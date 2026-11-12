@@ -1,0 +1,14 @@
+[package]
+name = "evo-sim-cli"
+description = "Command-line runner and benchmark for the evo-sim prototype."
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "evo-sim"
+path = "src/main.rs"
+
+[dependencies]
+evo-sim = { path = "../sim" }
+png = "0.17"
+rayon.workspace = true

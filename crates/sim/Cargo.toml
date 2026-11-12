@@ -1,0 +1,10 @@
+[package]
+name = "evo-sim"
+description = "Headless simulation rules for the Evolution MMO: genetics, needs, terrain, scoring."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rand.workspace = true
+rand_pcg.workspace = true
+rayon.workspace = true
