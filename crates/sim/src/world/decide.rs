@@ -105,7 +105,11 @@ impl World {
                     if hunter && q.mass() < max_prey_mass(o, coop) && !q.sheltered && reachable() {
                         // Learned avoidance of bright prey where warning coloration holds.
                         let avoid = if q.pheno[Gene::Coloration] > 0.6 {
-                            self.group.benefit(GroupTrait::WarningColoration, q.pos)
+                            if o.bright_aversion {
+                                1.0
+                            } else {
+                                self.group.benefit(GroupTrait::WarningColoration, q.pos)
+                            }
                         } else {
                             0.0
                         };

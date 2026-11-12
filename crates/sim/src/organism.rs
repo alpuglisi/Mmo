@@ -20,16 +20,18 @@ pub enum DeathCause {
     Exposure,
     Predation,
     Toxin,
+    Drowning,
     OldAge,
 }
 
 impl DeathCause {
-    pub const ALL: [DeathCause; 6] = [
+    pub const ALL: [DeathCause; 7] = [
         DeathCause::Starvation,
         DeathCause::Thirst,
         DeathCause::Exposure,
         DeathCause::Predation,
         DeathCause::Toxin,
+        DeathCause::Drowning,
         DeathCause::OldAge,
     ];
 
@@ -40,6 +42,7 @@ impl DeathCause {
             DeathCause::Exposure => "exposure",
             DeathCause::Predation => "eaten",
             DeathCause::Toxin => "toxin",
+            DeathCause::Drowning => "drowned",
             DeathCause::OldAge => "old age",
         }
     }
@@ -135,6 +138,8 @@ pub struct Organism {
     /// Conspecifics seen last tick (herd defense, social need).
     pub kin_nearby: u16,
     pub sheltered: bool,
+    /// Learned after being poisoned by brightly colored prey: avoid bright prey.
+    pub bright_aversion: bool,
     pub possessed_by: Option<PlayerId>,
     pub order: Option<Vec2>,
 }
@@ -174,6 +179,7 @@ impl Organism {
             activity: 1.0,
             kin_nearby: 0,
             sheltered: false,
+            bright_aversion: false,
             possessed_by: None,
             order: None,
         }

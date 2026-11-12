@@ -150,6 +150,13 @@ impl World {
             if let Traverse::Passable { speed: s, energy: e } = rule {
                 let dist = (step * s.min(1.5)).min(d);
                 let new_pos = self.map.clamp(pos + dd * dist);
+                // The end point can fall short of the checked tile (or cut a
+                // corner): never step onto a tile the body can't use.
+                if !stranded
+                    && traverse(&body, self.map.tile_at(new_pos), &self.weather, fly) == Traverse::Blocked
+                {
+                    continue;
+                }
                 let cost = dist * ENERGY_PER_TILE * e * if sprinting { 2.5 } else { 1.0 } / endurance;
                 let o = &mut self.organisms[i];
                 o.pos = new_pos;
@@ -218,13 +225,18 @@ impl World {
             p *= 1.0 - 0.6 * tox;
         }
         let prey_power = b.power();
+        let prey_bright = b.pheno[Gene::Coloration] > 0.6;
         let prey_pos = b.pos;
         let prey_mass = b.mass();
 
         // Toxins hurt whoever bites, whether or not the attack succeeds.
         if tox > 0.3 {
             let a = &mut self.organisms[i];
-            a.health -= 60.0 * tox * rng.gen_range(0.5..1.0);
+            a.health -= self.config.balance.toxin_damage * tox * rng.gen_range(0.5..1.0);
+            // A warning signal makes the lesson stick.
+            if prey_bright {
+                a.bright_aversion = true;
+            }
             if a.health <= 0.0 {
                 self.kill(i, DeathCause::Toxin);
             }
@@ -437,7 +449,7 @@ impl World {
             damage += harm((heat - 8.0) * 2.0 * dt, DeathCause::Exposure);
         }
         if drowning {
-            damage += harm(150.0 * dt, DeathCause::Exposure);
+            damage += harm(150.0 * dt, DeathCause::Drowning);
         }
         o.health -= damage;
         if damage == 0.0 && n.hunger < 70.0 && n.thirst < 70.0 {
@@ -522,6 +534,7 @@ impl World {
                 for g in genomes {
                     let jitter = Vec2::new(rng.gen_range(-0.4..0.4), rng.gen_range(-0.4..0.4));
                     let at = self.map.clamp(pos + jitter);
+                    let at = if self.passable_for(&self.organisms[i], at) { at } else { pos };
                     self.spawn_newborn(g, owner, lineage, at, generation, mother_id, preg.father_id, traits.newborn_growth, rng);
                 }
                 self.counters.births += count as u64;
@@ -571,6 +584,7 @@ impl World {
         let mut o = Organism::new(0, owner, genome, sex, pos);
         o.generation = generation;
         o.lineage = lineage;
+        *self.counters.born.entry(lineage).or_default() += 1;
         o.mother = Some(mother);
         o.father = Some(father);
         o.growth = growth;

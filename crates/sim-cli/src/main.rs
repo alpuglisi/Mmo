@@ -45,7 +45,7 @@ OPTIONS:
 
 Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_speed sprint
 attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
-pregnancy_cost meat_per_kg flee_weight ambush crowding
+pregnancy_cost meat_per_kg flee_weight ambush crowding toxin_damage
 ";
 
 struct Args {
@@ -276,14 +276,22 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
         c.kills + c.failed_hunts
     );
     println!("  deaths: {}", deaths.join(" · "));
-    for (owner, name) in names {
+    let counts = world.lineage_counts();
+    for (l, lineage) in world.lineages.iter().enumerate() {
+        let l32 = l as u32;
         let row: Vec<String> = DeathCause::ALL
             .iter()
-            .filter_map(|d| c.deaths_by_owner.get(&(*owner, *d)).map(|n| format!("{} {n}", d.label())))
+            .filter_map(|d| c.deaths_by_lineage.get(&(l32, *d)).map(|n| format!("{} {n}", d.label())))
             .collect();
-        if !row.is_empty() {
-            println!("    {:<20} {}", name, row.join(" · "));
-        }
+        println!(
+            "    {:<20} alive {:>4} ({:>4} adults) · born {:>5} · died {} (juveniles {})",
+            lineage.name,
+            counts[l].alive,
+            counts[l].adults,
+            c.born.get(&l32).copied().unwrap_or(0),
+            if row.is_empty() { "0".into() } else { row.join(", ") },
+            c.juvenile_deaths.get(&l32).copied().unwrap_or(0)
+        );
     }
     let groups: Vec<String> = GroupTrait::ALL
         .iter()

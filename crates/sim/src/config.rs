@@ -67,6 +67,8 @@ pub struct Balance {
     /// Extra hunger per kin nearby beyond 8, scaled by (1 - group tolerance):
     /// density dependence that keeps fast breeders below the hard cap.
     pub crowding: f32,
+    /// Health a predator loses biting fully toxic prey.
+    pub toxin_damage: f32,
 }
 
 impl Default for Balance {
@@ -88,12 +90,13 @@ impl Default for Balance {
             flee_weight: 1.5,
             ambush: 0.4,
             crowding: 0.03,
+            toxin_damage: 40.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 16;
+    pub const FIELD_COUNT: usize = 17;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -119,6 +122,7 @@ impl Balance {
             ("flee_weight", &mut self.flee_weight),
             ("ambush", &mut self.ambush),
             ("crowding", &mut self.crowding),
+            ("toxin_damage", &mut self.toxin_damage),
         ]
     }
 

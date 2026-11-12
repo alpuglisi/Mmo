@@ -82,7 +82,11 @@ pub struct Counters {
     pub hatched: u64,
     pub eggs_lost: u64,
     pub deaths: BTreeMap<DeathCause, u64>,
-    pub deaths_by_owner: BTreeMap<(PlayerId, DeathCause), u64>,
+    pub deaths_by_lineage: BTreeMap<(u32, DeathCause), u64>,
+    /// Deaths before reaching breeding age, per lineage.
+    pub juvenile_deaths: BTreeMap<u32, u64>,
+    /// Newborns and hatchlings per lineage.
+    pub born: BTreeMap<u32, u64>,
     pub matings: u64,
     pub directed_matings: u64,
     pub kills: u64,
@@ -327,9 +331,12 @@ impl World {
         o.alive = false;
         o.death = Some(cause);
         o.possessed_by = None;
-        let owner = o.owner;
+        let (owner, lineage, juvenile) = (o.owner, o.lineage, !o.matured);
         *self.counters.deaths.entry(cause).or_default() += 1;
-        *self.counters.deaths_by_owner.entry((owner, cause)).or_default() += 1;
+        *self.counters.deaths_by_lineage.entry((lineage, cause)).or_default() += 1;
+        if juvenile {
+            *self.counters.juvenile_deaths.entry(lineage).or_default() += 1;
+        }
         if let Some(c) = self.owner_counts.get_mut(&owner) {
             *c = c.saturating_sub(1);
         }
