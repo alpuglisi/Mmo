@@ -99,6 +99,9 @@ pub struct Organism {
     pub id: OrgId,
     pub owner: PlayerId,
     pub generation: u32,
+    /// Index into `World::lineages`: the founding population this descends
+    /// from (through the mother).
+    pub lineage: u32,
     pub sex: Sex,
     pub genome: Genome,
     pub pheno: Phenotype,
@@ -144,6 +147,7 @@ impl Organism {
             id,
             owner,
             generation: 0,
+            lineage: 0,
             sex,
             genome,
             pheno,

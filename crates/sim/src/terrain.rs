@@ -113,8 +113,6 @@ pub struct Map {
 /// Annual temperature swing (±) and day/night swing (±), in °C.
 const SEASONAL_AMPLITUDE: f32 = 12.0;
 const DIURNAL_AMPLITUDE: f32 = 4.0;
-/// Logistic regrowth rate of vegetation per day.
-const VEG_REGROWTH: f32 = 0.25;
 
 impl Map {
     pub fn generate(seed: u64, width: usize, height: usize) -> Map {
@@ -154,7 +152,7 @@ impl Map {
         }
         let water_dist = vec![u16::MAX; tiles.len()];
         let mut map = Map { width, height, tiles, water_dist };
-        map.update_environment(0, 12, 120, &Weather { wind: 0.2 });
+        map.update_environment(0, 12, 120, &Weather { wind: 0.2 }, 0.25);
         map
     }
 
@@ -285,7 +283,14 @@ impl Map {
 
     /// One simulated hour of environment: temperature, snow, ice, plant
     /// regrowth and carcass decay.
-    pub fn update_environment(&mut self, day_of_year: u32, hour: u32, days_per_year: u32, weather: &Weather) {
+    pub fn update_environment(
+        &mut self,
+        day_of_year: u32,
+        hour: u32,
+        days_per_year: u32,
+        weather: &Weather,
+        veg_regrowth: f32,
+    ) {
         let offset = Map::temperature_offset(hour, day_of_year, days_per_year);
         let storm_chill = if weather.storm() { 3.0 } else { 0.0 };
         let hours_per_day = 24.0;
@@ -309,7 +314,7 @@ impl Map {
             if t.veg_max > 0.0 {
                 let warmth = (t.temp / 12.0).clamp(0.0, 1.0);
                 let cover = (1.0 - t.snow * 3.0).clamp(0.0, 1.0);
-                let growth = VEG_REGROWTH * warmth * cover / hours_per_day;
+                let growth = veg_regrowth * warmth * cover / hours_per_day;
                 // Root term so grazed-out tiles recover.
                 t.veg += growth * (t.veg + 0.25 * t.veg_max) * (1.0 - t.veg / t.veg_max);
                 t.veg = t.veg.clamp(0.0, t.veg_max);

@@ -11,7 +11,7 @@ impl World {
         let mut rng = weather_rng(self.config.seed, hour_index);
         self.weather = next_weather(&self.weather, &mut rng);
         let (doy, hour, dpy) = (self.day_of_year(), self.hour(), self.config.days_per_year);
-        self.map.update_environment(doy, hour, dpy, &self.weather);
+        self.map.update_environment(doy, hour, dpy, &self.weather, self.config.balance.veg_regrowth);
         self.update_clutches(&mut rng);
     }
 
@@ -51,7 +51,7 @@ impl World {
                 let hatching: Vec<_> = c.eggs.drain(..).take(room).collect();
                 self.counters.hatched += hatching.len() as u64;
                 for g in hatching {
-                    self.spawn_newborn(g, c.owner, c.pos, c.generation, c.mother, c.father, c.newborn_growth, rng);
+                    self.spawn_newborn(g, c.owner, c.lineage, c.pos, c.generation, c.mother, c.father, c.newborn_growth, rng);
                 }
                 done = true;
             }

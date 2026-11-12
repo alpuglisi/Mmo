@@ -30,7 +30,7 @@ pub mod stats;
 pub mod terrain;
 pub mod world;
 
-pub use config::WorldConfig;
+pub use config::{Balance, WorldConfig};
 pub use design::{BirthType, FounderDesign, Thermo};
 pub use genome::{Gene, Genome, PlayerId, WILD};
 pub use world::World;

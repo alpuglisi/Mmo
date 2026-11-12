@@ -27,8 +27,111 @@ pub struct WorldConfig {
     pub mating_slots_per_season: u32,
     /// Upper bound on perception radius in tiles (also bounds neighbor queries).
     pub max_perception: f32,
+    pub balance: Balance,
+}
+
+/// Tunable rates that shape the ecosystem. Kept together so the sweep tool
+/// (`evo-sim sweep`) can search over them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Balance {
+    /// Hunger points per day at metabolism 1.0.
+    pub hunger_rate: f32,
+    /// Thirst points per day for a mid-sized warm-blooded body.
+    pub thirst_rate: f32,
+    /// Health lost per day while starving.
+    pub starvation_damage: f32,
+    /// Logistic regrowth rate of vegetation per day.
+    pub veg_regrowth: f32,
+    /// Tiles per tick at speed 1.0.
+    pub base_speed: f32,
+    /// Speed multiplier while sprinting (fleeing, closing on prey).
+    pub sprint: f32,
+    /// Distance in tiles at which an attack can land.
+    pub attack_reach: f32,
+    /// How much stealth shrinks the distance at which an organism is seen.
+    pub stealth_effect: f32,
+    /// Perception radius in tiles per unit of the perception stat.
+    pub perception_range: f32,
+    /// Multiplier on attack power (predation success).
+    pub attack_power: f32,
+    /// Hunger-rate reduction for full carnivores (big, infrequent meals).
+    pub carnivore_hunger_discount: f32,
+    /// Extra hunger rate per unit of litter burden while pregnant.
+    pub pregnancy_cost: f32,
     /// Food units left by a carcass per kg of body mass.
     pub meat_per_kg: f32,
+    /// Weight of the flee utility (how readily prey runs).
+    pub flee_weight: f32,
+    /// Fraction of resistance lost by prey that isn't fleeing (ambush).
+    pub ambush: f32,
+    /// Extra hunger per kin nearby beyond 8, scaled by (1 - group tolerance):
+    /// density dependence that keeps fast breeders below the hard cap.
+    pub crowding: f32,
+}
+
+impl Default for Balance {
+    fn default() -> Self {
+        Self {
+            hunger_rate: 60.0,
+            thirst_rate: 50.0,
+            starvation_damage: 25.0,
+            veg_regrowth: 0.25,
+            base_speed: 0.6,
+            sprint: 1.8,
+            attack_reach: 1.3,
+            stealth_effect: 0.6,
+            perception_range: 6.0,
+            attack_power: 1.0,
+            carnivore_hunger_discount: 0.3,
+            pregnancy_cost: 0.8,
+            meat_per_kg: 6.0,
+            flee_weight: 1.5,
+            ambush: 0.4,
+            crowding: 0.03,
+        }
+    }
+}
+
+impl Balance {
+    pub const FIELD_COUNT: usize = 16;
+
+    /// Every field by name, for search tools and reports.
+    pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
+        let mut copy = *self;
+        copy.fields_mut().map(|(n, v)| (n, *v))
+    }
+
+    pub fn fields_mut(&mut self) -> [(&'static str, &mut f32); Self::FIELD_COUNT] {
+        [
+            ("hunger_rate", &mut self.hunger_rate),
+            ("thirst_rate", &mut self.thirst_rate),
+            ("starvation_damage", &mut self.starvation_damage),
+            ("veg_regrowth", &mut self.veg_regrowth),
+            ("base_speed", &mut self.base_speed),
+            ("sprint", &mut self.sprint),
+            ("attack_reach", &mut self.attack_reach),
+            ("stealth_effect", &mut self.stealth_effect),
+            ("perception_range", &mut self.perception_range),
+            ("attack_power", &mut self.attack_power),
+            ("carnivore_hunger_discount", &mut self.carnivore_hunger_discount),
+            ("pregnancy_cost", &mut self.pregnancy_cost),
+            ("meat_per_kg", &mut self.meat_per_kg),
+            ("flee_weight", &mut self.flee_weight),
+            ("ambush", &mut self.ambush),
+            ("crowding", &mut self.crowding),
+        ]
+    }
+
+    /// Set a field by name. Returns false if there is no such field.
+    pub fn set(&mut self, name: &str, value: f32) -> bool {
+        match self.fields_mut().into_iter().find(|(n, _)| *n == name) {
+            Some((_, v)) => {
+                *v = value;
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 impl Default for WorldConfig {
@@ -47,7 +150,7 @@ impl Default for WorldConfig {
             wild_cap: 5000,
             mating_slots_per_season: 6,
             max_perception: 8.0,
-            meat_per_kg: 6.0,
+            balance: Balance::default(),
         }
     }
 }

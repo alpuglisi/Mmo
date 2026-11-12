@@ -15,9 +15,6 @@ use crate::terrain::{traverse, Traverse};
 /// Most hunger points an organism can eat per day (so a meal takes a few ticks).
 const MAX_INTAKE_PER_DAY: f32 = 1200.0;
 const MAX_DRINK_PER_DAY: f32 = 1500.0;
-const ATTACK_REACH: f32 = 1.3;
-/// Tiles per tick at speed 1.0.
-const BASE_SPEED: f32 = 0.6;
 /// Energy per tile walked at endurance 1.0.
 const ENERGY_PER_TILE: f32 = 0.6;
 const MATING_REACH: f32 = 1.2;
@@ -114,7 +111,7 @@ impl World {
             return 0.0;
         }
         let st = &o.traits.stats;
-        let mut speed = BASE_SPEED * st.speed * o.activity * (0.5 + 0.5 * o.growth);
+        let mut speed = self.config.balance.base_speed * st.speed * o.activity * (0.5 + 0.5 * o.growth);
         if o.pregnancy.is_some() && o.traits.birth == BirthType::Live {
             speed *= 0.7;
         }
@@ -126,7 +123,7 @@ impl World {
         }
         let sprinting = sprint && o.needs.energy > 15.0;
         if sprinting {
-            speed *= 1.8;
+            speed *= self.config.balance.sprint;
         }
         // Small possession bonus (reaction), per the design doc.
         if o.possessed_by.is_some() {
@@ -206,11 +203,15 @@ impl World {
 
     fn attack(&mut self, i: usize, j: usize, rng: &mut SimRng) {
         let (a, b) = (&self.organisms[i], &self.organisms[j]);
-        if !b.alive || a.pos.dist(b.pos) > ATTACK_REACH {
+        if !b.alive || a.pos.dist(b.pos) > self.config.balance.attack_reach {
             return;
         }
-        let pw = a.power() * (1.0 + self.coop_bonus(a));
-        let rs = b.resistance() * (1.0 + 1.5 * self.herd_bonus(b));
+        let pw = a.power() * (1.0 + self.coop_bonus(a)) * self.config.balance.attack_power;
+        let mut rs = b.resistance() * (1.0 + 1.5 * self.herd_bonus(b));
+        // Prey that hasn't noticed the hunter is caught off guard.
+        if b.action != Action::Flee {
+            rs *= 1.0 - self.config.balance.ambush;
+        }
         let mut p = pw * pw / (pw * pw + rs * rs + 1e-6);
         let tox = b.pheno[Gene::Toxins];
         if tox > 0.3 {
@@ -232,7 +233,7 @@ impl World {
         if rng.gen::<f32>() < p {
             self.kill(j, DeathCause::Predation);
             self.counters.kills += 1;
-            self.map.tile_at_mut(prey_pos).meat += prey_mass * self.config.meat_per_kg;
+            self.map.tile_at_mut(prey_pos).meat += prey_mass * self.config.balance.meat_per_kg;
             if self.organisms[i].alive {
                 self.eat_meat(i, 1.0);
             }
@@ -340,7 +341,7 @@ impl World {
             }
         }
         let n = c.eggs.len().min(3);
-        let food = n as f32 * c.egg_mass * self.config.meat_per_kg;
+        let food = n as f32 * c.egg_mass * self.config.balance.meat_per_kg;
         let eaten = food * o.traits.carnivory / o.food_per_hunger();
         let c = &mut self.clutches[k];
         c.eggs.truncate(c.eggs.len() - n);
@@ -360,6 +361,7 @@ impl World {
         let body = self.organisms[i].traits.body;
         let drowning = !body.can_fly && traverse(&body, tile, &self.weather, false) == Traverse::Blocked;
 
+        let bal = self.config.balance;
         let o = &mut self.organisms[i];
         let st = o.traits.stats;
         let resting = matches!(intent.action, Action::Rest | Action::Bask | Action::Guard | Action::Idle) && moved < 0.01;
@@ -393,11 +395,15 @@ impl World {
         };
         let thermo = if o.traits.warm { 1.0 + 0.04 * cold } else { 0.4 + 0.6 * o.activity };
         // Pregnancy costs scale with the litter's total mass.
-        let pregnant = if o.pregnancy.is_some() { 1.0 + 0.8 * o.traits.litter_burden } else { 1.0 };
+        let pregnant = if o.pregnancy.is_some() { 1.0 + bal.pregnancy_cost * o.traits.litter_burden } else { 1.0 };
         let size = o.pheno[Gene::BodySize];
         let n = &mut o.needs;
-        n.hunger += 60.0 * st.metabolism * thermo * activity_mult * pregnant * dt;
-        n.thirst += 50.0 * (1.0 + 0.05 * heat) * (0.8 + 0.4 * size) * if o.traits.warm { 1.0 } else { 0.7 } * dt;
+        // Carnivores eat big, infrequent meals: hunger rises more slowly.
+        let diet = 1.0 - bal.carnivore_hunger_discount * o.traits.carnivory;
+        // Crowding: competition with many kin, felt by group-intolerant organisms.
+        let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
+        n.hunger += bal.hunger_rate * st.metabolism * diet * crowd * thermo * activity_mult * pregnant * dt;
+        n.thirst += bal.thirst_rate * (1.0 + 0.05 * heat) * (0.8 + 0.4 * size) * if o.traits.warm { 1.0 } else { 0.7 } * dt;
         n.energy += if resting { 120.0 * if o.sheltered { 1.2 } else { 1.0 } } else { 15.0 } * dt;
         if n.hunger >= 90.0 {
             n.energy -= 30.0 * dt;
@@ -416,7 +422,7 @@ impl World {
         };
         let mut damage = 0.0;
         if n.hunger >= 100.0 {
-            damage += harm(25.0 * dt, DeathCause::Starvation);
+            damage += harm(bal.starvation_damage * dt, DeathCause::Starvation);
         }
         if n.thirst >= 100.0 {
             damage += harm(40.0 * dt, DeathCause::Thirst);
@@ -510,13 +516,13 @@ impl World {
         }
         let genomes: Vec<Genome> =
             (0..count).map(|_| Genome::inherit(&mother.genome, &preg.father, owner, mutation, rng)).collect();
-        let (pos, mother_id, generation) = (mother.pos, mother.id, mother.generation + 1);
+        let (pos, mother_id, generation, lineage) = (mother.pos, mother.id, mother.generation + 1, mother.lineage);
         match traits.birth {
             BirthType::Live => {
                 for g in genomes {
                     let jitter = Vec2::new(rng.gen_range(-0.4..0.4), rng.gen_range(-0.4..0.4));
                     let at = self.map.clamp(pos + jitter);
-                    self.spawn_newborn(g, owner, at, generation, mother_id, preg.father_id, traits.newborn_growth, rng);
+                    self.spawn_newborn(g, owner, lineage, at, generation, mother_id, preg.father_id, traits.newborn_growth, rng);
                 }
                 self.counters.births += count as u64;
             }
@@ -535,6 +541,7 @@ impl World {
                     mother: mother_id,
                     father: preg.father_id,
                     generation,
+                    lineage,
                     eggs: genomes,
                     hatch_tick: tick + (traits.incubation_days * tpd) as u64,
                     guardian,
@@ -552,6 +559,7 @@ impl World {
         &mut self,
         genome: Genome,
         owner: PlayerId,
+        lineage: u32,
         pos: Vec2,
         generation: u32,
         mother: OrgId,
@@ -562,6 +570,7 @@ impl World {
         let sex = if rng.gen::<bool>() { Sex::Female } else { Sex::Male };
         let mut o = Organism::new(0, owner, genome, sex, pos);
         o.generation = generation;
+        o.lineage = lineage;
         o.mother = Some(mother);
         o.father = Some(father);
         o.growth = growth;

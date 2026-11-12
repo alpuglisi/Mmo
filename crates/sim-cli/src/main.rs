@@ -9,7 +9,9 @@ use std::time::Instant;
 
 use evo_sim::group::GroupTrait;
 use evo_sim::organism::DeathCause;
-use evo_sim::{presets, render, Gene, PlayerId, World, WorldConfig, WILD};
+use evo_sim::{presets, render, Balance, Gene, PlayerId, World, WorldConfig, WILD};
+
+mod sweep;
 
 const USAGE: &str = "\
 evo-sim — Evolution MMO simulation prototype
@@ -17,11 +19,13 @@ evo-sim — Evolution MMO simulation prototype
 USAGE:
     evo-sim run    [--seed N] [--size N] [--days N] [--report N] [--snapshot PATH] [--threads N]
     evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N]
+    evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH]
     evo-sim designs
 
 COMMANDS:
     run      Found the wild ecosystem and four sample player lineages, run, report
     bench    Measure per-organism tick cost (µs) at a larger population
+    sweep    Random-search the balance parameters, scoring lineage coexistence
     designs  List the sample founder designs and their point costs
 
 OPTIONS:
@@ -31,7 +35,17 @@ OPTIONS:
     --report N      Print a report every N days (default 10)
     --snapshot PATH Write a PNG of the final world (prefix; also writes one per report)
     --scale N       Founding population multiplier for bench (default 4)
-    --threads N     Worker threads for the decision phase (default: all cores)
+    --threads N     Worker threads (default: all cores)
+    --set NAME=V    Override a balance parameter (repeatable; for sweep, sets the start point)
+    --trials N      Sweep: parameter sets per round (default 16)
+    --seeds N       Sweep: worlds per parameter set (default 3)
+    --rounds N      Sweep: rounds, each recentered on the best with half the spread (default 2)
+    --spread F      Sweep: max log-factor per parameter in round 1 (default 0.5, i.e. ×0.61–×1.65)
+    --out PATH      Sweep: write every trial to a CSV file
+
+Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_speed sprint
+attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
+pregnancy_cost meat_per_kg flee_weight ambush crowding
 ";
 
 struct Args {
@@ -43,12 +57,33 @@ struct Args {
     snapshot: Option<String>,
     scale: u32,
     threads: Option<usize>,
+    balance: Balance,
+    trials: usize,
+    seeds: u64,
+    rounds: u32,
+    spread: f32,
+    out: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut it = std::env::args().skip(1);
     let command = it.next().unwrap_or_else(|| "help".into());
-    let mut a = Args { command, seed: 1, size: 128, days: None, report: 10, snapshot: None, scale: 4, threads: None };
+    let mut a = Args {
+        command,
+        seed: 1,
+        size: 128,
+        days: None,
+        report: 10,
+        snapshot: None,
+        scale: 4,
+        threads: None,
+        balance: Balance::default(),
+        trials: 16,
+        seeds: 3,
+        rounds: 2,
+        spread: 0.5,
+        out: None,
+    };
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or(format!("{flag} needs a value"));
         let num = |v: String| v.parse::<u64>().map_err(|_| format!("{flag}: '{v}' is not a number"));
@@ -60,6 +95,22 @@ fn parse_args() -> Result<Args, String> {
             "--snapshot" => a.snapshot = Some(value()?),
             "--scale" => a.scale = (num(value()?)? as u32).max(1),
             "--threads" => a.threads = Some(num(value()?)? as usize),
+            "--trials" => a.trials = (num(value()?)? as usize).max(1),
+            "--seeds" => a.seeds = num(value()?)?.max(1),
+            "--rounds" => a.rounds = (num(value()?)? as u32).max(1),
+            "--spread" => {
+                let v = value()?;
+                a.spread = v.parse().map_err(|_| format!("--spread: '{v}' is not a number"))?;
+            }
+            "--out" => a.out = Some(value()?),
+            "--set" => {
+                let v = value()?;
+                let (name, x) = v.split_once('=').ok_or(format!("--set expects NAME=VALUE, got '{v}'"))?;
+                let x: f32 = x.parse().map_err(|_| format!("--set {name}: '{x}' is not a number"))?;
+                if !a.balance.set(name, x) {
+                    return Err(format!("--set: unknown balance parameter '{name}'"));
+                }
+            }
             "-h" | "--help" => a.command = "help".into(),
             other => return Err(format!("unknown option {other}")),
         }
@@ -81,6 +132,17 @@ fn main() -> ExitCode {
     match args.command.as_str() {
         "run" => run(&args),
         "bench" => bench(&args),
+        "sweep" => sweep::sweep(&sweep::SweepArgs {
+            base_seed: args.seed,
+            size: if args.size == 128 && !std::env::args().any(|a| a == "--size") { 96 } else { args.size },
+            days: args.days.unwrap_or(120),
+            trials: args.trials,
+            seeds: args.seeds,
+            rounds: args.rounds,
+            spread: args.spread,
+            center: args.balance,
+            out: args.out.clone(),
+        }),
         "designs" => designs(),
         "help" | "-h" | "--help" => print!("{USAGE}"),
         other => {
@@ -100,32 +162,14 @@ fn player_names() -> BTreeMap<PlayerId, String> {
     names
 }
 
-fn build_world(seed: u64, size: usize, scale: u32) -> World {
-    let config = WorldConfig { seed, width: size, height: size, ..Default::default() };
-    let mut world = World::new(config);
-    let area = (size * size) as f32 / (128.0 * 128.0);
-    let grow = |n: u32| ((n as f32 * area * scale as f32).round() as u32).max(4);
-    for (owner, design) in presets::wild_designs() {
-        let n = grow(design.founders);
-        world.found_lineage_unchecked(owner, &design.founders(n));
-    }
-    for (k, design) in presets::player_designs().into_iter().enumerate() {
-        let owner = k as PlayerId + 1;
-        // Player designs are validated at their designed founder count; bench
-        // scaling bypasses the budget on purpose.
-        if scale == 1 {
-            world.found_lineage(owner, &design).expect("preset designs fit the budget");
-        } else {
-            let n = grow(design.founders);
-            world.found_lineage_unchecked(owner, &design.founders(n));
-        }
-    }
-    world
+fn build_world(args: &Args, scale: u32) -> World {
+    let config = WorldConfig { seed: args.seed, width: args.size, height: args.size, balance: args.balance, ..Default::default() };
+    presets::standard_world(config, scale)
 }
 
 fn run(args: &Args) {
     let days = args.days.unwrap_or(120);
-    let mut world = build_world(args.seed, args.size, 1);
+    let mut world = build_world(args, 1);
     let names = player_names();
     println!(
         "World {}×{} seed {} · land {:.0}% · {} founders · {} ticks/day, {} days/year",
@@ -270,7 +314,7 @@ fn print_drift(world: &World, names: &BTreeMap<PlayerId, String>) {
 
 fn bench(args: &Args) {
     let days = args.days.unwrap_or(10);
-    let mut world = build_world(args.seed, args.size, args.scale);
+    let mut world = build_world(args, args.scale);
     println!(
         "Bench: {}×{} map, {} organisms, {} days, {} threads",
         args.size,

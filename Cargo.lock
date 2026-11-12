@@ -75,6 +75,7 @@ version = "0.1.0"
 dependencies = [
  "evo-sim",
  "png",
+ "rand",
  "rayon",
 ]
 

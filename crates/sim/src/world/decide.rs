@@ -57,12 +57,12 @@ impl World {
         let possessed = if o.possessed_by.is_some() { 1.2 } else { 1.0 };
         // Breeding drive lowers perception (doc: "Breeding season").
         let perception = o.traits.stats.perception * (1.0 + 0.5 * alarm) * possessed * (1.0 - 0.3 * n.breeding / 100.0);
-        let radius = (2.0 + 6.0 * perception).min(cfg.max_perception);
+        let radius = (2.0 + cfg.balance.perception_range * perception).min(cfg.max_perception);
 
         let coop = self.coop_bonus(o);
         let hunter = o.traits.carnivory > 0.45 && o.growth > 0.6;
         let can_breed = o.can_breed(self.tick);
-        let my_power = o.power() * (1.0 + coop);
+        let my_power = o.power() * (1.0 + coop) * cfg.balance.attack_power;
 
         let mut threat: f32 = 0.0;
         let mut threat_pos = o.pos;
@@ -89,7 +89,7 @@ impl World {
             } else {
                 // Sheltered burrowers and stealthy organisms are harder to see.
                 let hidden = if q.sheltered { 0.5 } else { 0.0 };
-                let detect = radius * (1.0 - 0.6 * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
+                let detect = radius * (1.0 - cfg.balance.stealth_effect * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
                 if d < detect {
                     if can_threaten(q, o) {
                         let odds = q.power() / (q.power() + o.resistance() + 1e-3);
@@ -151,7 +151,7 @@ impl World {
         let juvenile_care = !o.matured && o.growth < 0.7 && o.traits.birth != crate::BirthType::AbandonedEggs;
 
         let mut options: [(Action, f32); 12] = [
-            (Action::Flee, threat * (1.3 - boldness) * 1.5),
+            (Action::Flee, threat * (1.3 - boldness) * cfg.balance.flee_weight),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 }),
             (Action::Drink, thirst.powf(1.5) * 1.3 + if thirst > 0.8 { 0.5 } else { 0.0 }),
             (Action::Rest, tired * tired * 1.1),
@@ -181,6 +181,15 @@ impl World {
             .iter()
             .copied()
             .fold((Action::Idle, f32::MIN), |best, opt| if opt.1 > best.1 { opt } else { best });
+
+        // An exhausted hunter rests before chasing again; otherwise hunger keeps
+        // it chasing at a crawl until it starves.
+        let meat_here = self.map.tile_at(o.pos).meat * o.traits.carnivory > 1.0;
+        let action = if action == Action::Graze && o.traits.carnivory > 0.6 && n.energy < 30.0 && !meat_here && threat < 0.3 {
+            Action::Rest
+        } else {
+            action
+        };
 
         // --- Targets -------------------------------------------------------
         intent.action = action;

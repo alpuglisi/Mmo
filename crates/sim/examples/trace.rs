@@ -1,22 +1,18 @@
-//! Follow one organism tick by tick: `cargo run --release --example trace -- <owner> [ticks]`.
+//! Follow one organism tick by tick: `cargo run --release --example trace -- <lineage> [ticks]`.
+//! Lineages in the standard world: 0 vole, 1 antelope, 2 newt, 3 fox, 4 pack hunters,
+//! 5 herd grazers, 6 toxic frogs, 7 burrowing omnivores.
 //! Set SEED to pick a world. Useful when tuning behavior or balance.
 
-use evo_sim::{presets, World, WorldConfig};
+use evo_sim::{presets, WorldConfig};
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let owner: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let lineage: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(1);
     let ticks: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(48 * 4);
     let seed = std::env::var("SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
-    let mut w = World::new(WorldConfig { seed, ..Default::default() });
-    for (o, d) in presets::wild_designs() {
-        w.found_lineage_unchecked(o, &d);
-    }
-    for (k, d) in presets::player_designs().into_iter().enumerate() {
-        w.found_lineage(k as u32 + 1, &d).expect("preset designs fit the budget");
-    }
-    let Some(id) = w.organisms.iter().find(|o| o.owner == owner).map(|o| o.id) else {
-        eprintln!("no organism owned by {owner}");
+    let mut w = presets::standard_world(WorldConfig { seed, ..Default::default() }, 1);
+    let Some(id) = w.organisms.iter().find(|o| o.lineage == lineage).map(|o| o.id) else {
+        eprintln!("no organism in lineage {lineage}");
         return;
     };
     let o = w.organism(id).unwrap();

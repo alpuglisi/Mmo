@@ -114,8 +114,7 @@ pub fn derive(p: &Phenotype) -> Traits {
         perception: 0.15 + 0.3 * p[Eyes] + 0.3 * p[Ears] + 0.3 * p[Nose],
         stealth: (0.25 + 0.6 * p[Camouflage] - 0.35 * size - 0.35 * p[Coloration]).clamp(0.0, 1.0),
         defense: 0.1 + 0.45 * size + 0.3 * p[Scales] + 0.5 * p[Armor] + 0.2 * p[Toxins],
-        // Carnivores eat big, infrequent meals: hunger rises more slowly.
-        metabolism: (0.6 + 0.3 * p[Muscle]) * if warm { 1.0 } else { 0.35 } * (1.0 + upkeep) * (1.0 - 0.3 * p[Carnivory]),
+        metabolism: (0.6 + 0.3 * p[Muscle]) * if warm { 1.0 } else { 0.35 } * (1.0 + upkeep),
         insulation: (0.6 * fur_insulation + 0.35 * p[FatStores] - 0.15 * p[Ears]).clamp(0.0, 1.0),
     };
 

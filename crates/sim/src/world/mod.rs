@@ -46,6 +46,7 @@ pub struct Clutch {
     pub mother: OrgId,
     pub father: OrgId,
     pub generation: u32,
+    pub lineage: u32,
     pub eggs: Vec<Genome>,
     pub hatch_tick: u64,
     /// Incubated by the mother; `None` for abandoned eggs.
@@ -57,6 +58,21 @@ pub struct Clutch {
     pub newborn_growth: f32,
     /// Mass of one egg in kg (food value when raided).
     pub egg_mass: f32,
+}
+
+/// A founding population and its descendants.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lineage {
+    pub name: String,
+    pub owner: PlayerId,
+    pub founders: u32,
+}
+
+/// Living members of one lineage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LineageCount {
+    pub alive: usize,
+    pub adults: usize,
 }
 
 /// Cumulative event counters.
@@ -82,6 +98,7 @@ pub struct World {
     pub group: GroupField,
     pub counters: Counters,
     pub legacy: Vec<LegacySnapshot>,
+    pub lineages: Vec<Lineage>,
     tick: u64,
     next_id: OrgId,
     index: HashMap<OrgId, usize>,
@@ -135,6 +152,7 @@ impl World {
             group,
             counters: Counters::default(),
             legacy: Vec::new(),
+            lineages: Vec::new(),
             tick: 0,
             next_id: 1,
             index: HashMap::new(),
@@ -187,6 +205,19 @@ impl World {
         self.index.get(&id).map(|&i| &self.organisms[i]).filter(|o| o.alive)
     }
 
+    /// Living members per lineage, indexed like `lineages`.
+    pub fn lineage_counts(&self) -> Vec<LineageCount> {
+        let mut counts = vec![LineageCount::default(); self.lineages.len()];
+        for o in self.organisms.iter().filter(|o| o.alive) {
+            let c = &mut counts[o.lineage as usize];
+            c.alive += 1;
+            if o.matured {
+                c.adults += 1;
+            }
+        }
+        counts
+    }
+
     pub fn latest_legacy(&self) -> Option<&LegacySnapshot> {
         self.legacy.last()
     }
@@ -207,6 +238,8 @@ impl World {
         let spread = 3.0 + 10.0 * (1.0 - probe.pheno[crate::Gene::GroupTolerance]);
         let mut ids = Vec::with_capacity(design.founders as usize);
         let mut home = Vec2::ZERO;
+        let lineage = self.lineages.len() as u32;
+        self.lineages.push(Lineage { name: design.name.clone(), owner, founders: design.founders });
         for k in 0..design.founders {
             if k % group_size == 0 {
                 home = self.pick_home(&probe, &mut rng);
@@ -223,6 +256,7 @@ impl World {
                 }
             }
             let mut o = Organism::new(self.next_id, owner, genome, sex, pos);
+            o.lineage = lineage;
             // Founders start as adults of mixed ages.
             o.growth = 1.0;
             o.matured = true;

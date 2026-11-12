@@ -12,3 +12,4 @@ path = "src/main.rs"
 evo-sim = { path = "../sim" }
 png = "0.17"
 rayon.workspace = true
+rand.workspace = true

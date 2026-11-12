@@ -1,8 +1,41 @@
 //! Sample founder designs: a wild ecosystem and four player strategies that
 //! exercise different rules (pack hunting, herds, toxic eggs, burrowers).
 
+use crate::config::WorldConfig;
 use crate::design::{BirthType, FounderDesign, Thermo};
 use crate::genome::{Gene, PlayerId, WILD};
+use crate::world::World;
+
+/// The reference map size the preset founder counts and caps are tuned for.
+pub const REFERENCE_SIZE: usize = 128;
+
+/// A world with the wild ecosystem and the four sample player lineages.
+///
+/// Wild founders and population caps scale with map area. Player lineages are
+/// founded at their designed size (validated against the point budget) unless
+/// `scale` is above 1, which multiplies every founding population and skips
+/// the budget check (used for benchmarks).
+pub fn standard_world(mut config: WorldConfig, scale: u32) -> World {
+    let area = (config.width * config.height) as f32 / (REFERENCE_SIZE * REFERENCE_SIZE) as f32;
+    config.wild_cap = ((config.wild_cap as f32 * area * scale as f32) as usize).max(50);
+    config.lineage_cap = ((config.lineage_cap as f32 * area.max(0.5) * scale as f32) as usize).max(50);
+    let mut world = World::new(config);
+    let grow = |n: u32| ((n as f32 * area * scale as f32).round() as u32).max(4);
+    for (owner, design) in wild_designs() {
+        let n = grow(design.founders);
+        world.found_lineage_unchecked(owner, &design.founders(n));
+    }
+    for (k, design) in player_designs().into_iter().enumerate() {
+        let owner = k as PlayerId + 1;
+        if scale <= 1 {
+            world.found_lineage(owner, &design).expect("preset designs fit the budget");
+        } else {
+            let n = (design.founders * scale).max(4);
+            world.found_lineage_unchecked(owner, &design.founders(n));
+        }
+    }
+    world
+}
 
 /// The wild ecosystem. Founded without the point budget.
 pub fn wild_designs() -> Vec<(PlayerId, FounderDesign)> {
