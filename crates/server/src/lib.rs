@@ -1,0 +1,164 @@
+//! Authoritative game server for the Evolution MMO (build step 2 of
+//! `docs/game-design.md`).
+//!
+//! - [`runner`]: the world thread. It owns the `World` and ticks it at a
+//!   fixed rate; everything else talks to it through channels.
+//! - [`game`]: game state around the world (lineages, mating offers and the
+//!   consent flow, per-connection views and interest management).
+//! - [`http`]: Axum routes (accounts, founding, leaderboard, map PNG) and
+//!   the WebSocket session.
+//! - [`protocol`]: JSON wire types.
+//! - [`accounts`]: argon2 password hashes and bearer-token sessions.
+//! - [`store`]: persistence behind the [`store::Store`] trait (JSON files
+//!   now, PostgreSQL later).
+//! - [`design`]: the JSON form of a founder design.
+
+pub mod accounts;
+pub mod design;
+pub mod game;
+pub mod http;
+pub mod protocol;
+pub mod runner;
+pub mod store;
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::{mpsc, oneshot};
+
+use crate::accounts::Accounts;
+use crate::game::{build_world, Game, GameConfig, PersistEvent, WorldSettings};
+use crate::runner::{Runner, RunnerConfig};
+use crate::store::{FileStore, MemoryStore, Store};
+
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+#[derive(Clone, Debug)]
+pub struct ServerConfig {
+    pub bind: SocketAddr,
+    /// Directory for the file store; `None` keeps everything in memory.
+    pub data_dir: Option<PathBuf>,
+    pub world: WorldSettings,
+    pub runner: RunnerConfig,
+    pub game: GameConfig,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            bind: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            data_dir: Some(PathBuf::from("data")),
+            world: WorldSettings::default(),
+            runner: RunnerConfig { tick: Duration::from_secs(1), state_interval: Duration::from_secs(1) },
+            game: GameConfig::default(),
+        }
+    }
+}
+
+impl ServerConfig {
+    /// Fast mode for tests and demos: 20 ms ticks, state 10 times a second.
+    pub fn fast(mut self) -> Self {
+        self.runner = RunnerConfig { tick: Duration::from_millis(20), state_interval: Duration::from_millis(100) };
+        self
+    }
+}
+
+pub struct RunningServer {
+    pub addr: SocketAddr,
+    shutdown: Option<oneshot::Sender<()>>,
+    serve: tokio::task::JoinHandle<()>,
+}
+
+impl RunningServer {
+    /// Stop accepting connections and wait for the HTTP server to finish.
+    /// The world thread stops once the last handler lets go of it.
+    pub async fn shutdown(mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        let _ = (&mut self.serve).await;
+    }
+
+    /// Wait until the server stops (e.g. on Ctrl-C).
+    pub async fn wait(mut self) {
+        let _ = (&mut self.serve).await;
+    }
+
+    /// A sender that stops the server when used or dropped.
+    pub fn take_shutdown(&mut self) -> Option<oneshot::Sender<()>> {
+        self.shutdown.take()
+    }
+}
+
+/// Load persisted state, build the world, start the world thread and serve.
+///
+/// World state is not persisted yet, so every start generates a fresh world
+/// from the seed and re-founds every stored design in player order.
+pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
+    let store: Arc<dyn Store> = match &cfg.data_dir {
+        Some(dir) => Arc::new(FileStore::open(dir).await?),
+        None => Arc::new(MemoryStore::default()),
+    };
+    let accounts = store.load_accounts().await?;
+    let mut designs = store.load_designs().await?;
+    designs.sort_by_key(|d| d.player);
+
+    let world = build_world(&cfg.world);
+    let mut game = Game::new(world, cfg.game.clone());
+    for a in &accounts {
+        game.set_name(a.player, &a.name);
+    }
+    for d in &designs {
+        match d.design.to_design() {
+            Ok(design) => match game.found(d.player, &design) {
+                Ok(ok) => tracing::info!("re-founded {:?} for player {} as lineage {}", d.design.name, d.player, ok.lineage),
+                Err(e) => tracing::warn!("could not re-found the design of player {}: {e:?}", d.player),
+            },
+            Err(e) => tracing::warn!("stored design of player {} no longer validates: {}", d.player, e.message()),
+        }
+    }
+    let accounts = Arc::new(Accounts::new(store.clone(), accounts));
+
+    let (runner, handles) = Runner::new(game, cfg.runner.clone());
+    runner.spawn();
+    tokio::spawn(persist_task(store.clone(), handles.persist));
+
+    let state = http::AppState {
+        world: handles.tx,
+        accounts,
+        store,
+        published: handles.published,
+        next_conn: Arc::new(AtomicU64::new(1)),
+    };
+    let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
+    let addr = listener.local_addr()?;
+    let (shutdown, stop) = oneshot::channel::<()>();
+    let app = http::router(state);
+    let serve = tokio::spawn(async move {
+        let result = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = stop.await;
+            })
+            .await;
+        if let Err(e) = result {
+            tracing::error!("server error: {e}");
+        }
+    });
+    tracing::info!("listening on http://{addr}");
+    Ok(RunningServer { addr, shutdown: Some(shutdown), serve })
+}
+
+async fn persist_task(store: Arc<dyn Store>, mut rx: mpsc::UnboundedReceiver<PersistEvent>) {
+    while let Some(ev) = rx.recv().await {
+        let result = match &ev {
+            PersistEvent::Daily(r) => store.append_daily(r).await,
+            PersistEvent::Trade(r) => store.append_trade(r).await,
+        };
+        if let Err(e) = result {
+            tracing::error!("could not persist {ev:?}: {e}");
+        }
+    }
+}

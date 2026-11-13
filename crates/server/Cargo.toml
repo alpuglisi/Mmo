@@ -1,0 +1,29 @@
+[package]
+name = "evo-server"
+description = "Authoritative game server for the Evolution MMO: accounts, WebSocket play, persistence."
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "evo-server"
+path = "src/main.rs"
+
+[dependencies]
+evo-sim = { path = "../sim" }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+argon2 = { version = "0.5", features = ["std"] }
+async-trait = "0.1"
+axum = { version = "0.7", features = ["ws"] }
+png = "0.17"
+rand.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+tokio-tungstenite = "0.24"
