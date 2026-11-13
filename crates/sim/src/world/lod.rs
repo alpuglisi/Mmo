@@ -1281,7 +1281,7 @@ impl World {
             let stranded = if x.tiles == 0 { 1.0 } else { 0.0 };
             let density = c.count() as f32 / x.tiles.max(1) as f32 * cfg.clump;
             let larval = if rep.birth() == BirthType::AbandonedEggs {
-                super::apply::larval_hazard((density * KIN_AREA).min(u16::MAX as f32) as u16, bal.larval_competition)
+                super::apply::larval_hazard((density * KIN_AREA).min(u16::MAX as f32) as u16, rep.pace, bal.larval_competition)
             } else {
                 0.0
             };

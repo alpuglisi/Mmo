@@ -103,6 +103,10 @@ pub fn wild_designs() -> Vec<(PlayerId, FounderDesign)> {
                 .with(Fur, 0.5)
                 .with(Camouflage, 0.3)
                 .with(GroupTolerance, 0.2)
+                // Solitary hunters: at the default pack instinct (0.5) half
+                // the foxes carried cooperative hunting and, where it held,
+                // took prey three times their size (adult antelope).
+                .with(PackInstinct, 0.1)
                 // Foxes molt into a thick winter coat.
                 .with(SeasonalCoat, 0.8)
                 .founders(24),
@@ -178,5 +182,17 @@ mod tests {
         for d in player_designs() {
             assert!(d.validate().is_ok(), "{}: {:?} (cost {:.1})", d.name, d.validate(), d.point_cost());
         }
+    }
+
+    /// Foxes hunt alone: none of them carries cooperative hunting, so they
+    /// never take prey more than 1.5 times their size.
+    #[test]
+    fn foxes_are_solitary_hunters() {
+        use crate::group::GroupTrait;
+        let w = standard_world(WorldConfig { seed: 3, width: 64, height: 64, ..Default::default() }, 1);
+        let foxes: Vec<_> = w.organisms.iter().filter(|o| o.lineage == 3).collect();
+        assert!(!foxes.is_empty());
+        assert!(foxes.iter().all(|o| !GroupTrait::CooperativeHunting.is_carrier(&o.pheno)));
+        assert!(w.organisms.iter().any(|o| o.lineage == 4 && GroupTrait::CooperativeHunting.is_carrier(&o.pheno)));
     }
 }

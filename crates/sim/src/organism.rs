@@ -183,6 +183,9 @@ pub struct Organism {
     pub health: f32,
     pub alive: bool,
     pub death: Option<DeathCause>,
+    /// Lineage of the animal that killed it (predation, or a hunter killed
+    /// by prey that fought back), for diagnostics.
+    pub killer: Option<u32>,
     pub mother: Option<OrgId>,
     pub father: Option<OrgId>,
     pub pregnancy: Option<Pregnancy>,
@@ -258,6 +261,7 @@ impl Organism {
             health: 100.0,
             alive: true,
             death: None,
+            killer: None,
             mother: None,
             father: None,
             pregnancy: None,
@@ -314,8 +318,16 @@ impl Organism {
         }
     }
 
+    /// Ready to court and conceive: grown, not pregnant, recovered from the
+    /// last birth, awake, and not tied to a clutch it is incubating (doc:
+    /// "tied to nest until hatching").
     pub fn can_breed(&self, tick: u64) -> bool {
-        self.alive && self.matured && self.pregnancy.is_none() && tick >= self.breed_ready_tick && !self.dormancy.is_deep()
+        self.alive
+            && self.matured
+            && self.pregnancy.is_none()
+            && self.nest.is_none()
+            && tick >= self.breed_ready_tick
+            && !self.dormancy.is_deep()
     }
 
     pub fn is_breeding_adult(&self) -> bool {

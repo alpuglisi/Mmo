@@ -31,14 +31,17 @@ pub(crate) fn cold_blooded_thermo(activity: f32, body_t: f32, heat_burn: f32) ->
 }
 
 /// Daily death hazard of an uncared-for juvenile with `kin` of its own kind
-/// nearby: `(kin / competition)^4`. Steep, because perceived kin saturate in
-/// a crowd: a lone clutch of siblings barely notices (9 kin at the default:
-/// 6% a day), a crowd is lethal (25 kin: 370% a day).
-pub(crate) fn larval_hazard(kin: u16, competition: f32) -> f32 {
+/// nearby: `(kin * sqrt(pace) / competition)^4`, `pace` being its kind's pace
+/// of life (`Traits::pace_of_life`). Steep, because perceived kin saturate in
+/// a crowd. Many small hatchlings compete hardest (doc: "many: fragile, most
+/// die young"); the few, larger young of small clutches and big bodies hold
+/// their own (toxic frogs, pace 0.52: 9 kin 6% a day, 25 kin 330%; a
+/// two-egg clutch of a mid-sized body, pace 0.02, barely notices a crowd).
+pub(crate) fn larval_hazard(kin: u16, pace: f32, competition: f32) -> f32 {
     if competition <= 0.0 {
         return 0.0;
     }
-    (kin as f32 / competition).powi(4)
+    (kin as f32 * pace.max(0.0).sqrt() / competition).powi(4)
 }
 
 /// What walking costs an organism this tick.
@@ -555,13 +558,13 @@ impl World {
             let a = &mut self.organisms[i];
             a.health -= self.config.balance.fight_damage * prey_fights * rng.gen::<f32>();
             if a.alive && a.health <= 0.0 {
-                self.kill(i, DeathCause::Predation);
+                self.kill_by(i, j);
                 return;
             }
         }
 
         if rng.gen::<f32>() < p {
-            self.kill(j, DeathCause::Predation);
+            self.kill_by(j, i);
             self.counters.kills += 1;
             self.map.tile_at_mut(prey_pos).meat += prey_mass * self.config.balance.meat_per_kg;
             if self.organisms[i].alive {
@@ -574,7 +577,7 @@ impl World {
             a.needs.energy = (a.needs.energy - 8.0).max(0.0);
             a.health -= prey_power * 8.0 * rng.gen::<f32>();
             if a.alive && a.health <= 0.0 {
-                self.kill(i, DeathCause::Predation);
+                self.kill_by(i, j);
             }
             let b = &mut self.organisms[j];
             b.needs.energy = (b.needs.energy - 5.0).max(0.0);
@@ -700,6 +703,7 @@ impl World {
         let c = &mut self.clutches[k];
         c.eggs.truncate(c.eggs.len() - n);
         self.counters.eggs_lost += n as u64;
+        self.counters.eggs.entry(c.lineage).or_default().raided += n as u64;
         let o = &mut self.organisms[i];
         o.needs.hunger = (o.needs.hunger - eaten).max(0.0);
     }
@@ -891,10 +895,11 @@ impl World {
     /// own kind for food and shelter, and the losers starve: the doc's "many
     /// offspring: most die young", made density dependent.
     fn larval_competition_death(&self, o: &Organism, rng: &mut SimRng) -> bool {
-        if o.matured || o.traits.birth != BirthType::AbandonedEggs {
+        if o.matured || o.traits.birth != BirthType::AbandonedEggs || o.growth >= self.config.balance.larval_stage {
             return false;
         }
-        let hazard = larval_hazard(o.kin_nearby, self.config.balance.larval_competition);
+        let pace = o.traits.pace_of_life(o.pheno[Gene::BodySize]);
+        let hazard = larval_hazard(o.kin_nearby, pace, self.config.balance.larval_competition);
         hazard > 0.0 && rng.gen::<f32>() < hazard * self.config.dt_days()
     }
 
@@ -998,6 +1003,7 @@ impl World {
                     mother.nest = Some(pos);
                 }
                 let egg_mass = mother.traits.body.mass * 0.05;
+                self.counters.eggs.entry(lineage).or_default().laid += count as u64;
                 self.clutch_at.insert(self.map.tile_coords(pos), self.clutches.len());
                 self.clutches.push(Clutch {
                     pos,
@@ -1056,10 +1062,20 @@ mod tests {
 
     #[test]
     fn larval_hazard_rises_steeply_with_kin() {
-        assert_eq!(larval_hazard(30, 0.0), 0.0);
-        assert!(larval_hazard(5, 18.0) < 0.01);
-        assert!((larval_hazard(18, 18.0) - 1.0).abs() < 1e-6);
-        assert!(larval_hazard(30, 18.0) > 5.0);
+        assert_eq!(larval_hazard(30, 0.5, 0.0), 0.0);
+        assert!(larval_hazard(5, 1.0, 18.0) < 0.01);
+        assert!((larval_hazard(18, 1.0, 18.0) - 1.0).abs() < 1e-6);
+        assert!(larval_hazard(30, 1.0, 18.0) > 5.0);
+        // Fast-living kinds (big clutches of small young) compete hardest.
+        let traits = |litter: u32, size: f32| {
+            crate::stats::derive(&Genome::uniform(&crate::FounderDesign::new("x", crate::Thermo::Cold, BirthType::AbandonedEggs, litter).with(Gene::BodySize, size).values(), 1).phenotype())
+        };
+        let frog = traits(10, 0.12);
+        let pair = traits(2, 0.5);
+        let k = crate::Balance::default().larval_competition;
+        let (frog_h, pair_h) = (larval_hazard(20, frog.pace_of_life(0.12), k), larval_hazard(20, pair.pace_of_life(0.5), k));
+        assert!(frog_h > 0.5, "frog {frog_h}");
+        assert!(pair_h < 0.01, "pair {pair_h}");
     }
 
     /// Cold blood is cheapest when the body is cool and sluggish; a hot body
@@ -1202,6 +1218,34 @@ mod tests {
         let born = w.counters.births as usize;
         assert!(born >= 1);
         assert_eq!(w.cap_usage(1), (5 + born, 10));
+    }
+
+    /// An incubating parent recovers from the end of her brood, as a live
+    /// bearer does from the birth (`brood_recovery`): she can't court on the
+    /// nest, and after the hatch she needs her full recovery time again.
+    #[test]
+    fn brooders_recover_from_the_hatch() {
+        let mut w = presets::standard_world(WorldConfig { seed: 3, width: 64, height: 64, ..Default::default() }, 1);
+        w.config.balance.breeding_density = 0.0;
+        let i = w.organisms.iter().position(|o| o.lineage == 7 && o.sex == Sex::Female).unwrap();
+        assert_eq!(w.organisms[i].traits.birth, BirthType::IncubatedEggs);
+        (w.organisms[i].matured, w.organisms[i].growth) = (true, 1.0);
+        make_pregnant(&mut w, i);
+        let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+        w.give_birth(i, &mut rng);
+        let k = w.clutches.iter().position(|c| c.guardian == Some(w.organisms[i].id)).expect("a guarded clutch");
+        assert!(w.organisms[i].nest.is_some());
+        let recovery = (w.organisms[i].traits.recovery_days * w.config.ticks_per_day as f32) as u64;
+        // Long past her recovery from laying, still on the nest: no courting.
+        w.tick += recovery + 10;
+        assert!(!w.organisms[i].can_breed(w.tick));
+        // The eggs hatch: free of the nest, but recovering from now.
+        w.clutches[k].hatch_tick = w.tick;
+        w.update_clutches(&mut rng);
+        let o = &w.organisms[i];
+        assert!(o.nest.is_none());
+        assert_eq!(o.breed_ready_tick, w.tick + recovery);
+        assert!(!o.can_breed(w.tick) && o.can_breed(w.tick + recovery));
     }
 
     /// A mother in a dense colony of her own species carries fewer young.

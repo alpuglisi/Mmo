@@ -103,6 +103,7 @@ cargo run --release --bin evo-sim -- run --set sprint=2.0 --set crowding=0.05   
 cargo run --release --example trace -- 3 200          # follow one fox (lineage 3)
 cargo run --release --example stuck -- 120 1 2        # how often organisms get stuck
 cargo run --release --example calibrate -- tournament --worlds 20   # point-cost check (CSV)
+cargo run --release --example deaths -- 1,5 120 31 32 33   # who kills antelope and herd grazers, and when
 cargo run --release --bin evo-sim -- run --size 256 --focus 64,64 --focus 192,192   # level of detail
 cargo run --release --example lod -- 256 90 1 64,64 192,192   # LOD vs full simulation
 ```
@@ -682,7 +683,9 @@ Validation uses 12 seeds (31–42) that no tuning run or agent touched, on a
 | Greedy steering (12 unseen seeds) | 11.3 | 100% | 83% | 100% | 100% | 92% | 92% | 100% | 100% |
 | Pathfinding (12 unseen seeds) | 11.1 | 100% | 67% | 100% | 100% | 100% | 92% | 100% | 92% |
 | Environment upgrade (12 unseen seeds) | 11.05 | 100% | 75% | 92% | 100% | 92% | 92% | 100% | 100% |
-| **Current: seasonal strategies (12 unseen seeds)** | **10.94** | 100% | 58% | 92% | 100% | 100% | 92% | 100% | 100% |
+| Seasonal strategies (12 unseen seeds) | 10.94 | 100% | 58% | 92% | 100% | 100% | 92% | 100% | 100% |
+| Dominant-design counters, seeds 31–42 (55–66) | 10.73 (11.08) | 100% | 33% (58%) | 92% (92%) | 100% | 100% | 92% (92%) | 100% | 100% |
+| **Current: final balance pass, seeds 31–42 (55–66)** | **11.38 (11.79)** | 100% | 92% (100%) | 92% (100%) | 100% | 100% | 100% (100%) | 100% | 92% (100%) |
 
 Pathfinding cost 0.2 points, within the noise of a no-op change (`sprint`
 2.45 → 2.4501 under greedy steering scores 11.04 with antelope at 67%).
@@ -738,10 +741,12 @@ stream, so they change a world only through their effects.
 - Single worlds are chaotic: changing one parameter in the fourth decimal
   place can flip which marginal lineage survives. Judge changes by survival
   across many seeds, never one.
-- Antelope and herd grazers are the weakest lineages now that every predator
-  is viable (mean alive ~20 and ~40). Hybrids between those two
-  near-identical designs still occur, as do fox × pack hunter hybrids, since
-  those pairs share a body plan.
+- Antelope remain the most marginal lineage (92% and 100% survival on the
+  two held-out sets after the final balance pass, but 2–3 of 12 seeds still
+  end with a handful or none). What kills them now is cooperative pack
+  hunters taking adults at water and at rest, which is the predator design
+  working as intended. Hybrids between antelope and herd grazers still
+  occur, as do fox × pack hunter hybrids, since those pairs share a body plan.
 - A 12-seed, 120-day validation takes about 35 seconds on 4 cores.
 
 **Shared burrows and sentries.** Shared burrows: carriers are diggers
@@ -849,6 +854,87 @@ their floodplain (flooding only deepens the channel), wind has no direction
 and does not interact with wing loading or gliding, and lakes do not form in
 filled depressions.
 
+**Final balance pass: antelope, herd grazers and birth modes.** The new
+`examples/deaths.rs` (`cargo run --release --example deaths -- 1,5 120
+31 32 ...`) tallies every death of the given lineages by cause, life stage
+(calf: growth < 0.7, sub-adult, adult), season, what the victim was doing,
+whether its mother was near, the herd-defense benefit where it died and the
+killer's lineage (`Organism::killer`, `Counters::kills_by_lineage`);
+`calibrate --deaths` now also prints eggs laid, hatched, chilled and raided
+per entry (`Counters::eggs`). On seeds 31–42 before the pass, 92% of the
+antelope's 992 deaths and 82% of the herd grazers' 2,415 were predation. The
+victims were mostly adults: 589 antelope adults (pack hunters 367, foxes
+222) and 998 grazer adults. Calves came next (217 antelope, 647 grazers,
+nearly half of the grazer calves taken by foxes). Of the adults, 40% of the antelope
+(236) and 23% of the grazers (231) were killed while courting: only 119 and
+138 died fleeing. Autumn, spring and summer were about equal and winter was
+low. Five rule causes:
+
+| Problem | Fix |
+| --- | --- |
+| Full breeding drive outranked fleeing from anything but the closest hunter, so prey in breeding condition (most adults of year-round breeders) died courting | A threat in sight puts courting on hold: the urge to court is `1 - courtship_caution × threat` (`courtship_caution` 1). `breeding_recklessness` still blunts flight itself |
+| Half the foxes carried cooperative hunting (pack instinct at the 0.5 default), so they could take prey three times their size: 222 adult antelope | Red fox preset at pack instinct 0.1 (solitary; the wild fox has no budget) |
+| Herd defense was diluted by every plant eater, voles and frogs included, so it almost never held (most grazer kills happened at benefit 0) | Herd-defense eligibility needs body size > 0.45 as well as carnivory < 0.4, matching the doc's "herbivore + large size + group tolerance" |
+| Only a dependent calf next to its mother was guarded; sub-adults and orphans (about half of the young antelope that were killed) had nothing | Where herd defense holds and 3+ kin are around, the herd guards its young like a parent would (`herd_guard` 1 × care × benefit): "predators can't single out individuals" |
+| An incubating parent could court and conceive on the nest, and once the eggs hatched she could breed again the same day | No courting while tied to a nest (`Organism::can_breed`); incubators recover from the hatch, as live bearers do from the birth (`brood_recovery` 1) |
+
+After the rule fixes, on the same 12 seeds, foxes kill 5 adult antelope
+instead of 222. Antelope killed while courting fell from 236 to 85, and
+grazer calves taken fell from 647 to 211. Antelope deaths to predation
+dropped from 909 to 718, even though the antelope population is several
+times larger. Alive at day 120 (sum over the 12 seeds) went from 125 to 824
+antelope and from 946 to 3,000 herd grazers. More grazers now starve
+(250 → 560): food, not predators, limits them now.
+
+Birth modes. Two 48-world tournaments on fresh seeds (9601+, 9701+; 4 random
+full-budget designs per world, a fair share is 25% of entries) had incubated
+eggs win 35% of their entries, live birth 27% and abandoned eggs 13%. Among
+abandoned-egg designs, warm-blooded ones won 8%, which is the doc's
+thermoregulation mismatch working, and cold-blooded ones won 16%. The fixes,
+all from the doc's birth-type and offspring tradeoffs:
+
+- **Larval competition by pace of life.** Hatchlings of abandoned eggs died
+  of crowding at `(kin / larval_competition)^4` whatever their kind, so a
+  two-egg clutch of large young suffered like a frog's ten. The hazard is
+  now `(kin × sqrt(pace of life) / larval_competition)^4` (doc: "many:
+  fragile, most die young"), with `larval_competition` 18 → 13 so that the
+  toxic frogs (pace 0.52) see about the same hazard as before. At 18 with
+  the pace term, frogs and newts swell (sweep seed 31: 11.05, frogs 617
+  alive; seed 55: 11.23, frogs 691) against 11.40 and 11.74 at 13.
+  `larval_stage` (1) can end the larval stage before maturity.
+- **No courting on the nest, and brood recovery** (table above). With
+  recovery running from laying, a brooder cycled almost twice as fast as a
+  live bearer: about 2 + 5 days against 8 + 6 for a mid-sized litter of 6.
+- **Cold-blooded gestation.** Embryos develop at body temperature: a
+  cold-blooded live bearer now carries her young as much longer (×1.4) as
+  cold-blooded eggs take to incubate.
+
+On the same 96 worlds (pooled; the brood-recovery rule was designed after
+seeing them) the shares moved from abandoned/incubated/live 13% / 35% / 27%
+to 21% / 29% / 25%. Cold-blooded abandoned eggs went from 16% to 28%.
+Warm-blooded abandoned eggs stay at about 10%, as the doc mismatch intends.
+On 48 more worlds that no rule or tuning had seen (seeds 9801+):
+abandoned / incubated / live
+9.5% / 35.8% / 29.0% before and 15.9% / 31.3% / 27.4% after. That is the same
+direction with a smaller step, and incubated eggs are still the strongest mode.
+
+Held-out sweeps (`sweep --size 96 --trials 1 --seeds 12 --rounds 1 --days
+120`, seeds 31–42 and 55–66) score 11.38 and 11.79 (before: 10.73 and
+11.08). Antelope are at 92% / 100% (33% / 58%) with 69 / 72 mean alive (10
+/ 17), herd grazers at 100% / 100% (92% / 92%), and every other lineage is
+at 92–100%. Ablations on the two sets (before brood recovery, which by
+itself moved them from 23.14 to 23.17 in total): `herd_guard=0` 23.29 and
+`courtship_caution=0` 23.18 against 23.14. Both are neutral within the seed
+chaos and stay on as doc mechanics, because they cut the deaths they target.
+
+Parameter tuning came after the rule fixes: a 2-round, 16-trial sweep on
+seeds 1–6 (spread 0.25). Its best set scored 11.96 there against 11.72 for
+the defaults, but on the held-out sets it scored 11.55 / 11.54 against
+11.40 / 11.74, and the pack hunters and foxes fell to 83–92%. It was not
+adopted. The only changed default is `larval_competition` (18 → 13), which
+goes with the new pace-of-life term. New tunables: `courtship_caution`,
+`herd_guard`, `brood_recovery`, `larval_stage`.
+
 ## Point costs
 
 The costs in `design.rs` are calibrated with `examples/calibrate.rs`
@@ -943,9 +1029,9 @@ unchanged or better (pack hunters 92% → 100%) except antelope (67% → 50%,
 6 of 12 seeds) and herd grazers (92% → 83%); voles (100%, 217 alive) and
 newts (100%, 214) barely move. Burrowing omnivores stay at 100% survival
 but average 119 alive instead of 426; the toxic frogs (cold, carnivory 0.1)
-are unchanged (100%, 448). Not addressed:
-incubated eggs still win 38% and abandoned eggs 14% (birth mode, not diet or
-metabolism). Doc counters that already work: warm-blooded designs with
+are unchanged (100%, 448). Birth mode (incubated eggs winning 35–38%,
+abandoned eggs 13–14%) was addressed in the final balance pass (Balance
+section). Doc counters that already work: warm-blooded designs with
 abandoned eggs survive only 62% of the time (thermoregulation mismatch), and
 herd grazers lose herd defense when shrunk below 0.45.
 

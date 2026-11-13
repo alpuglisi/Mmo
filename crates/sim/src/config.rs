@@ -203,10 +203,17 @@ pub struct Balance {
     /// Health a predator loses biting fully toxic prey.
     pub toxin_damage: f32,
     /// Larval competition: young of abandoned eggs (no parental care) die at
-    /// a daily rate of `(kin nearby / larval_competition)^4` until they
-    /// mature, so unpredated fast breeders settle below the hard cap. Uses the
-    /// same kin count as `crowding`. 0 disables.
+    /// a daily rate of `(kin nearby * sqrt(pace of life) / larval_competition)^4`
+    /// until they mature (or reach `larval_stage`), so unpredated fast
+    /// breeders settle below the hard cap. Uses the same kin count as
+    /// `crowding`; pace of life (`Traits::pace_of_life`) makes it hit big
+    /// clutches of small young hardest, as `breeding_density` does for the
+    /// other birth modes. 0 disables.
     pub larval_competition: f32,
+    /// Growth (share of adult size) up to which young of abandoned eggs face
+    /// larval competition; past it they hold their own like any sub-adult.
+    /// 1 keeps it until maturity.
+    pub larval_stage: f32,
     /// Daily background death hazard of adults at pace of life 1
     /// (`Traits::pace_of_life`: small bodies with big litters live fast and
     /// die young), so unpredated fast breeders don't pile up adults across
@@ -223,6 +230,13 @@ pub struct Balance {
     /// when a predator attacks it, times `(1 - litter fraction)^2` (so
     /// single young are guarded fully, big litters barely). 0 disables.
     pub parent_defense: f32,
+    /// Herd guard: share of a parent's protection (`parent_defense`) a herd
+    /// gives each of its young members, calves, sub-adults and orphans
+    /// alike, where herd defense holds (`GroupTrait::HerdDefense`, 3+ kin
+    /// around): they get the resistance and power of a grown member of their
+    /// kind times `herd_guard × care × herd benefit` against a strike (the
+    /// better of this and the mother's own guard). 0 disables.
+    pub herd_guard: f32,
     /// Density-dependent breeding: live young and incubated eggs per birth
     /// are scaled by `1 / (1 + (d / breeding_density)^4)`, where `d` is the
     /// mother's species' members per tile in her 8×8-tile cell times
@@ -404,6 +418,21 @@ pub struct Balance {
     /// flee a threat (on top of the perception it costs), offset by
     /// sentries. 0 disables.
     pub breeding_recklessness: f32,
+    /// How far a threat it has seen (perceived level, capped at 1) cuts an
+    /// animal's urge to court: courting is `1 - courtship_caution × threat`
+    /// as urgent. Without it, full breeding drive outranked fleeing from
+    /// all but the closest hunters, so prey in breeding condition (most
+    /// adults of year-round breeders that hadn't found a mate) died
+    /// courting. 0 disables.
+    pub courtship_caution: f32,
+    /// Share of her recovery time (`Traits::recovery_days`) an incubating
+    /// parent starts over when her clutch hatches: young leave a live
+    /// bearer's body at birth but an incubator's care at hatching, so both
+    /// recover from the end of the brood (doc: eggs tie the parent to the
+    /// nest). Without it a brooder whose recovery ran out while she sat on
+    /// the eggs could breed again the day they hatched, cycling almost twice
+    /// as fast as a live bearer. 0 restores recovery from laying.
+    pub brood_recovery: f32,
 }
 
 impl Default for Balance {
@@ -431,11 +460,13 @@ impl Default for Balance {
             ambush: 0.4,
             crowding: 0.03,
             toxin_damage: 48.0,
-            larval_competition: 18.0,
+            larval_competition: 13.0,
+            larval_stage: 1.0,
             adult_mortality: 0.011,
             burrow_shelter: 1.0,
             burrow_caution: 2.0,
             parent_defense: 1.0,
+            herd_guard: 1.0,
             breeding_density: 0.03,
             escape: 0.6,
             escape_window: 1.0,
@@ -482,12 +513,14 @@ impl Default for Balance {
             breeding_window: 0.4,
             timed_conception: 0.3,
             breeding_recklessness: 0.15,
+            courtship_caution: 1.0,
+            brood_recovery: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 71;
+    pub const FIELD_COUNT: usize = 75;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -518,10 +551,12 @@ impl Balance {
             ("crowding", &mut self.crowding),
             ("toxin_damage", &mut self.toxin_damage),
             ("larval_competition", &mut self.larval_competition),
+            ("larval_stage", &mut self.larval_stage),
             ("adult_mortality", &mut self.adult_mortality),
             ("burrow_shelter", &mut self.burrow_shelter),
             ("burrow_caution", &mut self.burrow_caution),
             ("parent_defense", &mut self.parent_defense),
+            ("herd_guard", &mut self.herd_guard),
             ("breeding_density", &mut self.breeding_density),
             ("escape", &mut self.escape),
             ("escape_window", &mut self.escape_window),
@@ -568,6 +603,8 @@ impl Balance {
             ("breeding_window", &mut self.breeding_window),
             ("timed_conception", &mut self.timed_conception),
             ("breeding_recklessness", &mut self.breeding_recklessness),
+            ("courtship_caution", &mut self.courtship_caution),
+            ("brood_recovery", &mut self.brood_recovery),
         ]
     }
 
