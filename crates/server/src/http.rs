@@ -17,6 +17,7 @@ use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, watch};
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::accounts::{Accounts, AuthError, Session};
@@ -76,6 +77,19 @@ fn api_router(state: AppState) -> Router {
         .route("/api/map.png", get(map_png))
         .route("/ws", get(ws_upgrade))
         .with_state(state)
+        .layer(cors())
+}
+
+/// Cross-origin access to the API, so a client bundle served from elsewhere
+/// (a Capacitor app's `capacitor://localhost` / `https://localhost`, or a
+/// dev server on another port) can call it. Safe for any origin: auth is a
+/// bearer token the page holds, never a cookie the browser would attach.
+fn cors() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .max_age(Duration::from_secs(3600))
 }
 
 /// JSON error body: `{"code": "...", "message": "...", ...detail}`.
