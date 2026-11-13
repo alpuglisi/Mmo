@@ -107,6 +107,16 @@ pub struct Balance {
     /// barely feel it. Abandoned-egg young face `larval_competition`
     /// instead. 0 disables.
     pub breeding_density: f32,
+    /// Chance that alert prey slips a strike and bolts, when prey and hunter
+    /// are evenly matched in speed and agility (`Organism::evasion`). Scaled
+    /// by the prey's share of the contest, `2 * evade / (evade + pursue)`,
+    /// cut by `ambush` for prey caught off guard, capped at 0.95. Only a
+    /// strike the prey doesn't slip goes on to the power-vs-resistance roll.
+    /// 0 disables (every strike is a power roll, re-rolled each tick).
+    pub escape: f32,
+    /// Hours a hunter needs to recover after its prey broke free before it
+    /// can strike anything again: the prey's head start.
+    pub escape_window: f32,
 }
 
 impl Default for Balance {
@@ -137,12 +147,14 @@ impl Default for Balance {
             burrow_caution: 2.0,
             parent_defense: 1.0,
             breeding_density: 0.03,
+            escape: 0.6,
+            escape_window: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 23;
+    pub const FIELD_COUNT: usize = 25;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -175,6 +187,8 @@ impl Balance {
             ("burrow_caution", &mut self.burrow_caution),
             ("parent_defense", &mut self.parent_defense),
             ("breeding_density", &mut self.breeding_density),
+            ("escape", &mut self.escape),
+            ("escape_window", &mut self.escape_window),
         ]
     }
 

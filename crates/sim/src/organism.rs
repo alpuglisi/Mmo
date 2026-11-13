@@ -146,6 +146,9 @@ pub struct Organism {
     pub sheltered: bool,
     /// Learned after being poisoned by brightly colored prey: avoid bright prey.
     pub bright_aversion: bool,
+    /// Tick from which this organism can strike again: prey that broke free
+    /// leaves the hunter recovering for a while (`Balance::escape_window`).
+    pub strike_ready_tick: u64,
     pub possessed_by: Option<PlayerId>,
     pub order: Option<Vec2>,
 }
@@ -186,6 +189,7 @@ impl Organism {
             kin_nearby: 0,
             sheltered: false,
             bright_aversion: false,
+            strike_ready_tick: 0,
             possessed_by: None,
             order: None,
         }
@@ -231,6 +235,14 @@ impl Organism {
     /// Attack power before group-trait bonuses.
     pub fn power(&self) -> f32 {
         self.traits.stats.strength * self.vigor() + 0.3 * self.traits.stats.agility
+    }
+
+    /// Ability to get away from (or run down) another animal in a struggle:
+    /// running speed, as slowed by youth and cold, plus agility, both sapped
+    /// by exhaustion.
+    pub fn evasion(&self) -> f32 {
+        let st = &self.traits.stats;
+        (st.speed * self.activity * (0.5 + 0.5 * self.growth) + st.agility) * (0.4 + 0.6 * self.needs.energy / 100.0)
     }
 
     /// Resistance to attack before group-trait bonuses.
