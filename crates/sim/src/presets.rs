@@ -15,16 +15,8 @@ pub const REFERENCE_SIZE: usize = 128;
 /// founded at their designed size (validated against the point budget) unless
 /// `scale` is above 1, which multiplies every founding population and skips
 /// the budget check (used for benchmarks).
-pub fn standard_world(mut config: WorldConfig, scale: u32) -> World {
-    let area = (config.width * config.height) as f32 / (REFERENCE_SIZE * REFERENCE_SIZE) as f32;
-    config.wild_cap = ((config.wild_cap as f32 * area * scale as f32) as usize).max(50);
-    config.lineage_cap = ((config.lineage_cap as f32 * area.max(0.5) * scale as f32) as usize).max(50);
-    let mut world = World::new(config);
-    let grow = |n: u32| ((n as f32 * area * scale as f32).round() as u32).max(4);
-    for (owner, design) in wild_designs() {
-        let n = grow(design.founders);
-        world.found_lineage_unchecked(owner, &design.founders(n));
-    }
+pub fn standard_world(config: WorldConfig, scale: u32) -> World {
+    let mut world = wild_world(config, scale);
     for (k, design) in player_designs().into_iter().enumerate() {
         let owner = k as PlayerId + 1;
         if scale <= 1 {
@@ -33,6 +25,22 @@ pub fn standard_world(mut config: WorldConfig, scale: u32) -> World {
             let n = (design.founders * scale).max(4);
             world.found_lineage_unchecked(owner, &design.founders(n));
         }
+    }
+    world
+}
+
+/// A world with only the wild ecosystem, its founders and the population caps
+/// scaled to map area as in [`standard_world`]. Player lineages are added by
+/// the caller (the cost calibration example founds its own designs here).
+pub fn wild_world(mut config: WorldConfig, scale: u32) -> World {
+    let area = (config.width * config.height) as f32 / (REFERENCE_SIZE * REFERENCE_SIZE) as f32;
+    config.wild_cap = ((config.wild_cap as f32 * area * scale as f32) as usize).max(50);
+    config.lineage_cap = ((config.lineage_cap as f32 * area.max(0.5) * scale as f32) as usize).max(50);
+    let mut world = World::new(config);
+    let grow = |n: u32| ((n as f32 * area * scale as f32).round() as u32).max(4);
+    for (owner, design) in wild_designs() {
+        let n = grow(design.founders);
+        world.found_lineage_unchecked(owner, &design.founders(n));
     }
     world
 }
