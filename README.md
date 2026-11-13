@@ -76,6 +76,8 @@ On a 4-core container, 128×128 map, ~1,700 organisms:
 The single-thread figure falls within the design doc's 2–5 µs estimate. Only
 the decision phase runs in parallel so far, which is why 4 threads give about
 1.9×. Parallelizing the apply phase by region is the obvious next speed-up.
+The later nearest-first perception scan brought the single-thread cost to
+about 1.5–1.6 µs per organism-tick on the same benchmark.
 
 ## Balance
 
@@ -90,50 +92,52 @@ year and up to 0.5 for holding its founding size, minus up to 3 for time spent
 pinned at a population cap. Per-species births and deaths by cause are in
 every `run` report.
 
-| | Sweep score | Foxes survive | Pack hunters survive | Burrowers survive |
-| --- | --- | --- | --- | --- |
-| Original rules and defaults | 6.5 | 0% | 0% | 75% |
-| Fixed rules, tuned defaults (96×96, seeds 1–3) | 8.7 | 67% | 100% | 67% |
-| Same, validated on 128×128 with unseen seeds 11–13 | 9.3 | 100% | 67% | 67% |
+Validation uses 12 seeds (31–42) that no tuning run or agent touched, on a
+96×96 map for 120 days:
 
-Most of the gain came from rule fixes the sweep's per-species stats exposed,
-not from the numbers:
+| | Score | Vole | Antelope | Newt | Fox | Pack hunters | Herd grazers | Toxic frogs | Burrowers |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Original rules (first sweep, 3–4 seeds) | 6.5 | 100% | 100% | 100% | 0% | 0% | 100% | 100%, capped | 75% |
+| After the first tuning sweep (3 seeds) | 9.3 | 100% | 100% | 100% | 100% | 67% | 100% | 100%, capped | 67% |
+| **Current (12 unseen seeds)** | **11.3** | 100% | 83% | 100% | 100% | 92% | 92% | 100% | 100% |
 
-- Exhausted predators kept hunting instead of resting and starved at a crawl.
-  They now rest first, and prey that isn't fleeing is easier to catch (ambush).
-- Predators kept biting toxic frogs and dying. One poisoning by brightly
-  colored prey now teaches a predator to avoid bright prey.
-- Newborns were placed, and steps could end, in water too deep for the body
-  (hundreds of voles drowned).
-- Crowding raises hunger for organisms with many kin nearby, scaled by
-  `1 - group tolerance`.
+Toxic frogs now average about half their cap instead of sitting at it, and no
+lineage spends the run pinned at a cap.
 
-Tuning then raised the carnivore hunger discount, plant regrowth and movement
-speed, and lowered thirst and the stealth effect.
+Almost all of the gain came from rule bugs that per-species birth and death
+statistics exposed, not from tuning numbers:
 
-Unpredated fast breeders get two density brakes outside the sweep: larval
-competition (`larval_competition`) thins crowded young from abandoned eggs,
-and adult attrition (`adult_mortality`) gives adults a daily death hazard
-scaled by pace of life, `(litter fraction × (1 − body size))²`: toxic frogs
-~0.6% a day, voles ~0.2%, predators and grazers almost nothing. Without it
-adult frogs only died of old age (lifespan ~240 days, two years), so they
-piled up and the spring hatch refilled the cap in year 2.
+| Problem | Fix |
+| --- | --- |
+| Exhausted predators kept chasing and starved at a crawl | Rest before hunting; ambush bonus vs. unaware prey |
+| Predators kept eating toxic frogs and dying | One poisoning by bright prey teaches avoidance |
+| Hundreds of voles drowned | Newborns and steps never land on tiles the body can't use |
+| Wandering targeted unreachable tiles (deep water), stranding predators at shores | Wander only to enterable tiles |
+| Voles and newts interbred (and foxes with pack hunters) | Different body plans (endothermy, birth mode, size, diet) are sterile |
+| Foxes treated voles as kin and wouldn't hunt them | Kin recognition also requires a compatible body plan |
+| Only the first 48 neighbors were seen, in arbitrary order, so crowds hid predators | Nearest-first scan with exact pruning (also ~15% faster) |
+| A strike almost always killed: no contest of speed or agility | Alert prey can slip a strike and bolt (`escape`, `escape_window`) |
+| Burrowers fled in the open instead of going to ground | Threatened burrowers hide; attacks on sheltered burrowers mostly fail |
+| Calves died in their first days; mothers couldn't defend them | Nearby mothers add their defense; threatened calves run to them |
+| Predators hunted other predators as freely as prey | Prey that fights back is weighed as injury risk and hurts attackers |
+| Fast breeders (frogs, newts, voles) pinned their caps | Larval competition, pace-of-life adult mortality, density-dependent breeding |
+| Wild species shared one cap, so voles took the newts' room | Wild cap split per species |
+| Founders could start beside predators or with water behind them | Placement keeps a predator buffer and needs safely reachable water |
 
-Live-bearers and egg-guarders get a third brake, density-dependent breeding
-(`breeding_density`): a mother's litter shrinks by `1 / (1 + (d / K)^4)`,
-where `d` is her species' members per tile in her 8×8-tile cell (counted
-hourly, independent of how far each organism can see) times
-`1 - group tolerance` times the square root of pace of life. Voles used to
-boom past 2,500 on food that ran out only after they had overshot, then crash
-by 97% in winter; now they level off at a few hundred to ~900. The wild cap is
-split between the wild species in proportion to their founders (voles ~45%,
-foxes ~7%), so one booming species can no longer use up the others' room.
+A final 32-trial sweep over all 28 parameters (seeds 1–6) found nothing that
+beat the current defaults on the unseen seeds (11.07 vs 11.29), so the
+defaults stayed as they are.
 
-**Still open:** toxic frogs reach their population cap in every run (nothing
-eats them and they need little food, and crowding at its current strength
-doesn't hold them back), and burrowing omnivores and pack hunters still die
-out in about a third of worlds. A sweep takes about 30 minutes on 4 cores
-(each 120-day run is ~75 CPU-seconds).
+**Still open:**
+
+- Single worlds are chaotic: changing one parameter in the fourth decimal
+  place can flip which marginal lineage survives. Judge changes by survival
+  across many seeds, never one.
+- Antelope and herd grazers are the weakest lineages now that every predator
+  is viable (mean alive ~20 and ~40). Hybrids between those two
+  near-identical designs still occur, as do fox × pack hunter hybrids, since
+  those pairs share a body plan.
+- A 12-seed, 120-day validation takes about 35 seconds on 4 cores.
 
 Not yet implemented from the design doc: dominance and hidden recessives,
 mating-transmitted disease, the other five group traits, seasonal strategies
@@ -144,11 +148,10 @@ doc lists them as an open question.
 
 ## Suggested next steps
 
-1. **Faster sweeps:** screen trials on one short run and give only the best
-   the full seeds and days; cache a species ID per organism instead of
-   comparing genomes against every neighbor each tick.
-2. **Balance:** density dependence for unpredated fast breeders, and lineage
-   survival in the worlds where pack hunters or burrowers still die out.
+1. **Slow breeders under predation:** antelope and herd grazers are now the
+   weakest lineages (sub-adults and orphans are the main losses).
+2. **Sweep robustness:** score trials on more seeds (single worlds are
+   chaotic), and screen trials on short runs before giving the best full runs.
 3. Parallel apply by region, then measure at the doc's prototype target
    (~25k organisms on 256×256).
 4. Seasonal strategies as genes, then the remaining group traits.
