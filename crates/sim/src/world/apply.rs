@@ -292,7 +292,7 @@ impl World {
         if !accept_f || mm > 1.5 {
             return;
         }
-        let fert = mating::fertility(female.genome.distance(&male.genome));
+        let fert = mating::fertility(&female.genome, &male.genome);
         if fert <= 0.0 {
             // Courtship without conception.
             let half_day = self.config.ticks_per_day as u64 / 2;
@@ -308,14 +308,19 @@ impl World {
         let tick = self.tick;
         let father = Box::new(self.organisms[m].genome.clone());
         let father_id = self.organisms[m].id;
+        let father_lineage = self.organisms[m].lineage;
         let female = &mut self.organisms[f];
         female.pregnancy = Some(Pregnancy {
             father,
             father_id,
+            father_lineage,
             fertility,
             due_tick: tick + (female.traits.gestation_days * tpd) as u64,
         });
         female.needs.breeding = 0.0;
+        if female.lineage != father_lineage {
+            self.counters.cross_lineage_matings += 1;
+        }
         let male = &mut self.organisms[m];
         male.needs.breeding = 0.0;
         male.breed_ready_tick = tick + (tpd / 2.0) as u64;
@@ -552,6 +557,9 @@ impl World {
         mother.breed_ready_tick = tick + (traits.recovery_days * tpd) as u64;
         if count == 0 {
             return;
+        }
+        if preg.father_lineage != mother.lineage {
+            *self.counters.hybrids.entry((mother.lineage, preg.father_lineage)).or_default() += count as u64;
         }
         let genomes: Vec<Genome> =
             (0..count).map(|_| Genome::inherit(&mother.genome, &preg.father, owner, mutation, rng)).collect();

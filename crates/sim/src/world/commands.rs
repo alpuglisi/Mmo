@@ -123,7 +123,7 @@ impl World {
         let mismatch = mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
         let cost = mating::override_cost(mismatch, self.config.override_k);
         let failure_chance = mating::override_failure_chance(cost);
-        let fertility = mating::fertility(female.genome.distance(&male.genome));
+        let fertility = mating::fertility(&female.genome, &male.genome);
 
         for k in [f, m] {
             let n = &mut self.organisms[k].needs;

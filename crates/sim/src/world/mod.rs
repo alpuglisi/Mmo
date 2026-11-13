@@ -88,6 +88,11 @@ pub struct Counters {
     /// Newborns and hatchlings per lineage.
     pub born: BTreeMap<u32, u64>,
     pub matings: u64,
+    /// Conceptions between parents of different founding lineages.
+    pub cross_lineage_matings: u64,
+    /// Offspring (newborns or eggs) of cross-lineage matings, by
+    /// (mother's lineage, father's lineage).
+    pub hybrids: BTreeMap<(u32, u32), u64>,
     pub directed_matings: u64,
     pub kills: u64,
     pub failed_hunts: u64,
