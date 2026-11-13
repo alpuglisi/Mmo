@@ -57,17 +57,10 @@ ALTER TABLE season_placements DROP CONSTRAINT season_placements_pkey,
 DROP INDEX season_placements_player;
 CREATE INDEX season_placements_player ON season_placements (shard, player);
 
--- Marketplace auctions (0006, from another branch), if that migration ran
--- first: their rows are the default world's too. Their key and queries take
--- `shard` when that branch's store code is scoped by world.
-DO $$
-BEGIN
-    IF to_regclass('auctions') IS NOT NULL
-       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name = 'auctions' AND column_name = 'shard'
-                         AND table_schema = current_schema()) THEN
-        ALTER TABLE auctions ADD COLUMN shard TEXT NOT NULL DEFAULT 'main';
-        ALTER TABLE auctions ALTER COLUMN shard DROP DEFAULT;
-    END IF;
-END
-$$;
+-- How marketplace auctions ended (0006): per world.
+ALTER TABLE auctions ADD COLUMN shard TEXT NOT NULL DEFAULT 'main';
+ALTER TABLE auctions ALTER COLUMN shard DROP DEFAULT;
+ALTER TABLE auctions DROP CONSTRAINT auctions_pkey, ADD PRIMARY KEY (shard, world_id, listing);
+DROP INDEX auctions_seller;
+CREATE INDEX auctions_seller ON auctions (shard, seller, id);
+CREATE INDEX auctions_shard_id ON auctions (shard, id);

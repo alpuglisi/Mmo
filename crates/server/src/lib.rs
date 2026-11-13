@@ -554,6 +554,7 @@ async fn persist_one(
         PersistEvent::Trade(r) => store.append_trade(r).await,
         PersistEvent::Balance(r) => store.put_balance(r).await,
         PersistEvent::Ledger(r) => store.append_ledger(r).await,
+        PersistEvent::Auction(r) => store.append_auction(r).await,
         PersistEvent::Season(r) => store.put_season(r).await,
         PersistEvent::Snapshot(s) => {
             let t = &s.terrain;

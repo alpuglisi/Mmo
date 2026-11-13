@@ -103,17 +103,36 @@ pub enum ClientMsg {
     },
     /// Buy one mating with a listed organism for your adult `mine`: an
     /// already accepted agreement, the fee held in escrow until the two meet,
-    /// your seasonal slot spent when it runs. Data: `{offer}`.
+    /// your seasonal slot spent when it runs. Data: `{offer}`. Not for
+    /// auctions (`auction_listing`: bid instead).
     BuyListing {
         listing: u64,
         mine: OrgId,
     },
-    /// The open listings, newest first, each with the compatibility of your
-    /// `mine` with the listed organism if given. Data: [`MarketView`].
-    BrowseMarket {
+    /// Auction one mating with one of your adults: the highest bid at or
+    /// above `reserve` when it closes wins. It closes after `ticks` ticks if
+    /// given, else after `days` simulated days (default 1, at most 30).
+    /// Data: `{listing}` ([`ListingView`]).
+    CreateAuction {
+        organism: OrgId,
+        reserve: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        mine: Option<OrgId>,
+        days: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticks: Option<u64>,
     },
+    /// Bid `amount` renown on an auction for your adult `mine`. The amount
+    /// is held in escrow (raising your own highest bid holds only the
+    /// difference); you are refunded at once when outbid. Data: `{listing}`.
+    Bid {
+        listing: u64,
+        amount: u64,
+        mine: OrgId,
+    },
+    /// One page of the open listings, each with the compatibility of your
+    /// `mine` with the listed organism if given. Data: [`MarketView`]. With
+    /// no fields: the newest [`MARKET_PAGE`] listings of every kind.
+    BrowseMarket(MarketQuery),
     /// Your balance and recent ledger entries (newest first, at most `limit`,
     /// default 50). Data: [`LedgerView`].
     Ledger {
@@ -144,11 +163,96 @@ impl ClientMsg {
             ClientMsg::CreateListing { .. } => "create_listing",
             ClientMsg::WithdrawListing { .. } => "withdraw_listing",
             ClientMsg::BuyListing { .. } => "buy_listing",
+            ClientMsg::CreateAuction { .. } => "create_auction",
+            ClientMsg::Bid { .. } => "bid",
             ClientMsg::BrowseMarket { .. } => "browse_market",
             ClientMsg::Ledger { .. } => "ledger",
             ClientMsg::Resync => "resync",
         }
     }
+}
+
+/// Listings in a `browse_market` page unless asked otherwise.
+pub const MARKET_PAGE: usize = 20;
+/// The largest `browse_market` page.
+pub const MAX_MARKET_PAGE: usize = 50;
+
+/// Order of a `browse_market` page.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketSort {
+    /// Newest listing first.
+    #[default]
+    Newest,
+    /// Cheapest first (price: the fee, or an auction's highest bid or
+    /// reserve), then newest.
+    PriceAsc,
+    PriceDesc,
+    /// Closing soonest first (auctions' deadlines, listings' expiry; no
+    /// expiry last).
+    Ending,
+    /// With `mine`: compatible first by expected fertility, then
+    /// incompatible ones. Without `mine`, newest first.
+    Fertility,
+}
+
+/// Which listings a `browse_market` page holds.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ListingKind {
+    Fixed,
+    Auction,
+}
+
+/// `stud` (male) or `dam` (female).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ListingRole {
+    Stud,
+    Dam,
+}
+
+/// The fields of `browse_market`, all optional.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct MarketQuery {
+    /// One of your organisms: every listing in the page carries its
+    /// compatibility with it (`preview`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mine: Option<OrgId>,
+    /// Listings per page: default [`MARKET_PAGE`], at most
+    /// [`MAX_MARKET_PAGE`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// The previous page's `next_cursor`: the page after it, in the same
+    /// order and with the same filters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<MarketSort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ListingKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<ListingRole>,
+    /// Highest price (fee, or an auction's current bid or reserve).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_price: Option<u64>,
+    /// Only organisms of this lineage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<u32>,
+    /// Only organisms whose lineage belongs to this species (`GET
+    /// /api/species`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub species: Option<u32>,
+    /// With `mine`: only listings it can conceive with.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub compatible: bool,
+    /// Leave your own listings out of the page.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hide_own: bool,
+    /// Also return all your own listings (`own`), whatever the filters.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub with_own: bool,
 }
 
 /// A server → client WebSocket message.
@@ -935,15 +1039,49 @@ pub struct ListingView {
     /// `mine`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<MatingPreviewView>,
+    /// `fixed` or `auction` (listings from before auctions read as fixed).
+    #[serde(default = "fixed_kind")]
+    pub kind: ListingKind,
+    /// An auction's state (`expires_tick` is its deadline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auction: Option<AuctionView>,
 }
 
-/// Data of `browse_market`.
+fn fixed_kind() -> ListingKind {
+    ListingKind::Fixed
+}
+
+/// What a bidder sees of an auction.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AuctionView {
+    pub reserve: u64,
+    /// Closes (and settles) at this tick.
+    pub deadline_tick: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high_bid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high_bidder: Option<PlayerId>,
+    pub bids: u32,
+    /// The smallest bid accepted now.
+    pub min_bid: u64,
+}
+
+/// Data of `browse_market`: one page of listings.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct MarketView {
     pub balance: u64,
     pub escrow: u64,
     pub slots_left: u32,
     pub listings: Vec<ListingView>,
+    /// Listings matching the filters, on every page.
+    #[serde(default)]
+    pub total: usize,
+    /// Pass back as `cursor` for the next page; none on the last page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// All the caller's own listings (`with_own`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own: Option<Vec<ListingView>>,
 }
 
 pub fn action_name(a: Action) -> &'static str {
@@ -1084,9 +1222,38 @@ mod tests {
         let m: ClientEnvelope = serde_json::from_str(r#"{"type":"withdraw_listing","listing":2}"#).unwrap();
         assert_eq!(m.msg, ClientMsg::WithdrawListing { listing: 2 });
         let m: ClientEnvelope = serde_json::from_str(r#"{"type":"browse_market"}"#).unwrap();
-        assert_eq!(m.msg, ClientMsg::BrowseMarket { mine: None });
+        assert_eq!(m.msg, ClientMsg::BrowseMarket(MarketQuery::default()));
+        assert_eq!(serde_json::to_string(&m).unwrap(), r#"{"type":"browse_market"}"#);
         let m: ClientEnvelope = serde_json::from_str(r#"{"type":"browse_market","mine":3}"#).unwrap();
-        assert_eq!(m.msg, ClientMsg::BrowseMarket { mine: Some(3) });
+        assert_eq!(m.msg, ClientMsg::BrowseMarket(MarketQuery { mine: Some(3), ..Default::default() }));
+        let m: ClientEnvelope = serde_json::from_str(
+            r#"{"type":"browse_market","limit":5,"cursor":"0.12","sort":"price_asc","kind":"auction","role":"dam",
+                "max_price":30,"lineage":2,"species":4,"compatible":true,"hide_own":true,"with_own":true}"#,
+        )
+        .unwrap();
+        let q = MarketQuery {
+            mine: None,
+            limit: Some(5),
+            cursor: Some("0.12".into()),
+            sort: Some(MarketSort::PriceAsc),
+            kind: Some(ListingKind::Auction),
+            role: Some(ListingRole::Dam),
+            max_price: Some(30),
+            lineage: Some(2),
+            species: Some(4),
+            compatible: true,
+            hide_own: true,
+            with_own: true,
+        };
+        assert_eq!(m.msg, ClientMsg::BrowseMarket(q));
+        assert!(serde_json::from_str::<ClientEnvelope>(r#"{"type":"browse_market","sort":"random"}"#).is_err());
+        let m: ClientEnvelope =
+            serde_json::from_str(r#"{"type":"create_auction","organism":9,"reserve":20,"ticks":96}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::CreateAuction { organism: 9, reserve: 20, days: None, ticks: Some(96) });
+        assert_eq!(m.msg.name(), "create_auction");
+        let m: ClientEnvelope = serde_json::from_str(r#"{"type":"bid","listing":4,"amount":25,"mine":7}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::Bid { listing: 4, amount: 25, mine: 7 });
+        assert!(serde_json::from_str::<ClientEnvelope>(r#"{"type":"bid","listing":4,"amount":25}"#).is_err());
         let m: ClientEnvelope = serde_json::from_str(r#"{"type":"ledger","limit":5}"#).unwrap();
         assert_eq!(m.msg, ClientMsg::Ledger { limit: Some(5) });
         // Negative fees and missing fields are refused by the parser.

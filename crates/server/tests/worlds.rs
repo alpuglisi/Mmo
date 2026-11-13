@@ -262,17 +262,44 @@ async fn commands_market_and_leaderboards_stay_in_their_world() {
         }
     }
     let listed = listed.expect("one of Ann's founders can be listed");
+    // And an auction in main (closing in 10 ticks).
+    let mut auctioned = None;
+    for (k, &id) in ann_ids.iter().enumerate() {
+        let msg = json!({"type": "create_auction", "organism": id, "reserve": 1, "ticks": 10});
+        let r = command(&mut ann_main, 50 + k as u64, msg).await;
+        if r["ok"] == true {
+            auctioned = r["data"]["listing"]["id"].as_u64();
+            break;
+        }
+    }
+    let auctioned = auctioned.expect("one of Ann's founders can be auctioned");
     let mut bob_main = ws(addr, "main", &bob).await;
     let mut bob_isle = ws(addr, "isle", &bob).await;
     let m = command(&mut bob_main, 1, json!({"type": "browse_market"})).await;
-    assert!(m["data"]["listings"].as_array().unwrap().iter().any(|l| l["id"] == listed), "{m}");
+    let main_ids: Vec<u64> =
+        m["data"]["listings"].as_array().unwrap().iter().filter_map(|l| l["id"].as_u64()).collect();
+    assert!(main_ids.contains(&listed) && main_ids.contains(&auctioned), "{m}");
     let m = command(&mut bob_isle, 1, json!({"type": "browse_market"})).await;
     assert!(m["data"]["listings"].as_array().unwrap().is_empty(), "{m}");
-    // Buying it by id from the isle fails.
+    let m = command(&mut bob_isle, 3, json!({"type": "browse_market", "kind": "auction"})).await;
+    assert!(m["data"]["listings"].as_array().unwrap().is_empty(), "{m}");
+    // Buying the listing or bidding on the auction by id from the isle
+    // fails: the isle has no such listing (Bob has renown to bid there).
     srv.step_world("isle", 1).await;
     let bob_isle_ids = own_ids(&mut bob_isle).await;
     let r = command(&mut bob_isle, 2, json!({"type": "buy_listing", "listing": listed, "mine": bob_isle_ids[0]})).await;
     assert_eq!(r["ok"], false, "{r}");
+    let isle_balance = command(&mut bob_isle, 4, json!({"type": "ledger"})).await["data"]["balance"].as_u64().unwrap();
+    assert!(isle_balance >= 5, "Bob has {isle_balance} on the isle");
+    for (k, &mine) in bob_isle_ids.iter().take(4).enumerate() {
+        let msg = json!({"type": "bid", "listing": auctioned, "amount": 5, "mine": mine});
+        let r = command(&mut bob_isle, 5 + k as u64, msg).await;
+        assert_eq!((r["ok"].as_bool(), r["error"]["code"].as_str()), (Some(false), Some("unknown_listing")), "{r}");
+    }
+    let r = command(&mut bob_isle, 9, json!({"type": "ledger"})).await;
+    assert_eq!(r["data"]["balance"].as_u64(), Some(isle_balance), "nothing escrowed on the isle: {r}");
+    // The auction closes in main (unsold: no bids) and is recorded there.
+    srv.step_world("main", 12).await;
 
     // Balances and ledgers are per world: Ann has none on the isle.
     let main_ledger = command(&mut ann_main, 40, json!({"type": "ledger"})).await;
@@ -299,6 +326,9 @@ async fn commands_market_and_leaderboards_stay_in_their_world() {
         (store.recent_daily("main", 100).await.unwrap(), store.recent_daily("isle", 100).await.unwrap());
     assert!(!main_days.is_empty() && !isle_days.is_empty());
     assert!(main_days.iter().all(|d| isle_days.iter().all(|e| e.world_id != d.world_id)));
+    let main_auctions = store.recent_auctions("main", 100).await.unwrap();
+    assert_eq!(main_auctions.iter().map(|a| a.listing).collect::<Vec<_>>(), [auctioned], "{main_auctions:?}");
+    assert!(store.recent_auctions("isle", 100).await.unwrap().is_empty());
     assert!(!store.snapshot_ticks("main").await.unwrap().is_empty());
     assert!(!store.snapshot_ticks("isle").await.unwrap().is_empty());
 

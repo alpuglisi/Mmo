@@ -13,8 +13,8 @@ use evo_server::game::{GameConfig, WorldSettings};
 use evo_server::league::{SeasonRecord, SeasonTracker};
 use evo_server::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
 use evo_server::store::{
-    AccountRecord, AlertPrefsRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord, MemoryStore,
-    Store, TradeRecord, WorldStore, KEEP_SNAPSHOTS,
+    AccountRecord, AlertPrefsRecord, AuctionRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord,
+    MemoryStore, Store, TradeRecord, WorldStore, KEEP_SNAPSHOTS,
 };
 use evo_server::worlds::DEFAULT_WORLD;
 use evo_server::{start, ServerConfig};
@@ -259,6 +259,13 @@ async fn round_trip(s: &WorldStore) {
         s.put_snapshot(tick, tick / 100, &tick.to_le_bytes()).await.unwrap();
     }
     s.put_snapshot(400, 4, b"newer").await.unwrap();
+    // Auctions: a replayed close (same world and listing) replaces the
+    // first in its place.
+    assert!(s.recent_auctions(10).await.unwrap().is_empty());
+    s.append_auction(&auction("w1", 3, "unsold")).await.unwrap();
+    s.append_auction(&auction("w1", 4, "sold")).await.unwrap();
+    s.append_auction(&auction("w2", 3, "withdrawn")).await.unwrap();
+    s.append_auction(&AuctionRecord { bids: 9, ..auction("w1", 3, "sold") }).await.unwrap();
     // Terrains: written once per world and hash (a second put keeps the
     // first bytes: the same key always holds the same terrain).
     assert_eq!(s.load_terrain("w1", 7).await.unwrap(), None);
@@ -308,6 +315,7 @@ async fn round_trip(s: &WorldStore) {
     assert_eq!(s.load_snapshot(400).await.unwrap(), b"newer");
     assert_eq!(s.load_snapshot(200).await.unwrap(), 200u64.to_le_bytes());
     assert!(s.load_snapshot(100).await.is_err());
+    check_auctions(s).await;
     check_terrains(s).await;
     check_seasons(s).await;
 }
@@ -359,6 +367,36 @@ async fn check_seasons(s: &WorldStore) {
     assert_eq!(s.player_seasons(2, 1).await.unwrap().len(), 1);
     assert_eq!(s.player_seasons(3, 10).await.unwrap().len(), 1, "only in the replayed record");
     assert!(s.player_seasons(9, 10).await.unwrap().is_empty());
+}
+
+fn auction(world: &str, listing: u64, outcome: &str) -> AuctionRecord {
+    let sold = outcome == "sold";
+    AuctionRecord {
+        world_id: world.into(),
+        listing,
+        seller: 1,
+        organism: 40 + listing,
+        reserve: 10,
+        deadline_tick: 500,
+        bids: u32::from(sold) * 2,
+        high_bid: sold.then_some(25),
+        winner: sold.then_some(2),
+        winner_organism: sold.then_some(77),
+        outcome: outcome.into(),
+        offer: sold.then_some(12),
+        day: 10,
+    }
+}
+
+async fn check_auctions(s: &WorldStore) {
+    let all = s.recent_auctions(10).await.unwrap();
+    assert_eq!(
+        all.iter().map(|r| (r.world_id.as_str(), r.listing, r.outcome.as_str(), r.bids)).collect::<Vec<_>>(),
+        vec![("w1", 3, "sold", 9), ("w1", 4, "sold", 2), ("w2", 3, "withdrawn", 0)]
+    );
+    assert_eq!(all[1], auction("w1", 4, "sold"));
+    assert_eq!(all[2], auction("w2", 3, "withdrawn"));
+    assert_eq!(s.recent_auctions(1).await.unwrap(), vec![auction("w2", 3, "withdrawn")]);
 }
 
 async fn check_terrains(s: &WorldStore) {
@@ -413,6 +451,7 @@ async fn store_round_trips(backend: Backend) {
     assert_eq!(s.load_balances().await.unwrap().len(), 2);
     assert_eq!(s.recent_ledger(None, 100).await.unwrap().len(), 5);
     assert_eq!(s.load_alert_prefs(1).await.unwrap(), Some(alert_prefs(1)));
+    check_auctions(&s).await;
     check_terrains(&s).await;
     assert_eq!(s.list_seasons(0, 10).await.unwrap().1, 3);
     assert_eq!(s.load_season("w1", 1).await.unwrap(), Some(season("w1", 1, &[1, 2, 3], 4)));
@@ -827,6 +866,10 @@ async fn worlds_are_isolated_in_the_store(all: Arc<dyn Store>) {
     isle.put_snapshot(10, 0, b"isle").await.unwrap();
     main.put_terrain("w", 7, b"main terrain").await.unwrap();
     isle.put_terrain("w", 7, b"isle terrain").await.unwrap();
+    // Auction results: the same map id and listing in two worlds.
+    main.append_auction(&auction("w", 3, "sold")).await.unwrap();
+    isle.append_auction(&auction("w", 3, "unsold")).await.unwrap();
+    isle.append_auction(&auction("w", 4, "withdrawn")).await.unwrap();
     // Ranked seasons: the same map id and season number in two worlds.
     main.put_season(&season("w", 1, &[1], 1)).await.unwrap();
     isle.put_season(&season("w", 1, &[2], 2)).await.unwrap();
@@ -851,6 +894,8 @@ async fn worlds_are_isolated_in_the_store(all: Arc<dyn Store>) {
     assert!(main.load_snapshot(10).await.is_err());
     assert_eq!(main.load_terrain("w", 7).await.unwrap().as_deref(), Some(&b"main terrain"[..]));
     assert_eq!(isle.load_terrain("w", 7).await.unwrap().as_deref(), Some(&b"isle terrain"[..]));
+    assert_eq!(main.recent_auctions(10).await.unwrap(), [auction("w", 3, "sold")]);
+    assert_eq!(isle.recent_auctions(10).await.unwrap(), [auction("w", 3, "unsold"), auction("w", 4, "withdrawn")]);
     assert_eq!(main.list_seasons(0, 10).await.unwrap().1, 1);
     assert_eq!(isle.list_seasons(0, 10).await.unwrap().1, 2);
     assert_eq!(main.load_season("w", 1).await.unwrap(), Some(season("w", 1, &[1], 1)));
@@ -865,6 +910,7 @@ async fn worlds_are_isolated_in_the_store(all: Arc<dyn Store>) {
     assert!(none.load_designs().await.unwrap().is_empty() && none.recent_daily(10).await.unwrap().is_empty());
     assert!(none.load_balances().await.unwrap().is_empty() && none.recent_ledger(None, 10).await.unwrap().is_empty());
     assert!(none.snapshot_ticks().await.unwrap().is_empty() && none.load_terrain("w", 7).await.unwrap().is_none());
+    assert!(none.recent_auctions(10).await.unwrap().is_empty());
     // `--fresh` of the isle only.
     isle.clear_snapshots().await.unwrap();
     assert!(isle.snapshot_ticks().await.unwrap().is_empty() && isle.load_terrain("w", 7).await.unwrap().is_none());
@@ -912,6 +958,7 @@ struct Legacy {
     trade: TradeRecord,
     balances: Vec<BalanceRecord>,
     ledger: Vec<LedgerRecord>,
+    auction: AuctionRecord,
     season: SeasonRecord,
     tick: u64,
     day: u64,
@@ -970,6 +1017,7 @@ async fn legacy() -> Legacy {
         trade,
         balances,
         ledger,
+        auction: auction(game.saved().world_id(), 5, "sold"),
         season: season(game.saved().world_id(), 1, &[1], 9),
         tick: game.world.tick(),
         day: game.world.day(),
@@ -992,6 +1040,7 @@ fn write_legacy_files(dir: &std::path::Path, l: &Legacy) {
     lines("trades.jsonl", vec![serde_json::to_string(&l.trade).unwrap()]);
     lines("ledger.jsonl", l.ledger.iter().map(|r| serde_json::to_string(r).unwrap()).collect());
     lines("seasons.jsonl", vec![serde_json::to_string(&l.season).unwrap()]);
+    lines("auctions.jsonl", vec![serde_json::to_string(&l.auction).unwrap()]);
     std::fs::write(dir.join("snapshots").join(format!("world-{:012}.snap", l.tick)), &l.snapshot).unwrap();
     let t = &l.terrain;
     std::fs::write(dir.join("terrain").join(format!("{}-{:016x}.terrain", t.world_id, t.hash)), &t.bytes).unwrap();
@@ -1009,13 +1058,13 @@ mod erased {
     }
 }
 
-/// Write `l` into a schema migrated only up to 0005 (ranked seasons, before
+/// Write `l` into a schema migrated only up to 0006 (auctions, before
 /// worlds), in the columns that schema had.
 #[cfg(feature = "postgres")]
 async fn write_legacy_rows(url: &str, l: &Legacy) {
     use evo_server::store::PgStore;
     let pool = sqlx::PgPool::connect(url).await.unwrap();
-    PgStore::migrate_to(&pool, 5).await.unwrap();
+    PgStore::migrate_to(&pool, 6).await.unwrap();
     let q = |sql: &'static str| sqlx::query(sql);
     let a = &l.account;
     q("INSERT INTO accounts (name, player, password_hash, created_unix) VALUES ($1, $2, $3, $4)")
@@ -1113,6 +1162,25 @@ async fn write_legacy_rows(url: &str, l: &Legacy) {
         .execute(&pool)
         .await
         .unwrap();
+    let a = &l.auction;
+    q("INSERT INTO auctions (world_id, listing, seller, organism, reserve, deadline_tick, bids, high_bid, winner, \
+       winner_organism, outcome, offer, day) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
+    .bind(&a.world_id)
+    .bind(a.listing as i64)
+    .bind(i64::from(a.seller))
+    .bind(a.organism as i64)
+    .bind(a.reserve as i64)
+    .bind(a.deadline_tick as i64)
+    .bind(a.bids as i32)
+    .bind(a.high_bid.map(|v| v as i64))
+    .bind(a.winner.map(i64::from))
+    .bind(a.winner_organism.map(|v| v as i64))
+    .bind(&a.outcome)
+    .bind(a.offer.map(|v| v as i64))
+    .bind(a.day as i64)
+    .execute(&pool)
+    .await
+    .unwrap();
     let h = &l.season.head;
     q("INSERT INTO seasons (world_id, season, first_day, last_day, ended_unix, head, standings) \
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)")
@@ -1188,6 +1256,7 @@ async fn single_world_data_migrates_to_the_default_world(backend: Backend) {
     balances.sort_by_key(|b| b.player);
     assert_eq!(balances, l.balances);
     assert_eq!(main.recent_ledger(None, 1000).await.unwrap(), l.ledger);
+    assert_eq!(main.recent_auctions(10).await.unwrap(), std::slice::from_ref(&l.auction));
     let h = &l.season.head;
     assert_eq!(main.load_season(&h.world_id, h.season).await.unwrap().as_ref(), Some(&l.season));
     assert_eq!(main.list_seasons(0, 10).await.unwrap(), (vec![h.clone()], 1));
@@ -1204,6 +1273,7 @@ async fn single_world_data_migrates_to_the_default_world(backend: Backend) {
     assert!(isle.load_trades().await.unwrap().is_empty() && isle.load_balances().await.unwrap().is_empty());
     assert!(isle.recent_ledger(None, 10).await.unwrap().is_empty() && isle.snapshot_ticks().await.unwrap().is_empty());
     assert_eq!(isle.list_seasons(0, 10).await.unwrap().1, 0);
+    assert!(isle.recent_auctions(10).await.unwrap().is_empty());
     assert!(isle.load_season(&h.world_id, h.season).await.unwrap().is_none());
     assert!(isle.player_seasons(1, 10).await.unwrap().is_empty());
     // Writes after the migration land in the right world.

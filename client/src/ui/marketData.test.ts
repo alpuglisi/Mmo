@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { LedgerEntry, ListingView, MatingPreviewView, OwnOrganism, StateView } from '../protocol';
+import type { AuctionView, LedgerEntry, ListingView, MatingPreviewView, OwnOrganism, StateView } from '../protocol';
 import { parseLedgerView, parseMarketView } from '../protocol';
 import {
-  balanceText, buyProblem, DEFAULT_FILTER, expiresIn, filterListings, ledgerRows, ledgerTotals, listingCompat, ownAdults, traitSummary,
+  auctionText, balanceText, bidProblem, buyProblem, DEFAULT_FILTER, expiresIn, ledgerRows, ledgerTotals, listingCompat, marketQuery,
+  mergePages, ownAdults, PAGE_SIZE, pageText, traitSummary,
 } from './marketData';
 
 const preview = (extra: Partial<MatingPreviewView> = {}): MatingPreviewView => ({
@@ -16,9 +17,13 @@ function listing(id: number, extra: Partial<ListingView> = {}): ListingView {
     sales: 0, busy: false, pregnant: false, lineage: 1, lineage_name: 'Bob striders', generation: 0, offspring_raised: 0,
     age_days: 20, health: 90, x: 10, y: 12,
     traits: [{ gene: 'body_size', value: 0.45 }, { gene: 'fur', value: 0.8 }, { gene: 'carnivory', value: 0.1 }],
+    kind: 'fixed',
     ...extra,
   };
 }
+
+const auction = (id: number, a: Partial<AuctionView> = {}, extra: Partial<ListingView> = {}): ListingView =>
+  listing(id, { kind: 'auction', fee: 10, expires_tick: 96, auction: { reserve: 10, deadline_tick: 96, bids: 0, min_bid: 10, ...a }, ...extra });
 
 const own = (id: number, extra: Partial<OwnOrganism> = {}): OwnOrganism => ({
   id, lineage: 0, x: 0, y: 0, action: 'graze', sex: 'female', age_days: 20, growth: 1, matured: true, health: 90,
@@ -38,25 +43,68 @@ describe('traitSummary', () => {
   });
 });
 
-describe('filterListings', () => {
-  const list = [
-    listing(1, { fee: 30, preview: preview({ fertility: 0.7 }) }),
-    listing(2, { fee: 5, role: 'dam', sex: 'female', preview: preview() }),
-    listing(3, { fee: 1, preview: preview({ compatible: false, fertility: 0 }) }),
-    listing(4, { fee: 2 }),
-    listing(5, { owner: 1, owner_name: 'ann' }),
-  ];
-
-  it('ranks compatible listings first, then fertility and fee, and hides your own', () => {
-    expect(filterListings(list, DEFAULT_FILTER, 1).map((l) => l.id)).toEqual([2, 1, 4, 3]);
-    expect(filterListings(list, { ...DEFAULT_FILTER, hideOwn: false }, 1).map((l) => l.id)).toContain(5);
+describe('marketQuery', () => {
+  it('asks the server for a page with the filters, the order and the buyer', () => {
+    expect(marketQuery(DEFAULT_FILTER, undefined)).toEqual({ type: 'browse_market', limit: PAGE_SIZE, sort: 'fertility', with_own: true, hide_own: true });
+    expect(marketQuery({ ...DEFAULT_FILTER, role: 'dam', kind: 'auction', maxFee: 25, compatibleOnly: true, sort: 'ending' }, 7, 'c1')).toEqual({
+      type: 'browse_market', limit: PAGE_SIZE, sort: 'ending', mine: 7, cursor: 'c1', role: 'dam', kind: 'auction', max_price: 25,
+      compatible: true, hide_own: true,
+    });
+    // "Compatible only" needs a buyer organism; a later page doesn't repeat one's own listings.
+    const q = marketQuery({ ...DEFAULT_FILTER, compatibleOnly: true, hideOwn: false }, undefined, 'c2', 5);
+    expect(q).toEqual({ type: 'browse_market', limit: 5, sort: 'fertility', cursor: 'c2' });
   });
 
-  it('filters by role, fee and compatibility', () => {
-    expect(filterListings(list, { ...DEFAULT_FILTER, role: 'stud' }, 1).map((l) => l.id)).toEqual([1, 4, 3]);
-    expect(filterListings(list, { ...DEFAULT_FILTER, role: 'dam' }, 1).map((l) => l.id)).toEqual([2]);
-    expect(filterListings(list, { ...DEFAULT_FILTER, maxFee: 5 }, 1).map((l) => l.id)).toEqual([2, 4, 3]);
-    expect(filterListings(list, { ...DEFAULT_FILTER, compatibleOnly: true }, 1).map((l) => l.id)).toEqual([2, 1]);
+  it('merges pages in order, each listing once', () => {
+    expect(mergePages([[listing(5), listing(4)], [listing(4), listing(3)], []]).map((l) => l.id)).toEqual([5, 4, 3]);
+    expect(mergePages([])).toEqual([]);
+  });
+
+  it('says how much of the market is shown', () => {
+    const m = (total: number, next?: string) => ({ balance: 0, escrow: 0, slots_left: 0, listings: [], total, next_cursor: next });
+    expect(pageText(20, m(57, 'x'))).toBe('Showing 20 of 57');
+    expect(pageText(57, m(57))).toBe('All 57 shown');
+    expect(pageText(0, m(0))).toBe('');
+    expect(pageText(0, null)).toBe('');
+  });
+});
+
+describe('auctions', () => {
+  const l = auction(1, {}, { preview: preview() });
+  it('allows a bid at or above the lowest accepted', () => {
+    expect(bidProblem(l, 1, 50, 2, own(10), 10)).toBeNull();
+    expect(bidProblem(l, 1, 50, 2, own(10), 50)).toBeNull();
+  });
+  it('says what stands in the way of a bid', () => {
+    expect(bidProblem(listing(1), 1, 50, 2, own(10), 10)).toBe('not an auction');
+    expect(bidProblem(auction(1, {}, { owner: 1 }), 1, 50, 2, own(10), 10)).toBe('your own auction');
+    expect(bidProblem(l, 1, 50, 2, undefined, 10)).toBe('pick one of your adults');
+    expect(bidProblem(l, 1, 50, 2, own(10, { sex: 'male' }), 10)).toBe('needs a female');
+    expect(bidProblem(l, 1, 50, 2, own(10, { pregnant: true }), 10)).toBe('pregnant');
+    expect(bidProblem(auction(1, {}, { preview: preview({ compatible: false }) }), 1, 50, 2, own(10), 10)).toBe('cannot conceive');
+    expect(bidProblem(l, 1, 50, 0, own(10), 10)).toBe('no mating slots left');
+    expect(bidProblem(l, 1, 50, 2, own(10), 9)).toBe('bid at least 10');
+    expect(bidProblem(l, 1, 50, 2, own(10), Number.NaN)).toBe('bid at least 10');
+    expect(bidProblem(l, 1, 9, 2, own(10), 10)).toBe('needs 10 renown');
+  });
+  it('counts what a bidder already holds when raising their own bid', () => {
+    const mine = auction(1, { high_bid: 40, high_bidder: 1, bids: 1, min_bid: 42 });
+    expect(bidProblem(mine, 1, 2, 2, own(10), 42)).toBeNull();
+    expect(bidProblem(mine, 1, 1, 2, own(10), 42)).toBe('needs 2 renown');
+    const theirs = auction(1, { high_bid: 40, high_bidder: 3, bids: 1, min_bid: 42 });
+    expect(bidProblem(theirs, 1, 2, 2, own(10), 42)).toBe('needs 42 renown');
+  });
+  it('a buy button refuses an auction', () => {
+    expect(buyProblem(l, 1, 50, 2, own(10))).toBe('an auction: bid instead');
+  });
+  it('describes the highest bid and the time left', () => {
+    expect(auctionText(listing(1), 1, 0, 48)).toBe('');
+    expect(auctionText(auction(1), 1, 0, 48)).toBe('Auction: reserve 10, no bids yet · closes in 2.0 days');
+    expect(auctionText(auction(1, { high_bid: 12, high_bidder: 1, bids: 1 }), 1, 72, 48)).toBe('Auction: high bid 12 (yours) · 1 bid · closes in 12 h');
+    expect(auctionText(auction(1, { high_bid: 30, high_bidder: 2, bids: 4 }), 1, 95, 48)).toBe('Auction: high bid 30 · 4 bids · closes in 1 h');
+    expect(auctionText(auction(1), 1, 200, 48)).toBe('Auction: reserve 10, no bids yet · closing now');
+    // An auction's deadline is not shown as a listing expiry.
+    expect(expiresIn(auction(1), 0, 48)).toBeNull();
   });
 });
 
@@ -115,9 +163,28 @@ describe('parsing market data', () => {
     const m = parseMarketView({ balance: 40, escrow: 5, slots_left: 3, listings: [listing(1), { id: 'x' }, listing(2)] });
     expect(m?.listings.map((l) => l.id)).toEqual([1, 2]);
     expect(m?.escrow).toBe(5);
-    expect(parseMarketView({ balance: 1, listings: [] })).toEqual({ balance: 1, escrow: 0, slots_left: 0, listings: [] });
+    expect(parseMarketView({ balance: 1, listings: [] })).toEqual({ balance: 1, escrow: 0, slots_left: 0, listings: [], total: 0 });
     expect(parseMarketView(null)).toBeNull();
     expect(parseMarketView({ listings: [] })).toBeNull();
+  });
+
+  it('parses a page: total, cursor, own listings and auctions', () => {
+    const { kind: _k, ...old } = listing(3);
+    const m = parseMarketView({
+      balance: 40, escrow: 5, slots_left: 3, total: 57, next_cursor: '0.12',
+      listings: [listing(1), auction(2), old, { ...auction(4), auction: { reserve: 'x' } }],
+      own: [listing(9, { owner: 1 }), { id: 'x' }],
+    });
+    expect(m?.listings.map((l) => [l.id, l.kind])).toEqual([[1, 'fixed'], [2, 'auction'], [3, 'fixed']]);
+    expect(m?.listings[1].auction?.min_bid).toBe(10);
+    expect(m?.total).toBe(57);
+    expect(m?.next_cursor).toBe('0.12');
+    expect(m?.own?.map((l) => l.id)).toEqual([9]);
+    // A server before paging: the page is everything.
+    const before = parseMarketView({ balance: 1, listings: [old] });
+    expect(before?.total).toBe(1);
+    expect(before?.next_cursor).toBeUndefined();
+    expect(before?.own).toBeUndefined();
   });
 
   it('parses ledger data', () => {
