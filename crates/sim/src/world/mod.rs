@@ -402,6 +402,9 @@ impl World {
             })
             .collect();
         let threat_pos: Vec<Vec2> = threats.iter().map(|t| t.0).collect();
+        // How far founders scatter from home (`found_lineage_unchecked`),
+        // plus a margin.
+        let scatter = 3.0 + 10.0 * (1.0 - probe.pheno[crate::Gene::GroupTolerance]) + 8.0;
         // Reachable prey: land hunters can't take newts in deep water.
         let prey: Vec<(Vec2, u32, u32)> = if hunter {
             others()
@@ -430,6 +433,9 @@ impl World {
             // Competitors share a diet.
             let crowd = self.organisms.iter().filter(|o| o.pos.dist(p) < 12.0 && (o.traits.carnivory - carn).abs() < 0.3).count() as f32;
             let danger: f32 = threats.iter().map(|&(q, w)| w * (1.0 - q.dist(p) / buffer.max(1e-3)).max(0.0)).sum();
+            // A threat within the founders' scatter (plus a margin) would start
+            // among them: weigh it heavily, not just as a slice of `danger`.
+            let close: f32 = threats.iter().filter(|t| t.0.dist(p) < scatter).map(|t| t.1).sum();
             // Reachable prey nearby. Each prey lineage counts up to a share of
             // its founders and counts against the spot beyond twice that, so
             // hunters don't settle on most of one prey lineage; prey right on
@@ -454,7 +460,7 @@ impl World {
                 .sum();
             let productivity = (t.base_temp / 12.0).clamp(0.2, 1.0);
             let food = t.veg_max / 40.0 * productivity * (1.0 - carn) + carn * 0.04 * prey_count.min(60.0);
-            let score = water + food + comfort - 0.05 * crowd - (0.3 * danger).min(4.0) - (0.1 * carn * on_top).min(2.0)
+            let score = water + food + comfort - 0.05 * crowd - (0.3 * danger).min(4.0) - (0.1 * carn * on_top).min(2.0) - 2.0 * close
                 + rng.gen_range(0.0..0.5);
             if score > best.0 {
                 best = (score, p);

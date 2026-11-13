@@ -103,6 +103,8 @@ pub fn wild_designs() -> Vec<(PlayerId, FounderDesign)> {
                 .with(Fur, 0.5)
                 .with(Camouflage, 0.3)
                 .with(GroupTolerance, 0.2)
+                // Foxes molt into a thick winter coat.
+                .with(SeasonalCoat, 0.8)
                 .founders(24),
         ),
     ]

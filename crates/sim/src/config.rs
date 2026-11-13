@@ -364,6 +364,23 @@ pub struct Balance {
     /// Threat level (as perceived, about 0-2) at which a possessed organism
     /// breaks off its move order to flee or take cover.
     pub possess_danger: f32,
+    /// Seasonal coat: hunger points a full molt costs at full gene
+    /// expression (one into the winter coat in autumn, one back in spring).
+    pub molt_cost: f32,
+    /// Seasonal coat: insulation a warm-blooded body gains in its full
+    /// winter coat at full gene expression. Its heat tolerance drops with
+    /// it (comfort ceiling `30 - 8 × insulation`).
+    pub coat_insulation: f32,
+    /// Timed breeding: length of the breeding window from the start of
+    /// spring, as a share of the season.
+    pub breeding_window: f32,
+    /// Timed breeding: extra fertility of a mating in the window at full
+    /// gene expression (better conception; twins in single-young species).
+    pub timed_conception: f32,
+    /// Breeding-season risk: how much full breeding drive lowers the urge to
+    /// flee a threat (on top of the perception it costs), offset by
+    /// sentries. 0 disables.
+    pub breeding_recklessness: f32,
 }
 
 impl Default for Balance {
@@ -434,12 +451,17 @@ impl Default for Balance {
             shared_cache: 6.0,
             possess_urgency: 85.0,
             possess_danger: 0.6,
+            molt_cost: 12.0,
+            coat_insulation: 0.3,
+            breeding_window: 0.4,
+            timed_conception: 0.3,
+            breeding_recklessness: 0.15,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 63;
+    pub const FIELD_COUNT: usize = 68;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -512,6 +534,11 @@ impl Balance {
             ("shared_cache", &mut self.shared_cache),
             ("possess_urgency", &mut self.possess_urgency),
             ("possess_danger", &mut self.possess_danger),
+            ("molt_cost", &mut self.molt_cost),
+            ("coat_insulation", &mut self.coat_insulation),
+            ("breeding_window", &mut self.breeding_window),
+            ("timed_conception", &mut self.timed_conception),
+            ("breeding_recklessness", &mut self.breeding_recklessness),
         ]
     }
 

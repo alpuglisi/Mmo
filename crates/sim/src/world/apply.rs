@@ -496,6 +496,9 @@ impl World {
         if !b.alive || a.sex == b.sex || !a.can_breed(tick) || !b.can_breed(tick) || a.pos.dist(b.pos) > MATING_REACH {
             return;
         }
+        if !self.may_conceive(a) || !self.may_conceive(b) {
+            return;
+        }
         let (f, m) = if a.sex == Sex::Female { (i, j) } else { (j, i) };
         let (female, male) = (&self.organisms[f], &self.organisms[m]);
         let mf = mating::mismatch(&female.pheno, male.display());
@@ -505,7 +508,7 @@ impl World {
         if !accept_f || mm > 1.5 {
             return;
         }
-        let fert = mating::fertility(&female.genome, &male.genome) * self.disease_fertility(f, m);
+        let fert = mating::fertility(&female.genome, &male.genome) * self.disease_fertility(f, m) * self.conception_boost(female);
         self.mating_contact(f, m);
         if fert <= 0.0 {
             // Courtship without conception.
@@ -601,7 +604,6 @@ impl World {
     /// Needs, temperature, health. Returns a cause of death if health ran out.
     fn update_needs(&mut self, i: usize, intent: &Intent, moved: f32, dt: f32) -> Option<DeathCause> {
         let daytime = self.is_daytime();
-        let breed_factor = self.season().breeding_factor();
         let tick = self.tick;
         let pos = self.organisms[i].pos;
         let tile = self.map.tile_at(pos);
@@ -617,6 +619,9 @@ impl World {
         let dormant_rate = self.dormant_rate(&self.organisms[i]);
         // Group navigation: travelling with its group costs a migrant less.
         let nav = if intent.action == Action::Migrate { self.navigation_bonus(&self.organisms[i]) } else { 0.0 };
+        // Seasonal coat and timed breeding (`seasonal`).
+        let (coat_insulation, coat_mismatch) = self.coat_effect(&self.organisms[i]);
+        let drive = self.breeding_drive_rate(&self.organisms[i]);
         let o = &mut self.organisms[i];
         let st = o.traits.stats;
         let deep = o.dormancy.is_deep();
@@ -630,12 +635,13 @@ impl World {
 
         let (cold, heat) = if o.traits.warm {
             o.activity = 1.0;
-            let low = 12.0 - 30.0 * st.insulation;
-            let high = 30.0 - 8.0 * st.insulation;
+            let insulation = st.insulation + coat_insulation;
+            let low = 12.0 - 30.0 * insulation;
+            let high = 30.0 - 8.0 * insulation;
             ((low - temp).max(0.0), (temp - high).max(0.0))
         } else {
             let basking = daytime && open && matches!(intent.action, Action::Bask | Action::Rest | Action::Idle);
-            let bask = if basking { 10.0 * (1.0 - o.traits.fur_mismatch) } else { 0.0 };
+            let bask = if basking { 10.0 * (1.0 - o.traits.fur_mismatch - coat_mismatch).max(0.0) } else { 0.0 };
             let body_t = temp + bask;
             o.activity = ((body_t - 2.0) / 20.0).clamp(0.15, 1.0);
             ((6.0 - body_t).max(0.0), (body_t - 38.0).max(0.0))
@@ -741,8 +747,10 @@ impl World {
         // Drives
         let can_breed = o.can_breed(tick);
         let n = &mut o.needs;
-        if can_breed && n.hunger < 70.0 {
-            n.breeding = (n.breeding + 30.0 * breed_factor * dt).min(100.0);
+        if drive < 0.0 {
+            n.breeding = (n.breeding + drive * dt).max(0.0);
+        } else if can_breed && n.hunger < 70.0 {
+            n.breeding = (n.breeding + drive * dt).min(100.0);
         } else if !o.matured {
             n.breeding = 0.0;
         }

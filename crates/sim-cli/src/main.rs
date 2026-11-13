@@ -59,7 +59,8 @@ disease_fertility disease_kin path_nodes water_response snowmelt_swell rain_grow
 storm_exposure canopy_share dormancy_temp estivation_temp dormant_metabolism
 dormancy_mismatch brumation_mismatch fat_capacity den_concealment migration_range
 migration_risk torpor_metabolism cache_capacity shared_burrow sentry_share
-sentry_vigilance sentry_cost communal_den group_navigation shared_cache
+sentry_vigilance sentry_cost communal_den group_navigation shared_cache molt_cost
+coat_insulation breeding_window timed_conception breeding_recklessness
 possess_urgency possess_danger
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
@@ -415,7 +416,8 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
 }
 
 /// Seasonal strategies at work, per lineage that uses any: dormant (winter or
-/// summer), torpid, migrating, mean fat of adults and food cached.
+/// summer), torpid, migrating, in winter coat, mean fat of adults and food
+/// cached.
 fn print_seasonal(world: &World) {
     #[derive(Default)]
     struct Row {
@@ -423,6 +425,7 @@ fn print_seasonal(world: &World) {
         summer: usize,
         torpid: usize,
         migrating: usize,
+        coated: usize,
         adults: usize,
         fat: f32,
         cached: f32,
@@ -440,6 +443,9 @@ fn print_seasonal(world: &World) {
         if o.action == Action::Migrate {
             r.migrating += 1;
         }
+        if o.coat.is_some_and(|c| c > 0.5) {
+            r.coated += 1;
+        }
         if o.matured {
             r.adults += 1;
             r.fat += o.fat;
@@ -450,17 +456,18 @@ fn print_seasonal(world: &World) {
         r.shared = world.shared_cache_food(l);
     }
     for (l, r) in rows {
-        if r.winter + r.summer + r.torpid + r.migrating == 0 && r.fat + r.cached + r.shared < 1.0 {
+        if r.winter + r.summer + r.torpid + r.migrating + r.coated == 0 && r.fat + r.cached + r.shared < 1.0 {
             continue;
         }
         let shared = if r.shared >= 0.5 { format!(" (shared {:.0})", r.shared) } else { String::new() };
         println!(
-            "    {:<20} seasonal: hibernating {} · estivating {} · torpid {} · migrating {} · fat {:.0}/adult · cached {:.0}{shared}",
+            "    {:<20} seasonal: hibernating {} · estivating {} · torpid {} · migrating {} · winter coat {} · fat {:.0}/adult · cached {:.0}{shared}",
             world.lineages[l as usize].name,
             r.winter,
             r.summer,
             r.torpid,
             r.migrating,
+            r.coated,
             r.fat / r.adults.max(1) as f32,
             r.cached + r.shared
         );

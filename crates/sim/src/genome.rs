@@ -41,8 +41,16 @@ pub const WILD: PlayerId = 0;
 /// split founders of one design into strangers. Kin, mating and fertility
 /// thresholds stay as tuned on the other genes. (`Vigilance`, a behavior
 /// gene, counts like the other instinct genes.)
-pub const SEASONAL_GENES: [Gene; 6] =
-    [Gene::Hibernation, Gene::Brumation, Gene::Migration, Gene::Estivation, Gene::Caching, Gene::Torpor];
+pub const SEASONAL_GENES: [Gene; 8] = [
+    Gene::Hibernation,
+    Gene::Brumation,
+    Gene::Migration,
+    Gene::Estivation,
+    Gene::Caching,
+    Gene::Torpor,
+    Gene::SeasonalCoat,
+    Gene::TimedBreeding,
+];
 
 /// Which genes count toward [`Genome::distance`], by gene index.
 pub const IN_DISTANCE: [bool; Gene::COUNT] = {
@@ -154,6 +162,15 @@ define_genes! {
     /// Sentry instinct: in a group species, takes turns standing watch
     /// (`GroupTrait::Sentries`).
     Vigilance => "vigilance",
+    // Seasonal add-ons appended after the group genes (kept out of
+    // `Genome::distance` with the other seasonal genes).
+    /// Seasonal coat (add-on): molts into a thick winter coat in autumn and
+    /// back in spring, paying food for each molt. Warm-leaning: a
+    /// cold-blooded body can't use it (it blocks basking, like fur).
+    SeasonalCoat => "seasonal coat",
+    /// Timed breeding (add-on): breeds only in a narrow early-spring window,
+    /// with a strong drive and better conception there, and none outside it.
+    TimedBreeding => "timed breeding",
 }
 
 /// Dominance coefficient `h` of a gene, in `[-1, 1]`: expressed =
@@ -485,6 +502,8 @@ mod tests {
         // Seasonal strategies don't count.
         let mut v = flat(0.2);
         v[Gene::Migration.index()] = 1.0;
+        v[Gene::SeasonalCoat.index()] = 1.0;
+        v[Gene::TimedBreeding.index()] = 1.0;
         assert_eq!(Genome::uniform(&v, 1).distance(&a), 0.0);
         assert_eq!(a.distance(&a), 0.0);
     }
