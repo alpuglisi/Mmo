@@ -172,8 +172,37 @@ async fn terrain_stats_and_seasons() {
     assert!(genes.len() > 30);
     let fur = genes.iter().find(|g| g["gene"] == "fur").unwrap();
     assert_eq!(fur["history"].as_array().unwrap().len(), stats["history_days"].as_array().unwrap().len());
+    // Per-gene distributions: every agent in one bin of each gene.
+    for g in genes {
+        let bins = g["bins"].as_array().unwrap();
+        assert_eq!(bins.len(), evo_server::protocol::GENE_BINS);
+        assert_eq!(bins.iter().map(|b| b.as_u64().unwrap()).sum::<u64>(), stats["agents"].as_u64().unwrap(), "{g}");
+    }
+    // Allele origins: a lineage without cross-lineage matings carries its
+    // designer's alleles (and mutations, also tagged with the owner).
+    let origins = stats["origins"].as_array().unwrap();
+    assert_eq!(origins[0]["name"], "ann", "{origins:?}");
+    assert_eq!(origins[0]["lineage"], "Ann's");
+    let total: f64 = origins.iter().map(|o| o["share"].as_f64().unwrap()).sum();
+    assert!((total - 1.0).abs() < 1e-6, "{origins:?}");
     assert!(!stats["vitals"].as_array().unwrap().is_empty());
     assert!(!stats["legacy"].as_array().unwrap().is_empty());
+
+    // Alert preferences: defaults until saved, then normalized and kept.
+    let (s, _) = json_req(addr, Method::GET, "/api/alerts/prefs", None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, p) = json_req(addr, Method::GET, "/api/alerts/prefs", Some(&ann), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(p, serde_json::json!({"hidden": [], "toast": ["death", "need", "market"]}));
+    let body = serde_json::json!({"hidden": ["world", "daily_summary"], "toast": ["birth", "world"]});
+    let (s, p) = json_req(addr, Method::POST, "/api/alerts/prefs", Some(&ann), Some(body)).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    let saved = serde_json::json!({"hidden": ["daily_summary", "world"], "toast": ["birth"]});
+    assert_eq!(p, saved);
+    assert_eq!(json_req(addr, Method::GET, "/api/alerts/prefs", Some(&ann), None).await.1, saved);
+    let bad = serde_json::json!({"hidden": ["bogus"]});
+    let (s, _) = json_req(addr, Method::POST, "/api/alerts/prefs", Some(&ann), Some(bad)).await;
+    assert!(s.is_client_error(), "{s}");
 
     // Seasonal boards from the stored history (8-day years: 2-day seasons).
     let (s, boards) = json_req(addr, Method::GET, "/api/leaderboard/seasons?limit=4", None, None).await;

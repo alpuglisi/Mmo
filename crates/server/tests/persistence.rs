@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use evo_server::design::{BirthSpec, DesignSpec, ThermoSpec};
 use evo_server::game::WorldSettings;
-use evo_server::protocol::{LedgerEntry, LedgerKind};
+use evo_server::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
 use evo_server::store::{
-    AccountRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord, MemoryStore, Store, TradeRecord,
-    KEEP_SNAPSHOTS,
+    AccountRecord, AlertPrefsRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord, MemoryStore,
+    Store, TradeRecord, KEEP_SNAPSHOTS,
 };
 use evo_server::{start, ServerConfig};
 use futures_util::StreamExt;
@@ -192,6 +192,10 @@ async fn round_trip(s: &dyn Store) {
     // A replayed entry (same world and sequence number) replaces the first.
     s.append_ledger(&ledger("w1", 3, 1, -30)).await.unwrap();
     s.append_ledger(&ledger("w2", 1, 1, 7)).await.unwrap();
+    assert_eq!(s.load_alert_prefs(1).await.unwrap(), None);
+    s.put_alert_prefs(&AlertPrefsRecord { player: 1, prefs: AlertPrefs::default() }).await.unwrap();
+    s.put_alert_prefs(&alert_prefs(2)).await.unwrap();
+    s.put_alert_prefs(&alert_prefs(1)).await.unwrap();
     for tick in [100u64, 200, 300, 400] {
         s.put_snapshot(tick, tick / 100, &tick.to_le_bytes()).await.unwrap();
     }
@@ -229,12 +233,23 @@ async fn round_trip(s: &dyn Store) {
         vec![("w1", 3, -30), ("w2", 1, 7)]
     );
     assert_eq!(s.recent_ledger(Some(2), 10).await.unwrap().len(), 2);
+    assert_eq!(s.load_alert_prefs(1).await.unwrap(), Some(alert_prefs(1)));
+    assert_eq!(s.load_alert_prefs(2).await.unwrap(), Some(alert_prefs(2)));
+    assert_eq!(s.load_alert_prefs(3).await.unwrap(), None);
     let ticks = s.snapshot_ticks().await.unwrap();
     assert_eq!(ticks.len(), KEEP_SNAPSHOTS);
     assert_eq!(ticks, vec![400, 300, 200]);
     assert_eq!(s.load_snapshot(400).await.unwrap(), b"newer");
     assert_eq!(s.load_snapshot(200).await.unwrap(), 200u64.to_le_bytes());
     assert!(s.load_snapshot(100).await.is_err());
+}
+
+fn alert_prefs(player: u32) -> AlertPrefsRecord {
+    let prefs = AlertPrefs {
+        hidden: vec![AlertKind::DailySummary, AlertKind::World],
+        toast: if player == 1 { vec![AlertKind::Birth, AlertKind::Death] } else { vec![] },
+    };
+    AlertPrefsRecord { player, prefs }
 }
 
 fn ledger(world: &str, seq: u64, player: u32, delta: i64) -> LedgerRecord {
@@ -272,6 +287,7 @@ async fn store_round_trips(backend: Backend) {
     assert_eq!(s.snapshot_ticks().await.unwrap(), vec![400, 300, 200]);
     assert_eq!(s.load_balances().await.unwrap().len(), 2);
     assert_eq!(s.recent_ledger(None, 100).await.unwrap().len(), 5);
+    assert_eq!(s.load_alert_prefs(1).await.unwrap(), Some(alert_prefs(1)));
     drop(s);
     backend.cleanup().await;
 }

@@ -5,14 +5,14 @@
 
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
-import type { ClientMsg, LineageStats, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
+import type { AlertPrefs, ClientMsg, LineageStats, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
 import { WILD } from '../protocol';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, terrainSummary, type TerrainGrid } from '../world/terrain';
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
 import { describeLook } from '../world/creature';
 import { append, clear, h, label, pct } from './dom';
-import { renderDashboard, renderFeed } from './dashboard';
+import { renderAlertPrefs, renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
 import { compatSummary } from './mating';
 import { buildMarket } from './market';
@@ -638,10 +638,42 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }, MARKET_REFRESH_MS);
   cleanups.push(() => clearInterval(marketTimer));
 
-  // --- Genetics dashboard and alerts feed
+  // --- Genetics dashboard, alerts feed and alert preferences
   const dashEl = h('div', { id: 'dashboard' });
   const feedEl = h('div', { id: 'alerts-feed', class: 'feed' });
-  append(tabs.genetics, [dashEl, h('h3', {}, 'Alerts'), feedEl]);
+  const prefsEl = h('div', { id: 'alert-prefs-body' });
+  const prefsBox = h('details', { class: 'chart-card', id: 'alert-prefs' },
+    h('summary', {}, 'Alert preferences'),
+    h('p', { class: 'muted small' }, 'Saved to your account. Hidden kinds stay out of the feed and the badge; switch one back on to see its recent alerts.'),
+    prefsEl);
+  append(tabs.genetics, [dashEl, h('h3', {}, 'Alerts'), prefsBox, feedEl]);
+
+  function renderPrefs(): void {
+    prefsEl.replaceChildren(renderAlertPrefs(model.prefs, (p) => void savePrefs(p)));
+  }
+
+  async function savePrefs(p: AlertPrefs): Promise<void> {
+    const before = model.prefs;
+    model.setPrefs(p);
+    renderPrefs();
+    try {
+      model.setPrefs(await api.setAlertPrefs(deps.token, model.prefs));
+    } catch (e) {
+      model.setPrefs(before);
+      if (e instanceof ApiError && e.status === 401) return deps.onUnauthorized();
+      model.toast('error', `Alert preferences not saved: ${(e as Error).message}`);
+    }
+    renderPrefs();
+  }
+  renderPrefs();
+  void (async () => {
+    try {
+      model.setPrefs(await api.alertPrefs(deps.token));
+      renderPrefs();
+    } catch {
+      /* keep the defaults */
+    }
+  })();
 
   function renderGenetics(): void {
     renderDashboard(dashEl, stats);
@@ -649,9 +681,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
 
   function renderFeedPanel(): void {
-    seenFeed = model.feed.length;
+    const feed = model.visibleFeed();
+    seenFeed = feed.length;
     alertBadge.hidden = true;
-    keyed(feedEl, `${model.feed.length}|${model.feed[model.feed.length - 1]?.text ?? ''}`, () => [renderFeed(model.feed, (id) => {
+    keyed(feedEl, `${feed.length}|${feed[feed.length - 1]?.text ?? ''}|${model.prefs.hidden.join()}`, () => [renderFeed(feed, (id) => {
       model.select(id);
       showTab('organism');
     })]);
@@ -659,7 +692,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   function onAlerts(): void {
     if (tab === 'genetics') return renderFeedPanel();
-    const unseen = model.feed.length - seenFeed;
+    const unseen = model.visibleFeed().length - seenFeed;
     alertBadge.hidden = unseen <= 0;
     alertBadge.textContent = unseen > 9 ? '9+' : String(unseen);
   }

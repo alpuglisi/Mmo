@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GeneStat } from '../protocol';
-import { driftRows, legacySeries, linearScale, linePath, niceMax, pyramidRows, stackVitals } from './charts';
+import { SERIES, driftRows, histogramBars, legacySeries, linearScale, linePath, niceMax, originRows, pyramidRows, stackVitals } from './charts';
 import { alertEntry, mergeFeed, MAX_FEED, type FeedEntry } from '../model';
 
 describe('chart data prep', () => {
@@ -77,5 +77,32 @@ describe('alerts feed', () => {
     feed = mergeFeed(feed, many);
     expect(feed.length).toBe(MAX_FEED);
     expect(feed[feed.length - 1].text).toBe(`b${MAX_FEED + 4}`);
+  });
+});
+
+describe('gene distributions and allele origins', () => {
+  it('turns bins into bars over 0..1 with shares', () => {
+    const { bars, total, max } = histogramBars([0, 2, 6, 2, 0, 0, 0, 0, 0, 0]);
+    expect(total).toBe(10);
+    expect(max).toBe(6);
+    expect(bars.length).toBe(10);
+    expect(bars[2]).toMatchObject({ from: 0.2, count: 6, share: 0.6 });
+    expect(bars[2].to).toBeCloseTo(0.3);
+    expect(bars[9].to).toBeCloseTo(1);
+    expect(histogramBars([0, 0]).bars.every((b) => b.share === 0)).toBe(true);
+    expect(histogramBars([]).max).toBe(0);
+  });
+
+  it('labels origins, colors mine, the wild and rivals, and folds the tail', () => {
+    const o = (player: number, share: number, lineage?: string) => ({ player, name: `p${player}`, lineage, alleles: Math.round(share * 1000), share });
+    const rows = originRows([o(2, 0.2, 'Studs'), o(1, 0.6, 'Mine'), o(0, 0.1), o(3, 0.05), o(4, 0.03), o(5, 0.02)], 1, 5);
+    expect(rows.map((r) => r.label)).toEqual(['you (Mine)', 'p2 (Studs)', 'wild', 'p3', '2 others']);
+    expect(rows[0]).toMatchObject({ mine: true, color: SERIES[0], player: 1 });
+    expect(rows[2].color).toBe(SERIES[2]);
+    expect(rows[1].color).not.toBe(rows[3].color);
+    expect(rows[4]).toMatchObject({ player: null, color: SERIES[6], alleles: 50 });
+    expect(rows[4].share).toBeCloseTo(0.05);
+    expect(originRows([o(1, 1)], 1)).toHaveLength(1);
+    expect(originRows([], 1)).toEqual([]);
   });
 });

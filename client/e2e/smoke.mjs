@@ -740,6 +740,27 @@ async function main() {
     }), 20000);
     if (dash.charts < 4 || dash.genes < 30) throw new Error(`dashboard: ${JSON.stringify(dash)}`);
     step(`genetics dashboard: ${dash.charts} charts, ${dash.rows} drift sparklines, ${dash.genes} genes, ${dash.feed} alerts`);
+    // Per-gene histograms and the allele-origin card.
+    const genetics = await page.evaluate(() => ({
+      hist: document.querySelectorAll('#gene-table svg rect.hist-bar').length,
+      origins: document.querySelectorAll('#allele-origins rect.origin-seg').length,
+      originText: document.querySelector('#allele-origins .origin-list')?.textContent ?? '',
+    }));
+    if (genetics.hist < 30 || genetics.origins < 1 || !genetics.originText.includes('you')) {
+      throw new Error(`gene histograms / allele origins: ${JSON.stringify(genetics)}`);
+    }
+    step(`gene histograms: ${genetics.hist} bars; allele origins: ${genetics.originText.trim()}`);
+    // Alert preferences: hide daily summaries; the feed drops them and the
+    // server keeps the choice.
+    await page.click('#alert-prefs summary');
+    await page.click('#alert-prefs input[data-kind="daily_summary"][data-field="show"]');
+    await waitFor('daily summaries hidden', () => page.evaluate(() => document.querySelectorAll('#alerts-feed .feed-item.kind-daily_summary').length === 0), 5000);
+    const savedPrefs = await waitFor('alert preferences saved', () => page.evaluate(async () => {
+      const { token } = JSON.parse(localStorage.getItem('evo.session'));
+      const p = await (await fetch('/api/alerts/prefs', { headers: { authorization: `Bearer ${token}` } })).json();
+      return p.hidden.includes('daily_summary') ? p : null;
+    }), 5000);
+    step(`alert preferences saved: ${JSON.stringify(savedPrefs)}`);
     await page.screenshot({ path: path.join(shots, 'genetics-dashboard.png') });
     await page.$eval('#panel-genetics', (el) => { el.scrollTop = el.scrollHeight; });
     await page.waitForTimeout(200);

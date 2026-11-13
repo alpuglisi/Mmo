@@ -1,11 +1,11 @@
 // Small hand-rolled SVG charts for the genetics dashboard: data preparation
 // (pure, unit-tested) and the SVG builders that draw it. No chart library:
-// four chart forms are all the dashboard needs and the bundle stays light.
+// a handful of chart forms are all the dashboard needs and the bundle stays light.
 //
 // Colors: the categorical slots below are fixed per meaning (never cycled);
 // text stays in text colors; every mark has a <title> for hover.
 
-import type { AgeBand, DayVitals, GeneStat, LegacyPoint } from '../protocol';
+import type { AgeBand, AlleleOrigin, DayVitals, GeneStat, LegacyPoint, PlayerId } from '../protocol';
 
 /** Categorical slots (dark surface), in fixed order. */
 export const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9', '#8b949e'];
@@ -130,6 +130,66 @@ export function driftRows(genes: GeneStat[], n: number): DriftRow[] {
     }))
     .sort((a, b) => Math.abs(b.drift) - Math.abs(a.drift) || a.gene.localeCompare(b.gene))
     .slice(0, n);
+}
+
+export interface HistogramBar {
+  /** Bin range of the expressed value. */
+  from: number;
+  to: number;
+  count: number;
+  /** Share of the members in this bin, 0..1. */
+  share: number;
+}
+
+/** Equal-width bins over 0..1 (`GeneStat.bins`), with each bin's share and the largest count. */
+export function histogramBars(bins: number[]): { bars: HistogramBar[]; total: number; max: number } {
+  const total = bins.reduce((n, c) => n + c, 0);
+  const w = 1 / Math.max(1, bins.length);
+  const bars = bins.map((count, k) => ({ from: k * w, to: (k + 1) * w, count, share: total > 0 ? count / total : 0 }));
+  return { bars, total, max: Math.max(0, ...bins) };
+}
+
+export interface OriginRow {
+  /** Null for the folded "others" row. */
+  player: PlayerId | null;
+  label: string;
+  share: number;
+  alleles: number;
+  mine: boolean;
+  color: string;
+}
+
+/** Wild alleles: the green slot. */
+const WILD_COLOR = SERIES[2];
+const RIVAL_COLORS = [SERIES[1], SERIES[3], SERIES[4], SERIES[5]];
+
+/**
+ * Allele-origin rows for display: largest share first, mine in the first
+ * slot's color, the wild in green, other players in the remaining slots;
+ * past `max` rows the smallest fold into one "others" row (gray).
+ */
+export function originRows(origins: AlleleOrigin[], me: PlayerId, max = 5): OriginRow[] {
+  const sorted = [...origins].sort((a, b) => b.share - a.share || a.player - b.player);
+  const keep = sorted.length > max ? sorted.slice(0, max - 1) : sorted;
+  let rival = 0;
+  const rows: OriginRow[] = keep.map((o) => {
+    const mine = o.player === me;
+    const label = mine ? `you${o.lineage ? ` (${o.lineage})` : ''}` : o.player === 0 ? 'wild' : `${o.name}${o.lineage ? ` (${o.lineage})` : ''}`;
+    const color = mine ? SERIES[0] : o.player === 0 ? WILD_COLOR : RIVAL_COLORS[rival++ % RIVAL_COLORS.length];
+    return { player: o.player, label, share: o.share, alleles: o.alleles, mine, color };
+  });
+  const rest = sorted.slice(keep.length);
+  if (rest.length > 0) {
+    rows.push({
+      player: null,
+      label: `${rest.length} others`,
+      share: rest.reduce((n, o) => n + o.share, 0),
+      alleles: rest.reduce((n, o) => n + o.alleles, 0),
+      mine: false,
+      color: SERIES[6],
+    });
+  }
+  return rows;
 }
 
 /** Legacy share series in percent, plus the y maximum. */
@@ -281,5 +341,39 @@ export function spreadBar(mean: number, sd: number, founding: number): SVGElemen
     svg('line', { x1: sx(founding), x2: sx(founding), y1: 1, y2: H - 1, stroke: INK, 'stroke-width': 1 }),
     svg('circle', { cx: sx(mean), cy: H / 2, r: 3, fill: SERIES[0] }),
   );
+  return root;
+}
+
+/** A gene's distribution over the members: bars per bin over 0..1, a tick at the founding mean. */
+export function geneHistogram(label: string, bins: number[], founding: number): SVGElement {
+  const W = 100, H = 18;
+  const { bars, max, total } = histogramBars(bins);
+  const root = frame(W, H, `${label}: distribution of ${total} members`);
+  const sx = linearScale([0, 1], [1, W - 1]);
+  const sy = linearScale([0, Math.max(1, max)], [H - 1, 1]);
+  root.append(svg('line', { x1: sx(0), x2: sx(1), y1: H - 0.5, y2: H - 0.5, stroke: AXIS }));
+  for (const b of bars) {
+    if (b.count === 0) continue;
+    const x = sx(b.from) + 0.5, w = Math.max(1, sx(b.to) - sx(b.from) - 1);
+    root.append(svg('rect', { x, y: sy(b.count), width: w, height: H - 1 - sy(b.count), fill: SERIES[0], class: 'hist-bar' },
+      title(`${label} ${b.from.toFixed(1)}–${b.to.toFixed(1)}: ${b.count} (${(b.share * 100).toFixed(0)}%)`)));
+  }
+  root.append(svg('line', { x1: sx(founding), x2: sx(founding), y1: 0, y2: H, stroke: INK, 'stroke-width': 1, 'stroke-dasharray': '2 1' },
+    title(`founding mean ${founding.toFixed(2)}`)));
+  return root;
+}
+
+/** One stacked bar of allele-origin shares. */
+export function originBar(rows: OriginRow[]): SVGElement {
+  const W = 300, H = 16;
+  const root = frame(W, H, 'Share of alleles by origin');
+  let x = 0;
+  for (const r of rows) {
+    const w = r.share * W;
+    if (w <= 0) continue;
+    root.append(svg('rect', { x, y: 0, width: Math.max(0.5, w - (x + w < W - 0.5 ? 1 : 0)), height: H, fill: r.color, class: 'origin-seg' },
+      title(`${r.label}: ${(r.share * 100).toFixed(1)}% (${r.alleles} alleles)`)));
+    x += w;
+  }
   return root;
 }

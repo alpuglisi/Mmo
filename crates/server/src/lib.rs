@@ -20,6 +20,8 @@
 //! - [`saver`]: the background thread that encodes saved games, so a save
 //!   costs the world thread only a copy of the game.
 //! - [`design`]: the JSON form of a founder design.
+//! - [`genetics`]: the dashboard's per-gene distributions and allele
+//!   origins (whose alleles a lineage carries).
 //! - [`appearance`]: the coarse visible body plan sent with each organism
 //!   (`look`), for the client's sprites.
 //! - [`economy`]: renown balances, the ledger, escrow and the stud
@@ -30,6 +32,7 @@ pub mod appearance;
 pub mod design;
 pub mod economy;
 pub mod game;
+pub mod genetics;
 pub mod http;
 pub mod limits;
 pub mod protocol;

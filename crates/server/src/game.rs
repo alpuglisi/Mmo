@@ -1855,11 +1855,16 @@ impl Game {
                 let var = members.iter().map(|o| (o.pheno[g] as f64 - mean).powi(2)).sum::<f64>() / n;
                 let history = std::mem::take(&mut gene_hist[k]);
                 let founding_mean = history.first().copied().filter(|v| v.is_finite()).unwrap_or(mean as f32);
-                GeneStat { gene: gene_key(g), mean: mean as f32, sd: var.sqrt() as f32, founding_mean, history }
+                let bins = crate::genetics::histogram(members.iter().map(|o| o.pheno[g]));
+                GeneStat { gene: gene_key(g), mean: mean as f32, sd: var.sqrt() as f32, founding_mean, history, bins }
             })
             .collect();
         genes.sort_by(|a, b| {
             (b.mean - b.founding_mean).abs().total_cmp(&(a.mean - a.founding_mean).abs()).then(a.gene.cmp(&b.gene))
+        });
+        let origins = crate::genetics::allele_origins(members.iter().map(|o| &o.genome), |p| {
+            let lineage = self.lineage_of(p).and_then(|l| self.world.lineages.get(l as usize)).map(|l| l.name.clone());
+            (self.name(p), lineage)
         });
         LineageStats {
             player,
@@ -1876,6 +1881,7 @@ impl Game {
             vitals,
             history_days,
             genes,
+            origins,
             legacy,
             alerts: self.alerts(player),
         }
