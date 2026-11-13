@@ -59,6 +59,7 @@ impl World {
             o.target = intent.target;
             o.kin_nearby = intent.kin_nearby;
             o.needs.safety = (intent.threat * 100.0).min(100.0);
+            o.alert = intent.alert;
             if let Some(w) = intent.new_wander {
                 o.wander_target = Some(w);
             }
@@ -110,7 +111,12 @@ impl World {
 
         // Opportunistic eating and drinking while doing something else.
         let dormant = intent.action == Action::Dormant;
-        if !dormant && !matches!(intent.action, Action::Flee | Action::Graze | Action::Scavenge | Action::Hunt) {
+        // A dormant animal doesn't eat; a sentry on watch doesn't forage:
+        // that is the price of the watch.
+        if !matches!(
+            intent.action,
+            Action::Flee | Action::Graze | Action::Scavenge | Action::Hunt | Action::Dormant | Action::Sentry
+        ) {
             let o = &self.organisms[i];
             if o.needs.hunger > 30.0 {
                 self.eat_plants(i, 0.3);
@@ -394,7 +400,7 @@ impl World {
         let mut p = pw * pw / (pw * pw + rs * rs + 1e-6);
         // Prey that made it into its burrow is mostly out of reach.
         if b.sheltered {
-            p *= 1.0 - self.config.balance.burrow_shelter * b.traits.body.burrow;
+            p *= (1.0 - self.config.balance.burrow_shelter * self.burrow_depth(b)).max(0.0);
         }
         // A climber up in the canopy is mostly out of reach of ground hunters.
         p *= 1.0 - crate::terrain::canopy_refuge(self.map.tile_at(b.pos), &b.traits.body, &a.traits.body);
@@ -602,6 +608,10 @@ impl World {
         let (tile_temp, open, water) = (tile.temp, tile.is_open(), tile.water_depth);
         let body = self.organisms[i].traits.body;
         let drowning = !body.can_fly && traverse(&body, tile, &self.map.weather_at(pos), false) == Traverse::Blocked;
+        // A shared burrow lets carriers with modest burrowing shelter, and is
+        // deeper and better insulated than a lone burrow.
+        let shared = self.shared_burrow_bonus(&self.organisms[i]);
+        let depth = self.burrow_depth(&self.organisms[i]);
 
         let bal = self.config.balance;
         let dormant_rate = self.dormant_rate(&self.organisms[i]);
@@ -611,9 +621,10 @@ impl World {
         let torpid = o.dormancy == Dormancy::Torpor;
         let resting =
             matches!(intent.action, Action::Rest | Action::Bask | Action::Guard | Action::Idle | Action::Dormant) && moved < 0.01;
-        o.sheltered = resting && body.burrow > 0.5 && water == 0.0;
+        o.sheltered = resting && depth > 0.5 && water == 0.0;
         // Burrows buffer temperature toward 10 °C.
-        let temp = if o.sheltered { tile_temp + (10.0 - tile_temp) * 0.6 } else { tile_temp };
+        let buffer = (0.6 + 0.6 * bal.shared_burrow * shared).min(0.95);
+        let temp = if o.sheltered { tile_temp + (10.0 - tile_temp) * buffer } else { tile_temp };
 
         let (cold, heat) = if o.traits.warm {
             o.activity = 1.0;
@@ -659,11 +670,12 @@ impl World {
         // Pregnancy costs scale with the litter's total mass.
         let pregnant = if o.pregnancy.is_some() { 1.0 + bal.pregnancy_cost * o.traits.litter_burden } else { 1.0 };
         let size = o.pheno[Gene::BodySize];
+        let watch = if intent.action == Action::Sentry { 1.0 + bal.sentry_cost } else { 1.0 };
         // Carnivores eat big, infrequent meals: hunger rises more slowly.
         let diet = 1.0 - bal.carnivore_hunger_discount * o.traits.carnivory;
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
-        let mut hunger = bal.hunger_rate * st.metabolism * diet * crowd * thermo * activity_mult * pregnant * dt;
+        let mut hunger = bal.hunger_rate * st.metabolism * diet * crowd * thermo * activity_mult * pregnant * watch * dt;
         let mut thirst = bal.thirst_rate * (1.0 + 0.05 * heat) * (0.8 + 0.4 * size) * if o.traits.warm { 1.0 } else { 0.7 } * dt;
         if o.dormancy != Dormancy::Awake {
             hunger *= dormant_rate;

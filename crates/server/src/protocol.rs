@@ -334,6 +334,7 @@ pub fn action_name(a: Action) -> &'static str {
         Action::Ordered => "ordered",
         Action::Dormant => "dormant",
         Action::Cache => "cache",
+        Action::Sentry => "sentry",
     }
 }
 

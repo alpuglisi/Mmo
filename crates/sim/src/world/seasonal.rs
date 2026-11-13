@@ -342,6 +342,8 @@ mod tests {
         for t in &mut w.map.tiles {
             (t.biome, t.water_depth, t.mud, t.sand, t.slope, t.veg_density) = (Biome::Grassland, 0.0, 0.0, 0.0, 0.0, 0.1);
             (t.base_temp, t.veg, t.veg_max, t.snow, t.ice) = (base_temp, veg, veg, 0.0, 0.0);
+            // No lakes or rivers to refill when the weather updates water levels.
+            (t.base_water, t.river, t.current) = (0.0, 0.0, 0.0);
         }
         set_day(&mut w, day);
         w

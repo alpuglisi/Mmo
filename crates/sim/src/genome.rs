@@ -39,7 +39,8 @@ pub const WILD: PlayerId = 0;
 /// they are 0 in most designs, so counting them would dilute the distance
 /// (making different species kin), while founder variation on them would
 /// split founders of one design into strangers. Kin, mating and fertility
-/// thresholds stay as tuned on the other genes.
+/// thresholds stay as tuned on the other genes. (`Vigilance`, a behavior
+/// gene, counts like the other instinct genes.)
 pub const SEASONAL_GENES: [Gene; 6] =
     [Gene::Hibernation, Gene::Brumation, Gene::Migration, Gene::Estivation, Gene::Caching, Gene::Torpor];
 
@@ -149,6 +150,10 @@ define_genes! {
     Caching => "food caching",
     /// Short-term torpor (add-on): cheap, shallow dormancy on cold nights.
     Torpor => "torpor",
+    // Group behavior (critical-mass group traits).
+    /// Sentry instinct: in a group species, takes turns standing watch
+    /// (`GroupTrait::Sentries`).
+    Vigilance => "vigilance",
 }
 
 /// Dominance coefficient `h` of a gene, in `[-1, 1]`: expressed =
