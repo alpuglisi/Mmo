@@ -98,6 +98,7 @@ cargo run --release --bin evo-sim -- sweep --trials 16 --seeds 3 --rounds 2 --ou
 cargo run --release --bin evo-sim -- run --set sprint=2.0 --set crowding=0.05   # try a balance tweak
 cargo run --release --example trace -- 3 200          # follow one fox (lineage 3)
 cargo run --release --example stuck -- 120 1 2        # how often organisms get stuck
+cargo run --release --example calibrate -- tournament --worlds 20   # point-cost check (CSV)
 ```
 
 `run` founds a wild ecosystem (voles, antelope, newts, foxes) plus four sample
@@ -473,8 +474,59 @@ Not yet implemented from the design doc: the seasonal coat, timed breeding and t
 level-of-detail statistical populations. On the environment side: rivers do not overflow onto
 their floodplain (flooding only deepens the channel), wind has no direction
 and does not interact with wing loading or gliding, and lakes do not form in
-filled depressions. The point costs in `design.rs` are placeholders, as the
-doc lists them as an open question.
+filled depressions.
+
+## Point costs
+
+The costs in `design.rs` are calibrated with `examples/calibrate.rs`
+(single-threaded, 96×96, 120 days, scored by mean legacy share after day 10):
+
+- **Marginal value** (`marginal`, 6 seeds, 162 worlds): each of the four sample
+  designs gets one change at a time (+0.4 of a trait, +16 founders, litter ±1,
+  body size −0.2) in an otherwise standard world, with options rotated so each
+  meets a different mix of rivals. A trait's price is about 30 points per unit
+  of log legacy share it buys per unit of trait (half its mean over the four
+  designs, half its best), the rate at which extra founders buy legacy. A
+  second pass at +0.7 priced the threshold traits (flight needs wings > 0.5).
+- **Tournament** (`tournament`, 60 worlds × 4 random designs that each spend
+  the full budget): a regression of log share on points spent per trait, with
+  world fixed effects, shows which traits are still under- or overpriced. It
+  was run under the old costs, a first draft and the final draft (seeds 101+,
+  201+, 301+; new seeds each time).
+
+| Points per unit above default | |
+| --- | --- |
+| Leg length 25, wings 24, toxins 18, hooves 16 | Valuable in every design, or a threshold ability (flight, warning coloration) |
+| Muscle 7, fangs 7, claws 6, foot width 6, swimming 6, burrowing 6 | Valuable in one niche |
+| Camouflage 5, climbing 5, coloration 5, vocal 5, tail 4, scales 4, nose 4, eyes 4, ears 4, fur 3 | Small or mixed effects |
+| Armor 2, fat stores 2, body size 0 | Cost more fitness than they bring; bigger bodies already mean fewer breeders |
+| 0.7 per founder above 20, 2.5 per extra offspring | Founders were the best buy at 0.4; litter slightly underpriced at 1.5 |
+| 40 per unit of body size below 0.3, 20 for cold-blooded | Free choices that won out of proportion (below) |
+
+Under the new costs the clearest mispricings in the old table are mostly gone
+(per-point coefficients: founders +0.055 → +0.031, leg length +0.049 →
++0.020, hooves +0.032 → +0.003, keen nose −0.035 → −0.012; leg length went
+from 22 to 25 after the last run). Armor and fat
+stores lose fitness at any price (their speed and agility penalties outweigh
+defense and insulation over one year), so they keep only a floor price.
+
+**Dominant designs.** No trait combination dominates; what wins out of
+proportion are free or cheap structural choices. Across the three 60-world
+tournaments, small (< 0.25), cold-blooded, omnivorous designs with incubated
+eggs or live birth and big litters win far more often (a fair share is 25% of
+worlds): cold-blooded designs win 32–33% vs 16–18% for warm, small 37–43% vs
+13–21% for large, omnivores 29–46%, small omnivores 38–67%. The legacy score counts breeding heads,
+and a body that eats less fits more heads on the same food. Pricing cold blood
+(20) and smallness (40 per unit) did not shrink the gap measurably: points buy
+too little for a price to offset it without pushing the toxic frogs over budget
+(97.4 of 100 at calibration; after brumation was added they needed 4 fewer
+founders, 46, to stay at 99.4). The fix belongs in the rules, not the price list: weight
+legacy by biomass or tie the cold-blooded metabolism discount to temperature
+more steeply, and give omnivores a digestive penalty on both diets. Doc
+counters that already work: warm-blooded designs with abandoned eggs survive
+only 62% of the time (thermoregulation mismatch), and herd grazers lose herd
+defense when shrunk below 0.45.
+
 
 **Seasonal strategies** (`world::seasonal`, tunables `dormancy_temp` …
 `cache_capacity` in `Balance`): the sample designs use them where they

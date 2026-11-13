@@ -4,8 +4,10 @@
 //! spends points on the remaining traits. After launch the design changes only
 //! through breeding, mutation and selection.
 //!
-//! Point costs are placeholders (an open question in the design doc). They are
-//! all in [`trait_cost`] and the constants below so they are easy to tune.
+//! Point costs are calibrated by simulation (`examples/calibrate.rs`; method
+//! and evidence in the README): each trait is priced in proportion to the
+//! legacy share it buys, so a point buys about as much fitness wherever it is
+//! spent. They are all in [`trait_cost`] and the constants below.
 
 use std::fmt;
 
@@ -17,9 +19,15 @@ pub const DESIGN_BUDGET: f32 = 100.0;
 /// Founding population included in the base price.
 pub const BASE_FOUNDERS: u32 = 20;
 /// Points per extra founder above [`BASE_FOUNDERS`].
-pub const COST_PER_EXTRA_FOUNDER: f32 = 0.4;
+pub const COST_PER_EXTRA_FOUNDER: f32 = 0.7;
 /// Points per offspring per birth above one.
-pub const COST_PER_EXTRA_OFFSPRING: f32 = 1.5;
+pub const COST_PER_EXTRA_OFFSPRING: f32 = 2.5;
+/// Points per unit of body size below its default: small bodies fit more
+/// breeders on the same food, which the legacy score rewards.
+pub const COST_PER_SMALLER_BODY: f32 = 40.0;
+/// Points for cold-blooded thermoregulation: a third of the warm-blooded food
+/// need is worth more than its cold-weather sluggishness.
+pub const COST_COLD_BLOODED: f32 = 20.0;
 /// Standard deviation of founder alleles around the design value.
 pub const FOUNDER_VARIATION: f32 = 0.05;
 
@@ -102,33 +110,38 @@ pub fn default_value(g: Gene) -> f32 {
     }
 }
 
-/// Points per unit of trait value above the default. Behavior, diet and
-/// preference genes are free: they are tradeoffs, not upgrades.
+/// Points per unit of trait value above the default, roughly proportional to
+/// the legacy share a unit buys (`examples/calibrate.rs`). Traits that cost
+/// more fitness than they bring in every test (armor, fat stores, large eyes
+/// and ears) keep a small floor price so they are never free. Behavior, diet
+/// and preference genes are free: they are tradeoffs, not upgrades.
 pub fn trait_cost(g: Gene) -> f32 {
     use Gene::*;
     match g {
-        BodySize => 20.0,
-        Muscle => 15.0,
-        FatStores => 8.0,
-        LegLength => 12.0,
-        Claws => 10.0,
-        Hooves => 10.0,
+        // Bigger bodies already mean fewer, hungrier breeders (less legacy);
+        // smallness is what's charged (`COST_PER_SMALLER_BODY`).
+        BodySize => 0.0,
+        Muscle => 7.0,
+        FatStores => 2.0,
+        LegLength => 25.0,
+        Claws => 6.0,
+        Hooves => 16.0,
         FootWidth => 6.0,
-        Tail => 5.0,
-        Swimming => 12.0,
-        Wings => 25.0,
-        Climbing => 12.0,
-        Burrowing => 12.0,
-        Fur => 8.0,
-        Scales => 8.0,
-        Armor => 15.0,
-        Fangs => 10.0,
-        Eyes => 8.0,
-        Ears => 8.0,
-        Nose => 8.0,
-        Camouflage => 12.0,
-        Toxins => 15.0,
-        Coloration => 3.0,
+        Tail => 4.0,
+        Swimming => 6.0,
+        Wings => 24.0,
+        Climbing => 5.0,
+        Burrowing => 6.0,
+        Fur => 3.0,
+        Scales => 4.0,
+        Armor => 2.0,
+        Fangs => 7.0,
+        Eyes => 4.0,
+        Ears => 4.0,
+        Nose => 4.0,
+        Camouflage => 5.0,
+        Toxins => 18.0,
+        Coloration => 5.0,
         Vocal => 5.0,
         // Seasonal strategies.
         Hibernation => 8.0,
@@ -239,7 +252,9 @@ impl FounderDesign {
             .sum();
         let litter = self.litter_size.saturating_sub(1) as f32 * COST_PER_EXTRA_OFFSPRING;
         let founders = self.founders.saturating_sub(BASE_FOUNDERS) as f32 * COST_PER_EXTRA_FOUNDER;
-        traits + litter + founders
+        let small = (default_value(Gene::BodySize) - v[Gene::BodySize.index()]).max(0.0) * COST_PER_SMALLER_BODY;
+        let thermo = if self.thermo == Thermo::Cold { COST_COLD_BLOODED } else { 0.0 };
+        traits + litter + founders + small + thermo
     }
 
     pub fn validate(&self) -> Result<(), DesignError> {
@@ -295,6 +310,16 @@ mod tests {
     fn reserved_genes_are_rejected() {
         let d = FounderDesign::new("x", Thermo::Cold, BirthType::Live, 2).with(Gene::Endothermy, 1.0);
         assert_eq!(d.validate(), Err(DesignError::ReservedGene(Gene::Endothermy)));
+    }
+
+    #[test]
+    fn cold_blood_and_small_bodies_cost_points_but_size_up_is_free() {
+        let base = FounderDesign::new("b", Thermo::Warm, BirthType::Live, 1);
+        let cold = FounderDesign { thermo: Thermo::Cold, ..base.clone() };
+        assert_eq!(cold.point_cost(), COST_COLD_BLOODED);
+        let small = base.clone().with(Gene::BodySize, 0.1);
+        assert!((small.point_cost() - 0.2 * COST_PER_SMALLER_BODY).abs() < 1e-4);
+        assert_eq!(base.with(Gene::BodySize, 0.9).point_cost(), 0.0);
     }
 
     #[test]
