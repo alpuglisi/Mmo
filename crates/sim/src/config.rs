@@ -49,6 +49,14 @@ pub struct WorldConfig {
     /// (`species`, `chronicle`, `world::chronicle`). Catastrophes are off by
     /// default; detection and records never change the simulation.
     pub scoring: ScoringConfig,
+    /// Possessed organisms tick faster ("Slow world clock" in the design
+    /// doc): each tick is split into this many sub-steps for the movement of
+    /// possessed organisms following a move order (`World::substep`), so a
+    /// server can move them, and apply new orders, between world ticks.
+    /// Each sub-step covers `1 / possess_substeps` of a tick's movement,
+    /// so possession is no faster overall. 1 turns sub-steps off. Only
+    /// possessed organisms are affected.
+    pub possess_substeps: u32,
 }
 
 /// Species detection, eras and catastrophes ("Scoring: genetic legacy",
@@ -707,6 +715,7 @@ impl Default for WorldConfig {
             lod: LodConfig::default(),
             parallel_apply: true,
             scoring: ScoringConfig::default(),
+            possess_substeps: 4,
         }
     }
 }

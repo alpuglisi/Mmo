@@ -69,6 +69,8 @@ fn restored_world_continues_exactly() {
         a.step();
     }
     order_possessed(&mut a);
+    // Between ticks, part way through the possession sub-steps.
+    assert_eq!(a.substep().len(), 1, "want the possessed organism to move in a sub-step");
 
     // The snapshot holds the state the test is meant to cover.
     let alive = || a.organisms.iter().filter(|o| o.alive);
@@ -98,13 +100,19 @@ fn restored_world_continues_exactly() {
     let mut b = World::restore(&bytes).expect("restore");
     // A restored world snapshots to the same bytes.
     assert!(b.snapshot() == bytes, "round trip changes the snapshot");
+    // A clone (what a server encodes off its world thread) snapshots to the
+    // same bytes and continues the same way.
+    let mut c = a.clone();
+    assert!(c.snapshot() == bytes, "a clone snapshots differently");
 
     let n = k + 2 * tpd + 17;
     while a.tick() < n {
         a.step();
         b.step();
+        c.step();
     }
     assert_same(&a, &b);
+    assert_same(&a, &c);
 }
 
 #[test]

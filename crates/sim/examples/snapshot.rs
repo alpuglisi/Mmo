@@ -2,8 +2,9 @@
 //! `cargo run --release --features serde --example snapshot -- [size] [scale] [days] [--lod]`.
 //!
 //! Builds the standard world (founding populations × `scale`), runs it for
-//! `days`, then times `World::snapshot` and `World::restore` and prints the
-//! sizes (bincode before LZ4, and the stored bytes).
+//! `days`, then times `World::snapshot`, `World::restore` and `World::clone`
+//! (all a server's world thread pays to save in the background) and prints
+//! the sizes (bincode before LZ4, and the stored bytes).
 
 use std::time::Instant;
 
@@ -43,8 +44,16 @@ fn main() {
         assert_eq!(r.tick(), w.tick());
     }
     let restore_ms = t.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+    // What a server's tick loop pays to save off-thread: a clone of the
+    // world (encoding the clone happens on another thread).
+    let t = Instant::now();
+    for _ in 0..reps {
+        let c = w.clone();
+        assert_eq!(c.tick(), w.tick());
+    }
+    let clone_ms = t.elapsed().as_secs_f64() * 1000.0 / reps as f64;
     println!(
-        "raw {:.2} MB, stored {:.2} MB (LZ4 {:.0}%), {:.0} B/agent stored; snapshot {snap_ms:.0} ms, restore {restore_ms:.0} ms",
+        "raw {:.2} MB, stored {:.2} MB (LZ4 {:.0}%), {:.0} B/agent stored; snapshot {snap_ms:.0} ms, restore {restore_ms:.0} ms, clone {clone_ms:.1} ms",
         h.raw_len as f64 / 1e6,
         bytes.len() as f64 / 1e6,
         100.0 * bytes.len() as f64 / h.raw_len as f64,

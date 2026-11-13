@@ -134,8 +134,11 @@ impl World {
         if let Some(f) = intent.new_forage {
             o.forage_target = f;
         }
+        // A possessed organism's order moves it in sub-steps
+        // (`World::substep`); the tick's own move is the last of them.
+        let frac = if intent.action == Action::Ordered { self.substep_frac() } else { 1.0 };
         match intent.target {
-            Some(target) => self.step_toward(o, chase.unwrap_or(target), intent.sprint, scratch, paths),
+            Some(target) => self.step_toward(o, chase.unwrap_or(target), intent.sprint, frac, scratch, paths),
             None => 0.0,
         }
     }
@@ -258,12 +261,13 @@ impl World {
         }
     }
 
-    /// Move organism `i` toward `target` (see `step_toward`).
-    pub(super) fn move_toward(&mut self, i: usize, target: Vec2, sprint: bool) -> f32 {
+    /// Move organism `i` toward `target` (see `step_toward`), `frac` of a
+    /// tick's movement.
+    pub(super) fn move_toward(&mut self, i: usize, target: Vec2, sprint: bool, frac: f32) -> f32 {
         let mut orgs = std::mem::take(&mut self.organisms);
         let mut scratch = std::mem::take(&mut self.path_scratch);
         let mut paths = PathCount::default();
-        let moved = self.step_toward(&mut orgs[i], target, sprint, &mut scratch, &mut paths);
+        let moved = self.step_toward(&mut orgs[i], target, sprint, frac, &mut scratch, &mut paths);
         self.organisms = orgs;
         self.path_scratch = scratch;
         paths.add_to(&mut self.counters);
@@ -271,10 +275,19 @@ impl World {
     }
 
     /// Steer `o` toward `target`, following or planning a route (A* in
-    /// `scratch`, searches counted in `paths`) when the way is blocked.
+    /// `scratch`, searches counted in `paths`) when the way is blocked, by
+    /// `frac` of a tick's movement (1 except for possession sub-steps).
     /// Touches nothing but `o`, so the parallel apply can run it for many
     /// organisms at once. Returns the distance moved.
-    fn step_toward(&self, o: &mut Organism, target: Vec2, sprint: bool, scratch: &mut PathScratch, paths: &mut PathCount) -> f32 {
+    fn step_toward(
+        &self,
+        o: &mut Organism,
+        target: Vec2,
+        sprint: bool,
+        frac: f32,
+        scratch: &mut PathScratch,
+        paths: &mut PathCount,
+    ) -> f32 {
         let to = target - o.pos;
         let d = to.len();
         if d < 0.05 {
@@ -299,7 +312,7 @@ impl World {
         if o.possessed_by.is_some() {
             speed *= 1.1;
         }
-        let step = speed.min(d);
+        let step = (speed * frac).min(d);
         let dir = to * (1.0 / d);
         let body = o.traits.body;
         let pos = o.pos;
@@ -547,7 +560,7 @@ impl World {
             if !self.organisms[j].sheltered {
                 let away = (prey_pos - from).norm();
                 let away = if away == Vec2::ZERO { Vec2::new(1.0, 0.0) } else { away };
-                self.move_toward(j, self.map.clamp(prey_pos + away * 4.0), true);
+                self.move_toward(j, self.map.clamp(prey_pos + away * 4.0), true, 1.0);
             }
             return;
         }

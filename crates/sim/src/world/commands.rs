@@ -10,7 +10,7 @@ use super::World;
 use crate::genome::{Gene, PlayerId};
 use crate::mating;
 use crate::math::Vec2;
-use crate::organism::{OrgId, Sex};
+use crate::organism::{Action, Dormancy, OrgId, Sex};
 use crate::rng::{rng_for, stream};
 
 /// Organisms must physically meet for a directed mating.
@@ -255,6 +255,61 @@ impl World {
         }
     }
 
+    /// Fraction of a tick's movement one possession sub-step covers.
+    pub(super) fn substep_frac(&self) -> f32 {
+        1.0 / self.config.possess_substeps.max(1) as f32
+    }
+
+    /// Possession sub-steps still to take before the next tick
+    /// (`possess_substeps - 1` right after a tick, 0 when sub-steps are off).
+    pub fn substeps_left(&self) -> u32 {
+        self.config.possess_substeps.max(1) - 1 - self.substep
+    }
+
+    /// One possession sub-step, between ticks ("possessed organisms tick
+    /// faster", design doc): every possessed organism with a move order that
+    /// danger or a severe need doesn't override (as of its last tick) moves
+    /// `1 / possess_substeps` of a tick's movement toward it, so a new order
+    /// takes effect within a fraction of a tick and the owner sees smooth
+    /// movement. Nothing else changes and no randomness is drawn: worlds
+    /// without possessed organisms are untouched. Returns the organisms that
+    /// moved. A no-op once [`World::substeps_left`] is 0: the tick's own
+    /// move is the last sub-step, and [`World::step`] first takes any the
+    /// caller skipped, so the total movement per tick is the same either way.
+    pub fn substep(&mut self) -> Vec<OrgId> {
+        let mut moved = Vec::new();
+        if self.substeps_left() == 0 {
+            return moved;
+        }
+        self.substep += 1;
+        let frac = self.substep_frac();
+        for i in 0..self.organisms.len() {
+            let o = &self.organisms[i];
+            let (Some(_), Some(target)) = (o.possessed_by, o.order) else { continue };
+            if !o.alive || o.dormancy != Dormancy::Awake || o.pos.dist(target) <= ORDER_ARRIVAL {
+                continue;
+            }
+            if self.order_override(o, o.needs.safety / 100.0).is_some() {
+                continue;
+            }
+            let sprint = o.needs.energy > 40.0;
+            if self.move_toward(i, target, sprint, frac) > 0.0 {
+                let o = &mut self.organisms[i];
+                o.action = Action::Ordered;
+                o.target = Some(target);
+                moved.push(o.id);
+            }
+        }
+        moved
+    }
+
+    /// Take the sub-steps left before a tick.
+    pub(super) fn finish_substeps(&mut self) {
+        while self.substeps_left() > 0 {
+            self.substep();
+        }
+    }
+
     /// Return a possessed organism to its genetic behavior.
     pub fn release(&mut self, player: PlayerId, id: OrgId) -> Result<(), CommandError> {
         let i = self.live_index(id)?;
@@ -441,5 +496,135 @@ mod tests {
         assert_eq!(o.action, crate::organism::Action::Ordered);
         assert_eq!(o.order, Some(target));
         assert!(o.pos.dist(target) < before);
+    }
+
+    /// A standard world with player 1's first organism possessed and
+    /// ordered 14 tiles away.
+    fn possessed_world(substeps: u32) -> (World, OrgId) {
+        let config = WorldConfig { seed: 5, width: 64, height: 64, possess_substeps: substeps, ..Default::default() };
+        let mut w = crate::presets::standard_world(config, 1);
+        let id = w.organisms.iter().find(|o| o.owner == 1).unwrap().id;
+        w.possess(1, id).unwrap();
+        reorder(&mut w, id);
+        (w, id)
+    }
+
+    fn reorder(w: &mut World, id: OrgId) {
+        let p = w.organism(id).unwrap().pos;
+        let target = w.map.clamp(Vec2::new(if p.x < 32.0 { p.x + 14.0 } else { p.x - 14.0 }, p.y));
+        w.order_move(1, id, target).unwrap();
+    }
+
+    type Snap = (OrgId, bool, Vec2, Action, [u32; 4]);
+
+    fn state(w: &World) -> Vec<Snap> {
+        w.organisms
+            .iter()
+            .map(|o| {
+                let n = &o.needs;
+                (o.id, o.alive, o.pos, o.action, [n.hunger.to_bits(), n.thirst.to_bits(), n.energy.to_bits(), o.health.to_bits()])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn substeps_between_ticks_or_not_give_the_same_world() {
+        // A server calls `substep` between ticks; the CLI and tests don't.
+        // With the same orders at the same ticks the worlds are identical.
+        let (mut a, id) = possessed_world(4);
+        let (mut b, _) = possessed_world(4);
+        for t in 0..2 * a.config.ticks_per_day {
+            if t % 20 == 0 && a.organism(id).is_some_and(|o| o.alive) {
+                reorder(&mut a, id);
+                reorder(&mut b, id);
+            }
+            while a.substeps_left() > 0 {
+                a.substep();
+            }
+            a.step();
+            b.step();
+        }
+        assert_eq!(state(&a), state(&b));
+        assert_eq!(format!("{:?}", a.counters), format!("{:?}", b.counters));
+    }
+
+    #[test]
+    fn substeps_leave_unpossessed_worlds_alone() {
+        // Nobody possessed: the setting changes nothing.
+        let mk = |substeps| {
+            let config = WorldConfig { seed: 5, width: 64, height: 64, possess_substeps: substeps, ..Default::default() };
+            crate::presets::standard_world(config, 1)
+        };
+        let (mut a, mut b) = (mk(4), mk(1));
+        for _ in 0..a.config.ticks_per_day {
+            assert!(a.substep().is_empty());
+            a.step();
+            b.step();
+        }
+        assert_eq!(state(&a), state(&b));
+    }
+
+    #[test]
+    fn a_substep_moves_only_the_possessed_organism_and_applies_new_orders() {
+        let (mut w, id) = possessed_world(4);
+        w.step();
+        let before = state(&w);
+        let p0 = w.organism(id).unwrap().pos;
+        // A new order mid-tick moves it at the next sub-step, toward the
+        // new target, without waiting for the tick.
+        let target = w.map.clamp(p0 + Vec2::new(0.0, if p0.y < 32.0 { 10.0 } else { -10.0 }));
+        w.order_move(1, id, target).unwrap();
+        assert_eq!(w.substep(), vec![id]);
+        let p1 = w.organism(id).unwrap().pos;
+        assert!(p1.dist(target) < p0.dist(target), "{p0:?} -> {p1:?}, target {target:?}");
+        assert_eq!(w.organism(id).unwrap().action, Action::Ordered);
+        for (x, y) in before.iter().zip(&state(&w)) {
+            if x.0 != id {
+                assert_eq!(x, y, "organism {} changed in a sub-step", x.0);
+            }
+        }
+        // Three sub-steps per tick at 4, then nothing until the tick.
+        assert_eq!(w.substeps_left(), 2);
+        w.substep();
+        w.substep();
+        assert_eq!(w.substeps_left(), 0);
+        let p3 = w.organism(id).unwrap().pos;
+        assert!(w.substep().is_empty());
+        assert_eq!(w.organism(id).unwrap().pos, p3);
+        w.step();
+        assert_eq!(w.substeps_left(), 3);
+    }
+
+    #[test]
+    fn substeps_are_no_faster_than_whole_ticks() {
+        // Same distance per tick (within terrain rounding) as without
+        // sub-steps: possession only gets its small speed bonus.
+        let (mut a, id) = possessed_world(4);
+        let (mut b, _) = possessed_world(1);
+        let start = a.organism(id).unwrap().pos;
+        for _ in 0..3 {
+            while a.substeps_left() > 0 {
+                a.substep();
+            }
+            a.step();
+            b.step();
+        }
+        let da = a.organism(id).unwrap().pos.dist(start);
+        let db = b.organism(id).unwrap().pos.dist(start);
+        assert!(db > 0.5, "didn't move without sub-steps: {db}");
+        assert!((da - db).abs() <= 0.1 * db, "with sub-steps {da}, without {db}");
+        assert_eq!(b.substeps_left(), 0);
+        assert!(b.substep().is_empty());
+    }
+
+    #[test]
+    fn severe_need_overrides_substep_movement() {
+        let (mut w, id) = possessed_world(4);
+        w.step();
+        let i = w.index[&id];
+        w.organisms[i].needs.thirst = 95.0;
+        let p = w.organisms[i].pos;
+        assert!(w.substep().is_empty());
+        assert_eq!(w.organisms[i].pos, p);
     }
 }
