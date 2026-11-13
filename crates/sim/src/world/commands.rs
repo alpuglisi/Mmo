@@ -6,6 +6,7 @@ use std::fmt;
 
 use rand::Rng;
 
+use super::groups::MAX_GROUPS;
 use super::World;
 use crate::genome::{Gene, PlayerId};
 use crate::math::Vec2;
@@ -38,6 +39,20 @@ pub enum CommandError {
     },
     NoSlotsLeft,
     PossessedByOther(OrgId),
+    /// No such group (out of range, or without members).
+    NoSuchGroup(u8),
+    /// The player already has `groups::MAX_GROUPS` groups.
+    GroupLimit,
+    /// A split must leave members on both sides.
+    GroupTooSmall(u8),
+    NotInGroup(OrgId),
+    SameGroup(u8),
+    /// The group holds no territory.
+    NoTerritory(u8),
+    /// The group claimed a territory too recently (`groups::CLAIM_COOLDOWN_DAYS`).
+    ClaimCooldown {
+        ticks_left: u64,
+    },
 }
 
 impl fmt::Display for CommandError {
@@ -54,6 +69,17 @@ impl fmt::Display for CommandError {
             }
             CommandError::NoSlotsLeft => write!(f, "no directed-mating slots left this season"),
             CommandError::PossessedByOther(id) => write!(f, "organism {id} is possessed by another player"),
+            CommandError::NoSuchGroup(g) => write!(f, "you have no group {g}"),
+            CommandError::GroupLimit => {
+                write!(f, "you already have {} groups; merge two first", super::groups::MAX_GROUPS)
+            }
+            CommandError::GroupTooSmall(g) => write!(f, "a split must leave organisms in both halves of group {g}"),
+            CommandError::NotInGroup(id) => write!(f, "organism {id} is not in that group"),
+            CommandError::SameGroup(g) => write!(f, "group {g} can't merge into itself"),
+            CommandError::NoTerritory(g) => write!(f, "group {g} holds no territory"),
+            CommandError::ClaimCooldown { ticks_left } => {
+                write!(f, "the group claimed a territory recently; it can claim again in {ticks_left} ticks")
+            }
         }
     }
 }
@@ -105,7 +131,7 @@ pub struct MatingPreview {
 }
 
 impl World {
-    fn live_index(&self, id: OrgId) -> Result<usize, CommandError> {
+    pub(super) fn live_index(&self, id: OrgId) -> Result<usize, CommandError> {
         self.index.get(&id).copied().filter(|&i| self.organisms[i].alive).ok_or(CommandError::NotFound(id))
     }
 
@@ -320,14 +346,48 @@ impl World {
     }
 
     /// Group command: the player's adults drift toward `target` when no
-    /// urgent need overrides it.
+    /// urgent need overrides it. Given to every group (the main group and
+    /// any with members), each of which gives up its territory.
     pub fn command_migrate(&mut self, player: PlayerId, target: Vec2) {
         let target = self.map.clamp(target);
-        self.migrate_orders.insert(player, target);
+        let mut groups = [false; MAX_GROUPS as usize];
+        groups[0] = true;
+        for o in self.organisms.iter().filter(|o| o.alive && o.owner == player) {
+            if let Some(g) = groups.get_mut(o.group as usize) {
+                *g = true;
+            }
+        }
+        for g in (0..MAX_GROUPS).filter(|&g| groups[g as usize]) {
+            self.migrate_orders.insert((player, g), target);
+            self.territories.remove(&(player, g));
+        }
     }
 
+    /// Group command for one group: its adults drift toward `target`. Replaces
+    /// the group's territory, if it held one.
+    pub fn command_migrate_group(&mut self, player: PlayerId, group: u8, target: Vec2) -> Result<Vec2, CommandError> {
+        if group >= MAX_GROUPS {
+            return Err(CommandError::NoSuchGroup(group));
+        }
+        let target = self.map.clamp(target);
+        self.migrate_orders.insert((player, group), target);
+        self.territories.remove(&(player, group));
+        Ok(target)
+    }
+
+    /// Drop the migration orders of all the player's groups.
     pub fn clear_migration(&mut self, player: PlayerId) {
-        self.migrate_orders.remove(&player);
+        self.migrate_orders.retain(|&(p, _), _| p != player);
+    }
+
+    /// Drop one group's migration order.
+    pub fn clear_migration_group(&mut self, player: PlayerId, group: u8) {
+        self.migrate_orders.remove(&(player, group));
+    }
+
+    /// A group's migration order.
+    pub fn migration_order(&self, player: PlayerId, group: u8) -> Option<Vec2> {
+        self.migrate_orders.get(&(player, group)).copied()
     }
 }
 

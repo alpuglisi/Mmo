@@ -8,7 +8,7 @@ use rayon::prelude::*;
 
 use super::decide::{genes_of, Genes};
 use crate::math::Vec2;
-use crate::organism::{Organism, Sex};
+use crate::organism::{Action, Organism, Sex};
 
 /// Grown and carnivorous enough to hunt: could threaten something
 /// (`decide::is_armed`, the same test `decide::can_threaten` uses).
@@ -19,6 +19,8 @@ pub(crate) const COURTING: u8 = 2;
 pub(crate) const FEMALE: u8 = 4;
 /// A sentry giving a warning (`Organism::alert`).
 pub(crate) const ALERT: u8 = 8;
+/// Chasing an intruder out of its group's territory (`Action::Defend`).
+pub(crate) const DEFENDING: u8 = 16;
 
 /// What a neighbor scan needs to know about an organism to decide whether it
 /// is worth a closer look.
@@ -46,6 +48,9 @@ impl Entry {
         }
         if o.alert.is_some() {
             flags |= ALERT;
+        }
+        if o.action == Action::Defend {
+            flags |= DEFENDING;
         }
         Entry { pos: o.pos, idx: i as u32, lineage: o.lineage, mass: o.mass(), flags }
     }

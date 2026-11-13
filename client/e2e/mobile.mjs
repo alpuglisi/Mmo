@@ -363,6 +363,24 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   await waitFor('legend', () => page.evaluate(() => getComputedStyle(document.querySelector('.legends')).display !== 'none'), 3000);
   await shot(page, `${tag}-legend.png`);
   step(`${tag}: inspector in the sheet; legend toggle`);
+
+  // Group tools in the scrolling toolbar: split, then claim a territory for
+  // the new group with two taps on the map.
+  await page.tap('#legend-toggle');
+  await page.tap('#split-group');
+  await waitFor('two groups', () => page.evaluate(() => window.evo.model.state.groups?.length === 2
+    && document.querySelector('#group-select').value !== 'all'), 8000);
+  await page.tap('#territory');
+  const c = await box(page, '#world-canvas');
+  const zoom = await page.evaluate(() => window.evo.screen().view.cam.zoom);
+  await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height / 2);
+  await waitFor('territory draft', () => page.evaluate(() => window.evo.screen().view.overlayInfo().draft !== null), 3000);
+  await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height / 2 + 5 * zoom);
+  const held = await waitFor('territory held', () => page.evaluate(() => window.evo.model.state.groups.find((g) => g.territory)?.territory), 8000);
+  const tools = await page.evaluate(() => document.documentElement.scrollWidth);
+  if (tools > vw.width + 1) throw new Error(`${tag}: the toolbar made the page scroll sideways (${tools})`);
+  await shot(page, `${tag}-territory.png`);
+  step(`${tag}: split from the toolbar; territory of radius ${held.radius.toFixed(1)} drawn with two taps`);
   await context.close();
 }
 

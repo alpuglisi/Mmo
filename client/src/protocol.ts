@@ -22,8 +22,16 @@ export type ClientMsg =
   | { type: 'respond_mating'; request: number; accept: boolean }
   | { type: 'complete_mating'; request: number }
   | { type: 'cancel_mating'; request: number }
-  | { type: 'migrate'; x: number; y: number }
-  | { type: 'clear_migration' }
+  /** Group command: without `group` every group of yours migrates; replaces the territory of the groups it reaches. Data: `{x, y}` (clamped). */
+  | { type: 'migrate'; x: number; y: number; group?: number }
+  | { type: 'clear_migration'; group?: number }
+  /** Group `group` (default 0) holds a circle (radius kept within its `max_radius`); data: `TerritoryView`. */
+  | { type: 'claim_territory'; group?: number; x: number; y: number; radius: number }
+  | { type: 'abandon_territory'; group?: number }
+  /** Divide a group in two (the named organisms, else the far half across its widest spread); data: `{group, moved, kept}`. */
+  | { type: 'split_group'; group?: number; organisms?: OrgId[] }
+  /** Every member of `from` joins `into` (default 0); data: `{moved}`. */
+  | { type: 'merge_groups'; from: number; into?: number }
   | { type: 'set_view'; x: number; y: number; radius: number }
   | { type: 'clear_view' }
   /** Put one of your adults on the stud marketplace; data: `{ listing: ListingView }`. */
@@ -165,7 +173,7 @@ export type Sex = 'female' | 'male';
 
 export type ActionName =
   | 'idle' | 'graze' | 'hunt' | 'scavenge' | 'drink' | 'rest' | 'bask' | 'flee' | 'seek_mate'
-  | 'group' | 'wander' | 'migrate' | 'follow_parent' | 'guard' | 'ordered' | 'dormant' | 'cache' | 'sentry';
+  | 'group' | 'wander' | 'migrate' | 'follow_parent' | 'guard' | 'ordered' | 'dormant' | 'cache' | 'sentry' | 'patrol' | 'defend';
 
 /** One of the player's own organisms: full detail. */
 export interface OwnOrganism {
@@ -189,6 +197,30 @@ export interface OwnOrganism {
   order?: [number, number];
   /** Possessed only: tiles per tick it walks toward an order on open ground (before the terrain's factor). */
   speed?: number;
+  /** The group it belongs to (absent: 0, the main group). */
+  group?: number;
+}
+
+/** A territory a group holds. */
+export interface TerritoryView {
+  x: number;
+  y: number;
+  radius: number;
+  claimed_tick: number;
+}
+
+/** One of the player's groups. */
+export interface GroupView {
+  /** 0 is the main group; `split_group` makes the others (up to 4). */
+  id: number;
+  members: number;
+  adults: number;
+  migration?: [number, number];
+  territory?: TerritoryView;
+  /** Largest territory radius the group could claim now. */
+  max_radius: number;
+  /** First tick at which it may claim again (absent: now). */
+  claim_ready_tick?: number;
 }
 
 /** Someone else's organism inside the view window: only what can be seen. */
@@ -244,7 +276,10 @@ export interface StateView {
   slots_left: number;
   /** Living members of the lineage, cohort members of abstract (level of detail) regions included; `organisms` lists only agents. */
   population: number;
+  /** The main group's migration order (each group's is in `groups`). */
   migration: [number, number] | null;
+  /** The player's groups by id (absent from older servers). */
+  groups?: GroupView[];
   view: ViewWindow;
   organisms: OwnOrganism[];
   nearby: NearbyOrganism[];

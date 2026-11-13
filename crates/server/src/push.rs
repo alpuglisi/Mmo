@@ -157,6 +157,7 @@ mod tests {
             slots_left: 0,
             population: 0,
             migration: None,
+            groups: Vec::new(),
             view: ViewWindow { x: 0.0, y: 0.0, radius: 1.0 },
             organisms: Vec::new(),
             nearby: Vec::new(),

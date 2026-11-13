@@ -25,19 +25,11 @@ pub struct ClientEnvelope {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     /// Take direct control of one of your organisms.
-    Possess {
-        organism: OrgId,
-    },
+    Possess { organism: OrgId },
     /// Walk a possessed organism toward a point (tile units).
-    OrderMove {
-        organism: OrgId,
-        x: f32,
-        y: f32,
-    },
+    OrderMove { organism: OrgId, x: f32, y: f32 },
     /// Return a possessed organism to its genetic behavior.
-    Release {
-        organism: OrgId,
-    },
+    Release { organism: OrgId },
     /// Propose a directed mating between your organism `mine` and `partner`.
     /// Pairs within your own lineage run at once; another player's organism
     /// needs that player's consent first. A `price` (renown) is taken from
@@ -54,36 +46,68 @@ pub enum ClientMsg {
     /// living organism of the other sex): expected fertility, override cost
     /// and failure chance, and why the pair can't conceive if it can't. Data:
     /// [`MatingPreviewView`]. Nothing changes and no slot is used.
-    PreviewMating {
-        mine: OrgId,
-        partner: OrgId,
-    },
+    PreviewMating { mine: OrgId, partner: OrgId },
     /// The partner organism's owner accepts or declines an offer.
-    RespondMating {
-        request: u64,
-        accept: bool,
-    },
+    RespondMating { request: u64, accept: bool },
     /// Retry an accepted agreement now (it also completes on its own once the
     /// two organisms meet).
-    CompleteMating {
-        request: u64,
-    },
+    CompleteMating { request: u64 },
     /// Either side withdraws an open offer or agreement.
-    CancelMating {
-        request: u64,
-    },
-    /// Group command: your adults drift toward a point.
+    CancelMating { request: u64 },
+    /// Group command: your adults drift toward a point. Without `group`,
+    /// every group of yours; with it, that group only. Replaces the
+    /// territory of the groups it reaches.
     Migrate {
         x: f32,
         y: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<u8>,
     },
-    ClearMigration,
-    /// Pin the view window (interest area) to a point.
-    SetView {
+    /// Drop the migration order of `group`, or of every group without it.
+    ClearMigration {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<u8>,
+    },
+    /// Group command: `group` (default 0, the main group) holds the circle
+    /// of `radius` tiles around `x, y`: its members roam and forage inside
+    /// it and chase strangers out. The radius is kept between
+    /// `evo_sim::world::groups::TERRITORY_MIN_RADIUS` and what the group's
+    /// adults can hold (its `max_radius` in the state). Replaces the group's
+    /// migration order. A group may claim once every
+    /// `evo_sim::world::groups::CLAIM_COOLDOWN_DAYS` (`claim_cooldown`).
+    /// Data: the territory as claimed ([`TerritoryView`]).
+    ClaimTerritory {
+        #[serde(default)]
+        group: u8,
         x: f32,
         y: f32,
         radius: f32,
     },
+    /// Group command: `group` (default 0) gives up its territory.
+    AbandonTerritory {
+        #[serde(default)]
+        group: u8,
+    },
+    /// Group command: divide `group` (default 0) in two. With `organisms`
+    /// (yours, in that group, at most [`MAX_SPLIT_ORGANISMS`]), those form
+    /// the new group; without, the half of the group on the far side of its
+    /// widest spread. The new group starts with no orders. Data:
+    /// `{group, moved, kept}`.
+    SplitGroup {
+        #[serde(default)]
+        group: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        organisms: Option<Vec<OrgId>>,
+    },
+    /// Group command: every member of group `from` joins group `into`
+    /// (default 0); `from`'s orders end. Data: `{moved}`.
+    MergeGroups {
+        from: u8,
+        #[serde(default)]
+        into: u8,
+    },
+    /// Pin the view window (interest area) to a point.
+    SetView { x: f32, y: f32, radius: f32 },
     /// Let the view window follow your possessed organism or your lineage.
     ClearView,
     /// Offer one of your adults on the stud marketplace: anyone may buy one
@@ -98,17 +122,12 @@ pub enum ClientMsg {
     },
     /// Take one of your listings off the marketplace (agreements already
     /// bought from it stand).
-    WithdrawListing {
-        listing: u64,
-    },
+    WithdrawListing { listing: u64 },
     /// Buy one mating with a listed organism for your adult `mine`: an
     /// already accepted agreement, the fee held in escrow until the two meet,
     /// your seasonal slot spent when it runs. Data: `{offer}`. Not for
     /// auctions (`auction_listing`: bid instead).
-    BuyListing {
-        listing: u64,
-        mine: OrgId,
-    },
+    BuyListing { listing: u64, mine: OrgId },
     /// Auction one mating with one of your adults: the highest bid at or
     /// above `reserve` when it closes wins. It closes after `ticks` ticks if
     /// given, else after `days` simulated days (default 1, at most 30).
@@ -124,11 +143,7 @@ pub enum ClientMsg {
     /// Bid `amount` renown on an auction for your adult `mine`. The amount
     /// is held in escrow (raising your own highest bid holds only the
     /// difference); you are refunded at once when outbid. Data: `{listing}`.
-    Bid {
-        listing: u64,
-        amount: u64,
-        mine: OrgId,
-    },
+    Bid { listing: u64, amount: u64, mine: OrgId },
     /// One page of the open listings, each with the compatibility of your
     /// `mine` with the listed organism if given. Data: [`MarketView`]. With
     /// no fields: the newest [`MARKET_PAGE`] listings of every kind.
@@ -157,7 +172,11 @@ impl ClientMsg {
             ClientMsg::CompleteMating { .. } => "complete_mating",
             ClientMsg::CancelMating { .. } => "cancel_mating",
             ClientMsg::Migrate { .. } => "migrate",
-            ClientMsg::ClearMigration => "clear_migration",
+            ClientMsg::ClearMigration { .. } => "clear_migration",
+            ClientMsg::ClaimTerritory { .. } => "claim_territory",
+            ClientMsg::AbandonTerritory { .. } => "abandon_territory",
+            ClientMsg::SplitGroup { .. } => "split_group",
+            ClientMsg::MergeGroups { .. } => "merge_groups",
             ClientMsg::SetView { .. } => "set_view",
             ClientMsg::ClearView => "clear_view",
             ClientMsg::CreateListing { .. } => "create_listing",
@@ -171,6 +190,23 @@ impl ClientMsg {
         }
     }
 }
+
+impl ClientMsg {
+    /// Group commands that change a group (territory, splits, merges): they
+    /// have their own, tighter rate limit (`Limits::group_commands`).
+    pub fn is_group_change(&self) -> bool {
+        matches!(
+            self,
+            ClientMsg::ClaimTerritory { .. }
+                | ClientMsg::AbandonTerritory { .. }
+                | ClientMsg::SplitGroup { .. }
+                | ClientMsg::MergeGroups { .. }
+        )
+    }
+}
+
+/// Most organisms a `split_group` may name.
+pub const MAX_SPLIT_ORGANISMS: usize = 2000;
 
 /// Listings in a `browse_market` page unless asked otherwise.
 pub const MARKET_PAGE: usize = 20;
@@ -555,8 +591,19 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             TooFar { .. } => "too_far",
             NoSlotsLeft => "no_slots_left",
             PossessedByOther(_) => "possessed_by_other",
+            NoSuchGroup(_) => "no_such_group",
+            GroupLimit => "group_limit",
+            GroupTooSmall(_) => "group_too_small",
+            NotInGroup(_) => "not_in_group",
+            SameGroup(_) => "same_group",
+            NoTerritory(_) => "no_territory",
+            ClaimCooldown { .. } => "claim_cooldown",
         };
-        ErrorInfo::new(code, e.to_string())
+        let info = ErrorInfo::new(code, e.to_string());
+        match e {
+            ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
+            _ => info,
+        }
     }
 }
 
@@ -745,6 +792,62 @@ pub struct OwnOrganism {
     /// ground (`World::move_speed`, before the terrain's speed factor).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<f32>,
+    /// The group it belongs to (absent: 0, the main group).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub group: u8,
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
+/// A territory a group holds.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerritoryView {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    pub claimed_tick: u64,
+}
+
+impl From<evo_sim::world::groups::Territory> for TerritoryView {
+    fn from(t: evo_sim::world::groups::Territory) -> Self {
+        Self { x: t.center.x, y: t.center.y, radius: t.radius, claimed_tick: t.claimed_tick }
+    }
+}
+
+/// One of the player's groups (`World::groups`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GroupView {
+    /// 0 is the main group; `split_group` makes the others.
+    pub id: u8,
+    /// Living organisms in it (agents; cohort members of abstract regions
+    /// belong to no group).
+    pub members: usize,
+    pub adults: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration: Option<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub territory: Option<TerritoryView>,
+    /// Largest territory radius the group could claim now.
+    pub max_radius: f32,
+    /// First tick at which it may claim a territory again (absent: now).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub claim_ready_tick: u64,
+}
+
+impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
+    fn from(g: &evo_sim::world::groups::GroupInfo) -> Self {
+        Self {
+            id: g.id,
+            members: g.members,
+            adults: g.adults,
+            migration: g.migration.map(|p| [p.x, p.y]),
+            territory: g.territory.map(TerritoryView::from),
+            max_radius: g.max_radius,
+            claim_ready_tick: g.claim_ready_tick,
+        }
+    }
 }
 
 /// Someone else's organism inside the view window: only what can be seen.
@@ -793,7 +896,12 @@ pub struct StateView {
     /// includes cohort members of abstract regions, which are not agents and
     /// so are not in `organisms`.
     pub population: usize,
+    /// The main group's migration order (each group's is in `groups`).
     pub migration: Option<[f32; 2]>,
+    /// The player's groups by id: the main group always, others while they
+    /// have members or orders.
+    #[serde(default)]
+    pub groups: Vec<GroupView>,
     pub view: ViewWindow,
     pub organisms: Vec<OwnOrganism>,
     pub nearby: Vec<NearbyOrganism>,
@@ -1200,6 +1308,8 @@ pub fn action_name(a: Action) -> &'static str {
         Action::Dormant => "dormant",
         Action::Cache => "cache",
         Action::Sentry => "sentry",
+        Action::Patrol => "patrol",
+        Action::Defend => "defend",
     }
 }
 
@@ -1267,6 +1377,7 @@ impl OwnOrganism {
             look: Appearance::of(o),
             order: o.possessed_by.and(o.order).map(|t| [t.x, t.y]),
             speed: None,
+            group: o.group,
         }
     }
 }
@@ -1298,10 +1409,63 @@ mod tests {
         assert_eq!(m.id, Some(3));
         assert_eq!(m.msg, ClientMsg::OrderMove { organism: 7, x: 1.5, y: 2.0 });
         let m: ClientEnvelope = serde_json::from_str(r#"{"type":"clear_migration"}"#).unwrap();
-        assert_eq!(m.msg, ClientMsg::ClearMigration);
+        assert_eq!(m.msg, ClientMsg::ClearMigration { group: None });
+        assert_eq!(serde_json::to_string(&m).unwrap(), r#"{"type":"clear_migration"}"#);
         let m: ClientEnvelope = serde_json::from_str(r#"{"type":"request_mating","mine":1,"partner":2}"#).unwrap();
         assert_eq!(m.msg, ClientMsg::RequestMating { mine: 1, partner: 2, price: None });
         assert!(serde_json::from_str::<ClientEnvelope>(r#"{"type":"teleport"}"#).is_err());
+    }
+
+    #[test]
+    fn group_messages_parse() {
+        let parse = |s: &str| serde_json::from_str::<ClientEnvelope>(s).map(|e| e.msg);
+        // The old migrate message still reads (every group).
+        assert_eq!(
+            parse(r#"{"type":"migrate","x":3,"y":4}"#).unwrap(),
+            ClientMsg::Migrate { x: 3.0, y: 4.0, group: None }
+        );
+        assert_eq!(
+            parse(r#"{"type":"migrate","x":3,"y":4,"group":1}"#).unwrap(),
+            ClientMsg::Migrate { x: 3.0, y: 4.0, group: Some(1) }
+        );
+        assert_eq!(
+            parse(r#"{"type":"clear_migration","group":2}"#).unwrap(),
+            ClientMsg::ClearMigration { group: Some(2) }
+        );
+        let claim = parse(r#"{"type":"claim_territory","x":10,"y":12.5,"radius":6}"#).unwrap();
+        assert_eq!(claim, ClientMsg::ClaimTerritory { group: 0, x: 10.0, y: 12.5, radius: 6.0 });
+        assert_eq!(claim.name(), "claim_territory");
+        assert!(claim.is_group_change());
+        assert_eq!(
+            parse(r#"{"type":"claim_territory","group":1,"x":1,"y":2,"radius":3}"#).unwrap(),
+            ClientMsg::ClaimTerritory { group: 1, x: 1.0, y: 2.0, radius: 3.0 }
+        );
+        assert!(parse(r#"{"type":"claim_territory","x":1,"y":2}"#).is_err(), "radius is required");
+        assert!(parse(r#"{"type":"claim_territory","group":300,"x":1,"y":2,"radius":3}"#).is_err());
+        assert_eq!(parse(r#"{"type":"abandon_territory"}"#).unwrap(), ClientMsg::AbandonTerritory { group: 0 });
+        assert_eq!(parse(r#"{"type":"split_group"}"#).unwrap(), ClientMsg::SplitGroup { group: 0, organisms: None });
+        assert_eq!(
+            parse(r#"{"type":"split_group","group":1,"organisms":[4,5]}"#).unwrap(),
+            ClientMsg::SplitGroup { group: 1, organisms: Some(vec![4, 5]) }
+        );
+        assert_eq!(parse(r#"{"type":"merge_groups","from":2}"#).unwrap(), ClientMsg::MergeGroups { from: 2, into: 0 });
+        assert!(parse(r#"{"type":"merge_groups"}"#).is_err(), "from is required");
+        assert!(!ClientMsg::Migrate { x: 0.0, y: 0.0, group: None }.is_group_change());
+    }
+
+    #[test]
+    fn group_errors_have_codes() {
+        use evo_sim::world::commands::CommandError;
+        let code = |e: CommandError| ErrorInfo::from(&e);
+        assert_eq!(code(CommandError::NoSuchGroup(3)).code, "no_such_group");
+        assert_eq!(code(CommandError::GroupLimit).code, "group_limit");
+        assert_eq!(code(CommandError::GroupTooSmall(0)).code, "group_too_small");
+        assert_eq!(code(CommandError::NotInGroup(9)).code, "not_in_group");
+        assert_eq!(code(CommandError::SameGroup(1)).code, "same_group");
+        assert_eq!(code(CommandError::NoTerritory(1)).code, "no_territory");
+        let c = code(CommandError::ClaimCooldown { ticks_left: 7 });
+        assert_eq!(c.code, "claim_cooldown");
+        assert_eq!(c.detail, Some(serde_json::json!({ "ticks_left": 7 })));
     }
 
     #[test]

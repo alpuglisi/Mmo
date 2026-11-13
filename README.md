@@ -58,6 +58,7 @@ docs/
 | `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter), short-term torpor on cold nights, a seasonal coat (winter coat molted in autumn and shed in spring, food per molt; a mismatch on cold-blooded bodies) and timed breeding (a narrow early-spring window with strong drive and better conception, no breeding outside it). |
 | `world::par_apply` | Scale and performance (parallel regions) | The apply phase on all cores (`WorldConfig::parallel_apply`, default on; `--sequential-apply` for the old fully sequential apply): each turn split into a parallel movement sweep, a sequential interaction sweep in shuffled order, a parallel needs sweep and a sequential death/birth sweep. See [Parallel apply](#parallel-apply). |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
+| `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends. See [Groups and territory](#groups-and-territory). |
 | `world::chronicle` | Scoring | The daily hook: samples adults (cohorts included) for species detection, plans, applies and ends catastrophes through existing systems (`Map::climate_temp`, `Map::climate_wet`, infections), closes eras and awards achievements. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
 
@@ -102,6 +103,56 @@ Most of the remaining "stuck" ticks are the metric's blind spots (a detour
 around a lake doesn't shorten the straight-line distance; targets thrash
 between nearby spots). The benchmark runs about 0.75 searches per tick, and
 its cost is unchanged within noise (callgrind: +0.2% instructions in total).
+
+### Groups and territory
+
+The design doc's group commands ("order migration, claim or abandon
+territory, split a group"; `world::groups`, with the migration orders in
+`world::commands`). The doc gives no numbers, so these are this
+implementation's choices, kept in constants at the top of `groups.rs` (not
+`Balance` fields: they tune player levers, not the ecosystem the sweeps
+score).
+
+- **Groups.** Every organism carries a group id (`Organism::group`, 0 the
+  main group). `split_group` divides a group in two: the organisms named,
+  or by default the half on the far side of the group's widest spread (x or
+  y, by variance; ties by id; the smaller half when the count is odd). The
+  new group takes the lowest free id (at most 4 groups) and starts with no
+  orders; `merge_groups` joins two again (the merged group's orders end).
+  Young are born into their mother's group. Members of a player's other
+  groups no longer count as kin for cohesion (`Action::Group`), herd size
+  and company, so the halves don't drift back together (kinship for mating
+  and sentries is unchanged). Cohorts of abstract regions (level of detail)
+  belong to no group: agents expanded from them start in the main group.
+- **Per-group orders.** Migration orders are kept per (player, group).
+  `migrate` without a group reaches every group, as before; with one, only
+  it. A group has a migration order or a territory, never both: the newer
+  order replaces the other.
+- **Territory** (`claim_territory`): a circle a group holds. Its radius is
+  kept between 3 tiles and `4 + 2·√adults` (at most 24): a few animals
+  can't hold a valley. Members roam and forage inside it (wander targets
+  are pulled in, food searches and remembered patches outside are
+  dropped, `Map` sampling unchanged), walk back when outside
+  (`Action::Patrol`, utility 0.55 like an ordered migration), and adults
+  chase the nearest stranger they see inside it (`Action::Defend`: not the
+  player's, not kin, and not a hunter that could beat them; utility
+  `0.7 × (0.3 + 0.7 × max(aggression, boldness)) × (1 − hunger)`). A
+  stranger inside a territory sees a defender coming at it as a threat (as
+  an armed hunter of the defender's power would be) and flees.
+- **Costs** (the doc: every lever has a price; holding territory is what
+  year-round residents do): the group lives on the food inside the circle
+  until hunger passes 80 (then it forages anywhere, "hungry organisms
+  prioritize food over everything except immediate danger"), chasing is
+  at a sprint, and a group can claim only once every half day
+  (`claim_cooldown`). Seasonal migration (a gene) still outranks the
+  territory, and danger and thirst outrank both as usual.
+- **Determinism.** The commands draw no randomness and are applied where
+  the server applies every command (between sub-steps, in arrival order).
+  Every lookup sits behind an empty map and every organism is in group 0
+  until a player splits, so a world without them steps bit for bit as
+  before (the 12-seed sweeps still score 11.54 on seeds from 31 and 11.41 from 55; the tests
+  `group_commands_are_deterministic_and_unused_ones_change_nothing`, and the
+  snapshot round trip with a split herd, one half holding ground).
 
 ## Running
 
@@ -412,7 +463,9 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   logins and registrations per client IP (burst 10, then one per 6 s; checked
   before any password hashing, `429 rate_limited` with `retry_after_ms` and
   `Retry-After`), WebSocket commands per connection (20/s, burst 40) and per
-  IP over all its connections (60/s, burst 120), and the public reads that
+  IP over all its connections (60/s, burst 120), group changes
+  (`claim_territory`, `abandon_territory`, `split_group`, `merge_groups`)
+  per connection on top of that (1/s, burst 6), and the public reads that
   cost the world thread or the store (terrain, map, chronicle, history,
   seasons, lineage stats) per IP (10/s, burst 60); a refused command gets a
   `result` with `rate_limited` and never reaches the world thread. The IP is
@@ -525,7 +578,11 @@ Client → server:
 | `respond_mating` | `request, accept` | The partner's owner answers |
 | `complete_mating` | `request` | Retry an accepted agreement now |
 | `cancel_mating` | `request` | Either side withdraws an open offer |
-| `migrate` / `clear_migration` | `x, y` / – | Group command for your adults |
+| `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for your adults: every group without `group`, else that group (`no_such_group` past 3); `data` = the clamped `{x, y}`. Replaces the territory of the groups it reaches |
+| `claim_territory` | `group?, x, y, radius` | Group `group` (default 0) holds the circle around `x, y`: the radius is kept between 3 and the group's `max_radius`; replaces its migration order; `data` = `{x, y, radius, claimed_tick}`. `claim_cooldown` (`detail.ticks_left`) within half a day of the group's last claim; `no_such_group` for a group without members; `bad_coordinates` for a non-finite number |
+| `abandon_territory` | `group?` | Give the territory up (`no_territory` if none) |
+| `split_group` | `group?, organisms?` | Divide a group (default 0) in two: the named organisms (yours, in that group, at most 2000), else the far half across its widest spread; `data` = `{group, moved, kept}`. `group_limit` at 4 groups, `group_too_small` if a side would be empty, `not_in_group`, `not_owned`, `too_many_organisms` |
+| `merge_groups` | `from, into?` | Every member of `from` joins `into` (default 0); `data` = `{moved}`; `same_group`, `no_such_group` |
 | `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window |
 | `create_listing` | `organism, fee, expires_days?` | List one of your adults on the stud marketplace (a male as a stud, a female as a dam); `data` = `{listing}` |
 | `withdraw_listing` | `listing` | Take your listing down (agreements already bought stand) |
@@ -541,8 +598,8 @@ Server → client:
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor` |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, max_radius, claim_ready_tick?}`), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
@@ -570,10 +627,11 @@ web client handles both.
   bit mask of the fields that changed and those fields as LEB128 varints,
   numbers as zigzag differences from the client's copy. Quantized:
   positions and `order` to 1/64 tile, needs to 0.1, health and age to 0.01
-  (days), growth to 0.001; `speed` stays an exact `f32`. The format is
-  documented field by field at the top of `wire.rs`.
+  (days), growth to 0.001; `speed` stays an exact `f32`; an organism's
+  `group` is its own field. The format is documented field by field at
+  the top of `wire.rs`.
 - **Meta JSON** carries the other fields only when they changed (`clock`,
-  `weather`, `view`, `population`, `balance`, …), leaderboard rows keyed by
+  `weather`, `view`, `population`, `balance`, `groups` as a whole list, …), leaderboard rows keyed by
   player (`lb_set` / `lb_del`, the client keeps them in rank order),
   offers keyed by id (`offers_set` / `offers_del`), and **palettes**: each
   distinct `look` and action name is sent once per connection (`looks`,
@@ -971,7 +1029,9 @@ pregnancies, so `Organism` is 688 bytes instead of 1,496. Any change to a serial
 a snapshot of another version is refused with both versions named. Version
 3 added the possession sub-step counter and `WorldConfig::possess_substeps`;
 version 8 added the balance parameters `threat_caution`, `alert_guard` and
-`pasture_search` to the saved config.
+`pasture_search` to the saved config; version 9 the hunters' search image; version 10 added groups and
+territories (`Organism::group`, migration orders per player and group,
+claimed territories and claim times).
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -1306,7 +1366,18 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   **Release** (or hold the mouse / long-press on one of yours); while
   possessing, clicking empty map sends `order_move` (target line drawn).
   **Migrate…** then a click sends the group command; **Pin view here** sends
-  `set_view` at the camera center.
+  `set_view` at the camera center. Group commands: the toolbar's group
+  menu picks which group **Migrate…**, **Clear migration**, **Territory…**
+  and **Split** act on ("All" reaches every group; the territory and split
+  tools want one group, the only one if there is just one). **Territory…**
+  is two taps: the center (the largest circle the group may hold is
+  previewed), then the edge, which sends `claim_territory` with that radius;
+  **Split** sends `split_group` and picks the new group. Each group's
+  territory is drawn as a tinted disc in its color (the picked group's
+  outline bolder) and its migration target as a ringed cross; the
+  inspector names an organism's group. On phones the same tools sit in the
+  scrolling toolbar and both taps work by touch. The logic (names, colors,
+  the menu, the two-tap draw, the commands sent) is in `groups.ts`.
 - **Matings** tab: request a directed mating (one of your adults, a partner
   id filled from the inspector's "Request mating…", optional price in renown,
   held in escrow);
@@ -1384,7 +1455,9 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
 - **Lineage** tab: lineage size (with level of detail on, also how many of
   them are agents on the map; the Genetics tab adds an "On the map" tile),
   adults and young, pregnancies, newest
-  generation, mating slots left this season, migration target, the legacy
+  generation, mating slots left this season, migration target, a **Groups**
+  card per group (size, adults, what it is doing, and Pick, Claim
+  territory…, Abandon territory, Split, Merge into A, Center), the legacy
   leaderboard (share and weighted share per player, yours highlighted), the
   **seasonal leaderboards** (`GET /api/leaderboard/seasons`, the current
   season open) and a clickable list of your organisms. The top bar shows the
@@ -1625,7 +1698,10 @@ if the selection isn't its own), possesses it, clicks a dry-land spot clear
 of markers and checks it walks toward the target (closest approach tracked,
 an arrival counts, the order re-issued if a click misses or the organism
 breaks off for a need) while the state carries its `speed` and the drawn
-(predicted) marker stays within 3 tiles of the server position, migrates, sees an error toast, checks the seasonal
+(predicted) marker stays within 3 tiles of the server position, migrates, sees an error toast, splits the herd
+from the toolbar (the new group picked in the group menu), draws a territory for it with two clicks (in
+the state and drawn on the map; group cards in the Lineage tab; a back-to-back second claim refused with
+`claim_cooldown`) and merges the groups back, checks the seasonal
 leaderboard and the genetics dashboard (at least four charts with drawn
 lines, drift sparklines, every gene in the table with histogram bars, the
 allele-origin card naming you, alerts in the feed), hides daily summaries in
@@ -1643,7 +1719,8 @@ it; a touch tap selects an own organism and shows the floating button,
 which possesses; a long press (DevTools touch events) possesses; a
 one-finger drag pans and stops following; a pinch out zooms in at least 2×
 and a pinch in zooms back out; the inspector shows in the sheet; the legend
-toggles. Then a 1280×800 desktop: sidebar on the right with tabs on top,
+toggles; **Split** in the scrolling toolbar makes a second group and two
+taps claim a territory for it, with no sideways scroll. Then a 1280×800 desktop: sidebar on the right with tabs on top,
 phone controls hidden, sprite cache stats (textures shared per class), and
 a gallery of 20 body plans drawn with the game's sprite code. Screenshots:
 `iphone13-*.png`, `pixel7-*.png`, `desktop-world.png`,
@@ -3065,9 +3142,10 @@ sections above).
    client, so this is low priority). For save size, store the map's
    changing tiles (about 6 MB of an 18 MB save at 26k agents) as a delta
    against the previous save.
-9. **Design-doc features not built.** Group commands beyond migration
-   ("claim or abandon territory, split a group"), offline protection (home
-   ranges or surviving founder groups), and the doc's open question on
+9. **Design-doc features not built.** Offline protection (home ranges or
+   surviving founder groups; a territory could become one), group commands
+   as genes (the doc's open question; wanderlust and group tolerance
+   already shape how a group moves), and the doc's open question on
    duplicate mutations; `GET /api/leaderboard/seasons` would also want a
    cache instead of reading the whole history per call.
 10. **Tooling.** An adaptive `compare` that adds seeds until the CI

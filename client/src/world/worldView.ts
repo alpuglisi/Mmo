@@ -19,6 +19,7 @@ import { actionHint, bodyRadius, creatureKey, markerScaleFor, specOf, type Creat
 import { CreatureSprites, type MarkerParts } from './sprites';
 import type { NearbyOrganism, OrgId, OwnOrganism, StateView } from '../protocol';
 import { OWN_COLOR, ownerColor } from './colors';
+import { groupColor, groupsOf, type TerritoryDraft } from '../groups';
 import { paintTerrain, type TerrainGrid } from './terrain';
 import { isOpenGround, newTrack, Predictor, RECONCILE_SNAP, RECONCILE_TAU_MS, retarget, smoothToward, TickClock, trackAt, type Point, type Track } from './motion';
 
@@ -102,6 +103,10 @@ export class WorldView {
   readonly tickClock = new TickClock();
   private readonly passable = (x: number, y: number) => isOpenGround(this.terrain, x, y);
   selected: OrgId | null = null;
+  /** The group picked in the group menu (its territory is drawn bolder), or null for all. */
+  selectedGroup: number | null = null;
+  /** A territory being drawn (center tapped, edge not yet). */
+  territoryDraft: TerritoryDraft | null = null;
   cam: Camera = { x: 32, y: 32, zoom: 8 };
   follow = true;
   onClick: (c: WorldClick) => void = () => {};
@@ -250,6 +255,12 @@ export class WorldView {
     return { x: (sx - width / 2) / this.cam.zoom + this.cam.x, y: (sy - height / 2) / this.cam.zoom + this.cam.y };
   }
 
+  /** What the overlay shows of groups, for tests and debugging. */
+  overlayInfo(): { territories: { group: number; x: number; y: number; radius: number }[]; draft: TerritoryDraft | null } {
+    const territories = groupsOf(this.state).flatMap((g) => (g.territory ? [{ group: g.id, x: g.territory.x, y: g.territory.y, radius: g.territory.radius }] : []));
+    return { territories, draft: this.territoryDraft };
+  }
+
   private upsert(o: OwnOrganism | NearbyOrganism, own: boolean, now: number): void {
     const sprites = this.sprites;
     if (!sprites) return;
@@ -363,10 +374,31 @@ export class WorldView {
     if (!s) return;
     const v = s.view;
     g.rect(v.x - v.radius, v.y - v.radius, v.radius * 2, v.radius * 2).stroke({ width: 1.5 * px, color: 0x58a6ff, alpha: 0.6 });
-    if (s.migration) {
-      const [mx, my] = s.migration;
-      g.circle(mx, my, 8 * px).stroke({ width: 2 * px, color: 0xf778ba });
-      g.moveTo(mx - 5 * px, my).lineTo(mx + 5 * px, my).moveTo(mx, my - 5 * px).lineTo(mx, my + 5 * px).stroke({ width: 2 * px, color: 0xf778ba });
+    // Each group's territory (a tinted disc, the picked group's outline
+    // bolder) and migration target (a cross in a ring; pink for a lone group).
+    const groups = groupsOf(s);
+    for (const grp of groups) {
+      const color = groups.length > 1 ? groupColor(grp.id) : 0xf778ba;
+      const t = grp.territory;
+      if (t) {
+        const picked = this.selectedGroup === grp.id;
+        const tint = groupColor(grp.id);
+        g.circle(t.x, t.y, t.radius).fill({ color: tint, alpha: picked ? 0.2 : 0.12 });
+        g.circle(t.x, t.y, t.radius).stroke({ width: (picked ? 3 : 1.5) * px, color: tint, alpha: 0.9 });
+      }
+      if (grp.migration) {
+        const [mx, my] = grp.migration;
+        g.circle(mx, my, 8 * px).stroke({ width: 2 * px, color });
+        g.moveTo(mx - 5 * px, my).lineTo(mx + 5 * px, my).moveTo(mx, my - 5 * px).lineTo(mx, my + 5 * px).stroke({ width: 2 * px, color });
+      }
+    }
+    const d = this.territoryDraft;
+    if (d) {
+      // The largest circle the group may claim, and its center.
+      const tint = groupColor(d.group);
+      g.circle(d.x, d.y, d.radius).fill({ color: tint, alpha: 0.08 });
+      g.circle(d.x, d.y, d.radius).stroke({ width: 1.5 * px, color: tint, alpha: 0.6 });
+      g.circle(d.x, d.y, 3 * px).fill({ color: tint });
     }
     const possessed = s.organisms.find((o) => o.possessed);
     // The order the player gave, else the server's (e.g. after a reload).

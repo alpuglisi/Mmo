@@ -69,6 +69,19 @@ describe('DeltaDecoder', () => {
     expect(states.every((s) => s.nearby.every((n) => n.look && typeof n.look.diet === 'string'))).toBe(true);
   });
 
+  it('carries groups, their territory and each organism\'s group', () => {
+    const d = new DeltaDecoder();
+    const states = frames.map((f) => d.apply(f.frame));
+    for (const s of states) {
+      expect(s.groups?.map((g) => g.id)).toEqual([0, 1]);
+      const split = s.groups![1];
+      expect(split.territory).toMatchObject({ x: 40, y: 40, radius: 6 });
+      // Members of group 1 carry it; the main group's leave it out.
+      expect(s.organisms.filter((o) => o.group === 1).length).toBe(split.members);
+      expect(s.organisms.filter((o) => o.group === undefined).length).toBe(s.groups![0].members);
+    }
+  });
+
   it('refuses a delta after a lost frame until the next keyframe', () => {
     const d = new DeltaDecoder();
     d.apply(frames[0].frame);
