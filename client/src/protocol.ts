@@ -179,6 +179,10 @@ export interface OwnOrganism {
   generation: number;
   /** Visible body plan, for the sprite (absent from older servers). */
   look?: Appearance;
+  /** Possessed only: the move order's target `[x, y]` (tiles) while it has one. */
+  order?: [number, number];
+  /** Possessed only: tiles per tick it walks toward an order on open ground (before the terrain's factor). */
+  speed?: number;
 }
 
 /** Someone else's organism inside the view window: only what can be seen. */
@@ -278,6 +282,24 @@ export interface MatingUpdateMsg {
 }
 
 export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need' | 'world' | 'achievement' | 'market';
+
+/** Every alert kind, in the server's order. */
+export const ALERT_KINDS: readonly AlertKind[] = ['daily_summary', 'birth', 'death', 'milestone', 'need', 'world', 'achievement', 'market'];
+
+/**
+ * `GET` / `POST /api/alerts/prefs`: which alert kinds show in the feed and
+ * which also pop up as a toast. Stored per player on the server; applied
+ * by the client.
+ */
+export interface AlertPrefs {
+  /** Left out of the feed and the unread badge (never toasted). */
+  hidden: AlertKind[];
+  /** Also toasted when they arrive. */
+  toast: AlertKind[];
+}
+
+/** What the server answers before a player saves any preferences. */
+export const DEFAULT_ALERT_PREFS: AlertPrefs = { hidden: [], toast: ['death', 'need', 'market'] };
 
 export interface AlertView {
   tick: number;
@@ -487,6 +509,23 @@ export interface GeneStat {
   founding_mean: number;
   /** Daily means aligned with `LineageStats.history_days` (null: not recorded). */
   history: (number | null)[];
+  /** Living members per equal-width bin of the expressed value over 0..1 (`GENE_BINS` bins). */
+  bins?: number[];
+}
+
+/** Bins of `GeneStat.bins`. */
+export const GENE_BINS = 10;
+
+/** Whose alleles a lineage's living members carry (`LineageStats.origins`). */
+export interface AlleleOrigin {
+  /** The originating player (0: the wild ecosystem). */
+  player: PlayerId;
+  name: string;
+  /** That player's lineage, if any. */
+  lineage?: string;
+  alleles: number;
+  /** 0..1 of all alleles the members carry. */
+  share: number;
 }
 
 export interface LegacyPoint {
@@ -516,6 +555,8 @@ export interface LineageStats {
   history_days: number[];
   /** Largest drift from the founding mean first. */
   genes: GeneStat[];
+  /** Whose alleles the members carry, largest share first. */
+  origins?: AlleleOrigin[];
   legacy: LegacyPoint[];
   alerts: AlertView[];
 }

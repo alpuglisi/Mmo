@@ -37,7 +37,7 @@ docs/
 | `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
-| `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, grounded flyers) and rain or snow; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`; `Map::climate_temp`/`climate_wet` are climate anomalies (0 normally) that catastrophes set. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
+| `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge; depressions fed by more rain than evaporates off their surface fill into lakes (priority flood). Rivers in flood overflow onto their floodplain (low land up to two tiles from the channel): standing water that swimmers cross and that strands and drowns small non-swimmers, drowned plants, then silt that speeds regrowth for weeks. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, costly and risky flight) and rain or snow; the wind has a direction (prevailing westerly, swinging over days and veering regionally) that speeds or slows flyers and gliders by wing loading; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`; `Map::climate_temp`/`climate_wet` are climate anomalies (0 normally) that catastrophes set. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
 | `pathfinding` | Movement and terrain | Bounded A* over tiles for one body: blocked tiles are avoided, slow ones cost time. Used only when the direct step is blocked (see Movement below). |
 | `mating` | Override cost | Root-sum-of-squares preference mismatch, `cost = k·max(0, mismatch−1)²`, outbreeding depression by genetic distance, and sterility between different body plans (thermoregulation, birth mode, body size or diet more than 0.3 apart; `cargo run --release --example distances` prints the founders' matrix). Display coloration is condition-dependent (an honest signal). |
 | `group` | Critical-mass group traits | Daily regional carrier frequency → logistic benefit. Implemented: cooperative hunting, warning coloration, herd defense, alarm calls, shared burrows, sentries, communal dens, group navigation, shared caches. |
@@ -310,7 +310,10 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   world clock multiplies the cost of every organism to help a handful;
   prediction alone would show movement the server hasn't made (and gets
   terrain and paths wrong); sub-stepping only possessed movement costs a few
-  microseconds per sub-step and keeps the server authoritative.
+  microseconds per sub-step and keeps the server authoritative. The client
+  adds a bounded prediction on top (see [Client](#client), "Smooth
+  movement"), for which the possessed organism's state carries its `order`
+  and `speed`.
   `WorldConfig::possess_substeps` = 1 turns it off; it is off when the
   server runs as fast as possible (`--tick-ms 0`). A manual-clock server
   takes one with `RunningServer::substep`.
@@ -348,10 +351,16 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   logins and registrations per client IP (burst 10, then one per 6 s; checked
   before any password hashing, `429 rate_limited` with `retry_after_ms` and
   `Retry-After`), WebSocket commands per connection (20/s, burst 40) and per
-  IP over all its connections (60/s, burst 120); a refused command gets a
+  IP over all its connections (60/s, burst 120), and the public reads that
+  cost the world thread or the store (terrain, map, chronicle, history,
+  seasons, lineage stats) per IP (10/s, burst 60); a refused command gets a
   `result` with `rate_limited` and never reaches the world thread. The IP is
-  the TCP peer (behind a reverse proxy that would be the proxy: trusting
-  `X-Forwarded-For` is not implemented).
+  the TCP peer, an IPv6 peer counted by its /64 (behind a reverse proxy that
+  would be the proxy: trusting `X-Forwarded-For` is not implemented).
+- **Size limits:** HTTP bodies up to 64 KiB (`413` beyond), passwords up to
+  1024 bytes, WebSocket messages and frames up to 16 KiB (a larger one
+  closes the connection), at most 8 WebSocket connections per player
+  (`429 too_many_connections`), map images up to 2048 px a side.
 - **Alerts and history** (`game.rs`): the world thread keeps the daily records
   since start (up to 365) with each lineage's births, deaths by cause and
   mean gene values, and raises per-player alerts: deaths of founders and
@@ -384,7 +393,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 
 | Method and path | Auth | What it does |
 | --- | --- | --- |
-| `POST /api/register` `{name, password}` | | Create an account (name 3–24 of `[A-Za-z0-9_-]`, password ≥ 8). `201 {token, player, name}`; `409 name_taken` |
+| `POST /api/register` `{name, password}` | | Create an account (name 3–24 of `[A-Za-z0-9_-]`, password ≥ 8 characters and ≤ 1024 bytes). `201 {token, player, name}`; `409 name_taken` |
 | `POST /api/login` `{name, password}` | | `{token, player, name}`; `401 bad_credentials` |
 | `POST /api/logout` | Bearer | End the session |
 | `POST /api/lineage` (design) | Bearer | Found your lineage (one per player per world). `201 {lineage, founders: [ids], cost}`; `400` with `over_budget {cost, budget}`, `value_out_of_range {gene}`, `reserved_gene`, `litter_size`, `no_founders`, `unknown_gene`, `bad_name`; `409 already_founded` |
@@ -399,8 +408,10 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/eras` | | `{era, era_days, first_day, last_day, days_left, eras: [{era, first_day, last_day, breeding_adults, species_alive, catastrophes, rows: [{player, name, share, weighted_share}], niches: [{niche, player, name, share, adults}]}]}`, finished eras newest first with their final ranking |
 | `GET /api/catastrophes` | | `{enabled, active?, history: [{id, kind, severity, start_day, end_day, active, population_before, population_after?, players_before, survivors}]}` (only catastrophes that have started) |
 | `GET /api/achievements` | | `{players: [{player, name, species_founded, longevity_days, niche_dominance, catastrophes_survived}], recent: [{day, player, name, kind, text}]}` |
-| `GET /api/lineage/stats` | Bearer | The genetics dashboard: counts (alive, adults, young, pregnant, newest generation), `age_bands` (up to six equal bands by sex), `vitals` (births and deaths by cause per recorded day, the last entry today so far, at most 30), `genes` (every gene's mean, spread and founding mean with the daily means, largest drift first), `legacy` (share per recorded day) and recent `alerts` |
-| `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile), for debugging |
+| `GET /api/lineage/stats` | Bearer | The genetics dashboard: counts (alive, adults, young, pregnant, newest generation), `age_bands` (up to six equal bands by sex), `vitals` (births and deaths by cause per recorded day, the last entry today so far, at most 30), `genes` (every gene's mean, spread and founding mean with the daily means, largest drift first, and `bins`: members per tenth of the 0–1 range, a histogram), `origins` (whose alleles the living members carry: `[{player, name, lineage?, alleles, share}]`, largest share first; 0 is the wild), `legacy` (share per recorded day) and recent `alerts` |
+| `GET /api/alerts/prefs` | Bearer | The caller's alert preferences, `{hidden: [kind], toast: [kind]}` (kinds as in `alert` messages); the defaults `{hidden: [], toast: ["death", "need", "market"]}` until saved |
+| `POST /api/alerts/prefs` | Bearer | Replace them; the reply is the normalized form (sorted, no duplicates, nothing hidden is toasted). An unknown kind is refused (422) |
+| `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
 | `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`) and the process's `cpu_seconds` and `rss_bytes` (Linux) |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
@@ -444,7 +455,7 @@ Server → client:
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage}` | On connect |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
 | `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
@@ -556,6 +567,7 @@ it) and an in-memory one (`--memory`, tests).
 | One record per simulated day and world: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `history.jsonl` | `daily_history` (PK `(world_id, day)`, upsert; legacy and lineages `jsonb`; `seq` keeps write order) |
 | Finished directed-mating agreements with price and outcome, the listing they were bought from and how the escrow settled (`paid`/`refunded`) | `trades.jsonl` | `trades` (`bigserial` id; `listing`, `settlement` from migration 2) |
 | Renown balances, upserted on every change | `balances.json` | `balances` (player PK, balance, day, updated_at) |
+| Alert preferences (hidden and toasted alert kinds), upserted when a player saves them | `alert_prefs.json` | `alert_prefs` (player PK, hidden and toast `text[]` of kind names, updated_at; migration 3) |
 | The ledger: every balance change with world id and sequence number (a replayed entry, same world and sequence, replaces the earlier one) | `ledger.jsonl` | `ledger` (PK `(world_id, seq)`, upsert; `id` keeps write order) |
 | Saved games: the whole `World` plus the game state around it (including players' alerts), every simulated day and at a graceful shutdown; the newest 3 kept | `snapshots/world-<tick>.snap` | `snapshots` (tick PK, day, size, snapshot format version, saved_at, data `bytea`) |
 
@@ -644,8 +656,16 @@ and the world snapshot. The game JSON carries a layout `version`
 restores, with balances and recent ledger entries from the store instead
 (and no escrow on its open offers). A new world (no saved game, or
 `--fresh`) also starts from the stored balances, and players who have one
-don't get the founding grant again; the escrow of open agreements in a
-discarded world is not carried over. A crash between saves restores the
+don't get the founding grant again. `--fresh` refunds the escrow of the
+discarded world's open agreements (`Game::refund_discarded`): those open
+with escrow in its newest saved game, plus any escrowed in the store's
+ledger after that save, less any that settled (paid or refunded) after it;
+each refund is a `refund` ledger entry in the new world naming the old
+offer and world, written before startup goes on, and an earlier refund of
+the same offer is recognised, so a second `--fresh` from the same saved game
+pays nothing twice. `--fresh` then deletes the discarded world's saved games
+(their ticks are higher than the new world's, and a restart restores the
+highest tick). A crash between saves restores the
 balances of the last saved game, and the replayed days write the same
 ledger sequence numbers again, replacing their earlier entries.
 The world thread saves after the tick that starts a new simulated day and
@@ -683,6 +703,83 @@ the level-of-detail focus of their views is dropped, so lineages nobody
 watches fold into cohorts at the next day, as when everyone disconnects).
 Possession survives a restart. Records written after the last saved game
 (a crash between saves) are replayed by the restored world.
+
+### Security notes
+
+A review of the server (accounts, HTTP, WebSocket, game commands, economy,
+store) found and fixed:
+
+- **`--fresh` lost escrow, and could bring the old world back.** Open
+  agreements' escrow in the discarded world is now refunded (see
+  Persistence), and the discarded saved games are deleted: before, they kept
+  their higher ticks, so the next plain restart restored the old world (with
+  the escrow still held there).
+- **Unbounded request sizes.** HTTP bodies were limited only by axum's 2 MB
+  default and passwords not at all (argon2 hashes any length): now 64 KiB and
+  1024 bytes. WebSocket frames were bounded only by tungstenite's 16 MB
+  default (a frame is read whole before the 16 KiB message limit applies):
+  now 16 KiB too. `GET /api/map.png?scale=8` on a 1024-tile map rendered a
+  200 MB image on the world thread: the side is capped at 2048 px.
+- **Unauthenticated work for the world thread.** Terrain, map, chronicle,
+  history, seasons and lineage stats requests were unlimited and could fill
+  the world thread's queue (starving players' commands): now rate-limited
+  per client. One player could open any number of WebSockets, each a view
+  the world thread builds a state for every interval: now 8.
+- **Rate-limit bypasses.** An IPv6 client could use a fresh address of its
+  /64 for every attempt: IPv6 peers are keyed by /64. The limiter's key map
+  could grow without bound while every key was busy, and once past 4096 keys
+  pruned the whole map on every request (O(n) per request): pruning is now
+  amortized and the map is capped (65 536 keys; beyond, buckets are dropped,
+  briefly forgetting some limits rather than running out of memory).
+- **Login timing.** A login for an unknown name returned at once, one for a
+  wrong password after an argon2 verify, which told which names exist:
+  unknown names now verify against a dummy hash. (Registration still says
+  `name_taken`, by design.)
+- **Unpaid agreements.** If taking a price into escrow failed after the
+  funds check, the offer was still opened with nothing held; it is now
+  refused. Prices above the cap are refused before the pair checks.
+
+Checked and judged acceptable:
+
+- **Double settlement.** Every command runs on the world thread one at a
+  time, and an agreement is removed in the same step that settles it, so a
+  second cancel, complete, decline or refund finds nothing (`unknown_offer`);
+  a listed dam takes one buyer at a time. Only an offer's two parties can
+  answer, complete or cancel it, only owners list, withdraw or use their
+  organisms. Tests: `escrow_settles_once_and_only_the_parties_act_on_an_offer`.
+- **Numbers.** Prices, fees and limits are `u64`/`u32`: negative, fractional
+  or oversized values fail to parse (`bad_message`), prices and fees are
+  capped at 1 000 000, debits are checked and credits saturate, so balances
+  can't wrap; coordinates must be finite and are clamped to the map.
+- **Tokens.** 256 bits from the OS RNG, compared by a `HashMap` lookup:
+  SipHash with a per-process random key means an attacker can't steer which
+  entries are compared, and a byte-wise comparison happens only on a full
+  64-bit hash match, so there is no usable timing signal; a constant-time
+  compare would add nothing. Sessions expire (idle 1 h, at most 24 h) and
+  live only in memory. The WebSocket accepts the token in the query string
+  because browsers can't set headers there; the server doesn't log URLs, but
+  a proxy in front might.
+- **Password hashing.** argon2id with the crate defaults (19 MiB, 2 passes,
+  1 lane; OWASP's minimum), a random 16-byte salt, PHC strings; hashing and
+  verifying run on the blocking pool behind the login rate limit.
+- **CORS.** Any origin, no credentials: auth is a bearer token the page
+  holds, never a cookie, so another origin can't act as a user it has no
+  token for.
+- **Static files.** `tower-http`'s `ServeDir` rejects `..` and absolute
+  components; tested with encoded and backslash variants.
+- **SQL.** Every PostgreSQL query is a constant string with bound
+  parameters; nothing from a client is formatted into SQL.
+- **Panics from client input.** Commands index offers and organisms only
+  after looking them up; malformed JSON gets `bad_message` (WebSocket) or a
+  4xx (HTTP).
+- **Left as is:** names are case-sensitive (`Ann` and `ann` are different
+  accounts); a reverse proxy makes every client one IP for the limits;
+  `GET /api/leaderboard/seasons` reads up to 100 000 daily records per call
+  (rate-limited now; a cache would be the next step); `accounts.json` is
+  written with the process umask; after a crash and a restart from an older
+  saved game, the store's balances and ledger can hold entries from the
+  abandoned timeline until they are overwritten, which a later `--fresh`
+  refund (that trusts the store after the newest save) inherits.
 
 ## Client
 
@@ -754,7 +851,8 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   stays crisp as markers grow with zoom); a marker is four sprites sharing
   those textures, so hundreds of organisms cost no per-frame drawing.
   Markers live in screen space so they stay readable at any zoom (scaled
-  0.75–1.9× with it), and glide between state pushes. Drag to pan, wheel,
+  0.75–1.9× with it), and move smoothly between state pushes (see "Smooth
+  movement" below). Drag to pan, wheel,
   pinch or +/− to zoom; **Follow** keeps the camera on the server's view window (your
   possessed organism or your lineage's centroid), drawn as a blue square.
   Click an organism to inspect it: yours show action, sex, age, stage,
@@ -792,13 +890,34 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   pyramid by age band and sex; births (up) and deaths stacked by cause (down)
   per day; legacy share and weighted share over the recorded days; gene
   drift sparklines for the six genes that moved most since founding (dashed
-  founding value); and a table of every gene with mean ± spread on a 0–1
-  track. Hand-rolled SVG (no chart library), fixed categorical colors, a
-  `<title>` tooltip on every mark. Below it the **alerts feed**: server
-  alerts (births, deaths of founders and possessed organisms, milestones,
-  needs, daily summaries) merged with mating offers and their outcomes,
-  newest first, organism ids linking to the inspector; an unread badge on
-  the tab.
+  founding value); **whose genes** your organisms carry (a stacked bar and
+  list of allele shares by origin: you, the wild, other players and their
+  lineages, the smallest folded into "others"); and a table of every gene
+  with its mean, SD and **distribution**, a ten-bin histogram over 0–1 with
+  the founding mean dashed. Hand-rolled SVG (no chart library), fixed
+  categorical colors, a `<title>` tooltip on every mark. Below it the
+  **alerts feed**: server alerts (births, deaths of founders and possessed
+  organisms, milestones, needs, daily summaries) merged with mating offers
+  and their outcomes, newest first, organism ids linking to the inspector;
+  an unread badge on the tab. **Alert preferences** (a collapsible table
+  above the feed) switch each alert kind's *Show* (in the feed and the
+  badge) and *Toast* (pop up on arrival); deaths, needs and market alerts
+  toast by default.
+
+  *Allele origins* need no new simulation state: every allele already
+  carries the id of the player it originated with (founder alleles the
+  designer's, mutations the owner of the organism they appeared in), and
+  the tag passes unchanged through any mating, which is what the legacy
+  score counts. The server tallies the tags over the lineage's living agents
+  (gene and hidden-recessive loci) when the dashboard asks, so the snapshot
+  format is unchanged. Histograms and origins cover agents only, like the
+  other gene statistics (cohort members of abstract regions have no
+  genomes). *Alert preferences* are kept server-side in the `Store` so they
+  follow the account across devices and reinstalls; the server still records
+  and pushes every alert and the client applies the preferences (filtering
+  the feed and deciding toasts), so a kind switched back on shows its recent
+  alerts again and the game code needs no change. Offer events are not
+  alerts and always show.
 - **Lineage** tab: lineage size (with level of detail on, also how many of
   them are agents on the map; the Genetics tab adds an "On the map" tile),
   adults and young, pregnancies, newest
@@ -817,6 +936,42 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   allele owner and share, founder), the catastrophes with population before
   and after and how many player lineages survived, and achievement tallies
   per player with the latest achievements.
+
+**Smooth movement** (`world/motion.ts`, pure and unit-tested; wired in
+`worldView.ts`). The server pushes `state` once per state interval, and
+after each possession sub-step (a quarter tick) to the owner of a walking
+possessed organism; drawn as received, markers would hop.
+
+- *Interpolation, every marker.* A new server position starts a glide from
+  where the marker is drawn to that position, lasting as long as the
+  previous move took (from when its position last changed; clamped to
+  50–1200 ms). An organism that moves once a tick is therefore always
+  moving and arrives as the next position comes in: continuous, one message
+  behind. Repeated positions (a state that isn't a move) keep the glide
+  going; a jump of more than 6 tiles (a reconnect) snaps. Per marker this is
+  a handful of numbers and a lerp per frame, nothing allocated per state.
+- *Prediction, the possessed organism.* The state carries its `speed`
+  (tiles per tick on open ground: genes, size, condition, sprint and the
+  possession bonus, from `World::move_speed`) and its move `order`; the
+  client measures the tick length from `clock.tick` against arrival times
+  (`TickClock`). The drawn organism walks on from its last server position
+  straight toward the order at that speed, starting the moment the player
+  clicks (before the server confirms the order). Bounds, so it never shows
+  the organism where the server wouldn't put it: at most half a tick of
+  movement ahead of the last server position; stopping at the arrival
+  distance (0.75 tiles) and before the first tile that isn't plainly open
+  ground in the client's terrain (water, a mountain, flooded land, an
+  unfrozen river: the server knows the body and routes around them,
+  straight-line prediction can't); and no prediction at all once the server
+  has the order but its action isn't `ordered` (thirst, hunger or danger
+  took over), when its last move left the straight line (a route around an
+  obstacle), when it hasn't moved for 1.5 ticks (blocked), after arrival or
+  release, when the server refuses the order, or when an unconfirmed order
+  is 1.5 s old. *Reconciliation:* the drawn position eases toward the
+  predicted one (or, without prediction, toward its glide) with a 90 ms time
+  constant, so a server correction slides; it snaps only beyond 3 tiles.
+  The camera, when following, follows the drawn position, and the order
+  line is drawn from it (to the server's order after a reload).
 
 **Phones and touch.** Below 760 px wide the map fills the screen and the
 sidebar becomes a **bottom sheet** with a tab bar at the bottom (48 px
@@ -864,6 +1019,7 @@ api.ts       fetch wrapper for the HTTP API (ApiError carries code and detail)
 socket.ts    GameSocket: ids paired with `result`, 10 s reply timeout, reconnect with
              exponential backoff (0.5 s doubling to 15 s, ±20 % jitter), connection state
 model.ts     GameModel: latest state, offer table (requests, updates, outcomes), alerts feed, toasts; pub/sub
+alertPrefs.ts  alert preferences: normalize, per-kind show/toast switches, feed filter
 cost.ts      design point cost and validation (mirror of crates/sim/src/design.rs)
 ui/          DOM screens and panels; panels re-render at most 4×/s and rebuild buttons only
              when their content changes, so they stay clickable under 10 Hz state pushes
@@ -897,7 +1053,17 @@ size, newer-only dynamic updates) and tile colors (snow, ice, drought,
 floods, dry river beds, dried lakes, the season tint) and painting; chart
 data prep (scales, axis maxima, gap-aware line paths, deaths stacked by
 cause with rare causes folded into "other", the age pyramid, gene drift
-ranking, legacy percentages) and the alerts feed merge; the point cost and
+ranking, legacy percentages, histogram bars, allele-origin rows with colors
+and the folded tail) and the alerts feed merge; smooth movement (the
+measured tick length, the open-ground test, prediction speed, lead cap,
+arrival and terrain stop, frame-rate-independent easing and the snap,
+glides over the previous move interval that stay continuous, start from the
+drawn point and snap long jumps, 600 markers per frame, and the predictor:
+an immediate start on a local order, confirmation, repeated positions not
+pulling it back, stopping on a refused or stale order, a need or danger,
+arrival, release, a detour, a stall or a channel of deep water); alert preferences
+(normalizing like the server, show/toast switches, the feed filter that keeps
+offer events, the model toasting only preferred kinds); the point cost and
 validation against the server's own examples (the README design costs
 15.1, exactly-at-budget passes, one more founder fails); socket id pairing,
 backoff, reconnect and give-up; the offer table through request, accept
@@ -932,10 +1098,13 @@ the most room around its marker, checked with the view's hit test, retried
 if the selection isn't its own), possesses it, clicks a dry-land spot clear
 of markers and checks it walks toward the target (closest approach tracked,
 an arrival counts, the order re-issued if a click misses or the organism
-breaks off for a need), migrates, sees an error toast, checks the seasonal
+breaks off for a need) while the state carries its `speed` and the drawn
+(predicted) marker stays within 3 tiles of the server position, migrates, sees an error toast, checks the seasonal
 leaderboard and the genetics dashboard (at least four charts with drawn
-lines, drift sparklines, every gene in the table, alerts in the feed) and
-the World tab (species listed, the era clock, an achievements row). Every
+lines, drift sparklines, every gene in the table with histogram bars, the
+allele-origin card naming you, alerts in the feed), hides daily summaries in
+the alert preferences (gone from the feed, and `GET /api/alerts/prefs` has
+them hidden) and the World tab (species listed, the era clock, an achievements row). Every
 step waits on explicit state with generous timeouts. Screenshots go to `SCREENSHOT_DIR`. `e2e/winter_shot.mjs`
 is a screenshot helper (not a test): a 16-day-year world played into winter.
 `e2e/mobile.mjs` (run by `npm run e2e` after the smoke test; alone with
@@ -954,10 +1123,10 @@ a gallery of 20 body plans drawn with the game's sprite code. Screenshots:
 `iphone13-*.png`, `pixel7-*.png`, `desktop-world.png`,
 `desktop-sprite-gallery.png`.
 
-**Not yet:** marketplace auctions, allele-origin shares
-within the lineage (whose genes your organisms carry), per-gene
-distributions (histograms rather than mean ± spread), alert preferences,
-animated sprites, native builds tested on devices (the Capacitor projects
+**Not yet:** marketplace auctions, allele origins traced to the
+founding *lineage* rather than the player (a player founds one lineage per
+world, so the two coincide until re-founding exists), alert preferences
+applied server-side (muted kinds are still sent), animated sprites, native builds tested on devices (the Capacitor projects
 are generated but not built here), and push notifications.
 
 ## Benchmark
@@ -1539,11 +1708,61 @@ pack hunters within 30 days, as the 240-day run on seed 31 shows).
 Not covered by the level-of-detail cohorts:
 they use mean insulation and the seasonal breeding factor as before.
 
-All the doc's seasonal add-ons are now in. Not yet implemented on the
-environment side: rivers do not overflow onto
-their floodplain (flooding only deepens the channel), wind has no direction
-and does not interact with wing loading or gliding, and lakes do not form in
-filled depressions.
+All the doc's seasonal add-ons are now in.
+
+**Floodplains, wind direction and lakes.** The three environment gaps left
+above are closed, all deterministic (no new map randomness; storm gusts draw
+from a new `rng::stream::WIND`, one stream per tick and organism):
+
+- **Lakes.** Map generation's priority flood now keeps the level each
+  depression fills to. A connected depression at least 0.002 elevation ranks
+  deep holds a lake where the rain draining into it (the most any of its
+  tiles passes on) beats evaporation: one tile of surface per 4 units of
+  inflow, filling from the bottom up, so a well-fed basin fills to its rim
+  and a parched one stays dry. Lake tiles are `ShallowWater` (no new tile
+  type, so the terrain endpoint and client are unchanged), 0.2–0.9 m deep
+  and following regional wetness like other shallow lakes; they pass their
+  inflow on, so rivers leave over the rim. They are ordinary water sources
+  for `find_water`, `can_drink_at` and `water_dist`. On 96-tile maps:
+  63–622 lake tiles (seeds 55, 31, 9: 63, 147, 622).
+- **Floodplains.** Dry, gentle land (slope < 0.3) within two steps of a
+  river and at most 0.02 ranks above it gets `Tile::plain`, the river level
+  at which it floods (1.5× normal flow for the lowest bank, +0.3 a step
+  further out, up to +0.6 for the highest), and shares the river's
+  catchment. Above it the tile stands under `0.6 m ×` the excess (at most
+  0.9 m) of still water: tall bodies wade, swimmers swim, small
+  non-swimmers are blocked and drown if caught (the existing stranded and
+  drowning rules), and paths and the water field update with
+  `terrain_version`. A flooded tile loses 2% of its plants an hour and
+  gains `Tile::silt`; after the water goes, silt raises regrowth by up to
+  100% and fades (half-life about ten days). About 13% of land is
+  floodplain; over the first 120 days a 96-tile map has 50–145 floodplain
+  tiles under water on average (up to 450 at a spring peak).
+- **Wind direction.** Each weather cell has a direction
+  (`WeatherCell::dir`, carried by `Weather::dir` from `Map::weather_at`):
+  the prevailing westerly swings map-wide over a few days and veers
+  regionally with a pattern drifting like the fronts. `terrain::wind_effect`
+  gives flyers and gliders a speed and energy multiplier from the tail- or
+  headwind component, felt more by light wings (`1 / (1 + wing loading /
+  2)`), with extra cost in strong wind and much more in a storm. Wind
+  tolerance follows wing loading: a flyer is grounded above
+  `0.6 + 0.15 × wing loading` (at most 0.92), so heavier flyers can fly
+  into a storm, where each tick a gust injures them with chance 5% (−10
+  health, never fatal on its own, and −10 energy). Gliding is now a
+  movement mode (`terrain::glide`): a body that can glide but isn't flying
+  gets ×1.3 speed and ×0.5 energy (times the wind effect) on a step from
+  height (a canopy it climbs, a slope over 0.4, or ground falling away
+  ahead), and can't launch in wind above `0.5 + 0.05 × wing loading` (at
+  most 0.75). No sample design flies or glides yet.
+
+Held-out sweeps: 11.61 / 11.46 (seeds 31 / 55) against 11.53 / 11.61 before
+(sum 23.07 vs 23.14). With the floodplain and wind but no lakes they scored
+11.27 / 11.64, so the shifts are map reshuffle noise. Four tests whose
+outcome hung on one map's geography were made robust (summing froglet
+deaths over four maps, the colony's mean breeding suppression, another seed
+for the species-id test, a possessed organism started five tiles from
+water). Snapshots move to format version 5 (`Tile::plain`, `Tile::silt`,
+`WeatherCell::dir`, `Weather::dir`).
 
 **Final balance pass: antelope, herd grazers and birth modes.** The new
 `examples/deaths.rs` (`cargo run --release --example deaths -- 1,5 120
@@ -1806,11 +2025,11 @@ in use, 10.71 with the presets' strategies).
    instead of in every snapshot (a 30 MB `bytea` per day is fine for 3 kept
    rows, but terrain is most of it, and would also shrink the world
    thread's copy for the background saver); per-world tables once there are
-   several shards; client-side prediction of a possessed organism's
-   movement between sub-step states; smaller states (compression, delta
-   states or shorter `look`s: a steering player gets ~115 KB/s, see
+   several shards; smaller states (compression, delta states or shorter
+   `look`s: a steering player gets ~115 KB/s, see
    [Load and soak test](#load-and-soak-test)); session expiry and rate
-   limits; a stud marketplace and an economy behind the recorded prices; seasonal leaderboard aggregation;
+   limits; a stud marketplace and an economy behind the recorded prices;
+   seasonal leaderboard aggregation;
    several worlds (shards) per process.
 6. **Client (step 3, started):** a terrain endpoint (tile types and heights
    instead of the debug PNG) and tile rendering with seasons and weather;

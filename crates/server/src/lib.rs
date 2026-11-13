@@ -22,6 +22,8 @@
 //! - [`saver`]: the background thread that encodes saved games, so a save
 //!   costs the world thread only a copy of the game.
 //! - [`design`]: the JSON form of a founder design.
+//! - [`genetics`]: the dashboard's per-gene distributions and allele
+//!   origins (whose alleles a lineage carries).
 //! - [`appearance`]: the coarse visible body plan sent with each organism
 //!   (`look`), for the client's sprites.
 //! - [`economy`]: renown balances, the ledger, escrow and the stud
@@ -32,6 +34,7 @@ pub mod appearance;
 pub mod design;
 pub mod economy;
 pub mod game;
+pub mod genetics;
 pub mod http;
 pub mod limits;
 pub mod metrics;
@@ -193,6 +196,8 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
     designs.sort_by_key(|d| d.player);
 
     let restored = if cfg.fresh { None } else { load_saved_game(&*store, &cfg.world).await? };
+    // The world `--fresh` discards: its open agreements' escrow is refunded.
+    let discarded = if cfg.fresh { load_discarded_game(&*store).await? } else { None };
     let mut game = match restored {
         Some((world, saved)) => {
             let history = store.recent_daily(HISTORY_DAYS).await?;
@@ -206,6 +211,24 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         let balances: Vec<_> = store.load_balances().await?.into_iter().map(|b| (b.player, b.balance)).collect();
         let ledger = store.recent_ledger(None, 2000).await?.into_iter().map(|r| r.entry).collect();
         game.seed_economy(&balances, ledger);
+    }
+    if cfg.fresh {
+        if let Some(old) = discarded {
+            let ledger: Vec<_> = store.recent_ledger(None, DISCARDED_LEDGER_SCAN).await?;
+            for (player, amount) in game.refund_discarded(&old, &ledger) {
+                tracing::info!("refunded {amount} renown of escrow in the discarded world to player {player}");
+            }
+            // Write the refunds before the discarded saves go: a crash in
+            // between refunds nothing twice (see `Game::refund_discarded`).
+            for ev in game.take_persist() {
+                persist_one(&*store, &ev).await?;
+            }
+        }
+        // The discarded world's saves have higher ticks than the new world's
+        // will for a long time, and the newest tick is what a restart
+        // restores: drop them, or the next plain start would bring the old
+        // world (and its escrow, already refunded) back.
+        store.clear_snapshots().await?;
     }
     for a in &accounts {
         game.set_name(a.player, &a.name);
@@ -237,6 +260,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         limiters: Arc::new(Limiters::new(cfg.limits)),
         metrics: handles.metrics,
         net: Arc::new(NetStats::default()),
+        ws_conns: Default::default(),
     };
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     let addr = listener.local_addr()?;
@@ -331,6 +355,33 @@ async fn load_saved_game(store: &dyn Store, settings: &WorldSettings) -> Result<
     Ok(None)
 }
 
+/// Ledger records read back when `--fresh` refunds a discarded world's
+/// escrow: enough to cover everything written after its last saved game.
+const DISCARDED_LEDGER_SCAN: usize = 100_000;
+
+/// The game-side state of the newest saved game that decodes (its world is
+/// not restored): what `--fresh` discards.
+async fn load_discarded_game(store: &dyn Store) -> Result<Option<SavedGame>, BoxError> {
+    for tick in store.snapshot_ticks().await? {
+        let Ok(bytes) = store.load_snapshot(tick).await else { continue };
+        match tokio::task::spawn_blocking(move || snapshot::decode_game(&bytes)).await? {
+            Ok(saved) => return Ok(Some(saved)),
+            Err(e) => tracing::warn!("skipping the saved game of tick {tick}: {e}"),
+        }
+    }
+    Ok(None)
+}
+
+async fn persist_one(store: &dyn Store, ev: &PersistEvent) -> store::StoreResult<()> {
+    match ev {
+        PersistEvent::Daily(r) => store.append_daily(r).await,
+        PersistEvent::Trade(r) => store.append_trade(r).await,
+        PersistEvent::Balance(r) => store.put_balance(r).await,
+        PersistEvent::Ledger(r) => store.append_ledger(r).await,
+        PersistEvent::Snapshot(s) => store.put_snapshot(s.tick, s.day, &s.bytes).await,
+    }
+}
+
 async fn persist_task(
     store: Arc<dyn Store>,
     mut rx: mpsc::UnboundedReceiver<PersistEvent>,
@@ -338,13 +389,7 @@ async fn persist_task(
 ) {
     while let Some(ev) = rx.recv().await {
         let started = std::time::Instant::now();
-        let result = match &ev {
-            PersistEvent::Daily(r) => store.append_daily(r).await,
-            PersistEvent::Trade(r) => store.append_trade(r).await,
-            PersistEvent::Balance(r) => store.put_balance(r).await,
-            PersistEvent::Ledger(r) => store.append_ledger(r).await,
-            PersistEvent::Snapshot(s) => store.put_snapshot(s.tick, s.day, &s.bytes).await,
-        };
+        let result = persist_one(&*store, &ev).await;
         if matches!(ev, PersistEvent::Snapshot(_)) {
             let mut m = metrics.lock().unwrap();
             m.snapshots_pending = m.snapshots_pending.saturating_sub(1);

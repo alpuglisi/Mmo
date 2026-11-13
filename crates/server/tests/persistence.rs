@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use evo_server::design::{BirthSpec, DesignSpec, ThermoSpec};
 use evo_server::game::WorldSettings;
-use evo_server::protocol::{LedgerEntry, LedgerKind};
+use evo_server::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
 use evo_server::store::{
-    AccountRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord, MemoryStore, Store, TradeRecord,
-    KEEP_SNAPSHOTS,
+    AccountRecord, AlertPrefsRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord, MemoryStore,
+    Store, TradeRecord, KEEP_SNAPSHOTS,
 };
 use evo_server::{start, ServerConfig};
 use futures_util::StreamExt;
@@ -192,6 +192,10 @@ async fn round_trip(s: &dyn Store) {
     // A replayed entry (same world and sequence number) replaces the first.
     s.append_ledger(&ledger("w1", 3, 1, -30)).await.unwrap();
     s.append_ledger(&ledger("w2", 1, 1, 7)).await.unwrap();
+    assert_eq!(s.load_alert_prefs(1).await.unwrap(), None);
+    s.put_alert_prefs(&AlertPrefsRecord { player: 1, prefs: AlertPrefs::default() }).await.unwrap();
+    s.put_alert_prefs(&alert_prefs(2)).await.unwrap();
+    s.put_alert_prefs(&alert_prefs(1)).await.unwrap();
     for tick in [100u64, 200, 300, 400] {
         s.put_snapshot(tick, tick / 100, &tick.to_le_bytes()).await.unwrap();
     }
@@ -229,12 +233,23 @@ async fn round_trip(s: &dyn Store) {
         vec![("w1", 3, -30), ("w2", 1, 7)]
     );
     assert_eq!(s.recent_ledger(Some(2), 10).await.unwrap().len(), 2);
+    assert_eq!(s.load_alert_prefs(1).await.unwrap(), Some(alert_prefs(1)));
+    assert_eq!(s.load_alert_prefs(2).await.unwrap(), Some(alert_prefs(2)));
+    assert_eq!(s.load_alert_prefs(3).await.unwrap(), None);
     let ticks = s.snapshot_ticks().await.unwrap();
     assert_eq!(ticks.len(), KEEP_SNAPSHOTS);
     assert_eq!(ticks, vec![400, 300, 200]);
     assert_eq!(s.load_snapshot(400).await.unwrap(), b"newer");
     assert_eq!(s.load_snapshot(200).await.unwrap(), 200u64.to_le_bytes());
     assert!(s.load_snapshot(100).await.is_err());
+}
+
+fn alert_prefs(player: u32) -> AlertPrefsRecord {
+    let prefs = AlertPrefs {
+        hidden: vec![AlertKind::DailySummary, AlertKind::World],
+        toast: if player == 1 { vec![AlertKind::Birth, AlertKind::Death] } else { vec![] },
+    };
+    AlertPrefsRecord { player, prefs }
 }
 
 fn ledger(world: &str, seq: u64, player: u32, delta: i64) -> LedgerRecord {
@@ -272,6 +287,7 @@ async fn store_round_trips(backend: Backend) {
     assert_eq!(s.snapshot_ticks().await.unwrap(), vec![400, 300, 200]);
     assert_eq!(s.load_balances().await.unwrap().len(), 2);
     assert_eq!(s.recent_ledger(None, 100).await.unwrap().len(), 5);
+    assert_eq!(s.load_alert_prefs(1).await.unwrap(), Some(alert_prefs(1)));
     drop(s);
     backend.cleanup().await;
 }
@@ -453,10 +469,17 @@ async fn restart_continues_the_saved_world(backend: Backend) {
     drop(store);
 
     // --fresh ignores the saved game: a new world from tick 0.
-    let srv = start(ServerConfig { fresh: true, ..cfg }).await.unwrap();
+    let srv = start(ServerConfig { fresh: true, ..cfg.clone() }).await.unwrap();
     let client = reqwest_like::Client::new(srv.addr);
     let (tick, _) = world_clock(&client).await;
     assert!(tick < saved_tick, "fresh world at tick {tick}");
+    srv.shutdown().await;
+    // The discarded world's saves are gone: a plain restart continues the
+    // fresh world, not the older one with higher ticks.
+    let srv = start(cfg).await.unwrap();
+    let client = reqwest_like::Client::new(srv.addr);
+    let (tick, _) = world_clock(&client).await;
+    assert!(tick < saved_tick, "restarted the discarded world (tick {tick})");
     srv.shutdown().await;
     backend.cleanup().await;
 }
@@ -568,13 +591,31 @@ async fn restart_keeps_balances(backend: Backend) {
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // A fresh world: balances from the store, no second founding grant (the
-    // escrow of the old world's agreement is not carried over).
+    // A fresh world: balances from the store, no second founding grant, and
+    // the escrow of the discarded world's open agreement refunded.
+    let srv = start(ServerConfig { fresh: true, ..cfg.clone() }).await.unwrap();
+    let client = reqwest_like::Client::new(srv.addr);
+    let v = client.post_json("/api/login", r#"{"name":"ann","password":"a long password"}"#, None).await;
+    let (mut ws, _) = connect(srv.addr, v["token"].as_str().unwrap()).await;
+    assert_eq!(balance(&mut ws).await, (ann_before + 5, 0));
+    drop(ws);
+    srv.shutdown().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let store = backend.open().await;
+    let last = store.recent_ledger(Some(1), 1).await.unwrap().pop().expect("a refund entry").entry;
+    assert_eq!((last.kind, last.delta, last.balance, last.offer), (LedgerKind::Refund, 5, ann_before + 5, None));
+    assert!(last.text.contains(&format!("offer #{offer} of world")), "{}", last.text);
+    let stored = store.load_balances().await.unwrap();
+    assert_eq!(stored.iter().find(|b| b.player == 1).map(|b| b.balance), Some(ann_before + 5));
+    drop(store);
+
+    // The fresh world saved on shutdown: starting fresh again discards that
+    // one (no open agreements), so nothing is refunded twice.
     let srv = start(ServerConfig { fresh: true, ..cfg }).await.unwrap();
     let client = reqwest_like::Client::new(srv.addr);
     let v = client.post_json("/api/login", r#"{"name":"ann","password":"a long password"}"#, None).await;
     let (mut ws, _) = connect(srv.addr, v["token"].as_str().unwrap()).await;
-    assert_eq!(balance(&mut ws).await, (ann_before, 0));
+    assert_eq!(balance(&mut ws).await, (ann_before + 5, 0));
     drop(ws);
     srv.shutdown().await;
     backend.cleanup().await;

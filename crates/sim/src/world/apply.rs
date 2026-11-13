@@ -11,7 +11,7 @@ use crate::mating;
 use crate::organism::{Action, DeathCause, Dormancy, Infection, OrgId, Organism, Pregnancy, Sex};
 use crate::pathfinding::{enter_cost, Outcome, Path, PathScratch, MAX_TILE_SPEED};
 use crate::rng::{rng_for, stream, SimRng};
-use crate::terrain::{traverse, Map, Traverse, Weather};
+use crate::terrain::{glide, traverse, wind_effect, Map, Traverse, Weather};
 
 /// How far (tiles) a mother looks for a nest site for eggs she leaves.
 const NEST_SEARCH: usize = 3;
@@ -24,6 +24,10 @@ const ENERGY_PER_TILE: f32 = 0.6;
 const MATING_REACH: f32 = 1.2;
 /// Sprints shorter than this (tiles) steer greedily instead of planning.
 const PATH_SHORT: f32 = 4.0;
+/// Chance per tick of flight in a storm that a gust injures a flyer, and
+/// the health and energy it costs.
+const BUFFET_CHANCE: f32 = 0.05;
+const BUFFET_DAMAGE: f32 = 10.0;
 
 /// Hunger multiplier from a cold-blooded body's temperature: a sluggish body
 /// (low `activity`) idles cheaply; above full activity (22 °C) every 10 °C
@@ -284,6 +288,32 @@ impl World {
         moved
     }
 
+    /// How far `o` moves in a tick on open ground (tiles, before the terrain's
+    /// own speed factor): its genes, size, condition, a sprint (if it has
+    /// the energy) and the possession bonus. Clients use it to predict a
+    /// possessed organism's walk between state messages.
+    pub fn move_speed(&self, o: &Organism, sprint: bool) -> f32 {
+        let b = &self.config.balance;
+        let mut speed = b.base_speed * o.traits.stats.speed * o.activity * (0.5 + 0.5 * o.growth);
+        if o.pregnancy.is_some() && o.traits.birth == BirthType::Live {
+            speed *= 0.7;
+        }
+        if o.needs.energy < 20.0 {
+            speed *= 0.5;
+        }
+        if o.needs.hunger > 90.0 {
+            speed *= 0.7;
+        }
+        if sprint && o.needs.energy > 15.0 {
+            speed *= b.sprint;
+        }
+        // Small possession bonus (reaction), per the design doc.
+        if o.possessed_by.is_some() {
+            speed *= 1.1;
+        }
+        speed
+    }
+
     /// Steer `o` toward `target`, following or planning a route (A* in
     /// `scratch`, searches counted in `paths`) when the way is blocked, by
     /// `frac` of a tick's movement (1 except for possession sub-steps).
@@ -304,34 +334,18 @@ impl World {
             return 0.0;
         }
         let st = &o.traits.stats;
-        let mut speed = self.config.balance.base_speed * st.speed * o.activity * (0.5 + 0.5 * o.growth);
-        if o.pregnancy.is_some() && o.traits.birth == BirthType::Live {
-            speed *= 0.7;
-        }
-        if o.needs.energy < 20.0 {
-            speed *= 0.5;
-        }
-        if o.needs.hunger > 90.0 {
-            speed *= 0.7;
-        }
         let sprinting = sprint && o.needs.energy > 15.0;
-        if sprinting {
-            speed *= self.config.balance.sprint;
-        }
-        // Small possession bonus (reaction), per the design doc.
-        if o.possessed_by.is_some() {
-            speed *= 1.1;
-        }
+        let speed = self.move_speed(o, sprint);
         let step = (speed * frac).min(d);
         let dir = to * (1.0 / d);
         let body = o.traits.body;
         let pos = o.pos;
         let endurance = st.endurance;
-        let fly = body.can_fly && o.needs.energy > 25.0 && !self.map.weather_at(pos).grounds_flyers();
+        let air = self.map.weather_at(pos);
+        let fly = body.can_fly && o.needs.energy > 25.0 && !air.grounds(&body);
         // Stuck on a tile the body can't use (e.g. ice melted underneath):
         // struggle toward the target regardless.
-        let stranded =
-            !fly && traverse(&body, self.map.tile_at(pos), &self.map.weather_at(pos), false) == Traverse::Blocked;
+        let stranded = !fly && traverse(&body, self.map.tile_at(pos), &air, false) == Traverse::Blocked;
         let effort = Effort { sprint: if sprinting { 2.5 } else { 1.0 }, endurance };
 
         // Walkers follow a route planned earlier, or plan one when the direct
@@ -351,7 +365,19 @@ impl World {
             let rule = if stranded {
                 Traverse::Passable { speed: 0.3, energy: 2.0 }
             } else {
-                traverse(&body, self.map.tile_at(dest), &self.map.weather_at(dest), fly)
+                let rule = traverse(&body, self.map.tile_at(dest), &self.map.weather_at(dest), fly);
+                // Flyers ride or fight the wind; gliders launch from height.
+                let lift = if fly {
+                    Some(wind_effect(&body, &air, dd))
+                } else {
+                    glide(&body, self.map.tile_at(pos), self.map.tile_at(dest), &air, dd)
+                };
+                match (rule, lift) {
+                    (Traverse::Passable { speed, energy }, Some((ls, le))) => {
+                        Traverse::Passable { speed: speed * ls, energy: energy * le }
+                    }
+                    _ => rule,
+                }
             };
             if let Traverse::Passable { speed: s, energy: e } = rule {
                 let dist = (step * s.min(MAX_TILE_SPEED)).min(d);
@@ -364,6 +390,9 @@ impl World {
                 {
                     o.pos = new_pos;
                     o.needs.energy = (o.needs.energy - effort.cost(dist, e)).max(0.0);
+                    if fly && air.storm() {
+                        self.buffet(o, frac);
+                    }
                     return dist;
                 }
             }
@@ -375,6 +404,16 @@ impl World {
             }
         }
         0.0
+    }
+
+    /// A flyer in a storm risks being thrown about: an injury (never fatal
+    /// on its own) and lost energy, drawn from the wind stream.
+    fn buffet(&self, o: &mut Organism, frac: f32) {
+        let mut rng = rng_for(self.config.seed, stream::WIND, self.tick, o.id);
+        if rng.gen::<f32>() < BUFFET_CHANCE * frac {
+            o.health = (o.health - BUFFET_DAMAGE).max(1.0);
+            o.needs.energy = (o.needs.energy - BUFFET_DAMAGE).max(0.0);
+        }
     }
 
     /// Is `target` on the tile under `pos` or a neighboring one? Close enough
@@ -405,7 +444,7 @@ impl World {
             from,
             target,
             budget,
-            |t| enter_cost(traverse(&body, t, &Weather { wind: t.wind }, false)),
+            |t| enter_cost(traverse(&body, t, &Weather::still(t.wind), false)),
             &mut path.waypoints,
         );
         path.goal = target;
@@ -433,15 +472,23 @@ impl World {
         let center = |k: u32| Map::tile_center(k as usize % w, k as usize / w);
         let rule = |k: u32| {
             let t = &self.map.tiles[k as usize];
-            traverse(&body, t, &Weather { wind: t.wind }, false)
+            traverse(&body, t, &Weather::still(t.wind), false)
         };
         let (cx, cy) = self.map.tile_coords(pos);
         let on_route = (first as usize % w).abs_diff(cx) <= 1 && (first as usize / w).abs_diff(cy) <= 1;
         let ahead = if on_route && path.serves(pos, target) { rule(first) } else { Traverse::Blocked };
-        let Traverse::Passable { speed: s, energy: e } = ahead else {
+        let Traverse::Passable { speed: mut s, energy: mut e } = ahead else {
             path.clear();
             return None;
         };
+        // A glider on a route still glides where it has the height.
+        if body.can_glide {
+            let (here, next) = (&self.map.tiles[self.map.idx(cx, cy)], &self.map.tiles[first as usize]);
+            let dir = (center(first) - pos).norm();
+            if let Some((ls, le)) = glide(&body, here, next, &self.map.weather_at(pos), dir) {
+                (s, e) = (s * ls, e * le);
+            }
+        }
         let total = step * s.min(MAX_TILE_SPEED);
         let mut left = total;
         let mut at = pos;
@@ -1271,8 +1318,10 @@ mod tests {
     /// A crowd of froglets thins out; the same crowd without competition doesn't.
     #[test]
     fn crowded_froglets_die_young() {
-        let deaths = |competition: f32| {
-            let mut config = WorldConfig { seed: 5, width: 48, height: 48, ..Default::default() };
+        // Summed over a few maps: how crowded the founders stay depends on
+        // the ground around their home.
+        let deaths_on = |seed: u64, competition: f32| {
+            let mut config = WorldConfig { seed, width: 48, height: 48, ..Default::default() };
             config.balance.larval_competition = competition;
             let mut w = World::new(config);
             let frogs = presets::player_designs().into_iter().find(|d| d.name == "Toxic frogs").unwrap();
@@ -1285,8 +1334,9 @@ mod tests {
             w.run_days(2);
             w.counters.deaths_by_lineage.get(&(0, DeathCause::Starvation)).copied().unwrap_or(0)
         };
+        let deaths = |competition: f32| (4..8).map(|seed| deaths_on(seed, competition)).sum::<u64>();
         let (with, without) = (deaths(18.0), deaths(0.0));
-        assert!(with > without + 10, "deaths with competition {with}, without {without}");
+        assert!(with > without + 20, "deaths with competition {with}, without {without}");
     }
 
     fn wild_world(wild_cap: usize) -> World {
@@ -1381,8 +1431,10 @@ mod tests {
         let lone = w.organisms.iter().position(|o| o.lineage == 1).unwrap();
         w.organisms[lone].pos = Vec2::new(40.0, 40.0);
         w.density.rebuild(&w.organisms, w.lineages.len());
-        let crowded = w.breeding_suppression(0);
-        assert!(crowded < 0.7, "suppression in a colony of 40: {crowded}");
+        // Founders vary in group tolerance, so look at the colony's mean.
+        let colony: Vec<usize> = (0..w.organisms.len()).filter(|&i| w.organisms[i].lineage == 0).collect();
+        let crowded = colony.iter().map(|&i| w.breeding_suppression(i)).sum::<f32>() / colony.len() as f32;
+        assert!(crowded < 0.7, "mean suppression in a colony of 40: {crowded}");
         assert!(w.breeding_suppression(lone) > 0.99);
         w.config.balance.breeding_density = 0.0;
         assert_eq!(w.breeding_suppression(0), 1.0);

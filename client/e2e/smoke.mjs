@@ -665,10 +665,15 @@ async function main() {
         const d0 = Math.hypot(spot.from.x - target.x, spot.from.y - target.y);
         let best = d0;
         let lost = null;
+        let maxGap = 0;
+        let speed = null;
         const walk = await waitFor('organism walks toward the target', async () => {
           const o = await page.evaluate(({ id, target }) => {
             const o = window.evo.model.state.organisms.find((x) => x.id === id);
-            return o ? { d: Math.hypot(o.x - target.x, o.y - target.y), action: o.action, possessed: o.possessed } : null;
+            // The drawn (predicted, smoothed) position against the server's.
+            const m = o && window.evo.screen()?.view.markerWorldPos(id);
+            const gap = m ? Math.hypot(m.x - o.x, m.y - o.y) : 0;
+            return o ? { d: Math.hypot(o.x - target.x, o.y - target.y), action: o.action, possessed: o.possessed, speed: o.speed, gap } : null;
           }, { id, target });
           if (!o || !o.possessed) {
             lost = o ? 'released' : 'died';
@@ -676,8 +681,10 @@ async function main() {
           }
           actions.add(o.action);
           best = Math.min(best, o.d);
+          maxGap = Math.max(maxGap, o.gap);
+          if (o.speed !== undefined) speed = o.speed;
           // Closer by a tile, or arrived (order dropped near the target).
-          return best < d0 - 1 || best <= 1.0 ? { d0, best, action: o.action, attempt } : null;
+          return best < d0 - 1 || best <= 1.0 ? { d0, best, action: o.action, attempt, maxGap, speed } : null;
         }, 20000).catch(() => null);
         if (lost) throw new Retry(`#${id} ${lost} while walking`);
         if (walk) return walk;
@@ -707,6 +714,13 @@ async function main() {
     }
     if (!walked) throw new Error('could not possess and walk an organism in 4 rounds');
     step(`order_move ok; #${walked.id} walked from ${walked.d0.toFixed(1)} to ${walked.best.toFixed(1)} tiles of the target (${walked.action}, attempt ${walked.attempt})`);
+    // Prediction leads by at most half a tick of movement and eases
+    // corrections, snapping beyond RECONCILE_SNAP (3 tiles) of the
+    // prediction: so the drawn marker stays within about 3 tiles plus the
+    // lead of the server position. 4 allows for that lead on a slow runner.
+    if (!(walked.speed > 0)) throw new Error(`the possessed organism's state has no speed (${walked.speed})`);
+    if (walked.maxGap > 4) throw new Error(`drawn #${walked.id} was ${walked.maxGap.toFixed(2)} tiles from the server position`);
+    step(`prediction: speed ${walked.speed.toFixed(2)} tiles/tick, drawn marker at most ${walked.maxGap.toFixed(2)} tiles from the server position`);
 
     // Group command and a server-side error surfaced as a toast.
     await page.click('#migrate');
@@ -740,6 +754,27 @@ async function main() {
     }), 20000);
     if (dash.charts < 4 || dash.genes < 30) throw new Error(`dashboard: ${JSON.stringify(dash)}`);
     step(`genetics dashboard: ${dash.charts} charts, ${dash.rows} drift sparklines, ${dash.genes} genes, ${dash.feed} alerts`);
+    // Per-gene histograms and the allele-origin card.
+    const genetics = await page.evaluate(() => ({
+      hist: document.querySelectorAll('#gene-table svg rect.hist-bar').length,
+      origins: document.querySelectorAll('#allele-origins rect.origin-seg').length,
+      originText: document.querySelector('#allele-origins .origin-list')?.textContent ?? '',
+    }));
+    if (genetics.hist < 30 || genetics.origins < 1 || !genetics.originText.includes('you')) {
+      throw new Error(`gene histograms / allele origins: ${JSON.stringify(genetics)}`);
+    }
+    step(`gene histograms: ${genetics.hist} bars; allele origins: ${genetics.originText.trim()}`);
+    // Alert preferences: hide daily summaries; the feed drops them and the
+    // server keeps the choice.
+    await page.click('#alert-prefs summary');
+    await page.click('#alert-prefs input[data-kind="daily_summary"][data-field="show"]');
+    await waitFor('daily summaries hidden', () => page.evaluate(() => document.querySelectorAll('#alerts-feed .feed-item.kind-daily_summary').length === 0), 5000);
+    const savedPrefs = await waitFor('alert preferences saved', () => page.evaluate(async () => {
+      const { token } = JSON.parse(localStorage.getItem('evo.session'));
+      const p = await (await fetch('/api/alerts/prefs', { headers: { authorization: `Bearer ${token}` } })).json();
+      return p.hidden.includes('daily_summary') ? p : null;
+    }), 5000);
+    step(`alert preferences saved: ${JSON.stringify(savedPrefs)}`);
     await page.screenshot({ path: path.join(shots, 'genetics-dashboard.png') });
     await page.$eval('#panel-genetics', (el) => { el.scrollTop = el.scrollHeight; });
     await page.waitForTimeout(200);

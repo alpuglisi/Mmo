@@ -4,14 +4,15 @@
 //! PostgreSQL (sqlx): `PgStore` (cargo feature `postgres`, on by default;
 //! `--database-url`) keeps them in one table per record type (`accounts`,
 //! `designs`, `daily_history`, `trades`, `snapshots`, `balances`,
-//! `ledger`). [`FileStore`] (the default) keeps the same records as JSON
+//! `ledger`, `alert_prefs`). [`FileStore`] (the default) keeps the same records as JSON
 //! files in a data directory, and [`MemoryStore`] serves tests.
 //!
 //! What is persisted: accounts (name, player id, argon2 hash), founder
 //! designs (re-founded into the new world on restart), one history record per
 //! simulated day (legacy shares and lineage counts), directed-mating
 //! agreements with their price, listing and escrow settlement, renown
-//! balances and the ledger (`crate::economy`), and saved games (a world snapshot with the
+//! balances and the ledger (`crate::economy`), players' alert preferences
+//! (which alert kinds they see and get toasts for), and saved games (a world snapshot with the
 //! game state around it, `crate::snapshot`, which includes players' alerts;
 //! the newest [`KEEP_SNAPSHOTS`] are kept). Not persisted: login sessions
 //! (clients log in again after a restart).
@@ -30,7 +31,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::design::DesignSpec;
-use crate::protocol::LedgerEntry;
+use crate::protocol::{AlertPrefs, LedgerEntry};
 
 #[cfg(feature = "postgres")]
 mod pg;
@@ -161,6 +162,14 @@ pub struct LedgerRecord {
     pub entry: LedgerEntry,
 }
 
+/// A player's alert preferences (upserted when they change them).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AlertPrefsRecord {
+    pub player: PlayerId,
+    #[serde(flatten)]
+    pub prefs: AlertPrefs,
+}
+
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn load_accounts(&self) -> StoreResult<Vec<AccountRecord>>;
@@ -184,6 +193,8 @@ pub trait Store: Send + Sync {
     /// Ticks of the stored snapshots, newest first.
     async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>>;
     async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>>;
+    /// Delete every snapshot (`--fresh` discards the saved world).
+    async fn clear_snapshots(&self) -> StoreResult<()>;
     /// Insert or replace a player's balance.
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()>;
     async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>>;
@@ -193,6 +204,10 @@ pub trait Store: Send + Sync {
     /// The most recent `limit` ledger entries (of one player, or of
     /// everyone), oldest first.
     async fn recent_ledger(&self, player: Option<PlayerId>, limit: usize) -> StoreResult<Vec<LedgerRecord>>;
+    /// Insert or replace a player's alert preferences.
+    async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()>;
+    /// A player's alert preferences, if they ever saved any.
+    async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>>;
 }
 
 fn same_entry(a: &LedgerRecord, b: &LedgerRecord) -> bool {
@@ -223,6 +238,7 @@ struct MemInner {
     snapshots: Vec<(u64, Vec<u8>)>,
     balances: BTreeMap<PlayerId, BalanceRecord>,
     ledger: Vec<LedgerRecord>,
+    alert_prefs: BTreeMap<PlayerId, AlertPrefsRecord>,
 }
 
 impl MemoryStore {
@@ -303,6 +319,11 @@ impl Store for MemoryStore {
             .ok_or_else(|| StoreError(format!("no snapshot at tick {tick}")))
     }
 
+    async fn clear_snapshots(&self) -> StoreResult<()> {
+        self.inner.lock().await.snapshots.clear();
+        Ok(())
+    }
+
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
         self.inner.lock().await.balances.insert(record.player, record.clone());
         Ok(())
@@ -326,6 +347,15 @@ impl Store for MemoryStore {
         let rows = g.ledger.iter().filter(|r| player.is_none_or(|p| r.entry.player == p)).cloned().collect();
         Ok(last_n(rows, limit))
     }
+
+    async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()> {
+        self.inner.lock().await.alert_prefs.insert(record.player, record.clone());
+        Ok(())
+    }
+
+    async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
+        Ok(self.inner.lock().await.alert_prefs.get(&player).cloned())
+    }
 }
 
 /// Records of the same world and day (records without a world id are never
@@ -336,7 +366,8 @@ fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
 
 /// JSON files in one directory:
 ///
-/// - `accounts.json`, `designs.json`: whole tables, rewritten atomically
+/// - `accounts.json`, `designs.json`, `balances.json`, `alert_prefs.json`:
+///   whole tables, rewritten atomically
 ///   (write to a temp file, then rename) on every change;
 /// - `history.jsonl`, `trades.jsonl`: append-only, one record per line (a
 ///   replayed day is appended again and replaces the earlier line when
@@ -353,6 +384,7 @@ struct Tables {
     accounts: Vec<AccountRecord>,
     designs: Vec<DesignRecord>,
     balances: Vec<BalanceRecord>,
+    alert_prefs: Vec<AlertPrefsRecord>,
 }
 
 impl FileStore {
@@ -362,7 +394,8 @@ impl FileStore {
         let accounts = read_table(&dir.join("accounts.json")).await?;
         let designs = read_table(&dir.join("designs.json")).await?;
         let balances = read_table(&dir.join("balances.json")).await?;
-        Ok(Self { dir, tables: Mutex::new(Tables { accounts, designs, balances }) })
+        let alert_prefs = read_table(&dir.join("alert_prefs.json")).await?;
+        Ok(Self { dir, tables: Mutex::new(Tables { accounts, designs, balances, alert_prefs }) })
     }
 
     /// Every line of a JSONL file (none if it doesn't exist).
@@ -521,6 +554,14 @@ impl Store for FileStore {
         Ok(tokio::fs::read(self.dir.join(SNAPSHOT_DIR).join(snapshot_name(tick))).await?)
     }
 
+    async fn clear_snapshots(&self) -> StoreResult<()> {
+        let dir = self.dir.join(SNAPSHOT_DIR);
+        for tick in self.snapshot_ticks().await? {
+            tokio::fs::remove_file(dir.join(snapshot_name(tick))).await?;
+        }
+        Ok(())
+    }
+
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
         let mut t = self.tables.lock().await;
         match t.balances.iter_mut().find(|b| b.player == record.player) {
@@ -554,5 +595,18 @@ impl Store for FileStore {
         }
         rows.retain(|r| player.is_none_or(|p| r.entry.player == p));
         Ok(last_n(rows, limit))
+    }
+
+    async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()> {
+        let mut t = self.tables.lock().await;
+        match t.alert_prefs.iter_mut().find(|r| r.player == record.player) {
+            Some(r) => *r = record.clone(),
+            None => t.alert_prefs.push(record.clone()),
+        }
+        self.write_table("alert_prefs.json", &t.alert_prefs).await
+    }
+
+    async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
+        Ok(self.tables.lock().await.alert_prefs.iter().find(|r| r.player == player).cloned())
     }
 }

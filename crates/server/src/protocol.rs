@@ -191,7 +191,7 @@ pub enum ServerMsg {
     },
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AlertKind {
     /// Births and deaths of the day just ended.
@@ -213,6 +213,83 @@ pub enum AlertKind {
     /// The marketplace and renown: a listing bought, a sale paid, a refund,
     /// a listing closed, an achievement bonus.
     Market,
+}
+
+impl AlertKind {
+    pub const ALL: [AlertKind; 8] = [
+        AlertKind::DailySummary,
+        AlertKind::Birth,
+        AlertKind::Death,
+        AlertKind::Milestone,
+        AlertKind::Need,
+        AlertKind::World,
+        AlertKind::Achievement,
+        AlertKind::Market,
+    ];
+
+    /// The wire name (`daily_summary`, `birth`, ...).
+    pub fn name(self) -> &'static str {
+        match self {
+            AlertKind::DailySummary => "daily_summary",
+            AlertKind::Birth => "birth",
+            AlertKind::Death => "death",
+            AlertKind::Milestone => "milestone",
+            AlertKind::Need => "need",
+            AlertKind::World => "world",
+            AlertKind::Achievement => "achievement",
+            AlertKind::Market => "market",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
+/// `GET` / `POST /api/alerts/prefs`: which alert kinds a player sees in the
+/// feed and which pop up as a toast. Stored per player (`Store`); the
+/// server still records every alert, and the client applies the
+/// preferences, so a kind switched back on shows its recent alerts again.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AlertPrefs {
+    /// Kinds left out of the feed and the unread badge (never toasted).
+    #[serde(default)]
+    pub hidden: Vec<AlertKind>,
+    /// Kinds that also pop up as a toast when they arrive.
+    #[serde(default = "AlertPrefs::default_toast")]
+    pub toast: Vec<AlertKind>,
+}
+
+impl AlertPrefs {
+    /// Toasted by default: what needs attention now.
+    pub fn default_toast() -> Vec<AlertKind> {
+        vec![AlertKind::Death, AlertKind::Need, AlertKind::Market]
+    }
+
+    /// Sorted, without duplicates, and nothing hidden is toasted.
+    pub fn normalized(mut self) -> Self {
+        self.hidden.sort_unstable();
+        self.hidden.dedup();
+        self.toast.sort_unstable();
+        self.toast.dedup();
+        let hidden = &self.hidden;
+        self.toast.retain(|k| !hidden.contains(k));
+        self
+    }
+
+    pub fn shows(&self, kind: AlertKind) -> bool {
+        !self.hidden.contains(&kind)
+    }
+
+    pub fn toasts(&self, kind: AlertKind) -> bool {
+        self.shows(kind) && self.toast.contains(&kind)
+    }
+}
+
+impl Default for AlertPrefs {
+    fn default() -> Self {
+        AlertPrefs { hidden: Vec::new(), toast: Self::default_toast() }.normalized()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -451,6 +528,14 @@ pub struct OwnOrganism {
     pub generation: u32,
     /// Visible body plan, for the client's sprite.
     pub look: Appearance,
+    /// Possessed only: the move order's target `[x, y]` (tiles) while it has
+    /// one, so the client can predict the walk between state messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<[f32; 2]>,
+    /// Possessed only: tiles per tick it walks toward an order on open
+    /// ground (`World::move_speed`, before the terrain's speed factor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f32>,
 }
 
 /// Someone else's organism inside the view window: only what can be seen.
@@ -596,6 +681,34 @@ pub struct GeneStat {
     pub founding_mean: f32,
     /// Daily means, oldest first, aligned with `LineageStats::history_days`.
     pub history: Vec<f32>,
+    /// Distribution over living members: counts per equal-width bin of the
+    /// expressed value, [`GENE_BINS`] bins over 0..1 (1.0 falls in the
+    /// last). All zero without members.
+    #[serde(default)]
+    pub bins: Vec<u32>,
+}
+
+/// Bins of [`GeneStat::bins`].
+pub const GENE_BINS: usize = 10;
+
+/// Where the alleles carried by a lineage's living members came from
+/// (`LineageStats::origins`). Every allele carries the id of the player it
+/// originated with: founder alleles the designer's, a mutation the owner of
+/// the organism it appeared in. Tags pass unchanged through any mating, so
+/// alleles of another player's lineage enter yours by cross-lineage
+/// matings (directed matings, stud listings, wild encounters).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AlleleOrigin {
+    /// The originating player (0: the wild ecosystem).
+    pub player: PlayerId,
+    pub name: String,
+    /// That player's lineage, if they have one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<String>,
+    /// Alleles carried, gene and hidden-recessive loci of every member.
+    pub alleles: u64,
+    /// Share of all the alleles the members carry, 0..1.
+    pub share: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -632,6 +745,9 @@ pub struct LineageStats {
     pub history_days: Vec<u64>,
     /// Every gene, largest drift from the founding mean first.
     pub genes: Vec<GeneStat>,
+    /// Whose alleles the living members carry, largest share first.
+    #[serde(default)]
+    pub origins: Vec<AlleleOrigin>,
     /// Legacy share per recorded day, oldest first.
     pub legacy: Vec<LegacyPoint>,
     /// Recent alerts, newest last.
@@ -880,6 +996,8 @@ impl OwnOrganism {
             pregnant: o.pregnancy.is_some(),
             generation: o.generation,
             look: Appearance::of(o),
+            order: o.possessed_by.and(o.order).map(|t| [t.x, t.y]),
+            speed: None,
         }
     }
 }
@@ -963,6 +1081,31 @@ mod tests {
         }
         let alert = AlertView { tick: 1, day: 0, kind: AlertKind::Market, text: "sold".into(), organism: None };
         assert_eq!(serde_json::to_value(alert).unwrap()["kind"], "market");
+    }
+
+    #[test]
+    fn alert_kind_names_match_serde_and_prefs_normalize() {
+        for k in AlertKind::ALL {
+            assert_eq!(serde_json::to_value(k).unwrap(), k.name());
+            assert_eq!(AlertKind::parse(k.name()), Some(k));
+        }
+        assert_eq!(AlertKind::parse("nope"), None);
+        // Missing fields read as the defaults.
+        let p: AlertPrefs = serde_json::from_str("{}").unwrap();
+        assert_eq!(p, AlertPrefs::default());
+        assert!(p.toasts(AlertKind::Death) && !p.toasts(AlertKind::Birth) && p.shows(AlertKind::Birth));
+        let p: AlertPrefs =
+            serde_json::from_str(r#"{"hidden":["world","daily_summary","world"],"toast":["world","birth","birth"]}"#)
+                .unwrap();
+        let p = p.normalized();
+        assert_eq!(p.hidden, vec![AlertKind::DailySummary, AlertKind::World]);
+        assert_eq!(p.toast, vec![AlertKind::Birth], "a hidden kind is never toasted");
+        assert!(!p.shows(AlertKind::World) && !p.toasts(AlertKind::World));
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            serde_json::json!({"hidden": ["daily_summary", "world"], "toast": ["birth"]})
+        );
+        assert!(serde_json::from_str::<AlertPrefs>(r#"{"hidden":["bogus"]}"#).is_err());
     }
 
     #[test]
