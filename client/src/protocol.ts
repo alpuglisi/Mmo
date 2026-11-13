@@ -17,6 +17,8 @@ export type ClientMsg =
   | { type: 'order_move'; organism: OrgId; x: number; y: number }
   | { type: 'release'; organism: OrgId }
   | { type: 'request_mating'; mine: OrgId; partner: OrgId; price?: number }
+  /** What a mating of `mine` with `partner` would give; data: `MatingPreviewView`. */
+  | { type: 'preview_mating'; mine: OrgId; partner: OrgId }
   | { type: 'respond_mating'; request: number; accept: boolean }
   | { type: 'complete_mating'; request: number }
   | { type: 'cancel_mating'; request: number }
@@ -33,6 +35,38 @@ export type ClientEnvelope = ClientMsg & { id?: number };
 export interface ErrorInfo {
   code: string;
   message: string;
+  /** Specifics for some codes: `incompatible_body_plans` has `{ genes: BodyPlanGap[] }`. */
+  detail?: unknown;
+}
+
+/** A body-plan gene in which two organisms differ enough to lower fertility. */
+export interface BodyPlanGap {
+  /** Gene key as in /api/genes. */
+  gene: string;
+  /** Difference in expressed value. */
+  gap: number;
+}
+
+/** Reply to `preview_mating`. */
+export interface MatingPreviewView {
+  mine: OrgId;
+  partner: OrgId;
+  /** Whether the pair can conceive at all (fertility > 0). */
+  compatible: boolean;
+  fertility: number;
+  /** 0 for different body plans (thermoregulation, birth mode, body size, diet). */
+  body_plan_fertility: number;
+  /** Outbreeding depression over the whole genome. */
+  distance_fertility: number;
+  body_plan_gaps: BodyPlanGap[];
+  mismatch: number;
+  cost: number;
+  failure_chance: number;
+  /** Tiles apart; they must meet within `meeting_distance`. */
+  distance: number;
+  meeting_distance: number;
+  /** Why a request would be refused: `incompatible_body_plans` or `genetically_incompatible`. */
+  problem?: ErrorInfo;
 }
 
 export interface MatingOutcome {

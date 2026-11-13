@@ -241,6 +241,7 @@ Client → server:
 | `order_move` | `organism, x, y` | Walk a possessed organism to a point (tiles) |
 | `release` | `organism` | Back to genetic behavior |
 | `request_mating` | `mine, partner, price?` | Directed mating. Your own pair runs at once; another player's organism sends them a `mating_request` |
+| `preview_mating` | `mine, partner` | What the mating would give now, nothing spent: `data` = `{compatible, fertility, body_plan_fertility, distance_fertility, body_plan_gaps: [{gene, gap}], mismatch, cost, failure_chance, distance, meeting_distance, problem?}` |
 | `respond_mating` | `request, accept` | The partner's owner answers |
 | `complete_mating` | `request` | Retry an accepted agreement now |
 | `cancel_mating` | `request` | Either side withdraws an open offer |
@@ -253,23 +254,32 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage}` | On connect |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime), `weather` (mean wind, storm, drought and flood shares), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation), `nearby` (others in the window), `leaderboard`, `offers` (your open offers) |
-| `result` `{id, command, ok, error?: {code, message}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited` |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving) |
 | `session_ended` `{reason}` | The session expired; the socket closes next |
 
 **Directed-mating consent:** `request_mating` checks ownership, maturity, sex,
-pregnancy and slots, then creates a `pending` offer (price recorded; no
-economy yet) and asks the partner's owner. Wild organisms can't consent. On
+pregnancy, compatibility and slots, then creates a `pending` offer (price
+recorded; no economy yet) and asks the partner's owner. A pair that can't
+conceive is refused up front instead of spending a slot: different body
+plans (`incompatible_body_plans`, naming the genes, e.g. endothermy and birth
+mode) or too distant genomes (`genetically_incompatible`); `preview_mating`
+shows the expected fertility, preference mismatch, override cost and failure
+chance before asking (the matings panel shows it for the chosen pair). While
+an offer is open the female of the pair is held from breeding on her own
+(`World::hold_breeding`), so she isn't already pregnant when her partner
+arrives. Wild organisms can't consent. On
 `accept` the server tries the mating at once with `partner_consent`; if the
 two are farther apart than the meeting distance the agreement stays
 `accepted` (both get `too_far`) and runs on the first tick they meet, so
 escorting a possessed organism to the meeting is the trip the design
 describes. Outcomes: `completed` (with mismatch, override cost, failure
-chance, fertility, conceived), `declined`, `cancelled`, `failed` (the rules
-refused it, e.g. an organism died) or `expired` (season change, when slots
-reset). The requester's seasonal slot is spent.
+chance, fertility, conceived), `declined`, `cancelled`, `failed` (`died`:
+an organism died first, with the cause; or the rules refused it) or
+`expired` (season change, when slots reset). The requester's seasonal slot
+is spent.
 
 ### Persistence
 
@@ -406,7 +416,7 @@ Every failed `result` (server error codes such as `not_owned`,
 a toast. `window.evo` exposes the model, socket and view for debugging and
 the end-to-end test.
 
-**Tests.** Vitest (32 tests): protocol parsing against messages shaped like
+**Tests.** Vitest (35 tests): protocol parsing against messages shaped like
 serde's output, including malformed and unknown ones and the `alert` and
 `session_ended` messages; terrain decoding (layer sizes, refusing a wrong
 size, newer-only dynamic updates) and tile colors (snow, ice, drought,
@@ -417,7 +427,7 @@ ranking, legacy percentages) and the alerts feed merge; the point cost and
 validation against the server's own examples (the README design costs
 15.1, exactly-at-budget passes, one more founder fails); socket id pairing,
 backoff, reconnect and give-up; the offer table through request, accept
-and outcome. `e2e/smoke.mjs` (Playwright, pre-installed Chromium) starts
+and outcome; the matings panel's compatibility summary. `e2e/smoke.mjs` (Playwright, pre-installed Chromium) starts
 `evo-server --fast --memory --static client/dist` on a free port, registers,
 checks the live cost against the prices in `/api/genes` (and that the
 server's founding response agrees) and the client-side over-budget refusal, founds a lineage, waits for markers and
@@ -427,9 +437,12 @@ the most room around its marker, checked with the view's hit test, retried
 if the selection isn't its own), possesses it, clicks the map and checks it walks toward the target, migrates, sees an error toast,
 checks the seasonal leaderboard and the genetics dashboard (at least four
 charts with drawn lines, drift sparklines, every gene in the table, alerts in
-the feed), then registers a second player and runs a directed mating through
-both players' panels (request with price → incoming → accept → both see the
-update → escort). Screenshots go to `SCREENSHOT_DIR`. `e2e/winter_shot.mjs`
+the feed), then registers a second player with the same body plan and preferences and
+runs a directed mating through both players' panels (compatibility preview →
+request with price → incoming → accept → both see the update → escort,
+following the partner, until it completes; it must conceive, since a
+fertile pair inside both preferences has no failure chance; an organism
+lost to predators or thirst on the way means another pair is tried). Screenshots go to `SCREENSHOT_DIR`. `e2e/winter_shot.mjs`
 is a screenshot helper (not a test): a 16-day-year world played into winter.
 
 **Not yet:** organism sprites by body plan, touch pinch-zoom, a stud
