@@ -39,6 +39,7 @@ thread_local! {
 /// The deciding organism and what it brings to a close look at a neighbor.
 struct Viewer<'a> {
     o: &'a Organism,
+    genes: Genes,
     radius: f32,
     alarm: f32,
     /// Sentry benefit where the viewer stands, if it is a group member:
@@ -53,6 +54,12 @@ struct Viewer<'a> {
     fight_power: f32,
     /// Lowest injury discount the viewer accepts (`1 - hunger * carnivory`).
     risk_floor: f32,
+    /// Mass above which an armed neighbor can threaten the viewer
+    /// (`can_threaten`).
+    threat_floor: f32,
+    /// Mass below which the viewer would take prey (`max_prey_mass`).
+    prey_cap: f32,
+    female: bool,
     /// Seeds per-neighbor draws, so they don't depend on visit order.
     salt: u64,
 }
@@ -90,6 +97,101 @@ fn genetic_distance(a: &Organism, b: &Organism) -> f32 {
     use crate::genome::{DISTANCE_GENES, IN_DISTANCE};
     let diffs = a.pheno.0.iter().zip(&b.pheno.0).zip(IN_DISTANCE);
     diffs.map(|((x, y), counts)| if counts { (x - y).abs() } else { 0.0 }).sum::<f32>() / DISTANCE_GENES
+}
+
+/// Slots in [`Genes`]: the distance genes, padded to whole groups of four.
+pub(super) const GENE_SLOTS: usize = (crate::genome::DISTANCE_GENES as usize).div_ceil(4) * 4;
+
+/// The expressed values of the genes that count toward [`genetic_distance`],
+/// in gene order, then zeros: what kinship tests read of an organism, packed
+/// next to its neighbors' in the spatial grid.
+pub(super) type Genes = [f32; GENE_SLOTS];
+
+/// Gene index of each slot of [`Genes`] (padding slots repeat nothing).
+const GENE_OF_SLOT: [usize; crate::genome::DISTANCE_GENES as usize] = {
+    let mut out = [0; crate::genome::DISTANCE_GENES as usize];
+    let (mut k, mut n) = (0, 0);
+    while k < Gene::COUNT {
+        if crate::genome::IN_DISTANCE[k] {
+            out[n] = k;
+            n += 1;
+        }
+        k += 1;
+    }
+    out
+};
+
+/// Slot in [`Genes`] of each of `mating::BODY_PLAN_GENES`, in that order.
+const PLAN_SLOTS: [usize; mating::BODY_PLAN_GENES.len()] = {
+    let mut out = [usize::MAX; mating::BODY_PLAN_GENES.len()];
+    let mut i = 0;
+    while i < out.len() {
+        let mut n = 0;
+        while n < GENE_OF_SLOT.len() {
+            if GENE_OF_SLOT[n] == mating::BODY_PLAN_GENES[i] as usize {
+                out[i] = n;
+            }
+            n += 1;
+        }
+        assert!(out[i] != usize::MAX, "body-plan genes count toward the distance");
+        i += 1;
+    }
+    out
+};
+
+/// [`Genes`] of a phenotype.
+pub(super) fn genes_of(p: &crate::genome::Phenotype) -> Genes {
+    let mut out = [0.0; GENE_SLOTS];
+    for (slot, &k) in out.iter_mut().zip(&GENE_OF_SLOT) {
+        *slot = p.0[k];
+    }
+    out
+}
+
+/// `mating::body_plan_gap` from [`Genes`] (the same value, bit for bit: the
+/// same differences, folded in the same order).
+fn body_plan_gap(a: &Genes, b: &Genes) -> f32 {
+    PLAN_SLOTS.iter().map(|&k| (a[k] - b[k]).abs()).fold(0.0, f32::max)
+}
+
+/// Bounds on [`genetic_distance`] from a quick sum that adds the same terms
+/// in another order (four running sums, which vectorize, instead of one
+/// chain). Reordering a sum of `Gene::COUNT` non-negative terms moves it by
+/// less than `Gene::COUNT * f32::EPSILON` of itself, a few millionths;
+/// `SLACK` is far wider. Every test made of the distance is monotone in it,
+/// so if it comes out the same at both bounds it is the test's exact result.
+struct DistanceBounds {
+    lo: f32,
+    hi: f32,
+}
+
+impl DistanceBounds {
+    const SLACK: f32 = 1e-4;
+
+    fn new(a: &Genes, b: &Genes) -> Self {
+        use crate::genome::DISTANCE_GENES;
+        let mut lanes = [0.0f32; 4];
+        for (a, b) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+            for (l, lane) in lanes.iter_mut().enumerate() {
+                *lane += (a[l] - b[l]).abs();
+            }
+        }
+        let sum = (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]);
+        DistanceBounds { lo: sum * (1.0 - Self::SLACK) / DISTANCE_GENES, hi: sum * (1.0 + Self::SLACK) / DISTANCE_GENES }
+    }
+
+    /// `pass(genetic_distance(a, b))`, for a `pass` that can only go from
+    /// true to false as the distance grows: decided from the bounds when
+    /// they agree, from the exact distance (rarely needed) when they don't.
+    fn test(&self, a: &Organism, b: &Organism, pass: impl Fn(f32) -> bool) -> bool {
+        if pass(self.hi) {
+            true
+        } else if !pass(self.lo) {
+            false
+        } else {
+            pass(genetic_distance(a, b))
+        }
+    }
 }
 
 /// Carnivory above which an organism hunts live prey (`choose_food`).
@@ -283,7 +385,24 @@ impl World {
 
         let fight_power = o.power() * cfg.balance.attack_power;
         let risk_floor = 1.0 - n.hunger / 100.0 * o.traits.carnivory;
-        let v = Viewer { o, radius, alarm, sentry, coop, hunter, can_breed, my_power, fight_power, risk_floor, salt: rng.gen() };
+        let (threat_floor, prey_cap, female) = (0.3 * o.mass(), max_prey_mass(o, coop), o.sex == Sex::Female);
+        let v = Viewer {
+            o,
+            genes: genes_of(p),
+            radius,
+            alarm,
+            sentry,
+            coop,
+            hunter,
+            can_breed,
+            my_power,
+            fight_power,
+            risk_floor,
+            threat_floor,
+            prey_cap,
+            female,
+            salt: rng.gen(),
+        };
         let mut seen = Perception {
             threat: 0.0,
             threat_pos: o.pos,
@@ -303,8 +422,8 @@ impl World {
         SCAN.with(|buf| {
             let mut near = buf.take();
             near.clear();
-            self.grid.query(o.pos, radius, |slot, e, d2| {
-                if e.idx as usize != i {
+            self.grid.query(o.pos, radius, |slot, d2| {
+                if self.grid.entry(slot).idx as usize != i {
                     near.push((d2, slot));
                 }
             });
@@ -316,27 +435,24 @@ impl World {
             }
             let focus = near.len().min(FOCUS);
             for &(d2, slot) in &near[..focus] {
-                self.look(&v, &mut seen, self.grid.entry(slot).idx as usize, d2.sqrt(), true);
+                self.look(&v, &mut seen, slot, d2.sqrt(), true);
             }
             // Farther neighbors get a close look only if they could be the
             // biggest threat, the best prey or the best mate; each test is an
             // upper bound on what the look would score, so the outcome is
             // the same as looking at all of them. Their kin are estimated.
-            let threat_floor = 0.3 * o.mass();
-            let prey_cap = max_prey_mass(o, coop);
-            let female = o.sex == Sex::Female;
             for &(d2, slot) in &near[focus..] {
                 let e = self.grid.entry(slot);
                 let d = d2.sqrt();
-                let threat = e.flags & ARMED != 0 && e.mass > threat_floor;
-                let prey = hunter && e.mass < prey_cap && seen.prey.is_none_or(|(s, _)| e.mass.powf(0.75) * MAX_CHASE >= s * (1.0 + d));
+                let threat = e.flags & ARMED != 0 && e.mass > v.threat_floor;
+                let prey = hunter && e.mass < v.prey_cap && seen.prey.is_none_or(|(s, _)| e.mass.powf(0.75) * MAX_CHASE >= s * (1.0 + d));
                 let mate = can_breed
                     && e.flags & COURTING != 0
-                    && (e.flags & FEMALE != 0) != female
+                    && (e.flags & FEMALE != 0) != v.female
                     && seen.mate.is_none_or(|(s, _)| 1.0 >= s * (1.0 + d));
                 let warning = sentry > 0.0 && e.flags & ALERT != 0;
                 if threat || prey || mate || warning {
-                    self.look(&v, &mut seen, e.idx as usize, d, false);
+                    self.look(&v, &mut seen, slot, d, false);
                 }
                 let r = &mut rest[usize::from(e.lineage != o.lineage)];
                 r.0 += 1;
@@ -551,16 +667,29 @@ impl World {
         None
     }
 
-    /// A close look at neighbor `j`, `d` tiles away: is it kin, a threat,
-    /// prey, a mate? `count` adds it to the kin tally.
-    fn look(&self, v: &Viewer, seen: &mut Perception, j: usize, d: f32, count: bool) {
+    /// A close look at the neighbor in grid slot `slot`, `d` tiles away: is
+    /// it kin, a threat, prey, a mate? `count` adds it to the kin tally.
+    /// Kinship comes from the grid's summary of it ([`Genes`] and `Entry`);
+    /// the organism itself is read only for what kin can't settle.
+    fn look(&self, v: &Viewer, seen: &mut Perception, slot: u32, d: f32, count: bool) {
         let (o, radius, alarm, coop) = (v.o, v.radius, v.alarm, v.coop);
         let cfg = &self.config;
+        let e = self.grid.entry(slot);
+        let j = e.idx as usize;
         let q = &self.organisms[j];
-        let gd = genetic_distance(o, q);
-        let kin = mating::is_kin(&o.genome, &q.genome, gd, cfg.species_distance, cfg.kin_body_plan_gap);
+        let genes = self.grid.genes(slot);
+        // Kinship and mate distance are monotone in the genetic distance
+        // (`DistanceBounds`), as long as `species_distance` is positive.
+        let gd = DistanceBounds::new(&v.genes, genes);
+        let gap = body_plan_gap(&v.genes, genes);
+        let (sd, limit) = (cfg.species_distance, cfg.kin_body_plan_gap);
+        let kin = if sd > 0.0 {
+            gd.test(o, q, |gd| mating::is_kin_by_gap(gap, gd, sd, limit))
+        } else {
+            mating::is_kin_by_gap(gap, genetic_distance(o, q), sd, limit)
+        };
         // A kin sentry's warning reaches group members where sentries hold.
-        if kin && v.sentry > 0.0 {
+        if kin && v.sentry > 0.0 && e.flags & ALERT != 0 {
             if let Some((at, level)) = q.alert {
                 let heard = level * v.sentry;
                 if heard > seen.warning {
@@ -570,15 +699,20 @@ impl World {
             }
         }
         if count {
-            let lineage = usize::from(q.lineage != o.lineage);
+            let lineage = usize::from(e.lineage != o.lineage);
             seen.looked[lineage] += 1;
             if kin {
-                seen.kin_sum += q.pos;
+                seen.kin_sum += e.pos;
                 seen.kin += 1;
                 seen.looked_kin[lineage] += 1;
             }
         }
-        if !kin {
+        // A stranger matters only as a threat or as prey; the grid's summary
+        // tells whether it could be either (`can_threaten`, `max_prey_mass`)
+        // without reading the organism.
+        let could_threaten = e.flags & ARMED != 0 && e.mass > v.threat_floor;
+        let could_be_prey = v.hunter && e.mass < v.prey_cap;
+        if !kin && (could_threaten || could_be_prey) {
             // Sheltered burrowers and stealthy organisms are harder to see.
             // A shared burrow hides its sleepers better. A deep sleeper's den
             // hides it less than a burrow; a dormant burrower in its burrow
@@ -631,7 +765,16 @@ impl World {
                 }
             }
         }
-        if v.can_breed && q.sex != o.sex && q.can_breed(self.tick) && gd < cfg.mate_distance && q.needs.breeding > 20.0 && mating::body_plan_fertility(&o.genome, &q.genome) > 0.0 {
+        // `COURTING` is implied by `can_breed` and the drive, and spares
+        // reading the organism when it is clear.
+        if v.can_breed
+            && e.flags & COURTING != 0
+            && (e.flags & FEMALE != 0) != v.female
+            && q.can_breed(self.tick)
+            && gd.test(o, q, |gd| gd < cfg.mate_distance)
+            && q.needs.breeding > 20.0
+            && mating::fertility_from_gap(gap) > 0.0
+        {
             let m = mating::mismatch(&o.pheno, q.display());
             if m <= 1.0 {
                 let score = 1.0 / ((1.0 + m) * (1.0 + d));
@@ -912,5 +1055,37 @@ mod tests {
         let vat = w.organisms[vole].pos;
         let vole_care = guard_of(&w, vole, vat, 0.3) / w.organisms[vole].resistance();
         assert!(vole_care < 0.5 * near / w.organisms[m].resistance(), "vole care {vole_care}");
+    }
+
+    /// The quick kinship tests (packed genes, distance bounds) give exactly
+    /// what the genome-based ones give, over every pair in a mixed world
+    /// with some drift, the bounds bracketing the exact distance.
+    #[test]
+    fn packed_kinship_tests_match_the_genome() {
+        let mut w = presets::standard_world(WorldConfig { seed: 5, width: 64, height: 64, ..Default::default() }, 1);
+        w.run_days(6);
+        let cfg = &w.config;
+        let alive: Vec<&Organism> = w.organisms.iter().filter(|o| o.alive).collect();
+        let (mut kin, mut strangers) = (0, 0);
+        for a in &alive {
+            let ga = genes_of(&a.pheno);
+            for b in &alive {
+                let gb = genes_of(&b.pheno);
+                let gap = body_plan_gap(&ga, &gb);
+                assert_eq!(gap.to_bits(), mating::body_plan_gap(&a.genome, &b.genome).to_bits());
+                let exact = genetic_distance(a, b);
+                let bounds = DistanceBounds::new(&ga, &gb);
+                assert!(bounds.lo <= exact && exact <= bounds.hi, "{} <= {exact} <= {}", bounds.lo, bounds.hi);
+                let is_kin = bounds.test(a, b, |gd| mating::is_kin_by_gap(gap, gd, cfg.species_distance, cfg.kin_body_plan_gap));
+                assert_eq!(is_kin, mating::is_kin(&a.genome, &b.genome, exact, cfg.species_distance, cfg.kin_body_plan_gap));
+                assert_eq!(bounds.test(a, b, |gd| gd < cfg.mate_distance), exact < cfg.mate_distance);
+                if is_kin {
+                    kin += 1;
+                } else {
+                    strangers += 1;
+                }
+            }
+        }
+        assert!(kin > 100 && strangers > 100, "kin {kin}, strangers {strangers}");
     }
 }

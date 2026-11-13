@@ -4,6 +4,9 @@
 //! neighbors in the same cell, so a scan can find everything within range,
 //! and rule most of it out, without touching the organisms themselves.
 
+use rayon::prelude::*;
+
+use super::decide::{genes_of, Genes};
 use crate::math::Vec2;
 use crate::organism::{Organism, Sex};
 
@@ -57,13 +60,20 @@ pub(crate) struct SpatialGrid {
     rows: usize,
     starts: Vec<u32>,
     items: Vec<Entry>,
+    /// Each slot's position again, packed: all a scan reads of the slots it
+    /// rules out.
+    pos: Vec<Vec2>,
+    /// Kinship genes of each slot's organism (`decide::Genes`), alongside
+    /// `items`: a crowd's genes lie together instead of scattered over the
+    /// organisms.
+    genes: Vec<Genes>,
 }
 
 impl SpatialGrid {
     pub fn new(width: usize, height: usize, cell: f32) -> Self {
         let cols = (width as f32 / cell).ceil() as usize;
         let rows = (height as f32 / cell).ceil() as usize;
-        Self { cell, cols, rows, starts: vec![0; cols * rows + 1], items: Vec::new() }
+        Self { cell, cols, rows, starts: vec![0; cols * rows + 1], items: Vec::new(), pos: Vec::new(), genes: Vec::new() }
     }
 
     fn cell_of(&self, p: Vec2) -> (usize, usize) {
@@ -92,26 +102,34 @@ impl SpatialGrid {
             self.items[*slot as usize] = Entry::of(i, o);
             *slot += 1;
         }
+        self.pos.clear();
+        self.pos.extend(self.items.iter().map(|e| e.pos));
+        self.items.par_iter().map(|e| genes_of(&orgs[e.idx as usize].pheno)).collect_into_vec(&mut self.genes);
+    }
+
+    /// Kinship genes of the organism in `slot` (`decide::Genes`).
+    pub fn genes(&self, slot: u32) -> &Genes {
+        &self.genes[slot as usize]
     }
 
     pub fn entry(&self, slot: u32) -> &Entry {
         &self.items[slot as usize]
     }
 
-    /// Calls `f(slot, entry, squared distance)` for every organism within
-    /// `radius` of `p`, in cell order. `slot` is for [`Self::entry`].
-    pub fn query(&self, p: Vec2, radius: f32, mut f: impl FnMut(u32, &Entry, f32)) {
+    /// Calls `f(slot, squared distance)` for every organism within `radius`
+    /// of `p`, in cell order. `slot` is for [`Self::entry`].
+    pub fn query(&self, p: Vec2, radius: f32, mut f: impl FnMut(u32, f32)) {
         let (c0, r0) = self.cell_of(Vec2::new(p.x - radius, p.y - radius));
         let (c1, r1) = self.cell_of(Vec2::new(p.x + radius, p.y + radius));
         let r2 = radius * radius;
         for r in r0..=r1 {
             let row = r * self.cols;
             let (a, b) = (self.starts[row + c0], self.starts[row + c1 + 1]);
-            for (slot, e) in (a..b).zip(&self.items[a as usize..b as usize]) {
-                let (dx, dy) = (e.pos.x - p.x, e.pos.y - p.y);
+            for (slot, q) in (a..b).zip(&self.pos[a as usize..b as usize]) {
+                let (dx, dy) = (q.x - p.x, q.y - p.y);
                 let d2 = dx * dx + dy * dy;
                 if d2 <= r2 {
-                    f(slot, e, d2);
+                    f(slot, d2);
                 }
             }
         }
