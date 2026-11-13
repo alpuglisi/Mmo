@@ -3,6 +3,7 @@
 use std::ops::{Add, AddAssign, Mul, Sub};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Vec2 {
     pub x: f32,
     pub y: f32,

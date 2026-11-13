@@ -143,6 +143,7 @@ pub fn cluster(samples: &[Sample], rule: &LinkRule) -> Vec<Vec<usize>> {
 
 /// How a species came to be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SpeciesOrigin {
     /// Present at the first detection.
     Initial,
@@ -163,6 +164,7 @@ impl SpeciesOrigin {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Species {
     pub id: u32,
     pub name: String,
@@ -189,6 +191,7 @@ pub struct Species {
     pub last_seen: u64,
     /// Detections in a row that missed it.
     pub missed: u32,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::array_vec"))]
     reps: Vec<Expr>,
 }
 
@@ -212,6 +215,7 @@ pub enum SpeciesEvent {
 
 /// All species ever detected, with stable ids.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SpeciesTracker {
     pub species: Vec<Species>,
     /// Speciation events credited per player.

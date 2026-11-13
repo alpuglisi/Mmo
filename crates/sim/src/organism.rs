@@ -9,12 +9,14 @@ use crate::stats::{derive, Traits};
 pub type OrgId = u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Sex {
     Female,
     Male,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DeathCause {
     Starvation,
     Thirst,
@@ -68,6 +70,7 @@ impl DeathCause {
 /// Mating-transmitted disease state ("Genetics: balancing picky vs flexible
 /// lineages" in the design doc).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Infection {
     #[default]
     Susceptible,
@@ -88,6 +91,7 @@ impl Infection {
 /// Needs on a 0–100 scale ("Biological needs and behavior" in the doc).
 /// Energy is the one need where high is good.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Needs {
     pub hunger: f32,
     pub thirst: f32,
@@ -107,6 +111,7 @@ impl Default for Needs {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Pregnancy {
     pub father: Box<Genome>,
     pub father_id: OrgId,
@@ -118,6 +123,7 @@ pub struct Pregnancy {
 
 /// What the organism is doing this tick (from the utility AI or a player).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Action {
     Idle,
     Graze,
@@ -144,6 +150,7 @@ pub enum Action {
 
 /// Seasonal dormancy state ("Seasons and biomes" in the design doc).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Dormancy {
     #[default]
     Awake,
@@ -163,6 +170,7 @@ impl Dormancy {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Organism {
     pub id: OrgId,
     pub owner: PlayerId,

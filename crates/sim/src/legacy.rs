@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use crate::genome::{Genome, PlayerId};
 
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LegacySnapshot {
     pub day: u64,
     pub breeding_adults: usize,

@@ -16,6 +16,7 @@ use evo_sim::terrain::Season;
 use evo_sim::world::commands::{CommandError, DirectedMating, MEETING_DISTANCE};
 use evo_sim::chronicle::{AchievementKind, Catastrophe, CatastropheKind};
 use evo_sim::{FounderDesign, Gene, PlayerId, World, WorldConfig, WILD};
+use serde::{Deserialize, Serialize};
 
 use crate::design::gene_key;
 use crate::protocol::*;
@@ -48,6 +49,21 @@ pub type Outbox = Vec<(Target, ServerMsg)>;
 pub enum PersistEvent {
     Daily(DailyRecord),
     Trade(TradeRecord),
+    /// A saved game (`crate::snapshot`), sent by the world thread.
+    Snapshot(SnapshotBlob),
+}
+
+/// Saved-game bytes; `Debug` shows only the size.
+#[derive(Clone, PartialEq)]
+pub struct SnapshotBlob {
+    pub tick: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for SnapshotBlob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SnapshotBlob {{ tick: {}, {} bytes }}", self.tick, self.bytes.len())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -95,13 +111,8 @@ impl Default for WorldSettings {
 /// A world with the wild ecosystem scaled to its area (as
 /// `presets::standard_world` does) and no player lineages.
 pub fn build_world(s: &WorldSettings) -> World {
-    let mut config =
-        WorldConfig { seed: s.seed, width: s.width, height: s.height, days_per_year: s.days_per_year.max(4), ..Default::default() };
+    let config = world_config(s);
     let area = (s.width * s.height) as f32 / (REFERENCE_SIZE * REFERENCE_SIZE) as f32;
-    config.wild_cap = ((config.wild_cap as f32 * area) as usize).max(50);
-    config.lineage_cap = ((config.lineage_cap as f32 * area.max(0.5)) as usize).max(50);
-    config.lod.enabled = s.lod;
-    config.scoring.catastrophes = s.catastrophes;
     let mut world = World::new(config);
     if s.wild {
         for (owner, design) in presets::wild_designs() {
@@ -110,6 +121,19 @@ pub fn build_world(s: &WorldSettings) -> World {
         }
     }
     world
+}
+
+/// The configuration [`build_world`] uses (also checked against a restored
+/// snapshot's).
+pub fn world_config(s: &WorldSettings) -> WorldConfig {
+    let mut config =
+        WorldConfig { seed: s.seed, width: s.width, height: s.height, days_per_year: s.days_per_year.max(4), ..Default::default() };
+    let area = (s.width * s.height) as f32 / (REFERENCE_SIZE * REFERENCE_SIZE) as f32;
+    config.wild_cap = ((config.wild_cap as f32 * area) as usize).max(50);
+    config.lineage_cap = ((config.lineage_cap as f32 * area.max(0.5)) as usize).max(50);
+    config.lod.enabled = s.lod;
+    config.scoring.catastrophes = s.catastrophes;
+    config
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -125,7 +149,7 @@ pub enum FoundError {
     Design(DesignError),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Offer {
     id: u64,
     from: PlayerId,
@@ -143,7 +167,7 @@ struct Conn {
 }
 
 /// Per-player progress for milestone alerts.
-#[derive(Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct Progress {
     population: usize,
     generation: u32,
@@ -152,7 +176,7 @@ struct Progress {
 }
 
 /// Why an organism is watched for its death.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Watch {
     Founder,
     Possessed,
@@ -186,6 +210,30 @@ pub struct Game {
     focused: BTreeSet<PlayerId>,
     /// Chronicle entries already announced: achievements, eras, and per
     /// catastrophe whether its start and end were.
+    seen_achievements: usize,
+    seen_eras: usize,
+    seen_catastrophes: Vec<(bool, bool)>,
+}
+
+/// The game-side state saved with each world snapshot (`crate::snapshot`):
+/// what isn't in the `World` and can't be derived from it. Connections,
+/// views and the in-memory daily history are not saved (players log in
+/// again; the history is reloaded from the store).
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedGame {
+    lineage_of: BTreeMap<PlayerId, u32>,
+    migrations: BTreeMap<PlayerId, Vec2>,
+    offers: BTreeMap<u64, Offer>,
+    next_offer: u64,
+    prev_born: BTreeMap<u32, u64>,
+    /// `prev_deaths` as a list (JSON maps need string keys).
+    prev_deaths: Vec<((u32, DeathCause), u64)>,
+    alerts: BTreeMap<PlayerId, VecDeque<AlertView>>,
+    watched: BTreeMap<OrgId, (PlayerId, Watch)>,
+    progress: BTreeMap<PlayerId, Progress>,
+    need_alerted: BTreeMap<OrgId, u64>,
+    focused: BTreeSet<PlayerId>,
     seen_achievements: usize,
     seen_eras: usize,
     seen_catastrophes: Vec<(bool, bool)>,
@@ -227,6 +275,71 @@ impl Game {
             seen_eras: 0,
             seen_catastrophes: Vec::new(),
         }
+    }
+
+    /// The game-side state to save with a world snapshot.
+    pub fn saved(&self) -> SavedGame {
+        SavedGame {
+            lineage_of: self.lineage_of.clone(),
+            migrations: self.migrations.clone(),
+            offers: self.offers.clone(),
+            next_offer: self.next_offer,
+            prev_born: self.prev_born.clone(),
+            prev_deaths: self.prev_deaths.iter().map(|(&k, &v)| (k, v)).collect(),
+            alerts: self.alerts.clone(),
+            watched: self.watched.clone(),
+            progress: self.progress.clone(),
+            need_alerted: self.need_alerted.clone(),
+            focused: self.focused.clone(),
+            seen_achievements: self.seen_achievements,
+            seen_eras: self.seen_eras,
+            seen_catastrophes: self.seen_catastrophes.clone(),
+        }
+    }
+
+    /// A game continuing a restored world: the saved game-side state, and
+    /// the daily records of this world's past (oldest first) for the
+    /// dashboard. Records after the world's last legacy day (written after
+    /// the snapshot) are dropped, and a day number going backwards (a
+    /// replayed day, or an earlier world's records) drops the records it
+    /// replaces.
+    pub fn resume(world: World, cfg: GameConfig, saved: SavedGame, history: Vec<DailyRecord>) -> Self {
+        let mut g = Game::new(world, cfg);
+        let last_day = g.world.latest_legacy().map(|l| l.day);
+        let mut kept: VecDeque<DailyRecord> = VecDeque::new();
+        for r in history.into_iter().filter(|r| last_day.is_some_and(|d| r.day <= d)) {
+            while kept.back().is_some_and(|k| k.day >= r.day) {
+                kept.pop_back();
+            }
+            kept.push_back(r);
+        }
+        while kept.len() > HISTORY_DAYS {
+            kept.pop_front();
+        }
+        g.history = kept;
+        g.lineage_of = saved.lineage_of;
+        // A player's lineage is in the world even if the saved table lost it.
+        for (k, l) in g.world.lineages.iter().enumerate() {
+            if l.owner != WILD {
+                g.lineage_of.entry(l.owner).or_insert(k as u32);
+            }
+        }
+        g.migrations = saved.migrations;
+        g.offers = saved.offers;
+        g.next_offer = saved.next_offer.max(g.offers.keys().max().map_or(1, |k| k + 1));
+        g.prev_born = saved.prev_born;
+        g.prev_deaths = saved.prev_deaths.into_iter().collect();
+        g.alerts = saved.alerts;
+        g.watched = saved.watched;
+        g.progress = saved.progress;
+        g.need_alerted = saved.need_alerted;
+        g.focused = saved.focused;
+        g.seen_achievements = saved.seen_achievements;
+        g.seen_eras = saved.seen_eras;
+        g.seen_catastrophes = saved.seen_catastrophes;
+        // Nobody is connected: drop the level-of-detail focus of views.
+        g.sync_focus();
+        g
     }
 
     pub fn set_name(&mut self, player: PlayerId, name: &str) {

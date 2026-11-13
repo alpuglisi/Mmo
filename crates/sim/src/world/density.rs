@@ -10,6 +10,7 @@ use crate::organism::Organism;
 /// Cell side in tiles.
 const CELL: usize = 8;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct SpeciesDensity {
     cols: usize,
     rows: usize,

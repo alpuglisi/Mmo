@@ -19,6 +19,7 @@ pub const MAX_TILE_SPEED: f32 = 1.5;
 
 /// A route to a target, kept on the organism between ticks.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Path {
     /// Tile indices still to visit, last element next.
     pub waypoints: Vec<u32>,

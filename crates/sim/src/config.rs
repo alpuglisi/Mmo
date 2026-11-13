@@ -4,6 +4,7 @@
 use crate::genome::MutationParams;
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WorldConfig {
     pub seed: u64,
     pub width: usize,
@@ -53,6 +54,7 @@ pub struct WorldConfig {
 /// Species detection, eras and catastrophes ("Scoring: genetic legacy",
 /// supporting rules, in the design doc).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScoringConfig {
     /// Days between species detections (0 disables detection).
     pub species_interval_days: u32,
@@ -113,6 +115,7 @@ impl Default for ScoringConfig {
 /// false (the default) nothing here is read and a world runs exactly as
 /// without LOD.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LodConfig {
     pub enabled: bool,
     /// A region is active (full agents) when any part of it is within this
@@ -210,6 +213,7 @@ impl LodConfig {
 /// Tunable rates that shape the ecosystem. Kept together so the sweep tool
 /// (`evo-sim sweep`) can search over them.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Balance {
     /// Hunger points per day at metabolism 1.0.
     pub hunger_rate: f32,

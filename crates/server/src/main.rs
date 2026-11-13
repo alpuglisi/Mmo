@@ -4,7 +4,10 @@
 //! evo-server [--bind ADDR] [--data DIR | --memory] [--size N] [--seed N]
 //!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
 //!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
+//!            [--fresh]
 //! ```
+//!
+//! SIGINT (Ctrl-C) or SIGTERM stops it gracefully, saving the world first.
 
 use std::time::Duration;
 
@@ -12,7 +15,7 @@ use evo_server::{start, ServerConfig};
 
 const USAGE: &str = "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
-[--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes]";
+[--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] [--fresh]";
 
 fn parse_args() -> Result<ServerConfig, String> {
     let mut cfg = ServerConfig::default();
@@ -57,6 +60,7 @@ fn parse_args() -> Result<ServerConfig, String> {
             "--no-rate-limits" => cfg.limits = evo_server::limits::Limits::unlimited(),
             "--lod" => cfg.world.lod = true,
             "--no-catastrophes" => cfg.world.catastrophes = false,
+            "--fresh" => cfg.fresh = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -79,20 +83,32 @@ async fn main() {
             std::process::exit(2);
         }
     };
-    let mut server = match start(cfg).await {
+    let server = match start(cfg).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("could not start: {e}");
             std::process::exit(1);
         }
     };
-    let stop = server.take_shutdown();
-    tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        tracing::info!("shutting down");
-        if let Some(tx) = stop {
-            let _ = tx.send(());
+    shutdown_signal().await;
+    tracing::info!("shutting down: saving the world");
+    server.shutdown().await;
+    tracing::info!("stopped");
+}
+
+/// SIGINT or (on Unix) SIGTERM.
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = term.recv() => {}
         }
-    });
-    server.wait().await;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = ctrl_c.await;
+    }
 }
