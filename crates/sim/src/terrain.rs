@@ -6,12 +6,13 @@
 //!   biomes; depressions fed by enough rain fill into lakes; rivers are
 //!   carved by flow accumulation down a pit-free drainage network, from
 //!   high, wet ground to lakes, the sea or the map edge, and low land beside
-//!   them is their floodplain.
+//!   them is their floodplain. Each tile's fixed part is its [`Ground`], all of them a [`Terrain`] that a
+//!   [`Map`] shares behind an `Arc` (clones share it; snapshots name it by
+//!   hash); the changing part is its [`Tile`].
 //! - **Regional weather** on a coarse grid of [`CHUNK`]-sized cells, advanced
 //!   once per simulated hour ([`Map::advance_weather`]): fronts drifting
 //!   east bring wind (with a direction, for flyers and gliders), storms and
-//!   rain; slow-moving dry and wet spells and the
-//!   seasons set how much rain falls; each cell integrates rain, snowmelt and
+//!   rain; slow-moving dry and wet spells and the seasons set how much rain falls; each cell integrates rain, snowmelt and
 //!   evaporation into a soil `wetness` (0.5 normal, low is drought). Weather
 //!   is a pure function of `(seed, hour, cell)` apart from that integration.
 //! - **Tile state**, updated chunk by chunk ([`Map::update_chunks`], every
@@ -29,6 +30,7 @@
 //! when to invalidate.
 
 use std::f32::consts::TAU;
+use std::sync::Arc;
 
 use crate::config::Balance;
 use crate::math::Vec2;
@@ -77,28 +79,21 @@ impl Season {
     }
 }
 
+/// The static part of a tile, fixed when the map is generated (biome, relief,
+/// rivers, ground cover). Shared through [`Terrain`]: world clones share it,
+/// and snapshots store only its hash.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Tile {
+pub struct Ground {
     pub biome: Biome,
     pub elevation: f32,
     pub moisture: f32,
     /// Annual mean temperature in °C.
     pub base_temp: f32,
-    /// Current temperature in °C.
-    pub temp: f32,
-    /// Current water depth in m. Shallow lakes, marsh and rivers rise and
-    /// fall with regional wetness (0 when dried out); deep water is fixed.
-    pub water_depth: f32,
     /// Water depth at normal wetness (0 for dry land).
     pub base_water: f32,
     /// River channel: base current at normal flow, 0..1 (0 = not a river).
     pub river: f32,
-    /// Current flow speed, 0..1; deep fast water needs stronger swimmers.
-    pub current: f32,
-    pub ice: f32,
-    pub snow: f32,
-    pub mud: f32,
     pub sand: f32,
     /// 0 flat, 1 cliff.
     pub slope: f32,
@@ -106,33 +101,16 @@ pub struct Tile {
     pub veg_density: f32,
     /// Canopy height in m (forest); browse up there needs height or climbing.
     pub canopy: f32,
-    /// Plant food available (food units).
-    pub veg: f32,
+    /// Most plant food the tile holds (food units).
     pub veg_max: f32,
-    /// Carcass meat on the tile (food units).
-    pub meat: f32,
-    /// Local wind, 0 calm .. 1 gale (from the regional weather grid).
-    pub wind: f32,
-    /// Local precipitation, 0..1 (falls as snow below freezing).
-    pub rain: f32,
-    /// Regional soil wetness, 0 parched .. 1 soaked, 0.5 normal.
-    pub wetness: f32,
     /// Floodplain: the river level (× normal) above which the neighboring
     /// river overflows onto this tile; 0 off the floodplain.
     pub plain: f32,
-    /// Silt left by a flood, 0..1: speeds plant regrowth after the water
-    /// recedes and fades over a few weeks.
-    pub silt: f32,
 }
 
-impl Tile {
+impl Ground {
     pub fn is_open(&self) -> bool {
         self.veg_density < 0.4
-    }
-
-    /// Liquid water that can be drunk.
-    pub fn has_drinkable_water(&self) -> bool {
-        self.water_depth > 0.0 && self.ice < 0.5
     }
 
     pub fn is_river(&self) -> bool {
@@ -148,10 +126,47 @@ impl Tile {
         let reach = (body.height / (0.6 * self.canopy)).clamp(0.0, 1.0);
         self.veg_max * canopy_share * (1.0 - reach)
     }
+}
 
-    /// Plant food `body` can reach on this tile.
-    pub fn reachable_veg(&self, body: &Body, canopy_share: f32) -> f32 {
-        (self.veg - self.browse_out_of_reach(body, canopy_share)).max(0.0)
+/// The changing part of a tile: weather, water, snow and ice, food.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Tile {
+    /// Current temperature in °C.
+    pub temp: f32,
+    /// Current water depth in m. Shallow lakes, marsh and rivers rise and
+    /// fall with regional wetness (0 when dried out); deep water is fixed.
+    pub water_depth: f32,
+    /// Current flow speed, 0..1; deep fast water needs stronger swimmers.
+    pub current: f32,
+    pub ice: f32,
+    pub snow: f32,
+    /// Marsh mud follows the water level; elsewhere it stays as generated.
+    pub mud: f32,
+    /// Plant food available (food units).
+    pub veg: f32,
+    /// Carcass meat on the tile (food units).
+    pub meat: f32,
+    /// Local wind, 0 calm .. 1 gale (from the regional weather grid).
+    pub wind: f32,
+    /// Local precipitation, 0..1 (falls as snow below freezing).
+    pub rain: f32,
+    /// Regional soil wetness, 0 parched .. 1 soaked, 0.5 normal.
+    pub wetness: f32,
+    /// Silt left by a flood, 0..1: speeds plant regrowth after the water
+    /// recedes and fades over a few weeks.
+    pub silt: f32,
+}
+
+impl Tile {
+    /// Liquid water that can be drunk.
+    pub fn has_drinkable_water(&self) -> bool {
+        self.water_depth > 0.0 && self.ice < 0.5
+    }
+
+    /// Plant food `body` can reach on this tile (`g` is its ground).
+    pub fn reachable_veg(&self, g: &Ground, body: &Body, canopy_share: f32) -> f32 {
+        (self.veg - g.browse_out_of_reach(body, canopy_share)).max(0.0)
     }
 
     /// Bits that change when the tile's passability-relevant state crosses a
@@ -163,6 +178,57 @@ impl Tile {
 
     fn water_source(&self) -> bool {
         self.has_drinkable_water() || self.snow > 0.2
+    }
+}
+
+/// The static map: every tile's [`Ground`] and the river catchments, fixed
+/// at generation. A [`Map`] holds it behind an `Arc`, so cloning a world (the
+/// server's background saver does, once a day) shares it instead of copying
+/// it, and world snapshots store only its content hash (`Terrain::hash`,
+/// feature `serde`); the terrain itself is stored once per world
+/// (`Terrain::encode`).
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Terrain {
+    pub width: usize,
+    pub height: usize,
+    pub ground: Vec<Ground>,
+    /// Weather cell of each river tile's headwaters (the tile's own cell for
+    /// other tiles): rivers swell with snowmelt upstream.
+    pub catchment: Vec<u32>,
+    /// Content hash, computed on first use (`Terrain::hash`).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) hash: std::sync::OnceLock<u64>,
+}
+
+impl PartialEq for Terrain {
+    fn eq(&self, other: &Terrain) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.ground == other.ground
+            && self.catchment == other.catchment
+    }
+}
+
+/// A map's terrain in a world snapshot: only its content hash. Decoding
+/// gives a placeholder (no tiles) carrying that hash, which
+/// `World::restore` replaces with the stored terrain.
+#[cfg(feature = "serde")]
+mod terrain_ref {
+    use std::sync::Arc;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::Terrain;
+
+    pub fn serialize<S: Serializer>(terrain: &Arc<Terrain>, s: S) -> Result<S::Ok, S::Error> {
+        terrain.hash().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<Terrain>, D::Error> {
+        let placeholder = Terrain::default();
+        let _ = placeholder.hash.set(u64::deserialize(d)?);
+        Ok(Arc::new(placeholder))
     }
 }
 
@@ -203,8 +269,8 @@ const NEAR_OFFSETS: [(i32, i32); NEAR_SIDE * NEAR_SIDE] = {
 
 /// How much a canopy shelters a climbing prey from a non-climbing,
 /// non-flying attacker: the chance its attack succeeds is cut by this share.
-pub fn canopy_refuge(tile: &Tile, prey: &Body, attacker: &Body) -> f32 {
-    if tile.canopy > 0.5 && prey.climb >= CLIMB_CANOPY && attacker.climb < CLIMB_CANOPY && !attacker.can_fly {
+pub fn canopy_refuge(ground: &Ground, prey: &Body, attacker: &Body) -> f32 {
+    if ground.canopy > 0.5 && prey.climb >= CLIMB_CANOPY && attacker.climb < CLIMB_CANOPY && !attacker.can_fly {
         0.7 * prey.climb
     } else {
         0.0
@@ -285,7 +351,7 @@ pub const GLIDE_DROP: f32 = 0.004;
 /// needs height to launch (a canopy it climbs, a steep slope, or ground
 /// falling away ahead) and calm enough air; gliding is cheaper than
 /// flight, and the wind helps or hinders it as it does flyers.
-pub fn glide(body: &Body, from: &Tile, to: &Tile, weather: &Weather, dir: Vec2) -> Option<(f32, f32)> {
+pub fn glide(body: &Body, from: &Ground, to: &Ground, weather: &Weather, dir: Vec2) -> Option<(f32, f32)> {
     if !body.can_glide || weather.wind > glide_wind_limit(body) {
         return None;
     }
@@ -334,6 +400,11 @@ impl WeatherCell {
 pub struct Map {
     pub width: usize,
     pub height: usize,
+    /// The static map, shared by clones. Snapshots store only its content
+    /// hash; `World::restore` puts the terrain back.
+    #[cfg_attr(feature = "serde", serde(with = "terrain_ref"))]
+    terrain: Arc<Terrain>,
+    /// The changing state of every tile, row-major.
     pub tiles: Vec<Tile>,
     /// Steps to the nearest drinkable tile (BFS, recomputed hourly when chunk
     /// updates changed where water is). Lets any organism walk downhill to
@@ -344,9 +415,6 @@ pub struct Map {
     pub chunks_y: usize,
     /// Regional weather, `chunks_x × chunks_y`, row-major.
     pub cells: Vec<WeatherCell>,
-    /// Weather cell of each river tile's headwaters (the tile's own cell for
-    /// other tiles): rivers swell with snowmelt upstream.
-    pub catchment: Vec<u32>,
     /// Bumped whenever a chunk update changes some tile's water depth, ice
     /// or current by a 0.1 step. Path caches compare it to invalidate.
     pub terrain_version: u64,
@@ -471,6 +539,7 @@ impl Map {
         percentile_normalize(&mut elevation);
         percentile_normalize(&mut moisture);
 
+        let mut ground = Vec::with_capacity(width * height);
         let mut tiles = Vec::with_capacity(width * height);
         for y in 0..height {
             for x in 0..width {
@@ -485,12 +554,14 @@ impl Map {
                 let slope_raw = (ex * ex + ey * ey).sqrt() * 3.0;
 
                 let biome = classify(e, m, base_temp);
-                tiles.push(make_tile(biome, e, m, base_temp, slope_raw));
+                let (g, t) = make_tile(biome, e, m, base_temp, slope_raw);
+                ground.push(g);
+                tiles.push(t);
             }
         }
 
         let (chunks_x, chunks_y) = (width.div_ceil(CHUNK), height.div_ceil(CHUNK));
-        let catchment = carve_rivers(&mut tiles, width, height, chunks_x);
+        let catchment = carve_rivers(&mut ground, &mut tiles, width, height, chunks_x);
         let mut cells = vec![
             WeatherCell {
                 wind: 0.3,
@@ -503,15 +574,17 @@ impl Map {
             };
             chunks_x * chunks_y
         ];
-        for (i, t) in tiles.iter().enumerate() {
+        for (i, g) in ground.iter().enumerate() {
             let c = &mut cells[(i / width / CHUNK) * chunks_x + (i % width) / CHUNK];
-            c.land_tiles += (t.base_water < 1.0) as u32;
-            c.river_tiles += t.is_river() as u32;
+            c.land_tiles += (g.base_water < 1.0) as u32;
+            c.river_tiles += g.is_river() as u32;
         }
         let n = tiles.len();
+        let terrain = Terrain { width, height, ground, catchment, hash: Default::default() };
         let mut map = Map {
             width,
             height,
+            terrain: Arc::new(terrain),
             tiles,
             water_dist: vec![u16::MAX; n],
             chunks_x,
@@ -519,7 +592,6 @@ impl Map {
             chunk_version: vec![0; cells.len()],
             melt_acc: vec![0.0; cells.len()],
             cells,
-            catchment,
             terrain_version: 0,
             drought: 0.0,
             flood: 0.0,
@@ -535,6 +607,50 @@ impl Map {
 
     pub fn idx(&self, x: usize, y: usize) -> usize {
         y * self.width + x
+    }
+
+    /// The static map, shared by clones of this one.
+    pub fn terrain(&self) -> &Arc<Terrain> {
+        &self.terrain
+    }
+
+    /// Every tile's static ground, row-major (indexed like `tiles`).
+    pub fn ground(&self) -> &[Ground] {
+        &self.terrain.ground
+    }
+
+    pub fn ground_at(&self, p: Vec2) -> &Ground {
+        let (x, y) = self.tile_coords(p);
+        &self.terrain.ground[self.idx(x, y)]
+    }
+
+    /// Weather cell of each river tile's headwaters (the tile's own cell for
+    /// other tiles): rivers swell with snowmelt upstream.
+    pub fn catchment(&self) -> &[u32] {
+        &self.terrain.catchment
+    }
+
+    /// Change the static map (tests, map editing): copies it first if a
+    /// clone shares it, and forgets its content hash.
+    pub fn edit_terrain(&mut self) -> &mut Terrain {
+        let t = Arc::make_mut(&mut self.terrain);
+        t.hash = Default::default();
+        t
+    }
+
+    /// Put the static map back after a snapshot restore (which carries only
+    /// its hash). The caller checks it is the right one.
+    #[cfg(feature = "serde")]
+    pub(crate) fn set_terrain(&mut self, terrain: Arc<Terrain>) {
+        self.terrain = terrain;
+    }
+
+    /// [`traverse`] of the tile at `p` in its local weather.
+    pub fn traverse_at(&self, body: &Body, p: Vec2, flying: bool) -> Traverse {
+        let (x, y) = self.tile_coords(p);
+        let i = self.idx(x, y);
+        let weather = Weather { wind: self.tiles[i].wind, dir: self.cells[self.chunk_of(x, y)].dir };
+        traverse(body, &self.terrain.ground[i], &self.tiles[i], &weather, flying)
     }
 
     pub fn tile_coords(&self, p: Vec2) -> (usize, usize) {
@@ -849,7 +965,7 @@ impl Map {
             for x in x0..x1 {
                 let i = y * self.width + x;
                 let (wind, rain, wet) = self.sample_cells(x, y);
-                let source = &self.cells[self.catchment[i] as usize];
+                let source = &self.cells[self.terrain.catchment[i] as usize];
                 let env = TileEnv {
                     offset,
                     wind,
@@ -860,7 +976,7 @@ impl Map {
                 };
                 let t = &mut self.tiles[i];
                 let had_water = t.water_source();
-                melt += update_tile(t, &env, bal);
+                melt += update_tile(&self.terrain.ground[i], t, &env, bal);
                 self.water_dirty |= had_water != t.water_source();
                 let sig = t.pass_signature();
                 if sig != self.pass_sig[i] {
@@ -883,18 +999,18 @@ impl Map {
 }
 
 /// One hour of a tile's environment. Returns the snow that melted.
-fn update_tile(t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
+fn update_tile(g: &Ground, t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
     t.wind = e.wind;
     t.rain = e.rain;
     t.wetness = e.wet;
     // Storms chill, most of all on open ground.
-    let chill = if e.wind > STORM_WIND { 3.0 + if t.is_open() { bal.storm_exposure } else { 0.0 } } else { 0.0 };
-    t.temp = t.base_temp + e.offset - chill;
+    let chill = if e.wind > STORM_WIND { 3.0 + if g.is_open() { bal.storm_exposure } else { 0.0 } } else { 0.0 };
+    t.temp = g.base_temp + e.offset - chill;
 
     // Precipitation falls as snow below freezing; snow melts above.
     let mut melt = 0.0;
     if t.temp < 0.0 && t.water_depth < 1.0 {
-        t.snow = (t.snow + (0.002 + 0.025 * e.rain) * (0.4 + t.moisture)).min(1.0);
+        t.snow = (t.snow + (0.002 + 0.025 * e.rain) * (0.4 + g.moisture)).min(1.0);
     } else if t.temp > 0.0 && t.snow > 0.0 {
         melt = t.snow.min(t.temp * 0.01);
         t.snow -= melt;
@@ -903,21 +1019,21 @@ fn update_tile(t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
     // Water levels: rivers follow wetness along their course and swell with
     // snowmelt at their headwaters; shallow lakes and marsh follow local
     // wetness. Deep water stays.
-    if t.river > 0.0 {
+    if g.river > 0.0 {
         let level = river_level(e.river_wet, e.river_melt, bal);
-        t.water_depth = t.base_water * level;
-        t.current = (t.river * (0.6 + 0.4 * level)).min(1.0);
-    } else if t.base_water > 0.0 && t.base_water < 1.0 {
+        t.water_depth = g.base_water * level;
+        t.current = (g.river * (0.6 + 0.4 * level)).min(1.0);
+    } else if g.base_water > 0.0 && g.base_water < 1.0 {
         let level = water_level(e.wet, bal);
-        t.water_depth = t.base_water * level;
-        if t.biome == Biome::Marsh {
+        t.water_depth = g.base_water * level;
+        if g.biome == Biome::Marsh {
             t.mud = 0.7 * level.clamp(0.4, 1.0);
         }
-    } else if t.plain > 0.0 {
+    } else if g.plain > 0.0 {
         // Floodplain: the river overflows once its level passes the tile's
         // threshold, standing still and shallow at first, deeper as it rises.
         let level = river_level(e.river_wet, e.river_melt, bal);
-        t.water_depth = ((level - t.plain) * PLAIN_DEPTH).clamp(0.0, PLAIN_MAX_DEPTH);
+        t.water_depth = ((level - g.plain) * PLAIN_DEPTH).clamp(0.0, PLAIN_MAX_DEPTH);
     }
     if t.water_depth < WATER_GONE {
         t.water_depth = 0.0;
@@ -925,7 +1041,7 @@ fn update_tile(t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
     }
     // Flooded plains drown their plants and gather silt, which feeds
     // regrowth once the water has gone.
-    let flooded = t.plain > 0.0 && t.water_depth > 0.0;
+    let flooded = g.plain > 0.0 && t.water_depth > 0.0;
     if flooded {
         t.silt = (t.silt + SILT_GAIN).min(1.0);
         t.veg *= 1.0 - FLOOD_VEG_LOSS;
@@ -943,14 +1059,14 @@ fn update_tile(t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
     }
 
     // Vegetation: logistic regrowth, slowed by cold, snow cover and drought.
-    if t.veg_max > 0.0 && !flooded {
+    if g.veg_max > 0.0 && !flooded {
         let warmth = (t.temp / 12.0).clamp(0.0, 1.0);
         let cover = (1.0 - t.snow * 3.0).clamp(0.0, 1.0);
         let wet = 1.0 - bal.rain_growth + bal.rain_growth * (e.wet / 0.5).clamp(0.0, 1.4);
         let growth = bal.veg_regrowth * warmth * cover * wet * (1.0 + SILT_BOOST * t.silt) / 24.0;
         // Root term so grazed-out tiles recover.
-        t.veg += growth * (t.veg + 0.25 * t.veg_max) * (1.0 - t.veg / t.veg_max);
-        t.veg = t.veg.clamp(0.0, t.veg_max);
+        t.veg += growth * (t.veg + 0.25 * g.veg_max) * (1.0 - t.veg / g.veg_max);
+        t.veg = t.veg.clamp(0.0, g.veg_max);
     }
     if t.meat > 0.0 {
         let rot = if t.temp > 15.0 { 0.95 } else { 0.98 };
@@ -973,12 +1089,12 @@ fn update_tile(t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
 /// inflow on over the rim); tiles that gather more than `RIVER_FLOW` become
 /// river. Low land next to a river becomes its floodplain, sharing the
 /// river's catchment so it floods when the river does.
-fn carve_rivers(tiles: &mut [Tile], width: usize, height: usize, chunks_x: usize) -> Vec<u32> {
+fn carve_rivers(ground: &mut [Ground], tiles: &mut [Tile], width: usize, height: usize, chunks_x: usize) -> Vec<u32> {
     use std::cmp::Reverse;
     use std::collections::{BinaryHeap, VecDeque};
     let n = width * height;
     let cell_of = |i: usize| ((i / width / CHUNK) * chunks_x + (i % width) / CHUNK) as u32;
-    let is_water = |t: &Tile| matches!(t.biome, Biome::DeepWater | Biome::ShallowWater);
+    let is_water = |g: &Ground| matches!(g.biome, Biome::DeepWater | Biome::ShallowWater);
     let neighbors = |i: usize| {
         let (x, y) = (i % width, i / width);
         (y.saturating_sub(1)..=(y + 1).min(height - 1))
@@ -989,7 +1105,7 @@ fn carve_rivers(tiles: &mut [Tile], width: usize, height: usize, chunks_x: usize
     let mut seen = vec![false; n];
     let mut fill = vec![0.0f32; n];
     let mut heap = BinaryHeap::new();
-    for (i, t) in tiles.iter().enumerate() {
+    for (i, t) in ground.iter().enumerate() {
         let (x, y) = (i % width, i / width);
         if is_water(t) || x == 0 || y == 0 || x + 1 == width || y + 1 == height {
             seen[i] = true;
@@ -1009,7 +1125,7 @@ fn carve_rivers(tiles: &mut [Tile], width: usize, height: usize, chunks_x: usize
                 if !seen[j] {
                     seen[j] = true;
                     down[j] = i;
-                    heap.push(Reverse((tiles[j].elevation.max(filled).to_bits(), j)));
+                    heap.push(Reverse((ground[j].elevation.max(filled).to_bits(), j)));
                 }
             }
         }
@@ -1017,16 +1133,16 @@ fn carve_rivers(tiles: &mut [Tile], width: usize, height: usize, chunks_x: usize
 
     // Upstream tiles come later in the flood order, so walking it backwards
     // finishes every tile's inflow before passing it on.
-    let mut flow: Vec<f32> = tiles.iter().map(|t| 0.25 + t.moisture + 0.5 * t.elevation).collect();
+    let mut flow: Vec<f32> = ground.iter().map(|g| 0.25 + g.moisture + 0.5 * g.elevation).collect();
     for &i in order.iter().rev() {
-        if !is_water(&tiles[i]) && down[i] != usize::MAX {
+        if !is_water(&ground[i]) && down[i] != usize::MAX {
             flow[down[i]] += flow[i];
         }
     }
 
     // Lakes: each connected depression (fill well above the ground) whose
     // inflow, the most any of its tiles passes on, beats evaporation.
-    let deep = |i: usize| !is_water(&tiles[i]) && fill[i] - tiles[i].elevation > LAKE_MIN_DEPTH;
+    let deep = |i: usize| !is_water(&ground[i]) && fill[i] - ground[i].elevation > LAKE_MIN_DEPTH;
     let mut basin = vec![false; n];
     // Lake surface level per tile (`NAN` where there is no lake).
     let mut lake = vec![f32::NAN; n];
@@ -1056,23 +1172,25 @@ fn carve_rivers(tiles: &mut [Tile], width: usize, height: usize, chunks_x: usize
         if area < 2 {
             continue;
         }
-        members.sort_by(|&a, &b| tiles[a].elevation.total_cmp(&tiles[b].elevation).then(a.cmp(&b)));
-        let surface = if area == members.len() { fill[members[0]] } else { tiles[members[area]].elevation };
+        members.sort_by(|&a, &b| ground[a].elevation.total_cmp(&ground[b].elevation).then(a.cmp(&b)));
+        let surface = if area == members.len() { fill[members[0]] } else { ground[members[area]].elevation };
         for &i in &members[..area] {
             lake[i] = surface;
         }
     }
-    for (i, t) in tiles.iter_mut().enumerate().filter(|(i, _)| !lake[*i].is_nan()) {
-        let depth = (0.2 + LAKE_DEPTH * (lake[i] - t.elevation)).min(LAKE_MAX_DEPTH);
-        *t = make_tile(Biome::ShallowWater, t.elevation, t.moisture, t.base_temp, 0.0);
+    for i in (0..n).filter(|&i| !lake[i].is_nan()) {
+        let g = &ground[i];
+        let depth = (0.2 + LAKE_DEPTH * (lake[i] - g.elevation)).min(LAKE_MAX_DEPTH);
+        let (mut g, mut t) = make_tile(Biome::ShallowWater, g.elevation, g.moisture, g.base_temp, 0.0);
         t.water_depth = depth;
-        t.base_water = depth;
+        g.base_water = depth;
+        (ground[i], tiles[i]) = (g, t);
     }
 
     let mut catchment: Vec<u32> = (0..n).map(cell_of).collect();
     let mut main_inflow = vec![usize::MAX; n];
     for &i in order.iter().rev() {
-        if is_water(&tiles[i]) || flow[i] < RIVER_FLOW {
+        if is_water(&ground[i]) || flow[i] < RIVER_FLOW {
             continue;
         }
         let d = down[i];
@@ -1080,17 +1198,17 @@ fn carve_rivers(tiles: &mut [Tile], width: usize, height: usize, chunks_x: usize
             catchment[i] = catchment[main_inflow[i]];
         }
         let strength = (flow[i] / RIVER_FLOW).ln();
-        let drop = if d == usize::MAX { 0.0 } else { (tiles[i].elevation - tiles[d].elevation).max(0.0) };
-        let t = &mut tiles[i];
-        t.river = (0.15 + 0.06 * strength + 8.0 * drop).clamp(0.1, 0.8);
-        t.base_water = (0.1 + 0.08 * strength).min(0.45).max(t.base_water);
-        t.water_depth = t.base_water;
-        t.current = t.river;
-        t.veg_density *= 0.3;
-        t.sand = 0.0;
-        t.veg_max = t.veg_max.min(15.0);
-        t.veg = t.veg_max * 0.8;
-        t.canopy = 0.0;
+        let drop = if d == usize::MAX { 0.0 } else { (ground[i].elevation - ground[d].elevation).max(0.0) };
+        let (g, t) = (&mut ground[i], &mut tiles[i]);
+        g.river = (0.15 + 0.06 * strength + 8.0 * drop).clamp(0.1, 0.8);
+        g.base_water = (0.1 + 0.08 * strength).min(0.45).max(g.base_water);
+        t.water_depth = g.base_water;
+        t.current = g.river;
+        g.veg_density *= 0.3;
+        g.sand = 0.0;
+        g.veg_max = g.veg_max.min(15.0);
+        t.veg = g.veg_max * 0.8;
+        g.canopy = 0.0;
         if d != usize::MAX && (main_inflow[d] == usize::MAX || flow[i] > flow[main_inflow[d]]) {
             main_inflow[d] = i;
         }
@@ -1101,8 +1219,8 @@ fn carve_rivers(tiles: &mut [Tile], width: usize, height: usize, chunks_x: usize
     let mut reach = vec![u8::MAX; n];
     let mut source = vec![usize::MAX; n];
     let mut queue = VecDeque::new();
-    for (i, t) in tiles.iter().enumerate() {
-        if t.is_river() {
+    for (i, g) in ground.iter().enumerate() {
+        if g.is_river() {
             reach[i] = 0;
             source[i] = i;
             queue.push_back(i);
@@ -1114,15 +1232,15 @@ fn carve_rivers(tiles: &mut [Tile], width: usize, height: usize, chunks_x: usize
         }
         let river = source[i];
         for j in neighbors(i) {
-            let t = &tiles[j];
-            let rise = t.elevation - tiles[river].elevation;
-            if reach[j] != u8::MAX || t.base_water > 0.0 || t.slope > 0.3 || rise > PLAIN_RISE {
+            let g = &ground[j];
+            let rise = g.elevation - ground[river].elevation;
+            if reach[j] != u8::MAX || g.base_water > 0.0 || g.slope > 0.3 || rise > PLAIN_RISE {
                 continue;
             }
             reach[j] = reach[i] + 1;
             source[j] = river;
             catchment[j] = catchment[river];
-            tiles[j].plain = PLAIN_LEVEL + 0.3 * (reach[j] - 1) as f32 + 0.6 * rise.max(0.0) / PLAIN_RISE;
+            ground[j].plain = PLAIN_LEVEL + 0.3 * (reach[j] - 1) as f32 + 0.6 * rise.max(0.0) / PLAIN_RISE;
             queue.push_back(j);
         }
     }
@@ -1163,7 +1281,7 @@ fn classify(e: f32, m: f32, temp: f32) -> Biome {
     }
 }
 
-fn make_tile(biome: Biome, elevation: f32, moisture: f32, base_temp: f32, slope_raw: f32) -> Tile {
+fn make_tile(biome: Biome, elevation: f32, moisture: f32, base_temp: f32, slope_raw: f32) -> (Ground, Tile) {
     let (water_depth, mud, sand, veg_density, veg_max, slope) = match biome {
         Biome::DeepWater => (3.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         // Shallower toward the shore, so lakes shrink from the edges.
@@ -1176,32 +1294,35 @@ fn make_tile(biome: Biome, elevation: f32, moisture: f32, base_temp: f32, slope_
         Biome::Mountain => (0.0, 0.0, 0.0, 0.1, 8.0, (0.45 + slope_raw).min(1.0)),
     };
     let canopy = if biome == Biome::Forest { 0.9 + 2.0 * (moisture - 0.6).max(0.0) } else { 0.0 };
-    Tile {
+    let ground = Ground {
         biome,
         elevation,
         moisture,
         base_temp,
-        temp: base_temp,
-        water_depth,
         base_water: water_depth,
         river: 0.0,
-        current: 0.0,
-        ice: 0.0,
-        snow: 0.0,
-        mud,
         sand,
         slope,
         veg_density,
         canopy,
-        veg: veg_max * 0.8,
         veg_max,
+        plain: 0.0,
+    };
+    let tile = Tile {
+        temp: base_temp,
+        water_depth,
+        current: 0.0,
+        ice: 0.0,
+        snow: 0.0,
+        mud,
+        veg: veg_max * 0.8,
         meat: 0.0,
         wind: 0.3,
         rain: 0.0,
         wetness: 0.5,
-        plain: 0.0,
         silt: 0.0,
-    }
+    };
+    (ground, tile)
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,13 +1343,14 @@ pub fn ice_needed(mass: f32) -> f32 {
     0.1 + mass / 200.0
 }
 
-pub fn traverse(body: &Body, tile: &Tile, weather: &Weather, flying: bool) -> Traverse {
+/// How `body` crosses a tile (`g` its ground, `tile` its state) in `weather`.
+pub fn traverse(body: &Body, g: &Ground, tile: &Tile, weather: &Weather, flying: bool) -> Traverse {
     if flying {
         if weather.grounds(body) {
             return Traverse::Blocked;
         }
         // Flyers can't maneuver in dense forest.
-        let speed = 1.4 * (1.0 - 0.5 * tile.veg_density);
+        let speed = 1.4 * (1.0 - 0.5 * g.veg_density);
         return Traverse::Passable { speed, energy: 1.6 };
     }
 
@@ -1269,30 +1391,30 @@ pub fn traverse(body: &Body, tile: &Tile, weather: &Weather, flying: bool) -> Tr
         speed /= 1.0 + sink;
         energy *= 1.0 + 0.5 * sink;
     }
-    if tile.sand > 0.0 {
-        let sink = tile.sand * body.ground_pressure;
+    if g.sand > 0.0 {
+        let sink = g.sand * body.ground_pressure;
         speed /= 1.0 + sink;
         energy *= 1.0 + 0.5 * sink;
     }
 
     // Dense vegetation slows wide bodies; climbers slip through.
-    if tile.veg_density > 0.0 {
-        let hinder = tile.veg_density * (body.width - 0.3 * body.climb).max(0.0);
+    if g.veg_density > 0.0 {
+        let hinder = g.veg_density * (body.width - 0.3 * body.climb).max(0.0);
         speed *= (1.0 - 0.6 * hinder).max(0.3);
     }
 
     // Storms make open ground hard going.
-    if weather.storm() && tile.is_open() {
+    if weather.storm() && g.is_open() {
         speed *= 0.85;
         energy *= 1.3;
     }
 
     // Cliffs block non-climbers.
-    if tile.slope > 0.6 && body.climb < 0.4 {
+    if g.slope > 0.6 && body.climb < 0.4 {
         return Traverse::Blocked;
     }
-    speed *= 1.0 - 0.7 * tile.slope * (1.0 - body.grip);
-    energy *= 1.0 + tile.slope;
+    speed *= 1.0 - 0.7 * g.slope * (1.0 - body.grip);
+    energy *= 1.0 + g.slope;
 
     Traverse::Passable { speed: speed.max(0.05), energy }
 }
@@ -1349,7 +1471,7 @@ mod tests {
         FounderDesign::new("t", Thermo::Warm, BirthType::Live, 2)
     }
 
-    fn tile(biome: Biome) -> Tile {
+    fn tile(biome: Biome) -> (Ground, Tile) {
         make_tile(biome, 0.5, 0.5, 15.0, 0.0)
     }
 
@@ -1357,20 +1479,20 @@ mod tests {
 
     #[test]
     fn deep_water_blocks_non_swimmers_and_admits_swimmers() {
-        let deep = tile(Biome::DeepWater);
-        assert_eq!(traverse(&body(base()), &deep, &CALM, false), Traverse::Blocked);
+        let (g, deep) = tile(Biome::DeepWater);
+        assert_eq!(traverse(&body(base()), &g, &deep, &CALM, false), Traverse::Blocked);
         let swimmer = body(base().with(Gene::Swimming, 0.9).with(Gene::FatStores, 0.5));
-        assert!(matches!(traverse(&swimmer, &deep, &CALM, false), Traverse::Passable { .. }));
+        assert!(matches!(traverse(&swimmer, &g, &deep, &CALM, false), Traverse::Passable { .. }));
     }
 
     #[test]
     fn thick_ice_is_a_bridge_but_hooves_slip() {
-        let mut lake = tile(Biome::DeepWater);
+        let (g, mut lake) = tile(Biome::DeepWater);
         lake.ice = 1.0;
         let hoofed = body(base().with(Gene::Hooves, 1.0));
         let clawed = body(base().with(Gene::Claws, 1.0));
         let (Traverse::Passable { speed: hs, .. }, Traverse::Passable { speed: cs, .. }) =
-            (traverse(&hoofed, &lake, &CALM, false), traverse(&clawed, &lake, &CALM, false))
+            (traverse(&hoofed, &g, &lake, &CALM, false), traverse(&clawed, &g, &lake, &CALM, false))
         else {
             panic!("ice should be passable");
         };
@@ -1379,11 +1501,11 @@ mod tests {
 
     #[test]
     fn wide_feet_help_in_snow() {
-        let mut snowy = tile(Biome::Tundra);
+        let (g, mut snowy) = tile(Biome::Tundra);
         snowy.snow = 1.0;
         let narrow = body(base().with(Gene::BodySize, 0.7).with(Gene::Hooves, 1.0));
         let wide = body(base().with(Gene::BodySize, 0.7).with(Gene::FootWidth, 1.0));
-        let speed = |b: &Body| match traverse(b, &snowy, &CALM, false) {
+        let speed = |b: &Body| match traverse(b, &g, &snowy, &CALM, false) {
             Traverse::Passable { speed, .. } => speed,
             Traverse::Blocked => 0.0,
         };
@@ -1392,17 +1514,17 @@ mod tests {
 
     #[test]
     fn cliffs_need_climbing_and_storms_ground_flyers() {
-        let mut cliff = tile(Biome::Mountain);
+        let (mut cliff, t) = tile(Biome::Mountain);
         cliff.slope = 0.9;
-        assert_eq!(traverse(&body(base()), &cliff, &CALM, false), Traverse::Blocked);
+        assert_eq!(traverse(&body(base()), &cliff, &t, &CALM, false), Traverse::Blocked);
         let climber = body(base().with(Gene::Climbing, 0.8));
-        assert!(matches!(traverse(&climber, &cliff, &CALM, false), Traverse::Passable { .. }));
+        assert!(matches!(traverse(&climber, &cliff, &t, &CALM, false), Traverse::Passable { .. }));
         let storm = Weather::still(0.95);
-        assert_eq!(traverse(&climber, &cliff, &storm, true), Traverse::Blocked);
+        assert_eq!(traverse(&climber, &cliff, &t, &storm, true), Traverse::Blocked);
     }
 
-    fn speed(b: &Body, t: &Tile) -> Option<f32> {
-        match traverse(b, t, &CALM, false) {
+    fn speed(b: &Body, g: &Ground, t: &Tile) -> Option<f32> {
+        match traverse(b, g, t, &CALM, false) {
             Traverse::Passable { speed, .. } => Some(speed),
             Traverse::Blocked => None,
         }
@@ -1413,50 +1535,52 @@ mod tests {
         let walker = body(base().with(Gene::BodySize, 0.4).with(Gene::LegLength, 0.5));
         let paddler = body(base().with(Gene::BodySize, 0.4).with(Gene::Swimming, 0.4));
         let swimmer = body(base().with(Gene::BodySize, 0.4).with(Gene::Swimming, 0.9));
-        let mut river = tile(Biome::Grassland);
-        river.river = 0.4;
+        let (mut g, mut river) = tile(Biome::Grassland);
+        g.river = 0.4;
         // Low water: everyone wades or swims across.
         river.water_depth = 0.3 * walker.height;
         river.current = 0.3;
-        assert!(speed(&walker, &river).is_some());
+        assert!(speed(&walker, &g, &river).is_some());
         // Spring flood: deep and fast. Only the strong swimmer gets across.
         river.water_depth = 2.0 * walker.height;
         river.current = 0.9;
-        assert_eq!(speed(&walker, &river), None);
-        assert_eq!(speed(&paddler, &river), None);
-        assert!(speed(&swimmer, &river).is_some());
+        assert_eq!(speed(&walker, &g, &river), None);
+        assert_eq!(speed(&paddler, &g, &river), None);
+        assert!(speed(&swimmer, &g, &river).is_some());
         // The same depth in still water admits the weak swimmer.
         river.current = 0.0;
-        assert!(speed(&paddler, &river).is_some());
+        assert!(speed(&paddler, &g, &river).is_some());
         // Frozen: a bridge for the walker.
         river.current = 0.9;
         river.ice = 1.0;
-        assert!(speed(&walker, &river).is_some());
+        assert!(speed(&walker, &g, &river).is_some());
     }
 
     /// The biggest river tile, so its normal depth is well above a trickle.
     fn river_tile(map: &Map) -> usize {
-        (0..map.tiles.len())
-            .filter(|&i| map.tiles[i].is_river())
-            .max_by(|&a, &b| map.tiles[a].base_water.total_cmp(&map.tiles[b].base_water).then(b.cmp(&a)))
+        let g = map.ground();
+        (0..g.len())
+            .filter(|&i| g[i].is_river())
+            .max_by(|&a, &b| g[a].base_water.total_cmp(&g[b].base_water).then(b.cmp(&a)))
             .expect("map has rivers")
     }
 
     #[test]
     fn rivers_run_to_water_and_swell_with_snowmelt() {
         let mut map = Map::generate(9, 64, 64);
-        let land = map.tiles.iter().filter(|t| t.base_water < 1.0).count();
-        let rivers = map.tiles.iter().filter(|t| t.is_river()).count();
+        let land = map.ground().iter().filter(|g| g.base_water < 1.0).count();
+        let rivers = map.ground().iter().filter(|g| g.is_river()).count();
         assert!(rivers * 100 > land && rivers * 8 < land, "{rivers} river tiles on {land} land tiles");
         // Every river tile continues into another river tile, a lake or the
         // sea, or leaves the map.
-        for (i, t) in map.tiles.iter().enumerate().filter(|(_, t)| t.is_river()) {
+        let ground = map.ground();
+        for (i, t) in ground.iter().enumerate().filter(|(_, t)| t.is_river()) {
             let (x, y) = (i % 64, i / 64);
             let edge = x == 0 || y == 0 || x == 63 || y == 63;
             let next = (y.saturating_sub(1)..=(y + 1).min(63))
                 .flat_map(|ny| (x.saturating_sub(1)..=(x + 1).min(63)).map(move |nx| ny * 64 + nx))
                 .filter(|&j| j != i)
-                .any(|j| map.tiles[j].is_river() || map.tiles[j].base_water >= 0.3);
+                .any(|j| ground[j].is_river() || ground[j].base_water >= 0.3);
             assert!(edge || next, "river tile at ({x},{y}) leads nowhere: {t:?}");
         }
 
@@ -1466,17 +1590,18 @@ mod tests {
         map.cells.iter_mut().for_each(|c| c.wetness = 0.5);
         map.update_chunks(0, 1, 40, 12, 120, &bal);
         let normal = map.tiles[i].water_depth;
-        assert!(normal > 0.0 && speed(&wader, &map.tiles[i]).is_some(), "depth {normal}");
+        let g = map.ground()[i].clone();
+        assert!(normal > 0.0 && speed(&wader, &g, &map.tiles[i]).is_some(), "depth {normal}");
         // Spring thaw upstream: the river swells and blocks the wader.
-        let source = map.catchment[i] as usize;
+        let source = map.catchment()[i] as usize;
         map.cells[source].melt = 0.5;
         map.update_chunks(0, 1, 10, 12, 120, &bal);
         let t = &map.tiles[i];
         assert!(t.water_depth > 2.0 * normal, "{} vs {normal}", t.water_depth);
-        assert_eq!(speed(&wader, t), None);
+        assert_eq!(speed(&wader, &g, t), None);
         // Winter: the swollen river freezes over and becomes a bridge.
         map.tiles[i].ice = 1.0;
-        assert!(speed(&wader, &map.tiles[i]).is_some());
+        assert!(speed(&wader, &g, &map.tiles[i]).is_some());
     }
 
     #[test]
@@ -1499,10 +1624,11 @@ mod tests {
         assert!(map.water_dist.iter().map(|&d| d as u64).sum::<u64>() > dist);
         assert!(map.terrain_version > version);
         assert!(map
-            .tiles
+            .ground()
             .iter()
-            .filter(|t| t.biome == Biome::Marsh && !t.is_river())
-            .all(|t| t.water_depth < t.base_water));
+            .zip(&map.tiles)
+            .filter(|(g, _)| g.biome == Biome::Marsh && !g.is_river())
+            .all(|(g, t)| t.water_depth < g.base_water));
 
         set_wetness(&mut map, 0.8);
         map.update_chunks(0, 1, 40, 12, 120, &bal);
@@ -1511,7 +1637,12 @@ mod tests {
         let fixed = Balance { water_response: 0.0, ..bal };
         set_wetness(&mut map, 0.05);
         map.update_chunks(0, 1, 40, 12, 120, &fixed);
-        assert!(map.tiles.iter().filter(|t| !t.is_river()).all(|t| t.water_depth == t.base_water));
+        assert!(map
+            .ground()
+            .iter()
+            .zip(&map.tiles)
+            .filter(|(g, _)| !g.is_river())
+            .all(|(g, t)| t.water_depth == g.base_water));
         // The map-level signal follows regional wetness.
         set_wetness(&mut map, 0.05);
         map.advance_weather(1, 40, 120, &bal);
@@ -1571,31 +1702,31 @@ mod tests {
 
     #[test]
     fn canopy_browse_needs_height_or_climbing() {
-        let mut forest = tile(Biome::Forest);
-        forest.canopy = 1.2;
-        forest.veg = forest.veg_max;
+        let (mut g, mut forest) = tile(Biome::Forest);
+        g.canopy = 1.2;
+        forest.veg = g.veg_max;
         let short = body(base().with(Gene::BodySize, 0.1));
         let tall = body(base().with(Gene::BodySize, 0.7).with(Gene::LegLength, 0.8));
         let climber = body(base().with(Gene::BodySize, 0.1).with(Gene::Climbing, 0.8));
-        let reach = |b: &Body, t: &Tile| t.reachable_veg(b, 0.3);
+        let reach = |b: &Body, t: &Tile| t.reachable_veg(&g, b, 0.3);
         assert!(reach(&short, &forest) < reach(&tall, &forest));
         assert_eq!(reach(&climber, &forest), forest.veg);
         assert_eq!(reach(&tall, &forest), forest.veg);
         // Grazed down to the browse line, the short body finds nothing.
-        forest.veg = forest.browse_out_of_reach(&short, 0.3);
+        forest.veg = g.browse_out_of_reach(&short, 0.3);
         assert_eq!(reach(&short, &forest), 0.0);
-        assert!(canopy_refuge(&forest, &climber, &tall) > 0.0);
-        assert_eq!(canopy_refuge(&forest, &short, &tall), 0.0);
-        assert_eq!(canopy_refuge(&tile(Biome::Grassland), &climber, &tall), 0.0);
+        assert!(canopy_refuge(&g, &climber, &tall) > 0.0);
+        assert_eq!(canopy_refuge(&g, &short, &tall), 0.0);
+        assert_eq!(canopy_refuge(&tile(Biome::Grassland).0, &climber, &tall), 0.0);
     }
 
     #[test]
     fn storms_make_open_ground_costly() {
-        let open = tile(Biome::Grassland);
+        let (g, open) = tile(Biome::Grassland);
         let storm = Weather::still(0.9);
         let b = body(base());
         let (Traverse::Passable { speed: s0, energy: e0 }, Traverse::Passable { speed: s1, energy: e1 }) =
-            (traverse(&b, &open, &CALM, false), traverse(&b, &open, &storm, false))
+            (traverse(&b, &g, &open, &CALM, false), traverse(&b, &g, &open, &storm, false))
         else {
             panic!("grassland should be passable");
         };
@@ -1608,7 +1739,10 @@ mod tests {
         let b = Map::generate(9, 64, 64);
         assert_eq!(a.tiles, b.tiles);
         assert_eq!(a.cells, b.cells);
-        assert_eq!(a.catchment, b.catchment);
+        assert_eq!(a.terrain(), b.terrain());
+        // Clones share the static map.
+        let c = a.clone();
+        assert!(Arc::ptr_eq(a.terrain(), c.terrain()));
         let land = a.land_fraction();
         assert!(land > 0.3 && land < 0.98, "land fraction {land}");
     }
@@ -1641,8 +1775,8 @@ mod tests {
     }
 
     /// A grassland grid of the given elevations, for `carve_rivers`.
-    fn grid(w: usize, h: usize, elev: impl Fn(usize, usize) -> f32) -> Vec<Tile> {
-        (0..w * h).map(|i| make_tile(Biome::Grassland, elev(i % w, i / w), 0.5, 15.0, 0.0)).collect()
+    fn grid(w: usize, h: usize, elev: impl Fn(usize, usize) -> f32) -> (Vec<Ground>, Vec<Tile>) {
+        (0..w * h).map(|i| make_tile(Biome::Grassland, elev(i % w, i / w), 0.5, 15.0, 0.0)).unzip()
     }
 
     #[test]
@@ -1653,25 +1787,26 @@ mod tests {
             let d = ((x as f32 - 11.5).powi(2) + (y as f32 - 11.5).powi(2)).sqrt();
             0.4 + 0.01 * d - if d < 2.5 { 0.03 } else { 0.0 }
         };
-        let mut tiles = grid(w, h, bowl);
-        carve_rivers(&mut tiles, w, h, w.div_ceil(CHUNK));
-        let center = &tiles[12 * w + 12];
+        let (mut ground, mut tiles) = grid(w, h, bowl);
+        carve_rivers(&mut ground, &mut tiles, w, h, w.div_ceil(CHUNK));
+        let center = &ground[12 * w + 12];
         assert_eq!(center.biome, Biome::ShallowWater);
         assert!(center.base_water >= 0.2 && center.base_water < 1.0, "{center:?}");
-        assert!(center.has_drinkable_water());
+        assert!(tiles[12 * w + 12].has_drinkable_water());
         // Land around the lake stays land.
-        assert_eq!(tiles[w + 1].biome, Biome::Grassland);
+        assert_eq!(ground[w + 1].biome, Biome::Grassland);
         // The same kind of pit on a parched, tiny catchment stays dry: too
         // little drains in to beat evaporation.
         let (sw, sh) = (7, 7);
-        let mut small = grid(sw, sh, |x, y| if (2..5).contains(&x) && (2..5).contains(&y) { 0.38 } else { 0.4 });
-        small.iter_mut().for_each(|t| t.moisture = 0.0);
-        carve_rivers(&mut small, sw, sh, 1);
-        assert!(small.iter().all(|t| t.biome == Biome::Grassland));
+        let (mut small, mut small_tiles) =
+            grid(sw, sh, |x, y| if (2..5).contains(&x) && (2..5).contains(&y) { 0.38 } else { 0.4 });
+        small.iter_mut().for_each(|g| g.moisture = 0.0);
+        carve_rivers(&mut small, &mut small_tiles, sw, sh, 1);
+        assert!(small.iter().all(|g| g.biome == Biome::Grassland));
         // A plane with no pits gets no lakes.
-        let mut plane = grid(w, h, |x, _| 0.3 + 0.01 * x as f32);
-        carve_rivers(&mut plane, w, h, w.div_ceil(CHUNK));
-        assert!(plane.iter().all(|t| t.biome == Biome::Grassland));
+        let (mut plane, mut plane_tiles) = grid(w, h, |x, _| 0.3 + 0.01 * x as f32);
+        carve_rivers(&mut plane, &mut plane_tiles, w, h, w.div_ceil(CHUNK));
+        assert!(plane.iter().all(|g| g.biome == Biome::Grassland));
     }
 
     #[test]
@@ -1685,7 +1820,7 @@ mod tests {
             // Lake tiles sit above the sea and shore bands of the elevation
             // ranks, where `classify` puts no water.
             let found: Vec<usize> = (0..map.tiles.len())
-                .filter(|&i| map.tiles[i].biome == Biome::ShallowWater && map.tiles[i].elevation >= 0.22)
+                .filter(|&i| map.ground()[i].biome == Biome::ShallowWater && map.ground()[i].elevation >= 0.22)
                 .collect();
             for &i in &found {
                 assert_eq!(map.water_dist[i], 0);
@@ -1703,12 +1838,12 @@ mod tests {
     fn floods_overflow_onto_the_floodplain_and_leave_silt() {
         let mut map = Map::generate(9, 64, 64);
         let bal = Balance::default();
-        let plains: Vec<usize> = (0..map.tiles.len()).filter(|&i| map.tiles[i].plain > 0.0).collect();
-        let rivers = map.tiles.iter().filter(|t| t.is_river()).count();
+        let plains: Vec<usize> = (0..map.tiles.len()).filter(|&i| map.ground()[i].plain > 0.0).collect();
+        let rivers = map.ground().iter().filter(|g| g.is_river()).count();
         assert!(plains.len() > rivers, "{} floodplain tiles by {rivers} river tiles", plains.len());
         for &i in &plains {
-            let t = &map.tiles[i];
-            assert!(t.base_water == 0.0 && !t.is_river() && t.plain >= PLAIN_LEVEL, "{t:?}");
+            let g = &map.ground()[i];
+            assert!(g.base_water == 0.0 && !g.is_river() && g.plain >= PLAIN_LEVEL, "{g:?}");
         }
         // Normal flow: the floodplain is dry.
         let set = |m: &mut Map, wet: f32, melt: f32| {
@@ -1736,13 +1871,13 @@ mod tests {
         // caught in it).
         let deepest =
             *flooded.iter().max_by(|&&a, &&b| map.tiles[a].water_depth.total_cmp(&map.tiles[b].water_depth)).unwrap();
-        let t = map.tiles[deepest].clone();
+        let (g, t) = (map.ground()[deepest].clone(), map.tiles[deepest].clone());
         assert!(t.water_depth > 0.3, "deepest overflow {}", t.water_depth);
         let small = body(base().with(Gene::BodySize, 0.0));
         let swimmer = body(base().with(Gene::BodySize, 0.0).with(Gene::Swimming, 0.9));
         assert!(t.water_depth > 0.8 * small.height);
-        assert_eq!(speed(&small, &t), None);
-        assert!(speed(&swimmer, &t).is_some());
+        assert_eq!(speed(&small, &g, &t), None);
+        assert!(speed(&swimmer, &g, &t).is_some());
         // The water recedes and the silt feeds faster regrowth.
         set(&mut map, 0.5, 0.0);
         map.update_chunks(0, 1, 30, 12, 120, &bal);
@@ -1752,14 +1887,14 @@ mod tests {
         let env = TileEnv { offset: 0.0, wind: 0.3, rain: 0.0, wet: 0.5, river_wet: 0.5, river_melt: 0.0 };
         let (mut silted, mut plain) = (t.clone(), t.clone());
         plain.silt = 0.0;
-        silted.veg = 0.2 * silted.veg_max;
+        silted.veg = 0.2 * g.veg_max;
         plain.veg = silted.veg;
-        update_tile(&mut silted, &env, &bal);
-        update_tile(&mut plain, &env, &bal);
+        update_tile(&g, &mut silted, &env, &bal);
+        update_tile(&g, &mut plain, &env, &bal);
         assert!(silted.veg > plain.veg, "{} vs {}", silted.veg, plain.veg);
         // Silt fades over weeks.
         for _ in 0..24 * 60 {
-            update_tile(&mut silted, &env, &bal);
+            update_tile(&g, &mut silted, &env, &bal);
         }
         assert_eq!(silted.silt, 0.0);
     }
@@ -1816,9 +1951,9 @@ mod tests {
         // ... and tolerates more of it before it is grounded; storms cost.
         let gusty = Weather { wind: 0.75, dir: 0.0 };
         assert!(gusty.grounds(&light) && !gusty.grounds(&heavy));
-        let grass = tile(Biome::Grassland);
-        assert_eq!(traverse(&light, &grass, &gusty, true), Traverse::Blocked);
-        assert!(matches!(traverse(&heavy, &grass, &gusty, true), Traverse::Passable { .. }));
+        let (g, grass) = tile(Biome::Grassland);
+        assert_eq!(traverse(&light, &g, &grass, &gusty, true), Traverse::Blocked);
+        assert!(matches!(traverse(&heavy, &g, &grass, &gusty, true), Traverse::Passable { .. }));
         let storm = Weather { wind: 0.85, dir: 0.0 };
         assert!(storm.storm() && !storm.grounds(&heavy));
         assert!(wind_effect(&heavy, &storm, east).1 > 1.5 * wind_effect(&heavy, &breeze, east).1);
@@ -1831,7 +1966,7 @@ mod tests {
         let walker = body(base().with(Gene::BodySize, 0.2));
         let calm = Weather { wind: 0.2, dir: 0.0 };
         let east = Vec2::new(1.0, 0.0);
-        let (mut high, mut low) = (tile(Biome::Grassland), tile(Biome::Grassland));
+        let (mut high, mut low) = (tile(Biome::Grassland).0, tile(Biome::Grassland).0);
         (high.elevation, low.elevation) = (0.6, 0.6 - 2.0 * GLIDE_DROP);
         // Downhill: a cheap, fast glide; level ground or uphill: none.
         let (s, e) = glide(&glider, &high, &low, &calm, east).expect("glides downhill");
@@ -1840,7 +1975,7 @@ mod tests {
         assert_eq!(glide(&glider, &low, &low, &calm, east), None);
         assert_eq!(glide(&walker, &high, &low, &calm, east), None);
         // A climber launches from the canopy, even on level ground.
-        let forest = tile(Biome::Forest);
+        let forest = tile(Biome::Forest).0;
         assert!(glide(&glider, &forest, &low, &calm, east).is_some());
         // Strong wind stops the launch.
         assert!(glide(&glider, &high, &low, &Weather { wind: 0.8, dir: 0.0 }, east).is_none());

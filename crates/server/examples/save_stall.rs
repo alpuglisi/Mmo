@@ -72,7 +72,12 @@ fn main() {
     while let Ok(ev) = rx.try_recv() {
         saved += matches!(ev, PersistEvent::Snapshot(_)) as usize;
     }
-    println!("medians of {reps}: save {:.1} MB, {saved} written by the saver", bytes as f64 / 1e6);
+    let terrain = snapshot::terrain_blob(&game.world, game.saved().world_id()).bytes.len();
+    println!(
+        "medians of {reps}: save {:.1} MB (terrain {:.1} MB stored once per world), {saved} written by the saver",
+        bytes as f64 / 1e6,
+        terrain as f64 / 1e6
+    );
     println!("  tick, no save:                          {:.1} ms", median(plain));
     println!("  tick + save encoded on the world thread: {:.1} ms", median(inline));
     println!(

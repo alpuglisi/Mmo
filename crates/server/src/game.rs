@@ -82,17 +82,41 @@ pub enum PersistEvent {
     Snapshot(SnapshotBlob),
 }
 
-/// Saved-game bytes; `Debug` shows only the size.
+/// Saved-game bytes and the terrain they name; `Debug` shows only sizes.
 #[derive(Clone, PartialEq)]
 pub struct SnapshotBlob {
     pub tick: u64,
     pub day: u64,
     pub bytes: Vec<u8>,
+    /// The world's static terrain, which the saved game names by hash and
+    /// the store keeps once per world (shared by every save of it).
+    pub terrain: std::sync::Arc<TerrainBlob>,
 }
 
 impl std::fmt::Debug for SnapshotBlob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SnapshotBlob {{ tick: {}, {} bytes }}", self.tick, self.bytes.len())
+        write!(
+            f,
+            "SnapshotBlob {{ tick: {}, {} bytes, terrain {:016x} }}",
+            self.tick,
+            self.bytes.len(),
+            self.terrain.hash
+        )
+    }
+}
+
+/// A world's static terrain (`evo_sim::terrain::Terrain::encode`), stored
+/// once per world id and content hash.
+#[derive(Clone, PartialEq)]
+pub struct TerrainBlob {
+    pub world_id: String,
+    pub hash: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for TerrainBlob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TerrainBlob {{ world {}, {:016x}, {} bytes }}", self.world_id, self.hash, self.bytes.len())
     }
 }
 
@@ -303,6 +327,14 @@ pub struct SavedGame {
     seen_catastrophes: Vec<(bool, bool)>,
     /// Version 2 on.
     economy: Option<Economy>,
+}
+
+impl SavedGame {
+    /// The world that wrote it (empty before world ids), which keys its
+    /// stored terrain.
+    pub fn world_id(&self) -> &str {
+        &self.world_id
+    }
 }
 
 /// Refuse a price above [`economy::MAX_PRICE`].
@@ -2541,7 +2573,7 @@ mod tests {
         // on its first steps, near enough to reach water within the day.
         let m = &g.world.map;
         let dry = (0..m.tiles.len())
-            .find(|&k| m.water_dist[k] == 5 && m.tiles[k].slope < 0.3 && m.tiles[k].veg_density < 0.4)
+            .find(|&k| m.water_dist[k] == 5 && m.ground()[k].slope < 0.3 && m.ground()[k].veg_density < 0.4)
             .expect("open ground five tiles from water");
         let dry = evo_sim::terrain::Map::tile_center(dry % m.width, dry / m.width);
         g.world.organisms.iter_mut().find(|o| o.id == id).unwrap().pos = dry;
@@ -3264,7 +3296,7 @@ mod tests {
         let json = serde_json::to_string(&g.saved()).unwrap();
         let saved: SavedGame = serde_json::from_str(&json).unwrap();
         assert_eq!(saved.version, SAVED_GAME_VERSION);
-        let world = World::restore(&g.world.snapshot()).unwrap();
+        let world = World::restore(&g.world.snapshot(), Some(g.world.map.terrain().clone())).unwrap();
         let mut r = Game::resume(world, GameConfig::default(), saved, Vec::new());
         assert!(r.economy_restored());
         assert_eq!((r.balance(1), r.balance(2), r.escrow(2)), (g.balance(1), g.balance(2), 7));
@@ -3283,7 +3315,7 @@ mod tests {
         old.as_object_mut().unwrap().remove("version");
         old.as_object_mut().unwrap().remove("economy");
         let saved: SavedGame = serde_json::from_value(old).unwrap();
-        let world = World::restore(&g.world.snapshot()).unwrap();
+        let world = World::restore(&g.world.snapshot(), Some(g.world.map.terrain().clone())).unwrap();
         let mut r = Game::resume(world, GameConfig::default(), saved, Vec::new());
         assert!(!r.economy_restored());
         assert_eq!((r.balance(1), r.escrow(2)), (0, 0));

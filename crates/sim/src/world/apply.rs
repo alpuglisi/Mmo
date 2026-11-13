@@ -345,7 +345,7 @@ impl World {
         let fly = body.can_fly && o.needs.energy > 25.0 && !air.grounds(&body);
         // Stuck on a tile the body can't use (e.g. ice melted underneath):
         // struggle toward the target regardless.
-        let stranded = !fly && traverse(&body, self.map.tile_at(pos), &air, false) == Traverse::Blocked;
+        let stranded = !fly && self.map.traverse_at(&body, pos, false) == Traverse::Blocked;
         let effort = Effort { sprint: if sprinting { 2.5 } else { 1.0 }, endurance };
 
         // Walkers follow a route planned earlier, or plan one when the direct
@@ -365,12 +365,12 @@ impl World {
             let rule = if stranded {
                 Traverse::Passable { speed: 0.3, energy: 2.0 }
             } else {
-                let rule = traverse(&body, self.map.tile_at(dest), &self.map.weather_at(dest), fly);
+                let rule = self.map.traverse_at(&body, dest, fly);
                 // Flyers ride or fight the wind; gliders launch from height.
                 let lift = if fly {
                     Some(wind_effect(&body, &air, dd))
                 } else {
-                    glide(&body, self.map.tile_at(pos), self.map.tile_at(dest), &air, dd)
+                    glide(&body, self.map.ground_at(pos), self.map.ground_at(dest), &air, dd)
                 };
                 match (rule, lift) {
                     (Traverse::Passable { speed, energy }, Some((ls, le))) => {
@@ -384,10 +384,7 @@ impl World {
                 let new_pos = self.map.clamp(pos + dd * dist);
                 // The end point can fall short of the checked tile (or cut a
                 // corner): never step onto a tile the body can't use.
-                if stranded
-                    || traverse(&body, self.map.tile_at(new_pos), &self.map.weather_at(new_pos), fly)
-                        != Traverse::Blocked
-                {
+                if stranded || self.map.traverse_at(&body, new_pos, fly) != Traverse::Blocked {
                     o.pos = new_pos;
                     o.needs.energy = (o.needs.energy - effort.cost(dist, e)).max(0.0);
                     if fly && air.storm() {
@@ -444,7 +441,7 @@ impl World {
             from,
             target,
             budget,
-            |t| enter_cost(traverse(&body, t, &Weather::still(t.wind), false)),
+            |g, t| enter_cost(traverse(&body, g, t, &Weather::still(t.wind), false)),
             &mut path.waypoints,
         );
         path.goal = target;
@@ -472,7 +469,7 @@ impl World {
         let center = |k: u32| Map::tile_center(k as usize % w, k as usize / w);
         let rule = |k: u32| {
             let t = &self.map.tiles[k as usize];
-            traverse(&body, t, &Weather::still(t.wind), false)
+            traverse(&body, &self.map.ground()[k as usize], t, &Weather::still(t.wind), false)
         };
         let (cx, cy) = self.map.tile_coords(pos);
         let on_route = (first as usize % w).abs_diff(cx) <= 1 && (first as usize / w).abs_diff(cy) <= 1;
@@ -483,7 +480,8 @@ impl World {
         };
         // A glider on a route still glides where it has the height.
         if body.can_glide {
-            let (here, next) = (&self.map.tiles[self.map.idx(cx, cy)], &self.map.tiles[first as usize]);
+            let ground = self.map.ground();
+            let (here, next) = (&ground[self.map.idx(cx, cy)], &ground[first as usize]);
             let dir = (center(first) - pos).norm();
             if let Some((ls, le)) = glide(&body, here, next, &self.map.weather_at(pos), dir) {
                 (s, e) = (s * ls, e * le);
@@ -527,9 +525,10 @@ impl World {
         let fph = o.food_per_hunger();
         let (pos, body) = (o.pos, o.traits.body);
         let share = self.config.balance.canopy_share;
-        let tile = self.map.tile_at_mut(pos);
-        let got = (want * fph / eff).min(tile.reachable_veg(&body, share));
-        tile.veg -= got;
+        let (x, y) = self.map.tile_coords(pos);
+        let k = self.map.idx(x, y);
+        let got = (want * fph / eff).min(self.map.tiles[k].reachable_veg(&self.map.ground()[k], &body, share));
+        self.map.tiles[k].veg -= got;
         self.feed(i, got * eff / fph, fat_room);
     }
 
@@ -583,7 +582,7 @@ impl World {
             p *= (1.0 - self.config.balance.burrow_shelter * self.burrow_depth(b)).max(0.0);
         }
         // A climber up in the canopy is mostly out of reach of ground hunters.
-        p *= 1.0 - crate::terrain::canopy_refuge(self.map.tile_at(b.pos), &b.traits.body, &a.traits.body);
+        p *= 1.0 - crate::terrain::canopy_refuge(self.map.ground_at(b.pos), &b.traits.body, &a.traits.body);
         let tox = b.pheno[Gene::Toxins];
         if tox > 0.3 {
             p *= 1.0 - 0.6 * tox;
@@ -801,9 +800,9 @@ impl World {
         let tick = self.tick;
         let pos = o.pos;
         let tile = self.map.tile_at(pos);
-        let (tile_temp, open, water) = (tile.temp, tile.is_open(), tile.water_depth);
+        let (tile_temp, open, water) = (tile.temp, self.map.ground_at(pos).is_open(), tile.water_depth);
         let body = o.traits.body;
-        let drowning = !body.can_fly && traverse(&body, tile, &self.map.weather_at(pos), false) == Traverse::Blocked;
+        let drowning = !body.can_fly && self.map.traverse_at(&body, pos, false) == Traverse::Blocked;
         let (shared, depth) = burrow;
 
         let bal = self.config.balance;
@@ -1165,10 +1164,12 @@ impl World {
                 if !here && (!self.passable_for(o, p) || self.clutch_at.contains_key(&(x, y))) {
                     continue;
                 }
-                let tile = &self.map.tiles[self.map.idx(x, y)];
+                let k = self.map.idx(x, y);
+                let g = &self.map.ground()[k];
                 let stress = super::environment::nest_stress(
-                    tile,
-                    tile.base_temp + self.season_offset,
+                    g,
+                    &self.map.tiles[k],
+                    g.base_temp + self.season_offset,
                     self.map.climate_temp,
                     warm_eggs,
                     &bal,
@@ -1506,8 +1507,10 @@ mod tests {
     /// a sheltered site damps nothing).
     fn set_climate(w: &mut World, pos: Vec2, temp: f32) {
         let climate = w.map.climate_temp;
-        let t = w.map.tile_at_mut(pos);
-        (t.temp, t.base_temp) = (temp, temp - climate);
+        w.map.tile_at_mut(pos).temp = temp;
+        let (x, y) = w.map.tile_coords(pos);
+        let k = w.map.idx(x, y);
+        w.map.edit_terrain().ground[k].base_temp = temp - climate;
     }
 
     /// Doc: eggs "can be raided, chilled or overheated". Abandoned
@@ -1609,18 +1612,20 @@ mod tests {
         let pos = w.organisms[i].pos;
         let (cx, cy) = w.map.tile_coords(pos);
         let here = w.map.tile_at(pos).clone();
+        let ground = w.map.ground_at(pos).clone();
         let r = NEST_SEARCH as i64;
         for dy in -r..=r {
             for dx in -r..=r {
                 let (x, y) = ((cx as i64 + dx).clamp(0, 63) as usize, (cy as i64 + dy).clamp(0, 63) as usize);
                 let idx = w.map.idx(x, y);
-                w.map.tiles[idx] =
-                    crate::terrain::Tile { base_temp: 26.0, canopy: 0.0, water_depth: 0.0, ..here.clone() };
+                w.map.tiles[idx] = crate::terrain::Tile { water_depth: 0.0, ..here.clone() };
+                w.map.edit_terrain().ground[idx] =
+                    crate::terrain::Ground { base_temp: 26.0, canopy: 0.0, ..ground.clone() };
             }
         }
         let shade = ((cx as i64 + 2).clamp(0, 63) as usize, cy);
         let idx = w.map.idx(shade.0, shade.1);
-        w.map.tiles[idx].canopy = 1.0;
+        w.map.edit_terrain().ground[idx].canopy = 1.0;
         assert!(w.passable_for(&w.organisms[i], Map::tile_center(shade.0, shade.1)));
         w.season_offset = 12.0 + w.map.climate_temp;
         assert_eq!(w.map.tile_coords(w.nest_site(i, false)), shade);

@@ -16,7 +16,7 @@ use crate::math::Vec2;
 use crate::mating;
 use crate::organism::{Action, Organism, Sex};
 use crate::rng::{rng_for, splitmix64, stream, SimRng};
-use crate::terrain::{traverse, Traverse};
+use crate::terrain::{traverse, Traverse, Weather};
 
 /// How close a mother must be to her young to defend it.
 const GUARD_REACH: f32 = 2.5;
@@ -652,7 +652,7 @@ impl World {
             }
             Action::Rest | Action::Bask | Action::Idle => {
                 // Cold-blooded organisms bask in the open.
-                if action == Action::Bask && !self.map.tile_at(o.pos).is_open() {
+                if action == Action::Bask && !self.map.ground_at(o.pos).is_open() {
                     self.wander(o, &mut intent, &mut rng, 3.0);
                     intent.action = Action::Bask;
                 }
@@ -774,12 +774,8 @@ impl World {
                         seen.threat_from = j;
                     }
                 }
-                let reachable = || {
-                    matches!(
-                        traverse(&o.traits.body, self.map.tile_at(q.pos), &self.map.weather_at(q.pos), false),
-                        Traverse::Passable { .. }
-                    )
-                };
+                let reachable =
+                    || matches!(self.map.traverse_at(&o.traits.body, q.pos, false), Traverse::Passable { .. });
                 if v.hunter && q.mass() < max_prey_mass(o, coop) && !q.sheltered && reachable() {
                     // Learned avoidance of bright prey where warning coloration holds.
                     let avoid = if q.pheno[Gene::Coloration] > 0.6 {
@@ -855,12 +851,12 @@ impl World {
         let here = self.map.tile_at(o.pos);
         // Browse in the canopy only counts if the body can reach it.
         let (body, share) = (&o.traits.body, self.config.balance.canopy_share);
-        let veg = |t: &crate::terrain::Tile| t.reachable_veg(body, share);
+        let veg = |g: &crate::terrain::Ground, t: &crate::terrain::Tile| t.reachable_veg(g, body, share);
 
         // Value of each option in rough "food I can get" terms.
         let hunt_value = prey.map(|(s, _)| s * 4.0 * c).unwrap_or(0.0);
         let meat_here = here.meat * c;
-        let graze_here = veg(here) * plant_eff;
+        let graze_here = veg(self.map.ground_at(o.pos), here) * plant_eff;
 
         if meat_here > 1.0 && meat_here >= graze_here {
             intent.action = Action::Scavenge;
@@ -878,7 +874,7 @@ impl World {
         }
         if o.traits.carnivory > 0.7 {
             // Carnivore with nothing in sight: look for carcasses, else roam.
-            if let Some(t) = self.find_tile(o, rng, 1.0, |t| t.meat * c) {
+            if let Some(t) = self.find_tile(o, rng, 1.0, |_, t| t.meat * c) {
                 intent.action = Action::Scavenge;
                 intent.target = Some(t);
             } else {
@@ -901,12 +897,12 @@ impl World {
         // Keep heading for the patch chosen earlier while it still has food.
         if let Some(t) = o.forage_target {
             let tile = self.map.tile_at(t);
-            if veg(tile) * plant_eff + tile.meat * c >= bite {
+            if veg(self.map.ground_at(t), tile) * plant_eff + tile.meat * c >= bite {
                 intent.target = Some(t);
                 return;
             }
         }
-        match self.find_tile(o, rng, 2.0 * bite, |t| veg(t) * plant_eff + t.meat * c) {
+        match self.find_tile(o, rng, 2.0 * bite, |g, t| veg(g, t) * plant_eff + t.meat * c) {
             Some(t) => {
                 intent.target = Some(t);
                 intent.new_forage = Some(Some(t));
@@ -925,7 +921,7 @@ impl World {
         o: &Organism,
         rng: &mut SimRng,
         min_value: f32,
-        value: impl Fn(&crate::terrain::Tile) -> f32,
+        value: impl Fn(&crate::terrain::Ground, &crate::terrain::Tile) -> f32,
     ) -> Option<Vec2> {
         let near = 2.0 + 6.0 * o.pheno[Gene::ForagingRange];
         let mut best: Option<(f32, Vec2)> = None;
@@ -936,11 +932,13 @@ impl World {
             }
             let r = if k < 8 { near } else { near * 3.0 };
             let cand = self.map.clamp(o.pos + Vec2::new(rng.gen_range(-r..r), rng.gen_range(-r..r)));
-            let t = self.map.tile_at(cand);
-            if !matches!(traverse(&o.traits.body, t, &self.map.weather_at(cand), false), Traverse::Passable { .. }) {
+            let (x, y) = self.map.tile_coords(cand);
+            let k = self.map.idx(x, y);
+            let (g, t) = (&self.map.ground()[k], &self.map.tiles[k]);
+            if !matches!(traverse(&o.traits.body, g, t, &Weather::still(t.wind), false), Traverse::Passable { .. }) {
                 continue;
             }
-            let v = value(t);
+            let v = value(g, t);
             let score = v / (1.0 + 0.3 * o.pos.dist(cand));
             if v >= min_value && best.is_none_or(|(s, _)| score > s) {
                 best = Some((score, cand));
@@ -958,7 +956,7 @@ impl World {
             intent.target = Some(c);
         } else if self.map.tile_at(o.pos).veg * eff > 0.5 * bite {
             intent.target = None;
-        } else if let Some(t) = self.find_tile(o, rng, 2.0 * bite, |t| t.veg * eff) {
+        } else if let Some(t) = self.find_tile(o, rng, 2.0 * bite, |_, t| t.veg * eff) {
             intent.target = Some(t);
         } else {
             self.wander(o, intent, rng, 5.0);
@@ -968,12 +966,7 @@ impl World {
     fn wander(&self, o: &Organism, intent: &mut Intent, rng: &mut SimRng, range: f32) {
         // A target the body can't stand on is never reached, and would pin the
         // organism against the shore forever (starving next to the water).
-        let usable = |t: Vec2| {
-            matches!(
-                traverse(&o.traits.body, self.map.tile_at(t), &self.map.weather_at(t), false),
-                Traverse::Passable { .. }
-            )
-        };
+        let usable = |t: Vec2| matches!(self.map.traverse_at(&o.traits.body, t, false), Traverse::Passable { .. });
         if let Some(t) = o.wander_target {
             if o.pos.dist(t) > 0.5 && usable(t) {
                 intent.target = Some(t);
@@ -1001,9 +994,8 @@ mod tests {
     fn wander_drops_a_target_the_body_cannot_reach() {
         let mut w = presets::standard_world(WorldConfig { seed: 9, width: 48, height: 48, ..Default::default() }, 1);
         let i = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
-        let blocked = |w: &World, p: Vec2| {
-            traverse(&w.organisms[i].traits.body, w.map.tile_at(p), &w.map.weather_at(p), false) == Traverse::Blocked
-        };
+        let blocked =
+            |w: &World, p: Vec2| w.map.traverse_at(&w.organisms[i].traits.body, p, false) == Traverse::Blocked;
         let water = (0..48 * 48)
             .map(|k| Map::tile_center(k % 48, k / 48))
             .find(|&p| blocked(&w, p))

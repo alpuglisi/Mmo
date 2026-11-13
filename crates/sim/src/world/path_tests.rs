@@ -16,30 +16,33 @@ fn flat_world(path_nodes: f32) -> World {
     config.balance.path_nodes = path_nodes;
     let mut w = World::new(config);
     for t in &mut w.map.tiles {
-        t.biome = Biome::Grassland;
         t.water_depth = 0.0;
         t.ice = 0.0;
         t.snow = 0.0;
         t.mud = 0.0;
-        t.sand = 0.0;
-        t.slope = 0.0;
-        t.veg_density = 0.1;
+    }
+    for g in &mut w.map.edit_terrain().ground {
+        g.biome = Biome::Grassland;
+        g.sand = 0.0;
+        g.slope = 0.0;
+        g.veg_density = 0.1;
     }
     w
 }
 
 fn set(w: &mut World, x: usize, y: usize, what: &str) {
-    let t = &mut w.map.tiles[y * W + x];
+    let k = y * W + x;
     match what {
         "lake" => {
-            t.biome = Biome::DeepWater;
-            t.water_depth = 3.0;
+            w.map.edit_terrain().ground[k].biome = Biome::DeepWater;
+            w.map.tiles[k].water_depth = 3.0;
         }
         "cliff" => {
-            t.biome = Biome::Mountain;
-            t.slope = 0.9;
+            let g = &mut w.map.edit_terrain().ground[k];
+            g.biome = Biome::Mountain;
+            g.slope = 0.9;
         }
-        "ice" => t.ice = 1.0,
+        "ice" => w.map.tiles[k].ice = 1.0,
         _ => unreachable!(),
     }
 }
@@ -82,7 +85,7 @@ fn walk(w: &mut World, i: usize, target: Vec2, ticks: u32) -> (Option<u32>, bool
         let o = &w.organisms[i];
         let tile = w.map.tile_at(o.pos);
         assert!(
-            traverse(&o.traits.body, tile, &w.weather, false) != Traverse::Blocked,
+            traverse(&o.traits.body, w.map.ground_at(o.pos), tile, &w.weather, false) != Traverse::Blocked,
             "stepped onto a blocked tile at ({:.1}, {:.1})",
             o.pos.x,
             o.pos.y

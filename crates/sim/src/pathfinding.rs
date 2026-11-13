@@ -12,7 +12,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use crate::math::Vec2;
-use crate::terrain::{Map, Tile, Traverse};
+use crate::terrain::{Ground, Map, Tile, Traverse};
 
 /// Fastest speed multiplier movement uses (`move_toward` caps tile speed).
 pub const MAX_TILE_SPEED: f32 = 1.5;
@@ -61,7 +61,10 @@ impl Path {
 
 /// Reusable search buffers, sized to the map. Stamps mark which entries
 /// belong to the current search, so nothing is cleared between searches.
-#[derive(Clone, Debug, Default)]
+/// Nothing in them carries over from one search to the next, so a clone
+/// starts empty (as after a snapshot restore): a world clone, which the
+/// server's saver takes daily, doesn't copy a map-sized scratch.
+#[derive(Debug, Default)]
 pub struct PathScratch {
     stamp: u32,
     seen: Vec<u32>,
@@ -90,6 +93,12 @@ fn octile(ax: usize, ay: usize, bx: usize, by: usize) -> f32 {
     dx.max(dy) + (std::f32::consts::SQRT_2 - 1.0) * dx.min(dy)
 }
 
+impl Clone for PathScratch {
+    fn clone(&self) -> Self {
+        PathScratch::default()
+    }
+}
+
 impl PathScratch {
     fn begin(&mut self, n: usize) {
         if self.seen.len() != n {
@@ -110,12 +119,12 @@ impl PathScratch {
         self.heap.clear();
     }
 
-    fn touch(&mut self, i: usize, cost: &impl Fn(&Tile) -> Option<f32>, map: &Map) {
+    fn touch(&mut self, i: usize, cost: &impl Fn(&Ground, &Tile) -> Option<f32>, map: &Map) {
         if self.seen[i] != self.stamp {
             self.seen[i] = self.stamp;
             self.g[i] = f32::INFINITY;
             self.closed[i] = false;
-            self.enter[i] = cost(&map.tiles[i]).unwrap_or(f32::INFINITY);
+            self.enter[i] = cost(&map.ground()[i], &map.tiles[i]).unwrap_or(f32::INFINITY);
         }
     }
 
@@ -131,7 +140,7 @@ impl PathScratch {
         from: Vec2,
         to: Vec2,
         budget: usize,
-        cost: impl Fn(&Tile) -> Option<f32>,
+        cost: impl Fn(&Ground, &Tile) -> Option<f32>,
         out: &mut Vec<u32>,
     ) -> Outcome {
         out.clear();
@@ -263,17 +272,22 @@ mod tests {
     /// All-grass map with the given tiles turned to deep water.
     fn map_with_water(w: usize, h: usize, water: impl Fn(usize, usize) -> bool) -> Map {
         let mut m = Map::generate(1, w, h);
+        let terrain = m.edit_terrain();
         for y in 0..h {
             for x in 0..w {
-                let t = &mut m.tiles[y * w + x];
-                t.biome = if water(x, y) { Biome::DeepWater } else { Biome::Grassland };
+                let g = &mut terrain.ground[y * w + x];
+                g.biome = if water(x, y) { Biome::DeepWater } else { Biome::Grassland };
             }
         }
         m
     }
 
-    fn walk(t: &Tile) -> Option<f32> {
-        (t.biome != Biome::DeepWater).then_some(1.0)
+    fn walk(g: &Ground, _: &Tile) -> Option<f32> {
+        (g.biome != Biome::DeepWater).then_some(1.0)
+    }
+
+    fn walkable(m: &Map, k: usize) -> bool {
+        walk(&m.ground()[k], &m.tiles[k]).is_some()
     }
 
     #[test]
@@ -288,10 +302,10 @@ mod tests {
         let mut prev = (2usize, 2usize);
         for &k in out.iter().rev() {
             let (x, y) = (k as usize % 12, k as usize / 12);
-            assert!(walk(&m.tiles[k as usize]).is_some());
+            assert!(walkable(&m, k as usize));
             assert!(x.abs_diff(prev.0) <= 1 && y.abs_diff(prev.1) <= 1);
             // A diagonal step needs both orthogonal tiles open.
-            assert!(walk(&m.tiles[prev.1 * 12 + x]).is_some() && walk(&m.tiles[y * 12 + prev.0]).is_some());
+            assert!(walkable(&m, prev.1 * 12 + x) && walkable(&m, y * 12 + prev.0));
             prev = (x, y);
         }
         assert!(out.iter().any(|&k| k as usize / 12 >= 9), "went through the gap");

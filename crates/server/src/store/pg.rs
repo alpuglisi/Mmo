@@ -38,6 +38,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "initial", include_str!("../../migrations/0001_initial.sql")),
     (2, "economy", include_str!("../../migrations/0002_economy.sql")),
     (3, "alert_prefs", include_str!("../../migrations/0003_alert_prefs.sql")),
+    (4, "terrain", include_str!("../../migrations/0004_terrain.sql")),
 ];
 
 #[derive(Debug)]
@@ -67,6 +68,11 @@ fn int(v: u64) -> i64 {
 
 fn get_u64(row: &PgRow, col: &str) -> StoreResult<u64> {
     Ok(row.try_get::<i64, _>(col)? as u64)
+}
+
+/// A terrain content hash as stored: 16 lowercase hex digits.
+fn hash_text(hash: u64) -> String {
+    format!("{hash:016x}")
 }
 
 fn kind_names(kinds: &[AlertKind]) -> Vec<String> {
@@ -251,17 +257,22 @@ impl Store for PgStore {
     }
 
     async fn put_snapshot(&self, tick: u64, day: u64, bytes: &[u8]) -> StoreResult<()> {
-        let version = crate::snapshot::header(bytes).ok().map(|h| h.version as i32);
+        let header = crate::snapshot::header(bytes).ok();
+        let version = header.map(|h| h.version as i32);
+        let terrain = header.and_then(|h| h.terrain).map(hash_text);
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO snapshots (tick, day, size_bytes, format_version, data) VALUES ($1, $2, $3, $4, $5) \
+            "INSERT INTO snapshots (tick, day, size_bytes, format_version, terrain_hash, data) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
              ON CONFLICT (tick) DO UPDATE SET day = EXCLUDED.day, size_bytes = EXCLUDED.size_bytes, \
-             format_version = EXCLUDED.format_version, saved_at = now(), data = EXCLUDED.data",
+             format_version = EXCLUDED.format_version, terrain_hash = EXCLUDED.terrain_hash, saved_at = now(), \
+             data = EXCLUDED.data",
         )
         .bind(int(tick))
         .bind(int(day))
         .bind(int(bytes.len() as u64))
         .bind(version)
+        .bind(terrain)
         .bind(bytes)
         .execute(&mut *tx)
         .await?;
@@ -290,9 +301,46 @@ impl Store for PgStore {
     }
 
     async fn clear_snapshots(&self) -> StoreResult<()> {
-        sqlx::query("DELETE FROM snapshots").execute(&self.pool).await?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM snapshots").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM terrains").execute(&mut *tx).await?;
+        tx.commit().await?;
         Ok(())
     }
+
+    async fn put_terrain(&self, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()> {
+        // Usually stored already (once per world): don't send megabytes to
+        // find out.
+        let known = sqlx::query("SELECT 1 FROM terrains WHERE world_id = $1 AND hash = $2")
+            .bind(world_id)
+            .bind(hash_text(hash))
+            .fetch_optional(&self.pool)
+            .await?;
+        if known.is_some() {
+            return Ok(());
+        }
+        sqlx::query(
+            "INSERT INTO terrains (world_id, hash, size_bytes, data) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (world_id, hash) DO NOTHING",
+        )
+        .bind(world_id)
+        .bind(hash_text(hash))
+        .bind(int(bytes.len() as u64))
+        .bind(bytes)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_terrain(&self, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>> {
+        let row = sqlx::query("SELECT data FROM terrains WHERE world_id = $1 AND hash = $2")
+            .bind(world_id)
+            .bind(hash_text(hash))
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| r.try_get("data")).transpose()?)
+    }
+
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
         sqlx::query(
             "INSERT INTO balances (player, balance, updated_day) VALUES ($1, $2, $3) \

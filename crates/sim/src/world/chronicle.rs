@@ -308,7 +308,7 @@ impl World {
         };
         for o in self.organisms.iter().filter(|o| o.is_breeding_adult()) {
             add(diet_niche(o.genome.expr(Gene::Carnivory)), &o.genome, 1.0);
-            add(biome_niche(self.map.tile_at(o.pos).biome), &o.genome, 1.0);
+            add(biome_niche(self.map.ground_at(o.pos).biome), &o.genome, 1.0);
         }
         if self.config.lod.enabled {
             let today = self.tick as f64 / self.config.ticks_per_day as f64;
@@ -323,7 +323,7 @@ impl World {
                     ((r % cx) * CHUNK + CHUNK / 2).min(self.map.width - 1),
                     ((r / cx) * CHUNK + CHUNK / 2).min(self.map.height - 1),
                 );
-                let biome = biome_niche(self.map.tile_at(center).biome);
+                let biome = biome_niche(self.map.ground_at(center).biome);
                 let w = adults / c.pool.len() as f64;
                 for e in &c.pool {
                     add(diet_niche(e.genome.expr(Gene::Carnivory)), &e.genome, w);

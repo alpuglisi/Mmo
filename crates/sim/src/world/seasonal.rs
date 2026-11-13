@@ -108,7 +108,7 @@ enum Store {
 impl World {
     /// Seasonal mean temperature at `p` (no day/night swing or storms).
     pub(crate) fn seasonal_temp(&self, p: Vec2) -> f32 {
-        self.map.tile_at(p).base_temp + self.season_offset
+        self.map.ground_at(p).base_temp + self.season_offset
     }
 
     /// Fat the organism would still lay down now (0 outside its fattening
@@ -409,7 +409,7 @@ impl World {
                 continue;
             }
             let (x, y) = self.map.tile_coords(p);
-            let t = &self.map.tiles[self.map.idx(x, y)];
+            let t = &self.map.ground()[self.map.idx(x, y)];
             let water = self.map.water_dist[self.map.idx(x, y)].min(20) as f32;
             let score = t.veg_max / 40.0 - 0.1 * water - 0.01 * dx.abs();
             if best.is_none_or(|(s, _)| score > s) {
@@ -678,11 +678,13 @@ mod tests {
     fn flat_world(base_temp: f32, veg: f32, day: u32) -> World {
         let mut w = World::new(WorldConfig { seed: 7, width: 24, height: 24, ..Default::default() });
         for t in &mut w.map.tiles {
-            (t.biome, t.water_depth, t.mud, t.sand, t.slope, t.veg_density) =
-                (Biome::Grassland, 0.0, 0.0, 0.0, 0.0, 0.1);
-            (t.base_temp, t.veg, t.veg_max, t.snow, t.ice) = (base_temp, veg, veg, 0.0, 0.0);
+            (t.water_depth, t.mud, t.veg, t.snow, t.ice, t.current) = (0.0, 0.0, veg, 0.0, 0.0, 0.0);
+        }
+        for g in &mut w.map.edit_terrain().ground {
+            (g.biome, g.sand, g.slope, g.veg_density) = (Biome::Grassland, 0.0, 0.0, 0.1);
+            (g.base_temp, g.veg_max) = (base_temp, veg);
             // No lakes or rivers to refill when the weather updates water levels.
-            (t.base_water, t.river, t.current) = (0.0, 0.0, 0.0);
+            (g.base_water, g.river) = (0.0, 0.0);
         }
         set_day(&mut w, day);
         w
@@ -795,8 +797,8 @@ mod tests {
         w.step();
         assert_eq!(w.organisms[brum[0]].dormancy, Dormancy::Winter);
         assert_eq!(w.organisms[hib[0]].dormancy, Dormancy::Awake);
-        for t in &mut w.map.tiles {
-            t.base_temp = 20.0;
+        for g in &mut w.map.edit_terrain().ground {
+            g.base_temp = 20.0;
         }
         w.step();
         assert_eq!(w.organisms[brum[0]].dormancy, Dormancy::Awake);
@@ -1018,7 +1020,10 @@ mod tests {
         // Winter, nothing to graze: it lives off the cache.
         set_day(&mut w, 95);
         for t in &mut w.map.tiles {
-            (t.veg, t.veg_max, t.base_temp) = (0.0, 0.0, 20.0);
+            t.veg = 0.0;
+        }
+        for g in &mut w.map.edit_terrain().ground {
+            (g.veg_max, g.base_temp) = (0.0, 20.0);
         }
         let before = w.organisms[c].cache;
         w.organisms[c].needs.hunger = 60.0;

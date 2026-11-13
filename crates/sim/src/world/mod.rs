@@ -62,13 +62,13 @@ use crate::math::Vec2;
 use crate::organism::{DeathCause, OrgId, Organism, Sex};
 use crate::pathfinding::PathScratch;
 use crate::rng::{rng_for, stream};
-use crate::terrain::{traverse, Map, Season, Traverse, Weather};
+use crate::terrain::{Map, Season, Traverse, Weather};
 
 pub use chronicle::{biome_niche, diet_niche};
 use density::SpeciesDensity;
 pub use lod::{Cohort, LodStats, PoolEntry};
 #[cfg(feature = "serde")]
-pub use snapshot::{SnapshotError, SnapshotHeader, SNAPSHOT_VERSION};
+pub use snapshot::{SnapshotError, SnapshotHeader, SNAPSHOT_VERSION, TERRAIN_VERSION};
 use spatial::SpatialGrid;
 
 /// Founding: longest walk (tiles) from a home to a spot where it can drink
@@ -511,7 +511,7 @@ impl World {
             if !self.passable_for(probe, p) {
                 continue;
             }
-            let t = self.map.tile_at(p);
+            let t = self.map.ground_at(p);
             let comfort = if probe.traits.warm {
                 -(2.0 - t.base_temp).max(0.0) * 0.1
             } else {
@@ -640,10 +640,7 @@ impl World {
     }
 
     fn passable_for(&self, o: &Organism, p: Vec2) -> bool {
-        matches!(
-            traverse(&o.traits.body, self.map.tile_at(p), &self.map.weather_at(p), false),
-            Traverse::Passable { .. }
-        )
+        matches!(self.map.traverse_at(&o.traits.body, p, false), Traverse::Passable { .. })
     }
 
     fn insert(&mut self, mut o: Organism) -> OrgId {

@@ -3,8 +3,8 @@
 //! The design doc puts accounts, lineage history and world snapshots in
 //! PostgreSQL (sqlx): `PgStore` (cargo feature `postgres`, on by default;
 //! `--database-url`) keeps them in one table per record type (`accounts`,
-//! `designs`, `daily_history`, `trades`, `snapshots`, `balances`,
-//! `ledger`, `alert_prefs`). [`FileStore`] (the default) keeps the same records as JSON
+//! `designs`, `daily_history`, `trades`, `snapshots`, `terrains`,
+//! `balances`, `ledger`, `alert_prefs`). [`FileStore`] (the default) keeps the same records as JSON
 //! files in a data directory, and [`MemoryStore`] serves tests.
 //!
 //! What is persisted: accounts (name, player id, argon2 hash), founder
@@ -14,8 +14,10 @@
 //! balances and the ledger (`crate::economy`), players' alert preferences
 //! (which alert kinds they see and get toasts for), and saved games (a world snapshot with the
 //! game state around it, `crate::snapshot`, which includes players' alerts;
-//! the newest [`KEEP_SNAPSHOTS`] are kept). Not persisted: login sessions
-//! (clients log in again after a restart).
+//! the newest [`KEEP_SNAPSHOTS`] are kept) and, once per world, its static
+//! terrain, which saved games name by world id and content hash instead of
+//! carrying it. Not persisted: login sessions (clients log in again after a
+//! restart).
 //!
 //! Daily records carry the id of the world that wrote them; a world that
 //! replays days after a restart from an older saved game replaces its
@@ -193,8 +195,16 @@ pub trait Store: Send + Sync {
     /// Ticks of the stored snapshots, newest first.
     async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>>;
     async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>>;
-    /// Delete every snapshot (`--fresh` discards the saved world).
+    /// Delete every snapshot and stored terrain (`--fresh` discards the
+    /// saved world).
     async fn clear_snapshots(&self) -> StoreResult<()>;
+    /// Store a world's static terrain (`crate::game::TerrainBlob`, opaque
+    /// bytes) under its world id and content hash, unless the store has it
+    /// already (the same key always holds the same bytes). Saved games name
+    /// it; it is written before the first saved game that does.
+    async fn put_terrain(&self, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()>;
+    /// A stored terrain, `None` if the store doesn't have it.
+    async fn load_terrain(&self, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>>;
     /// Insert or replace a player's balance.
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()>;
     async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>>;
@@ -236,6 +246,7 @@ struct MemInner {
     trades: Vec<TradeRecord>,
     /// Oldest first.
     snapshots: Vec<(u64, Vec<u8>)>,
+    terrains: BTreeMap<(String, u64), Vec<u8>>,
     balances: BTreeMap<PlayerId, BalanceRecord>,
     ledger: Vec<LedgerRecord>,
     alert_prefs: BTreeMap<PlayerId, AlertPrefsRecord>,
@@ -320,8 +331,19 @@ impl Store for MemoryStore {
     }
 
     async fn clear_snapshots(&self) -> StoreResult<()> {
-        self.inner.lock().await.snapshots.clear();
+        let mut g = self.inner.lock().await;
+        g.snapshots.clear();
+        g.terrains.clear();
         Ok(())
+    }
+
+    async fn put_terrain(&self, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()> {
+        self.inner.lock().await.terrains.entry((world_id.to_string(), hash)).or_insert_with(|| bytes.to_vec());
+        Ok(())
+    }
+
+    async fn load_terrain(&self, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>> {
+        Ok(self.inner.lock().await.terrains.get(&(world_id.to_string(), hash)).cloned())
     }
 
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
@@ -373,7 +395,9 @@ fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
 ///   replayed day is appended again and replaces the earlier line when
 ///   read);
 /// - `snapshots/world-<tick>.snap`: saved games, written to a temp file,
-///   synced and renamed into place, the newest [`KEEP_SNAPSHOTS`] kept.
+///   synced and renamed into place, the newest [`KEEP_SNAPSHOTS`] kept;
+/// - `terrain/<world id>-<hash>.terrain`: each world's static terrain,
+///   written the same way, once.
 pub struct FileStore {
     dir: PathBuf,
     /// Serializes writers and caches the small tables.
@@ -429,6 +453,33 @@ impl FileStore {
 }
 
 const SNAPSHOT_DIR: &str = "snapshots";
+const TERRAIN_DIR: &str = "terrain";
+
+/// The file of a stored terrain. World ids are hex; anything else that
+/// could leave the directory is refused.
+fn terrain_name(world_id: &str, hash: u64) -> StoreResult<String> {
+    if world_id.is_empty() || !world_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err(StoreError(format!("world id {world_id:?} can't name a terrain file")));
+    }
+    Ok(format!("{world_id}-{hash:016x}.terrain"))
+}
+
+/// Write `bytes` to `dir/name` durably: a synced temp file renamed into
+/// place, then the directory synced (best effort: not every platform can
+/// open a directory).
+async fn write_durably(dir: &Path, name: &str, bytes: &[u8]) -> StoreResult<()> {
+    tokio::fs::create_dir_all(dir).await?;
+    let tmp = dir.join(format!("{name}.tmp"));
+    let mut f = tokio::fs::File::create(&tmp).await?;
+    f.write_all(bytes).await?;
+    f.sync_all().await?;
+    drop(f);
+    tokio::fs::rename(&tmp, dir.join(name)).await?;
+    if let Ok(d) = tokio::fs::File::open(dir).await {
+        let _ = d.sync_all().await;
+    }
+    Ok(())
+}
 
 fn snapshot_name(tick: u64) -> String {
     format!("world-{tick:012}.snap")
@@ -516,18 +567,7 @@ impl Store for FileStore {
 
     async fn put_snapshot(&self, tick: u64, _day: u64, bytes: &[u8]) -> StoreResult<()> {
         let dir = self.dir.join(SNAPSHOT_DIR);
-        tokio::fs::create_dir_all(&dir).await?;
-        let tmp = dir.join(format!("{}.tmp", snapshot_name(tick)));
-        let mut f = tokio::fs::File::create(&tmp).await?;
-        f.write_all(bytes).await?;
-        f.sync_all().await?;
-        drop(f);
-        tokio::fs::rename(&tmp, dir.join(snapshot_name(tick))).await?;
-        // Make the rename durable too (best effort: not every platform can
-        // open a directory).
-        if let Ok(d) = tokio::fs::File::open(&dir).await {
-            let _ = d.sync_all().await;
-        }
+        write_durably(&dir, &snapshot_name(tick), bytes).await?;
         for old in self.snapshot_ticks().await?.into_iter().skip(KEEP_SNAPSHOTS) {
             tokio::fs::remove_file(dir.join(snapshot_name(old))).await?;
         }
@@ -559,7 +599,27 @@ impl Store for FileStore {
         for tick in self.snapshot_ticks().await? {
             tokio::fs::remove_file(dir.join(snapshot_name(tick))).await?;
         }
-        Ok(())
+        match tokio::fs::remove_dir_all(self.dir.join(TERRAIN_DIR)).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
+    async fn put_terrain(&self, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()> {
+        let name = terrain_name(world_id, hash)?;
+        let dir = self.dir.join(TERRAIN_DIR);
+        if tokio::fs::try_exists(dir.join(&name)).await? {
+            return Ok(());
+        }
+        write_durably(&dir, &name, bytes).await
+    }
+
+    async fn load_terrain(&self, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>> {
+        match tokio::fs::read(self.dir.join(TERRAIN_DIR).join(terrain_name(world_id, hash)?)).await {
+            Ok(b) => Ok(Some(b)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {

@@ -102,6 +102,19 @@ impl Backend {
     }
 }
 
+/// Delete every stored terrain behind the store's back.
+async fn drop_terrains(backend: &Backend) {
+    match backend {
+        Backend::File(dir) => std::fs::remove_dir_all(dir.join("terrain")).unwrap(),
+        #[cfg(feature = "postgres")]
+        Backend::Pg { url, .. } => {
+            let pool = sqlx::PgPool::connect(url).await.unwrap();
+            sqlx::query("DELETE FROM terrains").execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+    }
+}
+
 /// `$name` runs `$body(backend)` on the file store; `$pg` on PostgreSQL.
 macro_rules! on_every_store {
     ($body:ident, $file:ident, $pg:ident) => {
@@ -200,6 +213,13 @@ async fn round_trip(s: &dyn Store) {
         s.put_snapshot(tick, tick / 100, &tick.to_le_bytes()).await.unwrap();
     }
     s.put_snapshot(400, 4, b"newer").await.unwrap();
+    // Terrains: written once per world and hash (a second put keeps the
+    // first bytes: the same key always holds the same terrain).
+    assert_eq!(s.load_terrain("w1", 7).await.unwrap(), None);
+    s.put_terrain("w1", 7, b"terrain 7").await.unwrap();
+    s.put_terrain("w1", 7, b"other").await.unwrap();
+    s.put_terrain("w1", u64::MAX, b"terrain max").await.unwrap();
+    s.put_terrain("w2", 7, b"w2's").await.unwrap();
 
     let accounts = s.load_accounts().await.unwrap();
     assert_eq!(accounts.len(), 2);
@@ -242,6 +262,15 @@ async fn round_trip(s: &dyn Store) {
     assert_eq!(s.load_snapshot(400).await.unwrap(), b"newer");
     assert_eq!(s.load_snapshot(200).await.unwrap(), 200u64.to_le_bytes());
     assert!(s.load_snapshot(100).await.is_err());
+    check_terrains(s).await;
+}
+
+async fn check_terrains(s: &dyn Store) {
+    assert_eq!(s.load_terrain("w1", 7).await.unwrap().as_deref(), Some(&b"terrain 7"[..]));
+    assert_eq!(s.load_terrain("w1", u64::MAX).await.unwrap().as_deref(), Some(&b"terrain max"[..]));
+    assert_eq!(s.load_terrain("w2", 7).await.unwrap().as_deref(), Some(&b"w2's"[..]));
+    assert_eq!(s.load_terrain("w2", 8).await.unwrap(), None);
+    assert_eq!(s.load_terrain("w3", 7).await.unwrap(), None);
 }
 
 fn alert_prefs(player: u32) -> AlertPrefsRecord {
@@ -288,11 +317,29 @@ async fn store_round_trips(backend: Backend) {
     assert_eq!(s.load_balances().await.unwrap().len(), 2);
     assert_eq!(s.recent_ledger(None, 100).await.unwrap().len(), 5);
     assert_eq!(s.load_alert_prefs(1).await.unwrap(), Some(alert_prefs(1)));
+    check_terrains(&*s).await;
+    // `--fresh` drops the terrains with the saved games.
+    s.clear_snapshots().await.unwrap();
+    assert!(s.snapshot_ticks().await.unwrap().is_empty());
+    assert_eq!(s.load_terrain("w1", 7).await.unwrap(), None);
     drop(s);
     backend.cleanup().await;
 }
 
 on_every_store!(store_round_trips, file_store_round_trips, pg_store_round_trips);
+
+/// World ids name terrain files: nothing that could leave the directory.
+#[tokio::test]
+async fn file_store_refuses_odd_world_ids() {
+    let dir = data_dir("odd-world-ids");
+    let s = FileStore::open(&dir).await.unwrap();
+    for id in ["../w1", "w1/x", "", "w1.terrain"] {
+        assert!(s.put_terrain(id, 7, b"x").await.is_err(), "{id:?}");
+        assert!(s.load_terrain(id, 7).await.is_err(), "{id:?}");
+    }
+    s.put_terrain("0123abcdef", 7, b"x").await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 on_every_store!(restart_keeps_accounts_and_refounds_designs, file_restart_keeps_accounts, pg_restart_keeps_accounts);
 
@@ -437,7 +484,13 @@ async fn restart_continues_the_saved_world(backend: Backend) {
     assert!(saved_tick >= tick_before, "saved at {saved_tick}, world was at {tick_before}");
     let bytes = store.load_snapshot(saved_tick).await.unwrap();
     assert_eq!(evo_server::snapshot::header(&bytes).unwrap().tick, saved_tick);
-    let (saved_world, _) = evo_server::snapshot::decode(&bytes).unwrap();
+    // The saved game names its terrain, stored once for the world.
+    let (world_id, hash) = evo_server::snapshot::terrain_key(&bytes).unwrap().expect("names a terrain");
+    assert_eq!(world_id, history[0].world_id);
+    let terrain = store.load_terrain(&world_id, hash).await.unwrap().expect("terrain stored");
+    let terrain = std::sync::Arc::new(evo_sim::terrain::Terrain::decode(&terrain).unwrap());
+    assert!(evo_server::snapshot::decode(&bytes, None).is_err());
+    let (saved_world, _) = evo_server::snapshot::decode(&bytes, Some(terrain)).unwrap();
     drop(store);
 
     // Second run: the same world carries on from the saved tick, with the
@@ -468,12 +521,24 @@ async fn restart_continues_the_saved_world(backend: Backend) {
     assert!(history.iter().all(|r| r.world_id == history[0].world_id));
     drop(store);
 
+    // Without its terrain the saved world doesn't restore, and the server
+    // won't start a new world over it.
+    let store = backend.open().await;
+    let blob = store.load_terrain(&world_id, hash).await.unwrap().unwrap();
+    drop_terrains(&backend).await;
+    let e = start(cfg.clone()).await.err().expect("refuses to start").to_string();
+    assert!(e.contains("terrain") && e.contains("--fresh"), "{e}");
+    store.put_terrain(&world_id, hash, &blob).await.unwrap();
+    drop(store);
+
     // --fresh ignores the saved game: a new world from tick 0.
     let srv = start(ServerConfig { fresh: true, ..cfg.clone() }).await.unwrap();
     let client = reqwest_like::Client::new(srv.addr);
     let (tick, _) = world_clock(&client).await;
     assert!(tick < saved_tick, "fresh world at tick {tick}");
     srv.shutdown().await;
+    // The discarded world's terrain went with its saves.
+    assert_eq!(backend.open().await.load_terrain(&world_id, hash).await.unwrap(), None);
     // The discarded world's saves are gone: a plain restart continues the
     // fresh world, not the older one with higher ticks.
     let srv = start(cfg).await.unwrap();
