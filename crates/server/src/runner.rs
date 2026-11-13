@@ -212,7 +212,7 @@ impl Runner {
             bytes.len() as f64 / 1e6,
             started.elapsed().as_secs_f64() * 1000.0
         );
-        let _ = self.persist.send(PersistEvent::Snapshot(SnapshotBlob { tick, bytes }));
+        let _ = self.persist.send(PersistEvent::Snapshot(SnapshotBlob { tick, day: self.saved_day, bytes }));
     }
 
     /// Answer reads now; queue changes for the tick boundary.

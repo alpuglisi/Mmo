@@ -1,4 +1,7 @@
-//! The file store, and a server restart on the same data directory.
+//! The stores, and a server restart on the same data, against every store:
+//! the file store always, PostgreSQL when `DATABASE_URL` names a database
+//! (each test in its own schema). Without one the PostgreSQL tests pass
+//! after saying they skipped, unless `EVO_REQUIRE_DATABASE` is set (CI).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -6,7 +9,7 @@ use std::time::Duration;
 
 use evo_server::design::{BirthSpec, DesignSpec, ThermoSpec};
 use evo_server::game::WorldSettings;
-use evo_server::store::{AccountRecord, DailyRecord, DesignRecord, FileStore, Store};
+use evo_server::store::{AccountRecord, DailyRecord, DesignRecord, FileStore, MemoryStore, Store, TradeRecord, KEEP_SNAPSHOTS};
 use evo_server::{start, ServerConfig};
 use futures_util::StreamExt;
 use tokio_tungstenite::tungstenite::Message;
@@ -15,6 +18,94 @@ fn data_dir(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("evo-server-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     dir
+}
+
+/// Where a test's server keeps its data.
+enum Backend {
+    File(PathBuf),
+    /// A database URL whose connections use a schema of their own.
+    #[cfg(feature = "postgres")]
+    Pg { url: String, base: String, schema: String },
+}
+
+impl Backend {
+    fn file(name: &str) -> Self {
+        Backend::File(data_dir(name))
+    }
+
+    /// A fresh schema in `DATABASE_URL`'s database, or `None` (skip) if the
+    /// variable is unset.
+    #[cfg(feature = "postgres")]
+    async fn pg(name: &str) -> Option<Self> {
+        let base = match std::env::var("DATABASE_URL") {
+            Ok(u) if !u.is_empty() => u,
+            _ => {
+                assert!(std::env::var_os("EVO_REQUIRE_DATABASE").is_none(), "EVO_REQUIRE_DATABASE is set but DATABASE_URL is not");
+                eprintln!("skipping the PostgreSQL run of {name}: DATABASE_URL is not set");
+                return None;
+            }
+        };
+        let schema = format!("evo_test_{name}_{}", std::process::id());
+        let pool = sqlx::PgPool::connect(&base).await.expect("connect to DATABASE_URL");
+        sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE")).execute(&pool).await.unwrap();
+        sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(&pool).await.unwrap();
+        pool.close().await;
+        let sep = if base.contains('?') { '&' } else { '?' };
+        let url = format!("{base}{sep}options%5Bsearch_path%5D={schema}");
+        Some(Backend::Pg { url, base, schema })
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    async fn pg(_name: &str) -> Option<Self> {
+        None
+    }
+
+    fn config(&self, cfg: ServerConfig) -> ServerConfig {
+        match self {
+            Backend::File(dir) => ServerConfig { data_dir: Some(dir.clone()), database_url: None, ..cfg },
+            #[cfg(feature = "postgres")]
+            Backend::Pg { url, .. } => ServerConfig { data_dir: None, database_url: Some(url.clone()), ..cfg },
+        }
+    }
+
+    async fn open(&self) -> Box<dyn Store> {
+        match self {
+            Backend::File(dir) => Box::new(FileStore::open(dir).await.unwrap()),
+            #[cfg(feature = "postgres")]
+            Backend::Pg { url, .. } => Box::new(evo_server::store::PgStore::connect(url).await.unwrap()),
+        }
+    }
+
+    async fn cleanup(self) {
+        match self {
+            Backend::File(dir) => {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            #[cfg(feature = "postgres")]
+            Backend::Pg { base, schema, .. } => {
+                let pool = sqlx::PgPool::connect(&base).await.unwrap();
+                sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&pool).await.unwrap();
+                pool.close().await;
+            }
+        }
+    }
+}
+
+/// `$name` runs `$body(backend)` on the file store; `$pg` on PostgreSQL.
+macro_rules! on_every_store {
+    ($body:ident, $file:ident, $pg:ident) => {
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn $file() {
+            $body(Backend::file(stringify!($file))).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn $pg() {
+            if let Some(b) = Backend::pg(stringify!($body)).await {
+                $body(b).await;
+            }
+        }
+    };
 }
 
 fn spec() -> DesignSpec {
@@ -28,38 +119,106 @@ fn spec() -> DesignSpec {
     }
 }
 
-#[tokio::test]
-async fn file_store_round_trips() {
-    let dir = data_dir("store");
-    {
-        let s = FileStore::open(&dir).await.unwrap();
-        let a = AccountRecord { name: "ann".into(), player: 1, password_hash: "h".into(), created_unix: 0 };
-        s.insert_account(&a).await.unwrap();
-        assert!(s.insert_account(&a).await.is_err());
-        s.put_design(&DesignRecord { player: 1, design: spec(), founded_day: 0, founded_unix: 0 }).await.unwrap();
-        for day in 0..5 {
-            let r = DailyRecord { day, year: 0, season: "spring".into(), breeding_adults: 0, legacy: vec![], lineages: vec![] };
-            s.append_daily(&r).await.unwrap();
-        }
+fn day(world: &str, day: u64, adults: usize) -> DailyRecord {
+    DailyRecord {
+        world_id: world.into(),
+        day,
+        year: 0,
+        season: "spring".into(),
+        breeding_adults: adults,
+        legacy: vec![evo_server::store::LegacyEntry { player: 1, share: 0.5, weighted_share: 0.25 }],
+        lineages: vec![],
     }
-    let s = FileStore::open(&dir).await.unwrap();
-    assert_eq!(s.load_accounts().await.unwrap().len(), 1);
-    assert_eq!(s.load_designs().await.unwrap()[0].design, spec());
-    let recent = s.recent_daily(2).await.unwrap();
-    assert_eq!(recent.iter().map(|r| r.day).collect::<Vec<_>>(), vec![3, 4]);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn restart_keeps_accounts_and_refounds_designs() {
-    let dir = data_dir("restart");
-    let cfg = ServerConfig {
-        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
-        data_dir: Some(dir.clone()),
-        world: WorldSettings { seed: 5, width: 64, height: 64, wild: false, ..Default::default() },
-        ..Default::default()
+/// Every record type written to `s`, read back.
+async fn round_trip(s: &dyn Store) {
+    let a = AccountRecord { name: "ann".into(), player: 1, password_hash: "h".into(), created_unix: 7 };
+    s.insert_account(&a).await.unwrap();
+    assert!(s.insert_account(&a).await.is_err());
+    s.insert_account(&AccountRecord { name: "bob".into(), player: 2, ..a.clone() }).await.unwrap();
+    s.put_design(&DesignRecord { player: 1, design: spec(), founded_day: 0, founded_unix: 0 }).await.unwrap();
+    let renamed = DesignSpec { name: "Renamed".into(), ..spec() };
+    s.put_design(&DesignRecord { player: 1, design: renamed.clone(), founded_day: 3, founded_unix: 9 }).await.unwrap();
+    for d in 0..5 {
+        s.append_daily(&day("w1", d, 0)).await.unwrap();
     }
-    .fast();
+    // A restart from an older saved game replays days 3 and 4.
+    s.append_daily(&day("w1", 3, 30)).await.unwrap();
+    s.append_daily(&day("w1", 4, 40)).await.unwrap();
+    s.append_daily(&day("w1", 5, 50)).await.unwrap();
+    let trade = TradeRecord {
+        offer: 1,
+        from_player: 1,
+        to_player: 2,
+        mine: 10,
+        partner: 11,
+        price: Some(5),
+        status: "done".into(),
+        conceived: Some(true),
+        day: 4,
+    };
+    s.append_trade(&trade).await.unwrap();
+    s.append_trade(&TradeRecord { offer: 2, price: None, conceived: None, status: "expired".into(), ..trade.clone() }).await.unwrap();
+    for tick in [100u64, 200, 300, 400] {
+        s.put_snapshot(tick, tick / 100, &tick.to_le_bytes()).await.unwrap();
+    }
+    s.put_snapshot(400, 4, b"newer").await.unwrap();
+
+    let accounts = s.load_accounts().await.unwrap();
+    assert_eq!(accounts.len(), 2);
+    assert_eq!(accounts.iter().find(|x| x.name == "ann"), Some(&a));
+    let designs = s.load_designs().await.unwrap();
+    assert_eq!(designs.len(), 1);
+    assert_eq!((designs[0].design.clone(), designs[0].founded_day), (renamed, 3));
+    let recent = s.recent_daily(3).await.unwrap();
+    assert_eq!(recent.iter().map(|r| (r.day, r.breeding_adults)).collect::<Vec<_>>(), vec![(3, 30), (4, 40), (5, 50)]);
+    assert_eq!(recent[0], day("w1", 3, 30));
+    assert_eq!(s.recent_daily(100).await.unwrap().len(), 6);
+    let trades = s.load_trades().await.unwrap();
+    assert_eq!(trades.len(), 2);
+    assert_eq!(trades[0], trade);
+    assert_eq!((trades[1].price, trades[1].conceived), (None, None));
+    let ticks = s.snapshot_ticks().await.unwrap();
+    assert_eq!(ticks.len(), KEEP_SNAPSHOTS);
+    assert_eq!(ticks, vec![400, 300, 200]);
+    assert_eq!(s.load_snapshot(400).await.unwrap(), b"newer");
+    assert_eq!(s.load_snapshot(200).await.unwrap(), 200u64.to_le_bytes());
+    assert!(s.load_snapshot(100).await.is_err());
+}
+
+#[tokio::test]
+async fn memory_store_round_trips() {
+    round_trip(&MemoryStore::default()).await;
+}
+
+/// Round trip, then the same checks through a newly opened store.
+async fn store_round_trips(backend: Backend) {
+    round_trip(&*backend.open().await).await;
+    let s = backend.open().await;
+    assert_eq!(s.load_accounts().await.unwrap().len(), 2);
+    assert_eq!(s.load_designs().await.unwrap()[0].design.name, "Renamed");
+    let recent = s.recent_daily(2).await.unwrap();
+    assert_eq!(recent.iter().map(|r| r.day).collect::<Vec<_>>(), vec![4, 5]);
+    assert_eq!(s.load_trades().await.unwrap().len(), 2);
+    assert_eq!(s.snapshot_ticks().await.unwrap(), vec![400, 300, 200]);
+    drop(s);
+    backend.cleanup().await;
+}
+
+on_every_store!(store_round_trips, file_store_round_trips, pg_store_round_trips);
+
+on_every_store!(restart_keeps_accounts_and_refounds_designs, file_restart_keeps_accounts, pg_restart_keeps_accounts);
+
+async fn restart_keeps_accounts_and_refounds_designs(backend: Backend) {
+    let cfg = backend.config(
+        ServerConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            world: WorldSettings { seed: 5, width: 64, height: 64, wild: false, ..Default::default() },
+            ..Default::default()
+        }
+        .fast(),
+    );
 
     // First run: an account and a design go to disk.
     {
@@ -97,7 +256,7 @@ async fn restart_keeps_accounts_and_refounds_designs() {
     }
     assert!(saw_state);
     srv.shutdown().await;
-    let _ = std::fs::remove_dir_all(&dir);
+    backend.cleanup().await;
 }
 
 async fn world_clock(client: &reqwest_like::Client) -> (u64, u64) {
@@ -133,19 +292,20 @@ async fn own_ids(ws: &mut Socket) -> Vec<u64> {
     panic!("socket closed before a state with organisms");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn restart_continues_the_saved_world() {
-    let dir = data_dir("continue");
-    let cfg = ServerConfig {
-        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
-        data_dir: Some(dir.clone()),
-        // Level of detail off: with it, nobody connected right after a restart
-        // folds the lineage into cohorts, whose members come back with new
-        // ids (the sim's snapshot test covers LOD state).
-        world: WorldSettings { seed: 9, width: 64, height: 64, wild: true, ..Default::default() },
-        ..Default::default()
-    }
-    .fast();
+on_every_store!(restart_continues_the_saved_world, file_restart_continues_the_saved_world, pg_restart_continues_the_saved_world);
+
+async fn restart_continues_the_saved_world(backend: Backend) {
+    let cfg = backend.config(
+        ServerConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            // Level of detail off: with it, nobody connected right after a
+            // restart folds the lineage into cohorts, whose members come back
+            // with new ids (the sim's snapshot test covers LOD state).
+            world: WorldSettings { seed: 9, width: 64, height: 64, wild: true, ..Default::default() },
+            ..Default::default()
+        }
+        .fast(),
+    );
 
     // First run: two players found lineages; the world runs past two days
     // (a saved game each day), then a graceful stop saves it once more.
@@ -176,7 +336,9 @@ async fn restart_continues_the_saved_world() {
     assert!(!ids_before.is_empty());
 
     // Daily saves plus the one at shutdown, the newest few kept.
-    let store = FileStore::open(&dir).await.unwrap();
+    let store = backend.open().await;
+    let history = store.recent_daily(100).await.unwrap();
+    assert!(history.len() >= 2 && history.iter().all(|r| r.world_id == history[0].world_id), "{history:?}");
     let ticks = store.snapshot_ticks().await.unwrap();
     assert!(ticks.len() >= 2, "{ticks:?}");
     let saved_tick = ticks[0];
@@ -206,6 +368,13 @@ async fn restart_continues_the_saved_world() {
     let again = client.post_json("/api/lineage", &serde_json::to_string(&spec()).unwrap(), Some(&token)).await;
     assert_eq!(again["code"], "already_founded", "{again}");
     srv.shutdown().await;
+    // The continued world kept its id: one history record per day.
+    let store = backend.open().await;
+    let history = store.recent_daily(100).await.unwrap();
+    let days: Vec<u64> = history.iter().map(|r| r.day).collect();
+    assert!(days.windows(2).all(|w| w[0] < w[1]), "{days:?}");
+    assert!(history.iter().all(|r| r.world_id == history[0].world_id));
+    drop(store);
 
     // --fresh ignores the saved game: a new world from tick 0.
     let srv = start(ServerConfig { fresh: true, ..cfg }).await.unwrap();
@@ -213,7 +382,7 @@ async fn restart_continues_the_saved_world() {
     let (tick, _) = world_clock(&client).await;
     assert!(tick < saved_tick, "fresh world at tick {tick}");
     srv.shutdown().await;
-    let _ = std::fs::remove_dir_all(&dir);
+    backend.cleanup().await;
 }
 
 /// A tiny JSON-over-HTTP helper on hyper.

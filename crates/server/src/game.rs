@@ -57,6 +57,7 @@ pub enum PersistEvent {
 #[derive(Clone, PartialEq)]
 pub struct SnapshotBlob {
     pub tick: u64,
+    pub day: u64,
     pub bytes: Vec<u8>,
 }
 
@@ -185,6 +186,10 @@ enum Watch {
 pub struct Game {
     pub world: World,
     cfg: GameConfig,
+    /// Identifies this world (made when the map is generated, kept in saved
+    /// games) in the daily records, so a restarted world's records continue
+    /// its own history.
+    world_id: String,
     names: BTreeMap<PlayerId, String>,
     lineage_of: BTreeMap<PlayerId, u32>,
     /// Standing migration orders (mirrors the world's, which are private).
@@ -222,6 +227,8 @@ pub struct Game {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedGame {
+    /// Empty in saved games from before world ids (a new one is made).
+    world_id: String,
     lineage_of: BTreeMap<PlayerId, u32>,
     migrations: BTreeMap<PlayerId, Vec2>,
     offers: BTreeMap<u64, Offer>,
@@ -254,6 +261,7 @@ impl Game {
         Self {
             world,
             cfg,
+            world_id: format!("{:016x}", rand::random::<u64>()),
             names: BTreeMap::new(),
             lineage_of: BTreeMap::new(),
             migrations: BTreeMap::new(),
@@ -280,6 +288,7 @@ impl Game {
     /// The game-side state to save with a world snapshot.
     pub fn saved(&self) -> SavedGame {
         SavedGame {
+            world_id: self.world_id.clone(),
             lineage_of: self.lineage_of.clone(),
             migrations: self.migrations.clone(),
             offers: self.offers.clone(),
@@ -317,6 +326,9 @@ impl Game {
             kept.pop_front();
         }
         g.history = kept;
+        if !saved.world_id.is_empty() {
+            g.world_id = saved.world_id;
+        }
         g.lineage_of = saved.lineage_of;
         // A player's lineage is in the world even if the saved table lost it.
         for (k, l) in g.world.lineages.iter().enumerate() {
@@ -1091,6 +1103,7 @@ impl Game {
             }
         };
         DailyRecord {
+            world_id: self.world_id.clone(),
             day: board.day.unwrap_or(self.world.day()),
             year: self.world.year(),
             season: season_name(self.world.season()).into(),

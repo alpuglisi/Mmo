@@ -55,6 +55,9 @@ pub struct ServerConfig {
     pub bind: SocketAddr,
     /// Directory for the file store; `None` keeps everything in memory.
     pub data_dir: Option<PathBuf>,
+    /// PostgreSQL URL (`postgres://user:pass@host/db`): keep everything in
+    /// the database instead of `data_dir` (needs the `postgres` feature).
+    pub database_url: Option<String>,
     pub world: WorldSettings,
     pub runner: RunnerConfig,
     pub game: GameConfig,
@@ -75,6 +78,7 @@ impl Default for ServerConfig {
         Self {
             bind: SocketAddr::from(([127, 0, 0, 1], 8080)),
             data_dir: Some(PathBuf::from("data")),
+            database_url: None,
             world: WorldSettings::default(),
             runner: RunnerConfig { tick: Duration::from_secs(1), state_interval: Duration::from_secs(1), manual: false },
             game: GameConfig::default(),
@@ -154,10 +158,7 @@ impl RunningServer {
 /// thread and serve. Stored designs whose player has no lineage in the world
 /// (all of them in a new world) are founded in player order.
 pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
-    let store: Arc<dyn Store> = match &cfg.data_dir {
-        Some(dir) => Arc::new(FileStore::open(dir).await?),
-        None => Arc::new(MemoryStore::default()),
-    };
+    let store = open_store(&cfg).await?;
     let accounts = store.load_accounts().await?;
     let mut designs = store.load_designs().await?;
     designs.sort_by_key(|d| d.player);
@@ -220,6 +221,28 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
     Ok(RunningServer { addr, shutdown: Some(shutdown), serve, world: handles.tx, persist })
 }
 
+/// The database if `database_url` is set, else the data directory, else
+/// memory.
+async fn open_store(cfg: &ServerConfig) -> Result<Arc<dyn Store>, BoxError> {
+    if let Some(url) = &cfg.database_url {
+        #[cfg(feature = "postgres")]
+        {
+            let store = store::PgStore::connect(url).await?;
+            tracing::info!("persisting to PostgreSQL");
+            return Ok(Arc::new(store));
+        }
+        #[cfg(not(feature = "postgres"))]
+        {
+            let _ = url;
+            return Err("a database URL needs evo-server built with the `postgres` feature".into());
+        }
+    }
+    Ok(match &cfg.data_dir {
+        Some(dir) => Arc::new(FileStore::open(dir).await?),
+        None => Arc::new(MemoryStore::default()),
+    })
+}
+
 /// The newest saved game that decodes, if any (older ones are fallbacks).
 /// A saved world for another map or calendar (seed, size, ticks per day,
 /// days per year, level of detail) is an error: start with the settings it
@@ -273,7 +296,7 @@ async fn persist_task(store: Arc<dyn Store>, mut rx: mpsc::UnboundedReceiver<Per
         let result = match &ev {
             PersistEvent::Daily(r) => store.append_daily(r).await,
             PersistEvent::Trade(r) => store.append_trade(r).await,
-            PersistEvent::Snapshot(s) => store.put_snapshot(s.tick, &s.bytes).await,
+            PersistEvent::Snapshot(s) => store.put_snapshot(s.tick, s.day, &s.bytes).await,
         };
         if let Err(e) = result {
             tracing::error!("could not persist {ev:?}: {e}");

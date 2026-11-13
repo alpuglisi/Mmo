@@ -203,7 +203,7 @@ parallel jobs:
 
 | Job | What it runs |
 | --- | --- |
-| Rust | `cargo build --release --workspace`, `cargo test --release --workspace`, `cargo clippy --release --all-targets -- -D warnings` (stable toolchain, cargo cache) |
+| Rust | `cargo build --release --workspace`, `cargo test --release --workspace` with a `postgres:16` service container (`DATABASE_URL` set, so the persistence tests also run against `PgStore`; `EVO_REQUIRE_DATABASE=1` makes them fail rather than skip if it goes missing), `cargo clippy --release --all-targets -- -D warnings`, and clippy on `evo-server --no-default-features` (no sqlx) (stable toolchain, cargo cache) |
 | Balance smoke check | `scripts/balance-smoke.sh`: `evo-sim sweep --size 64 --trials 1 --seeds 3 --rounds 1 --days 60` with the default `Balance`, failing if fewer than 14 of the 24 lineage-worlds (8 lineages × 3 seeds) still hold 4 members with 2 adults, or the score drops below 7 of 12. The current rules make 21 of 24 and 10.4, so only a rule change that wrecks coexistence trips it; thresholds are env-overridable (`MIN_SURVIVORS`, `MIN_SCORE`, `SEEDS`, `DAYS`, `SIZE`). |
 | Client | `npm ci`, `npm run typecheck`, `npm test`, `npm run build` |
 | End-to-end | builds `evo-server` and the client, installs Playwright and Chromium (CI only; developer machines have them pre-installed), runs `npm run e2e` and uploads the screenshots as an artifact when it fails |
@@ -213,6 +213,9 @@ Run the same checks locally before pushing:
 ```sh
 cargo build --release && cargo test --release --workspace
 cargo clippy --release --all-targets -- -D warnings
+cargo clippy --release -p evo-server --no-default-features --all-targets -- -D warnings
+# PostgreSQL runs of the persistence tests (skipped without DATABASE_URL):
+DATABASE_URL=postgres://evo:evo@localhost/evo_test cargo test --release -p evo-server --test persistence
 scripts/balance-smoke.sh
 (cd client && npm ci && npm run typecheck && npm test && npm run build && npm run e2e)
 ```
@@ -242,6 +245,7 @@ server. Clients only display state and send commands.
 cargo run --release --bin evo-server                          # 128×128 world, 1 tick/s, data in ./data
 cargo run --release --bin evo-server -- --fast --memory --size 64   # 20 ms ticks, nothing saved
 cargo run --release --bin evo-server -- --bind 0.0.0.0:8080 --data /var/lib/evo --seed 7 --tick-ms 500
+cargo run --release --bin evo-server -- --database-url postgres://evo:evo@localhost/evo   # PostgreSQL (or DATABASE_URL=...)
 cargo test -p evo-server                                      # unit + end-to-end tests (64×64 worlds)
 ```
 
@@ -407,18 +411,45 @@ reset). The requester's seasonal slot is spent.
 
 ### Persistence
 
-`Store` (`store.rs`) is an async trait with a JSON-file implementation
-(`FileStore`, the default, in `--data DIR`) and an in-memory one (`--memory`,
-tests). A PostgreSQL/sqlx `PgStore` would implement the same methods, one
-table per record.
+`Store` (`store.rs`) is an async trait with three implementations: a
+JSON-file one (`FileStore`, the default, in `--data DIR`), PostgreSQL
+(`PgStore`, `store/pg.rs`, selected by `--database-url URL` or the
+`DATABASE_URL` environment variable; `--data`/`--memory` after it override
+it) and an in-memory one (`--memory`, tests).
 
-| Persisted | File |
-| --- | --- |
-| Accounts (name, player id, argon2 hash) | `accounts.json` |
-| Founder designs | `designs.json` |
-| One record per simulated day: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `history.jsonl` |
-| Finished directed-mating agreements with price and outcome | `trades.jsonl` |
-| Saved games: the whole `World` plus the game state around it, every simulated day and at a graceful shutdown; the newest 3 kept | `snapshots/world-<tick>.snap` |
+| Persisted | File | PostgreSQL table |
+| --- | --- | --- |
+| Accounts (name, player id, argon2 hash) | `accounts.json` | `accounts` (name PK, player unique) |
+| Founder designs | `designs.json` | `designs` (player PK, design `jsonb`, upsert) |
+| One record per simulated day and world: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `history.jsonl` | `daily_history` (PK `(world_id, day)`, upsert; legacy and lineages `jsonb`; `seq` keeps write order) |
+| Finished directed-mating agreements with price and outcome | `trades.jsonl` | `trades` (`bigserial` id) |
+| Saved games: the whole `World` plus the game state around it (including players' alerts), every simulated day and at a graceful shutdown; the newest 3 kept | `snapshots/world-<tick>.snap` | `snapshots` (tick PK, day, size, snapshot format version, saved_at, data `bytea`) |
+
+**Daily records and restarts.** Every world gets a random id when its map is
+generated, kept in its saved games and written into each daily record. A
+world restored from a saved game older than its last records (a crash
+between saves) replays those days; the replayed record replaces the earlier
+one of the same world and day (an upsert in PostgreSQL; `FileStore` appends
+and keeps the last line per `(world_id, day)` when reading), so the history
+has one record per day. A `--fresh` world has a new id.
+
+**PostgreSQL.** sqlx 0.8 (tokio, rustls, no compile-time query macros: the
+queries are runtime strings, so building needs no database or
+`DATABASE_URL`). The schema is in `crates/server/migrations/`, embedded in
+the binary and applied by sqlx's migrator when the server connects (add a
+new numbered file for a change; never edit an applied one). Game counters
+are unsigned and stored as `BIGINT`. sqlx sits behind the `evo-server`
+cargo feature `postgres`, **on by default**: the design doc puts
+production persistence in PostgreSQL, so the normal binary should be able
+to use a database without a rebuild, and it costs nothing at run time
+unless a URL is given. `cargo build -p evo-server --no-default-features`
+leaves sqlx (and its TLS stack) out for a faster, smaller build; a database
+URL then stops the server with an error. The persistence tests
+(`tests/persistence.rs`) run the store round trip, restart-keeps-accounts and
+restart-continues-the-saved-world against the file store and, when
+`DATABASE_URL` is set, against PostgreSQL too, each test in a schema of its
+own (dropped afterwards); without it the PostgreSQL variants print that
+they skipped and pass.
 
 **World snapshots.** With the sim's `serde` feature (the server enables it;
 the sim builds without it) `World::snapshot()` returns the whole simulation
@@ -459,9 +490,10 @@ birth and death counters at the last day boundary) and the world snapshot.
 The world thread saves after the tick that starts a new simulated day and
 on `Request::Shutdown`, and hands the bytes to the store task
 (`Store::put_snapshot`; `FileStore` writes a temp file, syncs it and
-renames it into place, then drops all but the newest 3). On startup the
+renames it into place, then drops all but the newest 3; `PgStore` upserts
+the row and deletes older ones in one transaction). On startup the
 newest saved game that decodes is restored (older ones are fallbacks),
-the dashboard history is reloaded from `history.jsonl`, and only stored
+the dashboard history is reloaded from the store, and only stored
 designs whose player has no lineage in the world are founded. A saved world
 for another seed, size, ticks per day, days per year or LOD setting stops the
 server with an error (start with those settings, or `--fresh`); other changed
@@ -1171,10 +1203,11 @@ in use, 10.71 with the presets' strategies).
 4. A migrating sample design to exercise group navigation in play (none
    migrates yet: migrating antelope lost survival again even with group
    navigation).
-5. **Server (step 2, started):** a `PgStore` on sqlx (snapshots as
-   `bytea` rows); encode saved games off the world thread (a quarter of a
-   second at 25k agents) and store the static terrain once instead of in
-   every snapshot; dedupe `history.jsonl` days replayed after a crash; possessed organisms ticking faster than the world clock; interest
+5. **Server (step 2, started):** encode saved games off the world thread
+   (a quarter of a second at 25k agents) and store the static terrain once
+   instead of in every snapshot (a 30 MB `bytea` per day is fine for 3 kept
+   rows, but terrain is most of it); per-world tables once there are
+   several shards; possessed organisms ticking faster than the world clock; interest
    management through the sim's spatial grid instead of a scan per
    connection; session expiry and rate limits; a stud marketplace and an
    economy behind the recorded prices; seasonal leaderboard aggregation;

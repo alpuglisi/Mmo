@@ -8,6 +8,11 @@ edition.workspace = true
 name = "evo-server"
 path = "src/main.rs"
 
+[features]
+default = ["postgres"]
+# PostgreSQL persistence (`store::PgStore`, `--database-url`).
+postgres = ["dep:sqlx"]
+
 [dependencies]
 evo-sim = { path = "../sim", features = ["serde"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
@@ -19,6 +24,8 @@ png = "0.17"
 rand.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Runtime-checked queries only (no `macros`): builds need no database.
+sqlx = { version = "0.8", optional = true, default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "migrate"] }
 tower-http = { version = "0.6", default-features = false, features = ["fs"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs"] }
 tracing = "0.1"
