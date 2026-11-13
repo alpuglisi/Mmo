@@ -44,6 +44,9 @@ pub struct ServerConfig {
     pub world: WorldSettings,
     pub runner: RunnerConfig,
     pub game: GameConfig,
+    /// Serve the files in this directory (the built web client, `client/dist`)
+    /// on every path the API doesn't use.
+    pub static_dir: Option<PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -54,6 +57,7 @@ impl Default for ServerConfig {
             world: WorldSettings::default(),
             runner: RunnerConfig { tick: Duration::from_secs(1), state_interval: Duration::from_secs(1) },
             game: GameConfig::default(),
+            static_dir: None,
         }
     }
 }
@@ -136,7 +140,12 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     let addr = listener.local_addr()?;
     let (shutdown, stop) = oneshot::channel::<()>();
-    let app = http::router(state);
+    if let Some(dir) = &cfg.static_dir {
+        if !dir.join("index.html").is_file() {
+            tracing::warn!("{} has no index.html (run `npm run build` in client/)", dir.display());
+        }
+    }
+    let app = http::router(state, cfg.static_dir.as_deref());
     let serve = tokio::spawn(async move {
         let result = axum::serve(listener, app)
             .with_graceful_shutdown(async move {

@@ -267,3 +267,36 @@ async fn directed_mating_consent_round_trip() {
     }
     srv.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serves_the_static_client() {
+    let dir = std::env::temp_dir().join(format!("evo-static-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), "<!doctype html><title>evo</title>").unwrap();
+    std::fs::write(dir.join("assets/app.js"), "console.log(1)").unwrap();
+    let cfg = ServerConfig {
+        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+        data_dir: None,
+        world: WorldSettings { seed: 3, width: 64, height: 64, wild: false, ..Default::default() },
+        static_dir: Some(dir.clone()),
+        ..Default::default()
+    }
+    .fast();
+    let srv = start(cfg).await.unwrap();
+    let addr = srv.addr;
+    let (s, body) = http(addr, Method::GET, "/", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("<title>evo</title>"));
+    let (s, body) = http(addr, Method::GET, "/assets/app.js", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(&body[..], b"console.log(1)");
+    // Unknown paths fall back to the app; the API keeps its routes.
+    let (s, body) = http(addr, Method::GET, "/world", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("<title>evo</title>"));
+    let (s, v) = json_req(addr, Method::GET, "/api/world", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["width"], 64);
+    srv.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1,5 +1,6 @@
 //! HTTP routes and the WebSocket session.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, watch};
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::accounts::{Accounts, AuthError, Session};
 use crate::design::{self, DesignSpec, SpecError};
@@ -37,7 +39,17 @@ pub struct AppState {
     pub next_conn: Arc<AtomicU64>,
 }
 
-pub fn router(state: AppState) -> Router {
+/// The API routes, plus the files in `static_dir` (the built web client)
+/// on every other path. A path with no matching file gets `index.html`.
+pub fn router(state: AppState, static_dir: Option<&Path>) -> Router {
+    let api = api_router(state);
+    match static_dir {
+        Some(dir) => api.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))),
+        None => api,
+    }
+}
+
+fn api_router(state: AppState) -> Router {
     Router::new()
         .route("/api/register", post(register))
         .route("/api/login", post(login))
