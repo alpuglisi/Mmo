@@ -345,14 +345,43 @@ impl World {
     }
 
     fn wander(&self, o: &Organism, intent: &mut Intent, rng: &mut SimRng, range: f32) {
+        // A target the body can't stand on is never reached, and would pin the
+        // organism against the shore forever (starving next to the water).
+        let usable = |t: Vec2| matches!(traverse(&o.traits.body, self.map.tile_at(t), &self.weather, false), Traverse::Passable { .. });
         if let Some(t) = o.wander_target {
-            if o.pos.dist(t) > 0.5 {
+            if o.pos.dist(t) > 0.5 && usable(t) {
                 intent.target = Some(t);
                 return;
             }
         }
-        let t = self.map.clamp(o.pos + Vec2::new(rng.gen_range(-range..range), rng.gen_range(-range..range)));
+        let mut t = o.pos;
+        for _ in 0..4 {
+            t = self.map.clamp(o.pos + Vec2::new(rng.gen_range(-range..range), rng.gen_range(-range..range)));
+            if usable(t) {
+                break;
+            }
+        }
         intent.target = Some(t);
         intent.new_wander = Some(t);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{presets, terrain::Map, WorldConfig};
+
+    #[test]
+    fn wander_drops_a_target_the_body_cannot_reach() {
+        let mut w = presets::standard_world(WorldConfig { seed: 9, width: 48, height: 48, ..Default::default() }, 1);
+        let i = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
+        let blocked = |w: &World, p: Vec2| traverse(&w.organisms[i].traits.body, w.map.tile_at(p), &w.weather, false) == Traverse::Blocked;
+        let water = (0..48 * 48).map(|k| Map::tile_center(k % 48, k / 48)).find(|&p| blocked(&w, p)).expect("map has deep water");
+        w.organisms[i].wander_target = Some(water);
+        let mut intent = Intent::idle();
+        let mut rng = rng_for(1, stream::DECIDE, 0, 0);
+        w.wander(&w.organisms[i], &mut intent, &mut rng, 6.0);
+        assert_ne!(intent.target, Some(water));
+        assert!(intent.new_wander.is_some());
     }
 }
