@@ -163,6 +163,21 @@ pub struct Balance {
     /// Daily transmission chance between a nursing mother and her young when
     /// one of them is infectious (close kin).
     pub disease_kin: f32,
+    /// How strongly regional wetness moves the level of shallow lakes, marsh
+    /// and rivers: level = 1 + response × (wetness − 0.5) / 0.38, so a
+    /// drought dries them out and a wet spell fills them. 0 keeps them fixed.
+    pub water_response: f32,
+    /// River level rise per unit of snowmelt at the river's headwaters
+    /// (spring melt swells rivers so they block weak swimmers). 0 disables.
+    pub snowmelt_swell: f32,
+    /// Share of plant regrowth that follows regional wetness (drought slows
+    /// it, wet spells speed it up). 0 disables.
+    pub rain_growth: f32,
+    /// Extra chill in °C on open tiles during a storm (all tiles get 3 °C).
+    pub storm_exposure: f32,
+    /// Share of a forest tile's plant food that grows in the canopy, out of
+    /// reach of short bodies that can't climb. 0 disables.
+    pub canopy_share: f32,
 }
 
 impl Default for Balance {
@@ -207,12 +222,17 @@ impl Default for Balance {
             disease_chronic: 0.2,
             disease_fertility: 0.3,
             disease_kin: 0.2,
+            water_response: 1.0,
+            snowmelt_swell: 1.0,
+            rain_growth: 0.5,
+            storm_exposure: 3.0,
+            canopy_share: 0.3,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 37;
+    pub const FIELD_COUNT: usize = 42;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -259,6 +279,11 @@ impl Balance {
             ("disease_chronic", &mut self.disease_chronic),
             ("disease_fertility", &mut self.disease_fertility),
             ("disease_kin", &mut self.disease_kin),
+            ("water_response", &mut self.water_response),
+            ("snowmelt_swell", &mut self.snowmelt_swell),
+            ("rain_growth", &mut self.rain_growth),
+            ("storm_exposure", &mut self.storm_exposure),
+            ("canopy_share", &mut self.canopy_share),
         ]
     }
 

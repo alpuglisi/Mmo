@@ -9,7 +9,8 @@
 //! - [`genome`]: diploid genes with origin-tagged alleles, inheritance, mutation.
 //! - [`design`]: founder designs and the point budget.
 //! - [`stats`]: phenotype → stats and derived physical properties.
-//! - [`terrain`]: map generation, seasons, weather and movement rules.
+//! - [`terrain`]: map generation, rivers, seasons, regional weather, water
+//!   levels and movement rules.
 //! - [`mating`]: mate preference, override cost, outbreeding depression.
 //! - [`group`]: critical-mass group traits.
 //! - [`legacy`]: the genetic-legacy score.

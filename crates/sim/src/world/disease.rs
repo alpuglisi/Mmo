@@ -197,7 +197,13 @@ mod tests {
         w.run_days(1);
         let o = w.organisms.iter().find(|o| o.id == id).unwrap();
         assert!(!o.alive || o.health < start - 20.0, "health {}", o.health);
-        w.run_days(2);
+        // Day by day: the dead are removed at the start of the next day.
+        for _ in 0..2 {
+            if !w.organisms.iter().any(|o| o.id == id && o.alive) {
+                break;
+            }
+            w.run_days(1);
+        }
         let o = w.organisms.iter().find(|o| o.id == id).unwrap();
         if o.death != Some(DeathCause::Predation) {
             assert_eq!(o.death, Some(DeathCause::Disease));
