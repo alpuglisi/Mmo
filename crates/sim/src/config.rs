@@ -357,6 +357,13 @@ pub struct Balance {
     /// the lineage in the region may eat from it, free riders included, and
     /// it spoils at half the rate of a private hoard. 0 disables.
     pub shared_cache: f32,
+    /// Hunger or thirst (0-100) at which a possessed organism breaks off its
+    /// move order to eat or drink; it goes back to the order once the need
+    /// is down to 30. Below this the order is followed whatever the needs.
+    pub possess_urgency: f32,
+    /// Threat level (as perceived, about 0-2) at which a possessed organism
+    /// breaks off its move order to flee or take cover.
+    pub possess_danger: f32,
 }
 
 impl Default for Balance {
@@ -425,12 +432,14 @@ impl Default for Balance {
             communal_den: 0.5,
             group_navigation: 0.6,
             shared_cache: 6.0,
+            possess_urgency: 85.0,
+            possess_danger: 0.6,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 61;
+    pub const FIELD_COUNT: usize = 63;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -501,6 +510,8 @@ impl Balance {
             ("communal_den", &mut self.communal_den),
             ("group_navigation", &mut self.group_navigation),
             ("shared_cache", &mut self.shared_cache),
+            ("possess_urgency", &mut self.possess_urgency),
+            ("possess_danger", &mut self.possess_danger),
         ]
     }
 

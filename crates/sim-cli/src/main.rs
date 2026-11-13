@@ -60,6 +60,7 @@ storm_exposure canopy_share dormancy_temp estivation_temp dormant_metabolism
 dormancy_mismatch brumation_mismatch fat_capacity den_concealment migration_range
 migration_risk torpor_metabolism cache_capacity shared_burrow sentry_share
 sentry_vigilance sentry_cost communal_den group_navigation shared_cache
+possess_urgency possess_danger
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
 juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump

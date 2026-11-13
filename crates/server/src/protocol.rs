@@ -328,6 +328,10 @@ pub struct StateView {
     pub player: PlayerId,
     pub lineage: Option<u32>,
     pub slots_left: u32,
+    /// Living members of the player's lineage. With level of detail on this
+    /// includes cohort members of abstract regions, which are not agents and
+    /// so are not in `organisms`.
+    pub population: usize,
     pub migration: Option<[f32; 2]>,
     pub view: ViewWindow,
     pub organisms: Vec<OwnOrganism>,
@@ -343,7 +347,10 @@ pub struct WorldSummary {
     pub weather: WeatherView,
     pub width: usize,
     pub height: usize,
+    /// Every living organism, cohort members of abstract regions included.
     pub organisms: usize,
+    /// Organisms simulated as full agents (all of them with level of detail off).
+    pub agents: usize,
     pub lineages: usize,
 }
 
@@ -433,7 +440,12 @@ pub struct LineageStats {
     pub lineage: Option<u32>,
     pub name: Option<String>,
     pub day: u64,
+    /// Living members, cohort members of abstract regions included (level
+    /// of detail). `adults` and `juveniles` count them too; the age bands,
+    /// pregnancies, generation and gene statistics cover agents only.
     pub alive: usize,
+    /// Members simulated as full agents (all of them with level of detail off).
+    pub agents: usize,
     pub adults: usize,
     pub juveniles: usize,
     pub pregnant: usize,

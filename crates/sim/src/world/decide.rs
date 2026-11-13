@@ -337,11 +337,19 @@ impl World {
         }
 
         // --- Player overrides ----------------------------------------------
+        // A possessed organism follows its move order unless danger or a
+        // severe need overrides it (then it does what that need demands, and
+        // goes back to the order afterwards). Once there, it is on its own
+        // again (`World::settle_orders` drops the order).
+        let mut urgent = None;
         if let (Some(_), Some(target)) = (o.possessed_by, o.order) {
-            intent.action = Action::Ordered;
-            intent.target = Some(target);
-            intent.sprint = o.needs.energy > 40.0;
-            return intent;
+            urgent = self.order_override(o, threat);
+            if urgent.is_none() && o.pos.dist(target) > super::commands::ORDER_ARRIVAL {
+                intent.action = Action::Ordered;
+                intent.target = Some(target);
+                intent.sprint = o.needs.energy > 40.0;
+                return intent;
+            }
         }
 
         // --- Utilities -----------------------------------------------------
@@ -399,6 +407,7 @@ impl World {
             .iter()
             .copied()
             .fold((Action::Idle, f32::MIN), |best, opt| if opt.1 > best.1 { opt } else { best });
+        let action = urgent.unwrap_or(action);
 
         // An exhausted hunter rests before chasing again; otherwise hunger keeps
         // it chasing at a crawl until it starves.
@@ -481,6 +490,30 @@ impl World {
             Action::Hunt | Action::Scavenge | Action::Sentry | Action::Ordered | Action::Dormant => {}
         }
         intent
+    }
+
+    /// What, if anything, overrides a possessed organism's move order: a
+    /// threat at `Balance::possess_danger` (flee), or hunger or thirst at
+    /// `Balance::possess_urgency` (eat or drink, the worse of the two). An
+    /// organism already eating or drinking for it keeps at it until the need
+    /// is down to `ORDER_RESUME`, so it doesn't turn back after one sip.
+    fn order_override(&self, o: &Organism, threat: f32) -> Option<Action> {
+        use super::commands::ORDER_RESUME;
+        let b = &self.config.balance;
+        if threat >= b.possess_danger {
+            return Some(Action::Flee);
+        }
+        let n = &o.needs;
+        let drinking = o.action == Action::Drink && n.thirst > ORDER_RESUME;
+        let eating = matches!(o.action, Action::Graze | Action::Hunt | Action::Scavenge) && n.hunger > ORDER_RESUME;
+        if drinking || eating {
+            return Some(if drinking { Action::Drink } else { Action::Graze });
+        }
+        let worst = n.thirst.max(n.hunger);
+        if worst >= b.possess_urgency {
+            return Some(if n.thirst >= n.hunger { Action::Drink } else { Action::Graze });
+        }
+        None
     }
 
     /// A close look at neighbor `j`, `d` tiles away: is it kin, a threat,

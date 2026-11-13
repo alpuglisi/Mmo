@@ -102,17 +102,27 @@ async function main() {
     await setTrait('keen_nose', 0.3);
     const after = await page.textContent('#budget-total');
     if (before === after) throw new Error(`cost did not change (${before})`);
-    // body 0.15*20 + fur 0.4*8 + nose 0.3*8 + one extra offspring 1.5 = 10.1
-    if (!after.startsWith('10.1 ')) throw new Error(`unexpected cost ${after}`);
-    await setTrait('wings', 1);
-    await setTrait('armor_plates', 1);
-    await setTrait('muscle', 1);
-    await setTrait('toxins', 1);
-    await setTrait('claws', 1);
-    await setTrait('leg_length', 1);
+    // The starting cost plus each trait's rise above its default times its
+    // price, from the server's catalog (prices are tuned in the sim).
+    const catalog = await (await fetch(`${base}/api/genes`)).json();
+    const gene = (n) => catalog.genes.find((g) => g.name === n);
+    const set = { body_size: 0.45, fur: 0.4, keen_nose: 0.3 };
+    const expected = Number.parseFloat(before) + Object.entries(set).reduce((sum, [n, v]) => sum + Math.max(0, v - gene(n).default) * gene(n).cost, 0);
+    if (Math.abs(Number.parseFloat(after) - expected) > 0.051) throw new Error(`unexpected cost ${after} (expected ${expected.toFixed(1)})`);
+    // Max out the priciest traits until the design is over budget.
+    const pricey = [...catalog.genes].filter((g) => g.cost > 0).sort((a, b) => b.cost * (1 - b.default) - a.cost * (1 - a.default));
+    const maxed = [];
+    let extra = 0;
+    for (const g of pricey) {
+      if (expected + extra > catalog.budget + 10) break;
+      if (g.name in set) continue;
+      maxed.push(g);
+      extra += g.cost * (1 - g.default);
+      await setTrait(g.name, 1);
+    }
     if (!(await page.isDisabled('#design-submit'))) throw new Error('over-budget design was not refused');
     if (!(await page.textContent('#design-problem')).includes('budget')) throw new Error('no over-budget message');
-    for (const g of ['wings', 'armor_plates', 'muscle', 'toxins', 'claws', 'leg_length']) await setTrait(g, 0);
+    for (const g of maxed) await setTrait(g.name, g.default);
     step(`live cost ${after.trim()}; over-budget design refused client-side`);
     await page.screenshot({ path: path.join(shots, 'design-editor.png') });
     const [founded] = await Promise.all([
@@ -120,7 +130,7 @@ async function main() {
       page.click('#design-submit'),
     ]);
     const body = await founded.json();
-    if (founded.status() !== 201 || Math.abs(body.cost - 10.1) > 1e-3) throw new Error(`founding: ${founded.status()} ${JSON.stringify(body)}`);
+    if (founded.status() !== 201 || Math.abs(body.cost - expected) > 0.06) throw new Error(`founding: ${founded.status()} ${JSON.stringify(body)}`);
     step(`founded lineage ${body.lineage} with ${body.founders.length} founders; server cost ${body.cost.toFixed(2)} matches the client`);
 
     // World view with organisms.
@@ -160,25 +170,45 @@ async function main() {
       };
     });
 
-    // Zoom in, stop following and click one of our organisms (on screen).
-    await page.evaluate(() => {
-      const v = window.evo.screen().view;
-      v.setFollow(false);
-      const o = window.evo.model.state.organisms[0];
-      v.cam.zoom = 14;
-      v.centerOn(o.x, o.y);
-    });
-    await page.waitForTimeout(300);
+    // Zoom in, stop following and click one of our own organisms. Organisms
+    // keep moving and foreign markers can overlap ours, so pick the own
+    // organism with the most room around its marker, check that a click there
+    // hits it, click, and retry with a fresh pick if the selection isn't ours.
     const canvasBox = await page.locator('#world-canvas').boundingBox();
-    const target = await page.evaluate(() => {
-      const v = window.evo.screen().view;
-      const o = window.evo.model.state.organisms[0];
-      return { id: o.id, p: v.markerScreenPos(o.id) };
-    });
-    await page.mouse.click(canvasBox.x + target.p.x, canvasBox.y + target.p.y);
-    const selected = await waitFor('selection', () => page.evaluate(() => window.evo.model.selected));
+    let selected = null;
+    for (let attempt = 0; attempt < 8 && selected === null; attempt++) {
+      const pick = await page.evaluate(() => {
+        const v = window.evo.screen().view;
+        v.setFollow(false);
+        v.cam.zoom = 14;
+        const own = window.evo.model.state.organisms.filter((o) => v.markers.has(o.id));
+        let best = null;
+        for (const o of own) {
+          const m = v.markers.get(o.id);
+          let room = Infinity;
+          for (const [id, n] of v.markers) if (id !== o.id) room = Math.min(room, Math.hypot(n.x - m.x, n.y - m.y));
+          if (!best || room > best.room) best = { id: o.id, x: m.x, y: m.y, room };
+        }
+        if (best) v.centerOn(best.x, best.y);
+        return best;
+      });
+      if (!pick) throw new Error('no own marker to click');
+      await page.waitForTimeout(150);
+      const p = await page.evaluate((id) => {
+        const v = window.evo.screen().view;
+        const p = v.markerScreenPos(id);
+        return p && v.hitTest(p.x, p.y) === id ? p : null;
+      }, pick.id);
+      if (!p) continue;
+      await page.evaluate(() => window.evo.model.select(null));
+      await page.mouse.click(canvasBox.x + p.x, canvasBox.y + p.y);
+      const got = await waitFor('selection', () => page.evaluate(() => window.evo.model.selected), 3000).catch(() => null);
+      const own = await page.evaluate((id) => window.evo.model.state.organisms.some((o) => o.id === id), got);
+      if (got !== null && own) selected = got;
+    }
+    if (selected === null) throw new Error('could not select an own organism by clicking it');
     await page.waitForSelector('#btn-possess', { timeout: 5000 });
-    step(`clicked organism #${selected}; inspector open`);
+    step(`clicked own organism #${selected}; inspector open`);
 
     await page.click('#btn-possess');
     const possessed = await waitFor('possession', () => page.evaluate(() => window.evo.model.state.organisms.find((o) => o.possessed)?.id));

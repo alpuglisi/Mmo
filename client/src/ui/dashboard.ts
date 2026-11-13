@@ -25,9 +25,12 @@ export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
     el.replaceChildren(h('p', { class: 'muted' }, 'You have no lineage in this world yet.'));
     return;
   }
+  // Ages, pregnancies, generation and genes cover agents only.
   const kv = h('div', { class: 'stat-tiles' },
     ...([['Alive', s.alive], ['Adults', s.adults], ['Young', s.juveniles], ['Pregnant', s.pregnant], ['Generation', s.max_generation]] as [string, number][])
-      .map(([k, v]) => h('div', { class: 'tile' }, h('strong', {}, String(v)), h('span', { class: 'muted small' }, k))));
+      .map(([k, v]) => h('div', { class: 'tile' }, h('strong', {}, String(v)), h('span', { class: 'muted small' }, k))),
+    s.agents < s.alive ? h('div', { class: 'tile', title: 'Level of detail: the rest run as statistical cohorts where no player is watching' },
+      h('strong', {}, String(s.agents)), h('span', { class: 'muted small' }, 'On the map')) : null);
   const st = stackVitals(s.vitals);
   const births = s.vitals.reduce((n, v) => n + v.births, 0);
   const deaths = st.days.reduce((n, d) => n + d.deaths, 0);

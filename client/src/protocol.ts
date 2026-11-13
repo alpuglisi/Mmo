@@ -163,6 +163,8 @@ export interface StateView {
   player: PlayerId;
   lineage: number | null;
   slots_left: number;
+  /** Living members of the lineage, cohort members of abstract (level of detail) regions included; `organisms` lists only agents. */
+  population: number;
   migration: [number, number] | null;
   view: ViewWindow;
   organisms: OwnOrganism[];
@@ -276,7 +278,10 @@ export interface WorldSummary {
   weather: WeatherView;
   width: number;
   height: number;
+  /** Every living organism, cohort members of abstract regions included. */
   organisms: number;
+  /** Organisms simulated as agents. */
+  agents: number;
   lineages: number;
 }
 
@@ -353,7 +358,10 @@ export interface LineageStats {
   lineage: number | null;
   name: string | null;
   day: number;
+  /** Cohort members of abstract (level of detail) regions included. */
   alive: number;
+  /** Members simulated as agents (visible on the map). */
+  agents: number;
   adults: number;
   juveniles: number;
   pregnant: number;

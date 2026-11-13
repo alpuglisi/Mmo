@@ -6,7 +6,7 @@
 //! Every method that changes the world is called by the world thread
 //! between ticks, in the order requests arrived.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use evo_sim::design::DesignError;
 use evo_sim::math::Vec2;
@@ -76,11 +76,15 @@ pub struct WorldSettings {
     pub wild: bool,
     /// Short years make seasons (and slot resets) come quickly in tests.
     pub days_per_year: u32,
+    /// Level of detail (`WorldConfig::lod`): full agents only around the
+    /// view windows of connected players and possessed organisms; elsewhere,
+    /// offline players' lineages included, statistical cohorts.
+    pub lod: bool,
 }
 
 impl Default for WorldSettings {
     fn default() -> Self {
-        Self { seed: 1, width: 128, height: 128, wild: true, days_per_year: WorldConfig::default().days_per_year }
+        Self { seed: 1, width: 128, height: 128, wild: true, days_per_year: WorldConfig::default().days_per_year, lod: false }
     }
 }
 
@@ -92,6 +96,7 @@ pub fn build_world(s: &WorldSettings) -> World {
     let area = (s.width * s.height) as f32 / (REFERENCE_SIZE * REFERENCE_SIZE) as f32;
     config.wild_cap = ((config.wild_cap as f32 * area) as usize).max(50);
     config.lineage_cap = ((config.lineage_cap as f32 * area.max(0.5)) as usize).max(50);
+    config.lod.enabled = s.lod;
     let mut world = World::new(config);
     if s.wild {
         for (owner, design) in presets::wild_designs() {
@@ -172,6 +177,8 @@ pub struct Game {
     progress: BTreeMap<PlayerId, Progress>,
     /// Last day a `need` alert was raised per organism.
     need_alerted: BTreeMap<OrgId, u64>,
+    /// Players whose view windows are the world's level-of-detail focus.
+    focused: BTreeSet<PlayerId>,
 }
 
 fn finite(v: &[f32]) -> Result<(), ErrorInfo> {
@@ -205,6 +212,7 @@ impl Game {
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
             need_alerted: BTreeMap::new(),
+            focused: BTreeSet::new(),
         }
     }
 
@@ -511,6 +519,9 @@ impl Game {
         }
         self.watch_possessed(&mut out);
         self.announce_deaths(&mut out);
+        if self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) {
+            self.sync_focus();
+        }
         let legacy_day = self.world.latest_legacy().map(|l| l.day);
         if legacy_day != self.last_legacy_day {
             self.last_legacy_day = legacy_day;
@@ -540,44 +551,34 @@ impl Game {
         self.alerts.get(&player).map(|l| l.iter().cloned().collect()).unwrap_or_default()
     }
 
-    /// Watch possessed organisms for their death, and look after the needs
-    /// of one that stands at its order's target.
-    ///
-    /// In the sim a possessed organism keeps its order after arriving: it
-    /// stays `Ordered` on the spot and only drinks or eats if water or food
-    /// happens to be there, so an organism left at its destination dies of
-    /// thirst. Until the sim lets urgent needs win, the server clears an
-    /// order once the organism has arrived and is parched or starving; it
-    /// stays possessed and forages on its own until the player orders it
-    /// somewhere again.
+    /// Watch possessed organisms for their death, and tell the owner once a
+    /// day when one is parched or starving. The sim looks after it: a
+    /// possessed organism breaks off its move order to drink, eat or flee
+    /// when the need is severe (`Balance::possess_urgency`) and drops the
+    /// order once it arrives.
     fn watch_possessed(&mut self, out: &mut Outbox) {
         let day = self.world.day();
+        let urgency = self.world.config.balance.possess_urgency;
         let mut needy = Vec::new();
-        for o in self.world.organisms.iter_mut().filter(|o| o.alive && o.owner != WILD) {
+        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
             let Some(p) = o.possessed_by else { continue };
             self.watched.entry(o.id).or_insert((p, Watch::Possessed));
             let need = o.needs.thirst.max(o.needs.hunger);
-            if need < NEED_ALERT {
-                continue;
-            }
-            let walking = o.order.is_some();
-            let arrived = o.order.is_some_and(|t| t.dist(o.pos) < 0.75);
-            if arrived {
-                o.order = None;
-            }
-            if self.need_alerted.get(&o.id) != Some(&day) {
-                needy.push((p, o.id, o.needs.thirst, o.needs.hunger, walking, arrived));
+            if need >= NEED_ALERT && self.need_alerted.get(&o.id) != Some(&day) {
+                needy.push((p, o.id, o.needs.thirst, o.needs.hunger, o.order.is_some()));
             }
         }
-        for (p, id, thirst, hunger, walking, arrived) in needy {
+        for (p, id, thirst, hunger, walking) in needy {
             self.need_alerted.insert(id, day);
-            let what = if thirst >= hunger { format!("parched (thirst {thirst:.0})") } else { format!("starving (hunger {hunger:.0})") };
-            let tail = if arrived {
-                "it reached its destination, so it forages on its own until you give it a new order"
-            } else if walking {
-                "on its way it only drinks and eats what it passes; walk it to water or food, or release it"
+            let (what, act) = if thirst >= hunger {
+                (format!("parched (thirst {thirst:.0})"), "drink")
             } else {
-                "it is foraging on its own until you give it an order"
+                (format!("starving (hunger {hunger:.0})"), "eat")
+            };
+            let tail = if walking {
+                format!("it keeps to your order until the need reaches {urgency:.0}, then stops to {act}; walk it to water or food, or release it")
+            } else {
+                "it is foraging on its own until you give it an order".to_string()
             };
             self.alert(p, AlertKind::Need, format!("Possessed #{id} is {what}: {tail}."), Some(id), out);
         }
@@ -585,6 +586,78 @@ impl Game {
         // announced next).
         let world = &self.world;
         self.watched.retain(|id, (_, w)| *w == Watch::Founder || world.organism(*id).is_none_or(|o| o.possessed_by.is_some()));
+    }
+
+    /// With level of detail on, make every connected player's view windows
+    /// the world's focus for that player (regions around them run as full
+    /// agents) and clear the focus of players with no connection: their
+    /// lineages go on as cohorts wherever no one is watching. Runs on the
+    /// hour, just before the world updates its regions.
+    fn sync_focus(&mut self) {
+        if !self.world.config.lod.enabled {
+            return;
+        }
+        let mut points: BTreeMap<PlayerId, Vec<Vec2>> = BTreeMap::new();
+        for c in self.conns.values() {
+            let v = self.view_of(c);
+            points.entry(c.player).or_default().push(Vec2::new(v.x, v.y));
+        }
+        for p in std::mem::take(&mut self.focused) {
+            if !points.contains_key(&p) {
+                self.world.set_focus(p, Vec::new());
+            }
+        }
+        for (p, pts) in points {
+            self.world.set_focus(p, pts);
+            self.focused.insert(p);
+        }
+    }
+
+    /// Living members of a player's lineages: agents and, with level of
+    /// detail on, cohort members of abstract regions.
+    fn owner_population(&self, player: PlayerId) -> usize {
+        let cohorts: usize = if self.world.config.lod.enabled {
+            self.world.abstract_counts().iter().zip(&self.world.lineages).filter(|(_, l)| l.owner == player).map(|(c, _)| c.alive).sum()
+        } else {
+            0
+        };
+        self.world.owner_count(player) + cohorts
+    }
+
+    /// Where a player's lineage lives: the mean position of its agents, or,
+    /// with none (all of it abstract), of its cohorts by region; the map's
+    /// center for a player with neither.
+    fn lineage_center(&self, player: PlayerId) -> Vec2 {
+        let (mut sum, mut n) = (Vec2::ZERO, 0.0f32);
+        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner == player) {
+            sum += o.pos;
+            n += 1.0;
+        }
+        if n == 0.0 {
+            let m = &self.world.map;
+            let chunk = evo_sim::terrain::CHUNK;
+            for (r, c) in self.world.cohorts().filter(|(_, c)| c.owner == player) {
+                let k = c.count() as f32;
+                let center = Vec2::new(((r % m.chunks_x) * chunk) as f32 + chunk as f32 / 2.0, ((r / m.chunks_x) * chunk) as f32 + chunk as f32 / 2.0);
+                sum += m.clamp(center) * k;
+                n += k;
+            }
+        }
+        if n > 0.0 {
+            sum * (1.0 / n)
+        } else {
+            Vec2::new(self.world.map.width as f32 / 2.0, self.world.map.height as f32 / 2.0)
+        }
+    }
+
+    /// A connection's view window: the pinned one (`set_view`), else
+    /// centered on the player's possessed organism, else on its lineage.
+    fn view_of(&self, c: &Conn) -> ViewWindow {
+        c.view.unwrap_or_else(|| {
+            let possessed = self.world.organisms.iter().find(|o| o.alive && o.possessed_by == Some(c.player) && o.owner == c.player);
+            let center = possessed.map(|o| o.pos).unwrap_or_else(|| self.lineage_center(c.player));
+            ViewWindow { x: center.x, y: center.y, radius: self.cfg.default_view_radius }
+        })
     }
 
     fn announce_deaths(&mut self, out: &mut Outbox) {
@@ -696,7 +769,7 @@ impl Game {
 
     fn daily_record(&mut self) -> DailyRecord {
         let board = self.leaderboard();
-        let counts = self.world.lineage_counts();
+        let counts = self.world.population_counts();
         let (born, mut deaths) = self.vitals_since_boundary();
         self.prev_born = self.world.counters.born.clone();
         self.prev_deaths = self.world.counters.deaths_by_lineage.clone();
@@ -755,6 +828,10 @@ impl Game {
             None => Vec::new(),
         };
         let adults = members.iter().filter(|o| o.matured).count();
+        let cohorts = match lineage {
+            Some(l) if self.world.config.lod.enabled => self.world.abstract_counts().get(l as usize).copied().unwrap_or_default(),
+            _ => Default::default(),
+        };
         // Age bands: up to six equal bands (whole days) up to the oldest.
         let oldest = members.iter().map(|o| o.age_days(tpd)).fold(0.0f32, f32::max);
         let width = (oldest / 6.0).ceil().max(1.0);
@@ -811,9 +888,10 @@ impl Game {
             lineage,
             name: lineage.and_then(|l| self.world.lineages.get(l as usize)).map(|l| l.name.clone()),
             day,
-            alive: members.len(),
-            adults,
-            juveniles: members.len() - adults,
+            alive: members.len() + cohorts.alive,
+            agents: members.len(),
+            adults: adults + cohorts.adults,
+            juveniles: members.len() + cohorts.alive - adults - cohorts.adults,
             pregnant: members.iter().filter(|o| o.pregnancy.is_some()).count(),
             max_generation: members.iter().map(|o| o.generation).max().unwrap_or(0),
             age_bands,
@@ -842,7 +920,7 @@ impl Game {
                 name: self.name(p),
                 share: snap.map_or(0.0, |s| s.share(p)),
                 weighted_share: snap.map_or(0.0, |s| s.weighted_share(p)),
-                alive: self.world.owner_count(p),
+                alive: self.owner_population(p),
             })
             .collect();
         rows.sort_by(|a, b| b.share.total_cmp(&a.share).then(a.player.cmp(&b.player)));
@@ -872,7 +950,8 @@ impl Game {
             weather: self.weather(),
             width: self.world.map.width,
             height: self.world.map.height,
-            organisms: self.world.alive_count(),
+            organisms: self.world.population(),
+            agents: self.world.alive_count(),
             lineages: self.world.lineages.len(),
         }
     }
@@ -883,25 +962,9 @@ impl Game {
         let c = self.conns.get(&conn)?;
         let player = c.player;
         let tpd = self.world.config.ticks_per_day;
-        let mut own = Vec::new();
-        let (mut sum, mut possessed) = (Vec2::ZERO, None);
-        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner == player) {
-            sum += o.pos;
-            if o.possessed_by == Some(player) && possessed.is_none() {
-                possessed = Some(o.pos);
-            }
-            own.push(OwnOrganism::from_org(o, tpd));
-        }
-        let view = c.view.unwrap_or_else(|| {
-            let center = possessed.unwrap_or_else(|| {
-                if own.is_empty() {
-                    Vec2::new(self.world.map.width as f32 / 2.0, self.world.map.height as f32 / 2.0)
-                } else {
-                    sum * (1.0 / own.len() as f32)
-                }
-            });
-            ViewWindow { x: center.x, y: center.y, radius: self.cfg.default_view_radius }
-        });
+        let own: Vec<OwnOrganism> =
+            self.world.organisms.iter().filter(|o| o.alive && o.owner == player).map(|o| OwnOrganism::from_org(o, tpd)).collect();
+        let view = self.view_of(c);
         let center = Vec2::new(view.x, view.y);
         let mut nearby: Vec<(f32, NearbyOrganism)> = self
             .world
@@ -927,6 +990,7 @@ impl Game {
             player,
             lineage: self.lineage_of(player),
             slots_left: self.world.mating_slots_left(player),
+            population: self.owner_population(player),
             migration: self.migrations.get(&player).map(|p| [p.x, p.y]),
             view,
             organisms: own,
@@ -1133,7 +1197,7 @@ mod tests {
 
     #[test]
     fn wild_organisms_cannot_consent_and_seasons_expire_offers() {
-        let world = build_world(&WorldSettings { seed: 3, width: 64, height: 64, wild: true, days_per_year: 8 });
+        let world = build_world(&WorldSettings { seed: 3, width: 64, height: 64, wild: true, days_per_year: 8, lod: false });
         let mut g = Game::new(world, GameConfig::default());
         let a = g.found(1, &design("A")).unwrap().founders;
         let b = g.found(2, &design("B")).unwrap().founders;
@@ -1228,29 +1292,117 @@ mod tests {
     }
 
     #[test]
-    fn a_parched_possessed_organism_at_its_target_forages_again() {
+    fn possessed_needs_raise_an_alert_and_the_sim_lets_severe_ones_win() {
         let (mut g, a, _) = game();
         let id = a[0];
         g.command(10, 1, None, ClientMsg::Possess { organism: id });
         let pos = g.world.organism(id).unwrap().pos;
-        g.command(10, 1, None, ClientMsg::OrderMove { organism: id, x: pos.x, y: pos.y });
-        let o = g.world.organisms.iter_mut().find(|o| o.id == id).unwrap();
-        o.needs.thirst = 90.0;
+        let far = Vec2::new(if pos.x < 32.0 { 63.0 } else { 0.0 }, pos.y);
+        g.command(10, 1, None, ClientMsg::OrderMove { organism: id, x: far.x, y: far.y });
+        let set_thirst = |g: &mut Game, t: f32| {
+            let o = g.world.organisms.iter_mut().find(|o| o.id == id).unwrap();
+            o.needs.thirst = t;
+            o.needs.hunger = 0.0;
+        };
+        // Thirsty, but not yet severely: an alert, and it keeps walking.
+        set_thirst(&mut g, 80.0);
         g.world.step();
         let out = g.after_tick();
         let need = alerts_in(&out, 1).into_iter().find(|x| x.kind == AlertKind::Need).expect("need alert");
-        assert!(need.text.contains("parched") && need.text.contains("destination"), "{}", need.text);
+        assert!(need.text.contains("parched") && need.text.contains("stops to drink"), "{}", need.text);
         let o = g.world.organism(id).unwrap();
-        assert!(o.order.is_none() && o.possessed_by == Some(1));
+        assert_eq!(o.action, evo_sim::organism::Action::Ordered);
+        assert!(o.order.is_some() && o.possessed_by == Some(1));
         // Once a day per organism.
         g.world.step();
         assert!(alerts_in(&g.after_tick(), 1).iter().all(|x| x.kind != AlertKind::Need));
-        // It drinks on its own again.
+        // Severely thirsty: it breaks off to drink, keeping the order for later.
+        set_thirst(&mut g, 92.0);
+        g.world.step();
+        g.after_tick();
+        let o = g.world.organism(id).unwrap();
+        assert_eq!(o.action, evo_sim::organism::Action::Drink);
+        assert!(o.order.is_some());
+        let mut least = 100.0f32;
         for _ in 0..g.world.config.ticks_per_day {
             g.world.step();
             g.after_tick();
+            least = least.min(g.world.organism(id).expect("still alive").needs.thirst);
         }
-        let o = g.world.organism(id).expect("still alive");
-        assert!(o.needs.thirst < 90.0, "thirst {}", o.needs.thirst);
+        assert!(least < 50.0, "thirst stayed at {least}");
+    }
+
+    /// A 128-tile world with level of detail, the wild ecosystem and one
+    /// player, connected.
+    fn lod_game() -> Game {
+        let world = build_world(&WorldSettings { seed: 7, width: 128, height: 128, wild: true, lod: true, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        g.found(1, &design("A").founders(12)).unwrap();
+        g.connect(10, 1, "ann");
+        g
+    }
+
+    fn lineage_agents(g: &Game, lineage: u32) -> usize {
+        g.world.organisms.iter().filter(|o| o.alive && o.lineage == lineage).count()
+    }
+
+    #[test]
+    fn level_of_detail_follows_the_views_of_connected_players() {
+        let mut g = lod_game();
+        let l = g.lineage_of(1).unwrap();
+        run_days(&mut g, 2);
+        let s = g.state_for(10).unwrap();
+        let center = Vec2::new(s.view.x, s.view.y);
+        // The player's view runs as agents (its own lineage among them).
+        assert!(g.world.region_is_active(g.world.region_of(center)));
+        assert!(!s.organisms.is_empty(), "no agents in view at {center:?}");
+        // The far corner is cohorts.
+        let far = Vec2::new(if center.x < 64.0 { 120.0 } else { 8.0 }, if center.y < 64.0 { 120.0 } else { 8.0 });
+        assert!(!g.world.region_is_active(g.world.region_of(far)), "far region {far:?} still active");
+        assert!(g.world.abstract_count() > 0);
+        // Counts include cohort members everywhere they are reported.
+        let summary = g.summary();
+        assert_eq!(summary.organisms, summary.agents + g.world.abstract_count());
+        let rec = g.history().last().unwrap();
+        let recorded: usize = rec.lineages.iter().map(|e| e.alive).sum();
+        assert!(recorded > g.world.alive_count(), "daily record counts agents only: {recorded}");
+        let check = |g: &Game| {
+            let stats = g.lineage_stats(1);
+            let cohorts = g.world.abstract_counts()[l as usize].alive;
+            assert_eq!(stats.agents, lineage_agents(g, l));
+            assert_eq!(stats.alive, stats.agents + cohorts);
+            assert_eq!(g.state_for(10).map(|s| s.population), Some(stats.alive));
+            assert_eq!(g.leaderboard().rows.iter().find(|r| r.player == 1).map(|r| r.alive), Some(stats.alive));
+            stats
+        };
+        check(&g);
+
+        // Offline, the player's lineage goes on as cohorts.
+        g.disconnect(10);
+        run_days(&mut g, 2);
+        assert_eq!(lineage_agents(&g, l), 0, "an offline lineage stays agents");
+        let stats = g.lineage_stats(1);
+        assert!(stats.alive > 0 && stats.agents == 0, "{} alive, {} agents", stats.alive, stats.agents);
+
+        // Back online, the view finds the lineage by its cohorts and the
+        // region around it expands again within the hour.
+        g.connect(10, 1, "ann");
+        for _ in 0..2 * g.world.config.ticks_per_hour() {
+            g.world.step();
+            g.after_tick();
+        }
+        assert!(lineage_agents(&g, l) > 0, "the lineage did not expand around the returning player");
+        let s = check(&g);
+        assert!(s.agents > 0);
+    }
+
+    #[test]
+    fn without_level_of_detail_focus_is_left_alone() {
+        let (mut g, _, _) = game();
+        run_days(&mut g, 1);
+        assert_eq!(g.world.abstract_count(), 0);
+        let stats = g.lineage_stats(1);
+        assert_eq!(stats.alive, stats.agents);
+        assert_eq!(g.summary().organisms, g.summary().agents);
     }
 }
