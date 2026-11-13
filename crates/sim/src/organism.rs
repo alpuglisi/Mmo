@@ -129,6 +129,8 @@ pub enum Action {
     Migrate,
     FollowParent,
     Guard,
+    /// Standing watch for the group (`GroupTrait::Sentries`).
+    Sentry,
     Ordered,
 }
 
@@ -173,6 +175,10 @@ pub struct Organism {
     /// Conspecifics seen last tick (herd defense, social need).
     pub kin_nearby: u16,
     pub sheltered: bool,
+    /// A sentry that saw a threat itself while on watch (or is fleeing from
+    /// one it spotted on watch): where the threat is and how strong. Its
+    /// group hears the warning (`World::decide`).
+    pub alert: Option<(Vec2, f32)>,
     /// Learned after being poisoned by brightly colored prey: avoid bright prey.
     pub bright_aversion: bool,
     /// Tick from which this organism can strike again: prey that broke free
@@ -224,6 +230,7 @@ impl Organism {
             activity: 1.0,
             kin_nearby: 0,
             sheltered: false,
+            alert: None,
             bright_aversion: false,
             strike_ready_tick: 0,
             possessed_by: None,

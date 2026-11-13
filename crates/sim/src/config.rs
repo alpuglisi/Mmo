@@ -169,6 +169,22 @@ pub struct Balance {
     /// it got closest to and plans again from there. 0 disables pathfinding
     /// (greedy steering only).
     pub path_nodes: f32,
+    /// Shared burrows (`GroupTrait::SharedBurrows`): how far a shared burrow
+    /// deepens a carrier's shelter at full benefit. Its effective burrowing
+    /// is `burrowing + shared_burrow * benefit * (1 - burrowing)`, which sets
+    /// whether it can shelter at all (above 0.5), how many attacks fail
+    /// (`burrow_shelter`) and how well it hides; the burrow's temperature
+    /// buffering rises from 60% toward 10 °C by up to `0.6 * shared_burrow`.
+    /// 0 disables.
+    pub shared_burrow: f32,
+    /// Sentries (`GroupTrait::Sentries`): share of two-hour shifts in which a
+    /// sentry carrier in a group is on duty and stands watch, if no more
+    /// urgent need wins. 0 disables.
+    pub sentry_share: f32,
+    /// Perception boost for a sentry on watch (it ignores breeding drive).
+    pub sentry_vigilance: f32,
+    /// Extra hunger rate while on watch (an alert posture, no foraging).
+    pub sentry_cost: f32,
 }
 
 impl Default for Balance {
@@ -214,12 +230,16 @@ impl Default for Balance {
             disease_fertility: 0.3,
             disease_kin: 0.2,
             path_nodes: 1500.0,
+            shared_burrow: 0.5,
+            sentry_share: 0.25,
+            sentry_vigilance: 0.5,
+            sentry_cost: 0.2,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 38;
+    pub const FIELD_COUNT: usize = 42;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -267,6 +287,10 @@ impl Balance {
             ("disease_fertility", &mut self.disease_fertility),
             ("disease_kin", &mut self.disease_kin),
             ("path_nodes", &mut self.path_nodes),
+            ("shared_burrow", &mut self.shared_burrow),
+            ("sentry_share", &mut self.sentry_share),
+            ("sentry_vigilance", &mut self.sentry_vigilance),
+            ("sentry_cost", &mut self.sentry_cost),
         ]
     }
 

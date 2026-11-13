@@ -7,7 +7,8 @@
 //! scaled down when there are fewer carriers than the trait needs.
 //!
 //! Implemented: cooperative hunting, warning coloration, herd defense, alarm
-//! calls. The rest of the doc's table are on the roadmap.
+//! calls, shared burrows, sentries. Group navigation, communal dens and
+//! shared caches wait on migration, hibernation and caching.
 
 use crate::genome::{Gene, Phenotype};
 use crate::math::Vec2;
@@ -18,9 +19,11 @@ pub enum GroupTrait {
     WarningColoration,
     HerdDefense,
     AlarmCalls,
+    SharedBurrows,
+    Sentries,
 }
 
-pub const GROUP_TRAIT_COUNT: usize = 4;
+pub const GROUP_TRAIT_COUNT: usize = 6;
 
 impl GroupTrait {
     pub const ALL: [GroupTrait; GROUP_TRAIT_COUNT] = [
@@ -28,6 +31,8 @@ impl GroupTrait {
         GroupTrait::WarningColoration,
         GroupTrait::HerdDefense,
         GroupTrait::AlarmCalls,
+        GroupTrait::SharedBurrows,
+        GroupTrait::Sentries,
     ];
 
     pub fn label(self) -> &'static str {
@@ -36,6 +41,8 @@ impl GroupTrait {
             GroupTrait::WarningColoration => "warning coloration",
             GroupTrait::HerdDefense => "herd defense",
             GroupTrait::AlarmCalls => "alarm calls",
+            GroupTrait::SharedBurrows => "shared burrows",
+            GroupTrait::Sentries => "sentries",
         }
     }
 
@@ -46,6 +53,8 @@ impl GroupTrait {
             GroupTrait::WarningColoration => p[Toxins] > 0.5 && p[Coloration] > 0.6,
             GroupTrait::HerdDefense => p[Carnivory] < 0.4 && p[BodySize] > 0.45 && p[GroupTolerance] > 0.5,
             GroupTrait::AlarmCalls => p[Ears] > 0.5 && p[Vocal] > 0.5,
+            GroupTrait::SharedBurrows => is_digger(p) && p[GroupTolerance] > 0.5,
+            GroupTrait::Sentries => p[GroupTolerance] > 0.6 && p[Vigilance] > 0.5,
         }
     }
 
@@ -59,6 +68,10 @@ impl GroupTrait {
             GroupTrait::WarningColoration => p[Coloration] > 0.6,
             GroupTrait::HerdDefense => p[Carnivory] < 0.4,
             GroupTrait::AlarmCalls => true,
+            // Solitary diggers share nothing and crowd out the colony.
+            GroupTrait::SharedBurrows => is_digger(p),
+            // Group species: herd members that never stand watch dilute it.
+            GroupTrait::Sentries => p[GroupTolerance] > 0.6,
         }
     }
 
@@ -68,6 +81,8 @@ impl GroupTrait {
             GroupTrait::WarningColoration => 0.6,
             GroupTrait::HerdDefense => 0.5,
             GroupTrait::AlarmCalls => 0.4,
+            GroupTrait::SharedBurrows => 0.5,
+            GroupTrait::Sentries => 0.4,
         }
     }
 
@@ -78,8 +93,15 @@ impl GroupTrait {
             GroupTrait::WarningColoration => 6,
             GroupTrait::HerdDefense => 5,
             GroupTrait::AlarmCalls => 3,
+            GroupTrait::SharedBurrows => 4,
+            GroupTrait::Sentries => 4,
         }
     }
+}
+
+/// Can dig (claws or burrowing): the first half of the shared-burrow test.
+fn is_digger(p: &Phenotype) -> bool {
+    p[Gene::Claws] > 0.5 || p[Gene::Burrowing] > 0.4
 }
 
 /// `1 / (1 + e^(-k (freq - threshold)))`.
@@ -193,5 +215,59 @@ mod tests {
         let weak = field.benefit(GroupTrait::CooperativeHunting, at);
         assert!(strong > 0.9, "strong {strong}");
         assert!(weak < 0.2, "weak {weak}");
+    }
+
+    /// Benefit of `t` in a region of `carriers` and `others` (all adults).
+    fn benefit_of(t: GroupTrait, carrier: &Phenotype, n_carriers: usize, other: &Phenotype, n_others: usize) -> f32 {
+        let at = Vec2::new(1.0, 1.0);
+        let mut field = GroupField::new(32, 32, 16);
+        let adults: Vec<_> = (0..n_carriers).map(|_| (at, carrier)).chain((0..n_others).map(|_| (at, other))).collect();
+        field.update(adults.into_iter());
+        field.benefit(t, at)
+    }
+
+    fn digger(group_tolerance: f32) -> Phenotype {
+        pheno(
+            FounderDesign::new("d", Thermo::Warm, BirthType::Live, 3)
+                .with(Gene::Burrowing, 0.6)
+                .with(Gene::GroupTolerance, group_tolerance),
+        )
+    }
+
+    #[test]
+    fn shared_burrows_need_diggers_that_tolerate_each_other() {
+        let t = GroupTrait::SharedBurrows;
+        let (social, solitary) = (digger(0.7), digger(0.2));
+        let clawed = pheno(FounderDesign::new("c", Thermo::Warm, BirthType::Live, 3).with(Gene::Claws, 0.7).with(Gene::GroupTolerance, 0.7));
+        let surface = pheno(FounderDesign::new("s", Thermo::Warm, BirthType::Live, 3).with(Gene::GroupTolerance, 0.9));
+        assert!(t.is_carrier(&social) && t.is_carrier(&clawed));
+        assert!(!t.is_carrier(&solitary) && t.is_eligible(&solitary));
+        // A social animal that can't dig neither carries nor dilutes it.
+        assert!(!t.is_carrier(&surface) && !t.is_eligible(&surface));
+        let colony = benefit_of(t, &social, 6, &surface, 20);
+        assert!(colony > 0.9, "colony {colony}");
+        // Below threshold (2 of 6) and too few carriers: little benefit.
+        assert!(benefit_of(t, &social, 2, &solitary, 4) < 0.2);
+        // Solitary diggers moving in dilute it.
+        let diluted = benefit_of(t, &social, 6, &solitary, 12);
+        assert!(diluted < 0.2, "diluted {diluted}");
+    }
+
+    #[test]
+    fn sentries_need_vigilant_group_members() {
+        let t = GroupTrait::Sentries;
+        let herd = |vigilance: f32, gt: f32| {
+            pheno(FounderDesign::new("h", Thermo::Warm, BirthType::Live, 1).with(Gene::Vigilance, vigilance).with(Gene::GroupTolerance, gt))
+        };
+        let (sentry, member, loner) = (herd(0.8, 0.9), herd(0.0, 0.9), herd(0.8, 0.3));
+        assert!(t.is_carrier(&sentry));
+        assert!(!t.is_carrier(&member) && t.is_eligible(&member));
+        // Vigilance without a group to watch over is nothing.
+        assert!(!t.is_carrier(&loner) && !t.is_eligible(&loner));
+        assert!(benefit_of(t, &sentry, 6, &loner, 30) > 0.9);
+        assert!(benefit_of(t, &sentry, 6, &member, 4) > 0.8);
+        // Herd members that never stand watch dilute it.
+        let diluted = benefit_of(t, &sentry, 6, &member, 24);
+        assert!(diluted < 0.15, "diluted {diluted}");
     }
 }

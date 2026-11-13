@@ -97,6 +97,7 @@ pub fn default_value(g: Gene) -> f32 {
         | Pickiness => 0.5,
         TolColoration | TolBodySize => 0.5,
         Carnivory => 0.0,
+        Vigilance => 0.0,
         _ => 0.0,
     }
 }
@@ -129,6 +130,8 @@ pub fn trait_cost(g: Gene) -> f32 {
         Toxins => 15.0,
         Coloration => 3.0,
         Vocal => 5.0,
+        // Sentry instinct: cheap, since standing watch costs its carrier food.
+        Vigilance => 4.0,
         // Set through the design's own fields, never through `traits`.
         Endothermy | BirthMode | LitterSize => 0.0,
         Carnivory | Boldness | Aggression | Wanderlust | GroupTolerance | ForagingRange

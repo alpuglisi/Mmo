@@ -22,6 +22,8 @@ mod density;
 mod disease;
 mod environment;
 #[cfg(test)]
+mod group_tests;
+#[cfg(test)]
 mod path_tests;
 mod spatial;
 
@@ -154,6 +156,8 @@ pub(crate) struct Intent {
     pub sprint: bool,
     pub kin_nearby: u16,
     pub threat: f32,
+    /// The sentry warning this organism gives its group (`Organism::alert`).
+    pub alert: Option<(Vec2, f32)>,
     pub new_wander: Option<Vec2>,
     /// `Some(None)` forgets the remembered food patch.
     pub new_forage: Option<Option<Vec2>>,
@@ -168,6 +172,7 @@ impl Intent {
             sprint: false,
             kin_nearby: 0,
             threat: 0.0,
+            alert: None,
             new_wander: None,
             new_forage: None,
         }

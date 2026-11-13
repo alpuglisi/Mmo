@@ -111,6 +111,10 @@ define_genes! {
     TolColoration => "coloration tolerance",
     PrefBodySize => "preferred body size",
     TolBodySize => "body size tolerance",
+    // Group behavior (critical-mass group traits).
+    /// Sentry instinct: in a group species, takes turns standing watch
+    /// (`GroupTrait::Sentries`).
+    Vigilance => "vigilance",
 }
 
 /// Dominance coefficient `h` of a gene, in `[-1, 1]`: expressed =

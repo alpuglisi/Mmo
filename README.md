@@ -30,7 +30,7 @@ docs/
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night, wind. Snow, ice bridges, plant regrowth, carcass decay. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
 | `pathfinding` | Movement and terrain | Bounded A* over tiles for one body: blocked tiles are avoided, slow ones cost time. Used only when the direct step is blocked (see Movement below). |
 | `mating` | Override cost | Root-sum-of-squares preference mismatch, `cost = k·max(0, mismatch−1)²`, outbreeding depression by genetic distance, and sterility between different body plans (thermoregulation, birth mode, body size or diet more than 0.3 apart; `cargo run --release --example distances` prints the founders' matrix). Display coloration is condition-dependent (an honest signal). |
-| `group` | Critical-mass group traits | Daily regional carrier frequency → logistic benefit. Implemented: cooperative hunting, warning coloration, herd defense, alarm calls. |
+| `group` | Critical-mass group traits | Daily regional carrier frequency → logistic benefit. Implemented: cooperative hunting, warning coloration, herd defense, alarm calls, shared burrows, sentries. |
 | `legacy` | Scoring: genetic legacy | Share of origin-tagged alleles among living breeding adults, raw and weighted by offspring raised to adulthood. |
 | `world` | Needs and behavior, everything else | The tick loop: utility-AI decisions (parallel), then movement, grazing, hunting, scavenging, drinking, courtship, pregnancy, eggs and incubation, nursing, growth, death. |
 | `world::disease` | Genetics: picky vs flexible | Mating-transmitted disease: pathogens emerge at matings (4× between founding lineages), pass between mates (natural and directed) and between nursing mothers and young, drain the acutely sick's health (dulling their display) and cut fertility; infections end in immunity or lifelong symptomless carriage. Also deaths of homozygotes for harmful recessives. Reports count infections, current sick and carriers, harmful alleles per organism, and `disease` / `recessive` deaths per lineage. |
@@ -189,7 +189,29 @@ stream, so they change a world only through their effects.
   those pairs share a body plan.
 - A 12-seed, 120-day validation takes about 35 seconds on 4 cores.
 
-Not yet implemented from the design doc: the other five group traits, seasonal strategies
+**Shared burrows and sentries.** Shared burrows: carriers are diggers
+(claws > 0.5 or burrowing > 0.4) with group tolerance > 0.5; solitary diggers
+dilute it. Where it holds, a carrier's effective burrowing rises toward 1
+(`shared_burrow`), so modest diggers can go to ground and shelter, attacks
+on it fail more often, it hides better, and the burrow buffers more cold and
+heat. Dependent young of a carrier mother share her burrow. Sentries: a new
+`vigilance` gene (4 points per unit); carriers have vigilance > 0.5 and group
+tolerance > 0.6, and other group members dilute it. Each carrier is on duty
+for a random `sentry_share` of two-hour shifts and, if fed and with kin
+around, stands watch: it stays put, does not forage, eats faster
+(`sentry_cost`) and sees further (`sentry_vigilance`). A threat it sees
+itself becomes a warning that kin group members hear as a threat of their
+own (scaled by the regional benefit; warnings are never relayed), and group
+members where sentries hold lose no perception to breeding drive. Sample
+designs: burrowing omnivores now have group tolerance 0.6 (shared burrows),
+herd grazers vigilance 0.7 (sentries). On two 12-seed sweeps (seeds 31 and
+77), switching both rules off with `--set shared_burrow=0 --set
+sentry_share=0` scores 22.11 in total against 22.18 with them on: neutral.
+Herd grazers lose a little on watch duty, since adult grazers are rarely
+threatened.
+
+Not yet implemented from the design doc: group navigation, communal dens and shared caches (they wait on
+migration, hibernation and caching), seasonal strategies
 (hibernation, migration, estivation as genes), level-of-detail statistical
 populations. The point costs in `design.rs` are placeholders, as the
 doc lists them as an open question.

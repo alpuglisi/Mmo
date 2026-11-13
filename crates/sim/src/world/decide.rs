@@ -8,7 +8,7 @@ use std::cell::Cell;
 
 use rand::Rng;
 
-use super::spatial::{ARMED, COURTING, FEMALE};
+use super::spatial::{ALERT, ARMED, COURTING, FEMALE};
 use super::{Intent, World};
 use crate::genome::Gene;
 use crate::group::GroupTrait;
@@ -41,6 +41,9 @@ struct Viewer<'a> {
     o: &'a Organism,
     radius: f32,
     alarm: f32,
+    /// Sentry benefit where the viewer stands, if it is a group member:
+    /// how much a kin sentry's warning counts.
+    sentry: f32,
     coop: f32,
     hunter: bool,
     can_breed: bool,
@@ -59,6 +62,11 @@ struct Perception {
     threat: f32,
     threat_pos: Vec2,
     threat_from: usize,
+    /// Strongest warning heard from a kin sentry, and where its threat is.
+    /// Kept apart from `threat` so sentries never relay each other's
+    /// warnings in a loop.
+    warning: f32,
+    warning_pos: Vec2,
     prey: Option<(f32, usize)>,
     mate: Option<(f32, usize)>,
     kin: u32,
@@ -131,6 +139,57 @@ impl World {
         }
     }
 
+    /// Shared-burrow benefit for `o`: a carrier where the trait holds, or
+    /// dependent young of a carrier mother (raised in her burrow).
+    pub(crate) fn shared_burrow_bonus(&self, o: &Organism) -> f32 {
+        if self.config.balance.shared_burrow <= 0.0 {
+            return 0.0;
+        }
+        let t = GroupTrait::SharedBurrows;
+        let carrier = t.is_carrier(&o.pheno)
+            || (!o.matured
+                && o.growth < 0.7
+                && o.mother.and_then(|m| self.index.get(&m)).is_some_and(|&mi| t.is_carrier(&self.organisms[mi].pheno)));
+        if carrier {
+            self.group.benefit(t, o.pos)
+        } else {
+            0.0
+        }
+    }
+
+    /// Effective burrowing: the organism's own, deepened by a shared burrow
+    /// (`Balance::shared_burrow`). Above 0.5 it can shelter on dry ground.
+    pub(crate) fn burrow_depth(&self, o: &Organism) -> f32 {
+        let b = o.traits.body.burrow;
+        let shared = self.shared_burrow_bonus(o);
+        if shared <= 0.0 {
+            return b;
+        }
+        b + self.config.balance.shared_burrow * shared * (1.0 - b).max(0.0)
+    }
+
+    /// Sentry benefit for a group member (`GroupTrait::Sentries` eligible).
+    pub(crate) fn sentry_bonus(&self, o: &Organism) -> f32 {
+        if self.config.balance.sentry_share > 0.0 && GroupTrait::Sentries.is_eligible(&o.pheno) {
+            self.group.benefit(GroupTrait::Sentries, o.pos)
+        } else {
+            0.0
+        }
+    }
+
+    /// Is sentry carrier `o` on duty this tick? Shifts last two hours; each
+    /// carrier draws its own (seeded by id and shift), a `sentry_share` of
+    /// them on average.
+    pub(crate) fn on_watch_duty(&self, o: &Organism) -> bool {
+        let share = self.config.balance.sentry_share;
+        if share <= 0.0 || !o.matured || !GroupTrait::Sentries.is_carrier(&o.pheno) {
+            return false;
+        }
+        let shift = self.tick / (2 * self.config.ticks_per_hour());
+        let roll = (splitmix64(o.id ^ splitmix64(shift ^ 0x5e47_e1e5)) >> 40) as f32 / (1u64 << 24) as f32;
+        roll < share
+    }
+
     pub(crate) fn herd_bonus(&self, o: &Organism) -> f32 {
         if GroupTrait::HerdDefense.is_carrier(&o.pheno) && o.kin_nearby >= 3 {
             self.group.benefit(GroupTrait::HerdDefense, o.pos)
@@ -172,8 +231,14 @@ impl World {
         // --- Perception ---------------------------------------------------
         let alarm = if GroupTrait::AlarmCalls.is_carrier(p) { self.group.benefit(GroupTrait::AlarmCalls, o.pos) } else { 0.0 };
         let possessed = if o.possessed_by.is_some() { 1.2 } else { 1.0 };
+        // Group members where sentries hold breed under watch; a sentry on
+        // watch scans harder and isn't distracted by breeding.
+        let sentry = self.sentry_bonus(o);
+        let watching = o.action == Action::Sentry;
+        let vigil = if watching { 1.0 + cfg.balance.sentry_vigilance } else { 1.0 };
         // Breeding drive lowers perception (doc: "Breeding season").
-        let perception = o.traits.stats.perception * (1.0 + 0.5 * alarm) * possessed * (1.0 - 0.3 * n.breeding / 100.0);
+        let distraction = if watching { 0.0 } else { 0.3 * n.breeding / 100.0 * (1.0 - sentry) };
+        let perception = o.traits.stats.perception * (1.0 + 0.5 * alarm) * possessed * vigil * (1.0 - distraction);
         let radius = (2.0 + cfg.balance.perception_range * perception).min(cfg.max_perception);
 
         let coop = self.coop_bonus(o);
@@ -183,11 +248,13 @@ impl World {
 
         let fight_power = o.power() * cfg.balance.attack_power;
         let risk_floor = 1.0 - n.hunger / 100.0 * o.traits.carnivory;
-        let v = Viewer { o, radius, alarm, coop, hunter, can_breed, my_power, fight_power, risk_floor, salt: rng.gen() };
+        let v = Viewer { o, radius, alarm, sentry, coop, hunter, can_breed, my_power, fight_power, risk_floor, salt: rng.gen() };
         let mut seen = Perception {
             threat: 0.0,
             threat_pos: o.pos,
             threat_from: usize::MAX,
+            warning: 0.0,
+            warning_pos: o.pos,
             prey: None,
             mate: None,
             kin: 0,
@@ -232,7 +299,8 @@ impl World {
                     && e.flags & COURTING != 0
                     && (e.flags & FEMALE != 0) != female
                     && seen.mate.is_none_or(|(s, _)| 1.0 >= s * (1.0 + d));
-                if threat || prey || mate {
+                let warning = sentry > 0.0 && e.flags & ALERT != 0;
+                if threat || prey || mate || warning {
                     self.look(&v, &mut seen, e.idx as usize, d, false);
                 }
                 let r = &mut rest[usize::from(e.lineage != o.lineage)];
@@ -241,7 +309,10 @@ impl World {
             }
             buf.set(near);
         });
-        let Perception { threat, threat_pos, prey, mate, .. } = seen;
+        let Perception { threat: seen_threat, threat_pos: seen_pos, prey, mate, .. } = seen;
+        // A sentry's warning counts like a threat seen first hand, from
+        // wherever the sentry saw it.
+        let (threat, threat_pos) = if seen.warning > seen_threat { (seen.warning, seen.warning_pos) } else { (seen_threat, seen_pos) };
 
         // Kin beyond the nearest `FOCUS`: at the kin rate among the nearest,
         // by lineage (with none of a kind among them, one's own lineage
@@ -271,10 +342,14 @@ impl World {
         let juvenile_care = !o.matured && o.growth < 0.7 && o.traits.birth != crate::BirthType::AbandonedEggs;
         // A burrower on dry ground escapes by going to ground, which costs it
         // nothing, so it takes cover at lower threat than a runner would flee.
-        let can_dig = o.traits.body.burrow > 0.5 && self.map.tile_at(o.pos).water_depth == 0.0;
+        // Carriers of shared burrows can go to ground with modest burrowing.
+        let can_dig = self.map.tile_at(o.pos).water_depth == 0.0 && self.burrow_depth(o) > 0.5;
         let flee_weight = cfg.balance.flee_weight * if can_dig { cfg.balance.burrow_caution } else { 1.0 };
+        // A sentry on duty with its group around stands watch unless hungry,
+        // thirsty or courting wins: some stay alert while others breed.
+        let watch = if kin >= 2 && self.on_watch_duty(o) { 0.7 * sentry * (1.0 - hunger).powi(2) } else { 0.0 };
 
-        let mut options: [(Action, f32); 12] = [
+        let mut options: [(Action, f32); 13] = [
             (Action::Flee, threat * (1.3 - boldness) * flee_weight),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 }),
             (Action::Drink, thirst.powf(1.5) * 1.3 + if thirst > 0.8 { 0.5 } else { 0.0 }),
@@ -295,6 +370,7 @@ impl World {
                 _ => 0.0,
             }),
             (Action::Guard, if o.nest.is_some() { 0.6 } else { 0.0 }),
+            (Action::Sentry, watch),
             (Action::Idle, 0.0),
         ];
         // Aggressive organisms hunt a little before they're hungry.
@@ -314,6 +390,13 @@ impl World {
         } else {
             action
         };
+
+        // A sentry warns its group of a threat it saw itself, on watch or
+        // while fleeing from what it spotted there (never a relayed warning).
+        let raising = action == Action::Sentry || (action == Action::Flee && (watching || o.alert.is_some()));
+        if raising && seen_threat > 0.0 {
+            intent.alert = Some((seen_pos, seen_threat));
+        }
 
         // --- Targets -------------------------------------------------------
         intent.action = action;
@@ -369,7 +452,8 @@ impl World {
             Action::Migrate => intent.target = self.migrate_orders.get(&o.owner).copied(),
             Action::FollowParent => intent.target = mother_pos,
             Action::Guard => intent.target = o.nest,
-            Action::Hunt | Action::Scavenge | Action::Ordered => {}
+            // Standing watch where it is.
+            Action::Hunt | Action::Scavenge | Action::Sentry | Action::Ordered => {}
         }
         intent
     }
@@ -382,6 +466,16 @@ impl World {
         let q = &self.organisms[j];
         let gd = genetic_distance(o, q);
         let kin = mating::is_kin(&o.genome, &q.genome, gd, cfg.species_distance, cfg.kin_body_plan_gap);
+        // A kin sentry's warning reaches group members where sentries hold.
+        if kin && v.sentry > 0.0 {
+            if let Some((at, level)) = q.alert {
+                let heard = level * v.sentry;
+                if heard > seen.warning {
+                    seen.warning = heard;
+                    seen.warning_pos = at;
+                }
+            }
+        }
         if count {
             let lineage = usize::from(q.lineage != o.lineage);
             seen.looked[lineage] += 1;
@@ -393,7 +487,8 @@ impl World {
         }
         if !kin {
             // Sheltered burrowers and stealthy organisms are harder to see.
-            let hidden = if q.sheltered { 0.5 } else { 0.0 };
+            // A shared burrow hides its sleepers better.
+            let hidden = if q.sheltered { 0.5 + 0.3 * (self.burrow_depth(q) - q.traits.body.burrow) } else { 0.0 };
             let detect = radius * (1.0 - cfg.balance.stealth_effect * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
             if d < detect {
                 if can_threaten(q, o) {
@@ -652,7 +747,9 @@ mod tests {
     fn hunters_weigh_injury_from_prey_that_fights_back() {
         let w = presets::standard_world(WorldConfig { seed: 3, width: 48, height: 48, ..Default::default() }, 1);
         let pick = |lineage: u32| &w.organisms[w.organisms.iter().position(|o| o.lineage == lineage).unwrap()];
-        let (fox, pack, grazer, burrower) = (pick(3), pick(4), pick(5), pick(7));
+        let (fox, pack, burrower) = (pick(3), pick(4), pick(7));
+        // The most herbivorous grazer founder (founders vary around the design).
+        let grazer = w.organisms.iter().filter(|o| o.lineage == 5).min_by(|a, b| a.traits.carnivory.total_cmp(&b.traits.carnivory)).unwrap();
         let k = w.config.balance.injury_aversion;
         assert!(fight_back(grazer) < 0.05 * fight_back(fox));
         assert!(injury_discount(pack, pack.power(), fight_back(grazer), k) > 0.9);

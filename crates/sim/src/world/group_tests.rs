@@ -1,0 +1,206 @@
+//! Shared burrows and sentries (critical-mass group traits) in the world.
+
+use super::{Intent, World};
+use crate::genome::Gene;
+use crate::group::GroupTrait;
+use crate::math::Vec2;
+use crate::organism::{Action, Organism};
+use crate::rng::{rng_for, stream};
+use crate::{presets, WorldConfig};
+
+const CENTER: Vec2 = Vec2 { x: 24.0, y: 24.0 };
+
+fn world() -> World {
+    presets::standard_world(WorldConfig { seed: 4, width: 48, height: 48, ..Default::default() }, 1)
+}
+
+fn set_benefit(w: &mut World, t: GroupTrait, b: f32) {
+    for r in &mut w.group.benefit {
+        r[t as usize] = b;
+    }
+}
+
+fn set_gene(o: &mut Organism, g: Gene, v: f32) {
+    o.pheno.0[g.index()] = v;
+    if g == Gene::Burrowing {
+        o.traits.body.burrow = v;
+    }
+}
+
+/// A grown member of `lineage`, everyone else moved to a far corner.
+fn isolate(w: &mut World, lineage: u32) -> usize {
+    let i = w.organisms.iter().position(|o| o.lineage == lineage).unwrap();
+    for o in w.organisms.iter_mut() {
+        o.pos = Vec2::new(1.0, 1.0);
+    }
+    let o = &mut w.organisms[i];
+    (o.growth, o.matured, o.mother, o.pos) = (1.0, true, None, CENTER);
+    (o.needs.hunger, o.needs.thirst, o.needs.energy, o.needs.breeding) = (10.0, 10.0, 90.0, 0.0);
+    w.map.tile_at_mut(CENTER).water_depth = 0.0;
+    i
+}
+
+/// Rest in place for one tick.
+fn rest(w: &mut World, i: usize) {
+    let intent = Intent { action: Action::Rest, ..Intent::idle() };
+    let mut rng = rng_for(1, stream::APPLY, w.tick, 0);
+    w.apply(i, &intent, &mut rng);
+}
+
+/// A burrowing omnivore with only modest burrowing shelters in a shared
+/// burrow where the trait holds and it carries it, and nowhere else. Its
+/// young share the burrow even if they don't carry the trait.
+#[test]
+fn shared_burrow_shelters_carriers_where_it_holds() {
+    let t = GroupTrait::SharedBurrows;
+    let mut w = world();
+    let i = isolate(&mut w, 7);
+    set_gene(&mut w.organisms[i], Gene::Burrowing, 0.45);
+    set_gene(&mut w.organisms[i], Gene::GroupTolerance, 0.8);
+    assert!(t.is_carrier(&w.organisms[i].pheno));
+    let mut loner = w.organisms[i].clone();
+    set_gene(&mut loner, Gene::GroupTolerance, 0.2);
+
+    set_benefit(&mut w, t, 0.0);
+    assert_eq!(w.burrow_depth(&w.organisms[i]), 0.45);
+    rest(&mut w, i);
+    assert!(!w.organisms[i].sheltered, "no shared burrow without the trait");
+
+    set_benefit(&mut w, t, 1.0);
+    assert!(w.burrow_depth(&w.organisms[i]) > 0.6);
+    assert_eq!(w.burrow_depth(&loner), 0.45, "non-carriers get nothing");
+    rest(&mut w, i);
+    assert!(w.organisms[i].sheltered, "carrier shelters in the shared burrow");
+
+    // Dependent young of a carrier mother share her burrow.
+    let mut young = loner.clone();
+    (young.matured, young.growth, young.mother) = (false, 0.3, Some(w.organisms[i].id));
+    assert!(!t.is_carrier(&young.pheno));
+    assert_eq!(w.shared_burrow_bonus(&young), 1.0);
+    young.growth = 0.9;
+    assert_eq!(w.shared_burrow_bonus(&young), 0.0);
+
+    w.config.balance.shared_burrow = 0.0;
+    assert_eq!(w.burrow_depth(&w.organisms[i]), 0.45, "0 disables");
+}
+
+/// A shared burrow keeps out more cold than a lone burrow just as deep.
+#[test]
+fn shared_burrow_buffers_weather_better() {
+    let t = GroupTrait::SharedBurrows;
+    let mut w = world();
+    let i = isolate(&mut w, 7);
+    set_gene(&mut w.organisms[i], Gene::Burrowing, 0.9);
+    w.organisms[i].traits.stats.insulation = 0.0;
+    w.map.tile_at_mut(CENTER).temp = -40.0;
+    set_benefit(&mut w, t, 1.0);
+    let cold_in = |w: &mut World, gt: f32| {
+        set_gene(&mut w.organisms[i], Gene::GroupTolerance, gt);
+        rest(w, i);
+        assert!(w.organisms[i].sheltered);
+        w.organisms[i].needs.cold
+    };
+    let lone = cold_in(&mut w, 0.2);
+    let shared = cold_in(&mut w, 0.8);
+    assert!(shared < lone - 5.0, "shared {shared} vs lone {lone}");
+}
+
+/// Sets up a herd grazer with a kin sentry next to it that has spotted a
+/// threat out of the grazer's own sight. Returns (grazer, sentry).
+fn herd_with_sentry(w: &mut World) -> (usize, usize) {
+    let a = isolate(w, 5);
+    let s = w.organisms.iter().position(|o| o.lineage == 5 && o.id != w.organisms[a].id).unwrap();
+    let o = &mut w.organisms[s];
+    (o.growth, o.matured, o.mother, o.pos) = (1.0, true, None, CENTER + Vec2::new(1.5, 0.0));
+    o.action = Action::Sentry;
+    o.alert = Some((CENTER + Vec2::new(7.0, 0.0), 1.0));
+    w.grid.rebuild(&w.organisms);
+    (a, s)
+}
+
+/// A kin sentry's warning reaches group members only where sentries hold,
+/// and only group members.
+#[test]
+fn sentry_warns_group_members_where_the_trait_holds() {
+    let t = GroupTrait::Sentries;
+    let mut w = world();
+    let (a, _) = herd_with_sentry(&mut w);
+    set_benefit(&mut w, t, 0.0);
+    assert_eq!(w.decide(a).threat, 0.0, "nothing in sight");
+    set_benefit(&mut w, t, 1.0);
+    let warned = w.decide(a);
+    assert!(warned.threat > 0.5, "warned {}", warned.threat);
+    assert_eq!(warned.action, Action::Flee);
+    assert!(warned.alert.is_none(), "warnings are not relayed");
+    set_benefit(&mut w, t, 0.3);
+    let weak = w.decide(a).threat;
+    assert!(weak < warned.threat && weak > 0.0, "weak {weak}");
+    // A loner that wandered into the herd's region isn't a group member.
+    set_benefit(&mut w, t, 1.0);
+    set_gene(&mut w.organisms[a], Gene::GroupTolerance, 0.3);
+    assert_eq!(w.decide(a).threat, 0.0);
+}
+
+/// A vigilant herd member takes turns on watch, pays for it in food, and
+/// raises the alarm when it spots a predator.
+#[test]
+fn sentries_take_turns_on_watch() {
+    let t = GroupTrait::Sentries;
+    let mut w = world();
+    let s = isolate(&mut w, 5);
+    set_gene(&mut w.organisms[s], Gene::Vigilance, 0.8);
+    assert!(t.is_carrier(&w.organisms[s].pheno));
+    // Some of its herd around it.
+    let herd: Vec<usize> = w.organisms.iter().enumerate().filter(|(j, o)| o.lineage == 5 && *j != s).map(|(j, _)| j).take(4).collect();
+    for (k, &j) in herd.iter().enumerate() {
+        w.organisms[j].pos = CENTER + Vec2::new(1.0, 0.0).rotate(k as f32 * 1.5);
+    }
+    w.grid.rebuild(&w.organisms);
+    set_benefit(&mut w, t, 1.0);
+    let shift = 2 * w.config.ticks_per_hour();
+    let shifts = 400;
+    let on: Vec<u64> = (0..shifts).map(|k| k * shift).filter(|&tick| {
+        w.tick = tick;
+        w.on_watch_duty(&w.organisms[s])
+    }).collect();
+    let share = on.len() as f32 / shifts as f32;
+    assert!((share - w.config.balance.sentry_share).abs() < 0.07, "share {share}");
+    w.tick = on[0];
+    assert_eq!(w.decide(s).action, Action::Sentry);
+    set_benefit(&mut w, t, 0.0);
+    assert_ne!(w.decide(s).action, Action::Sentry, "no watch where the trait doesn't hold");
+    set_benefit(&mut w, t, 1.0);
+    let mut idler = w.organisms[s].clone();
+    set_gene(&mut idler, Gene::Vigilance, 0.0);
+    assert!(!w.on_watch_duty(&idler));
+
+    // On watch it doesn't eat and burns more than standing idle.
+    let hunger_after = |w: &mut World, action: Action| {
+        let tile = w.map.tile_at_mut(CENTER);
+        (tile.veg, tile.meat) = (0.0, 0.0);
+        w.organisms[s].needs.hunger = 40.0;
+        let intent = Intent { action, ..Intent::idle() };
+        let mut rng = rng_for(1, stream::APPLY, w.tick, 0);
+        w.apply(s, &intent, &mut rng);
+        w.organisms[s].needs.hunger
+    };
+    let watching = hunger_after(&mut w, Action::Sentry);
+    let idle = hunger_after(&mut w, Action::Idle);
+    assert!(watching > idle, "watching {watching} vs idle {idle}");
+
+    // A hungry sentry leaves its post to graze.
+    w.organisms[s].needs.hunger = 60.0;
+    assert_ne!(w.decide(s).action, Action::Sentry);
+
+    // A wolf comes into view: the sentry raises the alarm.
+    (w.organisms[s].action, w.organisms[s].needs.hunger) = (Action::Sentry, 10.0);
+    let wolf = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
+    (w.organisms[wolf].growth, w.organisms[wolf].traits.body.mass) = (1.0, 20.0);
+    assert!(super::decide::can_threaten(&w.organisms[wolf], &w.organisms[s]));
+    w.organisms[wolf].pos = CENTER + Vec2::new(5.0, 0.0);
+    w.grid.rebuild(&w.organisms);
+    let seen = w.decide(s);
+    assert!(seen.threat > 0.0, "wolf unseen");
+    let (at, level) = seen.alert.expect("alarm raised");
+    assert!(at.dist(w.organisms[wolf].pos) < 1e-3 && level > 0.0);
+}

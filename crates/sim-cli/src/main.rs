@@ -49,7 +49,8 @@ pregnancy_cost meat_per_kg flee_weight ambush crowding toxin_damage larval_compe
 adult_mortality burrow_shelter burrow_caution parent_defense breeding_density escape
 escape_window home_buffer injury_aversion fight_damage recessive_mutation recessive_hazard
 disease_emergence disease_transmission disease_damage disease_recovery disease_chronic
-disease_fertility disease_kin path_nodes
+disease_fertility disease_kin path_nodes shared_burrow sentry_share sentry_vigilance
+sentry_cost
 ";
 
 struct Args {
