@@ -2,3 +2,6 @@ target/
 *.png
 !docs/**/*.png
 .claude/worktrees/
+client/node_modules/
+client/dist/
+client/e2e/out/

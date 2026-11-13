@@ -9,6 +9,9 @@ no players attached, and measure per-organism tick cost) is done and still
 being tuned. **Build step 2 has started:** `evo-server`, the authoritative
 Rust server around the simulation (accounts, founding, WebSocket play,
 directed-mating consent, persistence behind a trait; see [Server](#server)).
+**Build step 3 has started:** a TypeScript web client (PixiJS, Vite) with
+login, the founder design editor, the world view, matings and a dashboard;
+see [Client](#client).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
 
@@ -19,6 +22,7 @@ crates/
   sim/       evo-sim: the rules engine (library, no I/O)
   sim-cli/   evo-sim binary: run worlds, print reports, benchmark, render PNGs
   server/    evo-server: authoritative game server (Tokio + Axum, WebSockets)
+client/      web client: TypeScript, PixiJS 8, Vite (npm)
 docs/
   game-design.md
 ```
@@ -114,7 +118,8 @@ cargo test -p evo-server                                      # unit + end-to-en
 ```
 
 Other flags: `--no-wild` (no wild ecosystem), `--state-ms` (state push
-interval). `RUST_LOG=debug` for more logging.
+interval), `--static DIR` (serve the built web client from `DIR`, e.g.
+`client/dist`, on every path the API doesn't use). `RUST_LOG=debug` for more logging.
 
 ### Architecture
 
@@ -236,6 +241,110 @@ warning); players log in again. World snapshots need serde on the sim types
 (organisms, genomes, map, weather, counters, the world's private fields);
 the RNG is derived from `(seed, stream, tick, organism)`, so a snapshot is
 just data plus the tick.
+
+## Client
+
+`client/` is build step 3: the browser client, TypeScript with PixiJS 8 for
+the map and plain DOM/CSS for panels (no UI framework), bundled by Vite into
+static files that `evo-server` can serve and Capacitor can wrap later. It
+only displays state and sends commands; the server stays authoritative.
+
+```sh
+cd client
+npm install
+npm run dev          # Vite on :5173, proxies /api and /ws to 127.0.0.1:8080 (EVO_SERVER=http://host:port to change)
+npm run build        # typecheck + static bundle in client/dist
+npm run typecheck
+npm test             # Vitest unit tests
+npm run e2e          # Playwright smoke test (needs `npm run build` and `cargo build --release -p evo-server`)
+```
+
+Serve the built client from the game server (one origin, no proxy):
+
+```sh
+(cd client && npm run build)
+cargo run --release --bin evo-server -- --fast --memory --static client/dist   # open http://127.0.0.1:8080
+```
+
+**Screens.**
+
+- **Login / register** (`ui/login.ts`). The token is kept in
+  `localStorage`; the server holds tokens in memory, so after a server
+  restart the socket fails while the API answers, and the client drops back
+  to the login screen.
+- **Founder design** (`ui/design.ts`), shown when `welcome` says the player
+  has no lineage: thermoregulation, birth type, offspring per birth,
+  founders, a slider per gene from `GET /api/genes` (paid traits, then the
+  free behavior, diet and preference genes), and a live point total against
+  the 100-point budget with a per-gene cost. `cost.ts` mirrors the sim's
+  `point_cost` and `validate` (same checks and error codes), so an invalid
+  design can't be submitted; server errors (`over_budget` with its numbers,
+  `already_founded`, …) are shown as returned.
+- **World** (`ui/game.ts`, `world/worldView.ts`): the `/api/map.png` image
+  as one nearest-filtered texture (refreshed every 15 s, dimmed at night)
+  under organism markers from `state`: own organisms yellow (larger when
+  adult; red ring when possessed, green when pregnant), wild grey, other
+  players a stable hue each. Markers live in screen space so they stay
+  readable at any zoom, and glide between state pushes. Drag to pan, wheel or
+  +/− to zoom; **Follow** keeps the camera on the server's view window (your
+  possessed organism or your lineage's centroid), drawn as a blue square.
+  Click an organism to inspect it: yours show action, sex, age, stage,
+  health, lineage and generation, and the eight needs as bars; others show
+  only what the protocol reveals. **Possess** / **Release**; while
+  possessing, clicking empty map sends `order_move` (target line drawn).
+  **Migrate…** then a click sends the group command; **Pin view here** sends
+  `set_view` at the camera center.
+- **Matings** tab: request a directed mating (one of your adults, a partner
+  id filled from the inspector's "Request mating…", optional price);
+  incoming requests with Accept / Decline; your open offers with Cancel and,
+  once accepted, **Complete now** and **Escort** (possess your organism and
+  walk it to the partner's last seen position, the trip to the meeting);
+  recent outcomes with conception, mismatch, fertility and failure chance.
+- **Lineage** tab (dashboard): lineage size, adults and young, pregnancies,
+  newest generation, mating slots left this season, migration target, the
+  legacy leaderboard (share and weighted share per player, yours
+  highlighted) and a clickable list of your organisms. The top bar shows the
+  clock, season, day/night, weather and the connection state.
+
+**Architecture.**
+
+```
+main.ts      login → design (no lineage) → game; one GameSocket from login to logout
+protocol.ts  wire types written by hand from crates/server/src/protocol.rs (keep in sync) + parseServerMsg
+api.ts       fetch wrapper for the HTTP API (ApiError carries code and detail)
+socket.ts    GameSocket: ids paired with `result`, 10 s reply timeout, reconnect with
+             exponential backoff (0.5 s doubling to 15 s, ±20 % jitter), connection state
+model.ts     GameModel: latest state, offer table (requests, updates, outcomes), toasts; pub/sub
+cost.ts      design point cost and validation (mirror of crates/sim/src/design.rs)
+ui/          DOM screens and panels; panels re-render at most 4×/s and rebuild buttons only
+             when their content changes, so they stay clickable under 10 Hz state pushes
+world/       PixiJS view: camera, map texture, overlays, markers, hit testing
+```
+
+Every failed `result` (server error codes such as `not_owned`,
+`too_far`, `no_slots_left`, or local `not_connected` / `timeout`) shows as
+a toast. `window.evo` exposes the model, socket and view for debugging and
+the end-to-end test.
+
+**Tests.** Vitest (19 tests): protocol parsing against messages shaped like
+serde's output, including malformed and unknown ones; the point cost and
+validation against the server's own examples (the README design costs
+15.1, exactly-at-budget passes, one more founder fails); socket id pairing,
+backoff, reconnect and give-up; the offer table through request, accept
+and outcome. `e2e/smoke.mjs` (Playwright, pre-installed Chromium) starts
+`evo-server --fast --memory --static client/dist` on a free port, registers,
+checks the live cost (10.1, and the server's founding response agrees) and
+the client-side over-budget refusal, founds a lineage, waits for markers and
+the map, clicks an organism, possesses it, clicks the map and checks it
+walks toward the target, migrates, sees an error toast, then registers a
+second player and runs a directed mating through both players' panels
+(request with price → incoming → accept → both see the update → escort).
+
+**Not yet:** tile-accurate map rendering (terrain from the server instead of
+the debug PNG), organism sprites by body plan, touch pinch-zoom, a stud
+marketplace and economy UI, leaderboard history charts, lineage genetics
+dashboard (allele shares, trait distributions), alerts, and the Capacitor
+shells.
 
 ## Benchmark (first measurement)
 
@@ -374,3 +483,8 @@ in use, 10.71 with the presets' strategies).
    connection; session expiry and rate limits; a stud marketplace and an
    economy behind the recorded prices; seasonal leaderboard aggregation;
    several worlds (shards) per process.
+6. **Client (step 3, started):** a terrain endpoint (tile types and heights
+   instead of the debug PNG) and tile rendering with seasons and weather;
+   a genetics dashboard (trait distributions and allele shares from a new
+   lineage-stats endpoint) and alerts (deaths, births, offers); sprites by
+   body plan; touch gestures; Capacitor shells for iOS and Android.

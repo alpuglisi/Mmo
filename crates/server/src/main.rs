@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! evo-server [--bind ADDR] [--data DIR | --memory] [--size N] [--seed N]
-//!            [--no-wild] [--tick-ms MS] [--state-ms MS] [--fast]
+//!            [--no-wild] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
 //! ```
 
 use std::time::Duration;
@@ -10,7 +10,7 @@ use std::time::Duration;
 use evo_server::{start, ServerConfig};
 
 const USAGE: &str = "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory] [--size 128] [--seed 1] \
-[--no-wild] [--tick-ms 1000] [--state-ms 1000] [--fast]";
+[--no-wild] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist]";
 
 fn parse_args() -> Result<ServerConfig, String> {
     let mut cfg = ServerConfig::default();
@@ -36,6 +36,7 @@ fn parse_args() -> Result<ServerConfig, String> {
                 cfg.runner.state_interval = Duration::from_millis(value("--state-ms")?.parse().map_err(|e| format!("--state-ms: {e}"))?)
             }
             "--fast" => cfg = cfg.fast(),
+            "--static" => cfg.static_dir = Some(value("--static")?.into()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
