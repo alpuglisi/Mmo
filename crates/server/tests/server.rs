@@ -533,8 +533,12 @@ async fn delta_states_match_json_states_and_resync() {
     for round in 0..6 {
         if round == 3 {
             send(&mut new, json!({"type": "resync"})).await;
-            // The reader handles it; give it a moment before the push.
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            // Wait until the reader has handled it (counted) before the push.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            while json_req(addr, Method::GET, "/api/metrics", None, None).await.1["resyncs"] != 1 {
+                assert!(tokio::time::Instant::now() < deadline, "the resync was never handled");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
         }
         if srv.substep().await > 0 {
             let (s, k) = same_state(next_frame(&mut old).await, next_frame(&mut new).await, &mut dec);

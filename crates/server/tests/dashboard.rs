@@ -149,16 +149,17 @@ async fn terrain_stats_and_seasons() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["lineage"].is_null() && v["alive"] == 0);
     found(addr, &ann, "Ann's").await;
-    // Wait for two simulated days (about a second each in fast mode).
-    let mut stats = Value::Null;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        stats = json_req(addr, Method::GET, "/api/lineage/stats", Some(&ann), None).await.1;
+    // Wait for two simulated days (about a second each in fast mode, slower
+    // on a busy machine, so the deadline is generous).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let stats = loop {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let stats = json_req(addr, Method::GET, "/api/lineage/stats", Some(&ann), None).await.1;
         if stats["history_days"].as_array().is_some_and(|d| d.len() >= 2) {
-            break;
+            break stats;
         }
-    }
-    assert!(stats["history_days"].as_array().unwrap().len() >= 2, "{stats}");
+        assert!(tokio::time::Instant::now() < deadline, "two days never passed: {stats}");
+    };
     assert_eq!(stats["name"], "Ann's");
     assert!(stats["alive"].as_u64().unwrap() > 0);
     let bands: u64 = stats["age_bands"]
@@ -269,24 +270,43 @@ async fn logins_and_commands_are_rate_limited() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_sessions_expire_and_close_the_socket() {
+    // Wide margins, so a slow machine can't fake either outcome: commands are
+    // sent every tenth of the idle timeout, so a round trip may take nine
+    // tenths of it before an in-use session could lapse.
+    const IDLE: Duration = Duration::from_secs(3);
+    let keep_alive = IDLE / 10;
     let mut cfg = config();
-    cfg.sessions = SessionPolicy { idle: Duration::from_millis(600), max_age: Duration::from_secs(60) };
+    cfg.sessions = SessionPolicy { idle: IDLE, max_age: Duration::from_secs(600) };
     let srv = server(cfg).await;
     let addr = srv.addr;
     let ann = register(addr, "ann").await;
     let mut w = ws(addr, &ann).await;
     wait_for(&mut w, "welcome", |v| v["type"] == "welcome").await;
-    // Commands keep the session alive past the idle timeout.
-    for id in 0..4 {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+    // Commands keep the session alive for twice the idle timeout. The next is
+    // due a keep-alive interval after the last was *sent*, so a slow round
+    // trip doesn't stretch the gap between uses.
+    let started = tokio::time::Instant::now();
+    let mut last_sent = started;
+    let mut id = 0u64;
+    while last_sent - started < IDLE * 2 {
+        tokio::time::sleep_until(last_sent + keep_alive).await;
+        last_sent = tokio::time::Instant::now();
         w.send(Message::Text(json!({"id": id, "type": "clear_view"}).to_string())).await.unwrap();
-        let r = wait_for(&mut w, "result", |v| v["type"] == "result" && v["id"] == id).await;
+        let r = wait_for(&mut w, "result", |v| {
+            assert_ne!(v["type"], "session_ended", "expired while in use (command {id}): {v}");
+            v["type"] == "result" && v["id"] == id
+        })
+        .await;
         assert_eq!(r["ok"], true, "{r}");
+        id += 1;
     }
-    // Then idle: the server says so and closes the socket.
+    // Then idle: the server says so, not before the timeout, and closes the
+    // socket. (The last use was at the server, after `last_sent`.)
     let ended = wait_for(&mut w, "session_ended", |v| v["type"] == "session_ended").await;
+    let idle_for = last_sent.elapsed();
     assert_eq!(ended["reason"], "expired");
-    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+    assert!(idle_for >= IDLE, "expired after {idle_for:?} idle, before the {IDLE:?} timeout");
+    let closed = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match w.next().await {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return true,

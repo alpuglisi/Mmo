@@ -29,6 +29,10 @@ const bin = process.env.EVO_SERVER_BIN ?? path.resolve(clientDir, '../target/rel
 const dist = path.join(clientDir, 'dist');
 const shots = path.resolve(process.env.SCREENSHOT_DIR ?? path.join(here, 'out'));
 const STEPS = 9;
+// How long a UI reaction may take. Generous: on a loaded machine the page,
+// the browser and the server's ticks all slow down; a waitFor returns as
+// soon as its condition holds, so this costs nothing when things are quick.
+const UI_MS = 15000;
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -136,7 +140,7 @@ async function desktopChecks(browser, base, errors) {
   // The tour opens by itself after founding, as a labelled non-modal dialog with focus on Next.
   const first = await waitFor('tour', () => tourState(page), 10000);
   if (first.step !== 'welcome' || first.count !== `1 of ${STEPS}` || first.role !== 'dialog' || !first.labelled.startsWith('Welcome')) throw new Error(`unexpected first step ${JSON.stringify(first)}`);
-  await waitFor('focus on Next', async () => (await tourState(page)).focus === 'tour-next', 3000);
+  await waitFor('focus on Next', async () => (await tourState(page)).focus === 'tour-next', UI_MS);
   checkFits(first, 'desktop');
   await shot(page, 'onboarding-desktop-welcome.png');
   step('desktop: the tour opens after founding, focus on Next');
@@ -145,7 +149,7 @@ async function desktopChecks(browser, base, errors) {
   const seen = [];
   for (let k = 0; k < 4; k++) {
     await page.click('#tour-next');
-    const t = await waitFor('next step', async () => { const s = await tourState(page); return s && s.count === `${k + 2} of ${STEPS}` && s; }, 3000);
+    const t = await waitFor('next step', async () => { const s = await tourState(page); return s && s.count === `${k + 2} of ${STEPS}` && s; }, UI_MS);
     checkFits(t, 'desktop');
     if (!t.ring) throw new Error(`no highlight at ${t.step}`);
     seen.push(t.step);
@@ -154,15 +158,15 @@ async function desktopChecks(browser, base, errors) {
   if (!(await page.isVisible('#panel-organism'))) throw new Error('the inspector step did not open the Organism tab');
   await shot(page, 'onboarding-desktop-possess.png');
   await page.keyboard.press('ArrowLeft');
-  await waitFor('back', async () => (await tourState(page))?.step === 'inspector', 3000);
+  await waitFor('back', async () => (await tourState(page))?.step === 'inspector', UI_MS);
   step(`desktop: Next and Back walk the steps (${seen.join(', ')})`);
 
   // Skip closes it and leaves nothing over the map; the game takes input.
   await page.click('#tour-skip');
-  await waitFor('tour closed', async () => (await tourState(page)) === null, 3000);
+  await waitFor('tour closed', async () => (await tourState(page)) === null, UI_MS);
   await mapTakesInput(page, 'desktop');
   await page.click('#tab-seasons');
-  await waitFor('seasons tab', () => page.isVisible('#panel-seasons'), 3000);
+  await waitFor('seasons tab', () => page.isVisible('#panel-seasons'), UI_MS);
   step('desktop: Skip closes the tour; the map and tabs take input again');
 
   await reload(page);
@@ -171,7 +175,7 @@ async function desktopChecks(browser, base, errors) {
 
   // Help: a modal dialog; Esc closes it and focus returns to the Help button.
   await page.click('#help-btn');
-  await page.waitForSelector('#help-dialog', { timeout: 3000 });
+  await page.waitForSelector('#help-dialog', { timeout: UI_MS });
   const help = await page.evaluate(() => ({ modal: document.querySelector('#help-dialog').getAttribute('aria-modal'), focus: document.activeElement?.id }));
   if (help.modal !== 'true' || help.focus !== 'help-replay') throw new Error(`help dialog ${JSON.stringify(help)}`);
   await page.keyboard.press('Tab');
@@ -179,16 +183,16 @@ async function desktopChecks(browser, base, errors) {
   await page.keyboard.press('Tab');
   if (!(await page.evaluate(() => document.querySelector('#help-dialog').contains(document.activeElement)))) throw new Error('focus left the help dialog');
   await page.keyboard.press('Escape');
-  await waitFor('help closed', () => page.evaluate(() => !document.querySelector('#help') && document.activeElement?.id === 'help-btn'), 3000);
+  await waitFor('help closed', () => page.evaluate(() => !document.querySelector('#help') && document.activeElement?.id === 'help-btn'), UI_MS);
   step('desktop: Help is a modal dialog that keeps focus, Esc closes it and focus returns');
 
   // Replay from Help reopens the tour at the first step; Esc skips it.
   await page.click('#help-btn');
   await page.click('#help-replay');
-  const replay = await waitFor('replayed tour', () => tourState(page), 3000);
+  const replay = await waitFor('replayed tour', () => tourState(page), UI_MS);
   if (replay.step !== 'welcome' || await page.$('#help')) throw new Error(`replay ${JSON.stringify(replay)}`);
   await page.keyboard.press('Escape');
-  await waitFor('tour closed by Esc', async () => (await tourState(page)) === null, 3000);
+  await waitFor('tour closed by Esc', async () => (await tourState(page)) === null, UI_MS);
   await mapTakesInput(page, 'desktop');
   await reload(page);
   if (await tourState(page)) throw new Error('the tour came back after a replay and a reload');
@@ -199,7 +203,7 @@ async function desktopChecks(browser, base, errors) {
   await page.click('#help-btn');
   await page.click('#help-reset-tips');
   await page.keyboard.press('Escape');
-  await page.waitForSelector('#help', { state: 'detached', timeout: 3000 });
+  await page.waitForSelector('#help', { state: 'detached', timeout: UI_MS });
   const death = (text) => page.evaluate((text) => window.evo.model.addFeed([{ kind: 'death', text, tick: 1e9 + text.length }]), text);
   await death('Your #1 starved (e2e).');
   // The living world may have called for other hints first (a pregnancy): dismiss those.
@@ -207,10 +211,14 @@ async function desktopChecks(browser, base, errors) {
     const shown = await page.evaluate(() => document.querySelector('#onboarding-hint')?.dataset.hint ?? null);
     if (shown && shown !== 'death') await page.click('#hint-dismiss');
     return shown === 'death';
-  }, 8000);
+  }, UI_MS);
   await shot(page, 'onboarding-desktop-hint.png');
   await page.click('#hint-show');
-  await waitFor('genetics tab', () => page.evaluate(() => !document.querySelector('#onboarding-hint') && !document.querySelector('#panel-genetics').hidden), 3000);
+  // The death hint closes and Genetics opens. The next due tip (the living
+  // world may have earned one meanwhile, more likely on a slow machine) may
+  // take the hint's place at once, so wait for the death hint to go, not
+  // for no hint at all.
+  await waitFor('genetics tab', () => page.evaluate(() => document.querySelector('#onboarding-hint')?.dataset.hint !== 'death' && !document.querySelector('#panel-genetics').hidden), UI_MS);
   await death('Your #2 starved again (e2e).');
   await page.waitForTimeout(600);
   if (await page.$('#onboarding-hint[data-hint="death"]')) throw new Error('the death hint showed twice');
@@ -238,14 +246,14 @@ async function phoneChecks(browser, base, errors) {
     if (k === STEPS - 1 && (await page.textContent('#tour-next')) !== 'Finish') throw new Error('no Finish on the last step');
     await page.tap('#tour-next');
   }
-  await waitFor('tour finished', async () => (await tourState(page)) === null, 3000);
+  await waitFor('tour finished', async () => (await tourState(page)) === null, UI_MS);
   step(`phone: every step fits ${page.viewportSize().width} px without sideways scrolling (${steps.join(', ')}); Finish completes it`);
 
   // The tab bar opens the sheet: nothing left blocking.
   await page.tap('#tab-lineage');
-  await waitFor('sheet open', () => page.evaluate(() => document.querySelector('.game').classList.contains('sheet-open')), 3000);
+  await waitFor('sheet open', () => page.evaluate(() => document.querySelector('.game').classList.contains('sheet-open')), UI_MS);
   await page.tap('#tab-lineage');
-  await waitFor('sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')), 3000);
+  await waitFor('sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')), UI_MS);
   await mapTakesInput(page, 'phone');
   const help = await page.locator('#help-btn').boundingBox();
   if (!help || help.x + help.width > page.viewportSize().width) throw new Error(`help button off screen ${JSON.stringify(help)}`);

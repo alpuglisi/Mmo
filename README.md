@@ -1782,8 +1782,12 @@ target/release/examples/loadgen --url http://host:8080 --world isle --players 50
 `--world ID` sends every player to that world and samples its metrics;
 `--worlds N` starts the server with N worlds (`main`, `w2`, …, seeds
 `--seed`+i), spreads the players over them round-robin, prints a line per
-extra world at every report and adds a `worlds` entry per world (tick and
-push timings, connections, organisms) to the summary.
+extra world at every report and adds a `worlds` entry per world (tick,
+push and sub-step timings, ticks per second, outbound MB/s, command
+latency of that world's players, connections, organisms) to the summary;
+`out_mb_s_all_worlds` is the process's total. With `--warm-until N` every
+world is grown to N organisms. The summary's other timings are the first
+world's; CPU and memory are the whole process.
 
 The players speak protocol 2 (binary delta states, as the web client) by
 default; `--proto 1` makes them old clients that get whole JSON states.
@@ -1977,9 +1981,10 @@ a tick, though only the possessed organism's delta goes out).
   (tick p99 ~110 ms, pushes p99 ~45 ms, command p99 ~260 ms) with 7.4 MB/s
   (60 Mbit/s) out on protocol 2, against 58 MB/s (470 Mbit/s) with JSON
   states: a 100 Mbit/s link is enough when clients speak protocol 2.
-  Plan **4–6 dedicated cores** (4 for the sim's parallel phases, 1 for the
-  world thread's serial work and the writers), or more worlds instead of
-  bigger ones; bandwidth is no longer what sets the size of a world.
+  This round planned 4–6 dedicated cores per world; the multi-world runs
+  ([below](#several-worlds-capacity)) measured about 2 cores per 500-player
+  world, so grow with more worlds instead of bigger ones; bandwidth is no
+  longer what sets the size of a world.
 - Memory: about 0.4 GB at 200 players and 0.7 GB at 500 including save
   copies; budget 1 GB per world. Saves take 45–90 ms of the world thread
   (the copy) and 0.3–1.3 s of the saver thread per simulated day.
@@ -2005,10 +2010,89 @@ a tick, though only the possessed organism's delta goes out).
   doubles with the load and memory grows by the second world's size: the
   second world costs what a second process would, without the second
   process. The p99 spread is the box's noise (one stalled sample sets a
-  p99 of the 256-tick window). Budget cores per world as above (a 512²,
-  500-player world wants 4–6), and add worlds to a process while its cores
-  have headroom; past that, run more processes (each with its own world
-  list) behind the same accounts store.
+  p99 of the 256-tick window). The 512², 500-player runs below replace the
+  4–6 cores per world above with about 2; add worlds to a process while its
+  cores have headroom, and past that run more processes (each with its own
+  world list) behind the same accounts store.
+
+### Several worlds: capacity
+
+The 500-player run repeated with several worlds in one process
+(`loadgen --worlds N`): 512² worlds warmed to 22k organisms each (one
+warm-up with `--worlds 2 --warm-until 22000`, copied for every run; the
+single world is that warm-up's `main`), growing to 30–35k during the run;
+1 s ticks, 1 s states, protocol 2, 150 s after the ramp (40 s for 500
+players, 80 s for 1,000, so registrations arrive at 12.5 a second in every
+run). Same 4-core container, shared with other agents' CPU-bound jobs:
+the load average is given for each run, and **the box was oversubscribed
+in all of them** (4 cores, load 4–11 from other jobs when each run started);
+these are pessimistic numbers. Timings are the medians of the 10 s reports
+after the ramp, as in the tables above; command latency is over all of a
+world's players' commands. Measured before prey switching (world snapshot
+version 9) was merged.
+
+| | 1 world × 500 | 2 worlds × 250 | 2 worlds × 500 |
+| --- | --- | --- | --- |
+| Load average (1 min) during the run: min / median / max | 7.6 / 9.2 / 10.3 | 4.2 / 8.8 / 10.9 | 8.8 / 11.5 / 13.2 |
+| Ticks per second (target 1) | 1.0 | 1.0, 1.0 | 1.0, 1.0 |
+| Organisms at the end | 33.4k | 30.4k, 31.7k | 34.9k, 35.5k |
+| Tick p50 / p99 (ms) | 82 / 204 | 135 / 268, 137 / 352 | 115 / 268, 108 / 257 |
+| One state push to all, p99 (ms) | 48 | 44, 39 | 83, 80 |
+| Possession sub-step, p99 (ms) | 57 | 64, 58 | 82, 92 |
+| Command → result p50 / p99 (ms) | 146 / 270 | 145 / 273, 145 / 281 | 148 / 358, 159 / 464 |
+| Outbound MB/s, per world (total) | 1.36 | 0.61, 0.64 (1.28) | 1.30, 1.41 (2.74) |
+| Outbound per client | 2.7 KB/s | 2.6 KB/s | 2.7 KB/s |
+| Server CPU (cores), whole process | 0.27 | 0.33 | 0.57 |
+| RSS, all players on / at the end (MB) | 482 / 525 | 835 / 912 | 866 / 999 |
+| Skipped state frames, dropped connections, panics | 34, 0, 0 | 40, 0, 0 | 45, 0, 0 |
+
+Per-world pairs are `main`, `w2`. Each column was run twice (and the
+baseline twice more); the second runs agree except where noted:
+
+- **2 × 250, first run at load 15–20** (another agent's build started):
+  tick p99 1.5–1.6 s, command p99 7 s, 3,485 skipped states and RSS 1.8 GB.
+  A rerun at load ~9 (the column) and a third (load 5–14: tick p50 65 ms,
+  one stall putting p99 at 455 ms and command p99 at 1.4 s) did not repeat
+  it. With 4 cores and 9–20 runnable threads, a world thread's tick is
+  mostly waiting for a core: CPU use stayed at 0.3 cores either way.
+- **2 × 500, first run with a 40 s ramp** (25 registrations a second,
+  load up to 23): **both world threads stopped ticking for about 40 s**
+  during the ramp, RSS rose to 2.9 GB and command p99 reached 12 s; after
+  the ramp both worlds held 1 tick per second. The cause is the login path,
+  not the worlds: every registration and login hashes a password with
+  Argon2 (19 MiB, tens of ms of CPU) on Tokio's blocking pool, which runs
+  up to 512 at once, so a burst of logins becomes hundreds of CPU-bound
+  threads that starve the world threads and hold ~19 MB each. With the
+  ramp at 12.5 a second (as in every other run) the same 1,000 players
+  ramped without a stall (load 12–14 and 9–13 in the two runs).
+- One world × 500 matches the earlier single-world runs (tick 82 / 163–204,
+  command p99 253–270 ms, 0.26–0.27 cores) in both runs.
+
+What it shows:
+
+- **A second world costs what the first did.** Two 500-player worlds used
+  2.1× the CPU of one (0.57 against 0.27 cores), 1.9× the memory (about
+  0.5 GB per world including save copies) and exactly twice the egress
+  (2.7 KB/s a client wherever the client is); per-world push and sub-step
+  times rose by about 70% (80–83 against 48 ms) and command p99 to 360–460 ms,
+  which on this box is the two worlds and the other agents competing for
+  cores, not a shared lock: nothing in the server serializes worlds.
+- **Splitting players over worlds** (2 × 250 against 1 × 500) halves each
+  world's push cost but adds a second sim tick, so it uses a little more
+  CPU (0.33 against 0.27 cores) and nearly twice the memory for the same
+  players; it buys nothing in latency at this size. Split by world size
+  and community, not for performance.
+- **Recommendation (512², 25–35k organisms, 1 s ticks):** **500 players
+  per world** and **about 2 cores per world**: two 500-player worlds held
+  the clock on 4 shared cores with command p99 under 0.5 s, so 1 world per
+  2 cores is measured with margin. The mean use (0.3 cores per world)
+  suggests a dedicated box holds more, up to about 1 world per core, but
+  that is extrapolated: measure before going past 2 worlds per 4 cores.
+  Budget 0.5 GB of memory and 1.4 MB/s (11 Mbit/s) of egress per
+  500-player world with protocol 2 clients. Spread logins: until password
+  hashing is bounded (a few concurrent hashes per core), a login storm of
+  more than ~12 a second per 4 cores (a restart that sends every client
+  back at once, for instance) stalls every world in the process.
 
 ## Level of detail
 
@@ -2821,11 +2905,15 @@ sections above).
    push through Capacitor (and web push for the browser) for the toasted
    alert kinds and mating requests, with the existing alert preferences
    deciding what is sent, which also means applying them server-side.
-3. **Capacity with several worlds.** The 500-player load test ran against
-   one world; the several-worlds check was two 256² worlds of 100 players.
-   Repeat the 500-player run (512², warmed) with `loadgen --worlds N` to
-   confirm the per-world budget of 4–6 cores and see where one process
-   stops scaling (see [Load and soak test](#load-and-soak-test)).
+3. **Capacity with several worlds.** Measured up to two 512² worlds of
+   500 players in one process on a shared 4-core box (see [Several worlds:
+   capacity](#several-worlds-capacity)): a second world costs what the
+   first did, nothing serializes them, and about 2 cores per 500-player
+   world holds the clock. Still open: where one process stops scaling (3+
+   worlds, on dedicated cores, where the measured 0.3 cores per world
+   suggests up to one world per core), and bounding concurrent password
+   hashes, since a login burst over ~12 a second per 4 cores stalled every
+   world thread for 40 s in that test.
 4. **Incubated eggs still win tournaments**: after the final balance pass
    and egg thermal risk they won 29.1% of entries pooled over 144 worlds
    (a fair share is 25%), abandoned eggs 16.8%; see [Balance](#balance). Next: find what
