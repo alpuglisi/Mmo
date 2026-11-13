@@ -608,6 +608,102 @@ export interface SeasonBoard {
   rows: SeasonRow[];
 }
 
+// ---------------------------------------------------------------- ranked seasons
+// Fixed-length ranked seasons (`GET /api/seasons`, `/api/seasons/current`,
+// `/api/seasons/:n`, `/api/seasons/player/:player`), not the weather seasons
+// above.
+
+export type SeasonCategory = 'legacy' | 'lineage' | 'species' | 'market' | 'survival';
+
+export interface SeasonPlacement {
+  player: PlayerId;
+  name: string;
+  /** Competition rank: equal values share a place. */
+  rank: number;
+  /** Legacy: mean share (0–1); lineage: peak members; species: founded; market: renown; survival: catastrophes. */
+  value: number;
+}
+
+export interface SeasonWinner {
+  category: SeasonCategory;
+  player: PlayerId;
+  name: string;
+  value: number;
+}
+
+export interface RankedSeasonHead {
+  world_id: string;
+  season: number;
+  first_day: number;
+  last_day: number;
+  length: number;
+  days: number;
+  ended_tick: number;
+  ended_unix: number;
+  players: number;
+  winners: SeasonWinner[];
+  summary: string;
+}
+
+/** `GET /api/seasons`: newest first. */
+export interface RankedSeasonList {
+  total: number;
+  offset: number;
+  seasons: RankedSeasonHead[];
+}
+
+export interface StandingPage {
+  category: SeasonCategory;
+  /** Players ranked in the category. */
+  total: number;
+  /** The asked-for page, plus the asked-for player's row if outside it. */
+  rows: SeasonPlacement[];
+}
+
+/** `GET /api/seasons/:n`. */
+export interface RankedSeasonPage extends RankedSeasonHead {
+  offset: number;
+  limit: number;
+  standings: StandingPage[];
+}
+
+/** `GET /api/seasons/current`. */
+export interface CurrentSeason {
+  world_id: string;
+  season: number;
+  first_day: number;
+  last_day: number;
+  length: number;
+  days: number;
+  days_left: number;
+  offset: number;
+  limit: number;
+  standings: StandingPage[];
+}
+
+export interface PlayerPlacement {
+  category: SeasonCategory;
+  rank: number;
+  value: number;
+  /** Players ranked in the category. */
+  of: number;
+}
+
+export interface PlayerSeason {
+  world_id: string;
+  season: number;
+  first_day: number;
+  last_day: number;
+  ended_unix: number;
+  placements: PlayerPlacement[];
+}
+
+/** `GET /api/seasons/player/:player`: newest first. */
+export interface PlayerSeasonHistory {
+  player: PlayerId;
+  seasons: PlayerSeason[];
+}
+
 // ---------------------------------------------------------------- chronicle
 // Species, eras, catastrophes and achievements (`GET /api/species`,
 // `/api/eras`, `/api/catastrophes`, `/api/achievements`).

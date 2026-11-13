@@ -1,7 +1,7 @@
 //! HTTP routes and the WebSocket session.
 //!
 //! Routes about one world (founding, the world summary, leaderboards,
-//! terrain, the chronicle, metrics, the WebSocket) take `?world=<id>` and
+//! ranked seasons, terrain, the chronicle, metrics, the WebSocket) take `?world=<id>` and
 //! default to the server's first world; an unknown id is a 404
 //! (`unknown_world`). Accounts, sessions, alert preferences and the gene
 //! catalog are global. `GET /api/worlds` lists the worlds.
@@ -16,7 +16,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, Query, Request as HttpRequest, State};
+use axum::extract::{
+    ConnectInfo, DefaultBodyLimit, FromRequestParts, Path as UrlPath, Query, Request as HttpRequest, State,
+};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -82,6 +84,10 @@ pub struct WorldHandle {
     pub metrics: Arc<Mutex<Metrics>>,
     pub net: Arc<NetStats>,
     pub store: WorldStore,
+    /// The id of the world's generated map at start-up (`Game::world_id`):
+    /// `/api/seasons/:n` means its seasons unless the request names another
+    /// map of the world (`?map=`, a world started over with `--fresh`).
+    pub map_id: Arc<str>,
 }
 
 impl AppState {
@@ -170,6 +176,10 @@ fn api_router(state: AppState) -> Router {
         .route("/api/eras", get(eras))
         .route("/api/catastrophes", get(catastrophes))
         .route("/api/achievements", get(achievements))
+        .route("/api/seasons", get(seasons_list))
+        .route("/api/seasons/current", get(season_current))
+        .route("/api/seasons/player/:player", get(season_player))
+        .route("/api/seasons/:season", get(season_one))
         .route("/api/terrain", get(terrain))
         .route("/api/terrain/dynamic", get(terrain_dynamic))
         .route("/api/map.png", get(map_png))
@@ -791,4 +801,81 @@ async fn catastrophes(World(w): World) -> Result<Json<CatastropheList>, ApiError
 /// `GET /api/achievements`: per-player tallies and the latest achievements.
 async fn achievements(World(w): World) -> Result<Json<AchievementList>, ApiError> {
     Ok(Json(chronicle(&w).await?.achievements))
+}
+
+#[derive(Deserialize)]
+struct SeasonPaging {
+    offset: Option<usize>,
+    limit: Option<usize>,
+    /// Always include this player's row in each category.
+    player: Option<PlayerId>,
+    /// The generated map of the world whose season is meant (default: the
+    /// running one). The world itself is `?world=`, as everywhere.
+    map: Option<String>,
+}
+
+/// `GET /api/seasons?world=ID&offset=0&limit=20`: the world's finished
+/// ranked seasons (of every map it had), newest first (heads: winners and
+/// summary, no standings).
+async fn seasons_list(
+    World(w): World,
+    Query(q): Query<SeasonPaging>,
+) -> Result<Json<crate::league::SeasonList>, ApiError> {
+    let offset = q.offset.unwrap_or(0);
+    let limit = q.limit.unwrap_or(20).clamp(1, 100);
+    let (seasons, total) = w.store.list_seasons(offset, limit).await.map_err(ApiError::internal)?;
+    Ok(Json(crate::league::SeasonList { total, offset, seasons }))
+}
+
+/// `GET /api/seasons/current?offset=0&limit=10&player=N`: the ranked season
+/// under way, standings so far.
+async fn season_current(
+    World(w): World,
+    Query(q): Query<SeasonPaging>,
+) -> Result<Json<crate::league::CurrentSeason>, ApiError> {
+    let (offset, limit) = crate::league::paging(q.offset, q.limit);
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::Season { offset, limit, player: q.player, reply })?;
+    Ok(Json(*rx.await.map_err(ApiError::internal)?))
+}
+
+/// `GET /api/seasons/:n?world=ID&map=ID&offset=0&limit=10&player=N`: one
+/// finished season of the world (of its current map unless `map` names an
+/// earlier one) with every category's standings, a page at a time.
+async fn season_one(
+    World(w): World,
+    UrlPath(season): UrlPath<String>,
+    Query(q): Query<SeasonPaging>,
+) -> Result<Json<crate::league::SeasonPage>, ApiError> {
+    let season: u32 = season
+        .parse()
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "bad_season", "a season is a positive number"))?;
+    let map = q.map.unwrap_or_else(|| w.map_id.to_string());
+    let (offset, limit) = crate::league::paging(q.offset, q.limit);
+    let record = w.store.load_season(&map, season).await.map_err(ApiError::internal)?.ok_or_else(|| {
+        let msg = format!("season {season} of world {} (map {map}) has not ended", w.id);
+        ApiError::new(StatusCode::NOT_FOUND, "no_season", msg)
+    })?;
+    let standings = crate::league::page(&record.standings, offset, limit, q.player);
+    Ok(Json(crate::league::SeasonPage { head: record.head, offset, limit, standings }))
+}
+
+#[derive(Deserialize)]
+struct PlayerSeasonsQuery {
+    limit: Option<usize>,
+}
+
+/// `GET /api/seasons/player/:player?world=ID&limit=50`: the world's
+/// finished seasons a player was ranked in, newest first, with every
+/// placement.
+async fn season_player(
+    World(w): World,
+    UrlPath(player): UrlPath<String>,
+    Query(q): Query<PlayerSeasonsQuery>,
+) -> Result<Json<crate::league::PlayerHistory>, ApiError> {
+    let player: PlayerId =
+        player.parse().map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "bad_player", "a player is a number"))?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let seasons = w.store.player_seasons(player, limit).await.map_err(ApiError::internal)?;
+    Ok(Json(crate::league::PlayerHistory { player, seasons }))
 }

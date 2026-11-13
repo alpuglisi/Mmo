@@ -41,3 +41,33 @@ ALTER TABLE ledger DROP CONSTRAINT ledger_pkey, ADD PRIMARY KEY (shard, world_id
 DROP INDEX ledger_player;
 CREATE INDEX ledger_player ON ledger (shard, player, id);
 CREATE INDEX ledger_shard_id ON ledger (shard, id);
+
+-- Ranked seasons (0005): per world. The placements reference their season
+-- by (shard, world_id, season).
+ALTER TABLE season_placements DROP CONSTRAINT season_placements_world_id_season_fkey;
+ALTER TABLE seasons ADD COLUMN shard TEXT NOT NULL DEFAULT 'main';
+ALTER TABLE seasons ALTER COLUMN shard DROP DEFAULT;
+ALTER TABLE seasons DROP CONSTRAINT seasons_pkey, ADD PRIMARY KEY (shard, world_id, season);
+CREATE INDEX seasons_shard_seq ON seasons (shard, seq);
+ALTER TABLE season_placements ADD COLUMN shard TEXT NOT NULL DEFAULT 'main';
+ALTER TABLE season_placements ALTER COLUMN shard DROP DEFAULT;
+ALTER TABLE season_placements DROP CONSTRAINT season_placements_pkey,
+    ADD PRIMARY KEY (shard, world_id, season, player, category),
+    ADD FOREIGN KEY (shard, world_id, season) REFERENCES seasons (shard, world_id, season) ON DELETE CASCADE;
+DROP INDEX season_placements_player;
+CREATE INDEX season_placements_player ON season_placements (shard, player);
+
+-- Marketplace auctions (0006, from another branch), if that migration ran
+-- first: their rows are the default world's too. Their key and queries take
+-- `shard` when that branch's store code is scoped by world.
+DO $$
+BEGIN
+    IF to_regclass('auctions') IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'auctions' AND column_name = 'shard'
+                         AND table_schema = current_schema()) THEN
+        ALTER TABLE auctions ADD COLUMN shard TEXT NOT NULL DEFAULT 'main';
+        ALTER TABLE auctions ALTER COLUMN shard DROP DEFAULT;
+    END IF;
+END
+$$;

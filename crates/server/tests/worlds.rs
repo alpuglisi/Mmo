@@ -325,3 +325,50 @@ async fn bad_world_lists_are_refused() {
         assert!(start(cfg).await.is_err());
     }
 }
+
+/// Ranked seasons are per world: a season that ends in one world is not in
+/// another's list, the current season is the asked world's, and a finished
+/// season is found under its own world only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ranked_seasons_are_per_world() {
+    let cfg = ServerConfig {
+        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+        store: Some(SharedStore(Arc::new(MemoryStore::default()))),
+        world: WorldSettings {
+            seed: 11,
+            width: 64,
+            height: 64,
+            wild: false,
+            days_per_year: 4000,
+            ..Default::default()
+        },
+        worlds: two_worlds(),
+        game: evo_server::game::GameConfig { season_days: 2, ..Default::default() },
+        ..Default::default()
+    }
+    .manual();
+    let srv = start(cfg).await.expect("server starts");
+    let addr = srv.addr;
+    let ann = register(addr, "ann").await;
+    assert_eq!(found(addr, "main", &ann, "Ann's").await.0, StatusCode::CREATED);
+    // Main runs past its first season; the isle stays at day 0.
+    srv.step_world("main", 3 * DAY).await;
+    let wait = tokio::time::Instant::now() + Duration::from_secs(10);
+    while get(addr, "/api/seasons?world=main").await["total"] == 0 {
+        assert!(tokio::time::Instant::now() < wait, "main's season was never stored");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(get(addr, "/api/seasons").await["total"], 1);
+    assert_eq!(get(addr, "/api/seasons?world=isle").await["total"], 0);
+    let main_cur = get(addr, "/api/seasons/current?world=main").await;
+    let isle_cur = get(addr, "/api/seasons/current?world=isle").await;
+    assert_ne!(main_cur, isle_cur);
+    assert_eq!(get(addr, "/api/seasons/1?world=main").await["season"], 1);
+    let (s, v) = json_req(addr, Method::GET, "/api/seasons/1?world=isle", None, None).await;
+    assert_eq!((s, v["code"].as_str()), (StatusCode::NOT_FOUND, Some("no_season")), "{v}");
+    assert!(!get(addr, "/api/seasons/player/1?world=main").await["seasons"].as_array().unwrap().is_empty());
+    assert!(get(addr, "/api/seasons/player/1?world=isle").await["seasons"].as_array().unwrap().is_empty());
+    let (s, v) = json_req(addr, Method::GET, "/api/seasons?world=nowhere", None, None).await;
+    assert_eq!((s, v["code"].as_str()), (StatusCode::NOT_FOUND, Some("unknown_world")), "{v}");
+    srv.shutdown().await;
+}

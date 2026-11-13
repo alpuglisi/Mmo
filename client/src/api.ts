@@ -7,8 +7,9 @@
 // none chosen they go to the server's default world.
 
 import type {
-  AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
-  LineageStats, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldList, WorldSummary,
+  AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, CurrentSeason, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
+  LineageStats, PlayerId, PlayerSeasonHistory, RankedSeasonList, RankedSeasonPage, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldList,
+  WorldSummary,
 } from './protocol';
 import { PROTO_DELTA } from './wire';
 
@@ -107,4 +108,10 @@ export const api = {
   eras: () => request<EraList>('GET', withWorld('/api/eras')),
   catastrophes: () => request<CatastropheList>('GET', withWorld('/api/catastrophes')),
   achievements: () => request<AchievementList>('GET', withWorld('/api/achievements')),
+  // Ranked seasons of the chosen world; `map` is the generated map a finished season belongs to (its `world_id`).
+  rankedSeasons: (offset = 0, limit = 10) => request<RankedSeasonList>('GET', withWorld(`/api/seasons?offset=${offset}&limit=${limit}`)),
+  currentSeason: (player: PlayerId, limit = 5) => request<CurrentSeason>('GET', withWorld(`/api/seasons/current?limit=${limit}&player=${player}`)),
+  rankedSeason: (map: string, season: number, player: PlayerId, offset = 0, limit = 10) =>
+    request<RankedSeasonPage>('GET', withWorld(`/api/seasons/${season}?map=${encodeURIComponent(map)}&offset=${offset}&limit=${limit}&player=${player}`)),
+  playerSeasons: (player: PlayerId, limit = 50) => request<PlayerSeasonHistory>('GET', withWorld(`/api/seasons/player/${player}?limit=${limit}`)),
 };

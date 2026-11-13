@@ -4,7 +4,7 @@
 //! evo-server [--bind ADDR] [--data DIR | --memory | --database-url URL] [--size N] [--seed N]
 //!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
 //!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
-//!            [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
+//!            [--season-days N] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
 //! ```
 //!
 //! `--database-url` (or the `DATABASE_URL` environment variable) keeps
@@ -27,8 +27,8 @@ use evo_server::{start, ServerConfig};
 const USAGE: &str =
     "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory | --database-url URL] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
-[--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] [--fresh] \
-[--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]";
+[--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] \
+[--season-days 60] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]";
 
 fn parse_args() -> Result<ServerConfig, String> {
     let mut cfg = ServerConfig {
@@ -92,6 +92,13 @@ fn parse_args() -> Result<ServerConfig, String> {
             "--no-rate-limits" => cfg.limits = evo_server::limits::Limits::unlimited(),
             "--lod" => cfg.world.lod = true,
             "--no-catastrophes" => cfg.world.catastrophes = false,
+            "--season-days" => {
+                let n: u64 = value("--season-days")?.parse().map_err(|e| format!("--season-days: {e}"))?;
+                if !(1..=100_000).contains(&n) {
+                    return Err("--season-days must be in 1..=100000".into());
+                }
+                cfg.game.season_days = n;
+            }
             "--fresh" => cfg.fresh = true,
             "--world" => cli_worlds.push(WorldSpec::parse(&value("--world")?).map_err(|e| format!("--world: {e}"))?),
             "--worlds-file" => {

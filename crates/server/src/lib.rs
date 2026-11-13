@@ -13,7 +13,9 @@
 //! - [`wire`]: protocol 2's binary delta states, encoded per connection
 //!   against what it was last sent (and the decoder the tests use).
 //! - [`terrain`]: the tile grid as compact byte layers for the client map.
-//! - [`seasons`]: seasonal leaderboards from the daily history.
+//! - [`seasons`]: leaderboards per weather season from the daily history.
+//! - [`league`]: ranked seasons: standings tracked over a fixed number of
+//!   days, frozen into stored season records at each rollover.
 //! - [`limits`]: token-bucket rate limits on logins and commands.
 //! - [`metrics`]: tick, state-push and save timings, queue and traffic
 //!   counters, process CPU and memory (`GET /api/metrics`).
@@ -42,6 +44,7 @@ pub mod economy;
 pub mod game;
 pub mod genetics;
 pub mod http;
+pub mod league;
 pub mod limits;
 pub mod metrics;
 pub mod protocol;
@@ -278,6 +281,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
     let mut handles = Vec::new();
     let mut running = Vec::new();
     for (spec, wstore, game) in games {
+        let map_id: Arc<str> = game.world_id().into();
         let (runner, h) = Runner::new(game, cfg.runner.clone());
         runner.spawn_named(format!("world-{}", spec.id));
         let persist = tokio::spawn(persist_task(wstore.clone(), h.persist, h.metrics.clone()));
@@ -290,6 +294,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
             metrics: h.metrics,
             net: Arc::new(NetStats::default()),
             store: wstore,
+            map_id,
         });
     }
 
@@ -379,6 +384,13 @@ async fn load_world(
         // restores: drop them, or the next plain start would bring the old
         // world (and its escrow, already refunded) back.
         store.clear_snapshots().await?;
+    }
+    // What the restored game has to write before anything else: the last
+    // finished ranked season again, in case the store missed it.
+    for ev in game.take_persist() {
+        if let Err(e) = persist_one(store, &ev, &mut BTreeSet::new()).await {
+            tracing::error!("could not persist {ev:?} in world {}: {e}", spec.id);
+        }
     }
     for a in accounts {
         game.set_name(a.player, &a.name);
@@ -542,6 +554,7 @@ async fn persist_one(
         PersistEvent::Trade(r) => store.append_trade(r).await,
         PersistEvent::Balance(r) => store.put_balance(r).await,
         PersistEvent::Ledger(r) => store.append_ledger(r).await,
+        PersistEvent::Season(r) => store.put_season(r).await,
         PersistEvent::Snapshot(s) => {
             let t = &s.terrain;
             let key = (t.world_id.clone(), t.hash);
