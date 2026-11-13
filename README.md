@@ -234,7 +234,9 @@ smoke test waits on explicit state conditions with generous timeouts rather
 than fixed sleeps, and retries the steps the living world can legitimately
 interrupt (a click landing on an organism that just moved there, a
 possessed organism breaking off its order to drink or flee, a picked mate
-dying or conceiving first).
+dying, conceiving first or its agreement expiring at a season change), but
+never loosens the assertions themselves: the directed mating between two
+same-design players must complete and conceive.
 
 ## Server
 
@@ -662,10 +664,18 @@ and outcome; the matings panel's compatibility summary. `e2e/smoke.mjs` (Playwri
 checks the live cost against the prices in `/api/genes` (and that the
 server's founding response agrees) and the client-side over-budget refusal, founds a lineage, waits for markers and
 the tile map (64×64 texture, at least 3 biomes and 20 tile colors, a dynamic
-refresh, the terrain legend), registers a second player and runs a directed
-mating through both players' panels while both lineages are young (request
-with price → incoming → accept → both see the update → escort, then
-release), clicks one of its own organisms (the one with
+refresh, the terrain legend), registers a second player with the same body plan
+and preferences and, while both lineages are young, runs a directed mating
+through both players' panels (compatibility preview, which must say
+compatible → request with price for the closest pair, preferring the
+requester's female → incoming → accept, clicked the moment the request shows
+→ both see the update → escort, both players walking their organism toward
+the other, until it completes with fertility above 0.5; it must conceive
+when the cost is 0, since a fertile pair inside both preferences has no
+failure chance; an organism lost to predators or thirst on the way, a
+partner female that conceives before bob accepts (a pending request holds
+nothing) or a season change expiring the agreement means another pair is
+tried, up to five times), releases the walkers, clicks one of its own organisms (the one with
 the most room around its marker, checked with the view's hit test, retried
 if the selection isn't its own), possesses it, clicks a dry-land spot clear
 of markers and checks it walks toward the target (closest approach tracked,

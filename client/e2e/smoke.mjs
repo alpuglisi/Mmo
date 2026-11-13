@@ -1,7 +1,9 @@
 // End-to-end smoke test: start evo-server (fast, in memory) serving the built
 // client, then in headless Chromium register, found a lineage, open the
 // world view, check the tile map and organisms are drawn, run a directed
-// mating with a second player, possess an organism and walk it, open the
+// mating with a second player of the same body plan (preview its
+// compatibility, request, accept, escort until the two meet, and check it
+// completes and conceives), possess an organism and walk it, open the
 // genetics dashboard, the seasonal leaderboard and the World tab.
 //
 // The world keeps running throughout, so every step waits on explicit state
@@ -169,12 +171,17 @@ async function main() {
       const orig = s.send.bind(s);
       s.send = async (m) => {
         const r = await orig(m);
-        window.__results.push({ type: m.type, ok: r.ok, error: r.error, x: m.x, y: m.y, mine: m.mine, partner: m.partner });
+        window.__results.push({ type: m.type, ok: r.ok, error: r.error, data: r.data, x: m.x, y: m.y, mine: m.mine, partner: m.partner });
         return r;
       };
     });
 
-    // Directed mating between two players through the panels.
+    // Directed mating between two players through the panels. Bob founds
+    // the same body plan and preferences as ours, so the pair is fully
+    // fertile and inside both preferences (no override cost, no failure
+    // chance): the mating completes and conceives once the two meet. This
+    // runs early, while both lineages are young: later on a loaded machine
+    // many more world days pass and a lineage can dwindle.
     const bob = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
     pages.push(bob);
     bob.on('pageerror', (e) => pageErrors.push(`bob: ${e.message}`));
@@ -183,80 +190,184 @@ async function main() {
     await bob.fill('#login-password', 'a long password');
     await bob.click('#register-submit');
     await bob.waitForSelector('#design-name');
-    await bob.fill('#design-name', 'Bob burrowers');
+    await bob.fill('#design-name', 'Bob striders');
+    for (const [g, v] of Object.entries(set)) {
+      await bob.$eval(`input[data-gene="${g}"]`, (el, v) => {
+        el.value = String(v);
+        el.dispatchEvent(new Event('input'));
+      }, v);
+    }
     await bob.click('#design-submit');
     await bob.waitForSelector('#world-canvas');
-    await waitFor('bob state', () => bob.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
-    // Organisms keep breeding, dying and being eaten on their own, so a pick
-    // can conceive or die before the request lands: pick again on those
-    // refusals. (This runs early, while both lineages are young: later on a
-    // loaded machine many more world days pass and a lineage can dwindle.)
+    await waitFor('bob state', () => bob.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0), 40000);
     await page.click('#tab-matings');
-    let pair = null;
-    for (let attempt = 0; attempt < 12 && !pair; attempt++) {
-      const cand = await waitFor('a compatible pair', async () => {
-        const adults = () => window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant).map((o) => ({ id: o.id, sex: o.sex, health: o.health }));
-        const a = await page.evaluate(adults);
-        const b = await bob.evaluate(adults);
-        // Prefer our male (males never become pregnant), then the healthiest.
-        a.sort((x, y) => (x.sex === 'male' ? -1 : 1) - (y.sex === 'male' ? -1 : 1) || y.health - x.health);
-        b.sort((x, y) => y.health - x.health);
-        for (const x of a) {
-          const y = b.find((o) => o.sex !== x.sex);
-          if (y) return { mine: x.id, partner: y.id };
+    await bob.click('#tab-matings');
+    const offerOf = (p, id) => p.evaluate((id) => {
+      const e = window.evo.model.offers.get(id);
+      return e ? { status: e.offer.status, outcome: e.outcome ?? null, error: e.error ?? null } : null;
+    }, id);
+    // Hand back every possessed organism (an escort's, or bob's walker), so
+    // the next round, and the possession step below, start from scratch.
+    const releaseAll = (p) => p.evaluate(async () => {
+      for (const o of window.evo.model.state.organisms.filter((o) => o.possessed)) await window.evo.socket.send({ type: 'release', organism: o.id });
+    });
+    // Bob accepts every incoming request the moment its Accept button
+    // appears: a pending request doesn't hold his female (only his consent
+    // does), so until he answers she can still conceive with one of her own,
+    // and in fast mode a day passes every second.
+    await bob.evaluate(() => {
+      const accept = () => document.querySelectorAll('#incoming .offer button.accept').forEach((b) => {
+        if (!b.dataset.clicked) { b.dataset.clicked = '1'; b.click(); }
+      });
+      new MutationObserver(accept).observe(document.body, { childList: true, subtree: true });
+      accept();
+    });
+    let done = null;
+    // The living world can spoil a round without the mating rules being at
+    // fault: a predator takes one of the pair on the way (`died`), her own
+    // kind gets her pregnant before bob's consent holds her
+    // (`already_pregnant`), or the season turns and expires the agreement.
+    // Those rounds are retried with another pair (up to 5 retries); any other
+    // ending fails the test.
+    const rounds = 6;
+    for (let round = 1; round <= rounds && !done; round++) {
+      if (round > 1) await Promise.all([releaseAll(page), releaseAll(bob)]);
+      // Organisms keep breeding on their own, so a chosen female can conceive
+      // before the request lands: pick again on those refusals.
+      let pair = null;
+      for (let attempt = 0; attempt < 12 && !pair; attempt++) {
+        let seen = '';
+        const cand = await waitFor('a pair of adults', async () => {
+          const adults = (p) => p.evaluate(() => window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant)
+            .map((o) => ({ id: o.id, sex: o.sex, urge: o.needs.breeding, x: o.x, y: o.y })));
+          const [a, b] = [await adults(page), await adults(bob)];
+          const tally = (l) => `${l.filter((o) => o.sex === 'female').length}F/${l.filter((o) => o.sex === 'male').length}M`;
+          seen = `ann ${tally(a)}, bob ${tally(b)} open adults`;
+          // Prefer the closest pair: predators pick off organisms on a long
+          // trip to the meeting. Then our female with bob's male: our own
+          // female is held from the moment we ask (our consent), bob's only
+          // once he accepts, and males never become pregnant. Then the least
+          // breeding urge in the female: a courting female tends to conceive
+          // with one of her own before the request lands.
+          let best = null;
+          for (const x of a) {
+            for (const y of b) {
+              if (x.sex === y.sex) continue;
+              const female = x.sex === 'female' ? x : y;
+              const score = Math.hypot(x.x - y.x, x.y - y.y) + (x.sex === 'female' ? 0 : 8) + female.urge / 20;
+              if (!best || score < best.score) best = { mine: x.id, partner: y.id, score };
+            }
+          }
+          return best;
+          // (In fast mode every adult female can be pregnant for a while.)
+        }, 120000).catch((e) => { throw new Error(`${e.message}; ${seen}`); });
+        await page.evaluate(() => { window.__results = []; });
+        // The form lists living adults; if our pick died since, pick again.
+        if (!(await page.selectOption('#mating-mine', String(cand.mine), { timeout: 3000 }).then(() => true, () => false))) {
+          console.log(`  … #${cand.mine} is no longer in the form; picking again`);
+          continue;
         }
-        return null;
-      }, 30000);
-      await page.evaluate(() => { window.__results = []; });
-      // The form lists living adults; if our pick died since, pick again.
-      if (!(await page.selectOption('#mating-mine', String(cand.mine), { timeout: 3000 }).then(() => true, () => false))) {
-        console.log(`  … #${cand.mine} is no longer in the form; picking again`);
+        await page.fill('#mating-partner', String(cand.partner));
+        await page.fill('#mating-price', '25');
+        // (The list of adults is rebuilt when one dies: check the choice held.)
+        if (Number(await page.inputValue('#mating-mine')) !== cand.mine) continue;
+        await page.click('#mating-submit');
+        const req = await waitFor('request result', () => page.evaluate(() => window.__results.find((r) => r.type === 'request_mating')));
+        // If our pick died before the click, the form falls back to another
+        // adult (which can be the partner's sex): retry then, too.
+        const swapped = req.mine !== cand.mine || req.partner !== cand.partner;
+        if (!req.ok) {
+          if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
+          console.log(`  … request_mating refused (${req.error?.code}${swapped ? `, form sent #${req.mine} × #${req.partner}` : ''}); picking again`);
+          await page.waitForTimeout(500);
+          continue;
+        }
+        const id = req.data.offer.id;
+        // Bob's page accepts it as soon as the request shows (see above).
+        await waitFor('bob\'s answer', async () => {
+          const o = await offerOf(bob, id);
+          return o && o.status !== 'pending';
+        }, 10000);
+        // The form shows the pair's compatibility (server preview). If our
+        // organism died meanwhile, the rebuilt list falls back to another
+        // adult and the preview shows that pair: the offer then fails with
+        // `died` and another pair is tried below.
+        const compat = await waitFor('compatibility preview', async () => {
+          if ((await offerOf(page, id))?.status === 'failed') return '(offer failed)';
+          return page.evaluate((pair) => {
+            const el = document.querySelector('#mating-compat');
+            if (el?.dataset.pair === pair) return el.textContent;
+            return document.querySelector('#mating-mine')?.value !== pair.split(':')[0] ? '(selection changed)' : null;
+          }, `${req.mine}:${req.partner}`);
+        }, 10000);
+        // (A preview error means one of them just died; the offer then fails.)
+        if (!compat.startsWith('(') && !compat.startsWith("Can't preview") && !compat.startsWith('Compatible: fertility')) throw new Error(`same designs not shown compatible: ${compat}`);
+        pair = { mine: req.mine, partner: req.partner, compat, id };
+      }
+      if (!pair) throw new Error('no mating request went through');
+      const id = pair.id;
+      step(`ann asked for #${pair.mine} × bob's #${pair.partner} at price 25 (${pair.compat})`);
+      const status = await waitFor('mating update on both sides', async () => {
+        const [sa, sb] = [await offerOf(page, id), await offerOf(bob, id)];
+        return sa && sb && sa.status !== 'pending' && sa.status === sb.status ? sa.status : null;
+      });
+      step(`bob accepted; both sides see the offer ${status}`);
+      if (status === 'accepted') {
+        // Escort: possess our organism and walk it to the partner, following
+        // her as she moves (her position as bob sees it). The agreement can
+        // resolve on its own before the click, which takes the button away.
+        await page.click(`#open-offers .offer[data-offer="${id}"] button:has-text("Escort")`, { timeout: 5000 }).catch(() => {});
+        const esc = await waitFor('escort possession', async () => {
+          if ((await offerOf(page, id))?.status !== 'accepted') return 'closed';
+          return page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id)?.possessed && 'possessed', pair.mine);
+        });
+        if (esc === 'possessed') step(`escort: #${pair.mine} possessed for the trip to the meeting`);
+        // Bob walks his organism toward ours too: half the trip each.
+        await bob.evaluate((organism) => window.evo.socket.send({ type: 'possess', organism }), pair.partner);
+        const met = await waitFor('the meeting', async () => {
+          const o = await offerOf(page, id);
+          if (o && o.status !== 'accepted') return true;
+          const p = await bob.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id), pair.partner);
+          if (p) await page.evaluate(({ organism, x, y }) => window.evo.socket.send({ type: 'order_move', organism, x, y }), { organism: pair.mine, x: p.x, y: p.y });
+          const m = await page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id), pair.mine);
+          if (m) await bob.evaluate(({ organism, x, y }) => window.evo.socket.send({ type: 'order_move', organism, x, y }), { organism: pair.partner, x: m.x, y: m.y });
+          await new Promise((r) => setTimeout(r, 400));
+          return false;
+        }, 90000).catch(() => false);
+        if (!met) {
+          const [a, b] = await Promise.all([
+            page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id), pair.mine),
+            bob.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id), pair.partner),
+          ]);
+          const gap = a && b ? `${Math.hypot(a.x - b.x, a.y - b.y).toFixed(1)} tiles apart` : 'one of them gone';
+          throw new Error(`the escorted pair #${pair.mine} × #${pair.partner} never met in 90 s (${gap})`);
+        }
+      }
+      const fin = await waitFor('final status on both sides', async () => {
+        const [sa, sb] = [await offerOf(page, id), await offerOf(bob, id)];
+        return sa && sb && !['pending', 'accepted'].includes(sa.status) && sa.status === sb.status ? sa : null;
+      });
+      if (fin.status === 'expired') {
+        step(`the season turned and expired the agreement; trying another pair (round ${round}/${rounds})`);
         continue;
       }
-      await page.fill('#mating-partner', String(cand.partner));
-      await page.fill('#mating-price', '25');
-      await page.click('#mating-submit');
-      const req = await waitFor('request result', () => page.evaluate(() => window.__results.find((r) => r.type === 'request_mating')));
-      // If our pick died before the click, the form falls back to another
-      // adult (which can be the partner's sex): retry then, too.
-      const swapped = req.mine !== cand.mine || req.partner !== cand.partner;
-      if (req.ok) pair = { mine: req.mine, partner: req.partner };
-      else if (!swapped && !['already_pregnant', 'not_mature', 'not_found'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
-      else console.log(`  … request_mating refused (${req.error?.code}${swapped ? `, form sent #${req.mine} × #${req.partner}` : ''}); picking again`);
-    }
-    if (!pair) throw new Error('no mating request went through');
-    await page.waitForSelector('#open-offers .offer');
-    await bob.click('#tab-matings');
-    await bob.waitForSelector('#incoming .offer button.accept', { timeout: 10000 });
-    step(`ann asked for #${pair.mine} × bob's #${pair.partner} at price 25; bob sees the request`);
-    await bob.click('#incoming .offer button.accept');
-    const status = await waitFor('mating update on both sides', async () => {
-      const s = (p) => p.evaluate(() => [...window.evo.model.offers.values()].map((e) => e.offer.status).find((x) => x !== 'pending'));
-      const [sa, sb] = [await s(page), await s(bob)];
-      return sa && sa === sb ? sa : null;
-    });
-    if (!['accepted', 'completed', 'failed'].includes(status)) throw new Error(`unexpected offer status ${status}`);
-    step(`bob accepted; both sides see the offer ${status}`);
-    if (status === 'accepted') {
-      // Escort: possess our organism and head for the partner. The agreement
-      // can still resolve on its own (the pair meets, or the rules refuse
-      // it) before the click, which takes the button away: that's fine.
-      const escort = page.locator('#open-offers .offer button:has-text("Escort")');
-      const clicked = await escort.click({ timeout: 5000 }).then(() => true, () => false);
-      if (clicked) {
-        const esc = await waitFor('escort possession', () => page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id)?.possessed, pair.mine));
-        if (!esc) throw new Error('escort did not possess');
-        step(`escort: #${pair.mine} possessed for the trip to the meeting`);
-        // Hand it back so the possession step below starts from scratch.
-        const rel = await page.evaluate((id) => window.evo.socket.send({ type: 'release', organism: id }), pair.mine);
-        if (!rel.ok) throw new Error(`release failed: ${JSON.stringify(rel.error)}`);
-        await waitFor('release', () => page.evaluate(() => !window.evo.model.state.organisms.some((o) => o.possessed)));
-      } else {
-        const now = await page.evaluate(() => [...window.evo.model.offers.values()].map((e) => e.offer.status).find((x) => x !== 'pending'));
-        if (now === 'accepted') throw new Error('escort button missing on an accepted offer');
-        step(`the agreement resolved (${now}) before the escort`);
+      if (fin.status === 'failed' && ['died', 'already_pregnant'].includes(fin.error?.code)) {
+        const why = fin.error.code === 'died' ? fin.error.message : 'she conceived before bob answered';
+        step(`offer failed: ${why}; trying another pair (round ${round}/${rounds})`);
+        continue;
       }
+      if (fin.status !== 'completed' || !fin.outcome) throw new Error(`mating ended ${JSON.stringify(fin)}`);
+      const o = fin.outcome;
+      if (!(o.fertility > 0.5)) throw new Error(`same designs not fertile: ${JSON.stringify(o)}`);
+      // Inside both preferences there is no override failure chance, so a
+      // fertile pair always conceives.
+      if (o.cost === 0 && !o.conceived) throw new Error(`no conception at no cost: ${JSON.stringify(o)}`);
+      done = o;
+      step(`mating completed: ${o.conceived ? 'conceived' : 'not conceived'} (fertility ${o.fertility.toFixed(2)}, mismatch ${o.mismatch.toFixed(2)}, cost ${o.cost.toFixed(2)})`);
     }
+    if (!done) throw new Error(`every one of ${rounds} escorted matings lost an organism, expired, or its female conceived before bob answered`);
+    await Promise.all([releaseAll(page), releaseAll(bob)]);
+    await waitFor('release', () => page.evaluate(() => !window.evo.model.state.organisms.some((o) => o.possessed)));
     await bob.waitForTimeout(500);
     await bob.screenshot({ path: path.join(shots, 'matings-bob.png') });
     await page.screenshot({ path: path.join(shots, 'matings-ann.png') });
