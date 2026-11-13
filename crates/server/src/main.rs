@@ -4,29 +4,42 @@
 //! evo-server [--bind ADDR] [--data DIR | --memory | --database-url URL] [--size N] [--seed N]
 //!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
 //!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
-//!            [--season-days N] [--fresh]
+//!            [--season-days N] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
 //! ```
 //!
 //! `--database-url` (or the `DATABASE_URL` environment variable) keeps
 //! everything in PostgreSQL instead of the data directory.
 //!
+//! Without `--world` the process hosts one world, `main`. Each `--world`
+//! adds one (the first is the default); `--worlds-file` reads a JSON list
+//! (`[{"id": "main"}, {"id": "isle", "seed": 2, "size": 96, "name": "Isle"}]`)
+//! and the `EVO_WORLDS` environment variable takes `--world` values
+//! separated by `;`. Command-line worlds replace the variable's. A world's
+//! missing seed and size come from `--seed` and `--size`.
+//!
 //! SIGINT (Ctrl-C) or SIGTERM stops it gracefully, saving the world first.
 
 use std::time::Duration;
 
+use evo_server::worlds::WorldSpec;
 use evo_server::{start, ServerConfig};
 
 const USAGE: &str =
     "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory | --database-url URL] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
 [--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] \
-[--season-days 60] [--fresh]";
+[--season-days 60] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]";
 
 fn parse_args() -> Result<ServerConfig, String> {
     let mut cfg = ServerConfig {
         database_url: std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty()),
         ..Default::default()
     };
+    let mut worlds = match std::env::var("EVO_WORLDS") {
+        Ok(v) if !v.trim().is_empty() => WorldSpec::parse_list(&v).map_err(|e| format!("EVO_WORLDS: {e}"))?,
+        _ => Vec::new(),
+    };
+    let mut cli_worlds: Vec<WorldSpec> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -87,6 +100,12 @@ fn parse_args() -> Result<ServerConfig, String> {
                 cfg.game.season_days = n;
             }
             "--fresh" => cfg.fresh = true,
+            "--world" => cli_worlds.push(WorldSpec::parse(&value("--world")?).map_err(|e| format!("--world: {e}"))?),
+            "--worlds-file" => {
+                let path = value("--worlds-file")?;
+                let text = std::fs::read_to_string(&path).map_err(|e| format!("--worlds-file {path}: {e}"))?;
+                cli_worlds.extend(WorldSpec::parse_file(&text).map_err(|e| format!("--worlds-file {path}: {e}"))?);
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -94,6 +113,13 @@ fn parse_args() -> Result<ServerConfig, String> {
             other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
         }
     }
+    if !cli_worlds.is_empty() {
+        worlds = cli_worlds;
+    }
+    if !worlds.is_empty() {
+        evo_server::worlds::validate(&worlds)?;
+    }
+    cfg.worlds = worlds;
     Ok(cfg)
 }
 

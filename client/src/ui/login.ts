@@ -1,6 +1,8 @@
 import { api, apiBase, ApiError, setApiBase } from '../api';
+import type { WorldList } from '../protocol';
 import { isNativeShell, normalizeOrigin, saveOrigin } from '../serverOrigin';
 import type { Session } from '../session';
+import { describeWorld, loadMemory, pickWorld, remember, remembered, saveMemory } from '../worldChoice';
 import { h } from './dom';
 
 export function loginScreen(onLogin: (s: Session) => void, notice?: string): HTMLElement {
@@ -16,6 +18,58 @@ export function loginScreen(onLogin: (s: Session) => void, notice?: string): HTM
   const serverBox = h('details', { class: 'server-box', id: 'server-box' }, h('summary', {}, 'Server: ', h('span', { id: 'server-current' }, apiBase() || 'this page')),
     h('label', {}, 'Game server address', server));
   if (native && !apiBase()) serverBox.open = true;
+
+  // The world picker: shown when the server hosts more than one world. It
+  // preselects the world this name played last on this server (or the last
+  // world chosen here), until the player picks one themselves.
+  const worldSelect = h('select', { id: 'world-select', name: 'world' }) as HTMLSelectElement;
+  const worldInfo = h('p', { class: 'muted world-info', id: 'world-info' });
+  const worldBox = h('div', { class: 'world-box', id: 'world-box', hidden: true },
+    h('label', {}, 'World', worldSelect), worldInfo);
+  let worlds: WorldList | null = null;
+  let picked = false;
+  let listFor: string | null = null;
+
+  function showInfo(): void {
+    const w = worlds?.worlds.find((x) => x.id === worldSelect.value);
+    worldInfo.textContent = w ? describeWorld(w) : '';
+  }
+
+  function preselect(): void {
+    if (!worlds || picked) return;
+    worldSelect.value = pickWorld(worlds, remembered(loadMemory(), apiBase(), name.value));
+    showInfo();
+  }
+
+  /** Fetch the server's worlds (again when the server address changed). */
+  async function loadWorlds(): Promise<void> {
+    const origin = apiBase();
+    if (listFor === origin && worlds) return;
+    listFor = origin;
+    try {
+      const list = await api.worlds();
+      if (apiBase() !== origin) return;
+      worlds = list;
+      worldSelect.replaceChildren(...list.worlds.map((w) => h('option', { value: w.id }, w.name)));
+      worldBox.hidden = list.worlds.length < 2;
+      preselect();
+    } catch {
+      // An older server (no world list) or none reachable: play its default world.
+      if (apiBase() !== origin) return;
+      worlds = null;
+      listFor = null;
+      worldBox.hidden = true;
+    }
+  }
+  worldSelect.addEventListener('change', () => {
+    picked = true;
+    showInfo();
+  });
+  name.addEventListener('change', preselect);
+  server.addEventListener('change', () => {
+    if (normalizeOrigin(server.value) !== null && applyServer()) void loadWorlds();
+  });
+  if (!native || apiBase()) void loadWorlds();
 
   /** Apply the Server field; false (with a message) when it isn't a usable address. */
   function applyServer(): boolean {
@@ -46,8 +100,11 @@ export function loginScreen(onLogin: (s: Session) => void, notice?: string): HTM
     if (!applyServer()) return;
     login.disabled = register.disabled = true;
     try {
+      await loadWorlds();
       const s = kind === 'login' ? await api.login(name.value.trim(), password.value) : await api.register(name.value.trim(), password.value);
-      onLogin(s);
+      const world = worlds ? pickWorld(worlds, worldSelect.value) : '';
+      if (world) saveMemory(remember(loadMemory(), apiBase(), s.name, world));
+      onLogin({ ...s, world });
     } catch (e) {
       error.textContent = e instanceof ApiError ? describe(e) : String(e);
     } finally {
@@ -60,6 +117,7 @@ export function loginScreen(onLogin: (s: Session) => void, notice?: string): HTM
     h('p', { class: 'muted' }, 'Design a species, guide its lineage, trade genes.'),
     h('label', {}, 'Name', name),
     h('label', {}, 'Password', password),
+    worldBox,
     h('div', { class: 'row' }, login, register),
     error,
     serverBox,

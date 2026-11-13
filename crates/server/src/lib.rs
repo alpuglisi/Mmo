@@ -34,6 +34,8 @@
 //!   (`look`), for the client's sprites.
 //! - [`economy`]: renown balances, the ledger, escrow and the stud
 //!   marketplace's listings.
+//! - [`worlds`]: the worlds (shards) one process hosts, each with its own
+//!   world thread, saver, store task and metrics; accounts are shared.
 
 pub mod accounts;
 pub mod appearance;
@@ -54,6 +56,7 @@ pub mod snapshot;
 pub mod store;
 pub mod terrain;
 pub mod wire;
+pub mod worlds;
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
@@ -70,12 +73,24 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::accounts::{Accounts, SessionPolicy};
 use crate::game::{build_world, world_config, Game, GameConfig, PersistEvent, SavedGame, WorldSettings, HISTORY_DAYS};
+use crate::http::WorldHandle;
 use crate::limits::{Limiters, Limits};
 use crate::metrics::{Metrics, NetStats};
 use crate::runner::{Request, Runner, RunnerConfig};
-use crate::store::{FileStore, MemoryStore, Store};
+use crate::store::{AccountRecord, FileStore, MemoryStore, Store, WorldStore};
+use crate::worlds::{WorldSpec, DEFAULT_WORLD};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// A store handed to the server directly ([`ServerConfig::store`]).
+#[derive(Clone)]
+pub struct SharedStore(pub Arc<dyn Store>);
+
+impl std::fmt::Debug for SharedStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SharedStore")
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
@@ -85,7 +100,15 @@ pub struct ServerConfig {
     /// PostgreSQL URL (`postgres://user:pass@host/db`): keep everything in
     /// the database instead of `data_dir` (needs the `postgres` feature).
     pub database_url: Option<String>,
+    /// Use this store instead of `database_url` / `data_dir` (tests: a
+    /// memory store that outlives one server).
+    pub store: Option<SharedStore>,
+    /// The settings of every world; each world in `worlds` may replace the
+    /// seed and size.
     pub world: WorldSettings,
+    /// The worlds this process hosts, the first one the default. Empty: one
+    /// world, `main` ([`DEFAULT_WORLD`]), with `world`'s settings.
+    pub worlds: Vec<WorldSpec>,
     pub runner: RunnerConfig,
     pub game: GameConfig,
     /// Serve the files in this directory (the built web client, `client/dist`)
@@ -95,8 +118,8 @@ pub struct ServerConfig {
     pub limits: Limits,
     /// Session idle timeout and maximum age.
     pub sessions: SessionPolicy,
-    /// Ignore saved games: generate a new world and re-found the stored
-    /// designs (`--fresh`).
+    /// Ignore saved games: generate new worlds and re-found the stored
+    /// designs (`--fresh`). Applies to every world.
     pub fresh: bool,
 }
 
@@ -106,7 +129,9 @@ impl Default for ServerConfig {
             bind: SocketAddr::from(([127, 0, 0, 1], 8080)),
             data_dir: Some(PathBuf::from("data")),
             database_url: None,
+            store: None,
             world: WorldSettings::default(),
+            worlds: Vec::new(),
             runner: RunnerConfig {
                 tick: Duration::from_secs(1),
                 state_interval: Duration::from_secs(1),
@@ -129,40 +154,62 @@ impl ServerConfig {
         self
     }
 
-    /// Manual clock for deterministic tests: the world ticks only when the
+    /// Manual clock for deterministic tests: the worlds tick only when the
     /// test calls [`RunningServer::step`], and commands apply on arrival.
     pub fn manual(mut self) -> Self {
         self.runner.manual = true;
         self
     }
+
+    /// The worlds to host: `worlds`, or the single default world.
+    pub fn world_specs(&self) -> Vec<WorldSpec> {
+        if self.worlds.is_empty() {
+            vec![WorldSpec::new(DEFAULT_WORLD)]
+        } else {
+            self.worlds.clone()
+        }
+    }
+}
+
+/// A running world's handles kept by [`RunningServer`].
+struct RunningWorld {
+    id: String,
+    tx: SyncSender<Request>,
+    persist: tokio::task::JoinHandle<()>,
 }
 
 pub struct RunningServer {
     pub addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
     serve: tokio::task::JoinHandle<()>,
-    world: SyncSender<Request>,
-    persist: tokio::task::JoinHandle<()>,
+    worlds: Vec<RunningWorld>,
 }
 
 impl RunningServer {
     /// Graceful stop: stop accepting connections, wait for the HTTP server,
-    /// save the game one last time, stop the world thread and wait until the
-    /// store task has written everything.
+    /// save every world one last time (in parallel), stop the world threads
+    /// and wait until the store tasks have written everything.
     pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
         let _ = (&mut self.serve).await;
-        let (reply, saved) = oneshot::channel();
-        let world = self.world.clone();
-        let sent =
-            tokio::task::spawn_blocking(move || world.send(Request::Shutdown { reply }).is_ok()).await.unwrap_or(false);
-        drop(self.world);
-        if sent {
-            let _ = saved.await;
+        let mut saved = Vec::new();
+        for w in &self.worlds {
+            let (reply, rx) = oneshot::channel();
+            let world = w.tx.clone();
+            let sent = tokio::task::spawn_blocking(move || world.send(Request::Shutdown { reply }).is_ok());
+            saved.push((sent, rx));
         }
-        let _ = self.persist.await;
+        for (sent, rx) in saved {
+            if sent.await.unwrap_or(false) {
+                let _ = rx.await;
+            }
+        }
+        for w in self.worlds.drain(..) {
+            drop(w.tx);
+            let _ = w.persist.await;
+        }
     }
 
     /// Wait until the server stops (e.g. on Ctrl-C).
@@ -170,23 +217,39 @@ impl RunningServer {
         let _ = (&mut self.serve).await;
     }
 
-    /// Advance the world `ticks` ticks (after applying anything queued) and
-    /// push state to every connection once at the end; returns the world
-    /// tick. Meant for [`ServerConfig::manual`] servers, where nothing else
-    /// moves the clock; on a ticking server it adds extra ticks.
+    /// The ids of the hosted worlds, the default first.
+    pub fn world_ids(&self) -> Vec<String> {
+        self.worlds.iter().map(|w| w.id.clone()).collect()
+    }
+
+    fn world_tx(&self, id: &str) -> &SyncSender<Request> {
+        &self.worlds.iter().find(|w| w.id == id).unwrap_or_else(|| panic!("no world {id:?}")).tx
+    }
+
+    /// Advance the default world `ticks` ticks (after applying anything
+    /// queued) and push state to its connections once at the end; returns
+    /// the world tick. Meant for [`ServerConfig::manual`] servers, where
+    /// nothing else moves the clock; on a ticking server it adds extra
+    /// ticks.
     pub async fn step(&self, ticks: u32) -> u64 {
+        self.step_world(&self.worlds[0].id, ticks).await
+    }
+
+    /// [`RunningServer::step`] for the world `id`.
+    pub async fn step_world(&self, id: &str, ticks: u32) -> u64 {
         let (reply, rx) = oneshot::channel();
-        self.world.send(runner::Request::Step { ticks, reply }).expect("world thread running");
+        self.world_tx(id).send(runner::Request::Step { ticks, reply }).expect("world thread running");
         rx.await.expect("world thread replies")
     }
 
-    /// Take one possession sub-step (after applying anything queued), as a
-    /// ticking server does between ticks: possessed organisms with a move
-    /// order move a fraction of a tick and their owners get a state. Returns
-    /// the sub-steps left before the next tick. For manual servers.
+    /// Take one possession sub-step of the default world (after applying
+    /// anything queued), as a ticking server does between ticks: possessed
+    /// organisms with a move order move a fraction of a tick and their
+    /// owners get a state. Returns the sub-steps left before the next tick.
+    /// For manual servers.
     pub async fn substep(&self) -> u32 {
         let (reply, rx) = oneshot::channel();
-        self.world.send(runner::Request::Substep { reply }).expect("world thread running");
+        self.worlds[0].tx.send(runner::Request::Substep { reply }).expect("world thread running");
         rx.await.expect("world thread replies")
     }
 
@@ -196,91 +259,52 @@ impl RunningServer {
     }
 }
 
-/// Load persisted state, restore the world from the newest readable saved
-/// game (unless `fresh`) or generate one from the seed, start the world
-/// thread and serve. Stored designs whose player has no lineage in the world
-/// (all of them in a new world) are founded in player order.
+/// Load persisted state, restore every configured world from its newest
+/// readable saved game (unless `fresh`) or generate it from its seed, start
+/// a world thread per world and serve. Every world is loaded before any
+/// starts, so a world that can't load stops the server from starting.
 pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
+    let specs = cfg.world_specs();
+    worlds::validate(&specs)?;
     let store = open_store(&cfg).await?;
     let accounts = store.load_accounts().await?;
-    let mut designs = store.load_designs().await?;
-    designs.sort_by_key(|d| d.player);
-
-    let restored = if cfg.fresh { None } else { load_saved_game(&*store, &cfg.world).await? };
-    // The world `--fresh` discards: its open agreements' escrow is refunded.
-    let discarded = if cfg.fresh { load_discarded_game(&*store).await? } else { None };
-    let mut game = match restored {
-        Some((world, saved)) => {
-            let history = store.recent_daily(HISTORY_DAYS).await?;
-            Game::resume(world, cfg.game.clone(), saved, history)
-        }
-        None => Game::new(build_world(&cfg.world), cfg.game.clone()),
-    };
-    // A new world, or a saved game from before the economy: balances and
-    // recent ledger entries come from the store.
-    if !game.economy_restored() {
-        let balances: Vec<_> = store.load_balances().await?.into_iter().map(|b| (b.player, b.balance)).collect();
-        let ledger = store.recent_ledger(None, 2000).await?.into_iter().map(|r| r.entry).collect();
-        game.seed_economy(&balances, ledger);
-    }
-    if cfg.fresh {
-        if let Some(old) = discarded {
-            let ledger: Vec<_> = store.recent_ledger(None, DISCARDED_LEDGER_SCAN).await?;
-            for (player, amount) in game.refund_discarded(&old, &ledger) {
-                tracing::info!("refunded {amount} renown of escrow in the discarded world to player {player}");
-            }
-            // Write the refunds before the discarded saves go: a crash in
-            // between refunds nothing twice (see `Game::refund_discarded`).
-            for ev in game.take_persist() {
-                persist_one(&*store, &ev, &mut BTreeSet::new()).await?;
-            }
-        }
-        // The discarded world's saves have higher ticks than the new world's
-        // will for a long time, and the newest tick is what a restart
-        // restores: drop them, or the next plain start would bring the old
-        // world (and its escrow, already refunded) back.
-        store.clear_snapshots().await?;
-    }
-    // What the restored game has to write before anything else: the last
-    // finished ranked season again, in case the store missed it.
-    for ev in game.take_persist() {
-        if let Err(e) = persist_one(&*store, &ev, &mut BTreeSet::new()).await {
-            tracing::error!("could not persist {ev:?}: {e}");
-        }
-    }
-    for a in &accounts {
-        game.set_name(a.player, &a.name);
-    }
-    let unfounded: Vec<_> = designs.iter().filter(|d| game.lineage_of(d.player).is_none()).collect();
-    for d in unfounded {
-        match d.design.to_design() {
-            Ok(design) => match game.found(d.player, &design) {
-                Ok(ok) => {
-                    tracing::info!("re-founded {:?} for player {} as lineage {}", d.design.name, d.player, ok.lineage)
-                }
-                Err(e) => tracing::warn!("could not re-found the design of player {}: {e:?}", d.player),
-            },
-            Err(e) => tracing::warn!("stored design of player {} no longer validates: {}", d.player, e.message()),
-        }
+    let mut games = Vec::new();
+    for spec in &specs {
+        let wstore = WorldStore::new(store.clone(), &spec.id);
+        let game = load_world(&cfg, spec, &wstore, &accounts)
+            .await
+            .map_err(|e| -> BoxError { format!("world {:?}: {e}", spec.id).into() })?;
+        games.push((spec, wstore, game));
     }
     let accounts = Arc::new(Accounts::with_policy(store.clone(), accounts, cfg.sessions));
-    let world_id: Arc<str> = game.world_id().into();
 
-    let (runner, handles) = Runner::new(game, cfg.runner.clone());
-    runner.spawn();
-    let persist = tokio::spawn(persist_task(store.clone(), handles.persist, handles.metrics.clone()));
+    let mut handles = Vec::new();
+    let mut running = Vec::new();
+    for (spec, wstore, game) in games {
+        let map_id: Arc<str> = game.world_id().into();
+        let (runner, h) = Runner::new(game, cfg.runner.clone());
+        runner.spawn_named(format!("world-{}", spec.id));
+        let persist = tokio::spawn(persist_task(wstore.clone(), h.persist, h.metrics.clone()));
+        running.push(RunningWorld { id: spec.id.clone(), tx: h.tx.clone(), persist });
+        handles.push(WorldHandle {
+            id: spec.id.as_str().into(),
+            name: spec.display_name().into(),
+            tx: h.tx,
+            published: h.published,
+            metrics: h.metrics,
+            net: Arc::new(NetStats::default()),
+            store: wstore,
+            map_id,
+        });
+    }
 
     let state = http::AppState {
-        world: handles.tx.clone(),
+        worlds: Arc::new(handles),
         accounts,
         store,
-        published: handles.published,
         next_conn: Arc::new(AtomicU64::new(1)),
         limiters: Arc::new(Limiters::new(cfg.limits)),
-        metrics: handles.metrics,
-        net: Arc::new(NetStats::default()),
         ws_conns: Default::default(),
-        world_id,
     };
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     let addr = listener.local_addr()?;
@@ -301,13 +325,101 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
             tracing::error!("server error: {e}");
         }
     });
-    tracing::info!("listening on http://{addr}");
-    Ok(RunningServer { addr, shutdown: Some(shutdown), serve, world: handles.tx, persist })
+    tracing::info!(
+        "listening on http://{addr} with {} world(s): {}",
+        specs.len(),
+        specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>().join(", ")
+    );
+    Ok(RunningServer { addr, shutdown: Some(shutdown), serve, worlds: running })
 }
 
-/// The database if `database_url` is set, else the data directory, else
-/// memory.
+/// One world's game: restored from its newest readable saved game (unless
+/// `fresh`) or generated from its seed. Stored designs whose player has no
+/// lineage in the world (all of them in a new world) are founded in player
+/// order.
+async fn load_world(
+    cfg: &ServerConfig,
+    spec: &WorldSpec,
+    store: &WorldStore,
+    accounts: &[AccountRecord],
+) -> Result<Game, BoxError> {
+    let settings = spec.settings(&cfg.world);
+    let mut designs = store.load_designs().await?;
+    designs.sort_by_key(|d| d.player);
+
+    let restored = if cfg.fresh { None } else { load_saved_game(store, &settings).await? };
+    // The world `--fresh` discards: its open agreements' escrow is refunded.
+    let discarded = if cfg.fresh { load_discarded_game(store).await? } else { None };
+    let mut game = match restored {
+        Some((world, saved)) => {
+            let history = store.recent_daily(HISTORY_DAYS).await?;
+            Game::resume(world, cfg.game.clone(), saved, history)
+        }
+        None => Game::new(build_world(&settings), cfg.game.clone()),
+    };
+    // A new world, or a saved game from before the economy: balances and
+    // recent ledger entries come from the store.
+    if !game.economy_restored() {
+        let balances: Vec<_> = store.load_balances().await?.into_iter().map(|b| (b.player, b.balance)).collect();
+        let ledger = store.recent_ledger(None, 2000).await?.into_iter().map(|r| r.entry).collect();
+        game.seed_economy(&balances, ledger);
+    }
+    if cfg.fresh {
+        if let Some(old) = discarded {
+            let ledger: Vec<_> = store.recent_ledger(None, DISCARDED_LEDGER_SCAN).await?;
+            for (player, amount) in game.refund_discarded(&old, &ledger) {
+                tracing::info!(
+                    "refunded {amount} renown of escrow in the discarded world {} to player {player}",
+                    spec.id
+                );
+            }
+            // Write the refunds before the discarded saves go: a crash in
+            // between refunds nothing twice (see `Game::refund_discarded`).
+            for ev in game.take_persist() {
+                persist_one(store, &ev, &mut BTreeSet::new()).await?;
+            }
+        }
+        // The discarded world's saves have higher ticks than the new world's
+        // will for a long time, and the newest tick is what a restart
+        // restores: drop them, or the next plain start would bring the old
+        // world (and its escrow, already refunded) back.
+        store.clear_snapshots().await?;
+    }
+    // What the restored game has to write before anything else: the last
+    // finished ranked season again, in case the store missed it.
+    for ev in game.take_persist() {
+        if let Err(e) = persist_one(store, &ev, &mut BTreeSet::new()).await {
+            tracing::error!("could not persist {ev:?} in world {}: {e}", spec.id);
+        }
+    }
+    for a in accounts {
+        game.set_name(a.player, &a.name);
+    }
+    let unfounded: Vec<_> = designs.iter().filter(|d| game.lineage_of(d.player).is_none()).collect();
+    for d in unfounded {
+        match d.design.to_design() {
+            Ok(design) => match game.found(d.player, &design) {
+                Ok(ok) => tracing::info!(
+                    "re-founded {:?} for player {} as lineage {} in world {}",
+                    d.design.name,
+                    d.player,
+                    ok.lineage,
+                    spec.id
+                ),
+                Err(e) => tracing::warn!("could not re-found the design of player {} in {}: {e:?}", d.player, spec.id),
+            },
+            Err(e) => tracing::warn!("stored design of player {} no longer validates: {}", d.player, e.message()),
+        }
+    }
+    Ok(game)
+}
+
+/// The store passed in the config, else the database if `database_url` is
+/// set, else the data directory, else memory.
 async fn open_store(cfg: &ServerConfig) -> Result<Arc<dyn Store>, BoxError> {
+    if let Some(s) = &cfg.store {
+        return Ok(s.0.clone());
+    }
     if let Some(url) = &cfg.database_url {
         #[cfg(feature = "postgres")]
         {
@@ -329,7 +441,7 @@ async fn open_store(cfg: &ServerConfig) -> Result<Arc<dyn Store>, BoxError> {
 
 /// The terrain a saved game names, from the store: `Ok(None)` for one that
 /// carries its own; an error if it can't be had (missing, unreadable).
-async fn load_terrain(store: &dyn Store, bytes: &[u8]) -> Result<Option<Arc<Terrain>>, String> {
+async fn load_terrain(store: &WorldStore, bytes: &[u8]) -> Result<Option<Arc<Terrain>>, String> {
     let Some((world_id, hash)) = snapshot::terrain_key(bytes).map_err(|e| e.to_string())? else {
         return Ok(None);
     };
@@ -353,7 +465,7 @@ async fn load_terrain(store: &dyn Store, bytes: &[u8]) -> Result<Option<Arc<Terr
 /// catastrophes) apply to the restored world. So is a store whose saved
 /// games all name a terrain it lacks: starting a new world would soon
 /// replace them.
-async fn load_saved_game(store: &dyn Store, settings: &WorldSettings) -> Result<Option<(World, SavedGame)>, BoxError> {
+async fn load_saved_game(store: &WorldStore, settings: &WorldSettings) -> Result<Option<(World, SavedGame)>, BoxError> {
     let wanted = world_config(settings);
     let mut no_terrain = None;
     for tick in store.snapshot_ticks().await? {
@@ -417,7 +529,7 @@ const DISCARDED_LEDGER_SCAN: usize = 100_000;
 
 /// The game-side state of the newest saved game that decodes (its world is
 /// not restored): what `--fresh` discards.
-async fn load_discarded_game(store: &dyn Store) -> Result<Option<SavedGame>, BoxError> {
+async fn load_discarded_game(store: &WorldStore) -> Result<Option<SavedGame>, BoxError> {
     for tick in store.snapshot_ticks().await? {
         let Ok(bytes) = store.load_snapshot(tick).await else { continue };
         match tokio::task::spawn_blocking(move || snapshot::decode_game(&bytes)).await? {
@@ -433,7 +545,7 @@ async fn load_discarded_game(store: &dyn Store) -> Result<Option<SavedGame>, Box
 /// the store already; if it can't be written, neither is the saved game,
 /// which would not restore without it.
 async fn persist_one(
-    store: &dyn Store,
+    store: &WorldStore,
     ev: &PersistEvent,
     stored: &mut BTreeSet<(String, u64)>,
 ) -> store::StoreResult<()> {
@@ -456,15 +568,11 @@ async fn persist_one(
     }
 }
 
-async fn persist_task(
-    store: Arc<dyn Store>,
-    mut rx: mpsc::UnboundedReceiver<PersistEvent>,
-    metrics: Arc<Mutex<Metrics>>,
-) {
+async fn persist_task(store: WorldStore, mut rx: mpsc::UnboundedReceiver<PersistEvent>, metrics: Arc<Mutex<Metrics>>) {
     let mut stored = BTreeSet::new();
     while let Some(ev) = rx.recv().await {
         let started = std::time::Instant::now();
-        let result = persist_one(&*store, &ev, &mut stored).await;
+        let result = persist_one(&store, &ev, &mut stored).await;
         if matches!(ev, PersistEvent::Snapshot(_)) {
             let mut m = metrics.lock().unwrap();
             m.snapshots_pending = m.snapshots_pending.saturating_sub(1);
@@ -487,7 +595,7 @@ mod tests {
     /// saved game that names it, and that save restores from the store.
     #[tokio::test]
     async fn the_first_save_stores_the_terrain_and_restores() {
-        let store = MemoryStore::default();
+        let store = WorldStore::new(Arc::new(MemoryStore::default()), DEFAULT_WORLD);
         let settings = WorldSettings { seed: 3, width: 32, height: 32, wild: false, ..Default::default() };
         let mut game = Game::new(build_world(&settings), GameConfig::default());
         game.world.step();
@@ -526,7 +634,7 @@ mod tests {
         let at = 16 + json + 8;
         bytes[at..at + 4].copy_from_slice(&5u32.to_le_bytes());
         assert_eq!(snapshot::terrain_key(&bytes).unwrap(), None);
-        let store = MemoryStore::default();
+        let store = WorldStore::new(Arc::new(MemoryStore::default()), DEFAULT_WORLD);
         store.put_snapshot(game.world.tick(), 0, &bytes).await.unwrap();
         assert!(load_saved_game(&store, &settings).await.unwrap().is_none());
     }
@@ -538,7 +646,7 @@ mod tests {
         let settings = WorldSettings { seed: 4, width: 32, height: 32, wild: false, ..Default::default() };
         let game = Game::new(build_world(&settings), GameConfig::default());
         let bytes = snapshot::encode(&game);
-        let store = MemoryStore::default();
+        let store = WorldStore::new(Arc::new(MemoryStore::default()), DEFAULT_WORLD);
         store.put_snapshot(game.world.tick(), 0, &bytes).await.unwrap();
         let e = load_saved_game(&store, &settings).await.err().expect("refused").to_string();
         assert!(e.contains("terrain") && e.contains("--fresh"), "{e}");

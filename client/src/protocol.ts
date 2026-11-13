@@ -458,6 +458,27 @@ export interface AuthResponse {
 export type ThermoSpec = 'warm' | 'cold';
 export type BirthSpec = 'live' | 'incubated_eggs' | 'abandoned_eggs';
 
+/** One world of `GET /api/worlds`. */
+export interface WorldListing {
+  /** What `?world=` takes. */
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  day: number;
+  year: number;
+  season: string;
+  population: number;
+  lineages: number;
+  players_online: number;
+}
+
+/** `GET /api/worlds`: the worlds the server hosts, the default first. */
+export interface WorldList {
+  default: string;
+  worlds: WorldListing[];
+}
+
 /** `DesignSpec`: the body of `POST /api/lineage`. */
 export interface DesignSpec {
   name: string;

@@ -1,4 +1,10 @@
 //! HTTP routes and the WebSocket session.
+//!
+//! Routes about one world (founding, the world summary, leaderboards,
+//! ranked seasons, terrain, the chronicle, metrics, the WebSocket) take `?world=<id>` and
+//! default to the server's first world; an unknown id is a 404
+//! (`unknown_world`). Accounts, sessions, alert preferences and the gene
+//! catalog are global. `GET /api/worlds` lists the worlds.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -10,7 +16,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Path as UrlPath, Query, Request as HttpRequest, State};
+use axum::extract::{
+    ConnectInfo, DefaultBodyLimit, FromRequestParts, Path as UrlPath, Query, Request as HttpRequest, State,
+};
+use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -31,10 +40,10 @@ use crate::limits::{client_key, Bucket, Limiters};
 use crate::metrics::{Metrics, MetricsView, NetStats};
 use crate::protocol::{
     AchievementList, AlertPrefs, CatastropheList, ChronicleView, ClientEnvelope, ClientMsg, EraList, ErrorInfo,
-    LineageStats, SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic, TerrainView,
+    LineageStats, SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic, TerrainView, WorldList, WorldListing,
 };
 use crate::runner::{Published, Request, TerrainReply};
-use crate::store::{AlertPrefsRecord, DesignRecord, Store};
+use crate::store::{AlertPrefsRecord, DesignRecord, Store, WorldStore};
 use crate::wire::{DeltaEncoder, KEYFRAME_EVERY, PROTO_DELTA, PROTO_JSON};
 
 /// Largest WebSocket message (and frame) a client may send.
@@ -52,19 +61,67 @@ pub const MAX_MAP_SIDE: usize = 2048;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub world: SyncSender<Request>,
+    /// The hosted worlds, the default first (never empty).
+    pub worlds: Arc<Vec<WorldHandle>>,
     pub accounts: Arc<Accounts>,
+    /// The whole store (global records: alert preferences).
     pub store: Arc<dyn Store>,
-    pub published: watch::Receiver<Arc<Published>>,
+    /// Connection ids, unique across worlds.
     pub next_conn: Arc<AtomicU64>,
     pub limiters: Arc<Limiters>,
+    /// Open WebSocket connections per player, over every world.
+    pub ws_conns: Arc<Mutex<HashMap<PlayerId, usize>>>,
+}
+
+/// One hosted world: its world thread, what it publishes, its metrics and
+/// traffic, and its view of the store.
+#[derive(Clone)]
+pub struct WorldHandle {
+    pub id: Arc<str>,
+    pub name: Arc<str>,
+    pub tx: SyncSender<Request>,
+    pub published: watch::Receiver<Arc<Published>>,
     pub metrics: Arc<Mutex<Metrics>>,
     pub net: Arc<NetStats>,
-    /// Open WebSocket connections per player.
-    pub ws_conns: Arc<Mutex<HashMap<PlayerId, usize>>>,
-    /// The running world's id: `/api/seasons/:n` means its seasons unless
-    /// the request names another world.
-    pub world_id: Arc<str>,
+    pub store: WorldStore,
+    /// The id of the world's generated map at start-up (`Game::world_id`):
+    /// `/api/seasons/:n` means its seasons unless the request names another
+    /// map of the world (`?map=`, a world started over with `--fresh`).
+    pub map_id: Arc<str>,
+}
+
+impl AppState {
+    /// The world `id`, or the default one when none is named.
+    pub fn world(&self, id: Option<&str>) -> Result<&WorldHandle, ApiError> {
+        match id.filter(|s| !s.is_empty()) {
+            None => Ok(&self.worlds[0]),
+            Some(id) => self.worlds.iter().find(|w| &*w.id == id).ok_or_else(|| {
+                let mut e = ApiError::new(StatusCode::NOT_FOUND, "unknown_world", format!("no world {id:?} here"));
+                e.detail =
+                    Some(serde_json::json!({ "worlds": self.worlds.iter().map(|w| &*w.id).collect::<Vec<_>>() }));
+                e
+            }),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct WorldQuery {
+    world: Option<String>,
+}
+
+/// The world a request is about: `?world=<id>`, the default without one.
+pub struct World(pub WorldHandle);
+
+#[axum::async_trait]
+impl FromRequestParts<AppState> for World {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, app: &AppState) -> Result<Self, ApiError> {
+        let q: Query<WorldQuery> = Query::try_from_uri(&parts.uri)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_query", e.body_text()))?;
+        Ok(World(app.world(q.world.as_deref())?.clone()))
+    }
 }
 
 /// One of a player's WebSocket connections, counted while it lives.
@@ -133,6 +190,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/lineage", post(found_lineage))
         .route("/api/genes", get(genes))
+        .route("/api/worlds", get(world_list))
         .route("/api/world", get(world_summary))
         .route("/api/leaderboard", get(leaderboard))
         .route("/api/metrics", get(metrics))
@@ -306,13 +364,14 @@ pub struct FoundResponse {
 
 async fn found_lineage(
     State(app): State<AppState>,
+    World(w): World,
     headers: HeaderMap,
     Json(spec): Json<DesignSpec>,
 ) -> Result<(StatusCode, Json<FoundResponse>), ApiError> {
     let session = authed(&app, &headers)?;
     let design = spec.to_design()?;
     let (reply, rx) = oneshot::channel();
-    send_request(&app.world, Request::Found { player: session.player, name: session.name.clone(), design, reply })?;
+    send_request(&w.tx, Request::Found { player: session.player, name: session.name.clone(), design, reply })?;
     let ok = match rx.await.map_err(ApiError::internal)? {
         Ok(ok) => ok,
         Err(FoundError::AlreadyFounded { lineage }) => {
@@ -323,11 +382,11 @@ async fn found_lineage(
         }
         Err(FoundError::Design(d)) => return Err(SpecError::Design(d).into()),
     };
-    let day = app.published.borrow().summary.clock.day;
+    let day = w.published.borrow().summary.clock.day;
     let unix = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let record = DesignRecord { player: session.player, design: spec, founded_day: day, founded_unix: unix };
-    if let Err(e) = app.store.put_design(&record).await {
-        tracing::error!("could not persist design of player {}: {e}", session.player);
+    if let Err(e) = w.store.put_design(&record).await {
+        tracing::error!("could not persist design of player {} in world {}: {e}", session.player, w.id);
     }
     Ok((StatusCode::CREATED, Json(FoundResponse { lineage: ok.lineage, founders: ok.founders, cost: ok.cost })))
 }
@@ -336,19 +395,44 @@ async fn genes() -> Json<design::GeneCatalog> {
     Json(design::catalog())
 }
 
-/// `GET /api/metrics`: world-thread timings, queues, saves, traffic and
-/// process usage ([`MetricsView`]).
-async fn metrics(State(app): State<AppState>) -> Json<MetricsView> {
-    let tick = app.published.borrow().summary.clock.tick;
-    Json(MetricsView::gather(&app.metrics, &app.net, tick))
+/// `GET /api/metrics`: one world's world-thread timings, queues, saves and
+/// traffic, and the process's usage ([`MetricsView`]).
+async fn metrics(World(w): World) -> Json<MetricsView> {
+    let tick = w.published.borrow().summary.clock.tick;
+    Json(MetricsView::gather(&w.id, &w.metrics, &w.net, tick))
 }
 
-async fn world_summary(State(app): State<AppState>) -> Json<crate::protocol::WorldSummary> {
-    Json(app.published.borrow().summary.clone())
+/// `GET /api/worlds`: every hosted world with its clock, population and
+/// players online (no login needed: the start screen picks from it).
+async fn world_list(State(app): State<AppState>) -> Json<WorldList> {
+    let worlds = app
+        .worlds
+        .iter()
+        .map(|w| {
+            let s = w.published.borrow().summary.clone();
+            WorldListing {
+                id: w.id.to_string(),
+                name: w.name.to_string(),
+                width: s.width,
+                height: s.height,
+                day: s.clock.day,
+                year: s.clock.year,
+                season: s.clock.season,
+                population: s.organisms,
+                lineages: s.lineages,
+                players_online: w.metrics.lock().unwrap().players,
+            }
+        })
+        .collect();
+    Json(WorldList { default: app.worlds[0].id.to_string(), worlds })
 }
 
-async fn leaderboard(State(app): State<AppState>) -> Json<crate::protocol::Leaderboard> {
-    Json(app.published.borrow().leaderboard.clone())
+async fn world_summary(World(w): World) -> Json<crate::protocol::WorldSummary> {
+    Json(w.published.borrow().summary.clone())
+}
+
+async fn leaderboard(World(w): World) -> Json<crate::protocol::Leaderboard> {
+    Json(w.published.borrow().leaderboard.clone())
 }
 
 #[derive(Deserialize)]
@@ -357,11 +441,11 @@ struct HistoryQuery {
 }
 
 async fn leaderboard_history(
-    State(app): State<AppState>,
+    World(w): World,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<Vec<crate::store::DailyRecord>>, ApiError> {
     let limit = q.limit.unwrap_or(30).clamp(1, 1000);
-    Ok(Json(app.store.recent_daily(limit).await.map_err(ApiError::internal)?))
+    Ok(Json(w.store.recent_daily(limit).await.map_err(ApiError::internal)?))
 }
 
 #[derive(Deserialize)]
@@ -372,11 +456,12 @@ struct SeasonsQuery {
 /// Seasonal leaderboards from the whole stored history, newest first.
 async fn leaderboard_seasons(
     State(app): State<AppState>,
+    World(w): World,
     Query(q): Query<SeasonsQuery>,
 ) -> Result<Json<Vec<SeasonBoard>>, ApiError> {
     let limit = q.limit.unwrap_or(8).clamp(1, 100);
-    let records = app.store.recent_daily(100_000).await.map_err(ApiError::internal)?;
-    let clock = app.published.borrow().summary.clock.clone();
+    let records = w.store.recent_daily(100_000).await.map_err(ApiError::internal)?;
+    let clock = w.published.borrow().summary.clock.clone();
     let accounts = app.accounts.clone();
     let name_of = move |p: evo_sim::PlayerId| {
         if p == evo_sim::WILD {
@@ -393,10 +478,14 @@ async fn leaderboard_seasons(
     Ok(Json(boards))
 }
 
-async fn lineage_stats(State(app): State<AppState>, headers: HeaderMap) -> Result<Json<LineageStats>, ApiError> {
+async fn lineage_stats(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+) -> Result<Json<LineageStats>, ApiError> {
     let session = authed(&app, &headers)?;
     let (reply, rx) = oneshot::channel();
-    send_request(&app.world, Request::Stats { player: session.player, reply })?;
+    send_request(&w.tx, Request::Stats { player: session.player, reply })?;
     Ok(Json(rx.await.map_err(ApiError::internal)?))
 }
 
@@ -424,24 +513,24 @@ async fn set_alert_prefs(
     Ok(Json(prefs))
 }
 
-async fn terrain_request(app: &AppState, full: bool) -> Result<TerrainReply, ApiError> {
+async fn terrain_request(w: &WorldHandle, full: bool) -> Result<TerrainReply, ApiError> {
     let (reply, rx) = oneshot::channel();
-    send_request(&app.world, Request::Terrain { full, reply })?;
+    send_request(&w.tx, Request::Terrain { full, reply })?;
     rx.await.map_err(ApiError::internal)
 }
 
 const NO_STORE: [(header::HeaderName, &str); 1] = [(header::CACHE_CONTROL, "no-store")];
 
-async fn terrain(State(app): State<AppState>) -> Result<Response, ApiError> {
-    let TerrainReply::Full(raw) = terrain_request(&app, true).await? else {
+async fn terrain(World(w): World) -> Result<Response, ApiError> {
+    let TerrainReply::Full(raw) = terrain_request(&w, true).await? else {
         return Err(ApiError::internal("wrong terrain reply"));
     };
     let view: TerrainView = tokio::task::spawn_blocking(move || raw.encode()).await.map_err(ApiError::internal)?;
     Ok((NO_STORE, Json(view)).into_response())
 }
 
-async fn terrain_dynamic(State(app): State<AppState>) -> Result<Response, ApiError> {
-    let TerrainReply::Dynamic(raw) = terrain_request(&app, false).await? else {
+async fn terrain_dynamic(World(w): World) -> Result<Response, ApiError> {
+    let TerrainReply::Dynamic(raw) = terrain_request(&w, false).await? else {
         return Err(ApiError::internal("wrong terrain reply"));
     };
     let view: TerrainDynamic = tokio::task::spawn_blocking(move || raw.encode()).await.map_err(ApiError::internal)?;
@@ -453,14 +542,14 @@ struct MapQuery {
     scale: Option<usize>,
 }
 
-async fn map_png(State(app): State<AppState>, Query(q): Query<MapQuery>) -> Result<Response, ApiError> {
+async fn map_png(World(w): World, Query(q): Query<MapQuery>) -> Result<Response, ApiError> {
     let side = {
-        let s = &app.published.borrow().summary;
+        let s = &w.published.borrow().summary;
         s.width.max(s.height)
     };
     let scale = map_scale(q.scale, side);
     let (reply, rx) = oneshot::channel();
-    send_request(&app.world, Request::Snapshot { scale, reply })?;
+    send_request(&w.tx, Request::Snapshot { scale, reply })?;
     let (w, h, rgb) = rx.await.map_err(ApiError::internal)?;
     let png = tokio::task::spawn_blocking(move || encode_png(w, h, &rgb))
         .await
@@ -496,9 +585,11 @@ struct WsQuery {
 }
 
 /// `GET /ws?token=…` (browsers can't set headers on a WebSocket) or with an
-/// `Authorization: Bearer …` header; `&proto=2` asks for delta states.
+/// `Authorization: Bearer …` header; `&proto=2` asks for delta states and
+/// `&world=<id>` picks the world (the default one without it).
 async fn ws_upgrade(
     State(app): State<AppState>,
+    World(world): World,
     info: Option<ConnectInfo<SocketAddr>>,
     Query(q): Query<WsQuery>,
     headers: HeaderMap,
@@ -524,7 +615,7 @@ async fn ws_upgrade(
     // A frame is read whole before the message limit applies: bound both.
     Ok(ws.max_message_size(MAX_CLIENT_MESSAGE).max_frame_size(MAX_CLIENT_MESSAGE).on_upgrade(
         move |socket| async move {
-            client_session(socket, app, session, token, ip, proto).await;
+            client_session(socket, app, world, session, token, ip, proto).await;
             drop(slot);
         },
     ))
@@ -553,18 +644,26 @@ fn session_check_interval(app: &AppState) -> Duration {
     (p.idle.min(p.max_age) / 4).clamp(Duration::from_millis(50), Duration::from_secs(30))
 }
 
-async fn client_session(socket: WebSocket, app: AppState, session: Session, token: String, ip: IpAddr, proto: u32) {
+async fn client_session(
+    socket: WebSocket,
+    app: AppState,
+    world: WorldHandle,
+    session: Session,
+    token: String,
+    ip: IpAddr,
+    proto: u32,
+) {
     let conn = app.next_conn.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = crate::push::channel(CONN_QUEUE);
     // The reader only holds a weak handle, so when the world thread drops a
     // connection (too slow), the writer ends and the socket closes.
     let weak = tx.downgrade();
     let connect = Request::Connect { conn, player: session.player, name: session.name.clone(), tx };
-    if app.world.try_send(connect).is_err() {
+    if world.tx.try_send(connect).is_err() {
         return;
     }
     let (mut sink, mut stream) = socket.split();
-    let net = app.net.clone();
+    let net = world.net.clone();
     net.ws_opened.fetch_add(1, Ordering::Relaxed);
     // Protocol 2: the reader asks for a keyframe when the client resyncs.
     let resync = Arc::new(AtomicBool::new(false));
@@ -648,12 +747,12 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session, toke
                     if env.msg == ClientMsg::Resync {
                         if proto == PROTO_DELTA {
                             resync.store(true, Ordering::Relaxed);
-                            app.net.resyncs.fetch_add(1, Ordering::Relaxed);
+                            world.net.resyncs.fetch_add(1, Ordering::Relaxed);
                         }
                         continue;
                     }
                     let req = Request::Command { conn, player: session.player, id: env.id, msg: env.msg };
-                    match app.world.try_send(req) {
+                    match world.tx.try_send(req) {
                         Ok(()) => {}
                         Err(TrySendError::Full(_)) => {
                             local(ServerMsg::err(env.id, name, ErrorInfo::new("busy", "the world is busy; try again")))
@@ -669,7 +768,7 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session, toke
     }
     // The world thread drops its sender on disconnect, which ends the writer
     // after it has flushed what is queued (e.g. `session_ended`).
-    let _ = app.world.try_send(Request::Disconnect { conn });
+    let _ = world.tx.try_send(Request::Disconnect { conn });
     let mut writer = writer;
     if tokio::time::timeout(Duration::from_secs(2), &mut writer).await.is_err() {
         writer.abort();
@@ -677,31 +776,31 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session, toke
 }
 
 /// The world thread's chronicle (species, eras, catastrophes, achievements).
-async fn chronicle(st: &AppState) -> Result<ChronicleView, ApiError> {
+async fn chronicle(w: &WorldHandle) -> Result<ChronicleView, ApiError> {
     let (reply, rx) = oneshot::channel();
-    send_request(&st.world, Request::Chronicle { reply })?;
+    send_request(&w.tx, Request::Chronicle { reply })?;
     Ok(*rx.await.map_err(ApiError::internal)?)
 }
 
 /// `GET /api/species`: every detected species (living first, by size), with
 /// parents (the species tree), founders and dominant allele owners.
-async fn species(State(st): State<AppState>) -> Result<Json<SpeciesList>, ApiError> {
-    Ok(Json(chronicle(&st).await?.species))
+async fn species(World(w): World) -> Result<Json<SpeciesList>, ApiError> {
+    Ok(Json(chronicle(&w).await?.species))
 }
 
 /// `GET /api/eras`: the era clock and every finished era's final ranking.
-async fn eras(State(st): State<AppState>) -> Result<Json<EraList>, ApiError> {
-    Ok(Json(chronicle(&st).await?.eras))
+async fn eras(World(w): World) -> Result<Json<EraList>, ApiError> {
+    Ok(Json(chronicle(&w).await?.eras))
 }
 
 /// `GET /api/catastrophes`: the active catastrophe and those before it.
-async fn catastrophes(State(st): State<AppState>) -> Result<Json<CatastropheList>, ApiError> {
-    Ok(Json(chronicle(&st).await?.catastrophes))
+async fn catastrophes(World(w): World) -> Result<Json<CatastropheList>, ApiError> {
+    Ok(Json(chronicle(&w).await?.catastrophes))
 }
 
 /// `GET /api/achievements`: per-player tallies and the latest achievements.
-async fn achievements(State(st): State<AppState>) -> Result<Json<AchievementList>, ApiError> {
-    Ok(Json(chronicle(&st).await?.achievements))
+async fn achievements(World(w): World) -> Result<Json<AchievementList>, ApiError> {
+    Ok(Json(chronicle(&w).await?.achievements))
 }
 
 #[derive(Deserialize)]
@@ -710,48 +809,52 @@ struct SeasonPaging {
     limit: Option<usize>,
     /// Always include this player's row in each category.
     player: Option<PlayerId>,
-    /// The world whose season is meant (default: the running one).
-    world: Option<String>,
+    /// The generated map of the world whose season is meant (default: the
+    /// running one). The world itself is `?world=`, as everywhere.
+    map: Option<String>,
 }
 
-/// `GET /api/seasons?offset=0&limit=20`: finished ranked seasons of every
-/// world, newest first (heads: winners and summary, no standings).
+/// `GET /api/seasons?world=ID&offset=0&limit=20`: the world's finished
+/// ranked seasons (of every map it had), newest first (heads: winners and
+/// summary, no standings).
 async fn seasons_list(
-    State(app): State<AppState>,
+    World(w): World,
     Query(q): Query<SeasonPaging>,
 ) -> Result<Json<crate::league::SeasonList>, ApiError> {
     let offset = q.offset.unwrap_or(0);
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
-    let (seasons, total) = app.store.list_seasons(offset, limit).await.map_err(ApiError::internal)?;
+    let (seasons, total) = w.store.list_seasons(offset, limit).await.map_err(ApiError::internal)?;
     Ok(Json(crate::league::SeasonList { total, offset, seasons }))
 }
 
 /// `GET /api/seasons/current?offset=0&limit=10&player=N`: the ranked season
 /// under way, standings so far.
 async fn season_current(
-    State(app): State<AppState>,
+    World(w): World,
     Query(q): Query<SeasonPaging>,
 ) -> Result<Json<crate::league::CurrentSeason>, ApiError> {
     let (offset, limit) = crate::league::paging(q.offset, q.limit);
     let (reply, rx) = oneshot::channel();
-    send_request(&app.world, Request::Season { offset, limit, player: q.player, reply })?;
+    send_request(&w.tx, Request::Season { offset, limit, player: q.player, reply })?;
     Ok(Json(*rx.await.map_err(ApiError::internal)?))
 }
 
-/// `GET /api/seasons/:n?world=ID&offset=0&limit=10&player=N`: one finished
-/// season with every category's standings, a page at a time.
+/// `GET /api/seasons/:n?world=ID&map=ID&offset=0&limit=10&player=N`: one
+/// finished season of the world (of its current map unless `map` names an
+/// earlier one) with every category's standings, a page at a time.
 async fn season_one(
-    State(app): State<AppState>,
+    World(w): World,
     UrlPath(season): UrlPath<String>,
     Query(q): Query<SeasonPaging>,
 ) -> Result<Json<crate::league::SeasonPage>, ApiError> {
     let season: u32 = season
         .parse()
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "bad_season", "a season is a positive number"))?;
-    let world = q.world.unwrap_or_else(|| app.world_id.to_string());
+    let map = q.map.unwrap_or_else(|| w.map_id.to_string());
     let (offset, limit) = crate::league::paging(q.offset, q.limit);
-    let record = app.store.load_season(&world, season).await.map_err(ApiError::internal)?.ok_or_else(|| {
-        ApiError::new(StatusCode::NOT_FOUND, "no_season", format!("season {season} of world {world} has not ended"))
+    let record = w.store.load_season(&map, season).await.map_err(ApiError::internal)?.ok_or_else(|| {
+        let msg = format!("season {season} of world {} (map {map}) has not ended", w.id);
+        ApiError::new(StatusCode::NOT_FOUND, "no_season", msg)
     })?;
     let standings = crate::league::page(&record.standings, offset, limit, q.player);
     Ok(Json(crate::league::SeasonPage { head: record.head, offset, limit, standings }))
@@ -762,16 +865,17 @@ struct PlayerSeasonsQuery {
     limit: Option<usize>,
 }
 
-/// `GET /api/seasons/player/:player?limit=50`: the finished seasons a
-/// player was ranked in, newest first, with every placement.
+/// `GET /api/seasons/player/:player?world=ID&limit=50`: the world's
+/// finished seasons a player was ranked in, newest first, with every
+/// placement.
 async fn season_player(
-    State(app): State<AppState>,
+    World(w): World,
     UrlPath(player): UrlPath<String>,
     Query(q): Query<PlayerSeasonsQuery>,
 ) -> Result<Json<crate::league::PlayerHistory>, ApiError> {
     let player: PlayerId =
         player.parse().map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "bad_player", "a player is a number"))?;
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
-    let seasons = app.store.player_seasons(player, limit).await.map_err(ApiError::internal)?;
+    let seasons = w.store.player_seasons(player, limit).await.map_err(ApiError::internal)?;
     Ok(Json(crate::league::PlayerHistory { player, seasons }))
 }

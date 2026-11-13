@@ -5,6 +5,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use evo_server::design::{BirthSpec, DesignSpec, ThermoSpec};
@@ -13,8 +14,9 @@ use evo_server::league::{SeasonRecord, SeasonTracker};
 use evo_server::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
 use evo_server::store::{
     AccountRecord, AlertPrefsRecord, AuctionRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord,
-    MemoryStore, Store, TradeRecord, KEEP_SNAPSHOTS,
+    MemoryStore, Store, TradeRecord, WorldStore, KEEP_SNAPSHOTS,
 };
+use evo_server::worlds::DEFAULT_WORLD;
 use evo_server::{start, ServerConfig};
 use futures_util::StreamExt;
 use tokio_tungstenite::tungstenite::Message;
@@ -80,12 +82,17 @@ impl Backend {
         }
     }
 
-    async fn open(&self) -> Box<dyn Store> {
+    async fn open_all(&self) -> Arc<dyn Store> {
         match self {
-            Backend::File(dir) => Box::new(FileStore::open(dir).await.unwrap()),
+            Backend::File(dir) => Arc::new(FileStore::open(dir).await.unwrap()),
             #[cfg(feature = "postgres")]
-            Backend::Pg { url, .. } => Box::new(evo_server::store::PgStore::connect(url).await.unwrap()),
+            Backend::Pg { url, .. } => Arc::new(evo_server::store::PgStore::connect(url).await.unwrap()),
         }
+    }
+
+    /// The store as the default world sees it.
+    async fn open(&self) -> WorldStore {
+        WorldStore::new(self.open_all().await, DEFAULT_WORLD)
     }
 
     async fn cleanup(self) {
@@ -106,7 +113,7 @@ impl Backend {
 /// Delete every stored terrain behind the store's back.
 async fn drop_terrains(backend: &Backend) {
     match backend {
-        Backend::File(dir) => std::fs::remove_dir_all(dir.join("terrain")).unwrap(),
+        Backend::File(dir) => std::fs::remove_dir_all(dir.join("worlds").join(DEFAULT_WORLD).join("terrain")).unwrap(),
         #[cfg(feature = "postgres")]
         Backend::Pg { url, .. } => {
             let pool = sqlx::PgPool::connect(url).await.unwrap();
@@ -121,7 +128,7 @@ async fn drop_terrains(backend: &Backend) {
 async fn drop_snapshots_after(backend: &Backend, tick: u64) {
     match backend {
         Backend::File(dir) => {
-            for e in std::fs::read_dir(dir.join("snapshots")).unwrap() {
+            for e in std::fs::read_dir(dir.join("worlds").join(DEFAULT_WORLD).join("snapshots")).unwrap() {
                 let path = e.unwrap().path();
                 let name = path.file_name().unwrap().to_str().unwrap().to_string();
                 let t: u64 = name.trim_start_matches("world-").trim_end_matches(".snap").parse().unwrap();
@@ -142,7 +149,9 @@ async fn drop_snapshots_after(backend: &Backend, tick: u64) {
 /// Delete every stored season behind the store's back (a lost write).
 async fn drop_seasons(backend: &Backend) {
     match backend {
-        Backend::File(dir) => std::fs::remove_file(dir.join("seasons.jsonl")).unwrap(),
+        Backend::File(dir) => {
+            std::fs::remove_file(dir.join("worlds").join(DEFAULT_WORLD).join("seasons.jsonl")).unwrap()
+        }
         #[cfg(feature = "postgres")]
         Backend::Pg { url, .. } => {
             let pool = sqlx::PgPool::connect(url).await.unwrap();
@@ -193,7 +202,7 @@ fn day(world: &str, day: u64, adults: usize) -> DailyRecord {
 }
 
 /// Every record type written to `s`, read back.
-async fn round_trip(s: &dyn Store) {
+async fn round_trip(s: &WorldStore) {
     let a = AccountRecord { name: "ann".into(), player: 1, password_hash: "h".into(), created_unix: 7 };
     s.insert_account(&a).await.unwrap();
     assert!(s.insert_account(&a).await.is_err());
@@ -327,7 +336,7 @@ fn season(world: &str, n: u32, players: &[u32], ended_unix: u64) -> SeasonRecord
 
 /// Seasons written, one replaced by a replayed rollover, read back: in
 /// first-written order, newest first, paged; per player.
-async fn check_seasons(s: &dyn Store) {
+async fn check_seasons(s: &WorldStore) {
     assert_eq!(s.list_seasons(0, 10).await.unwrap(), (vec![], 0));
     s.put_season(&season("w1", 1, &[1, 2], 1)).await.unwrap();
     s.put_season(&season("w1", 2, &[1], 2)).await.unwrap();
@@ -379,7 +388,7 @@ fn auction(world: &str, listing: u64, outcome: &str) -> AuctionRecord {
     }
 }
 
-async fn check_auctions(s: &dyn Store) {
+async fn check_auctions(s: &WorldStore) {
     let all = s.recent_auctions(10).await.unwrap();
     assert_eq!(
         all.iter().map(|r| (r.world_id.as_str(), r.listing, r.outcome.as_str(), r.bids)).collect::<Vec<_>>(),
@@ -390,7 +399,7 @@ async fn check_auctions(s: &dyn Store) {
     assert_eq!(s.recent_auctions(1).await.unwrap(), vec![auction("w2", 3, "withdrawn")]);
 }
 
-async fn check_terrains(s: &dyn Store) {
+async fn check_terrains(s: &WorldStore) {
     assert_eq!(s.load_terrain("w1", 7).await.unwrap().as_deref(), Some(&b"terrain 7"[..]));
     assert_eq!(s.load_terrain("w1", u64::MAX).await.unwrap().as_deref(), Some(&b"terrain max"[..]));
     assert_eq!(s.load_terrain("w2", 7).await.unwrap().as_deref(), Some(&b"w2's"[..]));
@@ -426,12 +435,12 @@ fn ledger(world: &str, seq: u64, player: u32, delta: i64) -> LedgerRecord {
 
 #[tokio::test]
 async fn memory_store_round_trips() {
-    round_trip(&MemoryStore::default()).await;
+    round_trip(&WorldStore::new(Arc::new(MemoryStore::default()), DEFAULT_WORLD)).await;
 }
 
 /// Round trip, then the same checks through a newly opened store.
 async fn store_round_trips(backend: Backend) {
-    round_trip(&*backend.open().await).await;
+    round_trip(&backend.open().await).await;
     let s = backend.open().await;
     assert_eq!(s.load_accounts().await.unwrap().len(), 2);
     assert_eq!(s.load_designs().await.unwrap()[0].design.name, "Renamed");
@@ -442,8 +451,8 @@ async fn store_round_trips(backend: Backend) {
     assert_eq!(s.load_balances().await.unwrap().len(), 2);
     assert_eq!(s.recent_ledger(None, 100).await.unwrap().len(), 5);
     assert_eq!(s.load_alert_prefs(1).await.unwrap(), Some(alert_prefs(1)));
-    check_auctions(&*s).await;
-    check_terrains(&*s).await;
+    check_auctions(&s).await;
+    check_terrains(&s).await;
     assert_eq!(s.list_seasons(0, 10).await.unwrap().1, 3);
     assert_eq!(s.load_season("w1", 1).await.unwrap(), Some(season("w1", 1, &[1, 2, 3], 4)));
     // `--fresh` drops the terrains with the saved games.
@@ -460,7 +469,7 @@ on_every_store!(store_round_trips, file_store_round_trips, pg_store_round_trips)
 #[tokio::test]
 async fn file_store_refuses_odd_world_ids() {
     let dir = data_dir("odd-world-ids");
-    let s = FileStore::open(&dir).await.unwrap();
+    let s = WorldStore::new(Arc::new(FileStore::open(&dir).await.unwrap()), DEFAULT_WORLD);
     for id in ["../w1", "w1/x", "", "w1.terrain"] {
         assert!(s.put_terrain(id, 7, b"x").await.is_err(), "{id:?}");
         assert!(s.load_terrain(id, 7).await.is_err(), "{id:?}");
@@ -814,6 +823,566 @@ async fn restart_keeps_balances(backend: Backend) {
     backend.cleanup().await;
 }
 
+// --- Several worlds: isolation in the store, and the migration ------------
+
+/// Records of one world are invisible to another, and `--fresh` of one
+/// world (clear_snapshots) leaves the others' saves and terrains.
+async fn worlds_are_isolated_in_the_store(all: Arc<dyn Store>) {
+    let main = WorldStore::new(all.clone(), DEFAULT_WORLD);
+    let isle = WorldStore::new(all.clone(), "isle");
+    main.put_design(&DesignRecord { player: 1, design: spec(), founded_day: 0, founded_unix: 0 }).await.unwrap();
+    let isle_spec = DesignSpec { name: "Isle".into(), ..spec() };
+    isle.put_design(&DesignRecord { player: 1, design: isle_spec.clone(), founded_day: 2, founded_unix: 0 })
+        .await
+        .unwrap();
+    isle.put_design(&DesignRecord { player: 2, design: spec(), founded_day: 2, founded_unix: 0 }).await.unwrap();
+    // The same generated world id and day in two shards are two records.
+    main.append_daily(&day("w", 1, 10)).await.unwrap();
+    isle.append_daily(&day("w", 1, 20)).await.unwrap();
+    isle.append_daily(&day("w", 2, 21)).await.unwrap();
+    let trade = TradeRecord {
+        offer: 1,
+        from_player: 1,
+        to_player: 2,
+        mine: 1,
+        partner: 2,
+        price: None,
+        status: "done".into(),
+        conceived: Some(true),
+        day: 1,
+        listing: None,
+        settlement: None,
+    };
+    isle.append_trade(&trade).await.unwrap();
+    main.put_balance(&BalanceRecord { player: 1, balance: 10, day: 1 }).await.unwrap();
+    isle.put_balance(&BalanceRecord { player: 1, balance: 99, day: 1 }).await.unwrap();
+    main.append_ledger(&ledger("w", 1, 1, 10)).await.unwrap();
+    isle.append_ledger(&ledger("w", 1, 1, 99)).await.unwrap();
+    isle.append_ledger(&ledger("w", 2, 2, 5)).await.unwrap();
+    // Snapshots: the same ticks in both; each world keeps its own newest few.
+    for tick in [10u64, 20, 30, 40] {
+        main.put_snapshot(tick, 0, b"main").await.unwrap();
+    }
+    isle.put_snapshot(10, 0, b"isle").await.unwrap();
+    main.put_terrain("w", 7, b"main terrain").await.unwrap();
+    isle.put_terrain("w", 7, b"isle terrain").await.unwrap();
+    // Auction results: the same map id and listing in two worlds.
+    main.append_auction(&auction("w", 3, "sold")).await.unwrap();
+    isle.append_auction(&auction("w", 3, "unsold")).await.unwrap();
+    isle.append_auction(&auction("w", 4, "withdrawn")).await.unwrap();
+    // Ranked seasons: the same map id and season number in two worlds.
+    main.put_season(&season("w", 1, &[1], 1)).await.unwrap();
+    isle.put_season(&season("w", 1, &[2], 2)).await.unwrap();
+    isle.put_season(&season("w", 2, &[2], 3)).await.unwrap();
+
+    assert_eq!(main.load_designs().await.unwrap().len(), 1);
+    let mut isle_designs = isle.load_designs().await.unwrap();
+    isle_designs.sort_by_key(|d| d.player);
+    assert_eq!((isle_designs.len(), &isle_designs[0].design), (2, &isle_spec));
+    assert_eq!(main.recent_daily(10).await.unwrap().iter().map(|d| d.breeding_adults).collect::<Vec<_>>(), [10]);
+    assert_eq!(isle.recent_daily(10).await.unwrap().iter().map(|d| d.breeding_adults).collect::<Vec<_>>(), [20, 21]);
+    assert!(main.load_trades().await.unwrap().is_empty());
+    assert_eq!(isle.load_trades().await.unwrap(), [trade]);
+    assert_eq!(main.load_balances().await.unwrap(), [BalanceRecord { player: 1, balance: 10, day: 1 }]);
+    assert_eq!(isle.load_balances().await.unwrap(), [BalanceRecord { player: 1, balance: 99, day: 1 }]);
+    assert_eq!(main.recent_ledger(None, 10).await.unwrap(), [ledger("w", 1, 1, 10)]);
+    assert_eq!(isle.recent_ledger(Some(1), 10).await.unwrap(), [ledger("w", 1, 1, 99)]);
+    assert_eq!(isle.recent_ledger(None, 10).await.unwrap().len(), 2);
+    assert_eq!(main.snapshot_ticks().await.unwrap(), vec![40, 30, 20]);
+    assert_eq!(isle.snapshot_ticks().await.unwrap(), vec![10]);
+    assert_eq!(isle.load_snapshot(10).await.unwrap(), b"isle");
+    assert!(main.load_snapshot(10).await.is_err());
+    assert_eq!(main.load_terrain("w", 7).await.unwrap().as_deref(), Some(&b"main terrain"[..]));
+    assert_eq!(isle.load_terrain("w", 7).await.unwrap().as_deref(), Some(&b"isle terrain"[..]));
+    assert_eq!(main.recent_auctions(10).await.unwrap(), [auction("w", 3, "sold")]);
+    assert_eq!(isle.recent_auctions(10).await.unwrap(), [auction("w", 3, "unsold"), auction("w", 4, "withdrawn")]);
+    assert_eq!(main.list_seasons(0, 10).await.unwrap().1, 1);
+    assert_eq!(isle.list_seasons(0, 10).await.unwrap().1, 2);
+    assert_eq!(main.load_season("w", 1).await.unwrap(), Some(season("w", 1, &[1], 1)));
+    assert_eq!(isle.load_season("w", 1).await.unwrap(), Some(season("w", 1, &[2], 2)));
+    assert!(main.load_season("w", 2).await.unwrap().is_none());
+    assert_eq!(main.player_seasons(1, 10).await.unwrap().len(), 1);
+    assert!(main.player_seasons(2, 10).await.unwrap().is_empty());
+    assert_eq!(isle.player_seasons(2, 10).await.unwrap().len(), 2);
+    assert!(isle.player_seasons(1, 10).await.unwrap().is_empty());
+    // A third world sees nothing.
+    let none = WorldStore::new(all.clone(), "none");
+    assert!(none.load_designs().await.unwrap().is_empty() && none.recent_daily(10).await.unwrap().is_empty());
+    assert!(none.load_balances().await.unwrap().is_empty() && none.recent_ledger(None, 10).await.unwrap().is_empty());
+    assert!(none.snapshot_ticks().await.unwrap().is_empty() && none.load_terrain("w", 7).await.unwrap().is_none());
+    assert!(none.recent_auctions(10).await.unwrap().is_empty());
+    // `--fresh` of the isle only.
+    isle.clear_snapshots().await.unwrap();
+    assert!(isle.snapshot_ticks().await.unwrap().is_empty() && isle.load_terrain("w", 7).await.unwrap().is_none());
+    assert_eq!(main.snapshot_ticks().await.unwrap().len(), 3);
+    assert!(main.load_terrain("w", 7).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn memory_store_keeps_worlds_apart() {
+    worlds_are_isolated_in_the_store(Arc::new(MemoryStore::default())).await;
+}
+
+/// World ids name directories in the file store: ids that could leave
+/// the data directory are refused (the server validates its world list
+/// before it opens a store).
+#[tokio::test]
+async fn file_and_memory_stores_refuse_odd_shards() {
+    let dir = data_dir("odd-shards");
+    let stores: [Arc<dyn Store>; 2] =
+        [Arc::new(FileStore::open(&dir).await.unwrap()), Arc::new(MemoryStore::default())];
+    for s in stores {
+        for id in ["../x", "", "a/b", "Main"] {
+            assert!(s.load_designs(id).await.is_err(), "{id:?}");
+            assert!(s.put_snapshot(id, 1, 0, b"x").await.is_err(), "{id:?}");
+        }
+    }
+    assert!(!dir.join("x").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+async fn stores_keep_worlds_apart(backend: Backend) {
+    worlds_are_isolated_in_the_store(backend.open_all().await).await;
+    backend.cleanup().await;
+}
+
+on_every_store!(stores_keep_worlds_apart, file_store_keeps_worlds_apart, pg_store_keeps_worlds_apart);
+
+/// What a server from before several worlds had stored: a real saved game
+/// of a world with one player's lineage, and every kind of record.
+struct Legacy {
+    account: AccountRecord,
+    prefs: AlertPrefsRecord,
+    design: DesignRecord,
+    daily: Vec<DailyRecord>,
+    trade: TradeRecord,
+    balances: Vec<BalanceRecord>,
+    ledger: Vec<LedgerRecord>,
+    auction: AuctionRecord,
+    season: SeasonRecord,
+    tick: u64,
+    day: u64,
+    snapshot: Vec<u8>,
+    terrain: evo_server::game::TerrainBlob,
+}
+
+fn legacy_settings() -> WorldSettings {
+    WorldSettings { seed: 13, width: 48, height: 48, wild: false, days_per_year: 4000, ..Default::default() }
+}
+
+async fn legacy() -> Legacy {
+    use evo_server::game::{build_world, Game, GameConfig, PersistEvent};
+    let mem: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    evo_server::accounts::Accounts::new(mem.clone(), vec![]).register("ann", "a long password").await.unwrap();
+    let account = mem.load_accounts().await.unwrap().remove(0);
+    let mut game = Game::new(build_world(&legacy_settings()), GameConfig::default());
+    game.set_name(account.player, "ann");
+    game.found(account.player, &spec().to_design().unwrap()).unwrap();
+    // Two days: daily records, income in the ledger.
+    while game.world.day() < 2 {
+        game.world.step();
+        game.after_tick();
+    }
+    let (mut daily, mut balances, mut ledger) = (Vec::new(), Vec::new(), Vec::new());
+    for ev in game.take_persist() {
+        match ev {
+            PersistEvent::Daily(r) => daily.push(r),
+            PersistEvent::Balance(r) => {
+                balances.retain(|b: &BalanceRecord| b.player != r.player);
+                balances.push(r);
+            }
+            PersistEvent::Ledger(r) => ledger.push(r),
+            _ => {}
+        }
+    }
+    assert!(daily.len() >= 2 && !ledger.is_empty() && !balances.is_empty());
+    let trade = TradeRecord {
+        offer: 1,
+        from_player: 1,
+        to_player: 1,
+        mine: 3,
+        partner: 4,
+        price: Some(2),
+        status: "done".into(),
+        conceived: Some(true),
+        day: 1,
+        listing: None,
+        settlement: Some("paid".into()),
+    };
+    Legacy {
+        prefs: alert_prefs(account.player),
+        design: DesignRecord { player: account.player, design: spec(), founded_day: 0, founded_unix: 5 },
+        account,
+        daily,
+        trade,
+        balances,
+        ledger,
+        auction: auction(game.saved().world_id(), 5, "sold"),
+        season: season(game.saved().world_id(), 1, &[1], 9),
+        tick: game.world.tick(),
+        day: game.world.day(),
+        snapshot: evo_server::snapshot::encode(&game),
+        terrain: evo_server::snapshot::terrain_blob(&game.world, game.saved().world_id()),
+    }
+}
+
+/// Write `l` in a single-world data directory's layout.
+fn write_legacy_files(dir: &std::path::Path, l: &Legacy) {
+    let json = |name: &str, v: &dyn erased::Json| std::fs::write(dir.join(name), v.to_json()).unwrap();
+    let lines = |name: &str, rows: Vec<String>| std::fs::write(dir.join(name), rows.join("\n") + "\n").unwrap();
+    std::fs::create_dir_all(dir.join("snapshots")).unwrap();
+    std::fs::create_dir_all(dir.join("terrain")).unwrap();
+    json("accounts.json", &vec![l.account.clone()]);
+    json("alert_prefs.json", &vec![l.prefs.clone()]);
+    json("designs.json", &vec![l.design.clone()]);
+    json("balances.json", &l.balances);
+    lines("history.jsonl", l.daily.iter().map(|r| serde_json::to_string(r).unwrap()).collect());
+    lines("trades.jsonl", vec![serde_json::to_string(&l.trade).unwrap()]);
+    lines("ledger.jsonl", l.ledger.iter().map(|r| serde_json::to_string(r).unwrap()).collect());
+    lines("seasons.jsonl", vec![serde_json::to_string(&l.season).unwrap()]);
+    lines("auctions.jsonl", vec![serde_json::to_string(&l.auction).unwrap()]);
+    std::fs::write(dir.join("snapshots").join(format!("world-{:012}.snap", l.tick)), &l.snapshot).unwrap();
+    let t = &l.terrain;
+    std::fs::write(dir.join("terrain").join(format!("{}-{:016x}.terrain", t.world_id, t.hash)), &t.bytes).unwrap();
+}
+
+/// `serde_json::to_vec` behind a trait object, for the helper above.
+mod erased {
+    pub trait Json {
+        fn to_json(&self) -> Vec<u8>;
+    }
+    impl<T: serde::Serialize> Json for T {
+        fn to_json(&self) -> Vec<u8> {
+            serde_json::to_vec_pretty(self).unwrap()
+        }
+    }
+}
+
+/// Write `l` into a schema migrated only up to 0006 (auctions, before
+/// worlds), in the columns that schema had.
+#[cfg(feature = "postgres")]
+async fn write_legacy_rows(url: &str, l: &Legacy) {
+    use evo_server::store::PgStore;
+    let pool = sqlx::PgPool::connect(url).await.unwrap();
+    PgStore::migrate_to(&pool, 6).await.unwrap();
+    let q = |sql: &'static str| sqlx::query(sql);
+    let a = &l.account;
+    q("INSERT INTO accounts (name, player, password_hash, created_unix) VALUES ($1, $2, $3, $4)")
+        .bind(&a.name)
+        .bind(i64::from(a.player))
+        .bind(&a.password_hash)
+        .bind(a.created_unix as i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let names = |k: &[AlertKind]| k.iter().map(|k| k.name().to_string()).collect::<Vec<_>>();
+    q("INSERT INTO alert_prefs (player, hidden, toast) VALUES ($1, $2, $3)")
+        .bind(i64::from(l.prefs.player))
+        .bind(names(&l.prefs.prefs.hidden))
+        .bind(names(&l.prefs.prefs.toast))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let d = &l.design;
+    q("INSERT INTO designs (player, design, founded_day, founded_unix) VALUES ($1, $2::jsonb, $3, $4)")
+        .bind(i64::from(d.player))
+        .bind(serde_json::to_string(&d.design).unwrap())
+        .bind(d.founded_day as i64)
+        .bind(d.founded_unix as i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for r in &l.daily {
+        q("INSERT INTO daily_history (world_id, day, year, season, breeding_adults, legacy, lineages) \
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)")
+        .bind(&r.world_id)
+        .bind(r.day as i64)
+        .bind(r.year as i64)
+        .bind(&r.season)
+        .bind(r.breeding_adults as i64)
+        .bind(serde_json::to_string(&r.legacy).unwrap())
+        .bind(serde_json::to_string(&r.lineages).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let t = &l.trade;
+    q("INSERT INTO trades (offer, from_player, to_player, mine, partner, price, status, conceived, day, listing, \
+       settlement) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
+    .bind(t.offer as i64)
+    .bind(i64::from(t.from_player))
+    .bind(i64::from(t.to_player))
+    .bind(t.mine as i64)
+    .bind(t.partner as i64)
+    .bind(t.price.map(|p| p as i64))
+    .bind(&t.status)
+    .bind(t.conceived)
+    .bind(t.day as i64)
+    .bind(t.listing.map(|p| p as i64))
+    .bind(&t.settlement)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for b in &l.balances {
+        q("INSERT INTO balances (player, balance, updated_day) VALUES ($1, $2, $3)")
+            .bind(i64::from(b.player))
+            .bind(b.balance as i64)
+            .bind(b.day as i64)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    for r in &l.ledger {
+        let e = &r.entry;
+        q("INSERT INTO ledger (world_id, seq, player, tick, day, delta, balance, kind, text, offer, listing) \
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
+        .bind(&r.world_id)
+        .bind(e.seq as i64)
+        .bind(i64::from(e.player))
+        .bind(e.tick as i64)
+        .bind(e.day as i64)
+        .bind(e.delta)
+        .bind(e.balance as i64)
+        .bind(e.kind.name())
+        .bind(&e.text)
+        .bind(e.offer.map(|v| v as i64))
+        .bind(e.listing.map(|v| v as i64))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let header = evo_server::snapshot::header(&l.snapshot).unwrap();
+    q("INSERT INTO snapshots (tick, day, size_bytes, format_version, terrain_hash, data) VALUES ($1, $2, $3, $4, $5, $6)")
+        .bind(l.tick as i64)
+        .bind(l.day as i64)
+        .bind(l.snapshot.len() as i64)
+        .bind(header.version as i32)
+        .bind(format!("{:016x}", l.terrain.hash))
+        .bind(&l.snapshot)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let a = &l.auction;
+    q("INSERT INTO auctions (world_id, listing, seller, organism, reserve, deadline_tick, bids, high_bid, winner, \
+       winner_organism, outcome, offer, day) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
+    .bind(&a.world_id)
+    .bind(a.listing as i64)
+    .bind(i64::from(a.seller))
+    .bind(a.organism as i64)
+    .bind(a.reserve as i64)
+    .bind(a.deadline_tick as i64)
+    .bind(a.bids as i32)
+    .bind(a.high_bid.map(|v| v as i64))
+    .bind(a.winner.map(i64::from))
+    .bind(a.winner_organism.map(|v| v as i64))
+    .bind(&a.outcome)
+    .bind(a.offer.map(|v| v as i64))
+    .bind(a.day as i64)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let h = &l.season.head;
+    q("INSERT INTO seasons (world_id, season, first_day, last_day, ended_unix, head, standings) \
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)")
+    .bind(&h.world_id)
+    .bind(i64::from(h.season))
+    .bind(h.first_day as i64)
+    .bind(h.last_day as i64)
+    .bind(h.ended_unix as i64)
+    .bind(serde_json::to_string(h).unwrap())
+    .bind(serde_json::to_string(&l.season.standings).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    for st in &l.season.standings {
+        for r in &st.rows {
+            q("INSERT INTO season_placements (world_id, season, player, category, rank, value, ranked) \
+               VALUES ($1, $2, $3, $4, $5, $6, $7)")
+            .bind(&h.world_id)
+            .bind(i64::from(h.season))
+            .bind(i64::from(r.player))
+            .bind(st.category.name())
+            .bind(i64::from(r.rank))
+            .bind(r.value)
+            .bind(st.rows.len() as i64)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    }
+    q("INSERT INTO terrains (world_id, hash, size_bytes, data) VALUES ($1, $2, $3, $4)")
+        .bind(&l.terrain.world_id)
+        .bind(format!("{:016x}", l.terrain.hash))
+        .bind(l.terrain.bytes.len() as i64)
+        .bind(&l.terrain.bytes)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+/// Single-world data in a store's old form: after opening it (the file
+/// layout moves, the PostgreSQL migration runs) every record is the default
+/// world's, none is another world's, and a two-world server continues the
+/// saved world as `main` beside a new `isle`.
+async fn single_world_data_migrates_to_the_default_world(backend: Backend) {
+    let l = legacy().await;
+    match &backend {
+        Backend::File(dir) => {
+            std::fs::create_dir_all(dir).unwrap();
+            write_legacy_files(dir, &l);
+        }
+        #[cfg(feature = "postgres")]
+        Backend::Pg { url, .. } => write_legacy_rows(url, &l).await,
+    }
+    let all = backend.open_all().await;
+    #[allow(irrefutable_let_patterns)]
+    if let Backend::File(dir) = &backend {
+        for name in evo_server::store::FILE_STORE_WORLD_FILES {
+            assert!(!dir.join(name).exists(), "{name} is still at the top");
+            assert!(dir.join("worlds/main").join(name).exists(), "{name} was not moved");
+        }
+        assert!(dir.join("accounts.json").exists() && dir.join("alert_prefs.json").exists());
+    }
+    // Global records as they were.
+    assert_eq!(all.load_accounts().await.unwrap(), std::slice::from_ref(&l.account));
+    assert_eq!(all.load_alert_prefs(l.prefs.player).await.unwrap(), Some(l.prefs.clone()));
+    // Everything else is the default world's...
+    let main = WorldStore::new(all.clone(), DEFAULT_WORLD);
+    assert_eq!(main.load_designs().await.unwrap(), std::slice::from_ref(&l.design));
+    assert_eq!(main.recent_daily(1000).await.unwrap(), l.daily);
+    assert_eq!(main.load_trades().await.unwrap(), std::slice::from_ref(&l.trade));
+    let mut balances = main.load_balances().await.unwrap();
+    balances.sort_by_key(|b| b.player);
+    assert_eq!(balances, l.balances);
+    assert_eq!(main.recent_ledger(None, 1000).await.unwrap(), l.ledger);
+    assert_eq!(main.recent_auctions(10).await.unwrap(), std::slice::from_ref(&l.auction));
+    let h = &l.season.head;
+    assert_eq!(main.load_season(&h.world_id, h.season).await.unwrap().as_ref(), Some(&l.season));
+    assert_eq!(main.list_seasons(0, 10).await.unwrap(), (vec![h.clone()], 1));
+    let ann_seasons = main.player_seasons(1, 10).await.unwrap();
+    assert_eq!(ann_seasons.len(), 1);
+    assert!(!ann_seasons[0].placements.is_empty());
+    assert_eq!(main.snapshot_ticks().await.unwrap(), [l.tick]);
+    assert_eq!(main.load_snapshot(l.tick).await.unwrap(), l.snapshot);
+    let t = &l.terrain;
+    assert_eq!(main.load_terrain(&t.world_id, t.hash).await.unwrap().as_deref(), Some(&t.bytes[..]));
+    // ...and nothing another world's.
+    let isle = WorldStore::new(all.clone(), "isle");
+    assert!(isle.load_designs().await.unwrap().is_empty() && isle.recent_daily(10).await.unwrap().is_empty());
+    assert!(isle.load_trades().await.unwrap().is_empty() && isle.load_balances().await.unwrap().is_empty());
+    assert!(isle.recent_ledger(None, 10).await.unwrap().is_empty() && isle.snapshot_ticks().await.unwrap().is_empty());
+    assert_eq!(isle.list_seasons(0, 10).await.unwrap().1, 0);
+    assert!(isle.recent_auctions(10).await.unwrap().is_empty());
+    assert!(isle.load_season(&h.world_id, h.season).await.unwrap().is_none());
+    assert!(isle.player_seasons(1, 10).await.unwrap().is_empty());
+    // Writes after the migration land in the right world.
+    main.put_snapshot(l.tick + 1, l.day, b"later").await.unwrap();
+    assert_eq!(main.snapshot_ticks().await.unwrap(), [l.tick + 1, l.tick]);
+    main.put_snapshot(l.tick + 1, l.day, &l.snapshot).await.unwrap();
+    drop((all, main, isle));
+    // Opening again changes nothing.
+    assert_eq!(backend.open().await.recent_ledger(None, 1000).await.unwrap(), l.ledger);
+
+    // A server with two worlds: `main` continues the saved world with Ann's
+    // lineage; `isle` is new.
+    let cfg = backend.config(
+        ServerConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            world: legacy_settings(),
+            worlds: vec![
+                evo_server::worlds::WorldSpec::new(DEFAULT_WORLD),
+                evo_server::worlds::WorldSpec { seed: Some(2), ..evo_server::worlds::WorldSpec::new("isle") },
+            ],
+            ..Default::default()
+        }
+        .manual(),
+    );
+    let srv = start(cfg).await.unwrap();
+    let client = reqwest_like::Client::new(srv.addr);
+    // The newest save (stored under tick + 1 above) holds the tick-`l.tick` world.
+    assert_eq!(client.get_json("/api/world").await["clock"]["tick"], l.tick);
+    assert_eq!(client.get_json("/api/world?world=isle").await["clock"]["tick"], 0);
+    let v = client.post_json("/api/login", r#"{"name":"ann","password":"a long password"}"#, None).await;
+    let token = v["token"].as_str().expect("ann logs in").to_string();
+    let (ws, _lineage) = connect(srv.addr, &token).await;
+    drop(ws);
+    let saved = evo_server::snapshot::decode_game(&l.snapshot).unwrap();
+    assert_eq!(saved.world_id(), l.terrain.world_id);
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{}/ws?token={token}&world=isle", srv.addr)).await.unwrap();
+    while let Some(Ok(Message::Text(t))) = ws.next().await {
+        let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+        if v["type"] == "welcome" {
+            assert!(v["lineage"].is_null(), "ann has no lineage on the isle: {v}");
+            break;
+        }
+    }
+    drop(ws);
+    srv.shutdown().await;
+    backend.cleanup().await;
+}
+
+on_every_store!(
+    single_world_data_migrates_to_the_default_world,
+    file_store_migrates_single_world_data,
+    pg_store_migrates_single_world_data
+);
+
+/// The memory store has no old form to migrate; what carries over is a
+/// single-world server's data into a server with several worlds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn memory_store_carries_single_world_data_into_several_worlds() {
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    let base = ServerConfig {
+        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+        store: Some(evo_server::SharedStore(store.clone())),
+        world: legacy_settings(),
+        ..Default::default()
+    }
+    .manual();
+    let tick = {
+        let srv = start(base.clone()).await.unwrap();
+        let client = reqwest_like::Client::new(srv.addr);
+        let v = client.post_json("/api/register", r#"{"name":"ann","password":"a long password"}"#, None).await;
+        let token = v["token"].as_str().unwrap().to_string();
+        let v = client.post_json("/api/lineage", &serde_json::to_string(&spec()).unwrap(), Some(&token)).await;
+        assert!(v["lineage"].is_u64(), "{v}");
+        let tick = srv.step(60).await;
+        srv.shutdown().await;
+        tick
+    };
+    let main = WorldStore::new(store.clone(), DEFAULT_WORLD);
+    assert_eq!(main.load_designs().await.unwrap().len(), 1);
+    assert!(!main.recent_ledger(None, 10).await.unwrap().is_empty());
+    let cfg = ServerConfig {
+        worlds: vec![evo_server::worlds::WorldSpec::new(DEFAULT_WORLD), evo_server::worlds::WorldSpec::new("isle")],
+        ..base
+    };
+    let srv = start(cfg).await.unwrap();
+    let client = reqwest_like::Client::new(srv.addr);
+    assert!(client.get_json("/api/world").await["clock"]["tick"].as_u64().unwrap() >= tick);
+    assert_eq!(client.get_json("/api/world?world=isle").await["clock"]["tick"], 0);
+    let board = client.get_json("/api/leaderboard?world=main").await;
+    assert!(board["rows"].as_array().unwrap().iter().any(|r| r["name"] == "ann"), "{board}");
+    srv.shutdown().await;
+    assert!(WorldStore::new(store, "isle").load_designs().await.unwrap().is_empty());
+}
+
+/// A data directory with per-world files both at the top and in
+/// `worlds/main/` (an older server used it after the move) is refused
+/// rather than merged.
+#[tokio::test]
+async fn file_store_refuses_a_half_migrated_directory() {
+    let dir = data_dir("half-migrated");
+    std::fs::create_dir_all(dir.join("worlds/main")).unwrap();
+    std::fs::write(dir.join("designs.json"), "[]").unwrap();
+    std::fs::write(dir.join("worlds/main/designs.json"), "[]").unwrap();
+    let e = FileStore::open(&dir).await.err().expect("refused").to_string();
+    assert!(e.contains("designs.json") && e.contains("merge"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A tiny JSON-over-HTTP helper on hyper.
 mod reqwest_like {
     use std::net::SocketAddr;
@@ -908,6 +1477,10 @@ async fn restart_around_a_season_rollover(backend: Backend) {
         assert_eq!((cur["season"].as_u64(), cur["days_left"].as_u64()), (Some(1), Some(2)), "{cur}");
         assert_eq!(srv.step(2 * tpd as u32).await, 2 * tpd);
         assert_eq!(client.get_json("/api/seasons").await["total"], 0);
+        // Let the daily saves of ticks tpd and 2 * tpd reach the store: the
+        // saver replaces a capture still waiting with a newer one, so on a
+        // slow disk the save at 2 * tpd could give way to the shutdown's.
+        eventually(&client, "/api/metrics", |v| v["saves"].as_u64() >= Some(2)).await;
         assert_eq!(srv.step(4).await, 2 * tpd + 4);
         let v = eventually(&client, "/api/seasons", |v| v["total"] == 1).await;
         assert_eq!(v["seasons"][0]["season"], 1);
@@ -934,7 +1507,7 @@ async fn restart_around_a_season_rollover(backend: Backend) {
         assert_eq!(v["season"], 1, "{v}");
         assert_eq!(v["world_id"], world.as_str());
         assert_eq!(v["standings"][0]["rows"][0]["name"], "ann");
-        let v = client.get_json(&format!("/api/seasons/1?world={world}")).await;
+        let v = client.get_json(&format!("/api/seasons/1?map={world}")).await;
         assert_eq!(v["days"], 2, "{v}");
         assert_eq!(client.get_json("/api/seasons/2").await["code"], "no_season");
         assert_eq!(client.get_json("/api/seasons/x").await["code"], "bad_season");

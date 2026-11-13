@@ -76,6 +76,8 @@ pub struct Metrics {
     /// them (`crate::push`).
     pub skipped_states: u64,
     pub conns: usize,
+    /// Distinct players connected.
+    pub players: usize,
     pub saves: u64,
     pub save_capture_ms: f32,
     pub save_encode_ms: f32,
@@ -119,9 +121,16 @@ impl NetStats {
 /// `GET /api/metrics`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MetricsView {
+    /// The world these numbers are of (`crate::worlds`); the process's CPU
+    /// and memory are shared by every world.
+    #[serde(default)]
+    pub world: String,
     pub tick: u64,
     pub ticks: u64,
     pub conns: usize,
+    /// Distinct players connected to the world.
+    #[serde(default)]
+    pub players_online: usize,
     pub tick_ms: Timing,
     pub states_ms: Timing,
     pub substep_ms: Timing,
@@ -159,14 +168,16 @@ pub struct MetricsView {
 }
 
 impl MetricsView {
-    pub fn gather(m: &Mutex<Metrics>, net: &NetStats, tick: u64) -> Self {
+    pub fn gather(world: &str, m: &Mutex<Metrics>, net: &NetStats, tick: u64) -> Self {
         let m = m.lock().unwrap();
         let (cpu_seconds, rss_bytes) = process_usage();
         let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
         MetricsView {
+            world: world.to_string(),
             tick,
             ticks: m.ticks,
             conns: m.conns,
+            players_online: m.players,
             tick_ms: m.tick.summary(),
             states_ms: m.states.summary(),
             substep_ms: m.substep.summary(),

@@ -264,6 +264,14 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .species-tree li.extinct { opacity: 0.55; }
 .feed-kind.kind-achievement, .feed-kind.kind-world { color: var(--own); border-color: var(--own); }
 
+/* ------------------------------------------------ login: world picker */
+.world-box { margin-top: 0.6em; }
+.world-box[hidden] { display: none; }
+.world-box select { width: 100%; }
+.world-info { font-size: 0.85em; margin: 0.3em 0 0; }
+.world-pill { white-space: nowrap; }
+.world-pill[hidden] { display: none; }
+
 /* ------------------------------------------------ login: server address */
 .server-box { margin-top: 0.8em; color: var(--muted); font-size: 0.9em; }
 .server-box summary { cursor: pointer; }

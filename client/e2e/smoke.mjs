@@ -134,7 +134,7 @@ async function main() {
     step(`live cost ${after.trim()}; over-budget design refused client-side`);
     await page.screenshot({ path: path.join(shots, 'design-editor.png') });
     const [founded] = await Promise.all([
-      page.waitForResponse((r) => r.url().endsWith('/api/lineage')),
+      page.waitForResponse((r) => new URL(r.url()).pathname === '/api/lineage'),
       page.click('#design-submit'),
     ]);
     const body = await founded.json();

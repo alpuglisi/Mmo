@@ -2,7 +2,7 @@
 // One GameSocket lives from login to logout; screens come and go.
 
 import './style.css';
-import { api, setApiBase, wsUrl } from './api';
+import { api, setApiBase, setWorld, wsUrl } from './api';
 import { initialOrigin } from './serverOrigin';
 import { GameModel } from './model';
 import { loadSession, saveSession, type Session } from './session';
@@ -66,6 +66,7 @@ function sessionExpired(): void {
 function start(session: Session): void {
   stop();
   saveSession(session);
+  setWorld(session.world ?? '');
   const model = new GameModel();
   model.player = session.player;
   model.name = session.name;
@@ -118,7 +119,7 @@ async function showGame(r: Running): Promise<void> {
   mount(holder);
   const screen = await gameScreen({
     model: r.model, send: (m) => r.socket.send(m), onLogout: logout, onUnauthorized: sessionExpired,
-    token: r.session.token, mountInto: (el) => root.replaceChildren(el),
+    token: r.session.token, mountInto: (el) => root.replaceChildren(el), world: r.session.world ?? '',
   });
   if (running !== r) return screen.destroy();
   r.screen = screen;
