@@ -83,11 +83,11 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     // Eight bytes at a time: fast enough for tens of MB (not a standard
     // FNV, but stable, which is all a checksum needs).
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut chunks = bytes.chunks_exact(8);
-    for c in &mut chunks {
-        h = (h ^ u64::from_le_bytes(c.try_into().unwrap())).wrapping_mul(0x0000_0100_0000_01b3);
+    let (chunks, rest) = bytes.as_chunks::<8>();
+    for c in chunks {
+        h = (h ^ u64::from_le_bytes(*c)).wrapping_mul(0x0000_0100_0000_01b3);
     }
-    for &b in chunks.remainder() {
+    for &b in rest {
         h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
