@@ -59,7 +59,7 @@ function logout(): void {
 function sessionExpired(): void {
   stop();
   saveSession(null);
-  showLogin('Your session has ended (the server may have restarted). Please log in again.');
+  showLogin('Your session has ended (it expired, or the server restarted). Please log in again.');
 }
 
 function start(session: Session): void {
@@ -89,6 +89,9 @@ function start(session: Session): void {
   running = r;
   window.evo = { model, socket, screen: () => r.screen };
   mount(h('div', { class: 'screen center' }, h('div', { class: 'card' }, h('p', { class: 'muted', id: 'connecting' }, 'Connecting to the world…'))));
+  model.on('session_ended', () => {
+    if (running === r) sessionExpired();
+  });
   model.on('welcome', () => {
     if (r.routed || running !== r) return;
     r.routed = true;
@@ -112,7 +115,10 @@ async function showGame(r: Running): Promise<void> {
   if (running !== r) return;
   const holder = h('div', { class: 'screen center' });
   mount(holder);
-  const screen = await gameScreen({ model: r.model, send: (m) => r.socket.send(m), onLogout: logout, mountInto: (el) => root.replaceChildren(el) });
+  const screen = await gameScreen({
+    model: r.model, send: (m) => r.socket.send(m), onLogout: logout, onUnauthorized: sessionExpired,
+    token: r.session.token, mountInto: (el) => root.replaceChildren(el),
+  });
   if (running !== r) return screen.destroy();
   r.screen = screen;
 }

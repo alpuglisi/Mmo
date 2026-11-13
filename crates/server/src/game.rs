@@ -6,17 +6,28 @@
 //! Every method that changes the world is called by the world thread
 //! between ticks, in the order requests arrived.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use evo_sim::design::DesignError;
 use evo_sim::math::Vec2;
 use evo_sim::presets::{self, REFERENCE_SIZE};
+use evo_sim::organism::{DeathCause, Sex};
 use evo_sim::terrain::Season;
 use evo_sim::world::commands::{CommandError, DirectedMating, MEETING_DISTANCE};
-use evo_sim::{FounderDesign, PlayerId, World, WorldConfig, WILD};
+use evo_sim::{FounderDesign, Gene, PlayerId, World, WorldConfig, WILD};
 
+use crate::design::gene_key;
 use crate::protocol::*;
 use crate::store::{DailyRecord, LegacyEntry, LineageEntry, TradeRecord};
+
+/// Daily records kept in memory for the genetics dashboard.
+pub const HISTORY_DAYS: usize = 365;
+/// Alerts kept per player.
+pub const MAX_ALERTS: usize = 50;
+/// Thirst or hunger at which a possessed organism raises a `need` alert.
+pub const NEED_ALERT: f32 = 75.0;
+const POPULATION_MILESTONES: [usize; 7] = [25, 50, 100, 250, 500, 1000, 1500];
+const SHARE_MILESTONES: [f64; 5] = [0.01, 0.05, 0.1, 0.25, 0.5];
 
 pub type ConnId = u64;
 
@@ -121,6 +132,22 @@ struct Conn {
     view: Option<ViewWindow>,
 }
 
+/// Per-player progress for milestone alerts.
+#[derive(Default)]
+struct Progress {
+    population: usize,
+    generation: u32,
+    share: f64,
+    extinct: bool,
+}
+
+/// Why an organism is watched for its death.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Watch {
+    Founder,
+    Possessed,
+}
+
 pub struct Game {
     pub world: World,
     cfg: GameConfig,
@@ -134,6 +161,17 @@ pub struct Game {
     last_legacy_day: Option<u64>,
     last_season: Season,
     persist: Vec<PersistEvent>,
+    /// The daily records since the server started, oldest first.
+    history: VecDeque<DailyRecord>,
+    /// Cumulative birth and death counters at the last day boundary.
+    prev_born: BTreeMap<u32, u64>,
+    prev_deaths: BTreeMap<(u32, DeathCause), u64>,
+    alerts: BTreeMap<PlayerId, VecDeque<AlertView>>,
+    /// Organisms whose death is announced to their owner.
+    watched: BTreeMap<OrgId, (PlayerId, Watch)>,
+    progress: BTreeMap<PlayerId, Progress>,
+    /// Last day a `need` alert was raised per organism.
+    need_alerted: BTreeMap<OrgId, u64>,
 }
 
 fn finite(v: &[f32]) -> Result<(), ErrorInfo> {
@@ -160,6 +198,13 @@ impl Game {
             last_legacy_day,
             last_season,
             persist: Vec::new(),
+            history: VecDeque::new(),
+            prev_born: BTreeMap::new(),
+            prev_deaths: BTreeMap::new(),
+            alerts: BTreeMap::new(),
+            watched: BTreeMap::new(),
+            progress: BTreeMap::new(),
+            need_alerted: BTreeMap::new(),
         }
     }
 
@@ -191,6 +236,9 @@ impl Game {
         let lineage = self.world.lineages.len() as u32;
         let founders = self.world.found_lineage(player, design).map_err(FoundError::Design)?;
         self.lineage_of.insert(player, lineage);
+        for &id in &founders {
+            self.watched.insert(id, (player, Watch::Founder));
+        }
         Ok(FoundOk { lineage, founders, cost: design.point_cost() })
     }
 
@@ -461,17 +509,204 @@ impl Game {
                 self.close(id, OfferStatus::Expired, None, None, &mut out);
             }
         }
+        self.watch_possessed(&mut out);
+        self.announce_deaths(&mut out);
         let legacy_day = self.world.latest_legacy().map(|l| l.day);
         if legacy_day != self.last_legacy_day {
             self.last_legacy_day = legacy_day;
-            self.persist.push(PersistEvent::Daily(self.daily_record()));
+            let record = self.daily_record();
+            self.daily_alerts(&record, &mut out);
+            self.history.push_back(record.clone());
+            if self.history.len() > HISTORY_DAYS {
+                self.history.pop_front();
+            }
+            self.persist.push(PersistEvent::Daily(record));
         }
         out
     }
 
-    fn daily_record(&self) -> DailyRecord {
+    fn alert(&mut self, player: PlayerId, kind: AlertKind, text: String, organism: Option<OrgId>, out: &mut Outbox) {
+        let alert = AlertView { tick: self.world.tick(), day: self.world.day(), kind, text, organism };
+        let list = self.alerts.entry(player).or_default();
+        list.push_back(alert.clone());
+        if list.len() > MAX_ALERTS {
+            list.pop_front();
+        }
+        out.push((Target::Player(player), ServerMsg::Alert { alert }));
+    }
+
+    /// Recent alerts of a player, oldest first.
+    pub fn alerts(&self, player: PlayerId) -> Vec<AlertView> {
+        self.alerts.get(&player).map(|l| l.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Watch possessed organisms for their death, and look after the needs
+    /// of one that stands at its order's target.
+    ///
+    /// In the sim a possessed organism keeps its order after arriving: it
+    /// stays `Ordered` on the spot and only drinks or eats if water or food
+    /// happens to be there, so an organism left at its destination dies of
+    /// thirst. Until the sim lets urgent needs win, the server clears an
+    /// order once the organism has arrived and is parched or starving; it
+    /// stays possessed and forages on its own until the player orders it
+    /// somewhere again.
+    fn watch_possessed(&mut self, out: &mut Outbox) {
+        let day = self.world.day();
+        let mut needy = Vec::new();
+        for o in self.world.organisms.iter_mut().filter(|o| o.alive && o.owner != WILD) {
+            let Some(p) = o.possessed_by else { continue };
+            self.watched.entry(o.id).or_insert((p, Watch::Possessed));
+            let need = o.needs.thirst.max(o.needs.hunger);
+            if need < NEED_ALERT {
+                continue;
+            }
+            let walking = o.order.is_some();
+            let arrived = o.order.is_some_and(|t| t.dist(o.pos) < 0.75);
+            if arrived {
+                o.order = None;
+            }
+            if self.need_alerted.get(&o.id) != Some(&day) {
+                needy.push((p, o.id, o.needs.thirst, o.needs.hunger, walking, arrived));
+            }
+        }
+        for (p, id, thirst, hunger, walking, arrived) in needy {
+            self.need_alerted.insert(id, day);
+            let what = if thirst >= hunger { format!("parched (thirst {thirst:.0})") } else { format!("starving (hunger {hunger:.0})") };
+            let tail = if arrived {
+                "it reached its destination, so it forages on its own until you give it a new order"
+            } else if walking {
+                "on its way it only drinks and eats what it passes; walk it to water or food, or release it"
+            } else {
+                "it is foraging on its own until you give it an order"
+            };
+            self.alert(p, AlertKind::Need, format!("Possessed #{id} is {what}: {tail}."), Some(id), out);
+        }
+        // Forget released organisms that aren't founders (the dead are
+        // announced next).
+        let world = &self.world;
+        self.watched.retain(|id, (_, w)| *w == Watch::Founder || world.organism(*id).is_none_or(|o| o.possessed_by.is_some()));
+    }
+
+    fn announce_deaths(&mut self, out: &mut Outbox) {
+        let dead: Vec<(OrgId, PlayerId, Watch)> =
+            self.watched.iter().filter(|(id, _)| self.world.organism(**id).is_none()).map(|(&id, &(p, w))| (id, p, w)).collect();
+        for (id, player, watch) in dead {
+            self.watched.remove(&id);
+            self.need_alerted.remove(&id);
+            let cause = self.world.organisms.iter().find(|o| o.id == id).and_then(|o| o.death);
+            let how = match cause {
+                Some(DeathCause::Predation) => "was eaten".to_string(),
+                Some(DeathCause::OldAge) => "died of old age".to_string(),
+                Some(DeathCause::Starvation) => "starved".to_string(),
+                Some(DeathCause::Drowning) => "drowned".to_string(),
+                Some(c) => format!("died ({})", c.label()),
+                None => "died".to_string(),
+            };
+            let who = match watch {
+                Watch::Founder => "Founder",
+                Watch::Possessed => "Possessed",
+            };
+            self.alert(player, AlertKind::Death, format!("{who} #{id} {how}."), Some(id), out);
+        }
+    }
+
+    /// Per player: the day's births and deaths, and milestones.
+    fn daily_alerts(&mut self, record: &DailyRecord, out: &mut Outbox) {
+        let players: Vec<(PlayerId, u32)> = self.lineage_of.iter().map(|(&p, &l)| (p, l)).collect();
+        let mut max_gen: BTreeMap<u32, u32> = BTreeMap::new();
+        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
+            let g = max_gen.entry(o.lineage).or_default();
+            *g = (*g).max(o.generation);
+        }
+        for (p, lineage) in players {
+            let Some(entry) = record.lineages.iter().find(|e| e.lineage == lineage) else { continue };
+            let died: u64 = entry.deaths.values().sum();
+            if entry.born > 0 || died > 0 {
+                let mut causes: Vec<(&String, &u64)> = entry.deaths.iter().collect();
+                causes.sort_by(|a, b| b.1.cmp(a.1));
+                let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{n} {}", c.replace('_', " "))).collect();
+                let text = format!(
+                    "Day {}: {} born, {} died{} · {} alive",
+                    record.day + 1,
+                    entry.born,
+                    died,
+                    if causes.is_empty() { String::new() } else { format!(" ({})", causes.join(", ")) },
+                    entry.alive
+                );
+                self.alert(p, AlertKind::DailySummary, text, None, out);
+            }
+            let alive = entry.alive;
+            let share = record.legacy.iter().find(|e| e.player == p).map_or(0.0, |e| e.share);
+            let generation = max_gen.get(&lineage).copied().unwrap_or(0);
+            let prog = self.progress.entry(p).or_default();
+            let mut texts = Vec::new();
+            if let Some(&m) = POPULATION_MILESTONES.iter().rev().find(|&&m| alive >= m && prog.population < m) {
+                texts.push((AlertKind::Milestone, format!("Your lineage reached {m} living organisms.")));
+            }
+            prog.population = prog.population.max(alive);
+            if generation > prog.generation {
+                let text = if prog.generation == 0 && generation == 1 {
+                    "The first offspring of your lineage were born (generation 1).".to_string()
+                } else {
+                    format!("Generation {generation} reached.")
+                };
+                texts.push((AlertKind::Birth, text));
+                prog.generation = generation;
+            }
+            if let Some(&m) = SHARE_MILESTONES.iter().rev().find(|&&m| share >= m && prog.share < m) {
+                texts.push((AlertKind::Milestone, format!("Your legacy share passed {:.0}%.", m * 100.0)));
+            }
+            prog.share = prog.share.max(share);
+            if alive == 0 && !prog.extinct {
+                prog.extinct = true;
+                texts.push((AlertKind::Milestone, "Your lineage has no living organisms left.".to_string()));
+            }
+            for (kind, text) in texts {
+                self.alert(p, kind, text, None, out);
+            }
+        }
+    }
+
+    /// Births and deaths per lineage since the last day boundary.
+    fn vitals_since_boundary(&self) -> (BTreeMap<u32, u64>, BTreeMap<u32, BTreeMap<String, u64>>) {
+        let c = &self.world.counters;
+        let born = c.born.iter().map(|(&l, &n)| (l, n.saturating_sub(self.prev_born.get(&l).copied().unwrap_or(0)))).collect();
+        let mut deaths: BTreeMap<u32, BTreeMap<String, u64>> = BTreeMap::new();
+        for (&(l, cause), &n) in &c.deaths_by_lineage {
+            let d = n.saturating_sub(self.prev_deaths.get(&(l, cause)).copied().unwrap_or(0));
+            if d > 0 {
+                *deaths.entry(l).or_default().entry(death_name(cause).to_string()).or_default() += d;
+            }
+        }
+        (born, deaths)
+    }
+
+    /// Sums of every gene's expressed value per player lineage, with counts.
+    fn gene_sums(&self) -> BTreeMap<u32, (usize, [f64; Gene::COUNT])> {
+        let mut sums: BTreeMap<u32, (usize, [f64; Gene::COUNT])> = BTreeMap::new();
+        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
+            let e = sums.entry(o.lineage).or_insert((0, [0.0; Gene::COUNT]));
+            e.0 += 1;
+            for (k, &g) in Gene::ALL.iter().enumerate() {
+                e.1[k] += o.pheno[g] as f64;
+            }
+        }
+        sums
+    }
+
+    fn daily_record(&mut self) -> DailyRecord {
         let board = self.leaderboard();
         let counts = self.world.lineage_counts();
+        let (born, mut deaths) = self.vitals_since_boundary();
+        self.prev_born = self.world.counters.born.clone();
+        self.prev_deaths = self.world.counters.deaths_by_lineage.clone();
+        let sums = self.gene_sums();
+        let gene_means = |k: u32| -> BTreeMap<String, f32> {
+            match sums.get(&k) {
+                Some((n, s)) if *n > 0 => Gene::ALL.iter().zip(s).map(|(&g, v)| (gene_key(g), (v / *n as f64) as f32)).collect(),
+                _ => BTreeMap::new(),
+            }
+        };
         DailyRecord {
             day: board.day.unwrap_or(self.world.day()),
             year: self.world.year(),
@@ -488,8 +723,105 @@ impl Game {
                 .iter()
                 .zip(counts)
                 .enumerate()
-                .map(|(k, (l, c))| LineageEntry { lineage: k as u32, name: l.name.clone(), owner: l.owner, alive: c.alive, adults: c.adults })
+                .map(|(k, (l, c))| {
+                    let k = k as u32;
+                    LineageEntry {
+                        lineage: k,
+                        name: l.name.clone(),
+                        owner: l.owner,
+                        alive: c.alive,
+                        adults: c.adults,
+                        born: born.get(&k).copied().unwrap_or(0),
+                        deaths: deaths.remove(&k).unwrap_or_default(),
+                        genes: if l.owner == WILD { BTreeMap::new() } else { gene_means(k) },
+                    }
+                })
                 .collect(),
+        }
+    }
+
+    /// The daily records since the server started, oldest first.
+    pub fn history(&self) -> impl Iterator<Item = &DailyRecord> {
+        self.history.iter()
+    }
+
+    /// The genetics dashboard of a player's lineage.
+    pub fn lineage_stats(&self, player: PlayerId) -> LineageStats {
+        let lineage = self.lineage_of(player);
+        let day = self.world.day();
+        let tpd = self.world.config.ticks_per_day;
+        let members: Vec<&evo_sim::organism::Organism> = match lineage {
+            Some(l) => self.world.organisms.iter().filter(|o| o.alive && o.lineage == l).collect(),
+            None => Vec::new(),
+        };
+        let adults = members.iter().filter(|o| o.matured).count();
+        // Age bands: up to six equal bands (whole days) up to the oldest.
+        let oldest = members.iter().map(|o| o.age_days(tpd)).fold(0.0f32, f32::max);
+        let width = (oldest / 6.0).ceil().max(1.0);
+        let bands = if members.is_empty() { 0 } else { ((oldest / width) as usize + 1).min(6) };
+        let mut age_bands: Vec<AgeBand> =
+            (0..bands).map(|k| AgeBand { from_days: k as f32 * width, to_days: (k + 1) as f32 * width, female: 0, male: 0 }).collect();
+        for o in &members {
+            let k = ((o.age_days(tpd) / width) as usize).min(bands - 1);
+            match o.sex {
+                Sex::Female => age_bands[k].female += 1,
+                Sex::Male => age_bands[k].male += 1,
+            }
+        }
+        // Per recorded day: vitals, gene means, legacy share.
+        let mut vitals: Vec<DayVitals> = Vec::new();
+        let mut history_days = Vec::new();
+        let mut gene_hist: Vec<Vec<f32>> = vec![Vec::new(); Gene::COUNT];
+        let mut legacy = Vec::new();
+        for r in &self.history {
+            let alive: usize = r.lineages.iter().filter(|e| e.owner == player).map(|e| e.alive).sum();
+            if let Some(e) = r.legacy.iter().find(|e| e.player == player) {
+                legacy.push(LegacyPoint { day: r.day, share: e.share, weighted_share: e.weighted_share, alive });
+            }
+            let Some(e) = lineage.and_then(|l| r.lineages.iter().find(|e| e.lineage == l)) else { continue };
+            vitals.push(DayVitals { day: r.day, births: e.born, deaths: e.deaths.clone() });
+            if !e.genes.is_empty() {
+                history_days.push(r.day);
+                for (k, &g) in Gene::ALL.iter().enumerate() {
+                    gene_hist[k].push(e.genes.get(&gene_key(g)).copied().unwrap_or(f32::NAN));
+                }
+            }
+        }
+        if let Some(l) = lineage {
+            let (born, mut deaths) = self.vitals_since_boundary();
+            vitals.push(DayVitals { day, births: born.get(&l).copied().unwrap_or(0), deaths: deaths.remove(&l).unwrap_or_default() });
+        }
+        let keep = vitals.len().saturating_sub(30);
+        vitals.drain(..keep);
+        let n = members.len().max(1) as f64;
+        let mut genes: Vec<GeneStat> = Gene::ALL
+            .iter()
+            .enumerate()
+            .map(|(k, &g)| {
+                let mean = members.iter().map(|o| o.pheno[g] as f64).sum::<f64>() / n;
+                let var = members.iter().map(|o| (o.pheno[g] as f64 - mean).powi(2)).sum::<f64>() / n;
+                let history = std::mem::take(&mut gene_hist[k]);
+                let founding_mean = history.first().copied().filter(|v| v.is_finite()).unwrap_or(mean as f32);
+                GeneStat { gene: gene_key(g), mean: mean as f32, sd: var.sqrt() as f32, founding_mean, history }
+            })
+            .collect();
+        genes.sort_by(|a, b| (b.mean - b.founding_mean).abs().total_cmp(&(a.mean - a.founding_mean).abs()).then(a.gene.cmp(&b.gene)));
+        LineageStats {
+            player,
+            lineage,
+            name: lineage.and_then(|l| self.world.lineages.get(l as usize)).map(|l| l.name.clone()),
+            day,
+            alive: members.len(),
+            adults,
+            juveniles: members.len() - adults,
+            pregnant: members.iter().filter(|o| o.pregnancy.is_some()).count(),
+            max_generation: members.iter().map(|o| o.generation).max().unwrap_or(0),
+            age_bands,
+            vitals,
+            history_days,
+            genes,
+            legacy,
+            alerts: self.alerts(player),
         }
     }
 
@@ -826,5 +1158,99 @@ mod tests {
         let daily = g.take_persist().into_iter().filter(|e| matches!(e, PersistEvent::Daily(_))).count();
         assert!(daily >= 1);
         assert!(g.leaderboard().rows.iter().any(|r| r.player == WILD));
+    }
+
+    fn run_days(g: &mut Game, days: u32) -> Outbox {
+        let mut out = Outbox::new();
+        for _ in 0..days * g.world.config.ticks_per_day {
+            g.world.step();
+            out.extend(g.after_tick());
+        }
+        out
+    }
+
+    fn alerts_in(out: &Outbox, player: PlayerId) -> Vec<AlertView> {
+        out.iter()
+            .filter_map(|(t, m)| match m {
+                ServerMsg::Alert { alert } if *t == Target::Player(player) => Some(alert.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lineage_stats_follow_the_daily_history() {
+        let (mut g, a, _) = game();
+        let s = g.lineage_stats(1);
+        assert_eq!((s.lineage, s.alive, s.adults), (Some(0), a.len(), a.len()));
+        assert_eq!(s.age_bands.iter().map(|b| b.female + b.male).sum::<usize>(), a.len());
+        assert!(s.age_bands.len() <= 6 && s.age_bands.windows(2).all(|w| w[0].to_days == w[1].from_days));
+        assert_eq!(s.genes.len(), Gene::COUNT);
+        assert!(s.history_days.is_empty() && s.vitals.len() == 1);
+        run_days(&mut g, 3);
+        let s = g.lineage_stats(1);
+        assert_eq!(s.history_days.len(), 3);
+        assert_eq!(s.vitals.len(), 4, "three recorded days and today");
+        assert!(s.genes.iter().all(|x| x.history.len() == 3 && (0.0..=1.0).contains(&x.mean) && x.sd >= 0.0));
+        // Sorted by drift from the founding mean.
+        let drift: Vec<f32> = s.genes.iter().map(|x| (x.mean - x.founding_mean).abs()).collect();
+        assert!(drift.windows(2).all(|w| w[0] >= w[1]));
+        let body = s.genes.iter().find(|x| x.gene == "body_size").unwrap();
+        assert_eq!(body.founding_mean, body.history[0], "{body:?}");
+        assert_eq!(s.legacy.len(), 3);
+        // The history counts births and deaths like the sim's counters.
+        let born: u64 = s.vitals.iter().map(|v| v.births).sum();
+        assert_eq!(born, g.world.counters.born.get(&0).copied().unwrap_or(0));
+        let died: u64 = s.vitals.iter().flat_map(|v| v.deaths.values()).sum();
+        let sim_died: u64 = g.world.counters.deaths_by_lineage.iter().filter(|((l, _), _)| *l == 0).map(|(_, n)| n).sum();
+        assert_eq!(died, sim_died);
+        // Records carry gene means for players only; nobody else's lineage.
+        let rec = g.history().last().unwrap();
+        assert!(rec.lineages.iter().filter(|e| e.owner != WILD).all(|e| e.genes.len() == Gene::COUNT || e.alive == 0));
+        let none = g.lineage_stats(9);
+        assert_eq!((none.lineage, none.alive, none.genes.len()), (None, 0, Gene::COUNT));
+    }
+
+    #[test]
+    fn deaths_of_watched_organisms_and_milestones_raise_alerts() {
+        let (mut g, a, _) = game();
+        // A founder at the end of its strength dies on its next tick.
+        g.world.organisms.iter_mut().find(|o| o.id == a[1]).unwrap().health = -1000.0;
+        let out = run_days(&mut g, 1);
+        let alerts = alerts_in(&out, 1);
+        let death = alerts.iter().find(|x| x.kind == AlertKind::Death).expect("founder death announced");
+        assert_eq!(death.organism, Some(a[1]));
+        assert!(death.text.starts_with(&format!("Founder #{}", a[1])), "{}", death.text);
+        assert!(alerts.iter().any(|x| x.kind == AlertKind::DailySummary && x.text.contains("died")), "{alerts:?}");
+        assert!(alerts_in(&out, 2).iter().all(|x| x.organism != Some(a[1])), "only the owner hears");
+        assert_eq!(g.alerts(1).len(), alerts.len());
+        assert!(g.lineage_stats(1).alerts.iter().any(|x| x.kind == AlertKind::Death));
+    }
+
+    #[test]
+    fn a_parched_possessed_organism_at_its_target_forages_again() {
+        let (mut g, a, _) = game();
+        let id = a[0];
+        g.command(10, 1, None, ClientMsg::Possess { organism: id });
+        let pos = g.world.organism(id).unwrap().pos;
+        g.command(10, 1, None, ClientMsg::OrderMove { organism: id, x: pos.x, y: pos.y });
+        let o = g.world.organisms.iter_mut().find(|o| o.id == id).unwrap();
+        o.needs.thirst = 90.0;
+        g.world.step();
+        let out = g.after_tick();
+        let need = alerts_in(&out, 1).into_iter().find(|x| x.kind == AlertKind::Need).expect("need alert");
+        assert!(need.text.contains("parched") && need.text.contains("destination"), "{}", need.text);
+        let o = g.world.organism(id).unwrap();
+        assert!(o.order.is_none() && o.possessed_by == Some(1));
+        // Once a day per organism.
+        g.world.step();
+        assert!(alerts_in(&g.after_tick(), 1).iter().all(|x| x.kind != AlertKind::Need));
+        // It drinks on its own again.
+        for _ in 0..g.world.config.ticks_per_day {
+            g.world.step();
+            g.after_tick();
+        }
+        let o = g.world.organism(id).expect("still alive");
+        assert!(o.needs.thirst < 90.0, "thirst {}", o.needs.thirst);
     }
 }

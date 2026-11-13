@@ -2,12 +2,15 @@
 //!
 //! Passwords are hashed with argon2id (random salt, PHC string). A login
 //! returns a random 256-bit bearer token. Sessions live in memory only, so a
-//! restart logs everyone out. Each account owns one [`PlayerId`], assigned in
+//! restart logs everyone out. A session ends after [`SessionPolicy::idle`]
+//! without use (any authenticated request, or an open WebSocket, which
+//! sends commands) or [`SessionPolicy::max_age`] after login,
+//! whichever comes first. Each account owns one [`PlayerId`], assigned in
 //! registration order starting at 1 (0 is the wild ecosystem).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -56,8 +59,36 @@ pub struct Session {
     pub name: String,
 }
 
+/// How long a login lasts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionPolicy {
+    /// A session unused for this long ends.
+    pub idle: Duration,
+    /// A session ends this long after login, used or not.
+    pub max_age: Duration,
+}
+
+impl Default for SessionPolicy {
+    fn default() -> Self {
+        Self { idle: Duration::from_secs(60 * 60), max_age: Duration::from_secs(24 * 60 * 60) }
+    }
+}
+
+struct SessionEntry {
+    session: Session,
+    created: Instant,
+    last_seen: Instant,
+}
+
+impl SessionEntry {
+    fn expired(&self, policy: SessionPolicy, now: Instant) -> bool {
+        now.saturating_duration_since(self.last_seen) >= policy.idle || now.saturating_duration_since(self.created) >= policy.max_age
+    }
+}
+
 pub struct Accounts {
     store: Arc<dyn Store>,
+    policy: SessionPolicy,
     inner: Mutex<Inner>,
 }
 
@@ -65,8 +96,19 @@ struct Inner {
     by_name: HashMap<String, AccountRecord>,
     /// Names reserved by registrations still hashing or persisting.
     pending: Vec<String>,
-    sessions: HashMap<String, Session>,
+    sessions: HashMap<String, SessionEntry>,
     next_player: PlayerId,
+}
+
+impl Inner {
+    /// Start a session, dropping expired ones.
+    fn open_session(&mut self, session: Session, policy: SessionPolicy) -> String {
+        let now = Instant::now();
+        self.sessions.retain(|_, e| !e.expired(policy, now));
+        let token = new_token();
+        self.sessions.insert(token.clone(), SessionEntry { session, created: now, last_seen: now });
+        token
+    }
 }
 
 fn valid_name(name: &str) -> bool {
@@ -81,9 +123,17 @@ fn new_token() -> String {
 
 impl Accounts {
     pub fn new(store: Arc<dyn Store>, existing: Vec<AccountRecord>) -> Self {
+        Self::with_policy(store, existing, SessionPolicy::default())
+    }
+
+    pub fn with_policy(store: Arc<dyn Store>, existing: Vec<AccountRecord>, policy: SessionPolicy) -> Self {
         let next_player = existing.iter().map(|a| a.player).max().unwrap_or(0) + 1;
         let by_name = existing.into_iter().map(|a| (a.name.clone(), a)).collect();
-        Self { store, inner: Mutex::new(Inner { by_name, pending: Vec::new(), sessions: HashMap::new(), next_player }) }
+        Self { store, policy, inner: Mutex::new(Inner { by_name, pending: Vec::new(), sessions: HashMap::new(), next_player }) }
+    }
+
+    pub fn policy(&self) -> SessionPolicy {
+        self.policy
     }
 
     pub fn name_of(&self, player: PlayerId) -> Option<String> {
@@ -115,8 +165,7 @@ impl Accounts {
         let record = result?;
         g.by_name.insert(name.to_string(), record);
         let session = Session { player, name: name.to_string() };
-        let token = new_token();
-        g.sessions.insert(token.clone(), session.clone());
+        let token = g.open_session(session.clone(), self.policy);
         Ok((token, session))
     }
 
@@ -148,13 +197,42 @@ impl Accounts {
             return Err(AuthError::BadCredentials);
         }
         let session = Session { player: record.player, name: record.name };
-        let token = new_token();
-        self.inner.lock().unwrap().sessions.insert(token.clone(), session.clone());
+        let token = self.inner.lock().unwrap().open_session(session.clone(), self.policy);
         Ok((token, session))
     }
 
+    /// The live session of a token, marking it used.
     pub fn session(&self, token: &str) -> Option<Session> {
-        self.inner.lock().unwrap().sessions.get(token).cloned()
+        self.session_at(token, Instant::now())
+    }
+
+    /// As [`Accounts::session`] at a given time (tests).
+    pub fn session_at(&self, token: &str, now: Instant) -> Option<Session> {
+        self.lookup(token, now, true)
+    }
+
+    /// Whether the token's session is still live, without marking it used
+    /// (an open WebSocket checks this periodically).
+    pub fn is_live(&self, token: &str) -> bool {
+        self.lookup(token, Instant::now(), false).is_some()
+    }
+
+    fn lookup(&self, token: &str, now: Instant, touch: bool) -> Option<Session> {
+        let mut g = self.inner.lock().unwrap();
+        let e = g.sessions.get_mut(token)?;
+        if e.expired(self.policy, now) {
+            g.sessions.remove(token);
+            return None;
+        }
+        if touch {
+            e.last_seen = e.last_seen.max(now);
+        }
+        Some(e.session.clone())
+    }
+
+    /// Living sessions (expired ones not yet dropped count too).
+    pub fn session_count(&self) -> usize {
+        self.inner.lock().unwrap().sessions.len()
     }
 
     pub fn logout(&self, token: &str) {
@@ -190,5 +268,30 @@ mod tests {
         assert!(acc2.session(&t3).is_none());
         assert_eq!(acc2.login("bob", "bob's password").await.unwrap().1.player, 2);
         assert_eq!(acc2.register("carol", "carol's password").await.unwrap().1.player, 3);
+    }
+
+    #[tokio::test]
+    async fn sessions_expire_when_idle_or_too_old() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+        let policy = SessionPolicy { idle: Duration::from_secs(60), max_age: Duration::from_secs(300) };
+        let acc = Accounts::with_policy(store, vec![], policy);
+        let (t, _) = acc.register("dave", "dave's password").await.unwrap();
+        let t0 = Instant::now();
+        let s = |dt: u64| acc.session_at(&t, t0 + Duration::from_secs(dt)).is_some();
+        // Used every 50 s: stays alive past the idle timeout...
+        for k in 1..=5 {
+            assert!(s(50 * k), "at {}s", 50 * k);
+        }
+        // ...until the maximum age.
+        assert!(!s(301));
+        assert!(acc.session(&t).is_none(), "expired sessions are dropped");
+        // Idle for longer than the timeout.
+        let (t2, _) = acc.login("dave", "dave's password").await.unwrap();
+        let t1 = Instant::now();
+        assert!(acc.session_at(&t2, t1 + Duration::from_secs(30)).is_some());
+        assert!(acc.session_at(&t2, t1 + Duration::from_secs(91)).is_none());
+        // Logins drop expired sessions.
+        let (_, _) = acc.login("dave", "dave's password").await.unwrap();
+        assert_eq!(acc.session_count(), 1);
     }
 }

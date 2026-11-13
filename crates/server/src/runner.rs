@@ -6,7 +6,8 @@
 //! connection's own bounded queue. Each tick:
 //!
 //! 1. wait for the tick deadline, queueing world-changing requests (commands,
-//!    foundings) in arrival order and answering reads (connect, map snapshot)
+//!    foundings) in arrival order and answering reads (connect, map snapshot,
+//!    terrain, lineage stats)
 //!    at once, since nothing changes the world between ticks;
 //! 2. apply the queued requests in arrival order;
 //! 3. `World::step`, then `Game::after_tick` (mating agreements, offer
@@ -23,7 +24,8 @@ use evo_sim::{FounderDesign, PlayerId};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::game::{ConnId, FoundError, FoundOk, Game, Outbox, PersistEvent, Target};
-use crate::protocol::{ClientMsg, Leaderboard, ServerMsg, WorldSummary};
+use crate::protocol::{ClientMsg, Leaderboard, LineageStats, ServerMsg, WorldSummary};
+use crate::terrain::{dynamic_raw, terrain_raw, DynamicRaw, TerrainRaw};
 
 pub enum Request {
     Found { player: PlayerId, name: String, design: FounderDesign, reply: oneshot::Sender<Result<FoundOk, FoundError>> },
@@ -32,6 +34,15 @@ pub enum Request {
     Command { conn: ConnId, player: PlayerId, id: Option<u64>, msg: ClientMsg },
     /// `render_rgb` at `scale` pixels per tile: (width, height, rgb).
     Snapshot { scale: usize, reply: oneshot::Sender<(usize, usize, Vec<u8>)> },
+    /// The tile grid: every layer, or only the dynamic ones.
+    Terrain { full: bool, reply: oneshot::Sender<TerrainReply> },
+    /// The genetics dashboard of a player's lineage.
+    Stats { player: PlayerId, reply: oneshot::Sender<LineageStats> },
+}
+
+pub enum TerrainReply {
+    Full(Box<TerrainRaw>),
+    Dynamic(Box<DynamicRaw>),
 }
 
 /// What the world thread publishes after every tick for cheap reads.
@@ -147,6 +158,13 @@ impl Runner {
             }
             Request::Snapshot { scale, reply } => {
                 let _ = reply.send(evo_sim::render::render_rgb(&self.game.world, scale));
+            }
+            Request::Terrain { full, reply } => {
+                let w = &self.game.world;
+                let _ = reply.send(if full { TerrainReply::Full(Box::new(terrain_raw(w))) } else { TerrainReply::Dynamic(Box::new(dynamic_raw(w))) });
+            }
+            Request::Stats { player, reply } => {
+                let _ = reply.send(self.game.lineage_stats(player));
             }
             req @ (Request::Found { .. } | Request::Command { .. }) => self.queued.push(req),
         }

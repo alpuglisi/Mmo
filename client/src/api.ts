@@ -3,7 +3,8 @@
 // Capacitor build sets the server origin with `setApiBase`.
 
 import type {
-  ApiErrorBody, AuthResponse, DesignSpec, FoundResponse, GeneCatalog, Leaderboard, WorldSummary,
+  ApiErrorBody, AuthResponse, DesignSpec, FoundResponse, GeneCatalog, Leaderboard, LineageStats, SeasonBoard,
+  TerrainDynamic, TerrainView, WorldSummary,
 } from './protocol';
 
 let base = '';
@@ -61,8 +62,8 @@ export const api = {
   genes: () => request<GeneCatalog>('GET', '/api/genes'),
   world: () => request<WorldSummary>('GET', '/api/world'),
   leaderboard: () => request<Leaderboard>('GET', '/api/leaderboard'),
+  seasons: (limit = 8) => request<SeasonBoard[]>('GET', `/api/leaderboard/seasons?limit=${limit}`),
+  terrain: () => request<TerrainView>('GET', '/api/terrain'),
+  terrainDynamic: () => request<TerrainDynamic>('GET', '/api/terrain/dynamic'),
+  lineageStats: (token: string) => request<LineageStats>('GET', '/api/lineage/stats', undefined, token),
 };
-
-export function mapUrl(scale: number): string {
-  return apiUrl(`/api/map.png?scale=${scale}&t=${Date.now()}`);
-}

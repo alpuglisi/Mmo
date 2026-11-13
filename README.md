@@ -121,9 +121,12 @@ cargo run --release --bin evo-server -- --bind 0.0.0.0:8080 --data /var/lib/evo 
 cargo test -p evo-server                                      # unit + end-to-end tests (64×64 worlds)
 ```
 
-Other flags: `--no-wild` (no wild ecosystem), `--state-ms` (state push
-interval), `--static DIR` (serve the built web client from `DIR`, e.g.
-`client/dist`, on every path the API doesn't use). `RUST_LOG=debug` for more logging.
+Other flags: `--no-wild` (no wild ecosystem), `--days-per-year N` (short
+years for demos), `--state-ms` (state push interval), `--static DIR` (serve
+the built web client from `DIR`, e.g. `client/dist`, on every path the API
+doesn't use), `--session-idle-min N` / `--session-max-hours N` (session
+expiry, default 60 min idle and 24 h), `--no-rate-limits`. `RUST_LOG=debug`
+for more logging.
 
 ### Architecture
 
@@ -157,6 +160,32 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   replies or events is closed.
 - **Accounts:** argon2id password hashes, random 256-bit bearer tokens held in
   memory. Each account owns a `PlayerId` (1, 2, …; 0 is the wild ecosystem).
+  A session ends after 60 minutes without use (an authenticated request or a
+  WebSocket command) or 24 hours after login (`SessionPolicy`); an open
+  WebSocket checks every `min(idle, max_age)/4` (at most 30 s), sends
+  `session_ended` and closes.
+- **Rate limits** (`limits.rs`, token buckets, `Limits` in `ServerConfig`):
+  logins and registrations per client IP (burst 10, then one per 6 s; checked
+  before any password hashing, `429 rate_limited` with `retry_after_ms` and
+  `Retry-After`), WebSocket commands per connection (20/s, burst 40) and per
+  IP over all its connections (60/s, burst 120); a refused command gets a
+  `result` with `rate_limited` and never reaches the world thread. The IP is
+  the TCP peer (behind a reverse proxy that would be the proxy: trusting
+  `X-Forwarded-For` is not implemented).
+- **Alerts and history** (`game.rs`): the world thread keeps the daily records
+  since start (up to 365) with each lineage's births, deaths by cause and
+  mean gene values, and raises per-player alerts: deaths of founders and
+  possessed organisms (with the cause), the day's births and deaths,
+  population (25, 50, 100, …) and legacy-share (1, 5, 10, 25, 50 %)
+  milestones, a new generation, extinction, and a possessed organism that is
+  parched or starving. The last 50 per player are kept for the dashboard.
+- **Possessed organisms at their destination:** the sim keeps a possessed
+  organism's order after it arrives, so it stands there `ordered` and only
+  drinks or eats what is on its tile (an organism left at its destination
+  dies of thirst in about four days). Until the sim lets urgent needs win,
+  the server clears an order once the organism has arrived and thirst or
+  hunger reaches 75: it stays possessed and forages on its own until the
+  next order, and the owner gets a `need` alert.
 
 ### HTTP API (JSON)
 
@@ -169,7 +198,11 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices |
 | `GET /api/world` | | Clock, season, weather, map size, organism and lineage counts |
 | `GET /api/leaderboard` | | Legacy shares from the latest daily snapshot: `{day, breeding_adults, rows: [{player, name, share, weighted_share, alive}]}` |
-| `GET /api/leaderboard/history?limit=30` | | The stored daily records (legacy shares and lineage sizes) |
+| `GET /api/leaderboard/history?limit=30` | | The stored daily records (legacy shares, lineage sizes, daily births and deaths by cause, player lineages' mean genes) |
+| `GET /api/leaderboard/seasons?limit=8` | | Seasonal leaderboards from the whole stored history, newest first: `[{year, season, first_day, last_day, days, current, rows: [{player, name, mean_share, final_share, peak_share, mean_weighted_share, peak_alive, days}]}]`, ranked by mean share over the season's recorded days (a missing day counts as 0; a restart, whose world starts again at day 0, starts a new run) |
+| `GET /api/terrain` | | The tile grid: `{width, height, terrain_version, biome, elevation, river, base_water, dynamic}`; every layer is one byte per tile, row-major, base64 (biome index 0–7; elevation 0–255 lowest..highest; river 0–255; depths in cm, capped at 255) |
+| `GET /api/terrain/dynamic` | | Only what changes (the sim updates it hourly): `{tick, day, hour, season, water (cm), ice, snow (0–255 for 0–0.5 m), veg (share of the tile's maximum), wetness (0.5 normal, < 0.3 drought)}`, about 110 KB of JSON for 128×128 |
+| `GET /api/lineage/stats` | Bearer | The genetics dashboard: counts (alive, adults, young, pregnant, newest generation), `age_bands` (up to six equal bands by sex), `vitals` (births and deaths by cause per recorded day, the last entry today so far, at most 30), `genes` (every gene's mean, spread and founding mean with the daily means, largest drift first), `legacy` (share per recorded day) and recent `alerts` |
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile), for debugging |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
@@ -208,9 +241,11 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage}` | On connect |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime), `weather` (mean wind, storm, drought and flood shares), `lineage`, `slots_left`, `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation), `nearby` (others in the window), `leaderboard`, `offers` (your open offers) |
-| `result` `{id, command, ok, error?: {code, message}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy` |
+| `result` `{id, command, ok, error?: {code, message}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
+| `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving) |
+| `session_ended` `{reason}` | The session expired; the socket closes next |
 
 **Directed-mating consent:** `request_mating` checks ownership, maturity, sex,
 pregnancy and slots, then creates a `pending` offer (price recorded; no
@@ -235,10 +270,12 @@ table per record.
 | --- | --- |
 | Accounts (name, player id, argon2 hash) | `accounts.json` |
 | Founder designs | `designs.json` |
-| One record per simulated day: legacy shares (raw and weighted) and every lineage's size | `history.jsonl` |
+| One record per simulated day: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `history.jsonl` |
 | Finished directed-mating agreements with price and outcome | `trades.jsonl` |
 
-**Not persisted yet:** the `World` itself and login sessions. A restart
+**Not persisted yet:** the `World` itself, login sessions and alerts (the
+dashboard's history starts when the server does; the seasonal leaderboards
+read the whole stored history). A restart
 generates a fresh world from the seed and re-founds every stored design in
 player order (a design that no longer fits the budget is skipped with a
 warning); players log in again. World snapshots need serde on the sim types
@@ -275,7 +312,8 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
 - **Login / register** (`ui/login.ts`). The token is kept in
   `localStorage`; the server holds tokens in memory, so after a server
   restart the socket fails while the API answers, and the client drops back
-  to the login screen.
+  to the login screen. So does a `session_ended` message (expiry) or a 401
+  from the dashboard endpoint.
 - **Founder design** (`ui/design.ts`), shown when `welcome` says the player
   has no lineage: thermoregulation, birth type, offspring per birth,
   founders, a slider per gene from `GET /api/genes` (paid traits, then the
@@ -284,9 +322,19 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   `point_cost` and `validate` (same checks and error codes), so an invalid
   design can't be submitted; server errors (`over_budget` with its numbers,
   `already_founded`, …) are shown as returned.
-- **World** (`ui/game.ts`, `world/worldView.ts`): the `/api/map.png` image
-  as one nearest-filtered texture (refreshed every 15 s, dimmed at night)
-  under organism markers from `state`: own organisms yellow (larger when
+- **World** (`ui/game.ts`, `world/worldView.ts`, `world/terrain.ts`): the
+  tile map from `GET /api/terrain`, painted one pixel per tile into an RGBA
+  buffer shown as a nearest-filtered texture (one world unit per tile, tile
+  edges outlined from 18 px per tile, dimmed at night). The dynamic layers
+  are refetched every 4 s from `GET /api/terrain/dynamic` and repaint the
+  same texture. Colors: biome, darkened where grazed out; grass, forest,
+  marsh and tundra tinted by season (fresh spring green, summer yellow-green,
+  autumn brown, dull winter); land in drought yellows toward straw; lakes
+  darken with depth, rivers are bright blue (a dry bed is sand, a dried marsh
+  or lake shore cracked mud); flooded land is muddy blue; ice is pale blue;
+  snow blends to white; hill shading from the north-west. A legend over the
+  map gives the drought, flood, snow and ice shares. Organism markers from
+  `state` sit on top: own organisms yellow (larger when
   adult; red ring when possessed, green when pregnant), wild grey, other
   players a stable hue each. Markers live in screen space so they stay
   readable at any zoom, and glide between state pushes. Drag to pan, wheel or
@@ -304,10 +352,23 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   once accepted, **Complete now** and **Escort** (possess your organism and
   walk it to the partner's last seen position, the trip to the meeting);
   recent outcomes with conception, mismatch, fertility and failure chance.
-- **Lineage** tab (dashboard): lineage size, adults and young, pregnancies,
-  newest generation, mating slots left this season, migration target, the
-  legacy leaderboard (share and weighted share per player, yours
-  highlighted) and a clickable list of your organisms. The top bar shows the
+- **Genetics** tab (`ui/dashboard.ts`, `ui/charts.ts`), from
+  `GET /api/lineage/stats` every 5 s while open: count tiles; a population
+  pyramid by age band and sex; births (up) and deaths stacked by cause (down)
+  per day; legacy share and weighted share over the recorded days; gene
+  drift sparklines for the six genes that moved most since founding (dashed
+  founding value); and a table of every gene with mean ± spread on a 0–1
+  track. Hand-rolled SVG (no chart library), fixed categorical colors, a
+  `<title>` tooltip on every mark. Below it the **alerts feed**: server
+  alerts (births, deaths of founders and possessed organisms, milestones,
+  needs, daily summaries) merged with mating offers and their outcomes,
+  newest first, organism ids linking to the inspector; an unread badge on
+  the tab.
+- **Lineage** tab: lineage size, adults and young, pregnancies, newest
+  generation, mating slots left this season, migration target, the legacy
+  leaderboard (share and weighted share per player, yours highlighted), the
+  **seasonal leaderboards** (`GET /api/leaderboard/seasons`, the current
+  season open) and a clickable list of your organisms. The top bar shows the
   clock, season, day/night, weather and the connection state.
 
 **Architecture.**
@@ -318,11 +379,12 @@ protocol.ts  wire types written by hand from crates/server/src/protocol.rs (keep
 api.ts       fetch wrapper for the HTTP API (ApiError carries code and detail)
 socket.ts    GameSocket: ids paired with `result`, 10 s reply timeout, reconnect with
              exponential backoff (0.5 s doubling to 15 s, ±20 % jitter), connection state
-model.ts     GameModel: latest state, offer table (requests, updates, outcomes), toasts; pub/sub
+model.ts     GameModel: latest state, offer table (requests, updates, outcomes), alerts feed, toasts; pub/sub
 cost.ts      design point cost and validation (mirror of crates/sim/src/design.rs)
 ui/          DOM screens and panels; panels re-render at most 4×/s and rebuild buttons only
              when their content changes, so they stay clickable under 10 Hz state pushes
-world/       PixiJS view: camera, map texture, overlays, markers, hit testing
+world/       PixiJS view: camera, tile-map texture (terrain.ts decodes and colors the grid), overlays,
+             markers, hit testing
 ```
 
 Every failed `result` (server error codes such as `not_owned`,
@@ -330,8 +392,14 @@ Every failed `result` (server error codes such as `not_owned`,
 a toast. `window.evo` exposes the model, socket and view for debugging and
 the end-to-end test.
 
-**Tests.** Vitest (19 tests): protocol parsing against messages shaped like
-serde's output, including malformed and unknown ones; the point cost and
+**Tests.** Vitest (32 tests): protocol parsing against messages shaped like
+serde's output, including malformed and unknown ones and the `alert` and
+`session_ended` messages; terrain decoding (layer sizes, refusing a wrong
+size, newer-only dynamic updates) and tile colors (snow, ice, drought,
+floods, dry river beds, dried lakes, the season tint) and painting; chart
+data prep (scales, axis maxima, gap-aware line paths, deaths stacked by
+cause with rare causes folded into "other", the age pyramid, gene drift
+ranking, legacy percentages) and the alerts feed merge; the point cost and
 validation against the server's own examples (the README design costs
 15.1, exactly-at-budget passes, one more founder fails); socket id pairing,
 backoff, reconnect and give-up; the offer table through request, accept
@@ -339,16 +407,20 @@ and outcome. `e2e/smoke.mjs` (Playwright, pre-installed Chromium) starts
 `evo-server --fast --memory --static client/dist` on a free port, registers,
 checks the live cost (10.1, and the server's founding response agrees) and
 the client-side over-budget refusal, founds a lineage, waits for markers and
-the map, clicks an organism, possesses it, clicks the map and checks it
-walks toward the target, migrates, sees an error toast, then registers a
-second player and runs a directed mating through both players' panels
-(request with price → incoming → accept → both see the update → escort).
+the tile map (64×64 texture, at least 3 biomes and 20 tile colors, a dynamic
+refresh, the terrain legend), clicks an organism, possesses it, clicks the
+map and checks it walks toward the target, migrates, sees an error toast,
+checks the seasonal leaderboard and the genetics dashboard (at least four
+charts with drawn lines, drift sparklines, every gene in the table, alerts in
+the feed), then registers a second player and runs a directed mating through
+both players' panels (request with price → incoming → accept → both see the
+update → escort). Screenshots go to `SCREENSHOT_DIR`. `e2e/winter_shot.mjs`
+is a screenshot helper (not a test): a 16-day-year world played into winter.
 
-**Not yet:** tile-accurate map rendering (terrain from the server instead of
-the debug PNG), organism sprites by body plan, touch pinch-zoom, a stud
-marketplace and economy UI, leaderboard history charts, lineage genetics
-dashboard (allele shares, trait distributions), alerts, and the Capacitor
-shells.
+**Not yet:** organism sprites by body plan, touch pinch-zoom, a stud
+marketplace and economy UI, allele-origin shares within the lineage (whose
+genes your organisms carry), per-gene distributions (histograms rather than
+mean ± spread), alert preferences, and the Capacitor shells.
 
 ## Benchmark (first measurement)
 

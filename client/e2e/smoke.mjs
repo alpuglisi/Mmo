@@ -1,6 +1,8 @@
 // End-to-end smoke test: start evo-server (fast, in memory) serving the built
 // client, then in headless Chromium register, found a lineage, open the
-// world view, check organisms are drawn, possess one and walk it.
+// world view, check the tile map and organisms are drawn, possess one and
+// walk it, open the genetics dashboard and the seasonal leaderboard, and
+// run a directed mating between two players.
 //
 //   npm run build && npm run e2e
 //
@@ -61,18 +63,22 @@ async function main() {
   mkdirSync(shots, { recursive: true });
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
-  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', '7', '--bind', `127.0.0.1:${port}`, '--static', dist], {
+  // 120-day seasons (two minutes in fast mode): a season change expires open
+  // mating offers, which would race the mating step on a slow machine.
+  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', '7', '--days-per-year', '480', '--bind', `127.0.0.1:${port}`, '--static', dist], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverLog = '';
   server.stdout.on('data', (d) => (serverLog += d));
   server.stderr.on('data', (d) => (serverLog += d));
   const browser = await chromium.launch({ headless: !process.env.HEADED });
+  const pages = [];
   try {
     await waitFor('server', async () => (await fetch(`${base}/api/world`)).ok);
     step(`server up on ${base}`);
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
     const pageErrors = [];
+    pages.push(page);
     page.on('pageerror', (e) => pageErrors.push(e.message));
     await page.goto(base);
 
@@ -122,10 +128,24 @@ async function main() {
     await waitFor('own organisms in state', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
     await waitFor('markers drawn', () => page.evaluate(() => {
       const v = window.evo.screen()?.view;
-      return v && v.markers.size > 0 && v.mapSprite.texture.width > 1;
+      return v && v.markers.size > 0 && v.terrain && v.mapSprite.texture.width === v.terrain.width;
     }));
     const counts = await page.evaluate(() => ({ own: window.evo.model.state.organisms.length, nearby: window.evo.model.state.nearby.length, markers: window.evo.screen().view.markers.size }));
-    step(`world view: ${counts.own} own + ${counts.nearby} nearby organisms, ${counts.markers} markers, map loaded`);
+    step(`world view: ${counts.own} own + ${counts.nearby} nearby organisms, ${counts.markers} markers`);
+
+    // Tile map: the terrain grid from /api/terrain, one texture pixel per tile.
+    const tiles = await page.evaluate(() => {
+      const v = window.evo.screen().view;
+      const t = v.terrain;
+      const buf = v.terrainBuf;
+      const colors = new Set();
+      for (let i = 0; i < t.width * t.height; i++) colors.add((buf[i * 4] << 16) | (buf[i * 4 + 1] << 8) | buf[i * 4 + 2]);
+      return { w: t.width, h: t.height, tex: [v.mapSprite.texture.width, v.mapSprite.texture.height], biomes: new Set(t.biome).size, colors: colors.size, tick: t.tick };
+    });
+    if (tiles.w !== 64 || tiles.h !== 64 || tiles.tex[0] !== 64 || tiles.biomes < 3 || tiles.colors < 20) throw new Error(`tile map: ${JSON.stringify(tiles)}`);
+    await waitFor('a dynamic terrain refresh', () => page.evaluate((t0) => window.evo.screen().view.terrain.tick > t0, tiles.tick), 15000);
+    if (!(await page.textContent('#terrain-legend')).includes('drought')) throw new Error('no terrain legend');
+    step(`tile map: ${tiles.w}×${tiles.h} tiles, ${tiles.biomes} biomes, ${tiles.colors} tile colors; dynamic layers refreshed`);
     await page.waitForFunction(() => document.querySelector('#conn-state')?.textContent === 'connected');
 
     // Record command results.
@@ -204,11 +224,32 @@ async function main() {
     await page.waitForTimeout(1200);
     await page.screenshot({ path: path.join(shots, 'world-view.png') });
     await page.click('#tab-lineage');
+    await page.waitForSelector('#season-boards table.board', { timeout: 15000 });
     await page.waitForTimeout(300);
     await page.screenshot({ path: path.join(shots, 'world-lineage.png') });
+    step('lineage tab: seasonal leaderboard shown');
+
+    // Genetics dashboard: charts from /api/lineage/stats and the alerts feed.
+    await page.click('#tab-genetics');
+    await page.waitForSelector('#dashboard svg.chart', { timeout: 10000 });
+    const dash = await waitFor('dashboard with recorded days', () => page.evaluate(() => {
+      const rows = document.querySelectorAll('#drift-list .drift-row').length;
+      const charts = document.querySelectorAll('#dashboard svg.chart').length;
+      const genes = document.querySelectorAll('#gene-table tbody tr').length;
+      const paths = [...document.querySelectorAll('#dashboard svg.chart path')].filter((p) => (p.getAttribute('d') ?? '').includes('L')).length;
+      const feed = document.querySelectorAll('#alerts-feed .feed-item').length;
+      return rows > 0 && paths >= 2 && feed > 0 ? { rows, charts, genes, paths, feed } : null;
+    }), 20000);
+    if (dash.charts < 4 || dash.genes < 30) throw new Error(`dashboard: ${JSON.stringify(dash)}`);
+    step(`genetics dashboard: ${dash.charts} charts, ${dash.rows} drift sparklines, ${dash.genes} genes, ${dash.feed} alerts`);
+    await page.screenshot({ path: path.join(shots, 'genetics-dashboard.png') });
+    await page.$eval('#panel-genetics', (el) => { el.scrollTop = el.scrollHeight; });
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(shots, 'genetics-dashboard-feed.png') });
 
     // Directed mating between two players through the panels.
     const bob = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+    pages.push(bob);
     bob.on('pageerror', (e) => pageErrors.push(`bob: ${e.message}`));
     await bob.goto(base);
     await bob.fill('#login-name', `${name}_b`);
@@ -272,6 +313,7 @@ async function main() {
     console.log(`smoke test passed; screenshots in ${shots}`);
   } catch (e) {
     console.error(serverLog.split('\n').slice(-20).join('\n'));
+    for (const [k, p] of pages.entries()) await p.screenshot({ path: path.join(shots, `failure-${k}.png`) }).catch(() => {});
     throw e;
   } finally {
     await browser.close();

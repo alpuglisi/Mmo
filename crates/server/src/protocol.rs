@@ -100,6 +100,38 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorInfo>,
     },
+    /// Something the player should notice: a death of a possessed or
+    /// founding organism, a day's births and deaths, a lineage milestone, a
+    /// possessed organism in need. Also listed in `GET /api/lineage/stats`.
+    Alert { alert: AlertView },
+    /// The session expired or was logged out; the socket closes next.
+    SessionEnded { reason: String },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertKind {
+    /// Births and deaths of the day just ended.
+    DailySummary,
+    /// The first offspring of the lineage, or a new generation reached.
+    Birth,
+    /// A possessed organism or a founder died.
+    Death,
+    /// Population or legacy milestone, or extinction.
+    Milestone,
+    /// A possessed organism is parched or starving (possession overrides
+    /// its own foraging once its standing order is reached).
+    Need,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AlertView {
+    pub tick: u64,
+    pub day: u64,
+    pub kind: AlertKind,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organism: Option<OrgId>,
 }
 
 impl ServerMsg {
@@ -315,6 +347,140 @@ pub struct WorldSummary {
     pub lineages: usize,
 }
 
+/// `GET /api/terrain`: the whole tile grid. Every layer is one byte per tile
+/// in row-major order (`y * width + x`), base64-encoded.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainView {
+    pub width: usize,
+    pub height: usize,
+    /// Changes when the fixed layers change (they don't yet after generation).
+    pub terrain_version: u64,
+    /// Biome index: 0 deep water, 1 shallow water, 2 marsh, 3 grassland,
+    /// 4 forest, 5 desert, 6 tundra, 7 mountain.
+    pub biome: String,
+    /// Elevation, 0..255 for the map's lowest..highest (percentile-normalized).
+    pub elevation: String,
+    /// River channel strength, 0 none .. 255 main stream.
+    pub river: String,
+    /// Water depth at normal wetness, centimeters (capped at 255).
+    pub base_water: String,
+    pub dynamic: TerrainDynamic,
+}
+
+/// `GET /api/terrain/dynamic`: the layers that change with weather and
+/// seasons (updated by the sim every hour). Same encoding as [`TerrainView`].
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerrainDynamic {
+    pub tick: u64,
+    pub day: u64,
+    pub hour: u32,
+    pub season: String,
+    /// Current water depth, centimeters (capped at 255).
+    pub water: String,
+    /// Ice cover, 0..255 for 0..1.
+    pub ice: String,
+    /// Snow, 0..255 for 0..0.5 m (deeper snow saturates).
+    pub snow: String,
+    /// Plant food as a share of the tile's maximum, 0..255.
+    pub veg: String,
+    /// Regional soil wetness, 0..255 for 0..1 (0.5 normal; below 0.3 is drought).
+    pub wetness: String,
+}
+
+/// Count of one sex in an age band.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AgeBand {
+    pub from_days: f32,
+    pub to_days: f32,
+    pub female: usize,
+    pub male: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct DayVitals {
+    pub day: u64,
+    pub births: u64,
+    /// Deaths by cause (`starved`, `thirst`, `eaten`, `old_age`, ...).
+    pub deaths: std::collections::BTreeMap<String, u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GeneStat {
+    /// Wire name of the gene (as in `GET /api/genes`).
+    pub gene: String,
+    /// Mean expressed value over living members, 0..1.
+    pub mean: f32,
+    /// Standard deviation over living members.
+    pub sd: f32,
+    /// Mean at founding (the first daily record, else the current mean).
+    pub founding_mean: f32,
+    /// Daily means, oldest first, aligned with `LineageStats::history_days`.
+    pub history: Vec<f32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LegacyPoint {
+    pub day: u64,
+    pub share: f64,
+    pub weighted_share: f64,
+    pub alive: usize,
+}
+
+/// `GET /api/lineage/stats`: the genetics dashboard of the caller's lineage.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LineageStats {
+    pub player: PlayerId,
+    pub lineage: Option<u32>,
+    pub name: Option<String>,
+    pub day: u64,
+    pub alive: usize,
+    pub adults: usize,
+    pub juveniles: usize,
+    pub pregnant: usize,
+    pub max_generation: u32,
+    /// Population by age band and sex (equal-width bands up to the oldest).
+    pub age_bands: Vec<AgeBand>,
+    /// Births and deaths by cause per recent day, oldest first; the last
+    /// entry is the current day so far.
+    pub vitals: Vec<DayVitals>,
+    /// Days of the daily records the gene histories cover, oldest first.
+    pub history_days: Vec<u64>,
+    /// Every gene, largest drift from the founding mean first.
+    pub genes: Vec<GeneStat>,
+    /// Legacy share per recorded day, oldest first.
+    pub legacy: Vec<LegacyPoint>,
+    /// Recent alerts, newest last.
+    pub alerts: Vec<AlertView>,
+}
+
+/// One player's standing over a season of the history.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SeasonRow {
+    pub player: PlayerId,
+    pub name: String,
+    pub mean_share: f64,
+    pub final_share: f64,
+    pub peak_share: f64,
+    pub mean_weighted_share: f64,
+    /// Most organisms the player had alive on a recorded day of the season.
+    pub peak_alive: usize,
+    pub days: usize,
+}
+
+/// `GET /api/leaderboard/seasons`: legacy standings per season, ranked by
+/// mean share over the season's recorded days.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SeasonBoard {
+    pub year: u64,
+    pub season: String,
+    pub first_day: u64,
+    pub last_day: u64,
+    pub days: usize,
+    /// True for the season still being played.
+    pub current: bool,
+    pub rows: Vec<SeasonRow>,
+}
+
 pub fn action_name(a: Action) -> &'static str {
     match a {
         Action::Idle => "idle",
@@ -351,6 +517,24 @@ pub fn season_name(s: Season) -> &'static str {
         Season::Summer => "summer",
         Season::Autumn => "autumn",
         Season::Winter => "winter",
+    }
+}
+
+/// Wire name of a death cause (the sim's label in `snake_case`).
+pub fn death_name(c: evo_sim::organism::DeathCause) -> &'static str {
+    use evo_sim::organism::DeathCause::*;
+    match c {
+        Starvation => "starved",
+        Thirst => "thirst",
+        Exposure => "exposure",
+        Predation => "eaten",
+        Toxin => "toxin",
+        Drowning => "drowned",
+        OldAge => "old_age",
+        Attrition => "attrition",
+        Recessive => "recessive",
+        Disease => "disease",
+        Journey => "journey",
     }
 }
 
@@ -422,5 +606,14 @@ mod tests {
         assert_eq!(s["type"], "result");
         assert_eq!(s["ok"], true);
         assert_eq!(s["id"], 1);
+        // The shapes client/src/protocol.ts parses.
+        let alert = AlertView { tick: 96, day: 2, kind: AlertKind::DailySummary, text: "Day 3".into(), organism: None };
+        let s = serde_json::to_value(ServerMsg::Alert { alert }).unwrap();
+        assert_eq!(s, serde_json::json!({"type": "alert", "alert": {"tick": 96, "day": 2, "kind": "daily_summary", "text": "Day 3"}}));
+        let s = serde_json::to_value(ServerMsg::SessionEnded { reason: "expired".into() }).unwrap();
+        assert_eq!(s, serde_json::json!({"type": "session_ended", "reason": "expired"}));
+        for c in evo_sim::organism::DeathCause::ALL {
+            assert_eq!(death_name(c), c.label().replace(' ', "_"));
+        }
     }
 }

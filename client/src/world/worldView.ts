@@ -1,13 +1,15 @@
 // The map and organisms, drawn with PixiJS.
 //
-// Two layers: the map (the server's /api/map.png as one texture, scaled to
-// world units, plus overlays in world units) moves with the camera; the
-// organism markers live in screen space so they stay readable at any zoom.
-// Positions glide toward each new `state` so 1 s state pushes don't jump.
+// Two layers: the map (the tile grid from /api/terrain painted one pixel per
+// tile into a nearest-neighbor texture, one world unit per tile, plus
+// overlays in world units) moves with the camera; the organism markers live
+// in screen space so they stay readable at any zoom. Positions glide toward
+// each new `state` so 1 s state pushes don't jump.
 
-import { Application, Container, Graphics, ImageSource, Sprite, Texture } from 'pixi.js';
+import { Application, BufferImageSource, Container, Graphics, Sprite, Texture } from 'pixi.js';
 import type { NearbyOrganism, OrgId, OwnOrganism, PlayerId, StateView } from '../protocol';
 import { OWN_COLOR, ownerColor } from './colors';
+import { paintTerrain, type TerrainGrid } from './terrain';
 
 export interface Camera {
   /** World point (tiles) at the center of the screen. */
@@ -37,6 +39,8 @@ interface Marker {
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 48;
 const HIT_PX = 12;
+/** Zoom (pixels per tile) from which tile edges are outlined. */
+const GRID_ZOOM = 18;
 
 export class WorldView {
   readonly app = new Application();
@@ -47,6 +51,10 @@ export class WorldView {
   private markers = new Map<OrgId, Marker>();
   private highlight = new Graphics();
   private texture: Texture | null = null;
+  private terrainBuf: Uint8Array | null = null;
+  private terrainSource: BufferImageSource | null = null;
+  /** The tile grid on screen (null until the first terrain arrives). */
+  terrain: TerrainGrid | null = null;
   private worldW = 64;
   private worldH = 64;
   private state: StateView | null = null;
@@ -84,13 +92,31 @@ export class WorldView {
     this.worldH = h;
   }
 
-  /** Swap in a new map image (`scale` image pixels per tile). */
-  setMap(bitmap: ImageBitmap | HTMLImageElement, scale: number): void {
-    const tex = new Texture({ source: new ImageSource({ resource: bitmap, scaleMode: 'nearest' }) });
+  /**
+   * Show a tile grid: one texture pixel per tile. A grid of the same size
+   * repaints the existing texture (the dynamic layers change every few
+   * seconds); a new size makes a new one.
+   */
+  setTerrain(g: TerrainGrid): void {
+    this.terrain = g;
+    this.setWorldSize(g.width, g.height);
+    const n = g.width * g.height * 4;
+    const src = this.terrainSource;
+    if (src && this.terrainBuf && src.width === g.width && src.height === g.height) {
+      paintTerrain(g, this.terrainBuf);
+      src.update();
+      return;
+    }
+    const buf = new Uint8Array(n);
+    paintTerrain(g, buf);
+    const source = new BufferImageSource({ resource: buf, width: g.width, height: g.height, scaleMode: 'nearest' });
+    const tex = new Texture({ source });
     this.mapSprite.texture = tex;
-    this.mapSprite.scale.set(1 / scale);
+    this.mapSprite.scale.set(1);
     this.texture?.destroy(true);
     this.texture = tex;
+    this.terrainBuf = buf;
+    this.terrainSource = source;
   }
 
   setState(s: StateView): void {
@@ -207,6 +233,17 @@ export class WorldView {
     const g = this.overlay;
     const px = 1 / this.cam.zoom; // one screen pixel in world units
     g.clear();
+    if (this.cam.zoom >= GRID_ZOOM) {
+      // Tile edges over the visible part of the map.
+      const { width, height } = this.app.screen;
+      const a = this.screenToWorld(0, 0);
+      const b = this.screenToWorld(width, height);
+      const x0 = Math.max(0, Math.floor(a.x)), x1 = Math.min(this.worldW, Math.ceil(b.x));
+      const y0 = Math.max(0, Math.floor(a.y)), y1 = Math.min(this.worldH, Math.ceil(b.y));
+      for (let x = x0; x <= x1; x++) g.moveTo(x, y0).lineTo(x, y1);
+      for (let y = y0; y <= y1; y++) g.moveTo(x0, y).lineTo(x1, y);
+      g.stroke({ width: px, color: 0x000000, alpha: 0.12 });
+    }
     g.rect(0, 0, this.worldW, this.worldH).stroke({ width: 2 * px, color: 0x30363d });
     const s = this.state;
     if (!s) return;

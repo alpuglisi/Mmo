@@ -160,3 +160,34 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .sidebar { width: 100%; border-left: 0; border-top: 1px solid var(--border); }
   .trait { grid-template-columns: 7.5em 1fr 2.6em 2.6em; }
 }
+
+/* ------------------------------------------------ terrain legend, genetics dashboard, alerts */
+.terrain-legend { bottom: 34px; }
+.dot.square-fill { border-radius: 2px; border: 1px solid rgba(255, 255, 255, 0.25); }
+.tab { position: relative; padding-left: 0.3em; padding-right: 0.3em; }
+.badge { position: absolute; top: 3px; right: 2px; display: inline-block; min-width: 1.4em; padding: 0 4px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 0.75em; line-height: 1.4em; }
+.badge[hidden] { display: none; }
+.stat-tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 6px 0 10px; }
+.tile { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 6px; display: flex; flex-direction: column; align-items: flex-start; }
+.tile strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.chart-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.chart-card h4 { margin: 0 0 2px; color: var(--text); }
+.chart-card summary { cursor: pointer; color: var(--text); font-weight: 600; font-size: 0.85rem; }
+.chart { display: block; margin-top: 4px; overflow: visible; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.8em; color: var(--muted); margin: 2px 0; }
+.drift-row { display: grid; grid-template-columns: 1fr 120px 92px; gap: 6px; align-items: center; padding: 2px 0; }
+.drift-row .gene-name { font-size: 0.85em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.drift-row svg { width: 120px; }
+.gene-table { width: 100%; border-collapse: collapse; font-size: 0.82em; font-variant-numeric: tabular-nums; margin-top: 6px; }
+.gene-table td, .gene-table th { padding: 2px 4px; border-bottom: 1px solid var(--border); text-align: left; }
+.gene-table th { color: var(--muted); font-weight: 500; }
+.gene-table svg { width: 100px; }
+.feed-list { list-style: none; margin: 0; padding: 0; }
+.feed-item { padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 0.88em; }
+.feed-kind { display: inline-block; min-width: 5.5em; margin-right: 6px; padding: 0 5px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); font-size: 0.8em; text-align: center; }
+.feed-kind.kind-death, .feed-kind.kind-need { color: var(--bad); border-color: var(--bad); }
+.feed-kind.kind-milestone, .feed-kind.kind-birth { color: var(--good); border-color: var(--good); }
+.feed-kind.kind-offer { color: var(--accent); border-color: var(--accent); }
+button.link { background: none; border: none; color: var(--accent); padding: 0 0 0 6px; text-decoration: underline; }
+details.season { margin: 4px 0; }
+details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em; }

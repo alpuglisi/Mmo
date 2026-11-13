@@ -107,7 +107,7 @@ export type Sex = 'female' | 'male';
 
 export type ActionName =
   | 'idle' | 'graze' | 'hunt' | 'scavenge' | 'drink' | 'rest' | 'bask' | 'flee' | 'seek_mate'
-  | 'group' | 'wander' | 'migrate' | 'follow_parent' | 'guard' | 'ordered' | 'dormant' | 'cache';
+  | 'group' | 'wander' | 'migrate' | 'follow_parent' | 'guard' | 'ordered' | 'dormant' | 'cache' | 'sentry';
 
 /** One of the player's own organisms: full detail. */
 export interface OwnOrganism {
@@ -202,7 +202,29 @@ export interface MatingUpdateMsg {
   error?: ErrorInfo;
 }
 
-export type ServerMsg = WelcomeMsg | StateMsg | ResultMsg | MatingRequestMsg | MatingUpdateMsg;
+export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need';
+
+export interface AlertView {
+  tick: number;
+  day: number;
+  kind: AlertKind;
+  text: string;
+  organism?: OrgId;
+}
+
+/** Something the player should notice (deaths, milestones, needs, a day's vitals). */
+export interface AlertMsg {
+  type: 'alert';
+  alert: AlertView;
+}
+
+/** The session expired or was logged out; the socket closes next. */
+export interface SessionEndedMsg {
+  type: 'session_ended';
+  reason: string;
+}
+
+export type ServerMsg = WelcomeMsg | StateMsg | ResultMsg | MatingRequestMsg | MatingUpdateMsg | AlertMsg | SessionEndedMsg;
 
 // ---------------------------------------------------------------- HTTP bodies
 
@@ -256,6 +278,116 @@ export interface WorldSummary {
   height: number;
   organisms: number;
   lineages: number;
+}
+
+/**
+ * `GET /api/terrain`: the tile grid. Every layer is one byte per tile,
+ * row-major (`y * width + x`), base64-encoded.
+ */
+export interface TerrainView {
+  width: number;
+  height: number;
+  terrain_version: number;
+  /** 0 deep water, 1 shallow water, 2 marsh, 3 grassland, 4 forest, 5 desert, 6 tundra, 7 mountain. */
+  biome: string;
+  /** 0..255 for the map's lowest..highest. */
+  elevation: string;
+  /** River channel strength, 0 none .. 255 main stream. */
+  river: string;
+  /** Water depth at normal wetness, centimeters (capped at 255). */
+  base_water: string;
+  dynamic: TerrainDynamic;
+}
+
+/** `GET /api/terrain/dynamic`: the layers that change with weather and seasons. */
+export interface TerrainDynamic {
+  tick: number;
+  day: number;
+  hour: number;
+  season: string;
+  /** Current water depth, centimeters (capped at 255). */
+  water: string;
+  /** Ice cover, 0..255 for 0..1. */
+  ice: string;
+  /** Snow, 0..255 for 0..0.5 m. */
+  snow: string;
+  /** Plant food as a share of the tile's maximum, 0..255. */
+  veg: string;
+  /** Regional soil wetness, 0..255 for 0..1 (0.5 normal, below 0.3 drought). */
+  wetness: string;
+}
+
+export interface AgeBand {
+  from_days: number;
+  to_days: number;
+  female: number;
+  male: number;
+}
+
+export interface DayVitals {
+  day: number;
+  births: number;
+  /** Deaths by cause: starved, thirst, exposure, eaten, toxin, drowned, old_age, attrition, recessive, disease, journey. */
+  deaths: Record<string, number>;
+}
+
+export interface GeneStat {
+  gene: string;
+  mean: number;
+  sd: number;
+  founding_mean: number;
+  /** Daily means aligned with `LineageStats.history_days` (null: not recorded). */
+  history: (number | null)[];
+}
+
+export interface LegacyPoint {
+  day: number;
+  share: number;
+  weighted_share: number;
+  alive: number;
+}
+
+/** `GET /api/lineage/stats`: the genetics dashboard of the caller's lineage. */
+export interface LineageStats {
+  player: PlayerId;
+  lineage: number | null;
+  name: string | null;
+  day: number;
+  alive: number;
+  adults: number;
+  juveniles: number;
+  pregnant: number;
+  max_generation: number;
+  age_bands: AgeBand[];
+  /** Oldest first; the last entry is the current day so far. */
+  vitals: DayVitals[];
+  history_days: number[];
+  /** Largest drift from the founding mean first. */
+  genes: GeneStat[];
+  legacy: LegacyPoint[];
+  alerts: AlertView[];
+}
+
+export interface SeasonRow {
+  player: PlayerId;
+  name: string;
+  mean_share: number;
+  final_share: number;
+  peak_share: number;
+  mean_weighted_share: number;
+  peak_alive: number;
+  days: number;
+}
+
+/** `GET /api/leaderboard/seasons`: newest first. */
+export interface SeasonBoard {
+  year: number;
+  season: string;
+  first_day: number;
+  last_day: number;
+  days: number;
+  current: boolean;
+  rows: SeasonRow[];
 }
 
 /** HTTP error body: `{code, message, ...detail}`. */
@@ -313,6 +445,11 @@ export function parseServerMsg(text: string): ServerMsg | null {
       return isOffer(v.offer) ? (v as unknown as MatingRequestMsg) : null;
     case 'mating_update':
       return isOffer(v.offer) ? (v as unknown as MatingUpdateMsg) : null;
+    case 'alert':
+      return isObj(v.alert) && isStr(v.alert.text) && isStr(v.alert.kind) && isNum(v.alert.day)
+        ? (v as unknown as AlertMsg) : null;
+    case 'session_ended':
+      return isStr(v.reason) ? { type: 'session_ended', reason: v.reason } : null;
     default:
       return null;
   }
