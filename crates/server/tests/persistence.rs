@@ -9,7 +9,10 @@ use std::time::Duration;
 
 use evo_server::design::{BirthSpec, DesignSpec, ThermoSpec};
 use evo_server::game::WorldSettings;
-use evo_server::store::{AccountRecord, DailyRecord, DesignRecord, FileStore, MemoryStore, Store, TradeRecord, KEEP_SNAPSHOTS};
+use evo_server::protocol::{LedgerEntry, LedgerKind};
+use evo_server::store::{
+    AccountRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord, MemoryStore, Store, TradeRecord, KEEP_SNAPSHOTS,
+};
 use evo_server::{start, ServerConfig};
 use futures_util::StreamExt;
 use tokio_tungstenite::tungstenite::Message;
@@ -157,9 +160,22 @@ async fn round_trip(s: &dyn Store) {
         status: "done".into(),
         conceived: Some(true),
         day: 4,
+        listing: Some(3),
+        settlement: Some("paid".into()),
     };
     s.append_trade(&trade).await.unwrap();
-    s.append_trade(&TradeRecord { offer: 2, price: None, conceived: None, status: "expired".into(), ..trade.clone() }).await.unwrap();
+    s.append_trade(&TradeRecord { offer: 2, price: None, conceived: None, status: "expired".into(), listing: None, settlement: None, ..trade.clone() })
+        .await
+        .unwrap();
+    s.put_balance(&BalanceRecord { player: 1, balance: 50, day: 0 }).await.unwrap();
+    s.put_balance(&BalanceRecord { player: 2, balance: 9, day: 1 }).await.unwrap();
+    s.put_balance(&BalanceRecord { player: 1, balance: 41, day: 3 }).await.unwrap();
+    for seq in 1..=4 {
+        s.append_ledger(&ledger("w1", seq, if seq % 2 == 1 { 1 } else { 2 }, seq as i64)).await.unwrap();
+    }
+    // A replayed entry (same world and sequence number) replaces the first.
+    s.append_ledger(&ledger("w1", 3, 1, -30)).await.unwrap();
+    s.append_ledger(&ledger("w2", 1, 1, 7)).await.unwrap();
     for tick in [100u64, 200, 300, 400] {
         s.put_snapshot(tick, tick / 100, &tick.to_le_bytes()).await.unwrap();
     }
@@ -178,13 +194,40 @@ async fn round_trip(s: &dyn Store) {
     let trades = s.load_trades().await.unwrap();
     assert_eq!(trades.len(), 2);
     assert_eq!(trades[0], trade);
-    assert_eq!((trades[1].price, trades[1].conceived), (None, None));
+    assert_eq!((trades[1].price, trades[1].conceived, trades[1].settlement.clone()), (None, None, None));
+    let mut balances = s.load_balances().await.unwrap();
+    balances.sort_by_key(|b| b.player);
+    assert_eq!(balances, vec![BalanceRecord { player: 1, balance: 41, day: 3 }, BalanceRecord { player: 2, balance: 9, day: 1 }]);
+    let all = s.recent_ledger(None, 100).await.unwrap();
+    assert_eq!(all.iter().map(|r| (r.world_id.as_str(), r.entry.seq)).collect::<Vec<_>>(), vec![("w1", 1), ("w1", 2), ("w1", 3), ("w1", 4), ("w2", 1)]);
+    assert_eq!(all[2], ledger("w1", 3, 1, -30));
+    let ann = s.recent_ledger(Some(1), 2).await.unwrap();
+    assert_eq!(ann.iter().map(|r| (r.world_id.as_str(), r.entry.seq, r.entry.delta)).collect::<Vec<_>>(), vec![("w1", 3, -30), ("w2", 1, 7)]);
+    assert_eq!(s.recent_ledger(Some(2), 10).await.unwrap().len(), 2);
     let ticks = s.snapshot_ticks().await.unwrap();
     assert_eq!(ticks.len(), KEEP_SNAPSHOTS);
     assert_eq!(ticks, vec![400, 300, 200]);
     assert_eq!(s.load_snapshot(400).await.unwrap(), b"newer");
     assert_eq!(s.load_snapshot(200).await.unwrap(), 200u64.to_le_bytes());
     assert!(s.load_snapshot(100).await.is_err());
+}
+
+fn ledger(world: &str, seq: u64, player: u32, delta: i64) -> LedgerRecord {
+    LedgerRecord {
+        world_id: world.into(),
+        entry: LedgerEntry {
+            seq,
+            player,
+            tick: seq * 10,
+            day: seq,
+            delta,
+            balance: 100,
+            kind: if delta < 0 { LedgerKind::Escrow } else { LedgerKind::Income },
+            text: format!("entry {seq}"),
+            offer: (delta < 0).then_some(4),
+            listing: None,
+        },
+    }
 }
 
 #[tokio::test]
@@ -202,6 +245,8 @@ async fn store_round_trips(backend: Backend) {
     assert_eq!(recent.iter().map(|r| r.day).collect::<Vec<_>>(), vec![4, 5]);
     assert_eq!(s.load_trades().await.unwrap().len(), 2);
     assert_eq!(s.snapshot_ticks().await.unwrap(), vec![400, 300, 200]);
+    assert_eq!(s.load_balances().await.unwrap().len(), 2);
+    assert_eq!(s.recent_ledger(None, 100).await.unwrap().len(), 5);
     drop(s);
     backend.cleanup().await;
 }
@@ -381,6 +426,116 @@ async fn restart_continues_the_saved_world(backend: Backend) {
     let client = reqwest_like::Client::new(srv.addr);
     let (tick, _) = world_clock(&client).await;
     assert!(tick < saved_tick, "fresh world at tick {tick}");
+    srv.shutdown().await;
+    backend.cleanup().await;
+}
+
+async fn next_state(ws: &mut Socket) -> serde_json::Value {
+    while let Some(Ok(Message::Text(t))) = ws.next().await {
+        let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+        if v["type"] == "state" {
+            return v;
+        }
+    }
+    panic!("socket closed before a state");
+}
+
+/// The renown balance and escrow in the next state message.
+async fn balance(ws: &mut Socket) -> (u64, u64) {
+    let v = next_state(ws).await;
+    (v["balance"].as_u64().unwrap(), v["escrow"].as_u64().unwrap())
+}
+
+on_every_store!(restart_keeps_balances, file_restart_keeps_balances, pg_restart_keeps_balances);
+
+/// Balances survive a restart from the saved game (with the escrow of an
+/// open agreement), and a `--fresh` world starts from the balances in the
+/// store without paying the founding grant again.
+async fn restart_keeps_balances(backend: Backend) {
+    let cfg = backend.config(
+        ServerConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            world: WorldSettings { seed: 11, width: 64, height: 64, wild: false, days_per_year: 4000, ..Default::default() },
+            ..Default::default()
+        }
+        .manual(),
+    );
+    let grant = evo_server::economy::FOUNDING_GRANT;
+    let (ann_before, offer) = {
+        let srv = start(cfg.clone()).await.unwrap();
+        let client = reqwest_like::Client::new(srv.addr);
+        let mut tokens = Vec::new();
+        for name in ["ann", "bob"] {
+            let v = client.post_json("/api/register", &format!(r#"{{"name":"{name}","password":"a long password"}}"#), None).await;
+            let token = v["token"].as_str().unwrap().to_string();
+            let design = DesignSpec { name: format!("{name}'s"), ..spec() };
+            let v = client.post_json("/api/lineage", &serde_json::to_string(&design).unwrap(), Some(&token)).await;
+            assert!(v["lineage"].is_u64(), "{v}");
+            tokens.push(token);
+        }
+        // Two days of income.
+        srv.step(2 * 48 + 1).await;
+        let (mut ws, _) = connect(srv.addr, &tokens[0]).await;
+        let st = next_state(&mut ws).await;
+        let (ann, escrow) = (st["balance"].as_u64().unwrap(), st["escrow"].as_u64().unwrap());
+        assert!(ann > grant && escrow == 0, "ann has {ann}");
+        // Ann asks for one of Bob's organisms at a price: escrowed.
+        let mine: Vec<u64> = st["organisms"].as_array().unwrap().iter().map(|o| o["id"].as_u64().unwrap()).collect();
+        let (mut bws, _) = connect(srv.addr, &tokens[1]).await;
+        let theirs = own_ids(&mut bws).await;
+        let mut offer = None;
+        'pairs: for &m in &mine {
+            for &p in &theirs {
+                let msg = serde_json::json!({"type": "request_mating", "id": 1, "mine": m, "partner": p, "price": 5});
+                futures_util::SinkExt::send(&mut ws, Message::Text(msg.to_string())).await.unwrap();
+                while let Some(Ok(Message::Text(t))) = ws.next().await {
+                    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                    if v["type"] == "result" {
+                        if v["ok"] == true {
+                            offer = v["data"]["offer"]["id"].as_u64();
+                            break 'pairs;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        let offer = offer.expect("some pair can be asked");
+        srv.step(1).await;
+        assert_eq!(balance(&mut ws).await, (ann - 5, 5));
+        drop((ws, bws));
+        srv.shutdown().await;
+        (ann - 5, offer)
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let store = backend.open().await;
+    let stored: Vec<BalanceRecord> = store.load_balances().await.unwrap();
+    assert_eq!(stored.iter().find(|b| b.player == 1).map(|b| b.balance), Some(ann_before));
+    let ledger = store.recent_ledger(Some(1), 100).await.unwrap();
+    assert_eq!(ledger.first().map(|r| r.entry.kind), Some(LedgerKind::Grant));
+    assert_eq!(ledger.last().map(|r| (r.entry.kind, r.entry.offer)), Some((LedgerKind::Escrow, Some(offer))));
+    drop(store);
+
+    // From the saved game: the same balance and the escrowed agreement.
+    {
+        let srv = start(cfg.clone()).await.unwrap();
+        let client = reqwest_like::Client::new(srv.addr);
+        let v = client.post_json("/api/login", r#"{"name":"ann","password":"a long password"}"#, None).await;
+        let (mut ws, _) = connect(srv.addr, v["token"].as_str().unwrap()).await;
+        assert_eq!(balance(&mut ws).await, (ann_before, 5));
+        drop(ws);
+        srv.shutdown().await;
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // A fresh world: balances from the store, no second founding grant (the
+    // escrow of the old world's agreement is not carried over).
+    let srv = start(ServerConfig { fresh: true, ..cfg }).await.unwrap();
+    let client = reqwest_like::Client::new(srv.addr);
+    let v = client.post_json("/api/login", r#"{"name":"ann","password":"a long password"}"#, None).await;
+    let (mut ws, _) = connect(srv.addr, v["token"].as_str().unwrap()).await;
+    assert_eq!(balance(&mut ws).await, (ann_before, 0));
+    drop(ws);
     srv.shutdown().await;
     backend.cleanup().await;
 }

@@ -14,6 +14,8 @@ import { append, clear, h, label, pct } from './dom';
 import { renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
 import { compatSummary } from './mating';
+import { buildMarket } from './market';
+import { balanceText } from './marketData';
 
 export interface GameDeps {
   model: GameModel;
@@ -33,9 +35,10 @@ const TERRAIN_REFRESH_MS = 4000;
 const STATS_REFRESH_MS = 5000;
 const SEASONS_REFRESH_MS = 15000;
 const CHRONICLE_REFRESH_MS = 10000;
+const MARKET_REFRESH_MS = 5000;
 
-type Tab = 'organism' | 'matings' | 'genetics' | 'lineage' | 'world';
-const TAB_LABELS: Record<Tab, string> = { organism: 'Organism', matings: 'Matings', genetics: 'Genetics', lineage: 'Lineage', world: 'World' };
+type Tab = 'organism' | 'matings' | 'market' | 'genetics' | 'lineage' | 'world';
+const TAB_LABELS: Record<Tab, string> = { organism: 'Organism', matings: 'Matings', market: 'Market', genetics: 'Genetics', lineage: 'Lineage', world: 'World' };
 type Mode = 'select' | 'migrate';
 
 export interface GameScreen {
@@ -60,9 +63,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const clockEl = h('span', { id: 'clock' });
   const weatherEl = h('span', { class: 'muted', id: 'weather' });
   const bannerEl = h('span', { class: 'catastrophe-pill', id: 'catastrophe-banner', hidden: true });
+  const balanceEl = h('button', { class: 'pill balance-pill', id: 'balance', title: 'Renown: earned from your legacy share, spent on stud fees (open the Market tab)', onclick: () => showTab('market') });
   const top = h('header', { class: 'topbar' },
     h('strong', {}, 'Evolution MMO'), h('span', { class: 'muted' }, model.name), clockEl, weatherEl, bannerEl,
-    h('span', { class: 'spacer' }), connPill,
+    h('span', { class: 'spacer' }), balanceEl, connPill,
     h('button', { class: 'secondary', id: 'logout', onclick: deps.onLogout }, 'Log out'));
 
   const stage = h('div', { class: 'stage', id: 'stage' });
@@ -90,6 +94,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const tabs: Record<Tab, HTMLElement> = {
     organism: h('div', { class: 'panel', id: 'panel-organism' }),
     matings: h('div', { class: 'panel', id: 'panel-matings' }),
+    market: h('div', { class: 'panel', id: 'panel-market' }),
     genetics: h('div', { class: 'panel', id: 'panel-genetics' }),
     lineage: h('div', { class: 'panel', id: 'panel-lineage' }),
     world: h('div', { class: 'panel', id: 'panel-world' }),
@@ -97,7 +102,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const tabBtns = (Object.keys(tabs) as Tab[]).map((t) =>
     h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, onclick: () => showTab(t) }, TAB_LABELS[t]));
   const alertBadge = h('span', { class: 'badge', id: 'alert-badge', hidden: true });
-  tabBtns[2].append(alertBadge);
+  tabBtns.find((b) => b.dataset.tab === 'genetics')!.append(alertBadge);
   let seenFeed = 0;
   const sidebar = h('aside', { class: 'sidebar' }, h('nav', { class: 'tabs' }, ...tabBtns), ...Object.values(tabs));
   const el = h('div', { class: 'screen game' }, top, h('div', { class: 'game-body' }, stageWrap, sidebar));
@@ -110,6 +115,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (t === 'genetics') void refreshStats();
     if (t === 'lineage') void refreshSeasons();
     if (t === 'world') void refreshChronicle();
+    if (t === 'market') void market.refresh();
     renderPanels(true);
   }
 
@@ -275,6 +281,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       renderTopbar();
       if (tab === 'organism') renderInspector();
       if (tab === 'matings') renderMatings();
+      if (tab === 'market') market.render();
       if (tab === 'lineage') renderLineage();
       if (tab === 'genetics') renderFeedPanel();
       if (tab === 'world' && !chronicle) renderWorld(tabs.world, null, model.player, 0);
@@ -300,6 +307,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const banner = catastropheBanner(w.catastrophe, c.day);
     bannerEl.hidden = banner === null;
     bannerEl.textContent = banner ?? '';
+    balanceEl.textContent = balanceText(s.balance, s.escrow);
   }
 
   function renderConn(): void {
@@ -537,6 +545,23 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         e.outcome && h('small', {}, `${e.outcome.conceived ? 'Conceived' : 'Not conceived'} · mismatch ${e.outcome.mismatch.toFixed(2)} · fertility ${pct(e.outcome.fertility, 0)} · failure chance ${pct(e.outcome.failure_chance, 0)}`),
         e.error && h('small', { class: 'error' }, e.error.message))));
   }
+
+  // --- Market: renown, the stud marketplace and the ledger
+  const market = buildMarket({
+    model,
+    send,
+    onOrganism: (id, x, y) => {
+      model.select(id);
+      view.setFollow(false);
+      if (x !== undefined && y !== undefined) view.centerOn(x, y);
+      showTab('organism');
+    },
+  });
+  tabs.market.append(market.el);
+  const marketTimer = setInterval(() => {
+    if (tab === 'market') void market.refresh();
+  }, MARKET_REFRESH_MS);
+  cleanups.push(() => clearInterval(marketTimer));
 
   // --- Genetics dashboard and alerts feed
   const dashEl = h('div', { id: 'dashboard' });

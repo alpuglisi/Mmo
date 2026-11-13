@@ -138,7 +138,7 @@ export class GameModel {
       }
       case 'alert':
         this.addFeed([alertEntry(m.alert)]);
-        if (m.alert.kind === 'death' || m.alert.kind === 'need') this.toast('info', m.alert.text);
+        if (m.alert.kind === 'death' || m.alert.kind === 'need' || m.alert.kind === 'market') this.toast('info', m.alert.text);
         break;
       case 'session_ended':
         this.emit('session_ended');

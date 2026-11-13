@@ -3,14 +3,15 @@
 //! The design doc puts accounts, lineage history and world snapshots in
 //! PostgreSQL (sqlx): `PgStore` (cargo feature `postgres`, on by default;
 //! `--database-url`) keeps them in one table per record type (`accounts`,
-//! `designs`, `daily_history`, `trades`, `snapshots`). [`FileStore`] (the
-//! default) keeps the same records as JSON files in a data directory, and
-//! [`MemoryStore`] serves tests.
+//! `designs`, `daily_history`, `trades`, `snapshots`, `balances`,
+//! `ledger`). [`FileStore`] (the default) keeps the same records as JSON
+//! files in a data directory, and [`MemoryStore`] serves tests.
 //!
 //! What is persisted: accounts (name, player id, argon2 hash), founder
 //! designs (re-founded into the new world on restart), one history record per
-//! simulated day (legacy shares and lineage counts), and directed-mating
-//! agreements with their price, and saved games (a world snapshot with the
+//! simulated day (legacy shares and lineage counts), directed-mating
+//! agreements with their price, listing and escrow settlement, renown
+//! balances and the ledger (`crate::economy`), and saved games (a world snapshot with the
 //! game state around it, `crate::snapshot`, which includes players' alerts;
 //! the newest [`KEEP_SNAPSHOTS`] are kept). Not persisted: login sessions
 //! (clients log in again after a restart).
@@ -29,6 +30,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::design::DesignSpec;
+use crate::protocol::LedgerEntry;
 
 #[cfg(feature = "postgres")]
 mod pg;
@@ -130,6 +132,33 @@ pub struct TradeRecord {
     pub status: String,
     pub conceived: Option<bool>,
     pub day: u64,
+    /// The marketplace listing it was bought from (records before the
+    /// economy read as none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listing: Option<u64>,
+    /// What happened to the escrowed price: `paid` (to the partner's owner)
+    /// or `refunded`; none when nothing was held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<String>,
+}
+
+/// A player's renown balance (upserted on every change).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BalanceRecord {
+    pub player: PlayerId,
+    pub balance: u64,
+    /// Simulated day of the last change.
+    pub day: u64,
+}
+
+/// A ledger entry of one world. `(world_id, entry.seq)` identifies it: a
+/// world replaying days after a restart from an older saved game writes the
+/// same sequence numbers again, replacing the earlier entries.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LedgerRecord {
+    pub world_id: String,
+    #[serde(flatten)]
+    pub entry: LedgerEntry,
 }
 
 #[async_trait]
@@ -155,6 +184,23 @@ pub trait Store: Send + Sync {
     /// Ticks of the stored snapshots, newest first.
     async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>>;
     async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>>;
+    /// Insert or replace a player's balance.
+    async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()>;
+    async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>>;
+    /// Record a ledger entry; replaces an earlier entry with the same world
+    /// and sequence number, which keeps its place in order.
+    async fn append_ledger(&self, record: &LedgerRecord) -> StoreResult<()>;
+    /// The most recent `limit` ledger entries (of one player, or of
+    /// everyone), oldest first.
+    async fn recent_ledger(&self, player: Option<PlayerId>, limit: usize) -> StoreResult<Vec<LedgerRecord>>;
+}
+
+fn same_entry(a: &LedgerRecord, b: &LedgerRecord) -> bool {
+    a.world_id == b.world_id && a.entry.seq == b.entry.seq
+}
+
+fn last_n<T>(mut v: Vec<T>, limit: usize) -> Vec<T> {
+    v.split_off(v.len().saturating_sub(limit))
 }
 
 /// Snapshots a store keeps (older ones are fallbacks if the newest is
@@ -175,6 +221,8 @@ struct MemInner {
     trades: Vec<TradeRecord>,
     /// Oldest first.
     snapshots: Vec<(u64, Vec<u8>)>,
+    balances: BTreeMap<PlayerId, BalanceRecord>,
+    ledger: Vec<LedgerRecord>,
 }
 
 impl MemoryStore {
@@ -250,6 +298,30 @@ impl Store for MemoryStore {
         let g = self.inner.lock().await;
         g.snapshots.iter().find(|s| s.0 == tick).map(|s| s.1.clone()).ok_or_else(|| StoreError(format!("no snapshot at tick {tick}")))
     }
+
+    async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
+        self.inner.lock().await.balances.insert(record.player, record.clone());
+        Ok(())
+    }
+
+    async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>> {
+        Ok(self.inner.lock().await.balances.values().cloned().collect())
+    }
+
+    async fn append_ledger(&self, record: &LedgerRecord) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        match g.ledger.iter_mut().find(|r| same_entry(r, record)) {
+            Some(r) => *r = record.clone(),
+            None => g.ledger.push(record.clone()),
+        }
+        Ok(())
+    }
+
+    async fn recent_ledger(&self, player: Option<PlayerId>, limit: usize) -> StoreResult<Vec<LedgerRecord>> {
+        let g = self.inner.lock().await;
+        let rows = g.ledger.iter().filter(|r| player.is_none_or(|p| r.entry.player == p)).cloned().collect();
+        Ok(last_n(rows, limit))
+    }
 }
 
 /// Records of the same world and day (records without a world id are never
@@ -276,6 +348,7 @@ pub struct FileStore {
 struct Tables {
     accounts: Vec<AccountRecord>,
     designs: Vec<DesignRecord>,
+    balances: Vec<BalanceRecord>,
 }
 
 impl FileStore {
@@ -284,7 +357,19 @@ impl FileStore {
         tokio::fs::create_dir_all(&dir).await?;
         let accounts = read_table(&dir.join("accounts.json")).await?;
         let designs = read_table(&dir.join("designs.json")).await?;
-        Ok(Self { dir, tables: Mutex::new(Tables { accounts, designs }) })
+        let balances = read_table(&dir.join("balances.json")).await?;
+        Ok(Self { dir, tables: Mutex::new(Tables { accounts, designs, balances }) })
+    }
+
+    /// Every line of a JSONL file (none if it doesn't exist).
+    async fn read_lines<T: for<'de> Deserialize<'de>>(&self, name: &str) -> StoreResult<Vec<T>> {
+        let _guard = self.tables.lock().await;
+        let text = match tokio::fs::read_to_string(self.dir.join(name)).await {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        text.lines().filter(|l| !l.trim().is_empty()).map(|l| Ok(serde_json::from_str(l)?)).collect()
     }
 
     async fn write_table<T: Serialize>(&self, name: &str, rows: &[T]) -> StoreResult<()> {
@@ -389,13 +474,7 @@ impl Store for FileStore {
     }
 
     async fn load_trades(&self) -> StoreResult<Vec<TradeRecord>> {
-        let _guard = self.tables.lock().await;
-        let text = match tokio::fs::read_to_string(self.dir.join("trades.jsonl")).await {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.into()),
-        };
-        text.lines().filter(|l| !l.trim().is_empty()).map(|l| Ok(serde_json::from_str(l)?)).collect()
+        self.read_lines("trades.jsonl").await
     }
 
     async fn put_snapshot(&self, tick: u64, _day: u64, bytes: &[u8]) -> StoreResult<()> {
@@ -436,5 +515,40 @@ impl Store for FileStore {
 
     async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>> {
         Ok(tokio::fs::read(self.dir.join(SNAPSHOT_DIR).join(snapshot_name(tick))).await?)
+    }
+
+    async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
+        let mut t = self.tables.lock().await;
+        match t.balances.iter_mut().find(|b| b.player == record.player) {
+            Some(b) => *b = record.clone(),
+            None => t.balances.push(record.clone()),
+        }
+        self.write_table("balances.json", &t.balances).await
+    }
+
+    async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>> {
+        Ok(self.tables.lock().await.balances.clone())
+    }
+
+    async fn append_ledger(&self, record: &LedgerRecord) -> StoreResult<()> {
+        self.append_line("ledger.jsonl", record).await
+    }
+
+    async fn recent_ledger(&self, player: Option<PlayerId>, limit: usize) -> StoreResult<Vec<LedgerRecord>> {
+        // A replayed entry (same world and sequence number) replaces the
+        // earlier line in its place.
+        let mut rows: Vec<LedgerRecord> = Vec::new();
+        let mut index: std::collections::HashMap<(String, u64), usize> = std::collections::HashMap::new();
+        for r in self.read_lines::<LedgerRecord>("ledger.jsonl").await? {
+            match index.get(&(r.world_id.clone(), r.entry.seq)) {
+                Some(&i) => rows[i] = r,
+                None => {
+                    index.insert((r.world_id.clone(), r.entry.seq), rows.len());
+                    rows.push(r);
+                }
+            }
+        }
+        rows.retain(|r| player.is_none_or(|p| r.entry.player == p));
+        Ok(last_n(rows, limit))
     }
 }

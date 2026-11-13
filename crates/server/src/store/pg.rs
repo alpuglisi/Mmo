@@ -13,7 +13,11 @@ use sqlx::migrate::{Migration, MigrationSource, MigrationType, Migrator};
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 
-use super::{AccountRecord, DailyRecord, DesignRecord, Store, StoreError, StoreResult, TradeRecord, KEEP_SNAPSHOTS};
+use super::{
+    AccountRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord, Store, StoreError, StoreResult, TradeRecord, KEEP_SNAPSHOTS,
+};
+use crate::protocol::{LedgerEntry, LedgerKind};
+use evo_sim::PlayerId;
 
 impl From<sqlx::Error> for StoreError {
     fn from(e: sqlx::Error) -> Self {
@@ -29,7 +33,10 @@ impl From<sqlx::migrate::MigrateError> for StoreError {
 
 /// The migrations in `crates/server/migrations/`, compiled in. Append new
 /// files here; never edit an applied one (sqlx checks their checksums).
-const MIGRATIONS: &[(i64, &str, &str)] = &[(1, "initial", include_str!("../../migrations/0001_initial.sql"))];
+const MIGRATIONS: &[(i64, &str, &str)] = &[
+    (1, "initial", include_str!("../../migrations/0001_initial.sql")),
+    (2, "economy", include_str!("../../migrations/0002_economy.sql")),
+];
 
 #[derive(Debug)]
 struct Embedded;
@@ -186,8 +193,8 @@ impl Store for PgStore {
 
     async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()> {
         sqlx::query(
-            "INSERT INTO trades (offer, from_player, to_player, mine, partner, price, status, conceived, day) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "INSERT INTO trades (offer, from_player, to_player, mine, partner, price, status, conceived, day, listing, settlement) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(int(record.offer))
         .bind(i64::from(record.from_player))
@@ -198,13 +205,15 @@ impl Store for PgStore {
         .bind(&record.status)
         .bind(record.conceived)
         .bind(int(record.day))
+        .bind(record.listing.map(int))
+        .bind(&record.settlement)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     async fn load_trades(&self) -> StoreResult<Vec<TradeRecord>> {
-        let rows = sqlx::query("SELECT offer, from_player, to_player, mine, partner, price, status, conceived, day FROM trades ORDER BY id")
+        let rows = sqlx::query("SELECT offer, from_player, to_player, mine, partner, price, status, conceived, day, listing, settlement FROM trades ORDER BY id")
             .fetch_all(&self.pool)
             .await?;
         rows.iter()
@@ -219,6 +228,8 @@ impl Store for PgStore {
                     status: r.try_get("status")?,
                     conceived: r.try_get("conceived")?,
                     day: get_u64(r, "day")?,
+                    listing: r.try_get::<Option<i64>, _>("listing")?.map(|p| p as u64),
+                    settlement: r.try_get("settlement")?,
                 })
             })
             .collect()
@@ -258,5 +269,82 @@ impl Store for PgStore {
             Some(r) => Ok(r.try_get("data")?),
             None => Err(StoreError(format!("no snapshot at tick {tick}"))),
         }
+    }
+    async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
+        sqlx::query(
+            "INSERT INTO balances (player, balance, updated_day) VALUES ($1, $2, $3) \
+             ON CONFLICT (player) DO UPDATE SET balance = EXCLUDED.balance, updated_day = EXCLUDED.updated_day, updated_at = now()",
+        )
+        .bind(i64::from(record.player))
+        .bind(int(record.balance))
+        .bind(int(record.day))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>> {
+        let rows = sqlx::query("SELECT player, balance, updated_day FROM balances ORDER BY player").fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|r| {
+                Ok(BalanceRecord { player: get_u64(r, "player")? as PlayerId, balance: get_u64(r, "balance")?, day: get_u64(r, "updated_day")? })
+            })
+            .collect()
+    }
+
+    async fn append_ledger(&self, record: &LedgerRecord) -> StoreResult<()> {
+        let e = &record.entry;
+        sqlx::query(
+            "INSERT INTO ledger (world_id, seq, player, tick, day, delta, balance, kind, text, offer, listing) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+             ON CONFLICT (world_id, seq) DO UPDATE SET player = EXCLUDED.player, tick = EXCLUDED.tick, day = EXCLUDED.day, \
+             delta = EXCLUDED.delta, balance = EXCLUDED.balance, kind = EXCLUDED.kind, text = EXCLUDED.text, \
+             offer = EXCLUDED.offer, listing = EXCLUDED.listing",
+        )
+        .bind(&record.world_id)
+        .bind(int(e.seq))
+        .bind(i64::from(e.player))
+        .bind(int(e.tick))
+        .bind(int(e.day))
+        .bind(e.delta)
+        .bind(int(e.balance))
+        .bind(e.kind.name())
+        .bind(&e.text)
+        .bind(e.offer.map(int))
+        .bind(e.listing.map(int))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn recent_ledger(&self, player: Option<PlayerId>, limit: usize) -> StoreResult<Vec<LedgerRecord>> {
+        let rows = sqlx::query(
+            "SELECT world_id, seq, player, tick, day, delta, balance, kind, text, offer, listing \
+             FROM (SELECT * FROM ledger WHERE $1::BIGINT IS NULL OR player = $1 ORDER BY id DESC LIMIT $2) recent ORDER BY id",
+        )
+        .bind(player.map(i64::from))
+        .bind(int(limit as u64))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                let kind: String = r.try_get("kind")?;
+                Ok(LedgerRecord {
+                    world_id: r.try_get("world_id")?,
+                    entry: LedgerEntry {
+                        seq: get_u64(r, "seq")?,
+                        player: get_u64(r, "player")? as PlayerId,
+                        tick: get_u64(r, "tick")?,
+                        day: get_u64(r, "day")?,
+                        delta: r.try_get("delta")?,
+                        balance: get_u64(r, "balance")?,
+                        kind: LedgerKind::parse(&kind).ok_or_else(|| StoreError(format!("unknown ledger kind {kind:?}")))?,
+                        text: r.try_get("text")?,
+                        offer: r.try_get::<Option<i64>, _>("offer")?.map(|v| v as u64),
+                        listing: r.try_get::<Option<i64>, _>("listing")?.map(|v| v as u64),
+                    },
+                })
+            })
+            .collect()
     }
 }

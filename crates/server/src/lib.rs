@@ -18,9 +18,12 @@
 //! - [`snapshot`]: saved games (world snapshot plus game state), written
 //!   daily and on shutdown, restored on startup.
 //! - [`design`]: the JSON form of a founder design.
+//! - [`economy`]: renown balances, the ledger, escrow and the stud
+//!   marketplace's listings.
 
 pub mod accounts;
 pub mod design;
+pub mod economy;
 pub mod game;
 pub mod http;
 pub mod limits;
@@ -171,6 +174,13 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         }
         None => Game::new(build_world(&cfg.world), cfg.game.clone()),
     };
+    // A new world, or a saved game from before the economy: balances and
+    // recent ledger entries come from the store.
+    if !game.economy_restored() {
+        let balances: Vec<_> = store.load_balances().await?.into_iter().map(|b| (b.player, b.balance)).collect();
+        let ledger = store.recent_ledger(None, 2000).await?.into_iter().map(|r| r.entry).collect();
+        game.seed_economy(&balances, ledger);
+    }
     for a in &accounts {
         game.set_name(a.player, &a.name);
     }
@@ -296,6 +306,8 @@ async fn persist_task(store: Arc<dyn Store>, mut rx: mpsc::UnboundedReceiver<Per
         let result = match &ev {
             PersistEvent::Daily(r) => store.append_daily(r).await,
             PersistEvent::Trade(r) => store.append_trade(r).await,
+            PersistEvent::Balance(r) => store.put_balance(r).await,
+            PersistEvent::Ledger(r) => store.append_ledger(r).await,
             PersistEvent::Snapshot(s) => store.put_snapshot(s.tick, s.day, &s.bytes).await,
         };
         if let Err(e) = result {

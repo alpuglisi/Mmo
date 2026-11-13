@@ -1,0 +1,30 @@
+/* The Market tab (ui/market.ts) and the renown pill in the top bar. */
+
+.balance-pill { cursor: pointer; color: #e3b341; border-color: #9e6a03; padding: 2px 10px; font-weight: 600; }
+.balance-pill:hover { background: var(--panel); }
+
+.market-balance { margin: 4px 0 8px; }
+.market-balance strong { color: #e3b341; }
+.market-filters label.check { display: flex; align-items: center; gap: 6px; }
+.market-filters label.check > input { width: auto; margin: 0; }
+
+/* Six sidebar tabs with the Market tab: let them scroll rather than clip. */
+.tabs { overflow-x: auto; scrollbar-width: thin; }
+.tabs .tab { flex: 1 0 auto; font-size: 0.92em; }
+
+.listing { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 6px 0; display: flex; flex-direction: column; gap: 4px; }
+.listing.busy { opacity: 0.7; }
+.listing-head { display: flex; align-items: baseline; gap: 2px; flex-wrap: wrap; }
+.listing-head .fee { margin-left: auto; color: #e3b341; font-weight: 600; white-space: nowrap; }
+.listing .compat[data-level='ok'] { color: var(--good); }
+.listing .compat[data-level='warn'] { color: var(--warn); }
+.listing .compat[data-level='bad'] { color: var(--bad); }
+.listing button[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+.trait-bars { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 0.8em; color: var(--muted); }
+.trait { display: inline-flex; align-items: center; gap: 4px; }
+.trait-bar { display: inline-block; width: 36px; height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.trait-bar span { display: block; height: 100%; background: var(--accent); }
+
+.ledger td.good { color: var(--good); white-space: nowrap; }
+.ledger td.bad { color: var(--bad); white-space: nowrap; }

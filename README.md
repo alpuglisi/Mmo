@@ -10,7 +10,8 @@ Build step 1 of that design (prototype the simulation rules headless, with
 no players attached, and measure per-organism tick cost) is done and still
 being tuned. **Build step 2 has started:** `evo-server`, the authoritative
 Rust server around the simulation (accounts, founding, WebSocket play,
-directed-mating consent, persistence behind a trait; see [Server](#server)).
+directed-mating consent, a renown economy with a stud marketplace,
+persistence behind a trait; see [Server](#server)).
 **Build step 3 has started:** a TypeScript web client (PixiJS, Vite) with
 login, the founder design editor, the world view, matings and a dashboard;
 see [Client](#client).
@@ -281,9 +282,10 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   `World::step`, runs the game bookkeeping, publishes a summary and pushes
   state. A run is reproducible given the same commands in the same ticks.
 - **`Game`** (`game.rs`) is the pure logic around the world: one lineage per
-  player, the mating-offer table and consent flow, migration orders, views and
-  interest management. It returns messages instead of sending them, so it is
-  unit-tested without sockets.
+  player, the mating-offer table and consent flow, the economy and the stud
+  marketplace (`economy.rs`: balances, ledger, listings; escrow on offers),
+  migration orders, views and interest management. It returns messages
+  instead of sending them, so it is unit-tested without sockets.
 - **Interest management:** a state message carries the player's own organisms
   in full and other organisms only inside a square view window (default
   half-side 16 tiles, at most 32; at most 256 foreign organisms, nearest
@@ -380,29 +382,35 @@ Client → server:
 | `possess` | `organism` | Take control of one of your organisms |
 | `order_move` | `organism, x, y` | Walk a possessed organism to a point (tiles) |
 | `release` | `organism` | Back to genetic behavior |
-| `request_mating` | `mine, partner, price?` | Directed mating. Your own pair runs at once; another player's organism sends them a `mating_request` |
+| `request_mating` | `mine, partner, price?` | Directed mating. Your own pair runs at once; another player's organism sends them a `mating_request`. A `price` (renown) goes into escrow at once (`insufficient_funds` if you can't cover it) |
 | `preview_mating` | `mine, partner` | What the mating would give now, nothing spent: `data` = `{compatible, fertility, body_plan_fertility, distance_fertility, body_plan_gaps: [{gene, gap}], mismatch, cost, failure_chance, distance, meeting_distance, problem?}` |
 | `respond_mating` | `request, accept` | The partner's owner answers |
 | `complete_mating` | `request` | Retry an accepted agreement now |
 | `cancel_mating` | `request` | Either side withdraws an open offer |
 | `migrate` / `clear_migration` | `x, y` / – | Group command for your adults |
 | `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window |
+| `create_listing` | `organism, fee, expires_days?` | List one of your adults on the stud marketplace (a male as a stud, a female as a dam); `data` = `{listing}` |
+| `withdraw_listing` | `listing` | Take your listing down (agreements already bought stand) |
+| `buy_listing` | `listing, mine` | Buy one mating with a listed organism for your adult `mine`: an already accepted agreement, the fee in escrow; `data` = `{offer}` |
+| `browse_market` | `mine?` | `data` = `{balance, escrow, slots_left, listings: [{id, owner, owner_name, organism, role (stud/dam), sex, fee, created_tick, expires_tick?, sales, busy, pregnant, lineage, lineage_name, generation, mother?, father?, offspring_raised, age_days, health, x, y, traits: [{gene, value}], preview?}]}`, newest first; `preview` is `preview_mating` of your `mine` with the listed organism |
+| `ledger` | `limit?` | `data` = `{balance, escrow, entries: [{seq, player, tick, day, delta, balance, kind, text, offer?, listing?}]}`, newest first (default 50, at most 100); `kind`: `grant`, `income`, `achievement`, `escrow`, `sale`, `refund` |
 
 Server → client:
 
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage}` | On connect |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation), `nearby` (others in the window), `leaderboard`, `offers` (your open offers) |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited` |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation), `nearby` (others in the window), `leaderboard`, `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
-| `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe) |
+| `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus) |
 | `session_ended` `{reason}` | The session expired; the socket closes next |
 
 **Directed-mating consent:** `request_mating` checks ownership, maturity, sex,
-pregnancy, compatibility and slots, then creates a `pending` offer (price
-recorded; no economy yet) and asks the partner's owner. A pair that can't
+pregnancy, compatibility and slots, then creates a `pending` offer (a
+price is taken into escrow, see [Economy](#economy-and-stud-marketplace))
+and asks the partner's owner. A pair that can't
 conceive is refused up front instead of spending a slot: different body
 plans (`incompatible_body_plans`, naming the genes, e.g. endothermy and birth
 mode) or too distant genomes (`genetically_incompatible`); `preview_mating`
@@ -426,6 +434,57 @@ an organism died first, with the cause; or the rules refused it) or
 `expired` (season change, when slots reset). The requester's seasonal slot
 is spent.
 
+### Economy and stud marketplace
+
+The design doc's "other player must consent and may set a price" and "stud
+marketplace for trading genetics", on a minimal economy (`economy.rs`,
+`game.rs`).
+
+- **Renown** is an in-game resource earned from play, never bought: a
+  one-time **founding grant** of 50 when a player first founds a lineage;
+  **daily income** at each legacy snapshot, `2 + round(100 × (share +
+  weighted_share) / 2)` while the lineage has living members (a 2-renown
+  stipend plus one renown per percentage point of the mean of raw and
+  weighted legacy share; 10% raw and 6% weighted earn 10 a day, an extinct
+  lineage nothing); **achievement bonuses**: species founded 100, niche
+  dominance 40, survived a catastrophe 25, each year of lineage longevity
+  20. Mating slots per season stay the scarce resource: renown only buys
+  access to someone else's organisms, and every directed mating (bought or
+  not) still spends the requester's slot.
+- **Escrow.** A directed request with a price, or a listing purchase,
+  moves the price from the payer's balance into escrow on the agreement at
+  once (`insufficient_funds` otherwise). When the mating runs (`completed`,
+  conceived or not: the preview shows fertility and failure chance up
+  front) the escrow is paid to the partner's owner; every other ending
+  (`declined`, `cancelled` by either side, `failed`, e.g. an organism eaten
+  on the way, `expired` at the season change) refunds it. Trades are stored
+  with the listing and the settlement (`paid` or `refunded`).
+- **Ledger.** Every balance change is an entry (`grant`, `income`,
+  `achievement`, `escrow` (negative), `sale`, `refund`) with the balance
+  after it, a text, the offer and listing; sequence numbers are unique per
+  world. The last 100 per player are kept in the game (the `ledger`
+  command), all of them in the store.
+- **Listings.** `create_listing` puts one of your adults on the market at a
+  fixed fee (0 allowed; up to 1,000,000), optionally expiring after 1–365
+  simulated days; at most 8 listings per player, one per organism. A
+  listing is the owner's consent given in advance: `buy_listing` runs the
+  same checks as a request (maturity, opposite sex, pregnancy,
+  compatibility, the buyer's slots and open-offer limit, funds) and creates
+  an agreement that is already `accepted`, with the fee in escrow; it tries
+  the mating at once and otherwise waits for the two to meet, exactly like
+  an accepted request (escort it from the Matings tab). A stud can serve
+  several buyers at once; a dam takes one buyer at a time (`listing_busy`
+  while promised), and a listed dam is held from breeding on her own while
+  listed (she may be listed while pregnant; buyers wait until she has given
+  birth). A buyer's organism can't be in two open agreements
+  (`organism_busy`). Listings close when withdrawn, at their expiry or
+  when the organism dies (the owner gets a `market` alert); agreements
+  already bought stand. No auctions yet.
+- **Browsing.** `browse_market` lists the open listings with what a buyer
+  sees of the organism (key trait values, lineage and parents, generation,
+  age, health, offspring raised, position) and, given one of your
+  organisms, the `preview_mating` compatibility with each.
+
 ### Persistence
 
 `Store` (`store.rs`) is an async trait with three implementations: a
@@ -439,7 +498,9 @@ it) and an in-memory one (`--memory`, tests).
 | Accounts (name, player id, argon2 hash) | `accounts.json` | `accounts` (name PK, player unique) |
 | Founder designs | `designs.json` | `designs` (player PK, design `jsonb`, upsert) |
 | One record per simulated day and world: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `history.jsonl` | `daily_history` (PK `(world_id, day)`, upsert; legacy and lineages `jsonb`; `seq` keeps write order) |
-| Finished directed-mating agreements with price and outcome | `trades.jsonl` | `trades` (`bigserial` id) |
+| Finished directed-mating agreements with price and outcome, the listing they were bought from and how the escrow settled (`paid`/`refunded`) | `trades.jsonl` | `trades` (`bigserial` id; `listing`, `settlement` from migration 2) |
+| Renown balances, upserted on every change | `balances.json` | `balances` (player PK, balance, day, updated_at) |
+| The ledger: every balance change with world id and sequence number (a replayed entry, same world and sequence, replaces the earlier one) | `ledger.jsonl` | `ledger` (PK `(world_id, seq)`, upsert; `id` keeps write order) |
 | Saved games: the whole `World` plus the game state around it (including players' alerts), every simulated day and at a graceful shutdown; the newest 3 kept | `snapshots/world-<tick>.snap` | `snapshots` (tick PK, day, size, snapshot format version, saved_at, data `bytea`) |
 
 **Daily records and restarts.** Every world gets a random id when its map is
@@ -501,9 +562,19 @@ caches, path) plus about 13 MB for a 512² map. Timed on a shared 4-core
 machine; `cargo run --release -p evo-sim --features serde --example snapshot -- 512 5 2`.
 
 **Saved games** (`snapshot.rs` in the server): magic, the game-side state
-as JSON (player → lineage, open offers, migration orders, alerts, watched
-organisms, milestone progress, chronicle entries already announced, the
-birth and death counters at the last day boundary) and the world snapshot.
+as JSON (player → lineage, open offers with their escrow, migration orders,
+alerts, watched organisms, milestone progress, chronicle entries already
+announced, the birth and death counters at the last day boundary, and the
+economy: balances, recent ledger, listings, who had the founding grant)
+and the world snapshot. The game JSON carries a layout `version`
+(`SAVED_GAME_VERSION`, 2 since the economy); a version-1 saved game still
+restores, with balances and recent ledger entries from the store instead
+(and no escrow on its open offers). A new world (no saved game, or
+`--fresh`) also starts from the stored balances, and players who have one
+don't get the founding grant again; the escrow of open agreements in a
+discarded world is not carried over. A crash between saves restores the
+balances of the last saved game, and the replayed days write the same
+ledger sequence numbers again, replacing their earlier entries.
 The world thread saves after the tick that starts a new simulated day and
 on `Request::Shutdown`, and hands the bytes to the store task
 (`Store::put_snapshot`; `FileStore` writes a temp file, syncs it and
@@ -590,11 +661,28 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   **Migrate…** then a click sends the group command; **Pin view here** sends
   `set_view` at the camera center.
 - **Matings** tab: request a directed mating (one of your adults, a partner
-  id filled from the inspector's "Request mating…", optional price);
+  id filled from the inspector's "Request mating…", optional price in renown,
+  held in escrow);
   incoming requests with Accept / Decline; your open offers with Cancel and,
   once accepted, **Complete now** and **Escort** (possess your organism and
   walk it to the partner's last seen position, the trip to the meeting);
   recent outcomes with conception, mismatch, fertility and failure chance.
+- **Market** tab (`ui/market.ts`, data prep in `ui/marketData.ts`): the
+  renown balance (with escrow) and slots left; the **stud marketplace**,
+  refreshed every 5 s while open: pick one of your adults and every listing
+  shows its compatibility with it (`browse_market` with `mine`), filter by
+  role (studs/dams), maximum fee and "compatible only"; listings sort
+  compatible first, then by fertility and fee, and show the owner and
+  lineage, an appearance summary from the key traits ("herbivore, furred,
+  large"), trait bars, generation and parents, age, health, offspring
+  raised, position, sales, expiry, and a **Buy** button that says why it is
+  disabled (your own listing, already promised, wrong sex, pregnant, can't
+  conceive, no slots, not enough renown); **Show** centers the map on the
+  organism. Below: list one of your adults (fee, optional expiry in days),
+  your listings with **Withdraw**, and the **ledger** (recent totals and
+  entries with signed amounts and the running balance). Bought agreements
+  appear in the Matings tab to escort; sales, payments and refunds arrive
+  as `market` alerts (toasts and the alerts feed).
 - **Genetics** tab (`ui/dashboard.ts`, `ui/charts.ts`), from
   `GET /api/lineage/stats` every 5 s while open: count tiles; a population
   pyramid by age band and sex; births (up) and deaths stacked by cause (down)
@@ -615,7 +703,8 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   **seasonal leaderboards** (`GET /api/leaderboard/seasons`, the current
   season open) and a clickable list of your organisms. The top bar shows the
   clock, season, day/night, weather, a red catastrophe banner while one is
-  under way (from `state.weather.catastrophe`) and the connection state.
+  under way (from `state.weather.catastrophe`), the renown balance (with
+  escrow; a click opens the Market tab) and the connection state.
 - **World** tab (`ui/chronicle.ts`), from `/api/species`, `/api/eras`,
   `/api/catastrophes` and `/api/achievements` every 10 s while open: the
   active catastrophe and what it does, the era clock, finished eras'
@@ -646,7 +735,10 @@ Every failed `result` (server error codes such as `not_owned`,
 a toast. `window.evo` exposes the model, socket and view for debugging and
 the end-to-end test.
 
-**Tests.** Vitest (41 tests): the World tab's data prep (species tree
+**Tests.** Vitest (52 tests): the Market tab's data prep (the appearance
+summary, listing filters and ranking, why a purchase is blocked, balance
+and expiry text, ledger rows and totals, parsing `browse_market` and
+`ledger` data, the state's economy fields and `market` alerts); the World tab's data prep (species tree
 order and depth, statuses, bad parent links, the catastrophe banner and
 labels, niche labels, the player's era ranks); protocol parsing against messages shaped like
 serde's output, including malformed and unknown ones and the `alert` and
@@ -675,7 +767,17 @@ when the cost is 0, since a fertile pair inside both preferences has no
 failure chance; an organism lost to predators or thirst on the way, a
 partner female that conceives before bob accepts (a pending request holds
 nothing) or a season change expiring the agreement means another pair is
-tried, up to five times), releases the walkers, clicks one of its own organisms (the one with
+tried, up to five times), releases the walkers, then buys from the **stud
+marketplace** through both players' Market tabs (the first player lists
+one of her females as a dam (a listed dam is held from breeding and the
+buyer is a male, so no pregnancy spoils the pair; if she is pregnant the
+buyer waits for the birth) → the second picks his male, the listing shows
+"Compatible" → **Buy** → an accepted agreement with the fee in escrow on
+both sides and a `market` alert to the lister → both walk toward each
+other for up to 12 s, then the buyer cancels; the ledgers must match the
+outcome: the lister paid on `completed`, the buyer refunded otherwise →
+the balance pill and ledger rows show → the lister withdraws the listing),
+clicks one of its own organisms (the one with
 the most room around its marker, checked with the view's hit test, retried
 if the selection isn't its own), possesses it, clicks a dry-land spot clear
 of markers and checks it walks toward the target (closest approach tracked,
@@ -687,8 +789,8 @@ the World tab (species listed, the era clock, an achievements row). Every
 step waits on explicit state with generous timeouts. Screenshots go to `SCREENSHOT_DIR`. `e2e/winter_shot.mjs`
 is a screenshot helper (not a test): a 16-day-year world played into winter.
 
-**Not yet:** organism sprites by body plan, touch pinch-zoom, a stud
-marketplace and economy UI, allele-origin shares within the lineage (whose
+**Not yet:** organism sprites by body plan, touch pinch-zoom, marketplace
+auctions, allele-origin shares within the lineage (whose
 genes your organisms carry), per-gene distributions (histograms rather than
 mean ± spread), alert preferences, and the Capacitor shells.
 

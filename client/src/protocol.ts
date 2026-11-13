@@ -25,7 +25,16 @@ export type ClientMsg =
   | { type: 'migrate'; x: number; y: number }
   | { type: 'clear_migration' }
   | { type: 'set_view'; x: number; y: number; radius: number }
-  | { type: 'clear_view' };
+  | { type: 'clear_view' }
+  /** Put one of your adults on the stud marketplace; data: `{ listing: ListingView }`. */
+  | { type: 'create_listing'; organism: OrgId; fee: number; expires_days?: number }
+  | { type: 'withdraw_listing'; listing: number }
+  /** Buy one mating with a listed organism for your adult `mine`; data: `{ offer: OfferView }`. */
+  | { type: 'buy_listing'; listing: number; mine: OrgId }
+  /** Open listings (with compatibility against `mine`); data: `MarketView`. */
+  | { type: 'browse_market'; mine?: OrgId }
+  /** Balance and recent ledger entries; data: `LedgerView`. */
+  | { type: 'ledger'; limit?: number };
 
 /** `ClientEnvelope`: a command plus an optional id echoed in its `result`. */
 export type ClientEnvelope = ClientMsg & { id?: number };
@@ -98,6 +107,10 @@ export interface OfferView {
   price?: number;
   status: OfferStatus;
   created_tick: number;
+  /** The marketplace listing it was bought from. */
+  listing?: number;
+  /** Renown held in escrow (the requester's price) while open. */
+  escrow?: number;
 }
 
 export interface WeatherView {
@@ -210,6 +223,10 @@ export interface StateView {
   nearby: NearbyOrganism[];
   leaderboard: Leaderboard;
   offers: OfferView[];
+  /** Renown available to spend (absent from servers before the economy). */
+  balance?: number;
+  /** Renown of yours held in escrow on open agreements. */
+  escrow?: number;
 }
 
 export interface WelcomeMsg {
@@ -243,7 +260,7 @@ export interface MatingUpdateMsg {
   error?: ErrorInfo;
 }
 
-export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need' | 'world' | 'achievement';
+export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need' | 'world' | 'achievement' | 'market';
 
 export interface AlertView {
   tick: number;
@@ -266,6 +283,77 @@ export interface SessionEndedMsg {
 }
 
 export type ServerMsg = WelcomeMsg | StateMsg | ResultMsg | MatingRequestMsg | MatingUpdateMsg | AlertMsg | SessionEndedMsg;
+
+// ---------------------------------------------------------------- economy and marketplace
+// Data of the `ledger`, `browse_market` and `create_listing` commands.
+
+export type LedgerKind = 'grant' | 'income' | 'achievement' | 'escrow' | 'sale' | 'refund';
+
+/** One change of a player's renown balance. */
+export interface LedgerEntry {
+  seq: number;
+  player: PlayerId;
+  tick: number;
+  day: number;
+  delta: number;
+  /** Balance after the change. */
+  balance: number;
+  kind: LedgerKind | string;
+  text: string;
+  offer?: number;
+  listing?: number;
+}
+
+export interface LedgerView {
+  balance: number;
+  escrow: number;
+  /** Newest first. */
+  entries: LedgerEntry[];
+}
+
+export interface TraitView {
+  /** Gene key as in /api/genes. */
+  gene: string;
+  value: number;
+}
+
+/** A stud (or dam) on the marketplace. */
+export interface ListingView {
+  id: number;
+  owner: PlayerId;
+  owner_name: string;
+  organism: OrgId;
+  role: 'stud' | 'dam' | string;
+  sex: Sex;
+  fee: number;
+  created_tick: number;
+  expires_tick?: number;
+  sales: number;
+  /** A dam already promised in an open agreement. */
+  busy: boolean;
+  pregnant: boolean;
+  lineage: number;
+  lineage_name: string;
+  generation: number;
+  mother?: OrgId;
+  father?: OrgId;
+  offspring_raised: number;
+  age_days: number;
+  health: number;
+  x: number;
+  y: number;
+  traits: TraitView[];
+  /** Compatibility with the organism passed to `browse_market`. */
+  preview?: MatingPreviewView;
+}
+
+export interface MarketView {
+  balance: number;
+  escrow: number;
+  slots_left: number;
+  /** Newest first. */
+  listings: ListingView[];
+}
 
 // ---------------------------------------------------------------- HTTP bodies
 
@@ -590,6 +678,32 @@ function isOffer(v: unknown): v is OfferView {
 function isState(v: Record<string, unknown>): boolean {
   return isObj(v.clock) && isObj(v.weather) && isObj(v.view) && Array.isArray(v.organisms)
     && Array.isArray(v.nearby) && Array.isArray(v.offers) && isObj(v.leaderboard) && isNum(v.slots_left);
+}
+
+function isListing(v: unknown): v is ListingView {
+  return isObj(v) && isNum(v.id) && isNum(v.organism) && isNum(v.owner) && isNum(v.fee) && isStr(v.role)
+    && isNum(v.x) && isNum(v.y) && Array.isArray(v.traits);
+}
+
+function isLedgerEntry(v: unknown): v is LedgerEntry {
+  return isObj(v) && isNum(v.seq) && isNum(v.delta) && isNum(v.balance) && isStr(v.kind) && isStr(v.text);
+}
+
+/** The data of a `browse_market` result; malformed listings are dropped, a malformed reply is null. */
+export function parseMarketView(data: unknown): MarketView | null {
+  if (!isObj(data) || !isNum(data.balance) || !Array.isArray(data.listings)) return null;
+  return {
+    balance: data.balance,
+    escrow: isNum(data.escrow) ? data.escrow : 0,
+    slots_left: isNum(data.slots_left) ? data.slots_left : 0,
+    listings: data.listings.filter(isListing),
+  };
+}
+
+/** The data of a `ledger` result. */
+export function parseLedgerView(data: unknown): LedgerView | null {
+  if (!isObj(data) || !isNum(data.balance) || !Array.isArray(data.entries)) return null;
+  return { balance: data.balance, escrow: isNum(data.escrow) ? data.escrow : 0, entries: data.entries.filter(isLedgerEntry) };
 }
 
 /**

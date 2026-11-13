@@ -31,8 +31,10 @@ pub enum ClientMsg {
     Release { organism: OrgId },
     /// Propose a directed mating between your organism `mine` and `partner`.
     /// Pairs within your own lineage run at once; another player's organism
-    /// needs that player's consent first. `price` is recorded with the
-    /// agreement (no economy yet).
+    /// needs that player's consent first. A `price` (renown) is taken from
+    /// your balance into escrow at once and paid to the partner's owner when
+    /// the mating runs, refunded if it doesn't (`insufficient_funds` if you
+    /// can't cover it).
     RequestMating {
         mine: OrgId,
         partner: OrgId,
@@ -58,6 +60,35 @@ pub enum ClientMsg {
     SetView { x: f32, y: f32, radius: f32 },
     /// Let the view window follow your possessed organism or your lineage.
     ClearView,
+    /// Offer one of your adults on the stud marketplace: anyone may buy one
+    /// mating with it for `fee` renown (consent given in advance). Expires
+    /// after `expires_days` simulated days if set. Data: `{listing}`
+    /// ([`ListingView`]).
+    CreateListing {
+        organism: OrgId,
+        fee: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_days: Option<u32>,
+    },
+    /// Take one of your listings off the marketplace (agreements already
+    /// bought from it stand).
+    WithdrawListing { listing: u64 },
+    /// Buy one mating with a listed organism for your adult `mine`: an
+    /// already accepted agreement, the fee held in escrow until the two meet,
+    /// your seasonal slot spent when it runs. Data: `{offer}`.
+    BuyListing { listing: u64, mine: OrgId },
+    /// The open listings, newest first, each with the compatibility of your
+    /// `mine` with the listed organism if given. Data: [`MarketView`].
+    BrowseMarket {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mine: Option<OrgId>,
+    },
+    /// Your balance and recent ledger entries (newest first, at most `limit`,
+    /// default 50). Data: [`LedgerView`].
+    Ledger {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
 }
 
 impl ClientMsg {
@@ -75,6 +106,11 @@ impl ClientMsg {
             ClientMsg::ClearMigration => "clear_migration",
             ClientMsg::SetView { .. } => "set_view",
             ClientMsg::ClearView => "clear_view",
+            ClientMsg::CreateListing { .. } => "create_listing",
+            ClientMsg::WithdrawListing { .. } => "withdraw_listing",
+            ClientMsg::BuyListing { .. } => "buy_listing",
+            ClientMsg::BrowseMarket { .. } => "browse_market",
+            ClientMsg::Ledger { .. } => "ledger",
         }
     }
 }
@@ -133,6 +169,9 @@ pub enum AlertKind {
     /// An achievement (species founded, longevity, niche dominance,
     /// surviving a catastrophe).
     Achievement,
+    /// The marketplace and renown: a listing bought, a sale paid, a refund,
+    /// a listing closed, an achievement bonus.
+    Market,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -287,6 +326,16 @@ pub struct OfferView {
     pub price: Option<u64>,
     pub status: OfferStatus,
     pub created_tick: u64,
+    /// The marketplace listing this agreement was bought from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listing: Option<u64>,
+    /// Renown held in escrow (the price, from the requester) while open.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub escrow: u64,
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -405,6 +454,12 @@ pub struct StateView {
     pub nearby: Vec<NearbyOrganism>,
     pub leaderboard: Leaderboard,
     pub offers: Vec<OfferView>,
+    /// Renown available to spend.
+    #[serde(default)]
+    pub balance: u64,
+    /// Renown of yours held in escrow on open agreements.
+    #[serde(default)]
+    pub escrow: u64,
 }
 
 /// World summary for `GET /api/world`.
@@ -560,6 +615,128 @@ pub struct SeasonBoard {
     pub rows: Vec<SeasonRow>,
 }
 
+/// Why a balance changed.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LedgerKind {
+    /// The founding grant.
+    Grant,
+    /// Daily income from the legacy share.
+    Income,
+    /// An achievement bonus.
+    Achievement,
+    /// A price or stud fee moved into escrow (negative).
+    Escrow,
+    /// Escrow paid out to the partner's owner when the mating ran.
+    Sale,
+    /// Escrow returned: the agreement ended without a mating.
+    Refund,
+}
+
+impl LedgerKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            LedgerKind::Grant => "grant",
+            LedgerKind::Income => "income",
+            LedgerKind::Achievement => "achievement",
+            LedgerKind::Escrow => "escrow",
+            LedgerKind::Sale => "sale",
+            LedgerKind::Refund => "refund",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        [LedgerKind::Grant, LedgerKind::Income, LedgerKind::Achievement, LedgerKind::Escrow, LedgerKind::Sale, LedgerKind::Refund]
+            .into_iter()
+            .find(|k| k.name() == s)
+    }
+}
+
+/// One change of a player's balance.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LedgerEntry {
+    /// Unique per world, increasing.
+    pub seq: u64,
+    pub player: PlayerId,
+    pub tick: u64,
+    pub day: u64,
+    pub delta: i64,
+    /// Balance after the change.
+    pub balance: u64,
+    pub kind: LedgerKind,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listing: Option<u64>,
+}
+
+/// Data of the `ledger` command.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LedgerView {
+    pub balance: u64,
+    pub escrow: u64,
+    /// Newest first.
+    pub entries: Vec<LedgerEntry>,
+}
+
+/// An expressed gene value of a listed organism.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TraitView {
+    /// Gene key as in `/api/genes`.
+    pub gene: String,
+    pub value: f32,
+}
+
+/// A marketplace listing with what a buyer gets to see of the organism.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ListingView {
+    pub id: u64,
+    pub owner: PlayerId,
+    pub owner_name: String,
+    pub organism: OrgId,
+    /// `stud` (male) or `dam` (female).
+    pub role: String,
+    pub sex: String,
+    pub fee: u64,
+    pub created_tick: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_tick: Option<u64>,
+    /// Matings bought from it so far.
+    pub sales: u32,
+    /// A dam already promised in an open agreement (one at a time).
+    pub busy: bool,
+    pub pregnant: bool,
+    pub lineage: u32,
+    pub lineage_name: String,
+    pub generation: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mother: Option<OrgId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub father: Option<OrgId>,
+    pub offspring_raised: u32,
+    pub age_days: f32,
+    pub health: f32,
+    pub x: f32,
+    pub y: f32,
+    /// Key genes (body size, legs, coverings, locomotion, defenses, diet,
+    /// coloration), expressed values.
+    pub traits: Vec<TraitView>,
+    /// Compatibility with the buyer's chosen organism (`browse_market` with
+    /// `mine`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<MatingPreviewView>,
+}
+
+/// Data of `browse_market`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MarketView {
+    pub balance: u64,
+    pub escrow: u64,
+    pub slots_left: u32,
+    pub listings: Vec<ListingView>,
+}
+
 pub fn action_name(a: Action) -> &'static str {
     match a {
         Action::Idle => "idle",
@@ -677,6 +854,52 @@ mod tests {
         let m: ClientEnvelope = serde_json::from_str(r#"{"type":"request_mating","mine":1,"partner":2}"#).unwrap();
         assert_eq!(m.msg, ClientMsg::RequestMating { mine: 1, partner: 2, price: None });
         assert!(serde_json::from_str::<ClientEnvelope>(r#"{"type":"teleport"}"#).is_err());
+    }
+
+    #[test]
+    fn market_messages_parse() {
+        let m: ClientEnvelope = serde_json::from_str(r#"{"id":4,"type":"create_listing","organism":9,"fee":12}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::CreateListing { organism: 9, fee: 12, expires_days: None });
+        assert_eq!(m.msg.name(), "create_listing");
+        let m: ClientEnvelope = serde_json::from_str(r#"{"type":"create_listing","organism":9,"fee":0,"expires_days":3}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::CreateListing { organism: 9, fee: 0, expires_days: Some(3) });
+        let m: ClientEnvelope = serde_json::from_str(r#"{"type":"buy_listing","listing":2,"mine":5}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::BuyListing { listing: 2, mine: 5 });
+        let m: ClientEnvelope = serde_json::from_str(r#"{"type":"withdraw_listing","listing":2}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::WithdrawListing { listing: 2 });
+        let m: ClientEnvelope = serde_json::from_str(r#"{"type":"browse_market"}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::BrowseMarket { mine: None });
+        let m: ClientEnvelope = serde_json::from_str(r#"{"type":"browse_market","mine":3}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::BrowseMarket { mine: Some(3) });
+        let m: ClientEnvelope = serde_json::from_str(r#"{"type":"ledger","limit":5}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::Ledger { limit: Some(5) });
+        // Negative fees and missing fields are refused by the parser.
+        assert!(serde_json::from_str::<ClientEnvelope>(r#"{"type":"create_listing","organism":9,"fee":-1}"#).is_err());
+        assert!(serde_json::from_str::<ClientEnvelope>(r#"{"type":"buy_listing","listing":2}"#).is_err());
+        // Ledger entries as the client parses them.
+        let e = LedgerEntry {
+            seq: 3,
+            player: 1,
+            tick: 96,
+            day: 2,
+            delta: -10,
+            balance: 40,
+            kind: LedgerKind::Escrow,
+            text: "held".into(),
+            offer: Some(7),
+            listing: None,
+        };
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"seq": 3, "player": 1, "tick": 96, "day": 2, "delta": -10, "balance": 40, "kind": "escrow", "text": "held", "offer": 7})
+        );
+        for k in ["grant", "income", "achievement", "escrow", "sale", "refund"] {
+            let kind = LedgerKind::parse(k).unwrap();
+            assert_eq!(serde_json::to_value(kind).unwrap(), k);
+        }
+        let alert = AlertView { tick: 1, day: 0, kind: AlertKind::Market, text: "sold".into(), organism: None };
+        assert_eq!(serde_json::to_value(alert).unwrap()["kind"], "market");
     }
 
     #[test]

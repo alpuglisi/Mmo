@@ -372,6 +372,187 @@ async function main() {
     await bob.screenshot({ path: path.join(shots, 'matings-bob.png') });
     await page.screenshot({ path: path.join(shots, 'matings-ann.png') });
 
+    // Stud marketplace: ann lists one of her females as a dam through the
+    // Market tab (a listed dam is held from breeding on her own, and bob's
+    // male can't become pregnant, so no pregnancy can spoil the pair
+    // meanwhile), bob finds it with his male's compatibility and buys it (an
+    // accepted agreement, the fee in escrow), both walk toward each other,
+    // and the escrow must settle consistently: paid to ann if the mating
+    // runs, refunded to bob on any other ending (a predator, a season
+    // change, or bob cancelling after 12 s apart). It runs right after the directed
+    // mating, while both lineages are young, and keeps its world time short.
+    await bob.evaluate(() => {
+      window.__results = [];
+      const s = window.evo.socket;
+      const orig = s.send.bind(s);
+      s.send = async (m) => {
+        const r = await orig(m);
+        window.__results.push({ type: m.type, ok: r.ok, error: r.error, data: r.data, mine: m.mine, listing: m.listing });
+        return r;
+      };
+    });
+    const renown = (p) => p.evaluate(() => ({ balance: window.evo.model.state.balance, escrow: window.evo.model.state.escrow }));
+    const ledgerOf = (p) => p.evaluate(async () => (await window.evo.socket.send({ type: 'ledger', limit: 100 })).data);
+    const fee = 10;
+    await page.click('#tab-market');
+    await bob.click('#tab-market');
+    let bought = null;
+    let listingId = null;
+    for (let attempt = 0; attempt < 8 && !bought; attempt++) {
+      // Ann's adult female closest to one of bob's males. She may be
+      // pregnant: once she has given birth the listing's hold keeps her from
+      // conceiving again, so bob waits for her below.
+      let seen = '';
+      const cand = await waitFor('a pair for the market', async () => {
+        const adults = (p) => p.evaluate(() => {
+          const s = window.evo.model.state;
+          return { all: s.organisms.length, adults: s.organisms.filter((o) => o.matured && !o.possessed).map((o) => ({ id: o.id, sex: o.sex, x: o.x, y: o.y, pregnant: o.pregnant })) };
+        });
+        const [a, b] = [await adults(page), await adults(bob)];
+        const females = a.adults.filter((o) => o.sex === 'female');
+        const males = b.adults.filter((o) => o.sex === 'male');
+        seen = `ann ${a.all} organisms, ${females.length} adult females; bob ${b.all} organisms, ${males.length} adult males`;
+        let best = null;
+        for (const x of females) {
+          for (const y of males) {
+            const score = Math.hypot(x.x - y.x, x.y - y.y) + (x.pregnant ? 10 : 0);
+            if (!best || score < best.score) best = { dam: x.id, buyer: y.id, score };
+          }
+        }
+        return best;
+      }, 60000).catch((e) => { throw new Error(`${e.message}; ${seen}`); });
+      // List her (withdrawing an earlier attempt's listing first).
+      if (listingId !== null) await page.evaluate((listing) => window.evo.socket.send({ type: 'withdraw_listing', listing }), listingId);
+      await page.evaluate(() => { window.__results = []; });
+      await page.click('#market-refresh');
+      if (!(await page.selectOption('#market-list-organism', String(cand.dam), { timeout: 3000 }).then(() => true, () => false))) continue;
+      await page.fill('#market-fee', String(fee));
+      await page.click('#market-list-submit');
+      const listed = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
+      if (!listed.ok) {
+        if (['not_found', 'not_mature', 'already_listed'].includes(listed.error?.code)) {
+          console.log(`  … create_listing refused (${listed.error.code}); picking again`);
+          continue;
+        }
+        throw new Error(`create_listing failed: ${JSON.stringify(listed.error)}`);
+      }
+      listingId = listed.data.listing.id;
+      await page.waitForSelector(`#my-listings .listing[data-listing="${listingId}"]`, { timeout: 10000 });
+      // Bob picks his male; the listing shows with its compatibility.
+      if (!(await bob.selectOption('#market-mine', String(cand.buyer), { timeout: 3000 }).then(() => true, () => false))) continue;
+      await bob.click('#market-refresh');
+      const card = `#market-listings .listing[data-listing="${listingId}"]`;
+      const compat = await waitFor('listing with compatibility', () => bob.evaluate((card) => document.querySelector(`${card} .compat`)?.textContent ?? null, card), 15000).catch(() => null);
+      if (!compat) {
+        console.log('  … the listing showed no compatibility (an organism died?); picking again');
+        continue;
+      }
+      if (!compat.startsWith('Compatible: fertility')) throw new Error(`same designs not shown compatible in the market: ${compat}`);
+      // Wait until the buy button is enabled: a pregnant dam first gives birth.
+      const ready = await waitFor('the dam to be available', async () => {
+        if (await bob.isEnabled(`${card} button.buy`).catch(() => false)) return 'ready';
+        const why = (await bob.textContent(`${card} .row .muted`, { timeout: 1000 }).catch(() => null)) ?? 'listing gone';
+        if (!why.includes('pregnant')) return why;
+        await bob.click('#market-refresh');
+        await new Promise((r) => setTimeout(r, 1000));
+        return null;
+      }, 25000).catch(() => 'still pregnant');
+      if (ready !== 'ready') {
+        if (/renown|slots/.test(ready)) throw new Error(`cannot buy: ${ready}; renown ${JSON.stringify(await renown(bob))}`);
+        console.log(`  … buy not possible (${ready}); picking again`);
+        continue;
+      }
+      const before = await renown(bob);
+      await bob.evaluate(() => { window.__results = []; });
+      // (A plain DOM click: the cards are rebuilt when what they show
+      // changes, which can detach a button under a slower synthetic click.)
+      const clicked = await bob.evaluate((sel) => {
+        const b = document.querySelector(sel);
+        if (!b || b.disabled) return false;
+        b.click();
+        return true;
+      }, `${card} button.buy`);
+      if (!clicked) {
+        console.log('  … the buy button went away (listing closed or no longer buyable); picking again');
+        continue;
+      }
+      const r = await waitFor('buy_listing result', () => bob.evaluate(() => window.__results.find((r) => r.type === 'buy_listing')));
+      if (!r.ok) {
+        if (['already_pregnant', 'not_found', 'died', 'not_mature', 'unknown_listing'].includes(r.error?.code)) {
+          console.log(`  … buy_listing refused (${r.error.code}); picking again`);
+          continue;
+        }
+        throw new Error(`buy_listing failed: ${JSON.stringify(r.error)}`);
+      }
+      bought = { id: r.data.offer.id, dam: cand.dam, buyer: r.mine, compat, before };
+      await bob.screenshot({ path: path.join(shots, 'market-listing.png') });
+    }
+    if (!bought) throw new Error('no listing purchase went through');
+    step(`ann listed her dam #${bought.dam} for ${fee} renown; bob bought it for #${bought.buyer} (${bought.compat})`);
+    // The agreement is already accepted on both sides, the fee held in escrow.
+    await waitFor('accepted agreement on both sides', async () => {
+      const [sa, sb] = [await offerOf(page, bought.id), await offerOf(bob, bought.id)];
+      return sa && sb && sa.status === sb.status && sa.status !== 'pending';
+    });
+    const held = await waitFor('escrow in bob\'s state', async () => {
+      const o = await offerOf(bob, bought.id);
+      const r = await renown(bob);
+      // Already settled (they happened to meet at once) or held.
+      return o && o.status !== 'accepted' ? { settled: true, ...r } : r.escrow >= fee ? r : null;
+    });
+    // (Daily income keeps arriving, so the balance itself is checked through
+    // the ledger below.)
+    if (!held.settled && held.escrow < fee) throw new Error(`escrow: ${JSON.stringify(bought.before)} → ${JSON.stringify(held)}`);
+    await waitFor('ann told of the sale', () => page.evaluate(() => window.evo.model.feed.some((e) => e.kind === 'market' && e.text.includes('bought a mating'))), 10000);
+    step(`purchase: offer ${bought.id} accepted at once, ${fee} renown in bob's escrow; ann alerted`);
+    // Both walk toward each other; give up (cancel) after 12 s apart.
+    await bob.evaluate((organism) => window.evo.socket.send({ type: 'possess', organism }), bought.buyer);
+    await page.evaluate((organism) => window.evo.socket.send({ type: 'possess', organism }), bought.dam);
+    const met = await waitFor('the market pair meeting', async () => {
+      const o = await offerOf(bob, bought.id);
+      if (o && o.status !== 'accepted') return true;
+      const a = await page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id), bought.dam);
+      const b = await bob.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id), bought.buyer);
+      if (a && b) {
+        await page.evaluate(({ organism, x, y }) => window.evo.socket.send({ type: 'order_move', organism, x, y }), { organism: bought.dam, x: b.x, y: b.y });
+        await bob.evaluate(({ organism, x, y }) => window.evo.socket.send({ type: 'order_move', organism, x, y }), { organism: bought.buyer, x: a.x, y: a.y });
+      }
+      await new Promise((r) => setTimeout(r, 400));
+      return false;
+    }, 12000).catch(() => false);
+    if (!met) await bob.evaluate((request) => window.evo.socket.send({ type: 'cancel_mating', request }), bought.id);
+    const fin = await waitFor('the purchase closing on both sides', async () => {
+      const [sa, sb] = [await offerOf(page, bought.id), await offerOf(bob, bought.id)];
+      return sa && sb && !['pending', 'accepted'].includes(sa.status) && sa.status === sb.status ? sa : null;
+    });
+    // Settlement: the ledgers must agree with the outcome.
+    const [annLedger, bobLedger] = [await ledgerOf(page), await ledgerOf(bob)];
+    const entry = (l, kind) => l.entries.find((e) => e.kind === kind && e.offer === bought.id);
+    if (!entry(bobLedger, 'escrow') || entry(bobLedger, 'escrow').delta !== -fee) throw new Error(`no escrow entry: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
+    if (fin.status === 'completed') {
+      if (entry(annLedger, 'sale')?.delta !== fee) throw new Error(`completed but ann not paid: ${JSON.stringify(annLedger.entries.slice(0, 5))}`);
+      if (entry(bobLedger, 'refund')) throw new Error('completed and refunded');
+      step(`market mating completed (${fin.outcome?.conceived ? 'conceived' : 'not conceived'}): ann paid ${fee} renown from escrow`);
+    } else {
+      if (entry(bobLedger, 'refund')?.delta !== fee) throw new Error(`${fin.status} but bob not refunded: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
+      if (entry(annLedger, 'sale')) throw new Error(`${fin.status} and paid`);
+      step(`market agreement ${fin.status}${fin.error ? ` (${fin.error.code})` : ''}: bob refunded ${fee} renown`);
+    }
+    await waitFor('escrow released', async () => (await renown(bob)).escrow === 0);
+    // The balance shows in the top bar; the ledger in the Market tab.
+    const pill = await bob.textContent('#balance');
+    if (!/\d+ renown/.test(pill ?? '')) throw new Error(`no balance in the top bar: ${pill}`);
+    await waitFor('ledger rows', () => bob.evaluate(() => document.querySelectorAll('#market-ledger tr[data-seq]').length >= 3), 15000);
+    // Ann withdraws the listing.
+    await page.click(`#my-listings .listing[data-listing="${listingId}"] button.withdraw`);
+    await waitFor('listing withdrawn', () => page.evaluate((id) => !document.querySelector(`#my-listings .listing[data-listing="${id}"]`), listingId), 10000);
+    step(`ledgers agree; balance pill "${pill.trim()}"; ann withdrew listing ${listingId}`);
+    await page.screenshot({ path: path.join(shots, 'market-ann.png') });
+    await bob.screenshot({ path: path.join(shots, 'market-bob.png') });
+    await Promise.all([releaseAll(page), releaseAll(bob)]);
+    await waitFor('release after the market', () => page.evaluate(() => !window.evo.model.state.organisms.some((o) => o.possessed)));
+    await page.click('#tab-matings');
+
     // Select by clicking, possess and walk one of our own organisms. The
     // world keeps running: markers move, organisms die (juveniles often), a
     // possessed organism may break off an order for danger, a severe need or
