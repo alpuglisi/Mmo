@@ -125,7 +125,8 @@ export class GameModel {
         break;
       }
       case 'result':
-        if (!m.ok && m.error) this.toast('error', `${m.command || 'command'}: ${m.error.message} (${m.error.code})`);
+        // A preview is shown in the matings form, not as a toast.
+        if (!m.ok && m.error && m.command !== 'preview_mating') this.toast('error', `${m.command || 'command'}: ${m.error.message} (${m.error.code})`);
         break;
       case 'mating_request': {
         this.offers.set(m.offer.id, { offer: m.offer, incoming: true });

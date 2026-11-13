@@ -29,6 +29,10 @@ p { margin: 0.4em 0; }
 .muted { color: var(--muted); }
 .small { font-size: 0.85em; }
 .error { color: var(--bad); min-height: 1em; }
+.compat { margin: 0.25em 0; }
+.compat[data-level="ok"] { color: var(--good); }
+.compat[data-level="warn"] { color: var(--warn); }
+.compat[data-level="bad"] { color: var(--bad); }
 .spacer { flex: 1; }
 
 button {

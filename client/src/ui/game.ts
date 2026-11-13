@@ -5,7 +5,7 @@
 
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
-import type { ClientMsg, LineageStats, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
+import type { ClientMsg, LineageStats, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
 import { WILD } from '../protocol';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, terrainSummary, type TerrainGrid } from '../world/terrain';
@@ -13,6 +13,7 @@ import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
 import { append, clear, h, label, pct } from './dom';
 import { renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
+import { compatSummary } from './mating';
 
 export interface GameDeps {
   model: GameModel;
@@ -409,8 +410,43 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const price = h('input', { id: 'mating-price', type: 'number', min: 0, placeholder: 'optional' });
     const submit = h('button', { id: 'mating-submit' }, 'Send request');
     const slots = h('p', { class: 'muted small' });
+    // Compatibility of the chosen pair (server `preview_mating`), refreshed
+    // when the pair changes and every few seconds (distance, condition).
+    const compat = h('p', { id: 'mating-compat', class: 'small compat' });
     let optionKey = '';
     let wantMine: OrgId | null = null;
+    let previewSeq = 0;
+    let previewAt = 0;
+    let previewTimer: ReturnType<typeof setTimeout> | undefined;
+    async function updateCompat(): Promise<void> {
+      const m = Number(mine.value);
+      const p = Number(partner.value);
+      const seq = ++previewSeq;
+      previewAt = Date.now();
+      if (!m || !p) {
+        compat.textContent = '';
+        compat.dataset.level = '';
+        compat.dataset.pair = '';
+        return;
+      }
+      const r = await send({ type: 'preview_mating', mine: m, partner: p });
+      if (seq !== previewSeq) return;
+      compat.dataset.pair = `${m}:${p}`;
+      if (r.ok) {
+        const c = compatSummary(r.data as MatingPreviewView);
+        compat.textContent = c.text;
+        compat.dataset.level = c.level;
+      } else {
+        compat.textContent = r.error ? `Can't preview: ${r.error.message}` : '';
+        compat.dataset.level = 'bad';
+      }
+    }
+    const schedulePreview = (): void => {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => void updateCompat(), 250);
+    };
+    mine.addEventListener('change', schedulePreview);
+    partner.addEventListener('input', schedulePreview);
     submit.addEventListener('click', async () => {
       const m = Number(mine.value);
       const p = Number(partner.value);
@@ -432,19 +468,23 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         mine.replaceChildren(...adults.map((o) => h('option', { value: o.id }, `#${o.id} ${o.sex}${o.pregnant ? ' (pregnant)' : ''} · gen ${o.generation}`)));
         if (adults.some((o) => o.id === keep)) mine.value = String(keep);
         wantMine = null;
+        schedulePreview();
+      } else if (Date.now() - previewAt > 3000 && partner.value !== '') {
+        void updateCompat();
       }
       slots.textContent = `${s.slots_left} directed-mating slot${s.slots_left === 1 ? '' : 's'} left this season.`;
     }
     const el = h('div', { class: 'form' },
       h('label', {}, 'My adult', mine),
       h('div', { class: 'row' }, h('label', {}, 'Partner organism', partner), h('label', {}, 'Price', price)),
+      compat,
       h('div', { class: 'row' }, submit), slots,
       h('p', { class: 'muted small' }, 'Pick a partner on the map and press "Request mating…". Pairs within your own lineage run at once; another player must consent, then the two must meet.'));
     return {
       el,
       refresh,
-      setMine: (id: OrgId) => { wantMine = id; mine.value = String(id); optionKey = ''; },
-      setPartner: (id: OrgId) => { partner.value = String(id); },
+      setMine: (id: OrgId) => { wantMine = id; mine.value = String(id); optionKey = ''; schedulePreview(); },
+      setPartner: (id: OrgId) => { partner.value = String(id); schedulePreview(); },
     };
   }
 
