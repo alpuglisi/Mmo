@@ -501,7 +501,7 @@ web client handles both.
   distinct `look` and action name is sent once per connection (`looks`,
   `actions`) and records refer to it by index, so a `look` costs a byte
   when an organism first comes into view and nothing after.
-- **Sub-step states** for a steering player come out as about 50–60 bytes:
+- **Sub-step states** for a steering player come out as about 50–80 bytes:
   the `view` that follows the possessed organism and that organism's new
   position (plus `action` on the first sub-step after an order).
 - **Keyframes and resync.** The first state of a connection is a keyframe,
@@ -1503,7 +1503,15 @@ cargo build --release -p evo-server --bins --examples
 target/release/examples/loadgen --players 200 --duration 150 --ramp 40 --warm-until 22000
 target/release/examples/loadgen --players 200 --duration 1800 --fast --warm-until 22000   # soak
 target/release/examples/loadgen --url http://host:8080 --players 50                       # a running server
+target/release/examples/loadgen --players 200 --proto 1 --deflate                         # JSON states, deflate estimate
 ```
+
+The players speak protocol 2 (binary delta states, as the web client) by
+default; `--proto 1` makes them old clients that get whole JSON states.
+`--deflate` also feeds every state through a deflate stream per connection
+to show what permessage-deflate would save. The summary has the server's
+time per encoded state (`state_encode_us`), protocol 2's keyframes,
+resyncs and decode errors, and the bytes each client got by message kind.
 
 It starts `evo-server` (512² by default) with a file store in `--data DIR`
 and `--no-rate-limits`, since every simulated player comes from 127.0.0.1
@@ -1524,7 +1532,8 @@ connections, skipped state frames, save timings, bytes out, process CPU and
 memory) and prints a line; at the end a summary (`--json FILE` for all of
 it), a graceful stop and a scan of the server log for panics.
 
-**Results** (512², warmed to 22k organisms and growing to 28–34k, 1 s ticks,
+**Results** of the first round, all JSON states (protocol 2 below; 512²,
+warmed to 22k organisms and growing to 28–34k, 1 s ticks,
 1 s state interval, 150 s after a 20–60 s ramp; 4-core container shared
 with other busy agents, load average 6–14, server and load generator on the
 same machine, so these are pessimistic):
@@ -1602,27 +1611,74 @@ RSS flat at 565 MB for its last ten minutes.
   captures replace the waiting one meanwhile. A test checks it.
 - `GET /api/metrics` exposes all of the above for operators.
 
-Remaining limits: **bandwidth** is the first to bite. A steering player
-gets about 115 KB/s (0.9 Mbit/s), an idle one 20–30 KB/s: the 256 nearest
-foreign organisms with their `look` are most of a state, and steering
-players get a full state at every sub-step. 500 steering players need about
-460 Mbit/s of egress. Compression (JSON states compress 5–10×), shorter
-`look`s or delta states would cut that, but each is a protocol change for
-the client. Next on the world thread is the sim tick itself, then the
-sub-step states (a full push to every steering player, three times a tick).
+**Delta states (protocol 2).** Bandwidth was the first limit: a steering
+player got about 115 KB/s, an idle one 20–30 KB/s, because the 256 nearest
+foreign organisms with their `look` were most of each state and steering
+players got a whole state at every sub-step. Measured candidates, same
+warmed world, 150 s after the ramp (the box shared with other jobs, load
+average 4–8):
+
+| | 200, JSON (before) | 200, protocol 2 | 500, JSON (before) | 500, protocol 2 |
+| --- | --- | --- | --- | --- |
+| Outbound, total (per client) | 17.3 MB/s (87 KB/s) | **2.7 MB/s (14 KB/s)** | 58 MB/s (116 KB/s) | **7.4 MB/s (15 KB/s)** |
+| State traffic per client | 75 KB/s | **0.9 KB/s** | 103 KB/s | **1.2 KB/s** |
+| State message p50 / p99 / max | 21 / 66 / 68 KB | 57 B / 5.9 / 11 KB | 32 / 68 / 70 KB | 76 B / 6.7 / 13 KB |
+| Server time per encoded state (mean) | 173 µs | 86–105 µs | – | 86 µs |
+| One state push to all, p50 / p99 | 5.8 / 16 ms | 6.3 / 11 ms | 19 / 37 ms | 20 / 47 ms |
+| Tick p50 / p99; sub-step p99 | 61 / 101; 29 ms | 59 / 109; 35 ms | 62 / 107; 37 ms | 51 / 113; 49 ms |
+| States per client per second | 2.7 | 2.7 | 2.8 | 2.8 |
+| Command → result p50 / p99 | 141 / 250 ms | 143 / 252 ms | 153 / 260 ms | 162 / 256 ms |
+| Server CPU (cores) / RSS max | 0.2 / 425 MB | 0.2 / 420 MB | 0.47 / 665 MB | 0.52 / 636 MB |
+| Dropped, skipped, decode errors, resyncs | 0 | 0 | 0 | 0 |
+
+"JSON (before)" is the server before this change; its encode time comes
+from the new server with `--proto 1` players (17.2 MB/s, the same traffic).
+"State traffic" is the state bytes the clients received; the rest of the
+total is command replies and events.
+
+- **What each technique gives** (bytes of state traffic): deflate with
+  context takeover (`--deflate`) shrinks the JSON states **18×** (the same
+  keys and `look`s over and over); delta states with `look` palettes,
+  quantized positions and the binary records shrink them **80–85×** on
+  their own (a tick's delta is mostly two-byte position changes, a sub-step
+  only the possessed organism), and deflate would take another 2.8× off
+  those. The WebSocket stack here (axum 0.7, tungstenite 0.24) has no
+  permessage-deflate, and delta states alone already take state traffic
+  below the rest, so protocol 2 has no compression.
+- **CPU:** encoding a delta costs less than serializing the JSON did (a
+  micro-benchmark, `wire::tests::encoding_cost`: 256 nearby and 12 own
+  organisms, 54 leaderboard rows: JSON 110 µs and 64 KB; a tick's delta
+  18 µs and 1.8 KB; an unchanged state 11 µs; a keyframe 36 µs and 8.5 KB);
+  in the writers, under load, 86–105 µs against 173 µs. The world thread
+  does what it did before (it still builds every `StateView`); the
+  encoder runs in the connection writers, keyed to what was sent.
+- **What is left:** with states down to about 1 KB/s a client, the load
+  generator's own market browsing is most of the traffic: `browse_market`
+  returns every open listing with its traits (hundreds of listings at 500
+  players), 10–11 KB/s a client at ~3 browses a minute. Paging that reply
+  (or compressing JSON replies once the WebSocket stack can) is next for
+  bandwidth. A player who doesn't browse gets about 1–1.5 KB/s: 0.9–1.2
+  KB/s of states plus replies and events.
+
+Next on the world thread is the sim tick itself, then the sub-step states
+(it still builds a whole `StateView` for every steering player three times
+a tick, though only the possessed organism's delta goes out).
 
 **Capacity recommendation** (512², 25–35k organisms, 1 s ticks):
 
 - **Up to 200 players per world on 4 cores.** The world thread is busy
-  about 15% of the time (tick ~80 ms, pushes ~7 ms, sub-steps ~50 ms
-  p99), command latency stays at its sub-step floor (p99 ~260 ms) and the
-  server needs about 17 MB/s (140 Mbit/s) of egress with everyone steering.
-- **500 players per world is possible** on 4 dedicated cores (on this
-  shared box it held the clock, with p99 command latency 750 ms and 57
-  MB/s, 460 Mbit/s, out), but plan **6–8 cores** (4 for the sim's parallel
-  phases, 1 for the world thread's serial work, 1–2 for serializing and
-  sending states) and a 1 Gbit/s link, or more worlds instead of bigger
-  ones.
+  about 15% of the time (tick ~60–80 ms, pushes ~6 ms, sub-steps ~35 ms
+  p99) and command latency stays at its sub-step floor (p99 ~250 ms).
+  With protocol 2 clients the server needs about 3 MB/s (22 Mbit/s) of
+  egress for 200 heavy players, most of it market browsing (states are
+  ~1 KB/s a client); old JSON clients need 87 KB/s each (17 MB/s).
+- **500 players per world** held the clock on this shared 4-core box
+  (tick p99 ~110 ms, pushes p99 ~45 ms, command p99 ~260 ms) with 7.4 MB/s
+  (60 Mbit/s) out on protocol 2, against 58 MB/s (470 Mbit/s) with JSON
+  states: a 100 Mbit/s link is enough when clients speak protocol 2.
+  Plan **4–6 dedicated cores** (4 for the sim's parallel phases, 1 for the
+  world thread's serial work and the writers), or more worlds instead of
+  bigger ones; bandwidth is no longer what sets the size of a world.
 - Memory: about 0.4 GB at 200 players and 0.7 GB at 500 including save
   copies; budget 1 GB per world. Saves take 45–90 ms of the world thread
   (the copy) and 0.3–1.3 s of the saver thread per simulated day.
@@ -2256,9 +2312,11 @@ in use, 10.71 with the presets' strategies).
    world-thread capture about 10–17 ms; next for save size, perhaps the
    changing tiles as a delta against the previous save; per-world tables
    once there are
-   several shards; smaller states (compression, delta states or shorter
-   `look`s: a steering player gets ~115 KB/s, see
-   [Load and soak test](#load-and-soak-test)); seasonal leaderboard
+   several shards; delta states are done (protocol 2, ~1 KB/s of
+   states a client instead of 75–115 KB/s, see
+   [Load and soak test](#load-and-soak-test)): next for bandwidth, paging
+   `browse_market` replies, and for the world thread, sub-step states that
+   don't rebuild a whole `StateView`; seasonal leaderboard
    aggregation;
    several worlds (shards) per process.
 6. **Client (step 3, started):** a terrain endpoint (tile types and heights
