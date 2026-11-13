@@ -69,6 +69,11 @@ pub struct Balance {
     pub crowding: f32,
     /// Health a predator loses biting fully toxic prey.
     pub toxin_damage: f32,
+    /// Larval competition: young of abandoned eggs (no parental care) die at
+    /// a daily rate of `(kin nearby / larval_competition)^4` until they
+    /// mature, so unpredated fast breeders settle below the hard cap. Uses the
+    /// same kin count as `crowding`. 0 disables.
+    pub larval_competition: f32,
 }
 
 impl Default for Balance {
@@ -93,12 +98,13 @@ impl Default for Balance {
             ambush: 0.4,
             crowding: 0.03,
             toxin_damage: 48.0,
+            larval_competition: 18.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 17;
+    pub const FIELD_COUNT: usize = 18;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -125,6 +131,7 @@ impl Balance {
             ("ambush", &mut self.ambush),
             ("crowding", &mut self.crowding),
             ("toxin_damage", &mut self.toxin_damage),
+            ("larval_competition", &mut self.larval_competition),
         ]
     }
 
