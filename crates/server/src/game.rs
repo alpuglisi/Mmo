@@ -2764,9 +2764,13 @@ mod tests {
         let ma = male(&g, &a);
         let pricey = data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 1000, expires_days: Some(1) }))["listing"]["id"].as_u64().unwrap();
         let fb = female(&g, &b);
+        // (She may have conceived with one of her own meanwhile.)
+        g.world.organisms.iter_mut().find(|o| o.id == fb).unwrap().pregnancy = None;
+        let before = g.balance(2);
+        assert!(before < 1000);
         let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: pricey, mine: fb });
         assert_eq!(result(&out).1.as_deref(), Some("insufficient_funds"));
-        assert_eq!(g.balance(2), economy::FOUNDING_GRANT);
+        assert_eq!(g.balance(2), before);
         // A day later the one-day listing has expired.
         let out = run_days(&mut g, 1);
         assert!(!g.economy.listings.contains_key(&pricey));
