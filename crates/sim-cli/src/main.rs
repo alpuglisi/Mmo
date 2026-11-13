@@ -47,7 +47,7 @@ Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_
 attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
 pregnancy_cost meat_per_kg flee_weight ambush crowding toxin_damage larval_competition
 adult_mortality burrow_shelter burrow_caution parent_defense breeding_density escape
-escape_window home_buffer
+escape_window home_buffer injury_aversion fight_damage
 ";
 
 struct Args {

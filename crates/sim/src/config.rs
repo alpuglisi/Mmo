@@ -120,6 +120,20 @@ pub struct Balance {
     /// Founding: distance in tiles within which organisms that could eat a
     /// new group count against its home (more the closer they are).
     pub home_buffer: f32,
+    /// How strongly a hunter shies away from prey that fights back
+    /// (`decide::fight_back`: power times carnivory, so mostly other
+    /// predators). Its prey score is scaled by
+    /// `(1 - risk)^(injury_aversion * (2 - carnivory))`, `risk` being the
+    /// prey's share of its own plus the striker's power (no pack bonus: the
+    /// bite lands on one animal). It skips prey whose factor is below
+    /// `1 - hunger * carnivory`, so only a hungry hunter takes on another
+    /// predator, and an omnivore, which can graze instead, hardly ever does.
+    /// 0 disables.
+    pub injury_aversion: f32,
+    /// Most health a hunter loses per strike that comes to grips with prey
+    /// that fights back, per unit of the prey's `fight_back`, win or lose.
+    /// 0 disables.
+    pub fight_damage: f32,
 }
 
 impl Default for Balance {
@@ -153,12 +167,14 @@ impl Default for Balance {
             escape: 0.6,
             escape_window: 1.0,
             home_buffer: 28.0,
+            injury_aversion: 6.0,
+            fight_damage: 30.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 26;
+    pub const FIELD_COUNT: usize = 28;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -194,6 +210,8 @@ impl Balance {
             ("escape", &mut self.escape),
             ("escape_window", &mut self.escape_window),
             ("home_buffer", &mut self.home_buffer),
+            ("injury_aversion", &mut self.injury_aversion),
+            ("fight_damage", &mut self.fight_damage),
         ]
     }
 

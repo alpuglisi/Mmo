@@ -45,6 +45,11 @@ struct Viewer<'a> {
     hunter: bool,
     can_breed: bool,
     my_power: f32,
+    /// Striking power without the pack bonus: whoever grabs prey that
+    /// fights back takes the bite alone.
+    fight_power: f32,
+    /// Lowest injury discount the viewer accepts (`1 - hunger * carnivory`).
+    risk_floor: f32,
     /// Seeds per-neighbor draws, so they don't depend on visit order.
     salt: u64,
 }
@@ -77,14 +82,39 @@ fn genetic_distance(a: &Organism, b: &Organism) -> f32 {
     a.pheno.0.iter().zip(&b.pheno.0).map(|(x, y)| (x - y).abs()).sum::<f32>() / Gene::COUNT as f32
 }
 
-/// Grown and carnivorous: able to threaten something.
+/// Carnivory above which an organism hunts live prey (`choose_food`).
+pub(crate) const HUNTER_CARNIVORY: f32 = 0.45;
+
+/// Grown and carnivorous enough to hunt: able to threaten something. The
+/// grid's `ARMED` flag prunes far threats with this, so it must stay in step
+/// with `can_threaten`.
 pub(crate) fn is_armed(o: &Organism) -> bool {
-    o.traits.carnivory > 0.5 && o.growth > 0.5
+    o.traits.carnivory > HUNTER_CARNIVORY && o.growth > 0.5
 }
 
-/// Can `predator` threaten `prey` at all?
+/// Can `predator` threaten `prey` at all? Anything that would hunt the
+/// prey counts, omnivores included.
 pub(crate) fn can_threaten(predator: &Organism, prey: &Organism) -> bool {
     is_armed(predator) && predator.mass() > 0.3 * prey.mass()
+}
+
+/// How hard `o` fights back when attacked: a meat eater turns on its
+/// attacker with fangs and claws, a plant eater mostly tries to get away.
+pub(crate) fn fight_back(o: &Organism) -> f32 {
+    o.power() * o.traits.carnivory
+}
+
+/// Factor on a hunter's prey score for the risk of being hurt by prey that
+/// fights back: `(1 - risk)^(injury_aversion * (2 - carnivory))`, where
+/// `risk` is the prey's share of the two fighters' power. Omnivores, which
+/// can eat plants instead, weigh the risk more than strict carnivores.
+/// Never above 1, so the far-neighbor prey bound in `decide` still holds.
+pub(crate) fn injury_discount(hunter: &Organism, own_power: f32, danger: f32, aversion: f32) -> f32 {
+    if danger <= 0.0 || aversion <= 0.0 {
+        return 1.0;
+    }
+    let risk = danger / (own_power + danger + 1e-3);
+    (1.0 - risk).powf(aversion * (2.0 - hunter.traits.carnivory))
 }
 
 /// Largest prey a hunter will take, with cooperative hunting.
@@ -147,11 +177,13 @@ impl World {
         let radius = (2.0 + cfg.balance.perception_range * perception).min(cfg.max_perception);
 
         let coop = self.coop_bonus(o);
-        let hunter = o.traits.carnivory > 0.45 && o.growth > 0.6;
+        let hunter = o.traits.carnivory > HUNTER_CARNIVORY && o.growth > 0.6;
         let can_breed = o.can_breed(self.tick);
         let my_power = o.power() * (1.0 + coop) * cfg.balance.attack_power;
 
-        let v = Viewer { o, radius, alarm, coop, hunter, can_breed, my_power, salt: rng.gen() };
+        let fight_power = o.power() * cfg.balance.attack_power;
+        let risk_floor = 1.0 - n.hunger / 100.0 * o.traits.carnivory;
+        let v = Viewer { o, radius, alarm, coop, hunter, can_breed, my_power, fight_power, risk_floor, salt: rng.gen() };
         let mut seen = Perception {
             threat: 0.0,
             threat_pos: o.pos,
@@ -391,10 +423,15 @@ impl World {
                     let guard = self.guardian(q).0;
                     let my_power = v.my_power;
                     let roll = (splitmix64(v.salt ^ q.id) >> 40) as f32 / (1u64 << 24) as f32;
-                    if roll >= avoid && (guard == 0.0 || my_power > q.resistance() + guard) {
+                    // Prey that fights back is only worth the risk to a hungry
+                    // hunter, and less so to one that could graze instead.
+                    let injury = injury_discount(o, v.fight_power, fight_back(q), cfg.balance.injury_aversion);
+                    if roll >= avoid && (guard == 0.0 || my_power > q.resistance() + guard) && injury >= v.risk_floor {
                         let odds = my_power / (my_power + q.resistance() + guard + 1e-3);
                         let chase = if q.traits.stats.speed * q.activity < o.traits.stats.speed * o.activity { MAX_CHASE } else { 0.6 };
-                        let score = q.mass().powf(0.75) / (1.0 + d) * odds * chase;
+                        // `injury <= 1` and `odds < 1`, so the far-neighbor bound
+                        // `mass^0.75 * MAX_CHASE / (1 + d)` still holds.
+                        let score = q.mass().powf(0.75) / (1.0 + d) * odds * chase * injury;
                         if beats(score, j, seen.prey) {
                             seen.prey = Some((score, j));
                         }
@@ -435,7 +472,7 @@ impl World {
             return;
         }
         if let Some((_, j)) = prey {
-            if hunt_value > graze_here * 0.05 && c > 0.45 {
+            if hunt_value > graze_here * 0.05 && c > HUNTER_CARNIVORY {
                 let q = &self.organisms[j];
                 intent.action = Action::Hunt;
                 intent.target = Some(q.pos);
@@ -577,6 +614,56 @@ mod tests {
         let intent = w.decide(vole);
         assert!(intent.threat > 0.0, "fox unseen");
         assert_eq!(intent.kin_nearby, 150);
+    }
+
+    /// A burrowing omnivore (carnivory 0.5) hunts voles, so a vole must see
+    /// it as a threat even beyond its nearest `FOCUS` neighbors, where only
+    /// the grid's `ARMED` flag decides whether it gets a close look.
+    #[test]
+    fn crowd_does_not_hide_a_burrowing_omnivore() {
+        let mut w = presets::standard_world(WorldConfig { seed: 4, width: 48, height: 48, ..Default::default() }, 1);
+        let vole = w.organisms.iter().position(|o| o.lineage == 0 && o.matured).unwrap();
+        let burrower = w.organisms.iter().position(|o| o.lineage == 7 && o.growth > 0.5).unwrap();
+        for o in w.organisms.iter_mut() {
+            o.pos = Vec2::new(1.0, 1.0);
+        }
+        let center = Vec2::new(24.0, 24.0);
+        let template = w.organisms[vole].clone();
+        for k in 0..150u64 {
+            let mut c = template.clone();
+            c.id = 1_000_000 + k;
+            c.pos = center + Vec2::new(1.8 * (k as f32 / 150.0).sqrt(), 0.0).rotate(2.4 * k as f32);
+            w.organisms.push(c);
+        }
+        w.organisms[vole].pos = center;
+        let b = &mut w.organisms[burrower];
+        b.traits.carnivory = 0.5;
+        b.sheltered = false;
+        b.pos = center + Vec2::new(2.0, 0.0);
+        assert!(can_threaten(&w.organisms[burrower], &w.organisms[vole]));
+        w.grid.rebuild(&w.organisms);
+        let intent = w.decide(vole);
+        assert!(intent.threat > 0.0, "burrower unseen");
+    }
+
+    /// Predators are risky prey: an omnivore shies away from a fox more than
+    /// a strict carnivore of equal power would, and nobody fears a grazer.
+    #[test]
+    fn hunters_weigh_injury_from_prey_that_fights_back() {
+        let w = presets::standard_world(WorldConfig { seed: 3, width: 48, height: 48, ..Default::default() }, 1);
+        let pick = |lineage: u32| &w.organisms[w.organisms.iter().position(|o| o.lineage == lineage).unwrap()];
+        let (fox, pack, grazer, burrower) = (pick(3), pick(4), pick(5), pick(7));
+        let k = w.config.balance.injury_aversion;
+        assert!(fight_back(grazer) < 0.05 * fight_back(fox));
+        assert!(injury_discount(pack, pack.power(), fight_back(grazer), k) > 0.9);
+        let from_burrower = injury_discount(burrower, 0.5, fight_back(fox), k);
+        let from_carnivore = injury_discount(pack, 0.5, fight_back(fox), k);
+        assert!(from_burrower < 0.5 * from_carnivore, "{from_burrower} vs {from_carnivore}");
+        // Even a starving omnivore leaves the fox alone: its risk tolerance
+        // tops out at its carnivory (`1 - hunger * carnivory`).
+        assert!(from_burrower < 1.0 - burrower.traits.carnivory, "{from_burrower}");
+        // A predator that burrows can threaten what it would hunt.
+        assert!(can_threaten(burrower, pick(0)));
     }
 
     /// An antelope calf next to its mother borrows her resistance; away from

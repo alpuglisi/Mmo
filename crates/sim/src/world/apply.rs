@@ -253,6 +253,7 @@ impl World {
             p *= 1.0 - 0.6 * tox;
         }
         let prey_power = b.power().max(guard_power);
+        let prey_fights = super::decide::fight_back(b);
         let prey_bright = b.pheno[Gene::Coloration] > 0.6;
         let prey_pos = b.pos;
         let prey_mass = b.mass();
@@ -287,6 +288,17 @@ impl World {
                 self.move_toward(j, self.map.clamp(prey_pos + away * 4.0), true);
             }
             return;
+        }
+
+        // Prey that fights back hurts the hunter once they come to grips,
+        // whether or not the hunter wins.
+        if prey_fights > 0.0 && self.config.balance.fight_damage > 0.0 {
+            let a = &mut self.organisms[i];
+            a.health -= self.config.balance.fight_damage * prey_fights * rng.gen::<f32>();
+            if a.alive && a.health <= 0.0 {
+                self.kill(i, DeathCause::Predation);
+                return;
+            }
         }
 
         if rng.gen::<f32>() < p {
