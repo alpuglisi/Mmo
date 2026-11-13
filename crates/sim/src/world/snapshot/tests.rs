@@ -28,11 +28,19 @@ fn busy_world() -> World {
 }
 
 /// Give some organisms mutations tagged by a third player, so their
-/// genomes carry several origin tags.
+/// genomes carry several origin tags. Every fifth organism is re-tagged, and
+/// the father of the first pregnancy, so that some pregnancy's father genome
+/// is no longer shared with anyone in the world.
 fn tag_mutations(w: &mut World) {
     let mut rng = crate::rng::rng_for(21, 99, 0, 0);
     let mutation = crate::genome::MutationParams { rate: 0.1, sd: 0.01 };
-    for i in (0..w.organisms.len()).step_by(5) {
+    let first_father = w
+        .organisms
+        .iter()
+        .filter_map(|o| o.pregnancy.as_ref())
+        .find_map(|p| w.organisms.iter().position(|f| Arc::ptr_eq(&f.genome, &p.father)));
+    let every_fifth = (0..w.organisms.len()).step_by(5).filter(|&i| Some(i) != first_father);
+    for i in first_father.into_iter().chain(every_fifth) {
         let a = &w.organisms[i].genome;
         let g = crate::Genome::inherit(a, a, 9, mutation, 0.0, &mut rng);
         w.organisms[i].genome = Arc::new(g);
