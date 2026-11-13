@@ -229,9 +229,11 @@ impl World {
 
     fn attack(&mut self, i: usize, j: usize, rng: &mut SimRng) {
         let (a, b) = (&self.organisms[i], &self.organisms[j]);
-        if !b.alive || a.pos.dist(b.pos) > self.config.balance.attack_reach {
+        // A hunter whose last prey broke free is still recovering.
+        if !b.alive || a.pos.dist(b.pos) > self.config.balance.attack_reach || self.tick < a.strike_ready_tick {
             return;
         }
+        let escape = self.escape_chance(a, b);
         let pw = a.power() * (1.0 + self.coop_bonus(a)) * self.config.balance.attack_power;
         let mut rs = b.resistance() * (1.0 + 1.5 * self.herd_bonus(b));
         // A parent standing over its dependent young fights for it.
@@ -268,6 +270,25 @@ impl World {
             }
         }
 
+        // The prey may twist away before the hunter gets a grip: a contest of
+        // speed and agility. It then bolts while the hunter recovers, so an
+        // encounter is a contest rather than a strike re-rolled every tick.
+        if rng.gen::<f32>() < escape {
+            self.counters.failed_hunts += 1;
+            let window = (self.config.balance.escape_window * self.config.ticks_per_day as f32 / 24.0).round();
+            let a = &mut self.organisms[i];
+            a.needs.energy = (a.needs.energy - 8.0).max(0.0);
+            a.strike_ready_tick = self.tick + window as u64;
+            let from = a.pos;
+            // A burrower stays in its burrow; anything else gets a burst of distance.
+            if !self.organisms[j].sheltered {
+                let away = (prey_pos - from).norm();
+                let away = if away == Vec2::ZERO { Vec2::new(1.0, 0.0) } else { away };
+                self.move_toward(j, self.map.clamp(prey_pos + away * 4.0), true);
+            }
+            return;
+        }
+
         if rng.gen::<f32>() < p {
             self.kill(j, DeathCause::Predation);
             self.counters.kills += 1;
@@ -276,6 +297,7 @@ impl World {
                 self.eat_meat(i, 1.0);
             }
         } else {
+            // Held but not subdued: the struggle goes on next tick.
             self.counters.failed_hunts += 1;
             let a = &mut self.organisms[i];
             a.needs.energy = (a.needs.energy - 8.0).max(0.0);
@@ -286,6 +308,18 @@ impl World {
             let b = &mut self.organisms[j];
             b.needs.energy = (b.needs.energy - 5.0).max(0.0);
         }
+    }
+
+    /// Chance that prey `b` slips away from hunter `a`'s strike: the prey's
+    /// share of their combined speed and agility, scaled by `Balance::escape`.
+    /// Prey caught off guard (not fleeing) reacts late, like its resistance.
+    pub(crate) fn escape_chance(&self, a: &Organism, b: &Organism) -> f32 {
+        let (pursue, evade) = (a.evasion(), b.evasion());
+        let mut q = self.config.balance.escape * 2.0 * evade / (evade + pursue + 1e-6);
+        if b.action != Action::Flee {
+            q *= 1.0 - self.config.balance.ambush;
+        }
+        q.min(0.95)
     }
 
     fn try_mate(&mut self, i: usize, j: usize, rng: &mut SimRng) {
@@ -654,6 +688,7 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::organism::Needs;
     use crate::{presets, WorldConfig};
 
     #[test]
@@ -683,5 +718,56 @@ mod tests {
         };
         let (with, without) = (deaths(18.0), deaths(0.0));
         assert!(with > without + 10, "deaths with competition {with}, without {without}");
+    }
+
+    /// A fox on a fleeing adult antelope: fast, alert, grown and rested prey
+    /// slips strikes more often than a calf, a tired or an unwary animal.
+    #[test]
+    fn escape_is_a_contest_of_speed_and_agility() {
+        let w = presets::standard_world(WorldConfig { seed: 3, width: 48, height: 48, ..Default::default() }, 1);
+        let pick = |lineage: u32| {
+            let mut o = w.organisms.iter().find(|o| o.lineage == lineage).unwrap().clone();
+            (o.growth, o.matured, o.action, o.needs.energy) = (1.0, true, Action::Flee, 80.0);
+            o
+        };
+        let (fox, adult) = (pick(3), pick(1));
+        let q = w.escape_chance(&fox, &adult);
+        assert!(q > 0.4 && q < 0.95, "adult {q}");
+        let calf = Organism { growth: 0.3, matured: false, ..adult.clone() };
+        let tired = Organism { needs: Needs { energy: 10.0, ..adult.needs }, ..adult.clone() };
+        let unwary = Organism { action: Action::Graze, ..adult.clone() };
+        for (what, o) in [("calf", calf), ("tired", tired), ("unwary", unwary)] {
+            let qo = w.escape_chance(&fox, &o);
+            assert!(qo < q - 0.05, "{what} {qo} vs adult {q}");
+        }
+    }
+
+    /// Prey that slips a strike bolts, and the hunter can't strike again
+    /// until it recovers: no re-roll next tick.
+    #[test]
+    fn slipped_strike_opens_an_escape_window() {
+        let mut config = WorldConfig { seed: 3, width: 48, height: 48, ..Default::default() };
+        config.balance.escape = 10.0; // capped at 0.95
+        let mut w = presets::standard_world(config, 1);
+        let fox = w.organisms.iter().position(|o| o.lineage == 3).unwrap();
+        let prey = w.organisms.iter().position(|o| o.lineage == 1).unwrap();
+        for o in [fox, prey] {
+            let o = &mut w.organisms[o];
+            (o.growth, o.matured, o.action, o.needs.energy, o.mother) = (1.0, true, Action::Flee, 80.0, None);
+        }
+        w.organisms[fox].pos = w.organisms[prey].pos + Vec2::new(0.6, 0.0);
+        let mut rng = crate::rng::rng_for(3, crate::rng::stream::APPLY, 0, 0);
+        w.attack(fox, prey, &mut rng);
+        assert!(w.organisms[prey].alive);
+        assert_eq!(w.counters.failed_hunts, 1);
+        assert!(w.organisms[fox].strike_ready_tick > w.tick);
+        assert!(w.organisms[fox].pos.dist(w.organisms[prey].pos) > 0.6, "prey bolted");
+        // Back in reach at once, but the fox is still recovering.
+        w.organisms[fox].pos = w.organisms[prey].pos + Vec2::new(0.6, 0.0);
+        for _ in 0..5 {
+            w.attack(fox, prey, &mut rng);
+        }
+        assert!(w.organisms[prey].alive);
+        assert_eq!((w.counters.failed_hunts, w.counters.kills), (1, 0));
     }
 }

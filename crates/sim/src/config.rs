@@ -96,6 +96,16 @@ pub struct Balance {
     /// when a predator attacks it, times `(1 - litter fraction)^2` (so
     /// single young are guarded fully, big litters barely). 0 disables.
     pub parent_defense: f32,
+    /// Chance that alert prey slips a strike and bolts, when prey and hunter
+    /// are evenly matched in speed and agility (`Organism::evasion`). Scaled
+    /// by the prey's share of the contest, `2 * evade / (evade + pursue)`,
+    /// cut by `ambush` for prey caught off guard, capped at 0.95. Only a
+    /// strike the prey doesn't slip goes on to the power-vs-resistance roll.
+    /// 0 disables (every strike is a power roll, re-rolled each tick).
+    pub escape: f32,
+    /// Hours a hunter needs to recover after its prey broke free before it
+    /// can strike anything again: the prey's head start.
+    pub escape_window: f32,
 }
 
 impl Default for Balance {
@@ -125,12 +135,14 @@ impl Default for Balance {
             burrow_shelter: 1.0,
             burrow_caution: 2.0,
             parent_defense: 1.0,
+            escape: 0.6,
+            escape_window: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 22;
+    pub const FIELD_COUNT: usize = 24;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -162,6 +174,8 @@ impl Balance {
             ("burrow_shelter", &mut self.burrow_shelter),
             ("burrow_caution", &mut self.burrow_caution),
             ("parent_defense", &mut self.parent_defense),
+            ("escape", &mut self.escape),
+            ("escape_window", &mut self.escape_window),
         ]
     }
 
