@@ -121,6 +121,7 @@ cargo run --release --example trace -- 3 200          # follow one fox (lineage 
 cargo run --release --example stuck -- 120 1 2        # how often organisms get stuck
 cargo run --release --example calibrate -- tournament --worlds 20   # point-cost check (CSV)
 cargo run --release --example deaths -- 1,5 120 31 32 33   # who kills antelope and herd grazers, and when
+cargo run --release --example predators -- 120 1 2 3     # pack hunters vs their prey: booms, kills by prey rarity
 cargo run --release --bin evo-sim -- sweep --trials 1 --seeds 12 --rounds 1 --seed 31 --migrants   # with the migrating caribou
 cargo run --release --bin evo-sim -- run --size 256 --focus 64,64 --focus 192,192   # level of detail
 cargo run --release --example lod -- 256 90 1 64,64 192,192   # LOD vs full simulation
@@ -2155,7 +2156,8 @@ Validation uses 12 seeds (31–42) that no tuning run or agent touched, on a
 | Dominant-design counters, seeds 31–42 (55–66) | 10.73 (11.08) | 100% | 33% (58%) | 92% (92%) | 100% | 100% | 92% (92%) | 100% | 100% |
 | Final balance pass, seeds 31–42 (55–66) | 11.38 (11.79) | 100% | 92% (100%) | 92% (100%) | 100% | 100% | 100% (100%) | 100% | 92% (100%) |
 | Base before vigilance at water (snapshot v7), seeds 31–42 (55–66) | 11.61 (11.46) | 100% | 92% (92%) | 100% | 100% | 100% | 100% (92%) | 100% | 100% |
-| **Current: vigilance at water, stripped-ground foraging, seeds 31–42 (55–66)** | **11.61 (11.37)** | 100% | **100% (100%)** | 100% | 100% | 92% (100%) | 100% (92%) | 100% | 100% |
+| Vigilance at water, stripped-ground foraging (snapshot v8), seeds 31–42 (55–66) | 11.61 (11.37) | 100% | 100% (100%) | 100% | 100% | 92% (100%) | 100% (92%) | 100% | 100% |
+| **Current: prey switching by search image, seeds 31–42 (55–66)** | **11.54 (11.41)** | 100% | 100% (100%) | 100% | 100% | 92% (100%) | 100% (92%) | 100% | 100% |
 
 Pathfinding cost 0.2 points, within the noise of a no-op change (`sprint`
 2.45 → 2.4501 under greedy steering scores 11.04 with antelope at 67%).
@@ -2215,8 +2217,10 @@ stream, so they change a world only through their effects.
   the held-out sets (12 of 12 on both after vigilance at water, below). A
   world loses them where pack hunters boom (24 founders to 100–145 by day
   80, fed by grazers and voles) and take the slow-breeding antelope as
-  by-catch; behavior fixes have not moved that macro outcome measurably
-  (see the rejected rules below). Hybrids between antelope and herd grazers
+  by-catch. Prey switching (below) halves how often a prey lineage is
+  wiped out, but the booms themselves are as large as before (hunter
+  peak-to-mean about 1.6 either way), and the one breeding rule tried on
+  the predator side (embryo resorption) suppressed the hunters too much. Hybrids between antelope and herd grazers
   still occur, as do fox × pack hunter hybrids, since those pairs share a
   body plan.
 - The prey-side changes below lean the balance toward prey: voles, newts,
@@ -2619,6 +2623,77 @@ threat_caution=0 --set alert_guard=0 --set pasture_search=0` restores the
 old rules (the antelope preset keeps its vigilance). Snapshots move to
 format version 8 (three new `Balance` fields in the saved config). New
 tunables: `threat_caution`, `alert_guard`, `pasture_search`.
+
+**Pack-hunter booms: prey switching by search image.** Decisions use
+`evo-sim compare` on seeds 101–124 and 149–172 (24 each; neither used for
+diagnosis), and the held-out sweeps as confirmation. Diagnosis used the new
+`examples/predators.rs` (`cargo run --release --example predators -- 120
+1 2 3 ...`), which follows the pack hunters against their prey (head
+counts, hunger and prey kg per hunter every 10 days; kills per prey
+lineage by how common that prey was; hunger while chasing; births and
+deaths by prey kg per hunter; pregnant hunters' hunger), on seeds 1–24
+and 201–248. On seeds 1–24 a pack-hunter population peaks at 1.57× its
+mean on average (up to 191 hunters from 24 founders), and two seeds lost a
+prey lineage. The candidate mechanisms against that data:
+
+| Mechanism | What the data says | Verdict |
+| --- | --- | --- |
+| Satiation (a full hunter stops hunting) | Already there: adult hunters chase in 4–7% of ticks below hunger 30 and 70–80% above 60 (the hunt is a hunger-driven food choice) | Nothing to add |
+| Prey switching away from rare prey | Absent, in fact reversed. Kills per hunter per prey-day are highest for a kind when it is rare: herd grazers below 5% of the prey alive 3.4–9.5 per 10k, against 0.6–1.0 at 10–20%; voles 1.7–3.5 below 5% against 1.2–1.5 at 20–30%. On seed 14 the antelope went from 44 to 0 under a steady 35–70 hunters that kept taking about 10 every 10 days while voles boomed to 970: antelope are worth 6.6 voles (score ∝ mass^0.75), so any hunter that saw one took it | Adopted (below) |
+| Cost of litters when prey per hunter is low | Weak gradient. Pregnant hunters spend 52–64% of their time at hunger ≥ 80 whatever the prey per hunter (feast and famine), and starving (100) only 11% → 20% from plenty to scarcity. Births per 100 hunter-days fall only from about 2.1 to 1.2 at the lowest prey per hunter | Tested as embryo resorption; rejected |
+| Starvation lag | Starvation is 73% of hunter deaths (thirst 21%); deaths per 100 hunter-days rise from about 1.1 to 2.0–2.2 at low prey per hunter, births fall to 1.2: the bust is slow but present | Not changed |
+| Density pressure among hunters | Not measured directly; packs share carcasses by design | Not tried |
+
+**Search image** (`search_image` 0.7, `Organism::search_image`). A hunter
+remembers the lineage of its last kill and overlooks prey of any other
+kind with chance `search_image`, drawn per hunter, prey and day (so the
+same vole is ignored all day, not re-rolled every tick). Hunters mostly kill
+whatever is common, so most carry its image, and a rare kind is taken less
+than its encounter rate would have it: Tinbergen's search image, the
+classic cause of prey switching (a type III functional response), which
+fits the doc's "each organism's AI makes decisions from its own weights"
+and needs no global knowledge. A starving hunter (hunger ≥ 90,
+`SEARCH_IMAGE_HUNGER`) drops its image and takes whatever it finds. Without
+that exception (first version below) hunters whose prey kind had crashed
+kept overlooking the prey that was left, and small founding packs starved
+on several diagnosis seeds (pack hunters lost on 1 and collapsed below 12
+on 3 of seeds 201–248, against 0 and 1 without the rule). A test
+(`search_image_overlooks_other_prey_unless_starving`) checks the overlook
+rate and the starving exception.
+
+Measured (A − B, paired 95% CI; lineages lost summed over the 24 seeds):
+
+| Comparison | Seeds | Score | Prey lineages lost (A / B) | Pack hunters lost (A / B) | Significant mean-alive changes |
+| --- | --- | --- | --- | --- | --- |
+| Search image 0.7, no starving exception, vs off | 101–124 | +0.15 ± 0.27 | 1 / 5 | 3 / 2 | voles +118, antelope +19, herd grazers +53 |
+| Same | 149–172 | −0.15 ± 0.36 | 2 / 3 | 2 / 1 | voles +132 |
+| **Search image 0.7 with the starving exception vs off (adopted)** | 101–124 | **+0.07 ± 0.38** | **2 / 5** | **1 / 2** | voles +131, antelope +18, newts +66 |
+| Same | 149–172 | **−0.06 ± 0.30** | **2 / 3** | **2 / 1** | voles +93, newts +63 |
+| Embryo resorption (`resorption` 0.5: a starving mother loses half her pregnancy's fertility a day) vs off, both with the search image | 101–124 | **−0.37 ± 0.28** | 1 / 2 | 3 / 1 | pack hunters −28, foxes −16, every prey +37 to +202 |
+| Same | 149–172 | **−0.61 ± 0.31** | 3 / 2 | 4 / 2 | pack hunters −18, foxes −21, prey +14 to +212 |
+
+So the search image keeps the score (both differences far inside the
+noise) and cuts the prey lineages lost from 8 to 4 in 48 worlds (on the
+diagnosis seeds 201–248: 1 against 4), with pack hunters lost equally
+often (3 and 3 in the compares; 1 and 0 on seeds 201–248). Rare-prey risk falls where
+it was highest: kills per 10k prey-days per hunter of antelope below 5% of
+the prey 1.32 / 1.33 against 1.52 / 1.52 (seeds 101–124 / 149–172,
+`examples/predators`). The booms themselves barely change: on the same 48
+worlds hunters peak at 80 against 86 (mean 50 against 53), peak-to-mean
+1.63 against 1.65. Resorption is significantly worse on both sets: it
+throttles the hunters' and foxes' breeding everywhere (pregnant hunters are
+hungry whatever the prey supply), so prey pile up toward their caps; it is
+not in the code.
+
+Held-out sweeps: 11.54 / 11.41 (seeds 31 / 55) against 11.61 / 11.37
+before (sum 22.95 vs 22.98), the same lineages lost (pack hunters on one
+seed of 31–42, herd grazers on one of 55–66). `--set search_image=0`
+restores the old hunting. The snapshot round-trip test now re-tags the
+father of a pregnancy explicitly (with fewer pregnancies at its snapshot
+tick, every fifth organism no longer hit one). The client wire fixture is
+unchanged. Snapshots move to format version 9
+(`Organism::search_image` and the new `Balance` field). New tunable:
+`search_image`.
 
 ## Point costs
 

@@ -27,6 +27,10 @@ const GUARD_REACH: f32 = 2.5;
 /// Sets cost, not behavior: up to `FOCUS` neighbors everything is exact.
 const FOCUS: usize = 32;
 
+/// Hunger at which a hunter drops its search image (`Balance::search_image`)
+/// and takes any prey it finds: a starving predator broadens its diet.
+const SEARCH_IMAGE_HUNGER: f32 = 90.0;
+
 /// Chase multiplier for prey slower than the hunter (the best case).
 const MAX_CHASE: f32 = 1.4;
 
@@ -795,6 +799,14 @@ impl World {
                     let guard = self.guardian(q).0;
                     let my_power = v.my_power;
                     let roll = (splitmix64(v.salt ^ q.id) >> 40) as f32 / (1u64 << 24) as f32;
+                    // Search image: prey of another kind than its last kill
+                    // is overlooked some of the time (the same prey all day),
+                    // unless the hunter is starving and takes what it finds.
+                    let day = self.tick / cfg.ticks_per_day.max(1) as u64;
+                    let overlooked = o.needs.hunger < SEARCH_IMAGE_HUNGER
+                        && o.search_image.is_some_and(|l| l != q.lineage)
+                        && ((splitmix64(o.id ^ splitmix64(q.id ^ (day << 20))) >> 40) as f32 / (1u64 << 24) as f32)
+                            < cfg.balance.search_image;
                     // Prey that fights back is only worth the risk to a hungry
                     // hunter, and less so to one that could graze instead.
                     let injury = injury_discount(
@@ -803,7 +815,11 @@ impl World {
                         fight_back(q, cfg.balance.generalist_tax),
                         cfg.balance.injury_aversion,
                     );
-                    if roll >= avoid && (guard == 0.0 || my_power > q.resistance() + guard) && injury >= v.risk_floor {
+                    if roll >= avoid
+                        && !overlooked
+                        && (guard == 0.0 || my_power > q.resistance() + guard)
+                        && injury >= v.risk_floor
+                    {
                         let odds = my_power / (my_power + q.resistance() + guard + 1e-3);
                         let chase = if q.traits.stats.speed * q.activity < o.traits.stats.speed * o.activity {
                             MAX_CHASE
@@ -1140,6 +1156,42 @@ mod tests {
         assert!(from_burrower < 1.0 - burrower.traits.carnivory, "{from_burrower}");
         // A predator that burrows can threaten what it would hunt.
         assert!(can_threaten(burrower, pick(0)));
+    }
+
+    /// A hunter carrying the search image of another kind overlooks a vole on
+    /// most days (`Balance::search_image`); with no image, the vole's own
+    /// image, or when starving, it hunts the vole every day.
+    #[test]
+    fn search_image_overlooks_other_prey_unless_starving() {
+        let mut w = presets::standard_world(WorldConfig { seed: 3, width: 48, height: 48, ..Default::default() }, 1);
+        let hunter = w.organisms.iter().position(|o| o.lineage == 4 && o.matured).unwrap();
+        let vole = w.organisms.iter().position(|o| o.lineage == 0 && o.matured).unwrap();
+        for o in w.organisms.iter_mut() {
+            o.pos = Vec2::new(1.0, 1.0);
+        }
+        let center = Vec2::new(24.0, 24.0);
+        w.organisms[vole].pos = center + Vec2::new(1.5, 0.0);
+        w.organisms[hunter].pos = center;
+        w.grid.rebuild(&w.organisms);
+        let days = 60u64;
+        let hunted_days = |w: &mut World, image: Option<u32>, hunger: f32| {
+            let h = &mut w.organisms[hunter];
+            (h.search_image, h.needs.hunger, h.needs.thirst, h.needs.energy) = (image, hunger, 0.0, 100.0);
+            (0..days)
+                .filter(|d| {
+                    w.tick = d * w.config.ticks_per_day as u64;
+                    let intent = w.decide(hunter);
+                    intent.action == Action::Hunt && intent.target_org == Some(vole)
+                })
+                .count() as f32
+                / days as f32
+        };
+        assert_eq!(hunted_days(&mut w, None, 60.0), 1.0);
+        assert_eq!(hunted_days(&mut w, Some(0), 60.0), 1.0);
+        let other = hunted_days(&mut w, Some(2), 60.0);
+        let expected = 1.0 - w.config.balance.search_image;
+        assert!((other - expected).abs() < 0.2, "hunted on {other} of days, expected about {expected}");
+        assert_eq!(hunted_days(&mut w, Some(2), SEARCH_IMAGE_HUNGER), 1.0);
     }
 
     /// An antelope calf next to its mother borrows her resistance; away from
