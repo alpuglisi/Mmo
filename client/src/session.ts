@@ -6,13 +6,15 @@ import type { AuthResponse } from './protocol';
 
 const KEY = 'evo.session';
 
-export type Session = AuthResponse;
+/** A login, and the world it plays in ('' or absent: the server's default). */
+export type Session = AuthResponse & { world?: string };
 
 export function loadSession(): Session | null {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
     const s = JSON.parse(raw) as Session;
+    if (s.world !== undefined && typeof s.world !== 'string') s.world = undefined;
     return typeof s.token === 'string' && typeof s.player === 'number' ? s : null;
   } catch {
     return null;

@@ -621,6 +621,32 @@ pub struct WorldSummary {
     pub lineages: usize,
 }
 
+/// One world of `GET /api/worlds`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WorldListing {
+    /// What `?world=` takes.
+    pub id: String,
+    pub name: String,
+    pub width: usize,
+    pub height: usize,
+    pub day: u64,
+    pub year: u64,
+    pub season: String,
+    /// Living organisms (`WorldSummary::organisms`).
+    pub population: usize,
+    pub lineages: usize,
+    /// Distinct players connected right now.
+    pub players_online: usize,
+}
+
+/// `GET /api/worlds`: the worlds this server hosts, the default first.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WorldList {
+    /// The world used when a request names none.
+    pub default: String,
+    pub worlds: Vec<WorldListing>,
+}
+
 /// `GET /api/terrain`: the whole tile grid. Every layer is one byte per tile
 /// in row-major order (`y * width + x`), base64-encoded.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

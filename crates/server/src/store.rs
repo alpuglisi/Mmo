@@ -19,12 +19,21 @@
 //! carrying it. Not persisted: login sessions (clients log in again after a
 //! restart).
 //!
-//! Daily records carry the id of the world that wrote them; a world that
-//! replays days after a restart from an older saved game replaces its
-//! earlier records of those days (one record per world and day).
+//! Accounts and alert preferences are global (one account plays in every
+//! world); everything else belongs to one configured world (`shard`, see
+//! [`Store`] and `crate::worlds`), so each world has its own designs,
+//! history, trades, saved games, terrains, balances and ledger. Data
+//! written before there were several worlds belongs to the default world
+//! (`main`): `FileStore::open` moves its files, and the PostgreSQL migration
+//! `0005_worlds.sql` fills the new `shard` columns with `'main'`.
+//!
+//! Daily records carry the id of the generated map that wrote them; a world
+//! that replays days after a restart from an older saved game replaces its
+//! earlier records of those days (one record per map and day).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use evo_sim::PlayerId;
@@ -172,52 +181,147 @@ pub struct AlertPrefsRecord {
     pub prefs: AlertPrefs,
 }
 
+/// Persistence for every world of the server. Accounts and alert
+/// preferences are global; every other record belongs to one world, named
+/// by `shard`: the configured world id (`crate::worlds`, `main` for a
+/// single-world server). Records of one shard are never seen through
+/// another. [`WorldStore`] binds a shard for code that serves one world.
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn load_accounts(&self) -> StoreResult<Vec<AccountRecord>>;
     /// Fails if the name is taken.
     async fn insert_account(&self, account: &AccountRecord) -> StoreResult<()>;
-    async fn load_designs(&self) -> StoreResult<Vec<DesignRecord>>;
-    /// Insert or replace the player's design.
-    async fn put_design(&self, design: &DesignRecord) -> StoreResult<()>;
-    /// Record a day; replaces an earlier record of the same world and day
-    /// (a day replayed after a restart), which keeps its place in order.
-    async fn append_daily(&self, record: &DailyRecord) -> StoreResult<()>;
-    /// The most recent `limit` daily records, oldest first.
-    async fn recent_daily(&self, limit: usize) -> StoreResult<Vec<DailyRecord>>;
-    async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()>;
-    /// Every trade record, oldest first.
-    async fn load_trades(&self) -> StoreResult<Vec<TradeRecord>>;
-    /// Save a snapshot taken at `tick` on `day` (opaque bytes) and drop all
-    /// but the newest [`KEEP_SNAPSHOTS`]. Replaces a snapshot of the same
-    /// tick.
-    async fn put_snapshot(&self, tick: u64, day: u64, bytes: &[u8]) -> StoreResult<()>;
-    /// Ticks of the stored snapshots, newest first.
-    async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>>;
-    async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>>;
-    /// Delete every snapshot and stored terrain (`--fresh` discards the
-    /// saved world).
-    async fn clear_snapshots(&self) -> StoreResult<()>;
-    /// Store a world's static terrain (`crate::game::TerrainBlob`, opaque
-    /// bytes) under its world id and content hash, unless the store has it
-    /// already (the same key always holds the same bytes). Saved games name
-    /// it; it is written before the first saved game that does.
-    async fn put_terrain(&self, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()>;
-    /// A stored terrain, `None` if the store doesn't have it.
-    async fn load_terrain(&self, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>>;
-    /// Insert or replace a player's balance.
-    async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()>;
-    async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>>;
-    /// Record a ledger entry; replaces an earlier entry with the same world
-    /// and sequence number, which keeps its place in order.
-    async fn append_ledger(&self, record: &LedgerRecord) -> StoreResult<()>;
-    /// The most recent `limit` ledger entries (of one player, or of
-    /// everyone), oldest first.
-    async fn recent_ledger(&self, player: Option<PlayerId>, limit: usize) -> StoreResult<Vec<LedgerRecord>>;
     /// Insert or replace a player's alert preferences.
     async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()>;
     /// A player's alert preferences, if they ever saved any.
     async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>>;
+
+    async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>>;
+    /// Insert or replace the player's design in the world.
+    async fn put_design(&self, shard: &str, design: &DesignRecord) -> StoreResult<()>;
+    /// Record a day; replaces an earlier record of the same world and day
+    /// (a day replayed after a restart), which keeps its place in order.
+    async fn append_daily(&self, shard: &str, record: &DailyRecord) -> StoreResult<()>;
+    /// The most recent `limit` daily records, oldest first.
+    async fn recent_daily(&self, shard: &str, limit: usize) -> StoreResult<Vec<DailyRecord>>;
+    async fn append_trade(&self, shard: &str, record: &TradeRecord) -> StoreResult<()>;
+    /// Every trade record, oldest first.
+    async fn load_trades(&self, shard: &str) -> StoreResult<Vec<TradeRecord>>;
+    /// Save a snapshot taken at `tick` on `day` (opaque bytes) and drop all
+    /// but the world's newest [`KEEP_SNAPSHOTS`]. Replaces a snapshot of the
+    /// same tick.
+    async fn put_snapshot(&self, shard: &str, tick: u64, day: u64, bytes: &[u8]) -> StoreResult<()>;
+    /// Ticks of the world's stored snapshots, newest first.
+    async fn snapshot_ticks(&self, shard: &str) -> StoreResult<Vec<u64>>;
+    async fn load_snapshot(&self, shard: &str, tick: u64) -> StoreResult<Vec<u8>>;
+    /// Delete every snapshot and stored terrain of the world (`--fresh`
+    /// discards the saved world).
+    async fn clear_snapshots(&self, shard: &str) -> StoreResult<()>;
+    /// Store a world's static terrain (`crate::game::TerrainBlob`, opaque
+    /// bytes) under its generated world id and content hash, unless the
+    /// store has it already (the same key always holds the same bytes).
+    /// Saved games name it; it is written before the first saved game that
+    /// does.
+    async fn put_terrain(&self, shard: &str, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()>;
+    /// A stored terrain, `None` if the store doesn't have it.
+    async fn load_terrain(&self, shard: &str, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>>;
+    /// Insert or replace a player's balance in the world.
+    async fn put_balance(&self, shard: &str, record: &BalanceRecord) -> StoreResult<()>;
+    async fn load_balances(&self, shard: &str) -> StoreResult<Vec<BalanceRecord>>;
+    /// Record a ledger entry; replaces an earlier entry with the same
+    /// generated world id and sequence number, which keeps its place in
+    /// order.
+    async fn append_ledger(&self, shard: &str, record: &LedgerRecord) -> StoreResult<()>;
+    /// The most recent `limit` ledger entries of the world (of one player,
+    /// or of everyone), oldest first.
+    async fn recent_ledger(
+        &self,
+        shard: &str,
+        player: Option<PlayerId>,
+        limit: usize,
+    ) -> StoreResult<Vec<LedgerRecord>>;
+}
+
+/// One world's view of a [`Store`]: the per-world methods with the shard
+/// bound. It derefs to the whole store, so the global records (accounts,
+/// alert preferences) read and write through it too.
+#[derive(Clone)]
+pub struct WorldStore {
+    store: Arc<dyn Store>,
+    shard: Arc<str>,
+}
+
+impl std::ops::Deref for WorldStore {
+    type Target = dyn Store;
+
+    fn deref(&self) -> &(dyn Store + 'static) {
+        &*self.store
+    }
+}
+
+impl WorldStore {
+    pub fn new(store: Arc<dyn Store>, shard: &str) -> Self {
+        WorldStore { store, shard: shard.into() }
+    }
+
+    /// The world id this view is bound to.
+    pub fn shard(&self) -> &str {
+        &self.shard
+    }
+
+    /// The whole store (accounts, alert preferences, other worlds).
+    pub fn global(&self) -> &Arc<dyn Store> {
+        &self.store
+    }
+
+    pub async fn load_designs(&self) -> StoreResult<Vec<DesignRecord>> {
+        self.store.load_designs(&self.shard).await
+    }
+    pub async fn put_design(&self, design: &DesignRecord) -> StoreResult<()> {
+        self.store.put_design(&self.shard, design).await
+    }
+    pub async fn append_daily(&self, record: &DailyRecord) -> StoreResult<()> {
+        self.store.append_daily(&self.shard, record).await
+    }
+    pub async fn recent_daily(&self, limit: usize) -> StoreResult<Vec<DailyRecord>> {
+        self.store.recent_daily(&self.shard, limit).await
+    }
+    pub async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()> {
+        self.store.append_trade(&self.shard, record).await
+    }
+    pub async fn load_trades(&self) -> StoreResult<Vec<TradeRecord>> {
+        self.store.load_trades(&self.shard).await
+    }
+    pub async fn put_snapshot(&self, tick: u64, day: u64, bytes: &[u8]) -> StoreResult<()> {
+        self.store.put_snapshot(&self.shard, tick, day, bytes).await
+    }
+    pub async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>> {
+        self.store.snapshot_ticks(&self.shard).await
+    }
+    pub async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>> {
+        self.store.load_snapshot(&self.shard, tick).await
+    }
+    pub async fn clear_snapshots(&self) -> StoreResult<()> {
+        self.store.clear_snapshots(&self.shard).await
+    }
+    pub async fn put_terrain(&self, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()> {
+        self.store.put_terrain(&self.shard, world_id, hash, bytes).await
+    }
+    pub async fn load_terrain(&self, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>> {
+        self.store.load_terrain(&self.shard, world_id, hash).await
+    }
+    pub async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
+        self.store.put_balance(&self.shard, record).await
+    }
+    pub async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>> {
+        self.store.load_balances(&self.shard).await
+    }
+    pub async fn append_ledger(&self, record: &LedgerRecord) -> StoreResult<()> {
+        self.store.append_ledger(&self.shard, record).await
+    }
+    pub async fn recent_ledger(&self, player: Option<PlayerId>, limit: usize) -> StoreResult<Vec<LedgerRecord>> {
+        self.store.recent_ledger(&self.shard, player, limit).await
+    }
 }
 
 fn same_entry(a: &LedgerRecord, b: &LedgerRecord) -> bool {
@@ -228,8 +332,17 @@ fn last_n<T>(mut v: Vec<T>, limit: usize) -> Vec<T> {
     v.split_off(v.len().saturating_sub(limit))
 }
 
-/// Snapshots a store keeps (older ones are fallbacks if the newest is
-/// unreadable).
+/// A shard id a store can use (it names a directory in the file store).
+fn check_shard(shard: &str) -> StoreResult<()> {
+    if crate::worlds::valid_world_id(shard) {
+        Ok(())
+    } else {
+        Err(StoreError(format!("world id {shard:?} is not valid")))
+    }
+}
+
+/// Snapshots a store keeps per world (older ones are fallbacks if the
+/// newest is unreadable).
 pub const KEEP_SNAPSHOTS: usize = 3;
 
 /// In-memory store for tests and throwaway servers.
@@ -241,6 +354,12 @@ pub struct MemoryStore {
 #[derive(Default)]
 struct MemInner {
     accounts: Vec<AccountRecord>,
+    alert_prefs: BTreeMap<PlayerId, AlertPrefsRecord>,
+    worlds: BTreeMap<String, MemWorld>,
+}
+
+#[derive(Default)]
+struct MemWorld {
     designs: Vec<DesignRecord>,
     daily: Vec<DailyRecord>,
     trades: Vec<TradeRecord>,
@@ -249,12 +368,19 @@ struct MemInner {
     terrains: BTreeMap<(String, u64), Vec<u8>>,
     balances: BTreeMap<PlayerId, BalanceRecord>,
     ledger: Vec<LedgerRecord>,
-    alert_prefs: BTreeMap<PlayerId, AlertPrefsRecord>,
+}
+
+impl MemInner {
+    fn world(&mut self, shard: &str) -> StoreResult<&mut MemWorld> {
+        check_shard(shard)?;
+        Ok(self.worlds.entry(shard.to_string()).or_default())
+    }
 }
 
 impl MemoryStore {
+    /// The default world's trade records.
     pub async fn trades(&self) -> Vec<TradeRecord> {
-        self.inner.lock().await.trades.clone()
+        self.load_trades(crate::worlds::DEFAULT_WORLD).await.unwrap_or_default()
     }
 }
 
@@ -273,103 +399,6 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    async fn load_designs(&self) -> StoreResult<Vec<DesignRecord>> {
-        Ok(self.inner.lock().await.designs.clone())
-    }
-
-    async fn put_design(&self, design: &DesignRecord) -> StoreResult<()> {
-        let mut g = self.inner.lock().await;
-        g.designs.retain(|d| d.player != design.player);
-        g.designs.push(design.clone());
-        Ok(())
-    }
-
-    async fn append_daily(&self, record: &DailyRecord) -> StoreResult<()> {
-        let mut g = self.inner.lock().await;
-        match g.daily.iter_mut().find(|r| same_day(r, record)) {
-            Some(r) => *r = record.clone(),
-            None => g.daily.push(record.clone()),
-        }
-        Ok(())
-    }
-
-    async fn recent_daily(&self, limit: usize) -> StoreResult<Vec<DailyRecord>> {
-        let g = self.inner.lock().await;
-        Ok(g.daily[g.daily.len().saturating_sub(limit)..].to_vec())
-    }
-
-    async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()> {
-        self.inner.lock().await.trades.push(record.clone());
-        Ok(())
-    }
-
-    async fn load_trades(&self) -> StoreResult<Vec<TradeRecord>> {
-        Ok(self.trades().await)
-    }
-
-    async fn put_snapshot(&self, tick: u64, _day: u64, bytes: &[u8]) -> StoreResult<()> {
-        let mut g = self.inner.lock().await;
-        g.snapshots.retain(|s| s.0 != tick);
-        g.snapshots.push((tick, bytes.to_vec()));
-        g.snapshots.sort_by_key(|s| s.0);
-        let excess = g.snapshots.len().saturating_sub(KEEP_SNAPSHOTS);
-        g.snapshots.drain(..excess);
-        Ok(())
-    }
-
-    async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>> {
-        Ok(self.inner.lock().await.snapshots.iter().rev().map(|s| s.0).collect())
-    }
-
-    async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>> {
-        let g = self.inner.lock().await;
-        g.snapshots
-            .iter()
-            .find(|s| s.0 == tick)
-            .map(|s| s.1.clone())
-            .ok_or_else(|| StoreError(format!("no snapshot at tick {tick}")))
-    }
-
-    async fn clear_snapshots(&self) -> StoreResult<()> {
-        let mut g = self.inner.lock().await;
-        g.snapshots.clear();
-        g.terrains.clear();
-        Ok(())
-    }
-
-    async fn put_terrain(&self, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()> {
-        self.inner.lock().await.terrains.entry((world_id.to_string(), hash)).or_insert_with(|| bytes.to_vec());
-        Ok(())
-    }
-
-    async fn load_terrain(&self, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>> {
-        Ok(self.inner.lock().await.terrains.get(&(world_id.to_string(), hash)).cloned())
-    }
-
-    async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
-        self.inner.lock().await.balances.insert(record.player, record.clone());
-        Ok(())
-    }
-
-    async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>> {
-        Ok(self.inner.lock().await.balances.values().cloned().collect())
-    }
-
-    async fn append_ledger(&self, record: &LedgerRecord) -> StoreResult<()> {
-        let mut g = self.inner.lock().await;
-        match g.ledger.iter_mut().find(|r| same_entry(r, record)) {
-            Some(r) => *r = record.clone(),
-            None => g.ledger.push(record.clone()),
-        }
-        Ok(())
-    }
-
-    async fn recent_ledger(&self, player: Option<PlayerId>, limit: usize) -> StoreResult<Vec<LedgerRecord>> {
-        let g = self.inner.lock().await;
-        let rows = g.ledger.iter().filter(|r| player.is_none_or(|p| r.entry.player == p)).cloned().collect();
-        Ok(last_n(rows, limit))
-    }
-
     async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()> {
         self.inner.lock().await.alert_prefs.insert(record.player, record.clone());
         Ok(())
@@ -377,6 +406,117 @@ impl Store for MemoryStore {
 
     async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
         Ok(self.inner.lock().await.alert_prefs.get(&player).cloned())
+    }
+
+    async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>> {
+        Ok(self.inner.lock().await.world(shard)?.designs.clone())
+    }
+
+    async fn put_design(&self, shard: &str, design: &DesignRecord) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        let w = g.world(shard)?;
+        w.designs.retain(|d| d.player != design.player);
+        w.designs.push(design.clone());
+        Ok(())
+    }
+
+    async fn append_daily(&self, shard: &str, record: &DailyRecord) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        let w = g.world(shard)?;
+        match w.daily.iter_mut().find(|r| same_day(r, record)) {
+            Some(r) => *r = record.clone(),
+            None => w.daily.push(record.clone()),
+        }
+        Ok(())
+    }
+
+    async fn recent_daily(&self, shard: &str, limit: usize) -> StoreResult<Vec<DailyRecord>> {
+        let mut g = self.inner.lock().await;
+        let w = g.world(shard)?;
+        Ok(w.daily[w.daily.len().saturating_sub(limit)..].to_vec())
+    }
+
+    async fn append_trade(&self, shard: &str, record: &TradeRecord) -> StoreResult<()> {
+        self.inner.lock().await.world(shard)?.trades.push(record.clone());
+        Ok(())
+    }
+
+    async fn load_trades(&self, shard: &str) -> StoreResult<Vec<TradeRecord>> {
+        Ok(self.inner.lock().await.world(shard)?.trades.clone())
+    }
+
+    async fn put_snapshot(&self, shard: &str, tick: u64, _day: u64, bytes: &[u8]) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        let w = g.world(shard)?;
+        w.snapshots.retain(|s| s.0 != tick);
+        w.snapshots.push((tick, bytes.to_vec()));
+        w.snapshots.sort_by_key(|s| s.0);
+        let excess = w.snapshots.len().saturating_sub(KEEP_SNAPSHOTS);
+        w.snapshots.drain(..excess);
+        Ok(())
+    }
+
+    async fn snapshot_ticks(&self, shard: &str) -> StoreResult<Vec<u64>> {
+        Ok(self.inner.lock().await.world(shard)?.snapshots.iter().rev().map(|s| s.0).collect())
+    }
+
+    async fn load_snapshot(&self, shard: &str, tick: u64) -> StoreResult<Vec<u8>> {
+        let mut g = self.inner.lock().await;
+        g.world(shard)?
+            .snapshots
+            .iter()
+            .find(|s| s.0 == tick)
+            .map(|s| s.1.clone())
+            .ok_or_else(|| StoreError(format!("no snapshot at tick {tick}")))
+    }
+
+    async fn clear_snapshots(&self, shard: &str) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        let w = g.world(shard)?;
+        w.snapshots.clear();
+        w.terrains.clear();
+        Ok(())
+    }
+
+    async fn put_terrain(&self, shard: &str, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        g.world(shard)?.terrains.entry((world_id.to_string(), hash)).or_insert_with(|| bytes.to_vec());
+        Ok(())
+    }
+
+    async fn load_terrain(&self, shard: &str, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>> {
+        Ok(self.inner.lock().await.world(shard)?.terrains.get(&(world_id.to_string(), hash)).cloned())
+    }
+
+    async fn put_balance(&self, shard: &str, record: &BalanceRecord) -> StoreResult<()> {
+        self.inner.lock().await.world(shard)?.balances.insert(record.player, record.clone());
+        Ok(())
+    }
+
+    async fn load_balances(&self, shard: &str) -> StoreResult<Vec<BalanceRecord>> {
+        Ok(self.inner.lock().await.world(shard)?.balances.values().cloned().collect())
+    }
+
+    async fn append_ledger(&self, shard: &str, record: &LedgerRecord) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        let w = g.world(shard)?;
+        match w.ledger.iter_mut().find(|r| same_entry(r, record)) {
+            Some(r) => *r = record.clone(),
+            None => w.ledger.push(record.clone()),
+        }
+        Ok(())
+    }
+
+    async fn recent_ledger(
+        &self,
+        shard: &str,
+        player: Option<PlayerId>,
+        limit: usize,
+    ) -> StoreResult<Vec<LedgerRecord>> {
+        let mut g = self.inner.lock().await;
+        let w = g.world(shard)?;
+        let rows = w.ledger.iter().filter(|r| player.is_none_or(|p| r.entry.player == p)).cloned().collect();
+        Ok(last_n(rows, limit))
     }
 }
 
@@ -386,18 +526,26 @@ fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
     !a.world_id.is_empty() && a.world_id == b.world_id && a.day == b.day
 }
 
-/// JSON files in one directory:
+/// JSON files in one directory. Global tables at the top:
 ///
-/// - `accounts.json`, `designs.json`, `balances.json`, `alert_prefs.json`:
-///   whole tables, rewritten atomically
-///   (write to a temp file, then rename) on every change;
-/// - `history.jsonl`, `trades.jsonl`: append-only, one record per line (a
-///   replayed day is appended again and replaces the earlier line when
-///   read);
+/// - `accounts.json`, `alert_prefs.json`: whole tables, rewritten
+///   atomically (write to a temp file, then rename) on every change;
+///
+/// and each world's records in `worlds/<world id>/`:
+///
+/// - `designs.json`, `balances.json`: whole tables, as above;
+/// - `history.jsonl`, `trades.jsonl`, `ledger.jsonl`: append-only, one
+///   record per line (a replayed day or ledger entry is appended again and
+///   replaces the earlier line when read);
 /// - `snapshots/world-<tick>.snap`: saved games, written to a temp file,
 ///   synced and renamed into place, the newest [`KEEP_SNAPSHOTS`] kept;
-/// - `terrain/<world id>-<hash>.terrain`: each world's static terrain,
-///   written the same way, once.
+/// - `terrain/<generated world id>-<hash>.terrain`: each generated map's
+///   static terrain, written the same way, once.
+///
+/// A data directory from before there were several worlds keeps the
+/// per-world files at the top; [`FileStore::open`] moves them into
+/// `worlds/main/` (the default world), one rename each, so an interrupted
+/// move finishes on the next open.
 pub struct FileStore {
     dir: PathBuf,
     /// Serializes writers and caches the small tables.
@@ -406,26 +554,55 @@ pub struct FileStore {
 
 struct Tables {
     accounts: Vec<AccountRecord>,
+    alert_prefs: Vec<AlertPrefsRecord>,
+    /// Each world's small tables, read on first use.
+    worlds: BTreeMap<String, WorldTables>,
+}
+
+struct WorldTables {
     designs: Vec<DesignRecord>,
     balances: Vec<BalanceRecord>,
-    alert_prefs: Vec<AlertPrefsRecord>,
 }
+
+/// The per-world files and directories of a data directory, which a
+/// single-world data directory keeps at its top.
+pub const FILE_STORE_WORLD_FILES: &[&str] =
+    &["designs.json", "balances.json", "history.jsonl", "trades.jsonl", "ledger.jsonl", "snapshots", "terrain"];
+
+const WORLDS_DIR: &str = "worlds";
 
 impl FileStore {
     pub async fn open(dir: impl AsRef<Path>) -> StoreResult<Self> {
         let dir = dir.as_ref().to_path_buf();
         tokio::fs::create_dir_all(&dir).await?;
+        migrate_single_world_layout(&dir).await?;
         let accounts = read_table(&dir.join("accounts.json")).await?;
-        let designs = read_table(&dir.join("designs.json")).await?;
-        let balances = read_table(&dir.join("balances.json")).await?;
         let alert_prefs = read_table(&dir.join("alert_prefs.json")).await?;
-        Ok(Self { dir, tables: Mutex::new(Tables { accounts, designs, balances, alert_prefs }) })
+        Ok(Self { dir, tables: Mutex::new(Tables { accounts, alert_prefs, worlds: BTreeMap::new() }) })
     }
 
-    /// Every line of a JSONL file (none if it doesn't exist).
-    async fn read_lines<T: for<'de> Deserialize<'de>>(&self, name: &str) -> StoreResult<Vec<T>> {
+    /// The directory of a world's records.
+    fn world_dir(&self, shard: &str) -> StoreResult<PathBuf> {
+        check_shard(shard)?;
+        Ok(self.dir.join(WORLDS_DIR).join(shard))
+    }
+
+    /// A world's small tables, read from disk on first use.
+    async fn world_tables<'a>(&self, t: &'a mut Tables, shard: &str) -> StoreResult<&'a mut WorldTables> {
+        let dir = self.world_dir(shard)?;
+        if !t.worlds.contains_key(shard) {
+            let designs = read_table(&dir.join("designs.json")).await?;
+            let balances = read_table(&dir.join("balances.json")).await?;
+            t.worlds.insert(shard.to_string(), WorldTables { designs, balances });
+        }
+        Ok(t.worlds.get_mut(shard).expect("inserted"))
+    }
+
+    /// Every line of a world's JSONL file (none if it doesn't exist).
+    async fn read_lines<T: for<'de> Deserialize<'de>>(&self, shard: &str, name: &str) -> StoreResult<Vec<T>> {
+        let path = self.world_dir(shard)?.join(name);
         let _guard = self.tables.lock().await;
-        let text = match tokio::fs::read_to_string(self.dir.join(name)).await {
+        let text = match tokio::fs::read_to_string(path).await {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e.into()),
@@ -433,23 +610,54 @@ impl FileStore {
         text.lines().filter(|l| !l.trim().is_empty()).map(|l| Ok(serde_json::from_str(l)?)).collect()
     }
 
-    async fn write_table<T: Serialize>(&self, name: &str, rows: &[T]) -> StoreResult<()> {
-        let path = self.dir.join(name);
-        let tmp = self.dir.join(format!("{name}.tmp"));
+    async fn write_table<T: Serialize>(&self, dir: &Path, name: &str, rows: &[T]) -> StoreResult<()> {
+        tokio::fs::create_dir_all(dir).await?;
+        let path = dir.join(name);
+        let tmp = dir.join(format!("{name}.tmp"));
         tokio::fs::write(&tmp, serde_json::to_vec_pretty(rows)?).await?;
         tokio::fs::rename(&tmp, &path).await?;
         Ok(())
     }
 
-    async fn append_line<T: Serialize>(&self, name: &str, row: &T) -> StoreResult<()> {
+    async fn append_line<T: Serialize>(&self, shard: &str, name: &str, row: &T) -> StoreResult<()> {
+        let dir = self.world_dir(shard)?;
         let _guard = self.tables.lock().await;
+        tokio::fs::create_dir_all(&dir).await?;
         let mut line = serde_json::to_vec(row)?;
         line.push(b'\n');
-        let mut f = tokio::fs::OpenOptions::new().create(true).append(true).open(self.dir.join(name)).await?;
+        let mut f = tokio::fs::OpenOptions::new().create(true).append(true).open(dir.join(name)).await?;
         f.write_all(&line).await?;
         f.flush().await?;
         Ok(())
     }
+}
+
+/// Move a single-world data directory's per-world files into the default
+/// world's directory. Each file or directory moves with one rename, and one
+/// already moved is skipped, so a move interrupted by a crash finishes on
+/// the next open. A file present in both places (an older server run on the
+/// directory after it moved) is an error: merging is left to a person.
+async fn migrate_single_world_layout(dir: &Path) -> StoreResult<()> {
+    let target = dir.join(WORLDS_DIR).join(crate::worlds::DEFAULT_WORLD);
+    for name in FILE_STORE_WORLD_FILES {
+        let old = dir.join(name);
+        if !tokio::fs::try_exists(&old).await? {
+            continue;
+        }
+        let new = target.join(name);
+        if tokio::fs::try_exists(&new).await? {
+            return Err(StoreError(format!(
+                "{} and {} both exist: a server from before several worlds used the data directory after it \
+                 was migrated; merge them by hand",
+                old.display(),
+                new.display()
+            )));
+        }
+        tokio::fs::create_dir_all(&target).await?;
+        tokio::fs::rename(&old, &new).await?;
+        tracing::info!("moved {} to {} (the default world)", old.display(), new.display());
+    }
+    Ok(())
 }
 
 const SNAPSHOT_DIR: &str = "snapshots";
@@ -509,39 +717,47 @@ impl Store for FileStore {
             return Err(StoreError(format!("account {:?} exists", account.name)));
         }
         t.accounts.push(account.clone());
-        if let Err(e) = self.write_table("accounts.json", &t.accounts).await {
+        if let Err(e) = self.write_table(&self.dir, "accounts.json", &t.accounts).await {
             t.accounts.pop();
             return Err(e);
         }
         Ok(())
     }
 
-    async fn load_designs(&self) -> StoreResult<Vec<DesignRecord>> {
-        Ok(self.tables.lock().await.designs.clone())
-    }
-
-    async fn put_design(&self, design: &DesignRecord) -> StoreResult<()> {
+    async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()> {
         let mut t = self.tables.lock().await;
-        t.designs.retain(|d| d.player != design.player);
-        t.designs.push(design.clone());
-        self.write_table("designs.json", &t.designs).await
+        match t.alert_prefs.iter_mut().find(|r| r.player == record.player) {
+            Some(r) => *r = record.clone(),
+            None => t.alert_prefs.push(record.clone()),
+        }
+        self.write_table(&self.dir, "alert_prefs.json", &t.alert_prefs).await
     }
 
-    async fn append_daily(&self, record: &DailyRecord) -> StoreResult<()> {
-        self.append_line("history.jsonl", record).await
+    async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
+        Ok(self.tables.lock().await.alert_prefs.iter().find(|r| r.player == player).cloned())
     }
 
-    async fn recent_daily(&self, limit: usize) -> StoreResult<Vec<DailyRecord>> {
-        let _guard = self.tables.lock().await;
-        let text = match tokio::fs::read_to_string(self.dir.join("history.jsonl")).await {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.into()),
-        };
+    async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>> {
+        let mut t = self.tables.lock().await;
+        Ok(self.world_tables(&mut t, shard).await?.designs.clone())
+    }
+
+    async fn put_design(&self, shard: &str, design: &DesignRecord) -> StoreResult<()> {
+        let mut t = self.tables.lock().await;
+        let w = self.world_tables(&mut t, shard).await?;
+        w.designs.retain(|d| d.player != design.player);
+        w.designs.push(design.clone());
+        self.write_table(&self.world_dir(shard)?, "designs.json", &w.designs).await
+    }
+
+    async fn append_daily(&self, shard: &str, record: &DailyRecord) -> StoreResult<()> {
+        self.append_line(shard, "history.jsonl", record).await
+    }
+
+    async fn recent_daily(&self, shard: &str, limit: usize) -> StoreResult<Vec<DailyRecord>> {
         let mut records: Vec<DailyRecord> = Vec::new();
         let mut index: std::collections::HashMap<(String, u64), usize> = std::collections::HashMap::new();
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let r: DailyRecord = serde_json::from_str(line)?;
+        for r in self.read_lines::<DailyRecord>(shard, "history.jsonl").await? {
             if r.world_id.is_empty() {
                 records.push(r);
                 continue;
@@ -554,29 +770,29 @@ impl Store for FileStore {
                 }
             }
         }
-        Ok(records.split_off(records.len().saturating_sub(limit)))
+        Ok(last_n(records, limit))
     }
 
-    async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()> {
-        self.append_line("trades.jsonl", record).await
+    async fn append_trade(&self, shard: &str, record: &TradeRecord) -> StoreResult<()> {
+        self.append_line(shard, "trades.jsonl", record).await
     }
 
-    async fn load_trades(&self) -> StoreResult<Vec<TradeRecord>> {
-        self.read_lines("trades.jsonl").await
+    async fn load_trades(&self, shard: &str) -> StoreResult<Vec<TradeRecord>> {
+        self.read_lines(shard, "trades.jsonl").await
     }
 
-    async fn put_snapshot(&self, tick: u64, _day: u64, bytes: &[u8]) -> StoreResult<()> {
-        let dir = self.dir.join(SNAPSHOT_DIR);
+    async fn put_snapshot(&self, shard: &str, tick: u64, _day: u64, bytes: &[u8]) -> StoreResult<()> {
+        let dir = self.world_dir(shard)?.join(SNAPSHOT_DIR);
         write_durably(&dir, &snapshot_name(tick), bytes).await?;
-        for old in self.snapshot_ticks().await?.into_iter().skip(KEEP_SNAPSHOTS) {
+        for old in self.snapshot_ticks(shard).await?.into_iter().skip(KEEP_SNAPSHOTS) {
             tokio::fs::remove_file(dir.join(snapshot_name(old))).await?;
         }
         Ok(())
     }
 
-    async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>> {
+    async fn snapshot_ticks(&self, shard: &str) -> StoreResult<Vec<u64>> {
         let mut ticks = Vec::new();
-        let mut entries = match tokio::fs::read_dir(self.dir.join(SNAPSHOT_DIR)).await {
+        let mut entries = match tokio::fs::read_dir(self.world_dir(shard)?.join(SNAPSHOT_DIR)).await {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ticks),
             Err(e) => return Err(e.into()),
@@ -590,61 +806,70 @@ impl Store for FileStore {
         Ok(ticks)
     }
 
-    async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>> {
-        Ok(tokio::fs::read(self.dir.join(SNAPSHOT_DIR).join(snapshot_name(tick))).await?)
+    async fn load_snapshot(&self, shard: &str, tick: u64) -> StoreResult<Vec<u8>> {
+        Ok(tokio::fs::read(self.world_dir(shard)?.join(SNAPSHOT_DIR).join(snapshot_name(tick))).await?)
     }
 
-    async fn clear_snapshots(&self) -> StoreResult<()> {
-        let dir = self.dir.join(SNAPSHOT_DIR);
-        for tick in self.snapshot_ticks().await? {
+    async fn clear_snapshots(&self, shard: &str) -> StoreResult<()> {
+        let world = self.world_dir(shard)?;
+        let dir = world.join(SNAPSHOT_DIR);
+        for tick in self.snapshot_ticks(shard).await? {
             tokio::fs::remove_file(dir.join(snapshot_name(tick))).await?;
         }
-        match tokio::fs::remove_dir_all(self.dir.join(TERRAIN_DIR)).await {
+        match tokio::fs::remove_dir_all(world.join(TERRAIN_DIR)).await {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
         }
     }
 
-    async fn put_terrain(&self, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()> {
+    async fn put_terrain(&self, shard: &str, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()> {
         let name = terrain_name(world_id, hash)?;
-        let dir = self.dir.join(TERRAIN_DIR);
+        let dir = self.world_dir(shard)?.join(TERRAIN_DIR);
         if tokio::fs::try_exists(dir.join(&name)).await? {
             return Ok(());
         }
         write_durably(&dir, &name, bytes).await
     }
 
-    async fn load_terrain(&self, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>> {
-        match tokio::fs::read(self.dir.join(TERRAIN_DIR).join(terrain_name(world_id, hash)?)).await {
+    async fn load_terrain(&self, shard: &str, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>> {
+        let path = self.world_dir(shard)?.join(TERRAIN_DIR).join(terrain_name(world_id, hash)?);
+        match tokio::fs::read(path).await {
             Ok(b) => Ok(Some(b)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
-    async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
+    async fn put_balance(&self, shard: &str, record: &BalanceRecord) -> StoreResult<()> {
         let mut t = self.tables.lock().await;
-        match t.balances.iter_mut().find(|b| b.player == record.player) {
+        let w = self.world_tables(&mut t, shard).await?;
+        match w.balances.iter_mut().find(|b| b.player == record.player) {
             Some(b) => *b = record.clone(),
-            None => t.balances.push(record.clone()),
+            None => w.balances.push(record.clone()),
         }
-        self.write_table("balances.json", &t.balances).await
+        self.write_table(&self.world_dir(shard)?, "balances.json", &w.balances).await
     }
 
-    async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>> {
-        Ok(self.tables.lock().await.balances.clone())
+    async fn load_balances(&self, shard: &str) -> StoreResult<Vec<BalanceRecord>> {
+        let mut t = self.tables.lock().await;
+        Ok(self.world_tables(&mut t, shard).await?.balances.clone())
     }
 
-    async fn append_ledger(&self, record: &LedgerRecord) -> StoreResult<()> {
-        self.append_line("ledger.jsonl", record).await
+    async fn append_ledger(&self, shard: &str, record: &LedgerRecord) -> StoreResult<()> {
+        self.append_line(shard, "ledger.jsonl", record).await
     }
 
-    async fn recent_ledger(&self, player: Option<PlayerId>, limit: usize) -> StoreResult<Vec<LedgerRecord>> {
+    async fn recent_ledger(
+        &self,
+        shard: &str,
+        player: Option<PlayerId>,
+        limit: usize,
+    ) -> StoreResult<Vec<LedgerRecord>> {
         // A replayed entry (same world and sequence number) replaces the
         // earlier line in its place.
         let mut rows: Vec<LedgerRecord> = Vec::new();
         let mut index: std::collections::HashMap<(String, u64), usize> = std::collections::HashMap::new();
-        for r in self.read_lines::<LedgerRecord>("ledger.jsonl").await? {
+        for r in self.read_lines::<LedgerRecord>(shard, "ledger.jsonl").await? {
             match index.get(&(r.world_id.clone(), r.entry.seq)) {
                 Some(&i) => rows[i] = r,
                 None => {
@@ -655,18 +880,5 @@ impl Store for FileStore {
         }
         rows.retain(|r| player.is_none_or(|p| r.entry.player == p));
         Ok(last_n(rows, limit))
-    }
-
-    async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()> {
-        let mut t = self.tables.lock().await;
-        match t.alert_prefs.iter_mut().find(|r| r.player == record.player) {
-            Some(r) => *r = record.clone(),
-            None => t.alert_prefs.push(record.clone()),
-        }
-        self.write_table("alert_prefs.json", &t.alert_prefs).await
-    }
-
-    async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
-        Ok(self.tables.lock().await.alert_prefs.iter().find(|r| r.player == player).cloned())
     }
 }

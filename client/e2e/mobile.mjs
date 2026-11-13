@@ -9,6 +9,9 @@
 // a long press possess; one-finger drag pans and a two-finger pinch zooms.
 // Desktop: sidebar on the right, tabs on top, sprite cache stats, and a
 // gallery of body-plan sprites for the screenshots.
+// Worlds: on a server with two worlds the phone's login screen shows the
+// world picker; the chosen world is the one played in, and the choice is
+// remembered per user.
 //
 //   npm run build && node e2e/mobile.mjs     (env as for smoke.mjs)
 
@@ -66,6 +69,9 @@ function device(name) {
 
 async function register(page, base, name, lineage) {
   await page.goto(base);
+  // One world: no picker.
+  await page.waitForTimeout(300);
+  if (await page.isVisible('#world-box')) throw new Error('world picker shown on a single-world server');
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
@@ -403,6 +409,66 @@ async function desktopChecks(browser, base, errors) {
   await page.close();
 }
 
+/** The world picker on a phone, against a server hosting `main` and `isle`. */
+async function worldChecks(browser, base, errors) {
+  const context = await browser.newContext({ ...device('Pixel 7') });
+  const page = await context.newPage();
+  page.on('pageerror', (e) => errors.push(e.message));
+  const online = async () => Object.fromEntries((await (await fetch(`${base}/api/worlds`)).json()).worlds.map((w) => [w.id, w.players_online]));
+  await page.goto(base);
+  await page.waitForSelector('#world-select', { state: 'visible', timeout: 10000 });
+  const options = await page.$$eval('#world-select option', (os) => os.map((o) => [o.value, o.textContent]));
+  if (JSON.stringify(options) !== JSON.stringify([['main', 'Mainland'], ['isle', 'Isle']])) throw new Error(`world options ${JSON.stringify(options)}`);
+  const sel = await box(page, '#world-select');
+  if (!sel || sel.x < 0 || sel.x + sel.width > 412 + 1) throw new Error(`world picker off screen: ${JSON.stringify(sel)}`);
+  // Ann picks the isle and plays there.
+  const ann = `ann_${Date.now().toString(36)}`;
+  await page.fill('#login-name', ann);
+  await page.fill('#login-password', 'a long password');
+  await page.selectOption('#world-select', 'isle');
+  if (!(await page.textContent('#world-info')).includes('48×48')) throw new Error(`world info: ${await page.textContent('#world-info')}`);
+  await shot(page, 'pixel7-world-picker.png');
+  await page.click('#register-submit');
+  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await page.fill('#design-name', 'Isle walkers');
+  await page.click('#design-submit');
+  await page.waitForSelector('#world-canvas', { timeout: 15000 });
+  await waitFor('own organisms', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
+  await waitFor('Ann online on the isle', async () => {
+    const o = await online();
+    return o.isle === 1 && o.main === 0;
+  });
+  await waitFor('world name in the top bar', async () => (await page.textContent('#world-name')) === 'Isle');
+  // Founded on the isle, not the mainland (no wild lineages on either).
+  const lineages = async (w) => (await (await fetch(`${base}/api/world?world=${w}`)).json()).lineages;
+  if ((await lineages('isle')) !== 1 || (await lineages('main')) !== 0) throw new Error('the lineage was founded in the wrong world');
+  step('world picker: Ann chose the isle on a phone and plays there');
+  await page.evaluate(() => document.querySelector('#logout').click());
+  await page.waitForSelector('#login-name');
+  // Bob picks the mainland.
+  const bob = `bob_${Date.now().toString(36)}`;
+  await page.fill('#login-name', bob);
+  await page.fill('#login-password', 'a long password');
+  await page.waitForSelector('#world-select', { state: 'visible' });
+  await page.selectOption('#world-select', 'main');
+  await page.click('#register-submit');
+  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await waitFor('Bob online on the mainland', async () => (await online()).main === 1);
+  await page.click('text=Log out');
+  await page.waitForSelector('#login-name');
+  // Each name brings back its own world.
+  const pickFor = async (name) => {
+    await page.fill('#login-name', name);
+    await page.dispatchEvent('#login-name', 'change');
+    return page.inputValue('#world-select');
+  };
+  await page.waitForSelector('#world-select', { state: 'visible' });
+  if ((await pickFor(ann)) !== 'isle') throw new Error('Ann\'s world was not remembered');
+  if ((await pickFor(bob)) !== 'main') throw new Error('Bob\'s world was not remembered');
+  step('world picker: the world is remembered per user');
+  await context.close();
+}
+
 /**
  * Run `fn` against a fresh server: each device gets a young world, so its
  * lineage is not yet thinned out (the fast world runs a day a second, and a
@@ -441,6 +507,7 @@ async function main() {
     await withServer(9, (base) => phoneChecks(browser, base, 'iPhone 13', 'iphone13', errors), ['--no-wild']);
     await withServer(10, (base) => phoneChecks(browser, base, 'Pixel 7', 'pixel7', errors), ['--no-wild']);
     await withServer(11, (base) => desktopChecks(browser, base, errors));
+    await withServer(12, (base) => worldChecks(browser, base, errors), ['--no-wild', '--world', 'main,name=Mainland', '--world', 'isle,seed=5,size=48,name=Isle']);
     if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);
     console.log(`mobile test passed; screenshots in ${shots}`);
   } catch (e) {

@@ -28,6 +28,8 @@ export interface GameDeps {
   onUnauthorized: () => void;
   /** Put the screen in the document (the canvas needs a laid-out parent). */
   mountInto: (el: HTMLElement) => void;
+  /** The world played in ('' for the server's default); named in the top bar when the server has several. */
+  world?: string;
 }
 
 const LOCAL_CODES = new Set(['not_connected', 'timeout', 'disconnected', 'closed']);
@@ -66,9 +68,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const clockEl = h('span', { id: 'clock' });
   const weatherEl = h('span', { class: 'muted', id: 'weather' });
   const bannerEl = h('span', { class: 'catastrophe-pill', id: 'catastrophe-banner', hidden: true });
+  const worldEl = h('span', { class: 'pill world-pill', id: 'world-name', hidden: true });
+  if (deps.world) {
+    void api.worlds().then((l) => {
+      const w = l.worlds.find((x) => x.id === deps.world);
+      if (!w || l.worlds.length < 2) return;
+      worldEl.textContent = w.name;
+      worldEl.title = `You are playing in the world ${w.name} (log out to pick another)`;
+      worldEl.hidden = false;
+    }).catch(() => {});
+  }
   const balanceEl = h('button', { class: 'pill balance-pill', id: 'balance', title: 'Renown: earned from your legacy share, spent on stud fees (open the Market tab)', onclick: () => showTab('market') });
   const top = h('header', { class: 'topbar' },
-    h('strong', {}, 'Evolution MMO'), h('span', { class: 'muted' }, model.name), clockEl, weatherEl, bannerEl,
+    h('strong', {}, 'Evolution MMO'), h('span', { class: 'muted' }, model.name), worldEl, clockEl, weatherEl, bannerEl,
     h('span', { class: 'spacer' }), balanceEl, connPill,
     h('button', { class: 'secondary', id: 'logout', onclick: deps.onLogout }, 'Log out'));
 

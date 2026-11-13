@@ -6,7 +6,15 @@
 //! target/release/examples/loadgen --players 200 --duration 300 --size 512 --warm-until 20000
 //! target/release/examples/loadgen --players 500 --duration 1800 --fast --warm-until 20000   # soak
 //! target/release/examples/loadgen --url http://host:8080 --players 50 --duration 120         # a running server
+//! target/release/examples/loadgen --url http://host:8080 --world isle --players 50           # one of its worlds
+//! target/release/examples/loadgen --worlds 2 --players 400 --duration 300 --size 512        # two worlds, one process
 //! ```
+//!
+//! `--world ID` sends every player to that world (`?world=` on the API and
+//! the WebSocket) and samples its metrics. `--worlds N` starts the server
+//! with N worlds (`main`, `w2`, ... `wN`, seeds `--seed` + i) and spreads
+//! the players over them round-robin; every report line then shows each
+//! world, and the summary has a `worlds` entry per world.
 //!
 //! Without `--url` it starts `evo-server` (next to this example in
 //! `target/release`, or `--server PATH`) on a free port with a file store in
@@ -68,7 +76,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 const USAGE: &str = "usage: loadgen [--players 50] [--duration 120] [--ramp 20] [--actions-per-min 30] \
 [--url http://HOST:PORT | --server PATH] [--data DIR] [--size 512] [--seed 1] [--tick-ms 1000] [--state-ms 1000] \
-[--fast] [--lod] [--warm-until 0] [--report 10] [--json FILE] [--dump-state FILE] [--founders 12] [--proto 2] [--deflate]";
+[--fast] [--lod] [--warm-until 0] [--report 10] [--json FILE] [--dump-state FILE] [--founders 12] [--proto 2] [--deflate] \
+[--world ID | --worlds N]";
 
 #[derive(Clone, Debug)]
 struct Args {
@@ -95,6 +104,36 @@ struct Args {
     /// Also measure what permessage-deflate would make of each state (a
     /// deflate stream per connection, as with context takeover).
     deflate: bool,
+    /// The world every player plays in (`?world=`).
+    world: Option<String>,
+    /// Worlds the started server hosts (players spread over them).
+    worlds: usize,
+}
+
+impl Args {
+    /// The worlds under test: `--world`, the started server's `--worlds`,
+    /// or the default world (`None`: no `?world=`).
+    fn world_ids(&self) -> Vec<Option<String>> {
+        if let Some(w) = &self.world {
+            return vec![Some(w.clone())];
+        }
+        if self.worlds <= 1 {
+            return vec![None];
+        }
+        (0..self.worlds).map(|i| Some(if i == 0 { "main".to_string() } else { format!("w{}", i + 1) })).collect()
+    }
+}
+
+/// One report of a world other than the first: (t, tick p50, tick p99,
+/// states p99, conns, organisms).
+type WorldRow = (f64, f32, f32, f32, usize, usize);
+
+/// `path` with `world=<id>` added.
+fn in_world(path: &str, world: &Option<String>) -> String {
+    match world {
+        None => path.to_string(),
+        Some(w) => format!("{path}{}world={w}", if path.contains('?') { '&' } else { '?' }),
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -119,6 +158,8 @@ fn parse_args() -> Result<Args, String> {
         founders: 12,
         proto: 2,
         deflate: false,
+        world: None,
+        worlds: 1,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -147,6 +188,8 @@ fn parse_args() -> Result<Args, String> {
             "--founders" => a.founders = num("--founders", v("--founders")?)?,
             "--proto" => a.proto = num("--proto", v("--proto")?)?,
             "--deflate" => a.deflate = true,
+            "--world" => a.world = Some(v("--world")?),
+            "--worlds" => a.worlds = num("--worlds", v("--worlds")?)?,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -157,6 +200,9 @@ fn parse_args() -> Result<Args, String> {
     if a.fast {
         a.tick_ms = 20;
         a.state_ms = 100;
+    }
+    if a.world.is_some() && a.worlds > 1 {
+        return Err("--world and --worlds don't mix".into());
     }
     Ok(a)
 }
@@ -247,6 +293,11 @@ fn spawn_server(args: &Args, data: &Path, port: u16, fast: bool, log_name: &str)
     if args.lod {
         cmd.arg("--lod");
     }
+    for (i, w) in args.world_ids().into_iter().enumerate() {
+        if let (Some(w), true) = (w, args.worlds > 1) {
+            cmd.args(["--world", &format!("{w},seed={}", args.seed + i as u64)]);
+        }
+    }
     cmd.env("RUST_LOG", "info").stdin(Stdio::null()).stderr(out.try_clone().expect("log handle")).stdout(out);
     let child = cmd
         .spawn()
@@ -281,7 +332,11 @@ async fn wait_up(http: &Http) {
 }
 
 async fn organisms(http: &Http) -> usize {
-    http.get::<Value>("/api/world").await.and_then(|w| w["organisms"].as_u64()).unwrap_or(0) as usize
+    organisms_in(http, &None).await
+}
+
+async fn organisms_in(http: &Http, world: &Option<String>) -> usize {
+    http.get::<Value>(&in_world("/api/world", world)).await.and_then(|w| w["organisms"].as_u64()).unwrap_or(0) as usize
 }
 
 // --- Measurements ----------------------------------------------------------
@@ -635,6 +690,8 @@ fn design(i: usize, founders: u32, rng: &mut StdRng) -> Value {
 
 async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
     let st = &ctx.stats;
+    let worlds = ctx.args.world_ids();
+    let world = &worlds[i % worlds.len()];
     let mut rng = StdRng::seed_from_u64(ctx.args.seed ^ (i as u64).wrapping_mul(0x9E37_79B9));
     let name = format!("lg{}_{i}", ctx.run);
     let creds = json!({"name": name, "password": "load test password"});
@@ -660,14 +717,14 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
         st.setup_failed.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    match ctx.http.call(Method::POST, "/api/lineage", Some(&token), Some(design(i, ctx.args.founders, &mut rng))).await
-    {
+    let found = in_world("/api/lineage", world);
+    match ctx.http.call(Method::POST, &found, Some(&token), Some(design(i, ctx.args.founders, &mut rng))).await {
         Ok((201, _)) | Ok((409, _)) => {
             st.founded.fetch_add(1, Ordering::Relaxed);
         }
         other => eprintln!("player {i}: founding failed: {other:?}"),
     }
-    let ws_url = format!("{}/ws?token={token}&proto={}", ctx.ws_base, ctx.args.proto);
+    let ws_url = in_world(&format!("{}/ws?token={token}&proto={}", ctx.ws_base, ctx.args.proto), world);
     let mut ws = match tokio_tungstenite::connect_async(ws_url).await {
         Ok((ws, _)) => ws,
         Err(e) => {
@@ -905,7 +962,8 @@ async fn main() {
     } else {
         let data = args.data.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("evo-loadgen-{run}")));
         std::fs::create_dir_all(&data).expect("data dir");
-        let has_save = std::fs::read_dir(data.join("snapshots")).map(|mut d| d.next().is_some()).unwrap_or(false);
+        let has_save =
+            std::fs::read_dir(data.join("worlds/main/snapshots")).map(|mut d| d.next().is_some()).unwrap_or(false);
         if args.warm_until > 0 && !has_save {
             let port = free_port();
             let base = format!("http://127.0.0.1:{port}");
@@ -938,8 +996,11 @@ async fn main() {
         run,
         stats: Stats::default(),
     });
+    let worlds = args.world_ids();
+    let main_world = worlds[0].clone();
+    let world_names: Vec<String> = worlds.iter().map(|w| w.clone().unwrap_or_else(|| "default".into())).collect();
     println!(
-        "{} players, {:.0} s (ramp {:.0} s), {:.0} actions/min each, tick {} ms, state {} ms, {}² world: {} organisms",
+        "{} players, {:.0} s (ramp {:.0} s), {:.0} actions/min each, tick {} ms, state {} ms, {}² world(s) {}: {} organisms",
         args.players,
         args.duration,
         args.ramp,
@@ -947,7 +1008,8 @@ async fn main() {
         args.tick_ms,
         args.state_ms,
         args.size,
-        organisms(&http).await
+        world_names.join(", "),
+        organisms_in(&http, &main_world).await
     );
 
     let (stop_tx, stop_rx) = watch::channel(false);
@@ -968,6 +1030,9 @@ async fn main() {
     let mut prev: Option<(Instant, MetricsView, u64, u64, u64, f64)> = None;
     let end = started + Duration::from_secs_f64(args.ramp + args.duration);
     let mut first_rss = None;
+    // The other worlds' timings, per report: (t, tick p50, tick p99, states
+    // p99, conns, organisms).
+    let mut others: Vec<Vec<WorldRow>> = vec![Vec::new(); worlds.len()];
     println!(
         "{:>6} {:>7} {:>6} {:>5} {:>13} {:>13} {:>6} {:>8} {:>8} {:>7} {:>6} {:>6} {:>7} {:>5} {:>4} {:>4}",
         "t s",
@@ -993,8 +1058,19 @@ async fn main() {
             break;
         }
         tokio::time::sleep(Duration::from_secs_f64(args.report).min(end - now)).await;
-        let Some(m) = http.get::<MetricsView>("/api/metrics").await else { continue };
-        let orgs = organisms(&http).await;
+        let Some(m) = http.get::<MetricsView>(&in_world("/api/metrics", &main_world)).await else { continue };
+        let orgs = organisms_in(&http, &main_world).await;
+        for (k, w) in worlds.iter().enumerate().skip(1) {
+            if let Some(o) = http.get::<MetricsView>(&in_world("/api/metrics", w)).await {
+                let n = organisms_in(&http, w).await;
+                let t = started.elapsed().as_secs_f64();
+                println!(
+                    "  [{}] tick p50/p99 {:.1}/{:.1} ms, states p50/p99 {:.1}/{:.1} ms, {} conns, {} organisms",
+                    world_names[k], o.tick_ms.p50, o.tick_ms.p99, o.states_ms.p50, o.states_ms.p99, o.conns, n
+                );
+                others[k].push((t, o.tick_ms.p50, o.tick_ms.p99, o.states_ms.p99, o.conns, n));
+            }
+        }
         let (states_in, state_bytes, cmds) = (
             st.states_in.load(Ordering::Relaxed),
             st.state_bytes_in.load(Ordering::Relaxed),
@@ -1050,7 +1126,7 @@ async fn main() {
     }
 
     // Summary.
-    let final_m = http.get::<MetricsView>("/api/metrics").await.unwrap_or_default();
+    let final_m = http.get::<MetricsView>(&in_world("/api/metrics", &main_world)).await.unwrap_or_default();
     let elapsed = started.elapsed().as_secs_f64();
     let _ = stop_tx.send(true);
     for t in tasks {
@@ -1082,6 +1158,33 @@ async fn main() {
     let rss_max = samples.iter().map(|s| s.rss_mb).fold(0.0, f64::max);
     let rss_end = samples.last().map_or(0.0, |s| s.rss_mb);
 
+    // Per world: the medians of its steady reports (the first world from
+    // the main samples).
+    let steady_from = args.ramp + args.report;
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(0.0)
+    };
+    let per_world: Vec<Value> = worlds
+        .iter()
+        .enumerate()
+        .map(|(k, _)| {
+            if k == 0 {
+                json!({"world": world_names[0], "tick_ms_p50": med(&|s| s.tick_p50 as f64),
+                    "tick_ms_p99": med(&|s| s.tick_p99 as f64), "states_ms_p99": med(&|s| s.states_p99 as f64),
+                    "conns": final_m.conns, "organisms_end": samples.last().map_or(0, |s| s.organisms)})
+            } else {
+                let rows: Vec<_> = others[k].iter().filter(|r| r.0 >= steady_from).collect();
+                let rows = if rows.is_empty() { others[k].iter().collect() } else { rows };
+                json!({"world": world_names[k],
+                    "tick_ms_p50": median(rows.iter().map(|r| r.1 as f64).collect()),
+                    "tick_ms_p99": median(rows.iter().map(|r| r.2 as f64).collect()),
+                    "states_ms_p99": median(rows.iter().map(|r| r.3 as f64).collect()),
+                    "conns": rows.last().map_or(0, |r| r.4), "organisms_end": rows.last().map_or(0, |r| r.5)})
+            }
+        })
+        .collect();
+
     let mut stopped_clean = None;
     let mut panics = 0;
     if let Some(p) = proc.as_mut() {
@@ -1096,6 +1199,7 @@ async fn main() {
     let by_kind: Vec<Value> = kinds.iter().take(10).map(|(k, b)| json!({"kind": k, "kb_s": per_client(*b)})).collect();
     let summary = json!({
         "players": args.players,
+        "worlds": per_world,
         "connected": st.connected.load(Ordering::Relaxed),
         "founded": st.founded.load(Ordering::Relaxed),
         "setup_failed": st.setup_failed.load(Ordering::Relaxed),

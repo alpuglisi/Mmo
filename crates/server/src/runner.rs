@@ -184,7 +184,13 @@ impl Runner {
 
     /// Run on a dedicated OS thread until every request sender is dropped.
     pub fn spawn(self) -> std::thread::JoinHandle<()> {
-        std::thread::Builder::new().name("world".into()).spawn(move || self.run()).expect("spawn world thread")
+        self.spawn_named("world".into())
+    }
+
+    /// [`Runner::spawn`] on a thread with this name (`world-<id>` when a
+    /// process hosts several worlds).
+    pub fn spawn_named(self, name: String) -> std::thread::JoinHandle<()> {
+        std::thread::Builder::new().name(name).spawn(move || self.run()).expect("spawn world thread")
     }
 
     fn run(mut self) {
@@ -311,6 +317,7 @@ impl Runner {
                 m.state_pushes += 1;
             }
             m.conns = self.conns.len();
+            m.players = self.players_online();
         }
         // Save once per simulated day.
         if self.game.world.day() != self.saved_day {
@@ -405,6 +412,14 @@ impl Runner {
             }
             other => self.receive(other),
         }
+    }
+
+    /// Distinct players with a connection open to this world.
+    fn players_online(&self) -> usize {
+        let mut players: Vec<PlayerId> = self.conns.values().map(|(p, _)| *p).collect();
+        players.sort_unstable();
+        players.dedup();
+        players.len()
     }
 
     fn dispatch(&mut self, out: Outbox) {

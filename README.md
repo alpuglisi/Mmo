@@ -266,8 +266,52 @@ of detail, below), `--no-catastrophes` (catastrophes are on by default in
 the game, never in the first year), `--fresh` (ignore the saved world: new
 world, stored designs re-founded; see [Persistence](#persistence)).
 `RUST_LOG=debug` for more logging. SIGINT (Ctrl-C) or SIGTERM stops the
-server gracefully: it stops serving, saves the world and waits for the store
-to finish writing.
+server gracefully: it stops serving, saves every world (in parallel) and
+waits for the store to finish writing.
+
+### Several worlds
+
+One process can host several worlds (shards), so a deployment grows by
+adding worlds rather than by making one world bigger. Without a world list
+it hosts one world, `main`, exactly as before.
+
+```sh
+evo-server --world main,name=Mainland --world isle,seed=7,size=96,name=The Isle
+EVO_WORLDS="main;isle,seed=7,size=96,name=The Isle" evo-server
+evo-server --worlds-file worlds.json   # [{"id": "main"}, {"id": "isle", "seed": 7, "size": 96, "name": "The Isle"}]
+```
+
+A world is `ID[,seed=N][,size=N][,name=TEXT]` (the name runs to the end, so
+it may contain commas). Ids are 1–32 of `[a-z0-9_-]` and unique; a missing
+seed or size comes from `--seed`/`--size`, and every other setting (`--no-wild`,
+`--days-per-year`, `--lod`, tick rates, `--fresh`) applies to all worlds.
+The first world is the default. `--world`/`--worlds-file` replace
+`EVO_WORLDS`; at most 64 worlds (`worlds.rs`).
+
+- **Each world is a full stack**: its own world thread (`world-<id>`),
+  saver thread, store task, published summary, `Metrics` and `NetStats`.
+  Worlds share only the Tokio runtime (HTTP and WebSocket handlers),
+  accounts and sessions, the rate limiters, the per-player connection cap
+  (8 over all worlds) and the store. Every world is loaded before any
+  starts, so a world that can't restore stops the start-up.
+- **Choosing a world**: every per-world route takes `?world=<id>`
+  (default: the first world), the WebSocket too (`/ws?token=…&world=isle`);
+  an unknown id is `404 unknown_world` with the list of ids.
+  `GET /api/worlds` lists them for the start screen.
+- **What is global and what is per world.** Global: the account (name,
+  password, player id), login sessions, and settings (alert preferences).
+  Per world: everything in the game and its economy: the founder design and
+  lineage (a player founds once *per world*), organisms, mating offers and
+  agreements, renown balances and the ledger, the stud market, the
+  leaderboards and daily history, seasons, eras, species and achievements,
+  saved games and terrain. Reasons: one identity and one set of
+  preferences is what a player expects across shards, while a shared
+  economy would let renown earned in a quiet world buy studs in a busy one,
+  couple worlds' persistence (one world's `--fresh` refund or crash replay
+  would touch another's balances) and need cross-thread locking on every
+  payment. Keeping the economy inside the world thread keeps payments
+  single-threaded and exact, as they were with one world.
+
 
 ### Architecture
 
@@ -404,6 +448,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `POST /api/register` `{name, password}` | | Create an account (name 3–24 of `[A-Za-z0-9_-]`, password ≥ 8 characters and ≤ 1024 bytes). `201 {token, player, name}`; `409 name_taken` |
 | `POST /api/login` `{name, password}` | | `{token, player, name}`; `401 bad_credentials` |
 | `POST /api/logout` | Bearer | End the session |
+| `GET /api/worlds` | | The hosted worlds, the default first: `{default, worlds: [{id, name, width, height, day, year, season, population, lineages, players_online}]}` |
 | `POST /api/lineage` (design) | Bearer | Found your lineage (one per player per world). `201 {lineage, founders: [ids], cost}`; `400` with `over_budget {cost, budget}`, `value_out_of_range {gene}`, `reserved_gene`, `litter_size`, `no_founders`, `unknown_gene`, `bad_name`; `409 already_founded` |
 | `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices |
 | `GET /api/world` | | Clock, season, weather, map size, organism and lineage counts |
@@ -422,6 +467,14 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
 | `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`) and the process's `cpu_seconds` and `rss_bytes` (Linux) |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
+
+Routes about a world (founding, `world`, the leaderboards, terrain, species,
+eras, catastrophes, achievements, lineage stats, map, metrics and the
+WebSocket) take `?world=<id>` and use the first world without it; an unknown
+id is `404 unknown_world`. Accounts, alert preferences, the gene catalog and
+`/api/worlds` are global. `/api/metrics` reports one world (its `world`
+field; `players_online` is distinct players connected) plus the process's
+CPU and memory, which all worlds share.
 
 Errors are `{"code": "...", "message": "...", ...detail}`. A design:
 
@@ -625,17 +678,46 @@ JSON-file one (`FileStore`, the default, in `--data DIR`), PostgreSQL
 `DATABASE_URL` environment variable; `--data`/`--memory` after it override
 it) and an in-memory one (`--memory`, tests).
 
+Accounts and alert preferences are global; every other record belongs to
+one world (`shard`: the configured world id). In the file store the global
+tables stay at the top of the data directory and each world's files live in
+`worlds/<id>/` (the paths below); in PostgreSQL every per-world table has a
+`shard` column in its key (migration 5).
+
 | Persisted | File | PostgreSQL table |
 | --- | --- | --- |
 | Accounts (name, player id, argon2 hash) | `accounts.json` | `accounts` (name PK, player unique) |
-| Founder designs | `designs.json` | `designs` (player PK, design `jsonb`, upsert) |
-| One record per simulated day and world: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `history.jsonl` | `daily_history` (PK `(world_id, day)`, upsert; legacy and lineages `jsonb`; `seq` keeps write order) |
-| Finished directed-mating agreements with price and outcome, the listing they were bought from and how the escrow settled (`paid`/`refunded`) | `trades.jsonl` | `trades` (`bigserial` id; `listing`, `settlement` from migration 2) |
-| Renown balances, upserted on every change | `balances.json` | `balances` (player PK, balance, day, updated_at) |
+| Founder designs (one per player per world) | `worlds/<id>/designs.json` | `designs` (PK `(shard, player)`, design `jsonb`, upsert) |
+| One record per simulated day and world: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `worlds/<id>/history.jsonl` | `daily_history` (PK `(shard, world_id, day)`, upsert; legacy and lineages `jsonb`; `seq` keeps write order) |
+| Finished directed-mating agreements with price and outcome, the listing they were bought from and how the escrow settled (`paid`/`refunded`) | `worlds/<id>/trades.jsonl` | `trades` (`bigserial` id, `shard`; `listing`, `settlement` from migration 2) |
+| Renown balances, upserted on every change | `worlds/<id>/balances.json` | `balances` (PK `(shard, player)`, balance, day, updated_at) |
 | Alert preferences (hidden and toasted alert kinds), upserted when a player saves them | `alert_prefs.json` | `alert_prefs` (player PK, hidden and toast `text[]` of kind names, updated_at; migration 3) |
-| The ledger: every balance change with world id and sequence number (a replayed entry, same world and sequence, replaces the earlier one) | `ledger.jsonl` | `ledger` (PK `(world_id, seq)`, upsert; `id` keeps write order) |
-| Saved games: the whole `World` except its static terrain, plus the game state around it (including players' alerts), every simulated day and at a graceful shutdown; the newest 3 kept | `snapshots/world-<tick>.snap` | `snapshots` (tick PK, day, size, snapshot format version, `terrain_hash` (migration 4; NULL for saves from before world snapshot version 6), saved_at, data `bytea`) |
-| Each world's static terrain (biomes, relief, rivers, ground cover: `Terrain::encode`), written once before the first saved game that names it; `--fresh` deletes it with the saved games | `terrain/<world id>-<hash>.terrain` | `terrains` (PK `(world_id, hash)`, hash as 16 hex digits, size, saved_at, data `bytea`; migration 4) |
+| The ledger: every balance change with world id and sequence number (a replayed entry, same world and sequence, replaces the earlier one) | `worlds/<id>/ledger.jsonl` | `ledger` (PK `(shard, world_id, seq)`, upsert; `id` keeps write order) |
+| Saved games: the whole `World` except its static terrain, plus the game state around it (including players' alerts), every simulated day and at a graceful shutdown; the newest 3 kept | `worlds/<id>/snapshots/world-<tick>.snap` | `snapshots` (PK `(shard, tick)`, day, size, snapshot format version, `terrain_hash` (migration 4; NULL for saves from before world snapshot version 6), saved_at, data `bytea`) |
+| Each world's static terrain (biomes, relief, rivers, ground cover: `Terrain::encode`), written once before the first saved game that names it; `--fresh` deletes it with the saved games | `worlds/<id>/terrain/<world id>-<hash>.terrain` | `terrains` (PK `(shard, world_id, hash)`, hash as 16 hex digits, size, saved_at, data `bytea`; migration 4) |
+
+**Migrating single-world data.** Data written before several worlds
+belongs to the default world, `main`, and nothing is lost: `FileStore::open`
+moves the top-level per-world files and directories (`designs.json`,
+`balances.json`, `history.jsonl`, `trades.jsonl`, `ledger.jsonl`,
+`snapshots/`, `terrain/`) into `worlds/main/`, one rename each, so an
+interrupted move finishes on the next open; a file found in both places (an
+older server ran on the directory after the move) stops the start with a
+message instead of guessing. `0005_worlds.sql` adds `shard` to every
+per-world table with the default `'main'` for existing rows, drops the
+default and rebuilds the keys and indexes with `shard` first. Keep a world
+with the id `main` in the list to go on playing the old world (it is the
+default when there is no list). `tests/persistence.rs` writes a real
+single-world save and every record kind in the old layout (files) and the
+0004 schema (PostgreSQL, through `PgStore::migrate_to`), opens the store,
+checks every record is `main`'s and none another world's, then starts a
+two-world server that continues the saved world as `main` beside a new
+world; for the memory store (which has no old form) it carries a
+single-world server's data into a two-world server. `tests/worlds.rs`
+checks isolation end to end: commands on another world's organisms fail,
+a listing isn't on the other world's market and can't be bought from it,
+leaderboards, history, balances and ledgers are per world, and a restart
+restores each world from its own save.
 
 **Daily records and restarts.** Every world gets a random id when its map is
 generated, kept in its saved games and written into each daily record. A
@@ -975,7 +1057,16 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
 
 **Screens.**
 
-- **Login / register** (`ui/login.ts`). The token is kept in
+- **Login / register** (`ui/login.ts`). On a server with several worlds
+  it shows a **World** picker (from `GET /api/worlds`, with each world's
+  size, day, population and players online; hidden when there is one
+  world). It preselects the world the typed name played last on this server,
+  else the last world chosen here (`worldChoice.ts`, `localStorage`), and
+  the choice goes into the saved session, so a reload reconnects to the
+  same world; `api.ts` adds `world=<id>` to every per-world call and the
+  socket. The game's top bar names the world when there are several (log
+  out to switch). The phone layout gets the same card at full width
+  (`e2e/mobile.mjs` picks a world on a Pixel 7). The token is kept in
   `localStorage`; the server holds tokens in memory, so after a server
   restart the socket fails while the API answers, and the client drops back
   to the login screen. So does a `session_ended` message (expiry) or a 401
@@ -1507,7 +1598,15 @@ target/release/examples/loadgen --players 200 --duration 150 --ramp 40 --warm-un
 target/release/examples/loadgen --players 200 --duration 1800 --fast --warm-until 22000   # soak
 target/release/examples/loadgen --url http://host:8080 --players 50                       # a running server
 target/release/examples/loadgen --players 200 --proto 1 --deflate                         # JSON states, deflate estimate
+target/release/examples/loadgen --worlds 2 --players 400                                  # two worlds in one process
+target/release/examples/loadgen --url http://host:8080 --world isle --players 50          # one world of a running server
 ```
+
+`--world ID` sends every player to that world and samples its metrics;
+`--worlds N` starts the server with N worlds (`main`, `w2`, …, seeds
+`--seed`+i), spreads the players over them round-robin, prints a line per
+extra world at every report and adds a `worlds` entry per world (tick and
+push timings, connections, organisms) to the summary.
 
 The players speak protocol 2 (binary delta states, as the web client) by
 default; `--proto 1` makes them old clients that get whole JSON states.
@@ -1687,6 +1786,30 @@ a tick, though only the possessed organism's delta goes out).
   (the copy) and 0.3–1.3 s of the saver thread per simulated day.
 - Keep rate limits on in production (the test turns them off only because
   all its players share one IP).
+- **More worlds per process** (`--world`, above) scale out instead of up:
+  each world brings its own world thread and saver, so worlds tick in
+  parallel and only share cores, memory and the network. A quick check on
+  this shared, noisy 4-core box (load average ~9 from other jobs during the
+  runs; 256² worlds, no warm-up, ~2.5k organisms each, 90 s after a 20 s
+  ramp, `loadgen --players 100` against `loadgen --worlds 2 --players 200`):
+
+  | | one world, 100 players | two worlds, 100 players each |
+  | --- | --- | --- |
+  | tick p50 / p99 (ms) | 8.8 / 40.9 | main 10.7 / 35.6, w2 9.7 / 66.4 |
+  | state push p99 (ms) | 7.0 | 5.7, 8.1 |
+  | command latency p50 / p99 (ms) | 135 / 254 | 137 / 258 |
+  | server CPU (cores) | 0.04 | 0.08 |
+  | RSS max (MB) | 203 | 226 |
+  | out per world (MB/s) | 0.74 | 0.71 (main) |
+
+  Per-world timings and command latency stay where one world had them, CPU
+  doubles with the load and memory grows by the second world's size: the
+  second world costs what a second process would, without the second
+  process. The p99 spread is the box's noise (one stalled sample sets a
+  p99 of the 256-tick window). Budget cores per world as above (a 512²,
+  500-player world wants 4–6), and add worlds to a process while its cores
+  have headroom; past that, run more processes (each with its own world
+  list) behind the same accounts store.
 
 ## Level of detail
 

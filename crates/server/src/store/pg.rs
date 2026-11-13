@@ -39,6 +39,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (2, "economy", include_str!("../../migrations/0002_economy.sql")),
     (3, "alert_prefs", include_str!("../../migrations/0003_alert_prefs.sql")),
     (4, "terrain", include_str!("../../migrations/0004_terrain.sql")),
+    (5, "worlds", include_str!("../../migrations/0005_worlds.sql")),
 ];
 
 #[derive(Debug)]
@@ -97,6 +98,16 @@ impl PgStore {
         Ok(Self { pool })
     }
 
+    /// Apply the embedded migrations up to `version` only (tests of a later
+    /// migration build the schema it starts from).
+    #[doc(hidden)]
+    pub async fn migrate_to(pool: &PgPool, version: i64) -> StoreResult<()> {
+        let mut m = Migrator::new(Embedded).await?;
+        m.migrations = m.migrations.iter().filter(|x| x.version <= version).cloned().collect::<Vec<_>>().into();
+        m.run(pool).await?;
+        Ok(())
+    }
+
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
@@ -137,10 +148,12 @@ impl Store for PgStore {
         Ok(())
     }
 
-    async fn load_designs(&self) -> StoreResult<Vec<DesignRecord>> {
+    async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>> {
         let rows = sqlx::query(
-            "SELECT player, design::text AS design, founded_day, founded_unix FROM designs ORDER BY player",
+            "SELECT player, design::text AS design, founded_day, founded_unix FROM designs WHERE shard = $1 \
+             ORDER BY player",
         )
+        .bind(shard)
         .fetch_all(&self.pool)
         .await?;
         rows.iter()
@@ -155,26 +168,28 @@ impl Store for PgStore {
             .collect()
     }
 
-    async fn put_design(&self, design: &DesignRecord) -> StoreResult<()> {
+    async fn put_design(&self, shard: &str, design: &DesignRecord) -> StoreResult<()> {
         sqlx::query(
-            "INSERT INTO designs (player, design, founded_day, founded_unix) VALUES ($1, $2::jsonb, $3, $4) \
-             ON CONFLICT (player) DO UPDATE SET design = EXCLUDED.design, founded_day = EXCLUDED.founded_day, \
+            "INSERT INTO designs (shard, player, design, founded_day, founded_unix) \
+             VALUES ($5, $1, $2::jsonb, $3, $4) \
+             ON CONFLICT (shard, player) DO UPDATE SET design = EXCLUDED.design, founded_day = EXCLUDED.founded_day, \
              founded_unix = EXCLUDED.founded_unix",
         )
         .bind(i64::from(design.player))
         .bind(serde_json::to_string(&design.design)?)
         .bind(int(design.founded_day))
         .bind(int(design.founded_unix))
+        .bind(shard)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    async fn append_daily(&self, record: &DailyRecord) -> StoreResult<()> {
+    async fn append_daily(&self, shard: &str, record: &DailyRecord) -> StoreResult<()> {
         sqlx::query(
-            "INSERT INTO daily_history (world_id, day, year, season, breeding_adults, legacy, lineages) \
-             VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb) \
-             ON CONFLICT (world_id, day) DO UPDATE SET year = EXCLUDED.year, season = EXCLUDED.season, \
+            "INSERT INTO daily_history (shard, world_id, day, year, season, breeding_adults, legacy, lineages) \
+             VALUES ($8, $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb) \
+             ON CONFLICT (shard, world_id, day) DO UPDATE SET year = EXCLUDED.year, season = EXCLUDED.season, \
              breeding_adults = EXCLUDED.breeding_adults, legacy = EXCLUDED.legacy, lineages = EXCLUDED.lineages",
         )
         .bind(&record.world_id)
@@ -184,17 +199,19 @@ impl Store for PgStore {
         .bind(int(record.breeding_adults as u64))
         .bind(serde_json::to_string(&record.legacy)?)
         .bind(serde_json::to_string(&record.lineages)?)
+        .bind(shard)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    async fn recent_daily(&self, limit: usize) -> StoreResult<Vec<DailyRecord>> {
+    async fn recent_daily(&self, shard: &str, limit: usize) -> StoreResult<Vec<DailyRecord>> {
         let rows = sqlx::query(
             "SELECT world_id, day, year, season, breeding_adults, legacy::text AS legacy, lineages::text AS lineages \
-             FROM (SELECT * FROM daily_history ORDER BY seq DESC LIMIT $1) recent ORDER BY seq",
+             FROM (SELECT * FROM daily_history WHERE shard = $2 ORDER BY seq DESC LIMIT $1) recent ORDER BY seq",
         )
         .bind(int(limit as u64))
+        .bind(shard)
         .fetch_all(&self.pool)
         .await?;
         rows.iter()
@@ -212,10 +229,10 @@ impl Store for PgStore {
             .collect()
     }
 
-    async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()> {
+    async fn append_trade(&self, shard: &str, record: &TradeRecord) -> StoreResult<()> {
         sqlx::query(
-            "INSERT INTO trades (offer, from_player, to_player, mine, partner, price, status, conceived, day, listing, settlement) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            "INSERT INTO trades (shard, offer, from_player, to_player, mine, partner, price, status, conceived, day, listing, settlement) \
+             VALUES ($12, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(int(record.offer))
         .bind(i64::from(record.from_player))
@@ -228,13 +245,15 @@ impl Store for PgStore {
         .bind(int(record.day))
         .bind(record.listing.map(int))
         .bind(&record.settlement)
+        .bind(shard)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    async fn load_trades(&self) -> StoreResult<Vec<TradeRecord>> {
-        let rows = sqlx::query("SELECT offer, from_player, to_player, mine, partner, price, status, conceived, day, listing, settlement FROM trades ORDER BY id")
+    async fn load_trades(&self, shard: &str) -> StoreResult<Vec<TradeRecord>> {
+        let rows = sqlx::query("SELECT offer, from_player, to_player, mine, partner, price, status, conceived, day, listing, settlement FROM trades WHERE shard = $1 ORDER BY id")
+            .bind(shard)
             .fetch_all(&self.pool)
             .await?;
         rows.iter()
@@ -256,15 +275,15 @@ impl Store for PgStore {
             .collect()
     }
 
-    async fn put_snapshot(&self, tick: u64, day: u64, bytes: &[u8]) -> StoreResult<()> {
+    async fn put_snapshot(&self, shard: &str, tick: u64, day: u64, bytes: &[u8]) -> StoreResult<()> {
         let header = crate::snapshot::header(bytes).ok();
         let version = header.map(|h| h.version as i32);
         let terrain = header.and_then(|h| h.terrain).map(hash_text);
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "INSERT INTO snapshots (tick, day, size_bytes, format_version, terrain_hash, data) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
-             ON CONFLICT (tick) DO UPDATE SET day = EXCLUDED.day, size_bytes = EXCLUDED.size_bytes, \
+            "INSERT INTO snapshots (shard, tick, day, size_bytes, format_version, terrain_hash, data) \
+             VALUES ($7, $1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (shard, tick) DO UPDATE SET day = EXCLUDED.day, size_bytes = EXCLUDED.size_bytes, \
              format_version = EXCLUDED.format_version, terrain_hash = EXCLUDED.terrain_hash, saved_at = now(), \
              data = EXCLUDED.data",
         )
@@ -274,24 +293,33 @@ impl Store for PgStore {
         .bind(version)
         .bind(terrain)
         .bind(bytes)
+        .bind(shard)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("DELETE FROM snapshots WHERE tick NOT IN (SELECT tick FROM snapshots ORDER BY tick DESC LIMIT $1)")
-            .bind(int(KEEP_SNAPSHOTS as u64))
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "DELETE FROM snapshots WHERE shard = $2 AND tick NOT IN \
+             (SELECT tick FROM snapshots WHERE shard = $2 ORDER BY tick DESC LIMIT $1)",
+        )
+        .bind(int(KEEP_SNAPSHOTS as u64))
+        .bind(shard)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
 
-    async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>> {
-        let rows = sqlx::query("SELECT tick FROM snapshots ORDER BY tick DESC").fetch_all(&self.pool).await?;
+    async fn snapshot_ticks(&self, shard: &str) -> StoreResult<Vec<u64>> {
+        let rows = sqlx::query("SELECT tick FROM snapshots WHERE shard = $1 ORDER BY tick DESC")
+            .bind(shard)
+            .fetch_all(&self.pool)
+            .await?;
         rows.iter().map(|r| get_u64(r, "tick")).collect()
     }
 
-    async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>> {
-        let row = sqlx::query("SELECT data FROM snapshots WHERE tick = $1")
+    async fn load_snapshot(&self, shard: &str, tick: u64) -> StoreResult<Vec<u8>> {
+        let row = sqlx::query("SELECT data FROM snapshots WHERE shard = $2 AND tick = $1")
             .bind(int(tick))
+            .bind(shard)
             .fetch_optional(&self.pool)
             .await?;
         match row {
@@ -300,62 +328,67 @@ impl Store for PgStore {
         }
     }
 
-    async fn clear_snapshots(&self) -> StoreResult<()> {
+    async fn clear_snapshots(&self, shard: &str) -> StoreResult<()> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM snapshots").execute(&mut *tx).await?;
-        sqlx::query("DELETE FROM terrains").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM snapshots WHERE shard = $1").bind(shard).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM terrains WHERE shard = $1").bind(shard).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    async fn put_terrain(&self, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()> {
+    async fn put_terrain(&self, shard: &str, world_id: &str, hash: u64, bytes: &[u8]) -> StoreResult<()> {
         // Usually stored already (once per world): don't send megabytes to
         // find out.
-        let known = sqlx::query("SELECT 1 FROM terrains WHERE world_id = $1 AND hash = $2")
+        let known = sqlx::query("SELECT 1 FROM terrains WHERE shard = $3 AND world_id = $1 AND hash = $2")
             .bind(world_id)
             .bind(hash_text(hash))
+            .bind(shard)
             .fetch_optional(&self.pool)
             .await?;
         if known.is_some() {
             return Ok(());
         }
         sqlx::query(
-            "INSERT INTO terrains (world_id, hash, size_bytes, data) VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (world_id, hash) DO NOTHING",
+            "INSERT INTO terrains (shard, world_id, hash, size_bytes, data) VALUES ($5, $1, $2, $3, $4) \
+             ON CONFLICT (shard, world_id, hash) DO NOTHING",
         )
         .bind(world_id)
         .bind(hash_text(hash))
         .bind(int(bytes.len() as u64))
         .bind(bytes)
+        .bind(shard)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    async fn load_terrain(&self, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>> {
-        let row = sqlx::query("SELECT data FROM terrains WHERE world_id = $1 AND hash = $2")
+    async fn load_terrain(&self, shard: &str, world_id: &str, hash: u64) -> StoreResult<Option<Vec<u8>>> {
+        let row = sqlx::query("SELECT data FROM terrains WHERE shard = $3 AND world_id = $1 AND hash = $2")
             .bind(world_id)
             .bind(hash_text(hash))
+            .bind(shard)
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(|r| r.try_get("data")).transpose()?)
     }
 
-    async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
+    async fn put_balance(&self, shard: &str, record: &BalanceRecord) -> StoreResult<()> {
         sqlx::query(
-            "INSERT INTO balances (player, balance, updated_day) VALUES ($1, $2, $3) \
-             ON CONFLICT (player) DO UPDATE SET balance = EXCLUDED.balance, updated_day = EXCLUDED.updated_day, updated_at = now()",
+            "INSERT INTO balances (shard, player, balance, updated_day) VALUES ($4, $1, $2, $3) \
+             ON CONFLICT (shard, player) DO UPDATE SET balance = EXCLUDED.balance, updated_day = EXCLUDED.updated_day, updated_at = now()",
         )
         .bind(i64::from(record.player))
         .bind(int(record.balance))
         .bind(int(record.day))
+        .bind(shard)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>> {
-        let rows = sqlx::query("SELECT player, balance, updated_day FROM balances ORDER BY player")
+    async fn load_balances(&self, shard: &str) -> StoreResult<Vec<BalanceRecord>> {
+        let rows = sqlx::query("SELECT player, balance, updated_day FROM balances WHERE shard = $1 ORDER BY player")
+            .bind(shard)
             .fetch_all(&self.pool)
             .await?;
         rows.iter()
@@ -369,12 +402,12 @@ impl Store for PgStore {
             .collect()
     }
 
-    async fn append_ledger(&self, record: &LedgerRecord) -> StoreResult<()> {
+    async fn append_ledger(&self, shard: &str, record: &LedgerRecord) -> StoreResult<()> {
         let e = &record.entry;
         sqlx::query(
-            "INSERT INTO ledger (world_id, seq, player, tick, day, delta, balance, kind, text, offer, listing) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
-             ON CONFLICT (world_id, seq) DO UPDATE SET player = EXCLUDED.player, tick = EXCLUDED.tick, day = EXCLUDED.day, \
+            "INSERT INTO ledger (shard, world_id, seq, player, tick, day, delta, balance, kind, text, offer, listing) \
+             VALUES ($12, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+             ON CONFLICT (shard, world_id, seq) DO UPDATE SET player = EXCLUDED.player, tick = EXCLUDED.tick, day = EXCLUDED.day, \
              delta = EXCLUDED.delta, balance = EXCLUDED.balance, kind = EXCLUDED.kind, text = EXCLUDED.text, \
              offer = EXCLUDED.offer, listing = EXCLUDED.listing",
         )
@@ -389,18 +422,26 @@ impl Store for PgStore {
         .bind(&e.text)
         .bind(e.offer.map(int))
         .bind(e.listing.map(int))
+        .bind(shard)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    async fn recent_ledger(&self, player: Option<PlayerId>, limit: usize) -> StoreResult<Vec<LedgerRecord>> {
+    async fn recent_ledger(
+        &self,
+        shard: &str,
+        player: Option<PlayerId>,
+        limit: usize,
+    ) -> StoreResult<Vec<LedgerRecord>> {
         let rows = sqlx::query(
             "SELECT world_id, seq, player, tick, day, delta, balance, kind, text, offer, listing \
-             FROM (SELECT * FROM ledger WHERE $1::BIGINT IS NULL OR player = $1 ORDER BY id DESC LIMIT $2) recent ORDER BY id",
+             FROM (SELECT * FROM ledger WHERE shard = $3 AND ($1::BIGINT IS NULL OR player = $1) \
+             ORDER BY id DESC LIMIT $2) recent ORDER BY id",
         )
         .bind(player.map(i64::from))
         .bind(int(limit as u64))
+        .bind(shard)
         .fetch_all(&self.pool)
         .await?;
         rows.iter()
