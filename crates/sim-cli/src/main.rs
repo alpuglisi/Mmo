@@ -13,6 +13,7 @@ use evo_sim::math::Vec2;
 use evo_sim::organism::{Action, DeathCause, Dormancy, Infection};
 use evo_sim::{presets, render, Balance, Gene, LodConfig, PlayerId, ScoringConfig, World, WorldConfig, WILD};
 
+mod stats;
 mod sweep;
 
 const USAGE: &str = "\
@@ -23,12 +24,16 @@ USAGE:
                    [--catastrophes] [--catastrophe KIND@DAY] [--era-years N]
     evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N,..] [--lod] [--focus X,Y] [--sequential-apply] [--compare-apply]
     evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH] [--sequential-apply]
+                   [--screen-days D,..] [--screen-seeds N] [--eta F]
+    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--set NAME=V ..] [vs [defaults | --set NAME=V ..]]
     evo-sim designs
 
 COMMANDS:
     run      Found the wild ecosystem and four sample player lineages, run, report
     bench    Measure per-organism tick cost (µs) at a larger population
     sweep    Random-search the balance parameters, scoring lineage coexistence
+    compare  Run two balance configurations on the same seeds and report the paired
+             score difference with a 95% confidence interval (is A better than B?)
     designs  List the sample founder designs and their point costs
 
 OPTIONS:
@@ -40,12 +45,23 @@ OPTIONS:
     --scale N       Founding population multiplier for bench (default 4)
     --threads N     Worker threads (default: all cores). Bench takes a list (1,2,4)
                     and measures each, rotating the simulated days between them
-    --set NAME=V    Override a balance parameter (repeatable; for sweep, sets the start point)
+    --set NAME=V    Override a balance parameter (repeatable; for sweep, sets the start point;
+                    for compare, configures A, or B after `vs`)
     --trials N      Sweep: parameter sets per round (default 16)
-    --seeds N       Sweep: worlds per parameter set (default 3)
+    --seeds N       Sweep: worlds per parameter set on the full run (default 3);
+                    compare: seeds per configuration (default 12)
+    --screen-days D,..  Sweep: successive halving. Each round first runs every trial
+                    for D days (a comma list gives several screens, shortest first),
+                    keeps the best 1/eta plus the round center, and resumes only
+                    those worlds to the full --days (default: no screens)
+    --screen-seeds N    Sweep: seeds per trial in the screens (default --seeds)
+    --eta F         Sweep: a screen keeps ceil(trials / F) trials (default 3)
     --rounds N      Sweep: rounds, each recentered on the best with half the spread (default 2)
     --spread F      Sweep: max log-factor per parameter in round 1 (default 0.5, i.e. ×0.61–×1.65)
-    --out PATH      Sweep: write every trial to a CSV file
+    --out PATH      Sweep: write every trial to a CSV file (score, its SE and 95% CI,
+                    the paired difference to the center); compare: per-seed scores
+    vs              Compare: the --set flags after it configure B; before it, A.
+                    B defaults to the default balance (`vs defaults` says so)
     --lod           Level of detail: full agents only near focus points, statistical
                     cohorts elsewhere (run and bench)
     --focus X,Y     A focus point in tiles (repeatable; implies --lod). Without any,
@@ -97,10 +113,16 @@ struct Args {
     scoring: ScoringConfig,
     forced: Vec<(CatastropheKind, u64)>,
     trials: usize,
-    seeds: u64,
+    /// `--seeds`; the default depends on the command (sweep 3, compare 12).
+    seeds: Option<u64>,
     rounds: u32,
     spread: f32,
     out: Option<String>,
+    screen_days: Vec<u32>,
+    screen_seeds: Option<u64>,
+    eta: f64,
+    /// Compare: the configuration after `vs` (defaults unless `--set` follows).
+    balance_b: Option<Balance>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -124,10 +146,14 @@ fn parse_args() -> Result<Args, String> {
         scoring: ScoringConfig::default(),
         forced: Vec::new(),
         trials: 16,
-        seeds: 3,
+        seeds: None,
         rounds: 2,
         spread: 0.5,
         out: None,
+        screen_days: Vec::new(),
+        screen_seeds: None,
+        eta: 3.0,
+        balance_b: None,
     };
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or(format!("{flag} needs a value"));
@@ -148,7 +174,29 @@ fn parse_args() -> Result<Args, String> {
                 a.threads = a.thread_list.iter().copied().max();
             }
             "--trials" => a.trials = (num(value()?)? as usize).max(1),
-            "--seeds" => a.seeds = num(value()?)?.max(1),
+            "--seeds" => a.seeds = Some(num(value()?)?.max(1)),
+            "--screen-days" => {
+                let v = value()?;
+                a.screen_days =
+                    v.split(',').map(|t| num(t.trim().to_string()).map(|n| n as u32)).collect::<Result<_, _>>()?;
+            }
+            "--screen-seeds" => a.screen_seeds = Some(num(value()?)?.max(1)),
+            "--eta" => {
+                let v = value()?;
+                a.eta = v.parse().map_err(|_| format!("--eta: '{v}' is not a number"))?;
+                if a.eta.is_nan() || a.eta < 1.0 {
+                    return Err(format!("--eta must be at least 1, got '{v}'"));
+                }
+            }
+            // Compare: what follows `vs` configures B; `defaults` names the
+            // unmodified balance on either side.
+            "vs" if a.command == "compare" => {
+                if a.balance_b.is_some() {
+                    return Err("compare takes one 'vs'".into());
+                }
+                a.balance_b = Some(Balance::default());
+            }
+            "defaults" if a.command == "compare" => {}
             "--rounds" => a.rounds = (num(value()?)? as u32).max(1),
             "--spread" => {
                 let v = value()?;
@@ -159,7 +207,8 @@ fn parse_args() -> Result<Args, String> {
                 let v = value()?;
                 let (name, x) = v.split_once('=').ok_or(format!("--set expects NAME=VALUE, got '{v}'"))?;
                 let x: f32 = x.parse().map_err(|_| format!("--set {name}: '{x}' is not a number"))?;
-                if !a.balance.set(name, x) {
+                let target = a.balance_b.as_mut().unwrap_or(&mut a.balance);
+                if !target.set(name, x) {
                     return Err(format!("--set: unknown balance parameter '{name}'"));
                 }
             }
@@ -208,21 +257,38 @@ fn main() -> ExitCode {
     if let Some(n) = args.threads {
         rayon::ThreadPoolBuilder::new().num_threads(n).build_global().expect("thread pool");
     }
+    let size_given = std::env::args().any(|a| a == "--size");
+    let size = if args.size == 128 && !size_given { 96 } else { args.size };
     match args.command.as_str() {
         "run" => run(&args),
         "bench" => bench(&args),
         "sweep" => sweep::sweep(&sweep::SweepArgs {
             base_seed: args.seed,
-            size: if args.size == 128 && !std::env::args().any(|a| a == "--size") { 96 } else { args.size },
+            size,
             days: args.days.unwrap_or(120),
             trials: args.trials,
-            seeds: args.seeds,
+            seeds: args.seeds.unwrap_or(3),
             rounds: args.rounds,
             spread: args.spread,
             center: args.balance,
             out: args.out.clone(),
             parallel_apply: !args.sequential_apply,
+            screen_days: args.screen_days.clone(),
+            screen_seeds: args.screen_seeds,
+            eta: args.eta,
         }),
+        "compare" => {
+            sweep::compare(&sweep::CompareArgs {
+                base_seed: args.seed,
+                size,
+                days: args.days.unwrap_or(120),
+                seeds: args.seeds.unwrap_or(12),
+                a: args.balance,
+                b: args.balance_b.unwrap_or_default(),
+                out: args.out.clone(),
+                parallel_apply: !args.sequential_apply,
+            });
+        }
         "designs" => designs(),
         "help" | "-h" | "--help" => print!("{USAGE}"),
         other => {
