@@ -526,6 +526,26 @@ pub struct Balance {
     /// guarded and kept warm": a brooder in a cold place eats much more and
     /// must leave the nest to feed more often. 0 makes brooding free.
     pub brood_cost: f32,
+    /// Vigilance at water and at rest: a threat in sight scales the urges to
+    /// drink and to rest by `1 - threat_caution × threat` (threat capped at
+    /// 1), so immediate danger outranks them (doc: "Hungry organisms
+    /// prioritize food over everything except immediate danger"). The
+    /// parched still drink: the extra urge above thirst 80 is kept. 0
+    /// disables.
+    pub threat_caution: f32,
+    /// Share of the `ambush` penalty (on resistance and on the chance to
+    /// slip a strike) waived for prey that had a threat in sight
+    /// (`Needs::safety` > 0) but wasn't fleeing: drinking, resting or
+    /// grazing with an eye on the hunter, it is not wholly caught off guard.
+    /// 0: anything not fleeing is fully ambushed, as before.
+    pub alert_guard: f32,
+    /// Foraging on stripped ground. A forager whose tile is bare first
+    /// steps to the best of its 8 neighboring tiles with a bite on it,
+    /// instead of passing such remnants by for a sampled patch further out;
+    /// if nothing is found within 3× its foraging reach either, it samples
+    /// once more at `pasture_search` × its reach (a herd moving on to fresh
+    /// pasture) before it wanders. 0 disables both.
+    pub pasture_search: f32,
 }
 
 impl Default for Balance {
@@ -611,12 +631,15 @@ impl Default for Balance {
             egg_overheat: 0.02,
             brood_warmth: 20.0,
             brood_cost: 1.0,
+            threat_caution: 1.0,
+            alert_guard: 0.5,
+            pasture_search: 6.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 78;
+    pub const FIELD_COUNT: usize = 81;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -704,6 +727,9 @@ impl Balance {
             ("egg_overheat", &mut self.egg_overheat),
             ("brood_warmth", &mut self.brood_warmth),
             ("brood_cost", &mut self.brood_cost),
+            ("threat_caution", &mut self.threat_caution),
+            ("alert_guard", &mut self.alert_guard),
+            ("pasture_search", &mut self.pasture_search),
         ]
     }
 

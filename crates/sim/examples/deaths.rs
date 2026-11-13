@@ -5,7 +5,8 @@
 //! not yet breeding, adult), season, whether the mother was alive and near
 //! (within 3 tiles), and the killer's lineage. Lineages in the standard
 //! world: 0 vole, 1 antelope, 2 newt, 3 fox, 4 pack hunters, 5 herd grazers,
-//! 6 toxic frogs, 7 burrowing omnivores. `--set NAME=V` overrides a balance
+//! 6 toxic frogs, 7 burrowing omnivores; with `--migrants` (the extended
+//! world) also 8 migrating caribou. `--set NAME=V` overrides a balance
 //! parameter.
 
 use std::collections::BTreeMap;
@@ -16,9 +17,12 @@ use evo_sim::{presets, Balance, WorldConfig};
 fn main() {
     let mut balance = Balance::default();
     let mut pos: Vec<String> = Vec::new();
+    let mut migrants = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
-        if a == "--set" {
+        if a == "--migrants" {
+            migrants = true;
+        } else if a == "--set" {
             let s = args.next().expect("--set NAME=V");
             let (n, v) = s.split_once('=').expect("--set NAME=V");
             assert!(balance.set(n, v.parse().unwrap()), "unknown parameter {n}");
@@ -38,8 +42,8 @@ fn main() {
     }
     let mut names = Vec::new();
     for &seed in &seeds {
-        let mut w =
-            presets::standard_world(WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() }, 1);
+        let config = WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() };
+        let mut w = if migrants { presets::extended_world(config, 1) } else { presets::standard_world(config, 1) };
         names = w.lineages.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
         let tpd = w.config.ticks_per_day;
         for _ in 0..days {

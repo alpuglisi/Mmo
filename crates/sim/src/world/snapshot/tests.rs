@@ -14,7 +14,7 @@ fn possessed(w: &World) -> Option<&crate::organism::Organism> {
 /// dormancy comes quickly, a possessed organism with a move order, daily
 /// species detection.
 fn busy_world() -> World {
-    let mut config = WorldConfig { seed: 21, width: 96, height: 96, days_per_year: 16, ..Default::default() };
+    let mut config = WorldConfig { seed: 22, width: 96, height: 96, days_per_year: 16, ..Default::default() };
     config.lod.enabled = true;
     config.scoring.catastrophes = true;
     config.scoring.catastrophe_first_year = 0;
