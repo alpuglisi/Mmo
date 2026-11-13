@@ -259,7 +259,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const slots = s?.slots_left ?? 0;
     const why = (l: ListingView) => (l.auction ? bidProblem(l, model.player, balance, slots, mine, l.auction.min_bid) : buyProblem(l, model.player, balance, slots, mine));
     const key = JSON.stringify([shown.map((l) => [l.id, l.sales, l.busy, l.pregnant, l.preview?.fertility, l.preview?.distance?.toFixed(0),
-      l.auction?.high_bid, l.auction?.high_bidder, l.auction && Math.ceil((l.auction.deadline_tick - (s?.clock.tick ?? 0)) / 2), why(l)]), market === null]);
+      l.auction?.high_bid, l.auction?.high_bidder, why(l)]), market === null]);
     if (key !== listingsKey) {
       listingsKey = key;
       listingsEl.replaceChildren(...(market === null ? [h('p', { class: 'muted small' }, 'Loading…')]
@@ -267,12 +267,26 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
           ? [h('p', { class: 'muted small' }, 'No listings match the filters.')]
           : shown.map((l) => listingCard(l, false))));
     }
+    // The time left on auctions changes every tick: update the line in
+    // place rather than rebuilding the cards (and a bid being typed).
+    refreshAuctionLines(listingsEl, shown);
+    refreshAuctionLines(myListingsEl, own);
     pageEl.textContent = pageText(shown.length, market);
     moreBtn.hidden = !market?.next_cursor;
     const ownKey = JSON.stringify(own.map((l) => [l.id, l.sales, l.busy, l.auction?.high_bid, l.auction?.bids]));
     if (myListingsEl.dataset.key !== ownKey) {
       myListingsEl.dataset.key = ownKey;
       myListingsEl.replaceChildren(...(own.length === 0 ? [h('p', { class: 'muted small' }, 'None.')] : own.map((l) => listingCard(l, true))));
+    }
+  }
+
+  function refreshAuctionLines(root: HTMLElement, ls: ListingView[]): void {
+    const tick = model.state?.clock.tick ?? 0;
+    const byId = new Map(ls.map((l) => [l.id, l]));
+    for (const card of root.querySelectorAll<HTMLElement>('.listing[data-kind="auction"]')) {
+      const l = byId.get(Number(card.dataset.listing));
+      const line = card.querySelector('.auction-line');
+      if (l && line) line.textContent = auctionText(l, model.player, tick, TICKS_PER_DAY);
     }
   }
 

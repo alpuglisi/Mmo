@@ -587,7 +587,9 @@ async function main() {
     // An auction: ann auctions an adult from the Market tab, bob finds it
     // under "auctions" and bids the reserve for one of his adults of the
     // other sex (held in escrow; the auction can then no longer be
-    // withdrawn), or, if the world refuses the bid, ann withdraws it.
+    // withdrawn), or, if the world refuses the bid, ann withdraws it. The
+    // world runs fast (a simulated day is about a second), so the auction
+    // gets the longest run, 30 days.
     const reserve = 3;
     await page.selectOption('#market-list-kind', 'auction');
     if (!(await page.isVisible('#market-auction-days'))) throw new Error('the auction length field is hidden');
@@ -600,6 +602,7 @@ async function main() {
       if (options.length === 0) throw new Error('no adult of ann to auction');
       await page.selectOption('#market-list-organism', options[attempt % options.length]);
       await page.fill('#market-fee', String(reserve));
+      await page.fill('#market-auction-days', '30');
       await page.click('#market-list-submit');
       const r = await waitFor('create_auction result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_auction')));
       if (r.ok) [auctionId, lotSex] = [r.data.listing.id, r.data.listing.sex];
@@ -633,7 +636,8 @@ async function main() {
     if (bid?.ok) {
       await waitFor('bob\'s bid in escrow', async () => (await renown(bob)).escrow >= reserve, 10000);
       await page.click('#market-refresh');
-      await waitFor('ann sees the bid', () => page.evaluate(([id, reserve]) => {
+      // (Unless it closed meanwhile: then it settled with bob's bid.)
+      await waitFor('ann sees the bid', async () => !(await ownListings()).includes(auctionId) || page.evaluate(([id, reserve]) => {
         const c = document.querySelector(`#my-listings .listing[data-listing="${id}"]`);
         return c && c.querySelector('.auction-line')?.textContent.includes(`high bid ${reserve}`) && c.querySelector('button.withdraw')?.disabled;
       }, [auctionId, reserve]), 10000);
