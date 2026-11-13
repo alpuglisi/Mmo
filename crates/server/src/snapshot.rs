@@ -5,21 +5,40 @@
 //! little-endian), the game JSON, then the world snapshot bytes with their
 //! own versioned header (`evo_sim::world::SnapshotHeader`).
 //!
+//! The world snapshot leaves out the static terrain (biomes, relief,
+//! rivers: most of a large map) and names it by content hash; the store
+//! keeps it once per world ([`TerrainBlob`], `Store::put_terrain`), keyed by
+//! the saved game's world id and that hash. [`terrain_key`] reads both from
+//! a saved game, and [`decode`] needs the terrain back (saved games from
+//! before the split, world snapshot version 4, carry their own).
+//!
 //! Saving is split so the world thread never stalls on encoding: it takes a
-//! [`Capture`] (a clone of the world and the game state, tens of ms on a
-//! large world), and the background saver (`crate::saver`) encodes it
-//! (bincode + LZ4, hundreds of ms) and hands the bytes to the store task.
+//! [`Capture`] (a clone of the world, which shares the terrain, and the
+//! game state: tens of ms on a large world), and the background saver
+//! (`crate::saver`) encodes it (bincode + LZ4, hundreds of ms) and hands the
+//! bytes to the store task.
 
+use std::sync::Arc;
+
+use evo_sim::terrain::Terrain;
 use evo_sim::world::{SnapshotError, SnapshotHeader};
 use evo_sim::World;
 
-use crate::game::{Game, SavedGame};
+use crate::game::{Game, SavedGame, TerrainBlob};
 
 const MAGIC: &[u8; 8] = b"EVOSAVE\0";
 
-/// Snapshot the world and the game around it (on the calling thread).
+/// Snapshot the world and the game around it (on the calling thread). The
+/// terrain it names is [`terrain_blob`] of the same world.
 pub fn encode(game: &Game) -> Vec<u8> {
     encode_parts(&game.world, &game.saved())
+}
+
+/// The world's static terrain, encoded for the store under `world_id`.
+pub fn terrain_blob(world: &World, world_id: &str) -> TerrainBlob {
+    let terrain = world.map.terrain();
+    let bytes = terrain.encode();
+    TerrainBlob { world_id: world_id.to_string(), hash: terrain.hash(), bytes }
 }
 
 /// A copy of everything a saved game holds, taken between ticks, to encode
@@ -31,7 +50,7 @@ pub struct Capture {
 
 impl Capture {
     /// Copy the world and the game state around it. This is all a save
-    /// costs the world thread.
+    /// costs the world thread; the static terrain is shared, not copied.
     pub fn new(game: &Game) -> Capture {
         Capture { world: game.world.clone(), saved: game.saved() }
     }
@@ -42,6 +61,20 @@ impl Capture {
 
     pub fn day(&self) -> u64 {
         self.world.day()
+    }
+
+    pub fn world_id(&self) -> &str {
+        self.saved.world_id()
+    }
+
+    /// The terrain the saved game names.
+    pub fn terrain(&self) -> &Arc<Terrain> {
+        self.world.map.terrain()
+    }
+
+    /// The terrain, encoded for the store.
+    pub fn terrain_blob(&self) -> TerrainBlob {
+        terrain_blob(&self.world, self.world_id())
     }
 
     /// The saved-game bytes, identical to [`encode`] of the game when it
@@ -108,9 +141,18 @@ pub fn decode_game(bytes: &[u8]) -> Result<SavedGame, DecodeError> {
     serde_json::from_slice(saved).map_err(|e| DecodeError::Game(e.to_string()))
 }
 
-pub fn decode(bytes: &[u8]) -> Result<(World, SavedGame), DecodeError> {
+/// The stored terrain a saved game needs, as `(world id, content hash)`;
+/// `None` for one that carries its own (world snapshot version 4).
+pub fn terrain_key(bytes: &[u8]) -> Result<Option<(String, u64)>, DecodeError> {
+    let Some(hash) = header(bytes)?.terrain else { return Ok(None) };
+    Ok(Some((decode_game(bytes)?.world_id().to_string(), hash)))
+}
+
+/// Restore a saved game with the terrain it names ([`terrain_key`]). Fails
+/// cleanly (`SnapshotError::MissingTerrain`) without it.
+pub fn decode(bytes: &[u8], terrain: Option<Arc<Terrain>>) -> Result<(World, SavedGame), DecodeError> {
     let (saved, world) = split(bytes)?;
     let saved: SavedGame = serde_json::from_slice(saved).map_err(|e| DecodeError::Game(e.to_string()))?;
-    let world = World::restore(world).map_err(DecodeError::World)?;
+    let world = World::restore(world, terrain).map_err(DecodeError::World)?;
     Ok((world, saved))
 }

@@ -555,7 +555,8 @@ it) and an in-memory one (`--memory`, tests).
 | Renown balances, upserted on every change | `balances.json` | `balances` (player PK, balance, day, updated_at) |
 | Alert preferences (hidden and toasted alert kinds), upserted when a player saves them | `alert_prefs.json` | `alert_prefs` (player PK, hidden and toast `text[]` of kind names, updated_at; migration 3) |
 | The ledger: every balance change with world id and sequence number (a replayed entry, same world and sequence, replaces the earlier one) | `ledger.jsonl` | `ledger` (PK `(world_id, seq)`, upsert; `id` keeps write order) |
-| Saved games: the whole `World` plus the game state around it (including players' alerts), every simulated day and at a graceful shutdown; the newest 3 kept | `snapshots/world-<tick>.snap` | `snapshots` (tick PK, day, size, snapshot format version, saved_at, data `bytea`) |
+| Saved games: the whole `World` except its static terrain, plus the game state around it (including players' alerts), every simulated day and at a graceful shutdown; the newest 3 kept | `snapshots/world-<tick>.snap` | `snapshots` (tick PK, day, size, snapshot format version, `terrain_hash` (migration 4; NULL for version 4 saves), saved_at, data `bytea`) |
+| Each world's static terrain (biomes, relief, rivers, ground cover: `Terrain::encode`), written once before the first saved game that names it; `--fresh` deletes it with the saved games | `terrain/<world id>-<hash>.terrain` | `terrains` (PK `(world_id, hash)`, hash as 16 hex digits, size, saved_at, data `bytea`; migration 4) |
 
 **Daily records and restarts.** Every world gets a random id when its map is
 generated, kept in its saved games and written into each daily record. A
@@ -577,20 +578,43 @@ to use a database without a rebuild, and it costs nothing at run time
 unless a URL is given. `cargo build -p evo-server --no-default-features`
 leaves sqlx (and its TLS stack) out for a faster, smaller build; a database
 URL then stops the server with an error. The persistence tests
-(`tests/persistence.rs`) run the store round trip, restart-keeps-accounts and
-restart-continues-the-saved-world against the file store and, when
+(`tests/persistence.rs`) run the store round trip (terrains included),
+restart-keeps-accounts and restart-continues-the-saved-world (which also
+deletes the stored terrain behind the server's back and requires it to
+refuse to start) against the file store and, when
 `DATABASE_URL` is set, against PostgreSQL too, each test in a schema of its
 own (dropped afterwards); without it the PostgreSQL variants print that
 they skipped and pass.
 
 **World snapshots.** With the sim's `serde` feature (the server enables it;
 the sim builds without it) `World::snapshot()` returns the whole simulation
-as bytes and `World::restore(bytes)` continues it **exactly**: all randomness
-is derived from `(seed, stream, tick, id)`, so state plus tick determine the
-future. Format (`world::snapshot`): a fixed header (magic, format version
+as bytes, except the static terrain, and `World::restore(bytes, terrain)`
+continues it **exactly**: all randomness is derived from `(seed, stream,
+tick, id)`, so state plus tick determine the future. Format
+(`world::snapshot`): a fixed header (magic, format version
 `SNAPSHOT_VERSION`, flags, a hash of the whole `WorldConfig`, tick,
-organism count, raw length, payload checksum) and the `World` in `bincode`,
-LZ4-compressed. Every state type derives serde (long gene arrays through
+organism count, raw length, payload checksum, and from version 5 the
+terrain's content hash) and the `World` in `bincode`, LZ4-compressed.
+**Static terrain** is stored apart: each tile is split into its fixed
+`Ground` (biome, elevation, moisture, annual mean temperature, normal water
+depth, river channel, sand, slope, undergrowth, canopy, most food it holds)
+and its changing `Tile` (temperature, water depth, current, ice, snow, mud,
+food, carcass meat, wind, rain, wetness). The grounds and the river
+catchments form a `Terrain` that the map holds behind an `Arc`: a clone of
+the world (the server's saver takes one a day) shares it instead of copying
+it, and a snapshot names it by content hash (FNV-1a 64 of its `bincode`).
+`Terrain::encode`/`decode` give it its own blob (magic `EVOTERR\0`, format
+version, hash, size, checksum, LZ4), stored once per world. Restoring needs
+the terrain the header names: none is `SnapshotError::MissingTerrain`,
+another one `WrongTerrain`, both naming the hash. Vegetation, water levels,
+snow and ice, weather, drought and flood stay in every snapshot. Version 5
+made the split; **version 4 snapshots still restore** (their embedded
+terrain is split off on the way in, `terrain::v4`, and the world carries on
+exactly as it would have: a 42 KB fixture written by the last version 4
+build, `world/snapshot/v4-32x32.snap`, must restore to the same bytes this
+build's world snapshots to). It costs one frozen copy of the old map
+layout; a format change elsewhere in the world would need the fixture
+rewritten or the v4 path dropped. Every state type derives serde (long gene arrays through
 `serde_util`; hash maps are written sorted, so equal worlds give equal
 bytes). Skipped and rebuilt on restore: the id → index map, the spatial grid,
 A* scratch buffers and phase timings. Caches that steer the future (hourly
@@ -602,8 +626,10 @@ a snapshot of another version is refused with both versions named. Version
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
 it mid-hour and mid-sub-step, restores it (and clones it, as the server's
-saver does), runs all of them two more days and requires identical worlds,
-byte for byte; it also checks version, checksum and header errors.
+saver does, which shares the terrain) and restores it once more from an
+encoded terrain blob, runs all of them two more days and requires identical
+worlds, byte for byte; it also checks version, checksum and header errors,
+missing and wrong terrains, terrain blob errors, and the version 4 fixture.
 
 | Agents (standard world, `examples/snapshot`) | Map | Stored (raw bincode) | Snapshot | Restore |
 | --- | --- | --- | --- | --- |
@@ -613,11 +639,31 @@ byte for byte; it also checks version, checksum and header errors.
 | 26k | 512² | 34 MB (73 MB) | 250 ms | 219 ms |
 | 37k cohort members, no agents (LOD) | 512² | 26 MB (63 MB) | 202 ms | 194 ms |
 
-About 1.3 KB per agent stored (genome with origin tags, phenotype and trait
-caches, path) plus about 13 MB for a 512² map. Timed on a shared 4-core
-machine; `cargo run --release -p evo-sim --features serde --example snapshot -- 512 5 2`.
-The same run times `World::clone`, all the server's world thread now pays
-for a save: **40 ms against 255 ms** for the snapshot at 26k agents.
+(Version 4, terrain included.) About 1.3 KB per agent stored (genome with
+origin tags, phenotype and trait caches, path) plus about 13 MB for a 512²
+map. Timed on a shared 4-core machine; `cargo run --release -p evo-sim
+--features serde --example snapshot -- 512 5 2`. The same run times
+`World::clone`, all the server's world thread now pays for a save: **40 ms
+against 255 ms** for the snapshot at 26k agents.
+
+**Static terrain stored apart** (version 5; same example and machine, the
+last version 4 build and this one interleaved, under load from other jobs):
+
+| 512², 2 days | Stored (raw) v4 → v5 | `World::clone` v4 → v5 | Restore v4 → v5 |
+| --- | --- | --- | --- |
+| 26.6k agents (scale 5) | 34.5 MB (72.9) → **29.8 MB** (60.3) | 37.6 → **32.3 ms** | 215 → 219 ms |
+| 5.5k agents (scale 1) | 14.9 MB (35.3) → **10.2 MB** (22.8) | 11.6 → **3.9 ms** | 90 → 55 ms |
+
+The terrain blob is 4.9 MB (12.6 MB raw), stored once per world and
+encoded in about 35 ms. In a busy world agents, not terrain, are most of a
+snapshot (about 1.1 KB each), so the daily save shrinks by 14% at 26k
+agents and by a third at 5.5k. A clone now shares the terrain (the map's
+clone fell from 9.4 to 1.2 ms) and gives the A* scratch buffers (17 bytes
+per tile, `PathScratch`, contents never carried between searches) empty,
+as a restore always did; the rest of a clone is the organisms (about 27 ms
+at 26k agents). Simulation results are unchanged: the 12-seed sweep
+(`evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31
+--threads 1`) prints the same table before and after, timing aside.
 
 **Save stall on the world thread** (`cargo run --release -p evo-server
 --example save_stall -- 512 5 2`: 26k agents, 512², medians of 7,
@@ -631,6 +677,10 @@ so absolute numbers are noisy):
 | Ticks while the saver encodes | 104 ms | (share the cores with it) |
 
 A plain tick measured 146 ms in the same run (load noise; 60 ms when quieter).
+With the terrain stored apart, two interleaved rounds of the same example
+gave a capture of 32.8 and 32.5 ms against 37.9 and 38.9 ms for the last
+version 4 build, and a saved game of 31.9 MB against 36.5 MB (the 4.9 MB
+terrain stored once per world).
 
 **Saved games** (`snapshot.rs` in the server): magic, the game-side state
 as JSON (player → lineage, open offers with their escrow, migration orders,
@@ -656,10 +706,15 @@ balances of the last saved game, and the replayed days write the same
 ledger sequence numbers again, replacing their earlier entries.
 The world thread saves after the tick that starts a new simulated day and
 on `Request::Shutdown`. It only takes a `snapshot::Capture` (a clone of the
-`World` plus the game state) and hands it to the **background saver**
-(`saver.rs`, a dedicated thread), which encodes it (bincode + LZ4, the
-expensive part) and passes the bytes to the store task, so a save no longer
-stalls ticks (numbers below). One saver thread encodes one capture at a time
+`World`, sharing its terrain, plus the game state) and hands it to the
+**background saver** (`saver.rs`, a dedicated thread), which encodes it
+(bincode + LZ4, the expensive part) and passes the bytes to the store task,
+so a save no longer stalls ticks (numbers below). Each save carries the
+world's terrain blob, encoded once per world and terrain hash and then
+shared; the store task writes it (`Store::put_terrain`, a no-op when the
+store has it) before the first saved game that names it in each run, and
+skips that saved game if it can't. A saved game restored from a version 4
+snapshot therefore has its terrain stored with its first save. One saver thread encodes one capture at a time
 and sends them in capture order, and the store task writes in the order it
 receives, so an older save never lands after a newer one; a capture that
 arrives while an earlier one is still waiting replaces it (the older would
@@ -670,6 +725,11 @@ replies, and the server waits for the store task to write it
 renames it into place, then drops all but the newest 3; `PgStore` upserts
 the row and deletes older ones in one transaction). On startup the
 newest saved game that decodes is restored (older ones are fallbacks),
+with the terrain its header names, read from the store by the saved game's
+world id and that hash (`snapshot::terrain_key`). If none restores and one
+of them names a terrain the store lacks or can't read, the server stops
+with an error instead of generating a new world that would soon replace
+them (put the terrain back, or `--fresh`);
 the dashboard history is reloaded from the store, and only stored
 designs whose player has no lineage in the world are founded. A saved world
 for another seed, size, ticks per day, days per year or LOD setting stops the
@@ -1772,10 +1832,12 @@ in use, 10.71 with the presets' strategies).
 4. A migrating sample design to exercise group navigation in play (none
    migrates yet: migrating antelope lost survival again even with group
    navigation).
-5. **Server (step 2, started):** store the static terrain once
-   instead of in every snapshot (a 30 MB `bytea` per day is fine for 3 kept
-   rows, but terrain is most of it, and would also shrink the world
-   thread's copy for the background saver); per-world tables once there are
+5. **Server (step 2, started):** the static terrain is now stored once
+   per world (see [World snapshots](#persistence)); at 26k agents the daily
+   save is still about 30 MB, nearly all organisms (genomes with origin
+   tags, trait caches, paths), so a leaner organism encoding is next for
+   save size, and the world-thread capture (about 32 ms) is now the
+   organisms' clone; per-world tables once there are
    several shards; client-side prediction of a possessed organism's
    movement between sub-step states; interest
    management through the sim's spatial grid instead of a scan per

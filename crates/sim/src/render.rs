@@ -2,7 +2,7 @@
 //! water, snow, ice, vegetation and organisms colored by owner).
 
 use crate::genome::{PlayerId, WILD};
-use crate::terrain::{Biome, Tile};
+use crate::terrain::{Biome, Ground, Tile};
 use crate::world::World;
 
 pub fn owner_color(owner: PlayerId, carnivory: f32) -> [u8; 3] {
@@ -22,8 +22,8 @@ pub fn owner_color(owner: PlayerId, carnivory: f32) -> [u8; 3] {
     PALETTE[(owner as usize - 1) % PALETTE.len()]
 }
 
-fn tile_color(t: &Tile) -> [u8; 3] {
-    let base: [f32; 3] = match t.biome {
+fn tile_color(g: &Ground, t: &Tile) -> [u8; 3] {
+    let base: [f32; 3] = match g.biome {
         Biome::DeepWater => [20.0, 50.0, 120.0],
         Biome::ShallowWater => [40.0, 90.0, 160.0],
         Biome::Marsh => [60.0, 90.0, 70.0],
@@ -34,17 +34,17 @@ fn tile_color(t: &Tile) -> [u8; 3] {
         Biome::Mountain => [120.0, 110.0, 100.0],
     };
     // Grazed-out land looks browner.
-    let veg = if t.veg_max > 0.0 { t.veg / t.veg_max } else { 1.0 };
+    let veg = if g.veg_max > 0.0 { t.veg / g.veg_max } else { 1.0 };
     let mut c = base.map(|v| v * (0.6 + 0.4 * veg));
     // Rivers: brighter blue, darker when swollen; a dry bed shows as sand.
-    if t.is_river() {
+    if g.is_river() {
         c = if t.water_depth > 0.0 {
             let deep = t.water_depth.min(1.0);
             [70.0 - 40.0 * deep, 140.0 - 60.0 * deep, 225.0 - 40.0 * deep]
         } else {
             [175.0, 160.0, 120.0]
         };
-    } else if t.base_water > 0.0 && t.base_water < 1.0 && t.water_depth == 0.0 {
+    } else if g.base_water > 0.0 && g.base_water < 1.0 && t.water_depth == 0.0 {
         // Dried-out lake shore or marsh: cracked mud.
         c = [150.0, 130.0, 95.0];
     }
@@ -69,7 +69,8 @@ pub fn render_rgb(world: &World, scale: usize) -> (usize, usize, Vec<u8>) {
     };
     for ty in 0..world.map.height {
         for tx in 0..world.map.width {
-            let c = tile_color(&world.map.tiles[world.map.idx(tx, ty)]);
+            let i = world.map.idx(tx, ty);
+            let c = tile_color(&world.map.ground()[i], &world.map.tiles[i]);
             for dy in 0..scale {
                 for dx in 0..scale {
                     put(tx * scale + dx, ty * scale + dy, c, &mut buf);

@@ -866,7 +866,7 @@ impl World {
         let mut sum = 0.0;
         for y in y0..y1 {
             for x in x0..x1 {
-                sum += self.map.tiles[self.map.idx(x, y)].base_temp;
+                sum += self.map.ground()[self.map.idx(x, y)].base_temp;
             }
         }
         sum / ((x1 - x0) * (y1 - y0)).max(1) as f32 + self.season_offset
@@ -1046,7 +1046,11 @@ impl World {
             x.tiles = tiles.len();
             x.water = tiles.iter().any(|&t| self.map.water_dist[t as usize] <= WATER_REACH);
             let body = rep.probe.traits.body;
-            x.veg = tiles.iter().map(|&t| self.map.tiles[t as usize].reachable_veg(&body, bal.canopy_share)).sum();
+            let (ground, state) = (self.map.ground(), &self.map.tiles);
+            x.veg = tiles
+                .iter()
+                .map(|&t| state[t as usize].reachable_veg(&ground[t as usize], &body, bal.canopy_share))
+                .sum();
             x.dormant =
                 (rep.winter > 0.0 && temp < bal.dormancy_temp && matches!(season, Season::Autumn | Season::Winter))
                     || (rep.estivation > 0.0 && temp > bal.estivation_temp && season == Season::Summer);

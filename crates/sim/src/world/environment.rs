@@ -4,7 +4,7 @@ use super::World;
 use crate::config::Balance;
 use crate::legacy::LegacySnapshot;
 use crate::rng::SimRng;
-use crate::terrain::{weather_rng, Map, Tile};
+use crate::terrain::{weather_rng, Ground, Map, Tile};
 
 /// Chilling per hour per °C an egg sits below its floor.
 const CHILL_RATE: f32 = 0.006;
@@ -30,10 +30,10 @@ pub(crate) fn egg_range(warm_blooded: bool) -> (f32, f32) {
 
 /// How much a nest site damps the air's swing toward the tile's annual mean
 /// temperature: water has thermal inertia, a canopy shades and shelters.
-pub(crate) fn nest_shelter(tile: &Tile) -> f32 {
+pub(crate) fn nest_shelter(g: &Ground, tile: &Tile) -> f32 {
     if tile.water_depth > 0.0 {
         0.5
-    } else if tile.canopy > 0.0 {
+    } else if g.canopy > 0.0 {
         0.3
     } else {
         0.0
@@ -41,9 +41,9 @@ pub(crate) fn nest_shelter(tile: &Tile) -> f32 {
 }
 
 /// The temperature eggs on `tile` feel when the air there is `air`.
-pub(crate) fn nest_temp(tile: &Tile, air: f32, climate_temp: f32) -> f32 {
-    let mean = tile.base_temp + climate_temp;
-    mean + (air - mean) * (1.0 - nest_shelter(tile))
+pub(crate) fn nest_temp(g: &Ground, tile: &Tile, air: f32, climate_temp: f32) -> f32 {
+    let mean = g.base_temp + climate_temp;
+    mean + (air - mean) * (1.0 - nest_shelter(g, tile))
 }
 
 /// A sitting parent's effect on her eggs at nest temperature `site`:
@@ -65,12 +65,19 @@ pub(crate) fn brood(site: f32, warm: bool, bal: &Balance) -> (f32, f32, f32) {
 
 /// Expected thermal damage to eggs over one day at a nest site whose
 /// seasonal mean air temperature is `mean_air` (the day/night swing on top).
-pub(crate) fn nest_stress(tile: &Tile, mean_air: f32, climate_temp: f32, warm_blooded: bool, bal: &Balance) -> f32 {
+pub(crate) fn nest_stress(
+    g: &Ground,
+    tile: &Tile,
+    mean_air: f32,
+    climate_temp: f32,
+    warm_blooded: bool,
+    bal: &Balance,
+) -> f32 {
     let (lo, hi) = egg_range(warm_blooded);
     (0..24)
         .map(|h| {
             let air = mean_air + Map::diurnal_offset(h);
-            let t = nest_temp(tile, air, climate_temp);
+            let t = nest_temp(g, tile, air, climate_temp);
             (lo - t).max(0.0) * CHILL_RATE + (t - hi).max(0.0) * bal.egg_overheat
         })
         .sum()
@@ -174,7 +181,7 @@ impl World {
             if !done {
                 let bal = self.config.balance;
                 let tile = self.map.tile_at(c.pos);
-                let site = nest_temp(tile, tile.temp, self.map.climate_temp);
+                let site = nest_temp(self.map.ground_at(c.pos), tile, tile.temp, self.map.climate_temp);
                 let present = guardian.filter(|&gi| self.organisms[gi].pos.dist(c.pos) < 1.5);
                 let (lo, hi) = egg_range(c.warm_blooded);
                 let egg = match present {

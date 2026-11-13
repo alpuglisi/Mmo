@@ -3,8 +3,10 @@
 //!
 //! Builds the standard world (founding populations × `scale`), runs it for
 //! `days`, then times `World::snapshot`, `World::restore` and `World::clone`
-//! (all a server's world thread pays to save in the background) and prints
-//! the sizes (bincode before LZ4, and the stored bytes).
+//! (all a server's world thread pays to save in the background; it shares
+//! the static terrain) and prints the sizes (bincode before LZ4, and the
+//! stored bytes), and those of the terrain, which is stored once per world
+//! rather than in every snapshot (`Terrain::encode`).
 
 use std::time::Instant;
 
@@ -40,10 +42,13 @@ fn main() {
     let h = SnapshotHeader::read(&bytes).unwrap();
     let t = Instant::now();
     for _ in 0..reps {
-        let r = World::restore(&bytes).unwrap();
+        let r = World::restore(&bytes, Some(w.map.terrain().clone())).unwrap();
         assert_eq!(r.tick(), w.tick());
     }
     let restore_ms = t.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+    let t = Instant::now();
+    let terrain = w.map.terrain().encode();
+    let terrain_ms = t.elapsed().as_secs_f64() * 1000.0;
     // What a server's tick loop pays to save off-thread: a clone of the
     // world (encoding the clone happens on another thread).
     let t = Instant::now();
@@ -59,4 +64,5 @@ fn main() {
         100.0 * bytes.len() as f64 / h.raw_len as f64,
         bytes.len() as f64 / w.organisms.len().max(1) as f64
     );
+    println!("terrain (stored once per world): {:.2} MB, encoded in {terrain_ms:.0} ms", terrain.len() as f64 / 1e6);
 }

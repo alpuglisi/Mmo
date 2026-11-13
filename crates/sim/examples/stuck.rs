@@ -49,7 +49,11 @@ fn reachable(w: &World, i: usize, goal: Vec2) -> bool {
     let o = &w.organisms[i];
     let map = &w.map;
     let ok = |x: usize, y: usize| {
-        matches!(traverse(&o.traits.body, &map.tiles[map.idx(x, y)], &w.weather, false), Traverse::Passable { .. })
+        let k = map.idx(x, y);
+        matches!(
+            traverse(&o.traits.body, &map.ground()[k], &map.tiles[k], &w.weather, false),
+            Traverse::Passable { .. }
+        )
     };
     let (gx, gy) = map.tile_coords(goal);
     let (sx, sy) = map.tile_coords(o.pos);
@@ -132,7 +136,7 @@ fn main() {
                             t_l.episodes += 1;
                             *by_action.entry(format!("{:?}", o.action)).or_default() += 1;
                             if verbose {
-                                let tile = w.map.tile_at(o.pos);
+                                let tile = w.map.ground_at(o.pos);
                                 println!(
                                     "    {:?} {} at ({:.1},{:.1}) -> ({:.1},{:.1}) d {:.1} best {:.1} {:?} slope {:.2} path {:?}",
                                     o.action,

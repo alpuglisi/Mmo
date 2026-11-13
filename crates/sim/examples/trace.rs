@@ -42,7 +42,7 @@ fn main() {
             o.kin_nearby,
             o.pos.x,
             o.pos.y,
-            tile.biome,
+            w.map.ground_at(o.pos).biome,
             tile.veg,
             tile.temp
         );

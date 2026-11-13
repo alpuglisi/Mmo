@@ -43,6 +43,7 @@ pub mod snapshot;
 pub mod store;
 pub mod terrain;
 
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -51,6 +52,7 @@ use std::time::Duration;
 
 use std::sync::mpsc::SyncSender;
 
+use evo_sim::terrain::Terrain;
 use evo_sim::World;
 use tokio::sync::{mpsc, oneshot};
 
@@ -217,7 +219,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
             // Write the refunds before the discarded saves go: a crash in
             // between refunds nothing twice (see `Game::refund_discarded`).
             for ev in game.take_persist() {
-                persist_one(&*store, &ev).await?;
+                persist_one(&*store, &ev, &mut BTreeSet::new()).await?;
             }
         }
         // The discarded world's saves have higher ticks than the new world's
@@ -301,13 +303,35 @@ async fn open_store(cfg: &ServerConfig) -> Result<Arc<dyn Store>, BoxError> {
     })
 }
 
+/// The terrain a saved game names, from the store: `Ok(None)` for one that
+/// carries its own; an error if it can't be had (missing, unreadable).
+async fn load_terrain(store: &dyn Store, bytes: &[u8]) -> Result<Option<Arc<Terrain>>, String> {
+    let Some((world_id, hash)) = snapshot::terrain_key(bytes).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let blob = match store.load_terrain(&world_id, hash).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return Err(format!("its terrain {hash:016x} (world {world_id}) is not in the store")),
+        Err(e) => return Err(format!("could not read its terrain {hash:016x}: {e}")),
+    };
+    let decoded = tokio::task::spawn_blocking(move || Terrain::decode(&blob)).await.map_err(|e| e.to_string())?;
+    match decoded {
+        Ok(t) if t.hash() == hash => Ok(Some(Arc::new(t))),
+        Ok(t) => Err(format!("the stored terrain {hash:016x} hashes to {:016x}", t.hash())),
+        Err(e) => Err(format!("its terrain {hash:016x} does not decode: {e}")),
+    }
+}
+
 /// The newest saved game that decodes, if any (older ones are fallbacks).
 /// A saved world for another map or calendar (seed, size, ticks per day,
 /// days per year, level of detail) is an error: start with the settings it
 /// was made with, or `--fresh`. Other changed settings (balance, caps,
-/// catastrophes) apply to the restored world.
+/// catastrophes) apply to the restored world. So is a store whose saved
+/// games all name a terrain it lacks: starting a new world would soon
+/// replace them.
 async fn load_saved_game(store: &dyn Store, settings: &WorldSettings) -> Result<Option<(World, SavedGame)>, BoxError> {
     let wanted = world_config(settings);
+    let mut no_terrain = None;
     for tick in store.snapshot_ticks().await? {
         let bytes = match store.load_snapshot(tick).await {
             Ok(b) => b,
@@ -317,7 +341,15 @@ async fn load_saved_game(store: &dyn Store, settings: &WorldSettings) -> Result<
             }
         };
         let started = std::time::Instant::now();
-        let decoded = tokio::task::spawn_blocking(move || snapshot::decode(&bytes)).await?;
+        let terrain = match load_terrain(store, &bytes).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("skipping the saved game of tick {tick}: {e}");
+                no_terrain.get_or_insert(format!("the saved game of tick {tick}: {e}"));
+                continue;
+            }
+        };
+        let decoded = tokio::task::spawn_blocking(move || snapshot::decode(&bytes, terrain)).await?;
         let (mut world, saved) = match decoded {
             Ok(d) => d,
             Err(e) => {
@@ -346,6 +378,12 @@ async fn load_saved_game(store: &dyn Store, settings: &WorldSettings) -> Result<
         );
         return Ok(Some((world, saved)));
     }
+    if let Some(e) = no_terrain {
+        return Err(format!(
+            "no saved game restores, and {e}; put the terrain back, or start with --fresh to begin a new world"
+        )
+        .into());
+    }
     Ok(None)
 }
 
@@ -366,20 +404,109 @@ async fn load_discarded_game(store: &dyn Store) -> Result<Option<SavedGame>, Box
     Ok(None)
 }
 
-async fn persist_one(store: &dyn Store, ev: &PersistEvent) -> store::StoreResult<()> {
+/// Write one event. A saved game's terrain goes first, unless `stored`
+/// (world id and hash of the terrains written by this task) says it is in
+/// the store already; if it can't be written, neither is the saved game,
+/// which would not restore without it.
+async fn persist_one(
+    store: &dyn Store,
+    ev: &PersistEvent,
+    stored: &mut BTreeSet<(String, u64)>,
+) -> store::StoreResult<()> {
     match ev {
         PersistEvent::Daily(r) => store.append_daily(r).await,
         PersistEvent::Trade(r) => store.append_trade(r).await,
         PersistEvent::Balance(r) => store.put_balance(r).await,
         PersistEvent::Ledger(r) => store.append_ledger(r).await,
-        PersistEvent::Snapshot(s) => store.put_snapshot(s.tick, s.day, &s.bytes).await,
+        PersistEvent::Snapshot(s) => {
+            let t = &s.terrain;
+            let key = (t.world_id.clone(), t.hash);
+            if !stored.contains(&key) {
+                store.put_terrain(&t.world_id, t.hash, &t.bytes).await?;
+                stored.insert(key);
+            }
+            store.put_snapshot(s.tick, s.day, &s.bytes).await
+        }
     }
 }
 
 async fn persist_task(store: Arc<dyn Store>, mut rx: mpsc::UnboundedReceiver<PersistEvent>) {
+    let mut stored = BTreeSet::new();
     while let Some(ev) = rx.recv().await {
-        if let Err(e) = persist_one(&*store, &ev).await {
+        if let Err(e) = persist_one(&*store, &ev, &mut stored).await {
             tracing::error!("could not persist {ev:?}: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A saved game around the sim's version 4 world snapshot fixture
+    /// (terrain embedded; seed 3, 32x32), with empty game state.
+    fn v4_saved_game() -> Vec<u8> {
+        let world = include_bytes!("../../sim/src/world/snapshot/v4-32x32.snap");
+        let mut out = b"EVOSAVE\0".to_vec();
+        out.extend_from_slice(&2u64.to_le_bytes());
+        out.extend_from_slice(b"{}");
+        out.extend_from_slice(world);
+        out
+    }
+
+    /// A version 4 saved game restores without a stored terrain, and the
+    /// first save of the restored world stores its terrain before the saved
+    /// game that names it.
+    #[tokio::test]
+    async fn version_4_saves_restore_and_their_terrain_is_stored_on_the_next_save() {
+        let store = MemoryStore::default();
+        store.put_snapshot(55, 1, &v4_saved_game()).await.unwrap();
+        let settings = WorldSettings { seed: 3, width: 32, height: 32, wild: false, ..Default::default() };
+        let (world, saved) = load_saved_game(&store, &settings).await.unwrap().expect("restored");
+        assert_eq!(world.tick(), 55);
+        let mut game = Game::resume(world, GameConfig::default(), saved, Vec::new());
+        game.world.step();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut saver = saver::Saver::spawn(tx);
+        saver.submit(snapshot::Capture::new(&game));
+        saver.finish();
+        let mut stored = BTreeSet::new();
+        while let Ok(ev) = rx.try_recv() {
+            persist_one(&store, &ev, &mut stored).await.unwrap();
+        }
+        let hash = game.world.map.terrain().hash();
+        let world_id = game.saved().world_id().to_string();
+        assert!(stored.contains(&(world_id.clone(), hash)));
+        let blob = store.load_terrain(&world_id, hash).await.unwrap().expect("terrain stored");
+        assert!(Terrain::decode(&blob).unwrap() == **game.world.map.terrain());
+
+        // The new save names it and restores from the store.
+        assert_eq!(store.snapshot_ticks().await.unwrap()[0], 56);
+        let (again, _) = load_saved_game(&store, &settings).await.unwrap().expect("restored");
+        assert_eq!(again.tick(), 56);
+        assert!(again.snapshot() == game.world.snapshot());
+    }
+
+    /// Saved games whose terrain the store lacks don't restore, and the
+    /// server refuses to start a new world over them.
+    #[tokio::test]
+    async fn a_missing_terrain_is_an_error_not_a_new_world() {
+        let settings = WorldSettings { seed: 4, width: 32, height: 32, wild: false, ..Default::default() };
+        let game = Game::new(build_world(&settings), GameConfig::default());
+        let bytes = snapshot::encode(&game);
+        let store = MemoryStore::default();
+        store.put_snapshot(game.world.tick(), 0, &bytes).await.unwrap();
+        let e = load_saved_game(&store, &settings).await.err().expect("refused").to_string();
+        assert!(e.contains("terrain") && e.contains("--fresh"), "{e}");
+        let decoded = snapshot::decode(&bytes, None).err().expect("refused");
+        assert!(
+            matches!(decoded, snapshot::DecodeError::World(evo_sim::world::SnapshotError::MissingTerrain { .. })),
+            "{decoded}"
+        );
+        // With the terrain back it restores.
+        let t = snapshot::terrain_blob(&game.world, game.saved().world_id());
+        store.put_terrain(&t.world_id, t.hash, &t.bytes).await.unwrap();
+        assert!(load_saved_game(&store, &settings).await.unwrap().is_some());
     }
 }

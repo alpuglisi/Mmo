@@ -68,6 +68,10 @@ fn layer(map: &Map, f: impl Fn(&evo_sim::terrain::Tile) -> u8) -> Vec<u8> {
     map.tiles.iter().map(f).collect()
 }
 
+fn ground_layer(map: &Map, f: impl Fn(&evo_sim::terrain::Ground) -> u8) -> Vec<u8> {
+    map.ground().iter().map(f).collect()
+}
+
 pub fn dynamic_raw(world: &World) -> DynamicRaw {
     let m = &world.map;
     DynamicRaw {
@@ -78,7 +82,12 @@ pub fn dynamic_raw(world: &World) -> DynamicRaw {
         water: layer(m, |t| centimeters(t.water_depth)),
         ice: layer(m, |t| quantize(t.ice, 1.0)),
         snow: layer(m, |t| quantize(t.snow, 0.5)),
-        veg: layer(m, |t| if t.veg_max > 0.0 { quantize(t.veg / t.veg_max, 1.0) } else { 0 }),
+        veg: m
+            .ground()
+            .iter()
+            .zip(&m.tiles)
+            .map(|(g, t)| if g.veg_max > 0.0 { quantize(t.veg / g.veg_max, 1.0) } else { 0 })
+            .collect(),
         wetness: layer(m, |t| quantize(t.wetness, 1.0)),
     }
 }
@@ -89,10 +98,10 @@ pub fn terrain_raw(world: &World) -> TerrainRaw {
         width: m.width,
         height: m.height,
         terrain_version: m.terrain_version,
-        biome: layer(m, |t| biome_index(t.biome)),
-        elevation: layer(m, |t| quantize(t.elevation, 1.0)),
-        river: layer(m, |t| quantize(t.river, 1.0)),
-        base_water: layer(m, |t| centimeters(t.base_water)),
+        biome: ground_layer(m, |g| biome_index(g.biome)),
+        elevation: ground_layer(m, |g| quantize(g.elevation, 1.0)),
+        river: ground_layer(m, |g| quantize(g.river, 1.0)),
+        base_water: ground_layer(m, |g| centimeters(g.base_water)),
         dynamic: dynamic_raw(world),
     }
 }
@@ -161,8 +170,8 @@ mod tests {
             assert_eq!(decode(layer).len(), 48 * 40);
         }
         let biome = decode(&view.biome);
-        for (k, t) in world.map.tiles.iter().enumerate() {
-            assert_eq!(biome[k], biome_index(t.biome));
+        for (k, g) in world.map.ground().iter().enumerate() {
+            assert_eq!(biome[k], biome_index(g.biome));
         }
         // Water tiles have depth, the highest tile is near 255.
         let water = decode(&view.dynamic.water);

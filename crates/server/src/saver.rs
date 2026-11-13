@@ -3,7 +3,9 @@
 //! The world thread hands over a [`Capture`] (a clone of the game, cheap)
 //! and goes back to ticking; a dedicated `saver` thread encodes it (bincode and
 //! LZ4, the expensive part) and sends the bytes to the store task as a
-//! [`PersistEvent::Snapshot`].
+//! [`PersistEvent::Snapshot`], with the world's static terrain
+//! ([`TerrainBlob`]: encoded once per world and terrain hash, then shared by
+//! every save), which the store task writes first if the store lacks it.
 //!
 //! Ordering: one thread encodes one capture at a time and sends them in
 //! the order they were taken, and the store task writes in the order it
@@ -20,7 +22,7 @@ use std::time::Instant;
 
 use tokio::sync::mpsc;
 
-use crate::game::{PersistEvent, SnapshotBlob};
+use crate::game::{PersistEvent, SnapshotBlob, TerrainBlob};
 use crate::snapshot::Capture;
 
 #[derive(Default)]
@@ -88,6 +90,7 @@ impl Drop for Saver {
 
 fn run(shared: &(Mutex<Slot>, Condvar), persist: &mpsc::UnboundedSender<PersistEvent>) {
     let (lock, cv) = shared;
+    let mut terrain: Option<Arc<TerrainBlob>> = None;
     loop {
         let capture = {
             let mut slot = lock.lock().unwrap();
@@ -104,13 +107,22 @@ fn run(shared: &(Mutex<Slot>, Condvar), persist: &mpsc::UnboundedSender<PersistE
         let started = Instant::now();
         let (tick, day) = (capture.tick(), capture.day());
         let bytes = capture.encode();
+        let hash = capture.terrain().hash();
+        let blob = match &terrain {
+            Some(t) if t.hash == hash && t.world_id == capture.world_id() => t.clone(),
+            _ => {
+                let t = Arc::new(capture.terrain_blob());
+                tracing::info!("encoded the terrain {hash:016x}: {:.1} MB", t.bytes.len() as f64 / 1e6);
+                terrain.insert(t).clone()
+            }
+        };
         drop(capture);
         tracing::info!(
             "encoded the save of tick {tick} (day {day}): {:.1} MB in {:.0} ms (off the world thread)",
             bytes.len() as f64 / 1e6,
             started.elapsed().as_secs_f64() * 1000.0
         );
-        let _ = persist.send(PersistEvent::Snapshot(SnapshotBlob { tick, day, bytes }));
+        let _ = persist.send(PersistEvent::Snapshot(SnapshotBlob { tick, day, bytes, terrain: blob }));
     }
 }
 
@@ -158,6 +170,10 @@ mod tests {
         let newest = saves.last().unwrap();
         assert_eq!(newest.tick, end);
         assert!(newest.bytes == last);
+        // Every save carries the world's terrain, encoded once and shared.
+        let terrain = crate::snapshot::terrain_blob(&g.world, g.saved().world_id());
+        assert!(saves.iter().all(|s| *s.terrain == terrain && Arc::ptr_eq(&s.terrain, &newest.terrain)));
+        assert_eq!(crate::snapshot::terrain_key(&newest.bytes).unwrap(), Some((terrain.world_id, terrain.hash)));
         // Channel closed: the saver dropped its sender.
         assert!(rx.try_recv().is_err());
     }
