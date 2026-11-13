@@ -3,14 +3,15 @@
 //! The design doc puts accounts, lineage history and world snapshots in
 //! PostgreSQL (sqlx): `PgStore` (cargo feature `postgres`, on by default;
 //! `--database-url`) keeps them in one table per record type (`accounts`,
-//! `designs`, `daily_history`, `trades`, `snapshots`). [`FileStore`] (the
-//! default) keeps the same records as JSON files in a data directory, and
-//! [`MemoryStore`] serves tests.
+//! `designs`, `daily_history`, `trades`, `snapshots`, `balances`,
+//! `ledger`). [`FileStore`] (the default) keeps the same records as JSON
+//! files in a data directory, and [`MemoryStore`] serves tests.
 //!
 //! What is persisted: accounts (name, player id, argon2 hash), founder
 //! designs (re-founded into the new world on restart), one history record per
-//! simulated day (legacy shares and lineage counts), and directed-mating
-//! agreements with their price, and saved games (a world snapshot with the
+//! simulated day (legacy shares and lineage counts), directed-mating
+//! agreements with their price, listing and escrow settlement, renown
+//! balances and the ledger (`crate::economy`), and saved games (a world snapshot with the
 //! game state around it, `crate::snapshot`, which includes players' alerts;
 //! the newest [`KEEP_SNAPSHOTS`] are kept). Not persisted: login sessions
 //! (clients log in again after a restart).
