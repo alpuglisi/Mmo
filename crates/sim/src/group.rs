@@ -151,6 +151,7 @@ const STEEPNESS: f32 = 12.0;
 
 /// Regional frequencies and benefits, recomputed daily.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupField {
     pub region_size: usize,
     pub cols: usize,

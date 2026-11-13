@@ -10,6 +10,7 @@ use crate::genome::{Gene, Phenotype};
 
 /// Normalized stats, roughly 0–1.5.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Stats {
     pub speed: f32,
     pub strength: f32,
@@ -25,6 +26,7 @@ pub struct Stats {
 
 /// Physical properties that terrain checks compare against tile conditions.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Body {
     /// Adult mass in kg.
     pub mass: f32,
@@ -48,6 +50,7 @@ pub struct Body {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Traits {
     pub stats: Stats,
     pub body: Body,
@@ -80,6 +83,7 @@ pub const STRATEGY_THRESHOLD: f32 = 0.5;
 /// How well a winter-dormancy form suits the body (the doc's thermoregulation
 /// affinity table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WinterForm {
     /// Warm-blooded hibernation: sleeps through winter and wakes in spring by
     /// heating itself.
@@ -107,6 +111,7 @@ impl WinterForm {
 /// `(expression - threshold) / (1 - threshold)`, floored at 0.1 so a
 /// just-expressed strategy already does something.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Seasonal {
     /// Winter dormancy, if any: the form that suits the body when both genes
     /// are expressed, else the expressed one.

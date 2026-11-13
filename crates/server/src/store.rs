@@ -9,8 +9,10 @@
 //! What is persisted: accounts (name, player id, argon2 hash), founder
 //! designs (re-founded into the new world on restart), one history record per
 //! simulated day (legacy shares and lineage counts), and directed-mating
-//! agreements with their price. Not yet: the `World` itself (needs serde on
-//! the sim types) and login sessions (clients log in again after a restart).
+//! agreements with their price, and saved games (a world snapshot with the
+//! game state around it, `crate::snapshot`; the newest [`KEEP_SNAPSHOTS`]
+//! are kept). Not persisted: login sessions (clients log in again after a
+//! restart).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -128,7 +130,17 @@ pub trait Store: Send + Sync {
     /// The most recent `limit` daily records, oldest first.
     async fn recent_daily(&self, limit: usize) -> StoreResult<Vec<DailyRecord>>;
     async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()>;
+    /// Save a snapshot taken at `tick` (opaque bytes) and drop all but the
+    /// newest [`KEEP_SNAPSHOTS`]. Replaces a snapshot of the same tick.
+    async fn put_snapshot(&self, tick: u64, bytes: &[u8]) -> StoreResult<()>;
+    /// Ticks of the stored snapshots, newest first.
+    async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>>;
+    async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>>;
 }
+
+/// Snapshots a store keeps (older ones are fallbacks if the newest is
+/// unreadable).
+pub const KEEP_SNAPSHOTS: usize = 3;
 
 /// In-memory store for tests and throwaway servers.
 #[derive(Default)]
@@ -142,6 +154,8 @@ struct MemInner {
     designs: Vec<DesignRecord>,
     daily: Vec<DailyRecord>,
     trades: Vec<TradeRecord>,
+    /// Oldest first.
+    snapshots: Vec<(u64, Vec<u8>)>,
 }
 
 impl MemoryStore {
@@ -190,13 +204,34 @@ impl Store for MemoryStore {
         self.inner.lock().await.trades.push(record.clone());
         Ok(())
     }
+
+    async fn put_snapshot(&self, tick: u64, bytes: &[u8]) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        g.snapshots.retain(|s| s.0 != tick);
+        g.snapshots.push((tick, bytes.to_vec()));
+        g.snapshots.sort_by_key(|s| s.0);
+        let excess = g.snapshots.len().saturating_sub(KEEP_SNAPSHOTS);
+        g.snapshots.drain(..excess);
+        Ok(())
+    }
+
+    async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>> {
+        Ok(self.inner.lock().await.snapshots.iter().rev().map(|s| s.0).collect())
+    }
+
+    async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>> {
+        let g = self.inner.lock().await;
+        g.snapshots.iter().find(|s| s.0 == tick).map(|s| s.1.clone()).ok_or_else(|| StoreError(format!("no snapshot at tick {tick}")))
+    }
 }
 
 /// JSON files in one directory:
 ///
 /// - `accounts.json`, `designs.json`: whole tables, rewritten atomically
 ///   (write to a temp file, then rename) on every change;
-/// - `history.jsonl`, `trades.jsonl`: append-only, one record per line.
+/// - `history.jsonl`, `trades.jsonl`: append-only, one record per line;
+/// - `snapshots/world-<tick>.snap`: saved games, written to a temp file,
+///   synced and renamed into place, the newest [`KEEP_SNAPSHOTS`] kept.
 pub struct FileStore {
     dir: PathBuf,
     /// Serializes writers and caches the small tables.
@@ -234,6 +269,16 @@ impl FileStore {
         f.flush().await?;
         Ok(())
     }
+}
+
+const SNAPSHOT_DIR: &str = "snapshots";
+
+fn snapshot_name(tick: u64) -> String {
+    format!("world-{tick:012}.snap")
+}
+
+fn snapshot_tick(name: &str) -> Option<u64> {
+    name.strip_prefix("world-")?.strip_suffix(".snap")?.parse().ok()
 }
 
 async fn read_table<T: for<'de> Deserialize<'de>>(path: &Path) -> StoreResult<Vec<T>> {
@@ -291,5 +336,45 @@ impl Store for FileStore {
 
     async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()> {
         self.append_line("trades.jsonl", record).await
+    }
+
+    async fn put_snapshot(&self, tick: u64, bytes: &[u8]) -> StoreResult<()> {
+        let dir = self.dir.join(SNAPSHOT_DIR);
+        tokio::fs::create_dir_all(&dir).await?;
+        let tmp = dir.join(format!("{}.tmp", snapshot_name(tick)));
+        let mut f = tokio::fs::File::create(&tmp).await?;
+        f.write_all(bytes).await?;
+        f.sync_all().await?;
+        drop(f);
+        tokio::fs::rename(&tmp, dir.join(snapshot_name(tick))).await?;
+        // Make the rename durable too (best effort: not every platform can
+        // open a directory).
+        if let Ok(d) = tokio::fs::File::open(&dir).await {
+            let _ = d.sync_all().await;
+        }
+        for old in self.snapshot_ticks().await?.into_iter().skip(KEEP_SNAPSHOTS) {
+            tokio::fs::remove_file(dir.join(snapshot_name(old))).await?;
+        }
+        Ok(())
+    }
+
+    async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>> {
+        let mut ticks = Vec::new();
+        let mut entries = match tokio::fs::read_dir(self.dir.join(SNAPSHOT_DIR)).await {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ticks),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(e) = entries.next_entry().await? {
+            if let Some(t) = e.file_name().to_str().and_then(snapshot_tick) {
+                ticks.push(t);
+            }
+        }
+        ticks.sort_unstable_by(|a, b| b.cmp(a));
+        Ok(ticks)
+    }
+
+    async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>> {
+        Ok(tokio::fs::read(self.dir.join(SNAPSHOT_DIR).join(snapshot_name(tick))).await?)
     }
 }

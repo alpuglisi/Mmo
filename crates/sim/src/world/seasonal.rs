@@ -90,6 +90,7 @@ pub(crate) const DRIVE_RATE: f32 = 30.0;
 
 /// A lineage's shared food cache in one group region (`GroupTrait::SharedCaches`).
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct SharedCache {
     pub pos: Vec2,
     /// Plant food units.

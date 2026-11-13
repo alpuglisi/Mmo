@@ -69,6 +69,7 @@ const REP_REFRESH_DAYS: u64 = 5;
 
 /// One genome in a cohort's pool.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PoolEntry {
     pub genome: Genome,
     pub generation: u32,
@@ -76,6 +77,7 @@ pub struct PoolEntry {
 
 /// Mean traits of a cohort, derived from its genome pool.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct Rep {
     /// An adult organism from the first pool genome: body for passability,
     /// reachable browse and prey size.
@@ -186,6 +188,7 @@ struct Member {
 
 /// The members of one lineage in one abstract region, as statistics.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Cohort {
     pub lineage: u32,
     pub owner: PlayerId,
@@ -353,6 +356,7 @@ impl Cohort {
 
 /// Counters of LOD activity, for reports.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LodStats {
     /// Region switches.
     pub collapses: u64,
@@ -367,6 +371,7 @@ pub struct LodStats {
 
 /// Level-of-detail state of a world.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct Lod {
     pub focus: BTreeMap<PlayerId, Vec<Vec2>>,
     /// Per region: full agents (true) or cohorts.
@@ -376,6 +381,7 @@ pub(crate) struct Lod {
     owners: BTreeMap<PlayerId, usize>,
     lineages: Vec<LineageCount>,
     /// (region, lineage) → (chunk version, tiles the lineage can use).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
     passable: HashMap<(usize, u32), (u64, Vec<u32>)>,
     pub stats: LodStats,
 }

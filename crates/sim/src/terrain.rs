@@ -32,6 +32,7 @@ use crate::rng::{hash4, rng_for, stream, SimRng};
 use crate::stats::Body;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Biome {
     DeepWater,
     ShallowWater,
@@ -73,6 +74,7 @@ impl Season {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Tile {
     pub biome: Biome,
     pub elevation: f32,
@@ -170,6 +172,7 @@ pub fn canopy_refuge(tile: &Tile, prey: &Body, attacker: &Body) -> f32 {
 
 /// Local weather at a point, as [`traverse`] reads it.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Weather {
     /// 0 calm, 1 gale.
     pub wind: f32,
@@ -195,6 +198,7 @@ pub const CHUNK: usize = 16;
 
 /// One cell of the regional weather grid.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WeatherCell {
     /// 0 calm, 1 gale.
     pub wind: f32,
@@ -218,6 +222,7 @@ impl WeatherCell {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Map {
     pub width: usize,
     pub height: usize,

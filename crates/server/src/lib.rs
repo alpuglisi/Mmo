@@ -15,6 +15,8 @@
 //!   idle and maximum-age expiry.
 //! - [`store`]: persistence behind the [`store::Store`] trait (JSON files
 //!   now, PostgreSQL later).
+//! - [`snapshot`]: saved games (world snapshot plus game state), written
+//!   daily and on shutdown, restored on startup.
 //! - [`design`]: the JSON form of a founder design.
 
 pub mod accounts;
@@ -25,6 +27,7 @@ pub mod limits;
 pub mod protocol;
 pub mod runner;
 pub mod seasons;
+pub mod snapshot;
 pub mod store;
 pub mod terrain;
 
@@ -34,12 +37,15 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::sync::mpsc::SyncSender;
+
+use evo_sim::World;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::accounts::{Accounts, SessionPolicy};
 use crate::limits::{Limiters, Limits};
-use crate::game::{build_world, Game, GameConfig, PersistEvent, WorldSettings};
-use crate::runner::{Runner, RunnerConfig};
+use crate::game::{build_world, world_config, Game, GameConfig, PersistEvent, SavedGame, WorldSettings, HISTORY_DAYS};
+use crate::runner::{Request, Runner, RunnerConfig};
 use crate::store::{FileStore, MemoryStore, Store};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -59,6 +65,9 @@ pub struct ServerConfig {
     pub limits: Limits,
     /// Session idle timeout and maximum age.
     pub sessions: SessionPolicy,
+    /// Ignore saved games: generate a new world and re-found the stored
+    /// designs (`--fresh`).
+    pub fresh: bool,
 }
 
 impl Default for ServerConfig {
@@ -72,6 +81,7 @@ impl Default for ServerConfig {
             static_dir: None,
             limits: Limits::default(),
             sessions: SessionPolicy::default(),
+            fresh: false,
         }
     }
 }
@@ -88,16 +98,27 @@ pub struct RunningServer {
     pub addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
     serve: tokio::task::JoinHandle<()>,
+    world: SyncSender<Request>,
+    persist: tokio::task::JoinHandle<()>,
 }
 
 impl RunningServer {
-    /// Stop accepting connections and wait for the HTTP server to finish.
-    /// The world thread stops once the last handler lets go of it.
+    /// Graceful stop: stop accepting connections, wait for the HTTP server,
+    /// save the game one last time, stop the world thread and wait until the
+    /// store task has written everything.
     pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
         let _ = (&mut self.serve).await;
+        let (reply, saved) = oneshot::channel();
+        let world = self.world.clone();
+        let sent = tokio::task::spawn_blocking(move || world.send(Request::Shutdown { reply }).is_ok()).await.unwrap_or(false);
+        drop(self.world);
+        if sent {
+            let _ = saved.await;
+        }
+        let _ = self.persist.await;
     }
 
     /// Wait until the server stops (e.g. on Ctrl-C).
@@ -111,10 +132,10 @@ impl RunningServer {
     }
 }
 
-/// Load persisted state, build the world, start the world thread and serve.
-///
-/// World state is not persisted yet, so every start generates a fresh world
-/// from the seed and re-founds every stored design in player order.
+/// Load persisted state, restore the world from the newest readable saved
+/// game (unless `fresh`) or generate one from the seed, start the world
+/// thread and serve. Stored designs whose player has no lineage in the world
+/// (all of them in a new world) are founded in player order.
 pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
     let store: Arc<dyn Store> = match &cfg.data_dir {
         Some(dir) => Arc::new(FileStore::open(dir).await?),
@@ -124,12 +145,19 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
     let mut designs = store.load_designs().await?;
     designs.sort_by_key(|d| d.player);
 
-    let world = build_world(&cfg.world);
-    let mut game = Game::new(world, cfg.game.clone());
+    let restored = if cfg.fresh { None } else { load_saved_game(&*store, &cfg.world).await? };
+    let mut game = match restored {
+        Some((world, saved)) => {
+            let history = store.recent_daily(HISTORY_DAYS).await?;
+            Game::resume(world, cfg.game.clone(), saved, history)
+        }
+        None => Game::new(build_world(&cfg.world), cfg.game.clone()),
+    };
     for a in &accounts {
         game.set_name(a.player, &a.name);
     }
-    for d in &designs {
+    let unfounded: Vec<_> = designs.iter().filter(|d| game.lineage_of(d.player).is_none()).collect();
+    for d in unfounded {
         match d.design.to_design() {
             Ok(design) => match game.found(d.player, &design) {
                 Ok(ok) => tracing::info!("re-founded {:?} for player {} as lineage {}", d.design.name, d.player, ok.lineage),
@@ -142,10 +170,10 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
 
     let (runner, handles) = Runner::new(game, cfg.runner.clone());
     runner.spawn();
-    tokio::spawn(persist_task(store.clone(), handles.persist));
+    let persist = tokio::spawn(persist_task(store.clone(), handles.persist));
 
     let state = http::AppState {
-        world: handles.tx,
+        world: handles.tx.clone(),
         accounts,
         store,
         published: handles.published,
@@ -172,7 +200,55 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         }
     });
     tracing::info!("listening on http://{addr}");
-    Ok(RunningServer { addr, shutdown: Some(shutdown), serve })
+    Ok(RunningServer { addr, shutdown: Some(shutdown), serve, world: handles.tx, persist })
+}
+
+/// The newest saved game that decodes, if any (older ones are fallbacks).
+/// A saved world for another map or calendar (seed, size, ticks per day,
+/// days per year, level of detail) is an error: start with the settings it
+/// was made with, or `--fresh`. Other changed settings (balance, caps,
+/// catastrophes) apply to the restored world.
+async fn load_saved_game(store: &dyn Store, settings: &WorldSettings) -> Result<Option<(World, SavedGame)>, BoxError> {
+    let wanted = world_config(settings);
+    for tick in store.snapshot_ticks().await? {
+        let bytes = match store.load_snapshot(tick).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("could not read the saved game of tick {tick}: {e}");
+                continue;
+            }
+        };
+        let started = std::time::Instant::now();
+        let decoded = tokio::task::spawn_blocking(move || snapshot::decode(&bytes)).await?;
+        let (mut world, saved) = match decoded {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("skipping the saved game of tick {tick}: {e}");
+                continue;
+            }
+        };
+        if !world.config.snapshot_compatible(&wanted) {
+            let c = &world.config;
+            return Err(format!(
+                "the saved world (seed {}, {}x{}, {} ticks/day, {} days/year, lod {}) does not match the settings; \
+                 start with those settings, or with --fresh to begin a new world",
+                c.seed, c.width, c.height, c.ticks_per_day, c.days_per_year, c.lod.enabled
+            )
+            .into());
+        }
+        if world.config.snapshot_hash() != wanted.snapshot_hash() {
+            tracing::info!("world settings changed since the saved game; continuing under the new ones");
+            world.config = wanted.clone();
+        }
+        tracing::info!(
+            "restored the world from tick {tick} (day {}, {} organisms) in {:.0} ms",
+            world.day(),
+            world.population(),
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        return Ok(Some((world, saved)));
+    }
+    Ok(None)
 }
 
 async fn persist_task(store: Arc<dyn Store>, mut rx: mpsc::UnboundedReceiver<PersistEvent>) {
@@ -180,6 +256,7 @@ async fn persist_task(store: Arc<dyn Store>, mut rx: mpsc::UnboundedReceiver<Per
         let result = match &ev {
             PersistEvent::Daily(r) => store.append_daily(r).await,
             PersistEvent::Trade(r) => store.append_trade(r).await,
+            PersistEvent::Snapshot(s) => store.put_snapshot(s.tick, &s.bytes).await,
         };
         if let Err(e) = result {
             tracing::error!("could not persist {ev:?}: {e}");

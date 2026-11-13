@@ -13,7 +13,9 @@
 //! 3. `World::step`, then `Game::after_tick` (mating agreements, offer
 //!    expiry, daily records);
 //! 4. publish the summary/leaderboard and, when the state interval has
-//!    passed, push a state message to every connection.
+//!    passed, push a state message to every connection;
+//! 5. on a new simulated day, save the game (`crate::snapshot`) through the
+//!    store task. [`Request::Shutdown`] saves once more and stops the thread.
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError};
@@ -23,7 +25,7 @@ use std::time::{Duration, Instant};
 use evo_sim::{FounderDesign, PlayerId};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::game::{ConnId, FoundError, FoundOk, Game, Outbox, PersistEvent, Target};
+use crate::game::{ConnId, FoundError, FoundOk, Game, Outbox, PersistEvent, SnapshotBlob, Target};
 use crate::protocol::{ChronicleView, ClientMsg, Leaderboard, LineageStats, ServerMsg, WorldSummary};
 use crate::terrain::{dynamic_raw, terrain_raw, DynamicRaw, TerrainRaw};
 
@@ -40,6 +42,10 @@ pub enum Request {
     Stats { player: PlayerId, reply: oneshot::Sender<LineageStats> },
     /// Species, eras, catastrophes and achievements.
     Chronicle { reply: oneshot::Sender<Box<ChronicleView>> },
+    /// Save the game and stop the world thread (graceful shutdown). Queued
+    /// world changes are dropped. The reply comes once the snapshot is on
+    /// its way to the store task.
+    Shutdown { reply: oneshot::Sender<()> },
 }
 
 pub enum TerrainReply {
@@ -74,6 +80,8 @@ pub struct Runner {
     published: watch::Sender<Arc<Published>>,
     persist: mpsc::UnboundedSender<PersistEvent>,
     last_state: Instant,
+    /// Day of the last saved game.
+    saved_day: u64,
 }
 
 /// Handles for the rest of the server.
@@ -89,7 +97,9 @@ impl Runner {
         let initial = Arc::new(Published { summary: game.summary(), leaderboard: game.leaderboard() });
         let (published, published_rx) = watch::channel(initial);
         let (persist, persist_rx) = mpsc::unbounded_channel();
-        let runner = Runner { game, cfg, rx, conns: BTreeMap::new(), queued: Vec::new(), published, persist, last_state: Instant::now() };
+        let saved_day = game.world.day();
+        let runner =
+            Runner { game, cfg, rx, conns: BTreeMap::new(), queued: Vec::new(), published, persist, last_state: Instant::now(), saved_day };
         (runner, RunnerHandles { tx, published: published_rx, persist: persist_rx })
     }
 
@@ -117,6 +127,11 @@ impl Runner {
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                 };
+                if let Request::Shutdown { reply } = req {
+                    self.save();
+                    let _ = reply.send(());
+                    return;
+                }
                 self.receive(req);
             }
             // 2. Apply world-changing requests in arrival order.
@@ -137,6 +152,10 @@ impl Runner {
                 let states = self.game.states();
                 self.dispatch(states);
             }
+            // 5. Save once per simulated day.
+            if self.game.world.day() != self.saved_day {
+                self.save();
+            }
             let now = Instant::now();
             next += self.cfg.tick;
             if next < now {
@@ -144,6 +163,21 @@ impl Runner {
                 next = now;
             }
         }
+    }
+
+    /// Snapshot the game and hand it to the store task.
+    fn save(&mut self) {
+        let started = Instant::now();
+        let bytes = crate::snapshot::encode(&self.game);
+        let tick = self.game.world.tick();
+        self.saved_day = self.game.world.day();
+        tracing::info!(
+            "saved the game at tick {tick} (day {}): {:.1} MB in {:.0} ms",
+            self.saved_day,
+            bytes.len() as f64 / 1e6,
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        let _ = self.persist.send(PersistEvent::Snapshot(SnapshotBlob { tick, bytes }));
     }
 
     /// Answer reads now; queue changes for the tick boundary.
@@ -172,6 +206,8 @@ impl Runner {
                 let _ = reply.send(Box::new(self.game.chronicle()));
             }
             req @ (Request::Found { .. } | Request::Command { .. }) => self.queued.push(req),
+            // Handled by `run` before it gets here.
+            Request::Shutdown { reply } => drop(reply),
         }
     }
 

@@ -38,6 +38,8 @@ pub mod rng;
 pub mod stats;
 pub mod terrain;
 pub mod world;
+#[cfg(feature = "serde")]
+mod serde_util;
 
 pub use config::{Balance, LodConfig, ScoringConfig, WorldConfig};
 pub use design::{BirthType, FounderDesign, Thermo};

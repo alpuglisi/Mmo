@@ -212,7 +212,11 @@ the built web client from `DIR`, e.g. `client/dist`, on every path the API
 doesn't use), `--session-idle-min N` / `--session-max-hours N` (session
 expiry, default 60 min idle and 24 h), `--no-rate-limits`, `--lod` (level
 of detail, below), `--no-catastrophes` (catastrophes are on by default in
-the game, never in the first year). `RUST_LOG=debug` for more logging.
+the game, never in the first year), `--fresh` (ignore the saved world: new
+world, stored designs re-founded; see [Persistence](#persistence)).
+`RUST_LOG=debug` for more logging. SIGINT (Ctrl-C) or SIGTERM stops the
+server gracefully: it stops serving, saves the world and waits for the store
+to finish writing.
 
 ### Architecture
 
@@ -221,7 +225,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
         ▲                       bounded queue        │ tick loop, fixed rate
         └──── per-connection queue ◀── results, events, state pushes
                                     ◀── watch: world summary + leaderboard
-                       store task ◀── daily records, finished trades
+                       store task ◀── daily records, finished trades, saved games
 ```
 
 - **One world thread** owns the `World` exclusively (no locks around it).
@@ -375,16 +379,64 @@ table per record.
 | Founder designs | `designs.json` |
 | One record per simulated day: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `history.jsonl` |
 | Finished directed-mating agreements with price and outcome | `trades.jsonl` |
+| Saved games: the whole `World` plus the game state around it, every simulated day and at a graceful shutdown; the newest 3 kept | `snapshots/world-<tick>.snap` |
 
-**Not persisted yet:** the `World` itself, login sessions and alerts (the
-dashboard's history starts when the server does; the seasonal leaderboards
-read the whole stored history). A restart
-generates a fresh world from the seed and re-founds every stored design in
-player order (a design that no longer fits the budget is skipped with a
-warning); players log in again. World snapshots need serde on the sim types
-(organisms, genomes, map, weather, counters, the world's private fields);
-the RNG is derived from `(seed, stream, tick, organism)`, so a snapshot is
-just data plus the tick.
+**World snapshots.** With the sim's `serde` feature (the server enables it;
+the sim builds without it) `World::snapshot()` returns the whole simulation
+as bytes and `World::restore(bytes)` continues it **exactly**: all randomness
+is derived from `(seed, stream, tick, id)`, so state plus tick determine the
+future. Format (`world::snapshot`): a fixed header (magic, format version
+`SNAPSHOT_VERSION`, flags, a hash of the whole `WorldConfig`, tick,
+organism count, raw length, payload checksum) and the `World` in `bincode`,
+LZ4-compressed. Every state type derives serde (long gene arrays through
+`serde_util`; hash maps are written sorted, so equal worlds give equal
+bytes). Skipped and rebuilt on restore: the id → index map, the spatial grid,
+A* scratch buffers and phase timings. Caches that steer the future (hourly
+density, cohort representatives, LOD passability, cache and clutch lookups)
+are stored. Any change to a serialized type needs a `SNAPSHOT_VERSION` bump;
+a snapshot of another version is refused with both versions named.
+`cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
+with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
+organism with an order, disease, winter dormancy, caches, paths), snapshots
+it mid-hour, restores it, runs both two more days and requires identical
+worlds, byte for byte; it also checks version, checksum and header errors.
+
+| Agents (standard world, `examples/snapshot`) | Map | Stored (raw bincode) | Snapshot | Restore |
+| --- | --- | --- | --- | --- |
+| 1.5k | 256² | 3.8 MB (9.0 MB) | 22 ms | 14 ms |
+| 5.7k | 256² | 7.7 MB (16.6 MB) | 48 ms | 40 ms |
+| 21k | 512² | 29 MB (63 MB) | 215 ms | 188 ms |
+| 26k | 512² | 34 MB (73 MB) | 250 ms | 219 ms |
+| 37k cohort members, no agents (LOD) | 512² | 26 MB (63 MB) | 202 ms | 194 ms |
+
+About 1.3 KB per agent stored (genome with origin tags, phenotype and trait
+caches, path) plus about 13 MB for a 512² map. Timed on a shared 4-core
+machine; `cargo run --release -p evo-sim --features serde --example snapshot -- 512 5 2`.
+
+**Saved games** (`snapshot.rs` in the server): magic, the game-side state
+as JSON (player → lineage, open offers, migration orders, alerts, watched
+organisms, milestone progress, chronicle entries already announced, the
+birth and death counters at the last day boundary) and the world snapshot.
+The world thread saves after the tick that starts a new simulated day and
+on `Request::Shutdown`, and hands the bytes to the store task
+(`Store::put_snapshot`; `FileStore` writes a temp file, syncs it and
+renames it into place, then drops all but the newest 3). On startup the
+newest saved game that decodes is restored (older ones are fallbacks),
+the dashboard history is reloaded from `history.jsonl`, and only stored
+designs whose player has no lineage in the world are founded. A saved world
+for another seed, size, ticks per day, days per year or LOD setting stops the
+server with an error (start with those settings, or `--fresh`); other changed
+settings (balance, caps, catastrophes) apply to the restored world. With no
+readable saved game (none yet, `--fresh`, or another format version) the
+server generates a world from the seed and re-founds every stored design in
+player order, as before (a design that no longer fits the budget is skipped
+with a warning).
+
+**Not persisted:** login sessions and connections (players log in again;
+the level-of-detail focus of their views is dropped, so lineages nobody
+watches fold into cohorts at the next day, as when everyone disconnects).
+Possession survives a restart. Records written after the last saved game
+(a crash between saves) are replayed by the restored world.
 
 ## Client
 
@@ -1076,9 +1128,10 @@ in use, 10.71 with the presets' strategies).
 4. A migrating sample design to exercise group navigation in play (none
    migrates yet: migrating antelope lost survival again even with group
    navigation).
-5. **Server (step 2, started):** world snapshots (serde on the sim types,
-   then a snapshot every simulated day and on shutdown); a `PgStore` on
-   sqlx; possessed organisms ticking faster than the world clock; interest
+5. **Server (step 2, started):** a `PgStore` on sqlx (snapshots as
+   `bytea` rows); encode saved games off the world thread (a quarter of a
+   second at 25k agents) and store the static terrain once instead of in
+   every snapshot; dedupe `history.jsonl` days replayed after a crash; possessed organisms ticking faster than the world clock; interest
    management through the sim's spatial grid instead of a scan per
    connection; session expiry and rate limits; a stud marketplace and an
    economy behind the recorded prices; seasonal leaderboard aggregation;

@@ -31,6 +31,8 @@ mod density;
 mod disease;
 mod environment;
 pub mod lod;
+#[cfg(feature = "serde")]
+mod snapshot;
 mod par_apply;
 #[cfg(test)]
 mod group_tests;
@@ -59,6 +61,8 @@ use crate::terrain::{traverse, Map, Season, Traverse, Weather};
 use density::SpeciesDensity;
 pub use chronicle::{biome_niche, diet_niche};
 pub use lod::{Cohort, LodStats, PoolEntry};
+#[cfg(feature = "serde")]
+pub use snapshot::{SnapshotError, SnapshotHeader, SNAPSHOT_VERSION};
 use spatial::SpatialGrid;
 
 /// Founding: longest walk (tiles) from a home to a spot where it can drink
@@ -71,9 +75,12 @@ const PREY_RANGE: f32 = 16.0;
 const PREY_ON_TOP: f32 = 8.0;
 /// Founding: share of a prey lineage's founders a hunter's home may count.
 const PREY_SHARE: f32 = 0.15;
+/// Spatial index cell side in tiles.
+const GRID_CELL: f32 = 4.0;
 
 /// Eggs waiting to hatch.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Clutch {
     pub pos: Vec2,
     pub owner: PlayerId,
@@ -96,6 +103,7 @@ pub struct Clutch {
 
 /// A founding population and its descendants.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Lineage {
     pub name: String,
     pub owner: PlayerId,
@@ -104,6 +112,7 @@ pub struct Lineage {
 
 /// Living members of one lineage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LineageCount {
     pub alive: usize,
     pub adults: usize,
@@ -111,6 +120,7 @@ pub struct LineageCount {
 
 /// Cumulative event counters.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Counters {
     pub births: u64,
     pub hatched: u64,
@@ -137,6 +147,10 @@ pub struct Counters {
     pub path_failures: u64,
 }
 
+/// With the `serde` feature a world serializes whole except for the
+/// derived lookups marked `skip`, which `World::restore` rebuilds
+/// (`world::snapshot`).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct World {
     pub config: WorldConfig,
     pub map: Map,
@@ -153,7 +167,9 @@ pub struct World {
     pub chronicle: crate::chronicle::Chronicle,
     tick: u64,
     next_id: OrgId,
+    #[cfg_attr(feature = "serde", serde(skip))]
     index: HashMap<OrgId, usize>,
+    #[cfg_attr(feature = "serde", serde(skip))]
     grid: SpatialGrid,
     owner_counts: BTreeMap<PlayerId, usize>,
     /// Living organisms per lineage, indexed like `lineages`.
@@ -161,21 +177,27 @@ pub struct World {
     density: SpeciesDensity,
     migrate_orders: BTreeMap<PlayerId, Vec2>,
     slots_used: BTreeMap<PlayerId, u32>,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
     clutch_at: HashMap<(usize, usize), usize>,
+    #[cfg_attr(feature = "serde", serde(skip))]
     path_scratch: PathScratch,
     /// Seasonal part of today's temperature (`Map::seasonal_offset`).
     season_offset: f32,
     /// Tile → organism index of every food cache (`seasonal::rebuild_caches`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
     cache_at: HashMap<(usize, usize), usize>,
     /// Shared caches by (group region, lineage), and tile → key for raids
     /// (`seasonal`, `GroupTrait::SharedCaches`).
     shared_caches: BTreeMap<(usize, u32), seasonal::SharedCache>,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
     shared_cache_at: HashMap<(usize, usize), (usize, u32)>,
     /// Winter-dormant communal-den carriers per den cell (`seasonal`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
     den_cells: HashMap<(usize, usize), u16>,
     /// Level of detail: focus points and the cohorts of abstract regions.
     lod: lod::Lod,
     /// Wall-clock time spent in each phase of `step` (for `bench`).
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub phase_times: PhaseTimes,
 }
 
@@ -236,7 +258,7 @@ impl World {
         let map = Map::generate(config.seed, config.width, config.height);
         let weather = map.mean_weather();
         let group = GroupField::new(config.width, config.height, 16);
-        let grid = SpatialGrid::new(config.width, config.height, 4.0);
+        let grid = SpatialGrid::new(config.width, config.height, GRID_CELL);
         let lod = lod::Lod::new(map.cells.len());
         World {
             map,

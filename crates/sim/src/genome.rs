@@ -71,6 +71,7 @@ macro_rules! define_genes {
         /// Every heritable locus. Physical, behavioral and mate-preference
         /// traits are all genes, so all of them evolve.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
         pub enum Gene { $( $(#[$m])* $name ),* }
 
         impl Gene {
@@ -217,6 +218,7 @@ pub const LOAD_LOCI: usize = 4;
 const HARMFUL: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Allele {
     pub value: f32,
     pub origin: PlayerId,
@@ -235,6 +237,7 @@ impl Allele {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Locus {
     pub a: Allele,
     pub b: Allele,
@@ -255,6 +258,7 @@ impl Locus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MutationParams {
     /// Probability per allele per generation.
     pub rate: f32,
@@ -263,7 +267,9 @@ pub struct MutationParams {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Genome {
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::array"))]
     loci: [Locus; Gene::COUNT],
     /// Hidden-recessive loci: not genes, never expressed in the phenotype or
     /// counted in [`Genome::distance`].
@@ -450,7 +456,8 @@ fn mutate_load(allele: Allele, owner: PlayerId, rate: f32, rng: &mut impl Rng) -
 
 /// Expressed gene values.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Phenotype(pub [f32; Gene::COUNT]);
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Phenotype(#[cfg_attr(feature = "serde", serde(with = "crate::serde_util::array"))] pub [f32; Gene::COUNT]);
 
 impl Index<Gene> for Phenotype {
     type Output = f32;

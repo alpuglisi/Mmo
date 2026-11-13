@@ -36,6 +36,7 @@ pub const NICHE_MIN_SHARE: f64 = 0.25;
 pub const NICHE_MIN_ADULTS: f64 = 20.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CatastropheKind {
     /// A winter far colder than normal (every tile `-10 °C × severity`).
     SevereWinter,
@@ -79,6 +80,7 @@ impl CatastropheKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Catastrophe {
     pub id: u32,
     pub kind: CatastropheKind,
@@ -105,6 +107,7 @@ impl Catastrophe {
 
 /// A player's allele share at an era's end.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EraRank {
     pub player: PlayerId,
     pub share: f64,
@@ -113,6 +116,7 @@ pub struct EraRank {
 
 /// The leader of one niche at an era's end.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NicheLeader {
     /// `diet:herbivore` / `diet:omnivore` / `diet:carnivore` or
     /// `biome:<name>`.
@@ -124,6 +128,7 @@ pub struct NicheLeader {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EraRecord {
     pub era: u64,
     pub first_day: u64,
@@ -139,6 +144,7 @@ pub struct EraRecord {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AchievementKind {
     SpeciesFounded { species: u32 },
     /// A lineage alive `years` whole years after founding.
@@ -159,6 +165,7 @@ impl AchievementKind {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Achievement {
     pub day: u64,
     pub player: PlayerId,
@@ -167,6 +174,7 @@ pub struct Achievement {
 
 /// When a lineage was first seen alive and when it died out.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LineageLife {
     pub founded_day: u64,
     pub extinct_day: Option<u64>,
@@ -183,6 +191,7 @@ impl LineageLife {
 
 /// Everything the scoring extras record.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Chronicle {
     pub species: SpeciesTracker,
     pub eras: Vec<EraRecord>,

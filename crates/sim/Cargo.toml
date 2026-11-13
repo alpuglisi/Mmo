@@ -8,3 +8,15 @@ edition.workspace = true
 rand.workspace = true
 rand_pcg.workspace = true
 rayon.workspace = true
+serde = { version = "1", features = ["derive"], optional = true }
+bincode = { version = "1.3", optional = true }
+lz4_flex = { version = "0.11", optional = true, default-features = false, features = ["std", "safe-encode", "safe-decode"] }
+
+[features]
+# World snapshots (`World::snapshot` / `World::restore`): serde derives on the
+# state types, bincode encoding, LZ4 compression.
+serde = ["dep:serde", "dep:bincode", "dep:lz4_flex"]
+
+[[example]]
+name = "snapshot"
+required-features = ["serde"]

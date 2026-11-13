@@ -9,7 +9,7 @@ name = "evo-server"
 path = "src/main.rs"
 
 [dependencies]
-evo-sim = { path = "../sim" }
+evo-sim = { path = "../sim", features = ["serde"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 argon2 = { version = "0.5", features = ["std"] }
 async-trait = "0.1"
