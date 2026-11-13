@@ -150,7 +150,7 @@ score).
   the server applies every command (between sub-steps, in arrival order).
   Every lookup sits behind an empty map and every organism is in group 0
   until a player splits, so a world without them steps bit for bit as
-  before (the 12-seed sweep still scores 11.61; the tests
+  before (the 12-seed sweeps still score 11.54 on seeds from 31 and 11.41 from 55; the tests
   `group_commands_are_deterministic_and_unused_ones_change_nothing`, and the
   snapshot round trip with a split herd, one half holding ground).
 
