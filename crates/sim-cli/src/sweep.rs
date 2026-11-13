@@ -25,6 +25,8 @@ pub struct SweepArgs {
     pub spread: f32,
     pub center: Balance,
     pub out: Option<String>,
+    /// `WorldConfig::parallel_apply`.
+    pub parallel_apply: bool,
 }
 
 /// Outcome of one world run.
@@ -65,8 +67,8 @@ impl RunMetrics {
     }
 }
 
-pub fn run_one(balance: Balance, seed: u64, size: usize, days: u32) -> RunMetrics {
-    let config = WorldConfig { seed, width: size, height: size, balance, ..Default::default() };
+pub fn run_one(balance: Balance, seed: u64, size: usize, days: u32, parallel_apply: bool) -> RunMetrics {
+    let config = WorldConfig { seed, width: size, height: size, balance, parallel_apply, ..Default::default() };
     let mut world = presets::standard_world(config, 1);
     let n = world.lineages.len();
     let mut extinct_day = vec![None; n];
@@ -170,7 +172,7 @@ pub fn sweep(args: &SweepArgs) {
             (0..args.trials).flat_map(|k| (0..args.seeds).map(move |s| (k, s))).collect();
         let results: Vec<(usize, RunMetrics)> = jobs
             .par_iter()
-            .map(|&(k, s)| (k, run_one(balances[k], args.base_seed + s, args.size, args.days)))
+            .map(|&(k, s)| (k, run_one(balances[k], args.base_seed + s, args.size, args.days, args.parallel_apply)))
             .collect();
         let mut trials: Vec<Trial> = balances
             .iter()

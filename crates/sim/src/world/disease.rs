@@ -15,7 +15,7 @@
 use rand::Rng;
 
 use super::World;
-use crate::organism::Infection;
+use crate::organism::{Infection, OrgId, Organism};
 use crate::rng::{rng_for, stream, SimRng};
 
 /// New-pathogen multiplier for matings between founding lineages.
@@ -25,7 +25,11 @@ impl World {
     /// The disease stream for organism `i` this tick; `salt` (1–3) separates
     /// the rules drawing on the same tick (0 is births' load mutations).
     fn disease_rng(&self, i: usize, salt: u64) -> SimRng {
-        rng_for(self.config.seed, stream::GENETICS, self.tick, (self.organisms[i].id << 2) | salt)
+        self.disease_rng_for(self.organisms[i].id, salt)
+    }
+
+    fn disease_rng_for(&self, id: OrgId, salt: u64) -> SimRng {
+        rng_for(self.config.seed, stream::GENETICS, self.tick, (id << 2) | salt)
     }
 
     /// Infect a susceptible organism (no effect otherwise).
@@ -76,21 +80,33 @@ impl World {
 
     /// The course of an acute infection: each day a chance to end it, in
     /// immunity or chronic carriage. (Its health drain is in `update_needs`.)
+    #[cfg(test)]
     pub(crate) fn disease_course(&mut self, i: usize) {
-        if self.organisms[i].infection != Infection::Acute {
+        let mut orgs = std::mem::take(&mut self.organisms);
+        self.disease_course_of(&mut orgs[i]);
+        self.organisms = orgs;
+    }
+
+    /// `disease_course` for an organism held outside `organisms` (apply's
+    /// settle part).
+    pub(crate) fn disease_course_of(&self, o: &mut Organism) {
+        if o.infection != Infection::Acute {
             return;
         }
         let bal = self.config.balance;
-        let rng = &mut self.disease_rng(i, 3);
+        let rng = &mut self.disease_rng_for(o.id, 3);
         if rng.gen::<f32>() < bal.disease_recovery * self.config.dt_days() {
-            self.organisms[i].infection =
-                if rng.gen::<f32>() < bal.disease_chronic { Infection::Chronic } else { Infection::Immune };
+            o.infection = if rng.gen::<f32>() < bal.disease_chronic { Infection::Chronic } else { Infection::Immune };
         }
     }
 
     /// Homozygous harmful recessives: a daily death hazard per affected locus.
+    #[cfg(test)]
     pub(crate) fn recessive_death(&self, i: usize, rng: &mut impl Rng) -> bool {
-        let o = &self.organisms[i];
+        self.recessive_death_of(&self.organisms[i], rng)
+    }
+
+    pub(crate) fn recessive_death_of(&self, o: &Organism, rng: &mut impl Rng) -> bool {
         if o.recessive_load == 0 {
             return false;
         }

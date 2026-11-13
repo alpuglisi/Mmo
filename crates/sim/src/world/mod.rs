@@ -12,9 +12,11 @@
 //! 3. Rebuild the spatial index.
 //! 4. **Decide** (parallel, read-only): every organism scores its actions by
 //!    need urgency × behavior genes and picks one.
-//! 5. **Apply** (sequential, shuffled order): movement (steering, with A*
-//!    routes around blocked terrain; see `pathfinding`),
-//!    eating, predation, mating, needs, death and birth.
+//! 5. **Apply** (shuffled order): movement (steering, with A* routes
+//!    around blocked terrain; see `pathfinding`), eating, predation, mating,
+//!    needs, death and birth. Movement and needs run on all cores, the
+//!    interactions sequentially (`par_apply`; `parallel_apply = false` for
+//!    the fully sequential apply).
 //!
 //! All randomness comes from per-(tick, organism) streams, so a run is
 //! reproducible from its seed regardless of thread count.
@@ -26,6 +28,7 @@ mod density;
 mod disease;
 mod environment;
 pub mod lod;
+mod par_apply;
 #[cfg(test)]
 mod group_tests;
 #[cfg(test)]
@@ -166,6 +169,27 @@ pub struct World {
     den_cells: HashMap<(usize, usize), u16>,
     /// Level of detail: focus points and the cohorts of abstract regions.
     lod: lod::Lod,
+    /// Wall-clock time spent in each phase of `step` (for `bench`).
+    pub phase_times: PhaseTimes,
+}
+
+/// Cumulative wall-clock seconds per phase of `World::step`. Timing never
+/// feeds back into the simulation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PhaseTimes {
+    /// Level of detail (`lod_update`), hourly bookkeeping and environment chunks.
+    pub environment: f64,
+    pub daily: f64,
+    pub grid: f64,
+    pub decide: f64,
+    pub apply: f64,
+    /// Part of `apply` spent in the parallel apply's sequential sweeps (act
+    /// and finish, `par_apply`).
+    pub apply_serial: f64,
+    /// Organism-turns taken whole and in order because of a chase
+    /// (`World::engaged`), and all organism-turns applied (`par_apply`).
+    pub engaged: u64,
+    pub applied: u64,
 }
 
 /// The decision for one organism this tick.
@@ -234,6 +258,7 @@ impl World {
             shared_cache_at: HashMap::new(),
             den_cells: HashMap::new(),
             lod,
+            phase_times: PhaseTimes::default(),
             config,
         }
     }
@@ -580,6 +605,13 @@ impl World {
     /// Advance one tick.
     pub fn step(&mut self) {
         let tpd = self.config.ticks_per_day as u64;
+        let mut clock = std::time::Instant::now();
+        let mut lap = || {
+            let now = std::time::Instant::now();
+            let s = (now - clock).as_secs_f64();
+            clock = now;
+            s
+        };
         if self.config.lod.enabled && self.tick.is_multiple_of(self.config.ticks_per_hour()) {
             self.lod_update();
         }
@@ -587,21 +619,30 @@ impl World {
             self.hourly();
         }
         self.environment_slice();
+        self.phase_times.environment += lap();
         if self.tick.is_multiple_of(tpd) {
             self.daily();
         }
+        self.phase_times.daily += lap();
 
         self.grid.rebuild(&self.organisms);
+        self.phase_times.grid += lap();
         let n = self.organisms.len();
         let this = &*self;
         let intents: Vec<Intent> = (0..n).into_par_iter().map(|i| this.decide(i)).collect();
+        self.phase_times.decide += lap();
 
         let mut rng = rng_for(self.config.seed, stream::APPLY, self.tick, 0);
         let mut order: Vec<usize> = (0..n).collect();
         order.shuffle(&mut rng);
-        for i in order {
-            self.apply(i, &intents[i], &mut rng);
+        if self.config.parallel_apply {
+            self.par_apply(&intents, &order, &mut rng);
+        } else {
+            for i in order {
+                self.apply(i, &intents[i], &mut rng);
+            }
         }
+        self.phase_times.apply += lap();
         self.tick += 1;
     }
 

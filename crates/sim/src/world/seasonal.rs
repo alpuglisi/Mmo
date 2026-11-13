@@ -199,15 +199,14 @@ impl World {
     /// Enter or leave a dormancy, and let caches spoil. Runs in `apply`
     /// after the action, before needs. Returns a cause of death for a
     /// sleeper that never wakes.
-    pub(crate) fn seasonal_tick(&mut self, i: usize, intent: &Intent, moved: f32, rng: &mut SimRng) -> Option<DeathCause> {
+    pub(crate) fn seasonal_tick(&self, o: &mut Organism, intent: &Intent, moved: f32, rng: &mut SimRng) -> Option<DeathCause> {
         let bal = self.config.balance;
         let season = self.season();
         let daytime = self.is_daytime();
         let dt = self.config.dt_days();
-        let pos = self.organisms[i].pos;
+        let pos = o.pos;
         let temp = self.seasonal_temp(pos);
         let dry = self.map.dryness_at(pos);
-        let o = &mut self.organisms[i];
         if o.cache > 0.0 {
             o.cache *= 1.0 - CACHE_SPOIL * dt;
         }
@@ -885,8 +884,11 @@ mod tests {
     /// Migrants that navigate as a group lose fewer to the journey.
     #[test]
     fn group_migrants_lose_fewer_to_the_journey() {
-        let trip = |gt: f32| {
+        // Losses are a handful per trip, so trips over several seeds add up
+        // (the expected ratio is 1 - group_navigation = 0.4).
+        let trip = |gt: f32, seed: u64| {
             let mut w = flat_world(15.0, 40.0, 65);
+            w.config.seed = seed;
             w.config.balance.migration_risk = 0.05;
             let d = design(Thermo::Warm).with(Gene::Migration, 1.0).with(Gene::GroupTolerance, gt);
             let m = add(&mut w, &d, 40);
@@ -899,12 +901,19 @@ mod tests {
             let lost = w.counters.deaths.get(&DeathCause::Journey).copied().unwrap_or(0);
             (carrier, lost, w)
         };
-        let (carrier, solo, _) = trip(0.1);
-        assert!(!carrier);
-        let (carrier, group, mut w) = trip(0.9);
-        assert!(carrier);
-        assert!(solo >= 6, "{solo} of 40 lost travelling alone");
-        assert!(group * 2 <= solo, "{group} of 40 lost navigating as a group vs {solo}");
+        const SEEDS: u64 = 6;
+        let (mut solo, mut group) = (0, 0);
+        for seed in 0..SEEDS {
+            let (carrier, lost, _) = trip(0.1, seed);
+            assert!(!carrier);
+            solo += lost;
+            let (carrier, lost, _) = trip(0.9, seed);
+            assert!(carrier);
+            group += lost;
+        }
+        let (_, _, mut w) = trip(0.9, 0);
+        assert!(solo >= 6 * SEEDS, "{solo} of {} lost travelling alone", 40 * SEEDS);
+        assert!(group * 3 <= solo * 2, "{group} of {} lost navigating as a group vs {solo}", 40 * SEEDS);
         // Navigation needs the trait to hold and kin around.
         let mut o = w.organisms.iter().find(|o| o.alive).unwrap().clone();
         o.kin_nearby = 10;

@@ -9,7 +9,7 @@ use crate::genome::{Gene, Genome, PlayerId};
 use crate::mating;
 use crate::math::Vec2;
 use crate::organism::{Action, DeathCause, Dormancy, Infection, OrgId, Organism, Pregnancy, Sex};
-use crate::pathfinding::{enter_cost, Outcome, Path, MAX_TILE_SPEED};
+use crate::pathfinding::{enter_cost, Outcome, Path, PathScratch, MAX_TILE_SPEED};
 use crate::rng::{rng_for, stream, SimRng};
 use crate::terrain::{traverse, Map, Traverse, Weather};
 
@@ -47,39 +47,98 @@ impl Effort {
     }
 }
 
+/// Path searches run during movement (`World::step_toward`), added to the
+/// world's counters after a sweep.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct PathCount {
+    pub searches: u64,
+    pub failures: u64,
+}
+
+impl PathCount {
+    pub fn add_to(self, c: &mut super::Counters) {
+        c.path_searches += self.searches;
+        c.path_failures += self.failures;
+    }
+}
+
+/// What `World::settle` leaves for `World::finish`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Settled {
+    pub death: Option<DeathCause>,
+    /// Matured this tick: credit the parents.
+    pub matured: bool,
+}
+
 impl World {
+    /// Apply organism `i`'s decision in one go: take on the intent, move,
+    /// act, then settle needs, death, growth and birth. The parallel apply
+    /// (`world::par_apply`) runs the same parts as separate sweeps for
+    /// organisms that neither chase nor are chased.
     pub(crate) fn apply(&mut self, i: usize, intent: &Intent, rng: &mut SimRng) {
         if !self.organisms[i].alive {
             return;
         }
-        let dt = self.config.dt_days();
-        {
-            let o = &mut self.organisms[i];
-            o.action = intent.action;
-            o.target = intent.target;
-            o.kin_nearby = intent.kin_nearby;
-            o.needs.safety = (intent.threat * 100.0).min(100.0);
-            o.alert = intent.alert;
-            if let Some(w) = intent.new_wander {
-                o.wander_target = Some(w);
-            }
-            if let Some(f) = intent.new_forage {
-                o.forage_target = f;
-            }
-        }
-
         // Movement (chasing a live target follows it).
-        let mut moved = 0.0;
-        if let Some(target) = intent.target {
-            let target = match intent.target_org {
-                Some(j) if self.organisms[j].alive => self.organisms[j].pos,
-                _ => target,
-            };
-            moved = self.move_toward(i, target, intent.sprint);
+        let chase = match intent.target_org {
+            Some(j) if self.organisms[j].alive => Some(self.organisms[j].pos),
+            _ => None,
+        };
+        let mut orgs = std::mem::take(&mut self.organisms);
+        let mut scratch = std::mem::take(&mut self.path_scratch);
+        let mut paths = PathCount::default();
+        let moved = self.start(&mut orgs[i], intent, chase, &mut scratch, &mut paths);
+        self.organisms = orgs;
+        self.path_scratch = scratch;
+        paths.add_to(&mut self.counters);
+        if !self.act(i, intent, moved, rng) {
+            return;
+        }
+        let burrow = self.burrow_inputs(&self.organisms[i]);
+        let mut orgs = std::mem::take(&mut self.organisms);
+        let settled = self.settle(&mut orgs[i], intent, moved, burrow, rng);
+        self.organisms = orgs;
+        self.finish(i, settled, rng);
+    }
+
+    /// First part of `apply`, touching only organism `o` (held outside
+    /// `organisms`): take on the intent and move, toward `chase` (the live
+    /// position of a chased organism) if given. Returns the distance moved.
+    pub(super) fn start(
+        &self,
+        o: &mut Organism,
+        intent: &Intent,
+        chase: Option<Vec2>,
+        scratch: &mut PathScratch,
+        paths: &mut PathCount,
+    ) -> f32 {
+        o.action = intent.action;
+        o.target = intent.target;
+        o.kin_nearby = intent.kin_nearby;
+        o.needs.safety = (intent.threat * 100.0).min(100.0);
+        o.alert = intent.alert;
+        if let Some(w) = intent.new_wander {
+            o.wander_target = Some(w);
+        }
+        if let Some(f) = intent.new_forage {
+            o.forage_target = f;
+        }
+        match intent.target {
+            Some(target) => self.step_toward(o, chase.unwrap_or(target), intent.sprint, scratch, paths),
+            None => 0.0,
+        }
+    }
+
+    /// Middle part of `apply`: the action's effect and everything else that
+    /// reaches other organisms, tiles, clutches and caches (eating, hunting,
+    /// mating, drinking, raiding, nursing). False if the organism died.
+    pub(super) fn act(&mut self, i: usize, intent: &Intent, moved: f32, rng: &mut SimRng) -> bool {
+        if !self.organisms[i].alive {
+            return false;
         }
         if intent.action == Action::Migrate && self.journey_death(i, moved, rng) {
             self.kill(i, DeathCause::Journey);
-            return;
+            return false;
         }
 
         // The chosen action's effect.
@@ -106,7 +165,7 @@ impl World {
             _ => {}
         }
         if !self.organisms[i].alive {
-            return;
+            return false;
         }
 
         // Opportunistic eating and drinking while doing something else.
@@ -131,41 +190,80 @@ impl World {
             self.raid_clutch(i, rng);
         }
         self.nurse(i);
+        true
+    }
 
-        if let Some(cause) = self.seasonal_tick(i, intent, moved, rng) {
+    /// Shared-burrow inputs of `update_needs` (shared bonus, burrow depth),
+    /// read before `settle` because they look at the mother.
+    pub(super) fn burrow_inputs(&self, o: &Organism) -> (f32, f32) {
+        (self.shared_burrow_bonus(o), self.burrow_depth(o))
+    }
+
+    /// Last part of `apply` touching only organism `o` (held outside
+    /// `organisms`): dormancy, needs, the death rolls, the course of a
+    /// disease and growth. Deaths, parent credit and birth are left to
+    /// `finish`.
+    pub(super) fn settle(&self, o: &mut Organism, intent: &Intent, moved: f32, burrow: (f32, f32), rng: &mut SimRng) -> Settled {
+        let dead = |cause| Settled { death: Some(cause), matured: false };
+        if let Some(cause) = self.seasonal_tick(o, intent, moved, rng) {
+            return dead(cause);
+        }
+        if let Some(cause) = self.update_needs(o, intent, moved, self.config.dt_days(), burrow) {
+            return dead(cause);
+        }
+        if self.old_age_death(o, rng) {
+            return dead(DeathCause::OldAge);
+        }
+        if self.larval_competition_death(o, rng) {
+            return dead(DeathCause::Starvation);
+        }
+        if self.attrition_death(o, rng) {
+            return dead(DeathCause::Attrition);
+        }
+        if self.recessive_death_of(o, rng) {
+            return dead(DeathCause::Recessive);
+        }
+        self.disease_course_of(o);
+        Settled { death: None, matured: self.grow(o) }
+    }
+
+    /// Resolve what `settle` left: death, credit to the parents of a young
+    /// that just matured, birth when due.
+    pub(super) fn finish(&mut self, i: usize, settled: Settled, rng: &mut SimRng) {
+        if let Some(cause) = settled.death {
             self.kill(i, cause);
             return;
         }
-        let cause = self.update_needs(i, intent, moved, dt);
-        if let Some(cause) = cause {
-            self.kill(i, cause);
-            return;
+        if settled.matured {
+            // Credit parents: only offspring raised to breeding age count.
+            let o = &self.organisms[i];
+            let parents = [o.mother, o.father];
+            for &k in parents.iter().flatten().filter_map(|p| self.index.get(p)) {
+                self.organisms[k].offspring_raised += 1;
+            }
         }
-        if self.old_age_death(i, rng) {
-            self.kill(i, DeathCause::OldAge);
-            return;
-        }
-        if self.larval_competition_death(i, rng) {
-            self.kill(i, DeathCause::Starvation);
-            return;
-        }
-        if self.attrition_death(i, rng) {
-            self.kill(i, DeathCause::Attrition);
-            return;
-        }
-        if self.recessive_death(i, rng) {
-            self.kill(i, DeathCause::Recessive);
-            return;
-        }
-        self.disease_course(i);
-        self.grow(i);
         if matches!(&self.organisms[i].pregnancy, Some(p) if self.tick >= p.due_tick) {
             self.give_birth(i, rng);
         }
     }
 
+    /// Move organism `i` toward `target` (see `step_toward`).
     pub(super) fn move_toward(&mut self, i: usize, target: Vec2, sprint: bool) -> f32 {
-        let o = &self.organisms[i];
+        let mut orgs = std::mem::take(&mut self.organisms);
+        let mut scratch = std::mem::take(&mut self.path_scratch);
+        let mut paths = PathCount::default();
+        let moved = self.step_toward(&mut orgs[i], target, sprint, &mut scratch, &mut paths);
+        self.organisms = orgs;
+        self.path_scratch = scratch;
+        paths.add_to(&mut self.counters);
+        moved
+    }
+
+    /// Steer `o` toward `target`, following or planning a route (A* in
+    /// `scratch`, searches counted in `paths`) when the way is blocked.
+    /// Touches nothing but `o`, so the parallel apply can run it for many
+    /// organisms at once. Returns the distance moved.
+    fn step_toward(&self, o: &mut Organism, target: Vec2, sprint: bool, scratch: &mut PathScratch, paths: &mut PathCount) -> f32 {
         let to = target - o.pos;
         let d = to.len();
         if d < 0.05 {
@@ -206,7 +304,7 @@ impl World {
         // Short sprints (fleeing, the last lunge at prey) stay greedy.
         let pathing = !stranded && !fly && self.config.balance.path_nodes >= 1.0;
         if pathing {
-            if let Some(moved) = self.follow_path(i, target, step, effort) {
+            if let Some(moved) = self.follow_path(o, target, step, effort) {
                 return moved;
             }
         }
@@ -226,15 +324,14 @@ impl World {
                 // The end point can fall short of the checked tile (or cut a
                 // corner): never step onto a tile the body can't use.
                 if stranded || traverse(&body, self.map.tile_at(new_pos), &self.map.weather_at(new_pos), fly) != Traverse::Blocked {
-                    let o = &mut self.organisms[i];
                     o.pos = new_pos;
                     o.needs.energy = (o.needs.energy - effort.cost(dist, e)).max(0.0);
                     return dist;
                 }
             }
             // The way straight ahead is blocked: find a way around.
-            if k == 0 && can_plan && self.plan_path(i, target) {
-                if let Some(moved) = self.follow_path(i, target, step, effort) {
+            if k == 0 && can_plan && self.plan_path(o, target, scratch, paths) {
+                if let Some(moved) = self.follow_path(o, target, step, effort) {
                     return moved;
                 }
             }
@@ -254,9 +351,8 @@ impl World {
     /// it on the organism. A failed search is kept too, so it isn't repeated
     /// until the terrain changes (on the hour) or the target moves. True if
     /// there is a route to follow, possibly partial.
-    fn plan_path(&mut self, i: usize, target: Vec2) -> bool {
+    fn plan_path(&self, o: &mut Organism, target: Vec2, scratch: &mut PathScratch, paths: &mut PathCount) -> bool {
         let epoch = self.tick / self.config.ticks_per_hour();
-        let o = &mut self.organisms[i];
         if let Some(p) = &o.path {
             if p.failed && p.epoch == epoch && p.serves(o.pos, target) {
                 return false;
@@ -266,7 +362,7 @@ impl World {
         // Reuse the old route's allocation.
         let mut path = o.path.take().unwrap_or_else(|| Box::new(Path::new(target)));
         let budget = self.config.balance.path_nodes as usize;
-        let outcome = self.path_scratch.search(
+        let outcome = scratch.search(
             &self.map,
             from,
             target,
@@ -278,10 +374,10 @@ impl World {
         path.epoch = epoch;
         path.partial = outcome == Outcome::Partial;
         path.failed = outcome == Outcome::None;
-        self.counters.path_searches += 1;
-        self.counters.path_failures += u64::from(path.failed);
+        paths.searches += 1;
+        paths.failures += u64::from(path.failed);
         let ok = !path.failed;
-        self.organisms[i].path = Some(path);
+        o.path = Some(path);
         ok
     }
 
@@ -290,8 +386,7 @@ impl World {
     /// dropped, if it has no route that still serves the target, has been
     /// pushed off it, or the terrain ahead has closed (ice melted); the
     /// caller then steers greedily, re-planning if the direct way is blocked.
-    fn follow_path(&mut self, i: usize, target: Vec2, step: f32, effort: Effort) -> Option<f32> {
-        let o = &mut self.organisms[i];
+    fn follow_path(&self, o: &mut Organism, target: Vec2, step: f32, effort: Effort) -> Option<f32> {
         let path = o.path.as_mut()?;
         let first = path.next_tile()?;
         let pos = o.pos;
@@ -599,25 +694,25 @@ impl World {
     }
 
     /// Needs, temperature, health. Returns a cause of death if health ran out.
-    fn update_needs(&mut self, i: usize, intent: &Intent, moved: f32, dt: f32) -> Option<DeathCause> {
+    ///
+    /// `burrow` is `burrow_inputs`: a shared burrow lets carriers with modest
+    /// burrowing shelter, and is deeper and better insulated than a lone
+    /// burrow.
+    fn update_needs(&self, o: &mut Organism, intent: &Intent, moved: f32, dt: f32, burrow: (f32, f32)) -> Option<DeathCause> {
         let daytime = self.is_daytime();
         let breed_factor = self.season().breeding_factor();
         let tick = self.tick;
-        let pos = self.organisms[i].pos;
+        let pos = o.pos;
         let tile = self.map.tile_at(pos);
         let (tile_temp, open, water) = (tile.temp, tile.is_open(), tile.water_depth);
-        let body = self.organisms[i].traits.body;
+        let body = o.traits.body;
         let drowning = !body.can_fly && traverse(&body, tile, &self.map.weather_at(pos), false) == Traverse::Blocked;
-        // A shared burrow lets carriers with modest burrowing shelter, and is
-        // deeper and better insulated than a lone burrow.
-        let shared = self.shared_burrow_bonus(&self.organisms[i]);
-        let depth = self.burrow_depth(&self.organisms[i]);
+        let (shared, depth) = burrow;
 
         let bal = self.config.balance;
-        let dormant_rate = self.dormant_rate(&self.organisms[i]);
+        let dormant_rate = self.dormant_rate(o);
         // Group navigation: travelling with its group costs a migrant less.
-        let nav = if intent.action == Action::Migrate { self.navigation_bonus(&self.organisms[i]) } else { 0.0 };
-        let o = &mut self.organisms[i];
+        let nav = if intent.action == Action::Migrate { self.navigation_bonus(o) } else { 0.0 };
         let st = o.traits.stats;
         let deep = o.dormancy.is_deep();
         let torpid = o.dormancy == Dormancy::Torpor;
@@ -759,8 +854,7 @@ impl World {
         }
     }
 
-    fn old_age_death(&self, i: usize, rng: &mut SimRng) -> bool {
-        let o = &self.organisms[i];
+    fn old_age_death(&self, o: &Organism, rng: &mut SimRng) -> bool {
         let frac = o.age_days(self.config.ticks_per_day) / o.traits.lifespan_days;
         if frac < 0.8 {
             return false;
@@ -772,8 +866,7 @@ impl World {
     /// Young left to fend for themselves (abandoned eggs) compete with their
     /// own kind for food and shelter, and the losers starve: the doc's "many
     /// offspring: most die young", made density dependent.
-    fn larval_competition_death(&self, i: usize, rng: &mut SimRng) -> bool {
-        let o = &self.organisms[i];
+    fn larval_competition_death(&self, o: &Organism, rng: &mut SimRng) -> bool {
         if o.matured || o.traits.birth != BirthType::AbandonedEggs {
             return false;
         }
@@ -784,8 +877,7 @@ impl World {
     /// Adults of fast-living species wear out (disease, accidents, the cost
     /// of breeding) whether or not anything eats them: the doc's "live fast,
     /// die young" for big litters, so adults don't pile up across years.
-    fn attrition_death(&self, i: usize, rng: &mut SimRng) -> bool {
-        let o = &self.organisms[i];
+    fn attrition_death(&self, o: &Organism, rng: &mut SimRng) -> bool {
         if !o.matured {
             return false;
         }
@@ -814,23 +906,21 @@ impl World {
         1.0 / (1.0 + (d / k).powi(4))
     }
 
-    fn grow(&mut self, i: usize) {
+    /// Growth toward maturity; true when `o` matures this tick (its parents
+    /// are credited in `finish`).
+    fn grow(&self, o: &mut Organism) -> bool {
         let tpd = self.config.ticks_per_day;
-        let o = &mut self.organisms[i];
         if o.matured {
-            return;
+            return false;
         }
         let progress = (o.age_days(tpd) / o.traits.maturity_days).min(1.0);
         o.growth = o.traits.newborn_growth + (1.0 - o.traits.newborn_growth) * progress;
         if progress >= 1.0 {
             o.matured = true;
             o.growth = 1.0;
-            // Credit parents: only offspring raised to breeding age count.
-            let parents = [o.mother, o.father];
-            for &k in parents.iter().flatten().filter_map(|p| self.index.get(p)) {
-                self.organisms[k].offspring_raised += 1;
-            }
+            return true;
         }
+        false
     }
 
     fn give_birth(&mut self, i: usize, rng: &mut SimRng) {

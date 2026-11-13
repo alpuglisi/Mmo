@@ -39,6 +39,11 @@ pub struct WorldConfig {
     /// Level of detail: full agents near focus points, statistical cohorts
     /// elsewhere (`world::lod`). Off by default.
     pub lod: LodConfig,
+    /// Run the apply phase on all cores (`world::par_apply`); still
+    /// reproducible and independent of thread count. `false` restores the
+    /// fully sequential apply, whose worlds differ from parallel ones of
+    /// the same seed.
+    pub parallel_apply: bool,
 }
 
 /// Level-of-detail settings (`world::lod`, "Scale and performance" in the
@@ -535,6 +540,7 @@ impl Default for WorldConfig {
             max_perception: 8.0,
             balance: Balance::default(),
             lod: LodConfig::default(),
+            parallel_apply: true,
         }
     }
 }

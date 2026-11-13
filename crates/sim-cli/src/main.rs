@@ -18,9 +18,9 @@ const USAGE: &str = "\
 evo-sim — Evolution MMO simulation prototype
 
 USAGE:
-    evo-sim run    [--seed N] [--size N] [--days N] [--report N] [--snapshot PATH] [--threads N] [--lod] [--focus X,Y]
-    evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N] [--lod] [--focus X,Y]
-    evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH]
+    evo-sim run    [--seed N] [--size N] [--days N] [--report N] [--snapshot PATH] [--threads N] [--lod] [--focus X,Y] [--sequential-apply]
+    evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N,..] [--lod] [--focus X,Y] [--sequential-apply] [--compare-apply]
+    evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH] [--sequential-apply]
     evo-sim designs
 
 COMMANDS:
@@ -36,7 +36,8 @@ OPTIONS:
     --report N      Print a report every N days (default 10)
     --snapshot PATH Write a PNG of the final world (prefix; also writes one per report)
     --scale N       Founding population multiplier for bench (default 4)
-    --threads N     Worker threads (default: all cores)
+    --threads N     Worker threads (default: all cores). Bench takes a list (1,2,4)
+                    and measures each, rotating the simulated days between them
     --set NAME=V    Override a balance parameter (repeatable; for sweep, sets the start point)
     --trials N      Sweep: parameter sets per round (default 16)
     --seeds N       Sweep: worlds per parameter set (default 3)
@@ -48,6 +49,9 @@ OPTIONS:
     --focus X,Y     A focus point in tiles (repeatable; implies --lod). Without any,
                     --lod runs the whole world as cohorts
     --lod-set NAME=V  Override a level-of-detail parameter (repeatable)
+    --sequential-apply  Run the apply phase fully sequentially, as before the
+                    parallel apply (run, bench, sweep; worlds differ from parallel ones)
+    --compare-apply Bench: measure parallel and sequential apply, rotating days
 
 Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_speed sprint
 attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
@@ -74,9 +78,13 @@ struct Args {
     snapshot: Option<String>,
     scale: u32,
     threads: Option<usize>,
+    /// Bench: every thread count given to `--threads` (comma-separated).
+    thread_list: Vec<usize>,
+    compare_apply: bool,
     balance: Balance,
     lod: LodConfig,
     focus: Vec<Vec2>,
+    sequential_apply: bool,
     trials: usize,
     seeds: u64,
     rounds: u32,
@@ -96,9 +104,12 @@ fn parse_args() -> Result<Args, String> {
         snapshot: None,
         scale: 4,
         threads: None,
+        thread_list: Vec::new(),
+        compare_apply: false,
         balance: Balance::default(),
         lod: LodConfig::default(),
         focus: Vec::new(),
+        sequential_apply: false,
         trials: 16,
         seeds: 3,
         rounds: 2,
@@ -115,7 +126,11 @@ fn parse_args() -> Result<Args, String> {
             "--report" => a.report = (num(value()?)? as u32).max(1),
             "--snapshot" => a.snapshot = Some(value()?),
             "--scale" => a.scale = (num(value()?)? as u32).max(1),
-            "--threads" => a.threads = Some(num(value()?)? as usize),
+            "--threads" => {
+                let v = value()?;
+                a.thread_list = v.split(',').map(|t| num(t.trim().to_string()).map(|n| n.max(1) as usize)).collect::<Result<_, _>>()?;
+                a.threads = a.thread_list.iter().copied().max();
+            }
             "--trials" => a.trials = (num(value()?)? as usize).max(1),
             "--seeds" => a.seeds = num(value()?)?.max(1),
             "--rounds" => a.rounds = (num(value()?)? as u32).max(1),
@@ -133,6 +148,8 @@ fn parse_args() -> Result<Args, String> {
                 }
             }
             "--lod" => a.lod.enabled = true,
+            "--sequential-apply" => a.sequential_apply = true,
+            "--compare-apply" => a.compare_apply = true,
             "--focus" => {
                 let v = value()?;
                 let (x, y) = v.split_once(',').ok_or(format!("--focus expects X,Y, got '{v}'"))?;
@@ -179,6 +196,7 @@ fn main() -> ExitCode {
             spread: args.spread,
             center: args.balance,
             out: args.out.clone(),
+            parallel_apply: !args.sequential_apply,
         }),
         "designs" => designs(),
         "help" | "-h" | "--help" => print!("{USAGE}"),
@@ -206,6 +224,7 @@ fn build_world(args: &Args, scale: u32) -> World {
         height: args.size,
         balance: args.balance,
         lod: args.lod,
+        parallel_apply: !args.sequential_apply,
         ..Default::default()
     };
     let mut world = presets::standard_world(config, scale);
@@ -488,39 +507,107 @@ fn print_drift(world: &World, names: &BTreeMap<PlayerId, String>) {
 fn bench(args: &Args) {
     let days = args.days.unwrap_or(10);
     let mut world = build_world(args, args.scale);
+    // Every (threads, apply mode) setup to measure. Simulated days go to the
+    // setups in rotation, so all of them see similar populations and the
+    // same machine load; each reports the median day.
+    let threads = if args.thread_list.is_empty() { vec![rayon::current_num_threads()] } else { args.thread_list.clone() };
+    let modes = if args.compare_apply { vec![true, false] } else { vec![!args.sequential_apply] };
+    let setups: Vec<(usize, bool)> = threads.iter().flat_map(|&t| modes.iter().map(move |&m| (t, m))).collect();
+    let pools: Vec<rayon::ThreadPool> =
+        setups.iter().map(|&(t, _)| rayon::ThreadPoolBuilder::new().num_threads(t).build().expect("thread pool")).collect();
     println!(
-        "Bench: {}×{} map, {} organisms, {} days, {} threads{}",
+        "Bench: {}×{} map, {} organisms, {} days, threads {:?}, {} apply{}",
         args.size,
         args.size,
         world.population(),
         days,
-        rayon::current_num_threads(),
+        threads,
+        match modes.as_slice() {
+            [true] => "parallel",
+            [false] => "sequential",
+            _ => "parallel and sequential",
+        },
         if args.lod.enabled { format!(", level of detail on ({} focus points)", args.focus.len()) } else { String::new() }
     );
+    if (days as usize) < setups.len() {
+        println!("  (fewer days than setups: some setups go unmeasured; use --days {})", setups.len());
+    }
     // Warm up one day so caches and populations settle.
-    world.run_days(1);
-    let mut org_ticks = 0u64;
-    let mut pop_ticks = 0u64;
-    let searches = world.counters.path_searches;
-    let start = Instant::now();
-    for _ in 0..days * world.config.ticks_per_day {
-        org_ticks += world.alive_count() as u64;
-        pop_ticks += world.population() as u64;
-        world.step();
+    pools[0].install(|| world.run_days(1));
+    struct Day {
+        secs: f64,
+        org_ticks: u64,
+        pop_ticks: u64,
+        searches: u64,
+        phases: evo_sim::PhaseTimes,
     }
-    let secs = start.elapsed().as_secs_f64();
-    let ticks = (days * world.config.ticks_per_day) as f64;
-    let us = secs * 1e6 / org_ticks.max(1) as f64;
-    println!("  {:.0} organisms on average", pop_ticks as f64 / ticks);
-    if args.lod.enabled {
-        println!("  {:.0} of them agents, the rest in cohorts", org_ticks as f64 / ticks);
-        println!("  {:.2} µs per organism-tick counting cohort members", secs * 1e6 / pop_ticks.max(1) as f64);
+    let mut samples: Vec<Vec<Day>> = setups.iter().map(|_| Vec::new()).collect();
+    let tpd = world.config.ticks_per_day;
+    for d in 0..days as usize {
+        let k = d % setups.len();
+        world.config.parallel_apply = setups[k].1;
+        world.phase_times = Default::default();
+        let searches = world.counters.path_searches;
+        let (mut org_ticks, mut pop_ticks) = (0u64, 0u64);
+        let start = Instant::now();
+        pools[k].install(|| {
+            for _ in 0..tpd {
+                org_ticks += world.alive_count() as u64;
+                pop_ticks += world.population() as u64;
+                world.step();
+            }
+        });
+        let secs = start.elapsed().as_secs_f64();
+        let searches = world.counters.path_searches - searches;
+        samples[k].push(Day { secs, org_ticks, pop_ticks, searches, phases: world.phase_times });
     }
-    println!("  {:.2} ms per tick", secs * 1e3 / ticks);
-    println!("  {:.2} path searches per tick", (world.counters.path_searches - searches) as f64 / ticks);
-    if org_ticks > 0 {
-        println!("  {us:.2} µs per organism-tick (agents only; wall clock, all threads)");
-        println!("  ≈ {:.0}k organisms at 1 tick/second on this machine", 1e6 / us / 1e3);
+    let ticks = tpd as f64;
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        let n = v.len();
+        if n % 2 == 1 { v[n / 2] } else { 0.5 * (v[n / 2 - 1] + v[n / 2]) }
+    };
+    for (k, &(t, parallel)) in setups.iter().enumerate() {
+        let s = &samples[k];
+        if s.is_empty() {
+            continue;
+        }
+        let per_tick = |f: &dyn Fn(&Day) -> f64| median(s.iter().map(|d| f(d) * 1e3 / ticks).collect());
+        let ms = per_tick(&|d| d.secs);
+        let min = s.iter().map(|d| d.secs * 1e3 / ticks).fold(f64::MAX, f64::min);
+        let agents = s.iter().map(|d| d.org_ticks).sum::<u64>() as f64 / (ticks * s.len() as f64);
+        let pop = s.iter().map(|d| d.pop_ticks).sum::<u64>() as f64 / (ticks * s.len() as f64);
+        let us = median(s.iter().map(|d| d.secs * 1e6 / d.org_ticks.max(1) as f64).collect());
+        println!("\n  {t} threads, {} apply ({} days measured)", if parallel { "parallel" } else { "sequential" }, s.len());
+        println!("  {pop:.0} organisms on average");
+        if args.lod.enabled {
+            println!("  {agents:.0} of them agents, the rest in cohorts");
+            let us_pop = median(s.iter().map(|d| d.secs * 1e6 / d.pop_ticks.max(1) as f64).collect());
+            println!("  {us_pop:.2} µs per organism-tick counting cohort members");
+        }
+        println!("  {ms:.2} ms per tick (median day; fastest {min:.2})");
+        println!("  {:.2} path searches per tick", s.iter().map(|d| d.searches).sum::<u64>() as f64 / (ticks * s.len() as f64));
+        println!(
+            "  phases (ms per tick, median day): environment {:.2}, daily {:.2}, grid {:.2}, decide {:.2}, apply {:.2}",
+            per_tick(&|d| d.phases.environment),
+            per_tick(&|d| d.phases.daily),
+            per_tick(&|d| d.phases.grid),
+            per_tick(&|d| d.phases.decide),
+            per_tick(&|d| d.phases.apply)
+        );
+        if parallel {
+            let engaged = s.iter().map(|d| d.phases.engaged).sum::<u64>() as f64;
+            let applied = s.iter().map(|d| d.phases.applied).sum::<u64>().max(1) as f64;
+            println!(
+                "  parallel apply: {:.2} ms per tick in its sequential sweeps, {:.1}% of turns engaged in a chase",
+                per_tick(&|d| d.phases.apply_serial),
+                100.0 * engaged / applied
+            );
+        }
+        if agents > 0.0 {
+            println!("  {us:.2} µs per organism-tick (agents only; wall clock, all threads)");
+            println!("  ≈ {:.0}k organisms at 1 tick/second at this density", 1e6 / us / 1e3);
+        }
     }
 }
 

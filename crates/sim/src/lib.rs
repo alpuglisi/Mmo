@@ -37,4 +37,4 @@ pub mod world;
 pub use config::{Balance, LodConfig, WorldConfig};
 pub use design::{BirthType, FounderDesign, Thermo};
 pub use genome::{Gene, Genome, PlayerId, WILD};
-pub use world::World;
+pub use world::{PhaseTimes, World};
