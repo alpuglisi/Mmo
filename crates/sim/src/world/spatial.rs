@@ -7,7 +7,8 @@
 use crate::math::Vec2;
 use crate::organism::{Organism, Sex};
 
-/// Grown, carnivorous: could threaten something (see `decide::can_threaten`).
+/// Grown and carnivorous enough to hunt: could threaten something
+/// (`decide::is_armed`, the same test `decide::can_threaten` uses).
 pub(crate) const ARMED: u8 = 1;
 /// Mature, not pregnant and wanting to breed: could be courted this tick
 /// (the breed-ready tick is checked on the organism).
