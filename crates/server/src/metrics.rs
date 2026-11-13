@@ -95,6 +95,14 @@ pub struct NetStats {
     pub states_out: AtomicU64,
     pub ws_opened: AtomicU64,
     pub ws_closed: AtomicU64,
+    /// Time the writers spent encoding states (JSON or protocol 2), ns.
+    pub state_encode_ns: AtomicU64,
+    /// Protocol 2 keyframes sent (first states, resyncs, periodic).
+    pub keyframes_out: AtomicU64,
+    /// Protocol 2 `resync` requests from clients.
+    pub resyncs: AtomicU64,
+    /// Open connections speaking protocol 2.
+    pub delta_conns: AtomicU64,
 }
 
 impl NetStats {
@@ -135,6 +143,15 @@ pub struct MetricsView {
     pub states_out: u64,
     pub ws_opened: u64,
     pub ws_closed: u64,
+    /// Total time spent encoding states, ns (divide by `states_out`).
+    #[serde(default)]
+    pub state_encode_ns: u64,
+    #[serde(default)]
+    pub keyframes_out: u64,
+    #[serde(default)]
+    pub resyncs: u64,
+    #[serde(default)]
+    pub delta_conns: u64,
     /// User plus system CPU time of the server process (Linux only).
     pub cpu_seconds: Option<f64>,
     /// Resident memory of the server process (Linux only).
@@ -171,6 +188,10 @@ impl MetricsView {
             states_out: get(&net.states_out),
             ws_opened: get(&net.ws_opened),
             ws_closed: get(&net.ws_closed),
+            state_encode_ns: get(&net.state_encode_ns),
+            keyframes_out: get(&net.keyframes_out),
+            resyncs: get(&net.resyncs),
+            delta_conns: get(&net.delta_conns),
             cpu_seconds,
             rss_bytes,
         }

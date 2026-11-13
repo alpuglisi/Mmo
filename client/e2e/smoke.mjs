@@ -149,6 +149,9 @@ async function main() {
     }));
     const counts = await page.evaluate(() => ({ own: window.evo.model.state.organisms.length, nearby: window.evo.model.state.nearby.length, markers: window.evo.screen().view.markers.size }));
     step(`world view: ${counts.own} own + ${counts.nearby} nearby organisms, ${counts.markers} markers`);
+    // States arrive as protocol 2 binary deltas, rebuilt by the socket.
+    const proto = await page.evaluate(() => window.evo.model.proto);
+    if (proto !== 2) throw new Error(`the connection speaks protocol ${proto}, not 2`);
 
     // Tile map: the terrain grid from /api/terrain, one texture pixel per tile.
     const tiles = await page.evaluate(() => {
@@ -849,6 +852,10 @@ async function main() {
     await page.screenshot({ path: path.join(shots, 'world-chronicle.png') });
 
     if (pageErrors.length) throw new Error(`page errors: ${pageErrors.join('; ')}`);
+    // Every delta state applied (none needed a resync).
+    const decodeErrors = await Promise.all(pages.map((p) => p.evaluate(() => window.evo?.socket.decodeErrors ?? 0)));
+    if (decodeErrors.some((n) => n > 0)) throw new Error(`delta states that did not decode: ${decodeErrors}`);
+    step('every delta state decoded (protocol 2, no resyncs)');
     console.log(`smoke test passed; screenshots in ${shots}`);
   } catch (e) {
     console.error(serverLog.split('\n').slice(-20).join('\n'));

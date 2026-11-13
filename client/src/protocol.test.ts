@@ -28,6 +28,14 @@ const state: StateView = {
 };
 
 describe('parseServerMsg', () => {
+  it('reads the protocol a welcome announces', () => {
+    const w = parseServerMsg(JSON.stringify({ type: 'welcome', player: 1, name: 'ann', lineage: 3, proto: 2 }));
+    expect(w).toEqual({ type: 'welcome', player: 1, name: 'ann', lineage: 3, proto: 2 });
+    // Older servers don't say: protocol 1.
+    const old = parseServerMsg(JSON.stringify({ type: 'welcome', player: 1, name: 'ann', lineage: null }));
+    expect(old).toEqual({ type: 'welcome', player: 1, name: 'ann', lineage: null });
+  });
+
   it('parses every server message type', () => {
     expect(parseServerMsg('{"type":"welcome","player":1,"name":"ann","lineage":null}'))
       .toEqual({ type: 'welcome', player: 1, name: 'ann', lineage: null });

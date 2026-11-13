@@ -10,6 +10,8 @@
 //! - [`protocol`]: JSON wire types.
 //! - [`push`]: each connection's outgoing queue, `state` messages
 //!   coalesced so a slow reader gets the latest one and every event.
+//! - [`wire`]: protocol 2's binary delta states, encoded per connection
+//!   against what it was last sent (and the decoder the tests use).
 //! - [`terrain`]: the tile grid as compact byte layers for the client map.
 //! - [`seasons`]: seasonal leaderboards from the daily history.
 //! - [`limits`]: token-bucket rate limits on logins and commands.
@@ -48,6 +50,7 @@ pub mod seasons;
 pub mod snapshot;
 pub mod store;
 pub mod terrain;
+pub mod wire;
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;

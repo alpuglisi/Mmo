@@ -632,7 +632,7 @@ impl Game {
         self.conns.insert(conn, Conn { player, view: None });
         let mut out = vec![(
             Target::Conn(conn),
-            ServerMsg::Welcome { player, name: name.into(), lineage: self.lineage_of(player) },
+            ServerMsg::Welcome { player, name: name.into(), lineage: self.lineage_of(player), proto: None },
         )];
         if let Some(s) = self.state_for(conn) {
             out.push((Target::Conn(conn), ServerMsg::State(Box::new(s))));
@@ -750,6 +750,8 @@ impl Game {
                 };
                 Ok(Some(serde_json::to_value(view).unwrap()))
             }
+            // The connection answers it (`http.rs`); nothing to do here.
+            ClientMsg::Resync => Ok(None),
         }
     }
 

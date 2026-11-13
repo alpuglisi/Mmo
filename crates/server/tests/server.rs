@@ -456,3 +456,103 @@ async fn ticking_server_shows_possessed_movement_within_a_tick() {
     .await;
     srv.shutdown().await;
 }
+
+/// The next state on a socket: a protocol 1 JSON state, or a protocol 2
+/// binary frame (other messages are skipped).
+async fn next_frame(ws: &mut Ws) -> Message {
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(20), ws.next())
+            .await
+            .expect("a state in time")
+            .expect("socket open")
+            .expect("frame");
+        match &msg {
+            Message::Binary(_) => return msg,
+            Message::Text(t) if serde_json::from_str::<Value>(t).unwrap()["type"] == "state" => return msg,
+            _ => {}
+        }
+    }
+}
+
+/// Check a protocol 2 frame against the protocol 1 state of the same push;
+/// returns the decoded state and the frame kind.
+fn same_state(
+    json_frame: Message,
+    delta_frame: Message,
+    dec: &mut evo_server::wire::DeltaDecoder,
+) -> (evo_server::protocol::StateView, u8) {
+    let Message::Text(t) = json_frame else { panic!("protocol 1 states are text") };
+    let mut v: Value = serde_json::from_str(&t).unwrap();
+    v.as_object_mut().unwrap().remove("type");
+    let full: evo_server::protocol::StateView = serde_json::from_value(v).unwrap();
+    let Message::Binary(b) = delta_frame else { panic!("protocol 2 states are binary") };
+    let got = dec.apply(&b).expect("decodes");
+    assert_eq!(got, evo_server::wire::canonical(&full));
+    (got, b[0])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delta_states_match_json_states_and_resync() {
+    use evo_server::wire::{DeltaDecoder, DELTA, KEYFRAME};
+    let srv = manual_server().await;
+    let addr = srv.addr;
+    let (mut old, id, _, _) = possess_and_order(addr).await;
+    // The same player on protocol 2 (and on protocol 1 without asking).
+    let creds = json!({"name": "ann", "password": "a long password"});
+    let (s, v) = json_req(addr, Method::POST, "/api/login", None, Some(creds)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let token = v["token"].as_str().unwrap();
+    let (mut new, _) = connect_async(format!("ws://{addr}/ws?token={token}&proto=2")).await.expect("websocket");
+    let welcome = wait_for(&mut new, "welcome", |v| v["type"] == "welcome").await;
+    assert_eq!(welcome["proto"], 2);
+    let mut plain = ws(addr, token).await;
+    let welcome = wait_for(&mut plain, "welcome", |v| v["type"] == "welcome").await;
+    assert!(welcome.get("proto").is_none(), "{welcome}");
+    // Line both sockets up on the same push (the first is a keyframe).
+    let tick = srv.step(1).await;
+    let mut dec = DeltaDecoder::new();
+    let mut new_state = next_frame(&mut new).await;
+    loop {
+        let Message::Text(t) = next_frame(&mut old).await else { panic!("text") };
+        let v: Value = serde_json::from_str(&t).unwrap();
+        if v["clock"]["tick"] == tick {
+            // The protocol 2 socket's first state may be older: skip to this push.
+            loop {
+                let Message::Binary(b) = &new_state else { panic!("binary") };
+                let s = dec.apply(b).expect("decodes");
+                if s.clock.tick == tick {
+                    break;
+                }
+                new_state = next_frame(&mut new).await;
+            }
+            break;
+        }
+    }
+    let mut kinds = Vec::new();
+    let mut moved = false;
+    for round in 0..6 {
+        if round == 3 {
+            send(&mut new, json!({"type": "resync"})).await;
+            // The reader handles it; give it a moment before the push.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        if srv.substep().await > 0 {
+            let (s, k) = same_state(next_frame(&mut old).await, next_frame(&mut new).await, &mut dec);
+            moved |= s.organisms.iter().any(|o| o.id == id && o.possessed);
+            kinds.push(k);
+        }
+        srv.step(1).await;
+        let (_, k) = same_state(next_frame(&mut old).await, next_frame(&mut new).await, &mut dec);
+        kinds.push(k);
+    }
+    assert!(moved);
+    assert!(kinds.contains(&DELTA), "{kinds:?}");
+    assert_eq!(kinds.iter().filter(|&&k| k == KEYFRAME).count(), 1, "one keyframe, after the resync: {kinds:?}");
+    let (_, m) = json_req(addr, Method::GET, "/api/metrics", None, None).await;
+    assert_eq!(m["resyncs"], 1, "{m}");
+    assert_eq!(m["delta_conns"], 1, "{m}");
+    assert!(m["keyframes_out"].as_u64().unwrap() >= 2, "{m}");
+    assert!(m["state_encode_ns"].as_u64().unwrap() > 0, "{m}");
+    drop(plain);
+    srv.shutdown().await;
+}

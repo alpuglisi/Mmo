@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -30,11 +30,12 @@ use crate::game::FoundError;
 use crate::limits::{client_key, Bucket, Limiters};
 use crate::metrics::{Metrics, MetricsView, NetStats};
 use crate::protocol::{
-    AchievementList, AlertPrefs, CatastropheList, ChronicleView, ClientEnvelope, EraList, ErrorInfo, LineageStats,
-    SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic, TerrainView,
+    AchievementList, AlertPrefs, CatastropheList, ChronicleView, ClientEnvelope, ClientMsg, EraList, ErrorInfo,
+    LineageStats, SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic, TerrainView,
 };
 use crate::runner::{Published, Request, TerrainReply};
 use crate::store::{AlertPrefsRecord, DesignRecord, Store};
+use crate::wire::{DeltaEncoder, KEYFRAME_EVERY, PROTO_DELTA, PROTO_JSON};
 
 /// Largest WebSocket message (and frame) a client may send.
 pub const MAX_CLIENT_MESSAGE: usize = 16 * 1024;
@@ -482,10 +483,13 @@ fn encode_png(w: usize, h: usize, rgb: &[u8]) -> Result<Vec<u8>, png::EncodingEr
 #[derive(Deserialize)]
 struct WsQuery {
     token: Option<String>,
+    /// The highest protocol the client speaks (1 when absent): 2 gets
+    /// binary delta states (`wire.rs`).
+    proto: Option<u32>,
 }
 
 /// `GET /ws?token=…` (browsers can't set headers on a WebSocket) or with an
-/// `Authorization: Bearer …` header.
+/// `Authorization: Bearer …` header; `&proto=2` asks for delta states.
 async fn ws_upgrade(
     State(app): State<AppState>,
     info: Option<ConnectInfo<SocketAddr>>,
@@ -509,13 +513,31 @@ async fn ws_upgrade(
     })?;
     let token = token.to_string();
     let ip = client_ip(&info);
+    let proto = if q.proto.unwrap_or(PROTO_JSON) >= PROTO_DELTA { PROTO_DELTA } else { PROTO_JSON };
     // A frame is read whole before the message limit applies: bound both.
     Ok(ws.max_message_size(MAX_CLIENT_MESSAGE).max_frame_size(MAX_CLIENT_MESSAGE).on_upgrade(
         move |socket| async move {
-            client_session(socket, app, session, token, ip).await;
+            client_session(socket, app, session, token, ip, proto).await;
             drop(slot);
         },
     ))
+}
+
+/// A protocol 2 connection, counted in `delta_conns` while its writer lives
+/// (also when the writer is aborted).
+struct DeltaConn(Arc<NetStats>);
+
+impl DeltaConn {
+    fn new(net: &Arc<NetStats>) -> Self {
+        net.delta_conns.fetch_add(1, Ordering::Relaxed);
+        DeltaConn(net.clone())
+    }
+}
+
+impl Drop for DeltaConn {
+    fn drop(&mut self) {
+        self.0.delta_conns.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// How often an open WebSocket checks that its session is still live.
@@ -524,7 +546,7 @@ fn session_check_interval(app: &AppState) -> Duration {
     (p.idle.min(p.max_age) / 4).clamp(Duration::from_millis(50), Duration::from_secs(30))
 }
 
-async fn client_session(socket: WebSocket, app: AppState, session: Session, token: String, ip: IpAddr) {
+async fn client_session(socket: WebSocket, app: AppState, session: Session, token: String, ip: IpAddr, proto: u32) {
     let conn = app.next_conn.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = crate::push::channel(CONN_QUEUE);
     // The reader only holds a weak handle, so when the world thread drops a
@@ -537,11 +559,46 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session, toke
     let (mut sink, mut stream) = socket.split();
     let net = app.net.clone();
     net.ws_opened.fetch_add(1, Ordering::Relaxed);
+    // Protocol 2: the reader asks for a keyframe when the client resyncs.
+    let resync = Arc::new(AtomicBool::new(false));
+    let wants_key = resync.clone();
     let writer = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            let Ok(text) = serde_json::to_string(&msg) else { continue };
-            net.sent(text.len(), matches!(msg, ServerMsg::State(_)));
-            if sink.send(Message::Text(text)).await.is_err() {
+        let _counted = (proto == PROTO_DELTA).then(|| DeltaConn::new(&net));
+        // States are encoded here, when sent: a delta is against the state
+        // this client actually got, whatever the queue replaced meanwhile.
+        let mut delta = (proto == PROTO_DELTA).then(DeltaEncoder::new);
+        let mut last_key = Instant::now();
+        while let Some(mut msg) = rx.recv().await {
+            if let ServerMsg::Welcome { proto: p, .. } = &mut msg {
+                *p = delta.is_some().then_some(PROTO_DELTA);
+            }
+            let started = Instant::now();
+            let frame = match (&mut delta, &msg) {
+                (Some(enc), ServerMsg::State(s)) => {
+                    let key = wants_key.swap(false, Ordering::Relaxed) || last_key.elapsed() >= KEYFRAME_EVERY;
+                    let bytes = enc.encode(s, key);
+                    if bytes.first() == Some(&crate::wire::KEYFRAME) {
+                        last_key = Instant::now();
+                        net.keyframes_out.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Message::Binary(bytes)
+                }
+                _ => match serde_json::to_string(&msg) {
+                    Ok(text) => Message::Text(text),
+                    Err(_) => continue,
+                },
+            };
+            let len = match &frame {
+                Message::Binary(b) => b.len(),
+                Message::Text(t) => t.len(),
+                _ => 0,
+            };
+            let state = matches!(msg, ServerMsg::State(_));
+            if state {
+                net.state_encode_ns.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            }
+            net.sent(len, state);
+            if sink.send(frame).await.is_err() {
                 break;
             }
         }
@@ -579,6 +636,13 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session, toke
                     {
                         let msg = format!("too many commands; retry in {} ms", wait.as_millis().max(1));
                         local(ServerMsg::err(env.id, name, ErrorInfo::new("rate_limited", msg)));
+                        continue;
+                    }
+                    if env.msg == ClientMsg::Resync {
+                        if proto == PROTO_DELTA {
+                            resync.store(true, Ordering::Relaxed);
+                            app.net.resyncs.fetch_add(1, Ordering::Relaxed);
+                        }
                         continue;
                     }
                     let req = Request::Command { conn, player: session.player, id: env.id, msg: env.msg };

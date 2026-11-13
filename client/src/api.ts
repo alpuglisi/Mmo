@@ -6,6 +6,7 @@ import type {
   AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
   LineageStats, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldSummary,
 } from './protocol';
+import { PROTO_DELTA } from './wire';
 
 let base = '';
 
@@ -22,10 +23,14 @@ export function apiUrl(path: string): string {
   return base + path;
 }
 
-/** WebSocket URL for a session token, on the same origin as the API. */
+/**
+ * WebSocket URL for a session token, on the same origin as the API. Asks
+ * for protocol 2 (binary delta states); a server without it ignores the
+ * parameter and sends JSON states, which the socket handles too.
+ */
 export function wsUrl(token: string): string {
   const origin = base || window.location.origin;
-  return `${origin.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}`;
+  return `${origin.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}&proto=${PROTO_DELTA}`;
 }
 
 export class ApiError extends Error {
