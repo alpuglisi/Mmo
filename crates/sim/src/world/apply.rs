@@ -112,6 +112,10 @@ impl World {
             self.kill(i, DeathCause::Starvation);
             return;
         }
+        if self.attrition_death(i, rng) {
+            self.kill(i, DeathCause::Attrition);
+            return;
+        }
         self.grow(i);
         if matches!(&self.organisms[i].pregnancy, Some(p) if self.tick >= p.due_tick) {
             self.give_birth(i, rng);
@@ -516,6 +520,18 @@ impl World {
             return false;
         }
         let hazard = larval_hazard(o.kin_nearby, self.config.balance.larval_competition);
+        hazard > 0.0 && rng.gen::<f32>() < hazard * self.config.dt_days()
+    }
+
+    /// Adults of fast-living species wear out (disease, accidents, the cost
+    /// of breeding) whether or not anything eats them: the doc's "live fast,
+    /// die young" for big litters, so adults don't pile up across years.
+    fn attrition_death(&self, i: usize, rng: &mut SimRng) -> bool {
+        let o = &self.organisms[i];
+        if !o.matured {
+            return false;
+        }
+        let hazard = self.config.balance.adult_mortality * o.traits.pace_of_life(o.pheno[Gene::BodySize]);
         hazard > 0.0 && rng.gen::<f32>() < hazard * self.config.dt_days()
     }
 

@@ -74,6 +74,12 @@ pub struct Balance {
     /// mature, so unpredated fast breeders settle below the hard cap. Uses the
     /// same kin count as `crowding`. 0 disables.
     pub larval_competition: f32,
+    /// Daily background death hazard of adults at pace of life 1
+    /// (`Traits::pace_of_life`: small bodies with big litters live fast and
+    /// die young), so unpredated fast breeders don't pile up adults across
+    /// years. Toxic frogs get about 0.6% a day, voles 0.2%, predators and
+    /// grazers almost nothing. 0 disables.
+    pub adult_mortality: f32,
 }
 
 impl Default for Balance {
@@ -99,12 +105,13 @@ impl Default for Balance {
             crowding: 0.03,
             toxin_damage: 48.0,
             larval_competition: 18.0,
+            adult_mortality: 0.011,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 18;
+    pub const FIELD_COUNT: usize = 19;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -132,6 +139,7 @@ impl Balance {
             ("crowding", &mut self.crowding),
             ("toxin_damage", &mut self.toxin_damage),
             ("larval_competition", &mut self.larval_competition),
+            ("adult_mortality", &mut self.adult_mortality),
         ]
     }
 

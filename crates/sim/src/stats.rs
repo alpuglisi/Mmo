@@ -74,6 +74,15 @@ impl Traits {
     pub fn litter_fraction(&self) -> f32 {
         (self.litter - 1) as f32 / (MAX_LITTER - 1) as f32
     }
+
+    /// Pace of life, 0–1: small bodies with big litters live fast and die
+    /// young (r-selection); large bodies with few young are sturdy. Squared
+    /// so it falls on the extreme fast breeders (frogs ~0.5, voles ~0.16,
+    /// predators ~0.03). Scales adult background mortality
+    /// (`Balance::adult_mortality`).
+    pub fn pace_of_life(&self, body_size: f32) -> f32 {
+        (self.litter_fraction() * (1.0 - body_size).clamp(0.0, 1.0)).powi(2)
+    }
 }
 
 pub fn derive(p: &Phenotype) -> Traits {
@@ -187,6 +196,17 @@ mod tests {
         assert!(cold.stats.metabolism < warm.stats.metabolism);
         assert!(cold.stats.insulation < warm.stats.insulation);
         assert!(cold.fur_mismatch > 0.0 && warm.fur_mismatch == 0.0);
+    }
+
+    #[test]
+    fn small_big_litter_bodies_live_fast() {
+        let pace = |d: &FounderDesign| traits_of(d).pace_of_life(d.values()[Gene::BodySize.index()]);
+        let frog = FounderDesign::new("f", Thermo::Cold, BirthType::AbandonedEggs, 10).with(Gene::BodySize, 0.12);
+        let grazer = FounderDesign::new("g", Thermo::Warm, BirthType::Live, 1).with(Gene::BodySize, 0.6);
+        let fox = FounderDesign::new("x", Thermo::Warm, BirthType::Live, 4).with(Gene::BodySize, 0.35);
+        assert!(pace(&frog) > 0.4);
+        assert!(pace(&fox) < 0.05);
+        assert_eq!(pace(&grazer), 0.0);
     }
 
     #[test]

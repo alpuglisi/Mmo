@@ -22,10 +22,12 @@ pub enum DeathCause {
     Toxin,
     Drowning,
     OldAge,
+    /// Background adult mortality of fast-living species (disease, accidents).
+    Attrition,
 }
 
 impl DeathCause {
-    pub const ALL: [DeathCause; 7] = [
+    pub const ALL: [DeathCause; 8] = [
         DeathCause::Starvation,
         DeathCause::Thirst,
         DeathCause::Exposure,
@@ -33,6 +35,7 @@ impl DeathCause {
         DeathCause::Toxin,
         DeathCause::Drowning,
         DeathCause::OldAge,
+        DeathCause::Attrition,
     ];
 
     pub fn label(self) -> &'static str {
@@ -44,6 +47,7 @@ impl DeathCause {
             DeathCause::Toxin => "toxin",
             DeathCause::Drowning => "drowned",
             DeathCause::OldAge => "old age",
+            DeathCause::Attrition => "attrition",
         }
     }
 }
