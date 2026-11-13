@@ -10,6 +10,7 @@ import { WILD } from '../protocol';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, terrainSummary, type TerrainGrid } from '../world/terrain';
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
+import { describeLook } from '../world/creature';
 import { append, clear, h, label, pct } from './dom';
 import { renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
@@ -40,6 +41,8 @@ const MARKET_REFRESH_MS = 5000;
 type Tab = 'organism' | 'matings' | 'market' | 'genetics' | 'lineage' | 'world';
 const TAB_LABELS: Record<Tab, string> = { organism: 'Organism', matings: 'Matings', market: 'Market', genetics: 'Genetics', lineage: 'Lineage', world: 'World' };
 type Mode = 'select' | 'migrate';
+/** Narrow screens (phones): the sidebar becomes a bottom sheet over the map with a tab bar. */
+const NARROW = '(max-width: 760px)';
 
 export interface GameScreen {
   el: HTMLElement;
@@ -81,15 +84,26 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     h('button', { class: 'tool', title: 'Zoom in', onclick: () => view.zoomBy(1.4) }, '+'),
     h('button', { class: 'tool', title: 'Zoom out', onclick: () => view.zoomBy(1 / 1.4) }, '−'),
     migrateBtn, clearMigBtn, pinBtn);
-  const legend = h('div', { class: 'legend' },
-    h('span', {}, h('i', { class: 'dot', style: `background:${cssColor(OWN_COLOR)}` }), 'yours'),
+  const legendBtn = h('button', { class: 'tool narrow-only', id: 'legend-toggle', title: 'Show the map legend' }, 'Legend');
+  toolbar.append(legendBtn);
+  const legend = h('div', { class: 'legend', id: 'legend' },
+    h('span', {}, h('i', { class: 'dot ring', style: `border-color:${cssColor(OWN_COLOR)}` }), 'yours (ring at the feet)'),
     h('span', {}, h('i', { class: 'dot ring', style: 'border-color:#ff7b72' }), 'possessed'),
     h('span', {}, h('i', { class: 'dot ring', style: 'border-color:#7ee787' }), 'pregnant'),
-    h('span', {}, h('i', { class: 'dot', style: `background:${cssColor(ownerColor(WILD))}` }), 'wild'),
-    h('span', {}, h('i', { class: 'dot', style: `background:${cssColor(ownerColor(1))}` }), 'other players'),
-    h('span', {}, h('i', { class: 'dot square', style: 'border-color:#58a6ff' }), 'view window'));
+    h('span', {}, h('i', { class: 'dot ring', style: `border-color:${cssColor(ownerColor(WILD))}` }), 'wild'),
+    h('span', {}, h('i', { class: 'dot ring', style: `border-color:${cssColor(ownerColor(1))}` }), 'other players'),
+    h('span', {}, h('i', { class: 'dot square', style: 'border-color:#58a6ff' }), 'view window'),
+    h('span', { title: 'Body size, diet (muzzle, snout or fangs), warm or cold-blooded build, fur/scales/armor, colors, wings or fins; juveniles are drawn smaller' }, 'small = juvenile'),
+    h('span', {}, 'z resting · ! fleeing · ⌖ hunting · ♥ courting'));
   const terrainLegend = h('div', { class: 'legend terrain-legend', id: 'terrain-legend' });
-  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, hint, legend, terrainLegend, toasts);
+  // Possess / release the selected own organism without opening the panel (phones).
+  const fab = h('button', { class: 'fab', id: 'fab-possess', hidden: true });
+  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, hint, h('div', { class: 'legends' }, terrainLegend, legend), fab, toasts);
+  legendBtn.addEventListener('click', () => {
+    const on = !stageWrap.classList.contains('show-legend');
+    stageWrap.classList.toggle('show-legend', on);
+    legendBtn.classList.toggle('active', on);
+  });
 
   const tabs: Record<Tab, HTMLElement> = {
     organism: h('div', { class: 'panel', id: 'panel-organism' }),
@@ -100,14 +114,35 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     world: h('div', { class: 'panel', id: 'panel-world' }),
   };
   const tabBtns = (Object.keys(tabs) as Tab[]).map((t) =>
-    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, onclick: () => showTab(t) }, TAB_LABELS[t]));
+    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, onclick: () => tabClicked(t) }, TAB_LABELS[t]));
   const alertBadge = h('span', { class: 'badge', id: 'alert-badge', hidden: true });
   tabBtns.find((b) => b.dataset.tab === 'genetics')!.append(alertBadge);
   let seenFeed = 0;
-  const sidebar = h('aside', { class: 'sidebar' }, h('nav', { class: 'tabs' }, ...tabBtns), ...Object.values(tabs));
+  const sheetHandle = h('button', { class: 'sheet-handle narrow-only', id: 'sheet-handle', 'aria-label': 'Show or hide the panel' });
+  const sidebar = h('aside', { class: 'sidebar', id: 'sidebar' }, sheetHandle, h('nav', { class: 'tabs', id: 'tabbar' }, ...tabBtns), ...Object.values(tabs));
   const el = h('div', { class: 'screen game' }, top, h('div', { class: 'game-body' }, stageWrap, sidebar));
 
+  // On phones the panels are a bottom sheet: the tab bar always shows; the
+  // sheet opens on a tab tap (or a selection) and closes on a second tap of
+  // the open tab, the handle, or a tap on empty map.
+  const narrowQuery = window.matchMedia(NARROW);
+  const narrow = () => narrowQuery.matches;
+  let sheetOpen = false;
+  function setSheet(open: boolean): void {
+    sheetOpen = open;
+    el.classList.toggle('sheet-open', open);
+  }
+  sheetHandle.addEventListener('click', () => setSheet(!sheetOpen));
+  const onNarrowChange = () => updateHint();
+  narrowQuery.addEventListener('change', onNarrowChange);
+  cleanups.push(() => narrowQuery.removeEventListener('change', onNarrowChange));
+
   let tab: Tab = 'lineage';
+  function tabClicked(t: Tab): void {
+    if (narrow() && sheetOpen && tab === t) return setSheet(false);
+    setSheet(true);
+    showTab(t);
+  }
   function showTab(t: Tab): void {
     tab = t;
     for (const b of tabBtns) b.classList.toggle('active', b.dataset.tab === t);
@@ -136,9 +171,40 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   function updateHint(): void {
     const p = possessed();
+    const touch = narrow() || window.matchMedia('(pointer: coarse)').matches;
+    const tap = touch ? 'Tap' : 'Click';
     hint.textContent = mode === 'migrate'
-      ? 'Click the map to set the migration target (Esc cancels).'
-      : p ? `Possessing #${p.id}: click the map to walk there.` : 'Click an organism to inspect it. Drag to pan, wheel to zoom.';
+      ? `${tap} the map to set the migration target${touch ? '' : ' (Esc cancels)'}.`
+      : p ? `Possessing #${p.id}: ${tap.toLowerCase()} the map to walk there.`
+      : touch ? 'Tap an organism to inspect it, long-press yours to possess. Drag to pan, pinch to zoom.'
+      : 'Click an organism to inspect it (hold to possess yours). Drag to pan, wheel to zoom.';
+    renderFab();
+  }
+
+  /** The floating Possess / Release button for the selected own organism. */
+  function renderFab(): void {
+    const own = model.selected !== null ? model.state?.organisms.find((o) => o.id === model.selected) : undefined;
+    fab.hidden = !own;
+    if (!own) return;
+    const text = own.possessed ? `Release #${own.id}` : `Possess #${own.id}`;
+    if (fab.textContent !== text) fab.textContent = text;
+    fab.classList.toggle('active', own.possessed);
+    fab.dataset.org = String(own.id);
+  }
+  fab.addEventListener('click', async () => {
+    const id = Number(fab.dataset.org);
+    const own = model.state?.organisms.find((o) => o.id === id);
+    if (!own) return;
+    if (own.possessed) await send({ type: 'release', organism: id });
+    else await possess(id);
+  });
+  async function possess(id: OrgId): Promise<boolean> {
+    const r = await send({ type: 'possess', organism: id });
+    if (r.ok) {
+      view.setFollow(true);
+      model.toast('info', `Possessing #${id}. ${narrow() ? 'Tap' : 'Click'} the map to walk.`);
+    }
+    return r.ok;
   }
 
   view.onFollowChange = (f) => followBtn.classList.toggle('active', f);
@@ -172,7 +238,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }
     if (c.organism !== null) {
       model.select(c.organism);
-      showTab('organism');
+      // On phones a selection shows the inspector only if the sheet is up;
+      // the floating button covers possess without hiding the map.
+      if (!narrow() || sheetOpen) showTab('organism');
       return;
     }
     const p = possessed();
@@ -181,7 +249,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       await send({ type: 'order_move', organism: p.id, x: c.x, y: c.y });
     } else {
       model.select(null);
+      if (narrow()) setSheet(false);
     }
+  };
+  // Long press: possess your own organism under the finger (or the cursor),
+  // otherwise act like a tap.
+  view.onLongPress = async (c) => {
+    if (mode === 'select' && c.organism !== null && model.state?.organisms.some((o) => o.id === c.organism)) {
+      model.select(c.organism);
+      const own = model.state.organisms.find((o) => o.id === c.organism);
+      if (own && !own.possessed) await possess(own.id);
+      return;
+    }
+    await view.onClick(c);
   };
 
   // Tile map: the whole grid once, then the dynamic layers periodically.
@@ -361,6 +441,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           ['Stage', own.matured ? 'adult' : `juvenile (growth ${pct(own.growth, 0)})`],
           ['Health', meter(own.health, 100, 'good')], ['Lineage', `${own.lineage} · generation ${own.generation}`],
           ['Position', `${own.x.toFixed(1)}, ${own.y.toFixed(1)}`],
+          ['Body plan', own.look ? describeLook(own.look) : '—'],
           ['Status', [own.possessed && 'possessed', own.pregnant && 'pregnant'].filter(Boolean).join(', ') || '—'],
         ]),
         h('h4', {}, 'Needs'),
@@ -372,13 +453,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       keyed(inspActions, `own:${own.id}:${own.possessed}:${other?.id ?? ''}`, () => [
         own.possessed
           ? h('button', { id: 'btn-release', onclick: () => void send({ type: 'release', organism: own.id }) }, 'Release')
-          : h('button', { id: 'btn-possess', onclick: async () => {
-              const r = await send({ type: 'possess', organism: own.id });
-              if (r.ok) {
-                view.setFollow(true);
-                model.toast('info', `Possessing #${own.id}. Click the map to walk.`);
-              }
-            } }, other ? `Possess (releases #${other.id})` : 'Possess'),
+          : h('button', { id: 'btn-possess', onclick: () => void possess(own.id) }, other ? `Possess (releases #${other.id})` : 'Possess'),
         h('button', { class: 'secondary', onclick: () => { view.setFollow(false); view.centerOn(own.x, own.y); } }, 'Center'),
         own.matured && h('button', { class: 'secondary', onclick: () => { matingForm.setMine(own.id); showTab('matings'); } }, 'Mate this one…'),
       ]);
@@ -390,7 +465,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     inspDetails.replaceChildren(
       h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(ownerColor(o.owner))}` }), `#${o.id} · ${ownerName}`),
       dl([['Action', label(o.action)], ['Sex', o.sex], ['Stage', o.matured ? 'adult' : 'juvenile'], ['Lineage', String(o.lineage)],
-        ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`]]),
+        ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—']]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
     keyed(inspActions, `other:${o.id}:${wild}`, () => [
@@ -668,7 +743,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       updateHint();
       renderPanels();
     }),
-    model.on('select', () => { view.selected = model.selected; renderPanels(); }),
+    model.on('select', () => { view.selected = model.selected; renderFab(); renderPanels(); }),
     model.on('offers', () => renderPanels()),
     model.on('conn', renderConn),
     model.on('alerts', onAlerts),

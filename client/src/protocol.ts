@@ -177,6 +177,8 @@ export interface OwnOrganism {
   possessed: boolean;
   pregnant: boolean;
   generation: number;
+  /** Visible body plan, for the sprite (absent from older servers). */
+  look?: Appearance;
 }
 
 /** Someone else's organism inside the view window: only what can be seen. */
@@ -189,6 +191,21 @@ export interface NearbyOrganism {
   action: ActionName | string;
   sex: Sex;
   matured: boolean;
+  /** Visible body plan, for the sprite (absent from older servers). */
+  look?: Appearance;
+}
+
+/** `appearance::Appearance`: coarse visible body-plan classes of an adult. */
+export interface Appearance {
+  /** Adult size class from mass: 0 tiny (< 1 kg), 1 small (< 8 kg), 2 medium (< 40 kg), 3 large. */
+  size: 0 | 1 | 2 | 3;
+  diet: 'herbivore' | 'omnivore' | 'carnivore';
+  /** Warm-blooded. */
+  warm: boolean;
+  locomotion: 'walk' | 'swim' | 'glide' | 'fly';
+  cover: 'skin' | 'fur' | 'scales' | 'armor';
+  /** Drab browns, camouflage mottling, bright display colors, or warning colors (bright and toxic). */
+  coloring: 'drab' | 'camo' | 'bright' | 'warning';
 }
 
 export interface LeaderRow {

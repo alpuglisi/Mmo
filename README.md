@@ -401,12 +401,24 @@ Server → client:
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage}` | On connect |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation), `nearby` (others in the window), `leaderboard`, `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`), `nearby` (others in the window, also with `look`), `leaderboard`, `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
 | `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus) |
 | `session_ended` `{reason}` | The session expired; the socket closes next |
+
+`look` (`appearance.rs`) is the visible body plan of an adult, computed from
+the phenotype with a few comparisons per organism per push: `size` (0 tiny
+< 1 kg, 1 small < 8 kg, 2 medium < 40 kg, 3 large), `diet` (herbivore /
+omnivore / carnivore by carnivory), `warm` (endothermy), `locomotion` (walk,
+swim at swimming ≥ 0.6, glide, fly), `cover` (skin, fur, scales, armor: the
+strongest expressed ≥ 0.5) and `coloring` (drab, camo, bright display
+colors, or warning = bright and toxic). Only what anyone could see, and
+coarse so the client's sprite cache stays small. The API answers
+cross-origin requests (any origin, `GET`/`POST`, `Authorization` and
+`Content-Type`; auth is a bearer token, never a cookie), so a Capacitor app
+or a bundle on another origin can use a remote server.
 
 **Directed-mating consent:** `request_mating` checks ownership, maturity, sex,
 pregnancy, compatibility and slots, then creates a `pending` offer (a
@@ -602,7 +614,8 @@ Possession survives a restart. Records written after the last saved game
 
 `client/` is build step 3: the browser client, TypeScript with PixiJS 8 for
 the map and plain DOM/CSS for panels (no UI framework), bundled by Vite into
-static files that `evo-server` can serve and Capacitor can wrap later. It
+static files that `evo-server` can serve and Capacitor wraps for iOS and
+Android (see "Mobile apps" below). It
 only displays state and sends commands; the server stays authoritative.
 
 ```sh
@@ -612,7 +625,7 @@ npm run dev          # Vite on :5173, proxies /api and /ws to 127.0.0.1:8080 (EV
 npm run build        # typecheck + static bundle in client/dist
 npm run typecheck
 npm test             # Vitest unit tests
-npm run e2e          # Playwright smoke test (needs `npm run build` and `cargo build --release -p evo-server`)
+npm run e2e          # Playwright smoke + phone-emulation tests (needs `npm run build` and `cargo build --release -p evo-server`)
 ```
 
 Serve the built client from the game server (one origin, no proxy):
@@ -648,16 +661,32 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   darken with depth, rivers are bright blue (a dry bed is sand, a dried marsh
   or lake shore cracked mud); flooded land is muddy blue; ice is pale blue;
   snow blends to white; hill shading from the north-west. A legend over the
-  map gives the drought, flood, snow and ice shares. Organism markers from
-  `state` sit on top: own organisms yellow (larger when
-  adult; red ring when possessed, green when pregnant), wild grey, other
-  players a stable hue each. Markers live in screen space so they stay
-  readable at any zoom, and glide between state pushes. Drag to pan, wheel or
-  +/− to zoom; **Follow** keeps the camera on the server's view window (your
+  map gives the drought, flood, snow and ice shares. Organisms from `state`
+  are drawn as **creature sprites by body plan** (`world/creature.ts`,
+  `world/sprites.ts`) from the server's `look`: body radius by size class
+  (juveniles at 65 % with a bigger head); herbivores a round muzzle (horns
+  when large), omnivores a short snout, carnivores a long snout with fangs
+  and a brow; warm-blooded bodies round with ears and a stubby tail,
+  cold-blooded ones long and low with a tapering tail; a fur fringe, scale
+  dots, armor plates and a heavy outline, or a pale belly on bare skin; drab
+  browns, camouflage blotches, a bright display crest or yellow-and-black
+  warning bands; legs, or fins and a tail fin for swimmers, a membrane for
+  gliders, a raised wing for fliers. The owner is an ellipse at the feet
+  (yours yellow and stronger, wild grey, other players a stable hue each); a
+  ring round the body when possessed (red) or pregnant (green); and an icon
+  for what it is doing (z resting or dormant, ! fleeing, crosshair hunting,
+  heart seeking a mate). Sprites face the way they last moved. Each distinct
+  class is drawn once into a texture (`TextureCache`, supersampled so it
+  stays crisp as markers grow with zoom); a marker is four sprites sharing
+  those textures, so hundreds of organisms cost no per-frame drawing.
+  Markers live in screen space so they stay readable at any zoom (scaled
+  0.75–1.9× with it), and glide between state pushes. Drag to pan, wheel,
+  pinch or +/− to zoom; **Follow** keeps the camera on the server's view window (your
   possessed organism or your lineage's centroid), drawn as a blue square.
   Click an organism to inspect it: yours show action, sex, age, stage,
   health, lineage and generation, and the eight needs as bars; others show
-  only what the protocol reveals. **Possess** / **Release**; while
+  only what the protocol reveals, plus the body plan in words. **Possess** /
+  **Release** (or hold the mouse / long-press on one of yours); while
   possessing, clicking empty map sends `order_move` (target line drawn).
   **Migrate…** then a click sends the group command; **Pin view here** sends
   `set_view` at the camera center.
@@ -715,6 +744,43 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   and after and how many player lineages survived, and achievement tallies
   per player with the latest achievements.
 
+**Phones and touch.** Below 760 px wide the map fills the screen and the
+sidebar becomes a **bottom sheet** with a tab bar at the bottom (48 px
+targets, safe-area insets): a tab tap slides the sheet up over the map, a
+second tap on the open tab (or the handle, or a tap on empty map) closes
+it. Tap an organism to select it; a floating **Possess #id / Release #id**
+button appears for your own, and a long press (450 ms held still, or the browser's own long-press gesture) on one of
+yours possesses it directly. One-finger drag pans, two-finger pinch zooms
+about the fingers' midpoint (and pans with it). The top bar shrinks to the
+clock, connection and log out; the toolbar scrolls sideways; the legends
+hide behind a **Legend** button; only the two newest toasts show.
+
+**Mobile apps (Capacitor).** `capacitor.config.ts` wraps `dist/` as
+`org.evolutionmmo.client`; the native projects are generated locally and
+not committed (`client/android/`, `client/ios/` are git-ignored):
+
+```sh
+cd client
+npm run build
+npx cap add android        # once; needs Android Studio / SDK to build
+npx cap add ios            # once; needs macOS with Xcode (CocoaPods or SPM)
+npm run cap:sync           # build + copy dist/ and plugins into both projects (after every client change)
+npx cap open android       # or: npx cap run android / npx cap open ios
+```
+
+The app's page is `https://localhost` (Android) or `capacitor://localhost`
+(iOS), so it talks to a remote game server. The origin comes from, in
+order: `?server=https://host:port` on the page URL (remembered), the
+**Server** field on the login screen (remembered; a native app opens it
+until set), or a build default `VITE_EVO_SERVER=https://game.example.org
+npm run build`; otherwise the page's own origin (`setApiBase()` in
+`api.ts`, `serverOrigin.ts`). The WebSocket follows the same origin
+(`wss://` for https). For a plain-http LAN server during development, run
+`EVO_CAP_CLEARTEXT=1 npm run cap:sync` (cleartext and mixed content on
+Android; iOS also needs an App Transport Security exception in
+`ios/App/App/Info.plist`); `EVO_CAP_LIVE_URL=http://192.168.1.20:5173`
+loads the page from `npm run dev -- --host` for live reload.
+
 **Architecture.**
 
 ```
@@ -728,7 +794,10 @@ cost.ts      design point cost and validation (mirror of crates/sim/src/design.r
 ui/          DOM screens and panels; panels re-render at most 4×/s and rebuild buttons only
              when their content changes, so they stay clickable under 10 Hz state pushes
 world/       PixiJS view: camera, tile-map texture (terrain.ts decodes and colors the grid), overlays,
-             markers, hit testing
+             markers, hit testing, mouse/touch gestures (tap, long press, drag, pinch);
+             creature.ts: body plan → shapes (pure, tested); sprites.ts: shapes → cached textures
+serverOrigin.ts  which game server to talk to (URL, saved, build default, same origin)
+capacitor.config.ts  the iOS / Android wrapper
 ```
 
 Every failed `result` (server error codes such as `not_owned`,
@@ -736,10 +805,16 @@ Every failed `result` (server error codes such as `not_owned`,
 a toast. `window.evo` exposes the model, socket and view for debugging and
 the end-to-end test.
 
-**Tests.** Vitest (52 tests): the Market tab's data prep (the appearance
+**Tests.** Vitest: the Market tab's data prep (the appearance
 summary, listing filters and ranking, why a purchase is blocked, balance
 and expiry text, ledger rows and totals, parsing `browse_market` and
-`ledger` data, the state's economy fields and `market` alerts); the World tab's data prep (species tree
+`ledger` data, the state's economy fields and `market` alerts); creature sprites (a distinct cache key for each of the
+1,536 appearance classes × life stage, every shape inside its texture frame,
+size order and juvenile scale, each field changing the drawing, swimmers
+without legs, the default look for older servers, action icons, the body
+plan in words), the texture cache (one make per key, disposal, 600 markers
+from five plans → five textures) and the marker scale; the server origin
+(normalizing input, URL over saved over build default); the World tab's data prep (species tree
 order and depth, statuses, bad parent links, the catastrophe banner and
 labels, niche labels, the player's era ranks); protocol parsing against messages shaped like
 serde's output, including malformed and unknown ones and the `alert` and
@@ -789,11 +864,27 @@ lines, drift sparklines, every gene in the table, alerts in the feed) and
 the World tab (species listed, the era clock, an achievements row). Every
 step waits on explicit state with generous timeouts. Screenshots go to `SCREENSHOT_DIR`. `e2e/winter_shot.mjs`
 is a screenshot helper (not a test): a 16-day-year world played into winter.
+`e2e/mobile.mjs` (run by `npm run e2e` after the smoke test; alone with
+`npm run e2e:mobile`) emulates an iPhone 13 and a Pixel 7 in Chromium
+(viewport, touch, mobile UA), each against a fresh `--no-wild` server (so its
+lineage outlives the test): the login form
+fits; the map spans the width with the tab bar at the bottom and the sheet
+closed, no sideways scroll; a tab tap opens the sheet and a second closes
+it; a touch tap selects an own organism and shows the floating button,
+which possesses; a long press (DevTools touch events) possesses; a
+one-finger drag pans and stops following; a pinch out zooms in at least 2×
+and a pinch in zooms back out; the inspector shows in the sheet; the legend
+toggles. Then a 1280×800 desktop: sidebar on the right with tabs on top,
+phone controls hidden, sprite cache stats (textures shared per class), and
+a gallery of 20 body plans drawn with the game's sprite code. Screenshots:
+`iphone13-*.png`, `pixel7-*.png`, `desktop-world.png`,
+`desktop-sprite-gallery.png`.
 
-**Not yet:** organism sprites by body plan, touch pinch-zoom, marketplace
-auctions, allele-origin shares within the lineage (whose
-genes your organisms carry), per-gene distributions (histograms rather than
-mean ± spread), alert preferences, and the Capacitor shells.
+**Not yet:** marketplace auctions, allele-origin shares
+within the lineage (whose genes your organisms carry), per-gene
+distributions (histograms rather than mean ± spread), alert preferences,
+animated sprites, native builds tested on devices (the Capacitor projects
+are generated but not built here), and push notifications.
 
 ## Benchmark
 

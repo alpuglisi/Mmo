@@ -4,6 +4,7 @@
 //! `snake_case`. Client messages may carry an `id`, echoed in the matching
 //! [`ServerMsg::Result`] so a client can pair replies with requests.
 
+use crate::appearance::Appearance;
 use evo_sim::organism::{Action, Organism, Sex};
 use evo_sim::terrain::Season;
 use evo_sim::PlayerId;
@@ -402,6 +403,8 @@ pub struct OwnOrganism {
     pub possessed: bool,
     pub pregnant: bool,
     pub generation: u32,
+    /// Visible body plan, for the client's sprite.
+    pub look: Appearance,
 }
 
 /// Someone else's organism inside the view window: only what can be seen.
@@ -415,6 +418,8 @@ pub struct NearbyOrganism {
     pub action: String,
     pub sex: String,
     pub matured: bool,
+    /// Visible body plan, for the client's sprite.
+    pub look: Appearance,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -821,6 +826,7 @@ impl OwnOrganism {
             possessed: o.possessed_by.is_some(),
             pregnant: o.pregnancy.is_some(),
             generation: o.generation,
+            look: Appearance::of(o),
         }
     }
 }
@@ -836,6 +842,7 @@ impl NearbyOrganism {
             action: action_name(o.action).into(),
             sex: sex_name(o.sex).into(),
             matured: o.matured,
+            look: Appearance::of(o),
         }
     }
 }

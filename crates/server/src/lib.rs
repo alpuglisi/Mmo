@@ -18,10 +18,13 @@
 //! - [`snapshot`]: saved games (world snapshot plus game state), written
 //!   daily and on shutdown, restored on startup.
 //! - [`design`]: the JSON form of a founder design.
+//! - [`appearance`]: the coarse visible body plan sent with each organism
+//!   (`look`), for the client's sprites.
 //! - [`economy`]: renown balances, the ledger, escrow and the stud
 //!   marketplace's listings.
 
 pub mod accounts;
+pub mod appearance;
 pub mod design;
 pub mod economy;
 pub mod game;

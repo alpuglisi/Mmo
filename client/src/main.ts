@@ -2,7 +2,8 @@
 // One GameSocket lives from login to logout; screens come and go.
 
 import './style.css';
-import { api, wsUrl } from './api';
+import { api, setApiBase, wsUrl } from './api';
+import { initialOrigin } from './serverOrigin';
 import { GameModel } from './model';
 import { loadSession, saveSession, type Session } from './session';
 import { GameSocket } from './socket';
@@ -123,6 +124,7 @@ async function showGame(r: Running): Promise<void> {
   r.screen = screen;
 }
 
+setApiBase(initialOrigin());
 const saved = loadSession();
 if (saved) start(saved);
 else showLogin();

@@ -3,11 +3,20 @@
 // Two layers: the map (the tile grid from /api/terrain painted one pixel per
 // tile into a nearest-neighbor texture, one world unit per tile, plus
 // overlays in world units) moves with the camera; the organism markers live
-// in screen space so they stay readable at any zoom. Positions glide toward
-// each new `state` so 1 s state pushes don't jump.
+// in screen space so they stay readable at any zoom (growing a little as you
+// zoom in). Each marker is a few sprites sharing textures cached per
+// appearance class (`sprites.ts`): owner ring, body, status ring, action
+// icon. Positions glide toward each new `state` so 1 s state pushes don't
+// jump.
+//
+// Input: mouse drag or one-finger drag pans, wheel or two-finger pinch
+// zooms, a tap/click selects, and a long press (touch or mouse held still)
+// is reported separately (the game screen uses it to possess).
 
 import { Application, BufferImageSource, Container, Graphics, Sprite, Texture } from 'pixi.js';
-import type { NearbyOrganism, OrgId, OwnOrganism, PlayerId, StateView } from '../protocol';
+import { actionHint, bodyRadius, creatureKey, markerScaleFor, specOf, type CreatureSpec, type Hint } from './creature';
+import { CreatureSprites, type MarkerParts } from './sprites';
+import type { NearbyOrganism, OrgId, OwnOrganism, StateView } from '../protocol';
 import { OWN_COLOR, ownerColor } from './colors';
 import { paintTerrain, type TerrainGrid } from './terrain';
 
@@ -26,7 +35,7 @@ export interface WorldClick {
 }
 
 interface Marker {
-  g: Graphics;
+  parts: MarkerParts;
   /** Displayed position (world), easing toward the target. */
   x: number;
   y: number;
@@ -34,11 +43,35 @@ interface Marker {
   ty: number;
   style: string;
   seen: boolean;
+  own: boolean;
+  /** Body radius in screen pixels at marker scale 1. */
+  r: number;
+  /** 1 facing right, -1 facing left (the last horizontal heading). */
+  facing: 1 | -1;
+  hint: Hint | null;
+}
+
+/** What a marker shows, for tests and debugging. */
+export interface MarkerInfo {
+  key: string;
+  hint: Hint | null;
+  facing: 1 | -1;
+  own: boolean;
+  scale: number;
 }
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 48;
+/** Minimum tap target radius in screen pixels (fingers need more than a mouse). */
 const HIT_PX = 12;
+const TOUCH_HIT_PX = 20;
+/** A press held this long without moving is a long press. */
+// Shorter than the browser's own long-press gesture (~500 ms in Chromium),
+// which would otherwise cancel the pointer first; the `contextmenu` that
+// gesture raises also counts as a long press.
+const LONG_PRESS_MS = 450;
+/** Movement (px) that turns a press into a drag. */
+const DRAG_PX = 6;
 /** Zoom (pixels per tile) from which tile edges are outlined. */
 const GRID_ZOOM = 18;
 
@@ -50,6 +83,9 @@ export class WorldView {
   private markerLayer = new Container();
   private markers = new Map<OrgId, Marker>();
   private highlight = new Graphics();
+  private sprites: CreatureSprites | null = null;
+  /** Current marker scale (grows with zoom). */
+  private markerScale = 1;
   private texture: Texture | null = null;
   private terrainBuf: Uint8Array | null = null;
   private terrainSource: BufferImageSource | null = null;
@@ -63,6 +99,8 @@ export class WorldView {
   cam: Camera = { x: 32, y: 32, zoom: 8 };
   follow = true;
   onClick: (c: WorldClick) => void = () => {};
+  /** A press held still (touch or mouse); defaults to nothing. */
+  onLongPress: (c: WorldClick) => void = () => {};
   onFollowChange: (follow: boolean) => void = () => {};
 
   async init(parent: HTMLElement): Promise<void> {
@@ -75,6 +113,7 @@ export class WorldView {
       preference: ['webgl', 'canvas'],
     });
     parent.appendChild(this.app.canvas);
+    this.sprites = new CreatureSprites(this.app.renderer);
     this.app.canvas.id = 'world-canvas';
     this.mapLayer.addChild(this.mapSprite, this.overlay);
     this.app.stage.addChild(this.mapLayer, this.markerLayer, this.highlight);
@@ -83,6 +122,7 @@ export class WorldView {
   }
 
   destroy(): void {
+    this.sprites?.destroy();
     this.app.destroy(true, { children: true, texture: true });
     this.texture?.destroy(true);
   }
@@ -122,12 +162,11 @@ export class WorldView {
   setState(s: StateView): void {
     this.state = s;
     for (const m of this.markers.values()) m.seen = false;
-    const me = s.player;
-    for (const o of s.organisms) this.upsert(o.id, o.x, o.y, styleOwn(o));
-    for (const o of s.nearby) this.upsert(o.id, o.x, o.y, styleNearby(o, me));
+    for (const o of s.organisms) this.upsert(o, true);
+    for (const o of s.nearby) this.upsert(o, false);
     for (const [id, m] of this.markers) {
       if (!m.seen) {
-        m.g.destroy();
+        m.parts.root.destroy({ children: true });
         this.markers.delete(id);
       }
     }
@@ -160,6 +199,17 @@ export class WorldView {
     this.cam.y += before.y - after.y;
   }
 
+  /** What an organism's marker shows (for tests and debugging). */
+  markerInfo(id: OrgId): MarkerInfo | null {
+    const m = this.markers.get(id);
+    return m ? { key: m.style, hint: m.hint, facing: m.facing, own: m.own, scale: this.markerScale } : null;
+  }
+
+  /** Markers on screen and distinct textures made for them (the cache size). */
+  spriteStats(): { markers: number; textures: number; made: number } {
+    return { markers: this.markers.size, textures: this.sprites?.cache.size ?? 0, made: this.sprites?.cache.made ?? 0 };
+  }
+
   /** Screen position of an organism marker (for tests and tooltips). */
   markerScreenPos(id: OrgId): { x: number; y: number } | null {
     const m = this.markers.get(id);
@@ -176,28 +226,40 @@ export class WorldView {
     return { x: (sx - width / 2) / this.cam.zoom + this.cam.x, y: (sy - height / 2) / this.cam.zoom + this.cam.y };
   }
 
-  private upsert(id: OrgId, x: number, y: number, style: Style): void {
-    let m = this.markers.get(id);
+  private upsert(o: OwnOrganism | NearbyOrganism, own: boolean): void {
+    const sprites = this.sprites;
+    if (!sprites) return;
+    let m = this.markers.get(o.id);
     if (!m) {
-      const g = new Graphics();
-      this.markerLayer.addChild(g);
-      m = { g, x, y, tx: x, ty: y, style: '', seen: true };
-      this.markers.set(id, m);
+      const parts = sprites.marker();
+      this.markerLayer.addChild(parts.root);
+      m = { parts, x: o.x, y: o.y, tx: o.x, ty: o.y, style: '', seen: true, own, r: 0, facing: 1, hint: null };
+      this.markers.set(o.id, m);
     }
-    m.tx = x;
-    m.ty = y;
+    const dx = o.x - m.tx;
+    if (Math.abs(dx) > 0.02) m.facing = dx > 0 ? 1 : -1;
+    m.tx = o.x;
+    m.ty = o.y;
     // A long jump (e.g. after a reconnect) snaps instead of sliding.
-    if (Math.abs(m.x - x) + Math.abs(m.y - y) > 6) {
-      m.x = x;
-      m.y = y;
+    if (Math.abs(m.x - o.x) + Math.abs(m.y - o.y) > 6) {
+      m.x = o.x;
+      m.y = o.y;
     }
     m.seen = true;
-    const key = `${style.color}|${style.r}|${style.ring}|${style.own}`;
+    m.own = own;
+    const spec = specOf(o);
+    const status = own ? statusColor(o as OwnOrganism) : null;
+    const hint = actionHint(o.action);
+    const tint = own ? OWN_COLOR : ownerColor((o as NearbyOrganism).owner);
+    const key = `${creatureKey(spec)}|${tint}|${status ?? ''}|${hint ?? ''}|${own}`;
     if (key !== m.style) {
       m.style = key;
-      drawMarker(m.g, style);
+      m.hint = hint;
+      m.r = bodyRadius(spec);
+      applyMarker(sprites, m.parts, spec, own, tint, status, hint);
     }
-    m.g.zIndex = style.own ? 2 : 1;
+    m.parts.body.scale.x = m.facing;
+    m.parts.root.zIndex = own ? 2 : 1;
   }
 
   private frame(dtMs: number): void {
@@ -214,18 +276,25 @@ export class WorldView {
     this.mapLayer.position.set(width / 2 - this.cam.x * this.cam.zoom, height / 2 - this.cam.y * this.cam.zoom);
     this.drawOverlay();
     this.markerLayer.sortableChildren = true;
+    const sc = markerScaleFor(this.cam.zoom);
+    this.markerScale = sc;
     for (const m of this.markers.values()) {
       m.x += (m.tx - m.x) * k;
       m.y += (m.ty - m.y) * k;
       const p = this.worldToScreen(m.x, m.y);
-      m.g.position.set(p.x, p.y);
-      m.g.visible = p.x > -20 && p.y > -20 && p.x < width + 20 && p.y < height + 20;
+      const root = m.parts.root;
+      root.position.set(p.x, p.y);
+      root.scale.set(sc);
+      const pad = 40 * sc;
+      root.visible = p.x > -pad && p.y > -pad && p.x < width + pad && p.y < height + pad;
     }
     this.highlight.clear();
     const sel = this.selected !== null ? this.markers.get(this.selected) : undefined;
     if (sel) {
       const p = this.worldToScreen(sel.x, sel.y);
-      this.highlight.circle(p.x, p.y, 11).stroke({ width: 2, color: 0xffffff });
+      const r = Math.max(9, sel.r * 2.3 * sc);
+      this.highlight.circle(p.x, p.y, r).stroke({ width: 3.5, color: 0x0d1117, alpha: 0.6 });
+      this.highlight.circle(p.x, p.y, r).stroke({ width: 2, color: 0xffffff });
     }
   }
 
@@ -263,14 +332,18 @@ export class WorldView {
     }
   }
 
-  private hitTest(sx: number, sy: number): OrgId | null {
+  /** The organism under a screen point: the nearest marker within its tap radius. */
+  hitTest(sx: number, sy: number, touch = false): OrgId | null {
     let best: OrgId | null = null;
-    let bestD = HIT_PX * HIT_PX;
+    let bestD = Infinity;
+    const min = touch ? TOUCH_HIT_PX : HIT_PX;
     for (const [id, m] of this.markers) {
       const p = this.worldToScreen(m.x, m.y);
       const d = (p.x - sx) ** 2 + (p.y - sy) ** 2;
+      const reach = Math.max(min, m.r * 1.6 * this.markerScale);
+      if (d > reach * reach) continue;
       // Prefer own organisms on ties (they're drawn on top).
-      if (d < bestD || (d === bestD && m.g.zIndex > 1)) {
+      if (d < bestD || (d === bestD && m.own)) {
         bestD = d;
         best = id;
       }
@@ -279,75 +352,136 @@ export class WorldView {
   }
 
   private bindInput(canvas: HTMLCanvasElement): void {
-    let down: { x: number; y: number; camX: number; camY: number; id: number } | null = null;
-    let dragging = false;
+    // Active pointers (mouse, pen or fingers) by id, at their latest position.
+    const pointers = new Map<number, { x: number; y: number }>();
+    // The single-pointer gesture in progress: a tap, a long press or a drag.
+    let press: { id: number; x: number; y: number; camX: number; camY: number; touch: boolean; dragging: boolean; timer: number | null; done: boolean; hit: OrgId | null } | null = null;
+    // The two-finger gesture in progress: distance and midpoint at the last move.
+    let pinch: { d: number; mx: number; my: number } | null = null;
     const local = (e: PointerEvent | WheelEvent) => {
       const r = canvas.getBoundingClientRect();
       return { x: e.clientX - r.left, y: e.clientY - r.top };
     };
+    const cancelPress = () => {
+      if (press?.timer != null) clearTimeout(press.timer);
+      press = null;
+    };
+    const pinchOf = () => {
+      const [a, b] = [...pointers.values()];
+      return { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+    };
+    const click = (x: number, y: number, touch: boolean): WorldClick => {
+      const w = this.screenToWorld(x, y);
+      return { x: w.x, y: w.y, organism: this.hitTest(x, y, touch) };
+    };
+
+    const longPress = (pr: NonNullable<typeof press>) => {
+      if (press !== pr || pr.dragging || pr.done) return;
+      pr.done = true;
+      if (pr.timer != null) clearTimeout(pr.timer);
+      pr.timer = null;
+      const c = click(pr.x, pr.y, pr.touch);
+      this.onLongPress(pr.hit !== null && this.markers.has(pr.hit) ? { ...c, organism: pr.hit } : c);
+    };
+
     canvas.addEventListener('pointerdown', (e) => {
       const p = local(e);
-      down = { x: p.x, y: p.y, camX: this.cam.x, camY: this.cam.y, id: e.pointerId };
-      dragging = false;
-      canvas.setPointerCapture(e.pointerId);
+      pointers.set(e.pointerId, p);
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* synthetic events may not be capturable */
+      }
+      if (pointers.size === 2) {
+        // A second finger turns the gesture into a pinch.
+        cancelPress();
+        pinch = pinchOf();
+        this.setFollow(false);
+        return;
+      }
+      if (pointers.size > 2) return;
+      cancelPress();
+      const touch = e.pointerType === 'touch' || e.pointerType === 'pen';
+      // The organism under the finger when it went down: a long press acts on
+      // it even if its marker glides away during the hold.
+      const pr = { id: e.pointerId, x: p.x, y: p.y, camX: this.cam.x, camY: this.cam.y, touch, dragging: false, timer: null as number | null, done: false,
+        hit: this.hitTest(p.x, p.y, touch) };
+      if (e.button === 0 || touch) pr.timer = window.setTimeout(() => longPress(pr), LONG_PRESS_MS);
+      press = pr;
     });
     canvas.addEventListener('pointermove', (e) => {
-      if (!down || e.pointerId !== down.id) return;
+      if (!pointers.has(e.pointerId)) return;
       const p = local(e);
-      const dx = p.x - down.x;
-      const dy = p.y - down.y;
-      if (!dragging && dx * dx + dy * dy > 25) {
-        dragging = true;
+      pointers.set(e.pointerId, p);
+      if (pinch && pointers.size >= 2) {
+        const now = pinchOf();
+        if (pinch.d > 0 && now.d > 0) this.zoomBy(now.d / pinch.d, now.mx, now.my);
+        this.cam.x -= (now.mx - pinch.mx) / this.cam.zoom;
+        this.cam.y -= (now.my - pinch.my) / this.cam.zoom;
+        pinch = now;
+        return;
+      }
+      if (!press || e.pointerId !== press.id || press.done) return;
+      const dx = p.x - press.x;
+      const dy = p.y - press.y;
+      if (!press.dragging && dx * dx + dy * dy > DRAG_PX * DRAG_PX) {
+        press.dragging = true;
+        if (press.timer != null) clearTimeout(press.timer);
+        press.timer = null;
         this.setFollow(false);
       }
-      if (dragging) {
-        this.cam.x = down.camX - dx / this.cam.zoom;
-        this.cam.y = down.camY - dy / this.cam.zoom;
+      if (press.dragging) {
+        this.cam.x = press.camX - dx / this.cam.zoom;
+        this.cam.y = press.camY - dy / this.cam.zoom;
       }
     });
-    const up = (e: PointerEvent) => {
-      if (!down || e.pointerId !== down.id) return;
-      const p = local(e);
-      if (!dragging) {
-        const w = this.screenToWorld(p.x, p.y);
-        this.onClick({ x: w.x, y: w.y, organism: this.hitTest(p.x, p.y) });
+    const up = (e: PointerEvent, cancelled: boolean) => {
+      if (!pointers.delete(e.pointerId)) return;
+      if (pinch) {
+        // Lifting one finger of a pinch ends it; the other doesn't start a drag or tap.
+        if (pointers.size < 2) pinch = null;
+        return;
       }
-      down = null;
-      dragging = false;
+      if (!press || e.pointerId !== press.id) return;
+      const pr = press;
+      cancelPress();
+      if (!cancelled && !pr.dragging && !pr.done) this.onClick(click(pr.x, pr.y, pr.touch));
     };
-    canvas.addEventListener('pointerup', up);
-    canvas.addEventListener('pointercancel', () => { down = null; dragging = false; });
+    canvas.addEventListener('pointerup', (e) => up(e, false));
+    canvas.addEventListener('pointercancel', (e) => {
+      // A touch held still that the browser cancels is its long-press gesture.
+      if (press && e.pointerId === press.id && press.touch && !press.dragging && !press.done && !pinch) longPress(press);
+      up(e, true);
+    });
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const p = local(e);
       this.zoomBy(Math.exp(-e.deltaY * 0.0015), p.x, p.y);
     }, { passive: false });
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (press && press.touch && !press.dragging) longPress(press);
+    });
   }
 }
 
-interface Style {
-  color: number;
-  r: number;
-  ring: number | null;
-  own: boolean;
+function statusColor(o: OwnOrganism): number | null {
+  return o.possessed ? 0xff7b72 : o.pregnant ? 0x7ee787 : null;
 }
 
-function styleOwn(o: OwnOrganism): Style {
-  return {
-    color: OWN_COLOR,
-    r: o.matured ? 5.5 : 3.5,
-    ring: o.possessed ? 0xff7b72 : o.pregnant ? 0x7ee787 : null,
-    own: true,
-  };
-}
-
-function styleNearby(o: NearbyOrganism, _me: PlayerId): Style {
-  return { color: ownerColor(o.owner), r: o.matured ? 4.5 : 3, ring: null, own: false };
-}
-
-function drawMarker(g: Graphics, s: Style): void {
-  g.clear();
-  if (s.ring !== null) g.circle(0, 0, s.r + 3.5).stroke({ width: 2.5, color: s.ring });
-  g.circle(0, 0, s.r).fill(s.color).stroke({ width: s.own ? 1.5 : 1, color: s.own ? 0x1f2328 : 0x000000, alpha: 0.85 });
+function applyMarker(sprites: CreatureSprites, parts: MarkerParts, spec: CreatureSpec, own: boolean, tint: number, status: number | null, hint: Hint | null): void {
+  parts.ring.texture = sprites.ownerRing(spec, own);
+  parts.ring.tint = tint;
+  parts.body.texture = sprites.body(spec);
+  parts.status.visible = status !== null;
+  if (status !== null) {
+    parts.status.texture = sprites.statusRing(spec);
+    parts.status.tint = status;
+  }
+  parts.icon.visible = hint !== null;
+  if (hint !== null) {
+    parts.icon.texture = sprites.hint(hint);
+    const r = bodyRadius(spec);
+    parts.icon.position.set(r * 1.2, -r * 1.9 - 4);
+  }
 }
