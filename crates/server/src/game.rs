@@ -740,6 +740,8 @@ impl Game {
         if !o.matured {
             return Err(e(CommandError::NotMature(organism)));
         }
+        // A pregnant dam may be listed: buyers wait until she has given
+        // birth, and the listing's hold keeps her from conceiving again.
         if fee > economy::MAX_PRICE {
             return Err(ErrorInfo::new("bad_price", format!("fees go up to {} renown", economy::MAX_PRICE)));
         }
@@ -756,7 +758,9 @@ impl Game {
         }
         let tick = self.world.tick();
         let expires = expires_days.map(|d| tick + d as u64 * self.world.config.ticks_per_day as u64);
-        Ok(self.economy.add_listing(player, organism, fee, tick, expires))
+        let l = self.economy.add_listing(player, organism, fee, tick, expires);
+        self.hold_consented_females();
+        Ok(l)
     }
 
     /// Buy one mating with a listed organism: an accepted agreement at once
@@ -772,6 +776,9 @@ impl Game {
         }
         if self.listing_busy(&l) {
             return Err(ErrorInfo::new("listing_busy", format!("#{} is already promised in an open agreement", l.organism)));
+        }
+        if self.offers.values().any(|o| o.status.is_open() && (o.mine == mine || o.partner == mine)) {
+            return Err(ErrorInfo::new("organism_busy", format!("#{mine} is already promised in an open agreement")));
         }
         self.check_funds(player, l.fee)?;
         let id = self.open_offer(player, to, mine, l.organism, Some(l.fee), OfferStatus::Accepted, Some(listing));
@@ -979,9 +986,13 @@ impl Game {
     /// no consent from the partner's owner, and holding on it would let
     /// anyone freeze another player's female with requests that owner
     /// ignores. (Pairs within one lineage need no consent and mate at once,
-    /// so they never wait.) Runs on request, on acceptance and every tick.
+    /// so they never wait.) A dam listed on the marketplace is held while
+    /// listed: the listing is her owner's consent to a buyer's male, and
+    /// otherwise she would rarely be free when one comes. Runs on request,
+    /// on acceptance, on listing and every tick.
     fn hold_consented_females(&mut self) {
         let until = self.world.tick() + 2;
+        let listed = self.economy.listings.values().map(|l| l.organism);
         let held: Vec<OrgId> = self
             .offers
             .values()
@@ -990,6 +1001,7 @@ impl Game {
                 let partner = (o.status == OfferStatus::Accepted).then_some(o.partner);
                 std::iter::once(o.mine).chain(partner)
             })
+            .chain(listed)
             .filter(|&id| self.world.organism(id).is_some_and(|x| x.sex == Sex::Female))
             .collect();
         for id in held {
@@ -2699,9 +2711,13 @@ mod tests {
         assert_eq!(g.economy.listings[&listing.id].sales, 1);
         // The buyer's female waits for the stud (the listing is consent).
         assert!(g.world.organism(fb).unwrap().breed_ready_tick > g.world.tick());
-        // A stud may serve several buyers: the listing stays open.
+        // A stud may serve several buyers: the listing stays open (but the
+        // same buyer's organism can't be promised twice).
         let m: MarketView = serde_json::from_value(data(&g.command(20, 2, None, ClientMsg::BrowseMarket { mine: None }))).unwrap();
         assert!(!m.listings[0].busy);
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: listing.id, mine: fb });
+        assert_eq!(result(&out).1.as_deref(), Some("organism_busy"));
+        assert_eq!(g.balance(2), start - 12);
         // They meet: the mating runs on the buyer's slot and Ann is paid.
         place_together(&mut g, ma, fb);
         let out = g.after_tick();
@@ -2727,6 +2743,12 @@ mod tests {
         let (fa, mb, mc) = (female(&g, &a), male(&g, &b), male(&g, &c));
         let l = data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: 0, expires_days: None }))["listing"]["id"].as_u64().unwrap();
         assert_eq!(g.market(2, None).listings[0].role, "dam");
+        // Listed, she is kept from breeding on her own.
+        for _ in 0..3 {
+            g.world.step();
+            g.after_tick();
+            assert!(!g.world.organism(fa).unwrap().can_breed(g.world.tick()), "a listed dam is held");
+        }
         let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: l, mine: mb });
         assert_eq!(result(&out), (true, None));
         let id = offer_id(&out);

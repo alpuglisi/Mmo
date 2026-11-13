@@ -5,7 +5,12 @@
 
 .market-balance { margin: 4px 0 8px; }
 .market-balance strong { color: #e3b341; }
-.market-filters .check { display: flex; align-items: center; gap: 6px; flex-direction: row; }
+.market-filters label.check { display: flex; align-items: center; gap: 6px; }
+.market-filters label.check > input { width: auto; margin: 0; }
+
+/* Six sidebar tabs with the Market tab: let them scroll rather than clip. */
+.tabs { overflow-x: auto; scrollbar-width: thin; }
+.tabs .tab { flex: 1 0 auto; font-size: 0.92em; }
 
 .listing { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 6px 0; display: flex; flex-direction: column; gap: 4px; }
 .listing.busy { opacity: 0.7; }
