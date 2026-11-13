@@ -273,7 +273,11 @@ season, default 60; see [Ranked seasons](#ranked-seasons)), `--fresh` (ignore th
 world, stored designs re-founded; see [Persistence](#persistence)), `--no-push`,
 `--vapid-private-key KEY` / `--vapid-subject mailto:...` (or `EVO_VAPID_PRIVATE_KEY` /
 `EVO_VAPID_SUBJECT`), `--push-per-hour N` and `--push-allow-any-endpoint` (see
-[Push notifications](#push-notifications)).
+[Push notifications](#push-notifications)), `--hash-concurrency N` /
+`--hash-queue N` (or `EVO_HASH_CONCURRENCY` / `EVO_HASH_QUEUE`: password
+hashes run at once, default half the cores and at least 1, and requests
+allowed to wait for one, default 16 per concurrent hash; see Accounts under
+[Architecture](#architecture)).
 `RUST_LOG=debug` for more logging. SIGINT (Ctrl-C) or SIGTERM stops the
 server gracefully: it stops serving, saves every world (in parallel) and
 waits for the store to finish writing.
@@ -408,6 +412,24 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   WebSocket command) or 24 hours after login (`SessionPolicy`); an open
   WebSocket checks every `min(idle, max_age)/4` (at most 30 s), sends
   `session_ended` and closes.
+- **Password hashing is bounded** (`accounts::HashLimiter`): a registration
+  or login hashes (or verifies) a password with argon2id, 19 MiB and tens of
+  ms of CPU each. At most `--hash-concurrency` run at once on the blocking
+  pool (default half the cores, at least 1), at most `--hash-queue` more wait
+  for a slot (default 16 per slot), and past that the request is refused at
+  once with `503 busy`, `retry_after_ms` (about the time the queue takes to
+  drain, 0.25–5 s) and `Retry-After`. A refused registration reserves no
+  name or player id; a waiter whose client goes away frees its place, and a
+  hash already running keeps its slot until it ends. Token checks (every
+  authenticated request, the WebSocket and its liveness checks) never hash,
+  so only password logins count. The web client retries `busy` and
+  `rate_limited` itself (`client/src/retry.ts`: the server's hint or a
+  doubling backoff from 0.5 s, whichever is longer, ×0.5–1.5 jitter, capped
+  at 10 s, 5 retries), showing "The server is busy; retrying in N s". The
+  queue is behind the per-IP login limit, so a refused attempt still uses
+  one of that client's login tokens. Before the bound, Tokio ran up to 512
+  hashes at once, and a burst of logins starved every world thread (see
+  [Several worlds: capacity](#several-worlds-capacity)).
 - **Rate limits** (`limits.rs`, token buckets, `Limits` in `ServerConfig`):
   logins and registrations per client IP (burst 10, then one per 6 s; checked
   before any password hashing, `429 rate_limited` with `retry_after_ms` and
@@ -487,7 +509,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/push/prefs` | Bearer | The push kinds the caller switched off, `{off: [kind]}` (`mating`, `death`, `market`, `species`, `season`, `catastrophe`); `{off: []}` until saved |
 | `POST /api/push/prefs` | Bearer | Replace them; the reply is normalized (sorted, no duplicates); an unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
-| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`) and the process's `cpu_seconds` and `rss_bytes` (Linux) |
+| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`) the process's `cpu_seconds` and `rss_bytes` (Linux), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
 Routes about a world (founding, `world`, the leaderboards, terrain, species,
@@ -1186,7 +1208,8 @@ Checked and judged acceptable:
   a proxy in front might.
 - **Password hashing.** argon2id with the crate defaults (19 MiB, 2 passes,
   1 lane; OWASP's minimum), a random 16-byte salt, PHC strings; hashing and
-  verifying run on the blocking pool behind the login rate limit.
+  verifying run on the blocking pool behind the login rate limit and a
+  bound on concurrent hashes (`--hash-concurrency`, `--hash-queue`).
 - **CORS.** Any origin, no credentials: auth is a bearer token the page
   holds, never a cookie, so another origin can't act as a user it has no
   token for.
@@ -3021,21 +3044,17 @@ sections above).
    real iOS and Android devices (login with a remote server, touch
    gestures, the bottom sheet, the onboarding tour, reconnects when the app
    is backgrounded), and add the result to CI if it can run headless.
-2. **Push notifications.** Alerts reach a player only while the client is
-   open. The design's typical session ("check the dashboard and alerts …
-   log off while the lineage carries on") needs offline delivery: native
-   push through Capacitor (and web push for the browser) for the toasted
-   alert kinds and mating requests, with the existing alert preferences
-   deciding what is sent, which also means applying them server-side.
+2. **Native push notifications.** Web Push is implemented for the browser
+   (see [Push notifications](#push-notifications)). What remains is native
+   push in the Capacitor apps through FCM (Android) and APNs (iOS), and
+   trying Web Push from an iOS home-screen web app on a real device.
 3. **Capacity with several worlds.** Measured up to two 512² worlds of
    500 players in one process on a shared 4-core box (see [Several worlds:
    capacity](#several-worlds-capacity)): a second world costs what the
    first did, nothing serializes them, and about 2 cores per 500-player
    world holds the clock. Still open: where one process stops scaling (3+
    worlds, on dedicated cores, where the measured 0.3 cores per world
-   suggests up to one world per core), and bounding concurrent password
-   hashes, since a login burst over ~12 a second per 4 cores stalled every
-   world thread for 40 s in that test.
+   suggests up to one world per core).
 4. **Incubated eggs still win tournaments**: after the final balance pass
    and egg thermal risk they won 29.1% of entries pooled over 144 worlds
    (a fair share is 25%), abandoned eggs 16.8%; see [Balance](#balance). Next: find what
@@ -3048,30 +3067,25 @@ sections above).
    switching), measured with `compare` on 48+ seeds, and check whether the
    prey-side rules cost predators seeds systematically (the sign was
    negative, not significant).
-6. **Flaky test.** `idle_sessions_expire_and_close_the_socket`
-   (`crates/server/tests/dashboard.rs`) runs on a 600 ms idle timeout with
-   300 ms sleeps between commands, so a loaded CI machine can let the
-   session expire early. Drive it from a manual session clock, or widen
-   the margins.
-7. **World-thread cost.** Decide is most of a tick at the prototype target
+6. **World-thread cost.** Decide is most of a tick at the prototype target
    and its per-organism cost rises with density: cap or subsample the
    neighbors scanned, then split the apply phase's sequential act sweep by
    region (see [Benchmark](#benchmark)). Possession sub-step states still
    build a whole `StateView` for every steering player three times a tick
    though only the possessed organism's delta goes out.
-8. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
+7. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
    protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
    doesn't offer it; revisit when it does (states are already ~1 KB/s a
    client, so this is low priority). For save size, store the map's
    changing tiles (about 6 MB of an 18 MB save at 26k agents) as a delta
    against the previous save.
-9. **Design-doc features not built.** Group commands beyond migration
+8. **Design-doc features not built.** Group commands beyond migration
    ("claim or abandon territory, split a group"), offline protection (home
    ranges or surviving founder groups), and the doc's open question on
    duplicate mutations; `GET /api/leaderboard/seasons` would also want a
    cache instead of reading the whole history per call.
-10. **Tooling.** An adaptive `compare` that adds seeds until the CI
-    resolves, and a check of how well 40-day screen ranks predict 120-day
-    ranks; what migrating buys a design (the caribou with and without the
-    gene, paired) and a reason for winter ranges to exist (better
-    cold-season pasture than the summer range).
+9. **Tooling.** An adaptive `compare` that adds seeds until the CI
+   resolves, and a check of how well 40-day screen ranks predict 120-day
+   ranks; what migrating buys a design (the caribou with and without the
+   gene, paired) and a reason for winter ranges to exist (better
+   cold-season pasture than the summer range).

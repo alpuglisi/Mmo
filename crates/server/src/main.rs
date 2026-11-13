@@ -6,7 +6,7 @@
 //!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
 //!            [--season-days N] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
 //!            [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:...] [--push-per-hour N]
-//!            [--push-allow-any-endpoint]
+//!            [--push-allow-any-endpoint] [--hash-concurrency N] [--hash-queue N]
 //! ```
 //!
 //! `--database-url` (or the `DATABASE_URL` environment variable) keeps
@@ -27,10 +27,17 @@
 //! subscription endpoints outside the browsers' push services, plain http
 //! included (tests, private push servers).
 //!
+//! `--hash-concurrency` (or `EVO_HASH_CONCURRENCY`) sets how many password
+//! hashes (registrations and logins) run at once, by default half the cores
+//! (at least 1); `--hash-queue` (or `EVO_HASH_QUEUE`) how many more may
+//! wait, by default 16 per concurrent hash. Past that a login or
+//! registration is refused at once with 503 `busy` and `retry_after_ms`.
+//!
 //! SIGINT (Ctrl-C) or SIGTERM stops it gracefully, saving the world first.
 
 use std::time::Duration;
 
+use evo_server::accounts::HashPolicy;
 use evo_server::worlds::WorldSpec;
 use evo_server::{start, ServerConfig};
 
@@ -40,7 +47,7 @@ const USAGE: &str =
 [--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] \
 [--season-days 60] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE] \
 [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:you@example.org] [--push-per-hour 4] \
-[--push-allow-any-endpoint]";
+[--push-allow-any-endpoint] [--hash-concurrency N] [--hash-queue N]";
 
 fn parse_args() -> Result<ServerConfig, String> {
     let mut cfg = ServerConfig {
@@ -60,6 +67,16 @@ fn parse_args() -> Result<ServerConfig, String> {
         _ => Vec::new(),
     };
     let mut cli_worlds: Vec<WorldSpec> = Vec::new();
+    let positive = |name: &str, v: &str| -> Result<usize, String> {
+        match v.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(n),
+            _ => Err(format!("{name} must be a whole number of at least 1")),
+        }
+    };
+    let count = |name: &str, v: &str| v.trim().parse::<usize>().map_err(|e| format!("{name}: {e}"));
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    let mut hash_concurrency = env("EVO_HASH_CONCURRENCY").map(|v| positive("EVO_HASH_CONCURRENCY", &v)).transpose()?;
+    let mut hash_queue = env("EVO_HASH_QUEUE").map(|v| count("EVO_HASH_QUEUE", &v)).transpose()?;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -138,6 +155,10 @@ fn parse_args() -> Result<ServerConfig, String> {
                 cfg.push.limits.min_gap = cfg.push.limits.min_gap.min(Duration::from_secs(3600 / u64::from(n)));
             }
             "--push-allow-any-endpoint" => cfg.push.allow_any_endpoint = true,
+            "--hash-concurrency" => {
+                hash_concurrency = Some(positive("--hash-concurrency", &value("--hash-concurrency")?)?)
+            }
+            "--hash-queue" => hash_queue = Some(count("--hash-queue", &value("--hash-queue")?)?),
             "--world" => cli_worlds.push(WorldSpec::parse(&value("--world")?).map_err(|e| format!("--world: {e}"))?),
             "--worlds-file" => {
                 let path = value("--worlds-file")?;
@@ -150,6 +171,12 @@ fn parse_args() -> Result<ServerConfig, String> {
             }
             other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
         }
+    }
+    if let Some(n) = hash_concurrency {
+        cfg.hashing = HashPolicy::with_concurrency(n);
+    }
+    if let Some(q) = hash_queue {
+        cfg.hashing.queue = q;
     }
     if !cli_worlds.is_empty() {
         worlds = cli_worlds;

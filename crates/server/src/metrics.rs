@@ -118,6 +118,28 @@ impl NetStats {
     }
 }
 
+/// Password hashing (registrations and logins), process-wide
+/// (`crate::accounts::HashLimiter`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HashStats {
+    /// Hashes allowed to run at once (`--hash-concurrency`).
+    pub concurrency: usize,
+    /// Requests allowed to wait for a slot (`--hash-queue`).
+    pub queue: usize,
+    /// Hashes running now.
+    pub in_flight: usize,
+    /// Requests waiting for a slot now.
+    pub waiting: usize,
+    /// Most hashes that ran at once, since start (never above `concurrency`).
+    pub peak_in_flight: usize,
+    /// Hashes and verifications done, since start.
+    pub hashes: u64,
+    /// Requests refused as busy because the queue was full, since start.
+    pub rejected: u64,
+    /// Mean time of one hash, ms (0 before the first).
+    pub mean_ms: f32,
+}
+
 /// `GET /api/metrics`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MetricsView {
@@ -165,10 +187,13 @@ pub struct MetricsView {
     pub cpu_seconds: Option<f64>,
     /// Resident memory of the server process (Linux only).
     pub rss_bytes: Option<u64>,
+    /// Password hashing, shared by every world.
+    #[serde(default)]
+    pub hashing: HashStats,
 }
 
 impl MetricsView {
-    pub fn gather(world: &str, m: &Mutex<Metrics>, net: &NetStats, tick: u64) -> Self {
+    pub fn gather(world: &str, m: &Mutex<Metrics>, net: &NetStats, tick: u64, hashing: HashStats) -> Self {
         let m = m.lock().unwrap();
         let (cpu_seconds, rss_bytes) = process_usage();
         let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
@@ -205,6 +230,7 @@ impl MetricsView {
             delta_conns: get(&net.delta_conns),
             cpu_seconds,
             rss_bytes,
+            hashing,
         }
     }
 }

@@ -292,6 +292,12 @@ fn client_ip(info: &Option<ConnectInfo<SocketAddr>>) -> IpAddr {
 
 impl From<AuthError> for ApiError {
     fn from(e: AuthError) -> Self {
+        if let AuthError::Busy(retry) = e {
+            // Like `rate_limited`: `retry_after_ms` and a Retry-After header.
+            let mut err = ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e.code(), e.message());
+            err.detail = Some(serde_json::json!({ "retry_after_ms": retry.as_millis().max(1) as u64 }));
+            return err;
+        }
         let status = match e {
             AuthError::BadCredentials => StatusCode::UNAUTHORIZED,
             AuthError::NameTaken => StatusCode::CONFLICT,
@@ -407,9 +413,9 @@ async fn genes() -> Json<design::GeneCatalog> {
 
 /// `GET /api/metrics`: one world's world-thread timings, queues, saves and
 /// traffic, and the process's usage ([`MetricsView`]).
-async fn metrics(World(w): World) -> Json<MetricsView> {
+async fn metrics(State(app): State<AppState>, World(w): World) -> Json<MetricsView> {
     let tick = w.published.borrow().summary.clock.tick;
-    Json(MetricsView::gather(&w.id, &w.metrics, &w.net, tick))
+    Json(MetricsView::gather(&w.id, &w.metrics, &w.net, tick, app.accounts.hash_stats()))
 }
 
 /// `GET /api/worlds`: every hosted world with its clock, population and
