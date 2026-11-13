@@ -37,7 +37,7 @@ docs/
 | `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
-| `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, grounded flyers) and rain or snow; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`; `Map::climate_temp`/`climate_wet` are climate anomalies (0 normally) that catastrophes set. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
+| `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge; depressions fed by more rain than evaporates off their surface fill into lakes (priority flood). Rivers in flood overflow onto their floodplain (low land up to two tiles from the channel): standing water that swimmers cross and that strands and drowns small non-swimmers, drowned plants, then silt that speeds regrowth for weeks. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, costly and risky flight) and rain or snow; the wind has a direction (prevailing westerly, swinging over days and veering regionally) that speeds or slows flyers and gliders by wing loading; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`; `Map::climate_temp`/`climate_wet` are climate anomalies (0 normally) that catastrophes set. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
 | `pathfinding` | Movement and terrain | Bounded A* over tiles for one body: blocked tiles are avoided, slow ones cost time. Used only when the direct step is blocked (see Movement below). |
 | `mating` | Override cost | Root-sum-of-squares preference mismatch, `cost = k·max(0, mismatch−1)²`, outbreeding depression by genetic distance, and sterility between different body plans (thermoregulation, birth mode, body size or diet more than 0.3 apart; `cargo run --release --example distances` prints the founders' matrix). Display coloration is condition-dependent (an honest signal). |
 | `group` | Critical-mass group traits | Daily regional carrier frequency → logistic benefit. Implemented: cooperative hunting, warning coloration, herd defense, alarm calls, shared burrows, sentries, communal dens, group navigation, shared caches. |
@@ -1509,11 +1509,61 @@ pack hunters within 30 days, as the 240-day run on seed 31 shows).
 Not covered by the level-of-detail cohorts:
 they use mean insulation and the seasonal breeding factor as before.
 
-All the doc's seasonal add-ons are now in. Not yet implemented on the
-environment side: rivers do not overflow onto
-their floodplain (flooding only deepens the channel), wind has no direction
-and does not interact with wing loading or gliding, and lakes do not form in
-filled depressions.
+All the doc's seasonal add-ons are now in.
+
+**Floodplains, wind direction and lakes.** The three environment gaps left
+above are closed, all deterministic (no new map randomness; storm gusts draw
+from a new `rng::stream::WIND`, one stream per tick and organism):
+
+- **Lakes.** Map generation's priority flood now keeps the level each
+  depression fills to. A connected depression at least 0.002 elevation ranks
+  deep holds a lake where the rain draining into it (the most any of its
+  tiles passes on) beats evaporation: one tile of surface per 4 units of
+  inflow, filling from the bottom up, so a well-fed basin fills to its rim
+  and a parched one stays dry. Lake tiles are `ShallowWater` (no new tile
+  type, so the terrain endpoint and client are unchanged), 0.2–0.9 m deep
+  and following regional wetness like other shallow lakes; they pass their
+  inflow on, so rivers leave over the rim. They are ordinary water sources
+  for `find_water`, `can_drink_at` and `water_dist`. On 96-tile maps:
+  63–622 lake tiles (seeds 55, 31, 9: 63, 147, 622).
+- **Floodplains.** Dry, gentle land (slope < 0.3) within two steps of a
+  river and at most 0.02 ranks above it gets `Tile::plain`, the river level
+  at which it floods (1.5× normal flow for the lowest bank, +0.3 a step
+  further out, up to +0.6 for the highest), and shares the river's
+  catchment. Above it the tile stands under `0.6 m ×` the excess (at most
+  0.9 m) of still water: tall bodies wade, swimmers swim, small
+  non-swimmers are blocked and drown if caught (the existing stranded and
+  drowning rules), and paths and the water field update with
+  `terrain_version`. A flooded tile loses 2% of its plants an hour and
+  gains `Tile::silt`; after the water goes, silt raises regrowth by up to
+  100% and fades (half-life about ten days). About 13% of land is
+  floodplain; over the first 120 days a 96-tile map has 50–145 floodplain
+  tiles under water on average (up to 450 at a spring peak).
+- **Wind direction.** Each weather cell has a direction
+  (`WeatherCell::dir`, carried by `Weather::dir` from `Map::weather_at`):
+  the prevailing westerly swings map-wide over a few days and veers
+  regionally with a pattern drifting like the fronts. `terrain::wind_effect`
+  gives flyers and gliders a speed and energy multiplier from the tail- or
+  headwind component, felt more by light wings (`1 / (1 + wing loading /
+  2)`), with extra cost in strong wind and much more in a storm. Wind
+  tolerance follows wing loading: a flyer is grounded above
+  `0.6 + 0.15 × wing loading` (at most 0.92), so heavier flyers can fly
+  into a storm, where each tick a gust injures them with chance 5% (−10
+  health, never fatal on its own, and −10 energy). Gliding is now a
+  movement mode (`terrain::glide`): a body that can glide but isn't flying
+  gets ×1.3 speed and ×0.5 energy (times the wind effect) on a step from
+  height (a canopy it climbs, a slope over 0.4, or ground falling away
+  ahead), and can't launch in wind above `0.5 + 0.05 × wing loading` (at
+  most 0.75). No sample design flies or glides yet.
+
+Held-out sweeps: 11.61 / 11.46 (seeds 31 / 55) against 11.53 / 11.61 before
+(sum 23.07 vs 23.14). With the floodplain and wind but no lakes they scored
+11.27 / 11.64, so the shifts are map reshuffle noise. Four tests whose
+outcome hung on one map's geography were made robust (summing froglet
+deaths over four maps, the colony's mean breeding suppression, another seed
+for the species-id test, a possessed organism started five tiles from
+water). Snapshots move to format version 5 (`Tile::plain`, `Tile::silt`,
+`WeatherCell::dir`, `Weather::dir`).
 
 **Final balance pass: antelope, herd grazers and birth modes.** The new
 `examples/deaths.rs` (`cargo run --release --example deaths -- 1,5 120

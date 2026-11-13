@@ -34,6 +34,10 @@ impl Vec2 {
         }
     }
 
+    pub fn dot(self, o: Vec2) -> f32 {
+        self.x * o.x + self.y * o.y
+    }
+
     pub fn rotate(self, angle: f32) -> Vec2 {
         let (s, c) = angle.sin_cos();
         Vec2::new(self.x * c - self.y * s, self.x * s + self.y * c)

@@ -28,6 +28,9 @@ pub mod stream {
     pub const SETTLE: u64 = 9;
     /// Catastrophes: planning and their effects (epidemic infections).
     pub const CHRONICLE: u64 = 10;
+    /// Wind: gusts that buffet flyers in a storm, one stream per
+    /// (tick, organism).
+    pub const WIND: u64 = 11;
 }
 
 pub fn splitmix64(x: u64) -> u64 {

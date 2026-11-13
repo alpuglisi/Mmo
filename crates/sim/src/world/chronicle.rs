@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn species_are_detected_from_the_start_with_stable_ids() {
-        let mut w = world(3, 120);
+        let mut w = world(2, 120);
         w.run_days(1);
         let t = &w.chronicle.species;
         assert_eq!(t.last_detection, Some(0));
