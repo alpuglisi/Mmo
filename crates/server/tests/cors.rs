@@ -11,7 +11,12 @@ use hyper::{Method, Request, StatusCode};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 
-async fn send(addr: SocketAddr, method: Method, path: &str, headers: &[(&str, &str)]) -> (StatusCode, hyper::HeaderMap) {
+async fn send(
+    addr: SocketAddr,
+    method: Method,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> (StatusCode, hyper::HeaderMap) {
     let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
     let mut req = Request::builder().method(method).uri(format!("http://{addr}{path}"));
     for (k, v) in headers {
@@ -28,7 +33,15 @@ async fn api_allows_cross_origin_clients() {
     let cfg = ServerConfig {
         bind: SocketAddr::from(([127, 0, 0, 1], 0)),
         data_dir: None,
-        world: WorldSettings { seed: 3, width: 32, height: 32, wild: false, days_per_year: 8, lod: false, catastrophes: false },
+        world: WorldSettings {
+            seed: 3,
+            width: 32,
+            height: 32,
+            wild: false,
+            days_per_year: 8,
+            lod: false,
+            catastrophes: false,
+        },
         ..Default::default()
     }
     .fast();
@@ -40,7 +53,11 @@ async fn api_allows_cross_origin_clients() {
         srv.addr,
         Method::OPTIONS,
         "/api/lineage",
-        &[("origin", origin), ("access-control-request-method", "POST"), ("access-control-request-headers", "authorization,content-type")],
+        &[
+            ("origin", origin),
+            ("access-control-request-method", "POST"),
+            ("access-control-request-headers", "authorization,content-type"),
+        ],
     )
     .await;
     assert!(s.is_success(), "preflight status {s}");

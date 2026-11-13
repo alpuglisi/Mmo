@@ -321,7 +321,13 @@ impl SpeciesTracker {
 
     /// Cluster `samples` taken on `day` and update the species list.
     /// `name_of` names a new species after a founding lineage.
-    pub fn detect(&mut self, day: u64, samples: &[Sample], p: &DetectParams, name_of: impl Fn(u32) -> String) -> Vec<SpeciesEvent> {
+    pub fn detect(
+        &mut self,
+        day: u64,
+        samples: &[Sample],
+        p: &DetectParams,
+        name_of: impl Fn(u32) -> String,
+    ) -> Vec<SpeciesEvent> {
         let clusters = cluster(samples, &p.rule);
         let first = self.last_detection.is_none();
         self.last_detection = Some(day);
@@ -344,7 +350,8 @@ impl SpeciesTracker {
         // Each old species continues as the cluster it overlaps most.
         let successor: Vec<Option<usize>> = (0..live.len())
             .map(|k| {
-                let (c, n) = (0..clusters.len()).fold((0, 0), |b, c| if overlap[c][k] > b.1 { (c, overlap[c][k]) } else { b });
+                let (c, n) =
+                    (0..clusters.len()).fold((0, 0), |b, c| if overlap[c][k] > b.1 { (c, overlap[c][k]) } else { b });
                 (n > 0).then_some(c)
             })
             .collect();
@@ -377,7 +384,9 @@ impl SpeciesTracker {
             }
             // A new species: split of the old species it overlaps most, or of
             // its main lineage's species, else a founding.
-            let by_overlap = (0..live.len()).filter(|&k| overlap[c][k] > 0).max_by(|&a, &b| overlap[c][a].cmp(&overlap[c][b]).then(b.cmp(&a)));
+            let by_overlap = (0..live.len())
+                .filter(|&k| overlap[c][k] > 0)
+                .max_by(|&a, &b| overlap[c][a].cmp(&overlap[c][b]).then(b.cmp(&a)));
             let parent = by_overlap.map(|k| live[k] as u32).or_else(|| {
                 let main = sum.lineages.first().map(|l| l.0)?;
                 live.iter().find(|&&s| self.species[s].main_lineage() == Some(main)).map(|&s| s as u32)
@@ -393,7 +402,8 @@ impl SpeciesTracker {
             }
             let id = self.species.len() as u32;
             let base = sum.lineages.first().map(|l| name_of(l.0)).unwrap_or_else(|| format!("Species {id}"));
-            let same = self.species.iter().filter(|s| s.name == base || s.name.starts_with(&format!("{base} ("))).count();
+            let same =
+                self.species.iter().filter(|s| s.name == base || s.name.starts_with(&format!("{base} ("))).count();
             let name = if same == 0 { base } else { format!("{base} ({})", same + 1) };
             self.species.push(Species {
                 id,
@@ -497,7 +507,11 @@ mod tests {
         let cfg = crate::WorldConfig::default();
         let r = rule();
         let mut rng = crate::rng::rng_for(5, 0, 0, 0);
-        let designs = crate::presets::wild_designs().into_iter().map(|(_, d)| d).chain(crate::presets::player_designs()).collect::<Vec<_>>();
+        let designs = crate::presets::wild_designs()
+            .into_iter()
+            .map(|(_, d)| d)
+            .chain(crate::presets::player_designs())
+            .collect::<Vec<_>>();
         let mut genomes = Vec::new();
         for d in &designs {
             for k in 0..6 {
@@ -510,7 +524,8 @@ mod tests {
         let mut agree = 0;
         for a in &genomes {
             for b in &genomes {
-                let want = is_kin(a, b, a.distance(b), cfg.species_distance, cfg.kin_body_plan_gap) && fertility(a, b) >= r.min_fertility;
+                let want = is_kin(a, b, a.distance(b), cfg.species_distance, cfg.kin_body_plan_gap)
+                    && fertility(a, b) >= r.min_fertility;
                 assert_eq!(r.linked(&sample(a, 0, 1).expr, &sample(b, 0, 1).expr), want);
                 agree += want as usize;
             }
@@ -558,10 +573,11 @@ mod tests {
 
         // Day 5: different individuals (new sample), same kinds: same ids,
         // listed in the other order.
-        let day5: Vec<Sample> = group(&FounderDesign::new("c", Thermo::Cold, BirthType::IncubatedEggs, 4), 20, 1, WILD, 3)
-            .into_iter()
-            .chain(group(&base(), 25, 0, 1, 4))
-            .collect();
+        let day5: Vec<Sample> =
+            group(&FounderDesign::new("c", Thermo::Cold, BirthType::IncubatedEggs, 4), 20, 1, WILD, 3)
+                .into_iter()
+                .chain(group(&base(), 25, 0, 1, 4))
+                .collect();
         assert!(t.detect(5, &day5, &p, name).is_empty());
         assert_eq!(t.species.len(), 2);
         assert!((t.species[herb_id as usize].adults - 25.0).abs() < 1e-9);
@@ -570,7 +586,8 @@ mod tests {
         // species still), carrying player 2's alleles.
         let mid = group(&base().with(Gene::BodySize, 0.45), 10, 0, 2, 5);
         let far = group(&base().with(Gene::BodySize, 0.6), 10, 0, 2, 6);
-        let day10: Vec<Sample> = group(&base(), 20, 0, 1, 7).into_iter().chain(mid).chain(far.iter().cloned()).chain(cold.clone()).collect();
+        let day10: Vec<Sample> =
+            group(&base(), 20, 0, 1, 7).into_iter().chain(mid).chain(far.iter().cloned()).chain(cold.clone()).collect();
         assert!(t.detect(10, &day10, &p, name).is_empty());
         // Day 15: the intermediates are gone: the far group split off.
         let day15: Vec<Sample> = group(&base(), 20, 0, 1, 8).into_iter().chain(far).chain(cold.clone()).collect();

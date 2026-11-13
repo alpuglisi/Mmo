@@ -8,8 +8,8 @@ use rand::Rng;
 
 use super::World;
 use crate::genome::{Gene, PlayerId};
-use crate::mating;
 use crate::math::Vec2;
+use crate::mating;
 use crate::organism::{Action, Dormancy, OrgId, Sex};
 use crate::rng::{rng_for, stream};
 
@@ -33,7 +33,9 @@ pub enum CommandError {
     NotMature(OrgId),
     SameSex,
     AlreadyPregnant,
-    TooFar { distance: f32 },
+    TooFar {
+        distance: f32,
+    },
     NoSlotsLeft,
     PossessedByOther(OrgId),
 }
@@ -104,17 +106,11 @@ pub struct MatingPreview {
 
 impl World {
     fn live_index(&self, id: OrgId) -> Result<usize, CommandError> {
-        self.index
-            .get(&id)
-            .copied()
-            .filter(|&i| self.organisms[i].alive)
-            .ok_or(CommandError::NotFound(id))
+        self.index.get(&id).copied().filter(|&i| self.organisms[i].alive).ok_or(CommandError::NotFound(id))
     }
 
     pub fn mating_slots_left(&self, player: PlayerId) -> u32 {
-        self.config
-            .mating_slots_per_season
-            .saturating_sub(self.slots_used.get(&player).copied().unwrap_or(0))
+        self.config.mating_slots_per_season.saturating_sub(self.slots_used.get(&player).copied().unwrap_or(0))
     }
 
     /// Pair two organisms, overriding their own preferences at a cost that
@@ -170,7 +166,8 @@ impl World {
     /// directed mating between female `f` and male `m` (indices).
     fn directed_terms(&self, f: usize, m: usize) -> (f32, f32, f32, f32) {
         let (female, male) = (&self.organisms[f], &self.organisms[m]);
-        let mismatch = mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
+        let mismatch =
+            mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
         let cost = mating::override_cost(mismatch, self.config.override_k);
         let failure_chance = mating::override_failure_chance(cost);
         let fertility = mating::fertility(&female.genome, &male.genome) * self.disease_fertility(f, m);
@@ -380,7 +377,10 @@ mod tests {
         assert!(p.body_plan_fertility > 0.0 && p.fertility > 0.0, "{p:?}");
         assert!(p.distance < 1e-6);
         let out = w.directed_mating(DirectedMating { player: 1, a, b, partner_consent: false }).unwrap();
-        assert_eq!((p.mismatch, p.cost, p.failure_chance, p.fertility), (out.mismatch, out.cost, out.failure_chance, out.fertility));
+        assert_eq!(
+            (p.mismatch, p.cost, p.failure_chance, p.fertility),
+            (out.mismatch, out.cost, out.failure_chance, out.fertility)
+        );
     }
 
     #[test]
@@ -522,7 +522,13 @@ mod tests {
             .iter()
             .map(|o| {
                 let n = &o.needs;
-                (o.id, o.alive, o.pos, o.action, [n.hunger.to_bits(), n.thirst.to_bits(), n.energy.to_bits(), o.health.to_bits()])
+                (
+                    o.id,
+                    o.alive,
+                    o.pos,
+                    o.action,
+                    [n.hunger.to_bits(), n.thirst.to_bits(), n.energy.to_bits(), o.health.to_bits()],
+                )
             })
             .collect()
     }
@@ -552,7 +558,8 @@ mod tests {
     fn substeps_leave_unpossessed_worlds_alone() {
         // Nobody possessed: the setting changes nothing.
         let mk = |substeps| {
-            let config = WorldConfig { seed: 5, width: 64, height: 64, possess_substeps: substeps, ..Default::default() };
+            let config =
+                WorldConfig { seed: 5, width: 64, height: 64, possess_substeps: substeps, ..Default::default() };
             crate::presets::standard_world(config, 1)
         };
         let (mut a, mut b) = (mk(4), mk(1));

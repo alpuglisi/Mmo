@@ -109,7 +109,10 @@ mod tests {
             year,
             season: season.into(),
             breeding_adults: 10,
-            legacy: shares.iter().map(|&(player, share, _)| LegacyEntry { player, share, weighted_share: share / 2.0 }).collect(),
+            legacy: shares
+                .iter()
+                .map(|&(player, share, _)| LegacyEntry { player, share, weighted_share: share / 2.0 })
+                .collect(),
             lineages: shares
                 .iter()
                 .map(|&(owner, _, alive)| LineageEntry {

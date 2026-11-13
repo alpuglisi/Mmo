@@ -148,12 +148,24 @@ impl World {
                 self.counters.hatched += hatching.len() as u64;
                 self.counters.eggs.entry(c.lineage).or_default().hatched += hatching.len() as u64;
                 for g in hatching {
-                    self.spawn_newborn(g, c.owner, c.lineage, c.pos, c.generation, c.mother, c.father, c.newborn_growth, rng);
+                    self.spawn_newborn(
+                        g,
+                        c.owner,
+                        c.lineage,
+                        c.pos,
+                        c.generation,
+                        c.mother,
+                        c.father,
+                        c.newborn_growth,
+                        rng,
+                    );
                 }
                 // The brood is over: the parent recovers from now (`brood_recovery`).
                 if let Some(gi) = guardian {
                     let o = &mut self.organisms[gi];
-                    let rest = (self.config.balance.brood_recovery * o.traits.recovery_days * self.config.ticks_per_day as f32) as u64;
+                    let rest = (self.config.balance.brood_recovery
+                        * o.traits.recovery_days
+                        * self.config.ticks_per_day as f32) as u64;
                     o.breed_ready_tick = o.breed_ready_tick.max(tick + rest);
                 }
                 done = true;
@@ -174,7 +186,8 @@ impl World {
                         let per_hour = 1.0 / 24.0;
                         let hunger = bal.hunger_rate * o.traits.stats.metabolism * per_hour;
                         o.needs.hunger = (o.needs.hunger + bal.brood_cost * warmed / 10.0 * hunger).min(100.0);
-                        o.needs.thirst = (o.needs.thirst + bal.brood_cost * shaded / 10.0 * bal.thirst_rate * per_hour).min(100.0);
+                        o.needs.thirst =
+                            (o.needs.thirst + bal.brood_cost * shaded / 10.0 * bal.thirst_rate * per_hour).min(100.0);
                         egg
                     }
                     None => site,

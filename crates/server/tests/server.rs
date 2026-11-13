@@ -45,7 +45,13 @@ async fn manual_server() -> RunningServer {
     start(cfg).await.expect("server starts")
 }
 
-async fn http(addr: SocketAddr, method: Method, path: &str, token: Option<&str>, body: Option<Value>) -> (StatusCode, Bytes) {
+async fn http(
+    addr: SocketAddr,
+    method: Method,
+    path: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Bytes) {
     let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
     let mut req = Request::builder().method(method).uri(format!("http://{addr}{path}"));
     if let Some(t) = token {
@@ -63,13 +69,21 @@ async fn http(addr: SocketAddr, method: Method, path: &str, token: Option<&str>,
     (status, res.into_body().collect().await.unwrap().to_bytes())
 }
 
-async fn json_req(addr: SocketAddr, method: Method, path: &str, token: Option<&str>, body: Option<Value>) -> (StatusCode, Value) {
+async fn json_req(
+    addr: SocketAddr,
+    method: Method,
+    path: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let (s, b) = http(addr, method, path, token, body).await;
     (s, serde_json::from_slice(&b).unwrap_or(Value::Null))
 }
 
 async fn register(addr: SocketAddr, name: &str) -> String {
-    let (s, v) = json_req(addr, Method::POST, "/api/register", None, Some(json!({"name": name, "password": "a long password"}))).await;
+    let (s, v) =
+        json_req(addr, Method::POST, "/api/register", None, Some(json!({"name": name, "password": "a long password"})))
+            .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     v["token"].as_str().unwrap().to_string()
 }
@@ -124,17 +138,24 @@ async fn play_over_websocket() {
     // Accounts.
     let ann = register(addr, "ann").await;
     let bob = register(addr, "bob").await;
-    let (s, _) = json_req(addr, Method::POST, "/api/register", None, Some(json!({"name": "ann", "password": "whatever123"}))).await;
+    let (s, _) =
+        json_req(addr, Method::POST, "/api/register", None, Some(json!({"name": "ann", "password": "whatever123"})))
+            .await;
     assert_eq!(s, StatusCode::CONFLICT);
-    let (s, v) = json_req(addr, Method::POST, "/api/login", None, Some(json!({"name": "ann", "password": "a long password"}))).await;
+    let (s, v) =
+        json_req(addr, Method::POST, "/api/login", None, Some(json!({"name": "ann", "password": "a long password"})))
+            .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["player"], 1);
-    let (s, _) = json_req(addr, Method::POST, "/api/login", None, Some(json!({"name": "ann", "password": "nope nope nope"}))).await;
+    let (s, _) =
+        json_req(addr, Method::POST, "/api/login", None, Some(json!({"name": "ann", "password": "nope nope nope"})))
+            .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 
     // Founding: budget errors come back as JSON, one lineage per player.
     let mut over = design("Too much");
-    over["traits"] = json!({"wings": 1.0, "armor_plates": 1.0, "toxins": 1.0, "muscle": 1.0, "claws": 1.0, "fangs": 1.0});
+    over["traits"] =
+        json!({"wings": 1.0, "armor_plates": 1.0, "toxins": 1.0, "muscle": 1.0, "claws": 1.0, "fangs": 1.0});
     over["founders"] = json!(300);
     let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(&ann), Some(over)).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
@@ -254,7 +275,9 @@ async fn directed_mating_consent_round_trip() {
     // The open offer shows in both players' state (pushed after a step; a
     // pending offer doesn't change on a tick).
     assert_eq!(srv.step(1).await, tick0 + 1);
-    let s = wait_for(&mut wb, "offer in state", |v| v["type"] == "state" && !v["offers"].as_array().unwrap().is_empty()).await;
+    let s =
+        wait_for(&mut wb, "offer in state", |v| v["type"] == "state" && !v["offers"].as_array().unwrap().is_empty())
+            .await;
     assert_eq!(s["offers"][0]["id"], offer_id);
     assert_eq!(s["offers"][0]["status"], "pending");
 
@@ -282,7 +305,8 @@ async fn directed_mating_consent_round_trip() {
         send(&mut wa, json!({"id": 12, "type": "cancel_mating", "request": offer_id})).await;
         let r = wait_for(&mut wa, "cancel result", |v| v["type"] == "result" && v["id"] == 12).await;
         assert_eq!(r["ok"], true, "{r}");
-        let u = wait_for(&mut wb, "cancelled", |v| v["type"] == "mating_update" && v["offer"]["status"] == "cancelled").await;
+        let u = wait_for(&mut wb, "cancelled", |v| v["type"] == "mating_update" && v["offer"]["status"] == "cancelled")
+            .await;
         assert_eq!(u["offer"]["id"], offer_id);
         // Later ticks don't revive it.
         srv.step(5).await;
@@ -337,7 +361,8 @@ async fn possess_and_order(addr: SocketAddr) -> (Ws, u64, (f64, f64), f64) {
     let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(&ann), Some(design("Ann's"))).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let mut wa = ws(addr, &ann).await;
-    let state = wait_for(&mut wa, "state", |v| v["type"] == "state" && !v["organisms"].as_array().unwrap().is_empty()).await;
+    let state =
+        wait_for(&mut wa, "state", |v| v["type"] == "state" && !v["organisms"].as_array().unwrap().is_empty()).await;
     let org = &state["organisms"][0];
     let id = org["id"].as_u64().unwrap();
     let (x0, y0) = (org["x"].as_f64().unwrap(), org["y"].as_f64().unwrap());

@@ -245,7 +245,11 @@ mod tests {
                 .with(Gene::Carnivory, 0.9)
                 .with(Gene::PackInstinct, 0.9),
         );
-        let loner = pheno(FounderDesign::new("l", Thermo::Warm, BirthType::Live, 3).with(Gene::Carnivory, 0.9).with(Gene::PackInstinct, 0.1));
+        let loner = pheno(
+            FounderDesign::new("l", Thermo::Warm, BirthType::Live, 3)
+                .with(Gene::Carnivory, 0.9)
+                .with(Gene::PackInstinct, 0.1),
+        );
         let at = Vec2::new(1.0, 1.0);
         let mut field = GroupField::new(32, 32, 16);
         let pack: Vec<_> = (0..6).map(|_| (at, &wolf)).collect();
@@ -279,7 +283,11 @@ mod tests {
     fn shared_burrows_need_diggers_that_tolerate_each_other() {
         let t = GroupTrait::SharedBurrows;
         let (social, solitary) = (digger(0.7), digger(0.2));
-        let clawed = pheno(FounderDesign::new("c", Thermo::Warm, BirthType::Live, 3).with(Gene::Claws, 0.7).with(Gene::GroupTolerance, 0.7));
+        let clawed = pheno(
+            FounderDesign::new("c", Thermo::Warm, BirthType::Live, 3)
+                .with(Gene::Claws, 0.7)
+                .with(Gene::GroupTolerance, 0.7),
+        );
         let surface = pheno(FounderDesign::new("s", Thermo::Warm, BirthType::Live, 3).with(Gene::GroupTolerance, 0.9));
         assert!(t.is_carrier(&social) && t.is_carrier(&clawed));
         assert!(!t.is_carrier(&solitary) && t.is_eligible(&solitary));
@@ -298,7 +306,11 @@ mod tests {
     fn sentries_need_vigilant_group_members() {
         let t = GroupTrait::Sentries;
         let herd = |vigilance: f32, gt: f32| {
-            pheno(FounderDesign::new("h", Thermo::Warm, BirthType::Live, 1).with(Gene::Vigilance, vigilance).with(Gene::GroupTolerance, gt))
+            pheno(
+                FounderDesign::new("h", Thermo::Warm, BirthType::Live, 1)
+                    .with(Gene::Vigilance, vigilance)
+                    .with(Gene::GroupTolerance, gt),
+            )
         };
         let (sentry, member, loner) = (herd(0.8, 0.9), herd(0.0, 0.9), herd(0.8, 0.3));
         assert!(t.is_carrier(&sentry));
@@ -318,7 +330,11 @@ mod tests {
     fn herd_defense_is_diluted_only_by_large_plant_eaters() {
         let t = GroupTrait::HerdDefense;
         let grazer = |size: f32, gt: f32| {
-            pheno(FounderDesign::new("g", Thermo::Warm, BirthType::Live, 1).with(Gene::BodySize, size).with(Gene::GroupTolerance, gt))
+            pheno(
+                FounderDesign::new("g", Thermo::Warm, BirthType::Live, 1)
+                    .with(Gene::BodySize, size)
+                    .with(Gene::GroupTolerance, gt),
+            )
         };
         let (herd, loner, vole) = (grazer(0.6, 0.9), grazer(0.6, 0.2), grazer(0.12, 0.4));
         let fox = pheno(FounderDesign::new("f", Thermo::Warm, BirthType::Live, 4).with(Gene::Carnivory, 0.85));
@@ -330,15 +346,22 @@ mod tests {
     }
 
     fn seasonal(strategy: Gene, gt: f32) -> Phenotype {
-        pheno(FounderDesign::new("s", Thermo::Warm, BirthType::Live, 2).with(strategy, 0.8).with(Gene::GroupTolerance, gt))
+        pheno(
+            FounderDesign::new("s", Thermo::Warm, BirthType::Live, 2)
+                .with(strategy, 0.8)
+                .with(Gene::GroupTolerance, gt),
+        )
     }
 
     #[test]
     fn communal_dens_need_sleepers_that_tolerate_each_other() {
         let t = GroupTrait::CommunalDens;
         let (social, solitary) = (seasonal(Gene::Hibernation, 0.8), seasonal(Gene::Hibernation, 0.2));
-        let brumator =
-            pheno(FounderDesign::new("b", Thermo::Cold, BirthType::Live, 2).with(Gene::Brumation, 0.8).with(Gene::GroupTolerance, 0.8));
+        let brumator = pheno(
+            FounderDesign::new("b", Thermo::Cold, BirthType::Live, 2)
+                .with(Gene::Brumation, 0.8)
+                .with(Gene::GroupTolerance, 0.8),
+        );
         let awake = pheno(FounderDesign::new("a", Thermo::Warm, BirthType::Live, 2).with(Gene::GroupTolerance, 0.9));
         assert!(t.is_carrier(&social) && t.is_carrier(&brumator));
         assert!(!t.is_carrier(&solitary) && t.is_eligible(&solitary));
@@ -364,7 +387,8 @@ mod tests {
     fn shared_caches_are_diluted_by_free_riders() {
         let t = GroupTrait::SharedCaches;
         let cacher = seasonal(Gene::Caching, 0.8);
-        let free_rider = pheno(FounderDesign::new("f", Thermo::Warm, BirthType::Live, 2).with(Gene::GroupTolerance, 0.8));
+        let free_rider =
+            pheno(FounderDesign::new("f", Thermo::Warm, BirthType::Live, 2).with(Gene::GroupTolerance, 0.8));
         let loner = seasonal(Gene::Caching, 0.2);
         let hunter = pheno(
             FounderDesign::new("h", Thermo::Warm, BirthType::Live, 2)

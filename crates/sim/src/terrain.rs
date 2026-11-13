@@ -386,10 +386,11 @@ impl Map {
 
         let (chunks_x, chunks_y) = (width.div_ceil(CHUNK), height.div_ceil(CHUNK));
         let catchment = carve_rivers(&mut tiles, width, height, chunks_x);
-        let mut cells = vec![
-            WeatherCell { wind: 0.3, rain: 0.0, wetness: 0.5, melt: 0.0, land_tiles: 0, river_tiles: 0 };
-            chunks_x * chunks_y
-        ];
+        let mut cells =
+            vec![
+                WeatherCell { wind: 0.3, rain: 0.0, wetness: 0.5, melt: 0.0, land_tiles: 0, river_tiles: 0 };
+                chunks_x * chunks_y
+            ];
         for (i, t) in tiles.iter().enumerate() {
             let c = &mut cells[(i / width / CHUNK) * chunks_x + (i % width) / CHUNK];
             c.land_tiles += (t.base_water < 1.0) as u32;
@@ -442,10 +443,7 @@ impl Map {
     }
 
     pub fn clamp(&self, p: Vec2) -> Vec2 {
-        Vec2::new(
-            p.x.clamp(0.0, self.width as f32 - 0.01),
-            p.y.clamp(0.0, self.height as f32 - 0.01),
-        )
+        Vec2::new(p.x.clamp(0.0, self.width as f32 - 0.01), p.y.clamp(0.0, self.height as f32 - 0.01))
     }
 
     pub fn tile_center(x: usize, y: usize) -> Vec2 {
@@ -547,7 +545,13 @@ impl Map {
             // one the full scan below would pick.
             for &(dx, dy) in &NEAR_OFFSETS {
                 let (x, y) = (cx as i32 + dx, cy as i32 + dy);
-                if dx.abs() > radius || dy.abs() > radius || x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+                if dx.abs() > radius
+                    || dy.abs() > radius
+                    || x < 0
+                    || y < 0
+                    || x >= self.width as i32
+                    || y >= self.height as i32
+                {
                     continue;
                 }
                 if self.tiles[self.idx(x as usize, y as usize)].water_source() {
@@ -602,7 +606,14 @@ impl Map {
     /// One simulated hour of weather and environment over the whole map at
     /// once (generation, tests). The world spreads the chunk updates over the
     /// ticks of each hour instead.
-    pub fn update_environment(&mut self, hour_index: u64, day_of_year: u32, hour: u32, days_per_year: u32, bal: &Balance) {
+    pub fn update_environment(
+        &mut self,
+        hour_index: u64,
+        day_of_year: u32,
+        hour: u32,
+        days_per_year: u32,
+        bal: &Balance,
+    ) {
         self.advance_weather(hour_index, day_of_year, days_per_year, bal);
         self.update_chunks(0, 1, day_of_year, hour, days_per_year, bal);
     }
@@ -622,7 +633,9 @@ impl Map {
         let h = hour_index as f64;
         let seed = self.weather_seed;
         // Noise coordinates in units of `scale` tiles, drifting with time.
-        let at = |x: f64, y: f64, vx: f64, vy: f64, scale: f64| (((x - vx * h) / scale) as f32, ((y - vy * h) / scale) as f32);
+        let at = |x: f64, y: f64, vx: f64, vy: f64, scale: f64| {
+            (((x - vx * h) / scale) as f32, ((y - vy * h) / scale) as f32)
+        };
         let z = |n: f32| (n - 0.5) / NOISE_SD3;
         let (mut dry_land, mut land, mut flooded, mut rivers) = (0u32, 0u32, 0u32, 0u32);
         for (c, cell) in self.cells.iter_mut().enumerate() {
@@ -666,7 +679,15 @@ impl Map {
     /// updates each chunk once; the order is fixed, so runs stay
     /// deterministic. The water-distance field is refreshed after the last
     /// phase if any chunk changed where water is.
-    pub fn update_chunks(&mut self, phase: u64, phases: u64, day_of_year: u32, hour: u32, days_per_year: u32, bal: &Balance) {
+    pub fn update_chunks(
+        &mut self,
+        phase: u64,
+        phases: u64,
+        day_of_year: u32,
+        hour: u32,
+        days_per_year: u32,
+        bal: &Balance,
+    ) {
         let offset = Map::temperature_offset(hour, day_of_year, days_per_year) + self.climate_temp;
         let n = self.cells.len();
         let mut c = phase as usize;
@@ -1250,7 +1271,11 @@ mod tests {
         // Organisms have further to walk to water, and paths know terrain changed.
         assert!(map.water_dist.iter().map(|&d| d as u64).sum::<u64>() > dist);
         assert!(map.terrain_version > version);
-        assert!(map.tiles.iter().filter(|t| t.biome == Biome::Marsh && !t.is_river()).all(|t| t.water_depth < t.base_water));
+        assert!(map
+            .tiles
+            .iter()
+            .filter(|t| t.biome == Biome::Marsh && !t.is_river())
+            .all(|t| t.water_depth < t.base_water));
 
         set_wetness(&mut map, 0.8);
         map.update_chunks(0, 1, 40, 12, 120, &bal);
@@ -1279,7 +1304,8 @@ mod tests {
             let min = winds.iter().copied().fold(f32::MAX, f32::min);
             spread = spread.max(max - min);
             let wet: Vec<f32> = map.cells.iter().map(|c| c.wetness).collect();
-            wet_spread = wet_spread.max(wet.iter().copied().fold(f32::MIN, f32::max) - wet.iter().copied().fold(f32::MAX, f32::min));
+            wet_spread = wet_spread
+                .max(wet.iter().copied().fold(f32::MIN, f32::max) - wet.iter().copied().fold(f32::MAX, f32::min));
             rainy_and_dry |= map.cells.iter().any(|c| c.rain > 0.1) && map.cells.iter().any(|c| c.rain == 0.0);
             if h == 1 {
                 first = winds;
@@ -1369,13 +1395,18 @@ mod tests {
             // Speckle water about so that ties and misses both occur.
             for (k, t) in map.tiles.iter_mut().enumerate() {
                 let h = crate::rng::splitmix64(k as u64 ^ (seed << 32));
-                (t.water_depth, t.ice, t.snow) = (if h.is_multiple_of(23) { 0.5 } else { 0.0 }, if h.is_multiple_of(7) { 1.0 } else { 0.0 }, 0.0);
+                (t.water_depth, t.ice, t.snow) =
+                    (if h.is_multiple_of(23) { 0.5 } else { 0.0 }, if h.is_multiple_of(7) { 1.0 } else { 0.0 }, 0.0);
             }
             for y in 0..36 {
                 for x in 0..40 {
                     let p = Vec2::new(x as f32 + 0.3, y as f32 + 0.6);
                     for r in 0..=NEAR_RADIUS {
-                        assert_eq!(map.find_water(p, r), map.find_water_scan(p, r), "seed {seed} at {x},{y} radius {r}");
+                        assert_eq!(
+                            map.find_water(p, r),
+                            map.find_water_scan(p, r),
+                            "seed {seed} at {x},{y} radius {r}"
+                        );
                     }
                 }
             }

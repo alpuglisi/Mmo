@@ -144,14 +144,11 @@ pub fn sweep(args: &SweepArgs) {
     let mut center = args.center;
     let mut csv = String::new();
     let mut all: Vec<Trial> = Vec::new();
-    let lineage_names = presets::standard_world(
-        WorldConfig { width: 16, height: 16, ..Default::default() },
-        1,
-    )
-    .lineages
-    .iter()
-    .map(|l| l.name.clone())
-    .collect::<Vec<_>>();
+    let lineage_names = presets::standard_world(WorldConfig { width: 16, height: 16, ..Default::default() }, 1)
+        .lineages
+        .iter()
+        .map(|l| l.name.clone())
+        .collect::<Vec<_>>();
 
     println!(
         "Sweep: {} rounds × {} trials × {} seeds · {}×{} map · {} days · {} threads",
@@ -168,8 +165,7 @@ pub fn sweep(args: &SweepArgs) {
         let started = Instant::now();
         let balances: Vec<Balance> =
             (0..args.trials).map(|k| perturb(&center, spread, args.base_seed, round, k)).collect();
-        let jobs: Vec<(usize, u64)> =
-            (0..args.trials).flat_map(|k| (0..args.seeds).map(move |s| (k, s))).collect();
+        let jobs: Vec<(usize, u64)> = (0..args.trials).flat_map(|k| (0..args.seeds).map(move |s| (k, s))).collect();
         let results: Vec<(usize, RunMetrics)> = jobs
             .par_iter()
             .map(|&(k, s)| (k, run_one(balances[k], args.base_seed + s, args.size, args.days, args.parallel_apply)))
@@ -184,7 +180,12 @@ pub fn sweep(args: &SweepArgs) {
         }
         trials.sort_by(|a, b| b.score().total_cmp(&a.score()));
 
-        println!("\n── Round {} (spread ±{:.0}%) · {:.0}s ──", round + 1, (spread.exp() - 1.0) * 100.0, started.elapsed().as_secs_f64());
+        println!(
+            "\n── Round {} (spread ±{:.0}%) · {:.0}s ──",
+            round + 1,
+            (spread.exp() - 1.0) * 100.0,
+            started.elapsed().as_secs_f64()
+        );
         print_header(&lineage_names);
         let baseline = trials.iter().find(|t| t.index == 0).map(|t| t.score());
         for t in trials.iter().take(6) {

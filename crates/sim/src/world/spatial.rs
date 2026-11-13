@@ -73,7 +73,15 @@ impl SpatialGrid {
     pub fn new(width: usize, height: usize, cell: f32) -> Self {
         let cols = (width as f32 / cell).ceil() as usize;
         let rows = (height as f32 / cell).ceil() as usize;
-        Self { cell, cols, rows, starts: vec![0; cols * rows + 1], items: Vec::new(), pos: Vec::new(), genes: Vec::new() }
+        Self {
+            cell,
+            cols,
+            rows,
+            starts: vec![0; cols * rows + 1],
+            items: Vec::new(),
+            pos: Vec::new(),
+            genes: Vec::new(),
+        }
     }
 
     fn cell_of(&self, p: Vec2) -> (usize, usize) {

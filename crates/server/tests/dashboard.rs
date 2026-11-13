@@ -26,7 +26,15 @@ fn config() -> ServerConfig {
     ServerConfig {
         bind: SocketAddr::from(([127, 0, 0, 1], 0)),
         data_dir: None,
-        world: WorldSettings { seed: 11, width: 64, height: 48, wild: true, days_per_year: 8, lod: false, catastrophes: false },
+        world: WorldSettings {
+            seed: 11,
+            width: 64,
+            height: 48,
+            wild: true,
+            days_per_year: 8,
+            lod: false,
+            catastrophes: false,
+        },
         ..Default::default()
     }
     .fast()
@@ -36,7 +44,13 @@ async fn server(cfg: ServerConfig) -> RunningServer {
     start(cfg).await.expect("server starts")
 }
 
-async fn http(addr: SocketAddr, method: Method, path: &str, token: Option<&str>, body: Option<Value>) -> (StatusCode, hyper::HeaderMap, Bytes) {
+async fn http(
+    addr: SocketAddr,
+    method: Method,
+    path: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, hyper::HeaderMap, Bytes) {
     let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
     let mut req = Request::builder().method(method).uri(format!("http://{addr}{path}"));
     if let Some(t) = token {
@@ -54,13 +68,21 @@ async fn http(addr: SocketAddr, method: Method, path: &str, token: Option<&str>,
     (status, headers, res.into_body().collect().await.unwrap().to_bytes())
 }
 
-async fn json_req(addr: SocketAddr, method: Method, path: &str, token: Option<&str>, body: Option<Value>) -> (StatusCode, Value) {
+async fn json_req(
+    addr: SocketAddr,
+    method: Method,
+    path: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let (s, _, b) = http(addr, method, path, token, body).await;
     (s, serde_json::from_slice(&b).unwrap_or(Value::Null))
 }
 
 async fn register(addr: SocketAddr, name: &str) -> String {
-    let (s, v) = json_req(addr, Method::POST, "/api/register", None, Some(json!({"name": name, "password": "a long password"}))).await;
+    let (s, v) =
+        json_req(addr, Method::POST, "/api/register", None, Some(json!({"name": name, "password": "a long password"})))
+            .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     v["token"].as_str().unwrap().to_string()
 }
@@ -139,7 +161,12 @@ async fn terrain_stats_and_seasons() {
     assert!(stats["history_days"].as_array().unwrap().len() >= 2, "{stats}");
     assert_eq!(stats["name"], "Ann's");
     assert!(stats["alive"].as_u64().unwrap() > 0);
-    let bands: u64 = stats["age_bands"].as_array().unwrap().iter().map(|b| b["female"].as_u64().unwrap() + b["male"].as_u64().unwrap()).sum();
+    let bands: u64 = stats["age_bands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["female"].as_u64().unwrap() + b["male"].as_u64().unwrap())
+        .sum();
     assert_eq!(bands, stats["alive"].as_u64().unwrap());
     let genes = stats["genes"].as_array().unwrap();
     assert!(genes.len() > 30);
@@ -181,7 +208,14 @@ async fn logins_and_commands_are_rate_limited() {
     assert_eq!(v["code"], "rate_limited");
     assert!(v["retry_after_ms"].as_u64().unwrap() > 1000);
     assert!(h.get("retry-after").is_some());
-    let (s, _) = json_req(addr, Method::POST, "/api/register", None, Some(json!({"name": "bob", "password": "a long password"}))).await;
+    let (s, _) = json_req(
+        addr,
+        Method::POST,
+        "/api/register",
+        None,
+        Some(json!({"name": "bob", "password": "a long password"})),
+    )
+    .await;
     assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
 
     // Commands: five go through, the rest are answered `rate_limited`.
@@ -274,7 +308,10 @@ async fn species_eras_catastrophes_and_achievements() {
 
     let (s, eras) = json_req(addr, Method::GET, "/api/eras", None, None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!((eras["era"].as_u64(), eras["era_days"].as_u64(), eras["first_day"].as_u64()), (Some(0), Some(24), Some(0)));
+    assert_eq!(
+        (eras["era"].as_u64(), eras["era_days"].as_u64(), eras["first_day"].as_u64()),
+        (Some(0), Some(24), Some(0))
+    );
     assert!(eras["eras"].as_array().unwrap().is_empty() && eras["days_left"].as_u64().unwrap() <= 24);
 
     let (s, cats) = json_req(addr, Method::GET, "/api/catastrophes", None, None).await;

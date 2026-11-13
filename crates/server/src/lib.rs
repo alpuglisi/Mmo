@@ -52,8 +52,8 @@ use evo_sim::World;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::accounts::{Accounts, SessionPolicy};
-use crate::limits::{Limiters, Limits};
 use crate::game::{build_world, world_config, Game, GameConfig, PersistEvent, SavedGame, WorldSettings, HISTORY_DAYS};
+use crate::limits::{Limiters, Limits};
 use crate::runner::{Request, Runner, RunnerConfig};
 use crate::store::{FileStore, MemoryStore, Store};
 
@@ -89,7 +89,11 @@ impl Default for ServerConfig {
             data_dir: Some(PathBuf::from("data")),
             database_url: None,
             world: WorldSettings::default(),
-            runner: RunnerConfig { tick: Duration::from_secs(1), state_interval: Duration::from_secs(1), manual: false },
+            runner: RunnerConfig {
+                tick: Duration::from_secs(1),
+                state_interval: Duration::from_secs(1),
+                manual: false,
+            },
             game: GameConfig::default(),
             static_dir: None,
             limits: Limits::default(),
@@ -102,7 +106,8 @@ impl Default for ServerConfig {
 impl ServerConfig {
     /// Fast mode for tests and demos: 20 ms ticks, state 10 times a second.
     pub fn fast(mut self) -> Self {
-        self.runner = RunnerConfig { tick: Duration::from_millis(20), state_interval: Duration::from_millis(100), manual: false };
+        self.runner =
+            RunnerConfig { tick: Duration::from_millis(20), state_interval: Duration::from_millis(100), manual: false };
         self
     }
 
@@ -133,7 +138,8 @@ impl RunningServer {
         let _ = (&mut self.serve).await;
         let (reply, saved) = oneshot::channel();
         let world = self.world.clone();
-        let sent = tokio::task::spawn_blocking(move || world.send(Request::Shutdown { reply }).is_ok()).await.unwrap_or(false);
+        let sent =
+            tokio::task::spawn_blocking(move || world.send(Request::Shutdown { reply }).is_ok()).await.unwrap_or(false);
         drop(self.world);
         if sent {
             let _ = saved.await;
@@ -204,7 +210,9 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
     for d in unfounded {
         match d.design.to_design() {
             Ok(design) => match game.found(d.player, &design) {
-                Ok(ok) => tracing::info!("re-founded {:?} for player {} as lineage {}", d.design.name, d.player, ok.lineage),
+                Ok(ok) => {
+                    tracing::info!("re-founded {:?} for player {} as lineage {}", d.design.name, d.player, ok.lineage)
+                }
                 Err(e) => tracing::warn!("could not re-found the design of player {}: {e:?}", d.player),
             },
             Err(e) => tracing::warn!("stored design of player {} no longer validates: {}", d.player, e.message()),

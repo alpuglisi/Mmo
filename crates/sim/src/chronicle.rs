@@ -52,8 +52,12 @@ pub enum CatastropheKind {
 }
 
 impl CatastropheKind {
-    pub const ALL: [CatastropheKind; 4] =
-        [CatastropheKind::SevereWinter, CatastropheKind::Megadrought, CatastropheKind::Epidemic, CatastropheKind::FloodYear];
+    pub const ALL: [CatastropheKind; 4] = [
+        CatastropheKind::SevereWinter,
+        CatastropheKind::Megadrought,
+        CatastropheKind::Epidemic,
+        CatastropheKind::FloodYear,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -146,11 +150,22 @@ pub struct EraRecord {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AchievementKind {
-    SpeciesFounded { species: u32 },
+    SpeciesFounded {
+        species: u32,
+    },
     /// A lineage alive `years` whole years after founding.
-    LineageLongevity { lineage: u32, years: u32 },
-    NicheDominance { era: u64, niche: String, share: f64 },
-    SurvivedCatastrophe { catastrophe: u32 },
+    LineageLongevity {
+        lineage: u32,
+        years: u32,
+    },
+    NicheDominance {
+        era: u64,
+        niche: String,
+        share: f64,
+    },
+    SurvivedCatastrophe {
+        catastrophe: u32,
+    },
 }
 
 impl AchievementKind {

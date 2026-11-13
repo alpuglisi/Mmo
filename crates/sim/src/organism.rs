@@ -1,8 +1,8 @@
 //! A single organism: genome, derived traits, needs and life-cycle state.
 
 use crate::genome::{Gene, Genome, Phenotype, PlayerId};
-use crate::mating::Display;
 use crate::math::Vec2;
+use crate::mating::Display;
 use crate::pathfinding::Path;
 use crate::stats::{derive, Traits};
 
@@ -357,7 +357,8 @@ impl Organism {
     pub fn evasion(&self) -> f32 {
         let st = &self.traits.stats;
         let fat = 1.0 - 0.3 * (self.fat / 100.0).min(1.0);
-        (st.speed * self.activity * (0.5 + 0.5 * self.growth) * fat + st.agility) * (0.4 + 0.6 * self.needs.energy / 100.0)
+        (st.speed * self.activity * (0.5 + 0.5 * self.growth) * fat + st.agility)
+            * (0.4 + 0.6 * self.needs.energy / 100.0)
     }
 
     /// Resistance to attack before group-trait bonuses.

@@ -151,7 +151,8 @@ fn sentries_take_turns_on_watch() {
     set_gene(&mut w.organisms[s], Gene::Vigilance, 0.8);
     assert!(t.is_carrier(&w.organisms[s].pheno));
     // Some of its herd around it.
-    let herd: Vec<usize> = w.organisms.iter().enumerate().filter(|(j, o)| o.lineage == 5 && *j != s).map(|(j, _)| j).take(4).collect();
+    let herd: Vec<usize> =
+        w.organisms.iter().enumerate().filter(|(j, o)| o.lineage == 5 && *j != s).map(|(j, _)| j).take(4).collect();
     for (k, &j) in herd.iter().enumerate() {
         w.organisms[j].pos = CENTER + Vec2::new(1.0, 0.0).rotate(k as f32 * 1.5);
     }
@@ -159,10 +160,13 @@ fn sentries_take_turns_on_watch() {
     set_benefit(&mut w, t, 1.0);
     let shift = 2 * w.config.ticks_per_hour();
     let shifts = 400;
-    let on: Vec<u64> = (0..shifts).map(|k| k * shift).filter(|&tick| {
-        w.tick = tick;
-        w.on_watch_duty(&w.organisms[s])
-    }).collect();
+    let on: Vec<u64> = (0..shifts)
+        .map(|k| k * shift)
+        .filter(|&tick| {
+            w.tick = tick;
+            w.on_watch_duty(&w.organisms[s])
+        })
+        .collect();
     let share = on.len() as f32 / shifts as f32;
     assert!((share - w.config.balance.sentry_share).abs() < 0.07, "share {share}");
     w.tick = on[0];

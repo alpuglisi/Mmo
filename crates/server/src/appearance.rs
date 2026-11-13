@@ -137,7 +137,12 @@ mod tests {
 
     #[test]
     fn classifies_body_plans() {
-        let mouse = Appearance::of(&org(&[(Gene::BodySize, 0.0), (Gene::Carnivory, 0.0), (Gene::Endothermy, 0.9), (Gene::Fur, 0.8)]));
+        let mouse = Appearance::of(&org(&[
+            (Gene::BodySize, 0.0),
+            (Gene::Carnivory, 0.0),
+            (Gene::Endothermy, 0.9),
+            (Gene::Fur, 0.8),
+        ]));
         assert_eq!(mouse.size, 0);
         assert_eq!(mouse.diet, Diet::Herbivore);
         assert!(mouse.warm);

@@ -143,12 +143,21 @@ mod tests {
 
     #[test]
     fn layers_cover_every_tile_and_round_trip() {
-        let mut world = build_world(&WorldSettings { seed: 5, width: 48, height: 40, wild: false, ..Default::default() });
+        let mut world =
+            build_world(&WorldSettings { seed: 5, width: 48, height: 40, wild: false, ..Default::default() });
         world.run_days(1);
         let raw = terrain_raw(&world);
         let view = raw.encode();
         assert_eq!((view.width, view.height), (48, 40));
-        for layer in [&view.biome, &view.elevation, &view.river, &view.base_water, &view.dynamic.water, &view.dynamic.snow, &view.dynamic.wetness] {
+        for layer in [
+            &view.biome,
+            &view.elevation,
+            &view.river,
+            &view.base_water,
+            &view.dynamic.water,
+            &view.dynamic.snow,
+            &view.dynamic.wetness,
+        ] {
             assert_eq!(decode(layer).len(), 48 * 40);
         }
         let biome = decode(&view.biome);

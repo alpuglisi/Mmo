@@ -36,15 +36,15 @@ mod decide;
 mod density;
 mod disease;
 mod environment;
-pub mod lod;
-#[cfg(feature = "serde")]
-mod snapshot;
-mod par_apply;
 #[cfg(test)]
 mod group_tests;
+pub mod lod;
+mod par_apply;
 #[cfg(test)]
 mod path_tests;
 mod seasonal;
+#[cfg(feature = "serde")]
+mod snapshot;
 mod spatial;
 
 use std::collections::{BTreeMap, HashMap};
@@ -64,8 +64,8 @@ use crate::pathfinding::PathScratch;
 use crate::rng::{rng_for, stream};
 use crate::terrain::{traverse, Map, Season, Traverse, Weather};
 
-use density::SpeciesDensity;
 pub use chronicle::{biome_niche, diet_niche};
+use density::SpeciesDensity;
 pub use lod::{Cohort, LodStats, PoolEntry};
 #[cfg(feature = "serde")]
 pub use snapshot::{SnapshotError, SnapshotHeader, SNAPSHOT_VERSION};
@@ -282,7 +282,10 @@ impl Intent {
 
 impl World {
     pub fn new(config: WorldConfig) -> Self {
-        assert!(config.ticks_per_day >= 24 && config.ticks_per_day.is_multiple_of(24), "ticks_per_day must be a multiple of 24");
+        assert!(
+            config.ticks_per_day >= 24 && config.ticks_per_day.is_multiple_of(24),
+            "ticks_per_day must be a multiple of 24"
+        );
         let map = Map::generate(config.seed, config.width, config.height);
         let weather = map.mean_weather();
         let group = GroupField::new(config.width, config.height, 16);
@@ -367,7 +370,8 @@ impl World {
             return (0, 0);
         };
         if l.owner == crate::WILD {
-            let wild_founders: u64 = self.lineages.iter().filter(|w| w.owner == crate::WILD).map(|w| w.founders as u64).sum();
+            let wild_founders: u64 =
+                self.lineages.iter().filter(|w| w.owner == crate::WILD).map(|w| w.founders as u64).sum();
             let cap = self.config.wild_cap as u64 * l.founders as u64 / wild_founders.max(1);
             let alive = self.lineage_alive.get(lineage as usize).copied().unwrap_or(0);
             (alive + self.lod.lineage_count(lineage).alive, cap as usize)
@@ -518,7 +522,11 @@ impl World {
             // Competitors share a diet: an omnivore competes with grazers and
             // hunters alike (diet overlap `1 - |carnivory difference|` above
             // 0.45), specialists only with their own kind.
-            let crowd = self.organisms.iter().filter(|o| o.pos.dist(p) < 12.0 && (o.traits.carnivory - carn).abs() < 0.55).count() as f32;
+            let crowd = self
+                .organisms
+                .iter()
+                .filter(|o| o.pos.dist(p) < 12.0 && (o.traits.carnivory - carn).abs() < 0.55)
+                .count() as f32;
             let danger: f32 = threats.iter().map(|&(q, w)| w * (1.0 - q.dist(p) / buffer.max(1e-3)).max(0.0)).sum();
             // A threat within the founders' scatter (plus a margin) would start
             // among them: weigh it heavily, not just as a slice of `danger`.
@@ -547,7 +555,11 @@ impl World {
                 .sum();
             let productivity = (t.base_temp / 12.0).clamp(0.2, 1.0);
             let food = t.veg_max / 40.0 * productivity * plant_eff + meat_eff * 0.04 * prey_count.min(60.0);
-            let score = water + food + comfort - 0.05 * crowd - (0.3 * danger).min(4.0) - (0.1 * carn * on_top).min(2.0) - 2.0 * close
+            let score = water + food + comfort
+                - 0.05 * crowd
+                - (0.3 * danger).min(4.0)
+                - (0.1 * carn * on_top).min(2.0)
+                - 2.0 * close
                 + rng.gen_range(0.0..0.5);
             if score > best.0 {
                 best = (score, p);
@@ -628,7 +640,10 @@ impl World {
     }
 
     fn passable_for(&self, o: &Organism, p: Vec2) -> bool {
-        matches!(traverse(&o.traits.body, self.map.tile_at(p), &self.map.weather_at(p), false), Traverse::Passable { .. })
+        matches!(
+            traverse(&o.traits.body, self.map.tile_at(p), &self.map.weather_at(p), false),
+            Traverse::Passable { .. }
+        )
     }
 
     fn insert(&mut self, mut o: Organism) -> OrgId {

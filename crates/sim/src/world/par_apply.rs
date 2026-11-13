@@ -64,8 +64,8 @@ use rayon::prelude::*;
 
 use super::apply::{PathCount, Settled};
 use super::{Intent, World};
-use crate::math::Vec2;
 use crate::design::BirthType;
+use crate::math::Vec2;
 use crate::pathfinding::PathScratch;
 use crate::rng::{rng_for, stream, SimRng};
 
@@ -159,8 +159,10 @@ impl World {
 
         // Settle sweep: needs, death rolls, disease, growth.
         let this = &*self;
-        let burrow: Vec<(f32, f32)> =
-            (0..n).into_par_iter().map(|i| if acted[i] { this.burrow_inputs(&this.organisms[i]) } else { (0.0, 0.0) }).collect();
+        let burrow: Vec<(f32, f32)> = (0..n)
+            .into_par_iter()
+            .map(|i| if acted[i] { this.burrow_inputs(&this.organisms[i]) } else { (0.0, 0.0) })
+            .collect();
         let (seed, tick) = (self.config.seed, self.tick);
         let mut orgs = std::mem::take(&mut self.organisms);
         let this = &*self;
@@ -210,7 +212,9 @@ mod tests {
         let orgs: Vec<_> = w
             .organisms
             .iter()
-            .map(|o| (o.id, o.alive, o.pos, o.needs.hunger, o.needs.energy, o.health, o.fat, o.growth, o.offspring_raised))
+            .map(|o| {
+                (o.id, o.alive, o.pos, o.needs.hunger, o.needs.energy, o.health, o.fat, o.growth, o.offspring_raised)
+            })
             .collect();
         let food: f64 = w.map.tiles.iter().map(|t| t.veg as f64 + t.meat as f64).sum();
         format!("{orgs:?} {:?} {food} {}", w.counters, w.clutches.len())
@@ -223,7 +227,10 @@ mod tests {
             let mut b = world(9, parallel);
             run_on(1, &mut a, 8);
             run_on(4, &mut b, 8);
-            assert!(a.counters.births + a.counters.hatched > 0 && a.counters.kills > 0, "the test should see births and kills");
+            assert!(
+                a.counters.births + a.counters.hatched > 0 && a.counters.kills > 0,
+                "the test should see births and kills"
+            );
             assert_eq!(fingerprint(&a), fingerprint(&b), "parallel_apply = {parallel}");
         }
     }
@@ -267,7 +274,13 @@ mod tests {
             let n = w.organisms.len();
             let mut intents = vec![Intent::idle(); n];
             for &h in &hunters {
-                intents[h] = Intent { action: Action::Hunt, target: Some(at), target_org: Some(prey), sprint: true, ..Intent::idle() };
+                intents[h] = Intent {
+                    action: Action::Hunt,
+                    target: Some(at),
+                    target_org: Some(prey),
+                    sprint: true,
+                    ..Intent::idle()
+                };
             }
             let meat_before: f32 = w.map.tiles.iter().map(|t| t.meat).sum();
             let eaten_before = w.counters.deaths.get(&DeathCause::Predation).copied().unwrap_or(0);
@@ -293,7 +306,10 @@ mod tests {
     #[test]
     fn nursing_sees_the_mother_as_the_sequential_apply_does() {
         let nursed = |parallel: bool, young_first: bool| {
-            let mut w = presets::standard_world(WorldConfig { seed: 4, width: 48, height: 48, parallel_apply: parallel, ..Default::default() }, 1);
+            let mut w = presets::standard_world(
+                WorldConfig { seed: 4, width: 48, height: 48, parallel_apply: parallel, ..Default::default() },
+                1,
+            );
             let mother = w.organisms.iter().position(|o| o.lineage == 1).unwrap();
             let (pos, mid, owner) = (Vec2::new(20.5, 20.5), w.organisms[mother].id, w.organisms[mother].owner);
             w.organisms[mother].pos = pos;
@@ -305,7 +321,8 @@ mod tests {
             w.organisms[young].needs.hunger = 25.0;
             let n = w.organisms.len();
             let mut intents = vec![Intent::idle(); n];
-            intents[mother] = Intent { action: Action::Wander, target: Some(pos + Vec2::new(6.0, 0.0)), ..Intent::idle() };
+            intents[mother] =
+                Intent { action: Action::Wander, target: Some(pos + Vec2::new(6.0, 0.0)), ..Intent::idle() };
             let mut order: Vec<usize> = (0..n).filter(|&k| k != mother && k != young).collect();
             order.extend(if young_first { [young, mother] } else { [mother, young] });
             let mut rng = rng_for(4, stream::APPLY, 0, 0);

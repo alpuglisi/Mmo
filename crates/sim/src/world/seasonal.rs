@@ -147,7 +147,9 @@ impl World {
             Dormancy::Winter => {
                 let den = 1.0 - bal.communal_den * self.den_heat(o);
                 match s.winter {
-                    Some((WinterForm::WarmBrumator, k)) => bal.dormant_metabolism * (2.0 - k) * bal.brumation_mismatch * den,
+                    Some((WinterForm::WarmBrumator, k)) => {
+                        bal.dormant_metabolism * (2.0 - k) * bal.brumation_mismatch * den
+                    }
                     Some((_, k)) => bal.dormant_metabolism * (2.0 - k) * den,
                     None => 1.0,
                 }
@@ -295,7 +297,13 @@ impl World {
     /// Enter or leave a dormancy, and let caches spoil. Runs in `apply`
     /// after the action, before needs. Returns a cause of death for a
     /// sleeper that never wakes.
-    pub(crate) fn seasonal_tick(&self, o: &mut Organism, intent: &Intent, moved: f32, rng: &mut SimRng) -> Option<DeathCause> {
+    pub(crate) fn seasonal_tick(
+        &self,
+        o: &mut Organism,
+        intent: &Intent,
+        moved: f32,
+        rng: &mut SimRng,
+    ) -> Option<DeathCause> {
         let bal = self.config.balance;
         let season = self.season();
         let daytime = self.is_daytime();
@@ -315,7 +323,8 @@ impl World {
         };
         match o.dormancy {
             Dormancy::Awake => {
-                let free = o.pregnancy.is_none() && o.nest.is_none() && intent.threat < 0.3 && intent.action != Action::Flee;
+                let free =
+                    o.pregnancy.is_none() && o.nest.is_none() && intent.threat < 0.3 && intent.action != Action::Flee;
                 let fed = (o.fat > 0.0 || o.needs.hunger < LEAN_LIMIT) && o.needs.thirst < THIRST_LIMIT;
                 let cold_season = matches!(season, Season::Autumn | Season::Winter);
                 if !free {
@@ -669,7 +678,8 @@ mod tests {
     fn flat_world(base_temp: f32, veg: f32, day: u32) -> World {
         let mut w = World::new(WorldConfig { seed: 7, width: 24, height: 24, ..Default::default() });
         for t in &mut w.map.tiles {
-            (t.biome, t.water_depth, t.mud, t.sand, t.slope, t.veg_density) = (Biome::Grassland, 0.0, 0.0, 0.0, 0.0, 0.1);
+            (t.biome, t.water_depth, t.mud, t.sand, t.slope, t.veg_density) =
+                (Biome::Grassland, 0.0, 0.0, 0.0, 0.0, 0.1);
             (t.base_temp, t.veg, t.veg_max, t.snow, t.ice) = (base_temp, veg, veg, 0.0, 0.0);
             // No lakes or rivers to refill when the weather updates water levels.
             (t.base_water, t.river, t.current) = (0.0, 0.0, 0.0);
@@ -888,7 +898,11 @@ mod tests {
             }
             let sexes = (w.organisms[timed[0]].sex, w.organisms[timed[1]].sex);
             if sexes.0 == sexes.1 {
-                w.organisms[timed[1]].sex = if sexes.0 == crate::organism::Sex::Male { crate::organism::Sex::Female } else { crate::organism::Sex::Male };
+                w.organisms[timed[1]].sex = if sexes.0 == crate::organism::Sex::Male {
+                    crate::organism::Sex::Female
+                } else {
+                    crate::organism::Sex::Male
+                };
             }
         };
         pair(&mut w, window + 1);

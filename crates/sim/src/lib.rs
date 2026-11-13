@@ -27,19 +27,19 @@ pub mod design;
 pub mod genome;
 pub mod group;
 pub mod legacy;
-pub mod mating;
 pub mod math;
+pub mod mating;
 pub mod organism;
 pub mod pathfinding;
 pub mod presets;
 pub mod render;
-pub mod species;
 pub mod rng;
+#[cfg(feature = "serde")]
+mod serde_util;
+pub mod species;
 pub mod stats;
 pub mod terrain;
 pub mod world;
-#[cfg(feature = "serde")]
-mod serde_util;
 
 pub use config::{Balance, LodConfig, ScoringConfig, WorldConfig};
 pub use design::{BirthType, FounderDesign, Thermo};

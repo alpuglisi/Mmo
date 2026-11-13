@@ -31,7 +31,8 @@ fn main() {
     let scale = nums.get(1).copied().unwrap_or(5) as u32;
     let days = nums.get(2).copied().unwrap_or(2) as u32;
     let reps = nums.get(3).copied().unwrap_or(7) as usize;
-    let world = presets::standard_world(WorldConfig { seed: 7, width: size, height: size, ..Default::default() }, scale);
+    let world =
+        presets::standard_world(WorldConfig { seed: 7, width: size, height: size, ..Default::default() }, scale);
     let mut game = Game::new(world, GameConfig::default());
     game.world.run_days(days);
     println!("{size}x{size}, scale {scale}, {days} days: {} agents", game.world.alive_count());
@@ -74,6 +75,10 @@ fn main() {
     println!("medians of {reps}: save {:.1} MB, {saved} written by the saver", bytes as f64 / 1e6);
     println!("  tick, no save:                          {:.1} ms", median(plain));
     println!("  tick + save encoded on the world thread: {:.1} ms", median(inline));
-    println!("  tick + capture for the background saver: {:.1} ms (capture {:.1} ms)", median(background), median(capture));
+    println!(
+        "  tick + capture for the background saver: {:.1} ms (capture {:.1} ms)",
+        median(background),
+        median(capture)
+    );
     println!("  ticks while the saver encodes:          {:.1} ms", median(during));
 }

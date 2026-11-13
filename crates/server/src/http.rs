@@ -7,8 +7,8 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -25,8 +25,8 @@ use crate::design::{self, DesignSpec, SpecError};
 use crate::game::FoundError;
 use crate::limits::{Bucket, Limiters};
 use crate::protocol::{
-    AchievementList, CatastropheList, ChronicleView, ClientEnvelope, EraList, ErrorInfo, LineageStats, SeasonBoard, ServerMsg, SpeciesList,
-    TerrainDynamic, TerrainView,
+    AchievementList, CatastropheList, ChronicleView, ClientEnvelope, EraList, ErrorInfo, LineageStats, SeasonBoard,
+    ServerMsg, SpeciesList, TerrainDynamic, TerrainView,
 };
 use crate::runner::{Published, Request, TerrainReply};
 use crate::store::{DesignRecord, Store};
@@ -227,7 +227,11 @@ pub struct FoundResponse {
     pub cost: f32,
 }
 
-async fn found_lineage(State(app): State<AppState>, headers: HeaderMap, Json(spec): Json<DesignSpec>) -> Result<(StatusCode, Json<FoundResponse>), ApiError> {
+async fn found_lineage(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Json(spec): Json<DesignSpec>,
+) -> Result<(StatusCode, Json<FoundResponse>), ApiError> {
     let session = authed(&app, &headers)?;
     let design = spec.to_design()?;
     let (reply, rx) = oneshot::channel();
@@ -235,7 +239,8 @@ async fn found_lineage(State(app): State<AppState>, headers: HeaderMap, Json(spe
     let ok = match rx.await.map_err(ApiError::internal)? {
         Ok(ok) => ok,
         Err(FoundError::AlreadyFounded { lineage }) => {
-            let mut e = ApiError::new(StatusCode::CONFLICT, "already_founded", "you already founded a lineage in this world");
+            let mut e =
+                ApiError::new(StatusCode::CONFLICT, "already_founded", "you already founded a lineage in this world");
             e.detail = Some(serde_json::json!({ "lineage": lineage }));
             return Err(e);
         }
@@ -267,7 +272,10 @@ struct HistoryQuery {
     limit: Option<usize>,
 }
 
-async fn leaderboard_history(State(app): State<AppState>, Query(q): Query<HistoryQuery>) -> Result<Json<Vec<crate::store::DailyRecord>>, ApiError> {
+async fn leaderboard_history(
+    State(app): State<AppState>,
+    Query(q): Query<HistoryQuery>,
+) -> Result<Json<Vec<crate::store::DailyRecord>>, ApiError> {
     let limit = q.limit.unwrap_or(30).clamp(1, 1000);
     Ok(Json(app.store.recent_daily(limit).await.map_err(ApiError::internal)?))
 }
@@ -278,7 +286,10 @@ struct SeasonsQuery {
 }
 
 /// Seasonal leaderboards from the whole stored history, newest first.
-async fn leaderboard_seasons(State(app): State<AppState>, Query(q): Query<SeasonsQuery>) -> Result<Json<Vec<SeasonBoard>>, ApiError> {
+async fn leaderboard_seasons(
+    State(app): State<AppState>,
+    Query(q): Query<SeasonsQuery>,
+) -> Result<Json<Vec<SeasonBoard>>, ApiError> {
     let limit = q.limit.unwrap_or(8).clamp(1, 100);
     let records = app.store.recent_daily(100_000).await.map_err(ApiError::internal)?;
     let clock = app.published.borrow().summary.clock.clone();
@@ -290,9 +301,11 @@ async fn leaderboard_seasons(State(app): State<AppState>, Query(q): Query<Season
             accounts.name_of(p).unwrap_or_else(|| format!("player {p}"))
         }
     };
-    let boards = tokio::task::spawn_blocking(move || crate::seasons::season_boards(&records, Some((clock.year, &clock.season)), name_of, limit))
-        .await
-        .map_err(ApiError::internal)?;
+    let boards = tokio::task::spawn_blocking(move || {
+        crate::seasons::season_boards(&records, Some((clock.year, &clock.season)), name_of, limit)
+    })
+    .await
+    .map_err(ApiError::internal)?;
     Ok(Json(boards))
 }
 
@@ -312,13 +325,17 @@ async fn terrain_request(app: &AppState, full: bool) -> Result<TerrainReply, Api
 const NO_STORE: [(header::HeaderName, &str); 1] = [(header::CACHE_CONTROL, "no-store")];
 
 async fn terrain(State(app): State<AppState>) -> Result<Response, ApiError> {
-    let TerrainReply::Full(raw) = terrain_request(&app, true).await? else { return Err(ApiError::internal("wrong terrain reply")) };
+    let TerrainReply::Full(raw) = terrain_request(&app, true).await? else {
+        return Err(ApiError::internal("wrong terrain reply"));
+    };
     let view: TerrainView = tokio::task::spawn_blocking(move || raw.encode()).await.map_err(ApiError::internal)?;
     Ok((NO_STORE, Json(view)).into_response())
 }
 
 async fn terrain_dynamic(State(app): State<AppState>) -> Result<Response, ApiError> {
-    let TerrainReply::Dynamic(raw) = terrain_request(&app, false).await? else { return Err(ApiError::internal("wrong terrain reply")) };
+    let TerrainReply::Dynamic(raw) = terrain_request(&app, false).await? else {
+        return Err(ApiError::internal("wrong terrain reply"));
+    };
     let view: TerrainDynamic = tokio::task::spawn_blocking(move || raw.encode()).await.map_err(ApiError::internal)?;
     Ok((NO_STORE, Json(view)).into_response())
 }
@@ -333,7 +350,10 @@ async fn map_png(State(app): State<AppState>, Query(q): Query<MapQuery>) -> Resu
     let (reply, rx) = oneshot::channel();
     send_request(&app.world, Request::Snapshot { scale, reply })?;
     let (w, h, rgb) = rx.await.map_err(ApiError::internal)?;
-    let png = tokio::task::spawn_blocking(move || encode_png(w, h, &rgb)).await.map_err(ApiError::internal)?.map_err(ApiError::internal)?;
+    let png = tokio::task::spawn_blocking(move || encode_png(w, h, &rgb))
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(ApiError::internal)?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], png).into_response())
 }
 
@@ -372,7 +392,9 @@ async fn ws_upgrade(
     };
     let token = token.to_string();
     let ip = client_ip(&info);
-    Ok(ws.max_message_size(MAX_CLIENT_MESSAGE).on_upgrade(move |socket| client_session(socket, app, session, token, ip)))
+    Ok(ws
+        .max_message_size(MAX_CLIENT_MESSAGE)
+        .on_upgrade(move |socket| client_session(socket, app, session, token, ip)))
 }
 
 /// How often an open WebSocket checks that its session is still live.
@@ -432,7 +454,8 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session, toke
                         break;
                     }
                     let now = Instant::now();
-                    if let Err(wait) = bucket.take(rate, now).and_then(|_| app.limiters.ip_commands.check_at(&ip, now)) {
+                    if let Err(wait) = bucket.take(rate, now).and_then(|_| app.limiters.ip_commands.check_at(&ip, now))
+                    {
                         let msg = format!("too many commands; retry in {} ms", wait.as_millis().max(1));
                         local(ServerMsg::err(env.id, name, ErrorInfo::new("rate_limited", msg)));
                         continue;
@@ -440,7 +463,9 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session, toke
                     let req = Request::Command { conn, player: session.player, id: env.id, msg: env.msg };
                     match app.world.try_send(req) {
                         Ok(()) => {}
-                        Err(TrySendError::Full(_)) => local(ServerMsg::err(env.id, name, ErrorInfo::new("busy", "the world is busy; try again"))),
+                        Err(TrySendError::Full(_)) => {
+                            local(ServerMsg::err(env.id, name, ErrorInfo::new("busy", "the world is busy; try again")))
+                        }
                         Err(TrySendError::Disconnected(_)) => break,
                     }
                 }

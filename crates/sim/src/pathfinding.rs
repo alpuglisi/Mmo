@@ -300,7 +300,9 @@ mod tests {
     #[test]
     fn unreachable_goal_and_budget() {
         // Goal enclosed by water.
-        let m = map_with_water(12, 12, |x, y| (x == 7 || x == 10) && (4..=7).contains(&y) || (y == 4 || y == 7) && (7..=10).contains(&x));
+        let m = map_with_water(12, 12, |x, y| {
+            (x == 7 || x == 10) && (4..=7).contains(&y) || (y == 4 || y == 7) && (7..=10).contains(&x)
+        });
         let mut s = PathScratch::default();
         let mut out = Vec::new();
         assert_eq!(s.search(&m, Vec2::new(1.5, 1.5), Vec2::new(8.5, 5.5), 10_000, walk, &mut out), Outcome::None);

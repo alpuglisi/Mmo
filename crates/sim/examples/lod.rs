@@ -69,10 +69,7 @@ fn main() {
 
     let full = run(size, days, seed, None);
     let lod = run(size, days, seed, Some(&focus));
-    println!(
-        "{size}×{size} seed {seed}, {days} days, {} focus point(s), 1 thread",
-        focus.len()
-    );
+    println!("{size}×{size} seed {seed}, {days} days, {} focus point(s), 1 thread", focus.len());
     println!("  full: {:.2} ms/tick", full.ms_per_tick);
     println!(
         "  LOD:  {:.2} ms/tick ({:.1}× faster); agents at the end {} of {}",
@@ -96,7 +93,8 @@ fn main() {
         }
         println!();
         if k > 0 {
-            let errs: Vec<f64> = a.iter().zip(b).map(|(&x, &y)| ((y as f64 + 1.0) / (x as f64 + 1.0)).ln().abs()).collect();
+            let errs: Vec<f64> =
+                a.iter().zip(b).map(|(&x, &y)| ((y as f64 + 1.0) / (x as f64 + 1.0)).ln().abs()).collect();
             log_err.push(errs.iter().sum::<f64>() / errs.len() as f64);
         }
     }

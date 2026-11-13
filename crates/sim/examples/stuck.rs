@@ -184,7 +184,10 @@ fn main() {
 }
 
 fn print_table(w: &World, tally: &[Tally]) {
-    println!("  {:<22} {:>10} {:>9} {:>9} {:>11} {:>9}", "lineage", "heading", "stuck/1k", "% stuck", "unreach/1k", "% frozen");
+    println!(
+        "  {:<22} {:>10} {:>9} {:>9} {:>11} {:>9}",
+        "lineage", "heading", "stuck/1k", "% stuck", "unreach/1k", "% frozen"
+    );
     let mut sum = Tally::default();
     for (l, t) in w.lineages.iter().zip(tally) {
         print_row(&l.name, t);

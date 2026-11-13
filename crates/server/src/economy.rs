@@ -163,7 +163,8 @@ impl Economy {
             balance.checked_sub(delta.unsigned_abs()).ok_or(Insufficient { balance, needed: delta.unsigned_abs() })?
         };
         self.balances.insert(player, after);
-        let entry = LedgerEntry { seq: self.next_seq, player, tick, day, delta, balance: after, kind, text, offer, listing };
+        let entry =
+            LedgerEntry { seq: self.next_seq, player, tick, day, delta, balance: after, kind, text, offer, listing };
         self.next_seq += 1;
         self.push(entry.clone());
         Ok(entry)
@@ -174,7 +175,14 @@ impl Economy {
         self.ledger.get(&player).map(|l| l.iter().rev().take(limit).cloned().collect()).unwrap_or_default()
     }
 
-    pub fn add_listing(&mut self, owner: PlayerId, organism: OrgId, fee: u64, created_tick: u64, expires_tick: Option<u64>) -> Listing {
+    pub fn add_listing(
+        &mut self,
+        owner: PlayerId,
+        organism: OrgId,
+        fee: u64,
+        created_tick: u64,
+        expires_tick: Option<u64>,
+    ) -> Listing {
         let id = self.next_listing.max(1);
         self.next_listing = id + 1;
         let l = Listing { id, owner, organism, fee, created_tick, expires_tick, sales: 0 };
@@ -216,7 +224,10 @@ mod tests {
         assert_eq!((a.seq, a.balance), (1, 50));
         let b = e.post(1, -30, LedgerKind::Escrow, "hold".into(), Some(4), None, 10, 0).unwrap();
         assert_eq!((b.seq, b.balance, b.offer), (2, 20, Some(4)));
-        assert_eq!(e.post(1, -21, LedgerKind::Escrow, "too much".into(), None, None, 11, 0), Err(Insufficient { balance: 20, needed: 21 }));
+        assert_eq!(
+            e.post(1, -21, LedgerKind::Escrow, "too much".into(), None, None, 11, 0),
+            Err(Insufficient { balance: 20, needed: 21 })
+        );
         assert_eq!(e.balance(1), 20);
         assert_eq!(e.next_seq, 3, "a refused debit uses no sequence number");
         e.post(2, 7, LedgerKind::Income, "day".into(), None, None, 48, 1).unwrap();

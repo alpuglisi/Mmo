@@ -246,8 +246,7 @@ pub fn derive(p: &Phenotype) -> Traits {
         endurance: (0.4 + 0.3 * p[LegLength] + 0.2 * p[Hooves] + 0.25 * p[FatStores] - 0.2 * size
             + if warm { 0.1 } else { 0.0 })
         .max(0.1),
-        agility: (0.35 + 0.3 * p[Claws] + 0.3 * p[Tail] - 0.25 * p[Hooves] - 0.3 * p[Armor] - 0.15 * size)
-            .max(0.05),
+        agility: (0.35 + 0.3 * p[Claws] + 0.3 * p[Tail] - 0.25 * p[Hooves] - 0.3 * p[Armor] - 0.15 * size).max(0.05),
         perception: 0.15 + 0.3 * p[Eyes] + 0.3 * p[Ears] + 0.3 * p[Nose],
         stealth: (0.25 + 0.6 * p[Camouflage] - 0.35 * size - 0.35 * p[Coloration]).clamp(0.0, 1.0),
         defense: 0.1 + 0.45 * size + 0.3 * p[Scales] + 0.5 * p[Armor] + 0.2 * p[Toxins],
@@ -361,7 +360,8 @@ mod tests {
         let t = |thermo, birth| traits_of(&FounderDesign::new("t", thermo, birth, 3));
         let (warm, cold) = (t(Thermo::Warm, BirthType::Live), t(Thermo::Cold, BirthType::Live));
         let ratio = cold.gestation_days / warm.gestation_days;
-        let eggs = t(Thermo::Cold, BirthType::IncubatedEggs).incubation_days / t(Thermo::Warm, BirthType::IncubatedEggs).incubation_days;
+        let eggs = t(Thermo::Cold, BirthType::IncubatedEggs).incubation_days
+            / t(Thermo::Warm, BirthType::IncubatedEggs).incubation_days;
         assert!(ratio > 1.3 && (ratio - eggs).abs() < 1e-5, "gestation ×{ratio}, incubation ×{eggs}");
     }
 
@@ -401,8 +401,16 @@ mod tests {
 
     #[test]
     fn wings_cap_flying_weight() {
-        let light = traits_of(&FounderDesign::new("l", Thermo::Warm, BirthType::IncubatedEggs, 2).with(Gene::Wings, 0.9).with(Gene::BodySize, 0.15));
-        let heavy = traits_of(&FounderDesign::new("h", Thermo::Warm, BirthType::IncubatedEggs, 2).with(Gene::Wings, 0.9).with(Gene::BodySize, 0.9));
+        let light = traits_of(
+            &FounderDesign::new("l", Thermo::Warm, BirthType::IncubatedEggs, 2)
+                .with(Gene::Wings, 0.9)
+                .with(Gene::BodySize, 0.15),
+        );
+        let heavy = traits_of(
+            &FounderDesign::new("h", Thermo::Warm, BirthType::IncubatedEggs, 2)
+                .with(Gene::Wings, 0.9)
+                .with(Gene::BodySize, 0.9),
+        );
         assert!(light.body.can_fly);
         assert!(!heavy.body.can_fly);
     }

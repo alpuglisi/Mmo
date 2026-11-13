@@ -31,11 +31,11 @@
 //! over the last 10 days, `share_mean` over every day after day 10.
 
 use evo_sim::design::{
-    trait_cost, BASE_FOUNDERS, COST_COLD_BLOODED, COST_PER_EXTRA_FOUNDER, COST_PER_EXTRA_OFFSPRING, COST_PER_SMALLER_BODY,
-    DESIGN_BUDGET, MAX_LITTER,
+    trait_cost, BASE_FOUNDERS, COST_COLD_BLOODED, COST_PER_EXTRA_FOUNDER, COST_PER_EXTRA_OFFSPRING,
+    COST_PER_SMALLER_BODY, DESIGN_BUDGET, MAX_LITTER,
 };
-use evo_sim::rng::rng_for;
 use evo_sim::organism::DeathCause;
+use evo_sim::rng::rng_for;
 use evo_sim::{presets, Balance, BirthType, FounderDesign, Gene, PlayerId, Thermo, World, WorldConfig};
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -54,7 +54,18 @@ struct Opts {
 }
 
 fn parse(args: &[String]) -> Opts {
-    let mut o = Opts { seeds: 4, worlds: 20, days: 90, size: 96, delta: 0.3, extra_founders: 16, seed0: 1, only: None, balance: Balance::default(), deaths: false };
+    let mut o = Opts {
+        seeds: 4,
+        worlds: 20,
+        days: 90,
+        size: 96,
+        delta: 0.3,
+        extra_founders: 16,
+        seed0: 1,
+        only: None,
+        balance: Balance::default(),
+        deaths: false,
+    };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut v = || it.next().unwrap_or_else(|| panic!("{a} needs a value")).clone();
@@ -185,7 +196,8 @@ impl Variant {
 
 fn marginal(o: &Opts) {
     let templates = presets::player_designs();
-    let mut variants = vec![Variant::Control, Variant::Founders, Variant::LitterUp, Variant::LitterDown, Variant::Smaller];
+    let mut variants =
+        vec![Variant::Control, Variant::Founders, Variant::LitterUp, Variant::LitterDown, Variant::Smaller];
     variants.extend(costed_genes().into_iter().map(Variant::Trait));
     if let Some(only) = &o.only {
         variants.retain(|v| only.contains(&v.name()));

@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 use rand::Rng;
 
 use super::World;
-use crate::chronicle::{AchievementKind, Catastrophe, CatastropheKind, EraRank, EraRecord, NicheLeader, NICHE_MIN_ADULTS, NICHE_MIN_SHARE};
+use crate::chronicle::{
+    AchievementKind, Catastrophe, CatastropheKind, EraRank, EraRecord, NicheLeader, NICHE_MIN_ADULTS, NICHE_MIN_SHARE,
+};
 use crate::genome::{Gene, Genome, PlayerId, WILD};
 use crate::organism::Infection;
 use crate::rng::{rng_for, stream};
@@ -161,8 +163,13 @@ impl World {
 
     /// Players with a living lineage.
     fn living_players(&self, counts: &[super::LineageCount]) -> Vec<PlayerId> {
-        let mut players: Vec<PlayerId> =
-            self.lineages.iter().zip(counts).filter(|(l, c)| l.owner != WILD && c.alive > 0).map(|(l, _)| l.owner).collect();
+        let mut players: Vec<PlayerId> = self
+            .lineages
+            .iter()
+            .zip(counts)
+            .filter(|(l, c)| l.owner != WILD && c.alive > 0)
+            .map(|(l, _)| l.owner)
+            .collect();
         players.sort_unstable();
         players.dedup();
         players
@@ -195,7 +202,10 @@ impl World {
     fn run_catastrophes(&mut self, day: u64, counts: &[super::LineageCount]) {
         let sc = self.config.scoring;
         let year = self.year();
-        if sc.catastrophes && year >= sc.catastrophe_first_year as u64 && self.chronicle.planned_year.is_none_or(|y| y < year) {
+        if sc.catastrophes
+            && year >= sc.catastrophe_first_year as u64
+            && self.chronicle.planned_year.is_none_or(|y| y < year)
+        {
             self.chronicle.planned_year = Some(year);
             let mut rng = rng_for(self.config.seed, stream::CHRONICLE, year, 0);
             if rng.gen::<f32>() < sc.catastrophe_chance {
@@ -337,8 +347,11 @@ impl World {
         let (first_day, last_day) = (era * era_days, day - 1);
         let (ranking, breeding_adults) = match self.legacy.last() {
             Some(s) => {
-                let mut rows: Vec<EraRank> =
-                    s.alleles.keys().map(|&p| EraRank { player: p, share: s.share(p), weighted_share: s.weighted_share(p) }).collect();
+                let mut rows: Vec<EraRank> = s
+                    .alleles
+                    .keys()
+                    .map(|&p| EraRank { player: p, share: s.share(p), weighted_share: s.weighted_share(p) })
+                    .collect();
                 rows.sort_by(|a, b| b.share.total_cmp(&a.share).then(a.player.cmp(&b.player)));
                 (rows, s.breeding_adults)
             }
@@ -347,13 +360,31 @@ impl World {
         let niches = self.niche_leaders();
         for n in &niches {
             if n.player != WILD && n.share >= NICHE_MIN_SHARE {
-                self.chronicle.award(day, n.player, AchievementKind::NicheDominance { era, niche: n.niche.clone(), share: n.share });
+                self.chronicle.award(
+                    day,
+                    n.player,
+                    AchievementKind::NicheDominance { era, niche: n.niche.clone(), share: n.share },
+                );
             }
         }
-        let catastrophes =
-            self.chronicle.catastrophes.iter().filter(|c| c.started && (first_day..=last_day).contains(&c.start_day)).map(|c| c.id).collect();
+        let catastrophes = self
+            .chronicle
+            .catastrophes
+            .iter()
+            .filter(|c| c.started && (first_day..=last_day).contains(&c.start_day))
+            .map(|c| c.id)
+            .collect();
         let species_alive = self.chronicle.species.alive().count();
-        self.chronicle.eras.push(EraRecord { era, first_day, last_day, ranking, breeding_adults, niches, catastrophes, species_alive });
+        self.chronicle.eras.push(EraRecord {
+            era,
+            first_day,
+            last_day,
+            ranking,
+            breeding_adults,
+            niches,
+            catastrophes,
+            species_alive,
+        });
     }
 }
 
@@ -479,7 +510,12 @@ mod tests {
         assert!((total - 1.0).abs() < 1e-6);
         assert!(!era.niches.is_empty());
         // Lineages alive a whole year earn longevity.
-        let longevity = w.chronicle.achievements.iter().filter(|a| matches!(a.kind, AchievementKind::LineageLongevity { years: 1, .. })).count();
+        let longevity = w
+            .chronicle
+            .achievements
+            .iter()
+            .filter(|a| matches!(a.kind, AchievementKind::LineageLongevity { years: 1, .. }))
+            .count();
         assert!(longevity > 0);
         assert!(w.chronicle.achievements.iter().all(|a| a.player != crate::WILD));
     }
@@ -501,7 +537,10 @@ mod tests {
 
     #[test]
     fn default_worlds_have_no_catastrophes() {
-        let mut w = presets::standard_world(WorldConfig { seed: 4, width: 48, height: 48, days_per_year: 4, ..Default::default() }, 1);
+        let mut w = presets::standard_world(
+            WorldConfig { seed: 4, width: 48, height: 48, days_per_year: 4, ..Default::default() },
+            1,
+        );
         w.run_days(12);
         assert!(w.chronicle.catastrophes.is_empty());
         assert_eq!(w.map.climate_temp, 0.0);

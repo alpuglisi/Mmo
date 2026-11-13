@@ -279,10 +279,7 @@ pub struct Genome {
 impl Genome {
     /// Every allele set exactly to the given values.
     pub fn uniform(values: &[f32; Gene::COUNT], origin: PlayerId) -> Self {
-        let mut loci = [Locus {
-            a: Allele { value: 0.0, origin },
-            b: Allele { value: 0.0, origin },
-        }; Gene::COUNT];
+        let mut loci = [Locus { a: Allele { value: 0.0, origin }, b: Allele { value: 0.0, origin } }; Gene::COUNT];
         for (locus, &v) in loci.iter_mut().zip(values) {
             let allele = Allele { value: v.clamp(0.0, 1.0), origin };
             *locus = Locus { a: allele, b: allele };
@@ -293,12 +290,7 @@ impl Genome {
 
     /// A founder: each allele varies around the design value so selection has
     /// material from day one.
-    pub fn founder(
-        values: &[f32; Gene::COUNT],
-        origin: PlayerId,
-        variation: f32,
-        rng: &mut impl Rng,
-    ) -> Self {
+    pub fn founder(values: &[f32; Gene::COUNT], origin: PlayerId, variation: f32, rng: &mut impl Rng) -> Self {
         let mut g = Self::uniform(values, origin);
         for locus in g.loci.iter_mut() {
             for allele in [&mut locus.a, &mut locus.b] {
@@ -386,17 +378,22 @@ impl Genome {
             let f = &father.loci[k];
             let from_m = if rng.gen::<bool>() { m.a } else { m.b };
             let from_f = if rng.gen::<bool>() { f.a } else { f.b };
-            *locus = Locus {
-                a: mutate(from_m, child_owner, mutation, rng),
-                b: mutate(from_f, child_owner, mutation, rng),
-            };
+            *locus =
+                Locus { a: mutate(from_m, child_owner, mutation, rng), b: mutate(from_f, child_owner, mutation, rng) };
         }
         Genome { loci, load: mother.load }
     }
 
     /// The load-loci half of [`Genome::inherit`]: one allele from each
     /// parent, then harmful mutations at `load_rate` (no draws when it is 0).
-    pub fn inherit_load(&mut self, mother: &Genome, father: &Genome, child_owner: PlayerId, load_rate: f32, rng: &mut impl Rng) {
+    pub fn inherit_load(
+        &mut self,
+        mother: &Genome,
+        father: &Genome,
+        child_owner: PlayerId,
+        load_rate: f32,
+        rng: &mut impl Rng,
+    ) {
         for (k, locus) in self.load.iter_mut().enumerate() {
             let m = &mother.load[k];
             let f = &father.load[k];
@@ -437,10 +434,7 @@ impl Genome {
 
 fn mutate(allele: Allele, owner: PlayerId, m: MutationParams, rng: &mut impl Rng) -> Allele {
     if rng.gen::<f32>() < m.rate {
-        Allele {
-            value: (allele.value + normal(rng) * m.sd).clamp(0.0, 1.0),
-            origin: owner,
-        }
+        Allele { value: (allele.value + normal(rng) * m.sd).clamp(0.0, 1.0), origin: owner }
     } else {
         allele
     }
@@ -607,7 +601,10 @@ mod tests {
         }
         let (mut shown, mut born, mut planted_tags) = (0u32, 0u32, 0u32);
         for _ in 0..200 {
-            let mut pair = (Genome::inherit(&stud, &clean, 1, none, 0.0, &mut rng), Genome::inherit(&stud, &clean, 1, none, 0.0, &mut rng));
+            let mut pair = (
+                Genome::inherit(&stud, &clean, 1, none, 0.0, &mut rng),
+                Genome::inherit(&stud, &clean, 1, none, 0.0, &mut rng),
+            );
             for _ in 0..4 {
                 let mate = if inbred { pair.1.clone() } else { clean.clone() };
                 let a = Genome::inherit(&pair.0, &mate, 1, none, 0.0, &mut rng);

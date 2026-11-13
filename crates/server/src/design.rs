@@ -189,7 +189,15 @@ mod tests {
     #[test]
     fn budget_is_enforced() {
         assert!(spec(&[("fur", 0.5), ("large_eyes", 0.4)]).to_design().is_ok());
-        let mut over = spec(&[("wings", 1.0), ("armor_plates", 1.0), ("toxins", 1.0), ("muscle", 1.0), ("body_size", 1.0), ("claws", 1.0), ("fangs", 1.0)]);
+        let mut over = spec(&[
+            ("wings", 1.0),
+            ("armor_plates", 1.0),
+            ("toxins", 1.0),
+            ("muscle", 1.0),
+            ("body_size", 1.0),
+            ("claws", 1.0),
+            ("fangs", 1.0),
+        ]);
         over.founders = 300;
         let err = over.to_design().unwrap_err();
         assert_eq!(err.code(), "over_budget");

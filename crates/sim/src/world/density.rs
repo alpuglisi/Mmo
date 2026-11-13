@@ -21,7 +21,12 @@ pub(crate) struct SpeciesDensity {
 
 impl SpeciesDensity {
     pub fn new(width: usize, height: usize) -> Self {
-        SpeciesDensity { cols: width.div_ceil(CELL).max(1), rows: height.div_ceil(CELL).max(1), lineages: 0, counts: Vec::new() }
+        SpeciesDensity {
+            cols: width.div_ceil(CELL).max(1),
+            rows: height.div_ceil(CELL).max(1),
+            lineages: 0,
+            counts: Vec::new(),
+        }
     }
 
     fn cell(&self, p: Vec2) -> usize {

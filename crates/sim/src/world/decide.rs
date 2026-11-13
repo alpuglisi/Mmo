@@ -12,8 +12,8 @@ use super::spatial::{ALERT, ARMED, COURTING, FEMALE};
 use super::{Intent, World};
 use crate::genome::Gene;
 use crate::group::GroupTrait;
-use crate::mating;
 use crate::math::Vec2;
+use crate::mating;
 use crate::organism::{Action, Organism, Sex};
 use crate::rng::{rng_for, splitmix64, stream, SimRng};
 use crate::terrain::{traverse, Traverse};
@@ -177,7 +177,10 @@ impl DistanceBounds {
             }
         }
         let sum = (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]);
-        DistanceBounds { lo: sum * (1.0 - Self::SLACK) / DISTANCE_GENES, hi: sum * (1.0 + Self::SLACK) / DISTANCE_GENES }
+        DistanceBounds {
+            lo: sum * (1.0 - Self::SLACK) / DISTANCE_GENES,
+            hi: sum * (1.0 + Self::SLACK) / DISTANCE_GENES,
+        }
     }
 
     /// `pass(genetic_distance(a, b))`, for a `pass` that can only go from
@@ -255,7 +258,9 @@ impl World {
         let carrier = t.is_carrier(&o.pheno)
             || (!o.matured
                 && o.growth < 0.7
-                && o.mother.and_then(|m| self.index.get(&m)).is_some_and(|&mi| t.is_carrier(&self.organisms[mi].pheno)));
+                && o.mother
+                    .and_then(|m| self.index.get(&m))
+                    .is_some_and(|&mi| t.is_carrier(&self.organisms[mi].pheno)));
         if carrier {
             self.group.benefit(t, o.pos)
         } else {
@@ -362,7 +367,8 @@ impl World {
         let cfg = &self.config;
 
         // --- Perception ---------------------------------------------------
-        let alarm = if GroupTrait::AlarmCalls.is_carrier(p) { self.group.benefit(GroupTrait::AlarmCalls, o.pos) } else { 0.0 };
+        let alarm =
+            if GroupTrait::AlarmCalls.is_carrier(p) { self.group.benefit(GroupTrait::AlarmCalls, o.pos) } else { 0.0 };
         let possessed = if o.possessed_by.is_some() { 1.2 } else { 1.0 };
         // Group members where sentries hold breed under watch; a sentry on
         // watch scans harder and isn't distracted by breeding.
@@ -374,7 +380,8 @@ impl World {
         // ... and threat response: an animal in high breeding drive flees
         // later (`breeding_recklessness`). A short timed-breeding window
         // keeps the reckless period short; sentries offset it as well.
-        let reckless = if watching { 0.0 } else { cfg.balance.breeding_recklessness * n.breeding / 100.0 * (1.0 - sentry) };
+        let reckless =
+            if watching { 0.0 } else { cfg.balance.breeding_recklessness * n.breeding / 100.0 * (1.0 - sentry) };
         let perception = o.traits.stats.perception * (1.0 + 0.5 * alarm) * possessed * vigil * (1.0 - distraction);
         let radius = (2.0 + cfg.balance.perception_range * perception).min(cfg.max_perception);
 
@@ -445,7 +452,9 @@ impl World {
                 let e = self.grid.entry(slot);
                 let d = d2.sqrt();
                 let threat = e.flags & ARMED != 0 && e.mass > v.threat_floor;
-                let prey = hunter && e.mass < v.prey_cap && seen.prey.is_none_or(|(s, _)| e.mass.powf(0.75) * MAX_CHASE >= s * (1.0 + d));
+                let prey = hunter
+                    && e.mass < v.prey_cap
+                    && seen.prey.is_none_or(|(s, _)| e.mass.powf(0.75) * MAX_CHASE >= s * (1.0 + d));
                 let mate = can_breed
                     && e.flags & COURTING != 0
                     && (e.flags & FEMALE != 0) != v.female
@@ -463,12 +472,19 @@ impl World {
         let Perception { threat: seen_threat, threat_pos: seen_pos, prey, mate, .. } = seen;
         // A sentry's warning counts like a threat seen first hand, from
         // wherever the sentry saw it.
-        let (threat, threat_pos) = if seen.warning > seen_threat { (seen.warning, seen.warning_pos) } else { (seen_threat, seen_pos) };
+        let (threat, threat_pos) =
+            if seen.warning > seen_threat { (seen.warning, seen.warning_pos) } else { (seen_threat, seen_pos) };
 
         // Kin beyond the nearest `FOCUS`: at the kin rate among the nearest,
         // by lineage (with none of a kind among them, one's own lineage
         // counts as kin and others don't).
-        let rate = |k: usize, unseen: f32| if seen.looked[k] > 0 { seen.looked_kin[k] as f32 / seen.looked[k] as f32 } else { unseen };
+        let rate = |k: usize, unseen: f32| {
+            if seen.looked[k] > 0 {
+                seen.looked_kin[k] as f32 / seen.looked[k] as f32
+            } else {
+                unseen
+            }
+        };
         let (own, other) = (rate(0, 1.0), rate(1, 0.0));
         let kin_f = seen.kin as f32 + own * rest[0].0 as f32 + other * rest[1].0 as f32;
         let kin = kin_f.round().min(u16::MAX as f32) as u16;
@@ -517,7 +533,11 @@ impl World {
         // A sentry on duty with its group around stands watch unless hungry,
         // thirsty or courting wins: some stay alert while others breed. A
         // migrator on its seasonal journey keeps going instead.
-        let watch = if kin >= 2 && season_dest.is_none() && self.on_watch_duty(o) { 0.7 * sentry * (1.0 - hunger).powi(2) } else { 0.0 };
+        let watch = if kin >= 2 && season_dest.is_none() && self.on_watch_duty(o) {
+            0.7 * sentry * (1.0 - hunger).powi(2)
+        } else {
+            0.0
+        };
 
         let mut options: [(Action, f32); 14] = [
             (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless)),
@@ -527,25 +547,48 @@ impl World {
             (Action::Bask, if o.traits.warm { 0.0 } else { (1.0 - o.activity) * 0.7 }),
             // A threat it has seen puts courting on hold (`courtship_caution`);
             // breeding drive still blunts the flight itself (`reckless`).
-            (Action::SeekMate, if can_breed {
-                n.breeding / 100.0 * 0.9 * (1.0 - 0.7 * hunger) * (1.0 - cfg.balance.courtship_caution * threat.min(1.0))
-            } else {
-                0.0
-            }),
-            (Action::Group, match kin_centroid {
-                // Comfortable spacing grows with group size, so herds spread to graze.
-                Some(c) if o.pos.dist(c) > 1.5 + 4.0 * (1.0 - p[Gene::GroupTolerance]) + 0.8 * (kin as f32).sqrt() => {
-                    (p[Gene::GroupTolerance] * 0.25 + n.social / 100.0 * 0.3) * (1.0 - hunger)
-                }
-                _ => 0.0,
-            }),
+            (
+                Action::SeekMate,
+                if can_breed {
+                    n.breeding / 100.0
+                        * 0.9
+                        * (1.0 - 0.7 * hunger)
+                        * (1.0 - cfg.balance.courtship_caution * threat.min(1.0))
+                } else {
+                    0.0
+                },
+            ),
+            (
+                Action::Group,
+                match kin_centroid {
+                    // Comfortable spacing grows with group size, so herds spread to graze.
+                    Some(c)
+                        if o.pos.dist(c) > 1.5 + 4.0 * (1.0 - p[Gene::GroupTolerance]) + 0.8 * (kin as f32).sqrt() =>
+                    {
+                        (p[Gene::GroupTolerance] * 0.25 + n.social / 100.0 * 0.3) * (1.0 - hunger)
+                    }
+                    _ => 0.0,
+                },
+            ),
             (Action::Wander, 0.05 + 0.15 * p[Gene::Wanderlust]),
-            (Action::Migrate, if season_dest.is_some() { 0.6 } else if ordered { 0.55 } else { 0.0 }),
+            (
+                Action::Migrate,
+                if season_dest.is_some() {
+                    0.6
+                } else if ordered {
+                    0.55
+                } else {
+                    0.0
+                },
+            ),
             (Action::Cache, self.cache_utility(o)),
-            (Action::FollowParent, match mother_pos {
-                Some(m) if juvenile_care && o.pos.dist(m) > 1.2 => 0.6,
-                _ => 0.0,
-            }),
+            (
+                Action::FollowParent,
+                match mother_pos {
+                    Some(m) if juvenile_care && o.pos.dist(m) > 1.2 => 0.6,
+                    _ => 0.0,
+                },
+            ),
             (Action::Guard, if o.nest.is_some() { 0.6 } else { 0.0 }),
             (Action::Sentry, watch),
             (Action::Idle, 0.0),
@@ -554,20 +597,19 @@ impl World {
         if hunter && prey.is_some() {
             options[1].1 += 0.15 * p[Gene::Aggression];
         }
-        let (action, _) = options
-            .iter()
-            .copied()
-            .fold((Action::Idle, f32::MIN), |best, opt| if opt.1 > best.1 { opt } else { best });
+        let (action, _) =
+            options.iter().copied().fold((Action::Idle, f32::MIN), |best, opt| if opt.1 > best.1 { opt } else { best });
         let action = urgent.unwrap_or(action);
 
         // An exhausted hunter rests before chasing again; otherwise hunger keeps
         // it chasing at a crawl until it starves.
         let meat_here = self.map.tile_at(o.pos).meat * o.traits.carnivory > 1.0;
-        let action = if action == Action::Graze && o.traits.carnivory > 0.6 && n.energy < 30.0 && !meat_here && threat < 0.3 {
-            Action::Rest
-        } else {
-            action
-        };
+        let action =
+            if action == Action::Graze && o.traits.carnivory > 0.6 && n.energy < 30.0 && !meat_here && threat < 0.3 {
+                Action::Rest
+            } else {
+                action
+            };
 
         // A sentry warns its group of a threat it saw itself, on watch or
         // while fleeing from what it spotted there (never a relayed warning).
@@ -720,7 +762,8 @@ impl World {
             let burrow = if q.sheltered { 0.5 + 0.3 * (self.burrow_depth(q) - q.traits.body.burrow) } else { 0.0 };
             let den = if q.dormancy.is_deep() { cfg.balance.den_concealment } else { 0.0 };
             let hidden = burrow.max(den);
-            let detect = radius * (1.0 - cfg.balance.stealth_effect * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
+            let detect =
+                radius * (1.0 - cfg.balance.stealth_effect * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
             if d < detect {
                 if can_threaten(q, o) {
                     let odds = q.power() / (q.power() + o.resistance() + 1e-3);
@@ -732,7 +775,10 @@ impl World {
                     }
                 }
                 let reachable = || {
-                    matches!(traverse(&o.traits.body, self.map.tile_at(q.pos), &self.map.weather_at(q.pos), false), Traverse::Passable { .. })
+                    matches!(
+                        traverse(&o.traits.body, self.map.tile_at(q.pos), &self.map.weather_at(q.pos), false),
+                        Traverse::Passable { .. }
+                    )
                 };
                 if v.hunter && q.mass() < max_prey_mass(o, coop) && !q.sheltered && reachable() {
                     // Learned avoidance of bright prey where warning coloration holds.
@@ -751,10 +797,19 @@ impl World {
                     let roll = (splitmix64(v.salt ^ q.id) >> 40) as f32 / (1u64 << 24) as f32;
                     // Prey that fights back is only worth the risk to a hungry
                     // hunter, and less so to one that could graze instead.
-                    let injury = injury_discount(o, v.fight_power, fight_back(q, cfg.balance.generalist_tax), cfg.balance.injury_aversion);
+                    let injury = injury_discount(
+                        o,
+                        v.fight_power,
+                        fight_back(q, cfg.balance.generalist_tax),
+                        cfg.balance.injury_aversion,
+                    );
                     if roll >= avoid && (guard == 0.0 || my_power > q.resistance() + guard) && injury >= v.risk_floor {
                         let odds = my_power / (my_power + q.resistance() + guard + 1e-3);
-                        let chase = if q.traits.stats.speed * q.activity < o.traits.stats.speed * o.activity { MAX_CHASE } else { 0.6 };
+                        let chase = if q.traits.stats.speed * q.activity < o.traits.stats.speed * o.activity {
+                            MAX_CHASE
+                        } else {
+                            0.6
+                        };
                         // `injury <= 1` and `odds < 1`, so the far-neighbor bound
                         // `mass^0.75 * MAX_CHASE / (1 + d)` still holds.
                         let score = q.mass().powf(0.75) / (1.0 + d) * odds * chase * injury;
@@ -913,7 +968,12 @@ impl World {
     fn wander(&self, o: &Organism, intent: &mut Intent, rng: &mut SimRng, range: f32) {
         // A target the body can't stand on is never reached, and would pin the
         // organism against the shore forever (starving next to the water).
-        let usable = |t: Vec2| matches!(traverse(&o.traits.body, self.map.tile_at(t), &self.map.weather_at(t), false), Traverse::Passable { .. });
+        let usable = |t: Vec2| {
+            matches!(
+                traverse(&o.traits.body, self.map.tile_at(t), &self.map.weather_at(t), false),
+                Traverse::Passable { .. }
+            )
+        };
         if let Some(t) = o.wander_target {
             if o.pos.dist(t) > 0.5 && usable(t) {
                 intent.target = Some(t);
@@ -941,8 +1001,13 @@ mod tests {
     fn wander_drops_a_target_the_body_cannot_reach() {
         let mut w = presets::standard_world(WorldConfig { seed: 9, width: 48, height: 48, ..Default::default() }, 1);
         let i = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
-        let blocked = |w: &World, p: Vec2| traverse(&w.organisms[i].traits.body, w.map.tile_at(p), &w.map.weather_at(p), false) == Traverse::Blocked;
-        let water = (0..48 * 48).map(|k| Map::tile_center(k % 48, k / 48)).find(|&p| blocked(&w, p)).expect("map has deep water");
+        let blocked = |w: &World, p: Vec2| {
+            traverse(&w.organisms[i].traits.body, w.map.tile_at(p), &w.map.weather_at(p), false) == Traverse::Blocked
+        };
+        let water = (0..48 * 48)
+            .map(|k| Map::tile_center(k % 48, k / 48))
+            .find(|&p| blocked(&w, p))
+            .expect("map has deep water");
         w.organisms[i].wander_target = Some(water);
         let mut intent = Intent::idle();
         let mut rng = rng_for(1, stream::DECIDE, 0, 0);
@@ -1015,7 +1080,12 @@ mod tests {
         let pick = |lineage: u32| &w.organisms[w.organisms.iter().position(|o| o.lineage == lineage).unwrap()];
         let (fox, pack, burrower) = (pick(3), pick(4), pick(7));
         // The most herbivorous grazer founder (founders vary around the design).
-        let grazer = w.organisms.iter().filter(|o| o.lineage == 5).min_by(|a, b| a.traits.carnivory.total_cmp(&b.traits.carnivory)).unwrap();
+        let grazer = w
+            .organisms
+            .iter()
+            .filter(|o| o.lineage == 5)
+            .min_by(|a, b| a.traits.carnivory.total_cmp(&b.traits.carnivory))
+            .unwrap();
         let k = w.config.balance.injury_aversion;
         let fight_back = |o| fight_back(o, w.config.balance.generalist_tax);
         assert!(fight_back(grazer) < 0.05 * fight_back(fox));
@@ -1076,8 +1146,12 @@ mod tests {
                 let exact = genetic_distance(a, b);
                 let bounds = DistanceBounds::new(&ga, &gb);
                 assert!(bounds.lo <= exact && exact <= bounds.hi, "{} <= {exact} <= {}", bounds.lo, bounds.hi);
-                let is_kin = bounds.test(a, b, |gd| mating::is_kin_by_gap(gap, gd, cfg.species_distance, cfg.kin_body_plan_gap));
-                assert_eq!(is_kin, mating::is_kin(&a.genome, &b.genome, exact, cfg.species_distance, cfg.kin_body_plan_gap));
+                let is_kin =
+                    bounds.test(a, b, |gd| mating::is_kin_by_gap(gap, gd, cfg.species_distance, cfg.kin_body_plan_gap));
+                assert_eq!(
+                    is_kin,
+                    mating::is_kin(&a.genome, &b.genome, exact, cfg.species_distance, cfg.kin_body_plan_gap)
+                );
                 assert_eq!(bounds.test(a, b, |gd| gd < cfg.mate_distance), exact < cfg.mate_distance);
                 if is_kin {
                     kin += 1;

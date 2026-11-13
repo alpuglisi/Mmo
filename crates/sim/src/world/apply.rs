@@ -6,8 +6,8 @@ use rand::Rng;
 use super::{Clutch, Intent, World};
 use crate::design::BirthType;
 use crate::genome::{Gene, Genome, PlayerId};
-use crate::mating;
 use crate::math::Vec2;
+use crate::mating;
 use crate::organism::{Action, DeathCause, Dormancy, Infection, OrgId, Organism, Pregnancy, Sex};
 use crate::pathfinding::{enter_cost, Outcome, Path, PathScratch, MAX_TILE_SPEED};
 use crate::rng::{rng_for, stream, SimRng};
@@ -220,7 +220,14 @@ impl World {
     /// `organisms`): dormancy, needs, the death rolls, the course of a
     /// disease and growth. Deaths, parent credit and birth are left to
     /// `finish`.
-    pub(super) fn settle(&self, o: &mut Organism, intent: &Intent, moved: f32, burrow: (f32, f32), rng: &mut SimRng) -> Settled {
+    pub(super) fn settle(
+        &self,
+        o: &mut Organism,
+        intent: &Intent,
+        moved: f32,
+        burrow: (f32, f32),
+        rng: &mut SimRng,
+    ) -> Settled {
         let dead = |cause| Settled { death: Some(cause), matured: false };
         if let Some(cause) = self.seasonal_tick(o, intent, moved, rng) {
             return dead(cause);
@@ -323,7 +330,8 @@ impl World {
         let fly = body.can_fly && o.needs.energy > 25.0 && !self.map.weather_at(pos).grounds_flyers();
         // Stuck on a tile the body can't use (e.g. ice melted underneath):
         // struggle toward the target regardless.
-        let stranded = !fly && traverse(&body, self.map.tile_at(pos), &self.map.weather_at(pos), false) == Traverse::Blocked;
+        let stranded =
+            !fly && traverse(&body, self.map.tile_at(pos), &self.map.weather_at(pos), false) == Traverse::Blocked;
         let effort = Effort { sprint: if sprinting { 2.5 } else { 1.0 }, endurance };
 
         // Walkers follow a route planned earlier, or plan one when the direct
@@ -350,7 +358,10 @@ impl World {
                 let new_pos = self.map.clamp(pos + dd * dist);
                 // The end point can fall short of the checked tile (or cut a
                 // corner): never step onto a tile the body can't use.
-                if stranded || traverse(&body, self.map.tile_at(new_pos), &self.map.weather_at(new_pos), fly) != Traverse::Blocked {
+                if stranded
+                    || traverse(&body, self.map.tile_at(new_pos), &self.map.weather_at(new_pos), fly)
+                        != Traverse::Blocked
+                {
                     o.pos = new_pos;
                     o.needs.energy = (o.needs.energy - effort.cost(dist, e)).max(0.0);
                     return dist;
@@ -630,7 +641,9 @@ impl World {
         if !accept_f || mm > 1.5 {
             return;
         }
-        let fert = mating::fertility(&female.genome, &male.genome) * self.disease_fertility(f, m) * self.conception_boost(female);
+        let fert = mating::fertility(&female.genome, &male.genome)
+            * self.disease_fertility(f, m)
+            * self.conception_boost(female);
         self.mating_contact(f, m);
         if fert <= 0.0 {
             // Courtship without conception.
@@ -729,7 +742,14 @@ impl World {
     /// `burrow` is `burrow_inputs`: a shared burrow lets carriers with modest
     /// burrowing shelter, and is deeper and better insulated than a lone
     /// burrow.
-    fn update_needs(&self, o: &mut Organism, intent: &Intent, moved: f32, dt: f32, burrow: (f32, f32)) -> Option<DeathCause> {
+    fn update_needs(
+        &self,
+        o: &mut Organism,
+        intent: &Intent,
+        moved: f32,
+        dt: f32,
+        burrow: (f32, f32),
+    ) -> Option<DeathCause> {
         let daytime = self.is_daytime();
         let tick = self.tick;
         let pos = o.pos;
@@ -750,7 +770,8 @@ impl World {
         let deep = o.dormancy.is_deep();
         let torpid = o.dormancy == Dormancy::Torpor;
         let resting =
-            matches!(intent.action, Action::Rest | Action::Bask | Action::Guard | Action::Idle | Action::Dormant) && moved < 0.01;
+            matches!(intent.action, Action::Rest | Action::Bask | Action::Guard | Action::Idle | Action::Dormant)
+                && moved < 0.01;
         o.sheltered = resting && depth > 0.5 && water == 0.0;
         // Burrows buffer temperature toward 10 °C.
         let buffer = (0.6 + 0.6 * bal.shared_burrow * shared).min(0.95);
@@ -813,10 +834,23 @@ impl World {
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
         // Small bodies burn through food and water faster (`Balance::size_burn`).
         let size_burn = if bal.size_burn == 0.0 { 1.0 } else { o.traits.body.mass.powf(-bal.size_burn) };
-        let mut hunger =
-            bal.hunger_rate * st.metabolism * diet * crowd * thermo * activity_mult * pregnant * watch * travel * size_burn * dt;
-        let mut thirst =
-            bal.thirst_rate * (1.0 + 0.05 * heat) * (0.8 + 0.4 * size) * if o.traits.warm { 1.0 } else { 0.7 } * size_burn * dt;
+        let mut hunger = bal.hunger_rate
+            * st.metabolism
+            * diet
+            * crowd
+            * thermo
+            * activity_mult
+            * pregnant
+            * watch
+            * travel
+            * size_burn
+            * dt;
+        let mut thirst = bal.thirst_rate
+            * (1.0 + 0.05 * heat)
+            * (0.8 + 0.4 * size)
+            * if o.traits.warm { 1.0 } else { 0.7 }
+            * size_burn
+            * dt;
         if o.dormancy != Dormancy::Awake {
             hunger *= dormant_rate;
             if deep {
@@ -887,7 +921,11 @@ impl World {
         }
         let gt = o.pheno[Gene::GroupTolerance];
         if gt > 0.3 {
-            n.social = if o.kin_nearby == 0 { (n.social + 50.0 * gt * dt).min(100.0) } else { (n.social - 100.0 * dt).max(0.0) };
+            n.social = if o.kin_nearby == 0 {
+                (n.social + 50.0 * gt * dt).min(100.0)
+            } else {
+                (n.social - 100.0 * dt).max(0.0)
+            };
         }
         o.age_ticks += 1;
 
@@ -979,7 +1017,8 @@ impl World {
         let mother = &self.organisms[i];
         let traits = mother.traits;
         let owner = mother.owner;
-        let expected = traits.litter as f32 * preg.fertility * mother.condition().clamp(0.3, 1.0) * self.breeding_suppression(i);
+        let expected =
+            traits.litter as f32 * preg.fertility * mother.condition().clamp(0.3, 1.0) * self.breeding_suppression(i);
         let mut count = expected.floor() as usize + usize::from(rng.gen::<f32>() < expected.fract());
         if !traits.birth.lays_eggs() {
             count = count.min(self.cap_room(mother.lineage));
@@ -1007,7 +1046,17 @@ impl World {
                     let jitter = Vec2::new(rng.gen_range(-0.4..0.4), rng.gen_range(-0.4..0.4));
                     let at = self.map.clamp(pos + jitter);
                     let at = if self.passable_for(&self.organisms[i], at) { at } else { pos };
-                    self.spawn_newborn(g, owner, lineage, at, generation, mother_id, preg.father_id, traits.newborn_growth, rng);
+                    self.spawn_newborn(
+                        g,
+                        owner,
+                        lineage,
+                        at,
+                        generation,
+                        mother_id,
+                        preg.father_id,
+                        traits.newborn_growth,
+                        rng,
+                    );
                 }
                 self.counters.births += count as u64;
             }
@@ -1070,7 +1119,13 @@ impl World {
                     continue;
                 }
                 let tile = &self.map.tiles[self.map.idx(x, y)];
-                let stress = super::environment::nest_stress(tile, tile.base_temp + self.season_offset, self.map.climate_temp, warm_eggs, &bal);
+                let stress = super::environment::nest_stress(
+                    tile,
+                    tile.base_temp + self.season_offset,
+                    self.map.climate_temp,
+                    warm_eggs,
+                    &bal,
+                );
                 // Round so that a hair's difference doesn't send her away.
                 let key = ((stress * 1000.0).round() / 1000.0, dx * dx + dy * dy, p);
                 if best.is_none_or(|(s, d, _)| (key.0, key.1) < (s, d)) {
@@ -1125,12 +1180,21 @@ mod tests {
         assert!(larval_hazard(30, 1.0, 18.0) > 5.0);
         // Fast-living kinds (big clutches of small young) compete hardest.
         let traits = |litter: u32, size: f32| {
-            crate::stats::derive(&Genome::uniform(&crate::FounderDesign::new("x", crate::Thermo::Cold, BirthType::AbandonedEggs, litter).with(Gene::BodySize, size).values(), 1).phenotype())
+            crate::stats::derive(
+                &Genome::uniform(
+                    &crate::FounderDesign::new("x", crate::Thermo::Cold, BirthType::AbandonedEggs, litter)
+                        .with(Gene::BodySize, size)
+                        .values(),
+                    1,
+                )
+                .phenotype(),
+            )
         };
         let frog = traits(10, 0.12);
         let pair = traits(2, 0.5);
         let k = crate::Balance::default().larval_competition;
-        let (frog_h, pair_h) = (larval_hazard(20, frog.pace_of_life(0.12), k), larval_hazard(20, pair.pace_of_life(0.5), k));
+        let (frog_h, pair_h) =
+            (larval_hazard(20, frog.pace_of_life(0.12), k), larval_hazard(20, pair.pace_of_life(0.5), k));
         assert!(frog_h > 0.5, "frog {frog_h}");
         assert!(pair_h < 0.01, "pair {pair_h}");
     }
@@ -1498,7 +1562,8 @@ mod tests {
             for dx in -r..=r {
                 let (x, y) = ((cx as i64 + dx).clamp(0, 63) as usize, (cy as i64 + dy).clamp(0, 63) as usize);
                 let idx = w.map.idx(x, y);
-                w.map.tiles[idx] = crate::terrain::Tile { base_temp: 26.0, canopy: 0.0, water_depth: 0.0, ..here.clone() };
+                w.map.tiles[idx] =
+                    crate::terrain::Tile { base_temp: 26.0, canopy: 0.0, water_depth: 0.0, ..here.clone() };
             }
         }
         let shade = ((cx as i64 + 2).clamp(0, 63) as usize, cy);

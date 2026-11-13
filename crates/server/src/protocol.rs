@@ -25,11 +25,19 @@ pub struct ClientEnvelope {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     /// Take direct control of one of your organisms.
-    Possess { organism: OrgId },
+    Possess {
+        organism: OrgId,
+    },
     /// Walk a possessed organism toward a point (tile units).
-    OrderMove { organism: OrgId, x: f32, y: f32 },
+    OrderMove {
+        organism: OrgId,
+        x: f32,
+        y: f32,
+    },
     /// Return a possessed organism to its genetic behavior.
-    Release { organism: OrgId },
+    Release {
+        organism: OrgId,
+    },
     /// Propose a directed mating between your organism `mine` and `partner`.
     /// Pairs within your own lineage run at once; another player's organism
     /// needs that player's consent first. A `price` (renown) is taken from
@@ -46,19 +54,36 @@ pub enum ClientMsg {
     /// living organism of the other sex): expected fertility, override cost
     /// and failure chance, and why the pair can't conceive if it can't. Data:
     /// [`MatingPreviewView`]. Nothing changes and no slot is used.
-    PreviewMating { mine: OrgId, partner: OrgId },
+    PreviewMating {
+        mine: OrgId,
+        partner: OrgId,
+    },
     /// The partner organism's owner accepts or declines an offer.
-    RespondMating { request: u64, accept: bool },
+    RespondMating {
+        request: u64,
+        accept: bool,
+    },
     /// Retry an accepted agreement now (it also completes on its own once the
     /// two organisms meet).
-    CompleteMating { request: u64 },
+    CompleteMating {
+        request: u64,
+    },
     /// Either side withdraws an open offer or agreement.
-    CancelMating { request: u64 },
+    CancelMating {
+        request: u64,
+    },
     /// Group command: your adults drift toward a point.
-    Migrate { x: f32, y: f32 },
+    Migrate {
+        x: f32,
+        y: f32,
+    },
     ClearMigration,
     /// Pin the view window (interest area) to a point.
-    SetView { x: f32, y: f32, radius: f32 },
+    SetView {
+        x: f32,
+        y: f32,
+        radius: f32,
+    },
     /// Let the view window follow your possessed organism or your lineage.
     ClearView,
     /// Offer one of your adults on the stud marketplace: anyone may buy one
@@ -73,11 +98,16 @@ pub enum ClientMsg {
     },
     /// Take one of your listings off the marketplace (agreements already
     /// bought from it stand).
-    WithdrawListing { listing: u64 },
+    WithdrawListing {
+        listing: u64,
+    },
     /// Buy one mating with a listed organism for your adult `mine`: an
     /// already accepted agreement, the fee held in escrow until the two meet,
     /// your seasonal slot spent when it runs. Data: `{offer}`.
-    BuyListing { listing: u64, mine: OrgId },
+    BuyListing {
+        listing: u64,
+        mine: OrgId,
+    },
     /// The open listings, newest first, each with the compatibility of your
     /// `mine` with the listed organism if given. Data: [`MarketView`].
     BrowseMarket {
@@ -120,7 +150,11 @@ impl ClientMsg {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    Welcome { player: PlayerId, name: String, lineage: Option<u32> },
+    Welcome {
+        player: PlayerId,
+        name: String,
+        lineage: Option<u32>,
+    },
     State(Box<StateView>),
     /// The outcome of one client command.
     Result {
@@ -134,7 +168,9 @@ pub enum ServerMsg {
         data: Option<serde_json::Value>,
     },
     /// Another player asks to mate their organism with yours.
-    MatingRequest { offer: OfferView },
+    MatingRequest {
+        offer: OfferView,
+    },
     /// A directed-mating offer changed status (sent to both sides).
     MatingUpdate {
         offer: OfferView,
@@ -146,9 +182,13 @@ pub enum ServerMsg {
     /// Something the player should notice: a death of a possessed or
     /// founding organism, a day's births and deaths, a lineage milestone, a
     /// possessed organism in need. Also listed in `GET /api/lineage/stats`.
-    Alert { alert: AlertView },
+    Alert {
+        alert: AlertView,
+    },
     /// The session expired or was logged out; the socket closes next.
-    SessionEnded { reason: String },
+    SessionEnded {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -245,7 +285,13 @@ pub struct MatingOutcome {
 
 impl From<evo_sim::world::commands::DirectedOutcome> for MatingOutcome {
     fn from(o: evo_sim::world::commands::DirectedOutcome) -> Self {
-        Self { mismatch: o.mismatch, cost: o.cost, failure_chance: o.failure_chance, fertility: o.fertility, conceived: o.conceived }
+        Self {
+            mismatch: o.mismatch,
+            cost: o.cost,
+            failure_chance: o.failure_chance,
+            fertility: o.fertility,
+            conceived: o.conceived,
+        }
     }
 }
 
@@ -651,9 +697,16 @@ impl LedgerKind {
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        [LedgerKind::Grant, LedgerKind::Income, LedgerKind::Achievement, LedgerKind::Escrow, LedgerKind::Sale, LedgerKind::Refund]
-            .into_iter()
-            .find(|k| k.name() == s)
+        [
+            LedgerKind::Grant,
+            LedgerKind::Income,
+            LedgerKind::Achievement,
+            LedgerKind::Escrow,
+            LedgerKind::Sale,
+            LedgerKind::Refund,
+        ]
+        .into_iter()
+        .find(|k| k.name() == s)
     }
 }
 
@@ -853,7 +906,8 @@ mod tests {
 
     #[test]
     fn client_messages_parse() {
-        let m: ClientEnvelope = serde_json::from_str(r#"{"id":3,"type":"order_move","organism":7,"x":1.5,"y":2}"#).unwrap();
+        let m: ClientEnvelope =
+            serde_json::from_str(r#"{"id":3,"type":"order_move","organism":7,"x":1.5,"y":2}"#).unwrap();
         assert_eq!(m.id, Some(3));
         assert_eq!(m.msg, ClientMsg::OrderMove { organism: 7, x: 1.5, y: 2.0 });
         let m: ClientEnvelope = serde_json::from_str(r#"{"type":"clear_migration"}"#).unwrap();
@@ -865,10 +919,12 @@ mod tests {
 
     #[test]
     fn market_messages_parse() {
-        let m: ClientEnvelope = serde_json::from_str(r#"{"id":4,"type":"create_listing","organism":9,"fee":12}"#).unwrap();
+        let m: ClientEnvelope =
+            serde_json::from_str(r#"{"id":4,"type":"create_listing","organism":9,"fee":12}"#).unwrap();
         assert_eq!(m.msg, ClientMsg::CreateListing { organism: 9, fee: 12, expires_days: None });
         assert_eq!(m.msg.name(), "create_listing");
-        let m: ClientEnvelope = serde_json::from_str(r#"{"type":"create_listing","organism":9,"fee":0,"expires_days":3}"#).unwrap();
+        let m: ClientEnvelope =
+            serde_json::from_str(r#"{"type":"create_listing","organism":9,"fee":0,"expires_days":3}"#).unwrap();
         assert_eq!(m.msg, ClientMsg::CreateListing { organism: 9, fee: 0, expires_days: Some(3) });
         let m: ClientEnvelope = serde_json::from_str(r#"{"type":"buy_listing","listing":2,"mine":5}"#).unwrap();
         assert_eq!(m.msg, ClientMsg::BuyListing { listing: 2, mine: 5 });
@@ -918,7 +974,10 @@ mod tests {
         // The shapes client/src/protocol.ts parses.
         let alert = AlertView { tick: 96, day: 2, kind: AlertKind::DailySummary, text: "Day 3".into(), organism: None };
         let s = serde_json::to_value(ServerMsg::Alert { alert }).unwrap();
-        assert_eq!(s, serde_json::json!({"type": "alert", "alert": {"tick": 96, "day": 2, "kind": "daily_summary", "text": "Day 3"}}));
+        assert_eq!(
+            s,
+            serde_json::json!({"type": "alert", "alert": {"tick": 96, "day": 2, "kind": "daily_summary", "text": "Day 3"}})
+        );
         let s = serde_json::to_value(ServerMsg::SessionEnded { reason: "expired".into() }).unwrap();
         assert_eq!(s, serde_json::json!({"type": "session_ended", "reason": "expired"}));
         for c in evo_sim::organism::DeathCause::ALL {

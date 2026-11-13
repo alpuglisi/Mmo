@@ -14,7 +14,8 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 
 use super::{
-    AccountRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord, Store, StoreError, StoreResult, TradeRecord, KEEP_SNAPSHOTS,
+    AccountRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord, Store, StoreError, StoreResult, TradeRecord,
+    KEEP_SNAPSHOTS,
 };
 use crate::protocol::{LedgerEntry, LedgerKind};
 use evo_sim::PlayerId;
@@ -46,7 +47,9 @@ impl<'s> MigrationSource<'s> for Embedded {
         Box::pin(async {
             Ok(MIGRATIONS
                 .iter()
-                .map(|&(version, desc, sql)| Migration::new(version, Cow::Borrowed(desc), MigrationType::Simple, Cow::Borrowed(sql), false))
+                .map(|&(version, desc, sql)| {
+                    Migration::new(version, Cow::Borrowed(desc), MigrationType::Simple, Cow::Borrowed(sql), false)
+                })
                 .collect())
         })
     }
@@ -119,9 +122,11 @@ impl Store for PgStore {
     }
 
     async fn load_designs(&self) -> StoreResult<Vec<DesignRecord>> {
-        let rows = sqlx::query("SELECT player, design::text AS design, founded_day, founded_unix FROM designs ORDER BY player")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT player, design::text AS design, founded_day, founded_unix FROM designs ORDER BY player",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter()
             .map(|r| {
                 Ok(DesignRecord {
@@ -264,7 +269,10 @@ impl Store for PgStore {
     }
 
     async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>> {
-        let row = sqlx::query("SELECT data FROM snapshots WHERE tick = $1").bind(int(tick)).fetch_optional(&self.pool).await?;
+        let row = sqlx::query("SELECT data FROM snapshots WHERE tick = $1")
+            .bind(int(tick))
+            .fetch_optional(&self.pool)
+            .await?;
         match row {
             Some(r) => Ok(r.try_get("data")?),
             None => Err(StoreError(format!("no snapshot at tick {tick}"))),
@@ -284,10 +292,16 @@ impl Store for PgStore {
     }
 
     async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>> {
-        let rows = sqlx::query("SELECT player, balance, updated_day FROM balances ORDER BY player").fetch_all(&self.pool).await?;
+        let rows = sqlx::query("SELECT player, balance, updated_day FROM balances ORDER BY player")
+            .fetch_all(&self.pool)
+            .await?;
         rows.iter()
             .map(|r| {
-                Ok(BalanceRecord { player: get_u64(r, "player")? as PlayerId, balance: get_u64(r, "balance")?, day: get_u64(r, "updated_day")? })
+                Ok(BalanceRecord {
+                    player: get_u64(r, "player")? as PlayerId,
+                    balance: get_u64(r, "balance")?,
+                    day: get_u64(r, "updated_day")?,
+                })
             })
             .collect()
     }
@@ -338,7 +352,8 @@ impl Store for PgStore {
                         day: get_u64(r, "day")?,
                         delta: r.try_get("delta")?,
                         balance: get_u64(r, "balance")?,
-                        kind: LedgerKind::parse(&kind).ok_or_else(|| StoreError(format!("unknown ledger kind {kind:?}")))?,
+                        kind: LedgerKind::parse(&kind)
+                            .ok_or_else(|| StoreError(format!("unknown ledger kind {kind:?}")))?,
                         text: r.try_get("text")?,
                         offer: r.try_get::<Option<i64>, _>("offer")?.map(|v| v as u64),
                         listing: r.try_get::<Option<i64>, _>("listing")?.map(|v| v as u64),

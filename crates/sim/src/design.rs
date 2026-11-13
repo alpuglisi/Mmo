@@ -102,8 +102,7 @@ pub fn default_value(g: Gene) -> f32 {
     use Gene::*;
     match g {
         BodySize => 0.3,
-        Boldness | Aggression | Wanderlust | GroupTolerance | ForagingRange | PackInstinct
-        | Pickiness => 0.5,
+        Boldness | Aggression | Wanderlust | GroupTolerance | ForagingRange | PackInstinct | Pickiness => 0.5,
         TolColoration | TolBodySize => 0.5,
         Carnivory => 0.0,
         Vigilance => 0.0,
@@ -159,9 +158,8 @@ pub fn trait_cost(g: Gene) -> f32 {
         Vigilance => 4.0,
         // Set through the design's own fields, never through `traits`.
         Endothermy | BirthMode | LitterSize => 0.0,
-        Carnivory | Boldness | Aggression | Wanderlust | GroupTolerance | ForagingRange
-        | PackInstinct | Pickiness | PrefColoration | TolColoration | PrefBodySize
-        | TolBodySize => 0.0,
+        Carnivory | Boldness | Aggression | Wanderlust | GroupTolerance | ForagingRange | PackInstinct | Pickiness
+        | PrefColoration | TolColoration | PrefBodySize | TolBodySize => 0.0,
     }
 }
 
@@ -178,7 +176,10 @@ pub struct FounderDesign {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DesignError {
-    OverBudget { cost: f32, budget: f32 },
+    OverBudget {
+        cost: f32,
+        budget: f32,
+    },
     ValueOutOfRange(Gene),
     /// Thermoregulation, birth type and litter size have their own fields.
     ReservedGene(Gene),
@@ -206,14 +207,7 @@ impl std::error::Error for DesignError {}
 
 impl FounderDesign {
     pub fn new(name: impl Into<String>, thermo: Thermo, birth: BirthType, litter_size: u32) -> Self {
-        Self {
-            name: name.into(),
-            thermo,
-            birth,
-            litter_size,
-            traits: Vec::new(),
-            founders: BASE_FOUNDERS,
-        }
+        Self { name: name.into(), thermo, birth, litter_size, traits: Vec::new(), founders: BASE_FOUNDERS }
     }
 
     pub fn with(mut self, gene: Gene, value: f32) -> Self {
@@ -251,10 +245,7 @@ impl FounderDesign {
 
     pub fn point_cost(&self) -> f32 {
         let v = self.values();
-        let traits: f32 = Gene::ALL
-            .iter()
-            .map(|&g| (v[g.index()] - default_value(g)).max(0.0) * trait_cost(g))
-            .sum();
+        let traits: f32 = Gene::ALL.iter().map(|&g| (v[g.index()] - default_value(g)).max(0.0) * trait_cost(g)).sum();
         let litter = self.litter_size.saturating_sub(1) as f32 * COST_PER_EXTRA_OFFSPRING;
         let founders = self.founders.saturating_sub(BASE_FOUNDERS) as f32 * COST_PER_EXTRA_FOUNDER;
         let small = (default_value(Gene::BodySize) - v[Gene::BodySize.index()]).max(0.0) * COST_PER_SMALLER_BODY;

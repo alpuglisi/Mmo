@@ -11,7 +11,8 @@ use evo_server::design::{BirthSpec, DesignSpec, ThermoSpec};
 use evo_server::game::WorldSettings;
 use evo_server::protocol::{LedgerEntry, LedgerKind};
 use evo_server::store::{
-    AccountRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord, MemoryStore, Store, TradeRecord, KEEP_SNAPSHOTS,
+    AccountRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord, MemoryStore, Store, TradeRecord,
+    KEEP_SNAPSHOTS,
 };
 use evo_server::{start, ServerConfig};
 use futures_util::StreamExt;
@@ -28,7 +29,11 @@ enum Backend {
     File(PathBuf),
     /// A database URL whose connections use a schema of their own.
     #[cfg(feature = "postgres")]
-    Pg { url: String, base: String, schema: String },
+    Pg {
+        url: String,
+        base: String,
+        schema: String,
+    },
 }
 
 impl Backend {
@@ -43,7 +48,10 @@ impl Backend {
         let base = match std::env::var("DATABASE_URL") {
             Ok(u) if !u.is_empty() => u,
             _ => {
-                assert!(std::env::var_os("EVO_REQUIRE_DATABASE").is_none(), "EVO_REQUIRE_DATABASE is set but DATABASE_URL is not");
+                assert!(
+                    std::env::var_os("EVO_REQUIRE_DATABASE").is_none(),
+                    "EVO_REQUIRE_DATABASE is set but DATABASE_URL is not"
+                );
                 eprintln!("skipping the PostgreSQL run of {name}: DATABASE_URL is not set");
                 return None;
             }
@@ -164,9 +172,17 @@ async fn round_trip(s: &dyn Store) {
         settlement: Some("paid".into()),
     };
     s.append_trade(&trade).await.unwrap();
-    s.append_trade(&TradeRecord { offer: 2, price: None, conceived: None, status: "expired".into(), listing: None, settlement: None, ..trade.clone() })
-        .await
-        .unwrap();
+    s.append_trade(&TradeRecord {
+        offer: 2,
+        price: None,
+        conceived: None,
+        status: "expired".into(),
+        listing: None,
+        settlement: None,
+        ..trade.clone()
+    })
+    .await
+    .unwrap();
     s.put_balance(&BalanceRecord { player: 1, balance: 50, day: 0 }).await.unwrap();
     s.put_balance(&BalanceRecord { player: 2, balance: 9, day: 1 }).await.unwrap();
     s.put_balance(&BalanceRecord { player: 1, balance: 41, day: 3 }).await.unwrap();
@@ -197,12 +213,21 @@ async fn round_trip(s: &dyn Store) {
     assert_eq!((trades[1].price, trades[1].conceived, trades[1].settlement.clone()), (None, None, None));
     let mut balances = s.load_balances().await.unwrap();
     balances.sort_by_key(|b| b.player);
-    assert_eq!(balances, vec![BalanceRecord { player: 1, balance: 41, day: 3 }, BalanceRecord { player: 2, balance: 9, day: 1 }]);
+    assert_eq!(
+        balances,
+        vec![BalanceRecord { player: 1, balance: 41, day: 3 }, BalanceRecord { player: 2, balance: 9, day: 1 }]
+    );
     let all = s.recent_ledger(None, 100).await.unwrap();
-    assert_eq!(all.iter().map(|r| (r.world_id.as_str(), r.entry.seq)).collect::<Vec<_>>(), vec![("w1", 1), ("w1", 2), ("w1", 3), ("w1", 4), ("w2", 1)]);
+    assert_eq!(
+        all.iter().map(|r| (r.world_id.as_str(), r.entry.seq)).collect::<Vec<_>>(),
+        vec![("w1", 1), ("w1", 2), ("w1", 3), ("w1", 4), ("w2", 1)]
+    );
     assert_eq!(all[2], ledger("w1", 3, 1, -30));
     let ann = s.recent_ledger(Some(1), 2).await.unwrap();
-    assert_eq!(ann.iter().map(|r| (r.world_id.as_str(), r.entry.seq, r.entry.delta)).collect::<Vec<_>>(), vec![("w1", 3, -30), ("w2", 1, 7)]);
+    assert_eq!(
+        ann.iter().map(|r| (r.world_id.as_str(), r.entry.seq, r.entry.delta)).collect::<Vec<_>>(),
+        vec![("w1", 3, -30), ("w2", 1, 7)]
+    );
     assert_eq!(s.recent_ledger(Some(2), 10).await.unwrap().len(), 2);
     let ticks = s.snapshot_ticks().await.unwrap();
     assert_eq!(ticks.len(), KEEP_SNAPSHOTS);
@@ -337,7 +362,11 @@ async fn own_ids(ws: &mut Socket) -> Vec<u64> {
     panic!("socket closed before a state with organisms");
 }
 
-on_every_store!(restart_continues_the_saved_world, file_restart_continues_the_saved_world, pg_restart_continues_the_saved_world);
+on_every_store!(
+    restart_continues_the_saved_world,
+    file_restart_continues_the_saved_world,
+    pg_restart_continues_the_saved_world
+);
 
 async fn restart_continues_the_saved_world(backend: Backend) {
     let cfg = backend.config(
@@ -359,7 +388,9 @@ async fn restart_continues_the_saved_world(backend: Backend) {
         let client = reqwest_like::Client::new(srv.addr);
         let mut tokens = Vec::new();
         for name in ["ann", "bob"] {
-            let v = client.post_json("/api/register", &format!(r#"{{"name":"{name}","password":"a long password"}}"#), None).await;
+            let v = client
+                .post_json("/api/register", &format!(r#"{{"name":"{name}","password":"a long password"}}"#), None)
+                .await;
             let token = v["token"].as_str().unwrap().to_string();
             let design = DesignSpec { name: format!("{name}'s"), ..spec() };
             let v = client.post_json("/api/lineage", &serde_json::to_string(&design).unwrap(), Some(&token)).await;
@@ -455,7 +486,14 @@ async fn restart_keeps_balances(backend: Backend) {
     let cfg = backend.config(
         ServerConfig {
             bind: SocketAddr::from(([127, 0, 0, 1], 0)),
-            world: WorldSettings { seed: 11, width: 64, height: 64, wild: false, days_per_year: 4000, ..Default::default() },
+            world: WorldSettings {
+                seed: 11,
+                width: 64,
+                height: 64,
+                wild: false,
+                days_per_year: 4000,
+                ..Default::default()
+            },
             ..Default::default()
         }
         .manual(),
@@ -466,7 +504,9 @@ async fn restart_keeps_balances(backend: Backend) {
         let client = reqwest_like::Client::new(srv.addr);
         let mut tokens = Vec::new();
         for name in ["ann", "bob"] {
-            let v = client.post_json("/api/register", &format!(r#"{{"name":"{name}","password":"a long password"}}"#), None).await;
+            let v = client
+                .post_json("/api/register", &format!(r#"{{"name":"{name}","password":"a long password"}}"#), None)
+                .await;
             let token = v["token"].as_str().unwrap().to_string();
             let design = DesignSpec { name: format!("{name}'s"), ..spec() };
             let v = client.post_json("/api/lineage", &serde_json::to_string(&design).unwrap(), Some(&token)).await;
@@ -560,7 +600,8 @@ mod reqwest_like {
         }
 
         pub async fn post_json(&self, path: &str, body: &str, token: Option<&str>) -> serde_json::Value {
-            let mut req = hyper::Request::post(format!("http://{}{path}", self.addr)).header("content-type", "application/json");
+            let mut req =
+                hyper::Request::post(format!("http://{}{path}", self.addr)).header("content-type", "application/json");
             if let Some(t) = token {
                 req = req.header("authorization", format!("Bearer {t}"));
             }

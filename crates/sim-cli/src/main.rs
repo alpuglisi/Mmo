@@ -7,10 +7,10 @@ use std::io::BufWriter;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use evo_sim::group::GroupTrait;
-use evo_sim::organism::{Action, DeathCause, Dormancy, Infection};
-use evo_sim::math::Vec2;
 use evo_sim::chronicle::CatastropheKind;
+use evo_sim::group::GroupTrait;
+use evo_sim::math::Vec2;
+use evo_sim::organism::{Action, DeathCause, Dormancy, Infection};
 use evo_sim::{presets, render, Balance, Gene, LodConfig, PlayerId, ScoringConfig, World, WorldConfig, WILD};
 
 mod sweep;
@@ -141,7 +141,10 @@ fn parse_args() -> Result<Args, String> {
             "--scale" => a.scale = (num(value()?)? as u32).max(1),
             "--threads" => {
                 let v = value()?;
-                a.thread_list = v.split(',').map(|t| num(t.trim().to_string()).map(|n| n.max(1) as usize)).collect::<Result<_, _>>()?;
+                a.thread_list = v
+                    .split(',')
+                    .map(|t| num(t.trim().to_string()).map(|n| n.max(1) as usize))
+                    .collect::<Result<_, _>>()?;
                 a.threads = a.thread_list.iter().copied().max();
             }
             "--trials" => a.trials = (num(value()?)? as usize).max(1),
@@ -380,10 +383,8 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
             gen
         );
     }
-    let deaths: Vec<String> = DeathCause::ALL
-        .iter()
-        .map(|d| format!("{} {}", d.label(), c.deaths.get(d).copied().unwrap_or(0)))
-        .collect();
+    let deaths: Vec<String> =
+        DeathCause::ALL.iter().map(|d| format!("{} {}", d.label(), c.deaths.get(d).copied().unwrap_or(0))).collect();
     println!(
         "  births {} · hatched {} · eggs lost {} · matings {} ({} cross-lineage) · kills {}/{} hunts",
         c.births,
@@ -437,10 +438,8 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
         println!("  hybrid offspring (mother×father lineage): {}", pairs.join(" · "));
     }
     print_seasonal(world);
-    let groups: Vec<String> = GroupTrait::ALL
-        .iter()
-        .map(|t| format!("{} {}", t.label(), world.group.active_regions(*t)))
-        .collect();
+    let groups: Vec<String> =
+        GroupTrait::ALL.iter().map(|t| format!("{} {}", t.label(), world.group.active_regions(*t))).collect();
     println!("  group traits active (regions): {}", groups.join(" · "));
     print_drift(world, names);
     print_chronicle(world, names);
@@ -463,7 +462,9 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
 fn print_chronicle(world: &World, names: &BTreeMap<PlayerId, String>) {
     let ch = &world.chronicle;
     let t = &ch.species;
-    let name = |p: PlayerId| names.get(&p).cloned().unwrap_or_else(|| if p == WILD { "wild".into() } else { format!("player {p}") });
+    let name = |p: PlayerId| {
+        names.get(&p).cloned().unwrap_or_else(|| if p == WILD { "wild".into() } else { format!("player {p}") })
+    };
     let alive: Vec<String> = t
         .alive()
         .map(|s| format!("{} ~{:.0} ({} {:.0}%)", s.name, s.adults, name(s.dominant), s.dominant_share * 100.0))
@@ -494,7 +495,11 @@ fn print_chronicle(world: &World, names: &BTreeMap<PlayerId, String>) {
             c.end_day,
             c.population_before,
             after,
-            if c.ended { format!(" · survived by {}", if survivors.is_empty() { "none".into() } else { survivors.join(", ") }) } else { String::new() }
+            if c.ended {
+                format!(" · survived by {}", if survivors.is_empty() { "none".into() } else { survivors.join(", ") })
+            } else {
+                String::new()
+            }
         );
     }
     let era_days = world.config.era_days();
@@ -508,14 +513,24 @@ fn print_chronicle(world: &World, names: &BTreeMap<PlayerId, String>) {
         if world.config.scoring.catastrophes { "random from year 2" } else { "off (forced only)" }
     );
     for e in &ch.eras {
-        let top: Vec<String> = e.ranking.iter().take(3).map(|r| format!("{} {:.1}%", name(r.player), r.share * 100.0)).collect();
-        println!("  era {} (days {}–{}): {} · {} species", e.era + 1, e.first_day + 1, e.last_day + 1, top.join(", "), e.species_alive);
+        let top: Vec<String> =
+            e.ranking.iter().take(3).map(|r| format!("{} {:.1}%", name(r.player), r.share * 100.0)).collect();
+        println!(
+            "  era {} (days {}–{}): {} · {} species",
+            e.era + 1,
+            e.first_day + 1,
+            e.last_day + 1,
+            top.join(", "),
+            e.species_alive
+        );
     }
     let counts = ch.achievement_counts();
     if !counts.is_empty() {
         let rows: Vec<String> = counts
             .iter()
-            .map(|(&p, k)| format!("{} {}", name(p), k.iter().map(|(l, n)| format!("{l} {n}")).collect::<Vec<_>>().join(", ")))
+            .map(|(&p, k)| {
+                format!("{} {}", name(p), k.iter().map(|(l, n)| format!("{l} {n}")).collect::<Vec<_>>().join(", "))
+            })
             .collect();
         println!("  achievements: {}", rows.join(" · "));
     }
@@ -582,7 +597,8 @@ fn print_seasonal(world: &World) {
 
 /// Mean of a few genes per lineage, to watch selection at work.
 fn print_drift(world: &World, names: &BTreeMap<PlayerId, String>) {
-    const WATCH: [Gene; 6] = [Gene::BodySize, Gene::LegLength, Gene::Carnivory, Gene::Camouflage, Gene::Boldness, Gene::LitterSize];
+    const WATCH: [Gene; 6] =
+        [Gene::BodySize, Gene::LegLength, Gene::Carnivory, Gene::Camouflage, Gene::Boldness, Gene::LitterSize];
     let mut sums: BTreeMap<PlayerId, ([f32; 6], u32)> = BTreeMap::new();
     for o in world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
         let e = sums.entry(o.owner).or_default();
@@ -605,11 +621,14 @@ fn bench(args: &Args) {
     // Every (threads, apply mode) setup to measure. Simulated days go to the
     // setups in rotation, so all of them see similar populations and the
     // same machine load; each reports the median day.
-    let threads = if args.thread_list.is_empty() { vec![rayon::current_num_threads()] } else { args.thread_list.clone() };
+    let threads =
+        if args.thread_list.is_empty() { vec![rayon::current_num_threads()] } else { args.thread_list.clone() };
     let modes = if args.compare_apply { vec![true, false] } else { vec![!args.sequential_apply] };
     let setups: Vec<(usize, bool)> = threads.iter().flat_map(|&t| modes.iter().map(move |&m| (t, m))).collect();
-    let pools: Vec<rayon::ThreadPool> =
-        setups.iter().map(|&(t, _)| rayon::ThreadPoolBuilder::new().num_threads(t).build().expect("thread pool")).collect();
+    let pools: Vec<rayon::ThreadPool> = setups
+        .iter()
+        .map(|&(t, _)| rayon::ThreadPoolBuilder::new().num_threads(t).build().expect("thread pool"))
+        .collect();
     println!(
         "Bench: {}×{} map, {} organisms, {} days, threads {:?}, {} apply{}",
         args.size,
@@ -622,7 +641,11 @@ fn bench(args: &Args) {
             [false] => "sequential",
             _ => "parallel and sequential",
         },
-        if args.lod.enabled { format!(", level of detail on ({} focus points)", args.focus.len()) } else { String::new() }
+        if args.lod.enabled {
+            format!(", level of detail on ({} focus points)", args.focus.len())
+        } else {
+            String::new()
+        }
     );
     if (days as usize) < setups.len() {
         println!("  (fewer days than setups: some setups go unmeasured; use --days {})", setups.len());
@@ -660,7 +683,11 @@ fn bench(args: &Args) {
     let median = |mut v: Vec<f64>| {
         v.sort_by(f64::total_cmp);
         let n = v.len();
-        if n % 2 == 1 { v[n / 2] } else { 0.5 * (v[n / 2 - 1] + v[n / 2]) }
+        if n % 2 == 1 {
+            v[n / 2]
+        } else {
+            0.5 * (v[n / 2 - 1] + v[n / 2])
+        }
     };
     for (k, &(t, parallel)) in setups.iter().enumerate() {
         let s = &samples[k];
@@ -673,7 +700,11 @@ fn bench(args: &Args) {
         let agents = s.iter().map(|d| d.org_ticks).sum::<u64>() as f64 / (ticks * s.len() as f64);
         let pop = s.iter().map(|d| d.pop_ticks).sum::<u64>() as f64 / (ticks * s.len() as f64);
         let us = median(s.iter().map(|d| d.secs * 1e6 / d.org_ticks.max(1) as f64).collect());
-        println!("\n  {t} threads, {} apply ({} days measured)", if parallel { "parallel" } else { "sequential" }, s.len());
+        println!(
+            "\n  {t} threads, {} apply ({} days measured)",
+            if parallel { "parallel" } else { "sequential" },
+            s.len()
+        );
         println!("  {pop:.0} organisms on average");
         if args.lod.enabled {
             println!("  {agents:.0} of them agents, the rest in cohorts");
@@ -681,7 +712,10 @@ fn bench(args: &Args) {
             println!("  {us_pop:.2} µs per organism-tick counting cohort members");
         }
         println!("  {ms:.2} ms per tick (median day; fastest {min:.2})");
-        println!("  {:.2} path searches per tick", s.iter().map(|d| d.searches).sum::<u64>() as f64 / (ticks * s.len() as f64));
+        println!(
+            "  {:.2} path searches per tick",
+            s.iter().map(|d| d.searches).sum::<u64>() as f64 / (ticks * s.len() as f64)
+        );
         println!(
             "  phases (ms per tick, median day): environment {:.2}, daily {:.2}, grid {:.2}, decide {:.2}, apply {:.2}",
             per_tick(&|d| d.phases.environment),

@@ -28,7 +28,8 @@ fn main() {
     }
     let lineages: Vec<u32> = pos.first().map_or(vec![1, 5], |s| s.split(',').map(|x| x.parse().unwrap()).collect());
     let days: u32 = pos.get(1).and_then(|s| s.parse().ok()).unwrap_or(120);
-    let seeds: Vec<u64> = if pos.len() > 2 { pos[2..].iter().map(|s| s.parse().unwrap()).collect() } else { (31..=36).collect() };
+    let seeds: Vec<u64> =
+        if pos.len() > 2 { pos[2..].iter().map(|s| s.parse().unwrap()).collect() } else { (31..=36).collect() };
 
     // (lineage, key) -> count
     let mut tally: BTreeMap<(u32, String), u64> = BTreeMap::new();
@@ -37,7 +38,8 @@ fn main() {
     }
     let mut names = Vec::new();
     for &seed in &seeds {
-        let mut w = presets::standard_world(WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() }, 1);
+        let mut w =
+            presets::standard_world(WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() }, 1);
         names = w.lineages.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
         let tpd = w.config.ticks_per_day;
         for _ in 0..days {
@@ -75,17 +77,36 @@ fn main() {
                     let herd = w.group.benefit(GroupTrait::HerdDefense, o.pos);
                     let freq = w.group.frequency(GroupTrait::HerdDefense, o.pos);
                     let r = |x: f32| (x * 5.0).round() / 5.0;
-                    add(&mut tally, l, format!("y-herd {stage} benefit {:.1} freq {:.1} kin>=3 {}", r(herd), r(freq), o.kin_nearby >= 3));
+                    add(
+                        &mut tally,
+                        l,
+                        format!(
+                            "y-herd {stage} benefit {:.1} freq {:.1} kin>=3 {}",
+                            r(herd),
+                            r(freq),
+                            o.kin_nearby >= 3
+                        ),
+                    );
                     add(&mut tally, l, format!("y-action {stage} {:?}", o.action));
                     add(&mut tally, l, format!("y-mass {stage} {killer} {:.1}kg", (o.mass() * 2.0).round() / 2.0));
                 }
-                add(&mut tally, l, format!("z-hunger-at-death {:?} {}", cause, (o.needs.hunger / 20.0).floor() as u32 * 20));
+                add(
+                    &mut tally,
+                    l,
+                    format!("z-hunger-at-death {:?} {}", cause, (o.needs.hunger / 20.0).floor() as u32 * 20),
+                );
             }
         }
         let counts = w.lineage_counts();
         for &l in &lineages {
             let c = counts[l as usize];
-            eprintln!("seed {seed} {}: alive {} adults {} born {}", names[l as usize], c.alive, c.adults, w.counters.born.get(&l).copied().unwrap_or(0));
+            eprintln!(
+                "seed {seed} {}: alive {} adults {} born {}",
+                names[l as usize],
+                c.alive,
+                c.adults,
+                w.counters.born.get(&l).copied().unwrap_or(0)
+            );
             *tally.entry((l, "zz alive".into())).or_default() += c.alive as u64;
             *tally.entry((l, "zz born".into())).or_default() += w.counters.born.get(&l).copied().unwrap_or(0);
         }

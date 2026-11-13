@@ -161,7 +161,8 @@ mod tests {
     }
 
     fn preset(name: &str) -> Genome {
-        let designs = crate::presets::wild_designs().into_iter().map(|(_, d)| d).chain(crate::presets::player_designs());
+        let designs =
+            crate::presets::wild_designs().into_iter().map(|(_, d)| d).chain(crate::presets::player_designs());
         genome(&designs.into_iter().find(|d| d.name == name).unwrap())
     }
 

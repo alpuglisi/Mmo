@@ -35,36 +35,71 @@ use evo_sim::{FounderDesign, PlayerId};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::game::{ConnId, FoundError, FoundOk, Game, Outbox, PersistEvent, Target};
+use crate::protocol::{ChronicleView, ClientMsg, Leaderboard, LineageStats, ServerMsg, WorldSummary};
 use crate::saver::Saver;
 use crate::snapshot::Capture;
-use crate::protocol::{ChronicleView, ClientMsg, Leaderboard, LineageStats, ServerMsg, WorldSummary};
 use crate::terrain::{dynamic_raw, terrain_raw, DynamicRaw, TerrainRaw};
 
 pub enum Request {
-    Found { player: PlayerId, name: String, design: FounderDesign, reply: oneshot::Sender<Result<FoundOk, FoundError>> },
-    Connect { conn: ConnId, player: PlayerId, name: String, tx: mpsc::Sender<ServerMsg> },
-    Disconnect { conn: ConnId },
-    Command { conn: ConnId, player: PlayerId, id: Option<u64>, msg: ClientMsg },
+    Found {
+        player: PlayerId,
+        name: String,
+        design: FounderDesign,
+        reply: oneshot::Sender<Result<FoundOk, FoundError>>,
+    },
+    Connect {
+        conn: ConnId,
+        player: PlayerId,
+        name: String,
+        tx: mpsc::Sender<ServerMsg>,
+    },
+    Disconnect {
+        conn: ConnId,
+    },
+    Command {
+        conn: ConnId,
+        player: PlayerId,
+        id: Option<u64>,
+        msg: ClientMsg,
+    },
     /// `render_rgb` at `scale` pixels per tile: (width, height, rgb).
-    Snapshot { scale: usize, reply: oneshot::Sender<(usize, usize, Vec<u8>)> },
+    Snapshot {
+        scale: usize,
+        reply: oneshot::Sender<(usize, usize, Vec<u8>)>,
+    },
     /// The tile grid: every layer, or only the dynamic ones.
-    Terrain { full: bool, reply: oneshot::Sender<TerrainReply> },
+    Terrain {
+        full: bool,
+        reply: oneshot::Sender<TerrainReply>,
+    },
     /// The genetics dashboard of a player's lineage.
-    Stats { player: PlayerId, reply: oneshot::Sender<LineageStats> },
+    Stats {
+        player: PlayerId,
+        reply: oneshot::Sender<LineageStats>,
+    },
     /// Species, eras, catastrophes and achievements.
-    Chronicle { reply: oneshot::Sender<Box<ChronicleView>> },
+    Chronicle {
+        reply: oneshot::Sender<Box<ChronicleView>>,
+    },
     /// Save the game and stop the world thread (graceful shutdown). Queued
     /// world changes are dropped. The reply comes once the saver has
     /// encoded the last save and sent it on to the store task.
-    Shutdown { reply: oneshot::Sender<()> },
+    Shutdown {
+        reply: oneshot::Sender<()>,
+    },
     /// Apply the queued requests, advance the world `ticks` ticks and push
     /// state once at the end; replies with the world tick afterwards. Used by
     /// tests in manual mode ([`RunnerConfig::manual`]) to drive the clock.
-    Step { ticks: u32, reply: oneshot::Sender<u64> },
+    Step {
+        ticks: u32,
+        reply: oneshot::Sender<u64>,
+    },
     /// Apply the queued requests and take one possession sub-step
     /// (`Game::substep`, as a ticking server does between ticks); replies
     /// with the sub-steps left before the next tick. Manual mode (tests).
-    Substep { reply: oneshot::Sender<u32> },
+    Substep {
+        reply: oneshot::Sender<u32>,
+    },
 }
 
 pub enum TerrainReply {
@@ -237,7 +272,8 @@ impl Runner {
         for ev in self.game.take_persist() {
             let _ = self.persist.send(ev);
         }
-        self.published.send_replace(Arc::new(Published { summary: self.game.summary(), leaderboard: self.game.leaderboard() }));
+        self.published
+            .send_replace(Arc::new(Published { summary: self.game.summary(), leaderboard: self.game.leaderboard() }));
         if push_state {
             self.last_state = Instant::now();
             let states = self.game.states();
@@ -289,7 +325,11 @@ impl Runner {
             }
             Request::Terrain { full, reply } => {
                 let w = &self.game.world;
-                let _ = reply.send(if full { TerrainReply::Full(Box::new(terrain_raw(w))) } else { TerrainReply::Dynamic(Box::new(dynamic_raw(w))) });
+                let _ = reply.send(if full {
+                    TerrainReply::Full(Box::new(terrain_raw(w)))
+                } else {
+                    TerrainReply::Dynamic(Box::new(dynamic_raw(w)))
+                });
             }
             Request::Stats { player, reply } => {
                 let _ = reply.send(self.game.lineage_stats(player));

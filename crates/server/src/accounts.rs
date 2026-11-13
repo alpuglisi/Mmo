@@ -82,7 +82,8 @@ struct SessionEntry {
 
 impl SessionEntry {
     fn expired(&self, policy: SessionPolicy, now: Instant) -> bool {
-        now.saturating_duration_since(self.last_seen) >= policy.idle || now.saturating_duration_since(self.created) >= policy.max_age
+        now.saturating_duration_since(self.last_seen) >= policy.idle
+            || now.saturating_duration_since(self.created) >= policy.max_age
     }
 }
 
@@ -129,7 +130,11 @@ impl Accounts {
     pub fn with_policy(store: Arc<dyn Store>, existing: Vec<AccountRecord>, policy: SessionPolicy) -> Self {
         let next_player = existing.iter().map(|a| a.player).max().unwrap_or(0) + 1;
         let by_name = existing.into_iter().map(|a| (a.name.clone(), a)).collect();
-        Self { store, policy, inner: Mutex::new(Inner { by_name, pending: Vec::new(), sessions: HashMap::new(), next_player }) }
+        Self {
+            store,
+            policy,
+            inner: Mutex::new(Inner { by_name, pending: Vec::new(), sessions: HashMap::new(), next_player }),
+        }
     }
 
     pub fn policy(&self) -> SessionPolicy {

@@ -42,7 +42,9 @@ pub mod array {
         }
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(d: D) -> Result<[T; N], D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(
+        d: D,
+    ) -> Result<[T; N], D::Error> {
         d.deserialize_tuple(N, ArrayVisitor::<T, N>(PhantomData))
     }
 }
@@ -70,7 +72,9 @@ pub mod array_vec {
         s.collect_seq(v.iter().map(Ref))
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(d: D) -> Result<Vec<[T; N]>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(
+        d: D,
+    ) -> Result<Vec<[T; N]>, D::Error> {
         let v: Vec<Owned<T, N>> = Vec::deserialize(d)?;
         Ok(v.into_iter().map(|w| w.0).collect())
     }
@@ -82,7 +86,10 @@ pub mod sorted_map {
 
     use super::*;
 
-    pub fn serialize<S: Serializer, K: Serialize + Ord, V: Serialize>(m: &HashMap<K, V>, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer, K: Serialize + Ord, V: Serialize>(
+        m: &HashMap<K, V>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
         let mut entries: Vec<(&K, &V)> = m.iter().collect();
         entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
         s.collect_map(entries)

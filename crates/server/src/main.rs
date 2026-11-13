@@ -16,12 +16,16 @@ use std::time::Duration;
 
 use evo_server::{start, ServerConfig};
 
-const USAGE: &str = "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory | --database-url URL] [--size 128] [--seed 1] \
+const USAGE: &str =
+    "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory | --database-url URL] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
 [--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] [--fresh]";
 
 fn parse_args() -> Result<ServerConfig, String> {
-    let mut cfg = ServerConfig { database_url: std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty()), ..Default::default() };
+    let mut cfg = ServerConfig {
+        database_url: std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty()),
+        ..Default::default()
+    };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -53,9 +57,13 @@ fn parse_args() -> Result<ServerConfig, String> {
                 }
                 cfg.world.days_per_year = n;
             }
-            "--tick-ms" => cfg.runner.tick = Duration::from_millis(value("--tick-ms")?.parse().map_err(|e| format!("--tick-ms: {e}"))?),
+            "--tick-ms" => {
+                cfg.runner.tick =
+                    Duration::from_millis(value("--tick-ms")?.parse().map_err(|e| format!("--tick-ms: {e}"))?)
+            }
             "--state-ms" => {
-                cfg.runner.state_interval = Duration::from_millis(value("--state-ms")?.parse().map_err(|e| format!("--state-ms: {e}"))?)
+                cfg.runner.state_interval =
+                    Duration::from_millis(value("--state-ms")?.parse().map_err(|e| format!("--state-ms: {e}"))?)
             }
             "--fast" => cfg = cfg.fast(),
             "--static" => cfg.static_dir = Some(value("--static")?.into()),
@@ -111,7 +119,8 @@ async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
     #[cfg(unix)]
     {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
+        let mut term =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
         tokio::select! {
             _ = ctrl_c => {}
             _ = term.recv() => {}

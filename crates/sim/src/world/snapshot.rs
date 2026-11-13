@@ -176,7 +176,8 @@ impl World {
         let decompressed;
         let raw = if h.flags & FLAG_LZ4 != 0 {
             let len = usize::try_from(h.raw_len).map_err(|_| SnapshotError::BadHeader)?;
-            decompressed = lz4_flex::block::decompress(payload, len).map_err(|e| SnapshotError::Decode(e.to_string()))?;
+            decompressed =
+                lz4_flex::block::decompress(payload, len).map_err(|e| SnapshotError::Decode(e.to_string()))?;
             &decompressed[..]
         } else {
             payload

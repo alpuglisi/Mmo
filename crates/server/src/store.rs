@@ -296,7 +296,11 @@ impl Store for MemoryStore {
 
     async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>> {
         let g = self.inner.lock().await;
-        g.snapshots.iter().find(|s| s.0 == tick).map(|s| s.1.clone()).ok_or_else(|| StoreError(format!("no snapshot at tick {tick}")))
+        g.snapshots
+            .iter()
+            .find(|s| s.0 == tick)
+            .map(|s| s.1.clone())
+            .ok_or_else(|| StoreError(format!("no snapshot at tick {tick}")))
     }
 
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {

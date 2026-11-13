@@ -41,7 +41,10 @@ impl Saver {
     pub fn spawn(persist: mpsc::UnboundedSender<PersistEvent>) -> Saver {
         let shared = Arc::new((Mutex::new(Slot::default()), Condvar::new()));
         let theirs = shared.clone();
-        let thread = std::thread::Builder::new().name("saver".into()).spawn(move || run(&theirs, &persist)).expect("spawn saver thread");
+        let thread = std::thread::Builder::new()
+            .name("saver".into())
+            .spawn(move || run(&theirs, &persist))
+            .expect("spawn saver thread");
         Saver { shared, thread: Some(thread) }
     }
 

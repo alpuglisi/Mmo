@@ -42,8 +42,8 @@ use rand::Rng;
 
 use super::{decide, LineageCount, World};
 use crate::design::BirthType;
-use crate::group::GroupTrait;
 use crate::genome::{Gene, Genome, MutationParams, PlayerId};
+use crate::group::GroupTrait;
 use crate::legacy::LegacySnapshot;
 use crate::math::Vec2;
 use crate::organism::{DeathCause, OrgId, Organism, Sex};
@@ -780,7 +780,8 @@ impl World {
                 made.push(o);
             }
             // Dependent young of caring species go to a mother.
-            let mothers: Vec<usize> = (0..made.len()).filter(|&k| made[k].matured && made[k].sex == Sex::Female).collect();
+            let mothers: Vec<usize> =
+                (0..made.len()).filter(|&k| made[k].matured && made[k].sex == Sex::Female).collect();
             let mut ids: Vec<OrgId> = Vec::with_capacity(made.len());
             let first_id = self.next_id;
             for k in 0..made.len() {
@@ -955,7 +956,17 @@ impl World {
         for a in arrivals {
             let Some(entry) = a.member.entry else { continue };
             if self.lod.active[a.to] {
-                self.emigrate_as_agent(a.from, a.to, a.lineage, a.owner, a.member.sex, a.member.birth_day, entry, a.hunger, &mut rng);
+                self.emigrate_as_agent(
+                    a.from,
+                    a.to,
+                    a.lineage,
+                    a.owner,
+                    a.member.sex,
+                    a.member.birth_day,
+                    entry,
+                    a.hunger,
+                    &mut rng,
+                );
             } else {
                 let c = cohort_mut(&mut self.lod.regions[a.to], a.lineage, a.owner);
                 c.add(a.member.sex, a.member.birth_day, entry, k, &mut rng);
@@ -1036,8 +1047,9 @@ impl World {
             x.water = tiles.iter().any(|&t| self.map.water_dist[t as usize] <= WATER_REACH);
             let body = rep.probe.traits.body;
             x.veg = tiles.iter().map(|&t| self.map.tiles[t as usize].reachable_veg(&body, bal.canopy_share)).sum();
-            x.dormant = (rep.winter > 0.0 && temp < bal.dormancy_temp && matches!(season, Season::Autumn | Season::Winter))
-                || (rep.estivation > 0.0 && temp > bal.estivation_temp && season == Season::Summer);
+            x.dormant =
+                (rep.winter > 0.0 && temp < bal.dormancy_temp && matches!(season, Season::Autumn | Season::Winter))
+                    || (rep.estivation > 0.0 && temp > bal.estivation_temp && season == Season::Summer);
             x.units = c
                 .ages
                 .iter()
@@ -1238,7 +1250,6 @@ impl World {
             }
         }
 
-
         // Condition, deaths, births and migration per cohort.
         let neighbors = self.region_neighbors(r);
         let ring = self.region_ring(r);
@@ -1270,7 +1281,8 @@ impl World {
             let pay = deficit.min(c.fat);
             c.fat -= pay;
             deficit -= pay;
-            let fattens = rep.probe.traits.seasonal.fattens_in(season) || (rep.caching > 0.0 && season == Season::Autumn);
+            let fattens =
+                rep.probe.traits.seasonal.fattens_in(season) || (rep.caching > 0.0 && season == Season::Autumn);
             if s >= 0.95 && fattens {
                 let cap = bal.fat_capacity * (1.0 + rep.fat_stores) + bal.cache_capacity * rep.caching;
                 c.fat = (c.fat + 0.5 * x.hunger.max(10.0)).min(cap);
@@ -1287,7 +1299,11 @@ impl World {
             let stranded = if x.tiles == 0 { 1.0 } else { 0.0 };
             let density = c.count() as f32 / x.tiles.max(1) as f32 * cfg.clump;
             let larval = if rep.birth() == BirthType::AbandonedEggs {
-                super::apply::larval_hazard((density * KIN_AREA).min(u16::MAX as f32) as u16, rep.pace, bal.larval_competition)
+                super::apply::larval_hazard(
+                    (density * KIN_AREA).min(u16::MAX as f32) as u16,
+                    rep.pace,
+                    bal.larval_competition,
+                )
             } else {
                 0.0
             };
@@ -1372,7 +1388,8 @@ impl World {
                 for _ in 0..births {
                     let ma = &c.pool[rng.gen_range(0..c.pool.len())];
                     let pa = &c.pool[rng.gen_range(0..c.pool.len())];
-                    let genome = Genome::inherit(&ma.genome, &pa.genome, c.owner, mutation, bal.recessive_mutation, rng);
+                    let genome =
+                        Genome::inherit(&ma.genome, &pa.genome, c.owner, mutation, bal.recessive_mutation, rng);
                     let generation = ma.generation.max(pa.generation) + 1;
                     let sex = if rng.gen::<bool>() { Sex::Female } else { Sex::Male };
                     c.add(sex, today, PoolEntry { genome, generation }, k, rng);
@@ -1399,8 +1416,11 @@ impl World {
             if movers > 0 && !neighbors.is_empty() {
                 let lineage = c.lineage;
                 let (hunger, health, fat) = (c.hunger, c.health, c.fat);
-                let usable: Vec<usize> =
-                    neighbors.iter().copied().filter(|&nr| !self.passable_tiles(nr, lineage, &rep.probe).is_empty()).collect();
+                let usable: Vec<usize> = neighbors
+                    .iter()
+                    .copied()
+                    .filter(|&nr| !self.passable_tiles(nr, lineage, &rep.probe).is_empty())
+                    .collect();
                 if usable.is_empty() {
                     continue;
                 }
@@ -1627,7 +1647,13 @@ mod tests {
         let c = cohort_mut(&mut w.lod.regions[r], lineage, owner);
         for k in 0..n {
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
-            c.add(sex, today - 60.0, PoolEntry { genome: src[k as usize % src.len()].clone(), generation: 0 }, 64, &mut rng);
+            c.add(
+                sex,
+                today - 60.0,
+                PoolEntry { genome: src[k as usize % src.len()].clone(), generation: 0 },
+                64,
+                &mut rng,
+            );
         }
         c.blend_state(20.0, 100.0, 0.0);
         c.ensure_rep(0, false);
@@ -1702,7 +1728,12 @@ mod tests {
             let mut w = lod_world(8, 96);
             w.set_focus(1, vec![Vec2::new(30.0, 30.0)]);
             w.run_days(4);
-            (w.population(), w.alive_count(), w.organisms.iter().map(|o| (o.id, o.pos)).collect::<Vec<_>>(), w.legacy.clone())
+            (
+                w.population(),
+                w.alive_count(),
+                w.organisms.iter().map(|o| (o.id, o.pos)).collect::<Vec<_>>(),
+                w.legacy.clone(),
+            )
         };
         let (a, b) = (run(), run());
         assert_eq!(a.0, b.0);
