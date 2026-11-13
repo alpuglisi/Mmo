@@ -267,11 +267,12 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
         .map(|d| format!("{} {}", d.label(), c.deaths.get(d).copied().unwrap_or(0)))
         .collect();
     println!(
-        "  births {} · hatched {} · eggs lost {} · matings {} · kills {}/{} hunts",
+        "  births {} · hatched {} · eggs lost {} · matings {} ({} cross-lineage) · kills {}/{} hunts",
         c.births,
         c.hatched,
         c.eggs_lost,
         c.matings,
+        c.cross_lineage_matings,
         c.kills,
         c.kills + c.failed_hunts
     );
@@ -284,14 +285,19 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
             .filter_map(|d| c.deaths_by_lineage.get(&(l32, *d)).map(|n| format!("{} {n}", d.label())))
             .collect();
         println!(
-            "    {:<20} alive {:>4} ({:>4} adults) · born {:>5} · died {} (juveniles {})",
+            "    {:<20} alive {:>4} ({:>4} adults) · born {:>5} (hybrids {}) · died {} (juveniles {})",
             lineage.name,
             counts[l].alive,
             counts[l].adults,
             c.born.get(&l32).copied().unwrap_or(0),
+            c.hybrids.iter().filter(|((m, _), _)| *m == l32).map(|(_, n)| n).sum::<u64>(),
             if row.is_empty() { "0".into() } else { row.join(", ") },
             c.juvenile_deaths.get(&l32).copied().unwrap_or(0)
         );
+    }
+    if !c.hybrids.is_empty() {
+        let pairs: Vec<String> = c.hybrids.iter().map(|((m, f), n)| format!("{m}×{f} {n}")).collect();
+        println!("  hybrid offspring (mother×father lineage): {}", pairs.join(" · "));
     }
     let groups: Vec<String> = GroupTrait::ALL
         .iter()

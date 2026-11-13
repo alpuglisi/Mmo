@@ -124,7 +124,7 @@ impl World {
                     }
                 }
             }
-            if can_breed && q.sex != o.sex && q.can_breed(self.tick) && gd < cfg.mate_distance && q.needs.breeding > 20.0 {
+            if can_breed && q.sex != o.sex && q.can_breed(self.tick) && gd < cfg.mate_distance && q.needs.breeding > 20.0 && mating::body_plan_fertility(&o.genome, &q.genome) > 0.0 {
                 let m = mating::mismatch(&o.pheno, q.display());
                 if m <= 1.0 {
                     let score = 1.0 / ((1.0 + m) * (1.0 + d));

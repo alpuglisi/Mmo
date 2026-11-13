@@ -73,6 +73,8 @@ impl Default for Needs {
 pub struct Pregnancy {
     pub father: Box<Genome>,
     pub father_id: OrgId,
+    /// The father's lineage (offspring take the mother's).
+    pub father_lineage: u32,
     pub fertility: f32,
     pub due_tick: u64,
 }
