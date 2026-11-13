@@ -14,8 +14,14 @@ pub struct WorldConfig {
     pub days_per_year: u32,
     pub mutation: MutationParams,
     /// Genetic distance under which organisms treat each other as their own kind
-    /// (no hunting, no fleeing, grouping).
+    /// (no hunting, no fleeing, grouping), when their body plans match exactly.
+    /// See [`crate::mating::is_kin`].
     pub species_distance: f32,
+    /// Largest difference in any body-plan gene (thermoregulation, birth mode,
+    /// body size, diet) at which organisms with identical other genes are still
+    /// kin. Body-plan and whole-genome differences add up: kin need
+    /// `distance / species_distance + body_gap / kin_body_plan_gap < 1`.
+    pub kin_body_plan_gap: f32,
     /// Genetic distance above which organisms will not court each other.
     pub mate_distance: f32,
     /// `k` in the directed-mating override cost `k * max(0, mismatch - 1)^2`.
@@ -175,6 +181,7 @@ impl Default for WorldConfig {
             days_per_year: 120,
             mutation: MutationParams { rate: 0.004, sd: 0.07 },
             species_distance: 0.12,
+            kin_body_plan_gap: 0.25,
             mate_distance: 0.3,
             override_k: 1.0,
             lineage_cap: 1500,
