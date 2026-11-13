@@ -507,6 +507,25 @@ pub struct Balance {
     /// the eggs could breed again the day they hatched, cycling almost twice
     /// as fast as a live bearer. 0 restores recovery from laying.
     pub brood_recovery: f32,
+    /// Egg overheating (doc: eggs "can be raided, chilled or overheated"):
+    /// damage per hour per °C an egg sits above its ceiling (39 °C for
+    /// warm-blooded eggs, 34 °C for cold-blooded ones); the clutch dies
+    /// at 1. Eggs track their nest's microclimate: water and shade damp the
+    /// air's swing toward the tile's annual mean. A sitting parent shades
+    /// her eggs by at most 3 °C; abandoned eggs rely on the site their
+    /// mother picks. 0 disables overheating.
+    pub egg_overheat: f32,
+    /// Most °C a sitting warm-blooded parent can lift her eggs above the
+    /// nest's air toward 32 °C (a cold-blooded one manages 4). Below
+    /// `32 - brood_warmth` warm-blooded eggs cool even under a parent.
+    /// Large values restore the old fixed 32 °C.
+    pub brood_warmth: f32,
+    /// What brooding costs the parent: extra hunger per hour for each 10 °C
+    /// she warms her eggs, as a share of her hourly hunger, and extra thirst
+    /// the same way for each 10 °C she shades them. The doc's "eggs must be
+    /// guarded and kept warm": a brooder in a cold place eats much more and
+    /// must leave the nest to feed more often. 0 makes brooding free.
+    pub brood_cost: f32,
 }
 
 impl Default for Balance {
@@ -589,12 +608,15 @@ impl Default for Balance {
             breeding_recklessness: 0.15,
             courtship_caution: 1.0,
             brood_recovery: 1.0,
+            egg_overheat: 0.02,
+            brood_warmth: 20.0,
+            brood_cost: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 75;
+    pub const FIELD_COUNT: usize = 78;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -679,6 +701,9 @@ impl Balance {
             ("breeding_recklessness", &mut self.breeding_recklessness),
             ("courtship_caution", &mut self.courtship_caution),
             ("brood_recovery", &mut self.brood_recovery),
+            ("egg_overheat", &mut self.egg_overheat),
+            ("brood_warmth", &mut self.brood_warmth),
+            ("brood_cost", &mut self.brood_cost),
         ]
     }
 

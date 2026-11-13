@@ -13,6 +13,9 @@ use crate::pathfinding::{enter_cost, Outcome, Path, PathScratch, MAX_TILE_SPEED}
 use crate::rng::{rng_for, stream, SimRng};
 use crate::terrain::{traverse, Map, Traverse, Weather};
 
+/// How far (tiles) a mother looks for a nest site for eggs she leaves.
+const NEST_SEARCH: usize = 3;
+
 /// Most hunger points an organism can eat per day (so a meal takes a few ticks).
 pub(crate) const MAX_INTAKE_PER_DAY: f32 = 1200.0;
 const MAX_DRINK_PER_DAY: f32 = 1500.0;
@@ -1012,10 +1015,15 @@ impl World {
                 // Laying costs the clutch's mass in one go.
                 mother.needs.hunger = (mother.needs.hunger + 60.0 * traits.litter_burden).min(100.0);
                 let guardian = (traits.birth == BirthType::IncubatedEggs).then_some(mother_id);
-                if guardian.is_some() {
-                    mother.nest = Some(pos);
-                }
+                // A brooder makes her nest where she is and buffers it
+                // herself; eggs left alone go to the best site nearby.
                 let egg_mass = mother.traits.body.mass * 0.05;
+                let pos = if guardian.is_some() {
+                    mother.nest = Some(pos);
+                    pos
+                } else {
+                    self.nest_site(i, traits.warm)
+                };
                 self.counters.eggs.entry(lineage).or_default().laid += count as u64;
                 self.clutch_at.insert(self.map.tile_coords(pos), self.clutches.len());
                 self.clutches.push(Clutch {
@@ -1030,11 +1038,47 @@ impl World {
                     guardian,
                     warm_blooded: traits.warm,
                     chill: 0.0,
+                    overheat: 0.0,
                     newborn_growth: traits.newborn_growth,
                     egg_mass,
                 });
             }
         }
+    }
+
+    /// Where a mother that leaves her eggs lays them: the passable tile
+    /// within `NEST_SEARCH` tiles, without another clutch, whose
+    /// microclimate (water and shade damp the day's heat and the season's
+    /// swing) would harm her eggs least today, the nearest among equals.
+    /// Abandoned eggs rely on this choice where a brooder relies on herself.
+    pub(super) fn nest_site(&self, i: usize, warm_eggs: bool) -> Vec2 {
+        let o = &self.organisms[i];
+        let bal = self.config.balance;
+        let (cx, cy) = self.map.tile_coords(o.pos);
+        let r = NEST_SEARCH as i64;
+        let mut best: Option<(f32, i64, Vec2)> = None;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let (x, y) = (cx as i64 + dx, cy as i64 + dy);
+                if x < 0 || y < 0 || x >= self.map.width as i64 || y >= self.map.height as i64 {
+                    continue;
+                }
+                let (x, y) = (x as usize, y as usize);
+                let here = dx == 0 && dy == 0;
+                let p = if here { o.pos } else { Map::tile_center(x, y) };
+                if !here && (!self.passable_for(o, p) || self.clutch_at.contains_key(&(x, y))) {
+                    continue;
+                }
+                let tile = &self.map.tiles[self.map.idx(x, y)];
+                let stress = super::environment::nest_stress(tile, tile.base_temp + self.season_offset, self.map.climate_temp, warm_eggs, &bal);
+                // Round so that a hair's difference doesn't send her away.
+                let key = ((stress * 1000.0).round() / 1000.0, dx * dx + dy * dy, p);
+                if best.is_none_or(|(s, d, _)| (key.0, key.1) < (s, d)) {
+                    best = Some(key);
+                }
+            }
+        }
+        best.map_or(o.pos, |(_, _, p)| p)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1329,5 +1373,142 @@ mod tests {
         }
         assert!(w.organisms[prey].alive);
         assert_eq!((w.counters.failed_hunts, w.counters.kills), (1, 0));
+    }
+
+    /// A breeding female of `lineage` in the standard world, about to lay.
+    fn layer(lineage: u32, birth: BirthType) -> (World, usize) {
+        let mut w = presets::standard_world(WorldConfig { seed: 3, width: 64, height: 64, ..Default::default() }, 1);
+        w.config.balance.breeding_density = 0.0;
+        let i = w.organisms.iter().position(|o| o.lineage == lineage && o.sex == Sex::Female).unwrap();
+        assert_eq!(w.organisms[i].traits.birth, birth);
+        (w.organisms[i].matured, w.organisms[i].growth) = (true, 1.0);
+        make_pregnant(&mut w, i);
+        (w, i)
+    }
+
+    /// Hold the tile under `pos` at a steady `temp` (its annual mean too, so
+    /// a sheltered site damps nothing).
+    fn set_climate(w: &mut World, pos: Vec2, temp: f32) {
+        let climate = w.map.climate_temp;
+        let t = w.map.tile_at_mut(pos);
+        (t.temp, t.base_temp) = (temp, temp - climate);
+    }
+
+    /// Doc: eggs "can be raided, chilled or overheated". Abandoned
+    /// cold-blooded eggs in steady 40 °C heat cook within a day
+    /// (`egg_overheat`); without the rule they would sit there unharmed.
+    #[test]
+    fn abandoned_eggs_overheat_in_the_heat() {
+        for rate in [0.02, 0.0] {
+            let (mut w, i) = layer(6, BirthType::AbandonedEggs);
+            w.config.balance.egg_overheat = rate;
+            let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+            w.give_birth(i, &mut rng);
+            let id = w.organisms[i].id;
+            let k = w.clutches.iter().position(|c| c.mother == id).expect("a clutch");
+            let (pos, lineage, n) = (w.clutches[k].pos, w.clutches[k].lineage, w.clutches[k].eggs.len() as u64);
+            w.clutches[k].hatch_tick = u64::MAX;
+            set_climate(&mut w, pos, 40.0);
+            for _ in 0..24 {
+                w.update_clutches(&mut rng);
+            }
+            let e = w.counters.eggs[&lineage];
+            assert_eq!(e.chilled, 0);
+            if rate > 0.0 {
+                assert_eq!(e.overheated, n, "6 °C over the ceiling for a day kills the clutch");
+                assert!(w.clutches.iter().all(|c| c.mother != id));
+            } else {
+                assert_eq!(e.overheated, 0);
+                assert!(w.clutches.iter().any(|c| c.mother == id && c.overheat == 0.0));
+            }
+        }
+    }
+
+    /// A sitting parent shades her eggs in the heat, at a cost in water,
+    /// but only by `BROOD_SHADE`: at 42 °C warm-blooded eggs stay at their
+    /// 39 °C ceiling under her and cook without her.
+    #[test]
+    fn brooders_shade_their_eggs_at_a_cost() {
+        for sitting in [true, false] {
+            let (mut w, i) = layer(7, BirthType::IncubatedEggs);
+            let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+            w.give_birth(i, &mut rng);
+            let id = w.organisms[i].id;
+            let k = w.clutches.iter().position(|c| c.guardian == Some(id)).expect("a guarded clutch");
+            let pos = w.clutches[k].pos;
+            w.clutches[k].hatch_tick = u64::MAX;
+            set_climate(&mut w, pos, 42.0);
+            if !sitting {
+                w.organisms[i].pos = pos + Vec2::new(3.0, 0.0);
+            }
+            w.organisms[i].needs.thirst = 0.0;
+            for _ in 0..24 {
+                w.update_clutches(&mut rng);
+            }
+            let thirst = w.organisms[i].needs.thirst;
+            match w.clutches.iter().find(|c| c.guardian == Some(id)) {
+                Some(c) => {
+                    assert!(sitting && c.overheat == 0.0 && c.chill == 0.0);
+                    assert!(thirst > 0.0, "shading costs water");
+                }
+                None => assert!(!sitting && thirst == 0.0),
+            }
+        }
+    }
+
+    /// A warm-blooded brooder lifts her eggs by at most `brood_warmth`
+    /// above the nest's air, and every degree costs her food
+    /// (`brood_cost`): on a −10 °C nest the eggs chill under her, and she
+    /// grows hungry faster the more she warms them.
+    #[test]
+    fn brooding_in_the_cold_is_limited_and_costly() {
+        let mut hunger = Vec::new();
+        for (warmth, temp) in [(24.0, -10.0), (100.0, -10.0), (24.0, 20.0)] {
+            let (mut w, i) = layer(7, BirthType::IncubatedEggs);
+            w.config.balance.brood_warmth = warmth;
+            let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+            w.give_birth(i, &mut rng);
+            let id = w.organisms[i].id;
+            let k = w.clutches.iter().position(|c| c.guardian == Some(id)).expect("a guarded clutch");
+            let pos = w.clutches[k].pos;
+            w.clutches[k].hatch_tick = u64::MAX;
+            set_climate(&mut w, pos, temp);
+            w.organisms[i].needs.hunger = 0.0;
+            w.update_clutches(&mut rng);
+            let c = w.clutches.iter().find(|c| c.guardian == Some(id)).unwrap();
+            assert_eq!(c.chill > 0.0, warmth < 32.0 - temp, "warmth {warmth} at {temp} °C: chill {}", c.chill);
+            hunger.push(w.organisms[i].needs.hunger);
+        }
+        // Warming by 24 °C costs twice warming by 12 °C; by 42 °C, more still.
+        assert!((hunger[0] / hunger[2] - 2.0).abs() < 1e-3, "{hunger:?}");
+        assert!(hunger[1] > hunger[0]);
+    }
+
+    /// Abandoned eggs rely on their mother's choice of site: in a hot
+    /// summer she lays cold-blooded eggs in the shade of a canopy nearby
+    /// rather than on the open ground where she stands.
+    #[test]
+    fn abandoned_eggs_go_to_the_coolest_site_in_summer() {
+        let (mut w, i) = layer(6, BirthType::AbandonedEggs);
+        let pos = w.organisms[i].pos;
+        let (cx, cy) = w.map.tile_coords(pos);
+        let here = w.map.tile_at(pos).clone();
+        let r = NEST_SEARCH as i64;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let (x, y) = ((cx as i64 + dx).clamp(0, 63) as usize, (cy as i64 + dy).clamp(0, 63) as usize);
+                let idx = w.map.idx(x, y);
+                w.map.tiles[idx] = crate::terrain::Tile { base_temp: 26.0, canopy: 0.0, water_depth: 0.0, ..here.clone() };
+            }
+        }
+        let shade = ((cx as i64 + 2).clamp(0, 63) as usize, cy);
+        let idx = w.map.idx(shade.0, shade.1);
+        w.map.tiles[idx].canopy = 1.0;
+        assert!(w.passable_for(&w.organisms[i], Map::tile_center(shade.0, shade.1)));
+        w.season_offset = 12.0 + w.map.climate_temp;
+        assert_eq!(w.map.tile_coords(w.nest_site(i, false)), shade);
+        // In a cool season the open ground where she stands will do.
+        w.season_offset = -8.0 + w.map.climate_temp;
+        assert_eq!(w.map.tile_coords(w.nest_site(i, false)), (cx, cy));
     }
 }

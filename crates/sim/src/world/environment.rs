@@ -1,9 +1,80 @@
 //! Hourly and daily world updates.
 
 use super::World;
+use crate::config::Balance;
 use crate::legacy::LegacySnapshot;
 use crate::rng::SimRng;
-use crate::terrain::weather_rng;
+use crate::terrain::{weather_rng, Map, Tile};
+
+/// Chilling per hour per °C an egg sits below its floor.
+const CHILL_RATE: f32 = 0.006;
+/// Most °C a sitting parent can cool her eggs by shading them.
+pub(crate) const BROOD_SHADE: f32 = 3.0;
+/// The egg temperature a sitting warm-blooded parent aims for.
+const WARM_BROOD_TEMP: f32 = 32.0;
+/// A cold-blooded parent warms her eggs toward her sun-warmed body, by at
+/// most `COLD_BROOD_LIFT`.
+const COLD_BROOD_TEMP: f32 = 22.0;
+const COLD_BROOD_LIFT: f32 = 4.0;
+
+/// The temperatures between which eggs neither chill nor overheat, in °C:
+/// warm-blooded eggs need a parent's heat, cold-blooded ones develop at
+/// ambient temperatures but cook sooner.
+pub(crate) fn egg_range(warm_blooded: bool) -> (f32, f32) {
+    if warm_blooded {
+        (24.0, 39.0)
+    } else {
+        (10.0, 34.0)
+    }
+}
+
+/// How much a nest site damps the air's swing toward the tile's annual mean
+/// temperature: water has thermal inertia, a canopy shades and shelters.
+pub(crate) fn nest_shelter(tile: &Tile) -> f32 {
+    if tile.water_depth > 0.0 {
+        0.5
+    } else if tile.canopy > 0.0 {
+        0.3
+    } else {
+        0.0
+    }
+}
+
+/// The temperature eggs on `tile` feel when the air there is `air`.
+pub(crate) fn nest_temp(tile: &Tile, air: f32, climate_temp: f32) -> f32 {
+    let mean = tile.base_temp + climate_temp;
+    mean + (air - mean) * (1.0 - nest_shelter(tile))
+}
+
+/// A sitting parent's effect on her eggs at nest temperature `site`:
+/// `(egg temperature, °C warmed, °C shaded)`. She warms them toward her
+/// brooding temperature, by at most `brood_warmth` (warm-blooded) or
+/// `COLD_BROOD_LIFT`, and in the heat shades them by at most `BROOD_SHADE`.
+pub(crate) fn brood(site: f32, warm: bool, bal: &Balance) -> (f32, f32, f32) {
+    let (target, lift) = if warm { (WARM_BROOD_TEMP, bal.brood_warmth) } else { (COLD_BROOD_TEMP, COLD_BROOD_LIFT) };
+    if site < target {
+        let warmed = (target - site).min(lift.max(0.0));
+        (site + warmed, warmed, 0.0)
+    } else {
+        let (_, hi) = egg_range(warm);
+        // Shading only matters once the eggs would come near their ceiling.
+        let shaded = (site - (hi - BROOD_SHADE)).clamp(0.0, BROOD_SHADE).min(site - target);
+        (site - shaded, 0.0, shaded)
+    }
+}
+
+/// Expected thermal damage to eggs over one day at a nest site whose
+/// seasonal mean air temperature is `mean_air` (the day/night swing on top).
+pub(crate) fn nest_stress(tile: &Tile, mean_air: f32, climate_temp: f32, warm_blooded: bool, bal: &Balance) -> f32 {
+    let (lo, hi) = egg_range(warm_blooded);
+    (0..24)
+        .map(|h| {
+            let air = mean_air + Map::diurnal_offset(h);
+            let t = nest_temp(tile, air, climate_temp);
+            (lo - t).max(0.0) * CHILL_RATE + (t - hi).max(0.0) * bal.egg_overheat
+        })
+        .sum()
+}
 
 impl World {
     pub(super) fn hourly(&mut self) {
@@ -89,25 +160,47 @@ impl World {
             }
 
             if !done {
-                let temp = self.map.tile_at(c.pos).temp;
+                let bal = self.config.balance;
+                let tile = self.map.tile_at(c.pos);
+                let site = nest_temp(tile, tile.temp, self.map.climate_temp);
                 let present = guardian.filter(|&gi| self.organisms[gi].pos.dist(c.pos) < 1.5);
-                let heat = match present {
-                    Some(gi) if self.organisms[gi].traits.warm => 32.0,
-                    Some(_) => temp + 4.0,
-                    None => temp,
+                let (lo, hi) = egg_range(c.warm_blooded);
+                let egg = match present {
+                    Some(gi) => {
+                        let o = &mut self.organisms[gi];
+                        let (egg, warmed, shaded) = brood(site, o.traits.warm, &bal);
+                        // Brooding costs the parent (`brood_cost`): warming
+                        // burns food, shading in the heat costs water.
+                        let per_hour = 1.0 / 24.0;
+                        let hunger = bal.hunger_rate * o.traits.stats.metabolism * per_hour;
+                        o.needs.hunger = (o.needs.hunger + bal.brood_cost * warmed / 10.0 * hunger).min(100.0);
+                        o.needs.thirst = (o.needs.thirst + bal.brood_cost * shaded / 10.0 * bal.thirst_rate * per_hour).min(100.0);
+                        egg
+                    }
+                    None => site,
                 };
-                // Warm-blooded eggs need far more heat (thermoregulation mismatch
-                // for abandoned eggs).
-                let need = if c.warm_blooded { 30.0 } else { 16.0 };
-                if heat < need - 6.0 {
-                    c.chill += (need - 6.0 - heat) * 0.006;
+                // Warm-blooded eggs need far more heat (thermoregulation
+                // mismatch for abandoned eggs).
+                if egg < lo {
+                    c.chill += (lo - egg) * CHILL_RATE;
                 } else {
                     c.chill = (c.chill - 0.02).max(0.0);
                 }
+                if egg > hi {
+                    c.overheat += (egg - hi) * bal.egg_overheat;
+                } else {
+                    c.overheat = (c.overheat - 0.01).max(0.0);
+                }
+                let counts = self.counters.eggs.entry(c.lineage).or_default();
                 if c.chill >= 1.0 {
-                    self.counters.eggs_lost += c.eggs.len() as u64;
-                    self.counters.eggs.entry(c.lineage).or_default().chilled += c.eggs.len() as u64;
+                    counts.chilled += c.eggs.len() as u64;
                     done = true;
+                } else if c.overheat >= 1.0 {
+                    counts.overheated += c.eggs.len() as u64;
+                    done = true;
+                }
+                if done {
+                    self.counters.eggs_lost += c.eggs.len() as u64;
                 }
             }
 
