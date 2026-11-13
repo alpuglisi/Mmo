@@ -33,7 +33,7 @@ docs/
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, grounded flyers) and rain or snow; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
 | `pathfinding` | Movement and terrain | Bounded A* over tiles for one body: blocked tiles are avoided, slow ones cost time. Used only when the direct step is blocked (see Movement below). |
 | `mating` | Override cost | Root-sum-of-squares preference mismatch, `cost = k·max(0, mismatch−1)²`, outbreeding depression by genetic distance, and sterility between different body plans (thermoregulation, birth mode, body size or diet more than 0.3 apart; `cargo run --release --example distances` prints the founders' matrix). Display coloration is condition-dependent (an honest signal). |
-| `group` | Critical-mass group traits | Daily regional carrier frequency → logistic benefit. Implemented: cooperative hunting, warning coloration, herd defense, alarm calls, shared burrows, sentries. |
+| `group` | Critical-mass group traits | Daily regional carrier frequency → logistic benefit. Implemented: cooperative hunting, warning coloration, herd defense, alarm calls, shared burrows, sentries, communal dens, group navigation, shared caches. |
 | `legacy` | Scoring: genetic legacy | Share of origin-tagged alleles among living breeding adults, raw and weighted by offspring raised to adulthood. |
 | `world` | Needs and behavior, everything else | The tick loop: utility-AI decisions (parallel), then movement, grazing, hunting, scavenging, drinking, courtship, pregnancy, eggs and incubation, nursing, growth, death. |
 | `world::disease` | Genetics: picky vs flexible | Mating-transmitted disease: pathogens emerge at matings (4× between founding lineages), pass between mates (natural and directed) and between nursing mothers and young, drain the acutely sick's health (dulling their display) and cut fertility; infections end in immunity or lifelong symptomless carriage. Also deaths of homozygotes for harmful recessives. Reports count infections, current sick and carriers, harmful alleles per organism, and `disease` / `recessive` deaths per lineage. |
@@ -359,8 +359,36 @@ before the seasonal-strategies merge): neutral.
 Herd grazers lose a little on watch duty, since adult grazers are rarely
 threatened.
 
-Not yet implemented from the design doc: the seasonal coat, timed breeding and the strategy × group-trait combinations
-(communal dens, group navigation beyond a risk discount, shared caches),
+**Communal dens, group navigation and shared caches** (`group`, effects in
+`world::seasonal`; tunables `communal_den`, `group_navigation`,
+`shared_cache`). Each needs its strategy expressed (gene ≥ 0.5) plus group
+tolerance > 0.5. Communal dens: winter sleepers (hibernation or brumation)
+are eligible; a dormant carrier with dormant carrier den mates within a few
+tiles (den cells rebuilt hourly; full effect at 3 mates) has its dormant
+hunger and thirst cut by up to `communal_den` (0.5), so its fat lasts
+longer; loners and solitary sleepers get nothing. Group navigation: migrants
+are eligible; a migrating carrier with 2+ kin around, where the trait holds
+at its summer range or where it is, has its journey risk cut by up to
+`group_navigation` (0.6, replacing the old ad-hoc group-tolerance halving),
+uses up to a fifth less food on the way, hurries after its group when the
+group is ahead, and picks its winter pasture from 13 spots instead of 9.
+Shared caches: plant-eating group members are eligible, so members that
+never cache are free riders that dilute it. Where it holds (benefit > 0.5),
+carriers gather into one cache per lineage per 16-tile region, up to
+`shared_cache` (6) full private hoards, spoiling at half the rate; any
+plant-eating group member of the lineage eats from it in the lean seasons,
+free riders included, and anyone hungry on its tile can raid it. As free
+riders spread, the frequency drops below threshold and carriers fall back to
+private hoards: the rise-and-collapse cycle. The burrowing omnivores (and
+toxic frogs, brumators with group tolerance 0.6) are already communal-den
+carriers, so no preset changed for that. Voles at group tolerance 0.6 build
+shared caches (about 100 food units in 6–7 regions) but scored 10.80 vs 11.03
+on the 12-seed sweep (they crowd out newts and herd grazers), so they stay
+at 0.4; tolerant vole variants occasionally start small shared caches on
+their own. On the 12-seed sweep (seed 31) the defaults score 11.03 vs 10.96
+before; with `communal_den=0 shared_cache=0` runs are identical to before.
+
+Not yet implemented from the design doc: the seasonal coat, timed breeding,
 level-of-detail statistical populations. On the environment side: rivers do not overflow onto
 their floodplain (flooding only deepens the channel), wind has no direction
 and does not interact with wing loading or gliding, and lakes do not form in
@@ -387,8 +415,8 @@ in use, 10.71 with the presets' strategies).
    chaotic), and screen trials on short runs before giving the best full runs.
 3. Parallel apply by region, then measure at the doc's prototype target
    (~25k organisms on 256×256).
-4. The strategy × group-trait combinations (communal dens, group
-   navigation, shared caches).
+4. A migrating sample design to exercise group navigation in play (none
+   migrates yet).
 5. **Server (step 2, started):** world snapshots (serde on the sim types,
    then a snapshot every simulated day and on shutdown); a `PgStore` on
    sqlx; possessed organisms ticking faster than the world clock; interest
