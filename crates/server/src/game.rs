@@ -2488,6 +2488,335 @@ mod tests {
         assert!(ready(&g) <= tick + 2);
     }
 
+    fn offer_id(out: &Outbox) -> u64 {
+        out.iter()
+            .find_map(|(_, m)| match m {
+                ServerMsg::MatingRequest { offer } => Some(offer.id),
+                ServerMsg::Result { data: Some(d), .. } => d["offer"]["id"].as_u64(),
+                _ => None,
+            })
+            .expect("an offer")
+    }
+
+    fn data(out: &Outbox) -> serde_json::Value {
+        match &out[0].1 {
+            ServerMsg::Result { ok: true, data: Some(d), .. } => d.clone(),
+            m => panic!("expected data, got {m:?}"),
+        }
+    }
+
+    fn ledger_kinds(g: &Game, p: PlayerId) -> Vec<LedgerKind> {
+        g.ledger(p, 100).into_iter().rev().map(|e| e.kind).collect()
+    }
+
+    fn trades(g: &mut Game) -> Vec<TradeRecord> {
+        g.take_persist().into_iter().filter_map(|e| if let PersistEvent::Trade(t) = e { Some(t) } else { None }).collect()
+    }
+
+    #[test]
+    fn founding_grant_daily_income_and_the_ledger() {
+        let (mut g, _, _) = game();
+        let grant = economy::FOUNDING_GRANT;
+        assert_eq!((g.balance(1), g.balance(2), g.balance(3)), (grant, grant, 0));
+        let persisted = g.take_persist();
+        assert!(persisted.iter().any(|e| matches!(e, PersistEvent::Balance(b) if b.player == 1 && b.balance == grant)));
+        assert!(persisted.iter().any(|e| matches!(e, PersistEvent::Ledger(r) if r.entry.kind == LedgerKind::Grant && r.world_id == g.world_id)));
+        run_days(&mut g, 2);
+        // Each day pays the stipend plus one per point of mean legacy share.
+        let days: Vec<&DailyRecord> = g.history().collect();
+        assert_eq!(days.len(), 2);
+        let expected: u64 = days
+            .iter()
+            .map(|r| {
+                let e = r.legacy.iter().find(|e| e.player == 1).unwrap();
+                economy::daily_income(e.share, e.weighted_share, true)
+            })
+            .sum();
+        assert!(expected >= 2 * economy::DAILY_STIPEND);
+        assert_eq!(g.balance(1), grant + expected);
+        assert_eq!(ledger_kinds(&g, 1), vec![LedgerKind::Grant, LedgerKind::Income, LedgerKind::Income]);
+        let entries = g.ledger(1, 100);
+        assert!(entries.windows(2).all(|w| w[0].seq > w[1].seq), "newest first, increasing sequence numbers");
+        assert_eq!(entries[0].balance, g.balance(1));
+        assert!(entries[0].text.contains("income"), "{}", entries[0].text);
+        // A re-founding after a restart doesn't pay the grant again.
+        assert!(g.economy.granted.contains(&1));
+        // The ledger command and the state carry it.
+        let out = g.command(10, 1, None, ClientMsg::Ledger { limit: Some(2) });
+        let v: LedgerView = serde_json::from_value(data(&out)).unwrap();
+        assert_eq!((v.balance, v.escrow, v.entries.len()), (g.balance(1), 0, 2));
+        assert_eq!(g.state_for(10).unwrap().balance, g.balance(1));
+    }
+
+    #[test]
+    fn a_directed_price_is_escrowed_and_paid_when_the_mating_runs() {
+        let (mut g, a, b) = game();
+        let (fa, mb) = (female(&g, &a), male(&g, &b));
+        let start = economy::FOUNDING_GRANT;
+        // More than Ann has: refused, nothing asked.
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: Some(start + 1) });
+        assert_eq!(result(&out).1.as_deref(), Some("insufficient_funds"));
+        assert_eq!(out.len(), 1);
+        assert_eq!(g.balance(1), start);
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: Some(30) });
+        let id = offer_id(&out);
+        assert_eq!((g.balance(1), g.escrow(1)), (start - 30, 30));
+        assert_eq!(g.state_for(10).unwrap().escrow, 30);
+        assert_eq!(g.state_for(10).unwrap().offers[0].escrow, 30);
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        assert_eq!(g.escrow(1), 30, "still held while they are apart");
+        place_together(&mut g, fa, mb);
+        let out = g.after_tick();
+        assert!(out.iter().any(|(_, m)| matches!(m, ServerMsg::MatingUpdate { offer, .. } if offer.status == OfferStatus::Completed)));
+        assert_eq!((g.balance(1), g.escrow(1), g.balance(2)), (start - 30, 0, start + 30));
+        let bob_alert = alerts_in(&out, 2).into_iter().find(|x| x.kind == AlertKind::Market).expect("sale alert");
+        assert!(bob_alert.text.starts_with("Sale: 30 renown from ann"), "{}", bob_alert.text);
+        assert!(alerts_in(&out, 1).iter().any(|x| x.kind == AlertKind::Market && x.text.starts_with("Paid 30")));
+        assert_eq!(ledger_kinds(&g, 1), vec![LedgerKind::Grant, LedgerKind::Escrow]);
+        assert_eq!(ledger_kinds(&g, 2), vec![LedgerKind::Grant, LedgerKind::Sale]);
+        let t = trades(&mut g);
+        assert_eq!((t[0].price, t[0].settlement.as_deref(), t[0].status.as_str()), (Some(30), Some("paid"), "completed"));
+    }
+
+    #[test]
+    fn escrow_is_refunded_on_decline_cancel_death_and_expiry() {
+        let world = build_world(&WorldSettings { seed: 3, width: 64, height: 64, wild: false, days_per_year: 8, lod: false, catastrophes: false });
+        let mut g = Game::new(world, GameConfig::default());
+        let a = g.found(1, &design("A")).unwrap().founders;
+        let b = g.found(2, &design("B")).unwrap().founders;
+        g.connect(10, 1, "ann");
+        g.connect(20, 2, "bob");
+        let (fa, mb) = (female(&g, &a), male(&g, &b));
+        let start = g.balance(1);
+        let ask = |g: &mut Game| offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: Some(10) }));
+        // Declined.
+        let id = ask(&mut g);
+        assert_eq!(g.balance(1), start - 10);
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false });
+        assert_eq!(g.balance(1), start);
+        assert!(alerts_in(&out, 1).iter().any(|x| x.kind == AlertKind::Market && x.text.contains("Refund: 10") && x.text.contains("declined")));
+        // Cancelled by the requester, and by the partner's owner after accepting.
+        let id = ask(&mut g);
+        g.command(10, 1, None, ClientMsg::CancelMating { request: id });
+        assert_eq!(g.balance(1), start);
+        let id = ask(&mut g);
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.command(20, 2, None, ClientMsg::CancelMating { request: id });
+        assert_eq!((g.balance(1), g.balance(2)), (start, start), "bob is paid nothing");
+        // Died on the way.
+        let id = ask(&mut g);
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        let o = g.world.organisms.iter_mut().find(|o| o.id == mb).unwrap();
+        o.alive = false;
+        o.death = Some(DeathCause::Predation);
+        g.after_tick();
+        assert_eq!(g.balance(1), start);
+        // Free requests take nothing and settle nothing.
+        let (ma, fb) = (male(&g, &a), female(&g, &b));
+        let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fb, price: Some(0) }));
+        assert_eq!(g.offers[&id].escrow, 0);
+        g.command(10, 1, None, ClientMsg::CancelMating { request: id });
+        // Expired at the season change.
+        let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fb, price: Some(10) }));
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        assert_eq!(g.balance(1), start - 10);
+        let season = g.world.season();
+        let mut ticks = 0;
+        while g.world.season() == season {
+            g.world.step();
+            g.after_tick();
+            ticks += 1;
+            assert!(ticks < 10 * g.world.config.ticks_per_day, "no season change");
+        }
+        assert!(!g.offers.contains_key(&id));
+        assert_eq!(g.escrow(1), 0);
+        let refunds = g.ledger(1, 100).iter().filter(|e| e.kind == LedgerKind::Refund).count();
+        assert_eq!(refunds, 5);
+        let income: u64 = g.ledger(1, 100).iter().filter(|e| e.kind == LedgerKind::Income).map(|e| e.delta as u64).sum();
+        assert_eq!(g.balance(1), start + income, "every hold came back");
+        let t = trades(&mut g);
+        let settled: Vec<_> = t.iter().map(|t| (t.status.as_str(), t.settlement.as_deref())).collect();
+        assert_eq!(
+            settled,
+            vec![
+                ("declined", Some("refunded")),
+                ("cancelled", Some("refunded")),
+                ("cancelled", Some("refunded")),
+                ("failed", Some("refunded")),
+                ("cancelled", None),
+                ("expired", Some("refunded"))
+            ]
+        );
+    }
+
+    #[test]
+    fn listing_lifecycle_purchase_and_payment() {
+        let (mut g, a, b) = game();
+        let (ma, fb) = (male(&g, &a), female(&g, &b));
+        let start = economy::FOUNDING_GRANT;
+        // Errors first.
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: fb, fee: 5, expires_days: None });
+        assert_eq!(result(&out).1.as_deref(), Some("not_owned"));
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 5, expires_days: Some(0) });
+        assert_eq!(result(&out).1.as_deref(), Some("bad_expiry"));
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: economy::MAX_PRICE + 1, expires_days: None });
+        assert_eq!(result(&out).1.as_deref(), Some("bad_price"));
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 12, expires_days: Some(30) });
+        let listing: ListingView = serde_json::from_value(data(&out)["listing"].clone()).unwrap();
+        assert_eq!((listing.role.as_str(), listing.fee, listing.owner_name.as_str(), listing.sales), ("stud", 12, "ann", 0));
+        assert_eq!(listing.expires_tick, Some(g.world.tick() + 30 * g.world.config.ticks_per_day as u64));
+        assert_eq!(listing.traits.len(), LISTING_TRAITS.len());
+        assert!(listing.traits.iter().any(|t| t.gene == "body_size"));
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 1, expires_days: None });
+        assert_eq!(result(&out).1.as_deref(), Some("already_listed"));
+        // Bob browses with his female: compatibility is shown; Ann sees no preview of her own.
+        let out = g.command(20, 2, None, ClientMsg::BrowseMarket { mine: Some(fb) });
+        let m: MarketView = serde_json::from_value(data(&out)).unwrap();
+        assert_eq!((m.balance, m.listings.len()), (start, 1));
+        let p = m.listings[0].preview.as_ref().expect("preview");
+        assert!(p.compatible && p.mine == fb && p.partner == ma);
+        let out = g.command(10, 1, None, ClientMsg::BrowseMarket { mine: Some(a[0]) });
+        assert!(serde_json::from_value::<MarketView>(data(&out)).unwrap().listings[0].preview.is_none());
+        // Ann can't buy her own; Bob can't buy with a same-sex organism or what he can't pay.
+        let out = g.command(10, 1, None, ClientMsg::BuyListing { listing: listing.id, mine: a[0] });
+        assert_eq!(result(&out).1.as_deref(), Some("own_listing"));
+        let mb = male(&g, &b);
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: listing.id, mine: mb });
+        assert_eq!(result(&out).1.as_deref(), Some("same_sex"));
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: 99, mine: fb });
+        assert_eq!(result(&out).1.as_deref(), Some("unknown_listing"));
+        // Buy: an accepted agreement at once, the fee in escrow, Ann told.
+        let slots = g.world.mating_slots_left(2);
+        let out = g.command(20, 2, Some(7), ClientMsg::BuyListing { listing: listing.id, mine: fb });
+        assert_eq!(result(&out), (true, None));
+        let id = offer_id(&out);
+        assert_eq!(g.offers[&id].status, OfferStatus::Accepted);
+        assert_eq!((g.offers[&id].listing, g.offers[&id].escrow, g.offers[&id].from, g.offers[&id].to), (Some(listing.id), 12, 2, 1));
+        assert_eq!((g.balance(2), g.escrow(2)), (start - 12, 12));
+        let sold = alerts_in(&out, 1).into_iter().find(|x| x.kind == AlertKind::Market).expect("seller alert");
+        assert!(sold.text.starts_with("bob bought a mating with your stud"), "{}", sold.text);
+        assert!(out.iter().any(|(t, m)| *t == Target::Player(1) && matches!(m, ServerMsg::MatingUpdate { offer, .. } if offer.status == OfferStatus::Accepted)));
+        assert_eq!(g.economy.listings[&listing.id].sales, 1);
+        // The buyer's female waits for the stud (the listing is consent).
+        assert!(g.world.organism(fb).unwrap().breed_ready_tick > g.world.tick());
+        // A stud may serve several buyers: the listing stays open.
+        let m: MarketView = serde_json::from_value(data(&g.command(20, 2, None, ClientMsg::BrowseMarket { mine: None }))).unwrap();
+        assert!(!m.listings[0].busy);
+        // They meet: the mating runs on the buyer's slot and Ann is paid.
+        place_together(&mut g, ma, fb);
+        let out = g.after_tick();
+        assert!(out.iter().any(|(_, m)| matches!(m, ServerMsg::MatingUpdate { offer, outcome: Some(_), .. } if offer.status == OfferStatus::Completed)));
+        assert_eq!(g.world.mating_slots_left(2), slots - 1);
+        assert_eq!(g.world.mating_slots_left(1), g.world.config.mating_slots_per_season, "the lister's slots are untouched");
+        assert_eq!((g.balance(1), g.balance(2), g.escrow(2)), (start + 12, start - 12, 0));
+        let t = trades(&mut g);
+        assert_eq!((t[0].listing, t[0].settlement.as_deref()), (Some(listing.id), Some("paid")));
+        // Withdraw: only the owner.
+        let out = g.command(20, 2, None, ClientMsg::WithdrawListing { listing: listing.id });
+        assert_eq!(result(&out).1.as_deref(), Some("unknown_listing"));
+        let out = g.command(10, 1, None, ClientMsg::WithdrawListing { listing: listing.id });
+        assert_eq!(result(&out), (true, None));
+        assert!(g.market(2, None).listings.is_empty());
+    }
+
+    #[test]
+    fn a_listed_dam_takes_one_buyer_and_listings_close_on_expiry_and_death() {
+        let (mut g, a, b) = game();
+        let c = g.found(3, &design("C")).unwrap().founders;
+        g.connect(30, 3, "cat");
+        let (fa, mb, mc) = (female(&g, &a), male(&g, &b), male(&g, &c));
+        let l = data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: 0, expires_days: None }))["listing"]["id"].as_u64().unwrap();
+        assert_eq!(g.market(2, None).listings[0].role, "dam");
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: l, mine: mb });
+        assert_eq!(result(&out), (true, None));
+        let id = offer_id(&out);
+        assert_eq!(g.offers[&id].escrow, 0, "a free listing holds nothing");
+        assert!(g.market(3, None).listings[0].busy);
+        let out = g.command(30, 3, None, ClientMsg::BuyListing { listing: l, mine: mc });
+        assert_eq!(result(&out).1.as_deref(), Some("listing_busy"));
+        // Bob gives up: she is free for the next buyer.
+        g.command(20, 2, None, ClientMsg::CancelMating { request: id });
+        let out = g.command(30, 3, None, ClientMsg::BuyListing { listing: l, mine: mc });
+        assert_eq!(result(&out), (true, None));
+        // Insufficient funds for a listing.
+        let ma = male(&g, &a);
+        let pricey = data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 1000, expires_days: Some(1) }))["listing"]["id"].as_u64().unwrap();
+        let fb = female(&g, &b);
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: pricey, mine: fb });
+        assert_eq!(result(&out).1.as_deref(), Some("insufficient_funds"));
+        assert_eq!(g.balance(2), economy::FOUNDING_GRANT);
+        // A day later the one-day listing has expired.
+        let out = run_days(&mut g, 1);
+        assert!(!g.economy.listings.contains_key(&pricey));
+        assert!(alerts_in(&out, 1).iter().any(|x| x.kind == AlertKind::Market && x.text.contains(&format!("Listing #{pricey}")) && x.text.contains("expired")));
+        // A listed organism that dies closes its listing.
+        if g.economy.listings.contains_key(&l) {
+            let o = g.world.organisms.iter_mut().find(|o| o.id == fa).unwrap();
+            o.alive = false;
+            o.death = Some(DeathCause::Predation);
+            let out = g.after_tick();
+            assert!(!g.economy.listings.contains_key(&l));
+            assert!(alerts_in(&out, 1).iter().any(|x| x.text.contains("no longer alive")));
+        }
+        // Too many listings.
+        let ids: Vec<OrgId> = g.world.organisms.iter().filter(|o| o.alive && o.owner == 1 && o.matured).map(|o| o.id).collect();
+        let mut refused = None;
+        for id in ids {
+            let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: id, fee: 1, expires_days: None });
+            if let (false, Some(code)) = result(&out) {
+                if code != "already_listed" {
+                    refused = Some(code);
+                    break;
+                }
+            }
+        }
+        if g.economy.listings_of(1) >= economy::MAX_LISTINGS {
+            assert_eq!(refused.as_deref(), Some("too_many_listings"));
+        }
+    }
+
+    #[test]
+    fn saved_games_keep_the_economy_and_older_ones_fall_back() {
+        let (mut g, a, b) = game();
+        let (ma, fb) = (male(&g, &a), female(&g, &b));
+        let l = data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 7, expires_days: None }))["listing"]["id"].as_u64().unwrap();
+        let id = offer_id(&g.command(20, 2, None, ClientMsg::BuyListing { listing: l, mine: fb }));
+        let json = serde_json::to_string(&g.saved()).unwrap();
+        let saved: SavedGame = serde_json::from_str(&json).unwrap();
+        assert_eq!(saved.version, SAVED_GAME_VERSION);
+        let world = World::restore(&g.world.snapshot()).unwrap();
+        let mut r = Game::resume(world, GameConfig::default(), saved, Vec::new());
+        assert!(r.economy_restored());
+        assert_eq!((r.balance(1), r.balance(2), r.escrow(2)), (g.balance(1), g.balance(2), 7));
+        assert_eq!(r.economy, g.economy);
+        assert_eq!(r.ledger(2, 10), g.ledger(2, 10));
+        // The escrowed agreement settles in the restored game.
+        r.connect(10, 1, "ann");
+        r.connect(20, 2, "bob");
+        place_together(&mut r, ma, fb);
+        r.after_tick();
+        assert!(!r.offers.contains_key(&id));
+        assert_eq!(r.balance(1), economy::FOUNDING_GRANT + 7);
+        // A layout-1 saved game (no version, no economy, offers without
+        // escrow): the economy is left for the server to seed from the store.
+        let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
+        old.as_object_mut().unwrap().remove("version");
+        old.as_object_mut().unwrap().remove("economy");
+        let saved: SavedGame = serde_json::from_value(old).unwrap();
+        let world = World::restore(&g.world.snapshot()).unwrap();
+        let mut r = Game::resume(world, GameConfig::default(), saved, Vec::new());
+        assert!(!r.economy_restored());
+        assert_eq!((r.balance(1), r.escrow(2)), (0, 0));
+        r.seed_economy(&[(1, 33)], Vec::new());
+        assert_eq!(r.balance(1), 33);
+        assert!(r.economy_restored());
+        // Players with a stored balance don't get the founding grant again;
+        // a newcomer does.
+        assert!(r.economy.granted.contains(&1) && !r.economy.granted.contains(&4));
+        r.found(4, &design("D")).unwrap();
+        assert_eq!(r.balance(4), economy::FOUNDING_GRANT);
+    }
+
     #[test]
     fn accepted_offer_holds_the_female_and_a_death_fails_it_with_the_cause() {
         let (mut g, a, b) = game();
