@@ -19,9 +19,9 @@ use evo_sim::{FounderDesign, Gene, PlayerId, World, WorldConfig, WILD};
 use serde::{Deserialize, Serialize};
 
 use crate::design::gene_key;
-use crate::economy::{self, Economy, Insufficient, Listing};
+use crate::economy::{self, Bid, Economy, Insufficient, Listing};
 use crate::protocol::*;
-use crate::store::{BalanceRecord, DailyRecord, LedgerRecord, LegacyEntry, LineageEntry, TradeRecord};
+use crate::store::{AuctionRecord, BalanceRecord, DailyRecord, LedgerRecord, LegacyEntry, LineageEntry, TradeRecord};
 
 /// Daily records kept in memory for the genetics dashboard.
 pub const HISTORY_DAYS: usize = 365;
@@ -32,13 +32,12 @@ pub const NEED_ALERT: f32 = 75.0;
 const POPULATION_MILESTONES: [usize; 7] = [25, 50, 100, 250, 500, 1000, 1500];
 const SHARE_MILESTONES: [f64; 5] = [0.01, 0.05, 0.1, 0.25, 0.5];
 /// Layout version of [`SavedGame`]: 2 added the economy (balances, ledger,
-/// listings, escrow on offers). Older saved games restore with the
-/// balances kept by the store instead.
-pub const SAVED_GAME_VERSION: u32 = 2;
+/// listings, escrow on offers), 3 auctions (with their highest bids) among
+/// the listings. Saved games before 2 restore with the balances kept by the
+/// store instead; version 2 reads as having no auctions.
+pub const SAVED_GAME_VERSION: u32 = 3;
 /// Ledger entries returned by the `ledger` command unless asked otherwise.
 const LEDGER_DEFAULT: usize = 50;
-/// Listings returned by `browse_market`, newest first.
-const MAX_BROWSE: usize = 200;
 /// Genes shown for a listed organism.
 const LISTING_TRAITS: [Gene; 14] = [
     Gene::BodySize,
@@ -78,6 +77,8 @@ pub enum PersistEvent {
     /// A player's renown balance changed.
     Balance(BalanceRecord),
     Ledger(LedgerRecord),
+    /// An auction closed (settled, unsold, withdrawn or ended by a death).
+    Auction(AuctionRecord),
     /// A saved game (`crate::snapshot`), sent by the world thread.
     Snapshot(SnapshotBlob),
 }
@@ -362,6 +363,43 @@ fn discarded_mark(world: &str, offer: u64) -> String {
     format!("offer #{offer} of world {world},")
 }
 
+/// How a fresh-start refund names an auction of a discarded world.
+fn discarded_bid_mark(world: &str, listing: u64) -> String {
+    format!("auction #{listing} of world {world},")
+}
+
+/// A `browse_market` cursor: the sort key and id of the last listing of a
+/// page, `"<key>.<id>"`.
+fn cursor_text(key: (u64, u64)) -> String {
+    format!("{}.{}", key.0, u64::MAX - key.1)
+}
+
+fn parse_cursor(c: &str) -> Result<(u64, u64), ErrorInfo> {
+    let bad = || ErrorInfo::new("bad_cursor", "cursor must be a next_cursor from browse_market");
+    let (a, b) = c.split_once('.').ok_or_else(bad)?;
+    let (a, b): (u64, u64) = (a.parse().map_err(|_| bad())?, b.parse().map_err(|_| bad())?);
+    Ok((a, u64::MAX - b))
+}
+
+/// Where a listing goes in a `browse_market` order: ascending by (key,
+/// newest first). `preview` is the buyer's compatibility, for `fertility`.
+fn market_key(sort: MarketSort, l: &Listing, preview: Option<&MatingPreviewView>, mine: bool) -> (u64, u64) {
+    let newest = u64::MAX - l.id;
+    let key = match sort {
+        MarketSort::Newest => 0,
+        MarketSort::PriceAsc => l.price(),
+        MarketSort::PriceDesc => u64::MAX - l.price(),
+        MarketSort::Ending => l.expires_tick.unwrap_or(u64::MAX),
+        MarketSort::Fertility if !mine => 0,
+        MarketSort::Fertility => match preview {
+            Some(p) if p.compatible => 1_000_000 - (p.fertility.clamp(0.0, 1.0) * 1e6) as u64,
+            Some(_) => 2_000_000,
+            None => 3_000_000,
+        },
+    };
+    (key, newest)
+}
+
 fn finite(v: &[f32]) -> Result<(), ErrorInfo> {
     if v.iter().all(|x| x.is_finite()) {
         Ok(())
@@ -544,11 +582,38 @@ impl Game {
             let mark = discarded_mark(world, id);
             !ledger.iter().any(|r| r.entry.kind == LedgerKind::Refund && r.entry.text.contains(&mark))
         });
+        // Auction bids: the highest bids in the saved game, then the bids
+        // (escrow with a listing and no offer) and their refunds written
+        // after it, per bidder and auction.
+        let mut bids: BTreeMap<(u64, PlayerId), i128> = BTreeMap::new();
+        for l in economy.listings.values() {
+            if let Some(b) = l.auction.as_ref().and_then(|a| a.high.as_ref()) {
+                *bids.entry((l.id, b.bidder)).or_default() += i128::from(b.amount);
+            }
+        }
+        for r in ledger.iter().filter(later) {
+            let e = &r.entry;
+            if let (Some(l), None, LedgerKind::Escrow | LedgerKind::Refund) = (e.listing, e.offer, e.kind) {
+                *bids.entry((l, e.player)).or_default() -= i128::from(e.delta);
+            }
+        }
+        bids.retain(|&(l, _), &mut amount| {
+            let mark = discarded_bid_mark(world, l);
+            amount > 0 && !ledger.iter().any(|r| r.entry.kind == LedgerKind::Refund && r.entry.text.contains(&mark))
+        });
         let mut refunds = Vec::new();
         for (id, (player, amount)) in held {
             let Ok(amount_i) = i64::try_from(amount) else { continue };
             let text =
                 format!("Refund: {amount} renown held on {} discarded by a fresh start", discarded_mark(world, id));
+            if self.post(player, amount_i, LedgerKind::Refund, text, None, None).is_ok() {
+                refunds.push((player, amount));
+            }
+        }
+        for ((listing, player), amount) in bids {
+            let (Ok(amount), Ok(amount_i)) = (u64::try_from(amount), i64::try_from(amount)) else { continue };
+            let mark = discarded_bid_mark(world, listing);
+            let text = format!("Refund: {amount} renown bid on {mark} discarded by a fresh start");
             if self.post(player, amount_i, LedgerKind::Refund, text, None, None).is_ok() {
                 refunds.push((player, amount));
             }
@@ -561,9 +626,11 @@ impl Game {
         self.economy.balance(player)
     }
 
-    /// Renown of `player`'s held in escrow on open agreements.
+    /// Renown of `player`'s held in escrow on open agreements and as the
+    /// highest bid on auctions.
     pub fn escrow(&self, player: PlayerId) -> u64 {
-        self.offers.values().filter(|o| o.from == player && o.status.is_open()).map(|o| o.escrow).sum()
+        self.offers.values().filter(|o| o.from == player && o.status.is_open()).map(|o| o.escrow).sum::<u64>()
+            + self.economy.bids_held(player)
     }
 
     /// Recent ledger entries of a player, newest first.
@@ -733,15 +800,26 @@ impl Game {
                 Ok(Some(serde_json::json!({ "listing": self.listing_view(&l, None) })))
             }
             ClientMsg::WithdrawListing { listing } => {
-                match self.economy.listings.get(&listing) {
-                    Some(l) if l.owner == player => {}
+                let l = match self.economy.listings.get(&listing) {
+                    Some(l) if l.owner == player => l.clone(),
                     _ => return Err(ErrorInfo::new("unknown_listing", format!("no listing {listing} of yours"))),
+                };
+                if l.auction.as_ref().is_some_and(|a| a.high.is_some()) {
+                    return Err(ErrorInfo::new("auction_has_bids", "an auction with a bid can't be withdrawn"));
                 }
                 self.economy.listings.remove(&listing);
+                if l.auction.is_some() {
+                    self.record_auction(&l, "withdrawn", None);
+                }
                 Ok(None)
             }
             ClientMsg::BuyListing { listing, mine } => self.buy_listing(player, listing, mine, out),
-            ClientMsg::BrowseMarket { mine } => Ok(Some(serde_json::to_value(self.market(player, mine)).unwrap())),
+            ClientMsg::CreateAuction { organism, reserve, days, ticks } => {
+                let l = self.create_auction(player, organism, reserve, days, ticks)?;
+                Ok(Some(serde_json::json!({ "listing": self.listing_view(&l, None) })))
+            }
+            ClientMsg::Bid { listing, amount, mine } => self.bid(player, listing, amount, mine, out),
+            ClientMsg::BrowseMarket(q) => Ok(Some(serde_json::to_value(self.market(player, &q)?).unwrap())),
             ClientMsg::Ledger { limit } => {
                 let view = LedgerView {
                     balance: self.balance(player),
@@ -900,14 +978,10 @@ impl Game {
         Ok(to)
     }
 
-    /// Put one of the player's adults on the marketplace.
-    fn create_listing(
-        &mut self,
-        player: PlayerId,
-        organism: OrgId,
-        fee: u64,
-        expires_days: Option<u32>,
-    ) -> Result<Listing, ErrorInfo> {
+    /// The checks before putting an organism on the marketplace (either
+    /// kind): ownership, maturity, one listing per organism, the per-player
+    /// limit, the price.
+    fn check_listable(&self, player: PlayerId, organism: OrgId, price: u64) -> Result<(), ErrorInfo> {
         let e = |err: CommandError| ErrorInfo::from(&err);
         let o = self.world.organism(organism).ok_or(e(CommandError::NotFound(organism)))?;
         if o.owner != player {
@@ -916,18 +990,8 @@ impl Game {
         if !o.matured {
             return Err(e(CommandError::NotMature(organism)));
         }
-        // A pregnant dam may be listed: buyers wait until she has given
-        // birth, and the listing's hold keeps her from conceiving again.
-        if fee > economy::MAX_PRICE {
-            return Err(ErrorInfo::new("bad_price", format!("fees go up to {} renown", economy::MAX_PRICE)));
-        }
-        if let Some(d) = expires_days {
-            if d == 0 || d > economy::MAX_LISTING_DAYS {
-                return Err(ErrorInfo::new(
-                    "bad_expiry",
-                    format!("a listing lasts 1 to {} days", economy::MAX_LISTING_DAYS),
-                ));
-            }
+        if price > economy::MAX_PRICE {
+            return Err(ErrorInfo::new("bad_price", format!("prices go up to {} renown", economy::MAX_PRICE)));
         }
         if let Some(l) = self.economy.listing_of(organism) {
             return Err(ErrorInfo::new("already_listed", format!("#{organism} is already listing #{}", l.id)));
@@ -938,11 +1002,267 @@ impl Game {
                 format!("at most {} listings at once", economy::MAX_LISTINGS),
             ));
         }
+        Ok(())
+    }
+
+    /// Put one of the player's adults on the marketplace.
+    fn create_listing(
+        &mut self,
+        player: PlayerId,
+        organism: OrgId,
+        fee: u64,
+        expires_days: Option<u32>,
+    ) -> Result<Listing, ErrorInfo> {
+        // A pregnant dam may be listed: buyers wait until she has given
+        // birth, and the listing's hold keeps her from conceiving again.
+        if let Some(d) = expires_days {
+            if d == 0 || d > economy::MAX_LISTING_DAYS {
+                return Err(ErrorInfo::new(
+                    "bad_expiry",
+                    format!("a listing lasts 1 to {} days", economy::MAX_LISTING_DAYS),
+                ));
+            }
+        }
+        self.check_listable(player, organism, fee)?;
         let tick = self.world.tick();
         let expires = expires_days.map(|d| tick + d as u64 * self.world.config.ticks_per_day as u64);
         let l = self.economy.add_listing(player, organism, fee, tick, expires);
         self.hold_consented_females();
         Ok(l)
+    }
+
+    /// Auction one mating with one of the player's adults, closing after
+    /// `ticks` ticks or `days` days (default 1).
+    fn create_auction(
+        &mut self,
+        player: PlayerId,
+        organism: OrgId,
+        reserve: u64,
+        days: Option<u32>,
+        ticks: Option<u64>,
+    ) -> Result<Listing, ErrorInfo> {
+        let tpd = self.world.config.ticks_per_day as u64;
+        let longest = economy::MAX_AUCTION_DAYS as u64 * tpd;
+        let duration = match (days, ticks) {
+            (Some(_), Some(_)) => None,
+            (None, Some(t)) => Some(t),
+            (d, None) => Some(d.unwrap_or(1) as u64 * tpd),
+        };
+        let Some(duration) = duration.filter(|&t| t >= 1 && t <= longest) else {
+            return Err(ErrorInfo::new(
+                "bad_duration",
+                format!(
+                    "an auction lasts 1 to {} days (days) or 1 to {longest} ticks (ticks), not both",
+                    economy::MAX_AUCTION_DAYS
+                ),
+            ));
+        };
+        self.check_listable(player, organism, reserve)?;
+        // The winner's agreement must be able to run: a pregnant dam can't
+        // be auctioned (the auction's hold keeps a listed dam from
+        // conceiving meanwhile).
+        if self.world.organism(organism).is_some_and(|o| o.sex == Sex::Female && o.pregnancy.is_some()) {
+            return Err(ErrorInfo::from(&CommandError::AlreadyPregnant));
+        }
+        if self.offers.values().any(|o| o.status.is_open() && (o.mine == organism || o.partner == organism)) {
+            return Err(ErrorInfo::new(
+                "organism_busy",
+                format!("#{organism} is already promised in an open agreement"),
+            ));
+        }
+        let tick = self.world.tick();
+        let l = self.economy.add_auction(player, organism, reserve, tick, tick + duration);
+        self.hold_consented_females();
+        Ok(l)
+    }
+
+    /// Bid on an auction for the player's adult `mine`: the amount into
+    /// escrow (the difference when raising their own highest bid), the
+    /// previous highest bidder refunded.
+    fn bid(
+        &mut self,
+        player: PlayerId,
+        listing: u64,
+        amount: u64,
+        mine: OrgId,
+        out: &mut Outbox,
+    ) -> Result<Option<serde_json::Value>, ErrorInfo> {
+        let l = self
+            .economy
+            .listings
+            .get(&listing)
+            .cloned()
+            .ok_or_else(|| ErrorInfo::new("unknown_listing", format!("no open listing {listing}")))?;
+        let Some(auction) = l.auction.clone() else {
+            return Err(ErrorInfo::new("not_auction", format!("listing {listing} has a fixed fee: buy it instead")));
+        };
+        if l.owner == player {
+            return Err(ErrorInfo::new("own_listing", "you can't bid on your own auction"));
+        }
+        if l.expires_tick.is_some_and(|t| self.world.tick() >= t) {
+            return Err(ErrorInfo::new("auction_closed", format!("auction {listing} has closed")));
+        }
+        check_price(amount)?;
+        let min = auction.min_bid();
+        if amount < min {
+            return Err(ErrorInfo::new("bid_too_low", format!("the lowest bid now is {min} renown"))
+                .with_detail(serde_json::json!({ "min_bid": min })));
+        }
+        let to = self.check_cross_pair(player, mine, l.organism)?;
+        if to != l.owner {
+            return Err(ErrorInfo::new("unknown_listing", format!("listing {listing} is no longer valid")));
+        }
+        if self.offers.values().any(|o| o.status.is_open() && (o.mine == mine || o.partner == mine)) {
+            return Err(ErrorInfo::new("organism_busy", format!("#{mine} is already promised in an open agreement")));
+        }
+        let prev = auction.high.clone();
+        let held = prev.as_ref().filter(|b| b.bidder == player).map_or(0, |b| b.amount);
+        let due = amount - held;
+        self.check_funds(player, due)?;
+        let text = if held > 0 {
+            format!(
+                "Raised bid on auction #{listing} (#{}) from {held} to {amount}: {due} more held in escrow",
+                l.organism
+            )
+        } else {
+            format!("Bid of {amount} on auction #{listing} (#{} of {}) held in escrow", l.organism, self.name(l.owner))
+        };
+        let debit = i64::try_from(due).map_err(|_| ErrorInfo::new("bad_price", "bid too large"))?;
+        if self.post(player, -debit, LedgerKind::Escrow, text, None, Some(listing)).is_err() {
+            let balance = self.balance(player);
+            return Err(ErrorInfo::new("insufficient_funds", format!("{due} renown needed, you have {balance}"))
+                .with_detail(serde_json::json!({ "balance": balance, "needed": due })));
+        }
+        if let Some(p) = prev.as_ref().filter(|b| b.bidder != player) {
+            let text = format!("Refund: outbid on auction #{listing} (#{}), {} renown back", l.organism, p.amount);
+            let _ = self.post(p.bidder, p.amount as i64, LedgerKind::Refund, text, None, Some(listing));
+            let alert = format!(
+                "Outbid on auction #{listing} (#{}): {} bid {amount}; your {} renown is refunded.",
+                l.organism,
+                self.name(player),
+                p.amount
+            );
+            self.alert(p.bidder, AlertKind::Market, alert, Some(l.organism), out);
+        }
+        let tick = self.world.tick();
+        if let Some(a) = self.economy.listings.get_mut(&listing).and_then(|x| x.auction.as_mut()) {
+            a.high = Some(Bid { bidder: player, amount, mine, tick });
+            a.bids += 1;
+        }
+        self.hold_consented_females();
+        let role = self.world.organism(l.organism).map_or("organism", |o| role_name(o.sex));
+        let text = format!(
+            "{} bid {amount} renown on your auction #{listing} of your {role} #{}.",
+            self.name(player),
+            l.organism
+        );
+        self.alert(l.owner, AlertKind::Market, text, Some(l.organism), out);
+        let l = self.economy.listings[&listing].clone();
+        Ok(Some(serde_json::json!({ "listing": self.listing_view(&l, None) })))
+    }
+
+    /// Close an auction at its deadline: the highest bid becomes an
+    /// accepted agreement with the bid as its escrowed price; with no bid
+    /// (or a winner whose organism can no longer mate with the lot) the lot
+    /// returns to the seller and any bid is refunded.
+    fn settle_auction(&mut self, l: &Listing, out: &mut Outbox) {
+        let high = l.auction.as_ref().and_then(|a| a.high.clone());
+        let Some(b) = high else {
+            self.record_auction(l, "unsold", None);
+            let text = format!("Auction #{} of #{} closed without a bid: the lot is yours again.", l.id, l.organism);
+            self.alert(l.owner, AlertKind::Market, text, Some(l.organism), out);
+            return;
+        };
+        // Settlement skips the open-offer limit (the bid was the winner's
+        // commitment) but the pair must still be able to mate.
+        let problem = self.check_settlement(&b, l).err();
+        let released = format!("Winning bid on auction #{} released from the auction", l.id);
+        let _ = self.post(b.bidder, b.amount as i64, LedgerKind::Refund, released, None, Some(l.id));
+        let offer = match problem {
+            None => self
+                .open_offer(b.bidder, l.owner, b.mine, l.organism, Some(b.amount), OfferStatus::Accepted, Some(l.id))
+                .ok(),
+            Some(_) => None,
+        };
+        let Some(id) = offer else {
+            let why = problem.map_or_else(|| "the escrow could not be taken".to_string(), |p| p.message);
+            self.record_auction(l, "failed", None);
+            let text = format!("Auction #{} won with {} renown but it can't run ({why}): refunded.", l.id, b.amount);
+            self.alert(b.bidder, AlertKind::Market, text, Some(b.mine), out);
+            let text = format!("Auction #{} of #{} closed: the winning bid can't run ({why}).", l.id, l.organism);
+            self.alert(l.owner, AlertKind::Market, text, Some(l.organism), out);
+            return;
+        };
+        self.record_auction(l, "sold", Some(id));
+        self.hold_consented_females();
+        let view = self.offer_view(id);
+        let text = format!(
+            "Won auction #{} with {} renown: #{} will mate with {}'s #{} (held in escrow until they meet).",
+            l.id,
+            b.amount,
+            b.mine,
+            self.name(l.owner),
+            l.organism
+        );
+        self.alert(b.bidder, AlertKind::Market, text, Some(b.mine), out);
+        let text = format!(
+            "Auction #{} of #{} sold to {} for {} renown (held in escrow until #{} meets it).",
+            l.id,
+            l.organism,
+            self.name(b.bidder),
+            b.amount,
+            b.mine
+        );
+        self.alert(l.owner, AlertKind::Market, text, Some(l.organism), out);
+        for p in [b.bidder, l.owner] {
+            out.push((Target::Player(p), ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: None }));
+        }
+        let _ = self.execute(id, out);
+    }
+
+    /// Whether an auction's winning bid can still become an agreement.
+    fn check_settlement(&self, b: &Bid, l: &Listing) -> Result<(), ErrorInfo> {
+        let e = |err: CommandError| ErrorInfo::from(&err);
+        let a = self.world.organism(b.mine).filter(|o| o.owner == b.bidder).ok_or_else(|| self.gone(b.mine))?;
+        let lot =
+            self.world.organism(l.organism).filter(|o| o.owner == l.owner).ok_or_else(|| self.gone(l.organism))?;
+        if !a.matured {
+            return Err(e(CommandError::NotMature(a.id)));
+        }
+        if a.sex == lot.sex {
+            return Err(e(CommandError::SameSex));
+        }
+        if [a, lot].iter().any(|o| o.sex == Sex::Female && o.pregnancy.is_some()) {
+            return Err(e(CommandError::AlreadyPregnant));
+        }
+        if let Some(problem) = self.world.mating_preview(b.mine, l.organism).ok().as_ref().and_then(incompatibility) {
+            return Err(problem);
+        }
+        if self.offers.values().any(|o| o.status.is_open() && (o.mine == b.mine || o.partner == b.mine)) {
+            return Err(ErrorInfo::new("organism_busy", format!("#{} is already promised", b.mine)));
+        }
+        Ok(())
+    }
+
+    /// Queue an auction's end for the store.
+    fn record_auction(&mut self, l: &Listing, outcome: &str, offer: Option<u64>) {
+        let Some(a) = &l.auction else { return };
+        let won = (outcome == "sold").then_some(a.high.as_ref()).flatten();
+        self.persist.push(PersistEvent::Auction(AuctionRecord {
+            world_id: self.world_id.clone(),
+            listing: l.id,
+            seller: l.owner,
+            organism: l.organism,
+            reserve: a.reserve,
+            deadline_tick: l.expires_tick.unwrap_or_default(),
+            bids: a.bids,
+            high_bid: a.high.as_ref().map(|b| b.amount),
+            winner: won.map(|b| b.bidder),
+            winner_organism: won.map(|b| b.mine),
+            outcome: outcome.to_string(),
+            offer,
+            day: self.world.day(),
+        }));
     }
 
     /// Buy one mating with a listed organism: an accepted agreement at once
@@ -962,6 +1282,12 @@ impl Game {
             .ok_or_else(|| ErrorInfo::new("unknown_listing", format!("no open listing {listing}")))?;
         if l.owner == player {
             return Err(ErrorInfo::new("own_listing", "that listing is yours"));
+        }
+        if l.auction.is_some() {
+            return Err(ErrorInfo::new(
+                "auction_listing",
+                format!("listing {listing} is an auction: bid on it instead"),
+            ));
         }
         let to = self.check_cross_pair(player, mine, l.organism)?;
         if to != l.owner {
@@ -1006,11 +1332,23 @@ impl Game {
             && self.offers.values().any(|o| o.status.is_open() && (o.partner == l.organism || o.mine == l.organism))
     }
 
-    fn listing_view(&self, l: &Listing, buyer: Option<(PlayerId, OrgId)>) -> Option<ListingView> {
+    /// The compatibility of a buyer's organism with a listed one (none for
+    /// the buyer's own listing).
+    fn listing_preview(&self, player: PlayerId, mine: OrgId, l: &Listing) -> Option<MatingPreviewView> {
+        (player != l.owner).then(|| self.preview_mating(player, mine, l.organism).ok()).flatten()
+    }
+
+    fn listing_view(&self, l: &Listing, preview: Option<MatingPreviewView>) -> Option<ListingView> {
         let o = self.world.organism(l.organism)?;
         let tpd = self.world.config.ticks_per_day;
-        let preview =
-            buyer.filter(|&(p, _)| p != l.owner).and_then(|(p, mine)| self.preview_mating(p, mine, l.organism).ok());
+        let auction = l.auction.as_ref().map(|a| AuctionView {
+            reserve: a.reserve,
+            deadline_tick: l.expires_tick.unwrap_or_default(),
+            high_bid: a.high.as_ref().map(|b| b.amount),
+            high_bidder: a.high.as_ref().map(|b| b.bidder),
+            bids: a.bids,
+            min_bid: a.min_bid(),
+        });
         Some(ListingView {
             id: l.id,
             owner: l.owner,
@@ -1036,43 +1374,107 @@ impl Game {
             y: o.pos.y,
             traits: LISTING_TRAITS.iter().map(|&g| TraitView { gene: gene_key(g), value: o.pheno[g] }).collect(),
             preview,
+            kind: if l.auction.is_some() { ListingKind::Auction } else { ListingKind::Fixed },
+            auction,
         })
     }
 
-    /// The open listings, newest first, with compatibility against `mine`.
-    pub fn market(&self, player: PlayerId, mine: Option<OrgId>) -> MarketView {
-        let buyer = mine.map(|m| (player, m));
-        MarketView {
-            balance: self.balance(player),
-            escrow: self.escrow(player),
-            slots_left: self.world.mating_slots_left(player),
-            listings: self
-                .economy
+    /// One page of the open listings matching `q`, in its order, with
+    /// compatibility against `q.mine`.
+    pub fn market(&self, player: PlayerId, q: &MarketQuery) -> Result<MarketView, ErrorInfo> {
+        let limit = q.limit.unwrap_or(MARKET_PAGE).clamp(1, MAX_MARKET_PAGE);
+        let sort = q.sort.unwrap_or_default();
+        let after = q.cursor.as_deref().map(parse_cursor).transpose()?;
+        let species: Option<BTreeSet<u32>> = q.species.map(|id| {
+            self.world.chronicle.species.get(id).map(|s| s.lineages.iter().map(|l| l.0).collect()).unwrap_or_default()
+        });
+        // Previews of every candidate only when the filter or the order
+        // needs them; otherwise only for the page.
+        let early = q.mine.is_some() && (q.compatible || sort == MarketSort::Fertility);
+        let mut rows: Vec<((u64, u64), &Listing, Option<MatingPreviewView>)> = Vec::new();
+        for l in self.economy.listings.values() {
+            let Some(o) = self.world.organism(l.organism) else { continue };
+            let role = if o.sex == Sex::Male { ListingRole::Stud } else { ListingRole::Dam };
+            let kind = if l.auction.is_some() { ListingKind::Auction } else { ListingKind::Fixed };
+            if (q.hide_own && l.owner == player)
+                || q.kind.is_some_and(|k| k != kind)
+                || q.role.is_some_and(|r| r != role)
+                || q.max_price.is_some_and(|m| l.price() > m)
+                || q.lineage.is_some_and(|x| o.lineage != x)
+                || species.as_ref().is_some_and(|s| !s.contains(&o.lineage))
+            {
+                continue;
+            }
+            let preview = q.mine.filter(|_| early).and_then(|m| self.listing_preview(player, m, l));
+            if q.compatible && q.mine.is_some() && !preview.as_ref().is_some_and(|p| p.compatible) {
+                continue;
+            }
+            rows.push((market_key(sort, l, preview.as_ref(), q.mine.is_some()), l, preview));
+        }
+        rows.sort_unstable_by_key(|r| r.0);
+        let total = rows.len();
+        let start = after.map_or(0, |c| rows.partition_point(|r| r.0 <= c));
+        let page = &rows[start..];
+        let next_cursor = (page.len() > limit).then(|| cursor_text(page[limit - 1].0));
+        let view = |l: &Listing, p: Option<MatingPreviewView>| {
+            let p = if early { p } else { q.mine.and_then(|m| self.listing_preview(player, m, l)) };
+            self.listing_view(l, p)
+        };
+        let listings = page.iter().take(limit).filter_map(|(_, l, p)| view(l, p.clone())).collect();
+        let own = q.with_own.then(|| {
+            self.economy
                 .listings
                 .values()
                 .rev()
-                .filter_map(|l| self.listing_view(l, buyer))
-                .take(MAX_BROWSE)
-                .collect(),
-        }
+                .filter(|l| l.owner == player)
+                .filter_map(|l| self.listing_view(l, None))
+                .collect()
+        });
+        Ok(MarketView {
+            balance: self.balance(player),
+            escrow: self.escrow(player),
+            slots_left: self.world.mating_slots_left(player),
+            listings,
+            total,
+            next_cursor,
+            own,
+        })
     }
 
     /// Close listings whose organism died and listings past their expiry,
-    /// telling the owner.
+    /// telling the owner; settle auctions at their deadline.
     fn maintain_listings(&mut self, out: &mut Outbox) {
         let tick = self.world.tick();
-        let closed: Vec<(u64, PlayerId, OrgId, bool)> = self
+        let closed: Vec<(Listing, bool)> = self
             .economy
             .listings
             .values()
             .filter_map(|l| {
                 let dead = self.world.organism(l.organism).is_none_or(|o| o.owner != l.owner);
                 let expired = l.expires_tick.is_some_and(|t| tick >= t);
-                (dead || expired).then_some((l.id, l.owner, l.organism, dead))
+                (dead || expired).then(|| (l.clone(), dead))
             })
             .collect();
-        for (id, owner, organism, dead) in closed {
+        for (l, dead) in closed {
+            let (id, owner, organism) = (l.id, l.owner, l.organism);
             self.economy.listings.remove(&id);
+            if l.auction.is_some() && !dead {
+                self.settle_auction(&l, out);
+                continue;
+            }
+            if let Some(a) = &l.auction {
+                if let Some(b) = &a.high {
+                    let text =
+                        format!("Refund: auction #{id} ended ({organism} is no longer alive), {} back", b.amount);
+                    let _ = self.post(b.bidder, b.amount as i64, LedgerKind::Refund, text, None, Some(id));
+                    let text = format!(
+                        "Auction #{id} ended: #{organism} is no longer alive; your {} renown is refunded.",
+                        b.amount
+                    );
+                    self.alert(b.bidder, AlertKind::Market, text, Some(organism), out);
+                }
+                self.record_auction(&l, "ended", None);
+            }
             let text = if dead {
                 format!("Listing #{id} closed: #{organism} is no longer alive.")
             } else {
@@ -1216,7 +1618,12 @@ impl Game {
     /// on acceptance, on listing and every tick.
     fn hold_consented_females(&mut self) {
         let until = self.world.tick() + 2;
-        let listed = self.economy.listings.values().map(|l| l.organism);
+        // The highest bidder's female too: the bid is her owner's consent,
+        // and she must be free when the auction settles.
+        let listed = self.economy.listings.values().flat_map(|l| {
+            let bidder = l.auction.as_ref().and_then(|a| a.high.as_ref()).map(|b| b.mine);
+            std::iter::once(l.organism).chain(bidder)
+        });
         let held: Vec<OrgId> = self
             .offers
             .values()
@@ -2141,7 +2548,8 @@ impl Game {
             nearby.into_iter().map(|(_, i)| NearbyOrganism::from_org(&orgs[i as usize])).collect();
         let ids = idx.offers.get(&player).map_or(&[][..], Vec::as_slice);
         let offers = ids.iter().map(|&id| self.offer_view(id)).collect();
-        let escrow = ids.iter().map(|id| &self.offers[id]).filter(|o| o.from == player).map(|o| o.escrow).sum();
+        let escrow = ids.iter().map(|id| &self.offers[id]).filter(|o| o.from == player).map(|o| o.escrow).sum::<u64>()
+            + idx.bids.get(&player).copied().unwrap_or(0);
         let leaderboard = self.state_leaderboard(&idx.leaderboard, player, &nearby);
         Some(StateView {
             clock: idx.clock.clone(),
@@ -2238,6 +2646,8 @@ struct StateIndex {
     items: Vec<u32>,
     /// Open offers a player made or received, by id.
     offers: BTreeMap<PlayerId, Vec<u64>>,
+    /// Renown held as the highest bid on auctions, per bidder.
+    bids: BTreeMap<PlayerId, u64>,
     clock: ClockView,
     weather: WeatherView,
     leaderboard: Leaderboard,
@@ -2283,6 +2693,10 @@ impl StateIndex {
                 offers.entry(o.to).or_default().push(o.id);
             }
         }
+        let mut bids: BTreeMap<PlayerId, u64> = BTreeMap::new();
+        for b in g.economy.listings.values().filter_map(|l| l.auction.as_ref()?.high.as_ref()) {
+            *bids.entry(b.bidder).or_default() += b.amount;
+        }
         StateIndex {
             by_owner,
             cols,
@@ -2290,6 +2704,7 @@ impl StateIndex {
             starts,
             items,
             offers,
+            bids,
             clock: g.clock(),
             weather: g.weather(),
             leaderboard: g.leaderboard(),
@@ -3323,12 +3738,13 @@ mod tests {
         let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 1, expires_days: None });
         assert_eq!(result(&out).1.as_deref(), Some("already_listed"));
         // Bob browses with his female: compatibility is shown; Ann sees no preview of her own.
-        let out = g.command(20, 2, None, ClientMsg::BrowseMarket { mine: Some(fb) });
+        let out = g.command(20, 2, None, ClientMsg::BrowseMarket(MarketQuery { mine: Some(fb), ..Default::default() }));
         let m: MarketView = serde_json::from_value(data(&out)).unwrap();
         assert_eq!((m.balance, m.listings.len()), (start, 1));
         let p = m.listings[0].preview.as_ref().expect("preview");
         assert!(p.compatible && p.mine == fb && p.partner == ma);
-        let out = g.command(10, 1, None, ClientMsg::BrowseMarket { mine: Some(a[0]) });
+        let out =
+            g.command(10, 1, None, ClientMsg::BrowseMarket(MarketQuery { mine: Some(a[0]), ..Default::default() }));
         assert!(serde_json::from_value::<MarketView>(data(&out)).unwrap().listings[0].preview.is_none());
         // Ann can't buy her own; Bob can't buy with a same-sex organism or what he can't pay.
         let out = g.command(10, 1, None, ClientMsg::BuyListing { listing: listing.id, mine: a[0] });
@@ -3359,7 +3775,8 @@ mod tests {
         // A stud may serve several buyers: the listing stays open (but the
         // same buyer's organism can't be promised twice).
         let m: MarketView =
-            serde_json::from_value(data(&g.command(20, 2, None, ClientMsg::BrowseMarket { mine: None }))).unwrap();
+            serde_json::from_value(data(&g.command(20, 2, None, ClientMsg::BrowseMarket(MarketQuery::default()))))
+                .unwrap();
         assert!(!m.listings[0].busy);
         let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: listing.id, mine: fb });
         assert_eq!(result(&out).1.as_deref(), Some("organism_busy"));
@@ -3382,7 +3799,7 @@ mod tests {
         assert_eq!(result(&out).1.as_deref(), Some("unknown_listing"));
         let out = g.command(10, 1, None, ClientMsg::WithdrawListing { listing: listing.id });
         assert_eq!(result(&out), (true, None));
-        assert!(g.market(2, None).listings.is_empty());
+        assert!(g.market(2, &MarketQuery::default()).unwrap().listings.is_empty());
     }
 
     #[test]
@@ -3395,7 +3812,7 @@ mod tests {
             ["listing"]["id"]
             .as_u64()
             .unwrap();
-        assert_eq!(g.market(2, None).listings[0].role, "dam");
+        assert_eq!(g.market(2, &MarketQuery::default()).unwrap().listings[0].role, "dam");
         // Listed, she is kept from breeding on her own.
         for _ in 0..3 {
             g.world.step();
@@ -3406,7 +3823,7 @@ mod tests {
         assert_eq!(result(&out), (true, None));
         let id = offer_id(&out);
         assert_eq!(g.offers[&id].escrow, 0, "a free listing holds nothing");
-        assert!(g.market(3, None).listings[0].busy);
+        assert!(g.market(3, &MarketQuery::default()).unwrap().listings[0].busy);
         let out = g.command(30, 3, None, ClientMsg::BuyListing { listing: l, mine: mc });
         assert_eq!(result(&out).1.as_deref(), Some("listing_busy"));
         // Bob gives up: she is free for the next buyer.
@@ -3459,6 +3876,456 @@ mod tests {
         if g.economy.listings_of(1) >= economy::MAX_LISTINGS {
             assert_eq!(refused.as_deref(), Some("too_many_listings"));
         }
+    }
+
+    fn browse(g: &mut Game, conn: ConnId, player: PlayerId, q: MarketQuery) -> MarketView {
+        serde_json::from_value(data(&g.command(conn, player, None, ClientMsg::BrowseMarket(q)))).unwrap()
+    }
+
+    /// Every page of a query, following `next_cursor`.
+    fn all_pages(g: &mut Game, conn: ConnId, player: PlayerId, q: MarketQuery) -> (Vec<ListingView>, usize) {
+        let mut out: Vec<ListingView> = Vec::new();
+        let mut q = q;
+        let mut pages = 0;
+        loop {
+            let m = browse(g, conn, player, q.clone());
+            pages += 1;
+            assert!(m.listings.len() <= q.limit.unwrap_or(MARKET_PAGE));
+            out.extend(m.listings);
+            match m.next_cursor {
+                Some(c) => q.cursor = Some(c),
+                None => {
+                    assert_eq!(out.len(), m.total, "the pages hold every match once");
+                    return (out, pages);
+                }
+            }
+            assert!(pages < 100);
+        }
+    }
+
+    /// Four players with every founder listed: 24 listings, fees by order.
+    fn market_game() -> (Game, Vec<Vec<OrgId>>) {
+        let (mut g, a, b) = game();
+        let c = g.found(3, &design("C")).unwrap().founders;
+        let d = g.found(4, &design("D")).unwrap().founders;
+        g.connect(30, 3, "cat");
+        g.connect(40, 4, "dan");
+        let all = vec![a, b, c, d];
+        let mut fee = 0;
+        for (k, ids) in all.iter().enumerate() {
+            let p = k as PlayerId + 1;
+            for &id in ids {
+                fee = (fee * 7 + 3) % 31;
+                let out = g.command(
+                    p as u64 * 10,
+                    p,
+                    None,
+                    ClientMsg::CreateListing { organism: id, fee, expires_days: None },
+                );
+                assert_eq!(result(&out), (true, None), "{out:?}");
+            }
+        }
+        (g, all)
+    }
+
+    #[test]
+    fn browse_market_pages_with_a_stable_cursor_filters_and_sorts() {
+        let (mut g, all) = market_game();
+        let n = g.economy.listings.len();
+        assert_eq!(n, 24);
+        // No fields: the newest page of the default size, bounded.
+        let m = browse(&mut g, 10, 1, MarketQuery::default());
+        assert_eq!((m.listings.len(), m.total), (MARKET_PAGE, n));
+        let newest: Vec<u64> = g.economy.listings.keys().rev().copied().collect();
+        assert_eq!(m.listings.iter().map(|l| l.id).collect::<Vec<_>>(), newest[..MARKET_PAGE]);
+        assert!(m.next_cursor.is_some() && m.own.is_none());
+        assert!(m.listings.iter().all(|l| l.kind == ListingKind::Fixed && l.auction.is_none()));
+        // Small pages walk every listing once, newest first.
+        let (pages, count) = all_pages(&mut g, 10, 1, MarketQuery { limit: Some(5), ..Default::default() });
+        assert_eq!((pages.iter().map(|l| l.id).collect::<Vec<_>>(), count), (newest.clone(), 5));
+        // The page size is clamped.
+        assert_eq!(browse(&mut g, 10, 1, MarketQuery { limit: Some(0), ..Default::default() }).listings.len(), 1);
+        let big = browse(&mut g, 10, 1, MarketQuery { limit: Some(10_000), ..Default::default() });
+        assert_eq!((big.listings.len(), big.next_cursor), (n.min(MAX_MARKET_PAGE), None));
+        // A cursor stays valid while listings come and go: a listing made
+        // after the first page (newer) and one withdrawn from the second
+        // neither repeat nor shift what follows.
+        let first = browse(&mut g, 30, 3, MarketQuery { limit: Some(6), ..Default::default() });
+        let gone = newest[8];
+        let owner = g.economy.listings[&gone].owner;
+        let organism = g.economy.listings[&gone].organism;
+        let out = g.command(owner as u64 * 10, owner, None, ClientMsg::WithdrawListing { listing: gone });
+        assert_eq!(result(&out), (true, None));
+        let relisted = ClientMsg::CreateListing { organism, fee: 1, expires_days: None };
+        assert_eq!(result(&g.command(owner as u64 * 10, owner, None, relisted)), (true, None));
+        let second = browse(
+            &mut g,
+            30,
+            3,
+            MarketQuery { limit: Some(6), cursor: first.next_cursor.clone(), ..Default::default() },
+        );
+        let expect: Vec<u64> = newest[6..].iter().copied().filter(|&id| id != gone).take(6).collect();
+        assert_eq!(second.listings.iter().map(|l| l.id).collect::<Vec<_>>(), expect);
+        // A cursor not made by the server is refused.
+        for bad in ["", "12", "a.b", "1.2.3", "-1.4"] {
+            let q = MarketQuery { cursor: Some(bad.into()), ..Default::default() };
+            let out = g.command(10, 1, None, ClientMsg::BrowseMarket(q));
+            assert_eq!(result(&out).1.as_deref(), Some("bad_cursor"), "{bad:?}");
+        }
+        let n = g.economy.listings.len();
+        // Own listings: left out of the page with `hide_own`, all of them in
+        // `own` with `with_own`.
+        let mine_count = g.economy.listings_of(1);
+        let m = browse(&mut g, 10, 1, MarketQuery { hide_own: true, with_own: true, ..Default::default() });
+        assert_eq!(m.total, n - mine_count);
+        assert!(m.listings.iter().all(|l| l.owner != 1));
+        let own = m.own.unwrap();
+        assert_eq!(own.len(), mine_count);
+        assert!(own.iter().all(|l| l.owner == 1));
+        // Price order, both ways, across pages.
+        let (asc, _) = all_pages(
+            &mut g,
+            10,
+            1,
+            MarketQuery { limit: Some(7), sort: Some(MarketSort::PriceAsc), ..Default::default() },
+        );
+        assert!(asc.windows(2).all(|w| w[0].fee < w[1].fee || (w[0].fee == w[1].fee && w[0].id > w[1].id)));
+        let (desc, _) = all_pages(
+            &mut g,
+            10,
+            1,
+            MarketQuery { limit: Some(7), sort: Some(MarketSort::PriceDesc), ..Default::default() },
+        );
+        assert!(desc.windows(2).all(|w| w[0].fee >= w[1].fee));
+        assert_eq!(asc.len(), n);
+        // Filters: role, price, lineage, species, kind.
+        let (dams, _) = all_pages(&mut g, 10, 1, MarketQuery { role: Some(ListingRole::Dam), ..Default::default() });
+        assert!(!dams.is_empty() && dams.iter().all(|l| l.role == "dam" && l.sex == "female"));
+        let (studs, _) = all_pages(&mut g, 10, 1, MarketQuery { role: Some(ListingRole::Stud), ..Default::default() });
+        assert_eq!(dams.len() + studs.len(), n);
+        let (cheap, _) = all_pages(&mut g, 10, 1, MarketQuery { max_price: Some(10), ..Default::default() });
+        assert_eq!(cheap.len(), g.economy.listings.values().filter(|l| l.fee <= 10).count());
+        let bob = g.lineage_of(2).unwrap();
+        let (bobs, _) = all_pages(&mut g, 10, 1, MarketQuery { lineage: Some(bob), ..Default::default() });
+        assert!(!bobs.is_empty() && bobs.iter().all(|l| l.lineage == bob && l.owner == 2));
+        assert_eq!(browse(&mut g, 10, 1, MarketQuery { species: Some(9_999), ..Default::default() }).total, 0);
+        let q = MarketQuery { kind: Some(ListingKind::Auction), ..Default::default() };
+        assert_eq!(browse(&mut g, 10, 1, q.clone()).total, 0);
+        // Compatibility: with `mine`, the page carries previews; `compatible`
+        // keeps only pairs that can conceive (never one's own listings), and
+        // `fertility` puts the best first.
+        let mine = all[0][0];
+        let q = MarketQuery { mine: Some(mine), compatible: true, ..Default::default() };
+        let (compat, _) = all_pages(&mut g, 10, 1, MarketQuery { limit: Some(4), ..q });
+        assert!(!compat.is_empty());
+        assert!(compat.iter().all(|l| l.owner != 1 && l.preview.as_ref().is_some_and(|p| p.compatible)));
+        let q =
+            MarketQuery { mine: Some(mine), sort: Some(MarketSort::Fertility), limit: Some(4), ..Default::default() };
+        let (fert, _) = all_pages(&mut g, 10, 1, q);
+        assert_eq!(fert.len(), n);
+        let f = |l: &ListingView| l.preview.as_ref().filter(|p| p.compatible).map_or(-1.0, |p| p.fertility);
+        assert!(fert.windows(2).all(|w| f(&w[0]) >= f(&w[1]) - 1e-6), "best fertility first");
+        // The page's previews come with any order.
+        let m = browse(&mut g, 10, 1, MarketQuery { mine: Some(mine), hide_own: true, ..Default::default() });
+        let sex = sex_name(g.world.organism(mine).unwrap().sex);
+        assert!(m.listings.iter().any(|l| l.sex != sex));
+        assert!(m.listings.iter().filter(|l| l.sex != sex).all(|l| l.preview.is_some()));
+    }
+
+    fn not_pregnant(g: &mut Game, ids: &[OrgId]) {
+        for o in g.world.organisms.iter_mut().filter(|o| ids.contains(&o.id)) {
+            o.pregnancy = None;
+        }
+    }
+
+    fn auction_records(g: &mut Game) -> Vec<AuctionRecord> {
+        g.take_persist()
+            .into_iter()
+            .filter_map(|e| if let PersistEvent::Auction(r) = e { Some(r) } else { None })
+            .collect()
+    }
+
+    fn tick(g: &mut Game) -> Outbox {
+        g.world.step();
+        g.after_tick()
+    }
+
+    /// Keep two organisms apart (so an agreement waits for them to meet).
+    fn place_apart(g: &mut Game, a: OrgId, b: OrgId) {
+        let pa = g.world.organism(a).unwrap().pos;
+        let far = Vec2::new((pa.x + 30.0) % 60.0 + 2.0, (pa.y + 30.0) % 60.0 + 2.0);
+        g.world.organisms.iter_mut().find(|o| o.id == b).unwrap().pos = far;
+    }
+
+    #[test]
+    fn auction_bids_are_escrowed_outbid_bidders_refunded_and_the_winner_settles() {
+        let (mut g, a, b) = game();
+        let c = g.found(3, &design("C")).unwrap().founders;
+        g.connect(30, 3, "cat");
+        let (ma, fb, fc) = (male(&g, &a), female(&g, &b), female(&g, &c));
+        not_pregnant(&mut g, &[fb, fc]);
+        let start = economy::FOUNDING_GRANT;
+        let create = |g: &mut Game, reserve, days, ticks| {
+            g.command(10, 1, None, ClientMsg::CreateAuction { organism: ma, reserve, days, ticks })
+        };
+        for (days, ticks) in
+            [(Some(1), Some(10)), (Some(0), None), (Some(economy::MAX_AUCTION_DAYS + 1), None), (None, Some(0))]
+        {
+            assert_eq!(result(&create(&mut g, 10, days, ticks)).1.as_deref(), Some("bad_duration"));
+        }
+        assert_eq!(result(&create(&mut g, economy::MAX_PRICE + 1, None, Some(5))).1.as_deref(), Some("bad_price"));
+        let out =
+            g.command(20, 2, None, ClientMsg::CreateAuction { organism: ma, reserve: 1, days: None, ticks: None });
+        assert_eq!(result(&out).1.as_deref(), Some("not_owned"));
+        let out = create(&mut g, 10, None, Some(6));
+        let l: ListingView = serde_json::from_value(data(&out)["listing"].clone()).unwrap();
+        let deadline = g.world.tick() + 6;
+        assert_eq!(l.kind, ListingKind::Auction);
+        let view = l.auction.clone().unwrap();
+        assert_eq!(
+            (view.reserve, view.deadline_tick, view.bids, view.min_bid, view.high_bid),
+            (10, deadline, 0, 10, None)
+        );
+        assert_eq!(l.expires_tick, Some(deadline));
+        // A day-long auction by default, and one listing per organism.
+        assert_eq!(result(&create(&mut g, 10, None, None)).1.as_deref(), Some("already_listed"));
+        let id = l.id;
+        let bid = |g: &mut Game, conn, player, amount, mine| {
+            g.command(conn, player, None, ClientMsg::Bid { listing: id, amount, mine })
+        };
+        // The seller can't bid; an auction can't be bought outright; a
+        // fixed listing takes no bids; bids start at the reserve.
+        assert_eq!(result(&bid(&mut g, 10, 1, 50, a[0])).1.as_deref(), Some("own_listing"));
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: id, mine: fb });
+        assert_eq!(result(&out).1.as_deref(), Some("auction_listing"));
+        let fa = female(&g, &a);
+        let fixed =
+            data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: 3, expires_days: None }))
+                ["listing"]["id"]
+                .as_u64()
+                .unwrap();
+        let mb = male(&g, &b);
+        let out = g.command(20, 2, None, ClientMsg::Bid { listing: fixed, amount: 5, mine: mb });
+        assert_eq!(result(&out).1.as_deref(), Some("not_auction"));
+        let out = bid(&mut g, 20, 2, 9, fb);
+        assert_eq!(result(&out).1.as_deref(), Some("bid_too_low"));
+        assert_eq!(g.balance(2), start);
+        assert_eq!(result(&bid(&mut g, 20, 2, 10, mb)).1.as_deref(), Some("same_sex"));
+        assert_eq!(result(&bid(&mut g, 20, 2, start + 1, fb)).1.as_deref(), Some("insufficient_funds"));
+        // Bob bids the reserve: held in escrow, Ann told.
+        let out = bid(&mut g, 20, 2, 10, fb);
+        assert_eq!(result(&out), (true, None));
+        let v: ListingView = serde_json::from_value(data(&out)["listing"].clone()).unwrap();
+        let av = v.auction.unwrap();
+        assert_eq!((av.high_bid, av.high_bidder, av.bids, av.min_bid), (Some(10), Some(2), 1, 11));
+        assert_eq!((g.balance(2), g.escrow(2)), (start - 10, 10));
+        assert_eq!(g.state_for(20).unwrap().escrow, 10, "the state counts bids as escrow");
+        assert!(alerts_in(&out, 1).iter().any(|x| x.text.starts_with("bob bid 10 renown on your auction")));
+        // The highest bidder's female is held for the settlement.
+        tick(&mut g);
+        assert!(!g.world.organism(fb).unwrap().can_breed(g.world.tick()), "the bidder's dam is held");
+        // With a bid, the auction can't be withdrawn.
+        let out = g.command(10, 1, None, ClientMsg::WithdrawListing { listing: id });
+        assert_eq!(result(&out).1.as_deref(), Some("auction_has_bids"));
+        // Cat must beat it; then Bob is refunded at once and told.
+        assert_eq!(result(&bid(&mut g, 30, 3, 10, fc)).1.as_deref(), Some("bid_too_low"));
+        let (b2, b3) = (g.balance(2), g.balance(3));
+        let out = bid(&mut g, 30, 3, 11, fc);
+        assert_eq!(result(&out), (true, None));
+        assert_eq!((g.balance(2), g.escrow(2)), (b2 + 10, 0));
+        assert_eq!((g.balance(3), g.escrow(3)), (b3 - 11, 11));
+        assert!(alerts_in(&out, 2)
+            .iter()
+            .any(|x| x.kind == AlertKind::Market && x.text.starts_with("Outbid on auction")));
+        let bob: Vec<LedgerKind> = ledger_kinds(&g, 2).into_iter().filter(|&k| k != LedgerKind::Income).collect();
+        assert_eq!(bob, vec![LedgerKind::Grant, LedgerKind::Escrow, LedgerKind::Refund]);
+        assert!(g.ledger(2, 1)[0].listing == Some(id) && g.ledger(2, 1)[0].offer.is_none());
+        // Cat raises her own bid: only the difference is held.
+        let out = bid(&mut g, 30, 3, 20, fc);
+        assert_eq!(result(&out), (true, None));
+        assert_eq!((g.balance(3), g.escrow(3)), (b3 - 20, 20));
+        assert_eq!(g.ledger(3, 1)[0].delta, -9);
+        // The deadline: Cat's bid becomes an accepted agreement with the bid
+        // in escrow on it; the auction is recorded as sold.
+        place_apart(&mut g, ma, fc);
+        auction_records(&mut g);
+        let mut settled = Outbox::new();
+        while g.world.tick() < deadline {
+            assert!(g.economy.listings.contains_key(&id));
+            settled = tick(&mut g);
+            place_apart(&mut g, ma, fc);
+        }
+        assert!(!g.economy.listings.contains_key(&id));
+        let offer = g.offers.values().find(|o| o.listing == Some(id)).expect("the winner's agreement").clone();
+        assert_eq!(
+            (offer.from, offer.to, offer.mine, offer.partner, offer.escrow, offer.status),
+            (3, 1, fc, ma, 20, OfferStatus::Accepted)
+        );
+        // The bid moved from the auction to the agreement: released from
+        // the one, held on the other.
+        assert_eq!(g.escrow(3), 20);
+        let moves: Vec<(LedgerKind, i64, Option<u64>)> =
+            g.ledger(3, 100).iter().filter(|e| e.listing == Some(id)).map(|e| (e.kind, e.delta, e.offer)).collect();
+        assert_eq!(
+            moves,
+            vec![
+                (LedgerKind::Escrow, -20, Some(offer.id)),
+                (LedgerKind::Refund, 20, None),
+                (LedgerKind::Escrow, -9, None),
+                (LedgerKind::Escrow, -11, None)
+            ]
+        );
+        assert!(alerts_in(&settled, 3).iter().any(|x| x.text.starts_with(&format!("Won auction #{id} with 20"))));
+        assert!(alerts_in(&settled, 1).iter().any(|x| x.text.contains("sold to cat for 20")));
+        let rec = auction_records(&mut g);
+        assert_eq!(rec.len(), 1);
+        assert_eq!(
+            (rec[0].outcome.as_str(), rec[0].winner, rec[0].high_bid, rec[0].bids, rec[0].offer, rec[0].reserve),
+            ("sold", Some(3), Some(20), 3, Some(offer.id), 10)
+        );
+        assert_eq!(rec[0].world_id, g.world_id);
+        // They meet: Ann is paid the winning bid.
+        let (b1, b3) = (g.balance(1), g.balance(3));
+        place_together(&mut g, ma, fc);
+        g.after_tick();
+        assert!(!g.offers.contains_key(&offer.id));
+        assert_eq!((g.balance(1), g.balance(3), g.escrow(3)), (b1 + 20, b3, 0));
+        let t = trades(&mut g);
+        assert_eq!((t[0].listing, t[0].price, t[0].settlement.as_deref()), (Some(id), Some(20), Some("paid")));
+    }
+
+    #[test]
+    fn auctions_without_a_bid_return_to_the_seller_and_deaths_refund_the_bid() {
+        let (mut g, a, b) = game();
+        let (ma, fa, fb, mb) = (male(&g, &a), female(&g, &a), female(&g, &b), male(&g, &b));
+        not_pregnant(&mut g, &[fa, fb]);
+        let auction = |g: &mut Game, organism, ticks| {
+            g.command(10, 1, None, ClientMsg::CreateAuction { organism, reserve: 5, days: None, ticks: Some(ticks) })
+        };
+        // No bid: the lot is the seller's again at the deadline.
+        let l = data(&auction(&mut g, ma, 2))["listing"]["id"].as_u64().unwrap();
+        auction_records(&mut g);
+        let mut out = Outbox::new();
+        for _ in 0..2 {
+            out.extend(tick(&mut g));
+        }
+        assert!(!g.economy.listings.contains_key(&l));
+        assert!(alerts_in(&out, 1).iter().any(|x| x.text.contains("closed without a bid")));
+        assert_eq!(auction_records(&mut g).iter().map(|r| r.outcome.as_str()).collect::<Vec<_>>(), vec!["unsold"]);
+        assert!(g.ledger(1, 100).iter().all(|e| e.listing.is_none()), "no bid: no renown moved");
+        // Withdrawn before any bid.
+        let l = data(&auction(&mut g, ma, 50))["listing"]["id"].as_u64().unwrap();
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::WithdrawListing { listing: l })), (true, None));
+        assert_eq!(auction_records(&mut g)[0].outcome, "withdrawn");
+        // The lot dies with a bid on it: the bidder is refunded.
+        let l = data(&auction(&mut g, ma, 50))["listing"]["id"].as_u64().unwrap();
+        let b2 = g.balance(2);
+        assert_eq!(result(&g.command(20, 2, None, ClientMsg::Bid { listing: l, amount: 7, mine: fb })), (true, None));
+        assert_eq!(g.balance(2), b2 - 7);
+        let o = g.world.organisms.iter_mut().find(|o| o.id == ma).unwrap();
+        o.alive = false;
+        o.death = Some(DeathCause::Predation);
+        let out = g.after_tick();
+        assert!(!g.economy.listings.contains_key(&l));
+        assert_eq!((g.balance(2), g.escrow(2)), (b2, 0));
+        assert!(alerts_in(&out, 2).iter().any(|x| x.text.contains("refunded")));
+        assert_eq!(auction_records(&mut g)[0].outcome, "ended");
+        // The winner's organism dies before the deadline: no agreement, the
+        // bid refunded, the auction recorded as failed.
+        let mb2 = mb;
+        let fa2 = a.iter().copied().find(|&id| id != fa && g.world.organism(id).is_some_and(|o| o.sex == Sex::Female));
+        let Some(dam) = fa2 else { return };
+        g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pregnancy = None;
+        let l = data(&auction(&mut g, dam, 3))["listing"]["id"].as_u64().unwrap();
+        assert_eq!(result(&g.command(20, 2, None, ClientMsg::Bid { listing: l, amount: 9, mine: mb2 })), (true, None));
+        let o = g.world.organisms.iter_mut().find(|o| o.id == mb2).unwrap();
+        o.alive = false;
+        o.death = Some(DeathCause::Starvation);
+        let mut out = Outbox::new();
+        for _ in 0..3 {
+            out.extend(tick(&mut g));
+        }
+        assert!(!g.economy.listings.contains_key(&l));
+        assert!(!g.offers.values().any(|o| o.listing == Some(l)));
+        assert_eq!(g.escrow(2), 0);
+        let moves: Vec<i64> = g.ledger(2, 100).iter().filter(|e| e.listing == Some(l)).map(|e| e.delta).collect();
+        assert_eq!(moves, vec![9, -9], "refunded");
+        assert!(alerts_in(&out, 2).iter().any(|x| x.text.contains("can't run") && x.text.contains("refunded")));
+        let rec = auction_records(&mut g);
+        assert_eq!((rec[0].outcome.as_str(), rec[0].winner, rec[0].high_bid), ("failed", None, Some(9)));
+    }
+
+    #[test]
+    fn saved_games_keep_open_auctions_and_their_escrowed_bids() {
+        let (mut g, a, b) = game();
+        let (ma, fb) = (male(&g, &a), female(&g, &b));
+        not_pregnant(&mut g, &[fb]);
+        let l = data(&g.command(
+            10,
+            1,
+            None,
+            ClientMsg::CreateAuction { organism: ma, reserve: 4, days: None, ticks: Some(3) },
+        ))["listing"]["id"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(result(&g.command(20, 2, None, ClientMsg::Bid { listing: l, amount: 6, mine: fb })), (true, None));
+        let json = serde_json::to_string(&g.saved()).unwrap();
+        let saved: SavedGame = serde_json::from_str(&json).unwrap();
+        assert_eq!(saved.version, SAVED_GAME_VERSION);
+        let world = World::restore(&g.world.snapshot(), Some(g.world.map.terrain().clone())).unwrap();
+        let mut r = Game::resume(world, GameConfig::default(), saved, Vec::new());
+        assert_eq!(r.economy, g.economy);
+        assert_eq!((r.balance(2), r.escrow(2)), (g.balance(2), 6));
+        assert_eq!(r.ledger(2, 1)[0].delta, -6);
+        let a = r.economy.listings[&l].auction.clone().unwrap();
+        assert_eq!((a.reserve, a.bids, a.high.map(|b| (b.bidder, b.amount, b.mine))), (4, 1, Some((2, 6, fb))));
+        // It settles in the restored game.
+        r.connect(10, 1, "ann");
+        r.connect(20, 2, "bob");
+        for _ in 0..3 {
+            place_apart(&mut r, ma, fb);
+            tick(&mut r);
+        }
+        assert!(!r.economy.listings.contains_key(&l));
+        let offer = r.offers.values().find(|o| o.listing == Some(l)).expect("agreement").clone();
+        assert_eq!((offer.from, offer.escrow), (2, 6));
+        assert_eq!(r.escrow(2), 6);
+    }
+
+    #[test]
+    fn a_fresh_start_refunds_bids_held_on_auctions_of_the_discarded_world_once() {
+        let (mut g, a, b) = game();
+        let c = g.found(3, &design("C")).unwrap().founders;
+        g.connect(30, 3, "cat");
+        let (ma, fa, fb, fc, mb) = (male(&g, &a), female(&g, &a), female(&g, &b), female(&g, &c), male(&g, &b));
+        not_pregnant(&mut g, &[fa, fb, fc]);
+        let create = |g: &mut Game, organism| {
+            data(&g.command(10, 1, None, ClientMsg::CreateAuction { organism, reserve: 4, days: Some(3), ticks: None }))
+                ["listing"]["id"]
+                .as_u64()
+                .unwrap()
+        };
+        let (one, two) = (create(&mut g, ma), create(&mut g, fa));
+        assert!(result(&g.command(20, 2, None, ClientMsg::Bid { listing: one, amount: 10, mine: fb })).0);
+        let mut ledger = ledger_records(&mut g);
+        let saved: SavedGame = serde_json::from_str(&serde_json::to_string(&g.saved()).unwrap()).unwrap();
+        // After the save: Cat outbids Bob (Bob refunded) and raises; Bob
+        // bids on the other auction.
+        assert!(result(&g.command(30, 3, None, ClientMsg::Bid { listing: one, amount: 12, mine: fc })).0);
+        assert!(result(&g.command(30, 3, None, ClientMsg::Bid { listing: one, amount: 15, mine: fc })).0);
+        assert!(result(&g.command(20, 2, None, ClientMsg::Bid { listing: two, amount: 5, mine: mb })).0);
+        ledger.extend(ledger_records(&mut g));
+        let stored = [(1, g.balance(1)), (2, g.balance(2)), (3, g.balance(3))];
+        let mut n = Game::new(build_world(&WorldSettings { seed: 9, ..Default::default() }), GameConfig::default());
+        n.seed_economy(&stored, Vec::new());
+        let mut refunds = n.refund_discarded(&saved, &ledger);
+        refunds.sort_unstable();
+        assert_eq!(refunds, vec![(2, 5), (3, 15)]);
+        assert_eq!((n.balance(2), n.balance(3)), (economy::FOUNDING_GRANT, economy::FOUNDING_GRANT));
+        ledger.extend(ledger_records(&mut n));
+        let mut again = Game::new(build_world(&WorldSettings { seed: 9, ..Default::default() }), GameConfig::default());
+        again.seed_economy(&[(2, n.balance(2)), (3, n.balance(3))], Vec::new());
+        assert!(again.refund_discarded(&saved, &ledger).is_empty());
     }
 
     #[test]

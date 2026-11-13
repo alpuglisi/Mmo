@@ -24,6 +24,15 @@
 //! not) the escrow goes to the partner's owner; any other ending (declined,
 //! cancelled, failed, expired) refunds it.
 //!
+//! **Auctions** ([`Auction`]) are listings that sell one mating to the
+//! highest bid at a deadline. A bid moves its amount from the bidder's
+//! balance into escrow on the auction (a bidder raising their own bid pays
+//! only the difference); an outbid bidder is refunded at once. At the
+//! deadline the highest bid (never below the reserve) becomes an accepted
+//! agreement with the bid as its escrowed price, settled like any other
+//! (paid when the mating runs, refunded otherwise); with no bid the lot
+//! returns to the seller.
+//!
 //! Every change is a [`LedgerEntry`] with a sequence number that is unique
 //! per world; the store keeps the entries and each player's balance.
 
@@ -46,6 +55,8 @@ pub const LEDGER_KEPT: usize = 100;
 pub const MAX_LISTINGS: usize = 8;
 /// Longest listing expiry, in simulated days.
 pub const MAX_LISTING_DAYS: u32 = 365;
+/// Longest auction, in simulated days.
+pub const MAX_AUCTION_DAYS: u32 = 30;
 
 /// Renown for one simulated day: the stipend while the lineage lives, plus
 /// one per percentage point of the mean of raw and weighted legacy share.
@@ -84,6 +95,55 @@ pub struct Listing {
     /// Matings bought from it so far.
     #[serde(default)]
     pub sales: u32,
+    /// Set for an auction: one mating goes to the highest bid at the
+    /// deadline (`expires_tick`). None for a fixed-price listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auction: Option<Auction>,
+}
+
+impl Listing {
+    /// What it costs now: the fee, or an auction's highest bid (its reserve
+    /// before the first bid).
+    pub fn price(&self) -> u64 {
+        match &self.auction {
+            Some(a) => a.high.as_ref().map_or(a.reserve, |b| b.amount),
+            None => self.fee,
+        }
+    }
+}
+
+/// The highest bid on an auction, held in escrow from the bidder's balance.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Bid {
+    pub bidder: PlayerId,
+    pub amount: u64,
+    /// The bidder's organism for the mating if the bid wins.
+    pub mine: OrgId,
+    pub tick: u64,
+}
+
+/// An auction listing's state. The deadline is the listing's `expires_tick`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Auction {
+    /// The lowest winning bid.
+    pub reserve: u64,
+    /// Only the highest bid is kept: an outbid bidder is refunded at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high: Option<Bid>,
+    /// Bids placed so far.
+    #[serde(default)]
+    pub bids: u32,
+}
+
+impl Auction {
+    /// The smallest bid accepted now: the reserve (at least 1) for the
+    /// first bid, then the highest bid plus 5% (at least 1 more).
+    pub fn min_bid(&self) -> u64 {
+        match &self.high {
+            None => self.reserve.max(1),
+            Some(b) => b.amount.saturating_add((b.amount / 20).max(1)),
+        }
+    }
 }
 
 /// Balances, the recent ledger and the marketplace listings. Saved with the
@@ -185,9 +245,44 @@ impl Economy {
     ) -> Listing {
         let id = self.next_listing.max(1);
         self.next_listing = id + 1;
-        let l = Listing { id, owner, organism, fee, created_tick, expires_tick, sales: 0 };
+        let l = Listing { id, owner, organism, fee, created_tick, expires_tick, sales: 0, auction: None };
         self.listings.insert(id, l.clone());
         l
+    }
+
+    /// An auction of one mating with `organism`, settling at `deadline`.
+    pub fn add_auction(
+        &mut self,
+        owner: PlayerId,
+        organism: OrgId,
+        reserve: u64,
+        created_tick: u64,
+        deadline: u64,
+    ) -> Listing {
+        let id = self.next_listing.max(1);
+        self.next_listing = id + 1;
+        let l = Listing {
+            id,
+            owner,
+            organism,
+            fee: reserve,
+            created_tick,
+            expires_tick: Some(deadline),
+            sales: 0,
+            auction: Some(Auction { reserve, high: None, bids: 0 }),
+        };
+        self.listings.insert(id, l.clone());
+        l
+    }
+
+    /// Renown of `player`'s held as the highest bid on open auctions.
+    pub fn bids_held(&self, player: PlayerId) -> u64 {
+        self.listings
+            .values()
+            .filter_map(|l| l.auction.as_ref()?.high.as_ref())
+            .filter(|b| b.bidder == player)
+            .map(|b| b.amount)
+            .sum()
     }
 
     pub fn listing_of(&self, organism: OrgId) -> Option<&Listing> {
@@ -271,5 +366,29 @@ mod tests {
         assert_eq!(e.listing_of(101).map(|l| l.id), Some(2));
         assert_eq!(e.listings_of(1), 2);
         assert_eq!(e.listings_of(2), 0);
+        assert_eq!((a.price(), a.auction.is_none()), (5, true));
+    }
+
+    #[test]
+    fn auctions_price_at_the_highest_bid_and_step_up_by_five_percent() {
+        let mut e = Economy::new();
+        let l = e.add_auction(1, 100, 40, 10, 58);
+        assert_eq!((l.id, l.expires_tick, l.price()), (1, Some(58), 40));
+        let a = l.auction.clone().unwrap();
+        assert_eq!(a.min_bid(), 40);
+        assert_eq!(Auction { reserve: 0, high: None, bids: 0 }.min_bid(), 1, "a bid is at least 1");
+        let bid = |amount| Some(Bid { bidder: 2, amount, mine: 7, tick: 11 });
+        let high = Auction { high: bid(40), bids: 1, ..a.clone() };
+        assert_eq!(high.min_bid(), 42);
+        assert_eq!(Auction { high: bid(10), ..a.clone() }.min_bid(), 11, "at least one more");
+        assert_eq!(Auction { high: bid(u64::MAX), ..a }.min_bid(), u64::MAX);
+        e.listings.get_mut(&1).unwrap().auction = Some(high);
+        assert_eq!((e.listings[&1].price(), e.bids_held(2), e.bids_held(1)), (40, 40, 0));
+        // Auctions count against the listing limit like fixed listings.
+        assert_eq!(e.listings_of(1), 1);
+        // Saved games from before auctions read as fixed listings.
+        let old = r#"{"id":3,"owner":1,"organism":5,"fee":2,"created_tick":0}"#;
+        let l: Listing = serde_json::from_str(old).unwrap();
+        assert_eq!((l.auction.is_none(), l.sales, l.price()), (true, 0, 2));
     }
 }

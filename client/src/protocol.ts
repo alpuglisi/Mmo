@@ -31,8 +31,12 @@ export type ClientMsg =
   | { type: 'withdraw_listing'; listing: number }
   /** Buy one mating with a listed organism for your adult `mine`; data: `{ offer: OfferView }`. */
   | { type: 'buy_listing'; listing: number; mine: OrgId }
-  /** Open listings (with compatibility against `mine`); data: `MarketView`. */
-  | { type: 'browse_market'; mine?: OrgId }
+  /** Auction one mating with one of your adults (closes after `ticks`, else `days`, default 1); data: `{ listing }`. */
+  | { type: 'create_auction'; organism: OrgId; reserve: number; days?: number; ticks?: number }
+  /** Bid on an auction for your adult `mine` (held in escrow, refunded when outbid); data: `{ listing }`. */
+  | { type: 'bid'; listing: number; amount: number; mine: OrgId }
+  /** One page of the open listings (with compatibility against `mine`); data: `MarketView`. */
+  | ({ type: 'browse_market' } & MarketQuery)
   /** Balance and recent ledger entries; data: `LedgerView`. */
   | { type: 'ledger'; limit?: number }
   /** Protocol 2: the delta states stopped decoding; the next state is a keyframe (no reply). */
@@ -360,7 +364,42 @@ export interface TraitView {
   value: number;
 }
 
-/** A stud (or dam) on the marketplace. */
+/** Order of a `browse_market` page. */
+export type MarketSort = 'newest' | 'price_asc' | 'price_desc' | 'ending' | 'fertility';
+
+/** The fields of `browse_market` (all optional). */
+export interface MarketQuery {
+  mine?: OrgId;
+  /** Listings per page (server default 20, at most 50). */
+  limit?: number;
+  /** The previous page's `next_cursor`. */
+  cursor?: string;
+  sort?: MarketSort;
+  kind?: 'fixed' | 'auction';
+  role?: 'stud' | 'dam';
+  /** Highest price: the fee, or an auction's current bid (its reserve before any). */
+  max_price?: number;
+  lineage?: number;
+  species?: number;
+  /** With `mine`: only listings it can conceive with. */
+  compatible?: boolean;
+  hide_own?: boolean;
+  /** Also return all your own listings as `own`. */
+  with_own?: boolean;
+}
+
+/** What a bidder sees of an auction. */
+export interface AuctionView {
+  reserve: number;
+  deadline_tick: number;
+  high_bid?: number;
+  high_bidder?: PlayerId;
+  bids: number;
+  /** The smallest bid accepted now. */
+  min_bid: number;
+}
+
+/** A stud (or dam) on the marketplace: a fixed fee, or an auction. */
 export interface ListingView {
   id: number;
   owner: PlayerId;
@@ -388,14 +427,24 @@ export interface ListingView {
   traits: TraitView[];
   /** Compatibility with the organism passed to `browse_market`. */
   preview?: MatingPreviewView;
+  /** `fixed` when absent (servers before auctions). */
+  kind: 'fixed' | 'auction';
+  auction?: AuctionView;
 }
 
+/** One page of `browse_market`. */
 export interface MarketView {
   balance: number;
   escrow: number;
   slots_left: number;
-  /** Newest first. */
+  /** In the requested order. */
   listings: ListingView[];
+  /** Listings matching the filters on every page (the page's length from servers before paging). */
+  total: number;
+  /** Pass back as `cursor` for the next page; absent on the last page. */
+  next_cursor?: string;
+  /** All your own listings (`with_own`). */
+  own?: ListingView[];
 }
 
 // ---------------------------------------------------------------- HTTP bodies
@@ -742,9 +791,26 @@ function isState(v: Record<string, unknown>): boolean {
     && Array.isArray(v.nearby) && Array.isArray(v.offers) && isObj(v.leaderboard) && isNum(v.slots_left);
 }
 
+function isAuction(v: unknown): v is AuctionView {
+  return isObj(v) && isNum(v.reserve) && isNum(v.deadline_tick) && isNum(v.min_bid) && isNum(v.bids);
+}
+
 function isListing(v: unknown): v is ListingView {
   return isObj(v) && isNum(v.id) && isNum(v.organism) && isNum(v.owner) && isNum(v.fee) && isStr(v.role)
     && isNum(v.x) && isNum(v.y) && Array.isArray(v.traits);
+}
+
+/** A listing as the client keeps it: the kind filled in, a malformed auction dropped (with the listing). */
+function toListing(v: ListingView): ListingView | null {
+  const raw = v as unknown as Record<string, unknown>;
+  if (raw.kind === 'auction' || raw.auction !== undefined) {
+    return isAuction(raw.auction) ? { ...v, kind: 'auction' } : null;
+  }
+  return { ...v, kind: 'fixed' };
+}
+
+function listings(v: unknown[]): ListingView[] {
+  return v.filter(isListing).map(toListing).filter((l): l is ListingView => l !== null);
 }
 
 function isLedgerEntry(v: unknown): v is LedgerEntry {
@@ -754,12 +820,17 @@ function isLedgerEntry(v: unknown): v is LedgerEntry {
 /** The data of a `browse_market` result; malformed listings are dropped, a malformed reply is null. */
 export function parseMarketView(data: unknown): MarketView | null {
   if (!isObj(data) || !isNum(data.balance) || !Array.isArray(data.listings)) return null;
-  return {
+  const page = listings(data.listings);
+  const view: MarketView = {
     balance: data.balance,
     escrow: isNum(data.escrow) ? data.escrow : 0,
     slots_left: isNum(data.slots_left) ? data.slots_left : 0,
-    listings: data.listings.filter(isListing),
+    listings: page,
+    total: isNum(data.total) ? data.total : page.length,
   };
+  if (isStr(data.next_cursor)) view.next_cursor = data.next_cursor;
+  if (Array.isArray(data.own)) view.own = listings(data.own);
+  return view;
 }
 
 /** The data of a `ledger` result. */

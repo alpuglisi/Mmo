@@ -14,8 +14,8 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 
 use super::{
-    AccountRecord, AlertPrefsRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord, Store, StoreError,
-    StoreResult, TradeRecord, KEEP_SNAPSHOTS,
+    AccountRecord, AlertPrefsRecord, AuctionRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord, Store,
+    StoreError, StoreResult, TradeRecord, KEEP_SNAPSHOTS,
 };
 use crate::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
 use evo_sim::PlayerId;
@@ -39,6 +39,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (2, "economy", include_str!("../../migrations/0002_economy.sql")),
     (3, "alert_prefs", include_str!("../../migrations/0003_alert_prefs.sql")),
     (4, "terrain", include_str!("../../migrations/0004_terrain.sql")),
+    (5, "auctions", include_str!("../../migrations/0005_auctions.sql")),
 ];
 
 #[derive(Debug)]
@@ -451,5 +452,65 @@ impl Store for PgStore {
             })
         })
         .transpose()
+    }
+
+    async fn append_auction(&self, r: &AuctionRecord) -> StoreResult<()> {
+        sqlx::query(
+            "INSERT INTO auctions (world_id, listing, seller, organism, reserve, deadline_tick, bids, high_bid, winner, \
+             winner_organism, outcome, offer, day) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+             ON CONFLICT (world_id, listing) DO UPDATE SET seller = EXCLUDED.seller, organism = EXCLUDED.organism, \
+             reserve = EXCLUDED.reserve, deadline_tick = EXCLUDED.deadline_tick, bids = EXCLUDED.bids, \
+             high_bid = EXCLUDED.high_bid, winner = EXCLUDED.winner, winner_organism = EXCLUDED.winner_organism, \
+             outcome = EXCLUDED.outcome, offer = EXCLUDED.offer, day = EXCLUDED.day, closed_at = now()",
+        )
+        .bind(&r.world_id)
+        .bind(int(r.listing))
+        .bind(i64::from(r.seller))
+        .bind(int(r.organism))
+        .bind(int(r.reserve))
+        .bind(int(r.deadline_tick))
+        .bind(r.bids as i32)
+        .bind(r.high_bid.map(int))
+        .bind(r.winner.map(i64::from))
+        .bind(r.winner_organism.map(int))
+        .bind(&r.outcome)
+        .bind(r.offer.map(int))
+        .bind(int(r.day))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn recent_auctions(&self, limit: usize) -> StoreResult<Vec<AuctionRecord>> {
+        let rows = sqlx::query(
+            "SELECT world_id, listing, seller, organism, reserve, deadline_tick, bids, high_bid, winner, \
+             winner_organism, outcome, offer, day \
+             FROM (SELECT * FROM auctions ORDER BY id DESC LIMIT $1) recent ORDER BY id",
+        )
+        .bind(int(limit as u64))
+        .fetch_all(&self.pool)
+        .await?;
+        let opt = |r: &PgRow, col: &str| -> StoreResult<Option<u64>> {
+            Ok(r.try_get::<Option<i64>, _>(col)?.map(|v| v as u64))
+        };
+        rows.iter()
+            .map(|r| {
+                Ok(AuctionRecord {
+                    world_id: r.try_get("world_id")?,
+                    listing: get_u64(r, "listing")?,
+                    seller: get_u64(r, "seller")? as PlayerId,
+                    organism: get_u64(r, "organism")?,
+                    reserve: get_u64(r, "reserve")?,
+                    deadline_tick: get_u64(r, "deadline_tick")?,
+                    bids: r.try_get::<i32, _>("bids")? as u32,
+                    high_bid: opt(r, "high_bid")?,
+                    winner: opt(r, "winner")?.map(|v| v as PlayerId),
+                    winner_organism: opt(r, "winner_organism")?,
+                    outcome: r.try_get("outcome")?,
+                    offer: opt(r, "offer")?,
+                    day: get_u64(r, "day")?,
+                })
+            })
+            .collect()
     }
 }
