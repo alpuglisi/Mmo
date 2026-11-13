@@ -12,6 +12,7 @@
 //! agreements with their price. Not yet: the `World` itself (needs serde on
 //! the sim types) and login sessions (clients log in again after a restart).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -78,6 +79,16 @@ pub struct LineageEntry {
     pub owner: PlayerId,
     pub alive: usize,
     pub adults: usize,
+    /// Births during the day (records before this field read as 0).
+    #[serde(default)]
+    pub born: u64,
+    /// Deaths during the day by cause (`death_name`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub deaths: BTreeMap<String, u64>,
+    /// Mean expressed value of every gene over living members, by wire
+    /// name. Player lineages only (the genetics dashboard's drift charts).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub genes: BTreeMap<String, f32>,
 }
 
 /// One simulated day: the legacy leaderboard and every lineage's size.

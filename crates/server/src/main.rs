@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! evo-server [--bind ADDR] [--data DIR | --memory] [--size N] [--seed N]
-//!            [--no-wild] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
+//!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
+//!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits]
 //! ```
 
 use std::time::Duration;
@@ -10,7 +11,8 @@ use std::time::Duration;
 use evo_server::{start, ServerConfig};
 
 const USAGE: &str = "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory] [--size 128] [--seed 1] \
-[--no-wild] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist]";
+[--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
+[--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits]";
 
 fn parse_args() -> Result<ServerConfig, String> {
     let mut cfg = ServerConfig::default();
@@ -31,12 +33,28 @@ fn parse_args() -> Result<ServerConfig, String> {
             }
             "--seed" => cfg.world.seed = value("--seed")?.parse().map_err(|e| format!("--seed: {e}"))?,
             "--no-wild" => cfg.world.wild = false,
+            "--days-per-year" => {
+                let n: u32 = value("--days-per-year")?.parse().map_err(|e| format!("--days-per-year: {e}"))?;
+                if n < 4 {
+                    return Err("--days-per-year must be at least 4".into());
+                }
+                cfg.world.days_per_year = n;
+            }
             "--tick-ms" => cfg.runner.tick = Duration::from_millis(value("--tick-ms")?.parse().map_err(|e| format!("--tick-ms: {e}"))?),
             "--state-ms" => {
                 cfg.runner.state_interval = Duration::from_millis(value("--state-ms")?.parse().map_err(|e| format!("--state-ms: {e}"))?)
             }
             "--fast" => cfg = cfg.fast(),
             "--static" => cfg.static_dir = Some(value("--static")?.into()),
+            "--session-idle-min" => {
+                let m: f64 = value("--session-idle-min")?.parse().map_err(|e| format!("--session-idle-min: {e}"))?;
+                cfg.sessions.idle = Duration::from_secs_f64((m * 60.0).max(1.0));
+            }
+            "--session-max-hours" => {
+                let h: f64 = value("--session-max-hours")?.parse().map_err(|e| format!("--session-max-hours: {e}"))?;
+                cfg.sessions.max_age = Duration::from_secs_f64((h * 3600.0).max(1.0));
+            }
+            "--no-rate-limits" => cfg.limits = evo_server::limits::Limits::unlimited(),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);

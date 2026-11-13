@@ -50,6 +50,11 @@ describe('parseServerMsg', () => {
       outcome: { mismatch: 0.1, cost: 0.2, failure_chance: 0.05, fertility: 0.9, conceived: true },
     }));
     expect(upd?.type === 'mating_update' && upd.outcome?.conceived).toBe(true);
+
+    const alert = parseServerMsg('{"type":"alert","alert":{"tick":96,"day":2,"kind":"death","text":"Founder #3 was eaten.","organism":3}}');
+    expect(alert?.type === 'alert' && alert.alert.organism).toBe(3);
+    expect(parseServerMsg('{"type":"session_ended","reason":"expired"}')).toEqual({ type: 'session_ended', reason: 'expired' });
+    expect(parseServerMsg('{"type":"alert","alert":{"kind":"death"}}')).toBeNull();
   });
 
   it('rejects malformed or unknown messages', () => {

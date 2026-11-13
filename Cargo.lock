@@ -257,6 +257,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "axum",
+ "base64",
  "evo-sim",
  "futures-util",
  "http-body-util",

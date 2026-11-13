@@ -1,26 +1,37 @@
-// The play screen: world view, top bar (clock, weather, connection) and a
-// sidebar with the organism inspector, matings and the lineage dashboard.
+// The play screen: world view (tile map), top bar (clock, weather,
+// connection) and a sidebar with the organism inspector, matings, the
+// genetics dashboard with the alerts feed, and the lineage/leaderboards tab.
 
-import { mapUrl, api } from '../api';
-import type { GameModel } from '../model';
-import type { ClientMsg, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, StateView } from '../protocol';
+import { api, ApiError } from '../api';
+import { alertEntry, type GameModel } from '../model';
+import type { ClientMsg, LineageStats, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
 import { WILD } from '../protocol';
 import { WorldView } from '../world/worldView';
+import { applyDynamic, decodeTerrain, terrainSummary, type TerrainGrid } from '../world/terrain';
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
 import { append, clear, h, label, pct } from './dom';
+import { renderDashboard, renderFeed } from './dashboard';
 
 export interface GameDeps {
   model: GameModel;
   send: (m: ClientMsg) => Promise<ResultMsg>;
   onLogout: () => void;
+  /** The session token (for the authenticated dashboard endpoint). */
+  token: string;
+  /** The server refused the token (session expired). */
+  onUnauthorized: () => void;
   /** Put the screen in the document (the canvas needs a laid-out parent). */
   mountInto: (el: HTMLElement) => void;
 }
 
 const LOCAL_CODES = new Set(['not_connected', 'timeout', 'disconnected', 'closed']);
-const MAP_REFRESH_MS = 15000;
+/** The dynamic terrain layers change every simulated hour. */
+const TERRAIN_REFRESH_MS = 4000;
+const STATS_REFRESH_MS = 5000;
+const SEASONS_REFRESH_MS = 15000;
 
-type Tab = 'organism' | 'matings' | 'lineage';
+type Tab = 'organism' | 'matings' | 'genetics' | 'lineage';
+const TAB_LABELS: Record<Tab, string> = { organism: 'Organism', matings: 'Matings', genetics: 'Genetics', lineage: 'Lineage' };
 type Mode = 'select' | 'migrate';
 
 export interface GameScreen {
@@ -68,15 +79,20 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     h('span', {}, h('i', { class: 'dot', style: `background:${cssColor(ownerColor(WILD))}` }), 'wild'),
     h('span', {}, h('i', { class: 'dot', style: `background:${cssColor(ownerColor(1))}` }), 'other players'),
     h('span', {}, h('i', { class: 'dot square', style: 'border-color:#58a6ff' }), 'view window'));
-  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, hint, legend, toasts);
+  const terrainLegend = h('div', { class: 'legend terrain-legend', id: 'terrain-legend' });
+  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, hint, legend, terrainLegend, toasts);
 
   const tabs: Record<Tab, HTMLElement> = {
     organism: h('div', { class: 'panel', id: 'panel-organism' }),
     matings: h('div', { class: 'panel', id: 'panel-matings' }),
+    genetics: h('div', { class: 'panel', id: 'panel-genetics' }),
     lineage: h('div', { class: 'panel', id: 'panel-lineage' }),
   };
   const tabBtns = (Object.keys(tabs) as Tab[]).map((t) =>
-    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, onclick: () => showTab(t) }, t === 'organism' ? 'Organism' : t === 'matings' ? 'Matings' : 'Lineage'));
+    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, onclick: () => showTab(t) }, TAB_LABELS[t]));
+  const alertBadge = h('span', { class: 'badge', id: 'alert-badge', hidden: true });
+  tabBtns[2].append(alertBadge);
+  let seenFeed = 0;
   const sidebar = h('aside', { class: 'sidebar' }, h('nav', { class: 'tabs' }, ...tabBtns), ...Object.values(tabs));
   const el = h('div', { class: 'screen game' }, top, h('div', { class: 'game-body' }, stageWrap, sidebar));
 
@@ -85,6 +101,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     tab = t;
     for (const b of tabBtns) b.classList.toggle('active', b.dataset.tab === t);
     for (const [k, p] of Object.entries(tabs)) p.hidden = k !== t;
+    if (t === 'genetics') void refreshStats();
+    if (t === 'lineage') void refreshSeasons();
     renderPanels(true);
   }
 
@@ -153,14 +171,32 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }
   };
 
-  // Map image: fetched now and refreshed periodically.
-  let mapScale = 4;
-  async function refreshMap(): Promise<void> {
+  // Tile map: the whole grid once, then the dynamic layers periodically.
+  let terrain: TerrainGrid | null = null;
+  function showTerrain(g: TerrainGrid): void {
+    view.setTerrain(g);
+    const t = terrainSummary(g);
+    const chip = (color: string, text: string) => h('span', {}, h('i', { class: 'dot square-fill', style: `background:${color}` }), text);
+    terrainLegend.replaceChildren(
+      chip('#4682e1', 'water'), chip('#467ccf', 'river'),
+      chip('#c4aa68', `drought ${pct(t.drought, 0)}`), chip('#486c96', `flooded ${pct(t.flood, 1)}`),
+      chip('#f5f7fa', `snow ${pct(t.snow, 0)}`), chip('#c4dcee', `ice ${pct(t.ice, 0)}`),
+      h('span', { class: 'muted' }, `${g.season}, terrain at ${String(g.hour).padStart(2, '0')}:00`));
+  }
+  async function loadTerrain(): Promise<void> {
     try {
-      const res = await fetch(mapUrl(mapScale));
-      if (!res.ok) return;
-      const bmp = await createImageBitmap(await res.blob());
-      view.setMap(bmp, mapScale);
+      terrain = decodeTerrain(await api.terrain());
+      showTerrain(terrain);
+    } catch {
+      /* try again on the next refresh */
+    }
+  }
+  async function refreshTerrain(): Promise<void> {
+    if (!terrain) return loadTerrain();
+    try {
+      const before = terrain.tick;
+      applyDynamic(terrain, await api.terrainDynamic());
+      if (terrain.tick !== before) showTerrain(terrain);
     } catch {
       /* try again next time */
     }
@@ -169,13 +205,43 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const w = await api.world();
     view.setWorldSize(w.width, w.height);
     view.centerOn(w.width / 2, w.height / 2);
-    mapScale = Math.max(1, Math.min(8, Math.floor(1024 / Math.max(w.width, w.height))));
   } catch {
     /* defaults */
   }
-  await refreshMap();
-  const mapTimer = setInterval(() => void refreshMap(), MAP_REFRESH_MS);
-  cleanups.push(() => clearInterval(mapTimer));
+  await loadTerrain();
+  const terrainTimer = setInterval(() => void refreshTerrain(), TERRAIN_REFRESH_MS);
+  cleanups.push(() => clearInterval(terrainTimer));
+
+  // Genetics dashboard: fetched while its tab is open (and once now, for the feed).
+  let stats: LineageStats | null = null;
+  async function refreshStats(): Promise<void> {
+    try {
+      stats = await api.lineageStats(deps.token);
+      model.addFeed(stats.alerts.map(alertEntry));
+      if (tab === 'genetics') renderGenetics();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) deps.onUnauthorized();
+    }
+  }
+  void refreshStats();
+  const statsTimer = setInterval(() => {
+    if (tab === 'genetics') void refreshStats();
+  }, STATS_REFRESH_MS);
+  cleanups.push(() => clearInterval(statsTimer));
+
+  let seasons: SeasonBoard[] | null = null;
+  async function refreshSeasons(): Promise<void> {
+    try {
+      seasons = await api.seasons(6);
+      if (tab === 'lineage') renderSeasons();
+    } catch {
+      /* next time */
+    }
+  }
+  const seasonsTimer = setInterval(() => {
+    if (tab === 'lineage') void refreshSeasons();
+  }, SEASONS_REFRESH_MS);
+  cleanups.push(() => clearInterval(seasonsTimer));
 
   // ---------------------------------------------------------------- panels
   let renderQueued = false;
@@ -187,6 +253,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (tab === 'organism') renderInspector();
       if (tab === 'matings') renderMatings();
       if (tab === 'lineage') renderLineage();
+      if (tab === 'genetics') renderFeedPanel();
       return;
     }
     if (renderQueued) return;
@@ -405,11 +472,56 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         e.error && h('small', { class: 'error' }, e.error.message))));
   }
 
-  // --- Lineage dashboard
+  // --- Genetics dashboard and alerts feed
+  const dashEl = h('div', { id: 'dashboard' });
+  const feedEl = h('div', { id: 'alerts-feed', class: 'feed' });
+  append(tabs.genetics, [dashEl, h('h3', {}, 'Alerts'), feedEl]);
+
+  function renderGenetics(): void {
+    renderDashboard(dashEl, stats);
+    renderFeedPanel();
+  }
+
+  function renderFeedPanel(): void {
+    seenFeed = model.feed.length;
+    alertBadge.hidden = true;
+    keyed(feedEl, `${model.feed.length}|${model.feed[model.feed.length - 1]?.text ?? ''}`, () => [renderFeed(model.feed, (id) => {
+      model.select(id);
+      showTab('organism');
+    })]);
+  }
+
+  function onAlerts(): void {
+    if (tab === 'genetics') return renderFeedPanel();
+    const unseen = model.feed.length - seenFeed;
+    alertBadge.hidden = unseen <= 0;
+    alertBadge.textContent = unseen > 9 ? '9+' : String(unseen);
+  }
+
+  // --- Lineage, leaderboards
   const statsEl = h('div', { id: 'lineage-stats' });
   const boardEl = h('div', { id: 'leaderboard' });
+  const seasonsEl = h('div', { id: 'season-boards' });
   const listEl = h('div', { id: 'organism-list', class: 'org-list' });
-  append(tabs.lineage, [statsEl, h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', {}, 'My organisms'), listEl]);
+  append(tabs.lineage, [statsEl, h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', {}, 'Seasonal leaderboards'), seasonsEl,
+    h('h3', {}, 'My organisms'), listEl]);
+
+  function renderSeasons(): void {
+    const list = seasons;
+    keyed(seasonsEl, JSON.stringify(list), () => {
+      if (!list) return [h('p', { class: 'muted small' }, 'Loading…')];
+      if (list.length === 0) return [h('p', { class: 'muted small' }, 'The first season standings come with the first daily record.')];
+      return list.map((b) => h('details', { class: 'season', open: b.current || undefined },
+        h('summary', {}, `Year ${b.year + 1} ${b.season}${b.current ? ' (now)' : ''} · days ${b.first_day + 1}–${b.last_day + 1}`),
+        h('table', { class: 'board' },
+          h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Player'), h('th', { title: 'Mean legacy share over the recorded days' }, 'Mean'),
+            h('th', {}, 'Final'), h('th', {}, 'Peak'), h('th', { title: 'Most organisms alive on a recorded day' }, 'Peak alive'))),
+          h('tbody', {}, ...b.rows.slice(0, 8).map((r, k) => h('tr', { class: r.player === model.player ? 'me' : '' },
+            h('td', {}, String(k + 1)),
+            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), r.name),
+            h('td', {}, pct(r.mean_share)), h('td', {}, pct(r.final_share)), h('td', {}, pct(r.peak_share)), h('td', {}, String(r.peak_alive))))))));
+    });
+  }
 
   function renderLineage(): void {
     const s = model.state;
@@ -465,6 +577,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     model.on('select', () => { view.selected = model.selected; renderPanels(); }),
     model.on('offers', () => renderPanels()),
     model.on('conn', renderConn),
+    model.on('alerts', onAlerts),
     model.on('toast', () => {
       renderToasts();
       if (toastTimer) clearTimeout(toastTimer);

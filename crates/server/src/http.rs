@@ -1,14 +1,15 @@
 //! HTTP routes and the WebSocket session.
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -21,8 +22,9 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::accounts::{Accounts, AuthError, Session};
 use crate::design::{self, DesignSpec, SpecError};
 use crate::game::FoundError;
-use crate::protocol::{ClientEnvelope, ErrorInfo, ServerMsg};
-use crate::runner::{Published, Request};
+use crate::limits::{Bucket, Limiters};
+use crate::protocol::{ClientEnvelope, ErrorInfo, LineageStats, SeasonBoard, ServerMsg, TerrainDynamic, TerrainView};
+use crate::runner::{Published, Request, TerrainReply};
 use crate::store::{DesignRecord, Store};
 
 /// Largest WebSocket message a client may send.
@@ -37,6 +39,7 @@ pub struct AppState {
     pub store: Arc<dyn Store>,
     pub published: watch::Receiver<Arc<Published>>,
     pub next_conn: Arc<AtomicU64>,
+    pub limiters: Arc<Limiters>,
 }
 
 /// The API routes, plus the files in `static_dir` (the built web client)
@@ -59,6 +62,10 @@ fn api_router(state: AppState) -> Router {
         .route("/api/world", get(world_summary))
         .route("/api/leaderboard", get(leaderboard))
         .route("/api/leaderboard/history", get(leaderboard_history))
+        .route("/api/leaderboard/seasons", get(leaderboard_seasons))
+        .route("/api/lineage/stats", get(lineage_stats))
+        .route("/api/terrain", get(terrain))
+        .route("/api/terrain/dynamic", get(terrain_dynamic))
         .route("/api/map.png", get(map_png))
         .route("/ws", get(ws_upgrade))
         .with_state(state)
@@ -88,16 +95,33 @@ impl ApiError {
     fn internal(e: impl std::fmt::Display) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
     }
+
+    fn rate_limited(retry: Duration) -> Self {
+        let ms = retry.as_millis().max(1) as u64;
+        let mut e = Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", "too many attempts; try again later");
+        e.detail = Some(serde_json::json!({ "retry_after_ms": ms }));
+        e
+    }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut body = serde_json::json!({ "code": self.code, "message": self.message });
+        let retry = self.detail.as_ref().and_then(|d| d.get("retry_after_ms")).and_then(|v| v.as_u64());
         if let Some(serde_json::Value::Object(extra)) = self.detail {
             body.as_object_mut().unwrap().extend(extra);
         }
-        (self.status, Json(body)).into_response()
+        let mut res = (self.status, Json(body)).into_response();
+        if let Some(ms) = retry {
+            res.headers_mut().insert(header::RETRY_AFTER, ms.div_ceil(1000).max(1).into());
+        }
+        res
     }
+}
+
+/// The client's IP (unspecified when the server runs without connect info).
+fn client_ip(info: &Option<ConnectInfo<SocketAddr>>) -> IpAddr {
+    info.as_ref().map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip())
 }
 
 impl From<AuthError> for ApiError {
@@ -148,12 +172,22 @@ pub struct AuthResponse {
     pub name: String,
 }
 
-async fn register(State(app): State<AppState>, Json(c): Json<Credentials>) -> Result<(StatusCode, Json<AuthResponse>), ApiError> {
+async fn register(
+    State(app): State<AppState>,
+    info: Option<ConnectInfo<SocketAddr>>,
+    Json(c): Json<Credentials>,
+) -> Result<(StatusCode, Json<AuthResponse>), ApiError> {
+    app.limiters.logins.check(&client_ip(&info)).map_err(ApiError::rate_limited)?;
     let (token, s) = app.accounts.register(c.name.trim(), &c.password).await?;
     Ok((StatusCode::CREATED, Json(AuthResponse { token, player: s.player, name: s.name })))
 }
 
-async fn login(State(app): State<AppState>, Json(c): Json<Credentials>) -> Result<Json<AuthResponse>, ApiError> {
+async fn login(
+    State(app): State<AppState>,
+    info: Option<ConnectInfo<SocketAddr>>,
+    Json(c): Json<Credentials>,
+) -> Result<Json<AuthResponse>, ApiError> {
+    app.limiters.logins.check(&client_ip(&info)).map_err(ApiError::rate_limited)?;
     let (token, s) = app.accounts.login(c.name.trim(), &c.password).await?;
     Ok(Json(AuthResponse { token, player: s.player, name: s.name }))
 }
@@ -218,6 +252,57 @@ async fn leaderboard_history(State(app): State<AppState>, Query(q): Query<Histor
 }
 
 #[derive(Deserialize)]
+struct SeasonsQuery {
+    limit: Option<usize>,
+}
+
+/// Seasonal leaderboards from the whole stored history, newest first.
+async fn leaderboard_seasons(State(app): State<AppState>, Query(q): Query<SeasonsQuery>) -> Result<Json<Vec<SeasonBoard>>, ApiError> {
+    let limit = q.limit.unwrap_or(8).clamp(1, 100);
+    let records = app.store.recent_daily(100_000).await.map_err(ApiError::internal)?;
+    let clock = app.published.borrow().summary.clock.clone();
+    let accounts = app.accounts.clone();
+    let name_of = move |p: evo_sim::PlayerId| {
+        if p == evo_sim::WILD {
+            "wild".to_string()
+        } else {
+            accounts.name_of(p).unwrap_or_else(|| format!("player {p}"))
+        }
+    };
+    let boards = tokio::task::spawn_blocking(move || crate::seasons::season_boards(&records, Some((clock.year, &clock.season)), name_of, limit))
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(boards))
+}
+
+async fn lineage_stats(State(app): State<AppState>, headers: HeaderMap) -> Result<Json<LineageStats>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let (reply, rx) = oneshot::channel();
+    send_request(&app.world, Request::Stats { player: session.player, reply })?;
+    Ok(Json(rx.await.map_err(ApiError::internal)?))
+}
+
+async fn terrain_request(app: &AppState, full: bool) -> Result<TerrainReply, ApiError> {
+    let (reply, rx) = oneshot::channel();
+    send_request(&app.world, Request::Terrain { full, reply })?;
+    rx.await.map_err(ApiError::internal)
+}
+
+const NO_STORE: [(header::HeaderName, &str); 1] = [(header::CACHE_CONTROL, "no-store")];
+
+async fn terrain(State(app): State<AppState>) -> Result<Response, ApiError> {
+    let TerrainReply::Full(raw) = terrain_request(&app, true).await? else { return Err(ApiError::internal("wrong terrain reply")) };
+    let view: TerrainView = tokio::task::spawn_blocking(move || raw.encode()).await.map_err(ApiError::internal)?;
+    Ok((NO_STORE, Json(view)).into_response())
+}
+
+async fn terrain_dynamic(State(app): State<AppState>) -> Result<Response, ApiError> {
+    let TerrainReply::Dynamic(raw) = terrain_request(&app, false).await? else { return Err(ApiError::internal("wrong terrain reply")) };
+    let view: TerrainDynamic = tokio::task::spawn_blocking(move || raw.encode()).await.map_err(ApiError::internal)?;
+    Ok((NO_STORE, Json(view)).into_response())
+}
+
+#[derive(Deserialize)]
 struct MapQuery {
     scale: Option<usize>,
 }
@@ -252,6 +337,7 @@ struct WsQuery {
 /// `Authorization: Bearer …` header.
 async fn ws_upgrade(
     State(app): State<AppState>,
+    info: Option<ConnectInfo<SocketAddr>>,
     Query(q): Query<WsQuery>,
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -263,10 +349,18 @@ async fn ws_upgrade(
         Ok(ws) => ws,
         Err(rejection) => return Ok(rejection.into_response()),
     };
-    Ok(ws.max_message_size(MAX_CLIENT_MESSAGE).on_upgrade(move |socket| client_session(socket, app, session)))
+    let token = token.to_string();
+    let ip = client_ip(&info);
+    Ok(ws.max_message_size(MAX_CLIENT_MESSAGE).on_upgrade(move |socket| client_session(socket, app, session, token, ip)))
 }
 
-async fn client_session(socket: WebSocket, app: AppState, session: Session) {
+/// How often an open WebSocket checks that its session is still live.
+fn session_check_interval(app: &AppState) -> Duration {
+    let p = app.accounts.policy();
+    (p.idle.min(p.max_age) / 4).clamp(Duration::from_millis(50), Duration::from_secs(30))
+}
+
+async fn client_session(socket: WebSocket, app: AppState, session: Session, token: String, ip: IpAddr) {
     let conn = app.next_conn.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = mpsc::channel::<ServerMsg>(CONN_QUEUE);
     // The reader only holds a weak handle, so when the world thread drops a
@@ -286,28 +380,60 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session) {
         }
         let _ = sink.close().await;
     });
-    let local_error = |e: ErrorInfo| {
+    let local = |msg: ServerMsg| {
         if let Some(tx) = weak.upgrade() {
-            let _ = tx.try_send(ServerMsg::err(None, "message", e));
+            let _ = tx.try_send(msg);
         }
     };
-    while let Some(Ok(frame)) = stream.next().await {
+    let rate = app.limiters.limits.commands;
+    let mut bucket = Bucket::new(rate, Instant::now());
+    let mut check = tokio::time::interval(session_check_interval(&app));
+    check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let frame = tokio::select! {
+            f = stream.next() => f,
+            _ = check.tick() => {
+                if app.accounts.is_live(&token) {
+                    continue;
+                }
+                local(ServerMsg::SessionEnded { reason: "expired".into() });
+                break;
+            }
+        };
+        let Some(Ok(frame)) = frame else { break };
         match frame {
             Message::Text(text) => match serde_json::from_str::<ClientEnvelope>(&text) {
                 Ok(env) => {
+                    let name = env.msg.name();
+                    // A command counts as use of the session.
+                    if app.accounts.session(&token).is_none() {
+                        local(ServerMsg::SessionEnded { reason: "expired".into() });
+                        break;
+                    }
+                    let now = Instant::now();
+                    if let Err(wait) = bucket.take(rate, now).and_then(|_| app.limiters.ip_commands.check_at(&ip, now)) {
+                        let msg = format!("too many commands; retry in {} ms", wait.as_millis().max(1));
+                        local(ServerMsg::err(env.id, name, ErrorInfo::new("rate_limited", msg)));
+                        continue;
+                    }
                     let req = Request::Command { conn, player: session.player, id: env.id, msg: env.msg };
                     match app.world.try_send(req) {
                         Ok(()) => {}
-                        Err(TrySendError::Full(_)) => local_error(ErrorInfo::new("busy", "the world is busy; try again")),
+                        Err(TrySendError::Full(_)) => local(ServerMsg::err(env.id, name, ErrorInfo::new("busy", "the world is busy; try again"))),
                         Err(TrySendError::Disconnected(_)) => break,
                     }
                 }
-                Err(e) => local_error(ErrorInfo::new("bad_message", e.to_string())),
+                Err(e) => local(ServerMsg::err(None, "message", ErrorInfo::new("bad_message", e.to_string()))),
             },
             Message::Close(_) => break,
             _ => {}
         }
     }
+    // The world thread drops its sender on disconnect, which ends the writer
+    // after it has flushed what is queued (e.g. `session_ended`).
     let _ = app.world.try_send(Request::Disconnect { conn });
-    writer.abort();
+    let mut writer = writer;
+    if tokio::time::timeout(Duration::from_secs(2), &mut writer).await.is_err() {
+        writer.abort();
+    }
 }

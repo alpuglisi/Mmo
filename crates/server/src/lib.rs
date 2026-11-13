@@ -5,10 +5,14 @@
 //!   fixed rate; everything else talks to it through channels.
 //! - [`game`]: game state around the world (lineages, mating offers and the
 //!   consent flow, per-connection views and interest management).
-//! - [`http`]: Axum routes (accounts, founding, leaderboard, map PNG) and
-//!   the WebSocket session.
+//! - [`http`]: Axum routes (accounts, founding, leaderboards, terrain,
+//!   lineage stats, map PNG) and the WebSocket session.
 //! - [`protocol`]: JSON wire types.
-//! - [`accounts`]: argon2 password hashes and bearer-token sessions.
+//! - [`terrain`]: the tile grid as compact byte layers for the client map.
+//! - [`seasons`]: seasonal leaderboards from the daily history.
+//! - [`limits`]: token-bucket rate limits on logins and commands.
+//! - [`accounts`]: argon2 password hashes and bearer-token sessions with
+//!   idle and maximum-age expiry.
 //! - [`store`]: persistence behind the [`store::Store`] trait (JSON files
 //!   now, PostgreSQL later).
 //! - [`design`]: the JSON form of a founder design.
@@ -17,9 +21,12 @@ pub mod accounts;
 pub mod design;
 pub mod game;
 pub mod http;
+pub mod limits;
 pub mod protocol;
 pub mod runner;
+pub mod seasons;
 pub mod store;
+pub mod terrain;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -29,7 +36,8 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::accounts::Accounts;
+use crate::accounts::{Accounts, SessionPolicy};
+use crate::limits::{Limiters, Limits};
 use crate::game::{build_world, Game, GameConfig, PersistEvent, WorldSettings};
 use crate::runner::{Runner, RunnerConfig};
 use crate::store::{FileStore, MemoryStore, Store};
@@ -47,6 +55,10 @@ pub struct ServerConfig {
     /// Serve the files in this directory (the built web client, `client/dist`)
     /// on every path the API doesn't use.
     pub static_dir: Option<PathBuf>,
+    /// Rate limits on logins and commands.
+    pub limits: Limits,
+    /// Session idle timeout and maximum age.
+    pub sessions: SessionPolicy,
 }
 
 impl Default for ServerConfig {
@@ -58,6 +70,8 @@ impl Default for ServerConfig {
             runner: RunnerConfig { tick: Duration::from_secs(1), state_interval: Duration::from_secs(1) },
             game: GameConfig::default(),
             static_dir: None,
+            limits: Limits::default(),
+            sessions: SessionPolicy::default(),
         }
     }
 }
@@ -124,7 +138,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
             Err(e) => tracing::warn!("stored design of player {} no longer validates: {}", d.player, e.message()),
         }
     }
-    let accounts = Arc::new(Accounts::new(store.clone(), accounts));
+    let accounts = Arc::new(Accounts::with_policy(store.clone(), accounts, cfg.sessions));
 
     let (runner, handles) = Runner::new(game, cfg.runner.clone());
     runner.spawn();
@@ -136,6 +150,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         store,
         published: handles.published,
         next_conn: Arc::new(AtomicU64::new(1)),
+        limiters: Arc::new(Limiters::new(cfg.limits)),
     };
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     let addr = listener.local_addr()?;
@@ -147,7 +162,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
     }
     let app = http::router(state, cfg.static_dir.as_deref());
     let serve = tokio::spawn(async move {
-        let result = axum::serve(listener, app)
+        let result = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(async move {
                 let _ = stop.await;
             })
