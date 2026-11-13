@@ -72,7 +72,8 @@ pub struct Metrics {
     pub max_queued: usize,
     /// Connections closed because they couldn't take replies or events.
     pub dropped_conns: u64,
-    /// State frames skipped because a connection's queue was full.
+    /// State frames replaced by a newer one before a slow connection took
+    /// them (`crate::push`).
     pub skipped_states: u64,
     pub conns: usize,
     pub saves: u64,

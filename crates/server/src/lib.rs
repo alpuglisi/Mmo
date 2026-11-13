@@ -8,6 +8,8 @@
 //! - [`http`]: Axum routes (accounts, founding, leaderboards, terrain,
 //!   lineage stats, map PNG) and the WebSocket session.
 //! - [`protocol`]: JSON wire types.
+//! - [`push`]: each connection's outgoing queue, `state` messages
+//!   coalesced so a slow reader gets the latest one and every event.
 //! - [`terrain`]: the tile grid as compact byte layers for the client map.
 //! - [`seasons`]: seasonal leaderboards from the daily history.
 //! - [`limits`]: token-bucket rate limits on logins and commands.
@@ -39,6 +41,7 @@ pub mod http;
 pub mod limits;
 pub mod metrics;
 pub mod protocol;
+pub mod push;
 pub mod runner;
 pub mod saver;
 pub mod seasons;
