@@ -299,3 +299,55 @@ fn the_herd_guards_its_young() {
     w.config.balance.herd_guard = 0.0;
     assert_eq!(w.guardian(&w.organisms[i]), (0.0, 0.0), "0 disables");
 }
+
+/// Vigilance at water and at rest (`threat_caution`): a thirsty antelope
+/// with a pack hunter in sight flees instead of drinking, unless it is
+/// parched; a tired one flees instead of resting.
+#[test]
+fn a_seen_threat_puts_drinking_and_resting_on_hold() {
+    let mut w = world();
+    let a = isolate(&mut w, 1);
+    set_gene(&mut w.organisms[a], Gene::Vigilance, 0.0);
+    let h = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
+    let o = &mut w.organisms[h];
+    (o.growth, o.matured, o.pos) = (1.0, true, CENTER + Vec2::new(2.5, 0.0));
+    w.grid.rebuild(&w.organisms);
+    w.organisms[a].needs.thirst = 75.0;
+    w.config.balance.threat_caution = 0.0;
+    let careless = w.decide(a);
+    assert!(careless.threat > 0.1 && careless.threat < 0.7, "threat {}", careless.threat);
+    assert_eq!(careless.action, Action::Drink, "thirst outranks a moderate threat");
+    w.config.balance.threat_caution = 1.0;
+    assert_eq!(w.decide(a).action, Action::Flee);
+    // The parched still drink.
+    w.organisms[a].needs.thirst = 97.0;
+    assert_eq!(w.decide(a).action, Action::Drink);
+    // Tired, not thirsty: flees rather than rests.
+    (w.organisms[a].needs.thirst, w.organisms[a].needs.energy) = (10.0, 15.0);
+    w.config.balance.threat_caution = 0.0;
+    assert_eq!(w.decide(a).action, Action::Rest);
+    w.config.balance.threat_caution = 1.0;
+    assert_eq!(w.decide(a).action, Action::Flee);
+}
+
+/// Foraging on stripped ground (`pasture_search`): a hungry grazer on a bare
+/// tile steps to the remnant on the next tile instead of passing it by.
+#[test]
+fn a_forager_on_bare_ground_eats_the_remnant_next_door() {
+    let mut w = world();
+    let a = isolate(&mut w, 5);
+    set_gene(&mut w.organisms[a], Gene::Vigilance, 0.0);
+    w.organisms[a].needs.hunger = 70.0;
+    for t in w.map.tiles.iter_mut() {
+        t.veg = 0.0;
+    }
+    let (x, y) = w.map.tile_coords(CENTER);
+    let k = w.map.idx(x + 1, y);
+    w.map.tiles[k].veg = 40.0;
+    w.map.tiles[k].water_depth = 0.0;
+    w.grid.rebuild(&w.organisms);
+    let intent = w.decide(a);
+    assert_eq!(intent.action, Action::Graze);
+    let next = crate::terrain::Map::tile_center(x + 1, y);
+    assert_eq!(intent.target, Some(next), "{:?}", intent.target);
+}

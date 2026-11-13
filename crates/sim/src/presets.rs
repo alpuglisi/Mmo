@@ -29,6 +29,25 @@ pub fn standard_world(config: WorldConfig, scale: u32) -> World {
     world
 }
 
+/// Owner of the extra migrating lineage in [`extended_world`].
+pub const MIGRANT_OWNER: PlayerId = 5;
+
+/// [`standard_world`] plus the migrating sample design ([`migrant_design`])
+/// as a fifth player lineage (owner [`MIGRANT_OWNER`], the last lineage).
+/// The standard world's eight lineages keep their indices, so scores over
+/// them stay comparable; the extra lineage is scored on its own.
+pub fn extended_world(config: WorldConfig, scale: u32) -> World {
+    let mut world = standard_world(config, scale);
+    let design = migrant_design();
+    if scale <= 1 {
+        world.found_lineage(MIGRANT_OWNER, &design).expect("preset designs fit the budget");
+    } else {
+        let n = (design.founders * scale).max(4);
+        world.found_lineage_unchecked(MIGRANT_OWNER, &design.founders(n));
+    }
+    world
+}
+
 /// A world with only the wild ecosystem, its founders and the population caps
 /// scaled to map area as in [`standard_world`]. Player lineages are added by
 /// the caller (the cost calibration example founds its own designs here).
@@ -75,6 +94,8 @@ pub fn wild_designs() -> Vec<(PlayerId, FounderDesign)> {
                 .with(Fur, 0.4)
                 .with(GroupTolerance, 0.8)
                 .with(Boldness, 0.3)
+                // A herd that takes turns on watch (`GroupTrait::Sentries`).
+                .with(Vigilance, 0.7)
                 .founders(70),
         ),
         (
@@ -173,13 +194,36 @@ pub fn player_designs() -> Vec<FounderDesign> {
     ]
 }
 
+/// A migrating herd: summers at its founding range, winters a third of the
+/// map further south, and travels as a group (`GroupTrait::GroupNavigation`:
+/// migration ≥ 0.5 with group tolerance > 0.5), so it runs less journey
+/// risk, eats less on the way and keeps together. Within the point budget.
+pub fn migrant_design() -> FounderDesign {
+    use Gene::*;
+    FounderDesign::new("Migrating caribou", Thermo::Warm, BirthType::Live, 2)
+        // Large: at 0.55 (antelope size) pack hunters took the herd on
+        // 3 of 8 test seeds.
+        .with(BodySize, 0.72)
+        .with(LegLength, 0.6)
+        .with(Hooves, 0.6)
+        .with(FatStores, 0.5)
+        .with(Eyes, 0.5)
+        .with(Ears, 0.6)
+        .with(Vocal, 0.6)
+        .with(Fur, 0.6)
+        .with(GroupTolerance, 0.9)
+        .with(Boldness, 0.3)
+        .with(Migration, 0.8)
+        .founders(36)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn player_designs_fit_the_budget() {
-        for d in player_designs() {
+        for d in player_designs().into_iter().chain([migrant_design()]) {
             assert!(d.validate().is_ok(), "{}: {:?} (cost {:.1})", d.name, d.validate(), d.point_cost());
         }
     }
@@ -194,5 +238,36 @@ mod tests {
         assert!(!foxes.is_empty());
         assert!(foxes.iter().all(|o| !GroupTrait::CooperativeHunting.is_carrier(&o.pheno)));
         assert!(w.organisms.iter().any(|o| o.lineage == 4 && GroupTrait::CooperativeHunting.is_carrier(&o.pheno)));
+    }
+
+    /// The migrating caribou are a fifth player lineage after the standard
+    /// eight, group-navigation carriers, and in autumn their herd heads
+    /// south together (`seasonal_destination`, `navigation_bonus`).
+    #[test]
+    fn caribou_migrate_south_as_a_group() {
+        use crate::group::GroupTrait;
+        use crate::organism::Action;
+        let config = WorldConfig { seed: 5, width: 64, height: 64, ..Default::default() };
+        let mut w = extended_world(config, 1);
+        let l = w.lineages.len() as u32 - 1;
+        assert_eq!(l, 8);
+        assert_eq!(w.lineages[l as usize].owner, MIGRANT_OWNER);
+        let herd: Vec<_> = w.organisms.iter().filter(|o| o.lineage == l).collect();
+        assert!(herd.iter().all(|o| GroupTrait::GroupNavigation.is_carrier(&o.pheno)));
+        let start = herd.iter().map(|o| o.pos.y).sum::<f32>() / herd.len() as f32;
+        // Into autumn: the herd is on its way, navigating as a group.
+        let (mut migrating, mut navigating) = (0, 0);
+        for _ in 0..70 {
+            w.run_days(1);
+            for o in w.organisms.iter().filter(|o| o.alive && o.lineage == l && o.action == Action::Migrate) {
+                migrating += 1;
+                navigating += usize::from(w.navigation_bonus(o) > 0.5);
+            }
+        }
+        let alive: Vec<_> = w.organisms.iter().filter(|o| o.alive && o.lineage == l).collect();
+        assert!(alive.len() >= 10, "{} caribou left", alive.len());
+        let now = alive.iter().map(|o| o.pos.y).sum::<f32>() / alive.len() as f32;
+        assert!(now > start + 5.0, "herd at {now:.1}, started at {start:.1}");
+        assert!(migrating > 0 && navigating * 2 > migrating, "{navigating} of {migrating} navigating");
     }
 }

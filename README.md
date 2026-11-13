@@ -112,6 +112,7 @@ cargo run --release --example trace -- 3 200          # follow one fox (lineage 
 cargo run --release --example stuck -- 120 1 2        # how often organisms get stuck
 cargo run --release --example calibrate -- tournament --worlds 20   # point-cost check (CSV)
 cargo run --release --example deaths -- 1,5 120 31 32 33   # who kills antelope and herd grazers, and when
+cargo run --release --bin evo-sim -- sweep --trials 1 --seeds 12 --rounds 1 --seed 31 --migrants   # with the migrating caribou
 cargo run --release --bin evo-sim -- run --size 256 --focus 64,64 --focus 192,192   # level of detail
 cargo run --release --example lod -- 256 90 1 64,64 192,192   # LOD vs full simulation
 cargo run --release --bin evo-sim -- run --days 361 --report 30 --catastrophes --catastrophe severe_winter@210   # eras, species, a catastrophe
@@ -656,7 +657,9 @@ payload's integers are varints. In memory an organism's genome is an
 `Arc<Genome>` (immutable once born), shared by clones of the world and by
 pregnancies, so `Organism` is 688 bytes instead of 1,496. Any change to a serialized type needs a `SNAPSHOT_VERSION` bump;
 a snapshot of another version is refused with both versions named. Version
-3 added the possession sub-step counter and `WorldConfig::possess_substeps`.
+3 added the possession sub-step counter and `WorldConfig::possess_substeps`;
+version 8 added the balance parameters `threat_caution`, `alert_guard` and
+`pasture_search` to the saved config.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -1710,7 +1713,9 @@ Validation uses 12 seeds (31–42) that no tuning run or agent touched, on a
 | Environment upgrade (12 unseen seeds) | 11.05 | 100% | 75% | 92% | 100% | 92% | 92% | 100% | 100% |
 | Seasonal strategies (12 unseen seeds) | 10.94 | 100% | 58% | 92% | 100% | 100% | 92% | 100% | 100% |
 | Dominant-design counters, seeds 31–42 (55–66) | 10.73 (11.08) | 100% | 33% (58%) | 92% (92%) | 100% | 100% | 92% (92%) | 100% | 100% |
-| **Current: final balance pass, seeds 31–42 (55–66)** | **11.38 (11.79)** | 100% | 92% (100%) | 92% (100%) | 100% | 100% | 100% (100%) | 100% | 92% (100%) |
+| Final balance pass, seeds 31–42 (55–66) | 11.38 (11.79) | 100% | 92% (100%) | 92% (100%) | 100% | 100% | 100% (100%) | 100% | 92% (100%) |
+| Base before vigilance at water (snapshot v7), seeds 31–42 (55–66) | 11.61 (11.46) | 100% | 92% (92%) | 100% | 100% | 100% | 100% (92%) | 100% | 100% |
+| **Current: vigilance at water, stripped-ground foraging, seeds 31–42 (55–66)** | **11.61 (11.37)** | 100% | **100% (100%)** | 100% | 100% | 92% (100%) | 100% (92%) | 100% | 100% |
 
 Pathfinding cost 0.2 points, within the noise of a no-op change (`sprint`
 2.45 → 2.4501 under greedy steering scores 11.04 with antelope at 67%).
@@ -1766,12 +1771,18 @@ stream, so they change a world only through their effects.
 - Single worlds are chaotic: changing one parameter in the fourth decimal
   place can flip which marginal lineage survives. Judge changes by survival
   across many seeds, never one.
-- Antelope remain the most marginal lineage (92% and 100% survival on the
-  two held-out sets after the final balance pass, but 2–3 of 12 seeds still
-  end with a handful or none). What kills them now is cooperative pack
-  hunters taking adults at water and at rest, which is the predator design
-  working as intended. Hybrids between antelope and herd grazers still
-  occur, as do fox × pack hunter hybrids, since those pairs share a body plan.
+- Antelope are still the most marginal lineage, though no longer lost on
+  the held-out sets (12 of 12 on both after vigilance at water, below). A
+  world loses them where pack hunters boom (24 founders to 100–145 by day
+  80, fed by grazers and voles) and take the slow-breeding antelope as
+  by-catch; behavior fixes have not moved that macro outcome measurably
+  (see the rejected rules below). Hybrids between antelope and herd grazers
+  still occur, as do fox × pack hunter hybrids, since those pairs share a
+  body plan.
+- The prey-side changes below lean the balance toward prey: voles, newts,
+  frogs and burrowers hold significantly more members and predators lose a
+  seed or two more often (pack hunters 92% vs 100% on seeds 101–124). The
+  score difference is not significant, but its sign is negative.
 - A 12-seed, 120-day validation takes about 35 seconds on 4 cores.
 
 **Shared burrows and sentries.** Shared burrows: carriers are diggers
@@ -2060,6 +2071,115 @@ before (sum 23.13 vs 23.17), every lineage at 92–100%. With `brood_cost`
 cohorts don't model eggs separately and are unchanged. Snapshots move to
 format version 4 (`Clutch::overheat`, `EggCounts::overheated`).
 
+**Vigilance at water, stripped-ground foraging and a migrating sample
+design.** Decisions here use `evo-sim compare` with 24 seeds (101–124
+unless noted; none of them used for diagnosis), and the held-out sweeps
+(seeds 31–42 and 55–66) as confirmation.
+
+*Antelope: diagnosis.* `examples/deaths` on seeds 31–42 (base): 890 of the
+antelope's 1,116 deaths were predation, 582 of them adults taken by pack
+hunters. By action at death the adults were fleeing (194), drinking (124),
+resting (118), grazing (71) or courting (67); 399 of the 590 adult kills
+had fewer than 3 kin around (no herd defense). Instrumenting the strike on
+four seeds showed what the drinkers and resters had in common: almost all
+of them **had the hunter in sight** (`Needs::safety` about 38–46, a threat
+of about 0.4) and kept drinking or resting anyway; they were tired (energy
+about 31–36 against 71 for the living adults); half of the resters and
+most of the fleers were at water; the drinkers were mostly still walking
+to it. Because "caught off guard" was implemented as "not fleeing", an
+antelope that saw the pack coming but kept drinking lost 40% of its
+resistance and of its chance to slip the strike, as if it had seen
+nothing, and the strike killed it with p ≈ 0.9. Doc grounding: "hungry
+organisms prioritize food over everything except immediate danger";
+Sentries (group species + sentry gene) "stay alert while others breed".
+
+| Change | Rule |
+| --- | --- |
+| Vigilance at water and at rest (`threat_caution` 1) | A threat in sight scales the urges to drink and to rest by `1 - threat_caution × threat`; the parched still drink (the extra urge above thirst 80 is kept) |
+| Aware prey is only partly ambushed (`alert_guard` 0.5) | Prey that had a threat in sight but wasn't fleeing keeps half of the `ambush` penalty instead of all of it (`World::ambush_on`) |
+| Antelope stand sentry | The wild antelope preset gets vigilance 0.7 (no budget), like the herd grazers: their herd takes turns on watch, and they no longer dilute the grazers' sentries as eligible non-carriers |
+
+Measured (A − B, paired 95% CI):
+
+| Comparison | Score | Antelope survival | Antelope mean alive |
+| --- | --- | --- | --- |
+| Package vs base (antelope vigilance and both rules vs none), seeds 101–124 | +0.06 ± 0.24 | +4 ± 9 pts | +12 ± 27 |
+| Same, seeds 125–148 | +0.03 ± 0.32 | +12 ± 14 pts | **+35 ± 20** |
+| Both rules on vs off (antelope vigilance on both sides), merged code | −0.20 ± 0.26 | +0 | −1 ± 19 |
+| All three rules (with `pasture_search`) on vs off | −0.25 ± 0.35 | +4 ± 9 pts | +17 ± 21 |
+| `threat_caution` without `alert_guard` (both with `pasture_search`) vs all off | **−0.45 ± 0.32** | −12 ± 19 pts | +7 ± 14 |
+
+So `threat_caution` alone makes prey flee more and get caught tired and
+alone (rejected as a stand-alone change; `alert_guard` 0 is significantly
+worse), and the package's antelope gain is clear on one 24-seed set and
+positive but unresolved on the other. Voles gain significantly in every
+comparison (+140 to +200), newts and frogs in most; with all three rules
+on, red foxes lose 12–20 members. On the held-out sweeps antelope went from 11 of 12 to
+12 of 12 on both sets, mean alive 59 → 81 and 52 → 72.
+
+Rejected (no significant effect on the score or on antelope, 24 seeds
+each; not in the code): **herd drinking** (herd members join kin they see
+heading for water: +0.12 ± 0.27, antelope −6 ± 16; kin around drinkers
+barely changed, 2.4 → 2.6), **pack wariness** (prey reads a pack hunter's
+cooperative bonus into the threat: −0.02 ± 0.23, antelope −4 ± 23),
+**safety in numbers** (isolated group animals flee sooner: −0.02 ± 0.28,
+antelope −1 ± 11), **herd cohesion** (herd members wander around their
+herd's centroid: −0.07 ± 0.30, antelope +3 ± 24), **hunters read herd
+defense** into their odds (−0.03 ± 0.21, antelope −2 ± 17) and antelope
+sentries alone (+0.07 ± 0.19, antelope −0 ± 14). Per-seed runs show why
+none moves much: the seeds that lose antelope are the seeds where pack
+hunters boom on other prey (seed 123: pack hunters 39 → 145 by day 81,
+herd grazers 75 → 4 by day 101, antelope 49 → 0; seed 104: pack hunters starve to 4,
+antelope reach 243).
+
+*Herd grazers: food limit or foraging bug?* Both. A probe of every grazer
+starvation on seeds 31, 37 and 41 (over 80% in winter) measured the best
+reachable vegetation around the body: about half had **two bites or more
+within 5 tiles** (usually on a neighboring tile) while walking to a target
+5–27 tiles away, and about a fifth had nothing within 15 tiles but food
+within 30. Two foraging bugs: `find_tile` samples 8 random spots in the
+near box, so scattered remnants next door are usually missed for a patch
+further out, and a stripped area wider than 3× the foraging reach left the
+herd random-walking in 5-tile hops. Fix (`pasture_search` 6): a forager on
+a bare tile first steps to the best of its 8 neighbors with a bite on it,
+and if nothing is found within 3× its reach it samples once more at 6×
+before wandering. On seeds 101–108 grazer starvation fell from 542 to 377
+deaths (14.5% → 11.2% of births). The rest is a real winter carrying
+capacity: food within 5 tiles is gone and the remaining deaths are
+commuting between bare pasture and water. Compare on vs off: −0.24 ± 0.31
+(not significant), herd grazers −0 ± 49, burrowing omnivores +49 ± 18 and
+toxic frogs +59 ± 49 (significant), pack hunters lost 2 more seeds. Kept
+as a bug fix.
+
+*Migrating caribou* (`presets::migrant_design`, 54.9 of 100 points):
+warm-blooded, live birth of 2, body size 0.72, leg length 0.6, hooves 0.6,
+fat stores 0.5, ears and vocal 0.6 (alarm calls), fur 0.6, group tolerance
+0.9, boldness 0.3, migration 0.8, 36 founders, so every founder is a
+group-navigation carrier. At body size 0.55 (antelope size) the herd was
+lost on 3 of 8 test seeds to pack hunters on its autumn trek and in its
+winter range (autumn predation 300 of 478 deaths on two seeds); at 0.72 it
+is out of reach of most packs. A test (`caribou_migrate_south_as_a_group`)
+checks that in autumn the herd is on the move south with most migrants
+navigating as a group. Founding it changes the other lineages' worlds, and
+an extra lineage would raise the score's maximum from 12 to 13.5, so it is
+an **extra lineage**: `run`, `sweep` and `compare` take `--migrants`
+(`presets::extended_world`, owner 5, the ninth lineage), report it in the
+lineage tables, and score only the standard eight (`RunMetrics::scored`).
+Scores with and without `--migrants` are on the same 12-point scale but are
+different worlds, so compare like with like. Held-out sweeps with
+`--migrants`: 11.62 / 11.40 (without: 11.61 / 11.37), caribou 12 of 12 on
+both sets (mean alive 167 and 214) and 24 of 24 on seeds 101–124. Rejected:
+steering navigators' winter pasture away from dense hunters
+(`migrant_wariness`): caribou −3 ± 28, score −0.19 ± 0.32.
+
+Held-out sweeps, all changes: 11.61 / 11.37 against 11.61 / 11.46 on the
+base (sum 22.98 vs 23.07); antelope 12/12 and 12/12 (base 11/12 and
+11/12), pack hunters 11/12 on seeds 31–42 (base 12/12). `--set
+threat_caution=0 --set alert_guard=0 --set pasture_search=0` restores the
+old rules (the antelope preset keeps its vigilance). Snapshots move to
+format version 8 (three new `Balance` fields in the saved config). New
+tunables: `threat_caution`, `alert_guard`, `pasture_search`.
+
 ## Point costs
 
 The costs in `design.rs` are calibrated with `examples/calibrate.rs`
@@ -2164,7 +2284,7 @@ herd grazers lose herd defense when shrunk below 0.45.
 **Seasonal strategies** (`world::seasonal`, tunables `dormancy_temp` …
 `cache_capacity` in `Balance`): the sample designs use them where they
 clearly fit: voles cache, newts and toxic frogs brumate, burrowing omnivores
-hibernate. Antelope were tried as migrators, but on both 12-seed sets
+hibernate (and the extra Migrating caribou migrate, see Balance). Antelope were tried as migrators, but on both 12-seed sets
 migration cost them survival (67% vs 75% and 50% vs 67%), mostly to
 predators met on the autumn trek, so they stay year-round. Seasonal genes
 are left out of the genetic distance (`genome::IN_DISTANCE`): counted, they
@@ -2175,8 +2295,14 @@ in use, 10.71 with the presets' strategies).
 
 ## Suggested next steps
 
-1. **Slow breeders under predation:** antelope and herd grazers are now the
-   weakest lineages (sub-adults and orphans are the main losses).
+1. **Slow breeders under predation:** antelope are no longer lost on the
+   held-out sets, but behavior fixes did not resolve them on fresh seeds:
+   they die where pack hunters boom on other prey (apparent competition).
+   Next: a predator-side check on the numerical response (pack hunters
+   starving faster when prey thins, or prey switching), measured with
+   `compare` on 48+ seeds; and whether the prey gains from vigilance at
+   water cost the predators seeds systematically (the sign was negative,
+   not significant).
 2. **Sweep robustness (done):** confidence intervals, paired differences,
    successive-halving screens and `evo-sim compare` (see
    [Balance](#balance)). Next: an adaptive `compare` that adds seeds until
@@ -2187,9 +2313,11 @@ in use, 10.71 with the presets' strategies).
    (perception scans more neighbors in a crowd); cap or subsample the
    neighbors scanned. Then the apply phase's sequential act sweep (a quarter
    of apply) by region. See [Benchmark](#benchmark).
-4. A migrating sample design to exercise group navigation in play (none
-   migrates yet: migrating antelope lost survival again even with group
-   navigation).
+4. **Migration (done):** the Migrating caribou (`--migrants`) migrate with
+   group navigation and survive 12/12 on both held-out sets. Next: measure
+   what migrating buys a design (the same herd without the gene, paired),
+   and give winter ranges a reason to exist, e.g. better cold-season
+   pasture than the summer range.
 5. **Server (step 2, started):** the static terrain is now stored once
    per world and organisms are encoded leanly (see
    [World snapshots](#persistence)): at 26k agents the daily save is about
