@@ -2039,7 +2039,14 @@ impl Game {
             .organisms
             .iter()
             .filter(|o| o.alive && o.owner == player)
-            .map(|o| OwnOrganism::from_org(o, tpd))
+            .map(|o| {
+                let mut v = OwnOrganism::from_org(o, tpd);
+                if o.possessed_by.is_some() {
+                    // An order sprints with energy to spare (`World::decide`).
+                    v.speed = Some(self.world.move_speed(o, o.needs.energy > 40.0));
+                }
+                v
+            })
             .collect();
         let view = self.view_of(c);
         let center = Vec2::new(view.x, view.y);
@@ -2289,8 +2296,17 @@ mod tests {
         let ServerMsg::State(s) = &out[0].1 else { panic!("want a state, got {:?}", out[0].1) };
         let seen = s.organisms.iter().find(|x| x.id == a[0]).unwrap();
         assert!(((seen.x - target.x).powi(2) + (seen.y - target.y).powi(2)).sqrt() < p0.dist(target));
+        // What the client needs to predict the walk: the order and the speed.
+        assert_eq!(seen.order, Some([target.x, target.y]));
+        let o = g.world.organism(a[0]).unwrap();
+        assert_eq!(seen.speed, Some(g.world.move_speed(o, o.needs.energy > 40.0)));
+        assert!(seen.speed.unwrap() > 0.0);
+        assert!(s.organisms.iter().filter(|x| !x.possessed).all(|x| x.order.is_none() && x.speed.is_none()));
         let out = g.command(10, 1, None, ClientMsg::Release { organism: a[0] });
         assert_eq!(result(&out), (true, None));
+        let s = g.state_for(10).unwrap();
+        let seen = s.organisms.iter().find(|x| x.id == a[0]).unwrap();
+        assert_eq!((seen.order, seen.speed), (None, None));
         // Nothing possessed: a sub-step sends nothing.
         assert!(g.substep().is_empty());
         let out = g.command(10, 1, None, ClientMsg::Migrate { x: 5.0, y: 5.0 });

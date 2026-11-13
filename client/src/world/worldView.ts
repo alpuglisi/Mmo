@@ -6,8 +6,9 @@
 // in screen space so they stay readable at any zoom (growing a little as you
 // zoom in). Each marker is a few sprites sharing textures cached per
 // appearance class (`sprites.ts`): owner ring, body, status ring, action
-// icon. Positions glide toward each new `state` so 1 s state pushes don't
-// jump.
+// icon. Markers glide between server positions and the possessed organism
+// is predicted toward its order (`motion.ts`), so movement is continuous
+// rather than hopping at each `state`.
 //
 // Input: mouse drag or one-finger drag pans, wheel or two-finger pinch
 // zooms, a tap/click selects, and a long press (touch or mouse held still)
@@ -19,6 +20,7 @@ import { CreatureSprites, type MarkerParts } from './sprites';
 import type { NearbyOrganism, OrgId, OwnOrganism, StateView } from '../protocol';
 import { OWN_COLOR, ownerColor } from './colors';
 import { paintTerrain, type TerrainGrid } from './terrain';
+import { isOpenGround, newTrack, Predictor, RECONCILE_SNAP, RECONCILE_TAU_MS, retarget, smoothToward, TickClock, trackAt, type Point, type Track } from './motion';
 
 export interface Camera {
   /** World point (tiles) at the center of the screen. */
@@ -36,11 +38,11 @@ export interface WorldClick {
 
 interface Marker {
   parts: MarkerParts;
-  /** Displayed position (world), easing toward the target. */
+  /** Displayed position (world). */
   x: number;
   y: number;
-  tx: number;
-  ty: number;
+  /** The glide between server positions. */
+  track: Track;
   style: string;
   seen: boolean;
   own: boolean;
@@ -95,6 +97,10 @@ export class WorldView {
   private worldH = 64;
   private state: StateView | null = null;
   private moveTarget: { x: number; y: number } | null = null;
+  /** Prediction for the possessed organism, and the measured tick length. */
+  readonly predictor = new Predictor();
+  readonly tickClock = new TickClock();
+  private readonly passable = (x: number, y: number) => isOpenGround(this.terrain, x, y);
   selected: OrgId | null = null;
   cam: Camera = { x: 32, y: 32, zoom: 8 };
   follow = true;
@@ -160,10 +166,12 @@ export class WorldView {
   }
 
   setState(s: StateView): void {
+    const now = performance.now();
     this.state = s;
+    this.tickClock.observe(s.clock.tick, now);
     for (const m of this.markers.values()) m.seen = false;
-    for (const o of s.organisms) this.upsert(o, true);
-    for (const o of s.nearby) this.upsert(o, false);
+    for (const o of s.organisms) this.upsert(o, true, now);
+    for (const o of s.nearby) this.upsert(o, false, now);
     for (const [id, m] of this.markers) {
       if (!m.seen) {
         m.parts.root.destroy({ children: true });
@@ -171,12 +179,22 @@ export class WorldView {
       }
     }
     const possessed = s.organisms.find((o) => o.possessed);
+    this.predictor.onState(possessed, now);
     if (!possessed) this.moveTarget = null;
     this.mapSprite.tint = s.clock.daytime ? 0xffffff : 0x8a96b8;
   }
 
+  /** Show a move order for the possessed organism (and predict the walk toward it), or clear it. */
   setMoveTarget(p: { x: number; y: number } | null): void {
     this.moveTarget = p;
+    if (p) this.predictor.order(p.x, p.y, performance.now());
+    else this.predictor.reject();
+  }
+
+  /** The server refused the last move order: stop predicting toward it. */
+  rejectMove(): void {
+    this.predictor.reject();
+    this.moveTarget = null;
   }
 
   setFollow(f: boolean): void {
@@ -210,6 +228,12 @@ export class WorldView {
     return { markers: this.markers.size, textures: this.sprites?.cache.size ?? 0, made: this.sprites?.cache.made ?? 0 };
   }
 
+  /** Drawn world position of an organism marker (glided or predicted; for tests). */
+  markerWorldPos(id: OrgId): { x: number; y: number } | null {
+    const m = this.markers.get(id);
+    return m ? { x: m.x, y: m.y } : null;
+  }
+
   /** Screen position of an organism marker (for tests and tooltips). */
   markerScreenPos(id: OrgId): { x: number; y: number } | null {
     const m = this.markers.get(id);
@@ -226,25 +250,20 @@ export class WorldView {
     return { x: (sx - width / 2) / this.cam.zoom + this.cam.x, y: (sy - height / 2) / this.cam.zoom + this.cam.y };
   }
 
-  private upsert(o: OwnOrganism | NearbyOrganism, own: boolean): void {
+  private upsert(o: OwnOrganism | NearbyOrganism, own: boolean, now: number): void {
     const sprites = this.sprites;
     if (!sprites) return;
     let m = this.markers.get(o.id);
     if (!m) {
       const parts = sprites.marker();
       this.markerLayer.addChild(parts.root);
-      m = { parts, x: o.x, y: o.y, tx: o.x, ty: o.y, style: '', seen: true, own, r: 0, facing: 1, hint: null };
+      m = { parts, x: o.x, y: o.y, track: newTrack(o.x, o.y, now), style: '', seen: true, own, r: 0, facing: 1, hint: null };
       this.markers.set(o.id, m);
     }
-    const dx = o.x - m.tx;
+    const dx = o.x - m.track.tx;
     if (Math.abs(dx) > 0.02) m.facing = dx > 0 ? 1 : -1;
-    m.tx = o.x;
-    m.ty = o.y;
-    // A long jump (e.g. after a reconnect) snaps instead of sliding.
-    if (Math.abs(m.x - o.x) + Math.abs(m.y - o.y) > 6) {
-      m.x = o.x;
-      m.y = o.y;
-    }
+    // Glide from where it is drawn; a long jump (e.g. a reconnect) snaps.
+    retarget(m.track, m, o.x, o.y, now);
     m.seen = true;
     m.own = own;
     const spec = specOf(o);
@@ -263,9 +282,16 @@ export class WorldView {
   }
 
   private frame(dtMs: number): void {
+    const now = performance.now();
     const k = Math.min(1, dtMs / 120);
+    this.moveMarkers(now, dtMs);
     if (this.follow && this.state) {
-      const v = this.state.view;
+      // The view window follows the possessed organism: follow its drawn
+      // (predicted) position so the camera moves as smoothly as it does.
+      // (Not when the view is pinned elsewhere.)
+      const sv = this.state.view;
+      const pm = this.predictor.id !== null ? this.markers.get(this.predictor.id) : undefined;
+      const v: Point = pm && Math.abs(pm.x - sv.x) + Math.abs(pm.y - sv.y) < 3 ? pm : sv;
       this.cam.x += (v.x - this.cam.x) * k * 0.5;
       this.cam.y += (v.y - this.cam.y) * k * 0.5;
     }
@@ -279,8 +305,6 @@ export class WorldView {
     const sc = markerScaleFor(this.cam.zoom);
     this.markerScale = sc;
     for (const m of this.markers.values()) {
-      m.x += (m.tx - m.x) * k;
-      m.y += (m.ty - m.y) * k;
       const p = this.worldToScreen(m.x, m.y);
       const root = m.parts.root;
       root.position.set(p.x, p.y);
@@ -295,6 +319,27 @@ export class WorldView {
       const r = Math.max(9, sel.r * 2.3 * sc);
       this.highlight.circle(p.x, p.y, r).stroke({ width: 3.5, color: 0x0d1117, alpha: 0.6 });
       this.highlight.circle(p.x, p.y, r).stroke({ width: 2, color: 0xffffff });
+    }
+  }
+
+  /**
+   * Drawn positions for this frame: every marker on its glide between server
+   * positions; the possessed one eased toward its predicted position when
+   * there is one (else toward its glide), so corrections slide.
+   */
+  private moveMarkers(now: number, dtMs: number): void {
+    const pid = this.predictor.id;
+    for (const [id, m] of this.markers) {
+      const g = trackAt(m.track, now);
+      if (id !== pid) {
+        m.x = g.x;
+        m.y = g.y;
+        continue;
+      }
+      const goal = this.predictor.goal(now, this.tickClock.msPerTick, this.passable) ?? g;
+      const p = smoothToward(m, goal, dtMs, RECONCILE_TAU_MS, RECONCILE_SNAP);
+      m.x = p.x;
+      m.y = p.y;
     }
   }
 
@@ -323,8 +368,9 @@ export class WorldView {
       g.circle(mx, my, 8 * px).stroke({ width: 2 * px, color: 0xf778ba });
       g.moveTo(mx - 5 * px, my).lineTo(mx + 5 * px, my).moveTo(mx, my - 5 * px).lineTo(mx, my + 5 * px).stroke({ width: 2 * px, color: 0xf778ba });
     }
-    const t = this.moveTarget;
     const possessed = s.organisms.find((o) => o.possessed);
+    // The order the player gave, else the server's (e.g. after a reload).
+    const t = this.moveTarget ?? (possessed?.order ? { x: possessed.order[0], y: possessed.order[1] } : null);
     if (t && possessed) {
       const m = this.markers.get(possessed.id);
       if (m) g.moveTo(m.x, m.y).lineTo(t.x, t.y).stroke({ width: 1.5 * px, color: 0xffd33d, alpha: 0.8 });

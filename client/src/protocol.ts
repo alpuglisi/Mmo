@@ -179,6 +179,10 @@ export interface OwnOrganism {
   generation: number;
   /** Visible body plan, for the sprite (absent from older servers). */
   look?: Appearance;
+  /** Possessed only: the move order's target `[x, y]` (tiles) while it has one. */
+  order?: [number, number];
+  /** Possessed only: tiles per tick it walks toward an order on open ground (before the terrain's factor). */
+  speed?: number;
 }
 
 /** Someone else's organism inside the view window: only what can be seen. */
