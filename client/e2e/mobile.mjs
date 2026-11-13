@@ -8,7 +8,8 @@
 // organism selects it and shows the floating Possess button; the button and
 // a long press possess; one-finger drag pans and a two-finger pinch zooms.
 // Desktop: sidebar on the right, tabs on top, sprite cache stats, and a
-// gallery of body-plan sprites for the screenshots.
+// gallery of body-plan sprites for the screenshots. Pages open with
+// `?tour=off` (e2e/onboarding.mjs tests the first-session tour).
 // Worlds: on a server with two worlds the phone's login screen shows the
 // world picker; the chosen world is the one played in, and the choice is
 // remembered per user.
@@ -68,7 +69,7 @@ function device(name) {
 }
 
 async function register(page, base, name, lineage) {
-  await page.goto(base);
+  await page.goto(`${base}/?tour=off`);
   // One world: no picker.
   await page.waitForTimeout(300);
   if (await page.isVisible('#world-box')) throw new Error('world picker shown on a single-world server');
@@ -168,7 +169,7 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   const vw = page.viewportSize();
 
   // Login screen fits the phone.
-  await page.goto(base);
+  await page.goto(`${base}/?tour=off`);
   await page.waitForSelector('#login-name');
   const form = await box(page, 'form.login');
   if (form.x < 0 || form.x + form.width > vw.width + 1) throw new Error(`${tag}: login form overflows ${JSON.stringify(form)}`);
@@ -449,7 +450,7 @@ async function worldChecks(browser, base, errors) {
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(e.message));
   const online = async () => Object.fromEntries((await (await fetch(`${base}/api/worlds`)).json()).worlds.map((w) => [w.id, w.players_online]));
-  await page.goto(base);
+  await page.goto(`${base}/?tour=off`);
   await page.waitForSelector('#world-select', { state: 'visible', timeout: 10000 });
   const options = await page.$$eval('#world-select option', (os) => os.map((o) => [o.value, o.textContent]));
   if (JSON.stringify(options) !== JSON.stringify([['main', 'Mainland'], ['isle', 'Isle']])) throw new Error(`world options ${JSON.stringify(options)}`);

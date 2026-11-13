@@ -27,7 +27,7 @@ try {
     await new Promise((r) => setTimeout(r, 100));
   }
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
-  await page.goto(base);
+  await page.goto(`${base}/?tour=off`);
   await page.fill('#login-name', 'winter_demo');
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
