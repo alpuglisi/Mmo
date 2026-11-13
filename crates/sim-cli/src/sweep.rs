@@ -80,8 +80,11 @@ pub fn run_one(balance: Balance, seed: u64, size: usize, days: u32) -> RunMetric
                 extinct_day[l] = Some(world.day());
             }
         }
-        let owners: std::collections::BTreeSet<_> = world.lineages.iter().map(|l| l.owner).collect();
-        if owners.iter().any(|&o| world.owner_count(o) as f32 >= 0.95 * world.config.cap_for(o) as f32) {
+        let capped = (0..n as u32).any(|l| {
+            let (count, cap) = world.cap_usage(l);
+            count as f32 >= 0.95 * cap as f32
+        });
+        if capped {
             capped_days += 1;
         }
         pop_sum += world.alive_count() as f64;

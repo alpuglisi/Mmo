@@ -542,6 +542,27 @@ impl World {
         hazard > 0.0 && rng.gen::<f32>() < hazard * self.config.dt_days()
     }
 
+    /// Density-dependent breeding: in a crowd of its own species a mother
+    /// carries fewer young to term (embryo resorption, suppressed breeding),
+    /// `1 / (1 + (d / breeding_density)^4)`. `d` is her species' members per
+    /// tile around her, felt as `crowding` is (scaled by 1 - group tolerance)
+    /// and most by fast breeders (scaled by the square root of pace of life:
+    /// voles 0.4, foxes 0.19, grazers ~0), whose numbers food alone reins in
+    /// only after they overshoot. Young of abandoned eggs face larval
+    /// competition instead, so their parents are exempt.
+    fn breeding_suppression(&self, i: usize) -> f32 {
+        let o = &self.organisms[i];
+        let k = self.config.balance.breeding_density;
+        if k <= 0.0 || o.traits.birth == BirthType::AbandonedEggs {
+            return 1.0;
+        }
+        let size = o.pheno[Gene::BodySize];
+        let d = self.density.per_tile(o.pos, o.lineage)
+            * (1.0 - o.pheno[Gene::GroupTolerance])
+            * o.traits.pace_of_life(size).sqrt();
+        1.0 / (1.0 + (d / k).powi(4))
+    }
+
     fn grow(&mut self, i: usize) {
         let tpd = self.config.ticks_per_day;
         let o = &mut self.organisms[i];
@@ -571,10 +592,10 @@ impl World {
         let mother = &self.organisms[i];
         let traits = mother.traits;
         let owner = mother.owner;
-        let expected = traits.litter as f32 * preg.fertility * mother.condition().clamp(0.3, 1.0);
+        let expected = traits.litter as f32 * preg.fertility * mother.condition().clamp(0.3, 1.0) * self.breeding_suppression(i);
         let mut count = expected.floor() as usize + usize::from(rng.gen::<f32>() < expected.fract());
         if !traits.birth.lays_eggs() {
-            count = count.min(self.config.cap_for(owner).saturating_sub(self.owner_count(owner)));
+            count = count.min(self.cap_room(mother.lineage));
         }
         let mother = &mut self.organisms[i];
         mother.breed_ready_tick = tick + (traits.recovery_days * tpd) as u64;
@@ -683,5 +704,76 @@ mod tests {
         };
         let (with, without) = (deaths(18.0), deaths(0.0));
         assert!(with > without + 10, "deaths with competition {with}, without {without}");
+    }
+
+    fn wild_world(wild_cap: usize) -> World {
+        let config = WorldConfig { seed: 7, width: 48, height: 48, wild_cap, ..Default::default() };
+        let mut w = World::new(config);
+        let wild = presets::wild_designs();
+        w.found_lineage_unchecked(crate::WILD, &wild[0].1.clone().founders(40)); // voles
+        w.found_lineage_unchecked(crate::WILD, &wild[1].1.clone().founders(10)); // antelope
+        w
+    }
+
+    fn make_pregnant(w: &mut World, i: usize) {
+        let o = &mut w.organisms[i];
+        o.pregnancy = Some(Pregnancy {
+            father: Box::new(o.genome.clone()),
+            father_id: o.id,
+            father_lineage: o.lineage,
+            fertility: 1.0,
+            due_tick: 0,
+        });
+        o.needs.hunger = 0.0;
+        o.health = 100.0;
+    }
+
+    /// Each wild species gets its share of the wild cap (by founders: 40
+    /// voles and 10 antelope split 100 as 80/20): voles at their share can't
+    /// breed while antelope with room left can.
+    #[test]
+    fn wild_cap_is_split_per_species() {
+        let mut w = wild_world(100);
+        w.config.balance.breeding_density = 0.0;
+        assert_eq!(w.cap_usage(0), (40, 80));
+        w.config.wild_cap = 50;
+        assert_eq!(w.cap_usage(0), (40, 40));
+        assert_eq!(w.cap_room(1), 0);
+        // Five antelope die: room for antelope, still none for voles.
+        let dead: Vec<usize> = (0..w.organisms.len()).filter(|&i| w.organisms[i].lineage == 1).take(5).collect();
+        for i in dead {
+            w.kill(i, DeathCause::Predation);
+        }
+        assert_eq!(w.cap_room(1), 5);
+        let vole = w.organisms.iter().position(|o| o.lineage == 0 && o.sex == Sex::Female).unwrap();
+        make_pregnant(&mut w, vole);
+        let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+        w.give_birth(vole, &mut rng);
+        assert_eq!(w.counters.births, 0);
+        let antelope = w.organisms.iter().position(|o| o.alive && o.lineage == 1 && o.sex == Sex::Female).unwrap();
+        make_pregnant(&mut w, antelope);
+        w.give_birth(antelope, &mut rng);
+        let born = w.counters.births as usize;
+        assert!(born >= 1);
+        assert_eq!(w.cap_usage(1), (5 + born, 10));
+    }
+
+    /// A mother in a dense colony of her own species carries fewer young.
+    #[test]
+    fn crowded_mothers_bear_smaller_litters() {
+        let mut w = wild_world(5000);
+        w.config.balance.breeding_density = 0.15;
+        let center = Vec2::new(4.0, 4.0);
+        for o in w.organisms.iter_mut().filter(|o| o.lineage == 0) {
+            o.pos = center;
+        }
+        let lone = w.organisms.iter().position(|o| o.lineage == 1).unwrap();
+        w.organisms[lone].pos = Vec2::new(40.0, 40.0);
+        w.density.rebuild(&w.organisms, w.lineages.len());
+        let crowded = w.breeding_suppression(0);
+        assert!(crowded < 0.7, "suppression in a colony of 40: {crowded}");
+        assert!(w.breeding_suppression(lone) > 0.99);
+        w.config.balance.breeding_density = 0.0;
+        assert_eq!(w.breeding_suppression(0), 1.0);
     }
 }

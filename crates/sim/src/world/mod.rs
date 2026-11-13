@@ -17,6 +17,7 @@
 mod apply;
 pub mod commands;
 mod decide;
+mod density;
 mod environment;
 mod spatial;
 
@@ -36,6 +37,7 @@ use crate::organism::{DeathCause, OrgId, Organism, Sex};
 use crate::rng::{rng_for, stream};
 use crate::terrain::{traverse, Map, Season, Traverse, Weather};
 
+use density::SpeciesDensity;
 use spatial::SpatialGrid;
 
 /// Eggs waiting to hatch.
@@ -113,6 +115,9 @@ pub struct World {
     index: HashMap<OrgId, usize>,
     grid: SpatialGrid,
     owner_counts: BTreeMap<PlayerId, usize>,
+    /// Living organisms per lineage, indexed like `lineages`.
+    lineage_alive: Vec<usize>,
+    density: SpeciesDensity,
     migrate_orders: BTreeMap<PlayerId, Vec2>,
     slots_used: BTreeMap<PlayerId, u32>,
     clutch_at: HashMap<(usize, usize), usize>,
@@ -167,6 +172,8 @@ impl World {
             index: HashMap::new(),
             grid,
             owner_counts: BTreeMap::new(),
+            lineage_alive: Vec::new(),
+            density: SpeciesDensity::new(config.width, config.height),
             migrate_orders: BTreeMap::new(),
             slots_used: BTreeMap::new(),
             clutch_at: HashMap::new(),
@@ -208,6 +215,30 @@ impl World {
 
     pub fn owner_count(&self, owner: PlayerId) -> usize {
         self.owner_counts.get(&owner).copied().unwrap_or(0)
+    }
+
+    /// The hard cap that applies to `lineage` and the count it is measured
+    /// against. Each wild species gets a share of `wild_cap` in proportion to
+    /// its founding population (the designed food pyramid: many voles, few
+    /// foxes), so one booming species can't take the others' room. Players
+    /// are capped per owner at `lineage_cap`.
+    pub fn cap_usage(&self, lineage: u32) -> (usize, usize) {
+        let Some(l) = self.lineages.get(lineage as usize) else {
+            return (0, 0);
+        };
+        if l.owner == crate::WILD {
+            let wild_founders: u64 = self.lineages.iter().filter(|w| w.owner == crate::WILD).map(|w| w.founders as u64).sum();
+            let cap = self.config.wild_cap as u64 * l.founders as u64 / wild_founders.max(1);
+            (self.lineage_alive.get(lineage as usize).copied().unwrap_or(0), cap as usize)
+        } else {
+            (self.owner_count(l.owner), self.config.cap_for(l.owner))
+        }
+    }
+
+    /// Births `lineage` can still add before reaching its cap.
+    pub fn cap_room(&self, lineage: u32) -> usize {
+        let (count, cap) = self.cap_usage(lineage);
+        cap.saturating_sub(count)
     }
 
     pub fn organism(&self, id: OrgId) -> Option<&Organism> {
@@ -323,6 +354,7 @@ impl World {
         self.next_id += 1;
         o.id = id;
         *self.owner_counts.entry(o.owner).or_default() += 1;
+        self.count_lineage(o.lineage, 1);
         self.index.insert(id, self.organisms.len());
         self.organisms.push(o);
         id
@@ -345,6 +377,15 @@ impl World {
         if let Some(c) = self.owner_counts.get_mut(&owner) {
             *c = c.saturating_sub(1);
         }
+        self.count_lineage(lineage, -1);
+    }
+
+    fn count_lineage(&mut self, lineage: u32, delta: isize) {
+        let l = lineage as usize;
+        if self.lineage_alive.len() <= l {
+            self.lineage_alive.resize(l + 1, 0);
+        }
+        self.lineage_alive[l] = self.lineage_alive[l].saturating_add_signed(delta);
     }
 
     /// Advance one tick.

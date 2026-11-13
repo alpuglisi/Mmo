@@ -26,9 +26,11 @@ pub struct WorldConfig {
     pub mate_distance: f32,
     /// `k` in the directed-mating override cost `k * max(0, mismatch - 1)^2`.
     pub override_k: f32,
-    /// Hard cap on living organisms per player.
+    /// Hard cap on living organisms per player (`World::cap_usage`).
     pub lineage_cap: usize,
-    /// Hard cap on the wild ecosystem (all wild species together).
+    /// Hard cap on the wild ecosystem (all wild species together), split
+    /// between the wild species in proportion to their founding populations
+    /// (`World::cap_usage`).
     pub wild_cap: usize,
     pub mating_slots_per_season: u32,
     /// Upper bound on perception radius in tiles (also bounds neighbor queries).
@@ -96,6 +98,15 @@ pub struct Balance {
     /// when a predator attacks it, times `(1 - litter fraction)^2` (so
     /// single young are guarded fully, big litters barely). 0 disables.
     pub parent_defense: f32,
+    /// Density-dependent breeding: live young and incubated eggs per birth
+    /// are scaled by `1 / (1 + (d / breeding_density)^4)`, where `d` is the
+    /// mother's species' members per tile in her 8×8-tile cell times
+    /// (1 - group tolerance) times the square root of pace of life
+    /// (`Traits::pace_of_life`). Colonies of fast breeders stop growing where
+    /// they are dense instead of booming into the hard cap; slow breeders
+    /// barely feel it. Abandoned-egg young face `larval_competition`
+    /// instead. 0 disables.
+    pub breeding_density: f32,
 }
 
 impl Default for Balance {
@@ -125,12 +136,13 @@ impl Default for Balance {
             burrow_shelter: 1.0,
             burrow_caution: 2.0,
             parent_defense: 1.0,
+            breeding_density: 0.03,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 22;
+    pub const FIELD_COUNT: usize = 23;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -162,6 +174,7 @@ impl Balance {
             ("burrow_shelter", &mut self.burrow_shelter),
             ("burrow_caution", &mut self.burrow_caution),
             ("parent_defense", &mut self.parent_defense),
+            ("breeding_density", &mut self.breeding_density),
         ]
     }
 
