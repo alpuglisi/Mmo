@@ -246,7 +246,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const p = possessed();
     if (p) {
       view.setMoveTarget({ x: c.x, y: c.y });
-      await send({ type: 'order_move', organism: p.id, x: c.x, y: c.y });
+      const r = await send({ type: 'order_move', organism: p.id, x: c.x, y: c.y });
+      if (!r.ok) view.rejectMove();
     } else {
       model.select(null);
       if (narrow()) setSheet(false);
@@ -590,6 +591,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!p) return model.toast('info', `Possessing #${mine}. The partner #${partner} is out of sight: click the map to walk.`);
     view.setMoveTarget({ x: p.x, y: p.y });
     const r = await send({ type: 'order_move', organism: mine, x: p.x, y: p.y });
+    if (!r.ok) view.rejectMove();
     if (r.ok) model.toast('info', `#${mine} is walking to #${partner}.`);
   }
 

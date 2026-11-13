@@ -665,10 +665,15 @@ async function main() {
         const d0 = Math.hypot(spot.from.x - target.x, spot.from.y - target.y);
         let best = d0;
         let lost = null;
+        let maxGap = 0;
+        let speed = null;
         const walk = await waitFor('organism walks toward the target', async () => {
           const o = await page.evaluate(({ id, target }) => {
             const o = window.evo.model.state.organisms.find((x) => x.id === id);
-            return o ? { d: Math.hypot(o.x - target.x, o.y - target.y), action: o.action, possessed: o.possessed } : null;
+            // The drawn (predicted, smoothed) position against the server's.
+            const m = o && window.evo.screen()?.view.markerWorldPos(id);
+            const gap = m ? Math.hypot(m.x - o.x, m.y - o.y) : 0;
+            return o ? { d: Math.hypot(o.x - target.x, o.y - target.y), action: o.action, possessed: o.possessed, speed: o.speed, gap } : null;
           }, { id, target });
           if (!o || !o.possessed) {
             lost = o ? 'released' : 'died';
@@ -676,8 +681,10 @@ async function main() {
           }
           actions.add(o.action);
           best = Math.min(best, o.d);
+          maxGap = Math.max(maxGap, o.gap);
+          if (o.speed !== undefined) speed = o.speed;
           // Closer by a tile, or arrived (order dropped near the target).
-          return best < d0 - 1 || best <= 1.0 ? { d0, best, action: o.action, attempt } : null;
+          return best < d0 - 1 || best <= 1.0 ? { d0, best, action: o.action, attempt, maxGap, speed } : null;
         }, 20000).catch(() => null);
         if (lost) throw new Retry(`#${id} ${lost} while walking`);
         if (walk) return walk;
@@ -707,6 +714,11 @@ async function main() {
     }
     if (!walked) throw new Error('could not possess and walk an organism in 4 rounds');
     step(`order_move ok; #${walked.id} walked from ${walked.d0.toFixed(1)} to ${walked.best.toFixed(1)} tiles of the target (${walked.action}, attempt ${walked.attempt})`);
+    // Prediction leads by at most half a tick of movement and eases
+    // corrections: the drawn marker never drifts far from the server.
+    if (!(walked.speed > 0)) throw new Error(`the possessed organism's state has no speed (${walked.speed})`);
+    if (walked.maxGap > 3) throw new Error(`drawn #${walked.id} was ${walked.maxGap.toFixed(2)} tiles from the server position`);
+    step(`prediction: speed ${walked.speed.toFixed(2)} tiles/tick, drawn marker at most ${walked.maxGap.toFixed(2)} tiles from the server position`);
 
     // Group command and a server-side error surfaced as a toast.
     await page.click('#migrate');

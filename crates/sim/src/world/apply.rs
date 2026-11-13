@@ -284,6 +284,32 @@ impl World {
         moved
     }
 
+    /// How far `o` moves in a tick on open ground (tiles, before the terrain's
+    /// own speed factor): its genes, size, condition, a sprint (if it has
+    /// the energy) and the possession bonus. Clients use it to predict a
+    /// possessed organism's walk between state messages.
+    pub fn move_speed(&self, o: &Organism, sprint: bool) -> f32 {
+        let b = &self.config.balance;
+        let mut speed = b.base_speed * o.traits.stats.speed * o.activity * (0.5 + 0.5 * o.growth);
+        if o.pregnancy.is_some() && o.traits.birth == BirthType::Live {
+            speed *= 0.7;
+        }
+        if o.needs.energy < 20.0 {
+            speed *= 0.5;
+        }
+        if o.needs.hunger > 90.0 {
+            speed *= 0.7;
+        }
+        if sprint && o.needs.energy > 15.0 {
+            speed *= b.sprint;
+        }
+        // Small possession bonus (reaction), per the design doc.
+        if o.possessed_by.is_some() {
+            speed *= 1.1;
+        }
+        speed
+    }
+
     /// Steer `o` toward `target`, following or planning a route (A* in
     /// `scratch`, searches counted in `paths`) when the way is blocked, by
     /// `frac` of a tick's movement (1 except for possession sub-steps).
@@ -304,24 +330,8 @@ impl World {
             return 0.0;
         }
         let st = &o.traits.stats;
-        let mut speed = self.config.balance.base_speed * st.speed * o.activity * (0.5 + 0.5 * o.growth);
-        if o.pregnancy.is_some() && o.traits.birth == BirthType::Live {
-            speed *= 0.7;
-        }
-        if o.needs.energy < 20.0 {
-            speed *= 0.5;
-        }
-        if o.needs.hunger > 90.0 {
-            speed *= 0.7;
-        }
         let sprinting = sprint && o.needs.energy > 15.0;
-        if sprinting {
-            speed *= self.config.balance.sprint;
-        }
-        // Small possession bonus (reaction), per the design doc.
-        if o.possessed_by.is_some() {
-            speed *= 1.1;
-        }
+        let speed = self.move_speed(o, sprint);
         let step = (speed * frac).min(d);
         let dir = to * (1.0 / d);
         let body = o.traits.body;
