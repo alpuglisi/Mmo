@@ -93,6 +93,11 @@ fn parse_args() -> Result<ServerConfig, String> {
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        // A log line that can't be written (stdout on a full disk, a closed
+        // pipe) is dropped. By default the subscriber reports it with
+        // `eprintln!`, which panics when stderr fails too: the soak test
+        // filled the disk and that killed the saver thread, stopping saves.
+        .log_internal_errors(false)
         .init();
     let cfg = match parse_args() {
         Ok(c) => c,

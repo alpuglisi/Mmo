@@ -321,6 +321,33 @@ async fn directed_mating_consent_round_trip() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_count_ticks_connections_and_traffic() {
+    let srv = manual_server().await;
+    let addr = srv.addr;
+    let token = register(addr, "meg").await;
+    let mut sock = ws(addr, &token).await;
+    wait_for(&mut sock, "state", |v| v["type"] == "state").await;
+    srv.step(3).await;
+    wait_for(&mut sock, "state", |v| v["type"] == "state").await;
+    let (s, m) = json_req(addr, Method::GET, "/api/metrics", None, None).await;
+    assert_eq!(s, StatusCode::OK, "{m}");
+    assert_eq!(m["ticks"], 3);
+    assert_eq!(m["conns"], 1);
+    assert_eq!(m["state_pushes"], 1, "one push at the end of the step: {m}");
+    assert_eq!(m["tick_ms"]["n"], 3);
+    assert!(m["states_ms"]["p50"].as_f64().unwrap() >= 0.0);
+    assert_eq!(m["ws_opened"], 1);
+    // welcome + the connect state + the step's state, all counted.
+    assert!(m["msgs_out"].as_u64().unwrap() >= 3, "{m}");
+    assert!(m["state_bytes"].as_u64().unwrap() > 0 && m["bytes_out"].as_u64() >= m["state_bytes"].as_u64());
+    assert_eq!(m["dropped_conns"], 0);
+    if cfg!(target_os = "linux") {
+        assert!(m["rss_bytes"].as_u64().unwrap() > 0);
+    }
+    srv.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn serves_the_static_client() {
     let dir = std::env::temp_dir().join(format!("evo-static-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("assets")).unwrap();

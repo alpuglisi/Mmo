@@ -28,13 +28,14 @@
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use evo_sim::{FounderDesign, PlayerId};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::game::{ConnId, FoundError, FoundOk, Game, Outbox, PersistEvent, Target};
+use crate::metrics::Metrics;
 use crate::protocol::{ChronicleView, ClientMsg, Leaderboard, LineageStats, ServerMsg, WorldSummary};
 use crate::saver::Saver;
 use crate::snapshot::Capture;
@@ -143,6 +144,8 @@ pub struct Runner {
     saved_day: u64,
     /// Encodes saves off this thread.
     saver: Saver,
+    /// Timings and counters for `GET /api/metrics`.
+    metrics: Arc<Mutex<Metrics>>,
 }
 
 /// Handles for the rest of the server.
@@ -150,6 +153,7 @@ pub struct RunnerHandles {
     pub tx: SyncSender<Request>,
     pub published: watch::Receiver<Arc<Published>>,
     pub persist: mpsc::UnboundedReceiver<PersistEvent>,
+    pub metrics: Arc<Mutex<Metrics>>,
 }
 
 impl Runner {
@@ -159,7 +163,8 @@ impl Runner {
         let (published, published_rx) = watch::channel(initial);
         let (persist, persist_rx) = mpsc::unbounded_channel();
         let saved_day = game.world.day();
-        let saver = Saver::spawn(persist.clone());
+        let metrics = Arc::new(Mutex::new(Metrics::default()));
+        let saver = Saver::with_metrics(persist.clone(), Some(metrics.clone()));
         let runner = Runner {
             game,
             cfg,
@@ -171,8 +176,9 @@ impl Runner {
             last_state: Instant::now(),
             saved_day,
             saver,
+            metrics: metrics.clone(),
         };
-        (runner, RunnerHandles { tx, published: published_rx, persist: persist_rx })
+        (runner, RunnerHandles { tx, published: published_rx, persist: persist_rx, metrics })
     }
 
     /// Run on a dedicated OS thread until every request sender is dropped.
@@ -199,8 +205,10 @@ impl Runner {
                     return;
                 }
                 self.apply_queued();
+                let started = Instant::now();
                 let out = self.game.substep();
                 self.dispatch(out);
+                self.metrics.lock().unwrap().substep.push(ms_since(started));
             }
             // 1. Gather requests until the tick is due.
             if !self.gather(next) {
@@ -258,14 +266,25 @@ impl Runner {
     }
 
     fn apply_queued(&mut self) {
-        for req in std::mem::take(&mut self.queued) {
+        if self.queued.is_empty() {
+            return;
+        }
+        let started = Instant::now();
+        let queued = std::mem::take(&mut self.queued);
+        let n = queued.len();
+        for req in queued {
             self.apply(req);
         }
+        let mut m = self.metrics.lock().unwrap();
+        m.apply.push(ms_since(started));
+        m.applied += n as u64;
+        m.max_queued = m.max_queued.max(n);
     }
 
     /// Advance the world one tick, run the bookkeeping and publish; push
     /// state to every connection if `push_state`.
     fn tick(&mut self, push_state: bool) {
+        let started = Instant::now();
         self.game.world.step();
         let out = self.game.after_tick();
         self.dispatch(out);
@@ -274,10 +293,23 @@ impl Runner {
         }
         self.published
             .send_replace(Arc::new(Published { summary: self.game.summary(), leaderboard: self.game.leaderboard() }));
-        if push_state {
-            self.last_state = Instant::now();
+        let tick_ms = ms_since(started);
+        let states_ms = push_state.then(|| {
+            let started = Instant::now();
+            self.last_state = started;
             let states = self.game.states();
             self.dispatch(states);
+            ms_since(started)
+        });
+        {
+            let mut m = self.metrics.lock().unwrap();
+            m.tick.push(tick_ms);
+            m.ticks += 1;
+            if let Some(ms) = states_ms {
+                m.states.push(ms);
+                m.state_pushes += 1;
+            }
+            m.conns = self.conns.len();
         }
         // Save once per simulated day.
         if self.game.world.day() != self.saved_day {
@@ -290,6 +322,7 @@ impl Runner {
     fn save(&mut self) {
         let started = Instant::now();
         let capture = Capture::new(&self.game);
+        self.metrics.lock().unwrap().save_capture_ms = ms_since(started) as f32;
         self.saved_day = self.game.world.day();
         tracing::info!(
             "captured the game at tick {} (day {}) for saving in {:.1} ms",
@@ -379,15 +412,27 @@ impl Runner {
                 Target::Conn(c) => vec![c],
                 Target::Player(p) => self.conns.iter().filter(|(_, (q, _))| *q == p).map(|(&c, _)| c).collect(),
             };
-            for c in conns {
+            // Each connection but the last gets a copy; the last takes the
+            // message itself (a state, sent to one connection, is never
+            // copied).
+            let mut msg = Some(msg);
+            let last = conns.len().saturating_sub(1);
+            for (k, c) in conns.into_iter().enumerate() {
                 let Some((_, tx)) = self.conns.get(&c) else { continue };
-                match tx.try_send(msg.clone()) {
+                let m = if k == last { msg.take() } else { msg.clone() };
+                let Some(m) = m else { break };
+                match tx.try_send(m) {
                     Ok(()) => {}
                     // A slow client misses a state frame; the next one replaces it.
-                    Err(mpsc::error::TrySendError::Full(ServerMsg::State(_))) => {}
+                    Err(mpsc::error::TrySendError::Full(ServerMsg::State(_))) => {
+                        self.metrics.lock().unwrap().skipped_states += 1;
+                    }
                     // Too far behind on replies and events, or gone: drop it,
                     // which closes its socket.
-                    Err(_) => {
+                    Err(e) => {
+                        if matches!(e, mpsc::error::TrySendError::Full(_)) {
+                            self.metrics.lock().unwrap().dropped_conns += 1;
+                        }
                         self.conns.remove(&c);
                         self.game.disconnect(c);
                     }
@@ -395,4 +440,8 @@ impl Runner {
             }
         }
     }
+}
+
+fn ms_since(t: Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0
 }

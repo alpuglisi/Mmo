@@ -11,6 +11,8 @@
 //! - [`terrain`]: the tile grid as compact byte layers for the client map.
 //! - [`seasons`]: seasonal leaderboards from the daily history.
 //! - [`limits`]: token-bucket rate limits on logins and commands.
+//! - [`metrics`]: tick, state-push and save timings, queue and traffic
+//!   counters, process CPU and memory (`GET /api/metrics`).
 //! - [`accounts`]: argon2 password hashes and bearer-token sessions with
 //!   idle and maximum-age expiry.
 //! - [`store`]: persistence behind the [`store::Store`] trait (JSON files
@@ -32,6 +34,7 @@ pub mod economy;
 pub mod game;
 pub mod http;
 pub mod limits;
+pub mod metrics;
 pub mod protocol;
 pub mod runner;
 pub mod saver;
@@ -43,7 +46,7 @@ pub mod terrain;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use std::sync::mpsc::SyncSender;
@@ -54,6 +57,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::accounts::{Accounts, SessionPolicy};
 use crate::game::{build_world, world_config, Game, GameConfig, PersistEvent, SavedGame, WorldSettings, HISTORY_DAYS};
 use crate::limits::{Limiters, Limits};
+use crate::metrics::{Metrics, NetStats};
 use crate::runner::{Request, Runner, RunnerConfig};
 use crate::store::{FileStore, MemoryStore, Store};
 
@@ -222,7 +226,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
 
     let (runner, handles) = Runner::new(game, cfg.runner.clone());
     runner.spawn();
-    let persist = tokio::spawn(persist_task(store.clone(), handles.persist));
+    let persist = tokio::spawn(persist_task(store.clone(), handles.persist, handles.metrics.clone()));
 
     let state = http::AppState {
         world: handles.tx.clone(),
@@ -231,6 +235,8 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         published: handles.published,
         next_conn: Arc::new(AtomicU64::new(1)),
         limiters: Arc::new(Limiters::new(cfg.limits)),
+        metrics: handles.metrics,
+        net: Arc::new(NetStats::default()),
     };
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     let addr = listener.local_addr()?;
@@ -325,8 +331,13 @@ async fn load_saved_game(store: &dyn Store, settings: &WorldSettings) -> Result<
     Ok(None)
 }
 
-async fn persist_task(store: Arc<dyn Store>, mut rx: mpsc::UnboundedReceiver<PersistEvent>) {
+async fn persist_task(
+    store: Arc<dyn Store>,
+    mut rx: mpsc::UnboundedReceiver<PersistEvent>,
+    metrics: Arc<Mutex<Metrics>>,
+) {
     while let Some(ev) = rx.recv().await {
+        let started = std::time::Instant::now();
         let result = match &ev {
             PersistEvent::Daily(r) => store.append_daily(r).await,
             PersistEvent::Trade(r) => store.append_trade(r).await,
@@ -334,6 +345,14 @@ async fn persist_task(store: Arc<dyn Store>, mut rx: mpsc::UnboundedReceiver<Per
             PersistEvent::Ledger(r) => store.append_ledger(r).await,
             PersistEvent::Snapshot(s) => store.put_snapshot(s.tick, s.day, &s.bytes).await,
         };
+        if matches!(ev, PersistEvent::Snapshot(_)) {
+            let mut m = metrics.lock().unwrap();
+            m.snapshots_pending = m.snapshots_pending.saturating_sub(1);
+            if result.is_ok() {
+                m.saves += 1;
+                m.save_write_ms = (started.elapsed().as_secs_f64() * 1000.0) as f32;
+            }
+        }
         if let Err(e) = result {
             tracing::error!("could not persist {ev:?}: {e}");
         }

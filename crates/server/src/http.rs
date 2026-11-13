@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
@@ -24,6 +24,7 @@ use crate::accounts::{Accounts, AuthError, Session};
 use crate::design::{self, DesignSpec, SpecError};
 use crate::game::FoundError;
 use crate::limits::{Bucket, Limiters};
+use crate::metrics::{Metrics, MetricsView, NetStats};
 use crate::protocol::{
     AchievementList, CatastropheList, ChronicleView, ClientEnvelope, EraList, ErrorInfo, LineageStats, SeasonBoard,
     ServerMsg, SpeciesList, TerrainDynamic, TerrainView,
@@ -44,6 +45,8 @@ pub struct AppState {
     pub published: watch::Receiver<Arc<Published>>,
     pub next_conn: Arc<AtomicU64>,
     pub limiters: Arc<Limiters>,
+    pub metrics: Arc<Mutex<Metrics>>,
+    pub net: Arc<NetStats>,
 }
 
 /// The API routes, plus the files in `static_dir` (the built web client)
@@ -75,6 +78,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/terrain", get(terrain))
         .route("/api/terrain/dynamic", get(terrain_dynamic))
         .route("/api/map.png", get(map_png))
+        .route("/api/metrics", get(metrics))
         .route("/ws", get(ws_upgrade))
         .with_state(state)
         .layer(cors())
@@ -259,6 +263,13 @@ async fn genes() -> Json<design::GeneCatalog> {
     Json(design::catalog())
 }
 
+/// `GET /api/metrics`: world-thread timings, queues, saves, traffic and
+/// process usage ([`MetricsView`]).
+async fn metrics(State(app): State<AppState>) -> Json<MetricsView> {
+    let tick = app.published.borrow().summary.clock.tick;
+    Json(MetricsView::gather(&app.metrics, &app.net, tick))
+}
+
 async fn world_summary(State(app): State<AppState>) -> Json<crate::protocol::WorldSummary> {
     Json(app.published.borrow().summary.clone())
 }
@@ -414,14 +425,18 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session, toke
         return;
     }
     let (mut sink, mut stream) = socket.split();
+    let net = app.net.clone();
+    net.ws_opened.fetch_add(1, Ordering::Relaxed);
     let writer = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let Ok(text) = serde_json::to_string(&msg) else { continue };
+            net.sent(text.len(), matches!(msg, ServerMsg::State(_)));
             if sink.send(Message::Text(text)).await.is_err() {
-                return;
+                break;
             }
         }
         let _ = sink.close().await;
+        net.ws_closed.fetch_add(1, Ordering::Relaxed);
     });
     let local = |msg: ServerMsg| {
         if let Some(tx) = weak.upgrade() {
