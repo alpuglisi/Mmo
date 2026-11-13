@@ -7,7 +7,7 @@ use std::fmt;
 use rand::Rng;
 
 use super::World;
-use crate::genome::PlayerId;
+use crate::genome::{Gene, PlayerId};
 use crate::mating;
 use crate::math::Vec2;
 use crate::organism::{OrgId, Sex};
@@ -79,6 +79,29 @@ pub struct DirectedOutcome {
     pub conceived: bool,
 }
 
+/// What a directed mating between two organisms would give, computed without
+/// running it (no slot used, nothing changes). Lets a player see whether a
+/// pair can conceive before asking another player for consent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatingPreview {
+    /// As in [`DirectedOutcome`].
+    pub mismatch: f32,
+    pub cost: f32,
+    pub failure_chance: f32,
+    /// Fertility the mating would run with: the lower of the two below,
+    /// times the mates' infections.
+    pub fertility: f32,
+    /// [`mating::body_plan_fertility`]: 0 for different body plans.
+    pub body_plan_fertility: f32,
+    /// [`mating::distance_fertility`] of the whole-genome distance.
+    pub distance_fertility: f32,
+    /// Body-plan genes whose difference lowers fertility (above
+    /// [`mating::BODY_PLAN_FULL`]), with the difference in expressed value.
+    pub body_plan_gaps: Vec<(Gene, f32)>,
+    /// Tiles between the two organisms (they must meet to mate).
+    pub distance: f32,
+}
+
 impl World {
     fn live_index(&self, id: OrgId) -> Result<usize, CommandError> {
         self.index
@@ -126,11 +149,7 @@ impl World {
         }
         *self.slots_used.entry(req.player).or_default() += 1;
 
-        let (female, male) = (&self.organisms[f], &self.organisms[m]);
-        let mismatch = mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
-        let cost = mating::override_cost(mismatch, self.config.override_k);
-        let failure_chance = mating::override_failure_chance(cost);
-        let fertility = mating::fertility(&female.genome, &male.genome) * self.disease_fertility(f, m);
+        let (mismatch, cost, failure_chance, fertility) = self.directed_terms(f, m);
 
         for k in [f, m] {
             let n = &mut self.organisms[k].needs;
@@ -145,6 +164,57 @@ impl World {
         }
         self.counters.directed_matings += 1;
         Ok(DirectedOutcome { mismatch, cost, failure_chance, fertility, conceived })
+    }
+
+    /// Preference mismatch, override cost, failure chance and fertility of a
+    /// directed mating between female `f` and male `m` (indices).
+    fn directed_terms(&self, f: usize, m: usize) -> (f32, f32, f32, f32) {
+        let (female, male) = (&self.organisms[f], &self.organisms[m]);
+        let mismatch = mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
+        let cost = mating::override_cost(mismatch, self.config.override_k);
+        let failure_chance = mating::override_failure_chance(cost);
+        let fertility = mating::fertility(&female.genome, &male.genome) * self.disease_fertility(f, m);
+        (mismatch, cost, failure_chance, fertility)
+    }
+
+    /// What [`World::directed_mating`] of `a` and `b` would give right now,
+    /// without running it. Needs two living organisms of different sexes;
+    /// ownership, maturity, pregnancy and distance are left to the caller.
+    pub fn mating_preview(&self, a: OrgId, b: OrgId) -> Result<MatingPreview, CommandError> {
+        let (ia, ib) = (self.live_index(a)?, self.live_index(b)?);
+        let (oa, ob) = (&self.organisms[ia], &self.organisms[ib]);
+        if oa.sex == ob.sex {
+            return Err(CommandError::SameSex);
+        }
+        let (f, m) = if oa.sex == Sex::Female { (ia, ib) } else { (ib, ia) };
+        let (mismatch, cost, failure_chance, fertility) = self.directed_terms(f, m);
+        let (ga, gb) = (&oa.genome, &ob.genome);
+        let body_plan_gaps = mating::BODY_PLAN_GENES
+            .iter()
+            .map(|&g| (g, (ga.expr(g) - gb.expr(g)).abs()))
+            .filter(|&(_, gap)| gap > mating::BODY_PLAN_FULL)
+            .collect();
+        Ok(MatingPreview {
+            mismatch,
+            cost,
+            failure_chance,
+            fertility,
+            body_plan_fertility: mating::body_plan_fertility(ga, gb),
+            distance_fertility: mating::distance_fertility(ga.distance(gb)),
+            body_plan_gaps,
+            distance: oa.pos.dist(ob.pos),
+        })
+    }
+
+    /// Keep an organism from breeding on its own until `until_tick` (it can
+    /// still take part in a directed mating). The server holds a female
+    /// promised in an open mating agreement, so she isn't already pregnant
+    /// by the time the partner arrives.
+    pub fn hold_breeding(&mut self, id: OrgId, until_tick: u64) {
+        if let Ok(i) = self.live_index(id) {
+            let o = &mut self.organisms[i];
+            o.breed_ready_tick = o.breed_ready_tick.max(until_tick);
+        }
     }
 
     /// Take direct control of one of your organisms.
@@ -245,6 +315,43 @@ mod tests {
         assert!(out.mismatch > 1.0);
         assert!(out.cost > 0.0);
         assert!(out.failure_chance > 0.0);
+    }
+
+    #[test]
+    fn preview_matches_the_mating_and_changes_nothing() {
+        let (mut w, a, b) = world_with_pair(true);
+        let p = w.mating_preview(a, b).unwrap();
+        assert_eq!(w.mating_slots_left(1), w.config.mating_slots_per_season);
+        assert!(p.body_plan_fertility > 0.0 && p.fertility > 0.0, "{p:?}");
+        assert!(p.distance < 1e-6);
+        let out = w.directed_mating(DirectedMating { player: 1, a, b, partner_consent: false }).unwrap();
+        assert_eq!((p.mismatch, p.cost, p.failure_chance, p.fertility), (out.mismatch, out.cost, out.failure_chance, out.fertility));
+    }
+
+    #[test]
+    fn preview_names_the_body_plan_genes_that_differ() {
+        let mut w = World::new(WorldConfig { width: 48, height: 48, ..Default::default() });
+        let warm = w.found_lineage(1, &FounderDesign::new("w", Thermo::Warm, BirthType::Live, 2).founders(2)).unwrap();
+        let cold = w.found_lineage(2, &FounderDesign::new("c", Thermo::Cold, BirthType::Live, 2).founders(2)).unwrap();
+        let sex = |w: &World, id| w.organism(id).unwrap().sex;
+        let b = *cold.iter().find(|&&c| sex(&w, c) != sex(&w, warm[0])).unwrap();
+        let p = w.mating_preview(warm[0], b).unwrap();
+        assert_eq!(p.fertility, 0.0);
+        assert_eq!(p.body_plan_fertility, 0.0);
+        assert!(p.distance_fertility > 0.9);
+        assert_eq!(p.body_plan_gaps.iter().map(|g| g.0).collect::<Vec<_>>(), vec![Gene::Endothermy]);
+        assert_eq!(w.mating_preview(warm[0], warm[0]), Err(CommandError::SameSex));
+    }
+
+    #[test]
+    fn held_organisms_skip_natural_breeding_but_not_directed_matings() {
+        let (mut w, a, b) = world_with_pair(false);
+        let until = w.tick + 100;
+        w.hold_breeding(a, until);
+        assert!(!w.organism(a).unwrap().can_breed(w.tick));
+        assert!(w.organism(a).unwrap().can_breed(until));
+        let out = w.directed_mating(DirectedMating { player: 1, a, b, partner_consent: false }).unwrap();
+        assert!(out.conceived);
     }
 
     #[test]

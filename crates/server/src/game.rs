@@ -13,7 +13,7 @@ use evo_sim::math::Vec2;
 use evo_sim::presets::{self, REFERENCE_SIZE};
 use evo_sim::organism::{DeathCause, Sex};
 use evo_sim::terrain::Season;
-use evo_sim::world::commands::{CommandError, DirectedMating, MEETING_DISTANCE};
+use evo_sim::world::commands::{CommandError, DirectedMating, MatingPreview, MEETING_DISTANCE};
 use evo_sim::chronicle::{AchievementKind, Catastrophe, CatastropheKind};
 use evo_sim::{FounderDesign, Gene, PlayerId, World, WorldConfig, WILD};
 
@@ -336,6 +336,9 @@ impl Game {
                 Ok(None)
             }
             ClientMsg::RequestMating { mine, partner, price } => self.request_mating(player, mine, partner, price, out),
+            ClientMsg::PreviewMating { mine, partner } => {
+                Ok(Some(serde_json::to_value(self.preview_mating(player, mine, partner)?).unwrap()))
+            }
             ClientMsg::RespondMating { request, accept } => self.respond_mating(player, request, accept, out),
             ClientMsg::CompleteMating { request } => {
                 let offer = self.offer_for(request, player)?;
@@ -373,8 +376,14 @@ impl Game {
         }
         let b = self.world.organism(partner).ok_or(e(CommandError::NotFound(partner)))?;
         let to = b.owner;
+        // A pair that can't conceive would only use up a slot (and, between
+        // players, the partner owner's time): refuse it with the reason.
+        let incompatible = || self.world.mating_preview(mine, partner).ok().as_ref().and_then(incompatibility);
         if to == player {
             // Within the player's own organisms: no consent needed.
+            if let Some(problem) = incompatible() {
+                return Err(problem);
+            }
             let req = DirectedMating { player, a: mine, b: partner, partner_consent: false };
             let outcome = self.world.directed_mating(req).map_err(e)?;
             return Ok(Some(serde_json::to_value(MatingOutcome::from(outcome)).unwrap()));
@@ -395,6 +404,9 @@ impl Game {
         if [a, b].iter().any(|o| o.sex == evo_sim::organism::Sex::Female && o.pregnancy.is_some()) {
             return Err(e(CommandError::AlreadyPregnant));
         }
+        if let Some(problem) = incompatible() {
+            return Err(problem);
+        }
         if self.world.mating_slots_left(player) == 0 {
             return Err(e(CommandError::NoSlotsLeft));
         }
@@ -406,6 +418,9 @@ impl Game {
         self.next_offer += 1;
         let offer = Offer { id, from: player, to, mine, partner, price, status: OfferStatus::Pending, created_tick: self.world.tick() };
         self.offers.insert(id, offer);
+        // Holds the requester's own female; the partner's waits for her
+        // owner's acceptance (see `hold_consented_females`).
+        self.hold_consented_females();
         let view = self.offer_view(id);
         out.push((Target::Player(to), ServerMsg::MatingRequest { offer: view.clone() }));
         Ok(Some(serde_json::json!({ "offer": view })))
@@ -425,6 +440,7 @@ impl Game {
             return Ok(None);
         }
         self.offers.get_mut(&request).unwrap().status = OfferStatus::Accepted;
+        self.hold_consented_females();
         // Try at once; if the organisms are apart, the agreement stands until
         // they meet (checked every tick) or the season ends.
         // The responder's answer succeeded either way; the mating's own
@@ -437,10 +453,15 @@ impl Game {
     fn execute(&mut self, request: u64, out: &mut Outbox) -> Result<MatingOutcome, ErrorInfo> {
         let o = self.offers[&request].clone();
         let partner_ok = self.world.organism(o.partner).is_some_and(|b| b.owner == o.to);
-        let result = if partner_ok {
+        let gone = [o.mine, o.partner].into_iter().find(|&id| self.world.organism(id).is_none());
+        let result = if let Some(id) = gone {
+            let info = self.gone(id);
+            self.close(request, OfferStatus::Failed, None, Some(info.clone()), out);
+            return Err(info);
+        } else if partner_ok {
             self.world.directed_mating(DirectedMating { player: o.from, a: o.mine, b: o.partner, partner_consent: true })
         } else {
-            Err(CommandError::NotFound(o.partner))
+            Err(CommandError::NotOwned(o.partner))
         };
         match result {
             Ok(outcome) => {
@@ -462,6 +483,73 @@ impl Game {
                 Err(info)
             }
         }
+    }
+
+    /// What a request for `mine` × `partner` would give; see
+    /// [`ClientMsg::PreviewMating`].
+    fn preview_mating(&self, player: PlayerId, mine: OrgId, partner: OrgId) -> Result<MatingPreviewView, ErrorInfo> {
+        let e = |err: CommandError| ErrorInfo::from(&err);
+        let a = self.world.organism(mine).ok_or(e(CommandError::NotFound(mine)))?;
+        if a.owner != player {
+            return Err(e(CommandError::NotOwned(mine)));
+        }
+        let p = self.world.mating_preview(mine, partner).map_err(e)?;
+        Ok(MatingPreviewView {
+            mine,
+            partner,
+            compatible: p.fertility > 0.0,
+            fertility: p.fertility,
+            body_plan_fertility: p.body_plan_fertility,
+            distance_fertility: p.distance_fertility,
+            body_plan_gaps: body_plan_gaps(&p),
+            mismatch: p.mismatch,
+            cost: p.cost,
+            failure_chance: p.failure_chance,
+            distance: p.distance,
+            meeting_distance: MEETING_DISTANCE,
+            problem: incompatibility(&p),
+        })
+    }
+
+    /// Keep the females promised in mating agreements from breeding on their
+    /// own until the agreement closes: otherwise one tends to be pregnant by
+    /// the time her partner arrives, and it fails. A female is held only once
+    /// her owner has consented: the requester's own female from the request
+    /// on (asking is consent for one's own organism), the partner's female
+    /// only once her owner has *accepted*. A merely pending request carries
+    /// no consent from the partner's owner, and holding on it would let
+    /// anyone freeze another player's female with requests that owner
+    /// ignores. (Pairs within one lineage need no consent and mate at once,
+    /// so they never wait.) Runs on request, on acceptance and every tick.
+    fn hold_consented_females(&mut self) {
+        let until = self.world.tick() + 2;
+        let held: Vec<OrgId> = self
+            .offers
+            .values()
+            .filter(|o| o.status.is_open())
+            .flat_map(|o| {
+                let partner = (o.status == OfferStatus::Accepted).then_some(o.partner);
+                std::iter::once(o.mine).chain(partner)
+            })
+            .filter(|&id| self.world.organism(id).is_some_and(|x| x.sex == Sex::Female))
+            .collect();
+        for id in held {
+            self.world.hold_breeding(id, until);
+        }
+    }
+
+    /// Error for an offer's organism that is no longer alive: how it died
+    /// when the world still has the record.
+    fn gone(&self, id: OrgId) -> ErrorInfo {
+        let cause = self.world.organisms.iter().find(|o| o.id == id && !o.alive).and_then(|o| o.death);
+        let how = match cause {
+            Some(DeathCause::Predation) => "was eaten".to_string(),
+            Some(DeathCause::Starvation) => "starved".to_string(),
+            Some(DeathCause::OldAge) => "died of old age".to_string(),
+            Some(c) => format!("died ({})", c.label()),
+            None => "died".to_string(),
+        };
+        ErrorInfo::new("died", format!("organism {id} {how} before the mating"))
     }
 
     fn close(&mut self, request: u64, status: OfferStatus, outcome: Option<MatingOutcome>, error: Option<ErrorInfo>, out: &mut Outbox) {
@@ -507,21 +595,24 @@ impl Game {
     /// have met, expire offers at a season change, record a new legacy day.
     pub fn after_tick(&mut self) -> Outbox {
         let mut out = Outbox::new();
-        let accepted: Vec<u64> = self.offers.values().filter(|o| o.status == OfferStatus::Accepted).map(|o| o.id).collect();
-        for id in accepted {
+        let open: Vec<u64> = self.offers.values().filter(|o| o.status.is_open()).map(|o| o.id).collect();
+        for id in open {
             let o = &self.offers[&id];
-            match (self.world.organism(o.mine), self.world.organism(o.partner)) {
-                (Some(a), Some(b)) if a.pos.dist(b.pos) <= MEETING_DISTANCE => {
+            let (accepted, mine, partner) = (o.status == OfferStatus::Accepted, o.mine, o.partner);
+            match (self.world.organism(mine), self.world.organism(partner)) {
+                (Some(a), Some(b)) if accepted && a.pos.dist(b.pos) <= MEETING_DISTANCE => {
                     let _ = self.execute(id, &mut out);
                 }
                 (Some(_), Some(_)) => {}
                 _ => {
-                    let missing = if self.world.organism(o.mine).is_none() { o.mine } else { o.partner };
-                    let info = ErrorInfo::from(&CommandError::NotFound(missing));
+                    // A pending offer fails too: there is nothing left to accept.
+                    let missing = if self.world.organism(mine).is_none() { mine } else { partner };
+                    let info = self.gone(missing);
                     self.close(id, OfferStatus::Failed, None, Some(info), &mut out);
                 }
             }
         }
+        self.hold_consented_females();
         let season = self.world.season();
         if season != self.last_season {
             self.last_season = season;
@@ -1260,6 +1351,30 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
     }
 }
 
+fn body_plan_gaps(p: &MatingPreview) -> Vec<BodyPlanGap> {
+    p.body_plan_gaps.iter().map(|&(g, gap)| BodyPlanGap { gene: gene_key(g), gap }).collect()
+}
+
+/// Why a pair can't conceive, if it can't: different body plans (naming the
+/// genes) or too distant genomes.
+fn incompatibility(p: &MatingPreview) -> Option<ErrorInfo> {
+    if p.body_plan_fertility <= 0.0 {
+        let gaps = body_plan_gaps(p);
+        let sterile: Vec<String> = p
+            .body_plan_gaps
+            .iter()
+            .filter(|&&(_, gap)| gap >= evo_sim::mating::BODY_PLAN_STERILE)
+            .map(|&(g, gap)| format!("{} ({gap:.2} apart)", g.label()))
+            .collect();
+        let msg = format!("different body plans: {} differ too much to conceive", sterile.join(", "));
+        return Some(ErrorInfo::new("incompatible_body_plans", msg).with_detail(serde_json::json!({ "genes": gaps })));
+    }
+    if p.distance_fertility <= 0.0 {
+        return Some(ErrorInfo::new("genetically_incompatible", "the two genomes are too different to conceive (outbreeding depression)"));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1696,5 +1811,199 @@ mod tests {
         assert!(ann.longevity_days >= 8);
         assert!(ch.achievements.recent.iter().all(|a| a.player == 1 && !a.text.is_empty()));
         assert_eq!(g.clock().era, 1);
+    }
+
+    /// Request a mating of player 1's male with player 2's female, have the
+    /// partner owner accept, leave the agreement waiting a few days, then walk
+    /// the male to her (as the client's escort does) until it closes. Returns
+    /// the requester's updates.
+    #[allow(clippy::type_complexity)]
+    fn escorted_mating(g: &mut Game, a: &[OrgId], b: &[OrgId]) -> Option<Vec<(OfferStatus, Option<MatingOutcome>, Option<ErrorInfo>)>> {
+        let pick = |g: &Game, ids: &[OrgId], sex| {
+            ids.iter().copied().find(|&i| g.world.organism(i).is_some_and(|o| o.matured && o.sex == sex && o.pregnancy.is_none()))
+        };
+        let (mine, partner) = (pick(g, a, Sex::Male)?, pick(g, b, Sex::Female)?);
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine, partner, price: Some(25) });
+        assert_eq!(result(&out), (true, None));
+        let id = out.iter().find_map(|(_, m)| if let ServerMsg::MatingRequest { offer } = m { Some(offer.id) } else { None }).unwrap();
+        let updates = |out: &Outbox| -> Vec<_> {
+            out.iter()
+                .filter_map(|(t, m)| match (t, m) {
+                    (Target::Player(1), ServerMsg::MatingUpdate { offer, outcome, error }) => Some((offer.status, *outcome, error.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut log = Vec::new();
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        log.extend(updates(&out));
+        // Accepted: she must not conceive with one of her own while the
+        // agreement waits for the two to meet.
+        for _ in 0..4 * g.world.config.ticks_per_day {
+            if !g.offers.contains_key(&id) {
+                return Some(log);
+            }
+            g.world.step();
+            log.extend(updates(&g.after_tick()));
+        }
+        g.command(10, 1, None, ClientMsg::Possess { organism: mine });
+        for t in 0..20 * g.world.config.ticks_per_day {
+            if !g.offers.contains_key(&id) {
+                break;
+            }
+            if t % 10 == 0 {
+                if let Some(p) = g.world.organism(partner).map(|o| o.pos) {
+                    g.command(10, 1, None, ClientMsg::OrderMove { organism: mine, x: p.x, y: p.y });
+                }
+            }
+            g.world.step();
+            log.extend(updates(&g.after_tick()));
+        }
+        Some(log)
+    }
+
+    #[test]
+    fn cross_player_agreement_survives_the_wait_and_completes_when_they_meet() {
+        // Two players' similar designs in a wild world, as in the e2e test.
+        let ann = design("Smoke").with(Gene::BodySize, 0.45).with(Gene::Fur, 0.4).with(Gene::Nose, 0.3).founders(20);
+        let bob = design("Bob").founders(20);
+        let mut completed = 0;
+        for seed in 0..5 {
+            let world = build_world(&WorldSettings { seed, width: 64, height: 64, days_per_year: 480, ..Default::default() });
+            let mut g = Game::new(world, GameConfig::default());
+            let a = g.found(1, &ann).unwrap().founders;
+            let b = g.found(2, &bob).unwrap().founders;
+            g.connect(10, 1, "ann");
+            g.connect(20, 2, "bob");
+            let log = escorted_mating(&mut g, &a, &b).expect("a pair of founders");
+            let last = log.last().unwrap_or_else(|| panic!("seed {seed}: no update"));
+            match last {
+                (OfferStatus::Completed, Some(o), None) => {
+                    assert!(o.fertility > 0.5, "seed {seed}: {o:?}");
+                    completed += 1;
+                }
+                // Predators don't wait for agreements.
+                (OfferStatus::Failed, None, Some(e)) if e.code == "died" => {}
+                other => panic!("seed {seed}: agreement ended {other:?} (all updates: {log:?})"),
+            }
+        }
+        assert!(completed >= 3, "{completed}/5 completed");
+    }
+
+    #[test]
+    fn different_body_plans_are_refused_at_request_time_with_the_genes() {
+        let (mut g, a, _) = game();
+        let newts = FounderDesign::new("C", Thermo::Cold, BirthType::AbandonedEggs, 2).founders(6);
+        let c = g.found(3, &newts).unwrap().founders;
+        g.connect(30, 3, "cat");
+        let ma = male(&g, &a);
+        let fc = female(&g, &c);
+        let out = g.command(10, 1, None, ClientMsg::PreviewMating { mine: ma, partner: fc });
+        let data = match &out[0].1 {
+            ServerMsg::Result { ok: true, data: Some(d), .. } => serde_json::from_value::<MatingPreviewView>(d.clone()).unwrap(),
+            m => panic!("{m:?}"),
+        };
+        assert!(!data.compatible);
+        assert_eq!(data.fertility, 0.0);
+        let genes: Vec<&str> = data.body_plan_gaps.iter().map(|g| g.gene.as_str()).collect();
+        assert_eq!(genes, ["endothermy", "birth_mode"]);
+        assert_eq!(data.problem.as_ref().map(|p| p.code.as_str()), Some("incompatible_body_plans"));
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fc, price: None });
+        let err = match &out[0].1 {
+            ServerMsg::Result { ok: false, error: Some(e), .. } => e.clone(),
+            m => panic!("{m:?}"),
+        };
+        assert_eq!(err.code, "incompatible_body_plans");
+        assert!(err.message.contains("endothermy"), "{}", err.message);
+        assert_eq!(err.detail.unwrap()["genes"][0]["gene"], "endothermy");
+        assert_eq!(out.len(), 1, "the other player is not asked");
+        assert_eq!(g.world.mating_slots_left(1), g.world.config.mating_slots_per_season);
+    }
+
+    #[test]
+    fn preview_of_a_compatible_pair() {
+        let (mut g, a, b) = game();
+        let (fa, mb) = (female(&g, &a), male(&g, &b));
+        let out = g.command(10, 1, None, ClientMsg::PreviewMating { mine: fa, partner: mb });
+        let data = match &out[0].1 {
+            ServerMsg::Result { ok: true, data: Some(d), .. } => serde_json::from_value::<MatingPreviewView>(d.clone()).unwrap(),
+            m => panic!("{m:?}"),
+        };
+        assert!(data.compatible && data.problem.is_none());
+        assert!(data.fertility > 0.9 && data.body_plan_gaps.is_empty(), "{data:?}");
+        assert_eq!(data.cost, 0.0);
+        assert_eq!(data.meeting_distance, MEETING_DISTANCE);
+        let out = g.command(20, 2, None, ClientMsg::PreviewMating { mine: fa, partner: mb });
+        assert_eq!(result(&out).1.as_deref(), Some("not_owned"));
+    }
+
+    #[test]
+    fn only_an_accepted_offer_holds_the_partner_female() {
+        let (mut g, a, b) = game();
+        let (ma, fb) = (male(&g, &a), female(&g, &b));
+        let ready = |g: &Game| g.world.organism(fb).unwrap().breed_ready_tick;
+        g.world.organisms.iter_mut().find(|o| o.id == fb).unwrap().breed_ready_tick = 0;
+        // Ann asks for Bob's female; Bob doesn't answer. A request alone
+        // must not freeze her: she keeps breeding naturally.
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fb, price: None });
+        assert_eq!(result(&out), (true, None));
+        let id = out.iter().find_map(|(_, m)| if let ServerMsg::MatingRequest { offer } = m { Some(offer.id) } else { None }).unwrap();
+        for _ in 0..5 {
+            g.after_tick();
+        }
+        assert_eq!(g.offers[&id].status, OfferStatus::Pending);
+        assert_eq!(ready(&g), 0, "a pending, unanswered offer doesn't hold the partner");
+        assert!(g.world.organism(fb).unwrap().can_breed(g.world.tick()) || !g.world.organism(fb).unwrap().matured);
+        // Bob accepts while the two are apart: from now on she waits for Ann's male.
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        assert_eq!(result(&out), (true, None));
+        assert_eq!(g.offers[&id].status, OfferStatus::Accepted);
+        assert!(ready(&g) > g.world.tick(), "held from the moment of acceptance");
+        for _ in 0..3 {
+            g.world.step();
+            g.after_tick();
+            let f = g.world.organism(fb).unwrap();
+            assert!(!f.can_breed(g.world.tick()) && f.pregnancy.is_none(), "an accepted offer holds her");
+        }
+        // Ann cancels: the hold lapses within a couple of ticks.
+        g.command(10, 1, None, ClientMsg::CancelMating { request: id });
+        assert!(!g.offers.get(&id).is_some_and(|o| o.status.is_open()));
+        let tick = g.world.tick();
+        assert!(ready(&g) <= tick + 2);
+    }
+
+    #[test]
+    fn accepted_offer_holds_the_female_and_a_death_fails_it_with_the_cause() {
+        let (mut g, a, b) = game();
+        let (fa, mb) = (female(&g, &a), male(&g, &b));
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: None });
+        let id = out.iter().find_map(|(_, m)| if let ServerMsg::MatingRequest { offer } = m { Some(offer.id) } else { None }).unwrap();
+        // Ann's own female is held as soon as Ann asks: that is her consent.
+        g.world.step();
+        g.after_tick();
+        assert_eq!(g.offers[&id].status, OfferStatus::Pending);
+        assert!(!g.world.organism(fa).unwrap().can_breed(g.world.tick()), "the requester's own female is held while pending");
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.world.step();
+        g.after_tick();
+        let tick = g.world.tick();
+        assert!(!g.world.organism(fa).unwrap().can_breed(tick), "a promised female doesn't breed on her own");
+        // The partner dies while the agreement waits for them to meet.
+        let o = g.world.organisms.iter_mut().find(|o| o.id == mb).unwrap();
+        o.alive = false;
+        o.death = Some(DeathCause::Predation);
+        let out = g.after_tick();
+        let err = out.iter().find_map(|(t, m)| match m {
+            ServerMsg::MatingUpdate { offer, error: Some(e), .. } if *t == Target::Player(1) && offer.status == OfferStatus::Failed => {
+                Some(e.clone())
+            }
+            _ => None,
+        });
+        let err = err.expect("the offer fails");
+        assert_eq!(err.code, "died");
+        assert!(err.message.contains("was eaten"), "{}", err.message);
+        // Once closed, she breeds on her own again.
+        g.world.step();
+        assert!(g.world.organism(fa).unwrap().can_breed(g.world.tick() + 2) || g.world.organism(fa).unwrap().pregnancy.is_some());
     }
 }

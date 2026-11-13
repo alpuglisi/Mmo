@@ -39,6 +39,11 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         price: Option<u64>,
     },
+    /// What a directed mating of your `mine` with `partner` would give (any
+    /// living organism of the other sex): expected fertility, override cost
+    /// and failure chance, and why the pair can't conceive if it can't. Data:
+    /// [`MatingPreviewView`]. Nothing changes and no slot is used.
+    PreviewMating { mine: OrgId, partner: OrgId },
     /// The partner organism's owner accepts or declines an offer.
     RespondMating { request: u64, accept: bool },
     /// Retry an accepted agreement now (it also completes on its own once the
@@ -62,6 +67,7 @@ impl ClientMsg {
             ClientMsg::OrderMove { .. } => "order_move",
             ClientMsg::Release { .. } => "release",
             ClientMsg::RequestMating { .. } => "request_mating",
+            ClientMsg::PreviewMating { .. } => "preview_mating",
             ClientMsg::RespondMating { .. } => "respond_mating",
             ClientMsg::CompleteMating { .. } => "complete_mating",
             ClientMsg::CancelMating { .. } => "cancel_mating",
@@ -153,11 +159,20 @@ impl ServerMsg {
 pub struct ErrorInfo {
     pub code: String,
     pub message: String,
+    /// Machine-readable specifics for some codes (`incompatible_body_plans`
+    /// lists the differing genes as [`BodyPlanGap`]s under `genes`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<serde_json::Value>,
 }
 
 impl ErrorInfo {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
-        Self { code: code.into(), message: message.into() }
+        Self { code: code.into(), message: message.into(), detail: None }
+    }
+
+    pub fn with_detail(mut self, detail: serde_json::Value) -> Self {
+        self.detail = Some(detail);
+        self
     }
 }
 
@@ -194,6 +209,46 @@ impl From<evo_sim::world::commands::DirectedOutcome> for MatingOutcome {
     }
 }
 
+/// A body-plan gene (endothermy, birth mode, body size, carnivory) in which
+/// two organisms differ enough to lower their fertility.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BodyPlanGap {
+    /// Gene key as in `/api/genes` (`"endothermy"`, `"body_size"`, …).
+    pub gene: String,
+    /// Difference in expressed value (fertility falls to 0 at
+    /// `evo_sim::mating::BODY_PLAN_STERILE`).
+    pub gap: f32,
+}
+
+/// Reply to `preview_mating`: what the directed mating would give now.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MatingPreviewView {
+    pub mine: OrgId,
+    pub partner: OrgId,
+    /// Whether the pair can conceive at all (`fertility > 0`).
+    pub compatible: bool,
+    /// Fertility the mating would run with: the lower of the two below,
+    /// times the mates' infections.
+    pub fertility: f32,
+    /// 0 for different body plans (thermoregulation, birth mode, body size,
+    /// diet).
+    pub body_plan_fertility: f32,
+    /// Outbreeding depression over the whole genome.
+    pub distance_fertility: f32,
+    pub body_plan_gaps: Vec<BodyPlanGap>,
+    /// Larger of the two preference mismatches (≤ 1: both would choose it).
+    pub mismatch: f32,
+    pub cost: f32,
+    pub failure_chance: f32,
+    /// Tiles apart (they must meet, within `meeting_distance`).
+    pub distance: f32,
+    pub meeting_distance: f32,
+    /// Why a request for this pair would be refused for incompatibility
+    /// (`incompatible_body_plans` or `genetically_incompatible`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<ErrorInfo>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OfferStatus {
@@ -204,7 +259,8 @@ pub enum OfferStatus {
     Completed,
     Declined,
     Cancelled,
-    /// The mating was attempted and refused by the rules (not mature, …).
+    /// The agreement could not be carried out: an organism died (`died`)
+    /// or the rules refused it when it ran.
     Failed,
     /// The season ended (slots reset) before it happened.
     Expired,
