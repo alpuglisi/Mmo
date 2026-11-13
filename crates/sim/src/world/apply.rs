@@ -573,9 +573,7 @@ impl World {
         let (guard_rs, guard_power) = self.guardian(b);
         rs += guard_rs;
         // Prey that hasn't noticed the hunter is caught off guard.
-        if b.action != Action::Flee {
-            rs *= 1.0 - self.config.balance.ambush;
-        }
+        rs *= 1.0 - self.ambush_on(b);
         let mut p = pw * pw / (pw * pw + rs * rs + 1e-6);
         // Prey that made it into its burrow is mostly out of reach.
         if b.sheltered {
@@ -662,11 +660,23 @@ impl World {
     /// Prey caught off guard (not fleeing) reacts late, like its resistance.
     pub(crate) fn escape_chance(&self, a: &Organism, b: &Organism) -> f32 {
         let (pursue, evade) = (a.evasion(), b.evasion());
-        let mut q = self.config.balance.escape * 2.0 * evade / (evade + pursue + 1e-6);
-        if b.action != Action::Flee {
-            q *= 1.0 - self.config.balance.ambush;
+        let q = self.config.balance.escape * 2.0 * evade / (evade + pursue + 1e-6);
+        (q * (1.0 - self.ambush_on(b))).min(0.95)
+    }
+
+    /// How far prey `b` is caught off guard by a strike (`Balance::ambush`):
+    /// not at all while fleeing; fully if it had no threat in sight; and
+    /// partly if it saw the hunter but kept drinking, resting or grazing
+    /// with an eye on it (`alert_guard` of the penalty waived).
+    pub(crate) fn ambush_on(&self, b: &Organism) -> f32 {
+        let bal = &self.config.balance;
+        if b.action == Action::Flee {
+            0.0
+        } else if b.needs.safety > 0.0 {
+            bal.ambush * (1.0 - bal.alert_guard)
+        } else {
+            bal.ambush
         }
-        q.min(0.95)
     }
 
     fn try_mate(&mut self, i: usize, j: usize, rng: &mut SimRng) {
@@ -1461,6 +1471,25 @@ mod tests {
             let qo = w.escape_chance(&fox, &o);
             assert!(qo < q - 0.05, "{what} {qo} vs adult {q}");
         }
+    }
+
+    /// Prey that saw the hunter but kept drinking is only partly caught off
+    /// guard (`alert_guard`); prey that saw nothing fully; fleeing prey not
+    /// at all.
+    #[test]
+    fn prey_with_a_threat_in_sight_is_partly_ambushed() {
+        let mut w = presets::standard_world(WorldConfig { seed: 3, width: 48, height: 48, ..Default::default() }, 1);
+        let mut o = w.organisms.iter().find(|o| o.lineage == 1).unwrap().clone();
+        let ambush = w.config.balance.ambush;
+        (o.action, o.needs.safety) = (Action::Drink, 0.0);
+        assert_eq!(w.ambush_on(&o), ambush);
+        o.needs.safety = 40.0;
+        assert!((w.ambush_on(&o) - ambush * (1.0 - w.config.balance.alert_guard)).abs() < 1e-6);
+        o.action = Action::Flee;
+        assert_eq!(w.ambush_on(&o), 0.0);
+        w.config.balance.alert_guard = 0.0;
+        (o.action, o.needs.safety) = (Action::Rest, 40.0);
+        assert_eq!(w.ambush_on(&o), ambush, "alert_guard 0: as before");
     }
 
     /// Prey that slips a strike bolts, and the hunter can't strike again

@@ -21,11 +21,11 @@ evo-sim — Evolution MMO simulation prototype
 
 USAGE:
     evo-sim run    [--seed N] [--size N] [--days N] [--report N] [--snapshot PATH] [--threads N] [--lod] [--focus X,Y] [--sequential-apply]
-                   [--catastrophes] [--catastrophe KIND@DAY] [--era-years N]
+                   [--catastrophes] [--catastrophe KIND@DAY] [--era-years N] [--migrants]
     evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N,..] [--lod] [--focus X,Y] [--sequential-apply] [--compare-apply]
     evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH] [--sequential-apply]
-                   [--screen-days D,..] [--screen-seeds N] [--eta F]
-    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--set NAME=V ..] [vs [defaults | --set NAME=V ..]]
+                   [--screen-days D,..] [--screen-seeds N] [--eta F] [--migrants]
+    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--set NAME=V ..] [vs [defaults | --set NAME=V ..]]
     evo-sim designs
 
 COMMANDS:
@@ -34,7 +34,7 @@ COMMANDS:
     sweep    Random-search the balance parameters, scoring lineage coexistence
     compare  Run two balance configurations on the same seeds and report the paired
              score difference with a 95% confidence interval (is A better than B?)
-    designs  List the sample founder designs and their point costs
+    designs  List the sample player designs (and the migrating one) and their point costs
 
 OPTIONS:
     --seed N        World seed (default 1)
@@ -67,6 +67,10 @@ OPTIONS:
     --focus X,Y     A focus point in tiles (repeatable; implies --lod). Without any,
                     --lod runs the whole world as cohorts
     --lod-set NAME=V  Override a level-of-detail parameter (repeatable)
+    --migrants      Also found the migrating sample design (Migrating caribou, a fifth
+                    player lineage) (run, sweep, compare). Sweep and compare report it
+                    but score only the standard eight lineages, so scores keep their
+                    12-point scale
     --sequential-apply  Run the apply phase fully sequentially, as before the
                     parallel apply (run, bench, sweep; worlds differ from parallel ones)
     --compare-apply Bench: measure parallel and sequential apply, rotating days
@@ -88,7 +92,8 @@ dormancy_mismatch brumation_mismatch fat_capacity den_concealment migration_rang
 migration_risk torpor_metabolism cache_capacity shared_burrow sentry_share
 sentry_vigilance sentry_cost communal_den group_navigation shared_cache molt_cost
 coat_insulation breeding_window timed_conception breeding_recklessness courtship_caution
-brood_recovery egg_overheat brood_warmth brood_cost possess_urgency possess_danger
+brood_recovery egg_overheat brood_warmth brood_cost threat_caution alert_guard pasture_search
+possess_urgency possess_danger
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
 juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump
@@ -110,6 +115,7 @@ struct Args {
     lod: LodConfig,
     focus: Vec<Vec2>,
     sequential_apply: bool,
+    migrants: bool,
     scoring: ScoringConfig,
     forced: Vec<(CatastropheKind, u64)>,
     trials: usize,
@@ -143,6 +149,7 @@ fn parse_args() -> Result<Args, String> {
         lod: LodConfig::default(),
         focus: Vec::new(),
         sequential_apply: false,
+        migrants: false,
         scoring: ScoringConfig::default(),
         forced: Vec::new(),
         trials: 16,
@@ -214,6 +221,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--lod" => a.lod.enabled = true,
             "--sequential-apply" => a.sequential_apply = true,
+            "--migrants" => a.migrants = true,
             "--compare-apply" => a.compare_apply = true,
             "--focus" => {
                 let v = value()?;
@@ -276,6 +284,7 @@ fn main() -> ExitCode {
             screen_days: args.screen_days.clone(),
             screen_seeds: args.screen_seeds,
             eta: args.eta,
+            migrants: args.migrants,
         }),
         "compare" => {
             sweep::compare(&sweep::CompareArgs {
@@ -287,6 +296,7 @@ fn main() -> ExitCode {
                 b: args.balance_b.unwrap_or_default(),
                 out: args.out.clone(),
                 parallel_apply: !args.sequential_apply,
+                migrants: args.migrants,
             });
         }
         "designs" => designs(),
@@ -305,6 +315,7 @@ fn player_names() -> BTreeMap<PlayerId, String> {
     for (k, d) in presets::player_designs().iter().enumerate() {
         names.insert(k as PlayerId + 1, d.name.clone());
     }
+    names.insert(presets::MIGRANT_OWNER, presets::migrant_design().name);
     names
 }
 
@@ -319,7 +330,8 @@ fn build_world(args: &Args, scale: u32) -> World {
         scoring: args.scoring,
         ..Default::default()
     };
-    let mut world = presets::standard_world(config, scale);
+    let mut world =
+        if args.migrants { presets::extended_world(config, scale) } else { presets::standard_world(config, scale) };
     for &(kind, day) in &args.forced {
         world.schedule_catastrophe(kind, day, None);
     }
@@ -808,7 +820,7 @@ fn bench(args: &Args) {
 
 fn designs() {
     println!("Budget: {} points\n", evo_sim::design::DESIGN_BUDGET);
-    for d in presets::player_designs() {
+    for d in presets::player_designs().into_iter().chain([presets::migrant_design()]) {
         println!(
             "{:<22} {:?}, {:?}, {} per birth, {} founders · {:.1} points · {}",
             d.name,
