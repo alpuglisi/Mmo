@@ -161,8 +161,7 @@ fn header_and_errors() {
     assert!(!w.config.snapshot_compatible(&resized));
 }
 
-/// The small world `v4-32x32.snap` was written from (by the last version 4
-/// build), 1 day and 7 ticks in.
+/// A small world, 1 day and 7 ticks in.
 fn fixture_world() -> World {
     let mut w = World::new(WorldConfig { seed: 3, width: 32, height: 32, ..Default::default() });
     for (owner, design) in presets::wild_designs().into_iter().take(2) {
@@ -220,30 +219,21 @@ fn terrain_is_stored_apart_and_must_be_the_right_one() {
     assert_eq!(w.map.terrain().hash(), hash);
 }
 
-/// A version 4 snapshot (terrain embedded), written by the last version 4
-/// build, still restores, without a terrain, to exactly the world this
-/// build makes, and carries on the same way.
+/// Snapshots from before version 6 (terrain embedded until version 5; no
+/// lakes, floodplains or wind direction before 6) are refused, naming the
+/// version, even when the header is readable.
 #[test]
-fn version_4_snapshots_still_restore() {
-    let old = include_bytes!("v4-32x32.snap");
-    let h = SnapshotHeader::read(old).unwrap();
-    assert_eq!((h.version, h.terrain), (4, None));
-    let mut restored = World::restore(old, None).expect("restore a version 4 snapshot");
-    let mut fresh = fixture_world();
-    assert!(**restored.map.terrain() == **fresh.map.terrain());
-    assert_eq!(restored.map.terrain().hash(), fresh.map.terrain().hash());
-    assert_eq!(restored.map.tiles, fresh.map.tiles);
-    let now = fresh.snapshot();
-    assert!(restored.snapshot() == now, "the upgraded world differs");
-    // What moved out of the snapshot is exactly the terrain's tiles and
-    // catchments (its width, height and two vector lengths aside: the map
-    // keeps the first two, and the hash that names it replaces one length).
-    let terrain = bincode::serialize(&**fresh.map.terrain()).unwrap().len();
-    let raw = SnapshotHeader::read(&now).unwrap().raw_len as usize;
-    assert_eq!(h.raw_len as usize - raw, terrain - 32);
-    for _ in 0..48 {
-        restored.step();
-        fresh.step();
+fn older_snapshots_are_refused_by_version() {
+    let bytes = fixture_world().snapshot();
+    for old in [4u32, 5] {
+        let mut b = bytes.clone();
+        b[8..12].copy_from_slice(&old.to_le_bytes());
+        // Their header has no terrain hash.
+        let h = SnapshotHeader::read(&b).unwrap();
+        assert_eq!((h.version, h.terrain), (old, None));
+        assert_eq!(
+            World::restore(&b, None).err(),
+            Some(SnapshotError::Version { found: old, expected: SNAPSHOT_VERSION })
+        );
     }
-    assert_same(&restored, &fresh);
 }

@@ -443,28 +443,13 @@ async fn persist_task(store: Arc<dyn Store>, mut rx: mpsc::UnboundedReceiver<Per
 mod tests {
     use super::*;
 
-    /// A saved game around the sim's version 4 world snapshot fixture
-    /// (terrain embedded; seed 3, 32x32), with empty game state.
-    fn v4_saved_game() -> Vec<u8> {
-        let world = include_bytes!("../../sim/src/world/snapshot/v4-32x32.snap");
-        let mut out = b"EVOSAVE\0".to_vec();
-        out.extend_from_slice(&2u64.to_le_bytes());
-        out.extend_from_slice(b"{}");
-        out.extend_from_slice(world);
-        out
-    }
-
-    /// A version 4 saved game restores without a stored terrain, and the
-    /// first save of the restored world stores its terrain before the saved
-    /// game that names it.
+    /// The saver's first save of a world stores its terrain before the
+    /// saved game that names it, and that save restores from the store.
     #[tokio::test]
-    async fn version_4_saves_restore_and_their_terrain_is_stored_on_the_next_save() {
+    async fn the_first_save_stores_the_terrain_and_restores() {
         let store = MemoryStore::default();
-        store.put_snapshot(55, 1, &v4_saved_game()).await.unwrap();
         let settings = WorldSettings { seed: 3, width: 32, height: 32, wild: false, ..Default::default() };
-        let (world, saved) = load_saved_game(&store, &settings).await.unwrap().expect("restored");
-        assert_eq!(world.tick(), 55);
-        let mut game = Game::resume(world, GameConfig::default(), saved, Vec::new());
+        let mut game = Game::new(build_world(&settings), GameConfig::default());
         game.world.step();
 
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -481,11 +466,29 @@ mod tests {
         let blob = store.load_terrain(&world_id, hash).await.unwrap().expect("terrain stored");
         assert!(Terrain::decode(&blob).unwrap() == **game.world.map.terrain());
 
-        // The new save names it and restores from the store.
-        assert_eq!(store.snapshot_ticks().await.unwrap()[0], 56);
+        assert_eq!(store.snapshot_ticks().await.unwrap()[0], game.world.tick());
         let (again, _) = load_saved_game(&store, &settings).await.unwrap().expect("restored");
-        assert_eq!(again.tick(), 56);
+        assert_eq!(again.tick(), game.world.tick());
         assert!(again.snapshot() == game.world.snapshot());
+    }
+
+    /// A saved game from before world snapshot version 6 (no terrain hash in
+    /// its header) is skipped like any other format version: no error, and
+    /// a new world is generated.
+    #[tokio::test]
+    async fn saves_of_an_older_format_are_skipped() {
+        let settings = WorldSettings { seed: 4, width: 32, height: 32, wild: false, ..Default::default() };
+        let game = Game::new(build_world(&settings), GameConfig::default());
+        let mut bytes = snapshot::encode(&game);
+        // The world snapshot starts after the magic, the JSON length and the
+        // JSON; its format version follows its own magic.
+        let json = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+        let at = 16 + json + 8;
+        bytes[at..at + 4].copy_from_slice(&5u32.to_le_bytes());
+        assert_eq!(snapshot::terrain_key(&bytes).unwrap(), None);
+        let store = MemoryStore::default();
+        store.put_snapshot(game.world.tick(), 0, &bytes).await.unwrap();
+        assert!(load_saved_game(&store, &settings).await.unwrap().is_none());
     }
 
     /// Saved games whose terrain the store lacks don't restore, and the

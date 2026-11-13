@@ -9,8 +9,9 @@
 //! rivers: most of a large map) and names it by content hash; the store
 //! keeps it once per world ([`TerrainBlob`], `Store::put_terrain`), keyed by
 //! the saved game's world id and that hash. [`terrain_key`] reads both from
-//! a saved game, and [`decode`] needs the terrain back (saved games from
-//! before the split, world snapshot version 4, carry their own).
+//! a saved game, and [`decode`] needs the terrain back. Saved games from
+//! before world snapshot version 6 don't restore (a new world is generated,
+//! as for any other format version).
 //!
 //! Saving is split so the world thread never stalls on encoding: it takes a
 //! [`Capture`] (a clone of the world, which shares the terrain, and the
@@ -21,7 +22,7 @@
 use std::sync::Arc;
 
 use evo_sim::terrain::Terrain;
-use evo_sim::world::{SnapshotError, SnapshotHeader};
+use evo_sim::world::{SnapshotError, SnapshotHeader, SNAPSHOT_VERSION};
 use evo_sim::World;
 
 use crate::game::{Game, SavedGame, TerrainBlob};
@@ -142,9 +143,11 @@ pub fn decode_game(bytes: &[u8]) -> Result<SavedGame, DecodeError> {
 }
 
 /// The stored terrain a saved game needs, as `(world id, content hash)`;
-/// `None` for one that carries its own (world snapshot version 4).
+/// `None` for one of another format version, which [`decode`] refuses
+/// anyway (before version 6 the header names no terrain).
 pub fn terrain_key(bytes: &[u8]) -> Result<Option<(String, u64)>, DecodeError> {
-    let Some(hash) = header(bytes)?.terrain else { return Ok(None) };
+    let h = header(bytes)?;
+    let Some(hash) = h.terrain.filter(|_| h.version == SNAPSHOT_VERSION) else { return Ok(None) };
     Ok(Some((decode_game(bytes)?.world_id().to_string(), hash)))
 }
 

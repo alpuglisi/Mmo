@@ -3,21 +3,23 @@
 //!
 //! The environment has three layers:
 //! - **Geography**, fixed at generation: elevation and moisture noise give
-//!   biomes; rivers are carved by flow accumulation down a pit-free drainage
-//!   network, from high, wet ground to lakes, the sea or the map edge. Each
-//!   tile's fixed part is its [`Ground`], all of them a [`Terrain`] that a
+//!   biomes; depressions fed by enough rain fill into lakes; rivers are
+//!   carved by flow accumulation down a pit-free drainage network, from
+//!   high, wet ground to lakes, the sea or the map edge, and low land beside
+//!   them is their floodplain. Each tile's fixed part is its [`Ground`], all of them a [`Terrain`] that a
 //!   [`Map`] shares behind an `Arc` (clones share it; snapshots name it by
 //!   hash); the changing part is its [`Tile`].
 //! - **Regional weather** on a coarse grid of [`CHUNK`]-sized cells, advanced
 //!   once per simulated hour ([`Map::advance_weather`]): fronts drifting
-//!   east bring wind, storms and rain; slow-moving dry and wet spells and the
-//!   seasons set how much rain falls; each cell integrates rain, snowmelt and
+//!   east bring wind (with a direction, for flyers and gliders), storms and
+//!   rain; slow-moving dry and wet spells and the seasons set how much rain falls; each cell integrates rain, snowmelt and
 //!   evaporation into a soil `wetness` (0.5 normal, low is drought). Weather
 //!   is a pure function of `(seed, hour, cell)` apart from that integration.
 //! - **Tile state**, updated chunk by chunk ([`Map::update_chunks`], every
 //!   chunk once per simulated hour, a share of them each tick): temperature,
 //!   snowfall and melt, ice, water levels (shallow lakes, marsh and rivers
-//!   follow regional wetness, rivers also swell with upstream snowmelt),
+//!   follow regional wetness, rivers also swell with upstream snowmelt and
+//!   in flood overflow onto their floodplain, leaving silt),
 //!   plant regrowth and carcass decay.
 //!
 //! Hooks for other systems: [`Map::weather_at`] samples local weather for
@@ -101,6 +103,9 @@ pub struct Ground {
     pub canopy: f32,
     /// Most plant food the tile holds (food units).
     pub veg_max: f32,
+    /// Floodplain: the river level (× normal) above which the neighboring
+    /// river overflows onto this tile; 0 off the floodplain.
+    pub plain: f32,
 }
 
 impl Ground {
@@ -148,6 +153,9 @@ pub struct Tile {
     pub rain: f32,
     /// Regional soil wetness, 0 parched .. 1 soaked, 0.5 normal.
     pub wetness: f32,
+    /// Silt left by a flood, 0..1: speeds plant regrowth after the water
+    /// recedes and fades over a few weeks.
+    pub silt: f32,
 }
 
 impl Tile {
@@ -269,27 +277,92 @@ pub fn canopy_refuge(ground: &Ground, prey: &Body, attacker: &Body) -> f32 {
     }
 }
 
-/// Local weather at a point, as [`traverse`] reads it.
+/// Local weather at a point, as [`traverse`] and the flight rules read it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Weather {
     /// 0 calm, 1 gale.
     pub wind: f32,
+    /// Direction the wind blows toward, in radians (0 = east, +x;
+    /// π/2 = south, +y).
+    pub dir: f32,
 }
 
-/// Wind above which a storm blows (chill, exposure on open ground).
+/// Wind above which a storm blows (chill, exposure on open ground, costly
+/// and risky flight).
 pub const STORM_WIND: f32 = 0.8;
-/// Wind above which flyers are grounded.
-pub const GROUNDING_WIND: f32 = 0.7;
+/// Prevailing wind direction: fronts drift east and a little south.
+const PREVAILING_DIR: f32 = 0.27;
 
 impl Weather {
+    /// Wind of this strength with no particular direction (ground movement
+    /// ignores where the wind blows).
+    pub const fn still(wind: f32) -> Weather {
+        Weather { wind, dir: PREVAILING_DIR }
+    }
+
     pub fn storm(&self) -> bool {
         self.wind > STORM_WIND
     }
 
-    pub fn grounds_flyers(&self) -> bool {
-        self.wind > GROUNDING_WIND
+    /// The wind as a vector: unit direction times strength.
+    pub fn vector(&self) -> Vec2 {
+        let (s, c) = self.dir.sin_cos();
+        Vec2::new(c, s) * self.wind
     }
+
+    /// Too windy for this body to fly ([`flight_wind_limit`]).
+    pub fn grounds(&self, body: &Body) -> bool {
+        self.wind > flight_wind_limit(body)
+    }
+}
+
+/// Wind above which a flyer stays on the ground. Light wings (low wing
+/// loading) are tossed about; heavier loading tolerates more wind, up to
+/// flying into a storm.
+pub fn flight_wind_limit(body: &Body) -> f32 {
+    (0.6 + 0.15 * body.wing_loading).min(0.92)
+}
+
+/// Wind above which a glider can't launch.
+pub fn glide_wind_limit(body: &Body) -> f32 {
+    (0.5 + 0.05 * body.wing_loading).min(0.75)
+}
+
+/// Speed and energy multipliers for flying or gliding in unit direction
+/// `dir`: a tailwind speeds the body and saves energy, a headwind slows it
+/// and costs more. Light wings feel the wind most (`1 / (1 + wing loading /
+/// 2)`); strong wind costs extra whichever way it blows, a storm a lot more.
+pub fn wind_effect(body: &Body, weather: &Weather, dir: Vec2) -> (f32, f32) {
+    let feel = 1.0 / (1.0 + 0.5 * body.wing_loading.max(0.0));
+    let along = weather.vector().dot(dir);
+    let speed = (1.0 + 0.6 * feel * along).max(0.3);
+    let turbulence = 1.5 * (weather.wind - 0.5).max(0.0) + if weather.storm() { 1.0 } else { 0.0 };
+    let energy = (1.0 - 0.5 * feel * along).max(0.4) * (1.0 + feel * turbulence);
+    (speed, energy)
+}
+
+/// Elevation drop between neighboring tiles (in the map's 0..1 elevation
+/// ranks) that gives a glider the height to launch.
+pub const GLIDE_DROP: f32 = 0.004;
+
+/// Gliding from tile `from` onto `to` in unit direction `dir`: speed and
+/// energy multipliers, or `None` if the body can't glide there. A glider
+/// needs height to launch (a canopy it climbs, a steep slope, or ground
+/// falling away ahead) and calm enough air; gliding is cheaper than
+/// flight, and the wind helps or hinders it as it does flyers.
+pub fn glide(body: &Body, from: &Ground, to: &Ground, weather: &Weather, dir: Vec2) -> Option<(f32, f32)> {
+    if !body.can_glide || weather.wind > glide_wind_limit(body) {
+        return None;
+    }
+    let height = (from.canopy > 0.5 && body.climb >= CLIMB_CANOPY)
+        || from.slope > 0.4
+        || from.elevation - to.elevation > GLIDE_DROP;
+    if !height {
+        return None;
+    }
+    let (s, e) = wind_effect(body, weather, dir);
+    Some((1.3 * s, 0.5 * e))
 }
 
 /// Tiles per side of an environment chunk, which is also a weather cell.
@@ -301,6 +374,8 @@ pub const CHUNK: usize = 16;
 pub struct WeatherCell {
     /// 0 calm, 1 gale.
     pub wind: f32,
+    /// Direction the wind blows toward, radians (see [`Weather::dir`]).
+    pub dir: f32,
     /// Precipitation, 0..1.
     pub rain: f32,
     /// Soil wetness, 0 parched .. 1 soaked, 0.5 normal.
@@ -407,6 +482,34 @@ pub fn river_level(wetness: f32, melt: f32, bal: &Balance) -> f32 {
     water_level(wetness, bal).max(0.15) + bal.snowmelt_swell * (melt - MELT_BASE).max(0.0) * MELT_SWELL
 }
 
+/// Floodplain tiles: within this many steps of a river and at most
+/// `PLAIN_RISE` (in elevation ranks) above it.
+const PLAIN_REACH: u8 = 2;
+const PLAIN_RISE: f32 = 0.02;
+/// River level at which the lowest floodplain tiles flood: a little below
+/// [`FLOOD_LEVEL`], so the river spills where its banks are lowest first.
+const PLAIN_LEVEL: f32 = FLOOD_LEVEL - 0.1;
+/// Overflow depth in m per unit of river level above a tile's threshold,
+/// and its cap.
+const PLAIN_DEPTH: f32 = 0.6;
+const PLAIN_MAX_DEPTH: f32 = 0.9;
+/// Silt gained per flooded hour, its hourly decay (half-life about ten
+/// days) and the regrowth boost at full silt (+100%).
+const SILT_GAIN: f32 = 0.05;
+const SILT_DECAY: f32 = 0.003;
+const SILT_BOOST: f32 = 1.0;
+/// Share of a flooded tile's plants drowned per hour.
+const FLOOD_VEG_LOSS: f32 = 0.02;
+/// Lakes: tiles of a filled depression at least `LAKE_MIN_DEPTH` deep
+/// (elevation ranks) hold water, the lowest first, one tile of surface per
+/// `LAKE_INFLOW` of rain draining in (evaporation balances inflow); depth in
+/// m per rank below the surface, capped below 1 m so lakes still follow
+/// regional wetness.
+const LAKE_MIN_DEPTH: f32 = 0.002;
+const LAKE_INFLOW: f32 = 4.0;
+const LAKE_DEPTH: f32 = 25.0;
+const LAKE_MAX_DEPTH: f32 = 0.9;
+
 /// Per-tile inputs to an environment update.
 struct TileEnv {
     offset: f32,
@@ -459,11 +562,18 @@ impl Map {
 
         let (chunks_x, chunks_y) = (width.div_ceil(CHUNK), height.div_ceil(CHUNK));
         let catchment = carve_rivers(&mut ground, &mut tiles, width, height, chunks_x);
-        let mut cells =
-            vec![
-                WeatherCell { wind: 0.3, rain: 0.0, wetness: 0.5, melt: 0.0, land_tiles: 0, river_tiles: 0 };
-                chunks_x * chunks_y
-            ];
+        let mut cells = vec![
+            WeatherCell {
+                wind: 0.3,
+                dir: PREVAILING_DIR,
+                rain: 0.0,
+                wetness: 0.5,
+                melt: 0.0,
+                land_tiles: 0,
+                river_tiles: 0
+            };
+            chunks_x * chunks_y
+        ];
         for (i, g) in ground.iter().enumerate() {
             let c = &mut cells[(i / width / CHUNK) * chunks_x + (i % width) / CHUNK];
             c.land_tiles += (g.base_water < 1.0) as u32;
@@ -539,8 +649,8 @@ impl Map {
     pub fn traverse_at(&self, body: &Body, p: Vec2, flying: bool) -> Traverse {
         let (x, y) = self.tile_coords(p);
         let i = self.idx(x, y);
-        let t = &self.tiles[i];
-        traverse(body, &self.terrain.ground[i], t, &Weather { wind: t.wind }, flying)
+        let weather = Weather { wind: self.tiles[i].wind, dir: self.cells[self.chunk_of(x, y)].dir };
+        traverse(body, &self.terrain.ground[i], &self.tiles[i], &weather, flying)
     }
 
     pub fn tile_coords(&self, p: Vec2) -> (usize, usize) {
@@ -581,7 +691,8 @@ impl Map {
 
     /// Local weather at a point, for [`traverse`] and flight checks.
     pub fn weather_at(&self, p: Vec2) -> Weather {
-        Weather { wind: self.tile_at(p).wind }
+        let (x, y) = self.tile_coords(p);
+        Weather { wind: self.tiles[self.idx(x, y)].wind, dir: self.cells[self.chunk_of(x, y)].dir }
     }
 
     /// Regional dryness at a point: 0 soaked, 0.5 normal, 1 parched.
@@ -591,8 +702,10 @@ impl Map {
 
     /// Map-wide average weather (for reports).
     pub fn mean_weather(&self) -> Weather {
-        let wind = self.cells.iter().map(|c| c.wind).sum::<f32>() / self.cells.len().max(1) as f32;
-        Weather { wind }
+        let n = self.cells.len().max(1) as f32;
+        let wind = self.cells.iter().map(|c| c.wind).sum::<f32>() / n;
+        let v = self.cells.iter().fold(Vec2::ZERO, |v, c| v + Vec2::new(c.dir.cos(), c.dir.sin()));
+        Weather { wind, dir: v.y.atan2(v.x) }
     }
 
     /// Water (or snow to eat) on this tile or an adjacent one.
@@ -756,6 +869,9 @@ impl Map {
         };
         let z = |n: f32| (n - 0.5) / NOISE_SD3;
         let (mut dry_land, mut land, mut flooded, mut rivers) = (0u32, 0u32, 0u32, 0u32);
+        // Wind direction: the prevailing westerly swings map-wide over a few
+        // days and veers regionally, the pattern drifting with the fronts.
+        let swing = (fbm(seed ^ 0xD2, (h / 60.0) as f32, 0.5, 2) - 0.5) / NOISE_SD2;
         for (c, cell) in self.cells.iter_mut().enumerate() {
             let x = ((c % self.chunks_x) * CHUNK) as f64 + CHUNK as f64 / 2.0;
             let y = ((c / self.chunks_x) * CHUNK) as f64 + CHUNK as f64 / 2.0;
@@ -771,6 +887,9 @@ impl Map {
             let spell = z(fbm(seed ^ 0x5E, sx, sy, 3));
 
             cell.wind = (0.42 + 0.12 * front + 0.11 * gust + storminess).clamp(0.0, 1.0);
+            let (vx, vy) = at(x, y, 0.3, 0.1, 80.0);
+            let veer = (fbm(seed ^ 0xD1, vx, vy, 2) - 0.5) / NOISE_SD2;
+            cell.dir = (PREVAILING_DIR + 0.9 * swing + 0.6 * veer).rem_euclid(TAU);
             let potential = front + 0.9 * spell + 1.5 * rain_season + self.climate_wet;
             cell.rain = ((potential - 1.0) * 0.35).clamp(0.0, 1.0);
             let melt = std::mem::take(&mut self.melt_acc[c]);
@@ -910,10 +1029,24 @@ fn update_tile(g: &Ground, t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
         if g.biome == Biome::Marsh {
             t.mud = 0.7 * level.clamp(0.4, 1.0);
         }
+    } else if g.plain > 0.0 {
+        // Floodplain: the river overflows once its level passes the tile's
+        // threshold, standing still and shallow at first, deeper as it rises.
+        let level = river_level(e.river_wet, e.river_melt, bal);
+        t.water_depth = ((level - g.plain) * PLAIN_DEPTH).clamp(0.0, PLAIN_MAX_DEPTH);
     }
     if t.water_depth < WATER_GONE {
         t.water_depth = 0.0;
         t.ice = 0.0;
+    }
+    // Flooded plains drown their plants and gather silt, which feeds
+    // regrowth once the water has gone.
+    let flooded = g.plain > 0.0 && t.water_depth > 0.0;
+    if flooded {
+        t.silt = (t.silt + SILT_GAIN).min(1.0);
+        t.veg *= 1.0 - FLOOD_VEG_LOSS;
+    } else if t.silt > 0.0 {
+        t.silt = (t.silt * (1.0 - SILT_DECAY) - 1e-4).max(0.0);
     }
 
     // Ice: winter lakes become bridges; currents resist freezing.
@@ -926,11 +1059,11 @@ fn update_tile(g: &Ground, t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
     }
 
     // Vegetation: logistic regrowth, slowed by cold, snow cover and drought.
-    if g.veg_max > 0.0 {
+    if g.veg_max > 0.0 && !flooded {
         let warmth = (t.temp / 12.0).clamp(0.0, 1.0);
         let cover = (1.0 - t.snow * 3.0).clamp(0.0, 1.0);
         let wet = 1.0 - bal.rain_growth + bal.rain_growth * (e.wet / 0.5).clamp(0.0, 1.4);
-        let growth = bal.veg_regrowth * warmth * cover * wet / 24.0;
+        let growth = bal.veg_regrowth * warmth * cover * wet * (1.0 + SILT_BOOST * t.silt) / 24.0;
         // Root term so grazed-out tiles recover.
         t.veg += growth * (t.veg + 0.25 * g.veg_max) * (1.0 - t.veg / g.veg_max);
         t.veg = t.veg.clamp(0.0, g.veg_max);
@@ -945,20 +1078,32 @@ fn update_tile(g: &Ground, t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
     melt
 }
 
-/// Carve rivers into land tiles and return each tile's catchment cell.
+/// Fill lakes, carve rivers into land tiles, mark their floodplains, and
+/// return each tile's catchment cell.
 ///
 /// A priority flood from the sea, lakes and map edge gives every land tile a
 /// downstream neighbor with no pits (depressions drain over their lowest
-/// rim). Each tile then sheds rain weighted by moisture and altitude
-/// downstream; tiles that gather more than `RIVER_FLOW` become river.
+/// rim) and the level each depression fills to. Each tile then sheds rain
+/// weighted by moisture and altitude downstream. A depression whose inflow
+/// outweighs evaporation over its surface becomes a lake (passing its
+/// inflow on over the rim); tiles that gather more than `RIVER_FLOW` become
+/// river. Low land next to a river becomes its floodplain, sharing the
+/// river's catchment so it floods when the river does.
 fn carve_rivers(ground: &mut [Ground], tiles: &mut [Tile], width: usize, height: usize, chunks_x: usize) -> Vec<u32> {
     use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
+    use std::collections::{BinaryHeap, VecDeque};
     let n = width * height;
     let cell_of = |i: usize| ((i / width / CHUNK) * chunks_x + (i % width) / CHUNK) as u32;
     let is_water = |g: &Ground| matches!(g.biome, Biome::DeepWater | Biome::ShallowWater);
+    let neighbors = |i: usize| {
+        let (x, y) = (i % width, i / width);
+        (y.saturating_sub(1)..=(y + 1).min(height - 1))
+            .flat_map(move |ny| (x.saturating_sub(1)..=(x + 1).min(width - 1)).map(move |nx| ny * width + nx))
+            .filter(move |&j| j != i)
+    };
     let mut down = vec![usize::MAX; n];
     let mut seen = vec![false; n];
+    let mut fill = vec![0.0f32; n];
     let mut heap = BinaryHeap::new();
     for (i, t) in ground.iter().enumerate() {
         let (x, y) = (i % width, i / width);
@@ -972,6 +1117,7 @@ fn carve_rivers(ground: &mut [Ground], tiles: &mut [Tile], width: usize, height:
     while let Some(Reverse((bits, i))) = heap.pop() {
         order.push(i);
         let filled = f32::from_bits(bits);
+        fill[i] = filled;
         let (x, y) = (i % width, i / width);
         for ny in y.saturating_sub(1)..=(y + 1).min(height - 1) {
             for nx in x.saturating_sub(1)..=(x + 1).min(width - 1) {
@@ -988,35 +1134,114 @@ fn carve_rivers(ground: &mut [Ground], tiles: &mut [Tile], width: usize, height:
     // Upstream tiles come later in the flood order, so walking it backwards
     // finishes every tile's inflow before passing it on.
     let mut flow: Vec<f32> = ground.iter().map(|g| 0.25 + g.moisture + 0.5 * g.elevation).collect();
+    for &i in order.iter().rev() {
+        if !is_water(&ground[i]) && down[i] != usize::MAX {
+            flow[down[i]] += flow[i];
+        }
+    }
+
+    // Lakes: each connected depression (fill well above the ground) whose
+    // inflow, the most any of its tiles passes on, beats evaporation.
+    let deep = |i: usize| !is_water(&ground[i]) && fill[i] - ground[i].elevation > LAKE_MIN_DEPTH;
+    let mut basin = vec![false; n];
+    // Lake surface level per tile (`NAN` where there is no lake).
+    let mut lake = vec![f32::NAN; n];
+    let mut members = Vec::new();
+    for start in 0..n {
+        if basin[start] || !deep(start) {
+            continue;
+        }
+        members.clear();
+        members.push(start);
+        basin[start] = true;
+        let mut k = 0;
+        while k < members.len() {
+            let i = members[k];
+            k += 1;
+            for j in neighbors(i) {
+                if !basin[j] && deep(j) {
+                    basin[j] = true;
+                    members.push(j);
+                }
+            }
+        }
+        // The lake spreads from the bottom up until evaporation over its
+        // surface matches the inflow; a well-fed basin fills to its rim.
+        let inflow = members.iter().map(|&i| flow[i]).fold(0.0f32, f32::max);
+        let area = ((inflow / LAKE_INFLOW) as usize).min(members.len());
+        if area < 2 {
+            continue;
+        }
+        members.sort_by(|&a, &b| ground[a].elevation.total_cmp(&ground[b].elevation).then(a.cmp(&b)));
+        let surface = if area == members.len() { fill[members[0]] } else { ground[members[area]].elevation };
+        for &i in &members[..area] {
+            lake[i] = surface;
+        }
+    }
+    for i in (0..n).filter(|&i| !lake[i].is_nan()) {
+        let g = &ground[i];
+        let depth = (0.2 + LAKE_DEPTH * (lake[i] - g.elevation)).min(LAKE_MAX_DEPTH);
+        let (mut g, mut t) = make_tile(Biome::ShallowWater, g.elevation, g.moisture, g.base_temp, 0.0);
+        t.water_depth = depth;
+        g.base_water = depth;
+        (ground[i], tiles[i]) = (g, t);
+    }
+
     let mut catchment: Vec<u32> = (0..n).map(cell_of).collect();
     let mut main_inflow = vec![usize::MAX; n];
     for &i in order.iter().rev() {
-        if is_water(&ground[i]) {
+        if is_water(&ground[i]) || flow[i] < RIVER_FLOW {
             continue;
         }
         let d = down[i];
-        if flow[i] >= RIVER_FLOW {
-            if main_inflow[i] != usize::MAX {
-                catchment[i] = catchment[main_inflow[i]];
-            }
-            let strength = (flow[i] / RIVER_FLOW).ln();
-            let drop = if d == usize::MAX { 0.0 } else { (ground[i].elevation - ground[d].elevation).max(0.0) };
-            let (g, t) = (&mut ground[i], &mut tiles[i]);
-            g.river = (0.15 + 0.06 * strength + 8.0 * drop).clamp(0.1, 0.8);
-            g.base_water = (0.1 + 0.08 * strength).min(0.45).max(g.base_water);
-            t.water_depth = g.base_water;
-            t.current = g.river;
-            g.veg_density *= 0.3;
-            g.sand = 0.0;
-            g.veg_max = g.veg_max.min(15.0);
-            t.veg = g.veg_max * 0.8;
-            g.canopy = 0.0;
-            if d != usize::MAX && (main_inflow[d] == usize::MAX || flow[i] > flow[main_inflow[d]]) {
-                main_inflow[d] = i;
-            }
+        if main_inflow[i] != usize::MAX {
+            catchment[i] = catchment[main_inflow[i]];
         }
-        if d != usize::MAX {
-            flow[d] += flow[i];
+        let strength = (flow[i] / RIVER_FLOW).ln();
+        let drop = if d == usize::MAX { 0.0 } else { (ground[i].elevation - ground[d].elevation).max(0.0) };
+        let (g, t) = (&mut ground[i], &mut tiles[i]);
+        g.river = (0.15 + 0.06 * strength + 8.0 * drop).clamp(0.1, 0.8);
+        g.base_water = (0.1 + 0.08 * strength).min(0.45).max(g.base_water);
+        t.water_depth = g.base_water;
+        t.current = g.river;
+        g.veg_density *= 0.3;
+        g.sand = 0.0;
+        g.veg_max = g.veg_max.min(15.0);
+        t.veg = g.veg_max * 0.8;
+        g.canopy = 0.0;
+        if d != usize::MAX && (main_inflow[d] == usize::MAX || flow[i] > flow[main_inflow[d]]) {
+            main_inflow[d] = i;
+        }
+    }
+
+    // Floodplains: dry, gentle land within `PLAIN_REACH` steps of a river
+    // and not far above it; the lower and nearer, the sooner it floods.
+    let mut reach = vec![u8::MAX; n];
+    let mut source = vec![usize::MAX; n];
+    let mut queue = VecDeque::new();
+    for (i, g) in ground.iter().enumerate() {
+        if g.is_river() {
+            reach[i] = 0;
+            source[i] = i;
+            queue.push_back(i);
+        }
+    }
+    while let Some(i) = queue.pop_front() {
+        if reach[i] >= PLAIN_REACH {
+            continue;
+        }
+        let river = source[i];
+        for j in neighbors(i) {
+            let g = &ground[j];
+            let rise = g.elevation - ground[river].elevation;
+            if reach[j] != u8::MAX || g.base_water > 0.0 || g.slope > 0.3 || rise > PLAIN_RISE {
+                continue;
+            }
+            reach[j] = reach[i] + 1;
+            source[j] = river;
+            catchment[j] = catchment[river];
+            ground[j].plain = PLAIN_LEVEL + 0.3 * (reach[j] - 1) as f32 + 0.6 * rise.max(0.0) / PLAIN_RISE;
+            queue.push_back(j);
         }
     }
     catchment
@@ -1081,6 +1306,7 @@ fn make_tile(biome: Biome, elevation: f32, moisture: f32, base_temp: f32, slope_
         veg_density,
         canopy,
         veg_max,
+        plain: 0.0,
     };
     let tile = Tile {
         temp: base_temp,
@@ -1094,6 +1320,7 @@ fn make_tile(biome: Biome, elevation: f32, moisture: f32, base_temp: f32, slope_
         wind: 0.3,
         rain: 0.0,
         wetness: 0.5,
+        silt: 0.0,
     };
     (ground, tile)
 }
@@ -1119,7 +1346,7 @@ pub fn ice_needed(mass: f32) -> f32 {
 /// How `body` crosses a tile (`g` its ground, `tile` its state) in `weather`.
 pub fn traverse(body: &Body, g: &Ground, tile: &Tile, weather: &Weather, flying: bool) -> Traverse {
     if flying {
-        if weather.grounds_flyers() {
+        if weather.grounds(body) {
             return Traverse::Blocked;
         }
         // Flyers can't maneuver in dense forest.
@@ -1229,131 +1456,6 @@ fn fbm(seed: u64, x: f32, y: f32, octaves: u32) -> f32 {
     sum / norm
 }
 
-/// The map as version 4 snapshots stored it (static terrain embedded in
-/// every tile), frozen, so `World::restore` can still read them.
-#[cfg(feature = "serde")]
-pub(crate) mod v4 {
-    use std::sync::Arc;
-
-    use super::{Biome, Ground, Terrain, Tile, WeatherCell};
-
-    /// A version 4 tile: every field of [`Ground`] and [`Tile`], interleaved.
-    #[derive(serde::Deserialize)]
-    struct TileV4 {
-        biome: Biome,
-        elevation: f32,
-        moisture: f32,
-        base_temp: f32,
-        temp: f32,
-        water_depth: f32,
-        base_water: f32,
-        river: f32,
-        current: f32,
-        ice: f32,
-        snow: f32,
-        mud: f32,
-        sand: f32,
-        slope: f32,
-        veg_density: f32,
-        canopy: f32,
-        veg: f32,
-        veg_max: f32,
-        meat: f32,
-        wind: f32,
-        rain: f32,
-        wetness: f32,
-    }
-
-    /// A version 4 [`super::Map`], fields in their stored order.
-    #[derive(serde::Deserialize)]
-    pub(crate) struct Map {
-        width: usize,
-        height: usize,
-        tiles: Vec<TileV4>,
-        water_dist: Vec<u16>,
-        chunks_x: usize,
-        chunks_y: usize,
-        cells: Vec<WeatherCell>,
-        catchment: Vec<u32>,
-        terrain_version: u64,
-        chunk_version: Vec<u64>,
-        drought: f32,
-        flood: f32,
-        climate_temp: f32,
-        climate_wet: f32,
-        weather_seed: u64,
-        melt_acc: Vec<f32>,
-        pass_sig: Vec<u32>,
-        water_dirty: bool,
-    }
-
-    impl Map {
-        /// The same map, its terrain split off into a shared [`Terrain`].
-        pub(crate) fn upgrade(self) -> super::Map {
-            let (ground, tiles) = self
-                .tiles
-                .into_iter()
-                .map(|t| {
-                    let g = Ground {
-                        biome: t.biome,
-                        elevation: t.elevation,
-                        moisture: t.moisture,
-                        base_temp: t.base_temp,
-                        base_water: t.base_water,
-                        river: t.river,
-                        sand: t.sand,
-                        slope: t.slope,
-                        veg_density: t.veg_density,
-                        canopy: t.canopy,
-                        veg_max: t.veg_max,
-                    };
-                    let s = Tile {
-                        temp: t.temp,
-                        water_depth: t.water_depth,
-                        current: t.current,
-                        ice: t.ice,
-                        snow: t.snow,
-                        mud: t.mud,
-                        veg: t.veg,
-                        meat: t.meat,
-                        wind: t.wind,
-                        rain: t.rain,
-                        wetness: t.wetness,
-                    };
-                    (g, s)
-                })
-                .unzip();
-            let terrain = Terrain {
-                width: self.width,
-                height: self.height,
-                ground,
-                catchment: self.catchment,
-                hash: Default::default(),
-            };
-            super::Map {
-                width: self.width,
-                height: self.height,
-                terrain: Arc::new(terrain),
-                tiles,
-                water_dist: self.water_dist,
-                chunks_x: self.chunks_x,
-                chunks_y: self.chunks_y,
-                cells: self.cells,
-                terrain_version: self.terrain_version,
-                chunk_version: self.chunk_version,
-                drought: self.drought,
-                flood: self.flood,
-                climate_temp: self.climate_temp,
-                climate_wet: self.climate_wet,
-                weather_seed: self.weather_seed,
-                melt_acc: self.melt_acc,
-                pass_sig: self.pass_sig,
-                water_dirty: self.water_dirty,
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1373,7 +1475,7 @@ mod tests {
         make_tile(biome, 0.5, 0.5, 15.0, 0.0)
     }
 
-    const CALM: Weather = Weather { wind: 0.1 };
+    const CALM: Weather = Weather::still(0.1);
 
     #[test]
     fn deep_water_blocks_non_swimmers_and_admits_swimmers() {
@@ -1417,7 +1519,7 @@ mod tests {
         assert_eq!(traverse(&body(base()), &cliff, &t, &CALM, false), Traverse::Blocked);
         let climber = body(base().with(Gene::Climbing, 0.8));
         assert!(matches!(traverse(&climber, &cliff, &t, &CALM, false), Traverse::Passable { .. }));
-        let storm = Weather { wind: 0.95 };
+        let storm = Weather::still(0.95);
         assert_eq!(traverse(&climber, &cliff, &t, &storm, true), Traverse::Blocked);
     }
 
@@ -1621,7 +1723,7 @@ mod tests {
     #[test]
     fn storms_make_open_ground_costly() {
         let (g, open) = tile(Biome::Grassland);
-        let storm = Weather { wind: 0.9 };
+        let storm = Weather::still(0.9);
         let b = body(base());
         let (Traverse::Passable { speed: s0, energy: e0 }, Traverse::Passable { speed: s1, energy: e1 }) =
             (traverse(&b, &g, &open, &CALM, false), traverse(&b, &g, &open, &storm, false))
@@ -1670,5 +1772,217 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A grassland grid of the given elevations, for `carve_rivers`.
+    fn grid(w: usize, h: usize, elev: impl Fn(usize, usize) -> f32) -> (Vec<Ground>, Vec<Tile>) {
+        (0..w * h).map(|i| make_tile(Biome::Grassland, elev(i % w, i / w), 0.5, 15.0, 0.0)).unzip()
+    }
+
+    #[test]
+    fn lakes_form_in_fed_depressions_only() {
+        // A bowl draining the whole map into a pit at its center.
+        let (w, h) = (24, 24);
+        let bowl = |x: usize, y: usize| {
+            let d = ((x as f32 - 11.5).powi(2) + (y as f32 - 11.5).powi(2)).sqrt();
+            0.4 + 0.01 * d - if d < 2.5 { 0.03 } else { 0.0 }
+        };
+        let (mut ground, mut tiles) = grid(w, h, bowl);
+        carve_rivers(&mut ground, &mut tiles, w, h, w.div_ceil(CHUNK));
+        let center = &ground[12 * w + 12];
+        assert_eq!(center.biome, Biome::ShallowWater);
+        assert!(center.base_water >= 0.2 && center.base_water < 1.0, "{center:?}");
+        assert!(tiles[12 * w + 12].has_drinkable_water());
+        // Land around the lake stays land.
+        assert_eq!(ground[w + 1].biome, Biome::Grassland);
+        // The same kind of pit on a parched, tiny catchment stays dry: too
+        // little drains in to beat evaporation.
+        let (sw, sh) = (7, 7);
+        let (mut small, mut small_tiles) =
+            grid(sw, sh, |x, y| if (2..5).contains(&x) && (2..5).contains(&y) { 0.38 } else { 0.4 });
+        small.iter_mut().for_each(|g| g.moisture = 0.0);
+        carve_rivers(&mut small, &mut small_tiles, sw, sh, 1);
+        assert!(small.iter().all(|g| g.biome == Biome::Grassland));
+        // A plane with no pits gets no lakes.
+        let (mut plane, mut plane_tiles) = grid(w, h, |x, _| 0.3 + 0.01 * x as f32);
+        carve_rivers(&mut plane, &mut plane_tiles, w, h, w.div_ceil(CHUNK));
+        assert!(plane.iter().all(|g| g.biome == Biome::Grassland));
+    }
+
+    #[test]
+    fn generated_lakes_are_water_sources() {
+        let (mut lakes, mut maps) = (0, 0);
+        for seed in [9, 31, 55] {
+            let mut map = Map::generate(seed, 96, 96);
+            let bal = Balance::default();
+            map.cells.iter_mut().for_each(|c| c.wetness = 0.5);
+            map.update_chunks(0, 1, 40, 12, 120, &bal);
+            // Lake tiles sit above the sea and shore bands of the elevation
+            // ranks, where `classify` puts no water.
+            let found: Vec<usize> = (0..map.tiles.len())
+                .filter(|&i| map.ground()[i].biome == Biome::ShallowWater && map.ground()[i].elevation >= 0.22)
+                .collect();
+            for &i in &found {
+                assert_eq!(map.water_dist[i], 0);
+                let p = Map::tile_center(i % 96, i / 96);
+                assert!(map.can_drink_at(p));
+                assert_eq!(map.find_water(p, 2), Some(p));
+            }
+            lakes += found.len();
+            maps += !found.is_empty() as usize;
+        }
+        assert!(maps >= 2, "lakes on {maps} of 3 maps ({lakes} tiles)");
+    }
+
+    #[test]
+    fn floods_overflow_onto_the_floodplain_and_leave_silt() {
+        let mut map = Map::generate(9, 64, 64);
+        let bal = Balance::default();
+        let plains: Vec<usize> = (0..map.tiles.len()).filter(|&i| map.ground()[i].plain > 0.0).collect();
+        let rivers = map.ground().iter().filter(|g| g.is_river()).count();
+        assert!(plains.len() > rivers, "{} floodplain tiles by {rivers} river tiles", plains.len());
+        for &i in &plains {
+            let g = &map.ground()[i];
+            assert!(g.base_water == 0.0 && !g.is_river() && g.plain >= PLAIN_LEVEL, "{g:?}");
+        }
+        // Normal flow: the floodplain is dry.
+        let set = |m: &mut Map, wet: f32, melt: f32| {
+            m.cells.iter_mut().for_each(|c| (c.wetness, c.melt) = (wet, melt));
+        };
+        set(&mut map, 0.5, 0.0);
+        map.update_chunks(0, 1, 30, 12, 120, &bal);
+        assert!(plains.iter().all(|&i| map.tiles[i].water_depth == 0.0));
+        let dist: u64 = map.water_dist.iter().map(|&d| d as u64).sum();
+        let veg: f32 = plains.iter().map(|&i| map.tiles[i].veg).sum();
+        let version = map.terrain_version;
+        // Spring flood: soaked soil and a thaw upstream. The low ground
+        // floods, plants drown, silt settles; paths and water search know.
+        set(&mut map, 0.9, 0.4);
+        for _ in 0..24 {
+            map.update_chunks(0, 1, 10, 12, 120, &bal);
+        }
+        let flooded: Vec<usize> = plains.iter().copied().filter(|&i| map.tiles[i].water_depth > 0.0).collect();
+        assert!(flooded.len() * 4 > plains.len(), "{} of {} flooded", flooded.len(), plains.len());
+        assert!(flooded.iter().all(|&i| map.tiles[i].silt > 0.5 && map.tiles[i].has_drinkable_water()));
+        assert!(plains.iter().map(|&i| map.tiles[i].veg).sum::<f32>() < veg);
+        assert!(map.terrain_version > version);
+        assert!(map.water_dist.iter().map(|&d| d as u64).sum::<u64>() < dist);
+        // Deep overflow is swum, or blocks small non-swimmers (who drown if
+        // caught in it).
+        let deepest =
+            *flooded.iter().max_by(|&&a, &&b| map.tiles[a].water_depth.total_cmp(&map.tiles[b].water_depth)).unwrap();
+        let (g, t) = (map.ground()[deepest].clone(), map.tiles[deepest].clone());
+        assert!(t.water_depth > 0.3, "deepest overflow {}", t.water_depth);
+        let small = body(base().with(Gene::BodySize, 0.0));
+        let swimmer = body(base().with(Gene::BodySize, 0.0).with(Gene::Swimming, 0.9));
+        assert!(t.water_depth > 0.8 * small.height);
+        assert_eq!(speed(&small, &g, &t), None);
+        assert!(speed(&swimmer, &g, &t).is_some());
+        // The water recedes and the silt feeds faster regrowth.
+        set(&mut map, 0.5, 0.0);
+        map.update_chunks(0, 1, 30, 12, 120, &bal);
+        let t = &map.tiles[deepest];
+        assert_eq!(t.water_depth, 0.0);
+        assert!(t.silt > 0.5);
+        let env = TileEnv { offset: 0.0, wind: 0.3, rain: 0.0, wet: 0.5, river_wet: 0.5, river_melt: 0.0 };
+        let (mut silted, mut plain) = (t.clone(), t.clone());
+        plain.silt = 0.0;
+        silted.veg = 0.2 * g.veg_max;
+        plain.veg = silted.veg;
+        update_tile(&g, &mut silted, &env, &bal);
+        update_tile(&g, &mut plain, &env, &bal);
+        assert!(silted.veg > plain.veg, "{} vs {}", silted.veg, plain.veg);
+        // Silt fades over weeks.
+        for _ in 0..24 * 60 {
+            update_tile(&g, &mut silted, &env, &bal);
+        }
+        assert_eq!(silted.silt, 0.0);
+    }
+
+    #[test]
+    fn wind_direction_varies_over_the_map_and_time() {
+        let mut map = Map::generate(3, 128, 128);
+        let bal = Balance::default();
+        let (mut east, mut hours, mut spread) = (0.0f32, 0, 0.0f32);
+        let mut first = Vec::new();
+        for h in 1..=24 * 20u64 {
+            map.advance_weather(h, 30 + (h / 24) as u32, 120, &bal);
+            let dirs: Vec<f32> = map.cells.iter().map(|c| c.dir).collect();
+            let (lo, hi) = dirs.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &d| {
+                let d = (d - PREVAILING_DIR + std::f32::consts::PI).rem_euclid(TAU);
+                (lo.min(d), hi.max(d))
+            });
+            spread = spread.max(hi - lo);
+            east += map.mean_weather().dir.cos();
+            hours += 1;
+            if h == 1 {
+                first = dirs;
+            }
+        }
+        assert!(spread > 0.5, "direction spread {spread}");
+        assert_ne!(first, map.cells.iter().map(|c| c.dir).collect::<Vec<_>>());
+        // Prevailing westerlies: on average the wind blows east.
+        assert!(east / hours as f32 > 0.3, "mean eastward share {}", east / hours as f32);
+        // `weather_at` carries the regional direction.
+        let p = Vec2::new(70.2, 20.9);
+        assert_eq!(map.weather_at(p).dir, map.cells[map.chunk_at(p)].dir);
+    }
+
+    #[test]
+    fn wind_helps_or_hinders_flyers_by_wing_loading() {
+        let flyer = body(base().with(Gene::BodySize, 0.1).with(Gene::Wings, 0.9));
+        assert!(flyer.can_fly);
+        let mut heavy = flyer;
+        heavy.wing_loading = 1.9;
+        let mut light = flyer;
+        light.wing_loading = 0.2;
+        let breeze = Weather { wind: 0.5, dir: 0.0 };
+        let (east, west) = (Vec2::new(1.0, 0.0), Vec2::new(-1.0, 0.0));
+        let (ts, te) = wind_effect(&light, &breeze, east);
+        let (hs, he) = wind_effect(&light, &breeze, west);
+        assert!(ts > 1.0 && te < 1.0 && hs < 1.0 && he > 1.0);
+        // A crosswind neither helps nor hinders.
+        let (cs, _) = wind_effect(&light, &breeze, Vec2::new(0.0, 1.0));
+        assert!((cs - 1.0).abs() < 1e-4);
+        // Heavier wing loading feels the wind less...
+        let (heavy_ts, _) = wind_effect(&heavy, &breeze, east);
+        let (heavy_hs, _) = wind_effect(&heavy, &breeze, west);
+        assert!(heavy_ts < ts && heavy_hs > hs);
+        // ... and tolerates more of it before it is grounded; storms cost.
+        let gusty = Weather { wind: 0.75, dir: 0.0 };
+        assert!(gusty.grounds(&light) && !gusty.grounds(&heavy));
+        let (g, grass) = tile(Biome::Grassland);
+        assert_eq!(traverse(&light, &g, &grass, &gusty, true), Traverse::Blocked);
+        assert!(matches!(traverse(&heavy, &g, &grass, &gusty, true), Traverse::Passable { .. }));
+        let storm = Weather { wind: 0.85, dir: 0.0 };
+        assert!(storm.storm() && !storm.grounds(&heavy));
+        assert!(wind_effect(&heavy, &storm, east).1 > 1.5 * wind_effect(&heavy, &breeze, east).1);
+    }
+
+    #[test]
+    fn gliders_need_height_and_calm_air() {
+        let glider = body(base().with(Gene::BodySize, 0.2).with(Gene::Wings, 0.35).with(Gene::Climbing, 0.6));
+        assert!(glider.can_glide && !glider.can_fly, "{glider:?}");
+        let walker = body(base().with(Gene::BodySize, 0.2));
+        let calm = Weather { wind: 0.2, dir: 0.0 };
+        let east = Vec2::new(1.0, 0.0);
+        let (mut high, mut low) = (tile(Biome::Grassland).0, tile(Biome::Grassland).0);
+        (high.elevation, low.elevation) = (0.6, 0.6 - 2.0 * GLIDE_DROP);
+        // Downhill: a cheap, fast glide; level ground or uphill: none.
+        let (s, e) = glide(&glider, &high, &low, &calm, east).expect("glides downhill");
+        assert!(s > 1.0 && e < 0.7, "{s} {e}");
+        assert_eq!(glide(&glider, &low, &high, &calm, east), None);
+        assert_eq!(glide(&glider, &low, &low, &calm, east), None);
+        assert_eq!(glide(&walker, &high, &low, &calm, east), None);
+        // A climber launches from the canopy, even on level ground.
+        let forest = tile(Biome::Forest).0;
+        assert!(glide(&glider, &forest, &low, &calm, east).is_some());
+        // Strong wind stops the launch.
+        assert!(glide(&glider, &high, &low, &Weather { wind: 0.8, dir: 0.0 }, east).is_none());
+        // A tailwind carries a glider further than a headwind.
+        let breeze = Weather { wind: 0.4, dir: 0.0 };
+        let with = glide(&glider, &high, &low, &breeze, east).unwrap().0;
+        let against = glide(&glider, &high, &low, &breeze, Vec2::new(-1.0, 0.0)).unwrap().0;
+        assert!(with > against);
     }
 }

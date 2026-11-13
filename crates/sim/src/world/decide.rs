@@ -935,7 +935,7 @@ impl World {
             let (x, y) = self.map.tile_coords(cand);
             let k = self.map.idx(x, y);
             let (g, t) = (&self.map.ground()[k], &self.map.tiles[k]);
-            if !matches!(traverse(&o.traits.body, g, t, &Weather { wind: t.wind }, false), Traverse::Passable { .. }) {
+            if !matches!(traverse(&o.traits.body, g, t, &Weather::still(t.wind), false), Traverse::Passable { .. }) {
                 continue;
             }
             let v = value(g, t);

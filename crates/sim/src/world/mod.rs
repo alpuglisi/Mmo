@@ -68,7 +68,7 @@ pub use chronicle::{biome_niche, diet_niche};
 use density::SpeciesDensity;
 pub use lod::{Cohort, LodStats, PoolEntry};
 #[cfg(feature = "serde")]
-pub use snapshot::{SnapshotError, SnapshotHeader, OLDEST_SNAPSHOT_VERSION, SNAPSHOT_VERSION, TERRAIN_VERSION};
+pub use snapshot::{SnapshotError, SnapshotHeader, SNAPSHOT_VERSION, TERRAIN_VERSION};
 use spatial::SpatialGrid;
 
 /// Founding: longest walk (tiles) from a home to a spot where it can drink

@@ -2569,6 +2569,14 @@ mod tests {
     fn possessed_needs_raise_an_alert_and_the_sim_lets_severe_ones_win() {
         let (mut g, a, _) = game();
         let id = a[0];
+        // Start it a few tiles from water, on open ground: too far to drink
+        // on its first steps, near enough to reach water within the day.
+        let m = &g.world.map;
+        let dry = (0..m.tiles.len())
+            .find(|&k| m.water_dist[k] == 5 && m.ground()[k].slope < 0.3 && m.ground()[k].veg_density < 0.4)
+            .expect("open ground five tiles from water");
+        let dry = evo_sim::terrain::Map::tile_center(dry % m.width, dry / m.width);
+        g.world.organisms.iter_mut().find(|o| o.id == id).unwrap().pos = dry;
         g.command(10, 1, None, ClientMsg::Possess { organism: id });
         let pos = g.world.organism(id).unwrap().pos;
         let far = Vec2::new(if pos.x < 32.0 { 63.0 } else { 0.0 }, pos.y);

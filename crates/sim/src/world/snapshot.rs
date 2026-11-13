@@ -23,7 +23,7 @@
 //! | 8 | organisms (agents, dead ones not yet removed included) |
 //! | 8 | payload length before compression |
 //! | 8 | FNV-1a 64 checksum of the stored payload |
-//! | 8 | terrain content hash ([`Terrain::hash`]; from version 5) |
+//! | 8 | terrain content hash ([`Terrain::hash`]; from version 6) |
 //! | … | payload: `bincode` of `World`, LZ4 block-compressed |
 //!
 //! The header stays readable across format versions, so a server can say
@@ -34,9 +34,11 @@
 //! cohort representatives, LOD passability, cache and clutch lookups), is
 //! stored.
 //!
-//! Version 4 snapshots (terrain embedded, no terrain hash in the header)
-//! still restore: their terrain is split off on the way in
-//! (`terrain::v4`), and the world continues exactly as it would have.
+//! Only snapshots of this format version restore. Version 5 moved the
+//! terrain out of the snapshot; version 6 added lakes and floodplains to map
+//! generation (`Ground::plain`, `Tile::silt`) and a wind direction to the
+//! weather cells, which older maps can't be given deterministically, so
+//! saves from before version 6 don't load (start the world afresh).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -54,16 +56,14 @@ use crate::terrain::Terrain;
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 5;
-/// The oldest format version [`World::restore`] still reads.
-pub const OLDEST_SNAPSHOT_VERSION: u32 = 4;
+pub const SNAPSHOT_VERSION: u32 = 6;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
 const MAGIC: &[u8; 8] = b"EVOSNAP\0";
-/// Header length up to version 4 (no terrain hash).
-const HEADER_LEN_V4: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8;
-const HEADER_LEN: usize = HEADER_LEN_V4 + 8;
+/// Header length before version 6 (no terrain hash).
+const HEADER_LEN_OLD: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8;
+const HEADER_LEN: usize = HEADER_LEN_OLD + 8;
 const FLAG_LZ4: u32 = 1;
 const TERRAIN_MAGIC: &[u8; 8] = b"EVOTERR\0";
 const TERRAIN_HEADER_LEN: usize = 8 + 4 + 4 + 8 * 5;
@@ -79,16 +79,17 @@ pub struct SnapshotHeader {
     pub raw_len: u64,
     pub checksum: u64,
     /// Content hash of the terrain the snapshot needs ([`Terrain::hash`]);
-    /// `None` before version 5, whose snapshots embed their terrain.
+    /// `None` before version 6 (such snapshots no longer restore, but their
+    /// header still reads, so the version can be reported).
     pub terrain: Option<u64>,
 }
 
 impl SnapshotHeader {
     fn len(&self) -> usize {
-        if self.version >= 5 {
+        if self.version >= 6 {
             HEADER_LEN
         } else {
-            HEADER_LEN_V4
+            HEADER_LEN_OLD
         }
     }
 }
@@ -246,13 +247,13 @@ impl WorldConfig {
 impl SnapshotHeader {
     /// Read the header without decoding the payload.
     pub fn read(bytes: &[u8]) -> Result<SnapshotHeader, SnapshotError> {
-        if bytes.len() < HEADER_LEN_V4 || &bytes[..8] != MAGIC {
+        if bytes.len() < HEADER_LEN_OLD || &bytes[..8] != MAGIC {
             return Err(SnapshotError::BadHeader);
         }
         let u32_at = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
         let u64_at = |o: usize| u64::from_le_bytes(bytes[o..o + 8].try_into().unwrap());
         let version = u32_at(8);
-        let terrain = if version >= 5 {
+        let terrain = if version >= 6 {
             if bytes.len() < HEADER_LEN {
                 return Err(SnapshotError::BadHeader);
             }
@@ -311,49 +312,27 @@ impl World {
     /// A world from [`World::snapshot`] bytes and the terrain it names
     /// (`SnapshotHeader::terrain`), with its derived lookups rebuilt. Fails
     /// on another format version, a corrupt payload, or a missing or wrong
-    /// terrain. A version 4 snapshot carries its own terrain (`terrain` is
-    /// not needed); the restored world's terrain is then new to the caller,
-    /// to store before its next snapshot.
+    /// terrain.
     pub fn restore(bytes: &[u8], terrain: Option<Arc<Terrain>>) -> Result<World, SnapshotError> {
         let h = SnapshotHeader::read(bytes)?;
-        if !(OLDEST_SNAPSHOT_VERSION..=SNAPSHOT_VERSION).contains(&h.version) {
+        if h.version != SNAPSHOT_VERSION {
             return Err(SnapshotError::Version { found: h.version, expected: SNAPSHOT_VERSION });
         }
+        let hash = h.terrain.ok_or(SnapshotError::BadHeader)?;
         let raw = payload(&bytes[h.len()..], h.flags, h.raw_len, h.checksum)?;
-        let mut w = match h.terrain {
-            Some(hash) => {
-                let terrain = terrain.ok_or(SnapshotError::MissingTerrain { hash })?;
-                if terrain.hash() != hash {
-                    return Err(SnapshotError::WrongTerrain { expected: hash, found: terrain.hash() });
-                }
-                let mut w: World = bincode::deserialize(&raw).map_err(decode_err)?;
-                let m = &w.map;
-                if m.terrain().hash() != hash
-                    || (terrain.width, terrain.height) != (m.width, m.height)
-                    || terrain.ground.len() != m.tiles.len()
-                {
-                    return Err(decode_err("payload does not match its terrain"));
-                }
-                w.map.set_terrain(terrain);
-                w
-            }
-            None => {
-                // Version 4: split the embedded terrain off the map, then
-                // decode the rest as usual.
-                let mut rest: &[u8] = &raw;
-                let _: WorldConfig = bincode::deserialize_from(&mut rest).map_err(decode_err)?;
-                let config_len = raw.len() - rest.len();
-                let old: crate::terrain::v4::Map = bincode::deserialize_from(&mut rest).map_err(decode_err)?;
-                let map = old.upgrade();
-                let terrain = map.terrain().clone();
-                let mut upgraded = raw[..config_len].to_vec();
-                bincode::serialize_into(&mut upgraded, &map).map_err(decode_err)?;
-                upgraded.extend_from_slice(rest);
-                let mut w: World = bincode::deserialize(&upgraded).map_err(decode_err)?;
-                w.map.set_terrain(terrain);
-                w
-            }
-        };
+        let terrain = terrain.ok_or(SnapshotError::MissingTerrain { hash })?;
+        if terrain.hash() != hash {
+            return Err(SnapshotError::WrongTerrain { expected: hash, found: terrain.hash() });
+        }
+        let mut w: World = bincode::deserialize(&raw).map_err(decode_err)?;
+        let m = &w.map;
+        if m.terrain().hash() != hash
+            || (terrain.width, terrain.height) != (m.width, m.height)
+            || terrain.ground.len() != m.tiles.len()
+        {
+            return Err(decode_err("payload does not match its terrain"));
+        }
+        w.map.set_terrain(terrain);
         if w.config.snapshot_hash() != h.config_hash || w.tick != h.tick {
             return Err(SnapshotError::Decode("payload does not match its header".into()));
         }

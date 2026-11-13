@@ -13,6 +13,6 @@ CREATE TABLE terrains (
     PRIMARY KEY (world_id, hash)
 );
 
--- The terrain each saved game names (NULL for saved games that carry their
--- own: world snapshot format version 4 and earlier).
+-- The terrain each saved game names (NULL for saved games from before
+-- world snapshot format version 6, which don't restore).
 ALTER TABLE snapshots ADD COLUMN terrain_hash TEXT;
