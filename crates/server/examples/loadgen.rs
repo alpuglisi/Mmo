@@ -20,9 +20,9 @@
 //! `target/release`, or `--server PATH`) on a free port with a file store in
 //! `--data DIR` (default: a new directory under the system temp dir) and
 //! `--no-rate-limits` (every player comes from 127.0.0.1). With
-//! `--warm-until N` it first runs that world in fast mode until it holds N
-//! organisms, stops it (saving) and restarts it from the save with the test's
-//! clock, so the test starts on a grown world.
+//! `--warm-until N` it first runs the server in fast mode until every world
+//! under test holds N organisms, stops it (saving) and restarts it from the
+//! saves with the test's clock, so the test starts on grown worlds.
 //!
 //! Each player registers, logs in, founds a lineage over HTTP and opens the
 //! game WebSocket, with `--proto 2` (the default, as the web client) for
@@ -125,9 +125,19 @@ impl Args {
     }
 }
 
-/// One report of a world other than the first: (t, tick p50, tick p99,
-/// states p99, conns, organisms).
-type WorldRow = (f64, f32, f32, f32, usize, usize);
+/// One report of a world other than the first.
+#[derive(Clone, Copy)]
+struct WorldRow {
+    t: f64,
+    tick_p50: f32,
+    tick_p99: f32,
+    states_p99: f32,
+    substep_p99: f32,
+    ticks_per_s: f64,
+    out_mb_s: f64,
+    conns: usize,
+    organisms: usize,
+}
 
 /// `path` with `world=<id>` added.
 fn in_world(path: &str, world: &Option<String>) -> String {
@@ -332,10 +342,6 @@ async fn wait_up(http: &Http) {
     panic!("server did not come up");
 }
 
-async fn organisms(http: &Http) -> usize {
-    organisms_in(http, &None).await
-}
-
 async fn organisms_in(http: &Http, world: &Option<String>) -> usize {
     http.get::<Value>(&in_world("/api/world", world)).await.and_then(|w| w["organisms"].as_u64()).unwrap_or(0) as usize
 }
@@ -395,6 +401,8 @@ struct Stats {
     errors: Mutex<HashMap<String, u64>>,
     latency: Mutex<HashMap<&'static str, Reservoir>>,
     latency_all: Mutex<Option<Reservoir>>,
+    /// Command latency by world (the index in `Args::world_ids`).
+    latency_world: Mutex<HashMap<usize, Reservoir>>,
     state_sizes: Mutex<Option<Reservoir>>,
     /// The largest state message seen (`--dump-state`).
     largest_state: Mutex<String>,
@@ -407,7 +415,8 @@ struct Stats {
 }
 
 impl Stats {
-    fn latency(&self, command: &'static str, ms: f32) {
+    fn latency(&self, world: usize, command: &'static str, ms: f32) {
+        self.latency_world.lock().unwrap().entry(world).or_insert_with(|| Reservoir::new(100_000)).push(ms);
         self.latency.lock().unwrap().entry(command).or_insert_with(|| Reservoir::new(20_000)).push(ms);
         self.latency_all.lock().unwrap().get_or_insert_with(|| Reservoir::new(100_000)).push(ms);
     }
@@ -717,7 +726,8 @@ fn design(i: usize, founders: u32, rng: &mut StdRng) -> Value {
 async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
     let st = &ctx.stats;
     let worlds = ctx.args.world_ids();
-    let world = &worlds[i % worlds.len()];
+    let world_ix = i % worlds.len();
+    let world = &worlds[world_ix];
     let mut rng = StdRng::seed_from_u64(ctx.args.seed ^ (i as u64).wrapping_mul(0x9E37_79B9));
     let name = format!("lg{}_{i}", ctx.run);
     let creds = json!({"name": name, "password": "load test password"});
@@ -878,7 +888,7 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
                     }
                     Incoming::Result { id, ok, error, data } => {
                         let Some((sent, name)) = id.and_then(|id| p.pending.remove(&id)) else { continue };
-                        st.latency(name, sent.elapsed().as_secs_f32() * 1000.0);
+                        st.latency(world_ix, name, sent.elapsed().as_secs_f32() * 1000.0);
                         if ok {
                             st.results_ok.fetch_add(1, Ordering::Relaxed);
                         } else {
@@ -991,8 +1001,11 @@ async fn main() {
     } else {
         let data = args.data.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("evo-loadgen-{run}")));
         std::fs::create_dir_all(&data).expect("data dir");
-        let has_save =
-            std::fs::read_dir(data.join("worlds/main/snapshots")).map(|mut d| d.next().is_some()).unwrap_or(false);
+        // Every world under test has a save (the default world is `main`).
+        let has_save = args.world_ids().iter().all(|w| {
+            let dir = data.join("worlds").join(w.as_deref().unwrap_or("main")).join("snapshots");
+            std::fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(false)
+        });
         if args.warm_until > 0 && !has_save {
             let port = free_port();
             let base = format!("http://127.0.0.1:{port}");
@@ -1000,10 +1013,14 @@ async fn main() {
             let http = Http::new(&base);
             wait_up(&http).await;
             let t = Instant::now();
+            // Until every world holds `--warm-until` organisms.
             loop {
-                let n = organisms(&http).await;
-                if n >= args.warm_until {
-                    println!("warm-up: {n} organisms after {:.0} s", t.elapsed().as_secs_f64());
+                let mut counts = Vec::new();
+                for w in args.world_ids() {
+                    counts.push(organisms_in(&http, &w).await);
+                }
+                if counts.iter().all(|&n| n >= args.warm_until) {
+                    println!("warm-up: {counts:?} organisms after {:.0} s", t.elapsed().as_secs_f64());
                     break;
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1059,9 +1076,11 @@ async fn main() {
     let mut prev: Option<(Instant, MetricsView, u64, u64, u64, f64)> = None;
     let end = started + Duration::from_secs_f64(args.ramp + args.duration);
     let mut first_rss = None;
-    // The other worlds' timings, per report: (t, tick p50, tick p99, states
-    // p99, conns, organisms).
+    // The other worlds' timings, per report, and their previous metrics.
     let mut others: Vec<Vec<WorldRow>> = vec![Vec::new(); worlds.len()];
+    let mut others_prev: Vec<Option<(Instant, MetricsView)>> = vec![None; worlds.len()];
+    // Outbound bytes over all worlds, per report (MB/s).
+    let mut out_total: Vec<(f64, f64)> = Vec::new();
     println!(
         "{:>6} {:>7} {:>6} {:>5} {:>13} {:>13} {:>6} {:>8} {:>8} {:>7} {:>6} {:>6} {:>7} {:>5} {:>4} {:>4}",
         "t s",
@@ -1089,15 +1108,41 @@ async fn main() {
         tokio::time::sleep(Duration::from_secs_f64(args.report).min(end - now)).await;
         let Some(m) = http.get::<MetricsView>(&in_world("/api/metrics", &main_world)).await else { continue };
         let orgs = organisms_in(&http, &main_world).await;
+        let mut others_out = 0.0;
         for (k, w) in worlds.iter().enumerate().skip(1) {
             if let Some(o) = http.get::<MetricsView>(&in_world("/api/metrics", w)).await {
                 let n = organisms_in(&http, w).await;
-                let t = started.elapsed().as_secs_f64();
-                println!(
-                    "  [{}] tick p50/p99 {:.1}/{:.1} ms, states p50/p99 {:.1}/{:.1} ms, {} conns, {} organisms",
-                    world_names[k], o.tick_ms.p50, o.tick_ms.p99, o.states_ms.p50, o.states_ms.p99, o.conns, n
-                );
-                others[k].push((t, o.tick_ms.p50, o.tick_ms.p99, o.states_ms.p99, o.conns, n));
+                let now = Instant::now();
+                if let Some((pt, pm)) = &others_prev[k] {
+                    let dt = now.duration_since(*pt).as_secs_f64();
+                    let row = WorldRow {
+                        t: started.elapsed().as_secs_f64(),
+                        tick_p50: o.tick_ms.p50,
+                        tick_p99: o.tick_ms.p99,
+                        states_p99: o.states_ms.p99,
+                        substep_p99: o.substep_ms.p99,
+                        ticks_per_s: (o.ticks - pm.ticks) as f64 / dt,
+                        out_mb_s: mb(o.bytes_out - pm.bytes_out) / dt,
+                        conns: o.conns,
+                        organisms: n,
+                    };
+                    println!(
+                        "  [{}] tick p50/p99 {:.1}/{:.1} ms, states p99 {:.1} ms, sub-step p99 {:.1} ms, \
+                         {:.2} tick/s, {:.2} MB/s out, {} conns, {} organisms",
+                        world_names[k],
+                        row.tick_p50,
+                        row.tick_p99,
+                        row.states_p99,
+                        row.substep_p99,
+                        row.ticks_per_s,
+                        row.out_mb_s,
+                        row.conns,
+                        row.organisms
+                    );
+                    others_out += row.out_mb_s;
+                    others[k].push(row);
+                }
+                others_prev[k] = Some((now, o));
             }
         }
         let (states_in, state_bytes, cmds) = (
@@ -1146,6 +1191,7 @@ async fn main() {
                 s.out_mb_s, s.state_kb, s.states_per_client_s, s.cmds_s, s.cpu_cores, s.rss_mb, s.dropped_conns,
                 s.skipped_states, s.saves
             );
+            out_total.push((s.t, s.out_mb_s + others_out));
             samples.push(s);
         }
         if first_rss.is_none() && st.connected.load(Ordering::Relaxed) >= args.players {
@@ -1194,25 +1240,36 @@ async fn main() {
         v.sort_by(f64::total_cmp);
         v.get(v.len() / 2).copied().unwrap_or(0.0)
     };
+    let latency_world = st.latency_world.lock().unwrap();
     let per_world: Vec<Value> = worlds
         .iter()
         .enumerate()
         .map(|(k, _)| {
+            let (lat50, lat99, _) = latency_world.get(&k).map_or((0.0, 0.0, 0.0), Reservoir::quantiles);
             if k == 0 {
                 json!({"world": world_names[0], "tick_ms_p50": med(&|s| s.tick_p50 as f64),
                     "tick_ms_p99": med(&|s| s.tick_p99 as f64), "states_ms_p99": med(&|s| s.states_p99 as f64),
+                    "substep_ms_p99": med(&|s| s.substep_p99 as f64), "ticks_per_s": med(&|s| s.ticks_per_s),
+                    "out_mb_s": med(&|s| s.out_mb_s), "cmd_latency_ms_p50": lat50, "cmd_latency_ms_p99": lat99,
                     "conns": final_m.conns, "organisms_end": samples.last().map_or(0, |s| s.organisms)})
             } else {
-                let rows: Vec<_> = others[k].iter().filter(|r| r.0 >= steady_from).collect();
+                let rows: Vec<_> = others[k].iter().filter(|r| r.t >= steady_from).collect();
                 let rows = if rows.is_empty() { others[k].iter().collect() } else { rows };
+                let med_of = |f: &dyn Fn(&WorldRow) -> f64| median(rows.iter().map(|r| f(r)).collect());
                 json!({"world": world_names[k],
-                    "tick_ms_p50": median(rows.iter().map(|r| r.1 as f64).collect()),
-                    "tick_ms_p99": median(rows.iter().map(|r| r.2 as f64).collect()),
-                    "states_ms_p99": median(rows.iter().map(|r| r.3 as f64).collect()),
-                    "conns": rows.last().map_or(0, |r| r.4), "organisms_end": rows.last().map_or(0, |r| r.5)})
+                    "tick_ms_p50": med_of(&|r| r.tick_p50 as f64),
+                    "tick_ms_p99": med_of(&|r| r.tick_p99 as f64),
+                    "states_ms_p99": med_of(&|r| r.states_p99 as f64),
+                    "substep_ms_p99": med_of(&|r| r.substep_p99 as f64),
+                    "ticks_per_s": med_of(&|r| r.ticks_per_s),
+                    "out_mb_s": med_of(&|r| r.out_mb_s),
+                    "cmd_latency_ms_p50": lat50, "cmd_latency_ms_p99": lat99,
+                    "conns": rows.last().map_or(0, |r| r.conns), "organisms_end": rows.last().map_or(0, |r| r.organisms)})
             }
         })
         .collect();
+    drop(latency_world);
+    let out_total_mb_s = median(out_total.iter().filter(|r| r.0 >= steady_from).map(|r| r.1).collect());
 
     let mut stopped_clean = None;
     let mut panics = 0;
@@ -1258,7 +1315,8 @@ async fn main() {
         "resyncs": final_m.resyncs,
         "states_per_client_s": med(&|s| s.states_per_client_s),
         "out_mb_s": med(&|s| s.out_mb_s),
-        "out_kb_s_per_client": med(&|s| s.out_mb_s) * 1e3 / args.players.max(1) as f64,
+        "out_kb_s_per_client": out_total_mb_s * 1e3 / args.players.max(1) as f64,
+        "out_mb_s_all_worlds": out_total_mb_s,
         "cmds_s": med(&|s| s.cmds_s),
         "cmd_latency_ms_p50": lat50, "cmd_latency_ms_p99": lat99, "cmd_latency_ms_max": latmax,
         "per_command": per_cmd.iter().map(|(k, n, a, b)| json!({"command": k, "n": n, "p50": a, "p99": b})).collect::<Vec<_>>(),

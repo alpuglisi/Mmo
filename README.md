@@ -1781,8 +1781,12 @@ target/release/examples/loadgen --url http://host:8080 --world isle --players 50
 `--world ID` sends every player to that world and samples its metrics;
 `--worlds N` starts the server with N worlds (`main`, `w2`, …, seeds
 `--seed`+i), spreads the players over them round-robin, prints a line per
-extra world at every report and adds a `worlds` entry per world (tick and
-push timings, connections, organisms) to the summary.
+extra world at every report and adds a `worlds` entry per world (tick,
+push and sub-step timings, ticks per second, outbound MB/s, command
+latency of that world's players, connections, organisms) to the summary;
+`out_mb_s_all_worlds` is the process's total. With `--warm-until N` every
+world is grown to N organisms. The summary's other timings are the first
+world's; CPU and memory are the whole process.
 
 The players speak protocol 2 (binary delta states, as the web client) by
 default; `--proto 1` makes them old clients that get whole JSON states.
