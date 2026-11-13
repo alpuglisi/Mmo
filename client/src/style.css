@@ -190,6 +190,8 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .legend { justify-content: flex-start; }
   .stage-wrap.show-legend .legends { display: flex; }
   .toasts { top: 56px; left: 8px; right: 8px; max-width: none; }
+  .toast { font-size: 12px; padding: 4px 8px; }
+  .toast:nth-last-child(n+3) { display: none; } /* the two newest only: keep the map visible */
 
   .sidebar {
     position: absolute; left: 0; right: 0; bottom: 0; width: auto; max-height: var(--tabbar-h, 50px);

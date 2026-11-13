@@ -179,7 +179,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const own = model.selected !== null ? model.state?.organisms.find((o) => o.id === model.selected) : undefined;
     fab.hidden = !own;
     if (!own) return;
-    fab.textContent = own.possessed ? `Release #${own.id}` : `Possess #${own.id}`;
+    const text = own.possessed ? `Release #${own.id}` : `Possess #${own.id}`;
+    if (fab.textContent !== text) fab.textContent = text;
     fab.classList.toggle('active', own.possessed);
     fab.dataset.org = String(own.id);
   }
