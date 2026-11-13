@@ -7,6 +7,8 @@
 //! | Estivation | Fatten in spring; dormant while the summer seasonal mean is above `estivation_temp`, or through a summer drought (`Map::dryness_at` past the drought line). |
 //! | Food caching | Gathers plant food into a cache in summer and autumn, eats from it in winter and spring. Anyone else can raid it. |
 //! | Torpor | On cold nights while resting: cheaper metabolism, cold costs nothing extra, but still exposed and slow to react until morning. |
+//! | Seasonal coat | Molts into a winter coat over the first days of autumn and back in spring, each full molt costing `molt_cost` hunger points: more insulation in the cold, but the comfort ceiling drops with it, so a late warm spell is hot. A cold-blooded body can't use it: the coat blocks basking like fur, worst in winter. |
+//! | Timed breeding | Breeding drive builds `TIMED_DRIVE` times as fast in an early-spring window (`breeding_window` of spring) and conception is better there (`timed_conception`); outside it the drive drains and there is no mating. Births are synchronized (predators are swamped, young get the spring flush) and the reckless high-drive period (`breeding_recklessness`, lowered perception) is short. |
 //!
 //! With group tolerance they become critical-mass group traits (`group`):
 //!
@@ -76,6 +78,15 @@ const NAV_STRAGGLE: f32 = 3.0;
 const RANGE_SPOTS: [f32; 13] = [0.0, 4.0, -4.0, 8.0, -8.0, 12.0, -12.0, 16.0, -16.0, 20.0, -20.0, 24.0, -24.0];
 /// Spoilage of a shared cache as a share of a private hoard's.
 const SHARED_SPOIL: f32 = 0.5;
+/// Days a full molt takes (seasonal coat).
+pub(crate) const MOLT_DAYS: f32 = 6.0;
+/// Breeding-drive factor of a timed breeder inside its window (the
+/// year-round spring factor is 1).
+pub(crate) const TIMED_DRIVE: f32 = 3.0;
+/// Breeding drive a timed breeder loses per day outside its window.
+pub(crate) const DRIVE_DECAY: f32 = 60.0;
+/// Daily breeding-drive gain at a seasonal factor of 1.
+pub(crate) const DRIVE_RATE: f32 = 30.0;
 
 /// A lineage's shared food cache in one group region (`GroupTrait::SharedCaches`).
 #[derive(Clone, Copy, Debug)]
@@ -196,6 +207,91 @@ impl World {
         }
     }
 
+    /// The coat a seasonal-coat carrier grows toward in `season`: winter
+    /// coat (1) in autumn and winter, summer coat (0) in spring and summer.
+    pub(crate) fn coat_target(season: Season) -> f32 {
+        if matches!(season, Season::Autumn | Season::Winter) {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// What the current coat does: (extra insulation, extra basking
+    /// mismatch). A warm-blooded carrier in its winter coat gains up to
+    /// `coat_insulation` insulation (and loses as much heat tolerance, by
+    /// the comfort formula); a cold-blooded one gets no insulation and its
+    /// basking is blocked by the coat's share, as with fur. Without the gene,
+    /// or in the summer coat, nothing changes.
+    pub(crate) fn coat_effect(&self, o: &Organism) -> (f32, f32) {
+        let k = o.traits.seasonal.coat;
+        let c = k * o.coat.unwrap_or(0.0);
+        if c <= 0.0 {
+            (0.0, 0.0)
+        } else if o.traits.warm {
+            (self.config.balance.coat_insulation * c, 0.0)
+        } else {
+            (0.0, c)
+        }
+    }
+
+    /// Seasonal coat: start in the season's coat, then molt toward it at
+    /// `1 / MOLT_DAYS` a day, paying `molt_cost × expression` hunger points
+    /// per full molt. Deep sleepers don't molt.
+    fn molt(&mut self, i: usize, dt: f32) {
+        let target = Self::coat_target(self.season());
+        let cost = self.config.balance.molt_cost;
+        let o = &mut self.organisms[i];
+        let k = o.traits.seasonal.coat;
+        if k <= 0.0 || o.dormancy.is_deep() {
+            return;
+        }
+        let Some(coat) = o.coat else {
+            o.coat = Some(target);
+            return;
+        };
+        if coat == target {
+            return;
+        }
+        let step = (dt / MOLT_DAYS).min((target - coat).abs());
+        o.coat = Some(if target > coat { coat + step } else { coat - step });
+        o.needs.hunger = (o.needs.hunger + cost * k * step).min(100.0);
+    }
+
+    /// Timed breeding: is it the early-spring window (the first
+    /// `breeding_window` of spring)?
+    pub(crate) fn in_breeding_window(&self) -> bool {
+        let w = self.config.balance.breeding_window.clamp(0.0, 1.0);
+        (self.day_of_year() as f32) < self.config.days_per_season() as f32 * w
+    }
+
+    /// May this organism mate now, as far as its season goes? Timed breeders
+    /// only in the window; everyone else year-round.
+    pub(crate) fn may_conceive(&self, o: &Organism) -> bool {
+        o.traits.seasonal.timed_breeding <= 0.0 || self.in_breeding_window()
+    }
+
+    /// Daily change of breeding drive from the season: `DRIVE_RATE` times
+    /// the seasonal factor year-round; a timed breeder builds it
+    /// `TIMED_DRIVE` times as fast in its window and loses `DRIVE_DECAY`
+    /// a day outside it (negative).
+    pub(crate) fn breeding_drive_rate(&self, o: &Organism) -> f32 {
+        if o.traits.seasonal.timed_breeding <= 0.0 {
+            DRIVE_RATE * self.season().breeding_factor()
+        } else if self.in_breeding_window() {
+            DRIVE_RATE * TIMED_DRIVE
+        } else {
+            -DRIVE_DECAY
+        }
+    }
+
+    /// Fertility multiplier of a mating for the female: better conception for
+    /// a timed breeder in its window (`timed_conception`; also twinning in
+    /// single-young species).
+    pub(crate) fn conception_boost(&self, female: &Organism) -> f32 {
+        1.0 + self.config.balance.timed_conception * female.traits.seasonal.timed_breeding
+    }
+
     /// Enter or leave a dormancy, and let caches spoil. Runs in `apply`
     /// after the action, before needs. Returns a cause of death for a
     /// sleeper that never wakes.
@@ -207,6 +303,7 @@ impl World {
         let pos = self.organisms[i].pos;
         let temp = self.seasonal_temp(pos);
         let dry = self.map.dryness_at(pos);
+        self.molt(i, dt);
         let o = &mut self.organisms[i];
         if o.cache > 0.0 {
             o.cache *= 1.0 - CACHE_SPOIL * dt;
@@ -688,6 +785,115 @@ mod tests {
         assert_eq!(w.organisms[brum[0]].dormancy, Dormancy::Awake);
     }
 
+    /// Seasonal coat: starts in the season's coat for free, molts into the
+    /// winter coat over `MOLT_DAYS` in autumn and back in spring, paying
+    /// `molt_cost` per full molt; non-carriers keep a fixed coat.
+    #[test]
+    fn seasonal_coat_molts_with_the_seasons() {
+        let mut w = flat_world(10.0, 0.0, 50);
+        let coat = add(&mut w, &design(Thermo::Warm).with(Gene::SeasonalCoat, 1.0), 2);
+        let plain = add(&mut w, &design(Thermo::Warm), 2);
+        let (c, p) = (coat[0], plain[0]);
+        let dt = w.config.dt_days();
+        let hunger = |w: &World, k: usize| w.organisms[k].needs.hunger;
+        // Summer: born into the summer coat, no cost.
+        w.molt(c, dt);
+        w.molt(p, dt);
+        assert_eq!((w.organisms[c].coat, w.organisms[p].coat), (Some(0.0), None));
+        assert_eq!(hunger(&w, c), 20.0);
+        // Autumn: molts toward the winter coat, a step per tick.
+        set_day(&mut w, 60);
+        let k = w.organisms[c].traits.seasonal.coat;
+        w.molt(c, dt);
+        let step = dt / MOLT_DAYS;
+        assert!((w.organisms[c].coat.unwrap() - step).abs() < 1e-6);
+        assert!((hunger(&w, c) - 20.0 - w.config.balance.molt_cost * k * step).abs() < 1e-4);
+        let ticks = (MOLT_DAYS / dt).ceil() as usize + 1;
+        for _ in 0..ticks {
+            w.molt(c, dt);
+        }
+        assert_eq!(w.organisms[c].coat, Some(1.0));
+        // The whole molt cost `molt_cost × expression`.
+        assert!((hunger(&w, c) - 20.0 - w.config.balance.molt_cost * k).abs() < 1e-3, "hunger {}", hunger(&w, c));
+        let (ins, mis) = w.coat_effect(&w.organisms[c]);
+        assert!((ins - w.config.balance.coat_insulation * k).abs() < 1e-6 && mis == 0.0);
+        assert_eq!(w.coat_effect(&w.organisms[p]), (0.0, 0.0));
+        // A deep sleeper doesn't molt; back in spring it sheds the coat.
+        set_day(&mut w, 5);
+        w.organisms[c].dormancy = Dormancy::Winter;
+        w.molt(c, dt);
+        assert_eq!(w.organisms[c].coat, Some(1.0));
+        w.organisms[c].dormancy = Dormancy::Awake;
+        w.molt(c, dt);
+        assert!(w.organisms[c].coat.unwrap() < 1.0);
+        // A cold-blooded body gets no insulation: the coat blocks basking.
+        let cold = add(&mut w, &design(Thermo::Cold).with(Gene::SeasonalCoat, 1.0), 1)[0];
+        w.organisms[cold].coat = Some(1.0);
+        let k = w.organisms[cold].traits.seasonal.coat;
+        assert_eq!(w.coat_effect(&w.organisms[cold]), (0.0, k));
+    }
+
+    /// The winter coat keeps out the cold but makes heat worse.
+    #[test]
+    fn winter_coat_trades_cold_for_heat_tolerance() {
+        for (temp, cold) in [(-12.0, true), (48.0, false)] {
+            let mut w = flat_world(temp, 20.0, 100);
+            let coat = add(&mut w, &design(Thermo::Warm).with(Gene::SeasonalCoat, 1.0), 1)[0];
+            let plain = add(&mut w, &design(Thermo::Warm), 1)[0];
+            w.organisms[coat].coat = Some(1.0);
+            w.step();
+            let (a, b) = (&w.organisms[coat].needs, &w.organisms[plain].needs);
+            if cold {
+                assert!(a.cold + 5.0 < b.cold, "cold {} vs {}", a.cold, b.cold);
+            } else {
+                assert!(a.heat > b.heat + 1.0, "heat {} vs {}", a.heat, b.heat);
+            }
+        }
+    }
+
+    /// Timed breeders build drive fast in the early-spring window and only
+    /// mate there; outside it the drive drains. Others breed year-round.
+    #[test]
+    fn timed_breeders_mate_only_in_the_spring_window() {
+        let mut w = flat_world(15.0, 40.0, 1);
+        let timed = add(&mut w, &design(Thermo::Warm).with(Gene::TimedBreeding, 1.0), 2);
+        let plain = add(&mut w, &design(Thermo::Warm), 2);
+        let window = (w.config.days_per_season() as f32 * w.config.balance.breeding_window) as u32;
+        let (t, p) = (&w.organisms[timed[0]], &w.organisms[plain[0]]);
+        assert!(w.in_breeding_window() && w.may_conceive(t) && w.may_conceive(p));
+        assert_eq!(w.breeding_drive_rate(t), DRIVE_RATE * TIMED_DRIVE);
+        assert_eq!(w.breeding_drive_rate(p), DRIVE_RATE);
+        let k = t.traits.seasonal.timed_breeding;
+        assert!((w.conception_boost(t) - 1.0 - w.config.balance.timed_conception * k).abs() < 1e-6);
+        assert_eq!(w.conception_boost(p), 1.0);
+        // Late spring: the timed breeders can't mate, and their drive drains.
+        set_day(&mut w, window + 1);
+        let (t, p) = (&w.organisms[timed[0]], &w.organisms[plain[0]]);
+        assert!(!w.in_breeding_window() && !w.may_conceive(t) && w.may_conceive(p));
+        assert_eq!(w.breeding_drive_rate(t), -DRIVE_DECAY);
+        assert_eq!(w.breeding_drive_rate(p), DRIVE_RATE * Season::Spring.breeding_factor());
+        let pair = |w: &mut World, day: u32| {
+            set_day(w, day);
+            let at = w.organisms[timed[0]].pos;
+            for &k in &timed {
+                let o = &mut w.organisms[k];
+                (o.pos, o.needs.breeding, o.breed_ready_tick, o.pregnancy) = (at, 100.0, 0, None);
+            }
+            let sexes = (w.organisms[timed[0]].sex, w.organisms[timed[1]].sex);
+            if sexes.0 == sexes.1 {
+                w.organisms[timed[1]].sex = if sexes.0 == crate::organism::Sex::Male { crate::organism::Sex::Female } else { crate::organism::Sex::Male };
+            }
+        };
+        pair(&mut w, window + 1);
+        w.run_days(1);
+        assert!(timed.iter().all(|&k| w.organisms[k].pregnancy.is_none()));
+        assert!(timed.iter().all(|&k| w.organisms[k].needs.breeding < 50.0));
+        // In the window they mate.
+        pair(&mut w, 1);
+        w.run_days(1);
+        assert!(timed.iter().any(|&k| w.organisms[k].pregnancy.is_some()), "no conception in the window");
+    }
+
     #[test]
     fn estivators_sleep_through_summer_heat() {
         let mut w = flat_world(28.0, 10.0, 40);
@@ -802,6 +1008,8 @@ mod tests {
         assert!(w.organisms[c].cache < before && w.organisms[c].needs.hunger < 60.0);
         // A hungry stranger on the cache's tile eats from it.
         let r = add(&mut w, &design(Thermo::Warm), 2)[0];
+        // (Topped up in case the owner ate it all.)
+        w.organisms[c].cache = w.organisms[c].cache.max(10.0);
         w.rebuild_caches();
         let left = w.organisms[c].cache;
         w.organisms[r].pos = at;

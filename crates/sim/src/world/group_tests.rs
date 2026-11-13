@@ -204,3 +204,26 @@ fn sentries_take_turns_on_watch() {
     let (at, level) = seen.alert.expect("alarm raised");
     assert!(at.dist(w.organisms[wolf].pos) < 1e-3 && level > 0.0);
 }
+
+/// Breeding-season risk: high breeding drive blunts the urge to flee a
+/// predator in sight (`breeding_recklessness`), not just perception.
+#[test]
+fn breeding_drive_blunts_threat_response() {
+    let mut w = world();
+    let a = isolate(&mut w, 5);
+    set_gene(&mut w.organisms[a], Gene::Vigilance, 0.0);
+    let h = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
+    let o = &mut w.organisms[h];
+    (o.growth, o.matured, o.pos) = (1.0, true, CENTER + Vec2::new(2.0, 0.0));
+    w.grid.rebuild(&w.organisms);
+    w.organisms[a].needs.breeding = 60.0;
+    w.config.balance.breeding_recklessness = 0.0;
+    let calm = w.decide(a);
+    assert!(calm.threat > 0.0);
+    assert_eq!(calm.action, Action::Flee, "threat {}", calm.threat);
+    w.config.balance.breeding_recklessness = 1.0;
+    assert_ne!(w.decide(a).action, Action::Flee, "high drive and full recklessness: courts instead");
+    // Without breeding drive it flees whatever the setting.
+    w.organisms[a].needs.breeding = 0.0;
+    assert_eq!(w.decide(a).action, Action::Flee);
+}

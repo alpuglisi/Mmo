@@ -150,6 +150,10 @@ pub fn trait_cost(g: Gene) -> f32 {
         Estivation => 6.0,
         Caching => 5.0,
         Torpor => 4.0,
+        // Priced like torpor: a cheap add-on with a running cost (food per
+        // molt) or a real tradeoff (no breeding outside the window).
+        SeasonalCoat => 4.0,
+        TimedBreeding => 4.0,
         // Sentry instinct: cheap, since standing watch costs its carrier food.
         Vigilance => 4.0,
         // Set through the design's own fields, never through `traits`.

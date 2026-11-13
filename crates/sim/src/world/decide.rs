@@ -244,12 +244,16 @@ impl World {
         let vigil = if watching { 1.0 + cfg.balance.sentry_vigilance } else { 1.0 };
         // Breeding drive lowers perception (doc: "Breeding season").
         let distraction = if watching { 0.0 } else { 0.3 * n.breeding / 100.0 * (1.0 - sentry) };
+        // ... and threat response: an animal in high breeding drive flees
+        // later (`breeding_recklessness`). A short timed-breeding window
+        // keeps the reckless period short; sentries offset it as well.
+        let reckless = if watching { 0.0 } else { cfg.balance.breeding_recklessness * n.breeding / 100.0 * (1.0 - sentry) };
         let perception = o.traits.stats.perception * (1.0 + 0.5 * alarm) * possessed * vigil * (1.0 - distraction);
         let radius = (2.0 + cfg.balance.perception_range * perception).min(cfg.max_perception);
 
         let coop = self.coop_bonus(o);
         let hunter = o.traits.carnivory > HUNTER_CARNIVORY && o.growth > 0.6;
-        let can_breed = o.can_breed(self.tick);
+        let can_breed = o.can_breed(self.tick) && self.may_conceive(o);
         let my_power = o.power() * (1.0 + coop) * cfg.balance.attack_power;
 
         let fight_power = o.power() * cfg.balance.attack_power;
@@ -367,7 +371,7 @@ impl World {
         let watch = if kin >= 2 && season_dest.is_none() && self.on_watch_duty(o) { 0.7 * sentry * (1.0 - hunger).powi(2) } else { 0.0 };
 
         let mut options: [(Action, f32); 14] = [
-            (Action::Flee, threat * (1.3 - boldness) * flee_weight),
+            (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless)),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
             (Action::Drink, thirst.powf(1.5) * 1.3 + if thirst > 0.8 { 0.5 } else { 0.0 }),
             (Action::Rest, tired * tired * 1.1),

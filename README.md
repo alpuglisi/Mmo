@@ -31,7 +31,7 @@ docs/
 
 | Module | Design-doc section | What it does |
 | --- | --- | --- |
-| `genome` | Scoring, Genetics | 44 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. |
+| `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, grounded flyers) and rain or snow; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
@@ -41,7 +41,7 @@ docs/
 | `legacy` | Scoring: genetic legacy | Share of origin-tagged alleles among living breeding adults, raw and weighted by offspring raised to adulthood. |
 | `world` | Needs and behavior, everything else | The tick loop: utility-AI decisions (parallel), then movement, grazing, hunting, scavenging, drinking, courtship, pregnancy, eggs and incubation, nursing, growth, death. |
 | `world::disease` | Genetics: picky vs flexible | Mating-transmitted disease: pathogens emerge at matings (4× between founding lineages), pass between mates (natural and directed) and between nursing mothers and young, drain the acutely sick's health (dulling their display) and cut fertility; infections end in immunity or lifelong symptomless carriage. Also deaths of homozygotes for harmful recessives. Reports count infections, current sick and carriers, harmful alleles per organism, and `disease` / `recessive` deaths per lineage. |
-| `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter) and short-term torpor on cold nights. |
+| `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter), short-term torpor on cold nights, a seasonal coat (winter coat molted in autumn and shed in spring, food per molt; a mismatch on cold-blooded bodies) and timed breeding (a narrow early-spring window with strong drive and better conception, no breeding outside it). |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
 
@@ -556,8 +556,56 @@ at 0.4; tolerant vole variants occasionally start small shared caches on
 their own. On the 12-seed sweep (seed 31) the defaults score 11.03 vs 10.96
 before; with `communal_den=0 shared_cache=0` runs are identical to before.
 
-Not yet implemented from the design doc: the seasonal coat and timed breeding.
-On the environment side: rivers do not overflow onto
+**Seasonal coat, timed breeding and breeding-season risk** (`world::seasonal`;
+tunables `molt_cost`, `coat_insulation`, `breeding_window`,
+`timed_conception`, `breeding_recklessness`). Two new seasonal genes, priced
+like torpor at 4 points per unit and kept out of the genetic distance with
+the other seasonal genes. Seasonal coat: a carrier starts in the coat of the
+season it is born or founded in (free), then molts toward the winter coat in
+autumn and back to the summer coat in spring over `MOLT_DAYS` (6), each full
+molt costing `molt_cost` (12) × expression hunger points; deep sleepers
+don't molt. The winter coat adds up to `coat_insulation` (0.3) insulation to
+a warm-blooded body, which lowers its cold threshold (`12 - 30 × ins`) and
+its heat ceiling (`30 - 8 × ins`) alike, so a hot spell in a winter coat
+hurts. On a cold-blooded body it adds no insulation and blocks basking like
+fur. Without the gene insulation stays fixed. Timed breeding: breeding drive
+builds three times as fast as the spring rate in the first `breeding_window`
+(0.4) of spring and drains at 60 a day outside it, when timed breeders
+neither court nor mate; a mating in the window has its fertility raised by
+`timed_conception` (0.3) × expression (better conception; occasional twins
+in single-young species). Everyone else breeds year-round at the seasonal
+factor, as before. Breeding-season risk: high breeding drive already cost
+perception (`0.3 × drive`, waived for group members where sentries hold);
+it now also blunts flight, cutting the flee urge by up to
+`breeding_recklessness` (0.15), offset by sentries the same way. A timed
+breeder's drive is only high in its window, so the reckless period is short.
+
+Sample designs: the red fox (wild, no budget) molts into a winter coat
+(seasonal coat 0.8). Measured on the 12-seed sweep at seed 31 (seed 77 in
+brackets), all with the new genes: fox coat 11.12 vs 11.04 without
+(10.88 vs 10.73), fox 100% both ways with slightly more alive. Rejected:
+herd grazers with timed breeding 0.8 (11.04 vs 10.89 at the time, same
+survival, but mean alive at day 120 fell from 76 to 27: one birth wave a
+year against several), pack hunters with a coat (10.80 vs 10.89; 11.07 vs
+11.04 later, neutral), and migrating antelope (migration 0.8 with their
+group tolerance 0.8, so group navigation applies): antelope survival 33% vs
+58% (42% vs 67%), mean alive 6 vs 32 (30 vs 36), so they stay year-round.
+Breeding recklessness costs the prey: `breeding_recklessness` 0 / 0.1 /
+0.15 / 0.3 scored 11.19 / 10.88 / 11.04 / 10.89 at seed 31 and 11.23 /
+10.99 / 10.73 / 11.06 at seed 77 (antelope and herd grazers lose most);
+`--set breeding_recklessness=0` restores the old flight behavior. Founding
+also changed: a home spot with a threat within the founders' scatter plus 8
+tiles is now penalized heavily (the soft `home_buffer` slope alone let a
+fox start 2.7 tiles from burrowing omnivores on seed 4 once the new genes
+reshuffled founder randomness). Overall, the 12-seed sweep at seed 31 scores 11.12 against 11.14 before
+this change (seed 77: 10.88 against 10.32), within the reshuffle noise
+(with the new genes in place but no rule in use, seed 31 already lost its
+pack hunters within 30 days, as the 240-day run on seed 31 shows).
+Not covered by the level-of-detail cohorts:
+they use mean insulation and the seasonal breeding factor as before.
+
+All the doc's seasonal add-ons are now in. Not yet implemented on the
+environment side: rivers do not overflow onto
 their floodplain (flooding only deepens the channel), wind has no direction
 and does not interact with wing loading or gliding, and lakes do not form in
 filled depressions.
@@ -635,7 +683,8 @@ in use, 10.71 with the presets' strategies).
 3. Parallel apply by region, then measure at the doc's prototype target
    (~25k organisms on 256×256).
 4. A migrating sample design to exercise group navigation in play (none
-   migrates yet).
+   migrates yet: migrating antelope lost survival again even with group
+   navigation).
 5. **Server (step 2, started):** world snapshots (serde on the sim types,
    then a snapshot every simulated day and on shutdown); a `PgStore` on
    sqlx; possessed organisms ticking faster than the world clock; interest

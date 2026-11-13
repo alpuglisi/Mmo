@@ -230,6 +230,10 @@ pub struct Organism {
     /// Plant food (food units) in this organism's cache at `cache_pos`.
     pub cache: f32,
     pub cache_pos: Option<Vec2>,
+    /// Seasonal coat carriers: 0 = summer coat, 1 = full winter coat
+    /// (`World::coat_effect`). `None` until its first tick, when it starts in
+    /// the coat of the season it was born (or founded) in, for free.
+    pub coat: Option<f32>,
 }
 
 impl Organism {
@@ -281,6 +285,7 @@ impl Organism {
             range: pos,
             cache: 0.0,
             cache_pos: None,
+            coat: None,
         }
     }
 

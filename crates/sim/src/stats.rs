@@ -115,10 +115,24 @@ pub struct Seasonal {
     pub estivation: f32,
     pub caching: f32,
     pub torpor: f32,
+    /// Seasonal coat: winter coat in autumn and winter, summer coat in
+    /// spring and summer (`World::coat_effect`).
+    pub coat: f32,
+    /// Timed breeding: breeds only in the early-spring window
+    /// (`World::breeding_drive_factor`).
+    pub timed_breeding: f32,
 }
 
 impl Seasonal {
-    pub const NONE: Seasonal = Seasonal { winter: None, migration: 0.0, estivation: 0.0, caching: 0.0, torpor: 0.0 };
+    pub const NONE: Seasonal = Seasonal {
+        winter: None,
+        migration: 0.0,
+        estivation: 0.0,
+        caching: 0.0,
+        torpor: 0.0,
+        coat: 0.0,
+        timed_breeding: 0.0,
+    };
 
     pub fn from_phenotype(p: &Phenotype, warm: bool) -> Seasonal {
         let strength = |g: Gene| {
@@ -143,6 +157,8 @@ impl Seasonal {
             estivation: strength(Gene::Estivation),
             caching: strength(Gene::Caching),
             torpor: strength(Gene::Torpor),
+            coat: strength(Gene::SeasonalCoat),
+            timed_breeding: strength(Gene::TimedBreeding),
         }
     }
 
@@ -308,6 +324,13 @@ mod tests {
         assert_eq!(weak.seasonal, Seasonal::NONE);
         let strong = traits_of(&FounderDesign::new("s", Thermo::Warm, BirthType::Live, 2).with(Gene::Migration, 1.0));
         assert_eq!(strong.seasonal.migration, 1.0);
+        // The add-ons follow the same threshold rule.
+        let addons = traits_of(
+            &FounderDesign::new("a", Thermo::Warm, BirthType::Live, 2)
+                .with(Gene::SeasonalCoat, 0.75)
+                .with(Gene::TimedBreeding, 0.4),
+        );
+        assert_eq!((addons.seasonal.coat, addons.seasonal.timed_breeding), (0.5, 0.0));
     }
 
     #[test]
