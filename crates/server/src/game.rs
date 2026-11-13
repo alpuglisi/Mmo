@@ -19,8 +19,9 @@ use evo_sim::{FounderDesign, Gene, PlayerId, World, WorldConfig, WILD};
 use serde::{Deserialize, Serialize};
 
 use crate::design::gene_key;
+use crate::economy::{self, Economy, Insufficient, Listing};
 use crate::protocol::*;
-use crate::store::{DailyRecord, LegacyEntry, LineageEntry, TradeRecord};
+use crate::store::{BalanceRecord, DailyRecord, LedgerRecord, LegacyEntry, LineageEntry, TradeRecord};
 
 /// Daily records kept in memory for the genetics dashboard.
 pub const HISTORY_DAYS: usize = 365;
@@ -30,6 +31,31 @@ pub const MAX_ALERTS: usize = 50;
 pub const NEED_ALERT: f32 = 75.0;
 const POPULATION_MILESTONES: [usize; 7] = [25, 50, 100, 250, 500, 1000, 1500];
 const SHARE_MILESTONES: [f64; 5] = [0.01, 0.05, 0.1, 0.25, 0.5];
+/// Layout version of [`SavedGame`]: 2 added the economy (balances, ledger,
+/// listings, escrow on offers). Older saved games restore with the
+/// balances kept by the store instead.
+pub const SAVED_GAME_VERSION: u32 = 2;
+/// Ledger entries returned by the `ledger` command unless asked otherwise.
+const LEDGER_DEFAULT: usize = 50;
+/// Listings returned by `browse_market`, newest first.
+const MAX_BROWSE: usize = 200;
+/// Genes shown for a listed organism.
+const LISTING_TRAITS: [Gene; 14] = [
+    Gene::BodySize,
+    Gene::LegLength,
+    Gene::Muscle,
+    Gene::Fur,
+    Gene::Scales,
+    Gene::Armor,
+    Gene::Wings,
+    Gene::Swimming,
+    Gene::Climbing,
+    Gene::Burrowing,
+    Gene::Camouflage,
+    Gene::Coloration,
+    Gene::Toxins,
+    Gene::Carnivory,
+];
 
 pub type ConnId = u64;
 
@@ -49,6 +75,9 @@ pub type Outbox = Vec<(Target, ServerMsg)>;
 pub enum PersistEvent {
     Daily(DailyRecord),
     Trade(TradeRecord),
+    /// A player's renown balance changed.
+    Balance(BalanceRecord),
+    Ledger(LedgerRecord),
     /// A saved game (`crate::snapshot`), sent by the world thread.
     Snapshot(SnapshotBlob),
 }
@@ -160,6 +189,13 @@ struct Offer {
     price: Option<u64>,
     status: OfferStatus,
     created_tick: u64,
+    /// Bought from this marketplace listing (consent given by the listing).
+    #[serde(default)]
+    listing: Option<u64>,
+    /// Renown taken from the requester, paid to the partner's owner when the
+    /// mating runs, refunded on any other ending.
+    #[serde(default)]
+    escrow: u64,
 }
 
 struct Conn {
@@ -218,6 +254,11 @@ pub struct Game {
     seen_achievements: usize,
     seen_eras: usize,
     seen_catastrophes: Vec<(bool, bool)>,
+    /// Renown balances, ledger and marketplace listings.
+    economy: Economy,
+    /// Whether the economy came from a saved game or the store (else it
+    /// starts empty).
+    economy_restored: bool,
 }
 
 /// The game-side state saved with each world snapshot (`crate::snapshot`):
@@ -227,6 +268,9 @@ pub struct Game {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedGame {
+    /// [`SAVED_GAME_VERSION`] when written; 0 in saved games from before
+    /// versions (layout 1).
+    version: u32,
     /// Empty in saved games from before world ids (a new one is made).
     world_id: String,
     lineage_of: BTreeMap<PlayerId, u32>,
@@ -244,6 +288,8 @@ pub struct SavedGame {
     seen_achievements: usize,
     seen_eras: usize,
     seen_catastrophes: Vec<(bool, bool)>,
+    /// Version 2 on.
+    economy: Option<Economy>,
 }
 
 fn finite(v: &[f32]) -> Result<(), ErrorInfo> {
@@ -282,12 +328,15 @@ impl Game {
             seen_achievements: 0,
             seen_eras: 0,
             seen_catastrophes: Vec::new(),
+            economy: Economy::new(),
+            economy_restored: false,
         }
     }
 
     /// The game-side state to save with a world snapshot.
     pub fn saved(&self) -> SavedGame {
         SavedGame {
+            version: SAVED_GAME_VERSION,
             world_id: self.world_id.clone(),
             lineage_of: self.lineage_of.clone(),
             migrations: self.migrations.clone(),
@@ -303,6 +352,7 @@ impl Game {
             seen_achievements: self.seen_achievements,
             seen_eras: self.seen_eras,
             seen_catastrophes: self.seen_catastrophes.clone(),
+            economy: Some(self.economy.clone()),
         }
     }
 
@@ -349,9 +399,60 @@ impl Game {
         g.seen_achievements = saved.seen_achievements;
         g.seen_eras = saved.seen_eras;
         g.seen_catastrophes = saved.seen_catastrophes;
+        match saved.economy {
+            Some(e) if saved.version >= 2 => {
+                g.economy = e;
+                g.economy_restored = true;
+            }
+            // An older layout: no escrow was taken on its offers.
+            _ => {
+                for o in g.offers.values_mut() {
+                    o.escrow = 0;
+                }
+            }
+        }
         // Nobody is connected: drop the level-of-detail focus of views.
         g.sync_focus();
         g
+    }
+
+    /// Whether the economy came from the saved game (or was seeded).
+    pub fn economy_restored(&self) -> bool {
+        self.economy_restored
+    }
+
+    /// Start the economy from what the store kept (balances and recent
+    /// ledger entries, oldest first): a new world, or a saved game from
+    /// before the economy. Players with a stored balance keep it and don't
+    /// get the founding grant again.
+    pub fn seed_economy(&mut self, balances: &[(PlayerId, u64)], ledger: Vec<LedgerEntry>) {
+        self.economy = Economy::from_store(balances, ledger);
+        self.economy_restored = true;
+    }
+
+    /// A player's renown balance.
+    pub fn balance(&self, player: PlayerId) -> u64 {
+        self.economy.balance(player)
+    }
+
+    /// Renown of `player`'s held in escrow on open agreements.
+    pub fn escrow(&self, player: PlayerId) -> u64 {
+        self.offers.values().filter(|o| o.from == player && o.status.is_open()).map(|o| o.escrow).sum()
+    }
+
+    /// Recent ledger entries of a player, newest first.
+    pub fn ledger(&self, player: PlayerId, limit: usize) -> Vec<LedgerEntry> {
+        self.economy.entries(player, limit)
+    }
+
+    /// Change a balance, record it in the ledger and queue both for the
+    /// store. A debit larger than the balance changes nothing.
+    fn post(&mut self, player: PlayerId, delta: i64, kind: LedgerKind, text: String, offer: Option<u64>, listing: Option<u64>) -> Result<LedgerEntry, Insufficient> {
+        let (tick, day) = (self.world.tick(), self.world.day());
+        let entry = self.economy.post(player, delta, kind, text, offer, listing, tick, day)?;
+        self.persist.push(PersistEvent::Ledger(LedgerRecord { world_id: self.world_id.clone(), entry: entry.clone() }));
+        self.persist.push(PersistEvent::Balance(BalanceRecord { player, balance: entry.balance, day }));
+        Ok(entry)
     }
 
     pub fn set_name(&mut self, player: PlayerId, name: &str) {
@@ -384,6 +485,10 @@ impl Game {
         self.lineage_of.insert(player, lineage);
         for &id in &founders {
             self.watched.insert(id, (player, Watch::Founder));
+        }
+        if self.economy.granted.insert(player) {
+            let text = format!("Founding grant for {}", design.name);
+            let _ = self.post(player, economy::FOUNDING_GRANT as i64, LedgerKind::Grant, text, None, None);
         }
         Ok(FoundOk { lineage, founders, cost: design.point_cost() })
     }
@@ -483,6 +588,28 @@ impl Game {
                 self.close(request, OfferStatus::Cancelled, None, None, out);
                 Ok(None)
             }
+            ClientMsg::CreateListing { organism, fee, expires_days } => {
+                let l = self.create_listing(player, organism, fee, expires_days)?;
+                Ok(Some(serde_json::json!({ "listing": self.listing_view(&l, None) })))
+            }
+            ClientMsg::WithdrawListing { listing } => {
+                match self.economy.listings.get(&listing) {
+                    Some(l) if l.owner == player => {}
+                    _ => return Err(ErrorInfo::new("unknown_listing", format!("no listing {listing} of yours"))),
+                }
+                self.economy.listings.remove(&listing);
+                Ok(None)
+            }
+            ClientMsg::BuyListing { listing, mine } => self.buy_listing(player, listing, mine, out),
+            ClientMsg::BrowseMarket { mine } => Ok(Some(serde_json::to_value(self.market(player, mine)).unwrap())),
+            ClientMsg::Ledger { limit } => {
+                let view = LedgerView {
+                    balance: self.balance(player),
+                    escrow: self.escrow(player),
+                    entries: self.ledger(player, limit.unwrap_or(LEDGER_DEFAULT).min(economy::LEDGER_KEPT)),
+                };
+                Ok(Some(serde_json::to_value(view).unwrap()))
+            }
         }
     }
 
@@ -500,18 +627,79 @@ impl Game {
             return Err(e(CommandError::NotOwned(mine)));
         }
         let b = self.world.organism(partner).ok_or(e(CommandError::NotFound(partner)))?;
-        let to = b.owner;
-        // A pair that can't conceive would only use up a slot (and, between
-        // players, the partner owner's time): refuse it with the reason.
-        let incompatible = || self.world.mating_preview(mine, partner).ok().as_ref().and_then(incompatibility);
-        if to == player {
-            // Within the player's own organisms: no consent needed.
-            if let Some(problem) = incompatible() {
+        if b.owner == player {
+            // Within the player's own organisms: no consent needed (and no
+            // price). A pair that can't conceive would only use up a slot.
+            if let Some(problem) = self.world.mating_preview(mine, partner).ok().as_ref().and_then(incompatibility) {
                 return Err(problem);
             }
             let req = DirectedMating { player, a: mine, b: partner, partner_consent: false };
             let outcome = self.world.directed_mating(req).map_err(e)?;
             return Ok(Some(serde_json::to_value(MatingOutcome::from(outcome)).unwrap()));
+        }
+        let to = self.check_cross_pair(player, mine, partner)?;
+        let price = price.filter(|&p| p > 0);
+        if let Some(p) = price {
+            self.check_funds(player, p)?;
+        }
+        let id = self.open_offer(player, to, mine, partner, price, OfferStatus::Pending, None);
+        // Holds the requester's own female; the partner's waits for her
+        // owner's acceptance (see `hold_consented_females`).
+        self.hold_consented_females();
+        let view = self.offer_view(id);
+        out.push((Target::Player(to), ServerMsg::MatingRequest { offer: view.clone() }));
+        Ok(Some(serde_json::json!({ "offer": view })))
+    }
+
+    /// Refuse a price or fee the player can't cover.
+    fn check_funds(&self, player: PlayerId, price: u64) -> Result<(), ErrorInfo> {
+        if price > economy::MAX_PRICE {
+            return Err(ErrorInfo::new("bad_price", format!("prices go up to {} renown", economy::MAX_PRICE)));
+        }
+        let balance = self.balance(player);
+        if balance < price {
+            return Err(ErrorInfo::new("insufficient_funds", format!("{price} renown needed, you have {balance}"))
+                .with_detail(serde_json::json!({ "balance": balance, "needed": price })));
+        }
+        Ok(())
+    }
+
+    /// Record a new offer and take its price into escrow (checked with
+    /// [`Game::check_funds`] beforehand).
+    #[allow(clippy::too_many_arguments)]
+    fn open_offer(&mut self, from: PlayerId, to: PlayerId, mine: OrgId, partner: OrgId, price: Option<u64>, status: OfferStatus, listing: Option<u64>) -> u64 {
+        let id = self.next_offer;
+        self.next_offer += 1;
+        let offer = Offer { id, from, to, mine, partner, price, status, created_tick: self.world.tick(), listing, escrow: 0 };
+        self.offers.insert(id, offer);
+        if let Some(p) = price.filter(|&p| p > 0) {
+            let what = match listing {
+                Some(l) => format!("Stud fee for listing #{l} (#{mine} × {}'s #{partner}) held in escrow", self.name(to)),
+                None => format!("Price of offer #{id} (#{mine} × {}'s #{partner}) held in escrow", self.name(to)),
+            };
+            if self.post(from, -(p as i64), LedgerKind::Escrow, what, Some(id), listing).is_ok() {
+                self.offers.get_mut(&id).unwrap().escrow = p;
+            }
+        }
+        id
+    }
+
+    /// The checks before asking another player's consent (or buying a
+    /// listing): ownership, maturity, sex, pregnancy, compatibility, slots
+    /// and the open-offer limit. Returns the partner's owner.
+    fn check_cross_pair(&self, player: PlayerId, mine: OrgId, partner: OrgId) -> Result<PlayerId, ErrorInfo> {
+        let e = |err: CommandError| ErrorInfo::from(&err);
+        let a = self.world.organism(mine).ok_or(e(CommandError::NotFound(mine)))?;
+        if a.owner != player {
+            return Err(e(CommandError::NotOwned(mine)));
+        }
+        let b = self.world.organism(partner).ok_or(e(CommandError::NotFound(partner)))?;
+        let to = b.owner;
+        // A pair that can't conceive would only use up a slot (and, between
+        // players, the partner owner's time): refuse it with the reason.
+        let incompatible = || self.world.mating_preview(mine, partner).ok().as_ref().and_then(incompatibility);
+        if to == player {
+            return Err(ErrorInfo::new("own_organism", "both organisms are yours: no consent or fee needed"));
         }
         if to == WILD {
             return Err(ErrorInfo::new("no_consent", "wild organisms have no owner to consent"));
@@ -539,16 +727,162 @@ impl Game {
         if open >= self.cfg.max_open_offers {
             return Err(ErrorInfo::new("too_many_offers", format!("at most {} open offers", self.cfg.max_open_offers)));
         }
-        let id = self.next_offer;
-        self.next_offer += 1;
-        let offer = Offer { id, from: player, to, mine, partner, price, status: OfferStatus::Pending, created_tick: self.world.tick() };
-        self.offers.insert(id, offer);
-        // Holds the requester's own female; the partner's waits for her
-        // owner's acceptance (see `hold_consented_females`).
+        Ok(to)
+    }
+
+    /// Put one of the player's adults on the marketplace.
+    fn create_listing(&mut self, player: PlayerId, organism: OrgId, fee: u64, expires_days: Option<u32>) -> Result<Listing, ErrorInfo> {
+        let e = |err: CommandError| ErrorInfo::from(&err);
+        let o = self.world.organism(organism).ok_or(e(CommandError::NotFound(organism)))?;
+        if o.owner != player {
+            return Err(e(CommandError::NotOwned(organism)));
+        }
+        if !o.matured {
+            return Err(e(CommandError::NotMature(organism)));
+        }
+        if fee > economy::MAX_PRICE {
+            return Err(ErrorInfo::new("bad_price", format!("fees go up to {} renown", economy::MAX_PRICE)));
+        }
+        if let Some(d) = expires_days {
+            if d == 0 || d > economy::MAX_LISTING_DAYS {
+                return Err(ErrorInfo::new("bad_expiry", format!("a listing lasts 1 to {} days", economy::MAX_LISTING_DAYS)));
+            }
+        }
+        if let Some(l) = self.economy.listing_of(organism) {
+            return Err(ErrorInfo::new("already_listed", format!("#{organism} is already listing #{}", l.id)));
+        }
+        if self.economy.listings_of(player) >= economy::MAX_LISTINGS {
+            return Err(ErrorInfo::new("too_many_listings", format!("at most {} listings at once", economy::MAX_LISTINGS)));
+        }
+        let tick = self.world.tick();
+        let expires = expires_days.map(|d| tick + d as u64 * self.world.config.ticks_per_day as u64);
+        Ok(self.economy.add_listing(player, organism, fee, tick, expires))
+    }
+
+    /// Buy one mating with a listed organism: an accepted agreement at once
+    /// (the listing is the owner's consent), the fee in escrow.
+    fn buy_listing(&mut self, player: PlayerId, listing: u64, mine: OrgId, out: &mut Outbox) -> Result<Option<serde_json::Value>, ErrorInfo> {
+        let l = self.economy.listings.get(&listing).cloned().ok_or_else(|| ErrorInfo::new("unknown_listing", format!("no open listing {listing}")))?;
+        if l.owner == player {
+            return Err(ErrorInfo::new("own_listing", "that listing is yours"));
+        }
+        let to = self.check_cross_pair(player, mine, l.organism)?;
+        if to != l.owner {
+            return Err(ErrorInfo::new("unknown_listing", format!("listing {listing} is no longer valid")));
+        }
+        if self.listing_busy(&l) {
+            return Err(ErrorInfo::new("listing_busy", format!("#{} is already promised in an open agreement", l.organism)));
+        }
+        self.check_funds(player, l.fee)?;
+        let id = self.open_offer(player, to, mine, l.organism, Some(l.fee), OfferStatus::Accepted, Some(listing));
+        if let Some(x) = self.economy.listings.get_mut(&listing) {
+            x.sales += 1;
+        }
         self.hold_consented_females();
         let view = self.offer_view(id);
-        out.push((Target::Player(to), ServerMsg::MatingRequest { offer: view.clone() }));
+        let role = self.world.organism(l.organism).map_or("organism", |o| role_name(o.sex));
+        let text = format!(
+            "{} bought a mating with your {role} #{} for {} renown (held in escrow until #{mine} meets it).",
+            self.name(player),
+            l.organism,
+            l.fee
+        );
+        self.alert(to, AlertKind::Market, text, Some(l.organism), out);
+        for p in [player, to] {
+            out.push((Target::Player(p), ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: None }));
+        }
+        // Try at once; apart, the agreement waits for the two to meet.
+        let _ = self.execute(id, out);
         Ok(Some(serde_json::json!({ "offer": view })))
+    }
+
+    /// A listed dam already promised in an open agreement takes no more
+    /// buyers until it closes (a stud may serve several).
+    fn listing_busy(&self, l: &Listing) -> bool {
+        self.world.organism(l.organism).is_some_and(|o| o.sex == Sex::Female)
+            && self.offers.values().any(|o| o.status.is_open() && (o.partner == l.organism || o.mine == l.organism))
+    }
+
+    fn listing_view(&self, l: &Listing, buyer: Option<(PlayerId, OrgId)>) -> Option<ListingView> {
+        let o = self.world.organism(l.organism)?;
+        let tpd = self.world.config.ticks_per_day;
+        let preview = buyer.filter(|&(p, _)| p != l.owner).and_then(|(p, mine)| self.preview_mating(p, mine, l.organism).ok());
+        Some(ListingView {
+            id: l.id,
+            owner: l.owner,
+            owner_name: self.name(l.owner),
+            organism: l.organism,
+            role: role_name(o.sex).into(),
+            sex: sex_name(o.sex).into(),
+            fee: l.fee,
+            created_tick: l.created_tick,
+            expires_tick: l.expires_tick,
+            sales: l.sales,
+            busy: self.listing_busy(l),
+            pregnant: o.pregnancy.is_some(),
+            lineage: o.lineage,
+            lineage_name: self.world.lineages.get(o.lineage as usize).map(|x| x.name.clone()).unwrap_or_default(),
+            generation: o.generation,
+            mother: o.mother,
+            father: o.father,
+            offspring_raised: o.offspring_raised,
+            age_days: o.age_days(tpd),
+            health: o.health,
+            x: o.pos.x,
+            y: o.pos.y,
+            traits: LISTING_TRAITS.iter().map(|&g| TraitView { gene: gene_key(g), value: o.pheno[g] }).collect(),
+            preview,
+        })
+    }
+
+    /// The open listings, newest first, with compatibility against `mine`.
+    pub fn market(&self, player: PlayerId, mine: Option<OrgId>) -> MarketView {
+        let buyer = mine.map(|m| (player, m));
+        MarketView {
+            balance: self.balance(player),
+            escrow: self.escrow(player),
+            slots_left: self.world.mating_slots_left(player),
+            listings: self.economy.listings.values().rev().filter_map(|l| self.listing_view(l, buyer)).take(MAX_BROWSE).collect(),
+        }
+    }
+
+    /// Close listings whose organism died and listings past their expiry,
+    /// telling the owner.
+    fn maintain_listings(&mut self, out: &mut Outbox) {
+        let tick = self.world.tick();
+        let closed: Vec<(u64, PlayerId, OrgId, bool)> = self
+            .economy
+            .listings
+            .values()
+            .filter_map(|l| {
+                let dead = self.world.organism(l.organism).is_none_or(|o| o.owner != l.owner);
+                let expired = l.expires_tick.is_some_and(|t| tick >= t);
+                (dead || expired).then_some((l.id, l.owner, l.organism, dead))
+            })
+            .collect();
+        for (id, owner, organism, dead) in closed {
+            self.economy.listings.remove(&id);
+            let text = if dead {
+                format!("Listing #{id} closed: #{organism} is no longer alive.")
+            } else {
+                format!("Listing #{id} of #{organism} expired.")
+            };
+            self.alert(owner, AlertKind::Market, text, Some(organism), out);
+        }
+    }
+
+    /// Daily renown from the day's legacy record.
+    fn pay_income(&mut self, record: &DailyRecord) {
+        let players: Vec<(PlayerId, u32)> = self.lineage_of.iter().map(|(&p, &l)| (p, l)).collect();
+        for (p, lineage) in players {
+            let alive = record.lineages.iter().any(|e| e.lineage == lineage && e.alive > 0);
+            let (share, weighted) = record.legacy.iter().find(|e| e.player == p).map_or((0.0, 0.0), |e| (e.share, e.weighted_share));
+            let income = economy::daily_income(share, weighted, alive);
+            if income > 0 {
+                let text = format!("Day {} income: legacy share {:.1}%, weighted {:.1}%", record.day + 1, share * 100.0, weighted * 100.0);
+                let _ = self.post(p, income as i64, LedgerKind::Income, text, None, None);
+            }
+        }
     }
 
     fn respond_mating(&mut self, player: PlayerId, request: u64, accept: bool, out: &mut Outbox) -> Result<Option<serde_json::Value>, ErrorInfo> {
@@ -685,6 +1019,7 @@ impl Game {
         for p in [o.from, o.to] {
             out.push((Target::Player(p), ServerMsg::MatingUpdate { offer: view.clone(), outcome, error: error.clone() }));
         }
+        let settlement = self.settle(&o, status, out);
         self.persist.push(PersistEvent::Trade(TradeRecord {
             offer: o.id,
             from_player: o.from,
@@ -695,9 +1030,39 @@ impl Game {
             status: serde_json::to_value(status).unwrap().as_str().unwrap_or_default().to_string(),
             conceived: outcome.map(|m| m.conceived),
             day: self.world.day(),
+            listing: o.listing,
+            settlement: settlement.map(String::from),
         }));
         // Closed offers stay only until reported; keep the table small.
         self.offers.remove(&request);
+    }
+
+    /// Settle a closing offer's escrow: paid to the partner's owner if the
+    /// mating ran, refunded to the requester otherwise.
+    fn settle(&mut self, o: &Offer, status: OfferStatus, out: &mut Outbox) -> Option<&'static str> {
+        if o.escrow == 0 {
+            return None;
+        }
+        let amount = o.escrow;
+        let (from, to) = (self.name(o.from), self.name(o.to));
+        if status == OfferStatus::Completed {
+            let what = match o.listing {
+                Some(l) => format!("listing #{l}"),
+                None => format!("offer #{}", o.id),
+            };
+            let text = format!("Sale: {amount} renown from {from} for {what} (your #{} with #{})", o.partner, o.mine);
+            let _ = self.post(o.to, amount as i64, LedgerKind::Sale, text.clone(), Some(o.id), o.listing);
+            self.alert(o.to, AlertKind::Market, format!("{text}."), Some(o.partner), out);
+            let paid = format!("Paid {amount} renown to {to} from escrow: the mating of #{} with #{} ran.", o.mine, o.partner);
+            self.alert(o.from, AlertKind::Market, paid, Some(o.mine), out);
+            Some("paid")
+        } else {
+            let how = serde_json::to_value(status).unwrap().as_str().unwrap_or_default().to_string();
+            let text = format!("Refund: {amount} renown back from offer #{} with {to} ({how})", o.id);
+            let _ = self.post(o.from, amount as i64, LedgerKind::Refund, text.clone(), Some(o.id), o.listing);
+            self.alert(o.from, AlertKind::Market, format!("{text}."), Some(o.mine), out);
+            Some("refunded")
+        }
     }
 
     fn offer_view(&self, id: u64) -> OfferView {
@@ -713,6 +1078,8 @@ impl Game {
             price: o.price,
             status: o.status,
             created_tick: o.created_tick,
+            listing: o.listing,
+            escrow: o.escrow,
         }
     }
 
@@ -738,6 +1105,7 @@ impl Game {
             }
         }
         self.hold_consented_females();
+        self.maintain_listings(&mut out);
         let season = self.world.season();
         if season != self.last_season {
             self.last_season = season;
@@ -755,6 +1123,7 @@ impl Game {
         if legacy_day != self.last_legacy_day {
             self.last_legacy_day = legacy_day;
             let record = self.daily_record();
+            self.pay_income(&record);
             self.daily_alerts(&record, &mut out);
             self.chronicle_alerts(&mut out);
             self.history.push_back(record.clone());
@@ -994,8 +1363,14 @@ impl Game {
                 }
             }
         }
+        let mut bonuses: Vec<(PlayerId, u64, String)> = Vec::new();
         for a in &ch.achievements[self.seen_achievements.min(ch.achievements.len())..] {
-            alerts.push((a.player, AlertKind::Achievement, achievement_text(&self.world, &a.kind)));
+            let text = achievement_text(&self.world, &a.kind);
+            let bonus = economy::achievement_bonus(a.kind.label());
+            if bonus > 0 && a.player != WILD {
+                bonuses.push((a.player, bonus, text.clone()));
+            }
+            alerts.push((a.player, AlertKind::Achievement, text));
         }
         self.seen_achievements = ch.achievements.len();
         for e in &ch.eras[self.seen_eras.min(ch.eras.len())..] {
@@ -1016,6 +1391,12 @@ impl Game {
         self.seen_eras = ch.eras.len();
         for (p, kind, text) in alerts {
             self.alert(p, kind, text, None, out);
+        }
+        for (p, bonus, text) in bonuses {
+            let what = text.split(':').next().unwrap_or("Achievement").to_string();
+            if self.post(p, bonus as i64, LedgerKind::Achievement, format!("{what}: achievement bonus"), None, None).is_ok() {
+                self.alert(p, AlertKind::Market, format!("+{bonus} renown for an achievement ({what})."), None, out);
+            }
         }
     }
 
@@ -1419,6 +1800,8 @@ impl Game {
             nearby: nearby.into_iter().map(|(_, n)| n).collect(),
             leaderboard: self.leaderboard(),
             offers,
+            balance: self.balance(player),
+            escrow: self.escrow(player),
         })
     }
 
@@ -1474,6 +1857,13 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
             let what = w.chronicle.catastrophes.get(*catastrophe as usize).map_or("a catastrophe", |c| catastrophe_text(c.kind));
             format!("Survivor: your lineage came through {what}.")
         }
+    }
+}
+
+fn role_name(s: Sex) -> &'static str {
+    match s {
+        Sex::Male => "stud",
+        Sex::Female => "dam",
     }
 }
 
