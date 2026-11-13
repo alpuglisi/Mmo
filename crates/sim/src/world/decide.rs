@@ -75,11 +75,13 @@ fn beats(score: f32, j: usize, best: Option<(f32, usize)>) -> bool {
     best.is_none_or(|(s, k)| score > s || (score == s && j < k))
 }
 
-/// Mean expression difference over all genes: `Genome::distance`, from the
-/// phenotype (which holds exactly the expressed values) so it reads 38
+/// Mean expression difference over the distance genes: `Genome::distance`, from the
+/// phenotype (which holds exactly the expressed values) so it reads `Gene::COUNT`
 /// contiguous floats instead of 76 scattered alleles.
 fn genetic_distance(a: &Organism, b: &Organism) -> f32 {
-    a.pheno.0.iter().zip(&b.pheno.0).map(|(x, y)| (x - y).abs()).sum::<f32>() / Gene::COUNT as f32
+    use crate::genome::{DISTANCE_GENES, IN_DISTANCE};
+    let diffs = a.pheno.0.iter().zip(&b.pheno.0).zip(IN_DISTANCE);
+    diffs.map(|((x, y), counts)| if counts { (x - y).abs() } else { 0.0 }).sum::<f32>() / DISTANCE_GENES
 }
 
 /// Carnivory above which an organism hunts live prey (`choose_food`).
@@ -89,7 +91,7 @@ pub(crate) const HUNTER_CARNIVORY: f32 = 0.45;
 /// grid's `ARMED` flag prunes far threats with this, so it must stay in step
 /// with `can_threaten`.
 pub(crate) fn is_armed(o: &Organism) -> bool {
-    o.traits.carnivory > HUNTER_CARNIVORY && o.growth > 0.5
+    o.traits.carnivory > HUNTER_CARNIVORY && o.growth > 0.5 && !o.dormancy.is_deep()
 }
 
 /// Can `predator` threaten `prey` at all? Anything that would hunt the
@@ -163,6 +165,10 @@ impl World {
         let o = &self.organisms[i];
         if !o.alive {
             return Intent::idle();
+        }
+        // Hibernating, brumating or estivating: no perception, no choices.
+        if o.dormancy.is_deep() {
+            return Intent { action: Action::Dormant, kin_nearby: o.kin_nearby, ..Intent::idle() };
         }
         let mut rng = rng_for(self.config.seed, stream::DECIDE, self.tick, o.id);
         let p = &o.pheno;
@@ -253,6 +259,11 @@ impl World {
         let kin_sum = seen.kin_sum + rest[0].1 * own + rest[1].1 * other;
         let kin_centroid = if kin > 0 { Some(kin_sum * (1.0 / kin_f)) } else { None };
         let mut intent = Intent { kin_nearby: kin, threat, ..Intent::idle() };
+        // Torpid on a cold night: only a close threat rouses it.
+        if o.dormancy == crate::organism::Dormancy::Torpor && threat < super::seasonal::TORPOR_ALERT {
+            intent.action = Action::Dormant;
+            return intent;
+        }
 
         // --- Player overrides ----------------------------------------------
         if let (Some(_), Some(target)) = (o.possessed_by, o.order) {
@@ -273,10 +284,15 @@ impl World {
         // nothing, so it takes cover at lower threat than a runner would flee.
         let can_dig = o.traits.body.burrow > 0.5 && self.map.tile_at(o.pos).water_depth == 0.0;
         let flee_weight = cfg.balance.flee_weight * if can_dig { cfg.balance.burrow_caution } else { 1.0 };
+        // Seasonal strategies: fattening before a dormancy, migrating
+        // between seasonal ranges.
+        let fatten = self.fat_room(o) / self.fat_capacity(o).max(1e-6);
+        let season_dest = self.seasonal_destination(o, juvenile_care);
+        let ordered = self.migrate_orders.contains_key(&o.owner) && o.matured;
 
-        let mut options: [(Action, f32); 12] = [
+        let mut options: [(Action, f32); 13] = [
             (Action::Flee, threat * (1.3 - boldness) * flee_weight),
-            (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 }),
+            (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
             (Action::Drink, thirst.powf(1.5) * 1.3 + if thirst > 0.8 { 0.5 } else { 0.0 }),
             (Action::Rest, tired * tired * 1.1),
             (Action::Bask, if o.traits.warm { 0.0 } else { (1.0 - o.activity) * 0.7 }),
@@ -289,7 +305,8 @@ impl World {
                 _ => 0.0,
             }),
             (Action::Wander, 0.05 + 0.15 * p[Gene::Wanderlust]),
-            (Action::Migrate, if self.migrate_orders.contains_key(&o.owner) && o.matured { 0.55 } else { 0.0 }),
+            (Action::Migrate, if season_dest.is_some() { 0.6 } else if ordered { 0.55 } else { 0.0 }),
+            (Action::Cache, self.cache_utility(o)),
             (Action::FollowParent, match mother_pos {
                 Some(m) if juvenile_care && o.pos.dist(m) > 1.2 => 0.6,
                 _ => 0.0,
@@ -366,10 +383,11 @@ impl World {
             }
             Action::Group => intent.target = kin_centroid,
             Action::Wander => self.wander(o, &mut intent, &mut rng, 2.0 + 8.0 * p[Gene::Wanderlust]),
-            Action::Migrate => intent.target = self.migrate_orders.get(&o.owner).copied(),
+            Action::Migrate => intent.target = season_dest.or_else(|| self.migrate_orders.get(&o.owner).copied()),
+            Action::Cache => self.choose_cache_spot(o, &mut intent, &mut rng),
             Action::FollowParent => intent.target = mother_pos,
             Action::Guard => intent.target = o.nest,
-            Action::Hunt | Action::Scavenge | Action::Ordered => {}
+            Action::Hunt | Action::Scavenge | Action::Ordered | Action::Dormant => {}
         }
         intent
     }
@@ -393,7 +411,14 @@ impl World {
         }
         if !kin {
             // Sheltered burrowers and stealthy organisms are harder to see.
-            let hidden = if q.sheltered { 0.5 } else { 0.0 };
+            // A deep sleeper's den hides it less than a burrow.
+            let hidden = if q.sheltered {
+                0.5
+            } else if q.dormancy.is_deep() {
+                cfg.balance.den_concealment
+            } else {
+                0.0
+            };
             let detect = radius * (1.0 - cfg.balance.stealth_effect * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
             if d < detect {
                 if can_threaten(q, o) {
@@ -498,6 +523,11 @@ impl World {
             intent.target = None;
             return;
         }
+        // A cacher lives off its hoard in the lean seasons.
+        if let Some(c) = self.cache_to_eat(o, bite) {
+            intent.target = (o.pos.dist(c) > 0.5).then_some(c);
+            return;
+        }
         // Keep heading for the patch chosen earlier while it still has food.
         if let Some(t) = o.forage_target {
             let tile = self.map.tile_at(t);
@@ -547,6 +577,22 @@ impl World {
             }
         }
         best.map(|(_, p)| p)
+    }
+
+    /// Gathering for the cache: go back if strayed too far from it, else
+    /// gather here if there is food, else find a food tile nearby.
+    fn choose_cache_spot(&self, o: &Organism, intent: &mut Intent, rng: &mut SimRng) {
+        let eff = 1.0 - o.traits.carnivory;
+        let bite = 25.0 * o.food_per_hunger();
+        if let Some(c) = o.cache_pos.filter(|&c| o.cache > 0.5 && o.pos.dist(c) > super::seasonal::CACHE_RANGE - 1.0) {
+            intent.target = Some(c);
+        } else if self.map.tile_at(o.pos).veg * eff > 0.5 * bite {
+            intent.target = None;
+        } else if let Some(t) = self.find_tile(o, rng, 2.0 * bite, |t| t.veg * eff) {
+            intent.target = Some(t);
+        } else {
+            self.wander(o, intent, rng, 5.0);
+        }
     }
 
     fn wander(&self, o: &Organism, intent: &mut Intent, rng: &mut SimRng, range: f32) {
@@ -655,7 +701,8 @@ mod tests {
         let (fox, pack, grazer, burrower) = (pick(3), pick(4), pick(5), pick(7));
         let k = w.config.balance.injury_aversion;
         assert!(fight_back(grazer) < 0.05 * fight_back(fox));
-        assert!(injury_discount(pack, pack.power(), fight_back(grazer), k) > 0.9);
+        // Founder variation can leave a grazer a few hundredths of carnivory.
+        assert!(injury_discount(pack, pack.power(), fight_back(grazer), k) > 0.8);
         let from_burrower = injury_discount(burrower, 0.5, fight_back(fox), k);
         let from_carnivore = injury_discount(pack, 0.5, fight_back(fox), k);
         assert!(from_burrower < 0.5 * from_carnivore, "{from_burrower} vs {from_carnivore}");

@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use evo_sim::group::GroupTrait;
-use evo_sim::organism::DeathCause;
+use evo_sim::organism::{Action, DeathCause, Dormancy};
 use evo_sim::{presets, render, Balance, Gene, PlayerId, World, WorldConfig, WILD};
 
 mod sweep;
@@ -47,7 +47,9 @@ Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_
 attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
 pregnancy_cost meat_per_kg flee_weight ambush crowding toxin_damage larval_competition
 adult_mortality burrow_shelter burrow_caution parent_defense breeding_density escape
-escape_window home_buffer injury_aversion fight_damage
+escape_window home_buffer injury_aversion fight_damage dormancy_temp estivation_temp
+dormant_metabolism dormancy_mismatch brumation_mismatch fat_capacity den_concealment
+migration_range migration_risk torpor_metabolism cache_capacity
 ";
 
 struct Args {
@@ -301,12 +303,61 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
         let pairs: Vec<String> = c.hybrids.iter().map(|((m, f), n)| format!("{m}×{f} {n}")).collect();
         println!("  hybrid offspring (mother×father lineage): {}", pairs.join(" · "));
     }
+    print_seasonal(world);
     let groups: Vec<String> = GroupTrait::ALL
         .iter()
         .map(|t| format!("{} {}", t.label(), world.group.active_regions(*t)))
         .collect();
     println!("  group traits active (regions): {}", groups.join(" · "));
     print_drift(world, names);
+}
+
+/// Seasonal strategies at work, per lineage that uses any: dormant (winter or
+/// summer), torpid, migrating, mean fat of adults and food cached.
+fn print_seasonal(world: &World) {
+    #[derive(Default)]
+    struct Row {
+        winter: usize,
+        summer: usize,
+        torpid: usize,
+        migrating: usize,
+        adults: usize,
+        fat: f32,
+        cached: f32,
+    }
+    let mut rows: BTreeMap<u32, Row> = BTreeMap::new();
+    for o in world.organisms.iter().filter(|o| o.alive) {
+        let r = rows.entry(o.lineage).or_default();
+        match o.dormancy {
+            Dormancy::Winter => r.winter += 1,
+            Dormancy::Summer => r.summer += 1,
+            Dormancy::Torpor => r.torpid += 1,
+            Dormancy::Awake => {}
+        }
+        if o.action == Action::Migrate {
+            r.migrating += 1;
+        }
+        if o.matured {
+            r.adults += 1;
+            r.fat += o.fat;
+        }
+        r.cached += o.cache;
+    }
+    for (l, r) in rows {
+        if r.winter + r.summer + r.torpid + r.migrating == 0 && r.fat + r.cached < 1.0 {
+            continue;
+        }
+        println!(
+            "    {:<20} seasonal: hibernating {} · estivating {} · torpid {} · migrating {} · fat {:.0}/adult · cached {:.0}",
+            world.lineages[l as usize].name,
+            r.winter,
+            r.summer,
+            r.torpid,
+            r.migrating,
+            r.fat / r.adults.max(1) as f32,
+            r.cached
+        );
+    }
 }
 
 /// Mean of a few genes per lineage, to watch selection at work.

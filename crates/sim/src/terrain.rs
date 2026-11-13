@@ -272,13 +272,18 @@ impl Map {
     }
 
     pub fn temperature_offset(hour: u32, day_of_year: u32, days_per_year: u32) -> f32 {
+        // Warmest at 15:00.
+        let diurnal = DIURNAL_AMPLITUDE * (std::f32::consts::TAU * (hour as f32 - 9.0) / 24.0).sin();
+        Map::seasonal_offset(day_of_year, days_per_year) + diurnal
+    }
+
+    /// The seasonal part of [`Map::temperature_offset`], without the
+    /// day/night swing: a tile's `base_temp` plus this is its seasonal mean.
+    pub fn seasonal_offset(day_of_year: u32, days_per_year: u32) -> f32 {
         let dpy = days_per_year.max(1) as f32;
         // Temperature lags the sun by 1/16 of a year: warmest early summer,
         // coldest early winter.
-        let seasonal = SEASONAL_AMPLITUDE * (std::f32::consts::TAU * (day_of_year as f32 - dpy / 16.0) / dpy).sin();
-        // Warmest at 15:00.
-        let diurnal = DIURNAL_AMPLITUDE * (std::f32::consts::TAU * (hour as f32 - 9.0) / 24.0).sin();
-        seasonal + diurnal
+        SEASONAL_AMPLITUDE * (std::f32::consts::TAU * (day_of_year as f32 - dpy / 16.0) / dpy).sin()
     }
 
     /// One simulated hour of environment: temperature, snow, ice, plant

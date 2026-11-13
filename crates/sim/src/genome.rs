@@ -23,6 +23,28 @@ pub type PlayerId = u32;
 /// Owner ID of the wild ecosystem.
 pub const WILD: PlayerId = 0;
 
+/// Seasonal-strategy genes. They are left out of [`Genome::distance`]:
+/// they are 0 in most designs, so counting them would dilute the distance
+/// (making different species kin), while founder variation on them would
+/// split founders of one design into strangers. Kin, mating and fertility
+/// thresholds stay as tuned on the other genes.
+pub const SEASONAL_GENES: [Gene; 6] =
+    [Gene::Hibernation, Gene::Brumation, Gene::Migration, Gene::Estivation, Gene::Caching, Gene::Torpor];
+
+/// Which genes count toward [`Genome::distance`], by gene index.
+pub const IN_DISTANCE: [bool; Gene::COUNT] = {
+    let mut mask = [true; Gene::COUNT];
+    let mut k = 0;
+    while k < SEASONAL_GENES.len() {
+        mask[SEASONAL_GENES[k] as usize] = false;
+        k += 1;
+    }
+    mask
+};
+
+/// Number of genes [`Genome::distance`] averages over.
+pub const DISTANCE_GENES: f32 = (Gene::COUNT - SEASONAL_GENES.len()) as f32;
+
 macro_rules! define_genes {
     ($( $(#[$m:meta])* $name:ident => $label:literal ),* $(,)?) => {
         /// Every heritable locus. Physical, behavioral and mate-preference
@@ -99,6 +121,22 @@ define_genes! {
     TolColoration => "coloration tolerance",
     PrefBodySize => "preferred body size",
     TolBodySize => "body size tolerance",
+    // Seasonal strategy (see `stats::Seasonal`). Each is expressed above
+    // `stats::STRATEGY_THRESHOLD`, and works better the higher it is.
+    /// Winter dormancy on stored fat, warm-leaning: a cold-blooded body can't
+    /// heat itself to wake.
+    Hibernation => "hibernation",
+    /// Winter dormancy that wakes with the weather, cold-leaning: a
+    /// warm-blooded body keeps burning fat while dormant.
+    Brumation => "brumation",
+    /// Seasonal range shift: toward warmer latitude in autumn, back in spring.
+    Migration => "migration",
+    /// Summer dormancy through heat.
+    Estivation => "estivation",
+    /// Food caching (add-on): hoards plant food in late summer and autumn.
+    Caching => "food caching",
+    /// Short-term torpor (add-on): cheap, shallow dormancy on cold nights.
+    Torpor => "torpor",
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -207,16 +245,18 @@ impl Genome {
         Genome { loci }
     }
 
-    /// Mean absolute difference in expressed values. Used for kin/species
-    /// recognition and outbreeding depression.
+    /// Mean absolute difference in expressed values over the genes in
+    /// [`IN_DISTANCE`]. Used for kin/species recognition and outbreeding
+    /// depression.
     pub fn distance(&self, other: &Genome) -> f32 {
         let sum: f32 = self
             .loci
             .iter()
             .zip(&other.loci)
-            .map(|(a, b)| (a.expressed() - b.expressed()).abs())
+            .zip(IN_DISTANCE)
+            .map(|((a, b), counts)| if counts { (a.expressed() - b.expressed()).abs() } else { 0.0 })
             .sum();
-        sum / Gene::COUNT as f32
+        sum / DISTANCE_GENES
     }
 
     /// Add `weight` per allele to each allele's origin.
@@ -286,7 +326,11 @@ mod tests {
     fn distance_is_mean_expression_difference() {
         let a = Genome::uniform(&flat(0.2), 1);
         let b = Genome::uniform(&flat(0.5), 1);
-        assert!((a.distance(&b) - 0.3).abs() < 1e-6);
+        assert!((a.distance(&b) - 0.3).abs() < 1e-5);
+        // Seasonal strategies don't count.
+        let mut v = flat(0.2);
+        v[Gene::Migration.index()] = 1.0;
+        assert_eq!(Genome::uniform(&v, 1).distance(&a), 0.0);
         assert_eq!(a.distance(&a), 0.0);
     }
 

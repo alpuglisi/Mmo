@@ -24,10 +24,12 @@ pub enum DeathCause {
     OldAge,
     /// Background adult mortality of fast-living species (disease, accidents).
     Attrition,
+    /// Lost on a seasonal migration (`Balance::migration_risk`).
+    Journey,
 }
 
 impl DeathCause {
-    pub const ALL: [DeathCause; 8] = [
+    pub const ALL: [DeathCause; 9] = [
         DeathCause::Starvation,
         DeathCause::Thirst,
         DeathCause::Exposure,
@@ -36,6 +38,7 @@ impl DeathCause {
         DeathCause::Drowning,
         DeathCause::OldAge,
         DeathCause::Attrition,
+        DeathCause::Journey,
     ];
 
     pub fn label(self) -> &'static str {
@@ -48,6 +51,7 @@ impl DeathCause {
             DeathCause::Drowning => "drowned",
             DeathCause::OldAge => "old age",
             DeathCause::Attrition => "attrition",
+            DeathCause::Journey => "journey",
         }
     }
 }
@@ -101,6 +105,30 @@ pub enum Action {
     FollowParent,
     Guard,
     Ordered,
+    /// Hibernating, brumating, estivating or torpid (see [`Dormancy`]).
+    Dormant,
+    /// Gathering plant food into its cache.
+    Cache,
+}
+
+/// Seasonal dormancy state ("Seasons and biomes" in the design doc).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Dormancy {
+    #[default]
+    Awake,
+    /// Hibernation or brumation through the cold season.
+    Winter,
+    /// Estivation through summer heat.
+    Summer,
+    /// Short torpor on a cold night: shallow and cheap.
+    Torpor,
+}
+
+impl Dormancy {
+    /// Hibernation, brumation or estivation: no perception, no breeding.
+    pub fn is_deep(self) -> bool {
+        matches!(self, Dormancy::Winter | Dormancy::Summer)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +179,16 @@ pub struct Organism {
     pub strike_ready_tick: u64,
     pub possessed_by: Option<PlayerId>,
     pub order: Option<Vec2>,
+    pub dormancy: Dormancy,
+    /// Fat reserve in hunger points, laid down before a dormancy and burned
+    /// during it (or whenever hunger runs high).
+    pub fat: f32,
+    /// Summer range of a migrator (inherited from the mother, so young
+    /// born in the winter range still know where home is).
+    pub range: Vec2,
+    /// Plant food (food units) in this organism's cache at `cache_pos`.
+    pub cache: f32,
+    pub cache_pos: Option<Vec2>,
 }
 
 impl Organism {
@@ -192,6 +230,11 @@ impl Organism {
             strike_ready_tick: 0,
             possessed_by: None,
             order: None,
+            dormancy: Dormancy::Awake,
+            fat: 0.0,
+            range: pos,
+            cache: 0.0,
+            cache_pos: None,
         }
     }
 
@@ -221,7 +264,7 @@ impl Organism {
     }
 
     pub fn can_breed(&self, tick: u64) -> bool {
-        self.alive && self.matured && self.pregnancy.is_none() && tick >= self.breed_ready_tick
+        self.alive && self.matured && self.pregnancy.is_none() && tick >= self.breed_ready_tick && !self.dormancy.is_deep()
     }
 
     pub fn is_breeding_adult(&self) -> bool {
@@ -238,11 +281,12 @@ impl Organism {
     }
 
     /// Ability to get away from (or run down) another animal in a struggle:
-    /// running speed, as slowed by youth and cold, plus agility, both sapped
-    /// by exhaustion.
+    /// running speed, as slowed by youth, cold and stored fat, plus agility,
+    /// both sapped by exhaustion.
     pub fn evasion(&self) -> f32 {
         let st = &self.traits.stats;
-        (st.speed * self.activity * (0.5 + 0.5 * self.growth) + st.agility) * (0.4 + 0.6 * self.needs.energy / 100.0)
+        let fat = 1.0 - 0.3 * (self.fat / 100.0).min(1.0);
+        (st.speed * self.activity * (0.5 + 0.5 * self.growth) * fat + st.agility) * (0.4 + 0.6 * self.needs.energy / 100.0)
     }
 
     /// Resistance to attack before group-trait bonuses.

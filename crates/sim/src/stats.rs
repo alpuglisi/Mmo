@@ -68,6 +68,89 @@ pub struct Traits {
     pub litter_burden: f32,
     /// Thermoregulation mismatch: fur on a cold-blooded body blocks basking.
     pub fur_mismatch: f32,
+    /// Seasonal strategy ("Seasons and biomes" in the design doc).
+    pub seasonal: Seasonal,
+}
+
+/// Expression above which a seasonal-strategy gene switches its strategy on.
+/// Above it the strategy works better the higher the expression, so it can
+/// evolve gradually once it appears.
+pub const STRATEGY_THRESHOLD: f32 = 0.5;
+
+/// How well a winter-dormancy form suits the body (the doc's thermoregulation
+/// affinity table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WinterForm {
+    /// Warm-blooded hibernation: sleeps through winter and wakes in spring by
+    /// heating itself.
+    Hibernation,
+    /// Cold-blooded brumation: dormant while it is cold, wakes with the
+    /// weather.
+    Brumation,
+    /// Mismatch: a cold-blooded hibernator can't heat itself to wake. It wakes
+    /// only with the weather, and may never wake (`Balance::dormancy_mismatch`).
+    ColdHibernator,
+    /// Mismatch: a warm-blooded brumator burns fat while dormant
+    /// (`Balance::brumation_mismatch`).
+    WarmBrumator,
+}
+
+impl WinterForm {
+    /// Wakes in spring by heating itself, whatever the weather.
+    pub fn self_waking(self) -> bool {
+        matches!(self, WinterForm::Hibernation)
+    }
+}
+
+/// Which seasonal strategies are expressed. Each strength is 0 when the gene
+/// is below [`STRATEGY_THRESHOLD`], otherwise its efficiency in (0, 1]:
+/// `(expression - threshold) / (1 - threshold)`, floored at 0.1 so a
+/// just-expressed strategy already does something.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Seasonal {
+    /// Winter dormancy, if any: the form that suits the body when both genes
+    /// are expressed, else the expressed one.
+    pub winter: Option<(WinterForm, f32)>,
+    pub migration: f32,
+    pub estivation: f32,
+    pub caching: f32,
+    pub torpor: f32,
+}
+
+impl Seasonal {
+    pub const NONE: Seasonal = Seasonal { winter: None, migration: 0.0, estivation: 0.0, caching: 0.0, torpor: 0.0 };
+
+    pub fn from_phenotype(p: &Phenotype, warm: bool) -> Seasonal {
+        let strength = |g: Gene| {
+            let x = p[g];
+            if x < STRATEGY_THRESHOLD {
+                0.0
+            } else {
+                ((x - STRATEGY_THRESHOLD) / (1.0 - STRATEGY_THRESHOLD)).max(0.1)
+            }
+        };
+        let (hib, brum) = (strength(Gene::Hibernation), strength(Gene::Brumation));
+        let winter = match (warm, hib > 0.0, brum > 0.0) {
+            (true, true, _) => Some((WinterForm::Hibernation, hib)),
+            (true, false, true) => Some((WinterForm::WarmBrumator, brum)),
+            (false, _, true) => Some((WinterForm::Brumation, brum)),
+            (false, true, false) => Some((WinterForm::ColdHibernator, hib)),
+            _ => None,
+        };
+        Seasonal {
+            winter,
+            migration: strength(Gene::Migration),
+            estivation: strength(Gene::Estivation),
+            caching: strength(Gene::Caching),
+            torpor: strength(Gene::Torpor),
+        }
+    }
+
+    /// Does it fatten up in `season` ahead of a dormancy?
+    pub fn fattens_in(&self, season: crate::terrain::Season) -> bool {
+        use crate::terrain::Season::*;
+        (self.winter.is_some() && season == Autumn) || (self.estivation > 0.0 && season == Spring)
+    }
 }
 
 impl Traits {
@@ -168,6 +251,7 @@ pub fn derive(p: &Phenotype) -> Traits {
         newborn_growth,
         litter_burden: litter as f32 * newborn_growth,
         fur_mismatch,
+        seasonal: Seasonal::from_phenotype(p, warm),
     }
 }
 
@@ -208,6 +292,22 @@ mod tests {
         assert!(pace(&frog) > 0.4);
         assert!(pace(&fox) < 0.05);
         assert_eq!(pace(&grazer), 0.0);
+    }
+
+    #[test]
+    fn winter_dormancy_form_follows_the_body() {
+        let form = |thermo, g: Gene| {
+            traits_of(&FounderDesign::new("d", thermo, BirthType::Live, 2).with(g, 0.9)).seasonal.winter.map(|w| w.0)
+        };
+        assert_eq!(form(Thermo::Warm, Gene::Hibernation), Some(WinterForm::Hibernation));
+        assert_eq!(form(Thermo::Cold, Gene::Brumation), Some(WinterForm::Brumation));
+        assert_eq!(form(Thermo::Cold, Gene::Hibernation), Some(WinterForm::ColdHibernator));
+        assert_eq!(form(Thermo::Warm, Gene::Brumation), Some(WinterForm::WarmBrumator));
+        // Below the threshold a strategy is not expressed at all.
+        let weak = traits_of(&FounderDesign::new("w", Thermo::Warm, BirthType::Live, 2).with(Gene::Migration, 0.45));
+        assert_eq!(weak.seasonal, Seasonal::NONE);
+        let strong = traits_of(&FounderDesign::new("s", Thermo::Warm, BirthType::Live, 2).with(Gene::Migration, 1.0));
+        assert_eq!(strong.seasonal.migration, 1.0);
     }
 
     #[test]

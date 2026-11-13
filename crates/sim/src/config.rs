@@ -134,6 +134,44 @@ pub struct Balance {
     /// that fights back, per unit of the prey's `fight_back`, win or lose.
     /// 0 disables.
     pub fight_damage: f32,
+    // --- Seasonal strategies (`world::seasonal`) ---
+    /// Seasonal mean temperature (°C, no day/night swing) below which a
+    /// hibernator or brumator goes dormant in autumn and winter. Brumators
+    /// (and hibernators that can't heat themselves) wake when it is 2 °C
+    /// warmer again; warm-blooded hibernators sleep until spring.
+    pub dormancy_temp: f32,
+    /// Seasonal mean temperature (°C) above which an estivator goes dormant
+    /// in summer; it wakes when it is 2 °C cooler or summer ends.
+    pub estivation_temp: f32,
+    /// Hunger and thirst rate while hibernating, brumating or estivating, as
+    /// a fraction of the resting rate, at full gene expression (twice this
+    /// just above the expression threshold).
+    pub dormant_metabolism: f32,
+    /// Chance that a cold-blooded hibernator (affinity mismatch) never wakes
+    /// from its winter dormancy.
+    pub dormancy_mismatch: f32,
+    /// Dormant-metabolism multiplier for a warm-blooded brumator (affinity
+    /// mismatch: it keeps burning fat while dormant).
+    pub brumation_mismatch: f32,
+    /// Most fat (hunger points) laid down before a dormancy, times
+    /// `1 + fat stores`. Fat pays for hunger while dormant or above 50 hunger.
+    pub fat_capacity: f32,
+    /// How much a dormant animal's den hides it from passing hunters (as
+    /// stealth does; a sheltered burrower hides 0.5).
+    pub den_concealment: f32,
+    /// Distance of a migrator's winter range south of its summer range, as a
+    /// fraction of the map height at full gene expression.
+    pub migration_range: f32,
+    /// Death chance per tile travelled on a seasonal migration, times
+    /// `1.5 - endurance` and halved by group navigation (group tolerance
+    /// with kin around).
+    pub migration_risk: f32,
+    /// Hunger-rate multiplier while in torpor on a cold night, at full gene
+    /// expression (cold costs nothing extra while torpid).
+    pub torpor_metabolism: f32,
+    /// Most food a cacher hoards, in its own hunger points, at full gene
+    /// expression.
+    pub cache_capacity: f32,
 }
 
 impl Default for Balance {
@@ -169,12 +207,23 @@ impl Default for Balance {
             home_buffer: 28.0,
             injury_aversion: 6.0,
             fight_damage: 30.0,
+            dormancy_temp: 6.0,
+            estivation_temp: 27.0,
+            dormant_metabolism: 0.05,
+            dormancy_mismatch: 0.5,
+            brumation_mismatch: 6.0,
+            fat_capacity: 50.0,
+            den_concealment: 0.3,
+            migration_range: 0.35,
+            migration_risk: 0.002,
+            torpor_metabolism: 0.4,
+            cache_capacity: 80.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 28;
+    pub const FIELD_COUNT: usize = 39;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -212,6 +261,17 @@ impl Balance {
             ("home_buffer", &mut self.home_buffer),
             ("injury_aversion", &mut self.injury_aversion),
             ("fight_damage", &mut self.fight_damage),
+            ("dormancy_temp", &mut self.dormancy_temp),
+            ("estivation_temp", &mut self.estivation_temp),
+            ("dormant_metabolism", &mut self.dormant_metabolism),
+            ("dormancy_mismatch", &mut self.dormancy_mismatch),
+            ("brumation_mismatch", &mut self.brumation_mismatch),
+            ("fat_capacity", &mut self.fat_capacity),
+            ("den_concealment", &mut self.den_concealment),
+            ("migration_range", &mut self.migration_range),
+            ("migration_risk", &mut self.migration_risk),
+            ("torpor_metabolism", &mut self.torpor_metabolism),
+            ("cache_capacity", &mut self.cache_capacity),
         ]
     }
 

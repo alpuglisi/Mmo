@@ -64,7 +64,7 @@ pub const BODY_PLAN_FULL: f32 = 0.12;
 pub const BODY_PLAN_STERILE: f32 = 0.3;
 
 /// Fertility from the largest difference in any [`BODY_PLAN_GENES`]. The
-/// whole-genome distance averages over 38 genes, so behavior and preference
+/// whole-genome distance averages over every gene, so behavior and preference
 /// genes dilute the few that make two designs different animals: a
 /// warm-blooded live-born vole and a cold-blooded egg-laying newt differ in
 /// almost nothing else. This keeps them (and a vole and a fox) sterile, while

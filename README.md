@@ -24,7 +24,7 @@ docs/
 
 | Module | Design-doc section | What it does |
 | --- | --- | --- |
-| `genome` | Scoring, Genetics | 38 diploid genes (body, behavior *and* mate preference). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. |
+| `genome` | Scoring, Genetics | 44 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night, wind. Snow, ice bridges, plant regrowth, carcass decay. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
@@ -32,6 +32,7 @@ docs/
 | `group` | Critical-mass group traits | Daily regional carrier frequency → logistic benefit. Implemented: cooperative hunting, warning coloration, herd defense, alarm calls. |
 | `legacy` | Scoring: genetic legacy | Share of origin-tagged alleles among living breeding adults, raw and weighted by offspring raised to adulthood. |
 | `world` | Needs and behavior, everything else | The tick loop: utility-AI decisions (parallel), then movement, grazing, hunting, scavenging, drinking, courtship, pregnancy, eggs and incubation, nursing, growth, death. |
+| `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat), food caching (raidable hoards for winter) and short-term torpor on cold nights. |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
 
 ### Tick structure
@@ -99,7 +100,8 @@ Validation uses 12 seeds (31–42) that no tuning run or agent touched, on a
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Original rules (first sweep, 3–4 seeds) | 6.5 | 100% | 100% | 100% | 0% | 0% | 100% | 100%, capped | 75% |
 | After the first tuning sweep (3 seeds) | 9.3 | 100% | 100% | 100% | 100% | 67% | 100% | 100%, capped | 67% |
-| **Current (12 unseen seeds)** | **11.3** | 100% | 83% | 100% | 100% | 92% | 92% | 100% | 100% |
+| Before seasonal strategies (12 unseen seeds) | 11.3 | 100% | 83% | 100% | 100% | 92% | 92% | 100% | 100% |
+| **With seasonal strategies (12 unseen seeds)** | **11.3** | 100% | 75% | 100% | 100% | 100% | 92% | 100% | 100% |
 
 Toxic frogs now average about half their cap instead of sitting at it, and no
 lineage spends the run pinned at a cap.
@@ -140,11 +142,24 @@ defaults stayed as they are.
 - A 12-seed, 120-day validation takes about 35 seconds on 4 cores.
 
 Not yet implemented from the design doc: dominance and hidden recessives,
-mating-transmitted disease, the other five group traits, seasonal strategies
-(hibernation, migration, estivation as genes), level-of-detail statistical
+mating-transmitted disease, the other five group traits, the seasonal coat,
+timed breeding and the strategy × group-trait combinations (communal dens,
+group navigation beyond a risk discount, shared caches), level-of-detail statistical
 populations, and A* pathfinding (movement is currently greedy steering with
 obstacle avoidance). The point costs in `design.rs` are placeholders, as the
 doc lists them as an open question.
+
+**Seasonal strategies** (`world::seasonal`, tunables `dormancy_temp` …
+`cache_capacity` in `Balance`): the sample designs use them where they
+clearly fit: voles cache, newts and toxic frogs brumate, burrowing omnivores
+hibernate. Antelope were tried as migrators, but on both 12-seed sets
+migration cost them survival (67% vs 75% and 50% vs 67%), mostly to
+predators met on the autumn trek, so they stay year-round. Seasonal genes
+are left out of the genetic distance (`genome::IN_DISTANCE`): counted, they
+diluted it enough to make foxes and pack hunters kin. Appending genes still
+reshuffles founder and mutation randomness, which alone moved a 12-seed score by up to
+0.4 (seeds 43–54: 11.13 before, 10.70 with the new genes and no strategies
+in use, 10.71 with the presets' strategies).
 
 ## Suggested next steps
 
@@ -154,6 +169,6 @@ doc lists them as an open question.
    chaotic), and screen trials on short runs before giving the best full runs.
 3. Parallel apply by region, then measure at the doc's prototype target
    (~25k organisms on 256×256).
-4. Seasonal strategies as genes, then the remaining group traits.
+4. The remaining group traits.
 5. Step 2 of the build order: the Tokio/Axum server around `World`, using
    `world::commands` for player actions.

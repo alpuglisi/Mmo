@@ -52,6 +52,8 @@ pub fn wild_designs() -> Vec<(PlayerId, FounderDesign)> {
                 .with(Fur, 0.5)
                 .with(Camouflage, 0.4)
                 .with(GroupTolerance, 0.4)
+                // Voles hoard seeds for winter.
+                .with(Caching, 0.8)
                 .founders(160),
         ),
         (
@@ -76,6 +78,8 @@ pub fn wild_designs() -> Vec<(PlayerId, FounderDesign)> {
                 .with(Camouflage, 0.6)
                 .with(Carnivory, 0.1)
                 .with(Tail, 0.6)
+                // Newts brumate through the cold.
+                .with(Brumation, 0.8)
                 .founders(100),
         ),
         (
@@ -134,6 +138,7 @@ pub fn player_designs() -> Vec<FounderDesign> {
             .with(Carnivory, 0.1)
             .with(GroupTolerance, 0.6)
             .with(Pickiness, 0.7)
+            .with(Brumation, 0.8)
             .founders(50),
         FounderDesign::new("Burrowing omnivores", Thermo::Warm, BirthType::IncubatedEggs, 4)
             .with(BodySize, 0.3)
@@ -145,6 +150,8 @@ pub fn player_designs() -> Vec<FounderDesign> {
             .with(FatStores, 0.5)
             .with(GroupTolerance, 0.3)
             .with(Wanderlust, 0.3)
+            // Badger-like: fattens in autumn, sleeps through hard winters.
+            .with(Hibernation, 0.8)
             .founders(30),
     ]
 }

@@ -12,8 +12,10 @@ impl World {
         self.weather = next_weather(&self.weather, &mut rng);
         let (doy, hour, dpy) = (self.day_of_year(), self.hour(), self.config.days_per_year);
         self.map.update_environment(doy, hour, dpy, &self.weather, self.config.balance.veg_regrowth);
+        self.season_offset = crate::terrain::Map::seasonal_offset(doy, dpy);
         self.update_clutches(&mut rng);
         self.density.rebuild(&self.organisms, self.lineages.len());
+        self.rebuild_caches();
     }
 
     pub(super) fn daily(&mut self) {
@@ -33,6 +35,7 @@ impl World {
             }
             self.lineage_alive[l] += 1;
         }
+        self.rebuild_caches();
 
         let adults = || self.organisms.iter().filter(|o| o.is_breeding_adult());
         self.group.update(adults().map(|o| (o.pos, &o.pheno)));

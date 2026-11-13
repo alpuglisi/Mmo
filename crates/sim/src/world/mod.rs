@@ -19,6 +19,7 @@ pub mod commands;
 mod decide;
 mod density;
 mod environment;
+mod seasonal;
 mod spatial;
 
 use std::collections::{BTreeMap, HashMap};
@@ -132,6 +133,10 @@ pub struct World {
     migrate_orders: BTreeMap<PlayerId, Vec2>,
     slots_used: BTreeMap<PlayerId, u32>,
     clutch_at: HashMap<(usize, usize), usize>,
+    /// Seasonal part of today's temperature (`Map::seasonal_offset`).
+    season_offset: f32,
+    /// Tile → organism index of every food cache (`seasonal::rebuild_caches`).
+    cache_at: HashMap<(usize, usize), usize>,
 }
 
 /// The decision for one organism this tick.
@@ -188,6 +193,8 @@ impl World {
             migrate_orders: BTreeMap::new(),
             slots_used: BTreeMap::new(),
             clutch_at: HashMap::new(),
+            season_offset: Map::seasonal_offset(0, config.days_per_year),
+            cache_at: HashMap::new(),
             config,
         }
     }
