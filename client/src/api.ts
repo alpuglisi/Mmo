@@ -13,6 +13,11 @@ export function setApiBase(origin: string): void {
   base = origin.replace(/\/$/, '');
 }
 
+/** The server origin in use ('' when it is the page's own). */
+export function apiBase(): string {
+  return base;
+}
+
 export function apiUrl(path: string): string {
   return base + path;
 }

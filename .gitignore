@@ -5,3 +5,5 @@ target/
 client/node_modules/
 client/dist/
 client/e2e/out/
+client/android/
+client/ios/
