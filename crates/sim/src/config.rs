@@ -117,6 +117,9 @@ pub struct Balance {
     /// Hours a hunter needs to recover after its prey broke free before it
     /// can strike anything again: the prey's head start.
     pub escape_window: f32,
+    /// Founding: distance in tiles within which organisms that could eat a
+    /// new group count against its home (more the closer they are).
+    pub home_buffer: f32,
 }
 
 impl Default for Balance {
@@ -149,12 +152,13 @@ impl Default for Balance {
             breeding_density: 0.03,
             escape: 0.6,
             escape_window: 1.0,
+            home_buffer: 28.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 25;
+    pub const FIELD_COUNT: usize = 26;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -189,6 +193,7 @@ impl Balance {
             ("breeding_density", &mut self.breeding_density),
             ("escape", &mut self.escape),
             ("escape_window", &mut self.escape_window),
+            ("home_buffer", &mut self.home_buffer),
         ]
     }
 

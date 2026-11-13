@@ -30,7 +30,7 @@ use rayon::prelude::*;
 use crate::config::WorldConfig;
 use crate::design::{DesignError, FounderDesign};
 use crate::genome::{Genome, PlayerId};
-use crate::group::GroupField;
+use crate::group::{GroupField, GroupTrait};
 use crate::legacy::LegacySnapshot;
 use crate::math::Vec2;
 use crate::organism::{DeathCause, OrgId, Organism, Sex};
@@ -39,6 +39,17 @@ use crate::terrain::{traverse, Map, Season, Traverse, Weather};
 
 use density::SpeciesDensity;
 use spatial::SpatialGrid;
+
+/// Founding: longest walk (tiles) from a home to a spot where it can drink
+/// (water within 6 tiles, as drinking reaches the next tile).
+const WATER_STEPS: usize = 5;
+/// Founding: radius in tiles of a hunter's prey count.
+const PREY_RANGE: f32 = 16.0;
+/// Founding: prey this close to a hunter's home counts against it, so hunters
+/// don't start on top of a prey group.
+const PREY_ON_TOP: f32 = 8.0;
+/// Founding: share of a prey lineage's founders a hunter's home may count.
+const PREY_SHARE: f32 = 0.15;
 
 /// Eggs waiting to hatch.
 #[derive(Clone, Debug)]
@@ -273,7 +284,8 @@ impl World {
     /// ecosystem is scattered in small groups across the map.
     pub fn found_lineage_unchecked(&mut self, owner: PlayerId, design: &FounderDesign) -> Vec<OrgId> {
         let mut rng = rng_for(self.config.seed, stream::FOUNDING, owner as u64, self.next_id);
-        let probe = Organism::new(0, owner, design.founder_genome(owner, &mut rng), Sex::Female, Vec2::ZERO);
+        let mut probe = Organism::new(0, owner, design.founder_genome(owner, &mut rng), Sex::Female, Vec2::ZERO);
+        probe.growth = 1.0;
         let group_size = if owner == crate::WILD { 12 } else { design.founders.max(1) };
         let spread = 3.0 + 10.0 * (1.0 - probe.pheno[crate::Gene::GroupTolerance]);
         let mut ids = Vec::with_capacity(design.founders as usize);
@@ -282,7 +294,7 @@ impl World {
         self.lineages.push(Lineage { name: design.name.clone(), owner, founders: design.founders });
         for k in 0..design.founders {
             if k % group_size == 0 {
-                home = self.pick_home(&probe, &mut rng);
+                home = self.pick_home(&probe, lineage, &mut rng);
             }
             let genome = design.founder_genome(owner, &mut rng);
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
@@ -309,8 +321,49 @@ impl World {
     }
 
     /// A start location the design can live on: passable, comfortable, edible,
-    /// near water, and away from organisms already placed.
-    fn pick_home(&self, probe: &Organism, rng: &mut impl Rng) -> Vec2 {
+    /// near water it can walk to without passing its predators, away from
+    /// organisms already placed, and out of reach of anything that could eat
+    /// it. A hunter's prey only counts if it can reach it, and prey so close
+    /// that the hunters would start on top of it counts against the spot.
+    fn pick_home(&self, probe: &Organism, lineage: u32, rng: &mut impl Rng) -> Vec2 {
+        let buffer = self.config.balance.home_buffer.max(0.0);
+        let region = self.passable_regions(probe);
+        let region_at = |p: Vec2| {
+            let (x, y) = self.map.tile_coords(p);
+            region[self.map.idx(x, y)]
+        };
+        let carn = probe.traits.carnivory;
+        let hunter = carn > 0.45;
+        // Prey it can take alone: a pack placed by big prey it can only
+        // take together eats through that prey lineage before it settles.
+        let max_prey = decide::max_prey_mass(probe, 0.0);
+        let others = || self.organisms.iter().filter(move |o| o.alive && o.lineage != lineage);
+        // Predators that could eat the founders, packs that only take them
+        // together included, weighted by their odds in a fight (as prey judge
+        // threats when deciding).
+        let resistance = probe.resistance();
+        let threats: Vec<(Vec2, f32)> = others()
+            .filter_map(|o| {
+                let coop = if GroupTrait::CooperativeHunting.is_carrier(&o.pheno) { 1.0 } else { 0.0 };
+                let can_take = o.traits.carnivory > 0.45 && probe.mass() < decide::max_prey_mass(o, coop);
+                (decide::can_threaten(o, probe) || can_take).then(|| {
+                    let power = o.power() * (1.0 + coop);
+                    (o.pos, (2.0 * power / (power + resistance + 1e-3)).min(1.0))
+                })
+            })
+            .collect();
+        let threat_pos: Vec<Vec2> = threats.iter().map(|t| t.0).collect();
+        // Reachable prey: land hunters can't take newts in deep water.
+        let prey: Vec<(Vec2, u32, u32)> = if hunter {
+            others()
+                .filter(|o| o.traits.carnivory < 0.4 && o.mass() < max_prey && !decide::can_threaten(o, probe))
+                .filter(|o| self.passable_for(probe, o.pos))
+                .map(|o| (o.pos, o.lineage, region_at(o.pos)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut per_lineage: BTreeMap<u32, f32> = BTreeMap::new();
         let mut best = (f32::MIN, Map::tile_center(self.map.width / 2, self.map.height / 2));
         for _ in 0..200 {
             let p = Vec2::new(rng.gen_range(0.0..self.map.width as f32), rng.gen_range(0.0..self.map.height as f32));
@@ -323,26 +376,113 @@ impl World {
             } else {
                 -(18.0 - t.base_temp).max(0.0) * 0.1
             };
-            let water = if self.map.find_water(p, 6).is_some() { 1.0 } else { -2.0 };
-            let carn = probe.traits.carnivory;
-            // Competitors share a diet; prey are plant eaters nearby.
-            let (mut crowd, mut prey) = (0.0f32, 0.0f32);
-            for o in self.organisms.iter().filter(|o| o.pos.dist(p) < 12.0) {
-                if (o.traits.carnivory - carn).abs() < 0.3 {
-                    crowd += 1.0;
-                }
-                if o.traits.carnivory < 0.4 {
-                    prey += 1.0;
+            // A short walk to drinking water that avoids the threats.
+            let water = if self.water_reachable(probe, p, &threat_pos) { 1.0 } else { -2.0 };
+            // Competitors share a diet.
+            let crowd = self.organisms.iter().filter(|o| o.pos.dist(p) < 12.0 && (o.traits.carnivory - carn).abs() < 0.3).count() as f32;
+            let danger: f32 = threats.iter().map(|&(q, w)| w * (1.0 - q.dist(p) / buffer.max(1e-3)).max(0.0)).sum();
+            // Reachable prey nearby. Each prey lineage counts up to a share of
+            // its founders and counts against the spot beyond twice that, so
+            // hunters don't settle on most of one prey lineage; prey right on
+            // the spot counts against it too.
+            let home_region = region_at(p);
+            per_lineage.clear();
+            let mut on_top = 0.0f32;
+            for &(q, l, r) in &prey {
+                let d = q.dist(p);
+                if d < PREY_ON_TOP {
+                    on_top += 1.0;
+                } else if d < PREY_RANGE && r == home_region {
+                    *per_lineage.entry(l).or_default() += 1.0;
                 }
             }
+            let prey_count: f32 = per_lineage
+                .iter()
+                .map(|(&l, &n)| {
+                    let share = (PREY_SHARE * self.lineages[l as usize].founders as f32).max(3.0);
+                    n.min(share) - (n - 2.0 * share).max(0.0)
+                })
+                .sum();
             let productivity = (t.base_temp / 12.0).clamp(0.2, 1.0);
-            let food = t.veg_max / 40.0 * productivity * (1.0 - carn) + carn * 0.04 * prey.min(60.0);
-            let score = water + food + comfort - 0.05 * crowd + rng.gen_range(0.0..0.5);
+            let food = t.veg_max / 40.0 * productivity * (1.0 - carn) + carn * 0.04 * prey_count.min(60.0);
+            let score = water + food + comfort - 0.05 * crowd - (0.3 * danger).min(4.0) - (0.1 * carn * on_top).min(2.0)
+                + rng.gen_range(0.0..0.5);
             if score > best.0 {
                 best = (score, p);
             }
         }
         best.1
+    }
+
+    /// Connected regions of tiles the organism can walk (8-neighbor), as a
+    /// label per tile; `u32::MAX` for impassable tiles.
+    fn passable_regions(&self, o: &Organism) -> Vec<u32> {
+        let (w, h) = (self.map.width, self.map.height);
+        let open: Vec<bool> = (0..w * h).map(|i| self.passable_for(o, Map::tile_center(i % w, i / w))).collect();
+        let mut label = vec![u32::MAX; w * h];
+        let mut next = 0;
+        let mut stack = Vec::new();
+        for start in 0..w * h {
+            if !open[start] || label[start] != u32::MAX {
+                continue;
+            }
+            label[start] = next;
+            stack.push(start);
+            while let Some(i) = stack.pop() {
+                let (x, y) = (i % w, i / w);
+                for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+                    for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                        let j = ny * w + nx;
+                        if open[j] && label[j] == u32::MAX {
+                            label[j] = next;
+                            stack.push(j);
+                        }
+                    }
+                }
+            }
+            next += 1;
+        }
+        label
+    }
+
+    /// A spot where it can drink within `WATER_STEPS` steps (8-neighbor) of
+    /// `p`, walking only over passable tiles that keep clear of `threats`.
+    fn water_reachable(&self, o: &Organism, p: Vec2, threats: &[Vec2]) -> bool {
+        const STEPS: usize = WATER_STEPS;
+        const CLEARANCE: f32 = 5.0;
+        let side = 2 * STEPS + 1;
+        let (cx, cy) = self.map.tile_coords(p);
+        let mut seen = vec![false; side * side];
+        let mut frontier = vec![(cx, cy)];
+        seen[STEPS * side + STEPS] = true;
+        for step in 0..=STEPS {
+            let mut next = Vec::new();
+            for &(x, y) in &frontier {
+                let c = Map::tile_center(x, y);
+                if self.map.can_drink_at(c) {
+                    return true;
+                }
+                if step == STEPS {
+                    continue;
+                }
+                for ny in y.saturating_sub(1)..=(y + 1).min(self.map.height - 1) {
+                    for nx in x.saturating_sub(1)..=(x + 1).min(self.map.width - 1) {
+                        let (lx, ly) = (nx + STEPS - cx, ny + STEPS - cy);
+                        let k = ly * side + lx;
+                        if seen[k] {
+                            continue;
+                        }
+                        seen[k] = true;
+                        let q = Map::tile_center(nx, ny);
+                        if self.passable_for(o, q) && threats.iter().all(|t| t.dist(q) >= CLEARANCE) {
+                            next.push((nx, ny));
+                        }
+                    }
+                }
+            }
+            frontier = next;
+        }
+        false
     }
 
     fn passable_for(&self, o: &Organism, p: Vec2) -> bool {
@@ -471,5 +611,28 @@ mod tests {
             }
         }
         assert!(w.found_lineage(1, &d).is_err());
+    }
+
+    #[test]
+    fn founders_start_clear_of_their_predators() {
+        // Player groups keep away from bigger predators founded before them.
+        for seed in 1..=4 {
+            let w = presets::standard_world(WorldConfig { seed, width: 96, height: 96, ..Default::default() }, 1);
+            for (l, lineage) in w.lineages.iter().enumerate().filter(|(_, l)| l.owner != crate::WILD) {
+                let l = l as u32;
+                let nearest = w
+                    .organisms
+                    .iter()
+                    .filter(|f| f.lineage == l)
+                    .flat_map(|f| {
+                        w.organisms
+                            .iter()
+                            .filter(move |o| o.lineage < l && decide::can_threaten(o, f) && o.mass() > f.mass())
+                            .map(move |o| o.pos.dist(f.pos))
+                    })
+                    .fold(f32::MAX, f32::min);
+                assert!(nearest > 8.0, "seed {seed}: {} founded {nearest:.1} tiles from a predator", lineage.name);
+            }
+        }
     }
 }
