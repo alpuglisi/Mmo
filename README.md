@@ -50,11 +50,13 @@ test for this).
 Needs a recent stable Rust.
 
 ```sh
-cargo test --release                                  # 31 tests
+cargo test --release                                  # unit and world tests
 cargo run --release --bin evo-sim -- designs          # sample designs and point costs
 cargo run --release --bin evo-sim -- run --days 120 --report 10 --snapshot out/world
 cargo run --release --bin evo-sim -- bench --scale 4 --days 3
-cargo run --release --example trace -- 2 200          # follow one organism of player 2
+cargo run --release --bin evo-sim -- sweep --trials 16 --seeds 3 --rounds 2 --out sweep.csv
+cargo run --release --bin evo-sim -- run --set sprint=2.0 --set crowding=0.05   # try a balance tweak
+cargo run --release --example trace -- 3 200          # follow one fox (lineage 3)
 ```
 
 `run` founds a wild ecosystem (voles, antelope, newts, foxes) plus four sample
@@ -75,19 +77,45 @@ The single-thread figure falls within the design doc's 2–5 µs estimate. Only
 the decision phase runs in parallel so far, which is why 4 threads give about
 1.9×. Parallelizing the apply phase by region is the obvious next speed-up.
 
-## Status and known gaps
+## Balance
 
-All the rules run end to end, are deterministic and have unit tests. **Balance
-is not done.** Current behavior with the sample designs:
+Ecosystem rates live in `Balance` (`crates/sim/src/config.rs`) and can be
+overridden from the command line with `--set NAME=VALUE`. `evo-sim sweep`
+tunes them by random search: each round perturbs every parameter of the
+current best, runs every trial on several seeds in parallel, and recenters on
+the winner with half the spread.
 
-- Fast-breeding species (voles, newts, toxic frogs) grow until they hit their
-  population cap. Vegetation stays at 80–95% map-wide, so the cap limits them,
-  not food.
-- Predators make kills but don't grow: wild foxes hover around 10–20 and don't
-  control prey, and the sample pack hunters usually die out within a season.
-- Slow-breeding herd grazers hang on with steady losses (mostly juveniles to
-  thirst and hunger).
-- So the wild ecosystem dominates the legacy score.
+A run's score (max 12) gives each of the 8 lineages 1 point for surviving the
+year and up to 0.5 for holding its founding size, minus up to 3 for time spent
+pinned at a population cap. Per-species births and deaths by cause are in
+every `run` report.
+
+| | Sweep score | Foxes survive | Pack hunters survive | Burrowers survive |
+| --- | --- | --- | --- | --- |
+| Original rules and defaults | 6.5 | 0% | 0% | 75% |
+| Fixed rules, tuned defaults (96×96, seeds 1–3) | 8.7 | 67% | 100% | 67% |
+| Same, validated on 128×128 with unseen seeds 11–13 | 9.3 | 100% | 67% | 67% |
+
+Most of the gain came from rule fixes the sweep's per-species stats exposed,
+not from the numbers:
+
+- Exhausted predators kept hunting instead of resting and starved at a crawl.
+  They now rest first, and prey that isn't fleeing is easier to catch (ambush).
+- Predators kept biting toxic frogs and dying. One poisoning by brightly
+  colored prey now teaches a predator to avoid bright prey.
+- Newborns were placed, and steps could end, in water too deep for the body
+  (hundreds of voles drowned).
+- Crowding raises hunger for organisms with many kin nearby, scaled by
+  `1 - group tolerance`.
+
+Tuning then raised the carnivore hunger discount, plant regrowth and movement
+speed, and lowered thirst and the stealth effect.
+
+**Still open:** toxic frogs reach their population cap in every run (nothing
+eats them and they need little food, and crowding at its current strength
+doesn't hold them back), and burrowing omnivores and pack hunters still die
+out in about a third of worlds. A sweep takes about 30 minutes on 4 cores
+(each 120-day run is ~75 CPU-seconds).
 
 Not yet implemented from the design doc: dominance and hidden recessives,
 mating-transmitted disease, the other five group traits, seasonal strategies
@@ -98,11 +126,13 @@ doc lists them as an open question.
 
 ## Suggested next steps
 
-1. **Balance pass:** predator viability (detection vs. stealth, chase vs.
-   flee speed, reproduction rate) and r- vs. K-selection. A parameter sweep
-   over seeds with a summary metric would beat hand-tuning.
-2. Parallel apply by region, then measure at the doc's prototype target
+1. **Faster sweeps:** screen trials on one short run and give only the best
+   the full seeds and days; cache a species ID per organism instead of
+   comparing genomes against every neighbor each tick.
+2. **Balance:** density dependence for unpredated fast breeders, and lineage
+   survival in the worlds where pack hunters or burrowers still die out.
+3. Parallel apply by region, then measure at the doc's prototype target
    (~25k organisms on 256×256).
-3. Seasonal strategies as genes, then the remaining group traits.
-4. Step 2 of the build order: the Tokio/Axum server around `World`, using
+4. Seasonal strategies as genes, then the remaining group traits.
+5. Step 2 of the build order: the Tokio/Axum server around `World`, using
    `world::commands` for player actions.
