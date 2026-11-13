@@ -277,6 +277,17 @@ async function main() {
     await page.waitForTimeout(200);
     await page.screenshot({ path: path.join(shots, 'genetics-dashboard-feed.png') });
 
+    // World tab: species detected from the sampled adults, era clock, achievements.
+    await page.click('#tab-world');
+    const world = await waitFor('world chronicle', () => page.evaluate(() => {
+      const species = document.querySelectorAll('#species-list li.species').length;
+      const era = document.querySelector('#era-clock')?.textContent ?? '';
+      const players = document.querySelectorAll('#achievement-table tbody tr').length;
+      return species > 0 && era && players > 0 ? { species, era, players } : null;
+    }), 15000);
+    step(`world tab: ${world.species} species, ${world.players} player tallies; ${world.era.split('.')[0]}`);
+    await page.screenshot({ path: path.join(shots, 'world-chronicle.png') });
+
     // Directed mating between two players through the panels.
     const bob = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
     pages.push(bob);

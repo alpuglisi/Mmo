@@ -22,6 +22,8 @@ pub mod stream {
     pub const GENETICS: u64 = 7;
     /// Level of detail: collapsing, expanding and evolving cohorts.
     pub const LOD: u64 = 8;
+    /// Catastrophes: planning and their effects (epidemic infections).
+    pub const CHRONICLE: u64 = 9;
 }
 
 pub fn splitmix64(x: u64) -> u64 {

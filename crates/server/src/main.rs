@@ -3,7 +3,7 @@
 //! ```text
 //! evo-server [--bind ADDR] [--data DIR | --memory] [--size N] [--seed N]
 //!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
-//!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod]
+//!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
 //! ```
 
 use std::time::Duration;
@@ -12,7 +12,7 @@ use evo_server::{start, ServerConfig};
 
 const USAGE: &str = "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
-[--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod]";
+[--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes]";
 
 fn parse_args() -> Result<ServerConfig, String> {
     let mut cfg = ServerConfig::default();
@@ -56,6 +56,7 @@ fn parse_args() -> Result<ServerConfig, String> {
             }
             "--no-rate-limits" => cfg.limits = evo_server::limits::Limits::unlimited(),
             "--lod" => cfg.world.lod = true,
+            "--no-catastrophes" => cfg.world.catastrophes = false,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);

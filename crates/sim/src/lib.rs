@@ -15,9 +15,13 @@
 //! - [`mating`]: mate preference, override cost, outbreeding depression.
 //! - [`group`]: critical-mass group traits.
 //! - [`legacy`]: the genetic-legacy score.
+//! - [`species`]: species detection (clusters of mutually kin, fertile
+//!   adults) with stable ids, splits and extinctions.
+//! - [`chronicle`]: eras, catastrophes and secondary achievements.
 //! - [`world`]: the tick loop (needs, utility AI, predation, breeding), and
 //!   level of detail (`world::lod`: statistical cohorts far from players).
 
+pub mod chronicle;
 pub mod config;
 pub mod design;
 pub mod genome;
@@ -29,12 +33,13 @@ pub mod organism;
 pub mod pathfinding;
 pub mod presets;
 pub mod render;
+pub mod species;
 pub mod rng;
 pub mod stats;
 pub mod terrain;
 pub mod world;
 
-pub use config::{Balance, LodConfig, WorldConfig};
+pub use config::{Balance, LodConfig, ScoringConfig, WorldConfig};
 pub use design::{BirthType, FounderDesign, Thermo};
 pub use genome::{Gene, Genome, PlayerId, WILD};
 pub use world::World;

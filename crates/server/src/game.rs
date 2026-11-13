@@ -14,6 +14,7 @@ use evo_sim::presets::{self, REFERENCE_SIZE};
 use evo_sim::organism::{DeathCause, Sex};
 use evo_sim::terrain::Season;
 use evo_sim::world::commands::{CommandError, DirectedMating, MEETING_DISTANCE};
+use evo_sim::chronicle::{AchievementKind, Catastrophe, CatastropheKind};
 use evo_sim::{FounderDesign, Gene, PlayerId, World, WorldConfig, WILD};
 
 use crate::design::gene_key;
@@ -80,11 +81,14 @@ pub struct WorldSettings {
     /// view windows of connected players and possessed organisms; elsewhere,
     /// offline players' lineages included, statistical cohorts.
     pub lod: bool,
+    /// Random catastrophes (`ScoringConfig::catastrophes`; never in the
+    /// first year). On by default in the game.
+    pub catastrophes: bool,
 }
 
 impl Default for WorldSettings {
     fn default() -> Self {
-        Self { seed: 1, width: 128, height: 128, wild: true, days_per_year: WorldConfig::default().days_per_year, lod: false }
+        Self { seed: 1, width: 128, height: 128, wild: true, days_per_year: WorldConfig::default().days_per_year, lod: false, catastrophes: true }
     }
 }
 
@@ -97,6 +101,7 @@ pub fn build_world(s: &WorldSettings) -> World {
     config.wild_cap = ((config.wild_cap as f32 * area) as usize).max(50);
     config.lineage_cap = ((config.lineage_cap as f32 * area.max(0.5)) as usize).max(50);
     config.lod.enabled = s.lod;
+    config.scoring.catastrophes = s.catastrophes;
     let mut world = World::new(config);
     if s.wild {
         for (owner, design) in presets::wild_designs() {
@@ -179,6 +184,11 @@ pub struct Game {
     need_alerted: BTreeMap<OrgId, u64>,
     /// Players whose view windows are the world's level-of-detail focus.
     focused: BTreeSet<PlayerId>,
+    /// Chronicle entries already announced: achievements, eras, and per
+    /// catastrophe whether its start and end were.
+    seen_achievements: usize,
+    seen_eras: usize,
+    seen_catastrophes: Vec<(bool, bool)>,
 }
 
 fn finite(v: &[f32]) -> Result<(), ErrorInfo> {
@@ -213,6 +223,9 @@ impl Game {
             progress: BTreeMap::new(),
             need_alerted: BTreeMap::new(),
             focused: BTreeSet::new(),
+            seen_achievements: 0,
+            seen_eras: 0,
+            seen_catastrophes: Vec::new(),
         }
     }
 
@@ -527,6 +540,7 @@ impl Game {
             self.last_legacy_day = legacy_day;
             let record = self.daily_record();
             self.daily_alerts(&record, &mut out);
+            self.chronicle_alerts(&mut out);
             self.history.push_back(record.clone());
             if self.history.len() > HISTORY_DAYS {
                 self.history.pop_front();
@@ -740,6 +754,189 @@ impl Game {
         }
     }
 
+    /// Announce what the chronicle recorded since the last day: catastrophes
+    /// beginning and ending (to every player with a lineage), achievements
+    /// (to their player) and finished eras (to every player, with their rank).
+    fn chronicle_alerts(&mut self, out: &mut Outbox) {
+        let players: Vec<PlayerId> = self.lineage_of.keys().copied().collect();
+        let ch = &self.world.chronicle;
+        let mut alerts: Vec<(PlayerId, AlertKind, String)> = Vec::new();
+        self.seen_catastrophes.resize(ch.catastrophes.len(), (false, false));
+        for (c, seen) in ch.catastrophes.iter().zip(self.seen_catastrophes.iter_mut()) {
+            let what = catastrophe_text(c.kind);
+            if c.started && !seen.0 {
+                seen.0 = true;
+                for &p in &players {
+                    alerts.push((p, AlertKind::World, format!("Catastrophe: {what} has begun (until about day {}).", c.end_day + 1)));
+                }
+            }
+            if c.ended && !seen.1 {
+                seen.1 = true;
+                let lost = c.population_before.saturating_sub(c.population_after.unwrap_or(0));
+                for &p in &players {
+                    alerts.push((p, AlertKind::World, format!("The {what} is over: {lost} fewer organisms in the world than at its start.")));
+                }
+            }
+        }
+        for a in &ch.achievements[self.seen_achievements.min(ch.achievements.len())..] {
+            alerts.push((a.player, AlertKind::Achievement, achievement_text(&self.world, &a.kind)));
+        }
+        self.seen_achievements = ch.achievements.len();
+        for e in &ch.eras[self.seen_eras.min(ch.eras.len())..] {
+            for &p in &players {
+                let rank = e.ranking.iter().filter(|r| r.player != WILD).position(|r| r.player == p);
+                let text = match rank {
+                    Some(r) => format!(
+                        "Era {} has ended: you finished #{} with {:.1}% of breeding alleles.",
+                        e.era + 1,
+                        r + 1,
+                        e.ranking.iter().find(|x| x.player == p).map_or(0.0, |x| x.share * 100.0)
+                    ),
+                    None => format!("Era {} has ended; your alleles were not among the breeding adults.", e.era + 1),
+                };
+                alerts.push((p, AlertKind::World, text));
+            }
+        }
+        self.seen_eras = ch.eras.len();
+        for (p, kind, text) in alerts {
+            self.alert(p, kind, text, None, out);
+        }
+    }
+
+    /// Species, eras, catastrophes and achievements (`World::chronicle`).
+    pub fn chronicle(&self) -> ChronicleView {
+        let w = &self.world;
+        let ch = &w.chronicle;
+        let t = &ch.species;
+        let lineage_name = |l: u32| w.lineages.get(l as usize).map(|x| (x.name.clone(), x.owner)).unwrap_or_default();
+        let mut species: Vec<SpeciesView> = t
+            .species
+            .iter()
+            .map(|s| SpeciesView {
+                id: s.id,
+                name: s.name.clone(),
+                origin: s.origin.label().into(),
+                parent: s.parent,
+                founded_day: s.founded_day,
+                extinct_day: s.extinct_day,
+                merged_into: s.merged_into,
+                founder: s.founder,
+                founder_name: s.founder.map(|p| self.name(p)),
+                dominant: s.dominant,
+                dominant_name: self.name(s.dominant),
+                dominant_share: s.dominant_share,
+                adults: s.adults,
+                peak_adults: s.peak_adults,
+                lineages: s
+                    .lineages
+                    .iter()
+                    .map(|&(l, adults)| {
+                        let (name, owner) = lineage_name(l);
+                        SpeciesLineage { lineage: l, name, owner, adults }
+                    })
+                    .collect(),
+                carnivory: s.carnivory,
+                body_size: s.body_size,
+            })
+            .collect();
+        species.sort_by(|a, b| {
+            a.extinct_day.is_some().cmp(&b.extinct_day.is_some()).then(b.adults.total_cmp(&a.adults)).then(a.id.cmp(&b.id))
+        });
+        let day = w.day();
+        let era_days = w.config.era_days();
+        let era = w.era();
+        let eras = EraList {
+            era,
+            era_days,
+            first_day: era * era_days,
+            last_day: (era + 1) * era_days - 1,
+            days_left: (era + 1) * era_days - day,
+            eras: ch
+                .eras
+                .iter()
+                .rev()
+                .map(|e| EraBoard {
+                    era: e.era,
+                    first_day: e.first_day,
+                    last_day: e.last_day,
+                    breeding_adults: e.breeding_adults,
+                    species_alive: e.species_alive,
+                    catastrophes: e.catastrophes.clone(),
+                    rows: e
+                        .ranking
+                        .iter()
+                        .map(|r| EraRow { player: r.player, name: self.name(r.player), share: r.share, weighted_share: r.weighted_share })
+                        .collect(),
+                    niches: e
+                        .niches
+                        .iter()
+                        .map(|n| NicheView { niche: n.niche.clone(), player: n.player, name: self.name(n.player), share: n.share, adults: n.adults })
+                        .collect(),
+                })
+                .collect(),
+        };
+        let catastrophes = CatastropheList {
+            enabled: w.config.scoring.catastrophes,
+            active: ch.active_catastrophe().map(catastrophe_view),
+            history: ch.catastrophes.iter().rev().filter(|c| c.started).map(catastrophe_view).collect(),
+        };
+        // Tallies for every player with a lineage or an achievement.
+        let mut tallies: BTreeMap<PlayerId, AchievementTally> = BTreeMap::new();
+        let new = |p: PlayerId| AchievementTally { player: p, name: self.name(p), ..Default::default() };
+        for &p in self.lineage_of.keys() {
+            tallies.entry(p).or_insert_with(|| new(p));
+        }
+        for (l, life) in ch.lineages.iter().enumerate() {
+            let owner = w.lineages[l].owner;
+            if owner != WILD {
+                let e = tallies.entry(owner).or_insert_with(|| new(owner));
+                e.longevity_days = e.longevity_days.max(life.days(day));
+            }
+        }
+        for a in &ch.achievements {
+            let e = tallies.entry(a.player).or_insert_with(|| new(a.player));
+            match a.kind {
+                AchievementKind::SpeciesFounded { .. } => e.species_founded += 1,
+                AchievementKind::NicheDominance { .. } => e.niche_dominance += 1,
+                AchievementKind::SurvivedCatastrophe { .. } => e.catastrophes_survived += 1,
+                AchievementKind::LineageLongevity { .. } => {}
+            }
+        }
+        let mut players: Vec<AchievementTally> = tallies.into_values().collect();
+        players.sort_by(|a, b| {
+            (b.species_founded + b.niche_dominance + b.catastrophes_survived)
+                .cmp(&(a.species_founded + a.niche_dominance + a.catastrophes_survived))
+                .then(b.longevity_days.cmp(&a.longevity_days))
+                .then(a.player.cmp(&b.player))
+        });
+        let recent = ch
+            .achievements
+            .iter()
+            .rev()
+            .take(200)
+            .map(|a| AchievementView {
+                day: a.day,
+                player: a.player,
+                name: self.name(a.player),
+                kind: a.kind.label().into(),
+                text: achievement_text(w, &a.kind),
+            })
+            .collect();
+        ChronicleView {
+            species: SpeciesList {
+                day,
+                detected_day: t.last_detection,
+                samples: t.last_samples,
+                alive: t.alive().count(),
+                species,
+                founded: t.founded.iter().map(|(&p, &count)| FoundedCount { player: p, name: self.name(p), count }).collect(),
+            },
+            eras,
+            catastrophes,
+            achievements: AchievementList { players, recent },
+        }
+    }
+
     /// Births and deaths per lineage since the last day boundary.
     fn vitals_since_boundary(&self) -> (BTreeMap<u32, u64>, BTreeMap<u32, BTreeMap<String, u64>>) {
         let c = &self.world.counters;
@@ -936,12 +1133,20 @@ impl Game {
             hour: w.hour(),
             season: season_name(w.season()).into(),
             daytime: w.is_daytime(),
+            era: w.era(),
+            era_days: w.config.era_days(),
         }
     }
 
     pub fn weather(&self) -> WeatherView {
         let w = &self.world;
-        WeatherView { mean_wind: w.weather.wind, storm: w.weather.storm(), drought: w.map.drought, flood: w.map.flood }
+        WeatherView {
+            mean_wind: w.weather.wind,
+            storm: w.weather.storm(),
+            drought: w.map.drought,
+            flood: w.map.flood,
+            catastrophe: w.chronicle.active_catastrophe().map(catastrophe_view),
+        }
     }
 
     pub fn summary(&self) -> WorldSummary {
@@ -1006,6 +1211,52 @@ impl Game {
             .keys()
             .filter_map(|&c| self.state_for(c).map(|s| (Target::Conn(c), ServerMsg::State(Box::new(s)))))
             .collect()
+    }
+}
+
+pub fn catastrophe_view(c: &Catastrophe) -> CatastropheView {
+    CatastropheView {
+        id: c.id,
+        kind: c.kind.label().into(),
+        severity: c.severity,
+        start_day: c.start_day,
+        end_day: c.end_day,
+        active: c.is_active(),
+        population_before: c.population_before,
+        population_after: c.population_after,
+        players_before: c.players_before.clone(),
+        survivors: c.survivors.clone(),
+    }
+}
+
+fn catastrophe_text(k: CatastropheKind) -> &'static str {
+    match k {
+        CatastropheKind::SevereWinter => "a severe winter",
+        CatastropheKind::Megadrought => "a megadrought",
+        CatastropheKind::Epidemic => "an epidemic",
+        CatastropheKind::FloodYear => "a flood year",
+    }
+}
+
+fn achievement_text(w: &World, k: &AchievementKind) -> String {
+    match k {
+        AchievementKind::SpeciesFounded { species } => {
+            let name = w.chronicle.species.get(*species).map_or_else(|| format!("#{species}"), |s| s.name.clone());
+            format!("Species founded: {name} split off as a species of its own, carrying mostly your alleles.")
+        }
+        AchievementKind::LineageLongevity { lineage, years } => {
+            let name = w.lineages.get(*lineage as usize).map_or("Your lineage", |l| l.name.as_str());
+            format!("Lineage longevity: {name} has lived {years} year{}.", if *years == 1 { "" } else { "s" })
+        }
+        AchievementKind::NicheDominance { era, niche, share } => {
+            let (axis, what) = niche.split_once(':').unwrap_or(("niche", niche));
+            let label = if axis == "diet" { format!("{what}s") } else { format!("the {what}") };
+            format!("Niche dominance: era {} ended with {:.0}% of breeding alleles among {label} yours.", era + 1, share * 100.0)
+        }
+        AchievementKind::SurvivedCatastrophe { catastrophe } => {
+            let what = w.chronicle.catastrophes.get(*catastrophe as usize).map_or("a catastrophe", |c| catastrophe_text(c.kind));
+            format!("Survivor: your lineage came through {what}.")
+        }
     }
 }
 
@@ -1197,7 +1448,7 @@ mod tests {
 
     #[test]
     fn wild_organisms_cannot_consent_and_seasons_expire_offers() {
-        let world = build_world(&WorldSettings { seed: 3, width: 64, height: 64, wild: true, days_per_year: 8, lod: false });
+        let world = build_world(&WorldSettings { seed: 3, width: 64, height: 64, wild: true, days_per_year: 8, lod: false, catastrophes: false });
         let mut g = Game::new(world, GameConfig::default());
         let a = g.found(1, &design("A")).unwrap().founders;
         let b = g.found(2, &design("B")).unwrap().founders;
@@ -1404,5 +1655,46 @@ mod tests {
         let stats = g.lineage_stats(1);
         assert_eq!(stats.alive, stats.agents);
         assert_eq!(g.summary().organisms, g.summary().agents);
+    }
+
+    #[test]
+    fn catastrophes_achievements_and_eras_are_announced_and_exposed() {
+        // Short years (8 days), one-year eras, a forced severe winter.
+        let mut world = build_world(&WorldSettings { seed: 3, width: 64, height: 64, wild: true, days_per_year: 8, lod: false, catastrophes: false });
+        world.config.scoring.era_years = 1;
+        world.config.scoring.species_interval_days = 1;
+        let id = world.schedule_catastrophe(CatastropheKind::SevereWinter, 2, Some(2));
+        let mut g = Game::new(world, GameConfig::default());
+        g.set_name(1, "ann");
+        g.found(1, &FounderDesign::new("A", Thermo::Cold, BirthType::Live, 2).with(Gene::BodySize, 0.5).founders(12)).unwrap();
+        g.connect(10, 1, "ann");
+        let out = run_days(&mut g, 3);
+        let alerts = alerts_in(&out, 1);
+        assert!(alerts.iter().any(|a| a.kind == AlertKind::World && a.text.contains("severe winter has begun")), "{alerts:?}");
+        let state = g.state_for(10).unwrap();
+        let c = state.weather.catastrophe.expect("banner while active");
+        assert_eq!((c.id, c.kind.as_str(), c.active), (id, "severe_winter", true));
+        let out = run_days(&mut g, 6);
+        let alerts = alerts_in(&out, 1);
+        assert!(alerts.iter().any(|a| a.kind == AlertKind::World && a.text.contains("is over")));
+        assert!(alerts.iter().any(|a| a.kind == AlertKind::Achievement && a.text.starts_with("Survivor")), "{alerts:?}");
+        assert!(alerts.iter().any(|a| a.kind == AlertKind::Achievement && a.text.starts_with("Lineage longevity")));
+        assert!(alerts.iter().any(|a| a.kind == AlertKind::World && a.text.starts_with("Era 1 has ended: you finished #1")), "{alerts:?}");
+        assert!(g.state_for(10).unwrap().weather.catastrophe.is_none());
+
+        let ch = g.chronicle();
+        assert_eq!(ch.catastrophes.history.len(), 1);
+        assert_eq!(ch.catastrophes.history[0].survivors, vec![1]);
+        assert!(ch.catastrophes.active.is_none());
+        assert_eq!((ch.eras.era, ch.eras.era_days, ch.eras.eras.len()), (1, 8, 1));
+        assert_eq!(ch.eras.eras[0].rows.iter().find(|r| r.player == 1).unwrap().name, "ann");
+        assert!(ch.species.alive >= 2 && ch.species.detected_day == Some(8));
+        let mine = ch.species.species.iter().find(|s| s.lineages.first().is_some_and(|l| l.owner == 1)).expect("own species");
+        assert_eq!((mine.dominant, mine.dominant_name.as_str(), mine.origin.as_str()), (1, "ann", "initial"));
+        let ann = ch.achievements.players.iter().find(|p| p.player == 1).unwrap();
+        assert_eq!(ann.catastrophes_survived, 1);
+        assert!(ann.longevity_days >= 8);
+        assert!(ch.achievements.recent.iter().all(|a| a.player == 1 && !a.text.is_empty()));
+        assert_eq!(g.clock().era, 1);
     }
 }

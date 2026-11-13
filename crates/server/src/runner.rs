@@ -7,7 +7,7 @@
 //!
 //! 1. wait for the tick deadline, queueing world-changing requests (commands,
 //!    foundings) in arrival order and answering reads (connect, map snapshot,
-//!    terrain, lineage stats)
+//!    terrain, lineage stats, chronicle)
 //!    at once, since nothing changes the world between ticks;
 //! 2. apply the queued requests in arrival order;
 //! 3. `World::step`, then `Game::after_tick` (mating agreements, offer
@@ -24,7 +24,7 @@ use evo_sim::{FounderDesign, PlayerId};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::game::{ConnId, FoundError, FoundOk, Game, Outbox, PersistEvent, Target};
-use crate::protocol::{ClientMsg, Leaderboard, LineageStats, ServerMsg, WorldSummary};
+use crate::protocol::{ChronicleView, ClientMsg, Leaderboard, LineageStats, ServerMsg, WorldSummary};
 use crate::terrain::{dynamic_raw, terrain_raw, DynamicRaw, TerrainRaw};
 
 pub enum Request {
@@ -38,6 +38,8 @@ pub enum Request {
     Terrain { full: bool, reply: oneshot::Sender<TerrainReply> },
     /// The genetics dashboard of a player's lineage.
     Stats { player: PlayerId, reply: oneshot::Sender<LineageStats> },
+    /// Species, eras, catastrophes and achievements.
+    Chronicle { reply: oneshot::Sender<Box<ChronicleView>> },
 }
 
 pub enum TerrainReply {
@@ -165,6 +167,9 @@ impl Runner {
             }
             Request::Stats { player, reply } => {
                 let _ = reply.send(self.game.lineage_stats(player));
+            }
+            Request::Chronicle { reply } => {
+                let _ = reply.send(Box::new(self.game.chronicle()));
             }
             req @ (Request::Found { .. } | Request::Command { .. }) => self.queued.push(req),
         }

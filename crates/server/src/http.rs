@@ -23,7 +23,10 @@ use crate::accounts::{Accounts, AuthError, Session};
 use crate::design::{self, DesignSpec, SpecError};
 use crate::game::FoundError;
 use crate::limits::{Bucket, Limiters};
-use crate::protocol::{ClientEnvelope, ErrorInfo, LineageStats, SeasonBoard, ServerMsg, TerrainDynamic, TerrainView};
+use crate::protocol::{
+    AchievementList, CatastropheList, ChronicleView, ClientEnvelope, EraList, ErrorInfo, LineageStats, SeasonBoard, ServerMsg, SpeciesList,
+    TerrainDynamic, TerrainView,
+};
 use crate::runner::{Published, Request, TerrainReply};
 use crate::store::{DesignRecord, Store};
 
@@ -64,6 +67,10 @@ fn api_router(state: AppState) -> Router {
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
         .route("/api/lineage/stats", get(lineage_stats))
+        .route("/api/species", get(species))
+        .route("/api/eras", get(eras))
+        .route("/api/catastrophes", get(catastrophes))
+        .route("/api/achievements", get(achievements))
         .route("/api/terrain", get(terrain))
         .route("/api/terrain/dynamic", get(terrain_dynamic))
         .route("/api/map.png", get(map_png))
@@ -436,4 +443,32 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session, toke
     if tokio::time::timeout(Duration::from_secs(2), &mut writer).await.is_err() {
         writer.abort();
     }
+}
+
+/// The world thread's chronicle (species, eras, catastrophes, achievements).
+async fn chronicle(st: &AppState) -> Result<ChronicleView, ApiError> {
+    let (reply, rx) = oneshot::channel();
+    send_request(&st.world, Request::Chronicle { reply })?;
+    Ok(*rx.await.map_err(ApiError::internal)?)
+}
+
+/// `GET /api/species`: every detected species (living first, by size), with
+/// parents (the species tree), founders and dominant allele owners.
+async fn species(State(st): State<AppState>) -> Result<Json<SpeciesList>, ApiError> {
+    Ok(Json(chronicle(&st).await?.species))
+}
+
+/// `GET /api/eras`: the era clock and every finished era's final ranking.
+async fn eras(State(st): State<AppState>) -> Result<Json<EraList>, ApiError> {
+    Ok(Json(chronicle(&st).await?.eras))
+}
+
+/// `GET /api/catastrophes`: the active catastrophe and those before it.
+async fn catastrophes(State(st): State<AppState>) -> Result<Json<CatastropheList>, ApiError> {
+    Ok(Json(chronicle(&st).await?.catastrophes))
+}
+
+/// `GET /api/achievements`: per-player tallies and the latest achievements.
+async fn achievements(State(st): State<AppState>) -> Result<Json<AchievementList>, ApiError> {
+    Ok(Json(chronicle(&st).await?.achievements))
 }

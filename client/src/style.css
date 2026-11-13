@@ -191,3 +191,12 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 button.link { background: none; border: none; color: var(--accent); padding: 0 0 0 6px; text-decoration: underline; }
 details.season { margin: 4px 0; }
 details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em; }
+
+/* ------------------------------------------------ world chronicle */
+.catastrophe-pill { padding: 1px 8px; border-radius: 10px; border: 1px solid var(--bad); color: var(--bad); font-size: 0.85em; max-width: 36em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.catastrophe-pill[hidden] { display: none; }
+.catastrophe-banner { background: rgba(248, 81, 73, 0.12); border: 1px solid var(--bad); color: var(--text); border-radius: 6px; padding: 6px 8px; margin: 4px 0 8px; font-size: 0.9em; }
+.species-tree { list-style: none; margin: 0; padding: 0; }
+.species-tree li { padding: 3px 0; border-bottom: 1px solid var(--border); font-size: 0.88em; }
+.species-tree li.extinct { opacity: 0.55; }
+.feed-kind.kind-achievement, .feed-kind.kind-world { color: var(--own); border-color: var(--own); }

@@ -1,6 +1,7 @@
 // The play screen: world view (tile map), top bar (clock, weather,
 // connection) and a sidebar with the organism inspector, matings, the
-// genetics dashboard with the alerts feed, and the lineage/leaderboards tab.
+// genetics dashboard with the alerts feed, the lineage/leaderboards tab and
+// the world chronicle (species, eras, catastrophes, achievements).
 
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
@@ -11,6 +12,7 @@ import { applyDynamic, decodeTerrain, terrainSummary, type TerrainGrid } from '.
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
 import { append, clear, h, label, pct } from './dom';
 import { renderDashboard, renderFeed } from './dashboard';
+import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
 
 export interface GameDeps {
   model: GameModel;
@@ -29,9 +31,10 @@ const LOCAL_CODES = new Set(['not_connected', 'timeout', 'disconnected', 'closed
 const TERRAIN_REFRESH_MS = 4000;
 const STATS_REFRESH_MS = 5000;
 const SEASONS_REFRESH_MS = 15000;
+const CHRONICLE_REFRESH_MS = 10000;
 
-type Tab = 'organism' | 'matings' | 'genetics' | 'lineage';
-const TAB_LABELS: Record<Tab, string> = { organism: 'Organism', matings: 'Matings', genetics: 'Genetics', lineage: 'Lineage' };
+type Tab = 'organism' | 'matings' | 'genetics' | 'lineage' | 'world';
+const TAB_LABELS: Record<Tab, string> = { organism: 'Organism', matings: 'Matings', genetics: 'Genetics', lineage: 'Lineage', world: 'World' };
 type Mode = 'select' | 'migrate';
 
 export interface GameScreen {
@@ -55,8 +58,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const connPill = h('span', { class: 'pill', id: 'conn-state' });
   const clockEl = h('span', { id: 'clock' });
   const weatherEl = h('span', { class: 'muted', id: 'weather' });
+  const bannerEl = h('span', { class: 'catastrophe-pill', id: 'catastrophe-banner', hidden: true });
   const top = h('header', { class: 'topbar' },
-    h('strong', {}, 'Evolution MMO'), h('span', { class: 'muted' }, model.name), clockEl, weatherEl,
+    h('strong', {}, 'Evolution MMO'), h('span', { class: 'muted' }, model.name), clockEl, weatherEl, bannerEl,
     h('span', { class: 'spacer' }), connPill,
     h('button', { class: 'secondary', id: 'logout', onclick: deps.onLogout }, 'Log out'));
 
@@ -87,6 +91,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     matings: h('div', { class: 'panel', id: 'panel-matings' }),
     genetics: h('div', { class: 'panel', id: 'panel-genetics' }),
     lineage: h('div', { class: 'panel', id: 'panel-lineage' }),
+    world: h('div', { class: 'panel', id: 'panel-world' }),
   };
   const tabBtns = (Object.keys(tabs) as Tab[]).map((t) =>
     h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, onclick: () => showTab(t) }, TAB_LABELS[t]));
@@ -103,6 +108,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     for (const [k, p] of Object.entries(tabs)) p.hidden = k !== t;
     if (t === 'genetics') void refreshStats();
     if (t === 'lineage') void refreshSeasons();
+    if (t === 'world') void refreshChronicle();
     renderPanels(true);
   }
 
@@ -243,6 +249,22 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }, SEASONS_REFRESH_MS);
   cleanups.push(() => clearInterval(seasonsTimer));
 
+  // World chronicle: fetched while its tab is open.
+  let chronicle: Chronicle | null = null;
+  async function refreshChronicle(): Promise<void> {
+    try {
+      const [species, eras, catastrophes, achievements] = await Promise.all([api.species(), api.eras(), api.catastrophes(), api.achievements()]);
+      chronicle = { species, eras, catastrophes, achievements };
+      if (tab === 'world') renderWorld(tabs.world, chronicle, model.player, model.state?.clock.day ?? species.day);
+    } catch {
+      /* next time */
+    }
+  }
+  const chronicleTimer = setInterval(() => {
+    if (tab === 'world') void refreshChronicle();
+  }, CHRONICLE_REFRESH_MS);
+  cleanups.push(() => clearInterval(chronicleTimer));
+
   // ---------------------------------------------------------------- panels
   let renderQueued = false;
   let lastRender = 0;
@@ -254,6 +276,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (tab === 'matings') renderMatings();
       if (tab === 'lineage') renderLineage();
       if (tab === 'genetics') renderFeedPanel();
+      if (tab === 'world' && !chronicle) renderWorld(tabs.world, null, model.player, 0);
       return;
     }
     if (renderQueued) return;
@@ -273,6 +296,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     clockEl.textContent = `Year ${c.year + 1} · day ${c.day + 1} · ${String(c.hour).padStart(2, '0')}:00 · ${c.season} · ${c.daytime ? 'day' : 'night'}`;
     const w = s.weather;
     weatherEl.textContent = `wind ${pct(w.mean_wind, 0)}${w.storm ? ' · STORM' : ''} · drought ${pct(w.drought, 0)} · flood ${pct(w.flood, 0)}`;
+    const banner = catastropheBanner(w.catastrophe, c.day);
+    bannerEl.hidden = banner === null;
+    bannerEl.textContent = banner ?? '';
   }
 
   function renderConn(): void {

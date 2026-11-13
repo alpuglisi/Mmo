@@ -9,7 +9,7 @@ const offer = {
 // Shaped like serde's output for ServerMsg::State (a newtype variant: the
 // state's fields sit beside "type").
 const state: StateView = {
-  clock: { tick: 120, day: 2, year: 0, hour: 7, season: 'spring', daytime: true },
+  clock: { tick: 120, day: 2, year: 0, hour: 7, season: 'spring', daytime: true, era: 0, era_days: 360 },
   weather: { mean_wind: 0.2, storm: false, drought: 0, flood: 0.1 },
   player: 1,
   lineage: 3,

@@ -10,7 +10,8 @@ use std::time::Instant;
 use evo_sim::group::GroupTrait;
 use evo_sim::organism::{Action, DeathCause, Dormancy, Infection};
 use evo_sim::math::Vec2;
-use evo_sim::{presets, render, Balance, Gene, LodConfig, PlayerId, World, WorldConfig, WILD};
+use evo_sim::chronicle::CatastropheKind;
+use evo_sim::{presets, render, Balance, Gene, LodConfig, PlayerId, ScoringConfig, World, WorldConfig, WILD};
 
 mod sweep;
 
@@ -19,6 +20,7 @@ evo-sim — Evolution MMO simulation prototype
 
 USAGE:
     evo-sim run    [--seed N] [--size N] [--days N] [--report N] [--snapshot PATH] [--threads N] [--lod] [--focus X,Y]
+                   [--catastrophes] [--catastrophe KIND@DAY] [--era-years N]
     evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N] [--lod] [--focus X,Y]
     evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH]
     evo-sim designs
@@ -48,6 +50,10 @@ OPTIONS:
     --focus X,Y     A focus point in tiles (repeatable; implies --lod). Without any,
                     --lod runs the whole world as cohorts
     --lod-set NAME=V  Override a level-of-detail parameter (repeatable)
+    --catastrophes  Random catastrophes (from year 2; off by default) (run)
+    --catastrophe KIND@DAY  Force a catastrophe starting on DAY (0-based, repeatable):
+                    severe_winter, megadrought, epidemic, flood_year
+    --era-years N   Era length in years (default 3)
 
 Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_speed sprint
 attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
@@ -79,6 +85,8 @@ struct Args {
     balance: Balance,
     lod: LodConfig,
     focus: Vec<Vec2>,
+    scoring: ScoringConfig,
+    forced: Vec<(CatastropheKind, u64)>,
     trials: usize,
     seeds: u64,
     rounds: u32,
@@ -101,6 +109,8 @@ fn parse_args() -> Result<Args, String> {
         balance: Balance::default(),
         lod: LodConfig::default(),
         focus: Vec::new(),
+        scoring: ScoringConfig::default(),
+        forced: Vec::new(),
         trials: 16,
         seeds: 3,
         rounds: 2,
@@ -150,6 +160,15 @@ fn parse_args() -> Result<Args, String> {
                     return Err(format!("--lod-set: unknown level-of-detail parameter '{name}'"));
                 }
             }
+            "--catastrophes" => a.scoring.catastrophes = true,
+            "--catastrophe" => {
+                let v = value()?;
+                let (kind, day) = v.split_once('@').ok_or(format!("--catastrophe expects KIND@DAY, got '{v}'"))?;
+                let kind = CatastropheKind::from_label(kind).ok_or(format!("--catastrophe: unknown kind '{kind}'"))?;
+                let day = day.parse::<u64>().map_err(|_| format!("--catastrophe: '{day}' is not a day"))?;
+                a.forced.push((kind, day));
+            }
+            "--era-years" => a.scoring.era_years = (num(value()?)? as u32).max(1),
             "-h" | "--help" => a.command = "help".into(),
             other => return Err(format!("unknown option {other}")),
         }
@@ -208,9 +227,13 @@ fn build_world(args: &Args, scale: u32) -> World {
         height: args.size,
         balance: args.balance,
         lod: args.lod,
+        scoring: args.scoring,
         ..Default::default()
     };
     let mut world = presets::standard_world(config, scale);
+    for &(kind, day) in &args.forced {
+        world.schedule_catastrophe(kind, day, None);
+    }
     if args.lod.enabled {
         world.set_focus(1, args.focus.clone());
     }
@@ -400,6 +423,7 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
         .collect();
     println!("  group traits active (regions): {}", groups.join(" · "));
     print_drift(world, names);
+    print_chronicle(world, names);
     if world.config.lod.enabled {
         let s = world.lod_stats();
         let active = (0..world.map.chunks_x * world.map.chunks_y).filter(|&r| world.region_is_active(r)).count();
@@ -412,6 +436,68 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
             s.expanded,
             s.emigrated
         );
+    }
+}
+
+/// Species, catastrophes, eras and achievements (`World::chronicle`).
+fn print_chronicle(world: &World, names: &BTreeMap<PlayerId, String>) {
+    let ch = &world.chronicle;
+    let t = &ch.species;
+    let name = |p: PlayerId| names.get(&p).cloned().unwrap_or_else(|| if p == WILD { "wild".into() } else { format!("player {p}") });
+    let alive: Vec<String> = t
+        .alive()
+        .map(|s| format!("{} ~{:.0} ({} {:.0}%)", s.name, s.adults, name(s.dominant), s.dominant_share * 100.0))
+        .collect();
+    let extinct = t.species.iter().filter(|s| !s.is_alive()).count();
+    let splits = t.species.iter().filter(|s| s.origin == evo_sim::species::SpeciesOrigin::Split).count();
+    println!(
+        "  species: {} alive, {} extinct, {} splits (detected day {}, {} samples, {} unclassified): {}",
+        alive.len(),
+        extinct,
+        splits,
+        t.last_detection.map_or("-".into(), |d| (d + 1).to_string()),
+        t.last_samples,
+        t.unclassified,
+        alive.join(" · ")
+    );
+    for c in &ch.catastrophes {
+        if !c.started {
+            continue;
+        }
+        let after = c.population_after.map_or("ongoing".to_string(), |p| format!("{p} after"));
+        let survivors: Vec<String> = c.survivors.iter().map(|&p| name(p)).collect();
+        println!(
+            "  catastrophe #{} {} days {}–{}: population {} before, {}{}",
+            c.id,
+            c.kind.label(),
+            c.start_day + 1,
+            c.end_day,
+            c.population_before,
+            after,
+            if c.ended { format!(" · survived by {}", if survivors.is_empty() { "none".into() } else { survivors.join(", ") }) } else { String::new() }
+        );
+    }
+    let era_days = world.config.era_days();
+    let pending = ch.catastrophes.iter().filter(|c| !c.started).count();
+    println!(
+        "  era {}: day {} of {}{} · catastrophes {}",
+        world.era() + 1,
+        world.day() % era_days + 1,
+        era_days,
+        if pending > 0 { format!(" · {pending} scheduled") } else { String::new() },
+        if world.config.scoring.catastrophes { "random from year 2" } else { "off (forced only)" }
+    );
+    for e in &ch.eras {
+        let top: Vec<String> = e.ranking.iter().take(3).map(|r| format!("{} {:.1}%", name(r.player), r.share * 100.0)).collect();
+        println!("  era {} (days {}–{}): {} · {} species", e.era + 1, e.first_day + 1, e.last_day + 1, top.join(", "), e.species_alive);
+    }
+    let counts = ch.achievement_counts();
+    if !counts.is_empty() {
+        let rows: Vec<String> = counts
+            .iter()
+            .map(|(&p, k)| format!("{} {}", name(p), k.iter().map(|(l, n)| format!("{l} {n}")).collect::<Vec<_>>().join(", ")))
+            .collect();
+        println!("  achievements: {}", rows.join(" · "));
     }
 }
 

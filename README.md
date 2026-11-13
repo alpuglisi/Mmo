@@ -34,21 +34,24 @@ docs/
 | `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
-| `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, grounded flyers) and rain or snow; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
+| `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, grounded flyers) and rain or snow; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`; `Map::climate_temp`/`climate_wet` are climate anomalies (0 normally) that catastrophes set. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
 | `pathfinding` | Movement and terrain | Bounded A* over tiles for one body: blocked tiles are avoided, slow ones cost time. Used only when the direct step is blocked (see Movement below). |
 | `mating` | Override cost | Root-sum-of-squares preference mismatch, `cost = k·max(0, mismatch−1)²`, outbreeding depression by genetic distance, and sterility between different body plans (thermoregulation, birth mode, body size or diet more than 0.3 apart; `cargo run --release --example distances` prints the founders' matrix). Display coloration is condition-dependent (an honest signal). |
 | `group` | Critical-mass group traits | Daily regional carrier frequency → logistic benefit. Implemented: cooperative hunting, warning coloration, herd defense, alarm calls, shared burrows, sentries, communal dens, group navigation, shared caches. |
 | `legacy` | Scoring: genetic legacy | Share of origin-tagged alleles among living breeding adults, raw and weighted by offspring raised to adulthood. |
+| `species` | Genetics (speciation), Scoring (species founded) | Species detection: every few days, single-linkage clusters of sampled breeding adults that would recognize each other as kin and be fertile together (`mating::is_kin` and `fertility` ≥ 0.5), with stable ids, splits, merges and extinctions. See [Species, eras and achievements](#species-eras-and-achievements). |
+| `chronicle` | Scoring (seasonal leaderboards, secondary achievements) | Eras with final legacy rankings and niche leaders, catastrophes (severe winter, megadrought, epidemic, flood year) and prestige-only achievements. |
 | `world` | Needs and behavior, everything else | The tick loop: utility-AI decisions (parallel), then movement, grazing, hunting, scavenging, drinking, courtship, pregnancy, eggs and incubation, nursing, growth, death. |
 | `world::disease` | Genetics: picky vs flexible | Mating-transmitted disease: pathogens emerge at matings (4× between founding lineages), pass between mates (natural and directed) and between nursing mothers and young, drain the acutely sick's health (dulling their display) and cut fertility; infections end in immunity or lifelong symptomless carriage. Also deaths of homozygotes for harmful recessives. Reports count infections, current sick and carriers, harmful alleles per organism, and `disease` / `recessive` deaths per lineage. |
 | `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter), short-term torpor on cold nights, a seasonal coat (winter coat molted in autumn and shed in spring, food per molt; a mismatch on cold-blooded bodies) and timed breeding (a narrow early-spring window with strong drive and better conception, no breeding outside it). |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
+| `world::chronicle` | Scoring | The daily hook: samples adults (cohorts included) for species detection, plans, applies and ends catastrophes through existing systems (`Map::climate_temp`, `Map::climate_wet`, infections), closes eras and awards achievements. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
 
 ### Tick structure
 
 1. **Hourly:** regional weather, egg incubation. **Every tick:** a share of the environment chunks (temperature, snow, ice, water levels, plant regrowth), so each chunk updates once per hour; the water-distance field is refreshed hourly.
-2. **Daily:** remove the dead, recompute group traits, take a legacy snapshot, reset mating slots at a season change.
+2. **Daily:** remove the dead, recompute group traits, take a legacy snapshot, reset mating slots at a season change; then the chronicle: catastrophes, species detection (every 5 days), era records and achievements.
 3. **Decide (parallel, read-only):** each organism scores actions by need urgency × its behavior genes.
 4. **Apply (sequential, shuffled):** act on the decision, update needs, resolve death and birth.
 
@@ -102,12 +105,91 @@ cargo run --release --example stuck -- 120 1 2        # how often organisms get 
 cargo run --release --example calibrate -- tournament --worlds 20   # point-cost check (CSV)
 cargo run --release --bin evo-sim -- run --size 256 --focus 64,64 --focus 192,192   # level of detail
 cargo run --release --example lod -- 256 90 1 64,64 192,192   # LOD vs full simulation
+cargo run --release --bin evo-sim -- run --days 361 --report 30 --catastrophes --catastrophe severe_winter@210   # eras, species, a catastrophe
 ```
 
 `run` founds a wild ecosystem (voles, antelope, newts, foxes) plus four sample
 player lineages (pack hunters, herd grazers, toxic frogs, burrowing
 omnivores), then prints population, legacy share, deaths by cause, active
-group traits and gene drift per lineage.
+group traits, gene drift per lineage, and the chronicle: species (estimated
+adults and dominant allele owner), catastrophes, the era clock, finished
+eras' rankings and achievements. `--catastrophes` turns on random
+catastrophes, `--catastrophe KIND@DAY` forces one (`severe_winter`,
+`megadrought`, `epidemic`, `flood_year`), `--era-years N` sets the era length.
+
+### Species, eras and achievements
+
+The design doc's supporting scoring rules (`species`, `chronicle`,
+`world::chronicle`; settings in `WorldConfig::scoring`). They are records
+only: the legacy score is unchanged, and with no catastrophe a world runs
+exactly as before (detection draws no random numbers and changes nothing).
+
+- **Species.** There is no species object; kinship and fertility are
+  decided pair by pair. Every `species_interval_days` (5) the world samples
+  its breeding adults, stratified by (founding lineage, 16-tile region), up
+  to 8 evenly spaced members per stratum and about 1200 in all, cohorts of
+  level-of-detail regions being strata of their own (their pool genomes
+  stand for their adults). Two samples are linked when they would
+  recognize each other as kin and be fertile together (fertility ≥ 0.5); a
+  species is a connected component (single linkage, so a cline of
+  intergrading forms is one species). Each sample stands for its stratum's
+  adults, so species sizes are estimates. Cost: the clustering compares
+  pairs only across components and most cross-species pairs fail on the four
+  body-plan genes: 6.7 ms per detection at 13.5k organisms.
+- **Stable ids.** Each species keeps 12 representative genomes
+  (farthest-point picks, covering every branch). A new cluster continues the
+  old species it overlaps most (samples linked to a representative); when
+  two old species continue as one cluster the larger overlap keeps its id
+  and the other is recorded as merged. A cluster that overlaps an old
+  species without being its continuation is a **split** (parent: that
+  species); one with no overlap is a split of its main lineage's species if
+  that lives on, else a **founding** (a new design). New species need 4
+  samples; a species missed by 2 detections in a row is extinct (dated to
+  its last detection). Names come from the main founding lineage ("Meadow
+  vole", then "Meadow vole (2)").
+- **Species founded (credit rule).** A split is credited to the player whose
+  origin-tagged alleles hold the plurality among the new species' sampled
+  adults: the legacy measure, so the genes that make up the new species earn
+  it, whoever owns the organisms. A wild plurality credits nobody. The
+  species present at the first detection and foundings are not speciation
+  and earn nothing. At the start the presets form 6 species from 8 lineages
+  (antelope and herd grazers are one kind, and fox and pack hunters
+  interbreed through founders that are kin across the two designs).
+- **Eras.** `era_years` (3) years each. When one ends, its final legacy
+  ranking (the day-boundary snapshot) is recorded with the niche leaders:
+  the largest allele share among breeding adults of each diet niche
+  (herbivore < 0.3 carnivory ≤ omnivore < 0.6 ≤ carnivore) and each biome
+  (where they stand; water biomes together), for niches with at least 20
+  adults.
+- **Catastrophes**, on existing systems: a **severe winter** (every tile
+  10 °C colder for a season from the start of winter, `Map::climate_temp`;
+  hibernation thresholds follow), a **megadrought** (rain bias −1.5 for a
+  summer and half an autumn, `Map::climate_wet`: soil wetness, lakes, marsh,
+  streams and plant growth follow), a **flood year** (rain bias +1.2 for
+  three quarters of a spring: soaked soil, swollen lakes and marsh) and an
+  **epidemic** (15% of susceptible agents infected with the
+  mating-transmitted disease at onset, 2% more a day for half a season;
+  cohorts are not affected). Severity scales all of them. **Frequency:** off
+  by default in `WorldConfig` (so `sweep`'s 120-day validation and every
+  existing run are unchanged; the validation sweep still scores 11.12); with
+  `catastrophes` on (the server's default, `--no-catastrophes` to disable),
+  each year from the second (`catastrophe_first_year` = 1) has a 40% chance
+  of one, drawn from its own random stream, never two at once.
+  `World::schedule_catastrophe` forces one.
+- **Achievements** (prestige only): *species founded* (credited split);
+  *lineage longevity* (a player lineage alive each whole year since it was
+  first seen); *niche dominance* (a niche leader with at least 25% of its
+  alleles at an era's end, wild leaders earn nothing); *survived a
+  catastrophe* (a lineage alive at its start and at its end).
+
+A 360-day run (seed 1, 128×128, `--catastrophes --catastrophe
+severe_winter@210`): 6 species throughout, no splits or extinctions in three
+years (speciation needs isolation over far longer); no random catastrophe
+was drawn in years 2–3; the forced severe winter (days 211–240) took the
+world from 3960 to 2661 organisms and all four player lineages survived it;
+era 1 ended with wild 46.0%, burrowing omnivores 29.1%, toxic frogs 23.6%,
+and the frogs and the burrowers each led two niches. A detection over 868
+samples of 13.5k organisms (256×256, scale 10) takes 6.7 ms, every 5 days.
 
 ## Server
 
@@ -126,7 +208,8 @@ years for demos), `--state-ms` (state push interval), `--static DIR` (serve
 the built web client from `DIR`, e.g. `client/dist`, on every path the API
 doesn't use), `--session-idle-min N` / `--session-max-hours N` (session
 expiry, default 60 min idle and 24 h), `--no-rate-limits`, `--lod` (level
-of detail, below). `RUST_LOG=debug` for more logging.
+of detail, below), `--no-catastrophes` (catastrophes are on by default in
+the game, never in the first year). `RUST_LOG=debug` for more logging.
 
 ### Architecture
 
@@ -177,8 +260,9 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   mean gene values, and raises per-player alerts: deaths of founders and
   possessed organisms (with the cause), the day's births and deaths,
   population (25, 50, 100, …) and legacy-share (1, 5, 10, 25, 50 %)
-  milestones, a new generation, extinction, and a possessed organism that is
-  parched or starving. The last 50 per player are kept for the dashboard.
+  milestones, a new generation, extinction, a possessed organism that is
+  parched or starving, catastrophes beginning and ending, era ends (with the
+  player's rank) and achievements. The last 50 per player are kept for the dashboard.
 - **Possessed organisms' needs:** the sim drops a move order once the
   organism arrives (within 0.75 tiles) and lets danger or severe thirst or
   hunger (`possess_danger`, `possess_urgency` = 85) win over the order until
@@ -214,6 +298,10 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/leaderboard/seasons?limit=8` | | Seasonal leaderboards from the whole stored history, newest first: `[{year, season, first_day, last_day, days, current, rows: [{player, name, mean_share, final_share, peak_share, mean_weighted_share, peak_alive, days}]}]`, ranked by mean share over the season's recorded days (a missing day counts as 0; a restart, whose world starts again at day 0, starts a new run) |
 | `GET /api/terrain` | | The tile grid: `{width, height, terrain_version, biome, elevation, river, base_water, dynamic}`; every layer is one byte per tile, row-major, base64 (biome index 0–7; elevation 0–255 lowest..highest; river 0–255; depths in cm, capped at 255) |
 | `GET /api/terrain/dynamic` | | Only what changes (the sim updates it hourly): `{tick, day, hour, season, water (cm), ice, snow (0–255 for 0–0.5 m), veg (share of the tile's maximum), wetness (0.5 normal, < 0.3 drought)}`, about 110 KB of JSON for 128×128 |
+| `GET /api/species` | | Detected species, living first by size: `{day, detected_day, samples, alive, species: [{id, name, origin (initial/founding/split), parent?, founded_day, extinct_day?, merged_into?, founder?, founder_name?, dominant, dominant_name, dominant_share, adults, peak_adults, lineages: [{lineage, name, owner, adults}], carnivory, body_size}], founded: [{player, name, count}]}` (`parent` links give the species tree) |
+| `GET /api/eras` | | `{era, era_days, first_day, last_day, days_left, eras: [{era, first_day, last_day, breeding_adults, species_alive, catastrophes, rows: [{player, name, share, weighted_share}], niches: [{niche, player, name, share, adults}]}]}`, finished eras newest first with their final ranking |
+| `GET /api/catastrophes` | | `{enabled, active?, history: [{id, kind, severity, start_day, end_day, active, population_before, population_after?, players_before, survivors}]}` (only catastrophes that have started) |
+| `GET /api/achievements` | | `{players: [{player, name, species_founded, longevity_days, niche_dominance, catastrophes_survived}], recent: [{day, player, name, kind, text}]}` |
 | `GET /api/lineage/stats` | Bearer | The genetics dashboard: counts (alive, adults, young, pregnant, newest generation), `age_bands` (up to six equal bands by sex), `vitals` (births and deaths by cause per recorded day, the last entry today so far, at most 30), `genes` (every gene's mean, spread and founding mean with the daily means, largest drift first), `legacy` (share per recorded day) and recent `alerts` |
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile), for debugging |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
@@ -252,11 +340,11 @@ Server → client:
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage}` | On connect |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime), `weather` (mean wind, storm, drought and flood shares), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation), `nearby` (others in the window), `leaderboard`, `offers` (your open offers) |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation), `nearby` (others in the window), `leaderboard`, `offers` (your open offers) |
 | `result` `{id, command, ok, error?: {code, message}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
-| `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving) |
+| `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe) |
 | `session_ended` `{reason}` | The session expired; the socket closes next |
 
 **Directed-mating consent:** `request_mating` checks ownership, maturity, sex,
@@ -383,7 +471,16 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   leaderboard (share and weighted share per player, yours highlighted), the
   **seasonal leaderboards** (`GET /api/leaderboard/seasons`, the current
   season open) and a clickable list of your organisms. The top bar shows the
-  clock, season, day/night, weather and the connection state.
+  clock, season, day/night, weather, a red catastrophe banner while one is
+  under way (from `state.weather.catastrophe`) and the connection state.
+- **World** tab (`ui/chronicle.ts`), from `/api/species`, `/api/eras`,
+  `/api/catastrophes` and `/api/achievements` every 10 s while open: the
+  active catastrophe and what it does, the era clock, finished eras'
+  leaderboards (your rank, niche leaders), the species tree (daughter
+  species under their parents; diet, estimated adults or extinction, dominant
+  allele owner and share, founder), the catastrophes with population before
+  and after and how many player lineages survived, and achievement tallies
+  per player with the latest achievements.
 
 **Architecture.**
 
@@ -406,7 +503,9 @@ Every failed `result` (server error codes such as `not_owned`,
 a toast. `window.evo` exposes the model, socket and view for debugging and
 the end-to-end test.
 
-**Tests.** Vitest (32 tests): protocol parsing against messages shaped like
+**Tests.** Vitest (38 tests): the World tab's data prep (species tree
+order and depth, statuses, bad parent links, the catastrophe banner and
+labels, niche labels, the player's era ranks); protocol parsing against messages shaped like
 serde's output, including malformed and unknown ones and the `alert` and
 `session_ended` messages; terrain decoding (layer sizes, refusing a wrong
 size, newer-only dynamic updates) and tile colors (snow, ice, drought,
@@ -427,7 +526,8 @@ the most room around its marker, checked with the view's hit test, retried
 if the selection isn't its own), possesses it, clicks the map and checks it walks toward the target, migrates, sees an error toast,
 checks the seasonal leaderboard and the genetics dashboard (at least four
 charts with drawn lines, drift sparklines, every gene in the table, alerts in
-the feed), then registers a second player and runs a directed mating through
+the feed), the World tab (species listed, the era clock, an achievements
+row), then registers a second player and runs a directed mating through
 both players' panels (request with price → incoming → accept → both see the
 update → escort). Screenshots go to `SCREENSHOT_DIR`. `e2e/winter_shot.mjs`
 is a screenshot helper (not a test): a 16-day-year world played into winter.

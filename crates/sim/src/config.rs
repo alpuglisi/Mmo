@@ -39,6 +39,68 @@ pub struct WorldConfig {
     /// Level of detail: full agents near focus points, statistical cohorts
     /// elsewhere (`world::lod`). Off by default.
     pub lod: LodConfig,
+    /// Species detection, eras, catastrophes and achievements
+    /// (`species`, `chronicle`, `world::chronicle`). Catastrophes are off by
+    /// default; detection and records never change the simulation.
+    pub scoring: ScoringConfig,
+}
+
+/// Species detection, eras and catastrophes ("Scoring: genetic legacy",
+/// supporting rules, in the design doc).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScoringConfig {
+    /// Days between species detections (0 disables detection).
+    pub species_interval_days: u32,
+    /// Most breeding adults sampled per detection, spread over (lineage,
+    /// 16-tile region) strata (cohorts are strata of their own).
+    pub species_max_samples: usize,
+    /// Most samples per stratum.
+    pub species_per_stratum: usize,
+    /// Two samples are linked (same species) when they would recognize each
+    /// other as kin (`mating::is_kin`) and their fertility
+    /// (`mating::fertility`) is at least this.
+    pub species_min_fertility: f32,
+    /// Samples a cluster needs to count as a new species (split or founding).
+    pub species_min_new: usize,
+    /// Detections a species may go undetected before it is declared extinct.
+    pub species_extinct_after: u32,
+    /// Representative genomes kept per species to match clusters across
+    /// detections (farthest-point picks, so every branch is covered).
+    pub species_reps: usize,
+    /// Era length in years. Each era ends with a final legacy ranking and
+    /// niche-dominance awards.
+    pub era_years: u32,
+    /// Random catastrophes (severe winter, megadrought, epidemic, flood
+    /// year). Off by default so balance runs are unaffected; the server
+    /// turns them on.
+    pub catastrophes: bool,
+    /// Chance per year (from year `catastrophe_first_year`) that a
+    /// catastrophe strikes during it.
+    pub catastrophe_chance: f32,
+    /// No random catastrophe before this year (0-based), so the first
+    /// year is always quiet.
+    pub catastrophe_first_year: u32,
+    /// Strength multiplier on catastrophe effects.
+    pub catastrophe_severity: f32,
+}
+
+impl Default for ScoringConfig {
+    fn default() -> Self {
+        Self {
+            species_interval_days: 5,
+            species_max_samples: 1200,
+            species_per_stratum: 8,
+            species_min_fertility: 0.5,
+            species_min_new: 4,
+            species_extinct_after: 2,
+            species_reps: 12,
+            era_years: 3,
+            catastrophes: false,
+            catastrophe_chance: 0.4,
+            catastrophe_first_year: 1,
+            catastrophe_severity: 1.0,
+        }
+    }
 }
 
 /// Level-of-detail settings (`world::lod`, "Scale and performance" in the
@@ -573,6 +635,7 @@ impl Default for WorldConfig {
             max_perception: 8.0,
             balance: Balance::default(),
             lod: LodConfig::default(),
+            scoring: ScoringConfig::default(),
         }
     }
 }
@@ -596,5 +659,10 @@ impl WorldConfig {
 
     pub fn days_per_season(&self) -> u32 {
         (self.days_per_year / 4).max(1)
+    }
+
+    /// Era length in days (`ScoringConfig::era_years` years, at least one day).
+    pub fn era_days(&self) -> u64 {
+        (self.scoring.era_years.max(1) as u64 * self.days_per_year as u64).max(1)
     }
 }

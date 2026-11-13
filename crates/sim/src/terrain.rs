@@ -245,6 +245,12 @@ pub struct Map {
     /// Share of river tiles in flood (river level above `FLOOD_LEVEL`), 0..1,
     /// updated hourly.
     pub flood: f32,
+    /// Climate anomaly in °C added to every tile's temperature (0 normally;
+    /// a severe winter lowers it, see `chronicle`).
+    pub climate_temp: f32,
+    /// Rain-potential anomaly added to every weather cell (0 normally;
+    /// negative in a megadrought, positive in a flood year).
+    pub climate_wet: f32,
     weather_seed: u64,
     /// Snowmelt per tile gathered by chunk updates since the last weather step.
     melt_acc: Vec<f32>,
@@ -368,6 +374,8 @@ impl Map {
             terrain_version: 0,
             drought: 0.0,
             flood: 0.0,
+            climate_temp: 0.0,
+            climate_wet: 0.0,
             weather_seed: hash4(seed, stream::ENVIRONMENT, u64::MAX, 0),
             pass_sig: vec![0; n],
             water_dirty: true,
@@ -573,7 +581,7 @@ impl Map {
             let spell = z(fbm(seed ^ 0x5E, sx, sy, 3));
 
             cell.wind = (0.42 + 0.12 * front + 0.11 * gust + storminess).clamp(0.0, 1.0);
-            let potential = front + 0.9 * spell + 1.5 * rain_season;
+            let potential = front + 0.9 * spell + 1.5 * rain_season + self.climate_wet;
             cell.rain = ((potential - 1.0) * 0.35).clamp(0.0, 1.0);
             let melt = std::mem::take(&mut self.melt_acc[c]);
             cell.melt = cell.melt * 0.97 + melt;
@@ -600,7 +608,7 @@ impl Map {
     /// deterministic. The water-distance field is refreshed after the last
     /// phase if any chunk changed where water is.
     pub fn update_chunks(&mut self, phase: u64, phases: u64, day_of_year: u32, hour: u32, days_per_year: u32, bal: &Balance) {
-        let offset = Map::temperature_offset(hour, day_of_year, days_per_year);
+        let offset = Map::temperature_offset(hour, day_of_year, days_per_year) + self.climate_temp;
         let n = self.cells.len();
         let mut c = phase as usize;
         while c < n {

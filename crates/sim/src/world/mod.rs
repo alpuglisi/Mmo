@@ -8,7 +8,9 @@
 //!    environment chunks (temperature, snow, ice, water levels, regrowth),
 //!    so each chunk updates once per simulated hour.
 //! 2. On the day: remove the dead, recompute group traits, take a legacy
-//!    snapshot, reset mating slots at a season change.
+//!    snapshot, reset mating slots at a season change; then the chronicle
+//!    (`chronicle`): catastrophes, species detection every few days, era
+//!    records and achievements.
 //! 3. Rebuild the spatial index.
 //! 4. **Decide** (parallel, read-only): every organism scores its actions by
 //!    need urgency × behavior genes and picks one.
@@ -20,6 +22,7 @@
 //! reproducible from its seed regardless of thread count.
 
 mod apply;
+mod chronicle;
 pub mod commands;
 mod decide;
 mod density;
@@ -51,6 +54,7 @@ use crate::rng::{rng_for, stream};
 use crate::terrain::{traverse, Map, Season, Traverse, Weather};
 
 use density::SpeciesDensity;
+pub use chronicle::{biome_niche, diet_niche};
 pub use lod::{Cohort, LodStats, PoolEntry};
 use spatial::SpatialGrid;
 
@@ -142,6 +146,8 @@ pub struct World {
     pub counters: Counters,
     pub legacy: Vec<LegacySnapshot>,
     pub lineages: Vec<Lineage>,
+    /// Species, eras, catastrophes and achievements (`world::chronicle`).
+    pub chronicle: crate::chronicle::Chronicle,
     tick: u64,
     next_id: OrgId,
     index: HashMap<OrgId, usize>,
@@ -217,6 +223,7 @@ impl World {
             counters: Counters::default(),
             legacy: Vec::new(),
             lineages: Vec::new(),
+            chronicle: Default::default(),
             tick: 0,
             next_id: 1,
             index: HashMap::new(),

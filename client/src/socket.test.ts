@@ -134,7 +134,7 @@ describe('GameModel offers', () => {
     m.apply({ type: 'mating_request', offer: offer('pending') });
     m.apply({ type: 'mating_update', offer: { ...offer('declined'), id: 2 } });
     const base = {
-      clock: { tick: 0, day: 0, year: 0, hour: 0, season: 'spring', daytime: true },
+      clock: { tick: 0, day: 0, year: 0, hour: 0, season: 'spring', daytime: true, era: 0, era_days: 360 },
       weather: { mean_wind: 0, storm: false, drought: 0, flood: 0 },
       player: 1, lineage: 1, slots_left: 6, population: 0, migration: null, view: { x: 0, y: 0, radius: 16 },
       organisms: [], nearby: [], leaderboard: { day: null, breeding_adults: 0, rows: [] },
