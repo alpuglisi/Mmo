@@ -34,7 +34,7 @@ use crate::config::WorldConfig;
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 1;
+pub const SNAPSHOT_VERSION: u32 = 2;
 
 const MAGIC: &[u8; 8] = b"EVOSNAP\0";
 const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8;

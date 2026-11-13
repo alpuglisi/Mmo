@@ -80,7 +80,9 @@ impl GroupTrait {
             GroupTrait::CooperativeHunting => p[Carnivory] > 0.6,
             // Predators learn from everything bright they try to eat.
             GroupTrait::WarningColoration => p[Coloration] > 0.6,
-            GroupTrait::HerdDefense => p[Carnivory] < 0.4,
+            // Large plant eaters that keep to themselves dilute a herd;
+            // small ones (voles, frogs) are no part of it.
+            GroupTrait::HerdDefense => p[Carnivory] < 0.4 && p[BodySize] > 0.45,
             GroupTrait::AlarmCalls => true,
             // Solitary diggers share nothing and crowd out the colony.
             GroupTrait::SharedBurrows => is_digger(p),
@@ -308,6 +310,23 @@ mod tests {
         // Herd members that never stand watch dilute it.
         let diluted = benefit_of(t, &sentry, 6, &member, 24);
         assert!(diluted < 0.15, "diluted {diluted}");
+    }
+
+    /// Herd defense is diluted by large plant eaters that don't keep to a
+    /// herd, not by small ones (voles, frogs) or by predators.
+    #[test]
+    fn herd_defense_is_diluted_only_by_large_plant_eaters() {
+        let t = GroupTrait::HerdDefense;
+        let grazer = |size: f32, gt: f32| {
+            pheno(FounderDesign::new("g", Thermo::Warm, BirthType::Live, 1).with(Gene::BodySize, size).with(Gene::GroupTolerance, gt))
+        };
+        let (herd, loner, vole) = (grazer(0.6, 0.9), grazer(0.6, 0.2), grazer(0.12, 0.4));
+        let fox = pheno(FounderDesign::new("f", Thermo::Warm, BirthType::Live, 4).with(Gene::Carnivory, 0.85));
+        assert!(t.is_carrier(&herd) && t.is_eligible(&loner) && !t.is_carrier(&loner));
+        assert!(!t.is_eligible(&vole) && !t.is_eligible(&fox));
+        assert!(benefit_of(t, &herd, 6, &vole, 60) > 0.9);
+        assert!(benefit_of(t, &herd, 6, &fox, 20) > 0.9);
+        assert!(benefit_of(t, &herd, 6, &loner, 12) < 0.2);
     }
 
     fn seasonal(strategy: Gene, gt: f32) -> Phenotype {

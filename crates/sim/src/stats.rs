@@ -275,8 +275,10 @@ pub fn derive(p: &Phenotype) -> Traits {
     };
 
     let newborn_growth = 0.05 + 0.2 * (1.0 - litter_frac);
+    // Embryos develop at body temperature: a cold-blooded mother carries her
+    // young as much longer as cold-blooded eggs take to incubate.
     let gestation_days = match birth {
-        BirthType::Live => 8.0 * (0.6 + size) * (1.0 + 0.3 * litter_frac),
+        BirthType::Live => 8.0 * (0.6 + size) * (1.0 + 0.3 * litter_frac) * cold_factor,
         _ => 2.0,
     };
 
@@ -350,6 +352,17 @@ mod tests {
         assert!(cold.stats.metabolism < warm.stats.metabolism);
         assert!(cold.stats.insulation < warm.stats.insulation);
         assert!(cold.fur_mismatch > 0.0 && warm.fur_mismatch == 0.0);
+    }
+
+    /// Young develop at body temperature, in the womb as in the egg: a
+    /// cold-blooded mother carries as much longer as her eggs would take.
+    #[test]
+    fn cold_blooded_young_develop_slower() {
+        let t = |thermo, birth| traits_of(&FounderDesign::new("t", thermo, birth, 3));
+        let (warm, cold) = (t(Thermo::Warm, BirthType::Live), t(Thermo::Cold, BirthType::Live));
+        let ratio = cold.gestation_days / warm.gestation_days;
+        let eggs = t(Thermo::Cold, BirthType::IncubatedEggs).incubation_days / t(Thermo::Warm, BirthType::IncubatedEggs).incubation_days;
+        assert!(ratio > 1.3 && (ratio - eggs).abs() < 1e-5, "gestation ×{ratio}, incubation ×{eggs}");
     }
 
     #[test]

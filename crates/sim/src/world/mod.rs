@@ -118,6 +118,16 @@ pub struct LineageCount {
     pub adults: usize,
 }
 
+/// One lineage's eggs (`Counters::eggs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EggCounts {
+    pub laid: u64,
+    pub hatched: u64,
+    pub chilled: u64,
+    pub raided: u64,
+}
+
 /// Cumulative event counters.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -125,8 +135,12 @@ pub struct Counters {
     pub births: u64,
     pub hatched: u64,
     pub eggs_lost: u64,
+    /// Eggs per lineage: laid, hatched, chilled, raided.
+    pub eggs: BTreeMap<u32, EggCounts>,
     pub deaths: BTreeMap<DeathCause, u64>,
     pub deaths_by_lineage: BTreeMap<(u32, DeathCause), u64>,
+    /// Predation deaths by (victim's lineage, killer's lineage).
+    pub kills_by_lineage: BTreeMap<(u32, u32), u64>,
     /// Deaths before reaching breeding age, per lineage.
     pub juvenile_deaths: BTreeMap<u32, u64>,
     /// Newborns and hatchlings per lineage.
@@ -631,6 +645,18 @@ impl World {
             *c = c.saturating_sub(1);
         }
         self.count_lineage(lineage, -1);
+    }
+
+    /// `kill` by another organism (`killer`): predation, or a hunter killed
+    /// by prey that fought back.
+    fn kill_by(&mut self, i: usize, killer: usize) {
+        if !self.organisms[i].alive {
+            return;
+        }
+        let k = self.organisms[killer].lineage;
+        self.organisms[i].killer = Some(k);
+        *self.counters.kills_by_lineage.entry((self.organisms[i].lineage, k)).or_default() += 1;
+        self.kill(i, DeathCause::Predation);
     }
 
     fn count_lineage(&mut self, lineage: u32, delta: isize) {

@@ -202,24 +202,47 @@ impl World {
         }
     }
 
-    /// Resistance and power a dependent juvenile's mother adds when she is
-    /// within reach of it. Scaled by parental care, which falls steeply with
+    /// Resistance and power a juvenile's guardians add when a hunter strikes
+    /// at it: its mother, if it is still dependent (growth < 0.7) and she is
+    /// within reach, or else (whichever is more) the herd it keeps with
+    /// (`herd_guard`). Scaled by parental care, which falls steeply with
     /// litter size (doc: few offspring get long care, many die young).
     pub(crate) fn guardian(&self, young: &Organism) -> (f32, f32) {
         let k = self.config.balance.parent_defense;
-        if k <= 0.0 || young.matured || young.growth >= 0.7 || young.traits.birth == crate::BirthType::AbandonedEggs {
-            return (0.0, 0.0);
-        }
-        let Some(&mi) = young.mother.and_then(|m| self.index.get(&m)) else {
-            return (0.0, 0.0);
-        };
-        let mother = &self.organisms[mi];
-        if !mother.alive || mother.pos.dist(young.pos) > GUARD_REACH {
+        if k <= 0.0 || young.matured || young.traits.birth == crate::BirthType::AbandonedEggs {
             return (0.0, 0.0);
         }
         let care = k * (1.0 - young.traits.litter_fraction()).powi(2);
-        let rs = mother.resistance() * (1.0 + 1.5 * self.herd_bonus(mother));
-        (care * rs, care * mother.power())
+        let mut guard = (0.0, 0.0);
+        if young.growth < 0.7 {
+            if let Some(&mi) = young.mother.and_then(|m| self.index.get(&m)) {
+                let mother = &self.organisms[mi];
+                if mother.alive && mother.pos.dist(young.pos) <= GUARD_REACH {
+                    let rs = mother.resistance() * (1.0 + 1.5 * self.herd_bonus(mother));
+                    guard = (care * rs, care * mother.power());
+                }
+            }
+        }
+        let (rs, power) = self.herd_guard(young, care);
+        (guard.0.max(rs), guard.1.max(power))
+    }
+
+    /// What the herd adds to a young member's defense (`herd_guard`): where
+    /// herd defense holds and kin are around, the adults close ranks around
+    /// the calves, sub-adults and orphans among them, as a parent would
+    /// (`care`), with the resistance and power of a grown member of its kind
+    /// and the herd's own bonus. Predators can't single out the young either.
+    fn herd_guard(&self, young: &Organism, care: f32) -> (f32, f32) {
+        let share = self.config.balance.herd_guard;
+        let herd = self.herd_bonus(young);
+        if share <= 0.0 || herd <= 0.0 {
+            return (0.0, 0.0);
+        }
+        let st = &young.traits.stats;
+        let adult_rs = st.defense + 0.3 * st.agility;
+        let adult_power = st.strength + 0.3 * st.agility;
+        let k = share * care * herd;
+        (k * adult_rs * (1.0 + 1.5 * herd), k * adult_power)
     }
 
     pub(crate) fn decide(&self, i: usize) -> Intent {
@@ -386,7 +409,13 @@ impl World {
             (Action::Drink, thirst.powf(1.5) * 1.3 + if thirst > 0.8 { 0.5 } else { 0.0 }),
             (Action::Rest, tired * tired * 1.1),
             (Action::Bask, if o.traits.warm { 0.0 } else { (1.0 - o.activity) * 0.7 }),
-            (Action::SeekMate, if can_breed { n.breeding / 100.0 * 0.9 * (1.0 - 0.7 * hunger) } else { 0.0 }),
+            // A threat it has seen puts courting on hold (`courtship_caution`);
+            // breeding drive still blunts the flight itself (`reckless`).
+            (Action::SeekMate, if can_breed {
+                n.breeding / 100.0 * 0.9 * (1.0 - 0.7 * hunger) * (1.0 - cfg.balance.courtship_caution * threat.min(1.0))
+            } else {
+                0.0
+            }),
             (Action::Group, match kin_centroid {
                 // Comfortable spacing grows with group size, so herds spread to graze.
                 Some(c) if o.pos.dist(c) > 1.5 + 4.0 * (1.0 - p[Gene::GroupTolerance]) + 0.8 * (kin as f32).sqrt() => {

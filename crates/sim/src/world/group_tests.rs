@@ -221,9 +221,77 @@ fn breeding_drive_blunts_threat_response() {
     let calm = w.decide(a);
     assert!(calm.threat > 0.0);
     assert_eq!(calm.action, Action::Flee, "threat {}", calm.threat);
+    // (With a threat this close, courting is on hold too: see below.)
+    w.config.balance.courtship_caution = 0.0;
     w.config.balance.breeding_recklessness = 1.0;
     assert_ne!(w.decide(a).action, Action::Flee, "high drive and full recklessness: courts instead");
     // Without breeding drive it flees whatever the setting.
     w.organisms[a].needs.breeding = 0.0;
     assert_eq!(w.decide(a).action, Action::Flee);
+}
+
+/// A threat in sight puts courting on hold (`courtship_caution`): an animal
+/// in full breeding drive with a willing mate beside it flees a hunter it
+/// would otherwise ignore for the mate.
+#[test]
+fn a_seen_threat_puts_courting_on_hold() {
+    let mut w = world();
+    let a = isolate(&mut w, 5);
+    set_gene(&mut w.organisms[a], Gene::Vigilance, 0.0);
+    w.organisms[a].breed_ready_tick = 0;
+    w.organisms[a].needs.breeding = 100.0;
+    let sex = w.organisms[a].sex;
+    let m = w.organisms.iter().position(|o| o.lineage == 5 && o.sex != sex).unwrap();
+    let o = &mut w.organisms[m];
+    (o.growth, o.matured, o.mother, o.pos, o.breed_ready_tick) = (1.0, true, None, CENTER + Vec2::new(-1.0, 0.0), 0);
+    (o.needs.breeding, o.needs.hunger, o.pregnancy) = (100.0, 10.0, None);
+    let h = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
+    let o = &mut w.organisms[h];
+    (o.growth, o.matured, o.pos) = (1.0, true, CENTER + Vec2::new(2.0, 0.0));
+    w.grid.rebuild(&w.organisms);
+    w.config.balance.courtship_caution = 0.0;
+    let reckless = w.decide(a);
+    assert!(reckless.threat > 0.2 && reckless.threat < 1.0, "threat {}", reckless.threat);
+    assert_eq!(reckless.action, Action::SeekMate, "full drive outranks a moderate threat");
+    w.config.balance.courtship_caution = 1.0;
+    assert_eq!(w.decide(a).action, Action::Flee);
+    // With nothing in sight it courts as before.
+    w.organisms[h].pos = Vec2::new(1.0, 1.0);
+    w.grid.rebuild(&w.organisms);
+    assert_eq!(w.decide(a).action, Action::SeekMate);
+}
+
+/// The herd guards its young (`herd_guard`): where herd defense holds, a
+/// sub-adult or an orphan with kin around gets the protection a mother
+/// gives a dependent calf, scaled by the benefit; nothing alone, nothing
+/// where the trait doesn't hold, nothing with the rule off.
+#[test]
+fn the_herd_guards_its_young() {
+    let t = GroupTrait::HerdDefense;
+    let mut w = world();
+    let i = isolate(&mut w, 5);
+    assert!(t.is_carrier(&w.organisms[i].pheno));
+    let o = &mut w.organisms[i];
+    (o.matured, o.growth, o.mother, o.kin_nearby) = (false, 0.8, None, 5);
+    set_benefit(&mut w, t, 1.0);
+    let (rs, power) = w.guardian(&w.organisms[i]);
+    assert!(rs > 0.5 * w.organisms[i].resistance() && power > 0.0, "sub-adult orphan: rs {rs} power {power}");
+    // An orphaned calf too.
+    w.organisms[i].growth = 0.3;
+    assert!(w.guardian(&w.organisms[i]).0 > 0.0);
+    set_benefit(&mut w, t, 0.5);
+    let half = w.guardian(&w.organisms[i]).0;
+    assert!(half > 0.0 && half < rs, "half {half} vs {rs}");
+    set_benefit(&mut w, t, 1.0);
+    w.organisms[i].kin_nearby = 1;
+    assert_eq!(w.guardian(&w.organisms[i]), (0.0, 0.0), "no herd around");
+    w.organisms[i].kin_nearby = 5;
+    set_benefit(&mut w, t, 0.0);
+    assert_eq!(w.guardian(&w.organisms[i]), (0.0, 0.0), "trait doesn't hold");
+    set_benefit(&mut w, t, 1.0);
+    w.organisms[i].matured = true;
+    assert_eq!(w.guardian(&w.organisms[i]), (0.0, 0.0), "adults defend themselves");
+    w.organisms[i].matured = false;
+    w.config.balance.herd_guard = 0.0;
+    assert_eq!(w.guardian(&w.organisms[i]), (0.0, 0.0), "0 disables");
 }

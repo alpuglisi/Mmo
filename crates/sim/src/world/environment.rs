@@ -63,7 +63,7 @@ impl World {
     }
 
     /// Incubation: eggs chill without enough heat, hatch on schedule.
-    fn update_clutches(&mut self, rng: &mut SimRng) {
+    pub(crate) fn update_clutches(&mut self, rng: &mut SimRng) {
         let tick = self.tick;
         let clutches = std::mem::take(&mut self.clutches);
         let mut keep = Vec::with_capacity(clutches.len());
@@ -75,8 +75,15 @@ impl World {
                 let room = self.cap_room(c.lineage);
                 let hatching: Vec<_> = c.eggs.drain(..).take(room).collect();
                 self.counters.hatched += hatching.len() as u64;
+                self.counters.eggs.entry(c.lineage).or_default().hatched += hatching.len() as u64;
                 for g in hatching {
                     self.spawn_newborn(g, c.owner, c.lineage, c.pos, c.generation, c.mother, c.father, c.newborn_growth, rng);
+                }
+                // The brood is over: the parent recovers from now (`brood_recovery`).
+                if let Some(gi) = guardian {
+                    let o = &mut self.organisms[gi];
+                    let rest = (self.config.balance.brood_recovery * o.traits.recovery_days * self.config.ticks_per_day as f32) as u64;
+                    o.breed_ready_tick = o.breed_ready_tick.max(tick + rest);
                 }
                 done = true;
             }
@@ -99,6 +106,7 @@ impl World {
                 }
                 if c.chill >= 1.0 {
                     self.counters.eggs_lost += c.eggs.len() as u64;
+                    self.counters.eggs.entry(c.lineage).or_default().chilled += c.eggs.len() as u64;
                     done = true;
                 }
             }

@@ -108,6 +108,18 @@ fn run(seed: u64, o: &Opts, designs: &[FounderDesign]) -> Vec<(f64, f64, usize, 
                 let n = world.counters.deaths_by_lineage.get(&((first + k) as u32, cause)).copied().unwrap_or(0);
                 line.push_str(&format!(",{}={n}", cause.label()));
             }
+            let l = (first + k) as u32;
+            let c = &world.counters;
+            let e = c.eggs.get(&l).copied().unwrap_or_default();
+            line.push_str(&format!(
+                ",born={},juvenile={},laid={},hatched={},chilled={},raided={}",
+                c.born.get(&l).copied().unwrap_or(0),
+                c.juvenile_deaths.get(&l).copied().unwrap_or(0),
+                e.laid,
+                e.hatched,
+                e.chilled,
+                e.raided
+            ));
             eprintln!("{line}");
         }
     }
