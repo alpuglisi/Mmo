@@ -3,6 +3,7 @@
 use crate::genome::{Gene, Genome, Phenotype, PlayerId};
 use crate::mating::Display;
 use crate::math::Vec2;
+use crate::pathfinding::Path;
 use crate::stats::{derive, Traits};
 
 pub type OrgId = u64;
@@ -182,6 +183,9 @@ pub struct Organism {
     /// Load loci homozygous for a harmful recessive (cached at birth).
     pub recessive_load: u32,
     pub infection: Infection,
+    /// Route to `target` around terrain the body can't cross, if the direct
+    /// way was blocked (`World::move_toward`).
+    pub path: Option<Box<Path>>,
 }
 
 impl Organism {
@@ -226,6 +230,7 @@ impl Organism {
             order: None,
             recessive_load,
             infection: Infection::Susceptible,
+            path: None,
         }
     }
 

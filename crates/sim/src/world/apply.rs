@@ -9,8 +9,9 @@ use crate::genome::{Gene, Genome, PlayerId};
 use crate::mating;
 use crate::math::Vec2;
 use crate::organism::{Action, DeathCause, Infection, OrgId, Organism, Pregnancy, Sex};
+use crate::pathfinding::{enter_cost, Outcome, Path, MAX_TILE_SPEED};
 use crate::rng::{rng_for, stream, SimRng};
-use crate::terrain::{traverse, Traverse};
+use crate::terrain::{traverse, Map, Traverse};
 
 /// Most hunger points an organism can eat per day (so a meal takes a few ticks).
 const MAX_INTAKE_PER_DAY: f32 = 1200.0;
@@ -18,6 +19,8 @@ const MAX_DRINK_PER_DAY: f32 = 1500.0;
 /// Energy per tile walked at endurance 1.0.
 const ENERGY_PER_TILE: f32 = 0.6;
 const MATING_REACH: f32 = 1.2;
+/// Sprints shorter than this (tiles) steer greedily instead of planning.
+const PATH_SHORT: f32 = 4.0;
 
 /// Daily death hazard of an uncared-for juvenile with `kin` of its own kind
 /// nearby: `(kin / competition)^4`. Steep, because perceived kin saturate in
@@ -28,6 +31,20 @@ pub(crate) fn larval_hazard(kin: u16, competition: f32) -> f32 {
         return 0.0;
     }
     (kin as f32 / competition).powi(4)
+}
+
+/// What walking costs an organism this tick.
+#[derive(Clone, Copy)]
+struct Effort {
+    sprint: f32,
+    endurance: f32,
+}
+
+impl Effort {
+    /// Energy for `dist` tiles on terrain with energy multiplier `e`.
+    fn cost(self, dist: f32, e: f32) -> f32 {
+        dist * ENERGY_PER_TILE * e * self.sprint / self.endurance
+    }
 }
 
 impl World {
@@ -127,7 +144,7 @@ impl World {
         }
     }
 
-    fn move_toward(&mut self, i: usize, target: Vec2, sprint: bool) -> f32 {
+    pub(super) fn move_toward(&mut self, i: usize, target: Vec2, sprint: bool) -> f32 {
         let o = &self.organisms[i];
         let to = target - o.pos;
         let d = to.len();
@@ -162,8 +179,20 @@ impl World {
         // Stuck on a tile the body can't use (e.g. ice melted underneath):
         // struggle toward the target regardless.
         let stranded = !fly && traverse(&body, self.map.tile_at(pos), &self.weather, false) == Traverse::Blocked;
+        let effort = Effort { sprint: if sprinting { 2.5 } else { 1.0 }, endurance };
 
-        for &angle in &[0.0f32, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9] {
+        // Walkers follow a route planned earlier, or plan one when the direct
+        // step is blocked (flyers only meet storms, which ground everything).
+        // Short sprints (fleeing, the last lunge at prey) stay greedy.
+        let pathing = !stranded && !fly && self.config.balance.path_nodes >= 1.0;
+        if pathing {
+            if let Some(moved) = self.follow_path(i, target, step, effort) {
+                return moved;
+            }
+        }
+        let can_plan = pathing && !(sprinting && d < PATH_SHORT) && !self.next_to(pos, target);
+
+        for (k, &angle) in [0.0f32, 0.6, -0.6, 1.2, -1.2, 1.9, -1.9].iter().enumerate() {
             let dd = dir.rotate(angle);
             let dest = self.map.clamp(pos + dd * step);
             let rule = if stranded {
@@ -172,23 +201,114 @@ impl World {
                 traverse(&body, self.map.tile_at(dest), &self.weather, fly)
             };
             if let Traverse::Passable { speed: s, energy: e } = rule {
-                let dist = (step * s.min(1.5)).min(d);
+                let dist = (step * s.min(MAX_TILE_SPEED)).min(d);
                 let new_pos = self.map.clamp(pos + dd * dist);
                 // The end point can fall short of the checked tile (or cut a
                 // corner): never step onto a tile the body can't use.
-                if !stranded
-                    && traverse(&body, self.map.tile_at(new_pos), &self.weather, fly) == Traverse::Blocked
-                {
-                    continue;
+                if stranded || traverse(&body, self.map.tile_at(new_pos), &self.weather, fly) != Traverse::Blocked {
+                    let o = &mut self.organisms[i];
+                    o.pos = new_pos;
+                    o.needs.energy = (o.needs.energy - effort.cost(dist, e)).max(0.0);
+                    return dist;
                 }
-                let cost = dist * ENERGY_PER_TILE * e * if sprinting { 2.5 } else { 1.0 } / endurance;
-                let o = &mut self.organisms[i];
-                o.pos = new_pos;
-                o.needs.energy = (o.needs.energy - cost).max(0.0);
-                return dist;
+            }
+            // The way straight ahead is blocked: find a way around.
+            if k == 0 && can_plan && self.plan_path(i, target) {
+                if let Some(moved) = self.follow_path(i, target, step, effort) {
+                    return moved;
+                }
             }
         }
         0.0
+    }
+
+    /// Is `target` on the tile under `pos` or a neighboring one? Close enough
+    /// that steering straight at it is all a route could do.
+    fn next_to(&self, pos: Vec2, target: Vec2) -> bool {
+        let (ax, ay) = self.map.tile_coords(pos);
+        let (bx, by) = self.map.tile_coords(target);
+        ax.abs_diff(bx) <= 1 && ay.abs_diff(by) <= 1
+    }
+
+    /// Search a route from organism `i` to `target` for its own body and keep
+    /// it on the organism. A failed search is kept too, so it isn't repeated
+    /// until the terrain changes (on the hour) or the target moves. True if
+    /// there is a route to follow, possibly partial.
+    fn plan_path(&mut self, i: usize, target: Vec2) -> bool {
+        let epoch = self.tick / self.config.ticks_per_hour();
+        let o = &mut self.organisms[i];
+        if let Some(p) = &o.path {
+            if p.failed && p.epoch == epoch && p.serves(o.pos, target) {
+                return false;
+            }
+        }
+        let (body, from) = (o.traits.body, o.pos);
+        // Reuse the old route's allocation.
+        let mut path = o.path.take().unwrap_or_else(|| Box::new(Path::new(target)));
+        let budget = self.config.balance.path_nodes as usize;
+        let weather = self.weather;
+        let outcome = self.path_scratch.search(
+            &self.map,
+            from,
+            target,
+            budget,
+            |t| enter_cost(traverse(&body, t, &weather, false)),
+            &mut path.waypoints,
+        );
+        path.goal = target;
+        path.epoch = epoch;
+        path.partial = outcome == Outcome::Partial;
+        path.failed = outcome == Outcome::None;
+        self.counters.path_searches += 1;
+        self.counters.path_failures += u64::from(path.failed);
+        let ok = !path.failed;
+        self.organisms[i].path = Some(path);
+        ok
+    }
+
+    /// Move organism `i` along its route to `target`, up to `step` tiles
+    /// (scaled by the speed of the tile ahead). `None`, with the route
+    /// dropped, if it has no route that still serves the target, has been
+    /// pushed off it, or the terrain ahead has closed (ice melted); the
+    /// caller then steers greedily, re-planning if the direct way is blocked.
+    fn follow_path(&mut self, i: usize, target: Vec2, step: f32, effort: Effort) -> Option<f32> {
+        let o = &mut self.organisms[i];
+        let path = o.path.as_mut()?;
+        let first = path.next_tile()?;
+        let pos = o.pos;
+        let body = o.traits.body;
+        let w = self.map.width;
+        let center = |k: u32| Map::tile_center(k as usize % w, k as usize / w);
+        let rule = |k: u32| traverse(&body, &self.map.tiles[k as usize], &self.weather, false);
+        let (cx, cy) = self.map.tile_coords(pos);
+        let on_route = (first as usize % w).abs_diff(cx) <= 1 && (first as usize / w).abs_diff(cy) <= 1;
+        let ahead = if on_route && path.serves(pos, target) { rule(first) } else { Traverse::Blocked };
+        let Traverse::Passable { speed: s, energy: e } = ahead else {
+            path.clear();
+            return None;
+        };
+        let total = step * s.min(MAX_TILE_SPEED);
+        let mut left = total;
+        let mut at = pos;
+        while let Some(k) = path.next_tile() {
+            if k != first && rule(k) == Traverse::Blocked {
+                break;
+            }
+            let c = center(k);
+            let len = at.dist(c);
+            if len > left {
+                at = at + (c - at) * (left / len);
+                left = 0.0;
+                break;
+            }
+            at = c;
+            left -= len;
+            path.waypoints.pop();
+        }
+        let dist = total - left;
+        o.pos = self.map.clamp(at);
+        o.needs.energy = (o.needs.energy - effort.cost(dist, e)).max(0.0);
+        Some(dist)
     }
 
     fn eat_plants(&mut self, i: usize, rate: f32) {

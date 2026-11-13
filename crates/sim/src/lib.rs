@@ -10,6 +10,7 @@
 //! - [`design`]: founder designs and the point budget.
 //! - [`stats`]: phenotype → stats and derived physical properties.
 //! - [`terrain`]: map generation, seasons, weather and movement rules.
+//! - [`pathfinding`]: bounded A* around terrain a body can't cross.
 //! - [`mating`]: mate preference, override cost, outbreeding depression.
 //! - [`group`]: critical-mass group traits.
 //! - [`legacy`]: the genetic-legacy score.
@@ -23,6 +24,7 @@ pub mod legacy;
 pub mod mating;
 pub mod math;
 pub mod organism;
+pub mod pathfinding;
 pub mod presets;
 pub mod render;
 pub mod rng;

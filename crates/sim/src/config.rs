@@ -163,6 +163,12 @@ pub struct Balance {
     /// Daily transmission chance between a nursing mother and her young when
     /// one of them is infectious (close kin).
     pub disease_kin: f32,
+    /// Most tiles one path search may expand (`pathfinding`). Movement
+    /// steers straight at its target and plans a route only when the direct
+    /// step is blocked; a search that runs out of budget heads for the tile
+    /// it got closest to and plans again from there. 0 disables pathfinding
+    /// (greedy steering only).
+    pub path_nodes: f32,
 }
 
 impl Default for Balance {
@@ -207,12 +213,13 @@ impl Default for Balance {
             disease_chronic: 0.2,
             disease_fertility: 0.3,
             disease_kin: 0.2,
+            path_nodes: 1500.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 37;
+    pub const FIELD_COUNT: usize = 38;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -259,6 +266,7 @@ impl Balance {
             ("disease_chronic", &mut self.disease_chronic),
             ("disease_fertility", &mut self.disease_fertility),
             ("disease_kin", &mut self.disease_kin),
+            ("path_nodes", &mut self.path_nodes),
         ]
     }
 

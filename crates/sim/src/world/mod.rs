@@ -8,7 +8,8 @@
 //! 3. Rebuild the spatial index.
 //! 4. **Decide** (parallel, read-only): every organism scores its actions by
 //!    need urgency × behavior genes and picks one.
-//! 5. **Apply** (sequential, shuffled order): movement with terrain checks,
+//! 5. **Apply** (sequential, shuffled order): movement (steering, with A*
+//!    routes around blocked terrain; see `pathfinding`),
 //!    eating, predation, mating, needs, death and birth.
 //!
 //! All randomness comes from per-(tick, organism) streams, so a run is
@@ -20,6 +21,8 @@ mod decide;
 mod density;
 mod disease;
 mod environment;
+#[cfg(test)]
+mod path_tests;
 mod spatial;
 
 use std::collections::{BTreeMap, HashMap};
@@ -35,6 +38,7 @@ use crate::group::{GroupField, GroupTrait};
 use crate::legacy::LegacySnapshot;
 use crate::math::Vec2;
 use crate::organism::{DeathCause, OrgId, Organism, Sex};
+use crate::pathfinding::PathScratch;
 use crate::rng::{rng_for, stream};
 use crate::terrain::{traverse, Map, Season, Traverse, Weather};
 
@@ -112,6 +116,9 @@ pub struct Counters {
     pub failed_hunts: u64,
     /// New mating-transmitted infections per lineage (emerged or caught).
     pub infections: BTreeMap<u32, u64>,
+    /// Path searches run (`World::move_toward`), and how many found no route.
+    pub path_searches: u64,
+    pub path_failures: u64,
 }
 
 pub struct World {
@@ -135,6 +142,7 @@ pub struct World {
     migrate_orders: BTreeMap<PlayerId, Vec2>,
     slots_used: BTreeMap<PlayerId, u32>,
     clutch_at: HashMap<(usize, usize), usize>,
+    path_scratch: PathScratch,
 }
 
 /// The decision for one organism this tick.
@@ -191,6 +199,7 @@ impl World {
             migrate_orders: BTreeMap::new(),
             slots_used: BTreeMap::new(),
             clutch_at: HashMap::new(),
+            path_scratch: PathScratch::default(),
             config,
         }
     }
