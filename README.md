@@ -6,15 +6,24 @@ A persistent multiplayer world where each player designs a founding organism
 and steers its lineage through breeding rather than direct editing. The full
 design is in [`docs/game-design.md`](docs/game-design.md).
 
-Build step 1 of that design (prototype the simulation rules headless, with
-no players attached, and measure per-organism tick cost) is done and still
-being tuned. **Build step 2 has started:** `evo-server`, the authoritative
-Rust server around the simulation (accounts, founding, WebSocket play,
-directed-mating consent, a renown economy with a stud marketplace,
-persistence behind a trait; see [Server](#server)).
-**Build step 3 has started:** a TypeScript web client (PixiJS, Vite) with
-login, the founder design editor, the world view, matings and a dashboard;
-see [Client](#client).
+Where the design's build order stands:
+
+- **Step 1, simulation (done, still being tuned):** the rules engine runs
+  headless and its per-organism tick cost is measured; see
+  [Benchmark](#benchmark) and [Balance](#balance).
+- **Step 2, server (well along):** `evo-server`, the authoritative Rust
+  server around the simulation: accounts, founding, WebSocket play with
+  binary delta states (protocol 2), directed-mating consent, a renown
+  economy with a paged stud marketplace and auctions, ranked seasons,
+  several worlds per process, and persistence in files or PostgreSQL; see
+  [Server](#server).
+- **Step 3, client (well along):** a TypeScript web client (PixiJS, Vite)
+  with login and world choice, the founder design editor, the world view
+  with creature sprites, the Matings, Market, Genetics, Lineage, Seasons
+  and World (chronicle) tabs, a phone layout and a first-session tour; Capacitor wraps
+  it for iOS and Android (not yet built on devices); see [Client](#client).
+
+What remains is in [Suggested next steps](#suggested-next-steps).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
 
@@ -112,6 +121,7 @@ cargo run --release --example trace -- 3 200          # follow one fox (lineage 
 cargo run --release --example stuck -- 120 1 2        # how often organisms get stuck
 cargo run --release --example calibrate -- tournament --worlds 20   # point-cost check (CSV)
 cargo run --release --example deaths -- 1,5 120 31 32 33   # who kills antelope and herd grazers, and when
+cargo run --release --example predators -- 120 1 2 3     # pack hunters vs their prey: booms, kills by prey rarity
 cargo run --release --bin evo-sim -- sweep --trials 1 --seeds 12 --rounds 1 --seed 31 --migrants   # with the migrating caribou
 cargo run --release --bin evo-sim -- run --size 256 --focus 64,64 --focus 192,192   # level of detail
 cargo run --release --example lod -- 256 90 1 64,64 192,192   # LOD vs full simulation
@@ -226,11 +236,6 @@ scripts/balance-smoke.sh
 (cd client && npm ci && npm run typecheck && npm test && npm run build && npm run e2e)
 ```
 
-Formatting isn't checked yet: the code is not `cargo fmt`-clean and no
-`rustfmt.toml` matches its hand-wrapped wide style, so enforcing it needs
-one mechanical whole-repo `cargo fmt` commit first (best done when no other
-branches are in flight), then a `cargo fmt --all --check` step.
-
 **Determinism in tests.** The server integration tests that need exact
 timing use a manual world clock: `ServerConfig::manual()` makes the world
 thread tick only on `RunningServer::step(n)` (which pushes state once at the
@@ -316,7 +321,6 @@ The first world is the default. `--world`/`--worlds-file` replace
   would touch another's balances) and need cross-thread locking on every
   payment. Keeping the economy inside the world thread keeps payments
   single-threaded and exact, as they were with one world.
-
 
 ### Architecture
 
@@ -1513,6 +1517,9 @@ loads the page from `npm run dev -- --host` for live reload.
 
 ```
 main.ts      login → design (no lineage) → game; one GameSocket from login to logout
+session.ts   the saved login (token and world), in localStorage when available
+worldChoice.ts  which world to preselect: per user and server, from GET /api/worlds
+onboarding.ts   tour steps, state machine, hint triggers and progress storage (pure; ui/onboarding.ts draws them)
 protocol.ts  wire types written by hand from crates/server/src/protocol.rs (keep in sync) + parseServerMsg
 api.ts       fetch wrapper for the HTTP API (ApiError carries code and detail)
 socket.ts    GameSocket: ids paired with `result`, 10 s reply timeout, reconnect with
@@ -1573,7 +1580,11 @@ offer events, the model toasting only preferred kinds); the point cost and
 validation against the server's own examples (the README design costs
 15.1, exactly-at-budget passes, one more founder fails); socket id pairing,
 backoff, reconnect and give-up; the offer table through request, accept
-and outcome; the matings panel's compatibility summary. `e2e/smoke.mjs` (Playwright, pre-installed Chromium) starts
+and outcome; the matings panel's compatibility summary; the Seasons tab's
+helpers; the world picker's memory (`worldChoice.test.ts`); the onboarding
+tour's state machine, steps, progress storage, hint triggers and card
+placement; and the protocol 2 decoder against the Rust fixture
+(`wire.test.ts`, above). `e2e/smoke.mjs` (Playwright, pre-installed Chromium) starts
 `evo-server --fast --memory --static client/dist` on a free port, registers,
 checks the live cost against the prices in `/api/genes` (and that the
 server's founding response agrees) and the client-side over-budget refusal, founds a lineage, waits for markers and
@@ -1666,15 +1677,16 @@ card explains and offers no button. Screenshot: `push-settings.png`.
 The server side of delivery is tested in Rust (`crates/server/tests/push.rs`)
 against a mock push service.
 
-**Not yet:** allele origins traced to the
-founding *lineage* rather than the player (a player founds one lineage per
-world, so the two coincide until re-founding exists), alert preferences
-applied server-side (muted kinds are still sent), animated sprites, native builds tested on devices (the Capacitor projects
-are generated but not built here), and push notifications in the native
-apps (their WebViews have no Web Push: that needs FCM/APNs through a
-Capacitor plugin; the card says push is not available there). Safari on
-iOS has Web Push only for a site added to the home screen
-(`manifest.webmanifest` is there for it; not tested on a device).
+**Not yet:** native builds tested on devices (the Capacitor projects are
+generated but not built here), push notifications in the native apps (their
+WebViews have no Web Push: that needs FCM/APNs through a Capacitor plugin;
+the card says push is not available there; Safari on iOS has Web Push only
+for a site added to the home screen, `manifest.webmanifest` is there for it,
+untested on a device), animated sprites, alert preferences applied
+server-side to the feed (muted kinds are still sent over the socket; pushes
+do honour them), and allele origins traced to the founding *lineage* rather
+than the player (a player founds one lineage per world, so the two coincide
+until re-founding exists).
 
 ## Benchmark
 
@@ -2262,7 +2274,8 @@ Validation uses 12 seeds (31–42) that no tuning run or agent touched, on a
 | Dominant-design counters, seeds 31–42 (55–66) | 10.73 (11.08) | 100% | 33% (58%) | 92% (92%) | 100% | 100% | 92% (92%) | 100% | 100% |
 | Final balance pass, seeds 31–42 (55–66) | 11.38 (11.79) | 100% | 92% (100%) | 92% (100%) | 100% | 100% | 100% (100%) | 100% | 92% (100%) |
 | Base before vigilance at water (snapshot v7), seeds 31–42 (55–66) | 11.61 (11.46) | 100% | 92% (92%) | 100% | 100% | 100% | 100% (92%) | 100% | 100% |
-| **Current: vigilance at water, stripped-ground foraging, seeds 31–42 (55–66)** | **11.61 (11.37)** | 100% | **100% (100%)** | 100% | 100% | 92% (100%) | 100% (92%) | 100% | 100% |
+| Vigilance at water, stripped-ground foraging (snapshot v8), seeds 31–42 (55–66) | 11.61 (11.37) | 100% | 100% (100%) | 100% | 100% | 92% (100%) | 100% (92%) | 100% | 100% |
+| **Current: prey switching by search image, seeds 31–42 (55–66)** | **11.54 (11.41)** | 100% | 100% (100%) | 100% | 100% | 92% (100%) | 100% (92%) | 100% | 100% |
 
 Pathfinding cost 0.2 points, within the noise of a no-op change (`sprint`
 2.45 → 2.4501 under greedy steering scores 11.04 with antelope at 67%).
@@ -2322,8 +2335,10 @@ stream, so they change a world only through their effects.
   the held-out sets (12 of 12 on both after vigilance at water, below). A
   world loses them where pack hunters boom (24 founders to 100–145 by day
   80, fed by grazers and voles) and take the slow-breeding antelope as
-  by-catch; behavior fixes have not moved that macro outcome measurably
-  (see the rejected rules below). Hybrids between antelope and herd grazers
+  by-catch. Prey switching (below) halves how often a prey lineage is
+  wiped out, but the booms themselves are as large as before (hunter
+  peak-to-mean about 1.6 either way), and the one breeding rule tried on
+  the predator side (embryo resorption) suppressed the hunters too much. Hybrids between antelope and herd grazers
   still occur, as do fox × pack hunter hybrids, since those pairs share a
   body plan.
 - The prey-side changes below lean the balance toward prey: voles, newts,
@@ -2727,6 +2742,77 @@ old rules (the antelope preset keeps its vigilance). Snapshots move to
 format version 8 (three new `Balance` fields in the saved config). New
 tunables: `threat_caution`, `alert_guard`, `pasture_search`.
 
+**Pack-hunter booms: prey switching by search image.** Decisions use
+`evo-sim compare` on seeds 101–124 and 149–172 (24 each; neither used for
+diagnosis), and the held-out sweeps as confirmation. Diagnosis used the new
+`examples/predators.rs` (`cargo run --release --example predators -- 120
+1 2 3 ...`), which follows the pack hunters against their prey (head
+counts, hunger and prey kg per hunter every 10 days; kills per prey
+lineage by how common that prey was; hunger while chasing; births and
+deaths by prey kg per hunter; pregnant hunters' hunger), on seeds 1–24
+and 201–248. On seeds 1–24 a pack-hunter population peaks at 1.57× its
+mean on average (up to 191 hunters from 24 founders), and two seeds lost a
+prey lineage. The candidate mechanisms against that data:
+
+| Mechanism | What the data says | Verdict |
+| --- | --- | --- |
+| Satiation (a full hunter stops hunting) | Already there: adult hunters chase in 4–7% of ticks below hunger 30 and 70–80% above 60 (the hunt is a hunger-driven food choice) | Nothing to add |
+| Prey switching away from rare prey | Absent, in fact reversed. Kills per hunter per prey-day are highest for a kind when it is rare: herd grazers below 5% of the prey alive 3.4–9.5 per 10k, against 0.6–1.0 at 10–20%; voles 1.7–3.5 below 5% against 1.2–1.5 at 20–30%. On seed 14 the antelope went from 44 to 0 under a steady 35–70 hunters that kept taking about 10 every 10 days while voles boomed to 970: antelope are worth 6.6 voles (score ∝ mass^0.75), so any hunter that saw one took it | Adopted (below) |
+| Cost of litters when prey per hunter is low | Weak gradient. Pregnant hunters spend 52–64% of their time at hunger ≥ 80 whatever the prey per hunter (feast and famine), and starving (100) only 11% → 20% from plenty to scarcity. Births per 100 hunter-days fall only from about 2.1 to 1.2 at the lowest prey per hunter | Tested as embryo resorption; rejected |
+| Starvation lag | Starvation is 73% of hunter deaths (thirst 21%); deaths per 100 hunter-days rise from about 1.1 to 2.0–2.2 at low prey per hunter, births fall to 1.2: the bust is slow but present | Not changed |
+| Density pressure among hunters | Not measured directly; packs share carcasses by design | Not tried |
+
+**Search image** (`search_image` 0.7, `Organism::search_image`). A hunter
+remembers the lineage of its last kill and overlooks prey of any other
+kind with chance `search_image`, drawn per hunter, prey and day (so the
+same vole is ignored all day, not re-rolled every tick). Hunters mostly kill
+whatever is common, so most carry its image, and a rare kind is taken less
+than its encounter rate would have it: Tinbergen's search image, the
+classic cause of prey switching (a type III functional response), which
+fits the doc's "each organism's AI makes decisions from its own weights"
+and needs no global knowledge. A starving hunter (hunger ≥ 90,
+`SEARCH_IMAGE_HUNGER`) drops its image and takes whatever it finds. Without
+that exception (first version below) hunters whose prey kind had crashed
+kept overlooking the prey that was left, and small founding packs starved
+on several diagnosis seeds (pack hunters lost on 1 and collapsed below 12
+on 3 of seeds 201–248, against 0 and 1 without the rule). A test
+(`search_image_overlooks_other_prey_unless_starving`) checks the overlook
+rate and the starving exception.
+
+Measured (A − B, paired 95% CI; lineages lost summed over the 24 seeds):
+
+| Comparison | Seeds | Score | Prey lineages lost (A / B) | Pack hunters lost (A / B) | Significant mean-alive changes |
+| --- | --- | --- | --- | --- | --- |
+| Search image 0.7, no starving exception, vs off | 101–124 | +0.15 ± 0.27 | 1 / 5 | 3 / 2 | voles +118, antelope +19, herd grazers +53 |
+| Same | 149–172 | −0.15 ± 0.36 | 2 / 3 | 2 / 1 | voles +132 |
+| **Search image 0.7 with the starving exception vs off (adopted)** | 101–124 | **+0.07 ± 0.38** | **2 / 5** | **1 / 2** | voles +131, antelope +18, newts +66 |
+| Same | 149–172 | **−0.06 ± 0.30** | **2 / 3** | **2 / 1** | voles +93, newts +63 |
+| Embryo resorption (`resorption` 0.5: a starving mother loses half her pregnancy's fertility a day) vs off, both with the search image | 101–124 | **−0.37 ± 0.28** | 1 / 2 | 3 / 1 | pack hunters −28, foxes −16, every prey +37 to +202 |
+| Same | 149–172 | **−0.61 ± 0.31** | 3 / 2 | 4 / 2 | pack hunters −18, foxes −21, prey +14 to +212 |
+
+So the search image keeps the score (both differences far inside the
+noise) and cuts the prey lineages lost from 8 to 4 in 48 worlds (on the
+diagnosis seeds 201–248: 1 against 4), with pack hunters lost equally
+often (3 and 3 in the compares; 1 and 0 on seeds 201–248). Rare-prey risk falls where
+it was highest: kills per 10k prey-days per hunter of antelope below 5% of
+the prey 1.32 / 1.33 against 1.52 / 1.52 (seeds 101–124 / 149–172,
+`examples/predators`). The booms themselves barely change: on the same 48
+worlds hunters peak at 80 against 86 (mean 50 against 53), peak-to-mean
+1.63 against 1.65. Resorption is significantly worse on both sets: it
+throttles the hunters' and foxes' breeding everywhere (pregnant hunters are
+hungry whatever the prey supply), so prey pile up toward their caps; it is
+not in the code.
+
+Held-out sweeps: 11.54 / 11.41 (seeds 31 / 55) against 11.61 / 11.37
+before (sum 22.95 vs 22.98), the same lineages lost (pack hunters on one
+seed of 31–42, herd grazers on one of 55–66). `--set search_image=0`
+restores the old hunting. The snapshot round-trip test now re-tags the
+father of a pregnancy explicitly (with fewer pregnancies at its snapshot
+tick, every fifth organism no longer hit one). The client wire fixture is
+unchanged. Snapshots move to format version 9
+(`Organism::search_image` and the new `Balance` field). New tunable:
+`search_image`.
+
 ## Point costs
 
 The costs in `design.rs` are calibrated with `examples/calibrate.rs`
@@ -2822,8 +2908,9 @@ unchanged or better (pack hunters 92% → 100%) except antelope (67% → 50%,
 newts (100%, 214) barely move. Burrowing omnivores stay at 100% survival
 but average 119 alive instead of 426; the toxic frogs (cold, carnivory 0.1)
 are unchanged (100%, 448). Birth mode (incubated eggs winning 35–38%,
-abandoned eggs 13–14%) was addressed in the final balance pass (Balance
-section). Doc counters that already work: warm-blooded designs with
+abandoned eggs 13–14%) was narrowed in the final balance pass and by egg
+thermal risk (Balance section), but incubated eggs still win tournaments
+most often. Doc counters that already work: warm-blooded designs with
 abandoned eggs survive only 62% of the time (thermoregulation mismatch), and
 herd grazers lose herd defense when shrunk below 0.45.
 
@@ -2842,45 +2929,61 @@ in use, 10.71 with the presets' strategies).
 
 ## Suggested next steps
 
-1. **Slow breeders under predation:** antelope are no longer lost on the
-   held-out sets, but behavior fixes did not resolve them on fresh seeds:
-   they die where pack hunters boom on other prey (apparent competition).
-   Next: a predator-side check on the numerical response (pack hunters
-   starving faster when prey thins, or prey switching), measured with
-   `compare` on 48+ seeds; and whether the prey gains from vigilance at
-   water cost the predators seeds systematically (the sign was negative,
-   not significant).
-2. **Sweep robustness (done):** confidence intervals, paired differences,
-   successive-halving screens and `evo-sim compare` (see
-   [Balance](#balance)). Next: an adaptive `compare` that adds seeds until
-   the CI resolves, and checking how well 40-day screen ranks predict
-   120-day ranks.
-3. **Decision cost at density:** decide is three quarters of a tick at the
-   prototype target and its per-organism cost doubles from scale 4 to 16
-   (perception scans more neighbors in a crowd); cap or subsample the
-   neighbors scanned. Then the apply phase's sequential act sweep (a quarter
-   of apply) by region. See [Benchmark](#benchmark).
-4. **Migration (done):** the Migrating caribou (`--migrants`) migrate with
-   group navigation and survive 12/12 on both held-out sets. Next: measure
-   what migrating buys a design (the same herd without the gene, paired),
-   and give winter ranges a reason to exist, e.g. better cold-season
-   pasture than the summer range.
-5. **Server (step 2, started):** the static terrain is now stored once
-   per world and organisms are encoded leanly (see
-   [World snapshots](#persistence)): at 26k agents the daily save is about
-   18 MB (genomes about 7 MB, the map's changing tiles about 6 MB) and the
-   world-thread capture about 10–17 ms; next for save size, perhaps the
-   changing tiles as a delta against the previous save; per-world tables
-   once there are
-   several shards; delta states are done (protocol 2, ~1 KB/s of
-   states a client instead of 75–115 KB/s, see
-   [Load and soak test](#load-and-soak-test)): next for bandwidth, paging
-   `browse_market` replies, and for the world thread, sub-step states that
-   don't rebuild a whole `StateView`; seasonal leaderboard
-   aggregation;
-   several worlds (shards) per process.
-6. **Client (step 3, started):** a terrain endpoint (tile types and heights
-   instead of the debug PNG) and tile rendering with seasons and weather;
-   a genetics dashboard (trait distributions and allele shares from a new
-   lineage-stats endpoint) and alerts (deaths, births, offers); sprites by
-   body plan; touch gestures; Capacitor shells for iOS and Android.
+In priority order; each item is open (done work is described in the
+sections above).
+
+1. **Mobile apps on devices.** The Capacitor projects are generated but
+   have never been built or run on a phone. Build both, play a session on
+   real iOS and Android devices (login with a remote server, touch
+   gestures, the bottom sheet, the onboarding tour, reconnects when the app
+   is backgrounded), and add the result to CI if it can run headless.
+2. **Push notifications.** Alerts reach a player only while the client is
+   open. The design's typical session ("check the dashboard and alerts …
+   log off while the lineage carries on") needs offline delivery: native
+   push through Capacitor (and web push for the browser) for the toasted
+   alert kinds and mating requests, with the existing alert preferences
+   deciding what is sent, which also means applying them server-side.
+3. **Capacity with several worlds.** The 500-player load test ran against
+   one world; the several-worlds check was two 256² worlds of 100 players.
+   Repeat the 500-player run (512², warmed) with `loadgen --worlds N` to
+   confirm the per-world budget of 4–6 cores and see where one process
+   stops scaling (see [Load and soak test](#load-and-soak-test)).
+4. **Incubated eggs still win tournaments**: after the final balance pass
+   and egg thermal risk they won 29.1% of entries pooled over 144 worlds
+   (a fair share is 25%), abandoned eggs 16.8%; see [Balance](#balance). Next: find what
+   incubators gain (the paired-rule method of the dominant-design work)
+   and judge any fix with `compare` and fresh tournament seeds.
+5. **Slow breeders under predation.** Antelope now survive the held-out
+   sets, but seeds that lose them are those where pack hunters boom on
+   other prey (apparent competition). Try a predator-side numerical
+   response (pack hunters starving faster when prey thins, or prey
+   switching), measured with `compare` on 48+ seeds, and check whether the
+   prey-side rules cost predators seeds systematically (the sign was
+   negative, not significant).
+6. **Flaky test.** `idle_sessions_expire_and_close_the_socket`
+   (`crates/server/tests/dashboard.rs`) runs on a 600 ms idle timeout with
+   300 ms sleeps between commands, so a loaded CI machine can let the
+   session expire early. Drive it from a manual session clock, or widen
+   the margins.
+7. **World-thread cost.** Decide is most of a tick at the prototype target
+   and its per-organism cost rises with density: cap or subsample the
+   neighbors scanned, then split the apply phase's sequential act sweep by
+   region (see [Benchmark](#benchmark)). Possession sub-step states still
+   build a whole `StateView` for every steering player three times a tick
+   though only the possessed organism's delta goes out.
+8. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
+   protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
+   doesn't offer it; revisit when it does (states are already ~1 KB/s a
+   client, so this is low priority). For save size, store the map's
+   changing tiles (about 6 MB of an 18 MB save at 26k agents) as a delta
+   against the previous save.
+9. **Design-doc features not built.** Group commands beyond migration
+   ("claim or abandon territory, split a group"), offline protection (home
+   ranges or surviving founder groups), and the doc's open question on
+   duplicate mutations; `GET /api/leaderboard/seasons` would also want a
+   cache instead of reading the whole history per call.
+10. **Tooling.** An adaptive `compare` that adds seeds until the CI
+    resolves, and a check of how well 40-day screen ranks predict 120-day
+    ranks; what migrating buys a design (the caribou with and without the
+    gene, paired) and a reason for winter ranges to exist (better
+    cold-season pasture than the summer range).
