@@ -111,6 +111,14 @@ not from the numbers:
 Tuning then raised the carnivore hunger discount, plant regrowth and movement
 speed, and lowered thirst and the stealth effect.
 
+Unpredated fast breeders get two density brakes outside the sweep: larval
+competition (`larval_competition`) thins crowded young from abandoned eggs,
+and adult attrition (`adult_mortality`) gives adults a daily death hazard
+scaled by pace of life, `(litter fraction × (1 − body size))²`: toxic frogs
+~0.6% a day, voles ~0.2%, predators and grazers almost nothing. Without it
+adult frogs only died of old age (lifespan ~240 days, two years), so they
+piled up and the spring hatch refilled the cap in year 2.
+
 **Still open:** toxic frogs reach their population cap in every run (nothing
 eats them and they need little food, and crowding at its current strength
 doesn't hold them back), and burrowing omnivores and pack hunters still die
