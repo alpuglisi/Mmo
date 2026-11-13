@@ -122,6 +122,11 @@ pub enum AlertKind {
     /// A possessed organism is parched or starving (possession overrides
     /// its own foraging once its standing order is reached).
     Need,
+    /// A catastrophe began or ended, or an era closed.
+    World,
+    /// An achievement (species founded, longevity, niche dominance,
+    /// surviving a catastrophe).
+    Achievement,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -237,6 +242,9 @@ pub struct WeatherView {
     pub drought: f32,
     /// Share of river tiles in flood, 0..1.
     pub flood: f32,
+    /// The catastrophe under way, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catastrophe: Option<CatastropheView>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -247,6 +255,9 @@ pub struct ClockView {
     pub hour: u32,
     pub season: String,
     pub daytime: bool,
+    /// Current era (0-based); eras last `era_days` days.
+    pub era: u64,
+    pub era_days: u64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -628,4 +639,175 @@ mod tests {
             assert_eq!(death_name(c), c.label().replace(' ', "_"));
         }
     }
+}
+
+/// A catastrophe (`GET /api/catastrophes`, and the active one in
+/// `weather.catastrophe`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CatastropheView {
+    pub id: u32,
+    /// `severe_winter`, `megadrought`, `epidemic` or `flood_year`.
+    pub kind: String,
+    pub severity: f32,
+    pub start_day: u64,
+    /// Planned first day after it while active; the day it ended once over.
+    pub end_day: u64,
+    pub active: bool,
+    pub population_before: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub population_after: Option<usize>,
+    /// Players with a living lineage at its start, and those alive at its end.
+    pub players_before: Vec<PlayerId>,
+    pub survivors: Vec<PlayerId>,
+}
+
+/// `GET /api/catastrophes`: catastrophes that have started, newest first.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CatastropheList {
+    /// Random catastrophes are on in this world.
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<CatastropheView>,
+    pub history: Vec<CatastropheView>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SpeciesLineage {
+    pub lineage: u32,
+    pub name: String,
+    pub owner: PlayerId,
+    /// Estimated breeding adults of this lineage in the species.
+    pub adults: f64,
+}
+
+/// One detected species.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SpeciesView {
+    pub id: u32,
+    pub name: String,
+    /// `initial`, `founding` or `split`.
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u32>,
+    pub founded_day: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extinct_day: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_into: Option<u32>,
+    /// Player credited with the speciation (splits only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub founder: Option<PlayerId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub founder_name: Option<String>,
+    /// Origin tag holding the most alleles in its adults.
+    pub dominant: PlayerId,
+    pub dominant_name: String,
+    pub dominant_share: f64,
+    /// Estimated breeding adults at the last detection, and the most ever.
+    pub adults: f64,
+    pub peak_adults: f64,
+    pub lineages: Vec<SpeciesLineage>,
+    pub carnivory: f32,
+    pub body_size: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FoundedCount {
+    pub player: PlayerId,
+    pub name: String,
+    pub count: u32,
+}
+
+/// `GET /api/species`: every species detected, living first by size.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SpeciesList {
+    pub day: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_day: Option<u64>,
+    pub samples: usize,
+    pub alive: usize,
+    pub species: Vec<SpeciesView>,
+    /// Speciation events credited per player.
+    pub founded: Vec<FoundedCount>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EraRow {
+    pub player: PlayerId,
+    pub name: String,
+    pub share: f64,
+    pub weighted_share: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct NicheView {
+    /// `diet:herbivore|omnivore|carnivore` or `biome:<name>`.
+    pub niche: String,
+    pub player: PlayerId,
+    pub name: String,
+    pub share: f64,
+    pub adults: f64,
+}
+
+/// The final legacy ranking of a finished era.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EraBoard {
+    pub era: u64,
+    pub first_day: u64,
+    pub last_day: u64,
+    pub breeding_adults: usize,
+    pub species_alive: usize,
+    pub catastrophes: Vec<u32>,
+    pub rows: Vec<EraRow>,
+    pub niches: Vec<NicheView>,
+}
+
+/// `GET /api/eras`: the current era and finished eras' rankings, newest first.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EraList {
+    pub era: u64,
+    pub era_days: u64,
+    pub first_day: u64,
+    pub last_day: u64,
+    pub days_left: u64,
+    pub eras: Vec<EraBoard>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AchievementView {
+    pub day: u64,
+    pub player: PlayerId,
+    pub name: String,
+    /// `species_founded`, `lineage_longevity`, `niche_dominance` or
+    /// `survived_catastrophe`.
+    pub kind: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct AchievementTally {
+    pub player: PlayerId,
+    pub name: String,
+    pub species_founded: u32,
+    /// Longest lineage life in days (to today, or to extinction).
+    pub longevity_days: u64,
+    pub niche_dominance: u32,
+    pub catastrophes_survived: u32,
+}
+
+/// `GET /api/achievements`: per-player tallies and the latest achievements.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AchievementList {
+    pub players: Vec<AchievementTally>,
+    /// Newest first (at most 200).
+    pub recent: Vec<AchievementView>,
+}
+
+/// Everything the scoring extras expose, built on the world thread.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ChronicleView {
+    pub species: SpeciesList,
+    pub eras: EraList,
+    pub catastrophes: CatastropheList,
+    pub achievements: AchievementList,
 }

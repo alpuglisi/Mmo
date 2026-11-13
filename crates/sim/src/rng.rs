@@ -26,6 +26,8 @@ pub mod stream {
     /// organisms not in a chase (`world::par_apply`), one stream per
     /// (tick, organism).
     pub const SETTLE: u64 = 9;
+    /// Catastrophes: planning and their effects (epidemic infections).
+    pub const CHRONICLE: u64 = 10;
 }
 
 pub fn splitmix64(x: u64) -> u64 {

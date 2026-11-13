@@ -66,6 +66,7 @@ export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
 
 const KIND_LABEL: Record<FeedEntry['kind'], string> = {
   daily_summary: 'day', birth: 'birth', death: 'death', milestone: 'milestone', need: 'need', offer: 'offer',
+  world: 'world', achievement: 'prestige',
 };
 
 /** The alerts feed, newest first. Entries naming an organism link to it. */

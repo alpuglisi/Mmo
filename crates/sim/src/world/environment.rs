@@ -13,7 +13,7 @@ impl World {
         let (doy, dpy) = (self.day_of_year(), self.config.days_per_year);
         self.map.advance_weather(hour_index, doy, dpy, &bal);
         self.weather = self.map.mean_weather();
-        self.season_offset = crate::terrain::Map::seasonal_offset(doy, dpy);
+        self.season_offset = crate::terrain::Map::seasonal_offset(doy, dpy) + self.map.climate_temp;
         self.update_clutches(&mut rng);
         self.density.rebuild(&self.organisms, self.lineages.len());
         self.spoil_shared_caches();
@@ -59,6 +59,7 @@ impl World {
         if self.day_of_year().is_multiple_of(self.config.days_per_season()) {
             self.slots_used.clear();
         }
+        self.chronicle_daily();
     }
 
     /// Incubation: eggs chill without enough heat, hatch on schedule.

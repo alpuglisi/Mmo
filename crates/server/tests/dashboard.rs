@@ -26,7 +26,7 @@ fn config() -> ServerConfig {
     ServerConfig {
         bind: SocketAddr::from(([127, 0, 0, 1], 0)),
         data_dir: None,
-        world: WorldSettings { seed: 11, width: 64, height: 48, wild: true, days_per_year: 8, lod: false },
+        world: WorldSettings { seed: 11, width: 64, height: 48, wild: true, days_per_year: 8, lod: false, catastrophes: false },
         ..Default::default()
     }
     .fast()
@@ -237,5 +237,56 @@ async fn idle_sessions_expire_and_close_the_socket() {
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     let (s, _, _) = http(addr, Method::GET, &format!("/ws?token={ann}"), None, None).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+    srv.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn species_eras_catastrophes_and_achievements() {
+    let mut cfg = config();
+    cfg.world.catastrophes = true;
+    let srv = server(cfg).await;
+    let addr = srv.addr;
+    let ann = register(addr, "ann").await;
+    found(addr, &ann, "Striders").await;
+    let mut w = ws(addr, &ann).await;
+    let state = wait_for(&mut w, "state", |v| v["type"] == "state").await;
+    assert!(state["clock"]["era"].is_u64() && state["clock"]["era_days"] == 24, "{}", state["clock"]);
+
+    // Species: detected from day 0, every species with a name, an origin and
+    // a dominant allele owner.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let species = loop {
+        let (s, v) = json_req(addr, Method::GET, "/api/species", None, None).await;
+        assert_eq!(s, StatusCode::OK);
+        if v["alive"].as_u64().unwrap_or(0) > 0 {
+            break v;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no species detected: {v}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let list = species["species"].as_array().unwrap();
+    assert!(list.len() >= 2, "{species}");
+    for sp in list {
+        assert!(sp["name"].is_string() && sp["origin"].is_string() && sp["dominant_name"].is_string(), "{sp}");
+        assert!(sp["lineages"].as_array().is_some_and(|l| !l.is_empty()));
+    }
+    assert!(species["detected_day"].is_u64() && species["samples"].as_u64().unwrap() > 0);
+
+    let (s, eras) = json_req(addr, Method::GET, "/api/eras", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!((eras["era"].as_u64(), eras["era_days"].as_u64(), eras["first_day"].as_u64()), (Some(0), Some(24), Some(0)));
+    assert!(eras["eras"].as_array().unwrap().is_empty() && eras["days_left"].as_u64().unwrap() <= 24);
+
+    let (s, cats) = json_req(addr, Method::GET, "/api/catastrophes", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(cats["enabled"], true);
+    // None in the first year.
+    assert!(cats["history"].as_array().unwrap().is_empty() && cats.get("active").is_none(), "{cats}");
+
+    let (s, ach) = json_req(addr, Method::GET, "/api/achievements", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    let row = ach["players"].as_array().unwrap().iter().find(|p| p["name"] == "ann").expect("ann has a tally").clone();
+    assert_eq!((row["species_founded"].as_u64(), row["catastrophes_survived"].as_u64()), (Some(0), Some(0)));
+    assert!(ach["recent"].is_array());
     srv.shutdown().await;
 }

@@ -74,6 +74,8 @@ export interface WeatherView {
   drought: number;
   /** Share of river tiles in flood, 0..1. */
   flood: number;
+  /** The catastrophe under way, if any. */
+  catastrophe?: CatastropheView;
 }
 
 export interface ClockView {
@@ -83,6 +85,9 @@ export interface ClockView {
   hour: number;
   season: string;
   daytime: boolean;
+  /** Current era (0-based); eras last `era_days` days. */
+  era: number;
+  era_days: number;
 }
 
 export interface ViewWindow {
@@ -204,7 +209,7 @@ export interface MatingUpdateMsg {
   error?: ErrorInfo;
 }
 
-export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need';
+export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need' | 'world' | 'achievement';
 
 export interface AlertView {
   tick: number;
@@ -396,6 +401,135 @@ export interface SeasonBoard {
   days: number;
   current: boolean;
   rows: SeasonRow[];
+}
+
+// ---------------------------------------------------------------- chronicle
+// Species, eras, catastrophes and achievements (`GET /api/species`,
+// `/api/eras`, `/api/catastrophes`, `/api/achievements`).
+
+export type CatastropheKind = 'severe_winter' | 'megadrought' | 'epidemic' | 'flood_year';
+
+export interface CatastropheView {
+  id: number;
+  kind: CatastropheKind | string;
+  severity: number;
+  start_day: number;
+  /** Planned first day after it while active; the day it ended once over. */
+  end_day: number;
+  active: boolean;
+  population_before: number;
+  population_after?: number;
+  players_before: PlayerId[];
+  survivors: PlayerId[];
+}
+
+export interface CatastropheList {
+  enabled: boolean;
+  active?: CatastropheView;
+  /** Newest first. */
+  history: CatastropheView[];
+}
+
+export interface SpeciesLineage {
+  lineage: number;
+  name: string;
+  owner: PlayerId;
+  adults: number;
+}
+
+export interface SpeciesView {
+  id: number;
+  name: string;
+  origin: 'initial' | 'founding' | 'split' | string;
+  parent?: number;
+  founded_day: number;
+  extinct_day?: number;
+  merged_into?: number;
+  /** Player credited with the speciation (splits only). */
+  founder?: PlayerId;
+  founder_name?: string;
+  dominant: PlayerId;
+  dominant_name: string;
+  dominant_share: number;
+  adults: number;
+  peak_adults: number;
+  lineages: SpeciesLineage[];
+  carnivory: number;
+  body_size: number;
+}
+
+export interface FoundedCount {
+  player: PlayerId;
+  name: string;
+  count: number;
+}
+
+export interface SpeciesList {
+  day: number;
+  detected_day?: number;
+  samples: number;
+  alive: number;
+  species: SpeciesView[];
+  founded: FoundedCount[];
+}
+
+export interface EraRow {
+  player: PlayerId;
+  name: string;
+  share: number;
+  weighted_share: number;
+}
+
+export interface NicheView {
+  niche: string;
+  player: PlayerId;
+  name: string;
+  share: number;
+  adults: number;
+}
+
+export interface EraBoard {
+  era: number;
+  first_day: number;
+  last_day: number;
+  breeding_adults: number;
+  species_alive: number;
+  catastrophes: number[];
+  rows: EraRow[];
+  niches: NicheView[];
+}
+
+export interface EraList {
+  era: number;
+  era_days: number;
+  first_day: number;
+  last_day: number;
+  days_left: number;
+  /** Newest first. */
+  eras: EraBoard[];
+}
+
+export interface AchievementView {
+  day: number;
+  player: PlayerId;
+  name: string;
+  kind: 'species_founded' | 'lineage_longevity' | 'niche_dominance' | 'survived_catastrophe' | string;
+  text: string;
+}
+
+export interface AchievementTally {
+  player: PlayerId;
+  name: string;
+  species_founded: number;
+  longevity_days: number;
+  niche_dominance: number;
+  catastrophes_survived: number;
+}
+
+export interface AchievementList {
+  players: AchievementTally[];
+  /** Newest first. */
+  recent: AchievementView[];
 }
 
 /** HTTP error body: `{code, message, ...detail}`. */

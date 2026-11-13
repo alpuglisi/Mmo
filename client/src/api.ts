@@ -3,8 +3,8 @@
 // Capacitor build sets the server origin with `setApiBase`.
 
 import type {
-  ApiErrorBody, AuthResponse, DesignSpec, FoundResponse, GeneCatalog, Leaderboard, LineageStats, SeasonBoard,
-  TerrainDynamic, TerrainView, WorldSummary,
+  AchievementList, ApiErrorBody, AuthResponse, CatastropheList, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
+  LineageStats, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldSummary,
 } from './protocol';
 
 let base = '';
@@ -66,4 +66,8 @@ export const api = {
   terrain: () => request<TerrainView>('GET', '/api/terrain'),
   terrainDynamic: () => request<TerrainDynamic>('GET', '/api/terrain/dynamic'),
   lineageStats: (token: string) => request<LineageStats>('GET', '/api/lineage/stats', undefined, token),
+  species: () => request<SpeciesList>('GET', '/api/species'),
+  eras: () => request<EraList>('GET', '/api/eras'),
+  catastrophes: () => request<CatastropheList>('GET', '/api/catastrophes'),
+  achievements: () => request<AchievementList>('GET', '/api/achievements'),
 };
