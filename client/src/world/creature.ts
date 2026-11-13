@@ -49,7 +49,14 @@ export function specOf(o: OwnOrganism | NearbyOrganism): CreatureSpec {
 /** Cache key of a creature texture: one per distinct appearance class and stage. */
 export function creatureKey(s: CreatureSpec): string {
   const l = s.look;
-  return `${l.size}${l.diet[0]}${l.warm ? 'w' : 'c'}${l.locomotion[0]}${l.cover[0]}${l.coloring[0]}${s.juvenile ? 'j' : 'a'}`;
+  // One letter per field value (skin and scales differ in their second letter).
+  const cover = l.cover === 'scales' ? 'c' : l.cover[0];
+  return `${l.size}${l.diet[0]}${l.warm ? 'w' : 'c'}${l.locomotion[0]}${cover}${l.coloring[0]}${s.juvenile ? 'j' : 'a'}`;
+}
+
+/** Marker scale for a zoom (pixels per tile): 1 at the default zoom, bigger zoomed in, smaller zoomed out. */
+export function markerScaleFor(zoom: number): number {
+  return Math.min(1.9, Math.max(0.75, 0.7 + zoom / 26));
 }
 
 /** Body radius in screen pixels (before the zoom-dependent marker scale). */
