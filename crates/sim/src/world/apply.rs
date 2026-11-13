@@ -239,6 +239,10 @@ impl World {
             rs *= 1.0 - self.config.balance.ambush;
         }
         let mut p = pw * pw / (pw * pw + rs * rs + 1e-6);
+        // Prey that made it into its burrow is mostly out of reach.
+        if b.sheltered {
+            p *= 1.0 - self.config.balance.burrow_shelter * b.traits.body.burrow;
+        }
         let tox = b.pheno[Gene::Toxins];
         if tox > 0.3 {
             p *= 1.0 - 0.6 * tox;
