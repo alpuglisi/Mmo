@@ -19,6 +19,17 @@ const MAX_DRINK_PER_DAY: f32 = 1500.0;
 const ENERGY_PER_TILE: f32 = 0.6;
 const MATING_REACH: f32 = 1.2;
 
+/// Daily death hazard of an uncared-for juvenile with `kin` of its own kind
+/// nearby: `(kin / competition)^4`. Steep, because perceived kin saturate in
+/// a crowd: a lone clutch of siblings barely notices (9 kin at the default:
+/// 6% a day), a crowd is lethal (25 kin: 370% a day).
+pub(crate) fn larval_hazard(kin: u16, competition: f32) -> f32 {
+    if competition <= 0.0 {
+        return 0.0;
+    }
+    (kin as f32 / competition).powi(4)
+}
+
 impl World {
     pub(crate) fn apply(&mut self, i: usize, intent: &Intent, rng: &mut SimRng) {
         if !self.organisms[i].alive {
@@ -95,6 +106,10 @@ impl World {
         }
         if self.old_age_death(i, rng) {
             self.kill(i, DeathCause::OldAge);
+            return;
+        }
+        if self.larval_competition_death(i, rng) {
+            self.kill(i, DeathCause::Starvation);
             return;
         }
         self.grow(i);
@@ -487,6 +502,18 @@ impl World {
         frac > 1.3 || rng.gen::<f32>() < self.config.dt_days() * 4.0 * (frac - 0.8)
     }
 
+    /// Young left to fend for themselves (abandoned eggs) compete with their
+    /// own kind for food and shelter, and the losers starve: the doc's "many
+    /// offspring: most die young", made density dependent.
+    fn larval_competition_death(&self, i: usize, rng: &mut SimRng) -> bool {
+        let o = &self.organisms[i];
+        if o.matured || o.traits.birth != BirthType::AbandonedEggs {
+            return false;
+        }
+        let hazard = larval_hazard(o.kin_nearby, self.config.balance.larval_competition);
+        hazard > 0.0 && rng.gen::<f32>() < hazard * self.config.dt_days()
+    }
+
     fn grow(&mut self, i: usize) {
         let tpd = self.config.ticks_per_day;
         let o = &mut self.organisms[i];
@@ -590,5 +617,40 @@ impl World {
         o.growth = growth;
         o.needs.hunger = 30.0;
         self.insert(o)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{presets, WorldConfig};
+
+    #[test]
+    fn larval_hazard_rises_steeply_with_kin() {
+        assert_eq!(larval_hazard(30, 0.0), 0.0);
+        assert!(larval_hazard(5, 18.0) < 0.01);
+        assert!((larval_hazard(18, 18.0) - 1.0).abs() < 1e-6);
+        assert!(larval_hazard(30, 18.0) > 5.0);
+    }
+
+    /// A crowd of froglets thins out; the same crowd without competition doesn't.
+    #[test]
+    fn crowded_froglets_die_young() {
+        let deaths = |competition: f32| {
+            let mut config = WorldConfig { seed: 5, width: 48, height: 48, ..Default::default() };
+            config.balance.larval_competition = competition;
+            let mut w = World::new(config);
+            let frogs = presets::player_designs().into_iter().find(|d| d.name == "Toxic frogs").unwrap();
+            w.found_lineage_unchecked(1, &frogs.founders(80));
+            for o in &mut w.organisms {
+                o.matured = false;
+                o.age_ticks = 0;
+                o.growth = o.traits.newborn_growth;
+            }
+            w.run_days(2);
+            w.counters.deaths_by_lineage.get(&(0, DeathCause::Starvation)).copied().unwrap_or(0)
+        };
+        let (with, without) = (deaths(18.0), deaths(0.0));
+        assert!(with > without + 10, "deaths with competition {with}, without {without}");
     }
 }
