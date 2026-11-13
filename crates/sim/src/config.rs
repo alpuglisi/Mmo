@@ -134,6 +134,35 @@ pub struct Balance {
     /// that fights back, per unit of the prey's `fight_back`, win or lose.
     /// 0 disables.
     pub fight_damage: f32,
+    /// Hidden recessives: probability per functional load allele per birth
+    /// that it mutates into a harmful recessive (tagged with the newborn's
+    /// owner). Carriers show nothing; see `recessive_hazard`. 0 disables.
+    pub recessive_mutation: f32,
+    /// Daily death hazard per load locus at which an organism is homozygous
+    /// for a harmful recessive (from birth, so most die young). 0 disables.
+    pub recessive_hazard: f32,
+    /// Mating-transmitted disease: chance per mating that one partner picks
+    /// up a new pathogen, ×4 when the mates come from different founding
+    /// lineages (unfamiliar pathogens). 0 disables.
+    pub disease_emergence: f32,
+    /// Chance per mating (natural or directed) that an infectious partner
+    /// (acute or chronic) infects a susceptible one.
+    pub disease_transmission: f32,
+    /// Health lost per day during an acute infection. It blocks the usual
+    /// regeneration, so long infections kill, and it dulls condition (and
+    /// with it display coloration and litter size).
+    pub disease_damage: f32,
+    /// Daily chance that an acute infection ends: the organism becomes immune
+    /// or, with chance `disease_chronic`, a chronic carrier.
+    pub disease_recovery: f32,
+    /// Chance that an ending acute infection leaves a lifelong carrier:
+    /// symptomless and still infectious, with the fertility cost.
+    pub disease_chronic: f32,
+    /// Fertility lost per infectious parent (acute or chronic) at a mating.
+    pub disease_fertility: f32,
+    /// Daily transmission chance between a nursing mother and her young when
+    /// one of them is infectious (close kin).
+    pub disease_kin: f32,
 }
 
 impl Default for Balance {
@@ -169,12 +198,21 @@ impl Default for Balance {
             home_buffer: 28.0,
             injury_aversion: 6.0,
             fight_damage: 30.0,
+            recessive_mutation: 0.002,
+            recessive_hazard: 0.08,
+            disease_emergence: 0.004,
+            disease_transmission: 0.4,
+            disease_damage: 3.0,
+            disease_recovery: 0.08,
+            disease_chronic: 0.2,
+            disease_fertility: 0.3,
+            disease_kin: 0.2,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 28;
+    pub const FIELD_COUNT: usize = 37;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -212,6 +250,15 @@ impl Balance {
             ("home_buffer", &mut self.home_buffer),
             ("injury_aversion", &mut self.injury_aversion),
             ("fight_damage", &mut self.fight_damage),
+            ("recessive_mutation", &mut self.recessive_mutation),
+            ("recessive_hazard", &mut self.recessive_hazard),
+            ("disease_emergence", &mut self.disease_emergence),
+            ("disease_transmission", &mut self.disease_transmission),
+            ("disease_damage", &mut self.disease_damage),
+            ("disease_recovery", &mut self.disease_recovery),
+            ("disease_chronic", &mut self.disease_chronic),
+            ("disease_fertility", &mut self.disease_fertility),
+            ("disease_kin", &mut self.disease_kin),
         ]
     }
 

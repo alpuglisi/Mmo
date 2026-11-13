@@ -17,6 +17,9 @@ pub mod stream {
     pub const ENVIRONMENT: u64 = 4;
     pub const FOUNDING: u64 = 5;
     pub const COMMANDS: u64 = 6;
+    /// Disease and hidden-recessive inheritance, kept off the apply stream
+    /// so these rules change a world only through their effects.
+    pub const GENETICS: u64 = 7;
 }
 
 pub fn splitmix64(x: u64) -> u64 {

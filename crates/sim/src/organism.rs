@@ -24,10 +24,14 @@ pub enum DeathCause {
     OldAge,
     /// Background adult mortality of fast-living species (disease, accidents).
     Attrition,
+    /// Homozygous for a harmful recessive (`Balance::recessive_hazard`).
+    Recessive,
+    /// An acute mating-transmitted infection drained its health.
+    Disease,
 }
 
 impl DeathCause {
-    pub const ALL: [DeathCause; 8] = [
+    pub const ALL: [DeathCause; 10] = [
         DeathCause::Starvation,
         DeathCause::Thirst,
         DeathCause::Exposure,
@@ -36,6 +40,8 @@ impl DeathCause {
         DeathCause::Drowning,
         DeathCause::OldAge,
         DeathCause::Attrition,
+        DeathCause::Recessive,
+        DeathCause::Disease,
     ];
 
     pub fn label(self) -> &'static str {
@@ -48,7 +54,29 @@ impl DeathCause {
             DeathCause::Drowning => "drowned",
             DeathCause::OldAge => "old age",
             DeathCause::Attrition => "attrition",
+            DeathCause::Recessive => "recessive",
+            DeathCause::Disease => "disease",
         }
+    }
+}
+
+/// Mating-transmitted disease state ("Genetics: balancing picky vs flexible
+/// lineages" in the design doc).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Infection {
+    #[default]
+    Susceptible,
+    /// Sick: loses health daily (`Balance::disease_damage`) until it recovers.
+    Acute,
+    /// Lifelong symptomless carrier: infectious, less fertile.
+    Chronic,
+    /// Recovered and cleared the pathogen.
+    Immune,
+}
+
+impl Infection {
+    pub fn infectious(self) -> bool {
+        matches!(self, Infection::Acute | Infection::Chronic)
     }
 }
 
@@ -151,12 +179,16 @@ pub struct Organism {
     pub strike_ready_tick: u64,
     pub possessed_by: Option<PlayerId>,
     pub order: Option<Vec2>,
+    /// Load loci homozygous for a harmful recessive (cached at birth).
+    pub recessive_load: u32,
+    pub infection: Infection,
 }
 
 impl Organism {
     pub fn new(id: OrgId, owner: PlayerId, genome: Genome, sex: Sex, pos: Vec2) -> Self {
         let pheno = genome.phenotype();
         let traits = derive(&pheno);
+        let recessive_load = genome.homozygous_load();
         Self {
             id,
             owner,
@@ -192,6 +224,8 @@ impl Organism {
             strike_ready_tick: 0,
             possessed_by: None,
             order: None,
+            recessive_load,
+            infection: Infection::Susceptible,
         }
     }
 

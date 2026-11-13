@@ -24,7 +24,7 @@ docs/
 
 | Module | Design-doc section | What it does |
 | --- | --- | --- |
-| `genome` | Scoring, Genetics | 38 diploid genes (body, behavior *and* mate preference). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. |
+| `genome` | Scoring, Genetics | 38 diploid genes (body, behavior *and* mate preference). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night, wind. Snow, ice bridges, plant regrowth, carcass decay. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
@@ -32,6 +32,7 @@ docs/
 | `group` | Critical-mass group traits | Daily regional carrier frequency → logistic benefit. Implemented: cooperative hunting, warning coloration, herd defense, alarm calls. |
 | `legacy` | Scoring: genetic legacy | Share of origin-tagged alleles among living breeding adults, raw and weighted by offspring raised to adulthood. |
 | `world` | Needs and behavior, everything else | The tick loop: utility-AI decisions (parallel), then movement, grazing, hunting, scavenging, drinking, courtship, pregnancy, eggs and incubation, nursing, growth, death. |
+| `world::disease` | Genetics: picky vs flexible | Mating-transmitted disease: pathogens emerge at matings (4× between founding lineages), pass between mates (natural and directed) and between nursing mothers and young, drain the acutely sick's health (dulling their display) and cut fertility; infections end in immunity or lifelong symptomless carriage. Also deaths of homozygotes for harmful recessives. Reports count infections, current sick and carriers, harmful alleles per organism, and `disease` / `recessive` deaths per lineage. |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
 
 ### Tick structure
@@ -128,6 +129,14 @@ A final 32-trial sweep over all 28 parameters (seeds 1–6) found nothing that
 beat the current defaults on the unseen seeds (11.07 vs 11.29), so the
 defaults stayed as they are.
 
+Dominance, hidden recessives and mating-transmitted disease (defaults in
+`Balance`) score 11.06 on the same 12 seeds (dominance alone 11.02): within
+the seed-to-seed chaos, antelope 67%, pack hunters 100%, herd grazers 83%,
+all else 100%. At the defaults disease is endemic but rare (tens of
+infections per world, a handful of deaths) and harmful recessives reach about
+0.05 per organism in a year; disease and recessive draws use their own random
+stream, so they change a world only through their effects.
+
 **Still open:**
 
 - Single worlds are chaotic: changing one parameter in the fourth decimal
@@ -139,8 +148,7 @@ defaults stayed as they are.
   those pairs share a body plan.
 - A 12-seed, 120-day validation takes about 35 seconds on 4 cores.
 
-Not yet implemented from the design doc: dominance and hidden recessives,
-mating-transmitted disease, the other five group traits, seasonal strategies
+Not yet implemented from the design doc: the other five group traits, seasonal strategies
 (hibernation, migration, estivation as genes), level-of-detail statistical
 populations, and A* pathfinding (movement is currently greedy steering with
 obstacle avoidance). The point costs in `design.rs` are placeholders, as the

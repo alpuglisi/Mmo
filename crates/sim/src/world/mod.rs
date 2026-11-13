@@ -18,6 +18,7 @@ mod apply;
 pub mod commands;
 mod decide;
 mod density;
+mod disease;
 mod environment;
 mod spatial;
 
@@ -109,6 +110,8 @@ pub struct Counters {
     pub directed_matings: u64,
     pub kills: u64,
     pub failed_hunts: u64,
+    /// New mating-transmitted infections per lineage (emerged or caught).
+    pub infections: BTreeMap<u32, u64>,
 }
 
 pub struct World {

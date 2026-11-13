@@ -67,7 +67,8 @@ pub struct DirectedOutcome {
     pub mismatch: f32,
     pub cost: f32,
     pub failure_chance: f32,
-    /// Outbreeding fertility multiplier.
+    /// Fertility multiplier: outbreeding depression times the mates'
+    /// infections (`Balance::disease_fertility`).
     pub fertility: f32,
     pub conceived: bool,
 }
@@ -123,13 +124,15 @@ impl World {
         let mismatch = mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
         let cost = mating::override_cost(mismatch, self.config.override_k);
         let failure_chance = mating::override_failure_chance(cost);
-        let fertility = mating::fertility(&female.genome, &male.genome);
+        let fertility = mating::fertility(&female.genome, &male.genome) * self.disease_fertility(f, m);
 
         for k in [f, m] {
             let n = &mut self.organisms[k].needs;
             n.hunger = (n.hunger + cost * HUNGER_PER_COST).min(100.0);
         }
         let mut rng = rng_for(self.config.seed, stream::COMMANDS, self.tick, req.a ^ (req.b << 1));
+        // The pair meets whether or not it conceives.
+        self.mating_contact(f, m);
         let conceived = fertility > 0.0 && rng.gen::<f32>() >= failure_chance;
         if conceived {
             self.conceive(f, m, fertility);

@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use evo_sim::group::GroupTrait;
-use evo_sim::organism::DeathCause;
+use evo_sim::organism::{DeathCause, Infection};
 use evo_sim::{presets, render, Balance, Gene, PlayerId, World, WorldConfig, WILD};
 
 mod sweep;
@@ -47,7 +47,9 @@ Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_
 attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
 pregnancy_cost meat_per_kg flee_weight ambush crowding toxin_damage larval_competition
 adult_mortality burrow_shelter burrow_caution parent_defense breeding_density escape
-escape_window home_buffer injury_aversion fight_damage
+escape_window home_buffer injury_aversion fight_damage recessive_mutation recessive_hazard
+disease_emergence disease_transmission disease_damage disease_recovery disease_chronic
+disease_fertility disease_kin
 ";
 
 struct Args {
@@ -280,6 +282,15 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
     );
     println!("  deaths: {}", deaths.join(" · "));
     let counts = world.lineage_counts();
+    // Per lineage: [acute, chronic, harmful alleles carried, homozygous].
+    let mut genetic = vec![[0u32; 4]; world.lineages.len()];
+    for o in world.organisms.iter().filter(|o| o.alive) {
+        let g = &mut genetic[o.lineage as usize];
+        g[0] += (o.infection == Infection::Acute) as u32;
+        g[1] += (o.infection == Infection::Chronic) as u32;
+        g[2] += o.genome.harmful_alleles();
+        g[3] += (o.recessive_load > 0) as u32;
+    }
     for (l, lineage) in world.lineages.iter().enumerate() {
         let l32 = l as u32;
         let row: Vec<String> = DeathCause::ALL
@@ -295,6 +306,15 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
             c.hybrids.iter().filter(|((m, _), _)| *m == l32).map(|(_, n)| n).sum::<u64>(),
             if row.is_empty() { "0".into() } else { row.join(", ") },
             c.juvenile_deaths.get(&l32).copied().unwrap_or(0)
+        );
+        let g = genetic[l];
+        println!(
+            "      infections {} (now sick {}, carriers {}) · harmful recessives {:.2}/organism, {} affected",
+            c.infections.get(&l32).copied().unwrap_or(0),
+            g[0],
+            g[1],
+            g[2] as f32 / counts[l].alive.max(1) as f32,
+            g[3]
         );
     }
     if !c.hybrids.is_empty() {

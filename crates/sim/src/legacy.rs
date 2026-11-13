@@ -65,7 +65,7 @@ mod tests {
         let other = Genome::uniform(&[0.5; Gene::COUNT], 2);
         let none = crate::genome::MutationParams { rate: 0.0, sd: 0.0 };
         let mut rng = crate::rng::rng_for(0, 0, 0, 0);
-        let hybrid = Genome::inherit(&pure, &other, 2, none, &mut rng);
+        let hybrid = Genome::inherit(&pure, &other, 2, none, 0.0, &mut rng);
         let s = LegacySnapshot::compute(0, [(&pure, 0), (&hybrid, 2)].into_iter());
         assert!((s.share(1) - 0.75).abs() < 1e-9);
         assert!((s.share(2) - 0.25).abs() < 1e-9);

@@ -8,8 +8,8 @@ use crate::design::BirthType;
 use crate::genome::{Gene, Genome, PlayerId};
 use crate::mating;
 use crate::math::Vec2;
-use crate::organism::{Action, DeathCause, OrgId, Organism, Pregnancy, Sex};
-use crate::rng::SimRng;
+use crate::organism::{Action, DeathCause, Infection, OrgId, Organism, Pregnancy, Sex};
+use crate::rng::{rng_for, stream, SimRng};
 use crate::terrain::{traverse, Traverse};
 
 /// Most hunger points an organism can eat per day (so a meal takes a few ticks).
@@ -116,6 +116,11 @@ impl World {
             self.kill(i, DeathCause::Attrition);
             return;
         }
+        if self.recessive_death(i, rng) {
+            self.kill(i, DeathCause::Recessive);
+            return;
+        }
+        self.disease_course(i);
         self.grow(i);
         if matches!(&self.organisms[i].pregnancy, Some(p) if self.tick >= p.due_tick) {
             self.give_birth(i, rng);
@@ -349,7 +354,8 @@ impl World {
         if !accept_f || mm > 1.5 {
             return;
         }
-        let fert = mating::fertility(&female.genome, &male.genome);
+        let fert = mating::fertility(&female.genome, &male.genome) * self.disease_fertility(f, m);
+        self.mating_contact(f, m);
         if fert <= 0.0 {
             // Courtship without conception.
             let half_day = self.config.ticks_per_day as u64 / 2;
@@ -384,8 +390,9 @@ impl World {
         self.counters.matings += 1;
     }
 
-    /// Juveniles of caring species are fed by a nearby mother.
-    fn nurse(&mut self, i: usize) {
+    /// Juveniles of caring species are fed by a nearby mother (close contact:
+    /// infection can pass either way, `Balance::disease_kin`).
+    pub(crate) fn nurse(&mut self, i: usize) {
         let o = &self.organisms[i];
         let needy = o.needs.hunger >= 10.0 || o.needs.thirst >= 10.0;
         if o.matured || o.growth >= 0.7 || o.traits.birth == BirthType::AbandonedEggs || !needy {
@@ -407,6 +414,7 @@ impl World {
             o.needs.thirst = (o.needs.thirst - amount).max(0.0);
         }
         self.organisms[mi].needs.hunger = (self.organisms[mi].needs.hunger + cost).min(100.0);
+        self.contact(i, mi, (self.config.balance.disease_kin * self.config.dt_days()).min(1.0));
     }
 
     fn raid_clutch(&mut self, i: usize, rng: &mut SimRng) {
@@ -528,6 +536,9 @@ impl World {
         if drowning {
             damage += harm(150.0 * dt, DeathCause::Drowning);
         }
+        if o.infection == Infection::Acute {
+            damage += harm(bal.disease_damage * dt, DeathCause::Disease);
+        }
         o.health -= damage;
         if damage == 0.0 && n.hunger < 70.0 && n.thirst < 70.0 {
             o.health = (o.health + 15.0 * dt).min(100.0);
@@ -632,6 +643,7 @@ impl World {
         let tick = self.tick;
         let tpd = self.config.ticks_per_day as f32;
         let mutation = self.config.mutation;
+        let load_rate = self.config.balance.recessive_mutation;
         let Some(preg) = self.organisms[i].pregnancy.take() else {
             return;
         };
@@ -651,8 +663,14 @@ impl World {
         if preg.father_lineage != mother.lineage {
             *self.counters.hybrids.entry((mother.lineage, preg.father_lineage)).or_default() += count as u64;
         }
-        let genomes: Vec<Genome> =
-            (0..count).map(|_| Genome::inherit(&mother.genome, &preg.father, owner, mutation, rng)).collect();
+        let mut load_rng = rng_for(self.config.seed, stream::GENETICS, tick, mother.id << 2);
+        let genomes: Vec<Genome> = (0..count)
+            .map(|_| {
+                let mut g = Genome::inherit_genes(&mother.genome, &preg.father, owner, mutation, rng);
+                g.inherit_load(&mother.genome, &preg.father, owner, load_rate, &mut load_rng);
+                g
+            })
+            .collect();
         let (pos, mother_id, generation, lineage) = (mother.pos, mother.id, mother.generation + 1, mother.lineage);
         match traits.birth {
             BirthType::Live => {
