@@ -200,15 +200,16 @@ async fn websocket_tokens_connections_and_frames_are_bounded() {
     let mut closed = socks.pop().unwrap();
     closed.close(None).await.unwrap();
     while closed.next().await.is_some() {}
-    let mut freed = None;
-    for _ in 0..50 {
+    // The server frees the slot once its side of the connection winds down
+    // (up to a couple of seconds, longer on a busy machine): poll for it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut ws = loop {
         if let Ok((ws, _)) = connect_async(format!("ws://{addr}/ws?token={token}")).await {
-            freed = Some(ws);
-            break;
+            break ws;
         }
+        assert!(tokio::time::Instant::now() < deadline, "a slot frees up after a close");
         tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let mut ws = freed.expect("a slot frees up after a close");
+    };
 
     // A malformed message gets an error and the connection stays usable.
     ws.send(Message::Text("{not json".into())).await.unwrap();
