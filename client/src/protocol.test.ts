@@ -71,6 +71,16 @@ describe('parseServerMsg', () => {
     expect(parseServerMsg(JSON.stringify({ type: 'mating_request', offer: { id: 1 } }))).toBeNull();
   });
 
+  it('parses the economy fields: balance, escrow, listing offers and market alerts', () => {
+    const s = parseServerMsg(JSON.stringify({ type: 'state', ...state, balance: 42, escrow: 10, offers: [{ ...offer, status: 'accepted', listing: 3, escrow: 10 }] }));
+    expect(s?.type === 'state' && [s.balance, s.escrow, s.offers[0].listing, s.offers[0].escrow]).toEqual([42, 10, 3, 10]);
+    // An older server without the economy still parses (no balance).
+    const old = parseServerMsg(JSON.stringify({ type: 'state', ...state }));
+    expect(old?.type === 'state' && old.balance).toBeUndefined();
+    const a = parseServerMsg('{"type":"alert","alert":{"tick":5,"day":0,"kind":"market","text":"Sale: 12 renown from bob"}}');
+    expect(a?.type === 'alert' && a.alert.kind).toBe('market');
+  });
+
   it('knows which offer statuses are open', () => {
     expect(isOpen('pending')).toBe(true);
     expect(isOpen('accepted')).toBe(true);
