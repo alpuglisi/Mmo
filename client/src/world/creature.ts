@@ -70,6 +70,16 @@ export function spriteExtent(s: CreatureSpec): number {
   return Math.ceil(bodyRadius(s) * 3.2) + 2;
 }
 
+const SIZE_WORDS = ['tiny', 'small', 'medium', 'large'] as const;
+const LOCOMOTION_WORDS = { walk: 'walks', swim: 'swims', glide: 'glides', fly: 'flies' } as const;
+const COLORING_WORDS = { drab: 'drab', camo: 'camouflaged', bright: 'brightly colored', warning: 'warning colors' } as const;
+
+/** The body plan in words, for the inspector: "small warm-blooded herbivore · fur · drab · walks". */
+export function describeLook(l: Appearance): string {
+  const size = SIZE_WORDS[Math.min(3, Math.max(0, l.size))];
+  return `${size} ${l.warm ? 'warm' : 'cold'}-blooded ${l.diet} · ${l.cover} · ${COLORING_WORDS[l.coloring]} · ${LOCOMOTION_WORDS[l.locomotion]}`;
+}
+
 export function actionHint(action: string): Hint | null {
   switch (action) {
     case 'rest':

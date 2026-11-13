@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Appearance, NearbyOrganism, OwnOrganism } from '../protocol';
 import {
-  actionHint, bodyRadius, creatureKey, creatureShapes, DEFAULT_LOOK, hintShapes, JUVENILE_SCALE, palette, specOf, spriteExtent,
+  actionHint, bodyRadius, describeLook, creatureKey, creatureShapes, DEFAULT_LOOK, hintShapes, JUVENILE_SCALE, palette, specOf, spriteExtent,
   type CreatureSpec, type Shape,
 } from './creature';
 
@@ -87,6 +87,13 @@ describe('appearance classes', () => {
     expect(palette(look({ coloring: 'warning' })).accent).toBe(0x1b1b1b);
     expect(palette(look({ coloring: 'bright' })).base).not.toBe(palette(look({ coloring: 'drab' })).base);
     expect(palette(look({ warm: false })).base).not.toBe(palette(look({ warm: true })).base);
+  });
+});
+
+describe('describeLook', () => {
+  it('puts the body plan in words', () => {
+    expect(describeLook(look({ size: 3, diet: 'carnivore', warm: false, cover: 'scales', coloring: 'camo', locomotion: 'swim' })))
+      .toBe('large cold-blooded carnivore · scales · camouflaged · swims');
   });
 });
 
