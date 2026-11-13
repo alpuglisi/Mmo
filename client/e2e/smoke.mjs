@@ -4,7 +4,8 @@
 // mating with a second player of the same body plan (preview its
 // compatibility, request, accept, escort until the two meet, and check it
 // completes and conceives), possess an organism and walk it, open the
-// genetics dashboard, the seasonal leaderboard and the World tab.
+// genetics dashboard, the seasonal leaderboard, the World tab and the
+// Seasons tab (ranked seasons; three days long here).
 //
 // The world keeps running throughout, so every step waits on explicit state
 // conditions (generous timeouts, no fixed sleeps for correctness) and retries
@@ -72,7 +73,7 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
   // 120-day seasons (two minutes in fast mode): a season change expires open
   // mating offers, which would race the mating step on a slow machine.
-  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', '7', '--days-per-year', '480', '--bind', `127.0.0.1:${port}`, '--static', dist], {
+  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', '7', '--days-per-year', '480', '--season-days', '3', '--bind', `127.0.0.1:${port}`, '--static', dist], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverLog = '';
@@ -561,25 +562,53 @@ async function main() {
       if (r.data.listings.some((l) => l.owner === window.evo.model.player)) throw new Error('hide_own showed an own listing');
       return r.data.own.map((l) => l.id);
     });
+    // Withdraw from the card in "My listings" (from `with_own`, whatever
+    // page the market is on). The world keeps running: if the listing
+    // closed (only a death closes it: it has no expiry), ann lists another
+    // adult; if the card doesn't show, check the listing again and, on later
+    // attempts, reopen the Market tab (a fresh render) before refreshing.
     let withdrawId = listingId;
     let withdrawOrg = bought.dam;
-    for (let attempt = 0; attempt < 5 && !(await ownListings()).includes(withdrawId); attempt++) {
-      // (Only a death closes it: it has no expiry, and nothing else withdrew it.)
+    let withdrawn = false;
+    const relist = async () => {
       const dead = await waitFor(`#${withdrawOrg} gone from ann's state`, () => page.evaluate((id) => !window.evo.model.state.organisms.some((o) => o.id === id), withdrawOrg), 5000).catch(() => false);
       if (!dead) throw new Error(`listing ${withdrawId} of #${withdrawOrg} closed though she is alive`);
       console.log(`  … listing ${withdrawId} closed: #${withdrawOrg} died; listing another adult to withdraw`);
       await page.evaluate(() => { window.__results = []; });
       await page.click('#market-refresh');
+      await page.selectOption('#market-list-kind', 'fixed');
       await page.selectOption('#market-list-organism', { index: 0 });
       await page.click('#market-list-submit');
       const relisted = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
       if (!relisted.ok && !['not_found', 'not_mature', 'already_listed'].includes(relisted.error?.code)) throw new Error(`create_listing failed: ${JSON.stringify(relisted.error)}`);
       if (relisted.ok) [withdrawId, withdrawOrg] = [relisted.data.listing.id, relisted.data.listing.organism];
+    };
+    for (let attempt = 0; attempt < 8 && !withdrawn; attempt++) {
+      if (!(await ownListings()).includes(withdrawId)) {
+        await relist();
+        continue;
+      }
+      if (attempt > 0) {
+        await page.click('#tab-matings');
+        await page.click('#tab-market');
+      }
+      await page.click('#market-refresh');
+      const card = `#my-listings .listing[data-listing="${withdrawId}"] button.withdraw`;
+      if (!(await page.waitForSelector(card, { timeout: 8000 }).then(() => true, () => false))) {
+        console.log(`  … the card of listing ${withdrawId} did not show; checking the listing again`);
+        continue;
+      }
+      await page.evaluate(() => { window.__results = []; });
+      if (!(await page.click(card, { timeout: 5000 }).then(() => true, () => false))) continue;
+      const r = await waitFor('withdraw_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'withdraw_listing')), 10000);
+      if (!r.ok) {
+        // Closed between the check and the click (the dam died).
+        if (r.error?.code !== 'unknown_listing') throw new Error(`withdraw_listing failed: ${JSON.stringify(r.error)}`);
+        continue;
+      }
+      withdrawn = true;
     }
-    const card = `#my-listings .listing[data-listing="${withdrawId}"] button.withdraw`;
-    await page.click('#market-refresh');
-    await page.waitForSelector(card, { timeout: 10000 });
-    await page.click(card);
+    if (!withdrawn) throw new Error(`could not withdraw listing ${withdrawId} from its card`);
     await waitFor('listing withdrawn', () => page.evaluate((id) => !document.querySelector(`#my-listings .listing[data-listing="${id}"]`), withdrawId), 10000);
     if ((await ownListings()).includes(withdrawId)) throw new Error(`listing ${withdrawId} still open after withdrawing it`);
     step(`ledgers agree; balance pill "${pill.trim()}"; ann withdrew listing ${withdrawId}`);
@@ -919,6 +948,29 @@ async function main() {
     }), 15000);
     step(`world tab: ${world.species} species, ${world.players} player tallies; ${world.era.split('.')[0]}`);
     await page.screenshot({ path: path.join(shots, 'world-chronicle.png') });
+
+    // Seasons tab (three-day ranked seasons here): the season under way, the
+    // hall of fame with finished seasons' winners, your own record, and a
+    // finished season's full standings.
+    await page.click('#tab-seasons');
+    const ranked = await waitFor('ranked seasons', () => page.evaluate(() => {
+      const clock = document.querySelector('#season-clock')?.textContent ?? '';
+      const finished = document.querySelectorAll('#season-history details').length;
+      const record = document.querySelector('#season-record')?.textContent ?? '';
+      return clock && finished > 0 && record.includes('ranked') ? { clock, finished, record } : null;
+    }), 20000);
+    const summary = await page.evaluate(() => document.querySelector('#season-history details p')?.textContent ?? '');
+    if (!/^Season \d+ \(days \d+–\d+\): /.test(summary)) throw new Error(`season summary: ${summary}`);
+    await page.click('#season-history details summary');
+    await page.waitForSelector('#season-history details[open] .standings table.board', { timeout: 10000 });
+    const api = await page.evaluate(async () => {
+      const me = window.evo.model.player;
+      const [list, mine] = await Promise.all([(await fetch('/api/seasons')).json(), (await fetch(`/api/seasons/player/${me}`)).json()]);
+      return { total: list.total, mine: mine.seasons.length };
+    });
+    if (api.total < 1 || api.mine < 1) throw new Error(`seasons API: ${JSON.stringify(api)}`);
+    step(`seasons tab: ${ranked.clock.split('·')[0].trim()} under way, ${ranked.finished} finished shown (${api.total} stored, ${api.mine} with you ranked)`);
+    await page.screenshot({ path: path.join(shots, 'seasons.png') });
 
     if (pageErrors.length) throw new Error(`page errors: ${pageErrors.join('; ')}`);
     // Every delta state applied (none needed a resync).

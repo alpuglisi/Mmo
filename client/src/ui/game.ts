@@ -1,7 +1,8 @@
 // The play screen: world view (tile map), top bar (clock, weather,
 // connection) and a sidebar with the organism inspector, matings, the
-// genetics dashboard with the alerts feed, the lineage/leaderboards tab and
-// the world chronicle (species, eras, catastrophes, achievements).
+// genetics dashboard with the alerts feed, the lineage/leaderboards tab, the
+// ranked seasons (hall of fame) and the world chronicle (species, eras,
+// catastrophes, achievements).
 
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
@@ -14,6 +15,7 @@ import { describeLook } from '../world/creature';
 import { append, clear, h, label, pct } from './dom';
 import { renderAlertPrefs, renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
+import { renderSeasons as renderRanked, seasonKey, type SeasonsData } from './seasons';
 import { compatSummary } from './mating';
 import { buildMarket } from './market';
 import { balanceText } from './marketData';
@@ -36,10 +38,15 @@ const TERRAIN_REFRESH_MS = 4000;
 const STATS_REFRESH_MS = 5000;
 const SEASONS_REFRESH_MS = 15000;
 const CHRONICLE_REFRESH_MS = 10000;
+const RANKED_REFRESH_MS = 5000;
+/** Finished seasons listed at first; "Older seasons" adds as many again. */
+const RANKED_PAGE = 10;
 const MARKET_REFRESH_MS = 5000;
 
-type Tab = 'organism' | 'matings' | 'market' | 'genetics' | 'lineage' | 'world';
-const TAB_LABELS: Record<Tab, string> = { organism: 'Organism', matings: 'Matings', market: 'Market', genetics: 'Genetics', lineage: 'Lineage', world: 'World' };
+type Tab = 'organism' | 'matings' | 'market' | 'genetics' | 'lineage' | 'seasons' | 'world';
+const TAB_LABELS: Record<Tab, string> = {
+  organism: 'Organism', matings: 'Matings', market: 'Market', genetics: 'Genetics', lineage: 'Lineage', seasons: 'Seasons', world: 'World',
+};
 type Mode = 'select' | 'migrate';
 /** Narrow screens (phones): the sidebar becomes a bottom sheet over the map with a tab bar. */
 const NARROW = '(max-width: 760px)';
@@ -111,6 +118,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     market: h('div', { class: 'panel', id: 'panel-market' }),
     genetics: h('div', { class: 'panel', id: 'panel-genetics' }),
     lineage: h('div', { class: 'panel', id: 'panel-lineage' }),
+    seasons: h('div', { class: 'panel', id: 'panel-seasons' }),
     world: h('div', { class: 'panel', id: 'panel-world' }),
   };
   const tabBtns = (Object.keys(tabs) as Tab[]).map((t) =>
@@ -150,6 +158,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (t === 'genetics') void refreshStats();
     if (t === 'lineage') void refreshSeasons();
     if (t === 'world') void refreshChronicle();
+    if (t === 'seasons') void refreshRanked();
     if (t === 'market') void market.refresh();
     renderPanels(true);
   }
@@ -337,6 +346,48 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }, SEASONS_REFRESH_MS);
   cleanups.push(() => clearInterval(seasonsTimer));
 
+  // Ranked seasons: fetched while their tab is open.
+  const ranked: SeasonsData = { current: null, list: null, mine: null, details: new Map() };
+  let rankedShown = RANKED_PAGE;
+  const rankedLoading = new Set<string>();
+  const rankedHandlers = {
+    open: (head: { world_id: string; season: number }) => {
+      const key = seasonKey(head);
+      if (rankedLoading.has(key)) return;
+      rankedLoading.add(key);
+      api.rankedSeason(head.world_id, head.season, model.player, 0, 10)
+        .then((page) => { ranked.details.set(key, page); if (tab === 'seasons') drawRanked(true); })
+        .catch(() => { /* next time it opens */ })
+        .finally(() => rankedLoading.delete(key));
+    },
+    more: () => {
+      rankedShown += RANKED_PAGE;
+      void refreshRanked();
+    },
+  };
+  let rankedKey = '';
+  function drawRanked(force = false): void {
+    const key = JSON.stringify([ranked.current, ranked.list, ranked.mine, ranked.details.size]);
+    if (!force && key === rankedKey && tabs.seasons.childElementCount > 0) return;
+    rankedKey = key;
+    renderRanked(tabs.seasons, ranked, model.player, rankedHandlers);
+  }
+  async function refreshRanked(): Promise<void> {
+    try {
+      const [current, list, mine] = await Promise.all([
+        api.currentSeason(model.player, 5), api.rankedSeasons(0, rankedShown), api.playerSeasons(model.player, 50),
+      ]);
+      Object.assign(ranked, { current, list, mine: mine.seasons });
+      if (tab === 'seasons') drawRanked();
+    } catch {
+      /* next time */
+    }
+  }
+  const rankedTimer = setInterval(() => {
+    if (tab === 'seasons') void refreshRanked();
+  }, RANKED_REFRESH_MS);
+  cleanups.push(() => clearInterval(rankedTimer));
+
   // World chronicle: fetched while its tab is open.
   let chronicle: Chronicle | null = null;
   async function refreshChronicle(): Promise<void> {
@@ -366,6 +417,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (tab === 'lineage') renderLineage();
       if (tab === 'genetics') renderFeedPanel();
       if (tab === 'world' && !chronicle) renderWorld(tabs.world, null, model.player, 0);
+      if (tab === 'seasons') drawRanked();
       return;
     }
     if (renderQueued) return;
@@ -704,7 +756,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const boardEl = h('div', { id: 'leaderboard' });
   const seasonsEl = h('div', { id: 'season-boards' });
   const listEl = h('div', { id: 'organism-list', class: 'org-list' });
-  append(tabs.lineage, [statsEl, h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', {}, 'Seasonal leaderboards'), seasonsEl,
+  append(tabs.lineage, [statsEl, h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter; the Seasons tab has the ranked seasons' }, 'By world season'), seasonsEl,
     h('h3', {}, 'My organisms'), listEl]);
 
   function renderSeasons(): void {

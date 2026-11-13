@@ -43,6 +43,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   let ledger: LedgerView | null = null;
   let filter: MarketFilter = { ...DEFAULT_FILTER };
   let fetching = false;
+  /** A refresh asked for while another was in flight: run it after (it may carry new filters or follow a change). */
+  let again = false;
 
   // --- balance
   const balanceEl = h('p', { id: 'market-balance', class: 'market-balance' });
@@ -327,8 +329,12 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
 
   /** Fetch the first page again, and as many after it as were loaded. */
   async function refresh(): Promise<void> {
-    if (fetching) return;
+    if (fetching) {
+      again = true;
+      return;
+    }
     fetching = true;
+    again = false;
     try {
       const want = Math.max(1, Math.min(MAX_PAGES, pages.length));
       const [first, l] = await Promise.all([fetchPage(), deps.send({ type: 'ledger', limit: 50 })]);
@@ -350,6 +356,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       fetching = false;
     }
     render();
+    if (again) await refresh();
   }
 
   /** Append the next page. */
@@ -367,6 +374,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       fetching = false;
     }
     render();
+    if (again) await refresh();
   }
 
   render();

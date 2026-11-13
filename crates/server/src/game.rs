@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::design::gene_key;
 use crate::economy::{self, Bid, Economy, Insufficient, Listing};
+use crate::league::{self, CurrentSeason, SeasonRecord, SeasonTracker};
 use crate::protocol::*;
 use crate::store::{AuctionRecord, BalanceRecord, DailyRecord, LedgerRecord, LegacyEntry, LineageEntry, TradeRecord};
 
@@ -32,10 +33,12 @@ pub const NEED_ALERT: f32 = 75.0;
 const POPULATION_MILESTONES: [usize; 7] = [25, 50, 100, 250, 500, 1000, 1500];
 const SHARE_MILESTONES: [f64; 5] = [0.01, 0.05, 0.1, 0.25, 0.5];
 /// Layout version of [`SavedGame`]: 2 added the economy (balances, ledger,
-/// listings, escrow on offers), 3 auctions (with their highest bids) among
-/// the listings. Saved games before 2 restore with the balances kept by the
-/// store instead; version 2 reads as having no auctions.
-pub const SAVED_GAME_VERSION: u32 = 3;
+/// listings, escrow on offers; older saved games restore with the balances
+/// kept by the store instead), 3 the ranked season under way and the last
+/// finished one (older saved games start tracking at their next day), 4
+/// auctions (with their highest bids) among the listings (versions 2 and 3
+/// read as having none).
+pub const SAVED_GAME_VERSION: u32 = 4;
 /// Ledger entries returned by the `ledger` command unless asked otherwise.
 const LEDGER_DEFAULT: usize = 50;
 /// Genes shown for a listed organism.
@@ -79,6 +82,9 @@ pub enum PersistEvent {
     Ledger(LedgerRecord),
     /// An auction closed (settled, unsold, withdrawn or ended by a death).
     Auction(AuctionRecord),
+    /// A ranked season ended (`crate::league`); replaces a stored record of
+    /// the same world and season.
+    Season(Box<SeasonRecord>),
     /// A saved game (`crate::snapshot`), sent by the world thread.
     Snapshot(SnapshotBlob),
 }
@@ -134,6 +140,9 @@ pub struct GameConfig {
     pub state_leaderboard_rows: usize,
     /// Most open offers one player may have made at once.
     pub max_open_offers: usize,
+    /// Length of a ranked season in simulated days (`crate::league`). A
+    /// change applies from the next season.
+    pub season_days: u64,
 }
 
 impl Default for GameConfig {
@@ -144,6 +153,7 @@ impl Default for GameConfig {
             max_nearby: 256,
             state_leaderboard_rows: 50,
             max_open_offers: 8,
+            season_days: league::DEFAULT_SEASON_DAYS,
         }
     }
 }
@@ -307,6 +317,11 @@ pub struct Game {
     /// Whether the economy came from a saved game or the store (else it
     /// starts empty).
     economy_restored: bool,
+    /// The ranked season under way.
+    season: SeasonTracker,
+    /// The last finished ranked season, kept so a restart can write it
+    /// again if the store missed it.
+    last_season_record: Option<SeasonRecord>,
 }
 
 /// The game-side state saved with each world snapshot (`crate::snapshot`):
@@ -338,6 +353,9 @@ pub struct SavedGame {
     seen_catastrophes: Vec<(bool, bool)>,
     /// Version 2 on.
     economy: Option<Economy>,
+    /// Version 3 on: the ranked season under way and the last one finished.
+    season: Option<SeasonTracker>,
+    last_season_record: Option<SeasonRecord>,
 }
 
 impl SavedGame {
@@ -412,6 +430,9 @@ impl Game {
     pub fn new(world: World, cfg: GameConfig) -> Self {
         let last_season = world.season();
         let last_legacy_day = world.latest_legacy().map(|l| l.day);
+        // The first season starts with the next daily snapshot.
+        let first_day = last_legacy_day.map_or(world.day(), |d| d + 1);
+        let season = SeasonTracker::new(1, first_day, cfg.season_days);
         Self {
             world,
             cfg,
@@ -438,6 +459,8 @@ impl Game {
             seen_catastrophes: Vec::new(),
             economy: Economy::new(),
             economy_restored: false,
+            season,
+            last_season_record: None,
         }
     }
 
@@ -461,6 +484,8 @@ impl Game {
             seen_eras: self.seen_eras,
             seen_catastrophes: self.seen_catastrophes.clone(),
             economy: Some(self.economy.clone()),
+            season: Some(self.season.clone()),
+            last_season_record: self.last_season_record.clone(),
         }
     }
 
@@ -518,6 +543,17 @@ impl Game {
                     o.escrow = 0;
                 }
             }
+        }
+        // A saved game from before ranked seasons starts season 1 at the
+        // next day (made by `Game::new`).
+        if let Some(t) = saved.season.filter(|t| t.season > 0) {
+            g.season = t;
+        }
+        // Written again in case the store missed it (a replace, never a
+        // second record).
+        if let Some(r) = saved.last_season_record {
+            g.persist.push(PersistEvent::Season(Box::new(r.clone())));
+            g.last_season_record = Some(r);
         }
         // Nobody is connected: drop the level-of-detail focus of views.
         g.sync_focus();
@@ -1704,7 +1740,9 @@ impl Game {
                 None => format!("offer #{}", o.id),
             };
             let text = format!("Sale: {amount} renown from {from} for {what} (your #{} with #{})", o.partner, o.mine);
-            let _ = self.post(o.to, amount as i64, LedgerKind::Sale, text.clone(), Some(o.id), o.listing);
+            if self.post(o.to, amount as i64, LedgerKind::Sale, text.clone(), Some(o.id), o.listing).is_ok() {
+                self.season.add_sale(o.to, amount);
+            }
             self.alert(o.to, AlertKind::Market, format!("{text}."), Some(o.partner), out);
             let paid =
                 format!("Paid {amount} renown to {to} from escrow: the mating of #{} with #{} ran.", o.mine, o.partner);
@@ -1777,6 +1815,7 @@ impl Game {
         if legacy_day != self.last_legacy_day {
             self.last_legacy_day = legacy_day;
             let record = self.daily_record();
+            self.season_day(&record, &mut out);
             self.pay_income(&record);
             self.daily_alerts(&record, &mut out);
             self.chronicle_alerts(&mut out);
@@ -1787,6 +1826,66 @@ impl Game {
             self.persist.push(PersistEvent::Daily(record));
         }
         out
+    }
+
+    /// Count a daily record towards the ranked season, ending the season
+    /// first if the record belongs to the next one: its standings are frozen
+    /// into a record for the store and every player hears where they placed.
+    fn season_day(&mut self, record: &DailyRecord, out: &mut Outbox) {
+        if self.season.is_over_by(record.day) {
+            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let finished = self.season.finish(&self.world_id, self.world.tick(), unix, |p| self.name(p));
+            let mut players: BTreeSet<PlayerId> = self.lineage_of.keys().copied().collect();
+            players.extend(finished.standings.iter().flat_map(|s| s.rows.iter().map(|r| r.player)));
+            for p in players {
+                let text = match finished.player_season(p) {
+                    Some(mine) => {
+                        let places: Vec<String> = mine
+                            .placements
+                            .iter()
+                            .map(|x| format!("#{} of {} in {}", x.rank, x.of, x.category.name()))
+                            .collect();
+                        format!("Season {} has ended: you placed {}.", finished.head.season, places.join(", "))
+                    }
+                    None => format!("Season {} has ended; you were not ranked.", finished.head.season),
+                };
+                self.alert(p, AlertKind::World, text, None, out);
+            }
+            self.season = self.season.next(record.day, self.cfg.season_days);
+            self.persist.push(PersistEvent::Season(Box::new(finished.clone())));
+            self.last_season_record = Some(finished);
+        }
+        self.season.record_day(record);
+    }
+
+    /// This world's id (daily records, ledger, seasons).
+    pub fn world_id(&self) -> &str {
+        &self.world_id
+    }
+
+    /// The ranked season under way: rows `offset..offset + limit` of each
+    /// category, plus `player`'s row.
+    pub fn current_season(&self, offset: usize, limit: usize, player: Option<PlayerId>) -> CurrentSeason {
+        let t = &self.season;
+        let standings = t.standings(|p| self.name(p));
+        let next = self.last_legacy_day.map_or(t.first_day, |d| d + 1).max(t.first_day);
+        CurrentSeason {
+            world_id: self.world_id.clone(),
+            season: t.season,
+            first_day: t.first_day,
+            last_day: t.end_day.saturating_sub(1),
+            length: t.length(),
+            days: t.days,
+            days_left: t.end_day.saturating_sub(next),
+            offset,
+            limit,
+            standings: league::page(&standings, offset, limit, player),
+        }
+    }
+
+    /// The last finished ranked season (since this world started).
+    pub fn last_season(&self) -> Option<&SeasonRecord> {
+        self.last_season_record.as_ref()
     }
 
     fn alert(&mut self, player: PlayerId, kind: AlertKind, text: String, organism: Option<OrgId>, out: &mut Outbox) {
@@ -2056,6 +2155,11 @@ impl Game {
         let mut bonuses: Vec<(PlayerId, u64, String)> = Vec::new();
         for a in &ch.achievements[self.seen_achievements.min(ch.achievements.len())..] {
             let text = achievement_text(&self.world, &a.kind);
+            match a.kind {
+                AchievementKind::SpeciesFounded { .. } => self.season.add_species(a.player),
+                AchievementKind::SurvivedCatastrophe { .. } => self.season.add_survival(a.player),
+                _ => {}
+            }
             let bonus = economy::achievement_bonus(a.kind.label());
             if bonus > 0 && a.player != WILD {
                 bonuses.push((a.player, bonus, text.clone()));
@@ -4293,6 +4397,47 @@ mod tests {
     }
 
     #[test]
+    fn saved_games_of_layout_2_and_3_still_restore_without_auctions() {
+        let (mut g, a, _) = game();
+        let (ma, fa) = (male(&g, &a), female(&g, &a));
+        not_pregnant(&mut g, &[fa]);
+        let fixed = ClientMsg::CreateListing { organism: ma, fee: 7, expires_days: None };
+        assert_eq!(result(&g.command(10, 1, None, fixed)), (true, None));
+        run_days(&mut g, 1);
+        let json: serde_json::Value = serde_json::to_value(g.saved()).unwrap();
+        assert_eq!(json["version"], SAVED_GAME_VERSION);
+        let season = serde_json::to_value(&g.season).unwrap();
+        // Layout 3 (ranked seasons, no auctions) and layout 2 (neither).
+        let mut v3 = json.clone();
+        v3["version"] = 3.into();
+        let mut v2 = v3.clone();
+        v2["version"] = 2.into();
+        v2.as_object_mut().unwrap().remove("season");
+        v2.as_object_mut().unwrap().remove("last_season_record");
+        for (layout, v) in [(3, v3), (2, v2)] {
+            let saved: SavedGame = serde_json::from_value(v).unwrap();
+            let world = World::restore(&g.world.snapshot(), Some(g.world.map.terrain().clone())).unwrap();
+            let mut r = Game::resume(world, GameConfig::default(), saved, Vec::new());
+            assert!(r.economy_restored(), "layout {layout}");
+            assert_eq!(r.economy, g.economy, "layout {layout}");
+            assert!(r.economy.listings.values().all(|l| l.auction.is_none()));
+            if layout == 3 {
+                assert_eq!(serde_json::to_value(&r.season).unwrap(), season, "the season tracker is kept");
+            }
+            // Auctions work in the restored game.
+            not_pregnant(&mut r, &[fa]);
+            let out = r.command(
+                10,
+                1,
+                None,
+                ClientMsg::CreateAuction { organism: fa, reserve: 2, days: None, ticks: Some(5) },
+            );
+            assert_eq!(result(&out), (true, None), "layout {layout}");
+            assert_eq!(r.saved().version, SAVED_GAME_VERSION);
+        }
+    }
+
+    #[test]
     fn a_fresh_start_refunds_bids_held_on_auctions_of_the_discarded_world_once() {
         let (mut g, a, b) = game();
         let c = g.found(3, &design("C")).unwrap().founders;
@@ -4706,5 +4851,113 @@ mod tests {
         // A board that fits is sent whole.
         let g = crowded(GameConfig::default());
         assert_eq!(g.state_for(10).unwrap().leaderboard, g.leaderboard());
+    }
+
+    fn seasons_in(g: &mut Game) -> Vec<SeasonRecord> {
+        g.take_persist()
+            .into_iter()
+            .filter_map(|e| if let PersistEvent::Season(r) = e { Some(*r) } else { None })
+            .collect()
+    }
+
+    /// A ranked season ends with the first daily record past it: its
+    /// standings are frozen once, players hear where they placed, and the
+    /// next season starts where it ended.
+    #[test]
+    fn ranked_seasons_roll_over_once() {
+        let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+        let mut g = Game::new(world, GameConfig { season_days: 2, ..Default::default() });
+        g.set_name(1, "ann");
+        g.set_name(2, "bob");
+        let a = g.found(1, &design("A")).unwrap().founders;
+        let b = g.found(2, &design("B")).unwrap().founders;
+        g.connect(10, 1, "ann");
+        // A stud fee paid during the season counts for the market board.
+        let (ma, fb) = (male(&g, &a), female(&g, &b));
+        let l = data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 7, expires_days: None }))
+            ["listing"]["id"]
+            .as_u64()
+            .unwrap();
+        g.connect(20, 2, "bob");
+        offer_id(&g.command(20, 2, None, ClientMsg::BuyListing { listing: l, mine: fb }));
+        place_together(&mut g, ma, fb);
+        run_days(&mut g, 2);
+        assert!(seasons_in(&mut g).is_empty(), "days 0 and 1 are season 1");
+        let cur = g.current_season(0, 10, None);
+        assert_eq!((cur.season, cur.days, cur.days_left, cur.first_day, cur.last_day), (1, 2, 0, 0, 1));
+        g.world.step();
+        let out = g.after_tick();
+        let done = seasons_in(&mut g);
+        assert_eq!(done.len(), 1);
+        let r = &done[0];
+        assert_eq!((r.head.season, r.head.days, r.head.first_day, r.head.last_day), (1, 2, 0, 1));
+        assert_eq!(r.head.world_id, g.world_id);
+        let legacy = &r.standings[0];
+        assert_eq!(legacy.category, league::Category::Legacy);
+        assert_eq!(legacy.rows.len(), 2);
+        let market = &r.standings[3];
+        assert_eq!(market.rows.iter().map(|p| (p.player, p.value)).collect::<Vec<_>>(), vec![(1, 7.0)]);
+        assert!(r.standings[1].rows.iter().all(|p| p.value >= 6.0), "founders count for the lineage board");
+        assert!(alerts_in(&out, 1).iter().any(|x| x.text.starts_with("Season 1 has ended: you placed #")));
+        assert_eq!(g.last_season(), Some(r));
+        // Season 2 started with the record that ended season 1.
+        let cur = g.current_season(0, 10, Some(1));
+        assert_eq!((cur.season, cur.first_day, cur.last_day, cur.days, cur.days_left), (2, 2, 3, 1, 1));
+        assert!(cur.standings[3].rows.is_empty(), "the market starts again");
+        run_days(&mut g, 2);
+        let done = seasons_in(&mut g);
+        assert_eq!(done.iter().map(|r| (r.head.season, r.head.days)).collect::<Vec<_>>(), vec![(2, 2)]);
+    }
+
+    /// A world restored from a save before the rollover replays it into the
+    /// same record (the store replaces it); one restored from the save after
+    /// it writes the finished record again and counts nothing twice.
+    #[test]
+    fn a_restart_around_a_rollover_neither_loses_nor_double_counts() {
+        let cfg = GameConfig { season_days: 2, ..Default::default() };
+        let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+        let mut g = Game::new(world, cfg.clone());
+        g.set_name(1, "ann");
+        g.found(1, &design("A")).unwrap();
+        run_days(&mut g, 2);
+        g.take_persist();
+        let before = (g.world.snapshot(), serde_json::to_string(&g.saved()).unwrap());
+        g.world.step();
+        g.after_tick();
+        let original = seasons_in(&mut g).pop().expect("rolled over");
+        let after = (g.world.snapshot(), serde_json::to_string(&g.saved()).unwrap());
+        let terrain = Some(g.world.map.terrain().clone());
+
+        // Restored from the save before: the replayed rollover gives the same standings.
+        let world = World::restore(&before.0, terrain.clone()).unwrap();
+        let mut r = Game::resume(world, cfg.clone(), serde_json::from_str(&before.1).unwrap(), Vec::new());
+        r.set_name(1, "ann");
+        assert!(seasons_in(&mut r).is_empty(), "nothing had finished yet");
+        r.world.step();
+        r.after_tick();
+        let replayed = seasons_in(&mut r).pop().expect("rolled over again");
+        assert_eq!(replayed.key(), original.key());
+        assert_eq!(replayed.standings, original.standings);
+        assert_eq!(replayed.head.days, original.head.days);
+
+        // Restored from the save after: the record is written again, the
+        // next season goes on from its first day.
+        let world = World::restore(&after.0, terrain).unwrap();
+        let mut r = Game::resume(world, cfg.clone(), serde_json::from_str(&after.1).unwrap(), Vec::new());
+        assert_eq!(seasons_in(&mut r), vec![original.clone()]);
+        let cur = r.current_season(0, 10, None);
+        assert_eq!((cur.season, cur.days), (2, 1));
+        run_days(&mut r, 2);
+        let next = seasons_in(&mut r);
+        assert_eq!(next.iter().map(|x| (x.head.season, x.head.days)).collect::<Vec<_>>(), vec![(2, 2)]);
+
+        // A saved game from before ranked seasons starts season 1 at its next day.
+        let mut old: serde_json::Value = serde_json::from_str(&after.1).unwrap();
+        old.as_object_mut().unwrap().remove("season");
+        old.as_object_mut().unwrap().remove("last_season_record");
+        let world = World::restore(&after.0, Some(g.world.map.terrain().clone())).unwrap();
+        let r = Game::resume(world, cfg, serde_json::from_value(old).unwrap(), Vec::new());
+        let cur = r.current_season(0, 10, None);
+        assert_eq!((cur.season, cur.first_day, cur.days), (1, 3, 0));
     }
 }
