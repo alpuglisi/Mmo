@@ -12,8 +12,8 @@ use evo_server::game::{GameConfig, WorldSettings};
 use evo_server::league::{SeasonRecord, SeasonTracker};
 use evo_server::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
 use evo_server::store::{
-    AccountRecord, AlertPrefsRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord, MemoryStore,
-    Store, TradeRecord, KEEP_SNAPSHOTS,
+    AccountRecord, AlertPrefsRecord, AuctionRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord,
+    MemoryStore, Store, TradeRecord, KEEP_SNAPSHOTS,
 };
 use evo_server::{start, ServerConfig};
 use futures_util::StreamExt;
@@ -250,6 +250,13 @@ async fn round_trip(s: &dyn Store) {
         s.put_snapshot(tick, tick / 100, &tick.to_le_bytes()).await.unwrap();
     }
     s.put_snapshot(400, 4, b"newer").await.unwrap();
+    // Auctions: a replayed close (same world and listing) replaces the
+    // first in its place.
+    assert!(s.recent_auctions(10).await.unwrap().is_empty());
+    s.append_auction(&auction("w1", 3, "unsold")).await.unwrap();
+    s.append_auction(&auction("w1", 4, "sold")).await.unwrap();
+    s.append_auction(&auction("w2", 3, "withdrawn")).await.unwrap();
+    s.append_auction(&AuctionRecord { bids: 9, ..auction("w1", 3, "sold") }).await.unwrap();
     // Terrains: written once per world and hash (a second put keeps the
     // first bytes: the same key always holds the same terrain).
     assert_eq!(s.load_terrain("w1", 7).await.unwrap(), None);
@@ -299,6 +306,7 @@ async fn round_trip(s: &dyn Store) {
     assert_eq!(s.load_snapshot(400).await.unwrap(), b"newer");
     assert_eq!(s.load_snapshot(200).await.unwrap(), 200u64.to_le_bytes());
     assert!(s.load_snapshot(100).await.is_err());
+    check_auctions(s).await;
     check_terrains(s).await;
     check_seasons(s).await;
 }
@@ -350,6 +358,36 @@ async fn check_seasons(s: &dyn Store) {
     assert_eq!(s.player_seasons(2, 1).await.unwrap().len(), 1);
     assert_eq!(s.player_seasons(3, 10).await.unwrap().len(), 1, "only in the replayed record");
     assert!(s.player_seasons(9, 10).await.unwrap().is_empty());
+}
+
+fn auction(world: &str, listing: u64, outcome: &str) -> AuctionRecord {
+    let sold = outcome == "sold";
+    AuctionRecord {
+        world_id: world.into(),
+        listing,
+        seller: 1,
+        organism: 40 + listing,
+        reserve: 10,
+        deadline_tick: 500,
+        bids: u32::from(sold) * 2,
+        high_bid: sold.then_some(25),
+        winner: sold.then_some(2),
+        winner_organism: sold.then_some(77),
+        outcome: outcome.into(),
+        offer: sold.then_some(12),
+        day: 10,
+    }
+}
+
+async fn check_auctions(s: &dyn Store) {
+    let all = s.recent_auctions(10).await.unwrap();
+    assert_eq!(
+        all.iter().map(|r| (r.world_id.as_str(), r.listing, r.outcome.as_str(), r.bids)).collect::<Vec<_>>(),
+        vec![("w1", 3, "sold", 9), ("w1", 4, "sold", 2), ("w2", 3, "withdrawn", 0)]
+    );
+    assert_eq!(all[1], auction("w1", 4, "sold"));
+    assert_eq!(all[2], auction("w2", 3, "withdrawn"));
+    assert_eq!(s.recent_auctions(1).await.unwrap(), vec![auction("w2", 3, "withdrawn")]);
 }
 
 async fn check_terrains(s: &dyn Store) {
@@ -404,6 +442,7 @@ async fn store_round_trips(backend: Backend) {
     assert_eq!(s.load_balances().await.unwrap().len(), 2);
     assert_eq!(s.recent_ledger(None, 100).await.unwrap().len(), 5);
     assert_eq!(s.load_alert_prefs(1).await.unwrap(), Some(alert_prefs(1)));
+    check_auctions(&*s).await;
     check_terrains(&*s).await;
     assert_eq!(s.list_seasons(0, 10).await.unwrap().1, 3);
     assert_eq!(s.load_season("w1", 1).await.unwrap(), Some(season("w1", 1, &[1, 2, 3], 4)));

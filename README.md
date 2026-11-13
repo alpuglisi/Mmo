@@ -459,8 +459,10 @@ Client → server:
 | `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window |
 | `create_listing` | `organism, fee, expires_days?` | List one of your adults on the stud marketplace (a male as a stud, a female as a dam); `data` = `{listing}` |
 | `withdraw_listing` | `listing` | Take your listing down (agreements already bought stand) |
-| `buy_listing` | `listing, mine` | Buy one mating with a listed organism for your adult `mine`: an already accepted agreement, the fee in escrow; `data` = `{offer}` |
-| `browse_market` | `mine?` | `data` = `{balance, escrow, slots_left, listings: [{id, owner, owner_name, organism, role (stud/dam), sex, fee, created_tick, expires_tick?, sales, busy, pregnant, lineage, lineage_name, generation, mother?, father?, offspring_raised, age_days, health, x, y, traits: [{gene, value}], preview?}]}`, newest first; `preview` is `preview_mating` of your `mine` with the listed organism |
+| `buy_listing` | `listing, mine` | Buy one mating with a listed organism for your adult `mine`: an already accepted agreement, the fee in escrow; `data` = `{offer}`. Not for auctions (`auction_listing`) |
+| `create_auction` | `organism, reserve, days?, ticks?` | Auction one mating with one of your adults: it closes after `ticks` ticks if given, else `days` simulated days (default 1, at most 30; not both: `bad_duration`); `data` = `{listing}` |
+| `bid` | `listing, amount, mine` | Bid on an auction for your adult `mine` (the same checks as `buy_listing`): at least `auction.min_bid` (`bid_too_low`, `detail.min_bid`), held in escrow (raising your own highest bid holds only the difference), refunded at once when outbid; `data` = `{listing}` |
+| `browse_market` | `mine?, limit?, cursor?, sort?, kind?, role?, max_price?, lineage?, species?, compatible?, hide_own?, with_own?` | One page: `data` = `{balance, escrow, slots_left, total, next_cursor?, own?, listings: [{id, owner, owner_name, organism, role (stud/dam), sex, fee, created_tick, expires_tick?, sales, busy, pregnant, lineage, lineage_name, generation, mother?, father?, offspring_raised, age_days, health, x, y, traits: [{gene, value}], preview?, kind (fixed/auction), auction?: {reserve, deadline_tick, high_bid?, high_bidder?, bids, min_bid}}]}`. `limit` default 20, at most 50; `next_cursor` (absent on the last page) goes back as `cursor` for the next page in the same order and filters; `total` counts the matches. `sort`: `newest` (default), `price_asc`, `price_desc` (price: the fee, or an auction's highest bid, its reserve before any), `ending` (deadline or expiry, none last), `fertility` (with `mine`: compatible first by expected fertility). Filters: `kind` `fixed`/`auction`, `role` `stud`/`dam`, `max_price`, `lineage`, `species` (its lineages, `GET /api/species`), `compatible` (with `mine`), `hide_own`; `with_own` adds `own`, all your listings. `preview` is `preview_mating` of your `mine` with the listed organism. `bad_cursor` for a cursor the server didn't make |
 | `ledger` | `limit?` | `data` = `{balance, escrow, entries: [{seq, player, tick, day, delta, balance, kind, text, offer?, listing?}]}`, newest first (default 50, at most 100); `kind`: `grant`, `income`, `achievement`, `escrow`, `sale`, `refund` |
 | `resync` | – | Protocol 2 only: the next state is a keyframe (no `result`; see below) |
 
@@ -470,10 +472,10 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy` |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
-| `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus) |
+| `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
 | `session_ended` `{reason}` | The session expired; the socket closes next |
 
 **Protocol 2: binary delta states** (`wire.rs`, the client's `wire.ts`).
@@ -661,11 +663,43 @@ marketplace for trading genetics", on a minimal economy (`economy.rs`,
   birth). A buyer's organism can't be in two open agreements
   (`organism_busy`). Listings close when withdrawn, at their expiry or
   when the organism dies (the owner gets a `market` alert); agreements
-  already bought stand. No auctions yet.
-- **Browsing.** `browse_market` lists the open listings with what a buyer
-  sees of the organism (key trait values, lineage and parents, generation,
-  age, health, offspring raised, position) and, given one of your
-  organisms, the `preview_mating` compatibility with each.
+  already bought stand.
+- **Auctions** (`create_auction`, `bid`) are listings of the other kind:
+  one mating with the organism goes to the highest bid when the auction
+  closes, after 1 tick to 30 days. Bids start at the reserve (at least 1)
+  and must beat the highest by 5% (at least 1 renown). A bid runs the
+  purchase checks for the bidder's organism (`mine`) and moves the amount
+  into escrow on the auction (`escrow` ledger entry with the listing and no
+  offer); raising your own highest bid holds only the difference; an outbid
+  bidder is refunded at once (`refund`) and alerted. The seller can't bid
+  (`own_listing`) and can withdraw an auction only before the first bid
+  (`auction_has_bids`); a fixed-fee `buy_listing` refuses auctions. While
+  open, an auctioned dam (not allowed while pregnant) and the highest
+  bidder's female are held from breeding. At the deadline the highest bid
+  (never below the reserve) becomes an accepted agreement between the two
+  organisms with the bid as its escrowed price (the bid is released from
+  the auction and held on the agreement: a `refund` and an `escrow` entry),
+  which settles like a purchase: paid to the seller when they mate,
+  refunded otherwise. With no bid the lot returns to the seller; if the
+  winner's organism can no longer mate with the lot (dead, pregnant, in
+  another agreement, incompatible) the bid is refunded (`failed`); if the
+  lot dies first the bid is refunded (`ended`). Open auctions and their
+  highest bids are in the saved game with the other listings; each ending
+  is stored (`auctions`, migration 6), and a `--fresh` start refunds bids
+  still held in the discarded world, once, like open agreements' escrow.
+- **Browsing** is paged: `browse_market` returns one page (20 by default,
+  at most 50) of the open listings with what a buyer sees of the organism
+  (key trait values, lineage and parents, generation, age, health,
+  offspring raised, position, and an auction's reserve, highest bid, bid
+  count, deadline and lowest next bid) and, given one of your organisms,
+  the `preview_mating` compatibility with each. The server filters (kind,
+  role, highest price, lineage, species, compatible with `mine`, leave out
+  your own), sorts (newest, price either way, closing soonest, best
+  fertility with `mine`) and pages with a keyset cursor: the last listing's
+  sort key and id, so a page after it neither repeats nor skips listings
+  when others are added or withdrawn meanwhile (a fertility order can shift
+  as organisms age). A request with no fields (an older client) gets the
+  newest 20 listings of every kind, so its reply stays bounded.
 
 ### Persistence
 
@@ -681,6 +715,7 @@ it) and an in-memory one (`--memory`, tests).
 | Founder designs | `designs.json` | `designs` (player PK, design `jsonb`, upsert) |
 | One record per simulated day and world: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `history.jsonl` | `daily_history` (PK `(world_id, day)`, upsert; legacy and lineages `jsonb`; `seq` keeps write order) |
 | Finished directed-mating agreements with price and outcome, the listing they were bought from and how the escrow settled (`paid`/`refunded`) | `trades.jsonl` | `trades` (`bigserial` id; `listing`, `settlement` from migration 2) |
+| How each auction ended (seller, organism, reserve, deadline, bids, highest bid, winner and their organism, outcome `sold`/`unsold`/`failed`/`ended`/`withdrawn`, the agreement it became, day); a world replaying a day replaces its record | `auctions.jsonl` | `auctions` (PK `(world_id, listing)`, upsert; `id` keeps write order; migration 6) |
 | Renown balances, upserted on every change | `balances.json` | `balances` (player PK, balance, day, updated_at) |
 | Alert preferences (hidden and toasted alert kinds), upserted when a player saves them | `alert_prefs.json` | `alert_prefs` (player PK, hidden and toast `text[]` of kind names, updated_at; migration 3) |
 | Finished ranked seasons: head (winners, summary) and full standings; a replayed rollover (same world and season) replaces the record in its place | `seasons.jsonl` (last line per key wins) | `seasons` (PK `(world_id, season)`, upsert, `seq` keeps write order, head and standings `jsonb`) and `season_placements` (one row per player and category: rank, value, players ranked; indexed by player for the per-player history; rewritten with its season; migration 5) |
@@ -859,10 +894,12 @@ genomes to come back shared, and a clone to share every genome.
 as JSON (player → lineage, open offers with their escrow, migration orders,
 alerts, watched organisms, milestone progress, chronicle entries already
 announced, the birth and death counters at the last day boundary, and the
-economy: balances, recent ledger, listings, who had the founding grant)
+economy: balances, recent ledger, listings with open auctions and their highest bids, who had the founding grant)
 and the world snapshot. The game JSON carries a layout `version`
 (`SAVED_GAME_VERSION`, 2 since the economy, 3 since ranked seasons: the
-season under way and the last finished record); a version-1 saved game still
+season under way and the last finished record, 4 since auctions: open
+auctions and their highest bids among the listings, none in versions 2
+and 3); a version-1 saved game still
 restores, with balances and recent ledger entries from the store instead
 (and no escrow on its open offers). A new world (no saved game, or
 `--fresh`) also starts from the stored balances, and players who have one
@@ -1090,17 +1127,26 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   recent outcomes with conception, mismatch, fertility and failure chance.
 - **Market** tab (`ui/market.ts`, data prep in `ui/marketData.ts`): the
   renown balance (with escrow) and slots left; the **stud marketplace**,
-  refreshed every 5 s while open: pick one of your adults and every listing
-  shows its compatibility with it (`browse_market` with `mine`), filter by
-  role (studs/dams), maximum fee and "compatible only"; listings sort
-  compatible first, then by fertility and fee, and show the owner and
+  paged (20 listings a page, **Load more** for the next, "Showing 20 of
+  57"; the 5 s refresh while open re-fetches the pages loaded): pick one of
+  your adults and every listing shows its compatibility with it
+  (`browse_market` with `mine`); filter by role (studs/dams), kind (fixed
+  fee/auctions), maximum price and "compatible only", and order by best
+  match (compatible first by fertility), newest, cheapest, priciest or
+  closing soonest, all applied by the server; listings show the owner and
   lineage, an appearance summary from the key traits ("herbivore, furred,
   large"), trait bars, generation and parents, age, health, offspring
   raised, position, sales, expiry, and a **Buy** button that says why it is
   disabled (your own listing, already promised, wrong sex, pregnant, can't
-  conceive, no slots, not enough renown); **Show** centers the map on the
-  organism. Below: list one of your adults (fee, optional expiry in days),
-  your listings with **Withdraw**, and the **ledger** (recent totals and
+  conceive, no slots, not enough renown); an auction shows its reserve or
+  highest bid (yours or not), bid count and time left, and a bid field
+  (preset to the lowest accepted bid) with a **Bid** button that says why
+  it is disabled the same way (also: below the lowest bid, not enough
+  renown counting what you already hold on it); **Show** centers the map on the
+  organism. Below: list one of your adults at a fixed fee (optional expiry
+  in days) or at auction (reserve, length in days), your listings (all of
+  them, from `with_own`) with **Withdraw** (disabled for an auction with a
+  bid), and the **ledger** (recent totals and
   entries with signed amounts and the running balance). Bought agreements
   appear in the Matings tab to escort; sales, payments and refunds arrive
   as `market` alerts (toasts and the alerts feed).
@@ -1268,9 +1314,11 @@ a toast. `window.evo` exposes the model, socket and view for debugging and
 the end-to-end test.
 
 **Tests.** Vitest: the Market tab's data prep (the appearance
-summary, listing filters and ranking, why a purchase is blocked, balance
+summary, the `browse_market` page request from the filters, merging pages, the page
+count text, why a purchase or a bid is blocked, the auction line, balance
 and expiry text, ledger rows and totals, parsing `browse_market` and
-`ledger` data, the state's economy fields and `market` alerts); creature sprites (a distinct cache key for each of the
+`ledger` data (pages, cursors, own listings, auctions, and replies of servers before
+paging), the state's economy fields and `market` alerts); creature sprites (a distinct cache key for each of the
 1,536 appearance classes × life stage, every shape inside its texture frame,
 size order and juvenile scale, each field changing the drawing, swimmers
 without legs, the default look for older servers, action icons, the body
@@ -1324,7 +1372,16 @@ buyer waits for the birth) → the second picks his male, the listing shows
 both sides and a `market` alert to the lister → both walk toward each
 other for up to 12 s, then the buyer cancels; the ledgers must match the
 outcome: the lister paid on `completed`, the buyer refunded otherwise →
-the balance pill and ledger rows show → the lister withdraws the listing),
+the balance pill and ledger rows show → the lister withdraws the listing
+from its card under "My listings" (from `browse_market`'s `with_own`, so
+it shows whatever page the market is on; if the listing closed meanwhile,
+the dam having died, she lists another adult, and a card that doesn't show
+is checked again and the tab reopened before retrying), checked through
+`own` → the lister auctions an adult
+from the form, the buyer finds it under "auctions" with "reserve 3, no
+bids yet" and bids the reserve with one of his adults of the other sex:
+the bid is in his escrow and the lister's card shows it with **Withdraw**
+disabled (if the world refuses the bid, the lister withdraws the auction)),
 clicks one of its own organisms (the one with
 the most room around its marker, checked with the view's hit test, retried
 if the selection isn't its own), possesses it, clicks a dry-land spot clear
@@ -1355,7 +1412,7 @@ a gallery of 20 body plans drawn with the game's sprite code. Screenshots:
 `iphone13-*.png`, `pixel7-*.png`, `desktop-world.png`,
 `desktop-sprite-gallery.png`.
 
-**Not yet:** marketplace auctions, allele origins traced to the
+**Not yet:** allele origins traced to the
 founding *lineage* rather than the player (a player founds one lineage per
 world, so the two coincide until re-founding exists), alert preferences
 applied server-side (muted kinds are still sent), animated sprites, native builds tested on devices (the Capacitor projects
@@ -1718,13 +1775,35 @@ total is command replies and events.
   in the writers, under load, 86–105 µs against 173 µs. The world thread
   does what it did before (it still builds every `StateView`); the
   encoder runs in the connection writers, keyed to what was sent.
-- **What is left:** with states down to about 1 KB/s a client, the load
-  generator's own market browsing is most of the traffic: `browse_market`
-  returns every open listing with its traits (hundreds of listings at 500
-  players), 10–11 KB/s a client at ~3 browses a minute. Paging that reply
-  (or compressing JSON replies once the WebSocket stack can) is next for
-  bandwidth. A player who doesn't browse gets about 1–1.5 KB/s: 0.9–1.2
-  KB/s of states plus replies and events.
+- **What was left:** with states down to about 1 KB/s a client, the load
+  generator's own market browsing was most of the traffic: `browse_market`
+  returned every open listing with its traits (up to 200, hundreds open at
+  200–500 players), 10–11 KB/s a client at ~3 browses a minute. It is now
+  paged (below). A player who doesn't browse gets about 1–1.5 KB/s:
+  0.9–1.2 KB/s of states plus replies and events.
+
+**Paged market browsing.** `browse_market` now returns a page of 20 (see
+[Economy](#economy-and-stud-marketplace)); the load generator's players ask
+for the first page without their own listings, sometimes the next page
+(the cursor from the last reply) or the cheapest or closing-soonest first,
+and 30% of their new listings are auctions (they bid the lowest accepted
+bid on auctions they find). Same warmed world (24k organisms, copied for
+each run), 200 players, 150 s after a 20 s ramp, 1 s ticks, the old server
+and load generator against the new (box shared with other jobs):
+
+| | before | after |
+| --- | --- | --- |
+| Outbound, total (per client) | 2.74 MB/s (13.7 KB/s) | **0.47 MB/s (2.3 KB/s)** |
+| `browse_market` replies per client | 11.2 KB/s | **1.2 KB/s** |
+| State traffic per client | 0.91 KB/s | 0.91 KB/s |
+| `browse_market` calls / p50 / p99 | 1941 / 151 / 262 ms | 1839 / 137 / 250 ms |
+| Commands per second; command p50 / p99 | 98.6; 148 / 254 ms | 98.4; 138 / 252 ms |
+| Server CPU (cores) | 0.18 | 0.15 |
+| Dropped connections, panics | 0 | 0 |
+
+A browse reply went from ~190 KB to ~20 KB; the server still filters
+and sorts every open listing for each page (a few thousand at most: 8 per
+player), which costs less than serializing 200 of them did.
 
 Next on the world thread is the sim tick itself, then the sub-step states
 (it still builds a whole `StateView` for every steering player three times
@@ -1736,7 +1815,7 @@ a tick, though only the possessed organism's delta goes out).
   about 15% of the time (tick ~60–80 ms, pushes ~6 ms, sub-steps ~35 ms
   p99) and command latency stays at its sub-step floor (p99 ~250 ms).
   With protocol 2 clients the server needs about 3 MB/s (22 Mbit/s) of
-  egress for 200 heavy players, most of it market browsing (states are
+  egress for 200 heavy players before paged browsing, 0.5 MB/s with it (states are
   ~1 KB/s a client); old JSON clients need 87 KB/s each (17 MB/s).
 - **500 players per world** held the clock on this shared 4-core box
   (tick p99 ~110 ms, pushes p99 ~45 ms, command p99 ~260 ms) with 7.4 MB/s

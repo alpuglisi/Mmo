@@ -28,3 +28,10 @@
 
 .ledger td.good { color: var(--good); white-space: nowrap; }
 .ledger td.bad { color: var(--bad); white-space: nowrap; }
+
+.listing.auction { border-left: 3px solid #e3b341; }
+.listing .auction-line { color: #e3b341; }
+.bid-form { display: inline-flex; gap: 4px; align-items: center; }
+.bid-form .bid-amount { width: 6em; margin: 0; }
+.market-paging { align-items: center; justify-content: space-between; }
+.market-paging p { margin: 0; }

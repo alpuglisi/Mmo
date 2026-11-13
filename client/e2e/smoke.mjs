@@ -556,32 +556,129 @@ async function main() {
     // dam died: the server closes her listing and alerts ann); then ann
     // lists another adult and withdraws that one.
     const ownListings = () => page.evaluate(async () => {
-      const r = await window.evo.socket.send({ type: 'browse_market' });
+      // A page of other players' listings is enough to ask for: `own` has all of ann's.
+      const r = await window.evo.socket.send({ type: 'browse_market', limit: 1, hide_own: true, with_own: true });
       if (!r.ok) throw new Error(`browse_market: ${JSON.stringify(r.error)}`);
-      return r.data.listings.filter((l) => l.owner === window.evo.model.player).map((l) => l.id);
+      if (r.data.listings.some((l) => l.owner === window.evo.model.player)) throw new Error('hide_own showed an own listing');
+      return r.data.own.map((l) => l.id);
     });
+    // Withdraw from the card in "My listings" (from `with_own`, whatever
+    // page the market is on). The world keeps running: if the listing
+    // closed (only a death closes it: it has no expiry), ann lists another
+    // adult; if the card doesn't show, check the listing again and, on later
+    // attempts, reopen the Market tab (a fresh render) before refreshing.
     let withdrawId = listingId;
     let withdrawOrg = bought.dam;
-    for (let attempt = 0; attempt < 5 && !(await ownListings()).includes(withdrawId); attempt++) {
-      // (Only a death closes it: it has no expiry, and nothing else withdrew it.)
+    let withdrawn = false;
+    const relist = async () => {
       const dead = await waitFor(`#${withdrawOrg} gone from ann's state`, () => page.evaluate((id) => !window.evo.model.state.organisms.some((o) => o.id === id), withdrawOrg), 5000).catch(() => false);
       if (!dead) throw new Error(`listing ${withdrawId} of #${withdrawOrg} closed though she is alive`);
       console.log(`  … listing ${withdrawId} closed: #${withdrawOrg} died; listing another adult to withdraw`);
       await page.evaluate(() => { window.__results = []; });
       await page.click('#market-refresh');
+      await page.selectOption('#market-list-kind', 'fixed');
       await page.selectOption('#market-list-organism', { index: 0 });
       await page.click('#market-list-submit');
       const relisted = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
       if (!relisted.ok && !['not_found', 'not_mature', 'already_listed'].includes(relisted.error?.code)) throw new Error(`create_listing failed: ${JSON.stringify(relisted.error)}`);
       if (relisted.ok) [withdrawId, withdrawOrg] = [relisted.data.listing.id, relisted.data.listing.organism];
+    };
+    for (let attempt = 0; attempt < 8 && !withdrawn; attempt++) {
+      if (!(await ownListings()).includes(withdrawId)) {
+        await relist();
+        continue;
+      }
+      if (attempt > 0) {
+        await page.click('#tab-matings');
+        await page.click('#tab-market');
+      }
+      await page.click('#market-refresh');
+      const card = `#my-listings .listing[data-listing="${withdrawId}"] button.withdraw`;
+      if (!(await page.waitForSelector(card, { timeout: 8000 }).then(() => true, () => false))) {
+        console.log(`  … the card of listing ${withdrawId} did not show; checking the listing again`);
+        continue;
+      }
+      await page.evaluate(() => { window.__results = []; });
+      if (!(await page.click(card, { timeout: 5000 }).then(() => true, () => false))) continue;
+      const r = await waitFor('withdraw_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'withdraw_listing')), 10000);
+      if (!r.ok) {
+        // Closed between the check and the click (the dam died).
+        if (r.error?.code !== 'unknown_listing') throw new Error(`withdraw_listing failed: ${JSON.stringify(r.error)}`);
+        continue;
+      }
+      withdrawn = true;
     }
-    const card = `#my-listings .listing[data-listing="${withdrawId}"] button.withdraw`;
-    await page.click('#market-refresh');
-    await page.waitForSelector(card, { timeout: 10000 });
-    await page.click(card);
+    if (!withdrawn) throw new Error(`could not withdraw listing ${withdrawId} from its card`);
     await waitFor('listing withdrawn', () => page.evaluate((id) => !document.querySelector(`#my-listings .listing[data-listing="${id}"]`), withdrawId), 10000);
     if ((await ownListings()).includes(withdrawId)) throw new Error(`listing ${withdrawId} still open after withdrawing it`);
     step(`ledgers agree; balance pill "${pill.trim()}"; ann withdrew listing ${withdrawId}`);
+
+    // An auction: ann auctions an adult from the Market tab, bob finds it
+    // under "auctions" and bids the reserve for one of his adults of the
+    // other sex (held in escrow; the auction can then no longer be
+    // withdrawn), or, if the world refuses the bid, ann withdraws it. The
+    // world runs fast (a simulated day is about a second), so the auction
+    // gets the longest run, 30 days.
+    const reserve = 3;
+    await page.selectOption('#market-list-kind', 'auction');
+    if (!(await page.isVisible('#market-auction-days'))) throw new Error('the auction length field is hidden');
+    let auctionId = null;
+    let lotSex = null;
+    for (let attempt = 0; attempt < 6 && auctionId === null; attempt++) {
+      await page.evaluate(() => { window.__results = []; });
+      await page.click('#market-refresh');
+      const options = await page.$$eval('#market-list-organism option', (os) => os.map((o) => o.value));
+      if (options.length === 0) throw new Error('no adult of ann to auction');
+      await page.selectOption('#market-list-organism', options[attempt % options.length]);
+      await page.fill('#market-fee', String(reserve));
+      await page.fill('#market-auction-days', '30');
+      await page.click('#market-list-submit');
+      const r = await waitFor('create_auction result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_auction')));
+      if (r.ok) [auctionId, lotSex] = [r.data.listing.id, r.data.listing.sex];
+      else if (!['already_pregnant', 'not_found', 'not_mature', 'already_listed', 'organism_busy'].includes(r.error?.code)) throw new Error(`create_auction failed: ${JSON.stringify(r.error)}`);
+      else console.log(`  … create_auction refused (${r.error.code}); picking again`);
+    }
+    if (auctionId === null) throw new Error('no auction could be created');
+    await page.waitForSelector(`#my-listings .listing[data-listing="${auctionId}"][data-kind="auction"] .auction-line`, { timeout: 10000 });
+    await bob.selectOption('#market-kind', 'auction');
+    const bobCard = `#market-listings .listing[data-listing="${auctionId}"]`;
+    const line = await waitFor('the auction in bob\'s market', () => bob.evaluate((c) => document.querySelector(`${c} .auction-line`)?.textContent ?? null, bobCard), 15000);
+    if (!line.includes(`reserve ${reserve}, no bids yet`)) throw new Error(`auction line: ${line}`);
+    const kinds = await bob.$$eval('#market-listings .listing', (ls) => ls.map((l) => l.dataset.kind));
+    if (kinds.some((k) => k !== 'auction')) throw new Error(`the auctions filter showed ${kinds}`);
+    const bidder = await bob.evaluate((sex) => window.evo.model.state.organisms.find((o) => o.matured && !o.pregnant && o.sex !== sex)?.id ?? null, lotSex);
+    let bid = null;
+    if (bidder !== null && await bob.selectOption('#market-mine', String(bidder), { timeout: 3000 }).then(() => true, () => false)) {
+      const enabled = await waitFor('bid button enabled', () => bob.evaluate((c) => {
+        const b = document.querySelector(`${c} button.bid`);
+        return b && !b.disabled;
+      }, bobCard), 10000).catch(() => false);
+      if (enabled) {
+        await bob.evaluate(() => { window.__results = []; });
+        await bob.click(`${bobCard} button.bid`);
+        bid = await waitFor('bid result', () => bob.evaluate(() => window.__results.find((r) => r.type === 'bid')));
+        if (!bid.ok && !['already_pregnant', 'not_found', 'not_mature', 'died', 'organism_busy', 'incompatible_body_plans', 'genetically_incompatible', 'no_slots_left', 'too_many_offers', 'auction_closed', 'unknown_listing'].includes(bid.error?.code)) {
+          throw new Error(`bid failed: ${JSON.stringify(bid.error)}`);
+        }
+      }
+    }
+    if (bid?.ok) {
+      await waitFor('bob\'s bid in escrow', async () => (await renown(bob)).escrow >= reserve, 10000);
+      await page.click('#market-refresh');
+      // (Unless it closed meanwhile: then it settled with bob's bid.)
+      await waitFor('ann sees the bid', async () => !(await ownListings()).includes(auctionId) || page.evaluate(([id, reserve]) => {
+        const c = document.querySelector(`#my-listings .listing[data-listing="${id}"]`);
+        return c && c.querySelector('.auction-line')?.textContent.includes(`high bid ${reserve}`) && c.querySelector('button.withdraw')?.disabled;
+      }, [auctionId, reserve]), 10000);
+      step(`ann auctioned listing ${auctionId}; bob bid ${reserve} renown for #${bidder} (held in escrow, withdraw disabled)`);
+    } else {
+      console.log(`  … no bid on the auction (${bid ? bid.error.code : 'no bidder or bid not possible'}); ann withdraws it`);
+      await page.click('#market-refresh');
+      await page.click(`#my-listings .listing[data-listing="${auctionId}"] button.withdraw`);
+      await waitFor('auction withdrawn', async () => !(await ownListings()).includes(auctionId), 10000);
+      step(`ann auctioned listing ${auctionId} and withdrew it`);
+    }
+    await bob.selectOption('#market-kind', 'any');
     await page.screenshot({ path: path.join(shots, 'market-ann.png') });
     await bob.screenshot({ path: path.join(shots, 'market-bob.png') });
     await Promise.all([releaseAll(page), releaseAll(bob)]);

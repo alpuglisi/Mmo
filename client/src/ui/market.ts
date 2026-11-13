@@ -1,17 +1,18 @@
-// The Market tab: renown balance, the stud marketplace (browse with filters
-// and compatibility, buy, list and withdraw) and the ledger. Talks to the
-// server with `browse_market`, `create_listing`, `withdraw_listing`,
-// `buy_listing` and `ledger`; the agreements it creates show in the Matings
-// tab like any other.
+// The Market tab: renown balance, the stud marketplace (browse page by page
+// with server-side filters, order and compatibility; buy, bid, list,
+// auction and withdraw) and the ledger. Talks to the server with
+// `browse_market`, `create_listing`, `create_auction`, `withdraw_listing`,
+// `buy_listing`, `bid` and `ledger`; the agreements it creates show in the
+// Matings tab like any other.
 
 import type { GameModel } from '../model';
-import type { ClientMsg, LedgerView, ListingView, MarketView, OrgId, ResultMsg } from '../protocol';
+import type { ClientMsg, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg } from '../protocol';
 import { parseLedgerView, parseMarketView } from '../protocol';
 import { h, label, pct } from './dom';
 import './market.css';
 import {
-  balanceText, buyProblem, DEFAULT_FILTER, expiresIn, filterListings, ledgerRows, ledgerTotals, listingCompat, ownAdults,
-  traitSummary, type MarketFilter, type RoleFilter,
+  auctionText, balanceText, bidProblem, buyProblem, DEFAULT_FILTER, expiresIn, ledgerRows, ledgerTotals, listingCompat,
+  marketQuery, mergePages, ownAdults, pageText, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
 } from './marketData';
 
 export interface MarketDeps {
@@ -23,37 +24,63 @@ export interface MarketDeps {
 
 export interface MarketPanel {
   el: HTMLElement;
-  /** Fetch listings and the ledger again. */
+  /** Fetch the loaded listing pages and the ledger again. */
   refresh: () => Promise<void>;
   /** Re-render from the latest state (cheap; called on state pushes). */
   render: () => void;
 }
 
 const TICKS_PER_DAY = 48;
+/** Pages kept on a refresh (more are fetched with "Load more"). */
+const MAX_PAGES = 10;
 
 export function buildMarket(deps: MarketDeps): MarketPanel {
   const { model } = deps;
+  /** The last page fetched (balance, total, cursor) and every page loaded so far. */
   let market: MarketView | null = null;
+  let pages: ListingView[][] = [];
+  let own: ListingView[] = [];
   let ledger: LedgerView | null = null;
   let filter: MarketFilter = { ...DEFAULT_FILTER };
   let fetching = false;
+  /** A refresh asked for while another was in flight: run it after (it may carry new filters or follow a change). */
+  let again = false;
 
   // --- balance
   const balanceEl = h('p', { id: 'market-balance', class: 'market-balance' });
 
-  // --- list one of my adults
+  // --- list one of my adults (fixed fee or auction)
   const listOrg = h('select', { id: 'market-list-organism' });
+  const listKind = h('select', { id: 'market-list-kind' },
+    h('option', { value: 'fixed' }, 'fixed fee'), h('option', { value: 'auction' }, 'auction'));
   const fee = h('input', { id: 'market-fee', type: 'number', min: 0, step: 1, value: 10 });
   const expiry = h('input', { id: 'market-expiry', type: 'number', min: 1, max: 365, placeholder: 'never' });
+  const auctionDays = h('input', { id: 'market-auction-days', type: 'number', min: 1, max: 30, value: 1 });
+  const feeLabel = h('label', {}, 'Fee (renown)', fee);
+  const expiryLabel = h('label', {}, 'Expires after (days)', expiry);
+  const daysLabel = h('label', { hidden: true }, 'Closes after (days)', auctionDays);
+  listKind.addEventListener('change', () => {
+    const auction = listKind.value === 'auction';
+    feeLabel.firstChild!.textContent = auction ? 'Reserve (renown)' : 'Fee (renown)';
+    expiryLabel.hidden = auction;
+    daysLabel.hidden = !auction;
+    listBtn.textContent = auction ? 'Auction' : 'List';
+  });
   const listBtn = h('button', { id: 'market-list-submit' }, 'List');
   listBtn.addEventListener('click', async () => {
     const organism = Number(listOrg.value);
     if (!organism) return model.toast('error', 'Pick one of your adults to list.');
-    const msg: ClientMsg = { type: 'create_listing', organism, fee: Math.max(0, Math.floor(Number(fee.value) || 0)) };
-    if (expiry.value !== '') msg.expires_days = Math.max(1, Math.floor(Number(expiry.value)));
+    const price = Math.max(0, Math.floor(Number(fee.value) || 0));
+    let msg: ClientMsg;
+    if (listKind.value === 'auction') {
+      msg = { type: 'create_auction', organism, reserve: price, days: Math.max(1, Math.floor(Number(auctionDays.value) || 1)) };
+    } else {
+      msg = { type: 'create_listing', organism, fee: price };
+      if (expiry.value !== '') msg.expires_days = Math.max(1, Math.floor(Number(expiry.value)));
+    }
     const r = await deps.send(msg);
     if (r.ok) {
-      model.toast('info', `#${organism} listed for ${msg.fee} renown.`);
+      model.toast('info', msg.type === 'create_auction' ? `#${organism} auctioned from ${price} renown.` : `#${organism} listed for ${price} renown.`);
       await refresh();
     }
   });
@@ -63,24 +90,34 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const mineSel = h('select', { id: 'market-mine' });
   const roleSel = h('select', { id: 'market-role' },
     h('option', { value: 'any' }, 'studs and dams'), h('option', { value: 'stud' }, 'studs (male)'), h('option', { value: 'dam' }, 'dams (female)'));
+  const kindSel = h('select', { id: 'market-kind' },
+    h('option', { value: 'any' }, 'fixed and auctions'), h('option', { value: 'fixed' }, 'fixed fee'), h('option', { value: 'auction' }, 'auctions'));
+  const sortSel = h('select', { id: 'market-sort' },
+    h('option', { value: 'fertility' }, 'best match'), h('option', { value: 'newest' }, 'newest'),
+    h('option', { value: 'price_asc' }, 'cheapest'), h('option', { value: 'price_desc' }, 'priciest'),
+    h('option', { value: 'ending' }, 'closing soonest'));
   const maxFee = h('input', { id: 'market-max-fee', type: 'number', min: 0, placeholder: 'any' });
   const compatOnly = h('input', { id: 'market-compatible', type: 'checkbox' });
   const refreshBtn = h('button', { id: 'market-refresh', class: 'secondary' }, 'Refresh');
   const listingsEl = h('div', { id: 'market-listings' });
+  const pageEl = h('p', { id: 'market-page', class: 'muted small' });
+  const moreBtn = h('button', { id: 'market-more', class: 'secondary', hidden: true }, 'Load more');
+  moreBtn.addEventListener('click', () => void loadMore());
+  // A filter, the order or the buyer organism changes the pages: start over.
   const readFilter = (): void => {
     filter = {
       role: roleSel.value as RoleFilter,
+      kind: kindSel.value as KindFilter,
       maxFee: maxFee.value === '' ? null : Math.max(0, Number(maxFee.value)),
       compatibleOnly: compatOnly.checked,
       hideOwn: true,
+      sort: sortSel.value as MarketSort,
     };
-    renderListings();
+    pages = pages.slice(0, 1);
+    void refresh();
   };
-  roleSel.addEventListener('change', readFilter);
-  maxFee.addEventListener('input', readFilter);
-  compatOnly.addEventListener('change', readFilter);
-  // A new buyer organism changes every listing's compatibility.
-  mineSel.addEventListener('change', () => void refresh());
+  for (const el of [roleSel, kindSel, sortSel, compatOnly, mineSel]) el.addEventListener('change', readFilter);
+  maxFee.addEventListener('change', readFilter);
   refreshBtn.addEventListener('click', () => void refresh());
 
   // --- ledger
@@ -91,15 +128,17 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     h('h3', {}, 'Stud marketplace'),
     h('div', { class: 'form market-filters' },
       h('label', {}, 'For my adult', mineSel),
-      h('div', { class: 'row' }, h('label', {}, 'Show', roleSel), h('label', {}, 'Max fee', maxFee)),
+      h('div', { class: 'row' }, h('label', {}, 'Show', roleSel), h('label', {}, 'Kind', kindSel)),
+      h('div', { class: 'row' }, h('label', {}, 'Order', sortSel), h('label', {}, 'Max price', maxFee)),
       h('div', { class: 'row' }, h('label', { class: 'check' }, compatOnly, 'compatible only'), refreshBtn)),
     listingsEl,
+    h('div', { class: 'row market-paging' }, pageEl, moreBtn),
     h('h3', {}, 'List one of my adults'),
     h('div', { class: 'form' },
-      h('label', {}, 'Adult', listOrg),
-      h('div', { class: 'row' }, h('label', {}, 'Fee (renown)', fee), h('label', {}, 'Expires after (days)', expiry)),
+      h('div', { class: 'row' }, h('label', {}, 'Adult', listOrg), h('label', {}, 'As', listKind)),
+      h('div', { class: 'row' }, feeLabel, expiryLabel, daysLabel),
       h('div', { class: 'row' }, listBtn),
-      h('p', { class: 'muted small' }, 'Anyone may buy one mating with a listed organism: the listing is your consent. The fee is held in escrow and paid to you when the two meet and mate; it is refunded if they never do. A dam takes one buyer at a time.')),
+      h('p', { class: 'muted small' }, 'Anyone may buy one mating with a listed organism: the listing is your consent. The fee is held in escrow and paid to you when the two meet and mate; it is refunded if they never do. A dam takes one buyer at a time. An auction sells one mating to the highest bid at or above the reserve when it closes; bids are held in escrow and refunded when outbid.')),
     h('h4', {}, 'My listings'), myListingsEl,
     h('h3', {}, 'Ledger'), ledgerEl);
 
@@ -107,7 +146,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   let optionsKey = '';
   function renderPickers(): void {
     const adults = ownAdults(model.state);
-    const listed = new Set((market?.listings ?? []).filter((l) => l.owner === model.player).map((l) => l.organism));
+    const listed = new Set(own.map((l) => l.organism));
     const key = adults.map((o) => `${o.id}${o.pregnant ? 'p' : ''}${listed.has(o.id) ? 'l' : ''}`).join(',');
     if (key === optionsKey) return;
     optionsKey = key;
@@ -128,34 +167,71 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       h('span', { class: 'muted small' }, ` · ${slots} mating slot${slots === 1 ? '' : 's'} left this season`));
   }
 
-  function listingCard(l: ListingView, own: boolean): HTMLElement {
+  function chosen() {
+    return model.state?.organisms.find((o) => o.id === Number(mineSel.value));
+  }
+
+  function listingCard(l: ListingView, isOwn: boolean): HTMLElement {
     const s = model.state;
     const tick = s?.clock.tick ?? 0;
     const days = expiresIn(l, tick, TICKS_PER_DAY);
-    const mine = s?.organisms.find((o) => o.id === Number(mineSel.value));
+    const mine = chosen();
     const compat = listingCompat(l);
-    const problem = own ? null : buyProblem(l, model.player, s?.balance ?? market?.balance ?? 0, s?.slots_left ?? 0, mine);
+    const balance = s?.balance ?? market?.balance ?? 0;
+    const slots = s?.slots_left ?? 0;
+    const a = l.auction;
     const parents = l.mother !== undefined || l.father !== undefined
       ? `of #${l.mother ?? '?'} × #${l.father ?? '?'}` : 'a founder';
-    const buy = h('button', { class: 'buy', disabled: problem !== null, title: problem ?? `Buy one mating for ${l.fee} renown` }, `Buy for ${l.fee}`);
-    buy.addEventListener('click', async () => {
-      if (!mine) return;
-      const r = await deps.send({ type: 'buy_listing', listing: l.id, mine: mine.id });
-      if (r.ok) {
-        model.toast('info', `Bought a mating of #${mine.id} with ${l.owner_name}'s #${l.organism}: escort it from the Matings tab.`);
-        await refresh();
-      }
-    });
-    const withdraw = h('button', { class: 'secondary withdraw' }, 'Withdraw');
-    withdraw.addEventListener('click', async () => {
-      const r = await deps.send({ type: 'withdraw_listing', listing: l.id });
-      if (r.ok) await refresh();
-    });
-    return h('div', { class: `listing${l.busy ? ' busy' : ''}`, 'data-listing': l.id, 'data-organism': l.organism },
+    let action: HTMLElement;
+    let problem: string | null = null;
+    if (isOwn) {
+      const hasBids = a?.high_bid !== undefined;
+      action = h('button', { class: 'secondary withdraw', disabled: hasBids, title: hasBids ? 'An auction with a bid runs to its close' : 'Take it off the market' }, 'Withdraw');
+      action.addEventListener('click', async () => {
+        const r = await deps.send({ type: 'withdraw_listing', listing: l.id });
+        if (r.ok) await refresh();
+      });
+    } else if (a) {
+      const amount = h('input', { class: 'bid-amount', type: 'number', min: a.min_bid, step: 1, value: a.min_bid });
+      const bid = h('button', { class: 'bid' }, 'Bid');
+      const check = (): void => {
+        const why = bidProblem(l, model.player, balance, slots, mine, Math.floor(Number(amount.value)));
+        bid.disabled = why !== null;
+        bid.title = why ?? `Bid ${amount.value} renown (held in escrow, refunded if outbid)`;
+      };
+      amount.addEventListener('input', check);
+      check();
+      problem = bidProblem(l, model.player, balance, slots, mine, a.min_bid);
+      bid.addEventListener('click', async () => {
+        if (!mine) return;
+        const value = Math.floor(Number(amount.value));
+        const r = await deps.send({ type: 'bid', listing: l.id, amount: value, mine: mine.id });
+        if (r.ok) {
+          model.toast('info', `Bid ${value} renown on auction #${l.id} for #${mine.id} (held in escrow).`);
+          await refresh();
+        }
+      });
+      action = h('span', { class: 'bid-form' }, amount, bid);
+    } else {
+      problem = buyProblem(l, model.player, balance, slots, mine);
+      const buy = h('button', { class: 'buy', disabled: problem !== null, title: problem ?? `Buy one mating for ${l.fee} renown` }, `Buy for ${l.fee}`);
+      buy.addEventListener('click', async () => {
+        if (!mine) return;
+        const r = await deps.send({ type: 'buy_listing', listing: l.id, mine: mine.id });
+        if (r.ok) {
+          model.toast('info', `Bought a mating of #${mine.id} with ${l.owner_name}'s #${l.organism}: escort it from the Matings tab.`);
+          await refresh();
+        }
+      });
+      action = buy;
+    }
+    const price = a ? `${a.high_bid ?? a.reserve} renown` : `${l.fee} renown`;
+    return h('div', { class: `listing${l.busy ? ' busy' : ''}${a ? ' auction' : ''}`, 'data-listing': l.id, 'data-organism': l.organism, 'data-kind': l.kind },
       h('div', { class: 'listing-head' },
         h('strong', {}, `${l.role === 'stud' ? 'Stud' : 'Dam'} #${l.organism}`),
         h('span', { class: 'muted' }, ` · ${l.owner_name}'s ${l.lineage_name}`),
-        h('span', { class: 'fee' }, `${l.fee} renown`)),
+        h('span', { class: 'fee' }, price)),
+      a && h('div', { class: 'small auction-line' }, auctionText(l, model.player, tick, TICKS_PER_DAY)),
       h('div', { class: 'small' }, traitSummary(l.traits)),
       h('div', { class: 'small muted' },
         `gen ${l.generation}, ${parents} · ${l.age_days.toFixed(0)} days · health ${l.health.toFixed(0)} · raised ${l.offspring_raised}`,
@@ -168,35 +244,51 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
           h('span', { class: 'trait-bar' }, h('span', { style: `width:${pct(Math.max(0, Math.min(1, t.value)), 0)}` }))))),
       compat && h('div', { class: `small compat`, 'data-level': compat.level }, compat.text),
       h('div', { class: 'row' },
-        own ? withdraw : buy,
+        action,
         h('button', { class: 'secondary', onclick: () => deps.onOrganism(l.organism, l.x, l.y) }, 'Show'),
-        !own && problem && h('span', { class: 'muted small' }, problem)));
+        !isOwn && problem && h('span', { class: 'muted small' }, problem)));
   }
 
   // Rebuild the listing cards only when what they show changes.
   let listingsKey = '';
   function renderListings(): void {
     const s = model.state;
-    const all = market?.listings ?? [];
-    const shown = filterListings(all, filter, model.player);
-    const mine = s?.organisms.find((o) => o.id === Number(mineSel.value));
+    const shown = mergePages(pages);
+    const mine = chosen();
     // What the cards show: the listing data and whether (and why not) it
     // can be bought, not the balance itself (which changes every day).
     const balance = s?.balance ?? market?.balance ?? 0;
+    const slots = s?.slots_left ?? 0;
+    const why = (l: ListingView) => (l.auction ? bidProblem(l, model.player, balance, slots, mine, l.auction.min_bid) : buyProblem(l, model.player, balance, slots, mine));
     const key = JSON.stringify([shown.map((l) => [l.id, l.sales, l.busy, l.pregnant, l.preview?.fertility, l.preview?.distance?.toFixed(0),
-      buyProblem(l, model.player, balance, s?.slots_left ?? 0, mine)]), market === null]);
+      l.auction?.high_bid, l.auction?.high_bidder, why(l)]), market === null]);
     if (key !== listingsKey) {
       listingsKey = key;
       listingsEl.replaceChildren(...(market === null ? [h('p', { class: 'muted small' }, 'Loading…')]
         : shown.length === 0
-          ? [h('p', { class: 'muted small' }, all.length === 0 ? 'No listings yet.' : 'No listings match the filters.')]
+          ? [h('p', { class: 'muted small' }, 'No listings match the filters.')]
           : shown.map((l) => listingCard(l, false))));
     }
-    const own = all.filter((l) => l.owner === model.player);
-    const ownKey = JSON.stringify(own.map((l) => [l.id, l.sales, l.busy]));
+    // The time left on auctions changes every tick: update the line in
+    // place rather than rebuilding the cards (and a bid being typed).
+    refreshAuctionLines(listingsEl, shown);
+    refreshAuctionLines(myListingsEl, own);
+    pageEl.textContent = pageText(shown.length, market);
+    moreBtn.hidden = !market?.next_cursor;
+    const ownKey = JSON.stringify(own.map((l) => [l.id, l.sales, l.busy, l.auction?.high_bid, l.auction?.bids]));
     if (myListingsEl.dataset.key !== ownKey) {
       myListingsEl.dataset.key = ownKey;
       myListingsEl.replaceChildren(...(own.length === 0 ? [h('p', { class: 'muted small' }, 'None.')] : own.map((l) => listingCard(l, true))));
+    }
+  }
+
+  function refreshAuctionLines(root: HTMLElement, ls: ListingView[]): void {
+    const tick = model.state?.clock.tick ?? 0;
+    const byId = new Map(ls.map((l) => [l.id, l]));
+    for (const card of root.querySelectorAll<HTMLElement>('.listing[data-kind="auction"]')) {
+      const l = byId.get(Number(card.dataset.listing));
+      const line = card.querySelector('.auction-line');
+      if (l && line) line.textContent = auctionText(l, model.player, tick, TICKS_PER_DAY);
     }
   }
 
@@ -227,18 +319,62 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     renderLedger();
   }
 
+  const mineId = (): OrgId | undefined => Number(mineSel.value) || undefined;
+
+  /** Fetch one page; null if the reply was refused or malformed. */
+  async function fetchPage(cursor?: string): Promise<MarketView | null> {
+    const r = await deps.send(marketQuery(filter, mineId(), cursor));
+    return r.ok ? parseMarketView(r.data) : null;
+  }
+
+  /** Fetch the first page again, and as many after it as were loaded. */
   async function refresh(): Promise<void> {
-    if (fetching) return;
+    if (fetching) {
+      again = true;
+      return;
+    }
     fetching = true;
+    again = false;
     try {
-      const mine = Number(mineSel.value) || undefined;
-      const [m, l] = await Promise.all([deps.send(mine ? { type: 'browse_market', mine } : { type: 'browse_market' }), deps.send({ type: 'ledger', limit: 50 })]);
-      if (m.ok) market = parseMarketView(m.data) ?? market;
+      const want = Math.max(1, Math.min(MAX_PAGES, pages.length));
+      const [first, l] = await Promise.all([fetchPage(), deps.send({ type: 'ledger', limit: 50 })]);
       if (l.ok) ledger = parseLedgerView(l.data) ?? ledger;
+      if (first) {
+        const next: ListingView[][] = [first.listings];
+        own = first.own ?? own;
+        let last = first;
+        while (next.length < want && last.next_cursor) {
+          const p = await fetchPage(last.next_cursor);
+          if (!p) break;
+          next.push(p.listings);
+          last = p;
+        }
+        market = last;
+        pages = next;
+      }
     } finally {
       fetching = false;
     }
     render();
+    if (again) await refresh();
+  }
+
+  /** Append the next page. */
+  async function loadMore(): Promise<void> {
+    const cursor = market?.next_cursor;
+    if (fetching || !cursor) return;
+    fetching = true;
+    try {
+      const p = await fetchPage(cursor);
+      if (p) {
+        market = p;
+        pages = [...pages, p.listings];
+      }
+    } finally {
+      fetching = false;
+    }
+    render();
+    if (again) await refresh();
   }
 
   render();

@@ -4,14 +4,15 @@
 //! PostgreSQL (sqlx): `PgStore` (cargo feature `postgres`, on by default;
 //! `--database-url`) keeps them in one table per record type (`accounts`,
 //! `designs`, `daily_history`, `trades`, `snapshots`, `terrains`,
-//! `balances`, `ledger`, `alert_prefs`, `seasons`, `season_placements`). [`FileStore`] (the default) keeps the same records as JSON
+//! `balances`, `ledger`, `alert_prefs`, `seasons`, `season_placements`, `auctions`). [`FileStore`] (the default) keeps the same records as JSON
 //! files in a data directory, and [`MemoryStore`] serves tests.
 //!
 //! What is persisted: accounts (name, player id, argon2 hash), founder
 //! designs (re-founded into the new world on restart), one history record per
 //! simulated day (legacy shares and lineage counts), directed-mating
 //! agreements with their price, listing and escrow settlement, renown
-//! balances and the ledger (`crate::economy`), players' alert preferences
+//! balances and the ledger (`crate::economy`), how each marketplace auction
+//! ended (open auctions and their bids live in the saved game), players' alert preferences
 //! (which alert kinds they see and get toasts for), finished ranked seasons
 //! (`crate::league`: final standings per category, winners, summary), and saved games (a world snapshot with the
 //! game state around it, `crate::snapshot`, which includes players' alerts;
@@ -166,6 +167,41 @@ pub struct LedgerRecord {
     pub entry: LedgerEntry,
 }
 
+/// How a marketplace auction ended. `(world_id, listing)` identifies it: a
+/// world replaying days after a restart from an older saved game may close
+/// the same auction again, replacing the earlier record.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AuctionRecord {
+    pub world_id: String,
+    pub listing: u64,
+    pub seller: PlayerId,
+    pub organism: u64,
+    pub reserve: u64,
+    pub deadline_tick: u64,
+    /// Bids placed.
+    pub bids: u32,
+    /// The highest bid when it closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high_bid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winner: Option<PlayerId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winner_organism: Option<u64>,
+    /// `sold` (the winning bid became agreement `offer`), `unsold` (no bid),
+    /// `failed` (the winner's organism could no longer mate with the lot:
+    /// refunded), `ended` (the lot died: refunded) or `withdrawn` (before any
+    /// bid).
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<u64>,
+    /// Simulated day it closed.
+    pub day: u64,
+}
+
+fn same_auction(a: &AuctionRecord, b: &AuctionRecord) -> bool {
+    a.world_id == b.world_id && a.listing == b.listing
+}
+
 /// A player's alert preferences (upserted when they change them).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AlertPrefsRecord {
@@ -220,6 +256,11 @@ pub trait Store: Send + Sync {
     async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()>;
     /// A player's alert preferences, if they ever saved any.
     async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>>;
+    /// Record how an auction ended; replaces an earlier record of the same
+    /// world and listing, which keeps its place in order.
+    async fn append_auction(&self, record: &AuctionRecord) -> StoreResult<()>;
+    /// The most recent `limit` auction records, oldest first.
+    async fn recent_auctions(&self, limit: usize) -> StoreResult<Vec<AuctionRecord>>;
     /// Record a finished ranked season; replaces an earlier record of the
     /// same world and season (a rollover replayed after a restart), which
     /// keeps its place in order.
@@ -264,6 +305,7 @@ struct MemInner {
     balances: BTreeMap<PlayerId, BalanceRecord>,
     ledger: Vec<LedgerRecord>,
     alert_prefs: BTreeMap<PlayerId, AlertPrefsRecord>,
+    auctions: Vec<AuctionRecord>,
     /// Write order.
     seasons: Vec<SeasonRecord>,
 }
@@ -395,6 +437,19 @@ impl Store for MemoryStore {
         Ok(self.inner.lock().await.alert_prefs.get(&player).cloned())
     }
 
+    async fn append_auction(&self, record: &AuctionRecord) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        match g.auctions.iter_mut().find(|r| same_auction(r, record)) {
+            Some(r) => *r = record.clone(),
+            None => g.auctions.push(record.clone()),
+        }
+        Ok(())
+    }
+
+    async fn recent_auctions(&self, limit: usize) -> StoreResult<Vec<AuctionRecord>> {
+        Ok(last_n(self.inner.lock().await.auctions.clone(), limit))
+    }
+
     async fn put_season(&self, record: &SeasonRecord) -> StoreResult<()> {
         league::upsert(&mut self.inner.lock().await.seasons, record);
         Ok(())
@@ -424,9 +479,10 @@ fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
 /// - `accounts.json`, `designs.json`, `balances.json`, `alert_prefs.json`:
 ///   whole tables, rewritten atomically
 ///   (write to a temp file, then rename) on every change;
-/// - `history.jsonl`, `trades.jsonl`, `ledger.jsonl`, `seasons.jsonl`:
-///   append-only, one record per line (a replayed day, ledger entry or
-///   season is appended again and replaces the earlier line when read);
+/// - `history.jsonl`, `trades.jsonl`, `ledger.jsonl`, `seasons.jsonl`,
+///   `auctions.jsonl`: append-only, one record per line (a replayed day,
+///   ledger entry, season or auction is appended again and replaces the
+///   earlier line when read);
 /// - `snapshots/world-<tick>.snap`: saved games, written to a temp file,
 ///   synced and renamed into place, the newest [`KEEP_SNAPSHOTS`] kept;
 /// - `terrain/<world id>-<hash>.terrain`: each world's static terrain,
@@ -701,6 +757,25 @@ impl Store for FileStore {
 
     async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
         Ok(self.tables.lock().await.alert_prefs.iter().find(|r| r.player == player).cloned())
+    }
+
+    async fn append_auction(&self, record: &AuctionRecord) -> StoreResult<()> {
+        self.append_line("auctions.jsonl", record).await
+    }
+
+    async fn recent_auctions(&self, limit: usize) -> StoreResult<Vec<AuctionRecord>> {
+        let mut rows: Vec<AuctionRecord> = Vec::new();
+        let mut index: std::collections::HashMap<(String, u64), usize> = std::collections::HashMap::new();
+        for r in self.read_lines::<AuctionRecord>("auctions.jsonl").await? {
+            match index.get(&(r.world_id.clone(), r.listing)) {
+                Some(&i) => rows[i] = r,
+                None => {
+                    index.insert((r.world_id.clone(), r.listing), rows.len());
+                    rows.push(r);
+                }
+            }
+        }
+        Ok(last_n(rows, limit))
     }
 
     async fn put_season(&self, record: &SeasonRecord) -> StoreResult<()> {

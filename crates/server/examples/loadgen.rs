@@ -25,8 +25,9 @@
 //! times a minute, does what a player does: moves the view, possesses an
 //! organism and steers it, requests and previews matings (in its lineage
 //! and with others' organisms, some priced), answers mating requests,
-//! browses the market, lists an adult, buys a listing, reads its ledger,
-//! sets migrations. Every command carries an id; its latency is the time
+//! browses the market (a page of 20, sometimes the next page or another
+//! order), lists an adult (at a fixed fee or at auction), buys a listing or
+//! bids on an auction, reads its ledger, sets migrations. Every command carries an id; its latency is the time
 //! to the matching `result`.
 //!
 //! Every `--report` seconds it samples the server's `GET /api/metrics`
@@ -473,12 +474,16 @@ struct Listing {
     owner: u32,
     sex: String,
     busy: bool,
+    /// An auction's lowest bid now (none: a fixed fee).
+    min_bid: Option<u64>,
 }
 
 struct Player {
     player: u32,
     state: StateLite,
     listings: Vec<Listing>,
+    /// The last market page's `next_cursor`.
+    cursor: Option<String>,
     my_listings: usize,
     pending: HashMap<u64, (Instant, &'static str)>,
     next_id: u64,
@@ -571,9 +576,19 @@ impl Player {
                 Some(("preview_mating", json!({"type": "preview_mating", "mine": m, "partner": p})))
             }
             68..=79 => {
+                // A page of 20 (the server's default) without one's own
+                // listings: usually the first, newest first; sometimes the
+                // next one, or the cheapest or closing soonest.
                 let mine: Vec<u64> = self.adults(None).iter().map(|o| o.id).collect();
                 let m = Self::pick(&mut self.rng, &mine).copied();
-                Some(("browse_market", json!({"type": "browse_market", "mine": m})))
+                let mut q = json!({"type": "browse_market", "mine": m, "hide_own": true});
+                match self.rng.gen_range(0..10) {
+                    0..=2 if self.cursor.is_some() => q["cursor"] = json!(self.cursor),
+                    3 => q["sort"] = json!("price_asc"),
+                    4 => q["sort"] = json!("ending"),
+                    _ => {}
+                }
+                Some(("browse_market", q))
             }
             80..=83 => {
                 if self.my_listings >= 2 {
@@ -582,6 +597,14 @@ impl Player {
                 let mine: Vec<u64> = self.adults(None).iter().filter(|o| !o.pregnant).map(|o| o.id).collect();
                 let m = *Self::pick(&mut self.rng, &mine)?;
                 let fee = self.rng.gen_range(0..20);
+                if self.rng.gen_bool(0.3) {
+                    // An auction closing in a quarter to a whole day.
+                    let ticks = self.rng.gen_range(12..48);
+                    return Some((
+                        "create_auction",
+                        json!({"type": "create_auction", "organism": m, "reserve": fee, "ticks": ticks}),
+                    ));
+                }
                 Some((
                     "create_listing",
                     json!({"type": "create_listing", "organism": m, "fee": fee, "expires_days": 10}),
@@ -595,6 +618,9 @@ impl Player {
                     self.adults(None).iter().filter(|o| o.sex != l.sex && !o.pregnant).map(|o| o.id).collect();
                 let m = *Self::pick(&mut self.rng, &mine)?;
                 self.listings.retain(|x| x.id != l.id);
+                if let Some(min) = l.min_bid {
+                    return Some(("bid", json!({"type": "bid", "listing": l.id, "amount": min, "mine": m})));
+                }
                 Some(("buy_listing", json!({"type": "buy_listing", "listing": l.id, "mine": m})))
             }
             89..=92 => Some(("ledger", json!({"type": "ledger", "limit": 20}))),
@@ -697,6 +723,7 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
         player: player_id,
         state: StateLite::default(),
         listings: Vec::new(),
+        cursor: None,
         my_listings: 0,
         pending: HashMap::new(),
         next_id: 1,
@@ -808,6 +835,7 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
                         match name {
                             "browse_market" => {
                                 let ls = data.as_ref().and_then(|d| d["listings"].as_array()).cloned().unwrap_or_default();
+                                p.cursor = data.as_ref().and_then(|d| d["next_cursor"].as_str()).map(str::to_string);
                                 p.listings = ls
                                     .iter()
                                     .filter_map(|l| {
@@ -816,11 +844,12 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
                                             owner: l["owner"].as_u64()? as u32,
                                             sex: l["sex"].as_str()?.to_string(),
                                             busy: l["busy"].as_bool().unwrap_or(false),
+                                            min_bid: l["auction"]["min_bid"].as_u64(),
                                         })
                                     })
                                     .collect();
                             }
-                            "create_listing" => p.my_listings += 1,
+                            "create_listing" | "create_auction" => p.my_listings += 1,
                             _ => {}
                         }
                     }
