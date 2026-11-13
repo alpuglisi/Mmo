@@ -46,6 +46,9 @@ pub struct SweepArgs {
     pub screen_seeds: Option<u64>,
     /// Each screen keeps the best `ceil(n / eta)` trials (plus the center).
     pub eta: f64,
+    /// Found the extra migrating lineage too (`presets::extended_world`). It
+    /// is reported but not scored, so scores keep their 12-point scale.
+    pub migrants: bool,
 }
 
 /// Outcome of one world run.
@@ -61,6 +64,9 @@ pub struct RunMetrics {
     pub capped_days: u32,
     pub days: u32,
     pub mean_population: f64,
+    /// Lineages that count toward the score: the standard world's eight.
+    /// Extra lineages (`--migrants`) come after them and are only reported.
+    pub scored: usize,
 }
 
 impl RunMetrics {
@@ -72,7 +78,7 @@ impl RunMetrics {
     /// size), minus up to 3 for spending the run pinned at a population cap.
     pub fn score(&self) -> f64 {
         let mut s = 0.0;
-        for l in 0..self.names.len() {
+        for l in 0..self.scored.min(self.names.len()) {
             if self.persisted(l) {
                 s += 1.0;
             } else if let Some(d) = self.extinct_day[l] {
@@ -101,9 +107,9 @@ pub struct ScoredRun {
 }
 
 impl ScoredRun {
-    pub fn new(balance: Balance, seed: u64, size: usize, parallel_apply: bool) -> ScoredRun {
+    pub fn new(balance: Balance, seed: u64, size: usize, parallel_apply: bool, migrants: bool) -> ScoredRun {
         let config = WorldConfig { seed, width: size, height: size, balance, parallel_apply, ..Default::default() };
-        let world = presets::standard_world(config, 1);
+        let world = if migrants { presets::extended_world(config, 1) } else { presets::standard_world(config, 1) };
         let n = world.lineages.len();
         ScoredRun { world, extinct_day: vec![None; n], capped_days: 0, pop_sum: 0.0, days_run: 0, collapsed: false }
     }
@@ -151,12 +157,23 @@ impl ScoredRun {
             capped_days: self.capped_days,
             days,
             mean_population: self.pop_sum / days as f64,
+            scored: SCORED_LINEAGES,
         }
     }
 }
 
-pub fn run_one(balance: Balance, seed: u64, size: usize, days: u32, parallel_apply: bool) -> RunMetrics {
-    let mut run = ScoredRun::new(balance, seed, size, parallel_apply);
+/// Lineages of the standard world, the ones a score counts.
+pub const SCORED_LINEAGES: usize = 8;
+
+pub fn run_one(
+    balance: Balance,
+    seed: u64,
+    size: usize,
+    days: u32,
+    parallel_apply: bool,
+    migrants: bool,
+) -> RunMetrics {
+    let mut run = ScoredRun::new(balance, seed, size, parallel_apply, migrants);
     run.advance_to(days);
     run.metrics(days)
 }
@@ -267,19 +284,17 @@ fn stages(args: &SweepArgs) -> Vec<(u32, u64)> {
     v
 }
 
-fn lineage_names() -> Vec<String> {
-    presets::standard_world(WorldConfig { width: 16, height: 16, ..Default::default() }, 1)
-        .lineages
-        .iter()
-        .map(|l| l.name.clone())
-        .collect()
+fn lineage_names(migrants: bool) -> Vec<String> {
+    let config = WorldConfig { width: 16, height: 16, ..Default::default() };
+    let world = if migrants { presets::extended_world(config, 1) } else { presets::standard_world(config, 1) };
+    world.lineages.iter().map(|l| l.name.clone()).collect()
 }
 
 pub fn sweep(args: &SweepArgs) {
     let mut center = args.center;
     let mut csv = String::new();
     let mut all: Vec<Trial> = Vec::new();
-    let lineage_names = lineage_names();
+    let lineage_names = lineage_names(args.migrants);
     let stages = stages(args);
 
     println!(
@@ -323,7 +338,7 @@ pub fn sweep(args: &SweepArgs) {
                 .into_par_iter()
                 .map(|(k, s, run)| {
                     let mut run = run.unwrap_or_else(|| {
-                        ScoredRun::new(balances[k], args.base_seed + s, args.size, args.parallel_apply)
+                        ScoredRun::new(balances[k], args.base_seed + s, args.size, args.parallel_apply, args.migrants)
                     });
                     run.advance_to(days);
                     let m = run.metrics(days);
@@ -619,6 +634,8 @@ pub struct CompareArgs {
     pub b: Balance,
     pub out: Option<String>,
     pub parallel_apply: bool,
+    /// Both sides found the extra migrating lineage (`SweepArgs::migrants`).
+    pub migrants: bool,
 }
 
 /// Label of a configuration: its parameters that differ from the defaults.
@@ -640,7 +657,7 @@ fn label(b: &Balance) -> String {
 /// Paired comparison: run `a` and `b` on the same seeds and report the
 /// per-seed difference `a − b` with a 95% CI. Returns that difference.
 pub fn compare(args: &CompareArgs) -> Summary {
-    let names = lineage_names();
+    let names = lineage_names(args.migrants);
     let (la, lb) = (label(&args.a), label(&args.b));
     println!(
         "Compare: A = {la} vs B = {lb} · seeds {}–{} · {}×{} map · {} days · {} threads",
@@ -657,7 +674,7 @@ pub fn compare(args: &CompareArgs) -> Summary {
         .par_iter()
         .map(|&(c, s)| {
             let balance = if c == 0 { args.a } else { args.b };
-            (c, s, run_one(balance, args.base_seed + s, args.size, args.days, args.parallel_apply))
+            (c, s, run_one(balance, args.base_seed + s, args.size, args.days, args.parallel_apply, args.migrants))
         })
         .collect();
     let mut sides = [Scored { runs: Vec::new() }, Scored { runs: Vec::new() }];
@@ -772,8 +789,8 @@ mod tests {
     #[test]
     fn resumed_runs_match_straight_runs() {
         let b = Balance::default();
-        let straight = run_one(b, 5, 48, 6, true);
-        let mut run = ScoredRun::new(b, 5, 48, true);
+        let straight = run_one(b, 5, 48, 6, true, false);
+        let mut run = ScoredRun::new(b, 5, 48, true, false);
         run.advance_to(2);
         let early = run.metrics(2);
         assert_eq!(early.days, 2);
@@ -809,6 +826,7 @@ mod tests {
             screen_days: vec![60, 30, 200, 30],
             screen_seeds: Some(4),
             eta: 3.0,
+            migrants: false,
         };
         assert_eq!(stages(&args), vec![(30, 4), (60, 4), (120, 12)]);
         assert_eq!(stages(&SweepArgs { screen_days: Vec::new(), ..args }), vec![(120, 12)]);

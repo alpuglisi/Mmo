@@ -539,11 +539,15 @@ impl World {
             0.0
         };
 
+        // Vigilance at water and at rest: a threat in sight puts drinking
+        // and resting on hold (`threat_caution`), except for the parched.
+        let calm = 1.0 - cfg.balance.threat_caution * threat.min(1.0);
+
         let mut options: [(Action, f32); 14] = [
             (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless)),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
-            (Action::Drink, thirst.powf(1.5) * 1.3 + if thirst > 0.8 { 0.5 } else { 0.0 }),
-            (Action::Rest, tired * tired * 1.1),
+            (Action::Drink, thirst.powf(1.5) * 1.3 * calm + if thirst > 0.8 { 0.5 } else { 0.0 }),
+            (Action::Rest, tired * tired * 1.1 * calm),
             (Action::Bask, if o.traits.warm { 0.0 } else { (1.0 - o.activity) * 0.7 }),
             // A threat it has seen puts courting on hold (`courtship_caution`);
             // breeding drive still blunts the flight itself (`reckless`).
@@ -889,6 +893,15 @@ impl World {
             intent.target = None;
             return;
         }
+        // Remnants next door come before a trek: a forager on a stripped
+        // tile steps to the best neighboring tile with a bite on it, rather
+        // than passing it by for a patch found by sampling further out.
+        if self.config.balance.pasture_search > 0.0 {
+            if let Some(t) = self.best_neighbor(o, bite, |g, t| veg(g, t) * plant_eff + t.meat * c) {
+                intent.target = Some(t);
+                return;
+            }
+        }
         // A cacher lives off its hoard in the lean seasons.
         if let Some(c) = self.cache_to_eat(o, bite) {
             intent.target = (o.pos.dist(c) > 0.5).then_some(c);
@@ -914,6 +927,34 @@ impl World {
         }
     }
 
+    /// The best of the 8 tiles around `o` by `value`, if one holds at least
+    /// `min_value` and the body can stand on it.
+    fn best_neighbor(
+        &self,
+        o: &Organism,
+        min_value: f32,
+        value: impl Fn(&crate::terrain::Ground, &crate::terrain::Tile) -> f32,
+    ) -> Option<Vec2> {
+        let (x0, y0) = self.map.tile_coords(o.pos);
+        let mut best: Option<(f32, Vec2)> = None;
+        for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+            let (x, y) = (x0 as i64 + dx, y0 as i64 + dy);
+            if x < 0 || y < 0 || x >= self.map.width as i64 || y >= self.map.height as i64 {
+                continue;
+            }
+            let k = self.map.idx(x as usize, y as usize);
+            let (g, t) = (&self.map.ground()[k], &self.map.tiles[k]);
+            let v = value(g, t);
+            if v < min_value || best.is_some_and(|(s, _)| v <= s) {
+                continue;
+            }
+            if matches!(traverse(&o.traits.body, g, t, &Weather::still(t.wind), false), Traverse::Passable { .. }) {
+                best = Some((v, crate::terrain::Map::tile_center(x as usize, y as usize)));
+            }
+        }
+        best.map(|(_, p)| p)
+    }
+
     /// Sample nearby tiles and return the best by `value`, discounted by
     /// distance. Foraging range sets how far the organism looks.
     fn find_tile(
@@ -925,12 +966,20 @@ impl World {
     ) -> Option<Vec2> {
         let near = 2.0 + 6.0 * o.pheno[Gene::ForagingRange];
         let mut best: Option<(f32, Vec2)> = None;
-        // Look close first; if the area is stripped, look much further.
-        for k in 0..16 {
-            if k == 8 && best.is_some() {
+        // Look close first; if the area is stripped, look much further, and
+        // if that is stripped too, scan wide for fresh pasture
+        // (`pasture_search`) instead of wandering about the stripped patch.
+        let wide = self.config.balance.pasture_search;
+        let rings = if wide > 0.0 { 24 } else { 16 };
+        for k in 0..rings {
+            if (k == 8 || k == 16) && best.is_some() {
                 break;
             }
-            let r = if k < 8 { near } else { near * 3.0 };
+            let r = match k {
+                0..8 => near,
+                8..16 => near * 3.0,
+                _ => near * wide,
+            };
             let cand = self.map.clamp(o.pos + Vec2::new(rng.gen_range(-r..r), rng.gen_range(-r..r)));
             let (x, y) = self.map.tile_coords(cand);
             let k = self.map.idx(x, y);
