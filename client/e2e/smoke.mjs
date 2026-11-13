@@ -379,7 +379,8 @@ async function main() {
     // accepted agreement, the fee in escrow), both walk toward each other,
     // and the escrow must settle consistently: paid to ann if the mating
     // runs, refunded to bob on any other ending (a predator, a season
-    // change, or bob cancelling after 30 s apart).
+    // change, or bob cancelling after 12 s apart). It runs right after the directed
+    // mating, while both lineages are young, and keeps its world time short.
     await bob.evaluate(() => {
       window.__results = [];
       const s = window.evo.socket;
@@ -455,7 +456,7 @@ async function main() {
         await bob.click('#market-refresh');
         await new Promise((r) => setTimeout(r, 1000));
         return null;
-      }, 40000).catch(() => 'still pregnant');
+      }, 25000).catch(() => 'still pregnant');
       if (ready !== 'ready') {
         if (/renown|slots/.test(ready)) throw new Error(`cannot buy: ${ready}; renown ${JSON.stringify(await renown(bob))}`);
         console.log(`  … buy not possible (${ready}); picking again`);
@@ -463,7 +464,18 @@ async function main() {
       }
       const before = await renown(bob);
       await bob.evaluate(() => { window.__results = []; });
-      await bob.click(`${card} button.buy`);
+      // (A plain DOM click: the cards are rebuilt when what they show
+      // changes, which can detach a button under a slower synthetic click.)
+      const clicked = await bob.evaluate((sel) => {
+        const b = document.querySelector(sel);
+        if (!b || b.disabled) return false;
+        b.click();
+        return true;
+      }, `${card} button.buy`);
+      if (!clicked) {
+        console.log('  … the buy button went away (listing closed or no longer buyable); picking again');
+        continue;
+      }
       const r = await waitFor('buy_listing result', () => bob.evaluate(() => window.__results.find((r) => r.type === 'buy_listing')));
       if (!r.ok) {
         if (['already_pregnant', 'not_found', 'died', 'not_mature', 'unknown_listing'].includes(r.error?.code)) {
@@ -493,7 +505,7 @@ async function main() {
     if (!held.settled && held.escrow < fee) throw new Error(`escrow: ${JSON.stringify(bought.before)} → ${JSON.stringify(held)}`);
     await waitFor('ann told of the sale', () => page.evaluate(() => window.evo.model.feed.some((e) => e.kind === 'market' && e.text.includes('bought a mating'))), 10000);
     step(`purchase: offer ${bought.id} accepted at once, ${fee} renown in bob's escrow; ann alerted`);
-    // Both walk toward each other; give up (cancel) after 30 s apart.
+    // Both walk toward each other; give up (cancel) after 12 s apart.
     await bob.evaluate((organism) => window.evo.socket.send({ type: 'possess', organism }), bought.buyer);
     await page.evaluate((organism) => window.evo.socket.send({ type: 'possess', organism }), bought.dam);
     const met = await waitFor('the market pair meeting', async () => {
@@ -507,7 +519,7 @@ async function main() {
       }
       await new Promise((r) => setTimeout(r, 400));
       return false;
-    }, 30000).catch(() => false);
+    }, 12000).catch(() => false);
     if (!met) await bob.evaluate((request) => window.evo.socket.send({ type: 'cancel_mating', request }), bought.id);
     const fin = await waitFor('the purchase closing on both sides', async () => {
       const [sa, sb] = [await offerOf(page, bought.id), await offerOf(bob, bought.id)];

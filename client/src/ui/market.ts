@@ -180,8 +180,11 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const all = market?.listings ?? [];
     const shown = filterListings(all, filter, model.player);
     const mine = s?.organisms.find((o) => o.id === Number(mineSel.value));
-    const key = JSON.stringify([shown.map((l) => [l.id, l.sales, l.busy, l.pregnant, l.preview?.fertility, l.preview?.distance?.toFixed(0)]),
-      s?.balance, s?.slots_left, mine?.id, mine?.pregnant, market === null]);
+    // What the cards show: the listing data and whether (and why not) it
+    // can be bought, not the balance itself (which changes every day).
+    const balance = s?.balance ?? market?.balance ?? 0;
+    const key = JSON.stringify([shown.map((l) => [l.id, l.sales, l.busy, l.pregnant, l.preview?.fertility, l.preview?.distance?.toFixed(0),
+      buyProblem(l, model.player, balance, s?.slots_left ?? 0, mine)]), market === null]);
     if (key !== listingsKey) {
       listingsKey = key;
       listingsEl.replaceChildren(...(market === null ? [h('p', { class: 'muted small' }, 'Loading…')]

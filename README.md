@@ -774,7 +774,7 @@ buyer is a male, so no pregnancy spoils the pair; if she is pregnant the
 buyer waits for the birth) → the second picks his male, the listing shows
 "Compatible" → **Buy** → an accepted agreement with the fee in escrow on
 both sides and a `market` alert to the lister → both walk toward each
-other for up to 30 s, then the buyer cancels; the ledgers must match the
+other for up to 12 s, then the buyer cancels; the ledgers must match the
 outcome: the lister paid on `completed`, the buyer refunded otherwise →
 the balance pill and ledger rows show → the lister withdraws the listing),
 clicks one of its own organisms (the one with
