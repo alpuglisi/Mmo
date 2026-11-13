@@ -328,6 +328,16 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   first). The window follows the possessed organism, else the lineage's
   centroid, unless the client pins it with `set_view`. Foreign organisms show
   only what can be seen (position, action, sex, maturity), not needs.
+  A push sorts the world once (`StateIndex` in `game.rs`: living organisms
+  by owner and by 16-tile grid cell, open offers by player, the shared
+  clock, weather and leaderboard), so each connection's state costs what
+  it contains rather than a scan of every organism; possession sub-steps
+  build one for the players they update. The leaderboard in a state is
+  the whole board up to `GameConfig::state_leaderboard_rows` (50) rows;
+  a longer one is cut to the top 50 plus the player's own row and the
+  rows of the owners of the organisms in view (whose names the client
+  shows), in rank order. `GET /api/leaderboard` always has every row.
+  See [Load and soak test](#load-and-soak-test).
 - **Slow clients:** each connection has a 256-message queue. A full queue
   drops state frames (the next replaces them); a connection that can't take
   replies or events is closed.
@@ -402,6 +412,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/alerts/prefs` | Bearer | The caller's alert preferences, `{hidden: [kind], toast: [kind]}` (kinds as in `alert` messages); the defaults `{hidden: [], toast: ["death", "need", "market"]}` until saved |
 | `POST /api/alerts/prefs` | Bearer | Replace them; the reply is the normalized form (sorted, no duplicates, nothing hidden is toasted). An unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
+| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`) and the process's `cpu_seconds` and `rss_bytes` (Linux) |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
 Errors are `{"code": "...", "message": "...", ...detail}`. A design:
@@ -444,7 +455,7 @@ Server → client:
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage}` | On connect |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard`, `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
 | `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
@@ -722,7 +733,11 @@ skips that saved game if it can't. One saver thread encodes one capture at a tim
 and sends them in capture order, and the store task writes in the order it
 receives, so an older save never lands after a newer one; a capture that
 arrives while an earlier one is still waiting replaces it (the older would
-be superseded anyway, and memory stays bounded at two copies). On shutdown
+be superseded anyway, and memory stays bounded at two copies). The saver
+also waits until the store task has written the save it sent last before
+it takes the next capture, so a slow store (or a full disk) holds at most
+one encoded save in the persist channel instead of a growing queue of
+30–60 MB blobs, and a panic while encoding loses that save only. On shutdown
 the world thread waits for the saver to encode the last save before it
 replies, and the server waits for the store task to write it
 (`Store::put_snapshot`; `FileStore` writes a temp file, syncs it and
@@ -1373,6 +1388,142 @@ launch numbers. From the measurements above:
 The two schedules differ by less than one seed set from the next (0.24), the
 usual chaos band.
 
+### Load and soak test
+
+`crates/server/examples/loadgen.rs` drives simulated players against a real
+server over the real protocol:
+
+```sh
+cargo build --release -p evo-server --bins --examples
+target/release/examples/loadgen --players 200 --duration 150 --ramp 40 --warm-until 22000
+target/release/examples/loadgen --players 200 --duration 1800 --fast --warm-until 22000   # soak
+target/release/examples/loadgen --url http://host:8080 --players 50                       # a running server
+```
+
+It starts `evo-server` (512² by default) with a file store in `--data DIR`
+and `--no-rate-limits`, since every simulated player comes from 127.0.0.1
+(the per-IP login, command and read limits would otherwise throttle them;
+against a server with limits on, run the players from many hosts). With
+`--warm-until N` it first grows the world in fast mode to N organisms, stops
+it (saving) and restarts it from that save with the test's clock. Each
+player registers, logs in, founds a lineage (12 founders), opens **one**
+WebSocket (well under the 8-per-player limit) and, about 30 times a minute,
+moves its view, possesses and steers an organism (30% of actions), requests
+and previews matings (own pairs and other players' organisms in view, some
+priced), answers mating requests, browses the market, lists an adult, buys
+listings, reads its ledger and sets migrations. That is a heavy player:
+nearly everyone is steering, so each gets the possession sub-step states
+too (2.7 states a second instead of 1). Every `--report` seconds it reads
+the new `GET /api/metrics` (world-thread timings, queue depth, dropped
+connections, skipped state frames, save timings, bytes out, process CPU and
+memory) and prints a line; at the end a summary (`--json FILE` for all of
+it), a graceful stop and a scan of the server log for panics.
+
+**Results** (512², warmed to 22k organisms and growing to 28–34k, 1 s ticks,
+1 s state interval, 150 s after a 20–60 s ramp; 4-core container shared
+with other busy agents, load average 6–14, server and load generator on the
+same machine, so these are pessimistic):
+
+| | 50 players | 200, before | 200 | 500, before | 500 |
+| --- | --- | --- | --- | --- | --- |
+| Ticks per second (target 1) | 1.0 | 1.0 | 1.0 | **0.3** | 1.0 |
+| Tick (step + bookkeeping) p50 / p99 | 78 / 167 ms | 77 / 166 ms | 81 / 216 ms | 150 / 325 ms | 114 / 284 ms |
+| One state push to all, p50 / p99 | 2.6 / 8 ms | 102 / 141 ms | 7.4 / 16 ms | 323 / 576 ms | 25 / 76 ms |
+| Possession sub-step, p99 | 20 ms | 164 ms | 52 ms | 617 ms | 121 ms |
+| State message p50 / p99 | 16 / 66 KB | 35 / 80 KB | 21 / 66 KB | 69 / 110 KB | 31 / 68 KB |
+| Outbound, total (per client) | 3.0 MB/s (61 KB/s) | 23 MB/s (117 KB/s) | 17 MB/s (84 KB/s) | 45 MB/s (90 KB/s)\* | 57 MB/s (115 KB/s) |
+| Commands per second | 24 | 98 | 98 | 250 | 243 |
+| Command → result p50 / p99 | 132 / 253 ms | 145 / 273 ms | 147 / 263 ms | 748 / 1700 ms | 203 / 748 ms |
+| Most requests queued at one boundary | 14 | 40 | 43 | 477 | 236 |
+| Server CPU (cores) / RSS max | 0.1 / 263 MB | 0.5 / 389 MB | 0.2 / 390 MB | 0.6 / 611 MB | 0.5 / 704 MB |
+| Save: capture (world thread) / encode / write | 87 / 292 / 74 ms | 50 / 457 / 86 ms | 81 / 445 / 87 ms | 378 / 1554 / 89 ms | 45 / 1284 / 235 ms |
+| Dropped connections, skipped states, panics | 0 | 0 | 0 | 0 | 0 |
+
+"Before" is the same server without the fixes below (same metrics); \* it
+pushed fewer states because the world fell to 0.3 ticks per second. Command
+latency has a floor of about half a sub-step (125 ms at the 1 s clock with 4
+sub-steps): commands apply at the next sub-step boundary. Saves are 30–36 MB
+at this size. The load generator used 0.1–0.6 cores.
+
+**Soak:** 200 players in fast mode (`--fast`: 20 ms ticks, states every
+100 ms) for 30 minutes on the same machine. The world could not hold 20 ms
+(the box was saturated, load average 15–18, the server got about 0.6 cores),
+so it ran as fast as it could, about 2 ticks a second: 3,350 ticks, 70
+simulated days, 67 saves, population 31k → 54k → 45k, 5.7 states a second
+per client (45 KB median), 93 commands a second, 52 MB/s out. No dropped
+connections, no skipped state frames, no unexpected closes, at most 122
+requests queued at one boundary. Memory followed the population and the
+save copies (378 MB at the start, 500–565 MB at 50k organisms between
+saves, 680–790 MB just after a save) and plateaued; nothing grew with time
+alone. State pushes stayed at 25 / 82 ms (p50 / p99) for 200 connections at
+50k organisms. That run also hit a full disk and found the saver crash
+below; a second 20-minute soak with the fixes (3,700 ticks, 77 days, 90
+saves, 42–56k organisms, 8.3 states a second per client, 88 MB/s out,
+commands 114 / 382 ms p50 / p99) ended with no dropped connections, no
+skipped states, not one warning or error in the log, a clean shutdown and
+RSS flat at 565 MB for its last ten minutes.
+
+**What it found and what changed:**
+
+- **State building was O(connections × organisms).** Each state scanned
+  every organism twice (own organisms, view window), again for the
+  possessed organism and the lineage centroid, and every offer, so one push
+  to 500 connections at 30k organisms took 320–580 ms of the world thread,
+  and the possession sub-steps (a push to every steering player, three
+  times a tick) as much again: the world fell to 0.3 ticks per second. Now
+  a push builds one `StateIndex` (organisms by owner and by 16-tile cell,
+  open offers by player, the shared clock, weather and leaderboard) in one
+  pass, and each state costs only what it contains: 13× faster at 200
+  players, 13× at 500 (25 ms), and the clock holds. A test checks that the
+  indexed states are identical to the old scan's for every connection
+  (pinned views at and off the map edge, the `max_nearby` cut, offers,
+  possession sub-steps).
+- **The leaderboard was a third to half of every state** (all players,
+  ~95 bytes a row: 48 KB at 500 players) and the client showed all of it.
+  States now carry the top 50 rows plus the player's own and those of the
+  owners in view (the client looks up owner names there); `GET
+  /api/leaderboard` keeps every row. A test checks the cut.
+- Every queued message was cloned once per recipient, including states,
+  which have one; the last (usually only) recipient now takes the message.
+- **Logging could kill the saver.** The soak filled the disk (other jobs
+  share it): the log write failed, `tracing-subscriber` reported that with
+  `eprintln!`, which panicked on the full stderr, inside the saver thread,
+  and saves stopped for good. `log_internal_errors(false)` now drops log
+  lines that can't be written, and a panic while encoding skips that save
+  only.
+- **Encoded saves could pile up behind a slow store** (the persist channel
+  is unbounded and a save is 30–60 MB). The saver now waits until the store
+  task has written the save it sent before taking the next capture; newer
+  captures replace the waiting one meanwhile. A test checks it.
+- `GET /api/metrics` exposes all of the above for operators.
+
+Remaining limits: **bandwidth** is the first to bite. A steering player
+gets about 115 KB/s (0.9 Mbit/s), an idle one 20–30 KB/s: the 256 nearest
+foreign organisms with their `look` are most of a state, and steering
+players get a full state at every sub-step. 500 steering players need about
+460 Mbit/s of egress. Compression (JSON states compress 5–10×), shorter
+`look`s or delta states would cut that, but each is a protocol change for
+the client. Next on the world thread is the sim tick itself, then the
+sub-step states (a full push to every steering player, three times a tick).
+
+**Capacity recommendation** (512², 25–35k organisms, 1 s ticks):
+
+- **Up to 200 players per world on 4 cores.** The world thread is busy
+  about 15% of the time (tick ~80 ms, pushes ~7 ms, sub-steps ~50 ms
+  p99), command latency stays at its sub-step floor (p99 ~260 ms) and the
+  server needs about 17 MB/s (140 Mbit/s) of egress with everyone steering.
+- **500 players per world is possible** on 4 dedicated cores (on this
+  shared box it held the clock, with p99 command latency 750 ms and 57
+  MB/s, 460 Mbit/s, out), but plan **6–8 cores** (4 for the sim's parallel
+  phases, 1 for the world thread's serial work, 1–2 for serializing and
+  sending states) and a 1 Gbit/s link, or more worlds instead of bigger
+  ones.
+- Memory: about 0.4 GB at 200 players and 0.7 GB at 500 including save
+  copies; budget 1 GB per world. Saves take 45–90 ms of the world thread
+  (the copy) and 0.3–1.3 s of the saver thread per simulated day.
+- Keep rate limits on in production (the test turns them off only because
+  all its players share one IP).
+
 ## Level of detail
 
 Opt-in (`WorldConfig::lod.enabled`, default off: with it off a run is
@@ -1938,10 +2089,10 @@ in use, 10.71 with the presets' strategies).
    tags, trait caches, paths), so a leaner organism encoding is next for
    save size, and the world-thread capture (about 32 ms) is now the
    organisms' clone; per-world tables once there are
-   several shards; interest
-   management through the sim's spatial grid instead of a scan per
-   connection; session expiry and rate limits; a stud marketplace and an
-   economy behind the recorded prices; seasonal leaderboard aggregation;
+   several shards; smaller states (compression, delta states or shorter
+   `look`s: a steering player gets ~115 KB/s, see
+   [Load and soak test](#load-and-soak-test)); seasonal leaderboard
+   aggregation;
    several worlds (shards) per process.
 6. **Client (step 3, started):** a terrain endpoint (tile types and heights
    instead of the debug PNG) and tile rendering with seasons and weather;
