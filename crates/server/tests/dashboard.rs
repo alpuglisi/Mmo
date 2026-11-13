@@ -220,7 +220,7 @@ async fn terrain_stats_and_seasons() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn logins_and_commands_are_rate_limited() {
     let mut cfg = config();
-    cfg.limits = Limits { logins: Rate::new(0.01, 3.0), commands: Rate::new(0.01, 5.0), ip_commands: Rate::UNLIMITED };
+    cfg.limits = Limits { logins: Rate::new(0.01, 3.0), commands: Rate::new(0.01, 5.0), ..Limits::unlimited() };
     let srv = server(cfg).await;
     let addr = srv.addr;
     let ann = register(addr, "ann").await;

@@ -288,6 +288,11 @@ impl Store for PgStore {
             None => Err(StoreError(format!("no snapshot at tick {tick}"))),
         }
     }
+
+    async fn clear_snapshots(&self) -> StoreResult<()> {
+        sqlx::query("DELETE FROM snapshots").execute(&self.pool).await?;
+        Ok(())
+    }
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
         sqlx::query(
             "INSERT INTO balances (player, balance, updated_day) VALUES ($1, $2, $3) \

@@ -101,6 +101,13 @@ pub fn header(bytes: &[u8]) -> Result<SnapshotHeader, DecodeError> {
     SnapshotHeader::read(world).map_err(DecodeError::World)
 }
 
+/// Only the game-side state of a saved game, without restoring the world
+/// (cheap: `--fresh` reads the discarded world's open agreements from it).
+pub fn decode_game(bytes: &[u8]) -> Result<SavedGame, DecodeError> {
+    let (saved, _) = split(bytes)?;
+    serde_json::from_slice(saved).map_err(|e| DecodeError::Game(e.to_string()))
+}
+
 pub fn decode(bytes: &[u8]) -> Result<(World, SavedGame), DecodeError> {
     let (saved, world) = split(bytes)?;
     let saved: SavedGame = serde_json::from_slice(saved).map_err(|e| DecodeError::Game(e.to_string()))?;

@@ -469,10 +469,17 @@ async fn restart_continues_the_saved_world(backend: Backend) {
     drop(store);
 
     // --fresh ignores the saved game: a new world from tick 0.
-    let srv = start(ServerConfig { fresh: true, ..cfg }).await.unwrap();
+    let srv = start(ServerConfig { fresh: true, ..cfg.clone() }).await.unwrap();
     let client = reqwest_like::Client::new(srv.addr);
     let (tick, _) = world_clock(&client).await;
     assert!(tick < saved_tick, "fresh world at tick {tick}");
+    srv.shutdown().await;
+    // The discarded world's saves are gone: a plain restart continues the
+    // fresh world, not the older one with higher ticks.
+    let srv = start(cfg).await.unwrap();
+    let client = reqwest_like::Client::new(srv.addr);
+    let (tick, _) = world_clock(&client).await;
+    assert!(tick < saved_tick, "restarted the discarded world (tick {tick})");
     srv.shutdown().await;
     backend.cleanup().await;
 }
@@ -584,13 +591,31 @@ async fn restart_keeps_balances(backend: Backend) {
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // A fresh world: balances from the store, no second founding grant (the
-    // escrow of the old world's agreement is not carried over).
+    // A fresh world: balances from the store, no second founding grant, and
+    // the escrow of the discarded world's open agreement refunded.
+    let srv = start(ServerConfig { fresh: true, ..cfg.clone() }).await.unwrap();
+    let client = reqwest_like::Client::new(srv.addr);
+    let v = client.post_json("/api/login", r#"{"name":"ann","password":"a long password"}"#, None).await;
+    let (mut ws, _) = connect(srv.addr, v["token"].as_str().unwrap()).await;
+    assert_eq!(balance(&mut ws).await, (ann_before + 5, 0));
+    drop(ws);
+    srv.shutdown().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let store = backend.open().await;
+    let last = store.recent_ledger(Some(1), 1).await.unwrap().pop().expect("a refund entry").entry;
+    assert_eq!((last.kind, last.delta, last.balance, last.offer), (LedgerKind::Refund, 5, ann_before + 5, None));
+    assert!(last.text.contains(&format!("offer #{offer} of world")), "{}", last.text);
+    let stored = store.load_balances().await.unwrap();
+    assert_eq!(stored.iter().find(|b| b.player == 1).map(|b| b.balance), Some(ann_before + 5));
+    drop(store);
+
+    // The fresh world saved on shutdown: starting fresh again discards that
+    // one (no open agreements), so nothing is refunded twice.
     let srv = start(ServerConfig { fresh: true, ..cfg }).await.unwrap();
     let client = reqwest_like::Client::new(srv.addr);
     let v = client.post_json("/api/login", r#"{"name":"ann","password":"a long password"}"#, None).await;
     let (mut ws, _) = connect(srv.addr, v["token"].as_str().unwrap()).await;
-    assert_eq!(balance(&mut ws).await, (ann_before, 0));
+    assert_eq!(balance(&mut ws).await, (ann_before + 5, 0));
     drop(ws);
     srv.shutdown().await;
     backend.cleanup().await;

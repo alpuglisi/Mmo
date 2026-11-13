@@ -193,6 +193,8 @@ pub trait Store: Send + Sync {
     /// Ticks of the stored snapshots, newest first.
     async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>>;
     async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>>;
+    /// Delete every snapshot (`--fresh` discards the saved world).
+    async fn clear_snapshots(&self) -> StoreResult<()>;
     /// Insert or replace a player's balance.
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()>;
     async fn load_balances(&self) -> StoreResult<Vec<BalanceRecord>>;
@@ -315,6 +317,11 @@ impl Store for MemoryStore {
             .find(|s| s.0 == tick)
             .map(|s| s.1.clone())
             .ok_or_else(|| StoreError(format!("no snapshot at tick {tick}")))
+    }
+
+    async fn clear_snapshots(&self) -> StoreResult<()> {
+        self.inner.lock().await.snapshots.clear();
+        Ok(())
     }
 
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {
@@ -545,6 +552,14 @@ impl Store for FileStore {
 
     async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>> {
         Ok(tokio::fs::read(self.dir.join(SNAPSHOT_DIR).join(snapshot_name(tick))).await?)
+    }
+
+    async fn clear_snapshots(&self) -> StoreResult<()> {
+        let dir = self.dir.join(SNAPSHOT_DIR);
+        for tick in self.snapshot_ticks().await? {
+            tokio::fs::remove_file(dir.join(snapshot_name(tick))).await?;
+        }
+        Ok(())
     }
 
     async fn put_balance(&self, record: &BalanceRecord) -> StoreResult<()> {

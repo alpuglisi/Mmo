@@ -338,10 +338,16 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   logins and registrations per client IP (burst 10, then one per 6 s; checked
   before any password hashing, `429 rate_limited` with `retry_after_ms` and
   `Retry-After`), WebSocket commands per connection (20/s, burst 40) and per
-  IP over all its connections (60/s, burst 120); a refused command gets a
+  IP over all its connections (60/s, burst 120), and the public reads that
+  cost the world thread or the store (terrain, map, chronicle, history,
+  seasons, lineage stats) per IP (10/s, burst 60); a refused command gets a
   `result` with `rate_limited` and never reaches the world thread. The IP is
-  the TCP peer (behind a reverse proxy that would be the proxy: trusting
-  `X-Forwarded-For` is not implemented).
+  the TCP peer, an IPv6 peer counted by its /64 (behind a reverse proxy that
+  would be the proxy: trusting `X-Forwarded-For` is not implemented).
+- **Size limits:** HTTP bodies up to 64 KiB (`413` beyond), passwords up to
+  1024 bytes, WebSocket messages and frames up to 16 KiB (a larger one
+  closes the connection), at most 8 WebSocket connections per player
+  (`429 too_many_connections`), map images up to 2048 px a side.
 - **Alerts and history** (`game.rs`): the world thread keeps the daily records
   since start (up to 365) with each lineage's births, deaths by cause and
   mean gene values, and raises per-player alerts: deaths of founders and
@@ -374,7 +380,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 
 | Method and path | Auth | What it does |
 | --- | --- | --- |
-| `POST /api/register` `{name, password}` | | Create an account (name 3–24 of `[A-Za-z0-9_-]`, password ≥ 8). `201 {token, player, name}`; `409 name_taken` |
+| `POST /api/register` `{name, password}` | | Create an account (name 3–24 of `[A-Za-z0-9_-]`, password ≥ 8 characters and ≤ 1024 bytes). `201 {token, player, name}`; `409 name_taken` |
 | `POST /api/login` `{name, password}` | | `{token, player, name}`; `401 bad_credentials` |
 | `POST /api/logout` | Bearer | End the session |
 | `POST /api/lineage` (design) | Bearer | Found your lineage (one per player per world). `201 {lineage, founders: [ids], cost}`; `400` with `over_budget {cost, budget}`, `value_out_of_range {gene}`, `reserved_gene`, `litter_size`, `no_founders`, `unknown_gene`, `bad_name`; `409 already_founded` |
@@ -392,7 +398,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/lineage/stats` | Bearer | The genetics dashboard: counts (alive, adults, young, pregnant, newest generation), `age_bands` (up to six equal bands by sex), `vitals` (births and deaths by cause per recorded day, the last entry today so far, at most 30), `genes` (every gene's mean, spread and founding mean with the daily means, largest drift first, and `bins`: members per tenth of the 0–1 range, a histogram), `origins` (whose alleles the living members carry: `[{player, name, lineage?, alleles, share}]`, largest share first; 0 is the wild), `legacy` (share per recorded day) and recent `alerts` |
 | `GET /api/alerts/prefs` | Bearer | The caller's alert preferences, `{hidden: [kind], toast: [kind]}` (kinds as in `alert` messages); the defaults `{hidden: [], toast: ["death", "need", "market"]}` until saved |
 | `POST /api/alerts/prefs` | Bearer | Replace them; the reply is the normalized form (sorted, no duplicates, nothing hidden is toasted). An unknown kind is refused (422) |
-| `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile), for debugging |
+| `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
 Errors are `{"code": "...", "message": "...", ...detail}`. A design:
@@ -636,8 +642,16 @@ and the world snapshot. The game JSON carries a layout `version`
 restores, with balances and recent ledger entries from the store instead
 (and no escrow on its open offers). A new world (no saved game, or
 `--fresh`) also starts from the stored balances, and players who have one
-don't get the founding grant again; the escrow of open agreements in a
-discarded world is not carried over. A crash between saves restores the
+don't get the founding grant again. `--fresh` refunds the escrow of the
+discarded world's open agreements (`Game::refund_discarded`): those open
+with escrow in its newest saved game, plus any escrowed in the store's
+ledger after that save, less any that settled (paid or refunded) after it;
+each refund is a `refund` ledger entry in the new world naming the old
+offer and world, written before startup goes on, and an earlier refund of
+the same offer is recognised, so a second `--fresh` from the same saved game
+pays nothing twice. `--fresh` then deletes the discarded world's saved games
+(their ticks are higher than the new world's, and a restart restores the
+highest tick). A crash between saves restores the
 balances of the last saved game, and the replayed days write the same
 ledger sequence numbers again, replacing their earlier entries.
 The world thread saves after the tick that starts a new simulated day and
@@ -671,6 +685,83 @@ the level-of-detail focus of their views is dropped, so lineages nobody
 watches fold into cohorts at the next day, as when everyone disconnects).
 Possession survives a restart. Records written after the last saved game
 (a crash between saves) are replayed by the restored world.
+
+### Security notes
+
+A review of the server (accounts, HTTP, WebSocket, game commands, economy,
+store) found and fixed:
+
+- **`--fresh` lost escrow, and could bring the old world back.** Open
+  agreements' escrow in the discarded world is now refunded (see
+  Persistence), and the discarded saved games are deleted: before, they kept
+  their higher ticks, so the next plain restart restored the old world (with
+  the escrow still held there).
+- **Unbounded request sizes.** HTTP bodies were limited only by axum's 2 MB
+  default and passwords not at all (argon2 hashes any length): now 64 KiB and
+  1024 bytes. WebSocket frames were bounded only by tungstenite's 16 MB
+  default (a frame is read whole before the 16 KiB message limit applies):
+  now 16 KiB too. `GET /api/map.png?scale=8` on a 1024-tile map rendered a
+  200 MB image on the world thread: the side is capped at 2048 px.
+- **Unauthenticated work for the world thread.** Terrain, map, chronicle,
+  history, seasons and lineage stats requests were unlimited and could fill
+  the world thread's queue (starving players' commands): now rate-limited
+  per client. One player could open any number of WebSockets, each a view
+  the world thread builds a state for every interval: now 8.
+- **Rate-limit bypasses.** An IPv6 client could use a fresh address of its
+  /64 for every attempt: IPv6 peers are keyed by /64. The limiter's key map
+  could grow without bound while every key was busy, and once past 4096 keys
+  pruned the whole map on every request (O(n) per request): pruning is now
+  amortized and the map is capped (65 536 keys; beyond, buckets are dropped,
+  briefly forgetting some limits rather than running out of memory).
+- **Login timing.** A login for an unknown name returned at once, one for a
+  wrong password after an argon2 verify, which told which names exist:
+  unknown names now verify against a dummy hash. (Registration still says
+  `name_taken`, by design.)
+- **Unpaid agreements.** If taking a price into escrow failed after the
+  funds check, the offer was still opened with nothing held; it is now
+  refused. Prices above the cap are refused before the pair checks.
+
+Checked and judged acceptable:
+
+- **Double settlement.** Every command runs on the world thread one at a
+  time, and an agreement is removed in the same step that settles it, so a
+  second cancel, complete, decline or refund finds nothing (`unknown_offer`);
+  a listed dam takes one buyer at a time. Only an offer's two parties can
+  answer, complete or cancel it, only owners list, withdraw or use their
+  organisms. Tests: `escrow_settles_once_and_only_the_parties_act_on_an_offer`.
+- **Numbers.** Prices, fees and limits are `u64`/`u32`: negative, fractional
+  or oversized values fail to parse (`bad_message`), prices and fees are
+  capped at 1 000 000, debits are checked and credits saturate, so balances
+  can't wrap; coordinates must be finite and are clamped to the map.
+- **Tokens.** 256 bits from the OS RNG, compared by a `HashMap` lookup:
+  SipHash with a per-process random key means an attacker can't steer which
+  entries are compared, and a byte-wise comparison happens only on a full
+  64-bit hash match, so there is no usable timing signal; a constant-time
+  compare would add nothing. Sessions expire (idle 1 h, at most 24 h) and
+  live only in memory. The WebSocket accepts the token in the query string
+  because browsers can't set headers there; the server doesn't log URLs, but
+  a proxy in front might.
+- **Password hashing.** argon2id with the crate defaults (19 MiB, 2 passes,
+  1 lane; OWASP's minimum), a random 16-byte salt, PHC strings; hashing and
+  verifying run on the blocking pool behind the login rate limit.
+- **CORS.** Any origin, no credentials: auth is a bearer token the page
+  holds, never a cookie, so another origin can't act as a user it has no
+  token for.
+- **Static files.** `tower-http`'s `ServeDir` rejects `..` and absolute
+  components; tested with encoded and backslash variants.
+- **SQL.** Every PostgreSQL query is a constant string with bound
+  parameters; nothing from a client is formatted into SQL.
+- **Panics from client input.** Commands index offers and organisms only
+  after looking them up; malformed JSON gets `bad_message` (WebSocket) or a
+  4xx (HTTP).
+- **Left as is:** names are case-sensitive (`Ann` and `ann` are different
+  accounts); a reverse proxy makes every client one IP for the limits;
+  `GET /api/leaderboard/seasons` reads up to 100 000 daily records per call
+  (rate-limited now; a cache would be the next step); `accounts.json` is
+  written with the process umask; after a crash and a restart from an older
+  saved game, the store's balances and ledger can hold entries from the
+  abandoned timeline until they are overwritten, which a later `--fresh`
+  refund (that trusts the store after the newest save) inherits.
 
 ## Client
 
