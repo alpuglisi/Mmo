@@ -9,7 +9,7 @@
 //! registration order starting at 1 (0 is the wild ecosystem).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use argon2::password_hash::rand_core::OsRng;
@@ -43,7 +43,9 @@ impl AuthError {
     pub fn message(&self) -> String {
         match self {
             AuthError::BadName => "names are 3 to 24 letters, digits, '_' or '-'".into(),
-            AuthError::WeakPassword => format!("passwords need at least {MIN_PASSWORD} characters"),
+            AuthError::WeakPassword => {
+                format!("passwords need at least {MIN_PASSWORD} characters and at most {MAX_PASSWORD_BYTES} bytes")
+            }
             AuthError::NameTaken => "that name is taken".into(),
             AuthError::BadCredentials => "wrong name or password".into(),
             AuthError::Internal(e) => e.clone(),
@@ -52,6 +54,20 @@ impl AuthError {
 }
 
 pub const MIN_PASSWORD: usize = 8;
+/// Longest password accepted, in bytes: argon2 hashes any length, so without
+/// a bound one request could make the server hash megabytes.
+pub const MAX_PASSWORD_BYTES: usize = 1024;
+
+/// A hash to verify against when the name is unknown, so a login for a
+/// missing account costs as much as one with a wrong password and the
+/// response time does not tell which names exist.
+fn dummy_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| {
+        let salt = SaltString::generate(&mut OsRng);
+        Argon2::default().hash_password(b"not a real password", &salt).map(|h| h.to_string()).unwrap_or_default()
+    })
+}
 
 #[derive(Clone, Debug)]
 pub struct Session {
@@ -151,7 +167,7 @@ impl Accounts {
         if !valid_name(name) {
             return Err(AuthError::BadName);
         }
-        if password.chars().count() < MIN_PASSWORD {
+        if password.chars().count() < MIN_PASSWORD || password.len() > MAX_PASSWORD_BYTES {
             return Err(AuthError::WeakPassword);
         }
         let player = {
@@ -190,17 +206,21 @@ impl Accounts {
     }
 
     pub async fn login(&self, name: &str, password: &str) -> Result<(String, Session), AuthError> {
-        let record = self.inner.lock().unwrap().by_name.get(name).cloned().ok_or(AuthError::BadCredentials)?;
+        if password.len() > MAX_PASSWORD_BYTES {
+            // No account has one this long; don't hash it.
+            return Err(AuthError::BadCredentials);
+        }
+        let record = self.inner.lock().unwrap().by_name.get(name).cloned();
         let password = password.to_string();
-        let hash = record.password_hash.clone();
+        let hash = record.as_ref().map_or_else(|| dummy_hash().to_string(), |r| r.password_hash.clone());
         let ok = tokio::task::spawn_blocking(move || {
             PasswordHash::new(&hash).is_ok_and(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok())
         })
         .await
         .map_err(|e| AuthError::Internal(e.to_string()))?;
-        if !ok {
+        let Some(record) = record.filter(|_| ok) else {
             return Err(AuthError::BadCredentials);
-        }
+        };
         let session = Session { player: record.player, name: record.name };
         let token = self.inner.lock().unwrap().open_session(session.clone(), self.policy);
         Ok((token, session))
@@ -273,6 +293,36 @@ mod tests {
         assert!(acc2.session(&t3).is_none());
         assert_eq!(acc2.login("bob", "bob's password").await.unwrap().1.player, 2);
         assert_eq!(acc2.register("carol", "carol's password").await.unwrap().1.player, 3);
+    }
+
+    #[tokio::test]
+    async fn passwords_are_bounded_and_hashed_with_argon2id() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+        let acc = Accounts::new(store.clone(), vec![]);
+        let long = "x".repeat(MAX_PASSWORD_BYTES + 1);
+        assert_eq!(acc.register("erin", &long).await.unwrap_err(), AuthError::WeakPassword);
+        let longest = "y".repeat(MAX_PASSWORD_BYTES);
+        acc.register("erin", &longest).await.unwrap();
+        assert!(acc.login("erin", &longest).await.is_ok());
+        assert_eq!(acc.login("erin", &long).await.unwrap_err(), AuthError::BadCredentials);
+        // Unknown names fail like wrong passwords (after a dummy verify).
+        assert_eq!(acc.login("nobody", "whatever123").await.unwrap_err(), AuthError::BadCredentials);
+        assert!(dummy_hash().starts_with("$argon2id$"));
+        // The stored hash is argon2id with at least OWASP's minimum cost.
+        let stored = store.load_accounts().await.unwrap();
+        let h = PasswordHash::new(&stored[0].password_hash).unwrap();
+        assert_eq!(h.algorithm.as_str(), "argon2id");
+        let params = argon2::Params::try_from(&h).unwrap();
+        assert!(params.m_cost() >= 19 * 1024 && params.t_cost() >= 2, "{params:?}");
+        assert!(h.salt.is_some_and(|s| s.len() >= 16));
+    }
+
+    #[test]
+    fn tokens_are_256_random_bits() {
+        let a = new_token();
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, new_token());
     }
 
     #[tokio::test]

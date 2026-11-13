@@ -305,6 +305,21 @@ pub struct SavedGame {
     economy: Option<Economy>,
 }
 
+/// Refuse a price above [`economy::MAX_PRICE`].
+fn check_price(price: u64) -> Result<(), ErrorInfo> {
+    if price > economy::MAX_PRICE {
+        return Err(ErrorInfo::new("bad_price", format!("prices go up to {} renown", economy::MAX_PRICE)));
+    }
+    Ok(())
+}
+
+/// How a fresh-start refund names the offer of a discarded world (the
+/// trailing comma keeps offer #1 of a world from matching #10, or a world id
+/// from matching a longer one).
+fn discarded_mark(world: &str, offer: u64) -> String {
+    format!("offer #{offer} of world {world},")
+}
+
 fn finite(v: &[f32]) -> Result<(), ErrorInfo> {
     if v.iter().all(|x| x.is_finite()) {
         Ok(())
@@ -441,6 +456,62 @@ impl Game {
     pub fn seed_economy(&mut self, balances: &[(PlayerId, u64)], ledger: Vec<LedgerEntry>) {
         self.economy = Economy::from_store(balances, ledger);
         self.economy_restored = true;
+    }
+
+    /// Refund, in this new world, the escrow still held on open agreements
+    /// of a discarded one (`--fresh`): the newest saved game `old` of the
+    /// previous world, and recent ledger records from the store. Call after
+    /// [`Game::seed_economy`] with the stored balances, which already had the
+    /// escrow taken out.
+    ///
+    /// An agreement counts as held when it is open in the saved game with
+    /// escrow, or when the store has an `escrow` entry of the old world
+    /// written after the saved game (its sequence number is at least the
+    /// saved economy's next one). It is skipped when the store has a `sale`
+    /// or `refund` of the old world written after the saved game (it settled
+    /// before the server stopped), or a refund made by an earlier fresh start
+    /// (recognised by its text, so starting fresh twice from the same saved
+    /// game refunds once). Refund entries name the old offer in their text
+    /// and carry no offer id (ids restart in the new world). Returns the
+    /// refunds as (player, amount).
+    pub fn refund_discarded(&mut self, old: &SavedGame, ledger: &[LedgerRecord]) -> Vec<(PlayerId, u64)> {
+        let Some(economy) = old.economy.as_ref().filter(|_| old.version >= 2 && !old.world_id.is_empty()) else {
+            // Older layouts took no escrow.
+            return Vec::new();
+        };
+        let world = old.world_id.as_str();
+        let after = economy.next_seq;
+        let mut held: BTreeMap<u64, (PlayerId, u64)> = old
+            .offers
+            .values()
+            .filter(|o| o.status.is_open() && o.escrow > 0)
+            .map(|o| (o.id, (o.from, o.escrow)))
+            .collect();
+        let later = |r: &&LedgerRecord| r.world_id == world && r.entry.seq >= after;
+        for r in ledger.iter().filter(later) {
+            if let (LedgerKind::Escrow, Some(id), true) = (r.entry.kind, r.entry.offer, r.entry.delta < 0) {
+                held.entry(id).or_insert((r.entry.player, r.entry.delta.unsigned_abs()));
+            }
+        }
+        for r in ledger.iter().filter(later) {
+            if let (LedgerKind::Sale | LedgerKind::Refund, Some(id)) = (r.entry.kind, r.entry.offer) {
+                held.remove(&id);
+            }
+        }
+        held.retain(|&id, _| {
+            let mark = discarded_mark(world, id);
+            !ledger.iter().any(|r| r.entry.kind == LedgerKind::Refund && r.entry.text.contains(&mark))
+        });
+        let mut refunds = Vec::new();
+        for (id, (player, amount)) in held {
+            let Ok(amount_i) = i64::try_from(amount) else { continue };
+            let text =
+                format!("Refund: {amount} renown held on {} discarded by a fresh start", discarded_mark(world, id));
+            if self.post(player, amount_i, LedgerKind::Refund, text, None, None).is_ok() {
+                refunds.push((player, amount));
+            }
+        }
+        refunds
     }
 
     /// A player's renown balance.
@@ -656,6 +727,9 @@ impl Game {
         out: &mut Outbox,
     ) -> Result<Option<serde_json::Value>, ErrorInfo> {
         let e = |err: CommandError| ErrorInfo::from(&err);
+        if let Some(p) = price {
+            check_price(p)?;
+        }
         let a = self.world.organism(mine).ok_or(e(CommandError::NotFound(mine)))?;
         if a.owner != player {
             return Err(e(CommandError::NotOwned(mine)));
@@ -676,7 +750,7 @@ impl Game {
         if let Some(p) = price {
             self.check_funds(player, p)?;
         }
-        let id = self.open_offer(player, to, mine, partner, price, OfferStatus::Pending, None);
+        let id = self.open_offer(player, to, mine, partner, price, OfferStatus::Pending, None)?;
         // Holds the requester's own female; the partner's waits for her
         // owner's acceptance (see `hold_consented_females`).
         self.hold_consented_females();
@@ -687,9 +761,7 @@ impl Game {
 
     /// Refuse a price or fee the player can't cover.
     fn check_funds(&self, player: PlayerId, price: u64) -> Result<(), ErrorInfo> {
-        if price > economy::MAX_PRICE {
-            return Err(ErrorInfo::new("bad_price", format!("prices go up to {} renown", economy::MAX_PRICE)));
-        }
+        check_price(price)?;
         let balance = self.balance(player);
         if balance < price {
             return Err(ErrorInfo::new("insufficient_funds", format!("{price} renown needed, you have {balance}"))
@@ -699,7 +771,8 @@ impl Game {
     }
 
     /// Record a new offer and take its price into escrow (checked with
-    /// [`Game::check_funds`] beforehand).
+    /// [`Game::check_funds`] beforehand). If the escrow can't be taken after
+    /// all, no offer is made: an agreement never runs on an unpaid price.
     #[allow(clippy::too_many_arguments)]
     fn open_offer(
         &mut self,
@@ -710,7 +783,7 @@ impl Game {
         price: Option<u64>,
         status: OfferStatus,
         listing: Option<u64>,
-    ) -> u64 {
+    ) -> Result<u64, ErrorInfo> {
         let id = self.next_offer;
         self.next_offer += 1;
         let offer =
@@ -723,11 +796,18 @@ impl Game {
                 }
                 None => format!("Price of offer #{id} (#{mine} × {}'s #{partner}) held in escrow", self.name(to)),
             };
-            if self.post(from, -(p as i64), LedgerKind::Escrow, what, Some(id), listing).is_ok() {
-                self.offers.get_mut(&id).unwrap().escrow = p;
+            let debit = i64::try_from(p).ok().map(|p| -p);
+            match debit.map(|d| self.post(from, d, LedgerKind::Escrow, what, Some(id), listing)) {
+                Some(Ok(_)) => self.offers.get_mut(&id).unwrap().escrow = p,
+                _ => {
+                    self.offers.remove(&id);
+                    let balance = self.balance(from);
+                    return Err(ErrorInfo::new("insufficient_funds", format!("{p} renown needed, you have {balance}"))
+                        .with_detail(serde_json::json!({ "balance": balance, "needed": p })));
+                }
             }
         }
-        id
+        Ok(id)
     }
 
     /// The checks before asking another player's consent (or buying a
@@ -853,7 +933,7 @@ impl Game {
             return Err(ErrorInfo::new("organism_busy", format!("#{mine} is already promised in an open agreement")));
         }
         self.check_funds(player, l.fee)?;
-        let id = self.open_offer(player, to, mine, l.organism, Some(l.fee), OfferStatus::Accepted, Some(listing));
+        let id = self.open_offer(player, to, mine, l.organism, Some(l.fee), OfferStatus::Accepted, Some(listing))?;
         if let Some(x) = self.economy.listings.get_mut(&listing) {
             x.sales += 1;
         }
@@ -3185,6 +3265,159 @@ mod tests {
         assert!(r.economy.granted.contains(&1) && !r.economy.granted.contains(&4));
         r.found(4, &design("D")).unwrap();
         assert_eq!(r.balance(4), economy::FOUNDING_GRANT);
+    }
+
+    #[test]
+    fn escrow_settles_once_and_only_the_parties_act_on_an_offer() {
+        let (mut g, a, b) = game();
+        g.set_name(3, "eve");
+        let c = g.found(3, &design("C")).unwrap().founders;
+        g.connect(30, 3, "eve");
+        let (fa, mb, ma, fb) = (female(&g, &a), male(&g, &b), male(&g, &a), female(&g, &b));
+        let start = g.balance(1);
+        let code = |out: &Outbox| result(out).1;
+        let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: Some(20) }));
+        // A stranger can't answer, complete or cancel it; the requester can't
+        // accept it for the partner's owner.
+        for msg in [
+            ClientMsg::RespondMating { request: id, accept: true },
+            ClientMsg::CompleteMating { request: id },
+            ClientMsg::CancelMating { request: id },
+        ] {
+            assert_eq!(code(&g.command(30, 3, None, msg)).as_deref(), Some("unknown_offer"));
+        }
+        let out = g.command(10, 1, None, ClientMsg::RespondMating { request: id, accept: true });
+        assert_eq!(code(&out).as_deref(), Some("unknown_offer"));
+        // Nor use someone else's organism as "mine".
+        let out = g.command(30, 3, None, ClientMsg::RequestMating { mine: fa, partner: c[0], price: None });
+        assert_eq!(code(&out).as_deref(), Some("not_owned"));
+        // Cancel, then cancel or complete again: refunded exactly once.
+        g.command(10, 1, None, ClientMsg::CancelMating { request: id });
+        assert_eq!(g.balance(1), start);
+        for msg in [ClientMsg::CancelMating { request: id }, ClientMsg::CompleteMating { request: id }] {
+            assert_eq!(code(&g.command(10, 1, None, msg)).as_deref(), Some("unknown_offer"));
+        }
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        assert_eq!((g.balance(1), g.balance(2)), (start, start));
+        assert_eq!(ledger_kinds(&g, 1), vec![LedgerKind::Grant, LedgerKind::Escrow, LedgerKind::Refund]);
+        // Completed (paid), then cancelled or declined: nothing moves again.
+        let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: Some(20) }));
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        place_together(&mut g, fa, mb);
+        g.command(10, 1, None, ClientMsg::CompleteMating { request: id });
+        assert_eq!((g.balance(1), g.balance(2)), (start - 20, start + 20));
+        g.command(20, 2, None, ClientMsg::CancelMating { request: id });
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false });
+        g.after_tick();
+        assert_eq!((g.balance(1), g.balance(2)), (start - 20, start + 20));
+
+        // Prices: above the cap, or more than the balance, are refused and
+        // take nothing; a direct escrow the balance can't cover makes no offer.
+        let over = economy::MAX_PRICE + 1;
+        let out = g.command(20, 2, None, ClientMsg::RequestMating { mine: fb, partner: ma, price: Some(over) });
+        assert_eq!(code(&out).as_deref(), Some("bad_price"));
+        let out = g.command(20, 2, None, ClientMsg::RequestMating { mine: fb, partner: ma, price: Some(u64::MAX) });
+        assert_eq!(code(&out).as_deref(), Some("bad_price"));
+        let out = g.command(20, 2, None, ClientMsg::CreateListing { organism: fb, fee: u64::MAX, expires_days: None });
+        assert_eq!(code(&out).as_deref(), Some("bad_price"));
+        let open = g.offers.len();
+        let err = g.open_offer(2, 1, fb, ma, Some(g.balance(2) + 1), OfferStatus::Pending, None).unwrap_err();
+        assert_eq!(err.code, "insufficient_funds");
+        assert_eq!((g.offers.len(), g.balance(2)), (open, start + 20));
+        // Negative or oversized numbers never parse.
+        for bad in [
+            r#"{"type":"request_mating","mine":1,"partner":2,"price":-5}"#,
+            r#"{"type":"request_mating","mine":1,"partner":2,"price":1e30}"#,
+            r#"{"type":"request_mating","mine":1,"partner":2,"price":18446744073709551616}"#,
+            r#"{"type":"create_listing","organism":1,"fee":-1}"#,
+            r#"{"type":"ledger","limit":-1}"#,
+        ] {
+            assert!(serde_json::from_str::<crate::protocol::ClientEnvelope>(bad).is_err(), "{bad}");
+        }
+
+        // Listings: only the owner lists or withdraws; a listed dam takes one
+        // buyer at a time; one's own listing can't be bought.
+        let out = g.command(30, 3, None, ClientMsg::CreateListing { organism: fb, fee: 5, expires_days: None });
+        assert_eq!(code(&out).as_deref(), Some("not_owned"));
+        let l = data(&g.command(20, 2, None, ClientMsg::CreateListing { organism: fb, fee: 5, expires_days: None }))
+            ["listing"]["id"]
+            .as_u64()
+            .unwrap();
+        let out = g.command(30, 3, None, ClientMsg::WithdrawListing { listing: l });
+        assert_eq!(code(&out).as_deref(), Some("unknown_listing"));
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: l, mine: mb });
+        assert_eq!(code(&out).as_deref(), Some("own_listing"));
+        let out = g.command(30, 3, None, ClientMsg::BuyListing { listing: l, mine: ma });
+        assert_eq!(code(&out).as_deref(), Some("not_owned"), "buying with someone else's organism");
+        let (b1, b3) = (g.balance(1), g.balance(3));
+        let first = g.command(10, 1, None, ClientMsg::BuyListing { listing: l, mine: ma });
+        assert!(result(&first).0, "{first:?}");
+        let mc = male(&g, &c);
+        let second = g.command(30, 3, None, ClientMsg::BuyListing { listing: l, mine: mc });
+        assert!(
+            matches!(code(&second).as_deref(), Some("listing_busy" | "already_pregnant")),
+            "the dam is promised (or already served): {second:?}"
+        );
+        assert_eq!(g.balance(3), b3, "a refused purchase takes nothing");
+        assert_eq!(g.balance(1), b1 - 5, "the first buyer's fee is held once");
+    }
+
+    fn ledger_records(g: &mut Game) -> Vec<LedgerRecord> {
+        g.take_persist()
+            .into_iter()
+            .filter_map(|e| if let PersistEvent::Ledger(r) = e { Some(r) } else { None })
+            .collect()
+    }
+
+    #[test]
+    fn a_fresh_start_refunds_the_escrow_of_the_discarded_world_once() {
+        let (mut g, a, b) = game();
+        let (fa, mb, ma, fb) = (female(&g, &a), male(&g, &b), male(&g, &a), female(&g, &b));
+        let start = g.balance(1);
+        let ask = |g: &mut Game, mine, partner, price| {
+            offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine, partner, price: Some(price) }))
+        };
+        let first = ask(&mut g, fa, mb, 10);
+        let _second = ask(&mut g, ma, fb, 5);
+        let mut ledger = ledger_records(&mut g);
+        // The newest saved game holds two open priced offers.
+        let saved: SavedGame = serde_json::from_str(&serde_json::to_string(&g.saved()).unwrap()).unwrap();
+        // After the save: the first is cancelled (refunded) and a third one
+        // is escrowed; the store saw both, the saved game neither.
+        g.command(10, 1, None, ClientMsg::CancelMating { request: first });
+        let _third = ask(&mut g, fa, mb, 3);
+        ledger.extend(ledger_records(&mut g));
+        assert_eq!(g.balance(1), start - 5 - 3);
+        let stored = [(1, g.balance(1)), (2, g.balance(2))];
+
+        // The new world starts from the stored balances, then refunds what
+        // was still held: the second (from the saved game) and the third
+        // (from the store), not the first (settled after the save).
+        let mut n = Game::new(build_world(&WorldSettings { seed: 9, ..Default::default() }), GameConfig::default());
+        n.seed_economy(&stored, Vec::new());
+        let refunds = n.refund_discarded(&saved, &ledger);
+        assert_eq!(refunds, vec![(1, 5), (1, 3)]);
+        assert_eq!((n.balance(1), n.balance(2)), (start, g.balance(2)));
+        let new_entries = ledger_records(&mut n);
+        assert_eq!(new_entries.len(), 2);
+        assert!(new_entries.iter().all(|r| r.entry.kind == LedgerKind::Refund
+            && r.entry.offer.is_none()
+            && r.world_id == n.world_id
+            && r.entry.text.contains(&g.world_id)));
+        assert!(new_entries[0].entry.text.starts_with("Refund: 5 renown held on offer #2 of world"));
+
+        // Starting fresh again from the same saved game (the new world never
+        // saved) refunds nothing a second time.
+        ledger.extend(new_entries);
+        let mut again = Game::new(build_world(&WorldSettings { seed: 9, ..Default::default() }), GameConfig::default());
+        again.seed_economy(&[(1, n.balance(1))], Vec::new());
+        assert!(again.refund_discarded(&saved, &ledger).is_empty());
+        assert_eq!(again.balance(1), start);
+
+        // A saved game from before the economy held no escrow.
+        let mut old = saved.clone();
+        old.version = 1;
+        assert!(again.refund_discarded(&old, &[]).is_empty());
     }
 
     #[test]

@@ -1,16 +1,18 @@
 //! HTTP routes and the WebSocket session.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, Request as HttpRequest, State};
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -20,10 +22,12 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
+use evo_sim::PlayerId;
+
 use crate::accounts::{Accounts, AuthError, Session};
 use crate::design::{self, DesignSpec, SpecError};
 use crate::game::FoundError;
-use crate::limits::{Bucket, Limiters};
+use crate::limits::{client_key, Bucket, Limiters};
 use crate::protocol::{
     AchievementList, CatastropheList, ChronicleView, ClientEnvelope, EraList, ErrorInfo, LineageStats, SeasonBoard,
     ServerMsg, SpeciesList, TerrainDynamic, TerrainView,
@@ -31,10 +35,18 @@ use crate::protocol::{
 use crate::runner::{Published, Request, TerrainReply};
 use crate::store::{DesignRecord, Store};
 
-/// Largest WebSocket message a client may send.
-const MAX_CLIENT_MESSAGE: usize = 16 * 1024;
+/// Largest WebSocket message (and frame) a client may send.
+pub const MAX_CLIENT_MESSAGE: usize = 16 * 1024;
 /// Per-connection queue of outgoing messages.
 const CONN_QUEUE: usize = 256;
+/// Largest HTTP request body (credentials, a founder design).
+pub const MAX_BODY: usize = 64 * 1024;
+/// Most WebSocket connections one player may hold open at once (tabs,
+/// devices); each costs the world thread a view and a state per interval.
+pub const MAX_CONNS_PER_PLAYER: usize = 8;
+/// Longest side of `GET /api/map.png`, in pixels: the scale is lowered to
+/// fit (8 pixels per tile on a 1024-tile map would be a 200 MB image).
+pub const MAX_MAP_SIDE: usize = 2048;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -44,6 +56,39 @@ pub struct AppState {
     pub published: watch::Receiver<Arc<Published>>,
     pub next_conn: Arc<AtomicU64>,
     pub limiters: Arc<Limiters>,
+    /// Open WebSocket connections per player.
+    pub ws_conns: Arc<Mutex<HashMap<PlayerId, usize>>>,
+}
+
+/// One of a player's WebSocket connections, counted while it lives.
+struct ConnSlot {
+    conns: Arc<Mutex<HashMap<PlayerId, usize>>>,
+    player: PlayerId,
+}
+
+impl ConnSlot {
+    /// Take a slot, unless the player already has [`MAX_CONNS_PER_PLAYER`].
+    fn take(conns: &Arc<Mutex<HashMap<PlayerId, usize>>>, player: PlayerId) -> Option<ConnSlot> {
+        let mut g = conns.lock().unwrap();
+        let n = g.entry(player).or_default();
+        if *n >= MAX_CONNS_PER_PLAYER {
+            return None;
+        }
+        *n += 1;
+        Some(ConnSlot { conns: conns.clone(), player })
+    }
+}
+
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        let mut g = self.conns.lock().unwrap();
+        if let Some(n) = g.get_mut(&self.player) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                g.remove(&self.player);
+            }
+        }
+    }
 }
 
 /// The API routes, plus the files in `static_dir` (the built web client)
@@ -57,14 +102,8 @@ pub fn router(state: AppState, static_dir: Option<&Path>) -> Router {
 }
 
 fn api_router(state: AppState) -> Router {
-    Router::new()
-        .route("/api/register", post(register))
-        .route("/api/login", post(login))
-        .route("/api/logout", post(logout))
-        .route("/api/lineage", post(found_lineage))
-        .route("/api/genes", get(genes))
-        .route("/api/world", get(world_summary))
-        .route("/api/leaderboard", get(leaderboard))
+    // Reads that cost the world thread or the store: rate-limited per client.
+    let reads = Router::new()
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
         .route("/api/lineage/stats", get(lineage_stats))
@@ -75,9 +114,33 @@ fn api_router(state: AppState) -> Router {
         .route("/api/terrain", get(terrain))
         .route("/api/terrain/dynamic", get(terrain_dynamic))
         .route("/api/map.png", get(map_png))
+        .route_layer(middleware::from_fn_with_state(state.clone(), limit_reads));
+    Router::new()
+        .route("/api/register", post(register))
+        .route("/api/login", post(login))
+        .route("/api/logout", post(logout))
+        .route("/api/lineage", post(found_lineage))
+        .route("/api/genes", get(genes))
+        .route("/api/world", get(world_summary))
+        .route("/api/leaderboard", get(leaderboard))
+        .merge(reads)
         .route("/ws", get(ws_upgrade))
         .with_state(state)
+        .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(cors())
+}
+
+/// Refuse a read past the client's `Limits::reads` rate.
+async fn limit_reads(
+    State(app): State<AppState>,
+    info: Option<ConnectInfo<SocketAddr>>,
+    req: HttpRequest,
+    next: Next,
+) -> Response {
+    match app.limiters.reads.check(&client_ip(&info)) {
+        Ok(()) => next.run(req).await,
+        Err(wait) => ApiError::rate_limited(wait).into_response(),
+    }
 }
 
 /// Cross-origin access to the API, so a client bundle served from elsewhere
@@ -140,9 +203,10 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// The client's IP (unspecified when the server runs without connect info).
+/// The client's rate-limit key: its IP, or its IPv6 /64 (`limits::client_key`;
+/// unspecified when the server runs without connect info).
 fn client_ip(info: &Option<ConnectInfo<SocketAddr>>) -> IpAddr {
-    info.as_ref().map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip())
+    client_key(info.as_ref().map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip()))
 }
 
 impl From<AuthError> for ApiError {
@@ -346,7 +410,11 @@ struct MapQuery {
 }
 
 async fn map_png(State(app): State<AppState>, Query(q): Query<MapQuery>) -> Result<Response, ApiError> {
-    let scale = q.scale.unwrap_or(4).clamp(1, 8);
+    let side = {
+        let s = &app.published.borrow().summary;
+        s.width.max(s.height)
+    };
+    let scale = map_scale(q.scale, side);
     let (reply, rx) = oneshot::channel();
     send_request(&app.world, Request::Snapshot { scale, reply })?;
     let (w, h, rgb) = rx.await.map_err(ApiError::internal)?;
@@ -355,6 +423,12 @@ async fn map_png(State(app): State<AppState>, Query(q): Query<MapQuery>) -> Resu
         .map_err(ApiError::internal)?
         .map_err(ApiError::internal)?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], png).into_response())
+}
+
+/// Pixels per tile for the map image: as asked (default 4, 1 to 8), lowered
+/// so the longest side stays within [`MAX_MAP_SIDE`].
+pub fn map_scale(asked: Option<usize>, tiles: usize) -> usize {
+    asked.unwrap_or(4).clamp(1, 8).min(MAX_MAP_SIDE / tiles.max(1)).max(1)
 }
 
 fn encode_png(w: usize, h: usize, rgb: &[u8]) -> Result<Vec<u8>, png::EncodingError> {
@@ -390,11 +464,22 @@ async fn ws_upgrade(
         Ok(ws) => ws,
         Err(rejection) => return Ok(rejection.into_response()),
     };
+    let slot = ConnSlot::take(&app.ws_conns, session.player).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_connections",
+            format!("at most {MAX_CONNS_PER_PLAYER} connections per player"),
+        )
+    })?;
     let token = token.to_string();
     let ip = client_ip(&info);
-    Ok(ws
-        .max_message_size(MAX_CLIENT_MESSAGE)
-        .on_upgrade(move |socket| client_session(socket, app, session, token, ip)))
+    // A frame is read whole before the message limit applies: bound both.
+    Ok(ws.max_message_size(MAX_CLIENT_MESSAGE).max_frame_size(MAX_CLIENT_MESSAGE).on_upgrade(
+        move |socket| async move {
+            client_session(socket, app, session, token, ip).await;
+            drop(slot);
+        },
+    ))
 }
 
 /// How often an open WebSocket checks that its session is still live.

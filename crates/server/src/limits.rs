@@ -1,5 +1,9 @@
-//! Rate limits: token buckets per key (a client IP for logins and commands,
-//! a connection id for commands).
+//! Rate limits: token buckets per key (a client address for logins, reads
+//! and commands, a connection for commands).
+//!
+//! Client addresses are keyed by [`client_key`]: an IPv4 address, or the /64
+//! network of an IPv6 one (one subscriber usually holds a whole /64, so
+//! keying single IPv6 addresses would give each client 2^64 buckets).
 //!
 //! A bucket holds up to `burst` tokens and refills at `per_sec`; each
 //! request takes one. An empty bucket refuses with the time until the next
@@ -7,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -65,24 +69,65 @@ impl Bucket {
 /// Buckets by key behind a mutex.
 pub struct KeyedLimiter<K> {
     rate: Rate,
-    buckets: Mutex<HashMap<K, Bucket>>,
+    buckets: Mutex<Buckets<K>>,
+}
+
+struct Buckets<K> {
+    map: HashMap<K, Bucket>,
+    /// Size at which the next new key prunes: twice what the last pruning
+    /// left (at least [`PRUNE_AT`]), so pruning costs O(1) per new key
+    /// however many keys are busy.
+    prune_at: usize,
 }
 
 /// Keys kept before full (idle) buckets are dropped.
 const PRUNE_AT: usize = 4096;
+/// Most keys kept at once. Past it (many clients busy at once, or one
+/// spraying addresses), buckets that still have tokens are dropped too, and
+/// as a last resort all of them: memory stays bounded, at the price of
+/// briefly forgetting some limits.
+const MAX_KEYS: usize = 65_536;
+
+/// The rate-limit key of a client address: IPv4 addresses (also when
+/// written IPv4-mapped in IPv6) as they are, IPv6 addresses by their /64.
+pub fn client_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let s = v6.segments();
+                IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+            }
+        },
+    }
+}
 
 impl<K: Hash + Eq + Clone> KeyedLimiter<K> {
     pub fn new(rate: Rate) -> Self {
-        Self { rate, buckets: Mutex::new(HashMap::new()) }
+        Self { rate, buckets: Mutex::new(Buckets { map: HashMap::new(), prune_at: PRUNE_AT }) }
     }
 
     pub fn check_at(&self, key: &K, now: Instant) -> Result<(), Duration> {
-        let mut map = self.buckets.lock().unwrap();
-        if map.len() >= PRUNE_AT {
+        let mut g = self.buckets.lock().unwrap();
+        let b = &mut *g;
+        if b.map.len() >= b.prune_at.min(MAX_KEYS) && !b.map.contains_key(key) {
             let rate = self.rate;
-            map.retain(|_, b| !b.is_full(rate, now));
+            b.map.retain(|_, x| !x.is_full(rate, now));
+            if b.map.len() >= MAX_KEYS / 2 {
+                b.map.retain(|_, x| x.tokens < 1.0);
+            }
+            if b.map.len() >= MAX_KEYS / 2 {
+                b.map.clear();
+            }
+            b.prune_at = (2 * b.map.len()).max(PRUNE_AT);
         }
-        map.entry(key.clone()).or_insert_with(|| Bucket::new(self.rate, now)).take(self.rate, now)
+        b.map.entry(key.clone()).or_insert_with(|| Bucket::new(self.rate, now)).take(self.rate, now)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.buckets.lock().unwrap().map.len()
     }
 
     pub fn check(&self, key: &K) -> Result<(), Duration> {
@@ -99,6 +144,9 @@ pub struct Limits {
     pub commands: Rate,
     /// WebSocket commands per client IP over all its connections.
     pub ip_commands: Rate,
+    /// Public reads that cost the world thread or the store (terrain, map,
+    /// chronicle, history, lineage stats) per client IP.
+    pub reads: Rate,
 }
 
 impl Default for Limits {
@@ -109,13 +157,21 @@ impl Default for Limits {
             // A client clicking around sends a few a second.
             commands: Rate::new(20.0, 40.0),
             ip_commands: Rate::new(60.0, 120.0),
+            // The client polls a few of these every few seconds; a dashboard
+            // opens with a handful at once.
+            reads: Rate::new(10.0, 60.0),
         }
     }
 }
 
 impl Limits {
     pub fn unlimited() -> Self {
-        Self { logins: Rate::UNLIMITED, commands: Rate::UNLIMITED, ip_commands: Rate::UNLIMITED }
+        Self {
+            logins: Rate::UNLIMITED,
+            commands: Rate::UNLIMITED,
+            ip_commands: Rate::UNLIMITED,
+            reads: Rate::UNLIMITED,
+        }
     }
 }
 
@@ -124,11 +180,17 @@ pub struct Limiters {
     pub limits: Limits,
     pub logins: KeyedLimiter<IpAddr>,
     pub ip_commands: KeyedLimiter<IpAddr>,
+    pub reads: KeyedLimiter<IpAddr>,
 }
 
 impl Limiters {
     pub fn new(limits: Limits) -> Self {
-        Self { limits, logins: KeyedLimiter::new(limits.logins), ip_commands: KeyedLimiter::new(limits.ip_commands) }
+        Self {
+            limits,
+            logins: KeyedLimiter::new(limits.logins),
+            ip_commands: KeyedLimiter::new(limits.ip_commands),
+            reads: KeyedLimiter::new(limits.reads),
+        }
     }
 }
 
@@ -172,9 +234,49 @@ mod tests {
         for k in 0..PRUNE_AT as u32 + 10 {
             let _ = lim.check_at(&(k + 10), t);
         }
-        // Much later every bucket is full again and the map was pruned.
+        let old = lim.len();
+        assert_eq!(old, PRUNE_AT + 12, "all still busy: nothing pruned");
+        // Much later every old bucket is full again: the next pruning (when
+        // new keys double the map) drops them.
         let later = t + Duration::from_secs(10);
         assert!(lim.check_at(&1u32, later).is_ok());
-        assert!(lim.buckets.lock().unwrap().len() <= 2);
+        let fresh = PRUNE_AT as u32 + 100;
+        for k in 0..fresh {
+            let _ = lim.check_at(&(k + 1_000_000), later);
+        }
+        assert!(lim.len() <= fresh as usize + 1, "{} kept", lim.len());
+    }
+
+    #[test]
+    fn ipv6_clients_are_keyed_by_their_slash_64() {
+        let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:ffff:1:2:3".parse().unwrap();
+        let other: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_eq!(client_key(a), client_key(b));
+        assert_ne!(client_key(a), client_key(other));
+        let v4: IpAddr = "192.0.2.7".parse().unwrap();
+        assert_eq!(client_key(v4), v4);
+        assert_eq!(client_key("::ffff:192.0.2.7".parse().unwrap()), v4);
+        // Rotating addresses inside one /64 doesn't refill the bucket.
+        let lim = KeyedLimiter::new(Rate::new(1.0, 2.0));
+        let t = Instant::now();
+        let mut ok = 0;
+        for k in 0..10u16 {
+            let ip = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 2, k, k, k, k));
+            ok += lim.check_at(&client_key(ip), t).is_ok() as u32;
+        }
+        assert_eq!(ok, 2);
+    }
+
+    #[test]
+    fn many_busy_keys_stay_bounded() {
+        let lim = KeyedLimiter::new(Rate::new(0.001, 1.0));
+        let t = Instant::now();
+        // Every key spends its token, so none is full and pruning alone
+        // would keep them all.
+        for k in 0..(MAX_KEYS as u32 + 100) {
+            let _ = lim.check_at(&k, t);
+        }
+        assert!(lim.len() <= MAX_KEYS);
     }
 }
