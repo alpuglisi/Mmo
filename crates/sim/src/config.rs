@@ -546,6 +546,12 @@ pub struct Balance {
     /// once more at `pasture_search` × its reach (a herd moving on to fresh
     /// pasture) before it wanders. 0 disables both.
     pub pasture_search: f32,
+    /// Prey switching by search image: chance that a hunter overlooks prey
+    /// of another kind (lineage) than its last kill (`Organism::search_image`),
+    /// drawn per hunter, prey and day. Hunters mostly kill the common prey,
+    /// so most carry its image and a rare kind is taken less than its
+    /// encounter rate alone would have it. 0 disables.
+    pub search_image: f32,
 }
 
 impl Default for Balance {
@@ -634,12 +640,13 @@ impl Default for Balance {
             threat_caution: 1.0,
             alert_guard: 0.5,
             pasture_search: 6.0,
+            search_image: 0.7,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 81;
+    pub const FIELD_COUNT: usize = 82;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -730,6 +737,7 @@ impl Balance {
             ("threat_caution", &mut self.threat_caution),
             ("alert_guard", &mut self.alert_guard),
             ("pasture_search", &mut self.pasture_search),
+            ("search_image", &mut self.search_image),
         ]
     }
 
