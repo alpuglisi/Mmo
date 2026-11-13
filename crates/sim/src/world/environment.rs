@@ -13,6 +13,7 @@ impl World {
         let (doy, hour, dpy) = (self.day_of_year(), self.hour(), self.config.days_per_year);
         self.map.update_environment(doy, hour, dpy, &self.weather, self.config.balance.veg_regrowth);
         self.update_clutches(&mut rng);
+        self.density.rebuild(&self.organisms, self.lineages.len());
     }
 
     pub(super) fn daily(&mut self) {
@@ -23,8 +24,14 @@ impl World {
             self.index.insert(o.id, k);
         }
         self.owner_counts.clear();
+        self.lineage_alive.clear();
         for o in &self.organisms {
             *self.owner_counts.entry(o.owner).or_default() += 1;
+            let l = o.lineage as usize;
+            if self.lineage_alive.len() <= l {
+                self.lineage_alive.resize(l + 1, 0);
+            }
+            self.lineage_alive[l] += 1;
         }
 
         let adults = || self.organisms.iter().filter(|o| o.is_breeding_adult());
@@ -47,7 +54,7 @@ impl World {
             let mut done = c.eggs.is_empty();
 
             if !done && tick >= c.hatch_tick {
-                let room = self.config.cap_for(c.owner).saturating_sub(self.owner_count(c.owner));
+                let room = self.cap_room(c.lineage);
                 let hatching: Vec<_> = c.eggs.drain(..).take(room).collect();
                 self.counters.hatched += hatching.len() as u64;
                 for g in hatching {

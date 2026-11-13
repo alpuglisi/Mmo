@@ -119,6 +119,16 @@ scaled by pace of life, `(litter fraction × (1 − body size))²`: toxic frogs
 adult frogs only died of old age (lifespan ~240 days, two years), so they
 piled up and the spring hatch refilled the cap in year 2.
 
+Live-bearers and egg-guarders get a third brake, density-dependent breeding
+(`breeding_density`): a mother's litter shrinks by `1 / (1 + (d / K)^4)`,
+where `d` is her species' members per tile in her 8×8-tile cell (counted
+hourly, so it doesn't saturate the way the 48-neighbor kin count does) times
+`1 - group tolerance` times the square root of pace of life. Voles used to
+boom past 2,500 on food that ran out only after they had overshot, then crash
+by 97% in winter; now they level off at a few hundred to ~900. The wild cap is
+split between the wild species in proportion to their founders (voles ~45%,
+foxes ~7%), so one booming species can no longer use up the others' room.
+
 **Still open:** toxic frogs reach their population cap in every run (nothing
 eats them and they need little food, and crowding at its current strength
 doesn't hold them back), and burrowing omnivores and pack hunters still die

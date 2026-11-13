@@ -79,7 +79,8 @@ impl Traits {
     /// young (r-selection); large bodies with few young are sturdy. Squared
     /// so it falls on the extreme fast breeders (frogs ~0.5, voles ~0.16,
     /// predators ~0.03). Scales adult background mortality
-    /// (`Balance::adult_mortality`).
+    /// (`Balance::adult_mortality`) and, square-rooted, density-dependent
+    /// breeding (`Balance::breeding_density`).
     pub fn pace_of_life(&self, body_size: f32) -> f32 {
         (self.litter_fraction() * (1.0 - body_size).clamp(0.0, 1.0)).powi(2)
     }
