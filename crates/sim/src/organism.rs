@@ -151,6 +151,11 @@ pub enum Action {
     Dormant,
     /// Gathering plant food into its cache.
     Cache,
+    /// Heading back into, or walking the edge of, its group's territory
+    /// (`World::claim_territory`).
+    Patrol,
+    /// Chasing an intruder out of its group's territory.
+    Defend,
 }
 
 /// Seasonal dormancy state ("Seasons and biomes" in the design doc).
@@ -259,6 +264,11 @@ pub struct Organism {
     /// (`World::coat_effect`). `None` until its first tick, when it starts in
     /// the coat of the season it was born (or founded) in, for free.
     pub coat: Option<f32>,
+    /// The player's group this organism belongs to (0 = the main group;
+    /// `World::split_group` makes others, up to `commands::MAX_GROUPS`).
+    /// Group commands (migration, territory) are given per group. Young are
+    /// born into their mother's group.
+    pub group: u8,
 }
 
 #[cfg(feature = "serde")]
@@ -323,6 +333,7 @@ impl Organism {
             cache: 0.0,
             cache_pos: None,
             coat: None,
+            group: 0,
         }
     }
 

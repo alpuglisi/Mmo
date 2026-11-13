@@ -1214,9 +1214,14 @@ impl World {
         *self.counters.born.entry(lineage).or_default() += 1;
         o.mother = Some(mother);
         o.father = Some(father);
-        // A migrator's young share their mother's summer range.
+        // A migrator's young share their mother's summer range; young are
+        // born into their mother's group (if she is the same player's).
         if let Some(&mi) = self.index.get(&mother) {
-            o.range = self.organisms[mi].range;
+            let m = &self.organisms[mi];
+            o.range = m.range;
+            if m.owner == owner {
+                o.group = m.group;
+            }
         }
         o.growth = growth;
         o.needs.hunger = 30.0;

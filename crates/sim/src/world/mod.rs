@@ -38,6 +38,9 @@ mod disease;
 mod environment;
 #[cfg(test)]
 mod group_tests;
+pub mod groups;
+#[cfg(test)]
+mod groups_tests;
 pub mod lod;
 mod par_apply;
 #[cfg(test)]
@@ -204,7 +207,12 @@ pub struct World {
     /// Living organisms per lineage, indexed like `lineages`.
     lineage_alive: Vec<usize>,
     density: SpeciesDensity,
-    migrate_orders: BTreeMap<PlayerId, Vec2>,
+    /// Migration orders by (player, group) (`World::command_migrate_group`).
+    migrate_orders: BTreeMap<(PlayerId, u8), Vec2>,
+    /// Claimed territories by (player, group) (`World::claim_territory`).
+    territories: BTreeMap<(PlayerId, u8), groups::Territory>,
+    /// Tick of each group's last territory claim (the claim cooldown).
+    territory_claims: BTreeMap<(PlayerId, u8), u64>,
     slots_used: BTreeMap<PlayerId, u32>,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
     clutch_at: HashMap<(usize, usize), usize>,
@@ -311,6 +319,8 @@ impl World {
             lineage_alive: Vec::new(),
             density: SpeciesDensity::new(config.width, config.height),
             migrate_orders: BTreeMap::new(),
+            territories: BTreeMap::new(),
+            territory_claims: BTreeMap::new(),
             slots_used: BTreeMap::new(),
             clutch_at: HashMap::new(),
             path_scratch: PathScratch::default(),

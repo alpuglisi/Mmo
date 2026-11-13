@@ -24,6 +24,11 @@ fn busy_world() -> World {
     w.schedule_catastrophe(CatastropheKind::Epidemic, 1, Some(4));
     let id = w.organisms.iter().find(|o| o.owner == 1).unwrap().id;
     w.possess(1, id).unwrap();
+    // Player 2 splits its herd: one half holds ground, the other migrates.
+    w.split_group(2, 0, None).unwrap();
+    let c = w.organisms.iter().find(|o| o.owner == 2 && o.group == 1).unwrap().pos;
+    w.claim_territory(2, 1, c, 6.0).unwrap();
+    w.command_migrate_group(2, 0, Vec2::new(10.0, 10.0)).unwrap();
     w
 }
 
@@ -147,6 +152,8 @@ fn restored_world_continues_exactly() {
     // genomes come back shared with the fathers.
     assert_same_caches(&a, &b);
     assert_eq!(shared_fathers(&b), fathers);
+    assert_eq!(b.groups(2), a.groups(2), "groups and their orders");
+    assert!(b.territory(2, 1).is_some() && b.migration_order(2, 0).is_some());
     // A restored world snapshots to the same bytes.
     assert!(b.snapshot() == bytes, "round trip changes the snapshot");
     // A clone (what a server encodes off its world thread) snapshots to the

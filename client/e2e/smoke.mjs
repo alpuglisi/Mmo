@@ -890,6 +890,52 @@ async function main() {
     await page.waitForSelector('.toast.error:has-text("999999")', { timeout: 5000 });
     step('migrate ok; command errors shown as toasts');
 
+    // Group commands: split the herd from the toolbar, draw a territory for
+    // the new group with two taps, see it on the map and in the Lineage
+    // tab, then merge the groups back.
+    await page.evaluate(() => { window.__results = []; });
+    await page.click('#split-group');
+    const split = await waitFor('split_group result', () => page.evaluate(() => window.__results.find((r) => r.type === 'split_group')));
+    if (!split.ok) throw new Error(`split_group failed: ${JSON.stringify(split.error)}`);
+    const newGroup = split.data.group;
+    await waitFor('the new group picked in the group menu', () => page.evaluate((g) => {
+      const sel = document.querySelector('#group-select');
+      return sel.value === String(g) && sel.options.length === 3 && window.evo.model.state.groups.length === 2;
+    }, newGroup), 10000);
+    await page.click('#territory');
+    await page.mouse.click(canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
+    const draft = await waitFor('a territory draft', () => page.evaluate(() => window.evo.screen().view.overlayInfo().draft));
+    if (draft.group !== newGroup) throw new Error(`draft for group ${draft.group}, want ${newGroup}`);
+    const zoom = await page.evaluate(() => window.evo.screen().view.cam.zoom);
+    await page.mouse.click(canvasBox.x + canvasBox.width / 2 + 4 * zoom, canvasBox.y + canvasBox.height / 2);
+    const claim = await waitFor('claim_territory result', () => page.evaluate(() => window.__results.find((r) => r.type === 'claim_territory')));
+    if (!claim.ok) throw new Error(`claim_territory failed: ${JSON.stringify(claim.error)}`);
+    const shown = await waitFor('the territory in the state and on the map', () => page.evaluate((g) => {
+      const t = window.evo.model.state.groups.find((x) => x.id === g)?.territory;
+      const drawn = window.evo.screen().view.overlayInfo().territories;
+      return t && drawn.some((d) => d.group === g) ? { t, drawn: drawn.length } : null;
+    }, newGroup), 10000);
+    if (Math.abs(shown.t.radius - claim.data.radius) > 1e-3 || shown.t.radius < 3) throw new Error(`territory ${JSON.stringify(shown.t)} vs claim ${JSON.stringify(claim.data)}`);
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: path.join(shots, 'territory.png') });
+    await page.click('#tab-lineage');
+    await page.waitForSelector(`#group-list .group-card[data-group="${newGroup}"] button[data-action="abandon"]`, { timeout: 5000 });
+    const cards = await page.evaluate(() => document.querySelectorAll('#group-list .group-card').length);
+    // Two claims at once: the second lands within the first's cooldown (the
+    // fast test world runs a day a second, so only back-to-back claims hit it).
+    const cooldown = await page.evaluate(async (group) => {
+      const claim = (x) => window.evo.socket.send({ type: 'claim_territory', group, x, y: 10, radius: 4 });
+      const [a, b] = await Promise.all([claim(10), claim(12)]);
+      return [a, b].find((r) => !r.ok) ?? null;
+    }, newGroup);
+    if (!cooldown || cooldown.error.code !== 'claim_cooldown') throw new Error(`back-to-back claims: ${JSON.stringify(cooldown)}`);
+    await page.click(`#group-list .group-card[data-group="${newGroup}"] button[data-action="merge"]`);
+    const merged = await waitFor('merge_groups result', () => page.evaluate(() => window.__results.find((r) => r.type === 'merge_groups')));
+    if (!merged.ok) throw new Error(`merge_groups failed: ${JSON.stringify(merged.error)}`);
+    await waitFor('one group again', () => page.evaluate(() => window.evo.model.state.groups.length === 1
+      && document.querySelector('#group-select').value === 'all' && !window.evo.model.state.organisms.some((o) => o.group)), 10000);
+    step(`groups: split ${split.data.moved} organisms into group ${newGroup}, territory radius ${shown.t.radius.toFixed(1)} drawn (${cards} group cards), cooldown refused a re-claim, merged back (${merged.data.moved})`);
+
     await page.evaluate(() => window.evo.screen().view.setFollow(true));
     await page.click('#tab-organism');
     await page.waitForTimeout(1200);

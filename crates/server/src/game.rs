@@ -15,6 +15,7 @@ use evo_sim::organism::{DeathCause, Sex};
 use evo_sim::presets::{self, REFERENCE_SIZE};
 use evo_sim::terrain::Season;
 use evo_sim::world::commands::{CommandError, DirectedMating, MatingPreview, MEETING_DISTANCE};
+use evo_sim::world::groups::MAX_GROUPS;
 use evo_sim::{FounderDesign, Gene, PlayerId, World, WorldConfig, WILD};
 use serde::{Deserialize, Serialize};
 
@@ -286,8 +287,6 @@ pub struct Game {
     world_id: String,
     names: BTreeMap<PlayerId, String>,
     lineage_of: BTreeMap<PlayerId, u32>,
-    /// Standing migration orders (mirrors the world's, which are private).
-    migrations: BTreeMap<PlayerId, Vec2>,
     offers: BTreeMap<u64, Offer>,
     next_offer: u64,
     conns: BTreeMap<ConnId, Conn>,
@@ -337,6 +336,9 @@ pub struct SavedGame {
     /// Empty in saved games from before world ids (a new one is made).
     world_id: String,
     lineage_of: BTreeMap<PlayerId, u32>,
+    /// The main groups' migration orders, for reading only: the world
+    /// snapshot holds every group's orders (since world snapshot version 9;
+    /// earlier saves don't restore).
     migrations: BTreeMap<PlayerId, Vec2>,
     offers: BTreeMap<u64, Offer>,
     next_offer: u64,
@@ -439,7 +441,6 @@ impl Game {
             world_id: format!("{:016x}", rand::random::<u64>()),
             names: BTreeMap::new(),
             lineage_of: BTreeMap::new(),
-            migrations: BTreeMap::new(),
             offers: BTreeMap::new(),
             next_offer: 1,
             conns: BTreeMap::new(),
@@ -470,7 +471,9 @@ impl Game {
             version: SAVED_GAME_VERSION,
             world_id: self.world_id.clone(),
             lineage_of: self.lineage_of.clone(),
-            migrations: self.migrations.clone(),
+            migrations: (self.lineage_of.keys())
+                .filter_map(|&p| self.world.migration_order(p, 0).map(|t| (p, t)))
+                .collect(),
             offers: self.offers.clone(),
             next_offer: self.next_offer,
             prev_born: self.prev_born.clone(),
@@ -519,7 +522,6 @@ impl Game {
                 g.lineage_of.entry(l.owner).or_insert(k as u32);
             }
         }
-        g.migrations = saved.migrations;
         g.offers = saved.offers;
         g.next_offer = saved.next_offer.max(g.offers.keys().max().map_or(1, |k| k + 1));
         g.prev_born = saved.prev_born;
@@ -780,17 +782,47 @@ impl Game {
                 Ok(None)
             }
             ClientMsg::Release { organism } => self.world.release(player, organism).map(|_| None).map_err(e),
-            ClientMsg::Migrate { x, y } => {
+            ClientMsg::Migrate { x, y, group } => {
                 finite(&[x, y])?;
                 let target = self.world.map.clamp(Vec2::new(x, y));
-                self.world.command_migrate(player, target);
-                self.migrations.insert(player, target);
+                match group {
+                    None => self.world.command_migrate(player, target),
+                    Some(g) => {
+                        self.world.command_migrate_group(player, g, target).map_err(e)?;
+                    }
+                }
                 Ok(Some(serde_json::json!({ "x": target.x, "y": target.y })))
             }
-            ClientMsg::ClearMigration => {
-                self.world.clear_migration(player);
-                self.migrations.remove(&player);
+            ClientMsg::ClearMigration { group } => {
+                match group {
+                    None => self.world.clear_migration(player),
+                    Some(g) if g < MAX_GROUPS => self.world.clear_migration_group(player, g),
+                    Some(g) => return Err(e(CommandError::NoSuchGroup(g))),
+                }
                 Ok(None)
+            }
+            ClientMsg::ClaimTerritory { group, x, y, radius } => {
+                finite(&[x, y, radius])?;
+                let t = self.world.claim_territory(player, group, Vec2::new(x, y), radius).map_err(e)?;
+                Ok(Some(serde_json::to_value(TerritoryView::from(t)).unwrap()))
+            }
+            ClientMsg::AbandonTerritory { group } => {
+                self.world.abandon_territory(player, group).map_err(e)?;
+                Ok(None)
+            }
+            ClientMsg::SplitGroup { group, organisms } => {
+                if organisms.as_ref().is_some_and(|o| o.len() > MAX_SPLIT_ORGANISMS) {
+                    return Err(ErrorInfo::new(
+                        "too_many_organisms",
+                        format!("a split names at most {MAX_SPLIT_ORGANISMS} organisms"),
+                    ));
+                }
+                let out = self.world.split_group(player, group, organisms.as_deref()).map_err(e)?;
+                Ok(Some(serde_json::json!({ "group": out.group, "moved": out.moved, "kept": out.kept })))
+            }
+            ClientMsg::MergeGroups { from, into } => {
+                let moved = self.world.merge_groups(player, from, into).map_err(e)?;
+                Ok(Some(serde_json::json!({ "moved": moved })))
             }
             ClientMsg::SetView { x, y, radius } => {
                 finite(&[x, y, radius])?;
@@ -2662,7 +2694,13 @@ impl Game {
             lineage: self.lineage_of(player),
             slots_left: self.world.mating_slots_left(player),
             population: self.owner_population(player),
-            migration: self.migrations.get(&player).map(|p| [p.x, p.y]),
+            migration: self.world.migration_order(player, 0).map(|p| [p.x, p.y]),
+            groups: self
+                .world
+                .groups_of(player, mine.iter().map(|&i| &orgs[i as usize]))
+                .iter()
+                .map(GroupView::from)
+                .collect(),
             view,
             organisms: own,
             nearby,
@@ -3037,10 +3075,89 @@ mod tests {
         assert_eq!((seen.order, seen.speed), (None, None));
         // Nothing possessed: a sub-step sends nothing.
         assert!(g.substep().is_empty());
-        let out = g.command(10, 1, None, ClientMsg::Migrate { x: 5.0, y: 5.0 });
+        let out = g.command(10, 1, None, ClientMsg::Migrate { x: 5.0, y: 5.0, group: None });
         assert_eq!(result(&out), (true, None));
-        let out = g.command(10, 1, None, ClientMsg::ClearMigration);
+        let out = g.command(10, 1, None, ClientMsg::ClearMigration { group: None });
         assert_eq!(result(&out), (true, None));
+    }
+
+    fn reply_data(out: &Outbox) -> serde_json::Value {
+        match &out[0].1 {
+            ServerMsg::Result { ok: true, data: Some(d), .. } => d.clone(),
+            m => panic!("expected data, got {m:?}"),
+        }
+    }
+
+    /// Split, per-group orders, territory and merge through the protocol,
+    /// with what the state shows of them.
+    #[test]
+    fn group_commands_split_claim_and_merge() {
+        let (mut g, a, b) = game();
+        let s = g.state_for(10).unwrap();
+        assert_eq!(s.groups.len(), 1);
+        assert_eq!((s.groups[0].id, s.groups[0].members), (0, a.len()));
+        assert!(s.organisms.iter().all(|o| o.group == 0));
+        // Split ann's founders: half go to group 1.
+        let out = g.command(10, 1, Some(4), ClientMsg::SplitGroup { group: 0, organisms: None });
+        let d = reply_data(&out);
+        assert_eq!((d["group"].as_u64(), d["moved"].as_u64()), (Some(1), Some(a.len() as u64 / 2)));
+        // Group 1 holds a territory; the main group migrates.
+        let out = g.command(10, 1, None, ClientMsg::ClaimTerritory { group: 1, x: 20.0, y: 22.0, radius: 500.0 });
+        let t: TerritoryView = serde_json::from_value(reply_data(&out)).unwrap();
+        assert_eq!((t.x, t.y), (20.0, 22.0));
+        let out = g.command(10, 1, None, ClientMsg::Migrate { x: 50.0, y: 50.0, group: Some(0) });
+        assert_eq!(result(&out), (true, None));
+        let s = g.state_for(10).unwrap();
+        assert_eq!(s.groups.iter().map(|x| x.id).collect::<Vec<_>>(), vec![0, 1]);
+        let (g0, g1) = (&s.groups[0], &s.groups[1]);
+        assert_eq!((g0.members + g1.members, g1.members), (a.len(), a.len() / 2));
+        assert_eq!((g0.migration, g0.territory), (Some([50.0, 50.0]), None));
+        assert_eq!((g1.migration, g1.territory.map(|t| t.radius)), (None, Some(g1.max_radius)));
+        assert!(g1.claim_ready_tick > 0);
+        assert_eq!(s.migration, Some([50.0, 50.0]), "the main group's order");
+        assert_eq!(s.organisms.iter().filter(|o| o.group == 1).count(), a.len() / 2);
+        // Bob sees none of it.
+        let sb = g.state_for(20).unwrap();
+        assert_eq!(sb.groups.len(), 1);
+        assert!(sb.groups[0].territory.is_none() && sb.groups[0].migration.is_none());
+
+        // Errors: their codes, nothing changed.
+        let code = |g: &mut Game, conn, player, m| result(&g.command(conn, player, None, m)).1;
+        let claim = ClientMsg::ClaimTerritory { group: 1, x: 20.0, y: 20.0, radius: 5.0 };
+        assert_eq!(code(&mut g, 10, 1, claim).as_deref(), Some("claim_cooldown"));
+        let nan = ClientMsg::ClaimTerritory { group: 0, x: f32::NAN, y: 20.0, radius: 5.0 };
+        assert_eq!(code(&mut g, 10, 1, nan).as_deref(), Some("bad_coordinates"));
+        let inf = ClientMsg::ClaimTerritory { group: 0, x: 1.0, y: 20.0, radius: f32::INFINITY };
+        assert_eq!(code(&mut g, 10, 1, inf).as_deref(), Some("bad_coordinates"));
+        let none = ClientMsg::ClaimTerritory { group: 3, x: 1.0, y: 1.0, radius: 5.0 };
+        assert_eq!(code(&mut g, 10, 1, none).as_deref(), Some("no_such_group"));
+        assert_eq!(code(&mut g, 10, 1, ClientMsg::AbandonTerritory { group: 0 }).as_deref(), Some("no_territory"));
+        let theirs = ClientMsg::SplitGroup { group: 0, organisms: Some(vec![b[0]]) };
+        assert_eq!(code(&mut g, 10, 1, theirs).as_deref(), Some("not_owned"));
+        let many = ClientMsg::SplitGroup { group: 0, organisms: Some(vec![a[0]; MAX_SPLIT_ORGANISMS + 1]) };
+        assert_eq!(code(&mut g, 10, 1, many).as_deref(), Some("too_many_organisms"));
+        let in_one = g.world.organisms.iter().find(|o| o.owner == 1 && o.group == 1).unwrap().id;
+        let wrong = ClientMsg::SplitGroup { group: 0, organisms: Some(vec![in_one]) };
+        assert_eq!(code(&mut g, 10, 1, wrong).as_deref(), Some("not_in_group"));
+        assert_eq!(code(&mut g, 10, 1, ClientMsg::MergeGroups { from: 1, into: 1 }).as_deref(), Some("same_group"));
+        let far = ClientMsg::Migrate { x: 1.0, y: 1.0, group: Some(9) };
+        assert_eq!(code(&mut g, 10, 1, far).as_deref(), Some("no_such_group"));
+        assert_eq!(code(&mut g, 10, 1, ClientMsg::ClearMigration { group: Some(9) }).as_deref(), Some("no_such_group"));
+        assert_eq!(g.world.territory(1, 1).map(|t| (t.center.x, t.center.y)), Some((20.0, 22.0)));
+        // Bob can't touch ann's groups: his own group 1 doesn't exist.
+        assert_eq!(code(&mut g, 20, 2, ClientMsg::AbandonTerritory { group: 1 }).as_deref(), Some("no_territory"));
+        assert_eq!(code(&mut g, 20, 2, ClientMsg::MergeGroups { from: 1, into: 0 }).as_deref(), Some("no_such_group"));
+
+        // Abandon, merge back: one group again.
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::AbandonTerritory { group: 1 })), (true, None));
+        let out = g.command(10, 1, None, ClientMsg::MergeGroups { from: 1, into: 0 });
+        assert_eq!(reply_data(&out)["moved"].as_u64(), Some(a.len() as u64 / 2));
+        let s = g.state_for(10).unwrap();
+        assert_eq!(s.groups.len(), 1);
+        assert!(s.organisms.iter().all(|o| o.group == 0));
+        // A whole-lineage clear reaches every group.
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::ClearMigration { group: None })), (true, None));
+        assert_eq!(g.state_for(10).unwrap().migration, None);
     }
 
     #[test]
@@ -4756,7 +4873,8 @@ mod tests {
             lineage: g.lineage_of(player),
             slots_left: g.world.mating_slots_left(player),
             population: g.owner_population(player),
-            migration: g.migrations.get(&player).map(|p| [p.x, p.y]),
+            migration: g.world.migration_order(player, 0).map(|p| [p.x, p.y]),
+            groups: g.world.groups(player).iter().map(GroupView::from).collect(),
             view,
             organisms: own,
             nearby: nearby.into_iter().map(|(_, n)| n).collect(),

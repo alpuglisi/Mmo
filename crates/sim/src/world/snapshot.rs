@@ -50,7 +50,9 @@
 //! Version 7 is the leaner organism encoding above; a version 6 save is
 //! refused like any other version. Version 8 adds three balance parameters
 //! to the saved config (`Balance::threat_caution`, `alert_guard`,
-//! `pasture_search`).
+//! `pasture_search`). Version 9 adds player groups and territories
+//! (`Organism::group`, migration orders keyed by player and group, the
+//! world's claimed territories and claim times).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -70,7 +72,7 @@ use crate::terrain::Terrain;
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 8;
+pub const SNAPSHOT_VERSION: u32 = 9;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 

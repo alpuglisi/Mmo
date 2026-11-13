@@ -8,7 +8,8 @@ use std::cell::Cell;
 
 use rand::Rng;
 
-use super::spatial::{ALERT, ARMED, COURTING, FEMALE};
+use super::groups::{DEFENDER_SCARE, DEFEND_UTILITY, RETURN_UTILITY};
+use super::spatial::{ALERT, ARMED, COURTING, DEFENDING, FEMALE};
 use super::{Intent, World};
 use crate::genome::Gene;
 use crate::group::GroupTrait;
@@ -62,6 +63,8 @@ struct Viewer<'a> {
     female: bool,
     /// Seeds per-neighbor draws, so they don't depend on visit order.
     salt: u64,
+    /// The viewer's group territory (center, radius), if it holds one.
+    territory: Option<(Vec2, f32)>,
 }
 
 /// What an organism has learned from the neighbors it looked at closely.
@@ -82,6 +85,8 @@ struct Perception {
     /// many of those were kin.
     looked: [u32; 2],
     looked_kin: [u32; 2],
+    /// Nearest stranger inside the viewer's territory: (-distance, index).
+    intruder: Option<(f32, usize)>,
 }
 
 /// Does `(score, index)` beat the best so far? Ties go to the lower index, so
@@ -409,6 +414,7 @@ impl World {
             prey_cap,
             female,
             salt: rng.gen(),
+            territory: self.territory_of(o).map(|t| (t.center, t.radius)),
         };
         let mut seen = Perception {
             threat: 0.0,
@@ -422,6 +428,7 @@ impl World {
             kin_sum: Vec2::ZERO,
             looked: [0; 2],
             looked_kin: [0; 2],
+            intruder: None,
         };
         // Neighbors beyond the nearest `FOCUS`, by [same lineage, other
         // lineage]: count and summed position.
@@ -460,7 +467,8 @@ impl World {
                     && (e.flags & FEMALE != 0) != v.female
                     && seen.mate.is_none_or(|(s, _)| 1.0 >= s * (1.0 + d));
                 let warning = sentry > 0.0 && e.flags & ALERT != 0;
-                if threat || prey || mate || warning {
+                let defender = e.flags & DEFENDING != 0;
+                if threat || prey || mate || warning || defender {
                     self.look(&v, &mut seen, slot, d, false);
                 }
                 let r = &mut rest[usize::from(e.lineage != o.lineage)];
@@ -469,7 +477,7 @@ impl World {
             }
             buf.set(near);
         });
-        let Perception { threat: seen_threat, threat_pos: seen_pos, prey, mate, .. } = seen;
+        let Perception { threat: seen_threat, threat_pos: seen_pos, prey, mate, intruder, .. } = seen;
         // A sentry's warning counts like a threat seen first hand, from
         // wherever the sentry saw it.
         let (threat, threat_pos) =
@@ -529,7 +537,17 @@ impl World {
         // between seasonal ranges.
         let fatten = self.fat_room(o) / self.fat_capacity(o).max(1e-6);
         let season_dest = self.seasonal_destination(o, juvenile_care);
-        let ordered = self.migrate_orders.contains_key(&o.owner) && o.matured;
+        let ordered = self.migrate_orders.contains_key(&(o.owner, o.group)) && o.matured;
+        // Group territory: walk back in when outside it (unless hungry enough
+        // to forage further), and see off strangers inside it.
+        let territory = self.territory_of(o).map(|t| (t.center, t.radius));
+        let outside = self.roam_bound(o).is_some_and(|(c, r)| o.pos.dist(c) > r);
+        let defend = match intruder {
+            Some(_) if o.matured && territory.is_some() => {
+                DEFEND_UTILITY * (0.3 + 0.7 * p[Gene::Aggression].max(boldness)) * (1.0 - hunger)
+            }
+            _ => 0.0,
+        };
         // A sentry on duty with its group around stands watch unless hungry,
         // thirsty or courting wins: some stay alert while others breed. A
         // migrator on its seasonal journey keeps going instead.
@@ -543,7 +561,7 @@ impl World {
         // and resting on hold (`threat_caution`), except for the parched.
         let calm = 1.0 - cfg.balance.threat_caution * threat.min(1.0);
 
-        let mut options: [(Action, f32); 14] = [
+        let mut options: [(Action, f32); 16] = [
             (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless)),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
             (Action::Drink, thirst.powf(1.5) * 1.3 * calm + if thirst > 0.8 { 0.5 } else { 0.0 }),
@@ -596,6 +614,8 @@ impl World {
             (Action::Guard, if o.nest.is_some() { 0.6 } else { 0.0 }),
             (Action::Sentry, watch),
             (Action::Idle, 0.0),
+            (Action::Patrol, if outside { RETURN_UTILITY } else { 0.0 }),
+            (Action::Defend, defend),
         ];
         // Aggressive organisms hunt a little before they're hungry.
         if hunter && prey.is_some() {
@@ -677,12 +697,23 @@ impl World {
             Action::Migrate => {
                 intent.target = match season_dest {
                     Some(d) => Some(self.migration_target(o, d, kin_centroid)),
-                    None => self.migrate_orders.get(&o.owner).copied(),
+                    None => self.migrate_orders.get(&(o.owner, o.group)).copied(),
                 }
             }
             Action::Cache => self.choose_cache_spot(o, &mut intent, &mut rng),
             Action::FollowParent => intent.target = mother_pos,
             Action::Guard => intent.target = o.nest,
+            Action::Patrol => {
+                if let Some((c, r)) = territory {
+                    intent.target = Some(self.map.clamp(c + (o.pos - c).norm() * (0.6 * r)));
+                }
+            }
+            Action::Defend => {
+                if let Some((_, j)) = intruder {
+                    intent.target = Some(self.organisms[j].pos);
+                    intent.sprint = n.energy > 40.0;
+                }
+            }
             // A sentry stands watch where it is.
             Action::Hunt | Action::Scavenge | Action::Sentry | Action::Ordered | Action::Dormant => {}
         }
@@ -744,10 +775,13 @@ impl World {
                 }
             }
         }
+        // The player's other groups go their own way: their members aren't
+        // counted with the viewer's herd (cohesion, herd size, company).
+        let herd = kin && (q.group == o.group || q.owner != o.owner);
         if count {
             let lineage = usize::from(e.lineage != o.lineage);
             seen.looked[lineage] += 1;
-            if kin {
+            if herd {
                 seen.kin_sum += e.pos;
                 seen.kin += 1;
                 seen.looked_kin[lineage] += 1;
@@ -758,7 +792,21 @@ impl World {
         // without reading the organism.
         let could_threaten = e.flags & ARMED != 0 && e.mass > v.threat_floor;
         let could_be_prey = v.hunter && e.mass < v.prey_cap;
-        if !kin && (could_threaten || could_be_prey) {
+        // A territory holder notes the nearest stranger inside its territory
+        // that couldn't beat it (`Action::Defend`).
+        if let (true, false, Some((c, r))) = (count, kin, v.territory) {
+            if q.owner != o.owner
+                && !q.dormancy.is_deep()
+                && q.pos.dist(c) <= r
+                && !(can_threaten(q, o) && q.power() > o.power())
+                && beats(-d, j, seen.intruder)
+            {
+                seen.intruder = Some((-d, j));
+            }
+        }
+        // A defender chasing the viewer out of its territory.
+        let defender = e.flags & DEFENDING != 0 && q.owner != o.owner;
+        if !kin && (could_threaten || could_be_prey || defender) {
             // Sheltered burrowers and stealthy organisms are harder to see.
             // A shared burrow hides its sleepers better. A deep sleeper's den
             // hides it less than a burrow; a dormant burrower in its burrow
@@ -769,6 +817,15 @@ impl World {
             let detect =
                 radius * (1.0 - cfg.balance.stealth_effect * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
             if d < detect {
+                if defender && self.territory_of(q).is_some_and(|t| t.contains(o.pos)) {
+                    let odds = q.power() / (q.power() + o.resistance() + 1e-3);
+                    let level = (1.0 - d / detect) * odds * 2.0 * DEFENDER_SCARE;
+                    if level > seen.threat || (level == seen.threat && level > 0.0 && j < seen.threat_from) {
+                        seen.threat = level;
+                        seen.threat_pos = q.pos;
+                        seen.threat_from = j;
+                    }
+                }
                 if can_threaten(q, o) {
                     let odds = q.power() / (q.power() + o.resistance() + 1e-3);
                     let level = (1.0 - d / detect) * odds * 2.0;
@@ -852,6 +909,7 @@ impl World {
         // a generalist values both foods less than a specialist would.
         let tax = self.config.balance.generalist_tax;
         let (plant_eff, c) = (o.traits.plant_efficiency(tax), o.traits.meat_efficiency(tax));
+        let bound = self.roam_bound(o);
         let here = self.map.tile_at(o.pos);
         // Browse in the canopy only counts if the body can reach it.
         let (body, share) = (&o.traits.body, self.config.balance.canopy_share);
@@ -908,7 +966,7 @@ impl World {
             return;
         }
         // Keep heading for the patch chosen earlier while it still has food.
-        if let Some(t) = o.forage_target {
+        if let Some(t) = o.forage_target.filter(|&t| self.confine(t, bound) == t) {
             let tile = self.map.tile_at(t);
             if veg(self.map.ground_at(t), tile) * plant_eff + tile.meat * c >= bite {
                 intent.target = Some(t);
@@ -936,6 +994,7 @@ impl World {
         value: impl Fn(&crate::terrain::Ground, &crate::terrain::Tile) -> f32,
     ) -> Option<Vec2> {
         let (x0, y0) = self.map.tile_coords(o.pos);
+        let bound = self.roam_bound(o);
         let mut best: Option<(f32, Vec2)> = None;
         for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
             let (x, y) = (x0 as i64 + dx, y0 as i64 + dy);
@@ -948,8 +1007,12 @@ impl World {
             if v < min_value || best.is_some_and(|(s, _)| v <= s) {
                 continue;
             }
+            let p = crate::terrain::Map::tile_center(x as usize, y as usize);
+            if self.confine(p, bound) != p {
+                continue;
+            }
             if matches!(traverse(&o.traits.body, g, t, &Weather::still(t.wind), false), Traverse::Passable { .. }) {
-                best = Some((v, crate::terrain::Map::tile_center(x as usize, y as usize)));
+                best = Some((v, p));
             }
         }
         best.map(|(_, p)| p)
@@ -971,6 +1034,8 @@ impl World {
         // (`pasture_search`) instead of wandering about the stripped patch.
         let wide = self.config.balance.pasture_search;
         let rings = if wide > 0.0 { 24 } else { 16 };
+        // A territory holder only takes food inside its territory.
+        let bound = self.roam_bound(o);
         for k in 0..rings {
             if (k == 8 || k == 16) && best.is_some() {
                 break;
@@ -981,6 +1046,9 @@ impl World {
                 _ => near * wide,
             };
             let cand = self.map.clamp(o.pos + Vec2::new(rng.gen_range(-r..r), rng.gen_range(-r..r)));
+            if self.confine(cand, bound) != cand {
+                continue;
+            }
             let (x, y) = self.map.tile_coords(cand);
             let k = self.map.idx(x, y);
             let (g, t) = (&self.map.ground()[k], &self.map.tiles[k]);
@@ -1016,8 +1084,10 @@ impl World {
         // A target the body can't stand on is never reached, and would pin the
         // organism against the shore forever (starving next to the water).
         let usable = |t: Vec2| matches!(self.map.traverse_at(&o.traits.body, t, false), Traverse::Passable { .. });
+        // A territory holder roams inside its territory.
+        let bound = self.roam_bound(o);
         if let Some(t) = o.wander_target {
-            if o.pos.dist(t) > 0.5 && usable(t) {
+            if o.pos.dist(t) > 0.5 && usable(t) && self.confine(t, bound) == t {
                 intent.target = Some(t);
                 return;
             }
@@ -1025,6 +1095,7 @@ impl World {
         let mut t = o.pos;
         for _ in 0..4 {
             t = self.map.clamp(o.pos + Vec2::new(rng.gen_range(-range..range), rng.gen_range(-range..range)));
+            t = self.confine(t, bound);
             if usable(t) {
                 break;
             }

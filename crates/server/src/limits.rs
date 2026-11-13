@@ -144,6 +144,10 @@ pub struct Limits {
     pub commands: Rate,
     /// WebSocket commands per client IP over all its connections.
     pub ip_commands: Rate,
+    /// Group changes (claim or abandon a territory, split or merge groups)
+    /// per connection, on top of `commands`: each rewrites standing orders
+    /// for a whole herd, so a client has no reason to send many.
+    pub group_commands: Rate,
     /// Public reads that cost the world thread or the store (terrain, map,
     /// chronicle, history, lineage stats) per client IP.
     pub reads: Rate,
@@ -157,6 +161,8 @@ impl Default for Limits {
             // A client clicking around sends a few a second.
             commands: Rate::new(20.0, 40.0),
             ip_commands: Rate::new(60.0, 120.0),
+            // A player splitting a herd and claiming ground for each half.
+            group_commands: Rate::new(1.0, 6.0),
             // The client polls a few of these every few seconds; a dashboard
             // opens with a handful at once.
             reads: Rate::new(10.0, 60.0),
@@ -170,6 +176,7 @@ impl Limits {
             logins: Rate::UNLIMITED,
             commands: Rate::UNLIMITED,
             ip_commands: Rate::UNLIMITED,
+            group_commands: Rate::UNLIMITED,
             reads: Rate::UNLIMITED,
         }
     }
