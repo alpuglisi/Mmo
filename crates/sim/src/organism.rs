@@ -3,6 +3,7 @@
 use crate::genome::{Gene, Genome, Phenotype, PlayerId};
 use crate::mating::Display;
 use crate::math::Vec2;
+use crate::pathfinding::Path;
 use crate::stats::{derive, Traits};
 
 pub type OrgId = u64;
@@ -151,6 +152,9 @@ pub struct Organism {
     pub strike_ready_tick: u64,
     pub possessed_by: Option<PlayerId>,
     pub order: Option<Vec2>,
+    /// Route to `target` around terrain the body can't cross, if the direct
+    /// way was blocked (`World::move_toward`).
+    pub path: Option<Box<Path>>,
 }
 
 impl Organism {
@@ -192,6 +196,7 @@ impl Organism {
             strike_ready_tick: 0,
             possessed_by: None,
             order: None,
+            path: None,
         }
     }
 

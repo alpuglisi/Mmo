@@ -134,6 +134,12 @@ pub struct Balance {
     /// that fights back, per unit of the prey's `fight_back`, win or lose.
     /// 0 disables.
     pub fight_damage: f32,
+    /// Most tiles one path search may expand (`pathfinding`). Movement
+    /// steers straight at its target and plans a route only when the direct
+    /// step is blocked; a search that runs out of budget heads for the tile
+    /// it got closest to and plans again from there. 0 disables pathfinding
+    /// (greedy steering only).
+    pub path_nodes: f32,
 }
 
 impl Default for Balance {
@@ -169,12 +175,13 @@ impl Default for Balance {
             home_buffer: 28.0,
             injury_aversion: 6.0,
             fight_damage: 30.0,
+            path_nodes: 1500.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 28;
+    pub const FIELD_COUNT: usize = 29;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -212,6 +219,7 @@ impl Balance {
             ("home_buffer", &mut self.home_buffer),
             ("injury_aversion", &mut self.injury_aversion),
             ("fight_damage", &mut self.fight_damage),
+            ("path_nodes", &mut self.path_nodes),
         ]
     }
 

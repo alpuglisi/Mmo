@@ -28,6 +28,7 @@ docs/
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night, wind. Snow, ice bridges, plant regrowth, carcass decay. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
+| `pathfinding` | Movement and terrain | Bounded A* over tiles for one body: blocked tiles are avoided, slow ones cost time. Used only when the direct step is blocked (see Movement below). |
 | `mating` | Override cost | Root-sum-of-squares preference mismatch, `cost = k·max(0, mismatch−1)²`, outbreeding depression by genetic distance, and sterility between different body plans (thermoregulation, birth mode, body size or diet more than 0.3 apart; `cargo run --release --example distances` prints the founders' matrix). Display coloration is condition-dependent (an honest signal). |
 | `group` | Critical-mass group traits | Daily regional carrier frequency → logistic benefit. Implemented: cooperative hunting, warning coloration, herd defense, alarm calls. |
 | `legacy` | Scoring: genetic legacy | Share of origin-tagged alleles among living breeding adults, raw and weighted by offspring raised to adulthood. |
@@ -45,6 +46,36 @@ Every random draw comes from a `(seed, stream, tick, organism)` stream, so a
 run reproduces exactly from its seed regardless of thread count (there is a
 test for this).
 
+### Movement
+
+Organisms steer straight at their target. When the direct step is blocked
+(lake, cliff, a concave shore), the walker plans a route with A* for its own
+body (`terrain::traverse`: swimmers cross deep water, climbers cliffs, ice
+holds bodies light enough for its thickness), keeps it on the organism, and
+follows it until it arrives, the target moves away from the route's goal,
+it is pushed off the route, or the tile ahead closes (ice melts). Searches
+expand at most `path_nodes` tiles (a search that runs out heads for the tile
+it got closest to); a failed search isn't repeated for the same target until
+the terrain changes on the hour, and a target out in water with no shore
+next to it fails at once. Planning happens in the sequential apply phase,
+so runs stay thread-count independent. Short sprints (fleeing, the last
+lunge at prey) stay greedy. `--set path_nodes=0` restores greedy steering
+exactly.
+
+`cargo run --release --example stuck -- 120 1 2 3` measures how often
+organisms are stuck: heading for the same reachable spot for 24 ticks
+without getting 0.5 tiles closer. Over a year on three 128×128 seeds:
+
+| | Stuck (share of ticks heading somewhere) | Worst lineages | Not moving at all |
+| --- | --- | --- | --- |
+| Greedy steering | 0.24% | burrowers 1.34%, voles 0.94% (one seed each) | 0.10% |
+| Pathfinding | 0.03% | burrowers 0.21%, voles 0.10% (one seed each) | 0.01% |
+
+Most of the remaining "stuck" ticks are the metric's blind spots (a detour
+around a lake doesn't shorten the straight-line distance; targets thrash
+between nearby spots). The benchmark runs about 0.75 searches per tick, and
+its cost is unchanged within noise (callgrind: +0.2% instructions in total).
+
 ## Running
 
 Needs a recent stable Rust.
@@ -57,6 +88,7 @@ cargo run --release --bin evo-sim -- bench --scale 4 --days 3
 cargo run --release --bin evo-sim -- sweep --trials 16 --seeds 3 --rounds 2 --out sweep.csv
 cargo run --release --bin evo-sim -- run --set sprint=2.0 --set crowding=0.05   # try a balance tweak
 cargo run --release --example trace -- 3 200          # follow one fox (lineage 3)
+cargo run --release --example stuck -- 120 1 2        # how often organisms get stuck
 ```
 
 `run` founds a wild ecosystem (voles, antelope, newts, foxes) plus four sample
@@ -99,7 +131,16 @@ Validation uses 12 seeds (31–42) that no tuning run or agent touched, on a
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Original rules (first sweep, 3–4 seeds) | 6.5 | 100% | 100% | 100% | 0% | 0% | 100% | 100%, capped | 75% |
 | After the first tuning sweep (3 seeds) | 9.3 | 100% | 100% | 100% | 100% | 67% | 100% | 100%, capped | 67% |
-| **Current (12 unseen seeds)** | **11.3** | 100% | 83% | 100% | 100% | 92% | 92% | 100% | 100% |
+| Greedy steering (12 unseen seeds) | 11.3 | 100% | 83% | 100% | 100% | 92% | 92% | 100% | 100% |
+| **Current: pathfinding (12 unseen seeds)** | **11.1** | 100% | 67% | 100% | 100% | 100% | 92% | 100% | 92% |
+
+Pathfinding cost 0.2 points, within the noise of a no-op change (`sprint`
+2.45 → 2.4501 under greedy steering scores 11.04 with antelope at 67%).
+Mean numbers lean toward predators: voles 257 → 188, newts 252 → 179, frogs
+417 → 337, herd grazers 40 → 19, foxes 54 → 64, pack hunters 20 → 30.
+Deaths by cause on single seeds show no consistent mechanism yet (predation
+up on one of three, down on another), so judge it on more seeds before
+retuning.
 
 Toxic frogs now average about half their cap instead of sitting at it, and no
 lineage spends the run pinned at a cap.
@@ -142,8 +183,7 @@ defaults stayed as they are.
 Not yet implemented from the design doc: dominance and hidden recessives,
 mating-transmitted disease, the other five group traits, seasonal strategies
 (hibernation, migration, estivation as genes), level-of-detail statistical
-populations, and A* pathfinding (movement is currently greedy steering with
-obstacle avoidance). The point costs in `design.rs` are placeholders, as the
+populations. The point costs in `design.rs` are placeholders, as the
 doc lists them as an open question.
 
 ## Suggested next steps

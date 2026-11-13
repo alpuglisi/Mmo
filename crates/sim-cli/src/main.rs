@@ -47,7 +47,7 @@ Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_
 attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
 pregnancy_cost meat_per_kg flee_weight ambush crowding toxin_damage larval_competition
 adult_mortality burrow_shelter burrow_caution parent_defense breeding_density escape
-escape_window home_buffer injury_aversion fight_damage
+escape_window home_buffer injury_aversion fight_damage path_nodes
 ";
 
 struct Args {
@@ -342,6 +342,7 @@ fn bench(args: &Args) {
     // Warm up one day so caches and populations settle.
     world.run_days(1);
     let mut org_ticks = 0u64;
+    let searches = world.counters.path_searches;
     let start = Instant::now();
     for _ in 0..days * world.config.ticks_per_day {
         org_ticks += world.alive_count() as u64;
@@ -353,6 +354,7 @@ fn bench(args: &Args) {
     println!("  {:.0} organisms on average", org_ticks as f64 / ticks);
     println!("  {:.2} ms per tick", secs * 1e3 / ticks);
     println!("  {us:.2} µs per organism-tick (wall clock, all threads)");
+    println!("  {:.2} path searches per tick", (world.counters.path_searches - searches) as f64 / ticks);
     println!(
         "  ≈ {:.0}k organisms at 1 tick/second on this machine",
         1e6 / us / 1e3
