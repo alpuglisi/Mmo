@@ -332,6 +332,8 @@ pub fn action_name(a: Action) -> &'static str {
         Action::FollowParent => "follow_parent",
         Action::Guard => "guard",
         Action::Ordered => "ordered",
+        Action::Dormant => "dormant",
+        Action::Cache => "cache",
     }
 }
 
