@@ -361,6 +361,8 @@ impl World {
             region[self.map.idx(x, y)]
         };
         let carn = probe.traits.carnivory;
+        let tax = self.config.balance.generalist_tax;
+        let (plant_eff, meat_eff) = (probe.traits.plant_efficiency(tax), probe.traits.meat_efficiency(tax));
         let hunter = carn > 0.45;
         // Prey it can take alone: a pack placed by big prey it can only
         // take together eats through that prey lineage before it settles.
@@ -406,8 +408,10 @@ impl World {
             };
             // A short walk to drinking water that avoids the threats.
             let water = if self.water_reachable(probe, p, &threat_pos) { 1.0 } else { -2.0 };
-            // Competitors share a diet.
-            let crowd = self.organisms.iter().filter(|o| o.pos.dist(p) < 12.0 && (o.traits.carnivory - carn).abs() < 0.3).count() as f32;
+            // Competitors share a diet: an omnivore competes with grazers and
+            // hunters alike (diet overlap `1 - |carnivory difference|` above
+            // 0.45), specialists only with their own kind.
+            let crowd = self.organisms.iter().filter(|o| o.pos.dist(p) < 12.0 && (o.traits.carnivory - carn).abs() < 0.55).count() as f32;
             let danger: f32 = threats.iter().map(|&(q, w)| w * (1.0 - q.dist(p) / buffer.max(1e-3)).max(0.0)).sum();
             // Reachable prey nearby. Each prey lineage counts up to a share of
             // its founders and counts against the spot beyond twice that, so
@@ -432,7 +436,7 @@ impl World {
                 })
                 .sum();
             let productivity = (t.base_temp / 12.0).clamp(0.2, 1.0);
-            let food = t.veg_max / 40.0 * productivity * (1.0 - carn) + carn * 0.04 * prey_count.min(60.0);
+            let food = t.veg_max / 40.0 * productivity * plant_eff + meat_eff * 0.04 * prey_count.min(60.0);
             let score = water + food + comfort - 0.05 * crowd - (0.3 * danger).min(4.0) - (0.1 * carn * on_top).min(2.0)
                 + rng.gen_range(0.0..0.5);
             if score > best.0 {

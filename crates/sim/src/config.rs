@@ -64,6 +64,24 @@ pub struct Balance {
     pub attack_power: f32,
     /// Hunger-rate reduction for full carnivores (big, infrequent meals).
     pub carnivore_hunger_discount: f32,
+    /// Share of food value an even omnivore (carnivory 0.5) loses for
+    /// keeping both guts (`stats::generalist_factor`): plants yield
+    /// `(1 - carnivory)` and meat `carnivory` of their value, times
+    /// `1 - tax * (4c(1-c))^3`. The tax fades fast toward either specialist.
+    /// 0 is the old linear rule (an omnivore gets half of each, free to
+    /// switch).
+    pub generalist_tax: f32,
+    /// Extra hunger for a cold-blooded body per 10 °C of body temperature
+    /// above full activity (22 °C): a warm ectotherm burns more, a cool one
+    /// stays cheap but sluggish.
+    pub cold_heat_burn: f32,
+    /// Extra mass-specific burn of small bodies: hunger and thirst points
+    /// rise at `(adult kg)^-k` times the base rate (food per hunger point
+    /// already scales with mass^0.75). Small bodies run hot and fast (shrews
+    /// eat all day) and carry smaller reserves, so they need more food and
+    /// water per kg and starve or dry out sooner; large bodies outlast them.
+    /// 0 keeps food needs on Kleiber's mass^0.75.
+    pub size_burn: f32,
     /// Extra hunger rate per unit of litter burden while pregnant.
     pub pregnancy_cost: f32,
     /// Food units left by a carcass per kg of body mass.
@@ -121,7 +139,7 @@ pub struct Balance {
     /// new group count against its home (more the closer they are).
     pub home_buffer: f32,
     /// How strongly a hunter shies away from prey that fights back
-    /// (`decide::fight_back`: power times carnivory, so mostly other
+    /// (`decide::fight_back`: power times the taxed meat share, so mostly other
     /// predators). Its prey score is scaled by
     /// `(1 - risk)^(injury_aversion * (2 - carnivory))`, `risk` being the
     /// prey's share of its own plus the striker's power (no pack bonus: the
@@ -256,6 +274,9 @@ impl Default for Balance {
             perception_range: 4.6,
             attack_power: 0.75,
             carnivore_hunger_discount: 0.44,
+            generalist_tax: 0.5,
+            cold_heat_burn: 1.0,
+            size_burn: 0.25,
             pregnancy_cost: 0.74,
             meat_per_kg: 5.75,
             flee_weight: 1.33,
@@ -308,7 +329,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 58;
+    pub const FIELD_COUNT: usize = 61;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -329,6 +350,9 @@ impl Balance {
             ("perception_range", &mut self.perception_range),
             ("attack_power", &mut self.attack_power),
             ("carnivore_hunger_discount", &mut self.carnivore_hunger_discount),
+            ("generalist_tax", &mut self.generalist_tax),
+            ("cold_heat_burn", &mut self.cold_heat_burn),
+            ("size_burn", &mut self.size_burn),
             ("pregnancy_cost", &mut self.pregnancy_cost),
             ("meat_per_kg", &mut self.meat_per_kg),
             ("flee_weight", &mut self.flee_weight),

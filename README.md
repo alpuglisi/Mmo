@@ -512,20 +512,69 @@ defense and insulation over one year), so they keep only a floor price.
 
 **Dominant designs.** No trait combination dominates; what wins out of
 proportion are free or cheap structural choices. Across the three 60-world
-tournaments, small (< 0.25), cold-blooded, omnivorous designs with incubated
-eggs or live birth and big litters win far more often (a fair share is 25% of
-worlds): cold-blooded designs win 32–33% vs 16–18% for warm, small 37–43% vs
-13–21% for large, omnivores 29–46%, small omnivores 38–67%. The legacy score counts breeding heads,
-and a body that eats less fits more heads on the same food. Pricing cold blood
-(20) and smallness (40 per unit) did not shrink the gap measurably: points buy
-too little for a price to offset it without pushing the toxic frogs over budget
-(97.4 of 100 at calibration; after brumation was added they needed 4 fewer
-founders, 46, to stay at 99.4). The fix belongs in the rules, not the price list: weight
-legacy by biomass or tie the cold-blooded metabolism discount to temperature
-more steeply, and give omnivores a digestive penalty on both diets. Doc
-counters that already work: warm-blooded designs with abandoned eggs survive
-only 62% of the time (thermoregulation mismatch), and herd grazers lose herd
-defense when shrunk below 0.45.
+calibration tournaments, small (< 0.25), cold-blooded, omnivorous designs
+with incubated eggs or live birth and big litters won far more often (a fair
+share is 25% of worlds): cold-blooded 32–33% vs 16–18% for warm, small 37–43%
+vs 13–21% for large, omnivores 29–46%, small omnivores 38–67%. Pricing cold
+blood (20) and smallness (40 per unit) did not shrink the gap: points buy too
+little to offset it without pushing the toxic frogs over budget. The legacy
+score (breeding heads) stays as it is; the fix is in the rules.
+
+Three fresh 48-world tournaments on the old rules (seeds 5000+, 9100+, 9200+,
+`calibrate tournament --deaths`) located the causes. Cold blood was not a
+consistent winner there (25% vs 25% pooled), but size and diet were: small
+won 35% vs 15% for large, omnivores 40% vs 16–23% for the other diets, small
+omnivores 53%. Paired re-runs of the same designs with one rule changed
+showed what drives it. Small bodies field the most breeding adults (201 vs 64
+for large per lineage). Omnivores (carnivory 0.5) were not food-limited: cutting
+their food value to a quarter of each food cost carnivores twice as
+much share as it cost them. They won on three side effects of
+carnivory: the hunger discount for meat eaters (22% for an omnivore), fighting
+back hard enough that hunters with `injury_aversion` 6 almost never attack
+them (9% of omnivore deaths were predation vs 38% for herbivores), and
+founding placement, where the crowding term counted only diets within 0.3 of
+their own, so omnivores settled in the best grazing land without seeing any
+competitors. The rule changes (tunables in `Balance`):
+
+- `generalist_tax` 0.5: plants yield `1 - carnivory` and meat `carnivory` of
+  their value, times `1 - tax · (4c(1-c))³` (`stats::generalist_factor`). An
+  even omnivore gets a quarter of each food instead of half; carnivory 0.1
+  keeps 98% and 0.85 keeps 93%. The same taxed meat share sets the meat
+  eater's hunger discount, how hard prey fights back, food choice and
+  founding food value. Founding now counts as competitors every diet that
+  overlaps by more than 0.45 (`1 - |Δcarnivory|`), so omnivores see grazers
+  and hunters alike.
+- `size_burn` 0.25: hunger and thirst rise at `(adult kg)^-0.25` times the
+  base rate, on top of mass^0.75 food per hunger point. Small bodies run hot
+  and carry small reserves, so they need more per kg and starve or dry out
+  sooner (a 0.36 kg body burns 2× as fast as a 6.3 kg one).
+- `cold_heat_burn` 1.0: a cold-blooded body above full activity (22 °C) burns
+  100% more per 10 °C (`apply::cold_blooded_thermo`). Cold blood stays cheap
+  when the body is cool and sluggish and costs more where it is hot.
+
+After, on the same 80 world-and-design sets (seeds 5000–5031 and 9200–9247),
+every class is within a few points of fair:
+
+| Win share | Before | After |
+| --- | --- | --- |
+| Cold / warm | 27% / 24% | 26% / 24% |
+| Small / mid / large | 33% / 26% / 17% | 24% / 27% / 23% |
+| Carnivory 0 / 0.1 / 0.5 / 0.85 | 20% / 16% / 37% / 25% | 21% / 24% / 26% / 28% |
+| Small omnivores | 43% | 30% |
+
+Mean legacy share moves the same way (omnivores 0.142 → 0.113, small 0.133 →
+0.119, large 0.075 → 0.091), and no reverse dominance appears. The
+ecosystem holds: the standard sweep (`sweep --size 96 --trials 1 --seeds 12
+--rounds 1 --seed 31`) scores 10.96 (11.12 before). Survival per lineage is
+unchanged or better (pack hunters 92% → 100%) except antelope (67% → 50%,
+6 of 12 seeds) and herd grazers (92% → 83%); voles (100%, 217 alive) and
+newts (100%, 214) barely move. Burrowing omnivores stay at 100% survival
+but average 119 alive instead of 426; the toxic frogs (cold, carnivory 0.1)
+are unchanged (100%, 448). Not addressed:
+incubated eggs still win 38% and abandoned eggs 14% (birth mode, not diet or
+metabolism). Doc counters that already work: warm-blooded designs with
+abandoned eggs survive only 62% of the time (thermoregulation mismatch), and
+herd grazers lose herd defense when shrunk below 0.45.
 
 
 **Seasonal strategies** (`world::seasonal`, tunables `dormancy_temp` …

@@ -22,7 +22,9 @@
 //!
 //! Options: `--seeds N` (marginal; seeds `--seed0`..), `--worlds N`
 //! (tournament), `--days N`, `--size N`, `--delta F`, `--extra-founders N`,
-//! `--seed0 N`, `--only NAME,...` (marginal options to run).
+//! `--seed0 N`, `--only NAME,...` (marginal options to run), `--set NAME=V`
+//! (override a `Balance` parameter, repeatable), `--deaths` (print each
+//! player lineage's deaths by cause to stderr: `deaths,seed,slot,cause=n,...`).
 //!
 //! Columns: `mode,seed,world,slot,template,option,delta,points,share_final,
 //! share_mean,alive,adults,design`. `share_final` is the mean legacy share
@@ -33,7 +35,8 @@ use evo_sim::design::{
     DESIGN_BUDGET, MAX_LITTER,
 };
 use evo_sim::rng::rng_for;
-use evo_sim::{presets, BirthType, FounderDesign, Gene, PlayerId, Thermo, World, WorldConfig};
+use evo_sim::organism::DeathCause;
+use evo_sim::{presets, Balance, BirthType, FounderDesign, Gene, PlayerId, Thermo, World, WorldConfig};
 use rand::seq::SliceRandom;
 use rand::Rng;
 
@@ -46,10 +49,12 @@ struct Opts {
     extra_founders: u32,
     seed0: u64,
     only: Option<Vec<String>>,
+    balance: Balance,
+    deaths: bool,
 }
 
 fn parse(args: &[String]) -> Opts {
-    let mut o = Opts { seeds: 4, worlds: 20, days: 90, size: 96, delta: 0.3, extra_founders: 16, seed0: 1, only: None };
+    let mut o = Opts { seeds: 4, worlds: 20, days: 90, size: 96, delta: 0.3, extra_founders: 16, seed0: 1, only: None, balance: Balance::default(), deaths: false };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut v = || it.next().unwrap_or_else(|| panic!("{a} needs a value")).clone();
@@ -62,6 +67,12 @@ fn parse(args: &[String]) -> Opts {
             "--extra-founders" => o.extra_founders = v().parse().unwrap(),
             "--seed0" => o.seed0 = v().parse().unwrap(),
             "--only" => o.only = Some(v().split(',').map(str::to_string).collect()),
+            "--deaths" => o.deaths = true,
+            "--set" => {
+                let s = v();
+                let (name, x) = s.split_once('=').unwrap_or_else(|| panic!("--set expects NAME=VALUE, got {s}"));
+                assert!(o.balance.set(name, x.parse().unwrap()), "unknown balance parameter {name}");
+            }
             _ => panic!("unknown option {a}"),
         }
     }
@@ -82,14 +93,24 @@ fn describe(d: &FounderDesign) -> String {
 
 /// Run a world with the given player designs and return each player's
 /// `(share_final, share_mean, alive, adults)`.
-fn run(seed: u64, size: usize, days: u32, designs: &[FounderDesign]) -> Vec<(f64, f64, usize, usize)> {
-    let config = WorldConfig { seed, width: size, height: size, ..Default::default() };
+fn run(seed: u64, o: &Opts, designs: &[FounderDesign]) -> Vec<(f64, f64, usize, usize)> {
+    let config = WorldConfig { seed, width: o.size, height: o.size, balance: o.balance, ..Default::default() };
     let mut world: World = presets::wild_world(config, 1);
     let first = world.lineages.len();
     for (k, d) in designs.iter().enumerate() {
         world.found_lineage_unchecked(k as PlayerId + 1, d);
     }
-    world.run_days(days);
+    world.run_days(o.days);
+    if o.deaths {
+        for k in 0..designs.len() {
+            let mut line = format!("deaths,{seed},{k}");
+            for cause in DeathCause::ALL {
+                let n = world.counters.deaths_by_lineage.get(&((first + k) as u32, cause)).copied().unwrap_or(0);
+                line.push_str(&format!(",{}={n}", cause.label()));
+            }
+            eprintln!("{line}");
+        }
+    }
     let counts = world.lineage_counts();
     let tail = world.legacy.len().saturating_sub(10);
     (0..designs.len())
@@ -170,7 +191,7 @@ fn marginal(o: &Opts) {
                 })
                 .collect();
             let designs: Vec<FounderDesign> = picks.iter().map(|p| p.0.clone()).collect();
-            let out = run(seed, o.size, o.days, &designs);
+            let out = run(seed, o, &designs);
             for (t, ((design, name, delta), r)) in picks.iter().zip(out).enumerate() {
                 println!(
                     "marginal,{seed},{w},{t},{},{name},{delta:.3},{:.1},{:.5},{:.5},{},{},{}",
@@ -246,7 +267,7 @@ fn tournament(o: &Opts) {
         let seed = o.seed0 + w;
         let mut rng = rng_for(seed, 0xca1, w, 0);
         let designs: Vec<FounderDesign> = (0..4).map(|k| random_design(&mut rng, format!("R{w}.{k}"))).collect();
-        let out = run(seed, o.size, o.days, &designs);
+        let out = run(seed, o, &designs);
         for (k, (d, r)) in designs.iter().zip(out).enumerate() {
             println!(
                 "tournament,{seed},{w},{k},{},random,0,{:.1},{:.5},{:.5},{},{},{}",

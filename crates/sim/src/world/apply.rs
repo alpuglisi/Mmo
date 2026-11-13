@@ -22,6 +22,14 @@ const MATING_REACH: f32 = 1.2;
 /// Sprints shorter than this (tiles) steer greedily instead of planning.
 const PATH_SHORT: f32 = 4.0;
 
+/// Hunger multiplier from a cold-blooded body's temperature: a sluggish body
+/// (low `activity`) idles cheaply; above full activity (22 °C) every 10 °C
+/// costs `heat_burn` more (`Balance::cold_heat_burn`), so the food discount
+/// of cold blood is largest where the body is cool and slow.
+pub(crate) fn cold_blooded_thermo(activity: f32, body_t: f32, heat_burn: f32) -> f32 {
+    (0.4 + 0.6 * activity) * (1.0 + heat_burn * (body_t - 22.0).max(0.0) / 10.0)
+}
+
 /// Daily death hazard of an uncared-for juvenile with `kin` of its own kind
 /// nearby: `(kin / competition)^4`. Steep, because perceived kin saturate in
 /// a crowd: a lone clutch of siblings barely notices (9 kin at the default:
@@ -337,10 +345,10 @@ impl World {
     /// keep eating past full and store the surplus as fat.
     fn eat_plants(&mut self, i: usize, rate: f32) {
         let o = &self.organisms[i];
-        let eff = 1.0 - o.traits.carnivory;
+        let eff = o.traits.plant_efficiency(self.config.balance.generalist_tax);
         let fat_room = self.fat_room(o);
         let room = o.needs.hunger + fat_room;
-        if eff < 0.05 || room < 5.0 {
+        if o.traits.carnivory > 0.95 || eff <= 0.0 || room < 5.0 {
             return;
         }
         let want = (MAX_INTAKE_PER_DAY * self.config.dt_days() * rate).min(room);
@@ -355,10 +363,10 @@ impl World {
 
     fn eat_meat(&mut self, i: usize, rate: f32) {
         let o = &self.organisms[i];
-        let eff = o.traits.carnivory;
+        let eff = o.traits.meat_efficiency(self.config.balance.generalist_tax);
         let fat_room = self.fat_room(o);
         let room = o.needs.hunger + fat_room;
-        if eff < 0.2 || room < 5.0 {
+        if o.traits.carnivory < 0.2 || room < 5.0 {
             return;
         }
         let want = (MAX_INTAKE_PER_DAY * self.config.dt_days() * rate).min(room);
@@ -409,7 +417,7 @@ impl World {
             p *= 1.0 - 0.6 * tox;
         }
         let prey_power = b.power().max(guard_power);
-        let prey_fights = super::decide::fight_back(b);
+        let prey_fights = super::decide::fight_back(b, self.config.balance.generalist_tax);
         let prey_bright = b.pheno[Gene::Coloration] > 0.6;
         let prey_pos = b.pos;
         let prey_mass = b.mass();
@@ -590,7 +598,7 @@ impl World {
         }
         let n = c.eggs.len().min(3);
         let food = n as f32 * c.egg_mass * self.config.balance.meat_per_kg;
-        let eaten = food * o.traits.carnivory / o.food_per_hunger();
+        let eaten = food * o.traits.meat_efficiency(self.config.balance.generalist_tax) / o.food_per_hunger();
         let c = &mut self.clutches[k];
         c.eggs.truncate(c.eggs.len() - n);
         self.counters.eggs_lost += n as u64;
@@ -626,6 +634,8 @@ impl World {
         let buffer = (0.6 + 0.6 * bal.shared_burrow * shared).min(0.95);
         let temp = if o.sheltered { tile_temp + (10.0 - tile_temp) * buffer } else { tile_temp };
 
+        // A cold-blooded body's temperature follows the air (plus basking).
+        let mut body_t = temp;
         let (cold, heat) = if o.traits.warm {
             o.activity = 1.0;
             let low = 12.0 - 30.0 * st.insulation;
@@ -634,7 +644,7 @@ impl World {
         } else {
             let basking = daytime && open && matches!(intent.action, Action::Bask | Action::Rest | Action::Idle);
             let bask = if basking { 10.0 * (1.0 - o.traits.fur_mismatch) } else { 0.0 };
-            let body_t = temp + bask;
+            body_t = temp + bask;
             o.activity = ((body_t - 2.0) / 20.0).clamp(0.15, 1.0);
             ((6.0 - body_t).max(0.0), (body_t - 38.0).max(0.0))
         };
@@ -665,18 +675,24 @@ impl World {
         } else if o.traits.warm {
             1.0 + 0.04 * cold
         } else {
-            0.4 + 0.6 * o.activity
+            cold_blooded_thermo(o.activity, body_t, bal.cold_heat_burn)
         };
         // Pregnancy costs scale with the litter's total mass.
         let pregnant = if o.pregnancy.is_some() { 1.0 + bal.pregnancy_cost * o.traits.litter_burden } else { 1.0 };
         let size = o.pheno[Gene::BodySize];
         let watch = if intent.action == Action::Sentry { 1.0 + bal.sentry_cost } else { 1.0 };
-        // Carnivores eat big, infrequent meals: hunger rises more slowly.
-        let diet = 1.0 - bal.carnivore_hunger_discount * o.traits.carnivory;
+        // Carnivores eat big, infrequent meals: hunger rises more slowly. The
+        // discount follows the meat gut (`Traits::meat_efficiency`), so a
+        // generalist gets less of it than its carnivory alone would say.
+        let diet = 1.0 - bal.carnivore_hunger_discount * o.traits.meat_efficiency(bal.generalist_tax);
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
-        let mut hunger = bal.hunger_rate * st.metabolism * diet * crowd * thermo * activity_mult * pregnant * watch * dt;
-        let mut thirst = bal.thirst_rate * (1.0 + 0.05 * heat) * (0.8 + 0.4 * size) * if o.traits.warm { 1.0 } else { 0.7 } * dt;
+        // Small bodies burn through food and water faster (`Balance::size_burn`).
+        let size_burn = if bal.size_burn == 0.0 { 1.0 } else { o.traits.body.mass.powf(-bal.size_burn) };
+        let mut hunger =
+            bal.hunger_rate * st.metabolism * diet * crowd * thermo * activity_mult * pregnant * watch * size_burn * dt;
+        let mut thirst =
+            bal.thirst_rate * (1.0 + 0.05 * heat) * (0.8 + 0.4 * size) * if o.traits.warm { 1.0 } else { 0.7 } * size_burn * dt;
         if o.dormancy != Dormancy::Awake {
             hunger *= dormant_rate;
             if deep {
@@ -943,6 +959,74 @@ mod tests {
         assert!(larval_hazard(5, 18.0) < 0.01);
         assert!((larval_hazard(18, 18.0) - 1.0).abs() < 1e-6);
         assert!(larval_hazard(30, 18.0) > 5.0);
+    }
+
+    /// Cold blood is cheapest when the body is cool and sluggish; a hot body
+    /// burns more than one at full activity.
+    #[test]
+    fn cold_blooded_hunger_follows_body_temperature() {
+        let burn = crate::Balance::default().cold_heat_burn;
+        assert!(burn > 0.0);
+        let at = |t: f32| cold_blooded_thermo(((t - 2.0) / 20.0).clamp(0.15, 1.0), t, burn);
+        assert!(at(5.0) < at(15.0) && at(15.0) < at(22.0) && at(22.0) < at(32.0));
+        assert!((at(22.0) - 1.0).abs() < 1e-6);
+        assert!((at(32.0) - (1.0 + burn)).abs() < 1e-5);
+        // Without the burn, the old curve: flat above full activity.
+        assert_eq!(cold_blooded_thermo(1.0, 35.0, 0.0), 1.0);
+    }
+
+    /// Hunger relieved per unit of vegetation grazed: full for a herbivore,
+    /// half for an untaxed omnivore (the old linear rule), clearly less than
+    /// half under the default generalist tax.
+    #[test]
+    fn generalists_get_less_from_grazing() {
+        let relief_per_veg = |carnivory: f32, tax: f32| {
+            let mut w = wild_world(5000);
+            w.config.balance.generalist_tax = tax;
+            let i = w.organisms.iter().position(|o| o.lineage == 0 && o.matured).unwrap();
+            let o = &mut w.organisms[i];
+            o.traits.carnivory = carnivory;
+            o.traits.seasonal.winter = None;
+            o.traits.seasonal.estivation = 0.0;
+            o.needs.hunger = 80.0;
+            let pos = o.pos;
+            w.map.tile_at_mut(pos).veg = 1000.0;
+            w.eat_plants(i, 0.1);
+            let eaten = 1000.0 - w.map.tile_at(pos).veg;
+            assert!(eaten > 0.0);
+            (80.0 - w.organisms[i].needs.hunger) / eaten
+        };
+        let herbivore = relief_per_veg(0.0, 0.0);
+        let linear = relief_per_veg(0.5, 0.0) / herbivore;
+        assert!((linear - 0.5).abs() < 1e-3, "{linear}");
+        let tax = crate::Balance::default().generalist_tax;
+        let taxed = relief_per_veg(0.5, tax) / herbivore;
+        assert!((taxed - 0.5 * (1.0 - tax)).abs() < 1e-3 && taxed < 0.4, "{taxed}");
+    }
+
+    /// Small bodies burn more hunger points per day than large ones under
+    /// `size_burn`; without it hunger points don't depend on size.
+    #[test]
+    fn small_bodies_burn_faster() {
+        let config = WorldConfig { seed: 9, width: 32, height: 32, ..Default::default() };
+        let mut w = World::new(config);
+        let d = crate::FounderDesign::new("d", crate::Thermo::Warm, BirthType::Live, 2);
+        w.found_lineage_unchecked(1, &d.founders(1));
+        let hunger_after = |w: &mut World, kg: f32, size_burn: f32| {
+            w.config.balance.size_burn = size_burn;
+            let o = &mut w.organisms[0];
+            o.traits.body.mass = kg;
+            o.needs.hunger = 0.0;
+            w.update_needs(0, &Intent { action: Action::Rest, ..Intent::idle() }, 0.0, 0.1);
+            w.organisms[0].needs.hunger
+        };
+        let burn = crate::Balance::default().size_burn;
+        assert!(burn > 0.0);
+        // 0.36 kg (body size 0.1) against 6.3 kg (0.6).
+        let ratio = hunger_after(&mut w, 0.36, burn) / hunger_after(&mut w, 6.3, burn);
+        assert!((ratio - (0.36f32 / 6.3).powf(-burn)).abs() < 1e-3 && ratio > 1.5, "{ratio}");
+        let (small, large) = (hunger_after(&mut w, 0.36, 0.0), hunger_after(&mut w, 6.3, 0.0));
+        assert!((small - large).abs() < 1e-4 * large, "{small} vs {large}");
     }
 
     /// A crowd of froglets thins out; the same crowd without competition doesn't.
