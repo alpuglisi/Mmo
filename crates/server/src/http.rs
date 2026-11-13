@@ -25,11 +25,11 @@ use crate::design::{self, DesignSpec, SpecError};
 use crate::game::FoundError;
 use crate::limits::{Bucket, Limiters};
 use crate::protocol::{
-    AchievementList, CatastropheList, ChronicleView, ClientEnvelope, EraList, ErrorInfo, LineageStats, SeasonBoard,
-    ServerMsg, SpeciesList, TerrainDynamic, TerrainView,
+    AchievementList, AlertPrefs, CatastropheList, ChronicleView, ClientEnvelope, EraList, ErrorInfo, LineageStats,
+    SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic, TerrainView,
 };
 use crate::runner::{Published, Request, TerrainReply};
-use crate::store::{DesignRecord, Store};
+use crate::store::{AlertPrefsRecord, DesignRecord, Store};
 
 /// Largest WebSocket message a client may send.
 const MAX_CLIENT_MESSAGE: usize = 16 * 1024;
@@ -68,6 +68,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
         .route("/api/lineage/stats", get(lineage_stats))
+        .route("/api/alerts/prefs", get(alert_prefs).post(set_alert_prefs))
         .route("/api/species", get(species))
         .route("/api/eras", get(eras))
         .route("/api/catastrophes", get(catastrophes))
@@ -314,6 +315,30 @@ async fn lineage_stats(State(app): State<AppState>, headers: HeaderMap) -> Resul
     let (reply, rx) = oneshot::channel();
     send_request(&app.world, Request::Stats { player: session.player, reply })?;
     Ok(Json(rx.await.map_err(ApiError::internal)?))
+}
+
+/// The caller's alert preferences (the defaults until they save some).
+async fn alert_prefs(State(app): State<AppState>, headers: HeaderMap) -> Result<Json<AlertPrefs>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let stored = app.store.load_alert_prefs(session.player).await.map_err(ApiError::internal)?;
+    Ok(Json(stored.map(|r| r.prefs.normalized()).unwrap_or_default()))
+}
+
+/// Replace the caller's alert preferences; replies with them normalized.
+/// Unchanged preferences are not written again.
+async fn set_alert_prefs(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Json(prefs): Json<AlertPrefs>,
+) -> Result<Json<AlertPrefs>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let prefs = prefs.normalized();
+    let stored = app.store.load_alert_prefs(session.player).await.map_err(ApiError::internal)?;
+    if stored.map(|r| r.prefs.normalized()) != Some(prefs.clone()) {
+        let record = AlertPrefsRecord { player: session.player, prefs: prefs.clone() };
+        app.store.put_alert_prefs(&record).await.map_err(ApiError::internal)?;
+    }
+    Ok(Json(prefs))
 }
 
 async fn terrain_request(app: &AppState, full: bool) -> Result<TerrainReply, ApiError> {

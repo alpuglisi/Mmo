@@ -238,6 +238,14 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .gene-table th { color: var(--muted); font-weight: 500; }
 .gene-table svg { width: 100px; }
 .feed-list { list-style: none; margin: 0; padding: 0; }
+.origin-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.85em; }
+.origin-list li { display: flex; align-items: center; gap: 4px; }
+.prefs-table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-top: 6px; }
+.prefs-table td, .prefs-table th { padding: 3px 4px; border-bottom: 1px solid var(--border); text-align: left; }
+.prefs-table th { color: var(--muted); font-weight: 500; }
+.prefs-table td:nth-child(n + 2), .prefs-table th:nth-child(n + 2) { text-align: center; width: 3.5em; }
+.prefs-table td:first-child .muted { margin-left: 4px; }
+.prefs-table input { width: 18px; height: 18px; }
 .feed-item { padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 0.88em; }
 .feed-kind { display: inline-block; min-width: 5.5em; margin-right: 6px; padding: 0 5px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); font-size: 0.8em; text-align: center; }
 .feed-kind.kind-death, .feed-kind.kind-need { color: var(--bad); border-color: var(--bad); }

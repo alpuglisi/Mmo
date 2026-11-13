@@ -14,10 +14,10 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 
 use super::{
-    AccountRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord, Store, StoreError, StoreResult, TradeRecord,
-    KEEP_SNAPSHOTS,
+    AccountRecord, AlertPrefsRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord, Store, StoreError,
+    StoreResult, TradeRecord, KEEP_SNAPSHOTS,
 };
-use crate::protocol::{LedgerEntry, LedgerKind};
+use crate::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
 use evo_sim::PlayerId;
 
 impl From<sqlx::Error> for StoreError {
@@ -37,6 +37,7 @@ impl From<sqlx::migrate::MigrateError> for StoreError {
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "initial", include_str!("../../migrations/0001_initial.sql")),
     (2, "economy", include_str!("../../migrations/0002_economy.sql")),
+    (3, "alert_prefs", include_str!("../../migrations/0003_alert_prefs.sql")),
 ];
 
 #[derive(Debug)]
@@ -66,6 +67,15 @@ fn int(v: u64) -> i64 {
 
 fn get_u64(row: &PgRow, col: &str) -> StoreResult<u64> {
     Ok(row.try_get::<i64, _>(col)? as u64)
+}
+
+fn kind_names(kinds: &[AlertKind]) -> Vec<String> {
+    kinds.iter().map(|k| k.name().to_string()).collect()
+}
+
+/// Alert kinds by wire name; names this build doesn't know are dropped.
+fn kinds(row: &PgRow, col: &str) -> StoreResult<Vec<AlertKind>> {
+    Ok(row.try_get::<Vec<String>, _>(col)?.iter().filter_map(|n| AlertKind::parse(n)).collect())
 }
 
 impl PgStore {
@@ -361,5 +371,32 @@ impl Store for PgStore {
                 })
             })
             .collect()
+    }
+
+    async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()> {
+        sqlx::query(
+            "INSERT INTO alert_prefs (player, hidden, toast) VALUES ($1, $2, $3) \
+             ON CONFLICT (player) DO UPDATE SET hidden = EXCLUDED.hidden, toast = EXCLUDED.toast, updated_at = now()",
+        )
+        .bind(i64::from(record.player))
+        .bind(kind_names(&record.prefs.hidden))
+        .bind(kind_names(&record.prefs.toast))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
+        let row = sqlx::query("SELECT player, hidden, toast FROM alert_prefs WHERE player = $1")
+            .bind(i64::from(player))
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|r| {
+            Ok(AlertPrefsRecord {
+                player: get_u64(&r, "player")? as PlayerId,
+                prefs: AlertPrefs { hidden: kinds(&r, "hidden")?, toast: kinds(&r, "toast")? },
+            })
+        })
+        .transpose()
     }
 }

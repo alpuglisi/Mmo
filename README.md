@@ -389,7 +389,9 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/eras` | | `{era, era_days, first_day, last_day, days_left, eras: [{era, first_day, last_day, breeding_adults, species_alive, catastrophes, rows: [{player, name, share, weighted_share}], niches: [{niche, player, name, share, adults}]}]}`, finished eras newest first with their final ranking |
 | `GET /api/catastrophes` | | `{enabled, active?, history: [{id, kind, severity, start_day, end_day, active, population_before, population_after?, players_before, survivors}]}` (only catastrophes that have started) |
 | `GET /api/achievements` | | `{players: [{player, name, species_founded, longevity_days, niche_dominance, catastrophes_survived}], recent: [{day, player, name, kind, text}]}` |
-| `GET /api/lineage/stats` | Bearer | The genetics dashboard: counts (alive, adults, young, pregnant, newest generation), `age_bands` (up to six equal bands by sex), `vitals` (births and deaths by cause per recorded day, the last entry today so far, at most 30), `genes` (every gene's mean, spread and founding mean with the daily means, largest drift first), `legacy` (share per recorded day) and recent `alerts` |
+| `GET /api/lineage/stats` | Bearer | The genetics dashboard: counts (alive, adults, young, pregnant, newest generation), `age_bands` (up to six equal bands by sex), `vitals` (births and deaths by cause per recorded day, the last entry today so far, at most 30), `genes` (every gene's mean, spread and founding mean with the daily means, largest drift first, and `bins`: members per tenth of the 0–1 range, a histogram), `origins` (whose alleles the living members carry: `[{player, name, lineage?, alleles, share}]`, largest share first; 0 is the wild), `legacy` (share per recorded day) and recent `alerts` |
+| `GET /api/alerts/prefs` | Bearer | The caller's alert preferences, `{hidden: [kind], toast: [kind]}` (kinds as in `alert` messages); the defaults `{hidden: [], toast: ["death", "need", "market"]}` until saved |
+| `POST /api/alerts/prefs` | Bearer | Replace them; the reply is the normalized form (sorted, no duplicates, nothing hidden is toasted). An unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile), for debugging |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
@@ -545,6 +547,7 @@ it) and an in-memory one (`--memory`, tests).
 | One record per simulated day and world: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `history.jsonl` | `daily_history` (PK `(world_id, day)`, upsert; legacy and lineages `jsonb`; `seq` keeps write order) |
 | Finished directed-mating agreements with price and outcome, the listing they were bought from and how the escrow settled (`paid`/`refunded`) | `trades.jsonl` | `trades` (`bigserial` id; `listing`, `settlement` from migration 2) |
 | Renown balances, upserted on every change | `balances.json` | `balances` (player PK, balance, day, updated_at) |
+| Alert preferences (hidden and toasted alert kinds), upserted when a player saves them | `alert_prefs.json` | `alert_prefs` (player PK, hidden and toast `text[]` of kind names, updated_at; migration 3) |
 | The ledger: every balance change with world id and sequence number (a replayed entry, same world and sequence, replaces the earlier one) | `ledger.jsonl` | `ledger` (PK `(world_id, seq)`, upsert; `id` keeps write order) |
 | Saved games: the whole `World` plus the game state around it (including players' alerts), every simulated day and at a graceful shutdown; the newest 3 kept | `snapshots/world-<tick>.snap` | `snapshots` (tick PK, day, size, snapshot format version, saved_at, data `bytea`) |
 
@@ -777,13 +780,34 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   pyramid by age band and sex; births (up) and deaths stacked by cause (down)
   per day; legacy share and weighted share over the recorded days; gene
   drift sparklines for the six genes that moved most since founding (dashed
-  founding value); and a table of every gene with mean ± spread on a 0–1
-  track. Hand-rolled SVG (no chart library), fixed categorical colors, a
-  `<title>` tooltip on every mark. Below it the **alerts feed**: server
-  alerts (births, deaths of founders and possessed organisms, milestones,
-  needs, daily summaries) merged with mating offers and their outcomes,
-  newest first, organism ids linking to the inspector; an unread badge on
-  the tab.
+  founding value); **whose genes** your organisms carry (a stacked bar and
+  list of allele shares by origin: you, the wild, other players and their
+  lineages, the smallest folded into "others"); and a table of every gene
+  with its mean, SD and **distribution**, a ten-bin histogram over 0–1 with
+  the founding mean dashed. Hand-rolled SVG (no chart library), fixed
+  categorical colors, a `<title>` tooltip on every mark. Below it the
+  **alerts feed**: server alerts (births, deaths of founders and possessed
+  organisms, milestones, needs, daily summaries) merged with mating offers
+  and their outcomes, newest first, organism ids linking to the inspector;
+  an unread badge on the tab. **Alert preferences** (a collapsible table
+  above the feed) switch each alert kind's *Show* (in the feed and the
+  badge) and *Toast* (pop up on arrival); deaths, needs and market alerts
+  toast by default.
+
+  *Allele origins* need no new simulation state: every allele already
+  carries the id of the player it originated with (founder alleles the
+  designer's, mutations the owner of the organism they appeared in), and
+  the tag passes unchanged through any mating, which is what the legacy
+  score counts. The server tallies the tags over the lineage's living agents
+  (gene and hidden-recessive loci) when the dashboard asks, so the snapshot
+  format is unchanged. Histograms and origins cover agents only, like the
+  other gene statistics (cohort members of abstract regions have no
+  genomes). *Alert preferences* are kept server-side in the `Store` so they
+  follow the account across devices and reinstalls; the server still records
+  and pushes every alert and the client applies the preferences (filtering
+  the feed and deciding toasts), so a kind switched back on shows its recent
+  alerts again and the game code needs no change. Offer events are not
+  alerts and always show.
 - **Lineage** tab: lineage size (with level of detail on, also how many of
   them are agents on the map; the Genetics tab adds an "On the map" tile),
   adults and young, pregnancies, newest
@@ -849,6 +873,7 @@ api.ts       fetch wrapper for the HTTP API (ApiError carries code and detail)
 socket.ts    GameSocket: ids paired with `result`, 10 s reply timeout, reconnect with
              exponential backoff (0.5 s doubling to 15 s, ±20 % jitter), connection state
 model.ts     GameModel: latest state, offer table (requests, updates, outcomes), alerts feed, toasts; pub/sub
+alertPrefs.ts  alert preferences: normalize, per-kind show/toast switches, feed filter
 cost.ts      design point cost and validation (mirror of crates/sim/src/design.rs)
 ui/          DOM screens and panels; panels re-render at most 4×/s and rebuild buttons only
              when their content changes, so they stay clickable under 10 Hz state pushes
@@ -882,7 +907,10 @@ size, newer-only dynamic updates) and tile colors (snow, ice, drought,
 floods, dry river beds, dried lakes, the season tint) and painting; chart
 data prep (scales, axis maxima, gap-aware line paths, deaths stacked by
 cause with rare causes folded into "other", the age pyramid, gene drift
-ranking, legacy percentages) and the alerts feed merge; the point cost and
+ranking, legacy percentages, histogram bars, allele-origin rows with colors
+and the folded tail) and the alerts feed merge; alert preferences
+(normalizing like the server, show/toast switches, the feed filter that keeps
+offer events, the model toasting only preferred kinds); the point cost and
 validation against the server's own examples (the README design costs
 15.1, exactly-at-budget passes, one more founder fails); socket id pairing,
 backoff, reconnect and give-up; the offer table through request, accept
@@ -919,8 +947,10 @@ of markers and checks it walks toward the target (closest approach tracked,
 an arrival counts, the order re-issued if a click misses or the organism
 breaks off for a need), migrates, sees an error toast, checks the seasonal
 leaderboard and the genetics dashboard (at least four charts with drawn
-lines, drift sparklines, every gene in the table, alerts in the feed) and
-the World tab (species listed, the era clock, an achievements row). Every
+lines, drift sparklines, every gene in the table with histogram bars, the
+allele-origin card naming you, alerts in the feed), hides daily summaries in
+the alert preferences (gone from the feed, and `GET /api/alerts/prefs` has
+them hidden) and the World tab (species listed, the era clock, an achievements row). Every
 step waits on explicit state with generous timeouts. Screenshots go to `SCREENSHOT_DIR`. `e2e/winter_shot.mjs`
 is a screenshot helper (not a test): a 16-day-year world played into winter.
 `e2e/mobile.mjs` (run by `npm run e2e` after the smoke test; alone with
@@ -939,10 +969,10 @@ a gallery of 20 body plans drawn with the game's sprite code. Screenshots:
 `iphone13-*.png`, `pixel7-*.png`, `desktop-world.png`,
 `desktop-sprite-gallery.png`.
 
-**Not yet:** marketplace auctions, allele-origin shares
-within the lineage (whose genes your organisms carry), per-gene
-distributions (histograms rather than mean ± spread), alert preferences,
-animated sprites, native builds tested on devices (the Capacitor projects
+**Not yet:** marketplace auctions, allele origins traced to the
+founding *lineage* rather than the player (a player founds one lineage per
+world, so the two coincide until re-founding exists), alert preferences
+applied server-side (muted kinds are still sent), animated sprites, native builds tested on devices (the Capacitor projects
 are generated but not built here), and push notifications.
 
 ## Benchmark

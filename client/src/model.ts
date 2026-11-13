@@ -2,8 +2,9 @@
 // fed by server messages. UI code subscribes; it never talks to the socket
 // for reads.
 
+import { normalizePrefs, toasts, visibleFeed } from './alertPrefs';
 import {
-  isOpen, type AlertKind, type AlertView, type ErrorInfo, type MatingOutcome, type OfferView, type OrgId, type ServerMsg, type StateView,
+  DEFAULT_ALERT_PREFS, isOpen, type AlertKind, type AlertPrefs, type AlertView, type ErrorInfo, type MatingOutcome, type OfferView, type OrgId, type ServerMsg, type StateView,
 } from './protocol';
 import type { ConnState } from './socket';
 
@@ -66,8 +67,10 @@ export class GameModel {
   conn: ConnState = 'closed';
   retryInMs: number | undefined;
   toasts: Toast[] = [];
-  /** The alerts feed, oldest first. */
+  /** The alerts feed, oldest first (every kind; see `visibleFeed`). */
   feed: FeedEntry[] = [];
+  /** Which alert kinds show and toast (loaded from the server). */
+  prefs: AlertPrefs = normalizePrefs(DEFAULT_ALERT_PREFS);
   private subs = new Map<Topic, Set<() => void>>();
 
   on(topic: Topic, fn: () => void): () => void {
@@ -92,6 +95,16 @@ export class GameModel {
     this.feed = mergeFeed(this.feed, entries);
     const after = this.feed.length === 0 ? '' : key(this.feed[this.feed.length - 1]);
     if (before !== after || entries.length > 0) this.emit('alerts');
+  }
+
+  /** The feed entries the preferences let through, oldest first. */
+  visibleFeed(): FeedEntry[] {
+    return visibleFeed(this.feed, this.prefs);
+  }
+
+  setPrefs(prefs: AlertPrefs): void {
+    this.prefs = normalizePrefs(prefs);
+    this.emit('alerts');
   }
 
   private tick(): number {
@@ -138,7 +151,7 @@ export class GameModel {
       }
       case 'alert':
         this.addFeed([alertEntry(m.alert)]);
-        if (m.alert.kind === 'death' || m.alert.kind === 'need' || m.alert.kind === 'market') this.toast('info', m.alert.text);
+        if (toasts(this.prefs, m.alert.kind)) this.toast('info', m.alert.text);
         break;
       case 'session_ended':
         this.emit('session_ended');
