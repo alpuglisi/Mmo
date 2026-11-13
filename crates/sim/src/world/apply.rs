@@ -230,6 +230,9 @@ impl World {
         }
         let pw = a.power() * (1.0 + self.coop_bonus(a)) * self.config.balance.attack_power;
         let mut rs = b.resistance() * (1.0 + 1.5 * self.herd_bonus(b));
+        // A parent standing over its dependent young fights for it.
+        let (guard_rs, guard_power) = self.guardian(b);
+        rs += guard_rs;
         // Prey that hasn't noticed the hunter is caught off guard.
         if b.action != Action::Flee {
             rs *= 1.0 - self.config.balance.ambush;
@@ -239,7 +242,7 @@ impl World {
         if tox > 0.3 {
             p *= 1.0 - 0.6 * tox;
         }
-        let prey_power = b.power();
+        let prey_power = b.power().max(guard_power);
         let prey_bright = b.pheno[Gene::Coloration] > 0.6;
         let prey_pos = b.pos;
         let prey_mass = b.mass();

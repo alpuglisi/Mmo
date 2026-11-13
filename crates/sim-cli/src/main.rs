@@ -46,6 +46,7 @@ OPTIONS:
 Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_speed sprint
 attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
 pregnancy_cost meat_per_kg flee_weight ambush crowding toxin_damage larval_competition
+parent_defense
 ";
 
 struct Args {

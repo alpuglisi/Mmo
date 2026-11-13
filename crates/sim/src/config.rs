@@ -74,6 +74,10 @@ pub struct Balance {
     /// mature, so unpredated fast breeders settle below the hard cap. Uses the
     /// same kin count as `crowding`. 0 disables.
     pub larval_competition: f32,
+    /// Share of a nearby mother's resistance added to her dependent young's
+    /// when a predator attacks it, times `(1 - litter fraction)^2` (so
+    /// single young are guarded fully, big litters barely). 0 disables.
+    pub parent_defense: f32,
 }
 
 impl Default for Balance {
@@ -99,12 +103,13 @@ impl Default for Balance {
             crowding: 0.03,
             toxin_damage: 48.0,
             larval_competition: 18.0,
+            parent_defense: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 18;
+    pub const FIELD_COUNT: usize = 19;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -132,6 +137,7 @@ impl Balance {
             ("crowding", &mut self.crowding),
             ("toxin_damage", &mut self.toxin_damage),
             ("larval_competition", &mut self.larval_competition),
+            ("parent_defense", &mut self.parent_defense),
         ]
     }
 
