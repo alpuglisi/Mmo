@@ -20,6 +20,7 @@
 //! - [`design`]: the JSON form of a founder design.
 
 pub mod accounts;
+pub mod appearance;
 pub mod design;
 pub mod game;
 pub mod http;
