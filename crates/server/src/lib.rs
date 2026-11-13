@@ -67,7 +67,7 @@ impl Default for ServerConfig {
             bind: SocketAddr::from(([127, 0, 0, 1], 8080)),
             data_dir: Some(PathBuf::from("data")),
             world: WorldSettings::default(),
-            runner: RunnerConfig { tick: Duration::from_secs(1), state_interval: Duration::from_secs(1) },
+            runner: RunnerConfig { tick: Duration::from_secs(1), state_interval: Duration::from_secs(1), manual: false },
             game: GameConfig::default(),
             static_dir: None,
             limits: Limits::default(),
@@ -79,13 +79,21 @@ impl Default for ServerConfig {
 impl ServerConfig {
     /// Fast mode for tests and demos: 20 ms ticks, state 10 times a second.
     pub fn fast(mut self) -> Self {
-        self.runner = RunnerConfig { tick: Duration::from_millis(20), state_interval: Duration::from_millis(100) };
+        self.runner = RunnerConfig { tick: Duration::from_millis(20), state_interval: Duration::from_millis(100), manual: false };
+        self
+    }
+
+    /// Manual clock for deterministic tests: the world ticks only when the
+    /// test calls [`RunningServer::step`], and commands apply on arrival.
+    pub fn manual(mut self) -> Self {
+        self.runner.manual = true;
         self
     }
 }
 
 pub struct RunningServer {
     pub addr: SocketAddr,
+    world: std::sync::mpsc::SyncSender<runner::Request>,
     shutdown: Option<oneshot::Sender<()>>,
     serve: tokio::task::JoinHandle<()>,
 }
@@ -103,6 +111,16 @@ impl RunningServer {
     /// Wait until the server stops (e.g. on Ctrl-C).
     pub async fn wait(mut self) {
         let _ = (&mut self.serve).await;
+    }
+
+    /// Advance the world `ticks` ticks (after applying anything queued) and
+    /// push state to every connection once at the end; returns the world
+    /// tick. Meant for [`ServerConfig::manual`] servers, where nothing else
+    /// moves the clock; on a ticking server it adds extra ticks.
+    pub async fn step(&self, ticks: u32) -> u64 {
+        let (reply, rx) = oneshot::channel();
+        self.world.send(runner::Request::Step { ticks, reply }).expect("world thread running");
+        rx.await.expect("world thread replies")
     }
 
     /// A sender that stops the server when used or dropped.
@@ -144,6 +162,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
     runner.spawn();
     tokio::spawn(persist_task(store.clone(), handles.persist));
 
+    let world = handles.tx.clone();
     let state = http::AppState {
         world: handles.tx,
         accounts,
@@ -172,7 +191,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         }
     });
     tracing::info!("listening on http://{addr}");
-    Ok(RunningServer { addr, shutdown: Some(shutdown), serve })
+    Ok(RunningServer { addr, world, shutdown: Some(shutdown), serve })
 }
 
 async fn persist_task(store: Arc<dyn Store>, mut rx: mpsc::UnboundedReceiver<PersistEvent>) {

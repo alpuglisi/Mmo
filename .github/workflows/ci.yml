@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Release builds keep full debuginfo locally (profiling); CI doesn't need it.
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  rust:
+    name: Rust (build, test, clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --workspace
+      - name: Test
+        run: cargo test --release --workspace
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+
+  balance:
+    name: Balance smoke check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build evo-sim
+        run: cargo build --release -p evo-sim-cli --bin evo-sim
+      # 3 seeds x 60 days on 64x64 with the default Balance; fails only if
+      # fewer than 14 of the 24 lineage-worlds survive or the score drops
+      # below 7 of 12 (the current rules: 21 of 24, 10.4).
+      - name: Sweep (default balance)
+        run: scripts/balance-smoke.sh
+
+  client:
+    name: Client (typecheck, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Build evo-server
+        run: cargo build --release -p evo-server --bin evo-server
+      - name: Build the client
+        working-directory: client
+        run: |
+          npm ci
+          npm run build
+      # Playwright is not a client dependency (developer machines have it
+      # and Chromium pre-installed); install both here, outside the lockfile.
+      - name: Install Playwright and Chromium
+        working-directory: client
+        run: |
+          npm install --no-save playwright@1.63.0
+          npx playwright install --with-deps chromium
+      - name: Smoke test
+        working-directory: client
+        env:
+          SCREENSHOT_DIR: ${{ github.workspace }}/client/e2e/out
+        run: npm run e2e
+      - name: Upload screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: client/e2e/out/
+          if-no-files-found: ignore
+          retention-days: 14

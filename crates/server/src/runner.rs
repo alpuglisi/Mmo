@@ -40,6 +40,10 @@ pub enum Request {
     Stats { player: PlayerId, reply: oneshot::Sender<LineageStats> },
     /// Species, eras, catastrophes and achievements.
     Chronicle { reply: oneshot::Sender<Box<ChronicleView>> },
+    /// Apply the queued requests, advance the world `ticks` ticks and push
+    /// state once at the end; replies with the world tick afterwards. Used by
+    /// tests in manual mode ([`RunnerConfig::manual`]) to drive the clock.
+    Step { ticks: u32, reply: oneshot::Sender<u64> },
 }
 
 pub enum TerrainReply {
@@ -60,6 +64,11 @@ pub struct RunnerConfig {
     pub tick: Duration,
     /// Wall time between state pushes to each connection.
     pub state_interval: Duration,
+    /// Manual clock (tests): the world never ticks on its own, only on
+    /// [`Request::Step`], and world-changing requests apply as soon as they
+    /// arrive (in arrival order) instead of at the next tick, so a test sees
+    /// exactly the ticks it asks for and nothing races a timer.
+    pub manual: bool,
 }
 
 /// Queue depth of the request channel; a full queue answers "busy".
@@ -99,6 +108,9 @@ impl Runner {
     }
 
     fn run(mut self) {
+        if self.cfg.manual {
+            return self.run_manual();
+        }
         let mut next = Instant::now() + self.cfg.tick;
         loop {
             // 1. Gather requests until the tick is due.
@@ -120,29 +132,47 @@ impl Runner {
                 self.receive(req);
             }
             // 2. Apply world-changing requests in arrival order.
-            for req in std::mem::take(&mut self.queued) {
-                self.apply(req);
-            }
-            // 3. Advance the world.
-            self.game.world.step();
-            let out = self.game.after_tick();
-            self.dispatch(out);
-            for ev in self.game.take_persist() {
-                let _ = self.persist.send(ev);
-            }
-            // 4. Publish.
-            self.published.send_replace(Arc::new(Published { summary: self.game.summary(), leaderboard: self.game.leaderboard() }));
-            if self.last_state.elapsed() >= self.cfg.state_interval {
-                self.last_state = Instant::now();
-                let states = self.game.states();
-                self.dispatch(states);
-            }
+            self.apply_queued();
+            // 3. Advance the world; 4. publish.
+            let push_state = self.last_state.elapsed() >= self.cfg.state_interval;
+            self.tick(push_state);
             let now = Instant::now();
             next += self.cfg.tick;
             if next < now {
                 // Running behind (or as fast as possible): don't try to catch up.
                 next = now;
             }
+        }
+    }
+
+    /// The manual-clock loop: wait for requests forever, tick only on `Step`.
+    fn run_manual(mut self) {
+        while let Ok(req) = self.rx.recv() {
+            self.receive(req);
+            self.apply_queued();
+        }
+    }
+
+    fn apply_queued(&mut self) {
+        for req in std::mem::take(&mut self.queued) {
+            self.apply(req);
+        }
+    }
+
+    /// Advance the world one tick, run the bookkeeping and publish; push
+    /// state to every connection if `push_state`.
+    fn tick(&mut self, push_state: bool) {
+        self.game.world.step();
+        let out = self.game.after_tick();
+        self.dispatch(out);
+        for ev in self.game.take_persist() {
+            let _ = self.persist.send(ev);
+        }
+        self.published.send_replace(Arc::new(Published { summary: self.game.summary(), leaderboard: self.game.leaderboard() }));
+        if push_state {
+            self.last_state = Instant::now();
+            let states = self.game.states();
+            self.dispatch(states);
         }
     }
 
@@ -170,6 +200,13 @@ impl Runner {
             }
             Request::Chronicle { reply } => {
                 let _ = reply.send(Box::new(self.game.chronicle()));
+            }
+            Request::Step { ticks, reply } => {
+                self.apply_queued();
+                for i in 0..ticks {
+                    self.tick(i + 1 == ticks);
+                }
+                let _ = reply.send(self.game.world.tick());
             }
             req @ (Request::Found { .. } | Request::Command { .. }) => self.queued.push(req),
         }
