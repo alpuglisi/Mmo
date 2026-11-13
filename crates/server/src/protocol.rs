@@ -120,6 +120,10 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<usize>,
     },
+    /// Protocol 2 only: the client lost track of the delta states; the
+    /// connection's next state is a keyframe. Handled by the connection (no
+    /// `result`), never by the world.
+    Resync,
 }
 
 impl ClientMsg {
@@ -142,6 +146,7 @@ impl ClientMsg {
             ClientMsg::BuyListing { .. } => "buy_listing",
             ClientMsg::BrowseMarket { .. } => "browse_market",
             ClientMsg::Ledger { .. } => "ledger",
+            ClientMsg::Resync => "resync",
         }
     }
 }
@@ -154,6 +159,10 @@ pub enum ServerMsg {
         player: PlayerId,
         name: String,
         lineage: Option<u32>,
+        /// The protocol this connection speaks (`wire::PROTO_DELTA` when the
+        /// client asked for it with `/ws?proto=2`; absent for protocol 1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        proto: Option<u32>,
     },
     State(Box<StateView>),
     /// The outcome of one client command.

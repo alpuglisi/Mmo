@@ -61,6 +61,8 @@ export class GameModel {
   player = 0;
   name = '';
   welcomeLineage: number | null = null;
+  /** The protocol of the connection (2: binary delta states; 1: whole JSON states). */
+  proto = 1;
   state: StateView | null = null;
   offers = new Map<number, OfferEntry>();
   selected: OrgId | null = null;
@@ -128,6 +130,7 @@ export class GameModel {
         this.player = m.player;
         this.name = m.name;
         this.welcomeLineage = m.lineage;
+        this.proto = m.proto ?? 1;
         this.emit('welcome');
         break;
       case 'state': {

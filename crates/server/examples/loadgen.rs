@@ -17,7 +17,10 @@
 //! clock, so the test starts on a grown world.
 //!
 //! Each player registers, logs in, founds a lineage over HTTP and opens the
-//! game WebSocket. It reads every message (states parsed for its own
+//! game WebSocket, with `--proto 2` (the default, as the web client) for
+//! binary delta states, decoded with `wire::DeltaDecoder` (a frame that
+//! doesn't decode sends `resync`), or `--proto 1` for whole JSON states. It
+//! reads every message (states parsed for its own
 //! organisms and the foreign ones in view) and, about `--actions-per-min`
 //! times a minute, does what a player does: moves the view, possesses an
 //! organism and steers it, requests and previews matings (in its lineage
@@ -29,7 +32,9 @@
 //! Every `--report` seconds it samples the server's `GET /api/metrics`
 //! (tick, state-push, sub-step and apply times; queue depth; dropped
 //! connections and skipped state frames; saves; bytes out; process CPU and
-//! memory) and `GET /api/world`, and prints a line. At the end it prints a
+//! memory) and `GET /api/world`, and prints a line. `--deflate` also runs
+//! every state through a per-connection deflate stream to show what
+//! permessage-deflate (with context takeover) would save. At the end it prints a
 //! summary (and writes it as JSON with `--json FILE`), stops the server
 //! gracefully and scans its log for panics.
 
@@ -44,6 +49,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use evo_server::metrics::{proc_usage, MetricsView};
+use evo_server::protocol::StateView;
+use evo_server::wire::DeltaDecoder;
+use flate2::{Compress, Compression, FlushCompress};
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -60,7 +68,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 const USAGE: &str = "usage: loadgen [--players 50] [--duration 120] [--ramp 20] [--actions-per-min 30] \
 [--url http://HOST:PORT | --server PATH] [--data DIR] [--size 512] [--seed 1] [--tick-ms 1000] [--state-ms 1000] \
-[--fast] [--lod] [--warm-until 0] [--report 10] [--json FILE] [--dump-state FILE] [--founders 12]";
+[--fast] [--lod] [--warm-until 0] [--report 10] [--json FILE] [--dump-state FILE] [--founders 12] [--proto 2] [--deflate]";
 
 #[derive(Clone, Debug)]
 struct Args {
@@ -82,6 +90,11 @@ struct Args {
     json: Option<PathBuf>,
     dump_state: Option<PathBuf>,
     founders: u32,
+    /// The state protocol the players ask for (1 JSON, 2 binary deltas).
+    proto: u32,
+    /// Also measure what permessage-deflate would make of each state (a
+    /// deflate stream per connection, as with context takeover).
+    deflate: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -104,6 +117,8 @@ fn parse_args() -> Result<Args, String> {
         json: None,
         dump_state: None,
         founders: 12,
+        proto: 2,
+        deflate: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -130,6 +145,8 @@ fn parse_args() -> Result<Args, String> {
             "--json" => a.json = Some(v("--json")?.into()),
             "--dump-state" => a.dump_state = Some(v("--dump-state")?.into()),
             "--founders" => a.founders = num("--founders", v("--founders")?)?,
+            "--proto" => a.proto = num("--proto", v("--proto")?)?,
+            "--deflate" => a.deflate = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -325,12 +342,22 @@ struct Stats {
     state_sizes: Mutex<Option<Reservoir>>,
     /// The largest state message seen (`--dump-state`).
     largest_state: Mutex<String>,
+    /// `--deflate`: state bytes after a per-connection deflate stream.
+    state_deflated: AtomicU64,
+    /// Protocol 2 frames that did not decode (a resync was sent).
+    decode_errors: AtomicU64,
+    /// Bytes received by message kind (`state`, `result:<command>`, events).
+    bytes_by_kind: Mutex<HashMap<String, u64>>,
 }
 
 impl Stats {
     fn latency(&self, command: &'static str, ms: f32) {
         self.latency.lock().unwrap().entry(command).or_insert_with(|| Reservoir::new(20_000)).push(ms);
         self.latency_all.lock().unwrap().get_or_insert_with(|| Reservoir::new(100_000)).push(ms);
+    }
+
+    fn kind_bytes(&self, kind: &str, bytes: usize) {
+        *self.bytes_by_kind.lock().unwrap().entry(kind.to_string()).or_default() += bytes as u64;
     }
 
     fn state_size(&self, bytes: usize) {
@@ -393,6 +420,51 @@ struct NearLite {
     owner: u32,
     sex: String,
     matured: bool,
+}
+
+impl From<StateView> for StateLite {
+    fn from(s: StateView) -> Self {
+        StateLite {
+            organisms: s
+                .organisms
+                .into_iter()
+                .map(|o| OwnLite {
+                    id: o.id,
+                    x: o.x,
+                    y: o.y,
+                    sex: o.sex,
+                    matured: o.matured,
+                    possessed: o.possessed,
+                    pregnant: o.pregnant,
+                })
+                .collect(),
+            nearby: s
+                .nearby
+                .into_iter()
+                .map(|n| NearLite { id: n.id, owner: n.owner, sex: n.sex, matured: n.matured })
+                .collect(),
+        }
+    }
+}
+
+/// Bytes `msg` takes in a deflate stream that carries on from the previous
+/// message (permessage-deflate with context takeover: sync flush, trailer
+/// dropped).
+fn deflated(z: &mut Compress, msg: &[u8]) -> usize {
+    let mut out = Vec::with_capacity(msg.len() / 2 + 64);
+    let before = z.total_out();
+    let mut input = msg;
+    loop {
+        let consumed = z.total_in();
+        out.clear();
+        z.compress_vec(input, &mut out, FlushCompress::Sync).expect("deflate");
+        input = &input[(z.total_in() - consumed) as usize..];
+        if input.is_empty() && out.len() < out.capacity() {
+            break;
+        }
+        out.reserve(out.capacity().max(1024));
+    }
+    ((z.total_out() - before) as usize).saturating_sub(4)
 }
 
 #[derive(Clone)]
@@ -595,7 +667,7 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
         }
         other => eprintln!("player {i}: founding failed: {other:?}"),
     }
-    let ws_url = format!("{}/ws?token={token}", ctx.ws_base);
+    let ws_url = format!("{}/ws?token={token}&proto={}", ctx.ws_base, ctx.args.proto);
     let mut ws = match tokio_tungstenite::connect_async(ws_url).await {
         Ok((ws, _)) => ws,
         Err(e) => {
@@ -631,6 +703,8 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
         rng,
         size: ctx.args.size as f32,
     };
+    let mut decoder = DeltaDecoder::new();
+    let mut deflate = ctx.args.deflate.then(|| Compress::new(Compression::default(), false));
     let mean = 60.0 / ctx.args.actions_per_min.max(0.01);
     let mut next_action = tokio::time::Instant::now() + Duration::from_secs_f64(p.rng.gen_range(0.0..mean));
     loop {
@@ -652,6 +726,38 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
             frame = ws.next() => {
                 let text = match frame {
                     Some(Ok(Message::Text(t))) => t,
+                    Some(Ok(Message::Binary(b))) => {
+                        // A protocol 2 state.
+                        st.msgs_in.fetch_add(1, Ordering::Relaxed);
+                        st.bytes_in.fetch_add(b.len() as u64, Ordering::Relaxed);
+                        st.states_in.fetch_add(1, Ordering::Relaxed);
+                        st.state_bytes_in.fetch_add(b.len() as u64, Ordering::Relaxed);
+                        st.state_size(b.len());
+                        st.kind_bytes("state", b.len());
+                        if let Some(z) = deflate.as_mut() {
+                            st.state_deflated.fetch_add(deflated(z, &b) as u64, Ordering::Relaxed);
+                        }
+                        match decoder.apply(&b) {
+                            Ok(s) => {
+                                if ctx.args.dump_state.is_some() {
+                                    let text = serde_json::to_string(&s).unwrap_or_default();
+                                    let mut big = st.largest_state.lock().unwrap();
+                                    if text.len() > big.len() {
+                                        *big = text;
+                                    }
+                                }
+                                p.state = StateLite::from(s);
+                            }
+                            Err(_) => {
+                                st.decode_errors.fetch_add(1, Ordering::Relaxed);
+                                if ws.send(Message::Text(json!({"type": "resync"}).to_string())).await.is_err() {
+                                    st.unexpected_close.fetch_add(1, Ordering::Relaxed);
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
                         st.unexpected_close.fetch_add(1, Ordering::Relaxed);
                         break;
@@ -661,11 +767,23 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
                 st.msgs_in.fetch_add(1, Ordering::Relaxed);
                 st.bytes_in.fetch_add(text.len() as u64, Ordering::Relaxed);
                 let Ok(msg) = serde_json::from_str::<Incoming>(&text) else { continue };
+                let kind = match &msg {
+                    Incoming::State(_) => "state".to_string(),
+                    Incoming::Result { id, .. } => {
+                        format!("result:{}", id.and_then(|id| p.pending.get(&id)).map_or("?", |(_, n)| n))
+                    }
+                    Incoming::MatingRequest { .. } => "mating_request".into(),
+                    _ => "other".into(),
+                };
+                st.kind_bytes(&kind, text.len());
                 match msg {
                     Incoming::State(s) => {
                         st.states_in.fetch_add(1, Ordering::Relaxed);
                         st.state_bytes_in.fetch_add(text.len() as u64, Ordering::Relaxed);
                         st.state_size(text.len());
+                        if let Some(z) = deflate.as_mut() {
+                            st.state_deflated.fetch_add(deflated(z, text.as_bytes()) as u64, Ordering::Relaxed);
+                        }
                         if ctx.args.dump_state.is_some() {
                             let mut big = st.largest_state.lock().unwrap();
                             if text.len() > big.len() {
@@ -761,6 +879,8 @@ struct Sample {
     skipped_states: u64,
     max_queued: usize,
     saves: u64,
+    /// Server time spent encoding one state (JSON or protocol 2), µs.
+    encode_us: f64,
 }
 
 fn mb(b: u64) -> f64 {
@@ -911,6 +1031,9 @@ async fn main() {
                 skipped_states: m.skipped_states,
                 max_queued: m.max_queued,
                 saves: m.saves,
+                encode_us: (m.state_encode_ns - pm.state_encode_ns) as f64
+                    / (m.states_out - pm.states_out).max(1) as f64
+                    / 1e3,
             };
             println!(
                 "{:>6.0} {:>7} {:>6} {:>5} {:>6.1}/{:<6.1} {:>6.1}/{:<6.1} {:>6.1} {:>8.2} {:>8.1} {:>7.2} {:>6.0} {:>6.2} {:>7.0} {:>5} {:>4} {:>4}",
@@ -967,6 +1090,10 @@ async fn main() {
         panics = log.matches("panicked").count();
     }
 
+    let mut kinds: Vec<(String, u64)> = st.bytes_by_kind.lock().unwrap().iter().map(|(k, v)| (k.clone(), *v)).collect();
+    kinds.sort_by_key(|e| std::cmp::Reverse(e.1));
+    let per_client = |b: u64| b as f64 / 1e3 / elapsed / args.players.max(1) as f64;
+    let by_kind: Vec<Value> = kinds.iter().take(10).map(|(k, b)| json!({"kind": k, "kb_s": per_client(*b)})).collect();
     let summary = json!({
         "players": args.players,
         "connected": st.connected.load(Ordering::Relaxed),
@@ -984,7 +1111,18 @@ async fn main() {
         "states_ms_p99": med(&|s| s.states_p99 as f64),
         "substep_ms_p99": med(&|s| s.substep_p99 as f64),
         "ticks_per_s": med(&|s| s.ticks_per_s),
+        "proto": args.proto,
         "state_bytes_p50": sz50, "state_bytes_p99": sz99, "state_bytes_max": szmax,
+        "state_encode_us": med(&|s| s.encode_us),
+        "state_deflate_ratio": if args.deflate {
+            st.state_bytes_in.load(Ordering::Relaxed) as f64 / st.state_deflated.load(Ordering::Relaxed).max(1) as f64
+        } else {
+            0.0
+        },
+        "decode_errors": st.decode_errors.load(Ordering::Relaxed),
+        "kb_s_per_client_by_kind": by_kind,
+        "keyframes_out": final_m.keyframes_out,
+        "resyncs": final_m.resyncs,
         "states_per_client_s": med(&|s| s.states_per_client_s),
         "out_mb_s": med(&|s| s.out_mb_s),
         "out_kb_s_per_client": med(&|s| s.out_mb_s) * 1e3 / args.players.max(1) as f64,

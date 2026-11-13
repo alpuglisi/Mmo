@@ -419,7 +419,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/alerts/prefs` | Bearer | The caller's alert preferences, `{hidden: [kind], toast: [kind]}` (kinds as in `alert` messages); the defaults `{hidden: [], toast: ["death", "need", "market"]}` until saved |
 | `POST /api/alerts/prefs` | Bearer | Replace them; the reply is the normalized form (sorted, no duplicates, nothing hidden is toasted). An unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
-| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`) and the process's `cpu_seconds` and `rss_bytes` (Linux) |
+| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`) and the process's `cpu_seconds` and `rss_bytes` (Linux) |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
 Errors are `{"code": "...", "message": "...", ...detail}`. A design:
@@ -456,18 +456,75 @@ Client → server:
 | `buy_listing` | `listing, mine` | Buy one mating with a listed organism for your adult `mine`: an already accepted agreement, the fee in escrow; `data` = `{offer}` |
 | `browse_market` | `mine?` | `data` = `{balance, escrow, slots_left, listings: [{id, owner, owner_name, organism, role (stud/dam), sex, fee, created_tick, expires_tick?, sales, busy, pregnant, lineage, lineage_name, generation, mother?, father?, offspring_raised, age_days, health, x, y, traits: [{gene, value}], preview?}]}`, newest first; `preview` is `preview_mating` of your `mine` with the listed organism |
 | `ledger` | `limit?` | `data` = `{balance, escrow, entries: [{seq, player, tick, day, delta, balance, kind, text, offer?, listing?}]}`, newest first (default 50, at most 100); `kind`: `grant`, `income`, `achievement`, `escrow`, `sale`, `refund` |
+| `resync` | – | Protocol 2 only: the next state is a keyframe (no `result`; see below) |
 
 Server → client:
 
 | `type` | When |
 | --- | --- |
-| `welcome` `{player, name, lineage}` | On connect |
+| `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
 | `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus) |
 | `session_ended` `{reason}` | The session expired; the socket closes next |
+
+**Protocol 2: binary delta states** (`wire.rs`, the client's `wire.ts`).
+A client that connects with `/ws?token=…&proto=2` gets `welcome` with
+`proto: 2` and then every `state` as a **binary** WebSocket message holding
+only what changed since the state that connection was last sent; every
+other message stays the JSON above. Without the parameter (older clients)
+nothing changes: whole JSON states, no `proto` in `welcome`. A client
+asking for 2 from an older server gets JSON states and no `proto`, so the
+web client handles both.
+
+- **Computed at send time.** Each connection's socket writer keeps a
+  `DeltaEncoder` with what it last sent that client and encodes a state
+  only when it writes it. A state replaced in the one-slot queue
+  (`push.rs`) is never encoded, so the next delta is against what the
+  client actually holds and nothing is lost; the world thread builds the
+  same `StateView`s as before.
+- **Frame:** a kind byte (1 keyframe, 2 delta), the state's `seq` on the
+  connection, the `base` seq a delta applies to, a JSON *meta* object, then
+  two sections (own organisms, nearby organisms), each a list of removed
+  ids and a list of new or changed records: id (delta-coded, ascending), a
+  bit mask of the fields that changed and those fields as LEB128 varints,
+  numbers as zigzag differences from the client's copy. Quantized:
+  positions and `order` to 1/64 tile, needs to 0.1, health and age to 0.01
+  (days), growth to 0.001; `speed` stays an exact `f32`. The format is
+  documented field by field at the top of `wire.rs`.
+- **Meta JSON** carries the other fields only when they changed (`clock`,
+  `weather`, `view`, `population`, `balance`, …), leaderboard rows keyed by
+  player (`lb_set` / `lb_del`, the client keeps them in rank order),
+  offers keyed by id (`offers_set` / `offers_del`), and **palettes**: each
+  distinct `look` and action name is sent once per connection (`looks`,
+  `actions`) and records refer to it by index, so a `look` costs a byte
+  when an organism first comes into view and nothing after.
+- **Sub-step states** for a steering player come out as about 50–60 bytes:
+  the `view` that follows the possessed organism and that organism's new
+  position (plus `action` on the first sub-step after an order).
+- **Keyframes and resync.** The first state of a connection is a keyframe,
+  and so is one at least every 60 s (`KEYFRAME_EVERY`). A client that can't
+  apply a frame (a `base` that isn't the seq it holds, a truncated or
+  garbled frame, an index outside a palette) drops states until the next
+  keyframe and sends `{"type": "resync"}`; the writer then makes the next
+  state a keyframe (at most one request per 2 s from the web client).
+  Decoded lists are in id order (`organisms`, `nearby`, `offers`), the
+  leaderboard in rank order.
+- **Tests:** Rust (`wire.rs`) round-trips ticks and sub-steps of a live
+  game through encoder and decoder with states dropped at random (the
+  replaced slot) and random keyframes, and checks every decoded state
+  equals the original after quantization (`wire::canonical`), that a
+  sub-step delta carries only the possessed organism, that a lost frame is
+  refused until a keyframe, and that truncated or garbled frames are
+  errors, not panics; a server test (`tests/server.rs`) compares a protocol
+  2 socket with a protocol 1 socket of the same player push by push and
+  checks `resync`. A Rust test writes `client/src/wire.fixture.json`
+  (frames of a short session and the states they decode to,
+  `UPDATE_WIRE_FIXTURE=1` after a format change), and Vitest
+  (`wire.test.ts`) decodes it with the client's decoder, drops a frame,
+  garbles and truncates frames, and drives the socket's resync.
 
 `look` (`appearance.rs`) is the visible body plan of an adult, computed from
 the phenotype with a few comparisons per organism per push: `size` (0 tiny
@@ -1124,7 +1181,9 @@ main.ts      login → design (no lineage) → game; one GameSocket from login t
 protocol.ts  wire types written by hand from crates/server/src/protocol.rs (keep in sync) + parseServerMsg
 api.ts       fetch wrapper for the HTTP API (ApiError carries code and detail)
 socket.ts    GameSocket: ids paired with `result`, 10 s reply timeout, reconnect with
-             exponential backoff (0.5 s doubling to 15 s, ±20 % jitter), connection state
+             exponential backoff (0.5 s doubling to 15 s, ±20 % jitter), connection state;
+             asks for protocol 2 and rebuilds its binary delta states into whole `state`s
+wire.ts      protocol 2 decoder (mirror of crates/server/src/wire.rs; wire.fixture.json pins them)
 model.ts     GameModel: latest state, offer table (requests, updates, outcomes), alerts feed, toasts; pub/sub
 alertPrefs.ts  alert preferences: normalize, per-kind show/toast switches, feed filter
 cost.ts      design point cost and validation (mirror of crates/sim/src/design.rs)

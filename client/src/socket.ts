@@ -1,7 +1,11 @@
 // The game WebSocket: typed messages, request ids paired with `result`
 // replies, reconnect with exponential backoff and a connection state.
+// Protocol 2 binary delta states (wire.ts) are rebuilt into whole `state`
+// messages here, so the rest of the client sees the same messages from any
+// server.
 
 import { parseServerMsg, type ClientMsg, type ResultMsg, type ServerMsg } from './protocol';
+import { DeltaDecoder } from './wire';
 
 export type ConnState = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
@@ -20,6 +24,8 @@ export interface SocketOptions {
   minDelayMs?: number;
   maxDelayMs?: number;
   resultTimeoutMs?: number;
+  /** Least time between two `resync` requests while delta states don't decode. */
+  resyncIntervalMs?: number;
 }
 
 /** Delay before retry number `attempt` (1-based): doubling, capped, ±20 % jitter. */
@@ -40,6 +46,9 @@ export class GameSocket {
   private attempt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  private lastResync = -Infinity;
+  /** Protocol 2 frames that did not decode (each one asks for a keyframe, at most once per interval). */
+  decodeErrors = 0;
   state: ConnState = 'closed';
 
   constructor(private opts: SocketOptions) {}
@@ -86,13 +95,21 @@ export class GameSocket {
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
     let opened = false;
     const ws = new Impl(this.opts.url());
+    ws.binaryType = 'arraybuffer';
     this.ws = ws;
+    // Each connection has its own delta states, starting with a keyframe.
+    const decoder = new DeltaDecoder();
+    this.lastResync = -Infinity;
     ws.onopen = () => {
       opened = true;
       this.attempt = 0;
       this.setState('open');
     };
     ws.onmessage = (ev: MessageEvent) => {
+      if (ev.data instanceof ArrayBuffer) {
+        this.onFrame(ws, decoder, ev.data);
+        return;
+      }
       if (typeof ev.data !== 'string') return;
       const m = parseServerMsg(ev.data);
       if (!m) return;
@@ -116,6 +133,25 @@ export class GameSocket {
     ws.onerror = () => {
       /* onclose follows */
     };
+  }
+
+  /** A protocol 2 state: rebuild it, or ask for a keyframe if it doesn't apply. */
+  private onFrame(ws: WebSocket, decoder: DeltaDecoder, data: ArrayBuffer): void {
+    if (this.ws !== ws) return;
+    let state;
+    try {
+      state = decoder.apply(data);
+    } catch {
+      this.decodeErrors += 1;
+      const now = Date.now();
+      if (now - this.lastResync >= (this.opts.resyncIntervalMs ?? 2000) && ws.readyState === 1 /* OPEN */) {
+        this.lastResync = now;
+        ws.send(JSON.stringify({ type: 'resync' }));
+      }
+      return;
+    }
+    this.lastResync = -Infinity;
+    this.opts.onMessage({ type: 'state', ...state });
   }
 
   private async scheduleRetry(wasOpen: boolean): Promise<void> {

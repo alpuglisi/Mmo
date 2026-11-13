@@ -34,7 +34,9 @@ export type ClientMsg =
   /** Open listings (with compatibility against `mine`); data: `MarketView`. */
   | { type: 'browse_market'; mine?: OrgId }
   /** Balance and recent ledger entries; data: `LedgerView`. */
-  | { type: 'ledger'; limit?: number };
+  | { type: 'ledger'; limit?: number }
+  /** Protocol 2: the delta states stopped decoding; the next state is a keyframe (no reply). */
+  | { type: 'resync' };
 
 /** `ClientEnvelope`: a command plus an optional id echoed in its `result`. */
 export type ClientEnvelope = ClientMsg & { id?: number };
@@ -255,6 +257,8 @@ export interface WelcomeMsg {
   player: PlayerId;
   name: string;
   lineage: number | null;
+  /** The protocol the connection speaks: 2 for binary delta states (wire.ts); absent for whole JSON states. */
+  proto?: number;
 }
 
 /** `ServerMsg::State` is a newtype variant: the state's fields sit beside `type`. */
@@ -781,7 +785,10 @@ export function parseServerMsg(text: string): ServerMsg | null {
   switch (v.type) {
     case 'welcome':
       return isNum(v.player) && isStr(v.name) && (v.lineage === null || v.lineage === undefined || isNum(v.lineage))
-        ? ({ type: 'welcome', player: v.player, name: v.name, lineage: (v.lineage as number | undefined) ?? null })
+        ? ({
+          type: 'welcome', player: v.player, name: v.name, lineage: (v.lineage as number | undefined) ?? null,
+          ...(isNum(v.proto) ? { proto: v.proto } : {}),
+        })
         : null;
     case 'state':
       return isState(v) ? (v as unknown as StateMsg) : null;
