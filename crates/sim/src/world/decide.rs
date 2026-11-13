@@ -15,6 +15,9 @@ use crate::organism::{Action, Organism};
 use crate::rng::{rng_for, stream, SimRng};
 use crate::terrain::{traverse, Traverse};
 
+/// How close a mother must be to her young to defend it.
+const GUARD_REACH: f32 = 2.5;
+
 /// Can `predator` threaten `prey` at all?
 pub(crate) fn can_threaten(predator: &Organism, prey: &Organism) -> bool {
     predator.traits.carnivory > 0.5 && predator.growth > 0.5 && predator.mass() > 0.3 * prey.mass()
@@ -40,6 +43,26 @@ impl World {
         } else {
             0.0
         }
+    }
+
+    /// Resistance and power a dependent juvenile's mother adds when she is
+    /// within reach of it. Scaled by parental care, which falls steeply with
+    /// litter size (doc: few offspring get long care, many die young).
+    pub(crate) fn guardian(&self, young: &Organism) -> (f32, f32) {
+        let k = self.config.balance.parent_defense;
+        if k <= 0.0 || young.matured || young.growth >= 0.7 || young.traits.birth == crate::BirthType::AbandonedEggs {
+            return (0.0, 0.0);
+        }
+        let Some(&mi) = young.mother.and_then(|m| self.index.get(&m)) else {
+            return (0.0, 0.0);
+        };
+        let mother = &self.organisms[mi];
+        if !mother.alive || mother.pos.dist(young.pos) > GUARD_REACH {
+            return (0.0, 0.0);
+        }
+        let care = k * (1.0 - young.traits.litter_fraction()).powi(2);
+        let rs = mother.resistance() * (1.0 + 1.5 * self.herd_bonus(mother));
+        (care * rs, care * mother.power())
     }
 
     pub(crate) fn decide(&self, i: usize) -> Intent {
@@ -113,8 +136,10 @@ impl World {
                         } else {
                             0.0
                         };
-                        if rng.gen::<f32>() >= avoid {
-                            let odds = my_power / (my_power + q.resistance() + 1e-3);
+                        // A lone hunter won't take on a guarding parent it can't beat.
+                        let guard = self.guardian(q).0;
+                        if rng.gen::<f32>() >= avoid && (guard == 0.0 || my_power > q.resistance() + guard) {
+                            let odds = my_power / (my_power + q.resistance() + guard + 1e-3);
                             let chase = if q.traits.stats.speed * q.activity < o.traits.stats.speed * o.activity { 1.4 } else { 0.6 };
                             let score = q.mass().powf(0.75) / (1.0 + d) * odds * chase;
                             if prey.is_none_or(|(s, _)| score > s) {
@@ -211,6 +236,10 @@ impl World {
                 let away = (o.pos - threat_pos).norm();
                 let away = if away == Vec2::ZERO { Vec2::new(1.0, 0.0) } else { away };
                 intent.target = Some(self.map.clamp(o.pos + away * 4.0));
+                // Dependent young run to their mother, who defends them.
+                if let Some(m) = mother_pos.filter(|&m| juvenile_care && o.pos.dist(m) < radius) {
+                    intent.target = Some(self.map.clamp(m + away));
+                }
                 intent.sprint = true;
             }
             Action::Graze => self.choose_food(o, prey, &mut intent, &mut rng),
@@ -392,5 +421,31 @@ mod tests {
         w.wander(&w.organisms[i], &mut intent, &mut rng, 6.0);
         assert_ne!(intent.target, Some(water));
         assert!(intent.new_wander.is_some());
+    }
+
+    /// An antelope calf next to its mother borrows her resistance; away from
+    /// her, or once grown, it is on its own. Big litters get little care.
+    #[test]
+    fn mother_guards_her_dependent_young() {
+        let w = presets::standard_world(WorldConfig { seed: 3, width: 48, height: 48, ..Default::default() }, 1);
+        let pick = |w: &World, lineage: u32| w.organisms.iter().position(|o| o.lineage == lineage).unwrap();
+        let guard_of = |w: &World, mother: usize, at: Vec2, growth: f32| {
+            let mut calf = w.organisms[mother].clone();
+            calf.mother = Some(w.organisms[mother].id);
+            calf.matured = false;
+            calf.growth = growth;
+            calf.pos = at;
+            w.guardian(&calf).0
+        };
+        let m = pick(&w, 1);
+        let at = w.organisms[m].pos;
+        let near = guard_of(&w, m, at, 0.3);
+        assert!(near > 0.2, "near {near}");
+        assert_eq!(guard_of(&w, m, at + Vec2::new(GUARD_REACH + 1.0, 0.0), 0.3), 0.0);
+        assert_eq!(guard_of(&w, m, at, 0.8), 0.0);
+        let vole = pick(&w, 0);
+        let vat = w.organisms[vole].pos;
+        let vole_care = guard_of(&w, vole, vat, 0.3) / w.organisms[vole].resistance();
+        assert!(vole_care < 0.5 * near / w.organisms[m].resistance(), "vole care {vole_care}");
     }
 }
