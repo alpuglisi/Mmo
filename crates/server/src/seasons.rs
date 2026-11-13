@@ -104,6 +104,7 @@ mod tests {
 
     fn rec(day: u64, year: u64, season: &str, shares: &[(PlayerId, f64, usize)]) -> DailyRecord {
         DailyRecord {
+            world_id: "w".into(),
             day,
             year,
             season: season.into(),

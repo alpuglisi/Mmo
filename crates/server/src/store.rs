@@ -1,18 +1,23 @@
 //! Persistence behind the [`Store`] trait.
 //!
 //! The design doc puts accounts, lineage history and world snapshots in
-//! PostgreSQL (sqlx). No database is available yet, so [`FileStore`] keeps
-//! the same records as JSON files in a data directory, and [`MemoryStore`]
-//! serves tests. A `PgStore` would implement the same trait with one table
-//! per record type (`accounts`, `designs`, `daily_history`, `trades`).
+//! PostgreSQL (sqlx): `PgStore` (cargo feature `postgres`, on by default;
+//! `--database-url`) keeps them in one table per record type (`accounts`,
+//! `designs`, `daily_history`, `trades`, `snapshots`). [`FileStore`] (the
+//! default) keeps the same records as JSON files in a data directory, and
+//! [`MemoryStore`] serves tests.
 //!
 //! What is persisted: accounts (name, player id, argon2 hash), founder
 //! designs (re-founded into the new world on restart), one history record per
 //! simulated day (legacy shares and lineage counts), and directed-mating
 //! agreements with their price, and saved games (a world snapshot with the
-//! game state around it, `crate::snapshot`; the newest [`KEEP_SNAPSHOTS`]
-//! are kept). Not persisted: login sessions (clients log in again after a
-//! restart).
+//! game state around it, `crate::snapshot`, which includes players' alerts;
+//! the newest [`KEEP_SNAPSHOTS`] are kept). Not persisted: login sessions
+//! (clients log in again after a restart).
+//!
+//! Daily records carry the id of the world that wrote them; a world that
+//! replays days after a restart from an older saved game replaces its
+//! earlier records of those days (one record per world and day).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +29,11 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::design::DesignSpec;
+
+#[cfg(feature = "postgres")]
+mod pg;
+#[cfg(feature = "postgres")]
+pub use pg::PgStore;
 
 #[derive(Debug)]
 pub struct StoreError(pub String);
@@ -96,6 +106,10 @@ pub struct LineageEntry {
 /// One simulated day: the legacy leaderboard and every lineage's size.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DailyRecord {
+    /// The world (one per generated map, kept across restarts) that wrote
+    /// the record; empty in records from before world ids.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub world_id: String,
     pub day: u64,
     pub year: u64,
     pub season: String,
@@ -126,13 +140,18 @@ pub trait Store: Send + Sync {
     async fn load_designs(&self) -> StoreResult<Vec<DesignRecord>>;
     /// Insert or replace the player's design.
     async fn put_design(&self, design: &DesignRecord) -> StoreResult<()>;
+    /// Record a day; replaces an earlier record of the same world and day
+    /// (a day replayed after a restart), which keeps its place in order.
     async fn append_daily(&self, record: &DailyRecord) -> StoreResult<()>;
     /// The most recent `limit` daily records, oldest first.
     async fn recent_daily(&self, limit: usize) -> StoreResult<Vec<DailyRecord>>;
     async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()>;
-    /// Save a snapshot taken at `tick` (opaque bytes) and drop all but the
-    /// newest [`KEEP_SNAPSHOTS`]. Replaces a snapshot of the same tick.
-    async fn put_snapshot(&self, tick: u64, bytes: &[u8]) -> StoreResult<()>;
+    /// Every trade record, oldest first.
+    async fn load_trades(&self) -> StoreResult<Vec<TradeRecord>>;
+    /// Save a snapshot taken at `tick` on `day` (opaque bytes) and drop all
+    /// but the newest [`KEEP_SNAPSHOTS`]. Replaces a snapshot of the same
+    /// tick.
+    async fn put_snapshot(&self, tick: u64, day: u64, bytes: &[u8]) -> StoreResult<()>;
     /// Ticks of the stored snapshots, newest first.
     async fn snapshot_ticks(&self) -> StoreResult<Vec<u64>>;
     async fn load_snapshot(&self, tick: u64) -> StoreResult<Vec<u8>>;
@@ -191,7 +210,11 @@ impl Store for MemoryStore {
     }
 
     async fn append_daily(&self, record: &DailyRecord) -> StoreResult<()> {
-        self.inner.lock().await.daily.push(record.clone());
+        let mut g = self.inner.lock().await;
+        match g.daily.iter_mut().find(|r| same_day(r, record)) {
+            Some(r) => *r = record.clone(),
+            None => g.daily.push(record.clone()),
+        }
         Ok(())
     }
 
@@ -205,7 +228,11 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    async fn put_snapshot(&self, tick: u64, bytes: &[u8]) -> StoreResult<()> {
+    async fn load_trades(&self) -> StoreResult<Vec<TradeRecord>> {
+        Ok(self.trades().await)
+    }
+
+    async fn put_snapshot(&self, tick: u64, _day: u64, bytes: &[u8]) -> StoreResult<()> {
         let mut g = self.inner.lock().await;
         g.snapshots.retain(|s| s.0 != tick);
         g.snapshots.push((tick, bytes.to_vec()));
@@ -225,11 +252,19 @@ impl Store for MemoryStore {
     }
 }
 
+/// Records of the same world and day (records without a world id are never
+/// the same day as another).
+fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
+    !a.world_id.is_empty() && a.world_id == b.world_id && a.day == b.day
+}
+
 /// JSON files in one directory:
 ///
 /// - `accounts.json`, `designs.json`: whole tables, rewritten atomically
 ///   (write to a temp file, then rename) on every change;
-/// - `history.jsonl`, `trades.jsonl`: append-only, one record per line;
+/// - `history.jsonl`, `trades.jsonl`: append-only, one record per line (a
+///   replayed day is appended again and replaces the earlier line when
+///   read);
 /// - `snapshots/world-<tick>.snap`: saved games, written to a temp file,
 ///   synced and renamed into place, the newest [`KEEP_SNAPSHOTS`] kept.
 pub struct FileStore {
@@ -330,15 +365,40 @@ impl Store for FileStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e.into()),
         };
-        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-        lines[lines.len().saturating_sub(limit)..].iter().map(|l| Ok(serde_json::from_str(l)?)).collect()
+        let mut records: Vec<DailyRecord> = Vec::new();
+        let mut index: std::collections::HashMap<(String, u64), usize> = std::collections::HashMap::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let r: DailyRecord = serde_json::from_str(line)?;
+            if r.world_id.is_empty() {
+                records.push(r);
+                continue;
+            }
+            match index.get(&(r.world_id.clone(), r.day)) {
+                Some(&i) => records[i] = r,
+                None => {
+                    index.insert((r.world_id.clone(), r.day), records.len());
+                    records.push(r);
+                }
+            }
+        }
+        Ok(records.split_off(records.len().saturating_sub(limit)))
     }
 
     async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()> {
         self.append_line("trades.jsonl", record).await
     }
 
-    async fn put_snapshot(&self, tick: u64, bytes: &[u8]) -> StoreResult<()> {
+    async fn load_trades(&self) -> StoreResult<Vec<TradeRecord>> {
+        let _guard = self.tables.lock().await;
+        let text = match tokio::fs::read_to_string(self.dir.join("trades.jsonl")).await {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        text.lines().filter(|l| !l.trim().is_empty()).map(|l| Ok(serde_json::from_str(l)?)).collect()
+    }
+
+    async fn put_snapshot(&self, tick: u64, _day: u64, bytes: &[u8]) -> StoreResult<()> {
         let dir = self.dir.join(SNAPSHOT_DIR);
         tokio::fs::create_dir_all(&dir).await?;
         let tmp = dir.join(format!("{}.tmp", snapshot_name(tick)));

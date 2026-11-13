@@ -1,11 +1,14 @@
 //! `evo-server`: run the authoritative game server.
 //!
 //! ```text
-//! evo-server [--bind ADDR] [--data DIR | --memory] [--size N] [--seed N]
+//! evo-server [--bind ADDR] [--data DIR | --memory | --database-url URL] [--size N] [--seed N]
 //!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
 //!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
 //!            [--fresh]
 //! ```
+//!
+//! `--database-url` (or the `DATABASE_URL` environment variable) keeps
+//! everything in PostgreSQL instead of the data directory.
 //!
 //! SIGINT (Ctrl-C) or SIGTERM stops it gracefully, saving the world first.
 
@@ -13,19 +16,26 @@ use std::time::Duration;
 
 use evo_server::{start, ServerConfig};
 
-const USAGE: &str = "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory] [--size 128] [--seed 1] \
+const USAGE: &str = "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory | --database-url URL] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
 [--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] [--fresh]";
 
 fn parse_args() -> Result<ServerConfig, String> {
-    let mut cfg = ServerConfig::default();
+    let mut cfg = ServerConfig { database_url: std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty()), ..Default::default() };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match a.as_str() {
             "--bind" => cfg.bind = value("--bind")?.parse().map_err(|e| format!("--bind: {e}"))?,
-            "--data" => cfg.data_dir = Some(value("--data")?.into()),
-            "--memory" => cfg.data_dir = None,
+            "--data" => {
+                cfg.data_dir = Some(value("--data")?.into());
+                cfg.database_url = None;
+            }
+            "--memory" => {
+                cfg.data_dir = None;
+                cfg.database_url = None;
+            }
+            "--database-url" => cfg.database_url = Some(value("--database-url")?),
             "--size" => {
                 let n: usize = value("--size")?.parse().map_err(|e| format!("--size: {e}"))?;
                 if !(32..=1024).contains(&n) {
