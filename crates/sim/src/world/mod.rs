@@ -96,6 +96,8 @@ pub struct Clutch {
     pub warm_blooded: bool,
     /// Accumulated chilling; the clutch dies at 1.
     pub chill: f32,
+    /// Accumulated overheating; the clutch dies at 1 (`Balance::egg_overheat`).
+    pub overheat: f32,
     pub newborn_growth: f32,
     /// Mass of one egg in kg (food value when raided).
     pub egg_mass: f32,
@@ -126,6 +128,8 @@ pub struct EggCounts {
     pub hatched: u64,
     pub chilled: u64,
     pub raided: u64,
+    /// Killed by heat (`Balance::egg_overheat`).
+    pub overheated: u64,
 }
 
 /// Cumulative event counters.
@@ -135,7 +139,7 @@ pub struct Counters {
     pub births: u64,
     pub hatched: u64,
     pub eggs_lost: u64,
-    /// Eggs per lineage: laid, hatched, chilled, raided.
+    /// Eggs per lineage: laid, hatched, chilled, overheated, raided.
     pub eggs: BTreeMap<u32, EggCounts>,
     pub deaths: BTreeMap<DeathCause, u64>,
     pub deaths_by_lineage: BTreeMap<(u32, DeathCause), u64>,

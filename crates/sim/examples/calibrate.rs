@@ -112,12 +112,13 @@ fn run(seed: u64, o: &Opts, designs: &[FounderDesign]) -> Vec<(f64, f64, usize, 
             let c = &world.counters;
             let e = c.eggs.get(&l).copied().unwrap_or_default();
             line.push_str(&format!(
-                ",born={},juvenile={},laid={},hatched={},chilled={},raided={}",
+                ",born={},juvenile={},laid={},hatched={},chilled={},overheated={},raided={}",
                 c.born.get(&l).copied().unwrap_or(0),
                 c.juvenile_deaths.get(&l).copied().unwrap_or(0),
                 e.laid,
                 e.hatched,
                 e.chilled,
+                e.overheated,
                 e.raided
             ));
             eprintln!("{line}");

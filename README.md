@@ -1289,6 +1289,55 @@ adopted. The only changed default is `larval_competition` (18 → 13), which
 goes with the new pace-of-life term. New tunables: `courtship_caution`,
 `herd_guard`, `brood_recovery`, `larval_stage`.
 
+**Egg thermal risk** (doc: eggs "can be raided, chilled or overheated";
+tunables `egg_overheat`, `brood_warmth`, `brood_cost`). Before this, a
+sitting warm-blooded parent held her eggs at 32 °C whatever the weather, for
+free, and eggs could only chill. Now:
+
+- **Nest microclimate.** Eggs feel their nest tile's temperature, with water
+  (0.5) and canopy (0.3) damping the air's swing toward the tile's annual
+  mean. Warm-blooded eggs chill below 24 °C and overheat above 39 °C;
+  cold-blooded ones chill below 10 °C and overheat above 34 °C, at
+  `egg_overheat` (0.02) per °C-hour, the clutch dying at 1. Overheated
+  eggs are counted in `EggCounts::overheated` (`calibrate --deaths`
+  prints them).
+- **Brooding is limited and costs the parent.** A warm-blooded parent lifts
+  her eggs toward 32 °C by at most `brood_warmth` (20 °C), so on a nest
+  below 4 °C the eggs cool even under her; a cold-blooded one warms them by
+  at most 4 °C. In the heat either can shade them by at most 3 °C. Warming
+  costs `brood_cost` (1.0) × her hourly hunger per 10 °C, shading the same
+  share of the thirst rate: a brooder in a cold place eats up to twice as
+  fast and leaves the nest to feed more often, exposing the eggs.
+- **Abandoned eggs rely on the nest site.** A mother leaving her eggs lays
+  them on the passable tile within 3 tiles (without another clutch) whose
+  microclimate would harm them least over today's day/night cycle, the
+  nearest among equals: in summer, cold-blooded eggs go into water or
+  shade. Brooders nest where they are.
+
+Measured with `calibrate tournament --deaths` (90 days, 4 random
+full-budget designs per world, win = highest final legacy share; fair is
+25%). Tuning set, seeds 10001–10096 (96 worlds), abandoned / incubated /
+live win share: 15.6% / 31.3% / 29.5% before, 16.3% / 31.3% / 28.6% after.
+Mean final share of incubated designs fell from 0.104 to 0.095 (live 0.097
+→ 0.100), and it fell monotonically with `brood_cost` (0.25 / 0.6 / 1.2:
+0.104 / 0.101 / 0.095). The win share hardly moves because winning egg
+layers fill their population cap regardless: winners hatching only 17% of
+their eggs still won with 47% of the legacy. Held-out set, seeds
+10201–10248 (48 worlds): 14.9% / 29.4% / 31.6% before, 17.9% / 25.0% /
+33.3% after; cold-blooded abandoned eggs went from 27.6% to 34.5% (they
+gain from nest sites, chilled 12% → 7%, overheated 2%), warm-blooded
+abandoned eggs stay at 5%. Pooled over the 144 worlds: 15.4% / 30.7% /
+30.2% before and 16.8% / 29.1% / 30.2% after. Egg fates there: warm
+incubated eggs hatch 38% (48% before; chilled 55%), cold incubated 76% (81%;
+5% overheated). With 60–70 entries per mode a win share has a standard
+error of about 5 points, so these are directional.
+
+Held-out sweeps: 11.53 / 11.61 (seeds 31 / 55) against 11.38 / 11.79
+before (sum 23.13 vs 23.17), every lineage at 92–100%. With `brood_cost`
+0.25 and `brood_warmth` 24 they scored 11.32 / 11.77. The level-of-detail
+cohorts don't model eggs separately and are unchanged. Snapshots move to
+format version 4 (`Clutch::overheat`, `EggCounts::overheated`).
+
 ## Point costs
 
 The costs in `design.rs` are calibrated with `examples/calibrate.rs`

@@ -531,9 +531,12 @@ impl Map {
     }
 
     pub fn temperature_offset(hour: u32, day_of_year: u32, days_per_year: u32) -> f32 {
-        // Warmest at 15:00.
-        let diurnal = DIURNAL_AMPLITUDE * (TAU * (hour as f32 - 9.0) / 24.0).sin();
-        Map::seasonal_offset(day_of_year, days_per_year) + diurnal
+        Map::seasonal_offset(day_of_year, days_per_year) + Map::diurnal_offset(hour)
+    }
+
+    /// The day/night part of [`Map::temperature_offset`]: warmest at 15:00.
+    pub fn diurnal_offset(hour: u32) -> f32 {
+        DIURNAL_AMPLITUDE * (TAU * (hour as f32 - 9.0) / 24.0).sin()
     }
 
     /// The seasonal part of [`Map::temperature_offset`], without the
