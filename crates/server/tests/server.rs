@@ -30,6 +30,21 @@ async fn server() -> RunningServer {
     start(cfg).await.expect("server starts")
 }
 
+/// A server whose world ticks only when the test calls `step`, and applies
+/// commands as they arrive: no race against a ticker, so a run is exactly
+/// reproducible.
+async fn manual_server() -> RunningServer {
+    let cfg = ServerConfig {
+        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+        data_dir: None,
+        world: WorldSettings { seed: 11, width: 64, height: 64, wild: true, ..Default::default() },
+        ..Default::default()
+    }
+    .fast()
+    .manual();
+    start(cfg).await.expect("server starts")
+}
+
 async fn http(addr: SocketAddr, method: Method, path: &str, token: Option<&str>, body: Option<Value>) -> (StatusCode, Bytes) {
     let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
     let mut req = Request::builder().method(method).uri(format!("http://{addr}{path}"));
@@ -202,7 +217,10 @@ async fn play_over_websocket() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn directed_mating_consent_round_trip() {
-    let srv = server().await;
+    // Manual clock: the world only moves when we step it, so nothing can
+    // resolve the offer behind our back (between "accepted" and "cancel", or
+    // a natural conception between request and answer).
+    let srv = manual_server().await;
     let addr = srv.addr;
     let ann = register(addr, "ann").await;
     let bob = register(addr, "bob").await;
@@ -210,8 +228,10 @@ async fn directed_mating_consent_round_trip() {
         let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(t), Some(design(n))).await;
         assert_eq!(s, StatusCode::CREATED, "{v}");
     }
+    let tick0 = srv.step(1).await;
     let mut wa = ws(addr, &ann).await;
     let mut wb = ws(addr, &bob).await;
+    // Connecting pushes a state at once; no tick needed.
     let sa = wait_for(&mut wa, "ann's state", |v| v["type"] == "state").await;
     let sb = wait_for(&mut wb, "bob's state", |v| v["type"] == "state").await;
     let pick = |s: &Value, sex: &str| {
@@ -231,9 +251,12 @@ async fn directed_mating_consent_round_trip() {
     assert_eq!(offer["price"], 25);
     assert_eq!(offer["status"], "pending");
     let offer_id = offer["id"].as_u64().unwrap();
-    // The open offer shows in both players' state.
+    // The open offer shows in both players' state (pushed after a step; a
+    // pending offer doesn't change on a tick).
+    assert_eq!(srv.step(1).await, tick0 + 1);
     let s = wait_for(&mut wb, "offer in state", |v| v["type"] == "state" && !v["offers"].as_array().unwrap().is_empty()).await;
     assert_eq!(s["offers"][0]["id"], offer_id);
+    assert_eq!(s["offers"][0]["status"], "pending");
 
     // Ann can't answer her own offer; Bob accepts.
     send(&mut wa, json!({"id": 11, "type": "respond_mating", "request": offer_id, "accept": true})).await;
@@ -245,8 +268,8 @@ async fn directed_mating_consent_round_trip() {
 
     // Both sides hear the outcome: the founders live apart, so the agreement
     // stands (accepted, too far) until they meet. If they happen to be close
-    // it completes at once, and if the female conceived naturally since the
-    // request the rules refuse it (failed).
+    // it completes at once; if the rules refuse it, it fails. With the manual
+    // clock the result is fixed by the seed, but all three are valid.
     let upd = wait_for(&mut wa, "mating update", |v| v["type"] == "mating_update").await;
     let status = upd["offer"]["status"].as_str().unwrap().to_string();
     assert!(["accepted", "completed", "failed"].contains(&status.as_str()), "{upd}");
@@ -254,12 +277,17 @@ async fn directed_mating_consent_round_trip() {
     assert_eq!(u["offer"]["status"], status.as_str());
     if status == "accepted" {
         assert_eq!(upd["error"]["code"], "too_far");
-        // Ann withdraws; both hear it.
+        // Ann withdraws; both hear it. No tick has run since the answer, so
+        // the agreement is still open.
         send(&mut wa, json!({"id": 12, "type": "cancel_mating", "request": offer_id})).await;
         let r = wait_for(&mut wa, "cancel result", |v| v["type"] == "result" && v["id"] == 12).await;
         assert_eq!(r["ok"], true, "{r}");
         let u = wait_for(&mut wb, "cancelled", |v| v["type"] == "mating_update" && v["offer"]["status"] == "cancelled").await;
         assert_eq!(u["offer"]["id"], offer_id);
+        // Later ticks don't revive it.
+        srv.step(5).await;
+        let s = wait_for(&mut wb, "state after cancel", |v| v["type"] == "state").await;
+        assert!(s["offers"].as_array().unwrap().iter().all(|o| o["id"] != offer_id), "{}", s["offers"]);
     } else if status == "completed" {
         assert!(upd["outcome"]["conceived"].is_boolean());
     } else {

@@ -1,8 +1,12 @@
 // End-to-end smoke test: start evo-server (fast, in memory) serving the built
 // client, then in headless Chromium register, found a lineage, open the
-// world view, check the tile map and organisms are drawn, possess one and
-// walk it, open the genetics dashboard and the seasonal leaderboard, and
-// run a directed mating between two players.
+// world view, check the tile map and organisms are drawn, run a directed
+// mating with a second player, possess an organism and walk it, open the
+// genetics dashboard, the seasonal leaderboard and the World tab.
+//
+// The world keeps running throughout, so every step waits on explicit state
+// conditions (generous timeouts, no fixed sleeps for correctness) and retries
+// what the living world can legitimately interrupt.
 //
 //   npm run build && npm run e2e
 //
@@ -165,80 +169,252 @@ async function main() {
       const orig = s.send.bind(s);
       s.send = async (m) => {
         const r = await orig(m);
-        window.__results.push({ type: m.type, ok: r.ok, error: r.error });
+        window.__results.push({ type: m.type, ok: r.ok, error: r.error, x: m.x, y: m.y, mine: m.mine, partner: m.partner });
         return r;
       };
     });
 
-    // Zoom in, stop following and click one of our own organisms. Organisms
-    // keep moving and foreign markers can overlap ours, so pick the own
-    // organism with the most room around its marker, check that a click there
-    // hits it, click, and retry with a fresh pick if the selection isn't ours.
-    const canvasBox = await page.locator('#world-canvas').boundingBox();
-    let selected = null;
-    for (let attempt = 0; attempt < 8 && selected === null; attempt++) {
-      const pick = await page.evaluate(() => {
-        const v = window.evo.screen().view;
-        v.setFollow(false);
-        v.cam.zoom = 14;
-        const own = window.evo.model.state.organisms.filter((o) => v.markers.has(o.id));
-        let best = null;
-        for (const o of own) {
-          const m = v.markers.get(o.id);
-          let room = Infinity;
-          for (const [id, n] of v.markers) if (id !== o.id) room = Math.min(room, Math.hypot(n.x - m.x, n.y - m.y));
-          if (!best || room > best.room) best = { id: o.id, x: m.x, y: m.y, room };
+    // Directed mating between two players through the panels.
+    const bob = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+    pages.push(bob);
+    bob.on('pageerror', (e) => pageErrors.push(`bob: ${e.message}`));
+    await bob.goto(base);
+    await bob.fill('#login-name', `${name}_b`);
+    await bob.fill('#login-password', 'a long password');
+    await bob.click('#register-submit');
+    await bob.waitForSelector('#design-name');
+    await bob.fill('#design-name', 'Bob burrowers');
+    await bob.click('#design-submit');
+    await bob.waitForSelector('#world-canvas');
+    await waitFor('bob state', () => bob.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
+    // Organisms keep breeding, dying and being eaten on their own, so a pick
+    // can conceive or die before the request lands: pick again on those
+    // refusals. (This runs early, while both lineages are young: later on a
+    // loaded machine many more world days pass and a lineage can dwindle.)
+    await page.click('#tab-matings');
+    let pair = null;
+    for (let attempt = 0; attempt < 12 && !pair; attempt++) {
+      const cand = await waitFor('a compatible pair', async () => {
+        const adults = () => window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant).map((o) => ({ id: o.id, sex: o.sex, health: o.health }));
+        const a = await page.evaluate(adults);
+        const b = await bob.evaluate(adults);
+        // Prefer our male (males never become pregnant), then the healthiest.
+        a.sort((x, y) => (x.sex === 'male' ? -1 : 1) - (y.sex === 'male' ? -1 : 1) || y.health - x.health);
+        b.sort((x, y) => y.health - x.health);
+        for (const x of a) {
+          const y = b.find((o) => o.sex !== x.sex);
+          if (y) return { mine: x.id, partner: y.id };
         }
-        if (best) v.centerOn(best.x, best.y);
-        return best;
-      });
-      if (!pick) throw new Error('no own marker to click');
-      await page.waitForTimeout(150);
-      const p = await page.evaluate((id) => {
-        const v = window.evo.screen().view;
-        const p = v.markerScreenPos(id);
-        return p && v.hitTest(p.x, p.y) === id ? p : null;
-      }, pick.id);
-      if (!p) continue;
-      await page.evaluate(() => window.evo.model.select(null));
-      await page.mouse.click(canvasBox.x + p.x, canvasBox.y + p.y);
-      const got = await waitFor('selection', () => page.evaluate(() => window.evo.model.selected), 3000).catch(() => null);
-      const own = await page.evaluate((id) => window.evo.model.state.organisms.some((o) => o.id === id), got);
-      if (got !== null && own) selected = got;
-    }
-    if (selected === null) throw new Error('could not select an own organism by clicking it');
-    await page.waitForSelector('#btn-possess', { timeout: 5000 });
-    step(`clicked own organism #${selected}; inspector open`);
-
-    await page.click('#btn-possess');
-    const possessed = await waitFor('possession', () => page.evaluate(() => window.evo.model.state.organisms.find((o) => o.possessed)?.id));
-    step(`possessed #${possessed}`);
-
-    // Click-to-move: a point a few tiles away with no marker under it.
-    const start = await page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id), possessed);
-    const spot = await page.evaluate(({ id }) => {
-      const v = window.evo.screen().view;
-      const o = window.evo.model.state.organisms.find((x) => x.id === id);
-      for (const [dx, dy] of [[6, 0], [-6, 0], [0, 6], [0, -6], [5, 5], [-5, -5], [5, -5], [-5, 5]]) {
-        const x = Math.min(62, Math.max(1, o.x + dx));
-        const y = Math.min(62, Math.max(1, o.y + dy));
-        const p = v.worldToScreen(x, y);
-        if (v.hitTest(p.x, p.y) === null) return { x, y, p };
+        return null;
+      }, 30000);
+      await page.evaluate(() => { window.__results = []; });
+      // The form lists living adults; if our pick died since, pick again.
+      if (!(await page.selectOption('#mating-mine', String(cand.mine), { timeout: 3000 }).then(() => true, () => false))) {
+        console.log(`  … #${cand.mine} is no longer in the form; picking again`);
+        continue;
       }
-      return null;
-    }, { id: possessed });
-    if (!spot) throw new Error('no empty spot to click');
-    await page.mouse.click(canvasBox.x + spot.p.x, canvasBox.y + spot.p.y);
-    const moveRes = await waitFor('order_move result', () => page.evaluate(() => window.__results.find((r) => r.type === 'order_move')));
-    if (!moveRes.ok) throw new Error(`order_move failed: ${JSON.stringify(moveRes.error)}`);
-    const d0 = Math.hypot(start.x - spot.x, start.y - spot.y);
-    const closer = await waitFor('organism walks toward the target', () => page.evaluate(({ id, spot, d0 }) => {
+      await page.fill('#mating-partner', String(cand.partner));
+      await page.fill('#mating-price', '25');
+      await page.click('#mating-submit');
+      const req = await waitFor('request result', () => page.evaluate(() => window.__results.find((r) => r.type === 'request_mating')));
+      // If our pick died before the click, the form falls back to another
+      // adult (which can be the partner's sex): retry then, too.
+      const swapped = req.mine !== cand.mine || req.partner !== cand.partner;
+      if (req.ok) pair = { mine: req.mine, partner: req.partner };
+      else if (!swapped && !['already_pregnant', 'not_mature', 'not_found'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
+      else console.log(`  … request_mating refused (${req.error?.code}${swapped ? `, form sent #${req.mine} × #${req.partner}` : ''}); picking again`);
+    }
+    if (!pair) throw new Error('no mating request went through');
+    await page.waitForSelector('#open-offers .offer');
+    await bob.click('#tab-matings');
+    await bob.waitForSelector('#incoming .offer button.accept', { timeout: 10000 });
+    step(`ann asked for #${pair.mine} × bob's #${pair.partner} at price 25; bob sees the request`);
+    await bob.click('#incoming .offer button.accept');
+    const status = await waitFor('mating update on both sides', async () => {
+      const s = (p) => p.evaluate(() => [...window.evo.model.offers.values()].map((e) => e.offer.status).find((x) => x !== 'pending'));
+      const [sa, sb] = [await s(page), await s(bob)];
+      return sa && sa === sb ? sa : null;
+    });
+    if (!['accepted', 'completed', 'failed'].includes(status)) throw new Error(`unexpected offer status ${status}`);
+    step(`bob accepted; both sides see the offer ${status}`);
+    if (status === 'accepted') {
+      // Escort: possess our organism and head for the partner. The agreement
+      // can still resolve on its own (the pair meets, or the rules refuse
+      // it) before the click, which takes the button away: that's fine.
+      const escort = page.locator('#open-offers .offer button:has-text("Escort")');
+      const clicked = await escort.click({ timeout: 5000 }).then(() => true, () => false);
+      if (clicked) {
+        const esc = await waitFor('escort possession', () => page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id)?.possessed, pair.mine));
+        if (!esc) throw new Error('escort did not possess');
+        step(`escort: #${pair.mine} possessed for the trip to the meeting`);
+        // Hand it back so the possession step below starts from scratch.
+        const rel = await page.evaluate((id) => window.evo.socket.send({ type: 'release', organism: id }), pair.mine);
+        if (!rel.ok) throw new Error(`release failed: ${JSON.stringify(rel.error)}`);
+        await waitFor('release', () => page.evaluate(() => !window.evo.model.state.organisms.some((o) => o.possessed)));
+      } else {
+        const now = await page.evaluate(() => [...window.evo.model.offers.values()].map((e) => e.offer.status).find((x) => x !== 'pending'));
+        if (now === 'accepted') throw new Error('escort button missing on an accepted offer');
+        step(`the agreement resolved (${now}) before the escort`);
+      }
+    }
+    await bob.waitForTimeout(500);
+    await bob.screenshot({ path: path.join(shots, 'matings-bob.png') });
+    await page.screenshot({ path: path.join(shots, 'matings-ann.png') });
+
+    // Select by clicking, possess and walk one of our own organisms. The
+    // world keeps running: markers move, organisms die (juveniles often), a
+    // possessed organism may break off an order for danger, a severe need or
+    // night torpor. So each part waits on explicit state and retries, and if
+    // the organism itself is lost the whole round restarts with a new one.
+    const canvasBox = await page.locator('#world-canvas').boundingBox();
+    class Retry extends Error {}
+    const alive = (id) => page.evaluate((id) => window.evo.model.state.organisms.some((o) => o.id === id), id);
+
+    // Zoom in, stop following and click one of our own organisms: an adult
+    // (they live longer) with the most room around its marker, checked with
+    // the view's hit test; retry with a fresh pick if the selection isn't ours.
+    async function clickOwn(exclude) {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const pick = await page.evaluate((exclude) => {
+          const v = window.evo.screen().view;
+          v.setFollow(false);
+          v.cam.zoom = 14;
+          const own = window.evo.model.state.organisms.filter((o) => v.markers.has(o.id) && !exclude.includes(o.id));
+          let best = null;
+          for (const o of own) {
+            const m = v.markers.get(o.id);
+            let room = Infinity;
+            for (const [id, n] of v.markers) if (id !== o.id) room = Math.min(room, Math.hypot(n.x - m.x, n.y - m.y));
+            const score = Math.min(room, 3) + (o.matured ? 3 : 0) + o.health / 100;
+            if (!best || score > best.score) best = { id: o.id, x: m.x, y: m.y, score };
+          }
+          if (best) v.centerOn(best.x, best.y);
+          return best;
+        }, exclude);
+        if (!pick) throw new Error('no own marker to click');
+        await page.waitForTimeout(150);
+        const p = await page.evaluate((id) => {
+          const v = window.evo.screen().view;
+          const p = v.markerScreenPos(id);
+          return p && v.hitTest(p.x, p.y) === id ? p : null;
+        }, pick.id);
+        if (!p) continue;
+        await page.evaluate(() => window.evo.model.select(null));
+        await page.mouse.click(canvasBox.x + p.x, canvasBox.y + p.y);
+        const got = await waitFor('selection', () => page.evaluate(() => window.evo.model.selected), 3000).catch(() => null);
+        if (got !== null && (await alive(got))) return got;
+      }
+      throw new Retry('could not select an own organism by clicking it');
+    }
+
+    // Click-to-move: a dry-land point a few tiles away, clear of markers. The
+    // check tracks the closest the organism got to the target over generous
+    // time and counts an arrival (the server drops the order within 0.75
+    // tiles); if it stalls, the order is re-issued from where it is now. A
+    // click that lands on a marker that just moved there selects it instead
+    // of ordering: that attempt is retried too.
+    const pickSpot = (id) => page.evaluate((id) => {
+      const v = window.evo.screen().view;
+      const t = v.terrain;
       const o = window.evo.model.state.organisms.find((x) => x.id === id);
       if (!o) return null;
-      const d = Math.hypot(o.x - spot.x, o.y - spot.y);
-      return d < d0 - 1 ? { d, action: o.action } : null;
-    }, { id: possessed, spot, d0 }), 15000);
-    step(`order_move ok; #${possessed} walked from ${d0.toFixed(1)} to ${closer.d.toFixed(1)} tiles of the target (${closer.action})`);
+      // Land biomes (grass, forest, desert, tundra) with no water now.
+      const dry = (x, y) => {
+        const i = Math.floor(y) * t.width + Math.floor(x);
+        return t.biome[i] >= 3 && t.biome[i] <= 6 && t.water[i] === 0;
+      };
+      const dirs = [];
+      for (const r of [6, 5, 4]) for (let k = 0; k < 16; k++) dirs.push([r * Math.cos((k * Math.PI) / 8), r * Math.sin((k * Math.PI) / 8)]);
+      let fallback = null;
+      for (const [dx, dy] of dirs) {
+        const x = Math.min(62, Math.max(1, o.x + dx));
+        const y = Math.min(62, Math.max(1, o.y + dy));
+        if (Math.hypot(x - o.x, y - o.y) < 3.5) continue;
+        const p = v.worldToScreen(x, y);
+        if (v.hitTest(p.x, p.y) !== null) continue;
+        // Keep clear of every marker by 1.5 tiles: they move before the click.
+        if ([...v.markers.values()].some((m) => Math.hypot(m.x - x, m.y - y) < 1.5)) continue;
+        const spot = { x, y, p, from: { x: o.x, y: o.y } };
+        if (dry(x, y) && dry((x + o.x) / 2, (y + o.y) / 2)) return spot;
+        fallback ??= spot;
+      }
+      return fallback;
+    }, id);
+
+    async function walkTo(id) {
+      const actions = new Set();
+      const attempts = 5;
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        if (!(await alive(id))) throw new Retry(`#${id} died`);
+        // Keep the possessed organism centred so the click lands on the map.
+        await page.evaluate((id) => {
+          const v = window.evo.screen().view;
+          const p = v.markers.get(id);
+          if (p) v.centerOn(p.x, p.y);
+        }, id);
+        await page.waitForTimeout(150);
+        const spot = await pickSpot(id);
+        if (!spot) throw new Retry('no empty spot to click');
+        await page.evaluate(() => { window.__results = window.__results.filter((r) => r.type !== 'order_move'); });
+        await page.mouse.click(canvasBox.x + spot.p.x, canvasBox.y + spot.p.y);
+        const moveRes = await waitFor('order_move result', () => page.evaluate(() => window.__results.find((r) => r.type === 'order_move')), 5000).catch(() => null);
+        if (!moveRes) {
+          console.log(`  … walk attempt ${attempt}: the click sent no order (it hit a marker that moved there?); retrying`);
+          await page.evaluate((id) => window.evo.model.select(id), id);
+          continue;
+        }
+        if (!moveRes.ok) {
+          if (moveRes.error?.code === 'not_found' || moveRes.error?.code === 'not_owned') throw new Retry(`order_move: ${moveRes.error.code}`);
+          throw new Error(`order_move failed: ${JSON.stringify(moveRes.error)}`);
+        }
+        // Measure against the target actually sent (the camera may have
+        // shifted a little between picking the spot and the click).
+        const target = { x: moveRes.x, y: moveRes.y };
+        const d0 = Math.hypot(spot.from.x - target.x, spot.from.y - target.y);
+        let best = d0;
+        let lost = null;
+        const walk = await waitFor('organism walks toward the target', async () => {
+          const o = await page.evaluate(({ id, target }) => {
+            const o = window.evo.model.state.organisms.find((x) => x.id === id);
+            return o ? { d: Math.hypot(o.x - target.x, o.y - target.y), action: o.action, possessed: o.possessed } : null;
+          }, { id, target });
+          if (!o || !o.possessed) {
+            lost = o ? 'released' : 'died';
+            return { lost };
+          }
+          actions.add(o.action);
+          best = Math.min(best, o.d);
+          // Closer by a tile, or arrived (order dropped near the target).
+          return best < d0 - 1 || best <= 1.0 ? { d0, best, action: o.action, attempt } : null;
+        }, 20000).catch(() => null);
+        if (lost) throw new Retry(`#${id} ${lost} while walking`);
+        if (walk) return walk;
+        console.log(`  … walk attempt ${attempt}: closest ${best.toFixed(1)} of ${d0.toFixed(1)} tiles (actions seen: ${[...actions].join(', ')}); re-issuing the order`);
+      }
+      throw new Error(`organism #${id} did not walk toward any of ${attempts} targets (actions seen: ${[...actions].join(', ')})`);
+    }
+
+    const tried = [];
+    let walked = null;
+    for (let round = 1; round <= 4 && !walked; round++) {
+      try {
+        const selected = await clickOwn(tried);
+        tried.push(selected);
+        if (!(await page.waitForSelector('#btn-possess', { timeout: 5000 }).then(() => true, () => false))) throw new Retry(`#${selected} has no possess button (died?)`);
+        step(`clicked own organism #${selected}; inspector open`);
+        await page.click('#btn-possess', { timeout: 5000 }).catch(() => { throw new Retry('possess button went away'); });
+        const possessed = await waitFor('possession', () => page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id && o.possessed)?.id, selected), 10000)
+          .catch(() => { throw new Retry(`#${selected} was not possessed`); });
+        step(`possessed #${possessed}`);
+        const walk = await walkTo(possessed);
+        walked = { id: possessed, ...walk };
+      } catch (e) {
+        if (!(e instanceof Retry)) throw e;
+        console.log(`  … round ${round}: ${e.message}; starting over with another organism`);
+      }
+    }
+    if (!walked) throw new Error('could not possess and walk an organism in 4 rounds');
+    step(`order_move ok; #${walked.id} walked from ${walked.d0.toFixed(1)} to ${walked.best.toFixed(1)} tiles of the target (${walked.action}, attempt ${walked.attempt})`);
 
     // Group command and a server-side error surfaced as a toast.
     await page.click('#migrate');
@@ -246,7 +422,7 @@ async function main() {
     const mig = await waitFor('migrate result', () => page.evaluate(() => window.__results.find((r) => r.type === 'migrate')));
     if (!mig.ok) throw new Error(`migrate failed: ${JSON.stringify(mig.error)}`);
     await page.evaluate(() => window.evo.socket.send({ type: 'possess', organism: 999999 }));
-    await page.waitForSelector('.toast.error', { timeout: 5000 });
+    await page.waitForSelector('.toast.error:has-text("999999")', { timeout: 5000 });
     step('migrate ok; command errors shown as toasts');
 
     await page.evaluate(() => window.evo.screen().view.setFollow(true));
@@ -287,68 +463,6 @@ async function main() {
     }), 15000);
     step(`world tab: ${world.species} species, ${world.players} player tallies; ${world.era.split('.')[0]}`);
     await page.screenshot({ path: path.join(shots, 'world-chronicle.png') });
-
-    // Directed mating between two players through the panels.
-    const bob = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
-    pages.push(bob);
-    bob.on('pageerror', (e) => pageErrors.push(`bob: ${e.message}`));
-    await bob.goto(base);
-    await bob.fill('#login-name', `${name}_b`);
-    await bob.fill('#login-password', 'a long password');
-    await bob.click('#register-submit');
-    await bob.waitForSelector('#design-name');
-    await bob.fill('#design-name', 'Bob burrowers');
-    await bob.click('#design-submit');
-    await bob.waitForSelector('#world-canvas');
-    await waitFor('bob state', () => bob.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
-    // Organisms keep breeding on their own, so a chosen female can conceive
-    // before the request lands: pick again on those refusals.
-    await page.click('#tab-matings');
-    let pair = null;
-    for (let attempt = 0; attempt < 8 && !pair; attempt++) {
-      const cand = await waitFor('a compatible pair', async () => {
-        const a = await page.evaluate(() => window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant).map((o) => ({ id: o.id, sex: o.sex })));
-        const b = await bob.evaluate(() => window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant).map((o) => ({ id: o.id, sex: o.sex })));
-        // Prefer our male: males never become pregnant.
-        a.sort((x, y) => (x.sex === 'male' ? -1 : 1) - (y.sex === 'male' ? -1 : 1));
-        for (const x of a) {
-          const y = b.find((o) => o.sex !== x.sex);
-          if (y) return { mine: x.id, partner: y.id };
-        }
-        return null;
-      });
-      await page.evaluate(() => { window.__results = []; });
-      await page.selectOption('#mating-mine', String(cand.mine));
-      await page.fill('#mating-partner', String(cand.partner));
-      await page.fill('#mating-price', '25');
-      await page.click('#mating-submit');
-      const req = await waitFor('request result', () => page.evaluate(() => window.__results.find((r) => r.type === 'request_mating')));
-      if (req.ok) pair = cand;
-      else if (!['already_pregnant', 'not_mature', 'not_found'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)}`);
-    }
-    if (!pair) throw new Error('no mating request went through');
-    await page.waitForSelector('#open-offers .offer');
-    await bob.click('#tab-matings');
-    await bob.waitForSelector('#incoming .offer button.accept', { timeout: 10000 });
-    step(`ann asked for #${pair.mine} × bob's #${pair.partner} at price 25; bob sees the request`);
-    await bob.click('#incoming .offer button.accept');
-    const status = await waitFor('mating update on both sides', async () => {
-      const s = (p) => p.evaluate(() => [...window.evo.model.offers.values()].map((e) => e.offer.status).find((x) => x !== 'pending'));
-      const [sa, sb] = [await s(page), await s(bob)];
-      return sa && sa === sb ? sa : null;
-    });
-    if (!['accepted', 'completed', 'failed'].includes(status)) throw new Error(`unexpected offer status ${status}`);
-    step(`bob accepted; both sides see the offer ${status}`);
-    if (status === 'accepted') {
-      // Escort: possess our organism and head for the partner.
-      await page.click('#open-offers .offer button:has-text("Escort")');
-      const esc = await waitFor('escort possession', () => page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id)?.possessed, pair.mine));
-      if (!esc) throw new Error('escort did not possess');
-      step(`escort: #${pair.mine} possessed for the trip to the meeting`);
-    }
-    await bob.waitForTimeout(500);
-    await bob.screenshot({ path: path.join(shots, 'matings-bob.png') });
-    await page.screenshot({ path: path.join(shots, 'matings-ann.png') });
 
     if (pageErrors.length) throw new Error(`page errors: ${pageErrors.join('; ')}`);
     console.log(`smoke test passed; screenshots in ${shots}`);

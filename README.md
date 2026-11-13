@@ -1,5 +1,7 @@
 # Evolution MMO
 
+[![CI](https://github.com/alpuglisi/mmo/actions/workflows/ci.yml/badge.svg)](https://github.com/alpuglisi/mmo/actions/workflows/ci.yml)
+
 A persistent multiplayer world where each player designs a founding organism
 and steers its lineage through breeding rather than direct editing. The full
 design is in [`docs/game-design.md`](docs/game-design.md).
@@ -193,6 +195,43 @@ world from 3960 to 2661 organisms and all four player lineages survived it;
 era 1 ended with wild 46.0%, burrowing omnivores 29.1%, toxic frogs 23.6%,
 and the frogs and the burrowers each led two niches. A detection over 868
 samples of 13.5k organisms (256×256, scale 10) takes 6.7 ms, every 5 days.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request, in four
+parallel jobs:
+
+| Job | What it runs |
+| --- | --- |
+| Rust | `cargo build --release --workspace`, `cargo test --release --workspace`, `cargo clippy --release --all-targets -- -D warnings` (stable toolchain, cargo cache) |
+| Balance smoke check | `scripts/balance-smoke.sh`: `evo-sim sweep --size 64 --trials 1 --seeds 3 --rounds 1 --days 60` with the default `Balance`, failing if fewer than 14 of the 24 lineage-worlds (8 lineages × 3 seeds) still hold 4 members with 2 adults, or the score drops below 7 of 12. The current rules make 21 of 24 and 10.4, so only a rule change that wrecks coexistence trips it; thresholds are env-overridable (`MIN_SURVIVORS`, `MIN_SCORE`, `SEEDS`, `DAYS`, `SIZE`). |
+| Client | `npm ci`, `npm run typecheck`, `npm test`, `npm run build` |
+| End-to-end | builds `evo-server` and the client, installs Playwright and Chromium (CI only; developer machines have them pre-installed), runs `npm run e2e` and uploads the screenshots as an artifact when it fails |
+
+Run the same checks locally before pushing:
+
+```sh
+cargo build --release && cargo test --release --workspace
+cargo clippy --release --all-targets -- -D warnings
+scripts/balance-smoke.sh
+(cd client && npm ci && npm run typecheck && npm test && npm run build && npm run e2e)
+```
+
+Formatting isn't checked yet: the code is not `cargo fmt`-clean and no
+`rustfmt.toml` matches its hand-wrapped wide style, so enforcing it needs
+one mechanical whole-repo `cargo fmt` commit first (best done when no other
+branches are in flight), then a `cargo fmt --all --check` step.
+
+**Determinism in tests.** The server integration tests that need exact
+timing use a manual world clock: `ServerConfig::manual()` makes the world
+thread tick only on `RunningServer::step(n)` (which pushes state once at the
+end) and apply commands as they arrive, so nothing races the 20 ms fast-mode
+ticker (`directed_mating_consent_round_trip` runs this way). The browser
+smoke test waits on explicit state conditions with generous timeouts rather
+than fixed sleeps, and retries the steps the living world can legitimately
+interrupt (a click landing on an organism that just moved there, a
+possessed organism breaking off its order to drink or flee, a picked mate
+dying or conceiving first).
 
 ## Server
 
@@ -576,15 +615,19 @@ and outcome. `e2e/smoke.mjs` (Playwright, pre-installed Chromium) starts
 checks the live cost against the prices in `/api/genes` (and that the
 server's founding response agrees) and the client-side over-budget refusal, founds a lineage, waits for markers and
 the tile map (64×64 texture, at least 3 biomes and 20 tile colors, a dynamic
-refresh, the terrain legend), clicks one of its own organisms (the one with
+refresh, the terrain legend), registers a second player and runs a directed
+mating through both players' panels while both lineages are young (request
+with price → incoming → accept → both see the update → escort, then
+release), clicks one of its own organisms (the one with
 the most room around its marker, checked with the view's hit test, retried
-if the selection isn't its own), possesses it, clicks the map and checks it walks toward the target, migrates, sees an error toast,
-checks the seasonal leaderboard and the genetics dashboard (at least four
-charts with drawn lines, drift sparklines, every gene in the table, alerts in
-the feed), the World tab (species listed, the era clock, an achievements
-row), then registers a second player and runs a directed mating through
-both players' panels (request with price → incoming → accept → both see the
-update → escort). Screenshots go to `SCREENSHOT_DIR`. `e2e/winter_shot.mjs`
+if the selection isn't its own), possesses it, clicks a dry-land spot clear
+of markers and checks it walks toward the target (closest approach tracked,
+an arrival counts, the order re-issued if a click misses or the organism
+breaks off for a need), migrates, sees an error toast, checks the seasonal
+leaderboard and the genetics dashboard (at least four charts with drawn
+lines, drift sparklines, every gene in the table, alerts in the feed) and
+the World tab (species listed, the era clock, an achievements row). Every
+step waits on explicit state with generous timeouts. Screenshots go to `SCREENSHOT_DIR`. `e2e/winter_shot.mjs`
 is a screenshot helper (not a test): a 16-day-year world played into winter.
 
 **Not yet:** organism sprites by body plan, touch pinch-zoom, a stud
