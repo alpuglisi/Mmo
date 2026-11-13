@@ -1435,7 +1435,7 @@ async fn eventually(
     path: &str,
     ok: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let v = client.get_json(path).await;
         if ok(&v) {
@@ -1475,11 +1475,15 @@ async fn restart_around_a_season_rollover(backend: Backend) {
         assert!(v["lineage"].is_u64(), "{v}");
         let cur = client.get_json("/api/seasons/current").await;
         assert_eq!((cur["season"].as_u64(), cur["days_left"].as_u64()), (Some(1), Some(2)), "{cur}");
-        assert_eq!(srv.step(2 * tpd as u32).await, 2 * tpd);
+        // Let the daily saves of ticks tpd and 2 * tpd reach the store, one
+        // day at a time: the saver replaces a capture still waiting with a
+        // newer one, so with both days in one step a busy saver thread could
+        // write only the second (and the count would never reach 2), and on
+        // a slow disk the save at 2 * tpd could give way to the shutdown's.
+        assert_eq!(srv.step(tpd as u32).await, tpd);
+        eventually(&client, "/api/metrics", |v| v["saves"].as_u64() >= Some(1)).await;
+        assert_eq!(srv.step(tpd as u32).await, 2 * tpd);
         assert_eq!(client.get_json("/api/seasons").await["total"], 0);
-        // Let the daily saves of ticks tpd and 2 * tpd reach the store: the
-        // saver replaces a capture still waiting with a newer one, so on a
-        // slow disk the save at 2 * tpd could give way to the shutdown's.
         eventually(&client, "/api/metrics", |v| v["saves"].as_u64() >= Some(2)).await;
         assert_eq!(srv.step(4).await, 2 * tpd + 4);
         let v = eventually(&client, "/api/seasons", |v| v["total"] == 1).await;
