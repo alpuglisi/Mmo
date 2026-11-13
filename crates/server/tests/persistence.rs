@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use evo_server::design::{BirthSpec, DesignSpec, ThermoSpec};
-use evo_server::game::WorldSettings;
+use evo_server::game::{GameConfig, WorldSettings};
+use evo_server::league::{SeasonRecord, SeasonTracker};
 use evo_server::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
 use evo_server::store::{
     AccountRecord, AlertPrefsRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord, MemoryStore,
@@ -110,6 +111,42 @@ async fn drop_terrains(backend: &Backend) {
         Backend::Pg { url, .. } => {
             let pool = sqlx::PgPool::connect(url).await.unwrap();
             sqlx::query("DELETE FROM terrains").execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+    }
+}
+
+/// Delete the saved games after `tick` behind the store's back: what a
+/// crash before they were written would have left.
+async fn drop_snapshots_after(backend: &Backend, tick: u64) {
+    match backend {
+        Backend::File(dir) => {
+            for e in std::fs::read_dir(dir.join("snapshots")).unwrap() {
+                let path = e.unwrap().path();
+                let name = path.file_name().unwrap().to_str().unwrap().to_string();
+                let t: u64 = name.trim_start_matches("world-").trim_end_matches(".snap").parse().unwrap();
+                if t > tick {
+                    std::fs::remove_file(path).unwrap();
+                }
+            }
+        }
+        #[cfg(feature = "postgres")]
+        Backend::Pg { url, .. } => {
+            let pool = sqlx::PgPool::connect(url).await.unwrap();
+            sqlx::query("DELETE FROM snapshots WHERE tick > $1").bind(tick as i64).execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+    }
+}
+
+/// Delete every stored season behind the store's back (a lost write).
+async fn drop_seasons(backend: &Backend) {
+    match backend {
+        Backend::File(dir) => std::fs::remove_file(dir.join("seasons.jsonl")).unwrap(),
+        #[cfg(feature = "postgres")]
+        Backend::Pg { url, .. } => {
+            let pool = sqlx::PgPool::connect(url).await.unwrap();
+            sqlx::query("DELETE FROM seasons").execute(&pool).await.unwrap();
             pool.close().await;
         }
     }
@@ -263,6 +300,56 @@ async fn round_trip(s: &dyn Store) {
     assert_eq!(s.load_snapshot(200).await.unwrap(), 200u64.to_le_bytes());
     assert!(s.load_snapshot(100).await.is_err());
     check_terrains(s).await;
+    check_seasons(s).await;
+}
+
+/// A finished season of `world` in which `players` held a legacy share.
+fn season(world: &str, n: u32, players: &[u32], ended_unix: u64) -> SeasonRecord {
+    let first = u64::from(n - 1) * 10;
+    let mut t = SeasonTracker::new(n, first, 10);
+    let mut d = day(world, first, 5);
+    d.legacy = players
+        .iter()
+        .map(|&p| evo_server::store::LegacyEntry { player: p, share: 0.1 * f64::from(p), weighted_share: 0.0 })
+        .collect();
+    t.record_day(&d);
+    t.add_sale(players[0], 5);
+    t.finish(world, u64::from(n) * 480, ended_unix, |p| format!("p{p}"))
+}
+
+/// Seasons written, one replaced by a replayed rollover, read back: in
+/// first-written order, newest first, paged; per player.
+async fn check_seasons(s: &dyn Store) {
+    assert_eq!(s.list_seasons(0, 10).await.unwrap(), (vec![], 0));
+    s.put_season(&season("w1", 1, &[1, 2], 1)).await.unwrap();
+    s.put_season(&season("w1", 2, &[1], 2)).await.unwrap();
+    s.put_season(&season("w2", 1, &[2], 3)).await.unwrap();
+    // The replayed rollover of w1's season 1 replaces it in its place.
+    let replayed = season("w1", 1, &[1, 2, 3], 4);
+    s.put_season(&replayed).await.unwrap();
+    let (heads, total) = s.list_seasons(0, 10).await.unwrap();
+    assert_eq!(total, 3);
+    let keys: Vec<(&str, u32)> = heads.iter().map(|h| (h.world_id.as_str(), h.season)).collect();
+    assert_eq!(keys, vec![("w2", 1), ("w1", 2), ("w1", 1)]);
+    assert_eq!(heads[2], replayed.head);
+    let (page, total) = s.list_seasons(1, 1).await.unwrap();
+    assert_eq!((page.len(), page[0].season, page[0].world_id.as_str(), total), (1, 2, "w1", 3));
+    assert_eq!(s.load_season("w1", 1).await.unwrap(), Some(replayed.clone()));
+    assert_eq!(s.load_season("w1", 3).await.unwrap(), None);
+    assert_eq!(s.load_season("w3", 1).await.unwrap(), None);
+    let ann = s.player_seasons(1, 10).await.unwrap();
+    assert_eq!(ann.iter().map(|p| (p.world_id.as_str(), p.season)).collect::<Vec<_>>(), vec![("w1", 2), ("w1", 1)]);
+    assert_eq!(ann[1], replayed.player_season(1).unwrap());
+    let bob = s.player_seasons(2, 10).await.unwrap();
+    assert_eq!(bob.iter().map(|p| (p.world_id.as_str(), p.season)).collect::<Vec<_>>(), vec![("w2", 1), ("w1", 1)]);
+    // Bob led the market in w2: legacy and market placements, category order.
+    assert_eq!(
+        bob[0].placements.iter().map(|p| (p.category.name(), p.rank)).collect::<Vec<_>>(),
+        vec![("legacy", 1), ("market", 1)]
+    );
+    assert_eq!(s.player_seasons(2, 1).await.unwrap().len(), 1);
+    assert_eq!(s.player_seasons(3, 10).await.unwrap().len(), 1, "only in the replayed record");
+    assert!(s.player_seasons(9, 10).await.unwrap().is_empty());
 }
 
 async fn check_terrains(s: &dyn Store) {
@@ -318,6 +405,8 @@ async fn store_round_trips(backend: Backend) {
     assert_eq!(s.recent_ledger(None, 100).await.unwrap().len(), 5);
     assert_eq!(s.load_alert_prefs(1).await.unwrap(), Some(alert_prefs(1)));
     check_terrains(&*s).await;
+    assert_eq!(s.list_seasons(0, 10).await.unwrap().1, 3);
+    assert_eq!(s.load_season("w1", 1).await.unwrap(), Some(season("w1", 1, &[1, 2, 3], 4)));
     // `--fresh` drops the terrains with the saved games.
     s.clear_snapshots().await.unwrap();
     assert!(s.snapshot_ticks().await.unwrap().is_empty());
@@ -723,4 +812,128 @@ mod reqwest_like {
             serde_json::from_slice(&bytes).unwrap()
         }
     }
+}
+
+on_every_store!(
+    restart_around_a_season_rollover,
+    file_restart_around_a_season_rollover,
+    pg_restart_around_a_season_rollover
+);
+
+/// Poll `path` until `ok` holds for its JSON (the store task writes after
+/// the world thread replies).
+async fn eventually(
+    client: &reqwest_like::Client,
+    path: &str,
+    ok: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let v = client.get_json(path).await;
+        if ok(&v) {
+            return v;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{path}: {v}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Ranked seasons across restarts: a season record the store lost is
+/// written again from the saved game, a rollover replayed from a save made
+/// before it replaces its record instead of adding one, and the next season
+/// counts each day once.
+async fn restart_around_a_season_rollover(backend: Backend) {
+    let tpd = u64::from(evo_sim::WorldConfig::default().ticks_per_day);
+    let cfg = backend.config(
+        ServerConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            world: WorldSettings { seed: 5, width: 48, height: 48, wild: false, ..Default::default() },
+            game: GameConfig { season_days: 2, ..Default::default() },
+            ..Default::default()
+        }
+        .manual(),
+    );
+
+    // First run: ann founds a lineage; days 0 and 1 make season 1, which
+    // ends with the record of day 2 (the step from tick 2 * tpd). The daily
+    // saves land at ticks tpd and 2 * tpd (before the rollover); the
+    // shutdown saves after it.
+    let first = {
+        let srv = start(cfg.clone()).await.unwrap();
+        let client = reqwest_like::Client::new(srv.addr);
+        let v = client.post_json("/api/register", r#"{"name":"ann","password":"a long password"}"#, None).await;
+        let token = v["token"].as_str().unwrap().to_string();
+        let v = client.post_json("/api/lineage", &serde_json::to_string(&spec()).unwrap(), Some(&token)).await;
+        assert!(v["lineage"].is_u64(), "{v}");
+        let cur = client.get_json("/api/seasons/current").await;
+        assert_eq!((cur["season"].as_u64(), cur["days_left"].as_u64()), (Some(1), Some(2)), "{cur}");
+        assert_eq!(srv.step(2 * tpd as u32).await, 2 * tpd);
+        assert_eq!(client.get_json("/api/seasons").await["total"], 0);
+        assert_eq!(srv.step(4).await, 2 * tpd + 4);
+        let v = eventually(&client, "/api/seasons", |v| v["total"] == 1).await;
+        assert_eq!(v["seasons"][0]["season"], 1);
+        assert_eq!(v["seasons"][0]["winners"][0]["name"], "ann", "{v}");
+        let cur = client.get_json("/api/seasons/current?player=1").await;
+        assert_eq!((cur["season"].as_u64(), cur["days"].as_u64()), (Some(2), Some(1)), "{cur}");
+        srv.shutdown().await;
+        let store = backend.open().await;
+        let (heads, total) = store.list_seasons(0, 10).await.unwrap();
+        assert_eq!((total, heads[0].season, heads[0].days), (1, 1, 2));
+        let r = store.load_season(&heads[0].world_id, 1).await.unwrap().unwrap();
+        assert_eq!(r.standings[0].rows[0].name, "ann");
+        r
+    };
+    let world = first.head.world_id.clone();
+
+    // The store loses the record; the saved game (after the rollover) has it
+    // and the restart writes it again.
+    drop_seasons(&backend).await;
+    {
+        let srv = start(cfg.clone()).await.unwrap();
+        let client = reqwest_like::Client::new(srv.addr);
+        let v = client.get_json("/api/seasons/1?limit=5&player=1").await;
+        assert_eq!(v["season"], 1, "{v}");
+        assert_eq!(v["world_id"], world.as_str());
+        assert_eq!(v["standings"][0]["rows"][0]["name"], "ann");
+        let v = client.get_json(&format!("/api/seasons/1?world={world}")).await;
+        assert_eq!(v["days"], 2, "{v}");
+        assert_eq!(client.get_json("/api/seasons/2").await["code"], "no_season");
+        assert_eq!(client.get_json("/api/seasons/x").await["code"], "bad_season");
+        srv.shutdown().await;
+    }
+    let store = backend.open().await;
+    assert_eq!(store.list_seasons(0, 10).await.unwrap().1, 1);
+    assert_eq!(store.load_season(&world, 1).await.unwrap().as_ref(), Some(&first));
+    drop(store);
+
+    // A crash before any save after the rollover: the world restarts from
+    // the save at tick 2 * tpd and replays the rollover, which replaces the
+    // record (same standings), then plays season 2 through.
+    drop_snapshots_after(&backend, 2 * tpd).await;
+    {
+        let srv = start(cfg.clone()).await.unwrap();
+        let client = reqwest_like::Client::new(srv.addr);
+        assert_eq!(world_clock(&client).await.0, 2 * tpd);
+        let cur = client.get_json("/api/seasons/current").await;
+        assert_eq!((cur["season"].as_u64(), cur["days"].as_u64()), (Some(1), Some(2)), "{cur}");
+        srv.step(1).await;
+        let cur = client.get_json("/api/seasons/current").await;
+        assert_eq!((cur["season"].as_u64(), cur["days"].as_u64()), (Some(2), Some(1)), "{cur}");
+        srv.step(2 * tpd as u32).await;
+        eventually(&client, "/api/seasons", |v| v["total"] == 2).await;
+        let mine = client.get_json("/api/seasons/player/1").await;
+        let seasons: Vec<u64> =
+            mine["seasons"].as_array().unwrap().iter().map(|s| s["season"].as_u64().unwrap()).collect();
+        assert_eq!(seasons, vec![2, 1], "{mine}");
+        srv.shutdown().await;
+    }
+    let store = backend.open().await;
+    let (heads, total) = store.list_seasons(0, 10).await.unwrap();
+    assert_eq!(total, 2);
+    assert_eq!(heads.iter().map(|h| (h.season, h.days, h.first_day)).collect::<Vec<_>>(), vec![(2, 2, 2), (1, 2, 0)]);
+    let again = store.load_season(&world, 1).await.unwrap().unwrap();
+    assert_eq!(again.standings, first.standings);
+    assert_eq!((again.head.days, again.head.ended_tick), (first.head.days, first.head.ended_tick));
+    drop(store);
+    backend.cleanup().await;
 }

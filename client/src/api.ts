@@ -3,8 +3,8 @@
 // Capacitor build sets the server origin with `setApiBase`.
 
 import type {
-  AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
-  LineageStats, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldSummary,
+  AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, CurrentSeason, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
+  LineageStats, PlayerId, PlayerSeasonHistory, RankedSeasonList, RankedSeasonPage, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldSummary,
 } from './protocol';
 import { PROTO_DELTA } from './wire';
 
@@ -82,4 +82,9 @@ export const api = {
   eras: () => request<EraList>('GET', '/api/eras'),
   catastrophes: () => request<CatastropheList>('GET', '/api/catastrophes'),
   achievements: () => request<AchievementList>('GET', '/api/achievements'),
+  rankedSeasons: (offset = 0, limit = 10) => request<RankedSeasonList>('GET', `/api/seasons?offset=${offset}&limit=${limit}`),
+  currentSeason: (player: PlayerId, limit = 5) => request<CurrentSeason>('GET', `/api/seasons/current?limit=${limit}&player=${player}`),
+  rankedSeason: (world: string, season: number, player: PlayerId, offset = 0, limit = 10) =>
+    request<RankedSeasonPage>('GET', `/api/seasons/${season}?world=${encodeURIComponent(world)}&offset=${offset}&limit=${limit}&player=${player}`),
+  playerSeasons: (player: PlayerId, limit = 50) => request<PlayerSeasonHistory>('GET', `/api/seasons/player/${player}?limit=${limit}`),
 };

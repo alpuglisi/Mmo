@@ -262,7 +262,8 @@ the built web client from `DIR`, e.g. `client/dist`, on every path the API
 doesn't use), `--session-idle-min N` / `--session-max-hours N` (session
 expiry, default 60 min idle and 24 h), `--no-rate-limits`, `--lod` (level
 of detail, below), `--no-catastrophes` (catastrophes are on by default in
-the game, never in the first year), `--fresh` (ignore the saved world: new
+the game, never in the first year), `--season-days N` (length of a ranked
+season, default 60; see [Ranked seasons](#ranked-seasons)), `--fresh` (ignore the saved world: new
 world, stored designs re-founded; see [Persistence](#persistence)).
 `RUST_LOG=debug` for more logging. SIGINT (Ctrl-C) or SIGTERM stops the
 server gracefully: it stops serving, saves the world and waits for the store
@@ -414,6 +415,10 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/species` | | Detected species, living first by size: `{day, detected_day, samples, alive, species: [{id, name, origin (initial/founding/split), parent?, founded_day, extinct_day?, merged_into?, founder?, founder_name?, dominant, dominant_name, dominant_share, adults, peak_adults, lineages: [{lineage, name, owner, adults}], carnivory, body_size}], founded: [{player, name, count}]}` (`parent` links give the species tree) |
 | `GET /api/eras` | | `{era, era_days, first_day, last_day, days_left, eras: [{era, first_day, last_day, breeding_adults, species_alive, catastrophes, rows: [{player, name, share, weighted_share}], niches: [{niche, player, name, share, adults}]}]}`, finished eras newest first with their final ranking |
 | `GET /api/catastrophes` | | `{enabled, active?, history: [{id, kind, severity, start_day, end_day, active, population_before, population_after?, players_before, survivors}]}` (only catastrophes that have started) |
+| `GET /api/seasons?offset=0&limit=20` | | Finished ranked seasons of every world, newest first: `{total, offset, seasons: [{world_id, season, first_day, last_day, length, days, ended_tick, ended_unix, players, winners: [{category, player, name, value}], summary}]}` (limit 1–100) |
+| `GET /api/seasons/current?offset=0&limit=10&player=N` | | The ranked season under way: `{world_id, season, first_day, last_day, length, days, days_left, offset, limit, standings: [{category, total, rows: [{player, name, rank, value}]}]}`, each category's rows `offset..offset+limit` plus player N's row (limit 1–200) |
+| `GET /api/seasons/:n?world=ID&offset=0&limit=10&player=N` | | A finished season (of the running world unless `world` is given): its head as in the list plus paged `standings` as above; `404 no_season`, `400 bad_season` |
+| `GET /api/seasons/player/:player?limit=50` | | `{player, seasons: [{world_id, season, first_day, last_day, ended_unix, placements: [{category, rank, value, of}]}]}`: the finished seasons the player was ranked in, newest first |
 | `GET /api/achievements` | | `{players: [{player, name, species_founded, longevity_days, niche_dominance, catastrophes_survived}], recent: [{day, player, name, kind, text}]}` |
 | `GET /api/lineage/stats` | Bearer | The genetics dashboard: counts (alive, adults, young, pregnant, newest generation), `age_bands` (up to six equal bands by sex), `vitals` (births and deaths by cause per recorded day, the last entry today so far, at most 30), `genes` (every gene's mean, spread and founding mean with the daily means, largest drift first, and `bins`: members per tenth of the 0–1 range, a histogram), `origins` (whose alleles the living members carry: `[{player, name, lineage?, alleles, share}]`, largest share first; 0 is the wild), `legacy` (share per recorded day) and recent `alerts` |
 | `GET /api/alerts/prefs` | Bearer | The caller's alert preferences, `{hidden: [kind], toast: [kind]}` (kinds as in `alert` messages); the defaults `{hidden: [], toast: ["death", "need", "market"]}` until saved |
@@ -565,6 +570,51 @@ an organism died first, with the cause; or the rules refused it) or
 `expired` (season change, when slots reset). The requester's seasonal slot
 is spent.
 
+### Ranked seasons
+
+The design doc's "seasonal leaderboards: snapshot and rank at the end of
+each era", as fixed-length competitive seasons (`league.rs`; the server's
+`GameConfig::season_days`, `--season-days`, default 60 simulated days: half
+a default year, so an era of 3 years holds 6). They are not the weather
+seasons (spring…winter, `GET /api/leaderboard/seasons`, the Lineage tab's
+"By world season" boards); every `/api/seasons` route means ranked seasons.
+
+- **Boundary.** Season *n* of a world counts the daily legacy snapshots of
+  days `first_day..first_day + season_days - 1`. When the daily record of
+  the first day past it arrives, the season is frozen into a **season
+  record** (final ranks per category, winners, a one-line summary such as
+  "Season 2 (days 61–120): ann won the legacy crown with 12.3% mean share.
+  Largest lineage: bob (412 organisms). …") and every player gets a `world`
+  alert with their places; the next season starts where it ended. A changed
+  length applies from the next season.
+- **Categories** (from what the game already tracks; nothing new in the
+  sim): **legacy** (mean legacy share over the season's snapshots, a missing
+  day counting 0, ties to the higher final share: the season's champion),
+  **lineage** (most living members on a recorded day), **species** (species
+  founded, the chronicle's credited splits), **market** (renown earned from
+  stud fees paid out of escrow) and **survival** (catastrophes survived). Only
+  players with a value above 0 are ranked; equal values share a place
+  (1, 2, 2, 4); the wild is never ranked. The design doc has no tournaments
+  (the calibration "tournaments" are an offline balance tool), so there is
+  no tournament board. Seasons are prestige only: no renown prize.
+- **Restart safety.** The season under way (`SeasonTracker`) and the last
+  finished record are in the saved game (`SAVED_GAME_VERSION` 3; older saved
+  games start season 1 at their next day). A day is counted at most once. A
+  world restored from a save made before a rollover replays it and writes
+  the record again under the same `(world id, season)` key, which every store
+  treats as a replacement in place (no second record); the record is sent to
+  the store task before the save that follows the rollover, and a restored
+  game writes its last finished record again at startup, so a record whose
+  write was lost comes back. Tested: `game::tests::a_restart_around_a_rollover_neither_loses_nor_double_counts`
+  and, on the file store and PostgreSQL, `restart_around_a_season_rollover`
+  (drop the stored record, restart, it is back; drop the saves after the
+  rollover, restart, the replay replaces the record with the same standings
+  and season 2 counts its days once).
+- **Seasons and `--fresh`.** Season numbers are per world: a fresh world
+  starts at season 1 again. The history lists every world's seasons
+  (`world_id` tells them apart); `/api/seasons/:n` means the running world's
+  unless `?world=` names another.
+
 ### Economy and stud marketplace
 
 The design doc's "other player must consent and may set a price" and "stud
@@ -632,6 +682,7 @@ it) and an in-memory one (`--memory`, tests).
 | Finished directed-mating agreements with price and outcome, the listing they were bought from and how the escrow settled (`paid`/`refunded`) | `trades.jsonl` | `trades` (`bigserial` id; `listing`, `settlement` from migration 2) |
 | Renown balances, upserted on every change | `balances.json` | `balances` (player PK, balance, day, updated_at) |
 | Alert preferences (hidden and toasted alert kinds), upserted when a player saves them | `alert_prefs.json` | `alert_prefs` (player PK, hidden and toast `text[]` of kind names, updated_at; migration 3) |
+| Finished ranked seasons: head (winners, summary) and full standings; a replayed rollover (same world and season) replaces the record in its place | `seasons.jsonl` (last line per key wins) | `seasons` (PK `(world_id, season)`, upsert, `seq` keeps write order, head and standings `jsonb`) and `season_placements` (one row per player and category: rank, value, players ranked; indexed by player for the per-player history; rewritten with its season; migration 5) |
 | The ledger: every balance change with world id and sequence number (a replayed entry, same world and sequence, replaces the earlier one) | `ledger.jsonl` | `ledger` (PK `(world_id, seq)`, upsert; `id` keeps write order) |
 | Saved games: the whole `World` except its static terrain, plus the game state around it (including players' alerts), every simulated day and at a graceful shutdown; the newest 3 kept | `snapshots/world-<tick>.snap` | `snapshots` (tick PK, day, size, snapshot format version, `terrain_hash` (migration 4; NULL for saves from before world snapshot version 6), saved_at, data `bytea`) |
 | Each world's static terrain (biomes, relief, rivers, ground cover: `Terrain::encode`), written once before the first saved game that names it; `--fresh` deletes it with the saved games | `terrain/<world id>-<hash>.terrain` | `terrains` (PK `(world_id, hash)`, hash as 16 hex digits, size, saved_at, data `bytea`; migration 4) |
@@ -807,7 +858,8 @@ alerts, watched organisms, milestone progress, chronicle entries already
 announced, the birth and death counters at the last day boundary, and the
 economy: balances, recent ledger, listings, who had the founding grant)
 and the world snapshot. The game JSON carries a layout `version`
-(`SAVED_GAME_VERSION`, 2 since the economy); a version-1 saved game still
+(`SAVED_GAME_VERSION`, 2 since the economy, 3 since ranked seasons: the
+season under way and the last finished record); a version-1 saved game still
 restores, with balances and recent ledger entries from the store instead
 (and no escrow on its open offers). A new world (no saved game, or
 `--fresh`) also starts from the stored balances, and players who have one
@@ -1092,6 +1144,17 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   clock, season, day/night, weather, a red catastrophe banner while one is
   under way (from `state.weather.catastrophe`), the renown balance (with
   escrow; a click opens the Market tab) and the connection state.
+- **Seasons** tab (`ui/seasons.ts`, pure helpers unit-tested in
+  `seasons.test.ts`), from `/api/seasons/current`, `/api/seasons` and
+  `/api/seasons/player/:me` every 5 s while open: the ranked season under way
+  (clock, days left, your places, the top 5 per category plus your row), your
+  record (seasons ranked, legacy crowns, titles, best place per category,
+  recent placements), and the hall of fame (most titles; finished seasons
+  newest first with summary and winners, each opening onto its standings
+  from `/api/seasons/:n`, "Older seasons" for the next 10). On phones the
+  seven tabs share the bar at 11 px (`e2e/mobile.mjs` checks that the bar and
+  the opened standings don't overflow on iPhone 13 and Pixel 7; the smoke
+  test runs 3-day seasons and checks the tab and the API).
 - **World** tab (`ui/chronicle.ts`), from `/api/species`, `/api/eras`,
   `/api/catastrophes` and `/api/achievements` every 10 s while open: the
   active catastrophe and what it does, the era clock, finished eras'
