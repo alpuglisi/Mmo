@@ -36,7 +36,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::game::{ConnId, FoundError, FoundOk, Game, Outbox, PersistEvent, Target};
 use crate::metrics::Metrics;
-use crate::protocol::{ChronicleView, ClientMsg, Leaderboard, LineageStats, ServerMsg, WorldSummary};
+use crate::protocol::{ChronicleView, ClientMsg, Leaderboard, LineageStats, WorldSummary};
+use crate::push::{PushError, PushSender, Pushed};
 use crate::saver::Saver;
 use crate::snapshot::Capture;
 use crate::terrain::{dynamic_raw, terrain_raw, DynamicRaw, TerrainRaw};
@@ -52,7 +53,7 @@ pub enum Request {
         conn: ConnId,
         player: PlayerId,
         name: String,
-        tx: mpsc::Sender<ServerMsg>,
+        tx: PushSender,
     },
     Disconnect {
         conn: ConnId,
@@ -135,7 +136,7 @@ pub struct Runner {
     game: Game,
     cfg: RunnerConfig,
     rx: Receiver<Request>,
-    conns: BTreeMap<ConnId, (PlayerId, mpsc::Sender<ServerMsg>)>,
+    conns: BTreeMap<ConnId, (PlayerId, PushSender)>,
     queued: Vec<Request>,
     published: watch::Sender<Arc<Published>>,
     persist: mpsc::UnboundedSender<PersistEvent>,
@@ -422,21 +423,23 @@ impl Runner {
                 let m = if k == last { msg.take() } else { msg.clone() };
                 let Some(m) = m else { break };
                 match tx.try_send(m) {
-                    Ok(()) => {}
-                    // A slow client misses a state frame; the next one replaces it.
-                    Err(mpsc::error::TrySendError::Full(ServerMsg::State(_))) => {
+                    Ok(Pushed::Queued) => continue,
+                    // A state not sent yet was replaced by this newer one.
+                    Ok(Pushed::Replaced) => {
                         self.metrics.lock().unwrap().skipped_states += 1;
+                        continue;
                     }
-                    // Too far behind on replies and events, or gone: drop it,
-                    // which closes its socket.
-                    Err(e) => {
-                        if matches!(e, mpsc::error::TrySendError::Full(_)) {
-                            self.metrics.lock().unwrap().dropped_conns += 1;
-                        }
-                        self.conns.remove(&c);
-                        self.game.disconnect(c);
+                    // States coalesce (`crate::push`), so a full queue is a
+                    // client too far behind on replies and events. Drop it
+                    // (or a closed one), which closes its socket.
+                    Err(PushError::Full) => {
+                        tracing::warn!("connection {c} is too far behind on replies and events; dropping it");
+                        self.metrics.lock().unwrap().dropped_conns += 1;
                     }
+                    Err(PushError::Closed) => {}
                 }
+                self.conns.remove(&c);
+                self.game.disconnect(c);
             }
         }
     }

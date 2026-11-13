@@ -340,9 +340,14 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   rows of the owners of the organisms in view (whose names the client
   shows), in rank order. `GET /api/leaderboard` always has every row.
   See [Load and soak test](#load-and-soak-test).
-- **Slow clients:** each connection has a 256-message queue. A full queue
-  drops state frames (the next replaces them); a connection that can't take
-  replies or events is closed.
+- **Slow clients:** each connection has a 256-message queue of replies and
+  events (`push.rs`). States don't pile up in it: a state waits in a
+  one-message slot (holding a single place in the queue) and a newer one
+  replaces it until the writer sends it, so a client that reads slower than
+  states come (possession sub-steps push the owner a state each quarter
+  tick, 150 a second in `--fast` mode) gets the latest state and still
+  every event, in order (`skipped_states` counts the replaced ones). A
+  connection whose queue fills with replies and events is closed.
 - **Accounts:** argon2id password hashes, random 256-bit bearer tokens held in
   memory. Each account owns a `PlayerId` (1, 2, …; 0 is the wild ecosystem).
   A session ends after 60 minutes without use (an authenticated request or a

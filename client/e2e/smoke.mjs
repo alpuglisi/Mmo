@@ -14,8 +14,9 @@
 //
 // Env: EVO_SERVER_BIN (default ../target/release/evo-server; build it with
 // `cargo build --release -p evo-server`), SCREENSHOT_DIR (default e2e/out),
-// HEADED=1 to watch. Uses the `playwright` package from NODE_PATH or
-// node_modules (it is not a dependency: browsers come pre-installed).
+// HEADED=1 to watch, SERVER_LOG_FILE to save the whole server log. Uses the
+// `playwright` package from NODE_PATH or node_modules (it is not a
+// dependency: browsers come pre-installed).
 
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -392,7 +393,11 @@ async function main() {
       };
     });
     const renown = (p) => p.evaluate(() => ({ balance: window.evo.model.state.balance, escrow: window.evo.model.state.escrow }));
-    const ledgerOf = (p) => p.evaluate(async () => (await window.evo.socket.send({ type: 'ledger', limit: 100 })).data);
+    const ledgerOf = async (p) => {
+      const r = await p.evaluate(() => window.evo.socket.send({ type: 'ledger', limit: 100 }));
+      if (!r.ok) throw new Error(`ledger: ${JSON.stringify(r.error)}`);
+      return r.data;
+    };
     const fee = 10;
     await page.click('#tab-market');
     await bob.click('#tab-market');
@@ -543,10 +548,36 @@ async function main() {
     const pill = await bob.textContent('#balance');
     if (!/\d+ renown/.test(pill ?? '')) throw new Error(`no balance in the top bar: ${pill}`);
     await waitFor('ledger rows', () => bob.evaluate(() => document.querySelectorAll('#market-ledger tr[data-seq]').length >= 3), 15000);
-    // Ann withdraws the listing.
-    await page.click(`#my-listings .listing[data-listing="${listingId}"] button.withdraw`);
-    await waitFor('listing withdrawn', () => page.evaluate((id) => !document.querySelector(`#my-listings .listing[data-listing="${id}"]`), listingId), 10000);
-    step(`ledgers agree; balance pill "${pill.trim()}"; ann withdrew listing ${listingId}`);
+    // Ann withdraws the listing. The world may have closed it first (the
+    // dam died: the server closes her listing and alerts ann); then ann
+    // lists another adult and withdraws that one.
+    const ownListings = () => page.evaluate(async () => {
+      const r = await window.evo.socket.send({ type: 'browse_market' });
+      if (!r.ok) throw new Error(`browse_market: ${JSON.stringify(r.error)}`);
+      return r.data.listings.filter((l) => l.owner === window.evo.model.player).map((l) => l.id);
+    });
+    let withdrawId = listingId;
+    let withdrawOrg = bought.dam;
+    for (let attempt = 0; attempt < 5 && !(await ownListings()).includes(withdrawId); attempt++) {
+      // (Only a death closes it: it has no expiry, and nothing else withdrew it.)
+      const dead = await waitFor(`#${withdrawOrg} gone from ann's state`, () => page.evaluate((id) => !window.evo.model.state.organisms.some((o) => o.id === id), withdrawOrg), 5000).catch(() => false);
+      if (!dead) throw new Error(`listing ${withdrawId} of #${withdrawOrg} closed though she is alive`);
+      console.log(`  … listing ${withdrawId} closed: #${withdrawOrg} died; listing another adult to withdraw`);
+      await page.evaluate(() => { window.__results = []; });
+      await page.click('#market-refresh');
+      await page.selectOption('#market-list-organism', { index: 0 });
+      await page.click('#market-list-submit');
+      const relisted = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
+      if (!relisted.ok && !['not_found', 'not_mature', 'already_listed'].includes(relisted.error?.code)) throw new Error(`create_listing failed: ${JSON.stringify(relisted.error)}`);
+      if (relisted.ok) [withdrawId, withdrawOrg] = [relisted.data.listing.id, relisted.data.listing.organism];
+    }
+    const card = `#my-listings .listing[data-listing="${withdrawId}"] button.withdraw`;
+    await page.click('#market-refresh');
+    await page.waitForSelector(card, { timeout: 10000 });
+    await page.click(card);
+    await waitFor('listing withdrawn', () => page.evaluate((id) => !document.querySelector(`#my-listings .listing[data-listing="${id}"]`), withdrawId), 10000);
+    if ((await ownListings()).includes(withdrawId)) throw new Error(`listing ${withdrawId} still open after withdrawing it`);
+    step(`ledgers agree; balance pill "${pill.trim()}"; ann withdrew listing ${withdrawId}`);
     await page.screenshot({ path: path.join(shots, 'market-ann.png') });
     await bob.screenshot({ path: path.join(shots, 'market-bob.png') });
     await Promise.all([releaseAll(page), releaseAll(bob)]);
@@ -667,14 +698,27 @@ async function main() {
         let lost = null;
         let maxGap = 0;
         let speed = null;
+        const samples = { predicted: 0, glided: 0 };
+        let over = null;
         const walk = await waitFor('organism walks toward the target', async () => {
-          const o = await page.evaluate(({ id, target }) => {
+          // Sampled in an animation frame callback queued after the view's
+          // own (Pixi's ticker queued it in the previous frame), so the drawn
+          // position was computed from the very state read here. Outside a
+          // frame, states that arrived since the last frame move the server
+          // position but not yet the marker: on a loaded machine frames can
+          // be 100+ ms apart, which in fast mode (20 ms ticks, up to a tile
+          // per tick) is several tiles of honest staleness, not drift.
+          const o = await page.evaluate(({ id, target }) => new Promise((resolve) => requestAnimationFrame(() => {
             const o = window.evo.model.state.organisms.find((x) => x.id === id);
+            if (!o) return resolve(null);
+            const v = window.evo.screen()?.view;
             // The drawn (predicted, smoothed) position against the server's.
-            const m = o && window.evo.screen()?.view.markerWorldPos(id);
+            const m = v?.markerWorldPos(id);
             const gap = m ? Math.hypot(m.x - o.x, m.y - o.y) : 0;
-            return o ? { d: Math.hypot(o.x - target.x, o.y - target.y), action: o.action, possessed: o.possessed, speed: o.speed, gap } : null;
-          }, { id, target });
+            // Was it drawn from a prediction this frame, or from its glide?
+            const predicted = !!v && v.predictor.id === id && v.predictor.goal(performance.now(), v.tickClock.msPerTick) !== null;
+            resolve({ d: Math.hypot(o.x - target.x, o.y - target.y), action: o.action, possessed: o.possessed, speed: o.speed, gap, predicted });
+          })), { id, target });
           if (!o || !o.possessed) {
             lost = o ? 'released' : 'died';
             return { lost };
@@ -683,8 +727,20 @@ async function main() {
           best = Math.min(best, o.d);
           maxGap = Math.max(maxGap, o.gap);
           if (o.speed !== undefined) speed = o.speed;
+          // The bound from the motion design (client/src/world/motion.ts).
+          // Predicted: the goal leads the server position by at most
+          // LEAD_TICKS (0.5) ticks of movement, and the drawn marker eases
+          // toward the goal, snapping to it beyond RECONCILE_SNAP (3 tiles):
+          // so within 3 + 0.5 x speed. Glided (no prediction: no order, a
+          // detour, a stall): the glide runs from where the marker was drawn
+          // to the latest server position and snaps beyond SNAP_TILES (6,
+          // Manhattan), and easing toward a point on that segment never
+          // moves away from the server position: so within 6.
+          const bound = o.predicted ? 3 + 0.5 * (o.speed ?? 0) : 6;
+          samples[o.predicted ? 'predicted' : 'glided']++;
+          if (o.gap > bound + 0.01) over ??= { gap: o.gap, bound, predicted: o.predicted, speed: o.speed };
           // Closer by a tile, or arrived (order dropped near the target).
-          return best < d0 - 1 || best <= 1.0 ? { d0, best, action: o.action, attempt, maxGap, speed } : null;
+          return best < d0 - 1 || best <= 1.0 ? { d0, best, action: o.action, attempt, maxGap, speed, samples, over } : null;
         }, 20000).catch(() => null);
         if (lost) throw new Retry(`#${id} ${lost} while walking`);
         if (walk) return walk;
@@ -714,13 +770,14 @@ async function main() {
     }
     if (!walked) throw new Error('could not possess and walk an organism in 4 rounds');
     step(`order_move ok; #${walked.id} walked from ${walked.d0.toFixed(1)} to ${walked.best.toFixed(1)} tiles of the target (${walked.action}, attempt ${walked.attempt})`);
-    // Prediction leads by at most half a tick of movement and eases
-    // corrections, snapping beyond RECONCILE_SNAP (3 tiles) of the
-    // prediction: so the drawn marker stays within about 3 tiles plus the
-    // lead of the server position. 4 allows for that lead on a slow runner.
+    // The drawn marker stayed within the motion design's bound of the
+    // server position (see the sampling above).
     if (!(walked.speed > 0)) throw new Error(`the possessed organism's state has no speed (${walked.speed})`);
-    if (walked.maxGap > 4) throw new Error(`drawn #${walked.id} was ${walked.maxGap.toFixed(2)} tiles from the server position`);
-    step(`prediction: speed ${walked.speed.toFixed(2)} tiles/tick, drawn marker at most ${walked.maxGap.toFixed(2)} tiles from the server position`);
+    if (walked.over) {
+      const o = walked.over;
+      throw new Error(`drawn #${walked.id} was ${o.gap.toFixed(2)} tiles from the server position (${o.predicted ? 'predicted' : 'glided'}, speed ${o.speed?.toFixed(2)}; bound ${o.bound.toFixed(2)})`);
+    }
+    step(`prediction: speed ${walked.speed.toFixed(2)} tiles/tick, drawn marker at most ${walked.maxGap.toFixed(2)} tiles from the server position (${walked.samples.predicted} predicted, ${walked.samples.glided} glided frames sampled)`);
 
     // Group command and a server-side error surfaced as a toast.
     await page.click('#migrate');
@@ -800,6 +857,7 @@ async function main() {
   } finally {
     await browser.close();
     server.kill('SIGINT');
+    if (process.env.SERVER_LOG_FILE) (await import('node:fs')).writeFileSync(process.env.SERVER_LOG_FILE, serverLog);
   }
 }
 

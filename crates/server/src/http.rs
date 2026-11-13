@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -526,7 +526,7 @@ fn session_check_interval(app: &AppState) -> Duration {
 
 async fn client_session(socket: WebSocket, app: AppState, session: Session, token: String, ip: IpAddr) {
     let conn = app.next_conn.fetch_add(1, Ordering::Relaxed);
-    let (tx, mut rx) = mpsc::channel::<ServerMsg>(CONN_QUEUE);
+    let (tx, mut rx) = crate::push::channel(CONN_QUEUE);
     // The reader only holds a weak handle, so when the world thread drops a
     // connection (too slow), the writer ends and the socket closes.
     let weak = tx.downgrade();
@@ -548,11 +548,7 @@ async fn client_session(socket: WebSocket, app: AppState, session: Session, toke
         let _ = sink.close().await;
         net.ws_closed.fetch_add(1, Ordering::Relaxed);
     });
-    let local = |msg: ServerMsg| {
-        if let Some(tx) = weak.upgrade() {
-            let _ = tx.try_send(msg);
-        }
-    };
+    let local = |msg: ServerMsg| weak.try_send(msg);
     let rate = app.limiters.limits.commands;
     let mut bucket = Bucket::new(rate, Instant::now());
     let mut check = tokio::time::interval(session_check_interval(&app));
