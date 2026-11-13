@@ -1824,6 +1824,24 @@ impl Game {
             .filter_map(|&c| self.state_for(c).map(|s| (Target::Conn(c), ServerMsg::State(Box::new(s)))))
             .collect()
     }
+
+    /// One possession sub-step between ticks (`World::substep`): possessed
+    /// organisms following an order move a fraction of a tick's way, and the
+    /// connections of the players who possess one that moved get a fresh
+    /// state, so steering feels responsive at the slow world clock. Everyone
+    /// else hears nothing until the next state push.
+    pub fn substep(&mut self) -> Outbox {
+        let moved = self.world.substep();
+        if moved.is_empty() {
+            return Vec::new();
+        }
+        let players: BTreeSet<PlayerId> = moved.iter().filter_map(|&id| self.world.organism(id).and_then(|o| o.possessed_by)).collect();
+        self.conns
+            .iter()
+            .filter(|(_, c)| players.contains(&c.player))
+            .filter_map(|(&c, _)| self.state_for(c).map(|s| (Target::Conn(c), ServerMsg::State(Box::new(s)))))
+            .collect()
+    }
 }
 
 pub fn catastrophe_view(c: &Catastrophe) -> CatastropheView {
@@ -1981,8 +1999,22 @@ mod tests {
         let s = g.state_for(10).unwrap();
         assert!((s.view.x - o.pos.x).abs() < 1e-3);
         assert!(s.organisms.iter().any(|x| x.id == a[0] && x.possessed));
+        // A new order moves it at the next sub-step, and only its owner's
+        // connection gets a state for it.
+        let p0 = o.pos;
+        let target = g.world.map.clamp(p0 + Vec2::new(0.0, if p0.y < 30.0 { 6.0 } else { -6.0 }));
+        let out = g.command(10, 1, None, ClientMsg::OrderMove { organism: a[0], x: target.x, y: target.y });
+        assert_eq!(result(&out), (true, None));
+        let out = g.substep();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, Target::Conn(10));
+        let ServerMsg::State(s) = &out[0].1 else { panic!("want a state, got {:?}", out[0].1) };
+        let seen = s.organisms.iter().find(|x| x.id == a[0]).unwrap();
+        assert!(((seen.x - target.x).powi(2) + (seen.y - target.y).powi(2)).sqrt() < p0.dist(target));
         let out = g.command(10, 1, None, ClientMsg::Release { organism: a[0] });
         assert_eq!(result(&out), (true, None));
+        // Nothing possessed: a sub-step sends nothing.
+        assert!(g.substep().is_empty());
         let out = g.command(10, 1, None, ClientMsg::Migrate { x: 5.0, y: 5.0 });
         assert_eq!(result(&out), (true, None));
         let out = g.command(10, 1, None, ClientMsg::ClearMigration);

@@ -14,6 +14,12 @@
 //! 3. Rebuild the spatial index.
 //! 4. **Decide** (parallel, read-only): every organism scores its actions by
 //!    need urgency × behavior genes and picks one.
+//!
+//! Between ticks, possessed organisms following a move order take
+//! `possess_substeps - 1` movement sub-steps (`World::substep`, in
+//! `commands`); the tick's own movement is the last one. `step` takes any
+//! the caller skipped first.
+//!
 //! 5. **Apply** (shuffled order): movement (steering, with A* routes
 //!    around blocked terrain; see `pathfinding`), eating, predation, mating,
 //!    needs, death and birth. Movement and needs run on all cores, the
@@ -164,6 +170,7 @@ pub struct Counters {
 /// With the `serde` feature a world serializes whole except for the
 /// derived lookups marked `skip`, which `World::restore` rebuilds
 /// (`world::snapshot`).
+#[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct World {
     pub config: WorldConfig,
@@ -180,6 +187,9 @@ pub struct World {
     /// Species, eras, catastrophes and achievements (`world::chronicle`).
     pub chronicle: crate::chronicle::Chronicle,
     tick: u64,
+    /// Possession sub-steps already taken since the last tick
+    /// (`World::substep`), always below `config.possess_substeps`.
+    substep: u32,
     next_id: OrgId,
     #[cfg_attr(feature = "serde", serde(skip))]
     index: HashMap<OrgId, usize>,
@@ -285,6 +295,7 @@ impl World {
             lineages: Vec::new(),
             chronicle: Default::default(),
             tick: 0,
+            substep: 0,
             next_id: 1,
             index: HashMap::new(),
             grid,
@@ -677,6 +688,10 @@ impl World {
             clock = now;
             s
         };
+        // Possession sub-steps the caller didn't take between ticks are
+        // taken now, so a world steps the same whether or not anyone calls
+        // `substep` (only when orders arrive can differ).
+        self.finish_substeps();
         if self.config.lod.enabled && self.tick.is_multiple_of(self.config.ticks_per_hour()) {
             self.lod_update();
         }
@@ -710,6 +725,7 @@ impl World {
         }
         self.phase_times.apply += lap();
         self.tick += 1;
+        self.substep = 0;
     }
 
     pub fn run_days(&mut self, days: u32) {

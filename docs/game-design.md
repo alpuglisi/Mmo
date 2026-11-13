@@ -305,7 +305,7 @@ Server load scales with organism count: players × organisms per lineage, plus a
 
 **Strategies to control load**
 
-- **Slow world clock:** about 1 tick per second or slower; possessed organisms tick faster.
+- **Slow world clock:** about 1 tick per second or slower; possessed organisms tick faster. (Implemented as movement sub-steps: a possessed organism following a move order moves in quarter-tick steps between world ticks and new orders apply at the next sub-step; decisions and needs stay on the world clock. See README, Server.)
 - **Level of detail:** full agents near active players; distant populations run as statistical models (birth, death, gene frequencies) and switch back to agents when a player arrives.
 - **Slow environment updates:** weather, vegetation regrowth and snow depth update per simulated hour, chunk by chunk.
 - **Population limits:** food-based carrying capacity, plus a hard cap per lineage.

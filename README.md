@@ -272,6 +272,10 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
         ▲                       bounded queue        │ tick loop, fixed rate
         └──── per-connection queue ◀── results, events, state pushes
                                     ◀── watch: world summary + leaderboard
+                                         │ daily: Capture (a clone of the game)
+                                         ▼
+                                   saver thread (bincode + LZ4)
+                                         │
                        store task ◀── daily records, finished trades, saved games
 ```
 
@@ -281,7 +285,34 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   answering reads at once (connect, map snapshot) and queueing world changes
   (commands, foundings); then applies the queue **in arrival order**, calls
   `World::step`, runs the game bookkeeping, publishes a summary and pushes
-  state. A run is reproducible given the same commands in the same ticks.
+  state. The wait is split into `possess_substeps` (4) parts; at each inner
+  boundary the queue is applied too and possessed organisms take a movement
+  sub-step (below). A run is reproducible given the same commands in the
+  same sub-steps of the same ticks.
+- **Possessed organisms tick faster** (the design doc's "slow world clock;
+  possessed organisms tick faster"). The world clock stays at sim rate, but
+  between ticks every possessed organism following a move order takes
+  `possess_substeps - 1` movement sub-steps (`World::substep`), each a
+  quarter of a tick's movement, the tick's own move being the last. A move
+  order therefore takes effect within a quarter tick (250 ms at the default
+  clock) instead of up to a whole tick, and the owner's connections get a
+  fresh `state` after each sub-step that moved one of their possessed
+  organisms (everyone else keeps the normal state interval), so steering
+  looks smooth. Only movement is sub-stepped: decisions, needs, eating,
+  fighting and perception stay on the world clock, and the total movement
+  per tick is unchanged, so possession gains no speed beyond its small 10%
+  bonus. Sub-steps draw no randomness and touch only possessed organisms:
+  a world without them is bit-for-bit what it was, and `World::step` takes
+  any sub-steps the caller skipped first, so the CLI, tests and a server
+  give the same world for the same orders. Why movement sub-steps rather
+  than a faster clock for everything or client-side prediction: a faster
+  world clock multiplies the cost of every organism to help a handful;
+  prediction alone would show movement the server hasn't made (and gets
+  terrain and paths wrong); sub-stepping only possessed movement costs a few
+  microseconds per sub-step and keeps the server authoritative.
+  `WorldConfig::possess_substeps` = 1 turns it off; it is off when the
+  server runs as fast as possible (`--tick-ms 0`). A manual-clock server
+  takes one with `RunningServer::substep`.
 - **`Game`** (`game.rs`) is the pure logic around the world: one lineage per
   player, the mating-offer table and consent flow, the economy and the stud
   marketplace (`economy.rs`: balances, ledger, listings; escrow on offers),
@@ -543,12 +574,14 @@ bytes). Skipped and rebuilt on restore: the id → index map, the spatial grid,
 A* scratch buffers and phase timings. Caches that steer the future (hourly
 density, cohort representatives, LOD passability, cache and clutch lookups)
 are stored. Any change to a serialized type needs a `SNAPSHOT_VERSION` bump;
-a snapshot of another version is refused with both versions named.
+a snapshot of another version is refused with both versions named. Version
+3 added the possession sub-step counter and `WorldConfig::possess_substeps`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
-it mid-hour, restores it, runs both two more days and requires identical
-worlds, byte for byte; it also checks version, checksum and header errors.
+it mid-hour and mid-sub-step, restores it (and clones it, as the server's
+saver does), runs all of them two more days and requires identical worlds,
+byte for byte; it also checks version, checksum and header errors.
 
 | Agents (standard world, `examples/snapshot`) | Map | Stored (raw bincode) | Snapshot | Restore |
 | --- | --- | --- | --- | --- |
@@ -561,6 +594,21 @@ worlds, byte for byte; it also checks version, checksum and header errors.
 About 1.3 KB per agent stored (genome with origin tags, phenotype and trait
 caches, path) plus about 13 MB for a 512² map. Timed on a shared 4-core
 machine; `cargo run --release -p evo-sim --features serde --example snapshot -- 512 5 2`.
+The same run times `World::clone`, all the server's world thread now pays
+for a save: **40 ms against 255 ms** for the snapshot at 26k agents.
+
+**Save stall on the world thread** (`cargo run --release -p evo-server
+--example save_stall -- 512 5 2`: 26k agents, 512², medians of 7,
+interleaved, on the same shared 4-core machine under load from other jobs,
+so absolute numbers are noisy):
+
+| | Tick that saves | Of which the save |
+| --- | --- | --- |
+| Before: encode on the world thread | 584 ms | about 440 ms (36.5 MB) |
+| Now: `Capture` handed to the saver | 112 ms | 33 ms (the clone) |
+| Ticks while the saver encodes | 104 ms | (share the cores with it) |
+
+A plain tick measured 146 ms in the same run (load noise; 60 ms when quieter).
 
 **Saved games** (`snapshot.rs` in the server): magic, the game-side state
 as JSON (player → lineage, open offers with their escrow, migration orders,
@@ -577,7 +625,17 @@ discarded world is not carried over. A crash between saves restores the
 balances of the last saved game, and the replayed days write the same
 ledger sequence numbers again, replacing their earlier entries.
 The world thread saves after the tick that starts a new simulated day and
-on `Request::Shutdown`, and hands the bytes to the store task
+on `Request::Shutdown`. It only takes a `snapshot::Capture` (a clone of the
+`World` plus the game state) and hands it to the **background saver**
+(`saver.rs`, a dedicated thread), which encodes it (bincode + LZ4, the
+expensive part) and passes the bytes to the store task, so a save no longer
+stalls ticks (numbers below). One saver thread encodes one capture at a time
+and sends them in capture order, and the store task writes in the order it
+receives, so an older save never lands after a newer one; a capture that
+arrives while an earlier one is still waiting replaces it (the older would
+be superseded anyway, and memory stays bounded at two copies). On shutdown
+the world thread waits for the saver to encode the last save before it
+replies, and the server waits for the store task to write it
 (`Store::put_snapshot`; `FileStore` writes a temp file, syncs it and
 renames it into place, then drops all but the newest 3; `PgStore` upserts
 the row and deletes older ones in one transaction). On startup the
@@ -1416,11 +1474,12 @@ in use, 10.71 with the presets' strategies).
 4. A migrating sample design to exercise group navigation in play (none
    migrates yet: migrating antelope lost survival again even with group
    navigation).
-5. **Server (step 2, started):** encode saved games off the world thread
-   (a quarter of a second at 25k agents) and store the static terrain once
+5. **Server (step 2, started):** store the static terrain once
    instead of in every snapshot (a 30 MB `bytea` per day is fine for 3 kept
-   rows, but terrain is most of it); per-world tables once there are
-   several shards; possessed organisms ticking faster than the world clock; interest
+   rows, but terrain is most of it, and would also shrink the world
+   thread's copy for the background saver); per-world tables once there are
+   several shards; client-side prediction of a possessed organism's
+   movement between sub-step states; interest
    management through the sim's spatial grid instead of a scan per
    connection; session expiry and rate limits; a stud marketplace and an
    economy behind the recorded prices; seasonal leaderboard aggregation;

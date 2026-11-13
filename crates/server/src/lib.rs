@@ -17,6 +17,8 @@
 //!   now, PostgreSQL later).
 //! - [`snapshot`]: saved games (world snapshot plus game state), written
 //!   daily and on shutdown, restored on startup.
+//! - [`saver`]: the background thread that encodes saved games, so a save
+//!   costs the world thread only a copy of the game.
 //! - [`design`]: the JSON form of a founder design.
 //! - [`economy`]: renown balances, the ledger, escrow and the stud
 //!   marketplace's listings.
@@ -29,6 +31,7 @@ pub mod http;
 pub mod limits;
 pub mod protocol;
 pub mod runner;
+pub mod saver;
 pub mod seasons;
 pub mod snapshot;
 pub mod store;
@@ -147,6 +150,16 @@ impl RunningServer {
     pub async fn step(&self, ticks: u32) -> u64 {
         let (reply, rx) = oneshot::channel();
         self.world.send(runner::Request::Step { ticks, reply }).expect("world thread running");
+        rx.await.expect("world thread replies")
+    }
+
+    /// Take one possession sub-step (after applying anything queued), as a
+    /// ticking server does between ticks: possessed organisms with a move
+    /// order move a fraction of a tick and their owners get a state. Returns
+    /// the sub-steps left before the next tick. For manual servers.
+    pub async fn substep(&self) -> u32 {
+        let (reply, rx) = oneshot::channel();
+        self.world.send(runner::Request::Substep { reply }).expect("world thread running");
         rx.await.expect("world thread replies")
     }
 

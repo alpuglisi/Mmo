@@ -532,7 +532,7 @@ impl World {
     /// `Balance::possess_urgency` (eat or drink, the worse of the two). An
     /// organism already eating or drinking for it keeps at it until the need
     /// is down to `ORDER_RESUME`, so it doesn't turn back after one sip.
-    fn order_override(&self, o: &Organism, threat: f32) -> Option<Action> {
+    pub(super) fn order_override(&self, o: &Organism, threat: f32) -> Option<Action> {
         use super::commands::ORDER_RESUME;
         let b = &self.config.balance;
         if threat >= b.possess_danger {

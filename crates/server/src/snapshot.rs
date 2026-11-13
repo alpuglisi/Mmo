@@ -4,6 +4,11 @@
 //! Layout: magic `EVOSAVE\0`, the length of the game JSON (u64
 //! little-endian), the game JSON, then the world snapshot bytes with their
 //! own versioned header (`evo_sim::world::SnapshotHeader`).
+//!
+//! Saving is split so the world thread never stalls on encoding: it takes a
+//! [`Capture`] (a clone of the world and the game state, tens of ms on a
+//! large world), and the background saver (`crate::saver`) encodes it
+//! (bincode + LZ4, hundreds of ms) and hands the bytes to the store task.
 
 use evo_sim::world::{SnapshotError, SnapshotHeader};
 use evo_sim::World;
@@ -12,10 +17,43 @@ use crate::game::{Game, SavedGame};
 
 const MAGIC: &[u8; 8] = b"EVOSAVE\0";
 
-/// Snapshot the world and the game around it.
+/// Snapshot the world and the game around it (on the calling thread).
 pub fn encode(game: &Game) -> Vec<u8> {
-    let world = game.world.snapshot();
-    let saved = serde_json::to_vec(&game.saved()).expect("saved game serializes");
+    encode_parts(&game.world, &game.saved())
+}
+
+/// A copy of everything a saved game holds, taken between ticks, to encode
+/// on another thread.
+pub struct Capture {
+    world: World,
+    saved: SavedGame,
+}
+
+impl Capture {
+    /// Copy the world and the game state around it. This is all a save
+    /// costs the world thread.
+    pub fn new(game: &Game) -> Capture {
+        Capture { world: game.world.clone(), saved: game.saved() }
+    }
+
+    pub fn tick(&self) -> u64 {
+        self.world.tick()
+    }
+
+    pub fn day(&self) -> u64 {
+        self.world.day()
+    }
+
+    /// The saved-game bytes, identical to [`encode`] of the game when it
+    /// was captured.
+    pub fn encode(&self) -> Vec<u8> {
+        encode_parts(&self.world, &self.saved)
+    }
+}
+
+fn encode_parts(world: &World, saved: &SavedGame) -> Vec<u8> {
+    let world = world.snapshot();
+    let saved = serde_json::to_vec(saved).expect("saved game serializes");
     let mut out = Vec::with_capacity(16 + saved.len() + world.len());
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&(saved.len() as u64).to_le_bytes());

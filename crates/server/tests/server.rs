@@ -328,3 +328,79 @@ async fn serves_the_static_client() {
     srv.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Register, found, connect and possess an organism ordered 6 tiles toward
+/// the map center; returns the socket, its id, the target and the distance
+/// to it from the organism's position in the last state.
+async fn possess_and_order(addr: SocketAddr) -> (Ws, u64, (f64, f64), f64) {
+    let ann = register(addr, "ann").await;
+    let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(&ann), Some(design("Ann's"))).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let mut wa = ws(addr, &ann).await;
+    let state = wait_for(&mut wa, "state", |v| v["type"] == "state" && !v["organisms"].as_array().unwrap().is_empty()).await;
+    let org = &state["organisms"][0];
+    let id = org["id"].as_u64().unwrap();
+    let (x0, y0) = (org["x"].as_f64().unwrap(), org["y"].as_f64().unwrap());
+    send(&mut wa, json!({"id": 1, "type": "possess", "organism": id})).await;
+    let r = wait_for(&mut wa, "possess result", |v| v["type"] == "result" && v["id"] == 1).await;
+    assert_eq!(r["ok"], true, "{r}");
+    let (tx, ty) = (x0 + (32.0 - x0).signum() * 6.0, y0 + (32.0 - y0).signum() * 6.0);
+    send(&mut wa, json!({"id": 2, "type": "order_move", "organism": id, "x": tx, "y": ty})).await;
+    let r = wait_for(&mut wa, "order result", |v| v["type"] == "result" && v["id"] == 2).await;
+    assert_eq!(r["ok"], true, "{r}");
+    (wa, id, (tx, ty), ((tx - x0).powi(2) + (ty - y0).powi(2)).sqrt())
+}
+
+fn dist_to(state: &Value, id: u64, (tx, ty): (f64, f64)) -> f64 {
+    let o = find_org(state, id).expect("organism in state");
+    ((tx - o["x"].as_f64().unwrap()).powi(2) + (ty - o["y"].as_f64().unwrap()).powi(2)).sqrt()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn possessed_organism_moves_between_ticks() {
+    // Manual clock: no tick at all, yet a sub-step moves the possessed
+    // organism toward its fresh order and shows the owner.
+    let srv = manual_server().await;
+    let tick0 = srv.step(1).await;
+    let (mut wa, id, target, d0) = possess_and_order(srv.addr).await;
+    assert_eq!(srv.substep().await, 2);
+    let s = wait_for(&mut wa, "sub-step state", |v| v["type"] == "state" && v["clock"]["tick"] == tick0).await;
+    let d1 = dist_to(&s, id, target);
+    assert!(d1 < d0, "no closer after a sub-step: {d0} -> {d1}");
+    assert_eq!(find_org(&s, id).unwrap()["action"], "ordered");
+    // The tick's own move is the last of the tick's four sub-steps.
+    assert_eq!(srv.substep().await, 1);
+    assert_eq!(srv.substep().await, 0);
+    assert_eq!(srv.substep().await, 0);
+    assert_eq!(srv.step(1).await, tick0 + 1);
+    srv.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ticking_server_shows_possessed_movement_within_a_tick() {
+    // A slow clock (600 ms ticks) and rare state pushes (once a minute):
+    // the owner still sees the organism move several times within one tick.
+    let mut cfg = ServerConfig {
+        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+        data_dir: None,
+        world: WorldSettings { seed: 11, width: 64, height: 64, wild: false, ..Default::default() },
+        ..Default::default()
+    };
+    cfg.runner.tick = Duration::from_millis(600);
+    cfg.runner.state_interval = Duration::from_secs(60);
+    let srv = start(cfg).await.expect("server starts");
+    let (mut wa, id, target, _) = possess_and_order(srv.addr).await;
+    let mut seen: Vec<(u64, f64)> = Vec::new();
+    // Two sub-step states in the same tick, the second closer.
+    let _ = wait_for(&mut wa, "two moves within a tick", |v| {
+        if v["type"] != "state" {
+            return false;
+        }
+        let (tick, d) = (v["clock"]["tick"].as_u64().unwrap(), dist_to(v, id, target));
+        let done = seen.iter().any(|&(t, e)| t == tick && d < e - 1e-4);
+        seen.push((tick, d));
+        done
+    })
+    .await;
+    srv.shutdown().await;
+}

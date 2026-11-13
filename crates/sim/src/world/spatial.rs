@@ -50,7 +50,7 @@ impl Entry {
 
 /// `Default` is an empty placeholder (snapshots skip the grid); `rebuild` on
 /// a grid from `new` before querying.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SpatialGrid {
     cell: f32,
     cols: usize,

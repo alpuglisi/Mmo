@@ -9,13 +9,22 @@
 //!    foundings) in arrival order and answering reads (connect, map snapshot,
 //!    terrain, lineage stats, chronicle)
 //!    at once, since nothing changes the world between ticks;
+//!    the interval is split into `possess_substeps` parts (4 by default):
+//!    at each inner boundary the queue is applied (in arrival order) and
+//!    possessed organisms with a move order take a movement sub-step
+//!    (`Game::substep`), their owners getting a fresh state, so steering
+//!    answers within a quarter tick instead of a whole one;
 //! 2. apply the queued requests in arrival order;
 //! 3. `World::step`, then `Game::after_tick` (mating agreements, offer
 //!    expiry, daily records);
 //! 4. publish the summary/leaderboard and, when the state interval has
 //!    passed, push a state message to every connection;
-//! 5. on a new simulated day, save the game (`crate::snapshot`) through the
-//!    store task. [`Request::Shutdown`] saves once more and stops the thread.
+//! 5. on a new simulated day, save the game: capture a copy of it
+//!    (`crate::snapshot::Capture`, a clone) and hand it to the background
+//!    saver (`crate::saver`), which encodes it and passes the bytes to the
+//!    store task, so encoding never stalls a tick. [`Request::Shutdown`]
+//!    saves once more, waits for the saver to encode that last save and
+//!    stops the thread.
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError};
@@ -25,7 +34,9 @@ use std::time::{Duration, Instant};
 use evo_sim::{FounderDesign, PlayerId};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::game::{ConnId, FoundError, FoundOk, Game, Outbox, PersistEvent, SnapshotBlob, Target};
+use crate::game::{ConnId, FoundError, FoundOk, Game, Outbox, PersistEvent, Target};
+use crate::saver::Saver;
+use crate::snapshot::Capture;
 use crate::protocol::{ChronicleView, ClientMsg, Leaderboard, LineageStats, ServerMsg, WorldSummary};
 use crate::terrain::{dynamic_raw, terrain_raw, DynamicRaw, TerrainRaw};
 
@@ -43,13 +54,17 @@ pub enum Request {
     /// Species, eras, catastrophes and achievements.
     Chronicle { reply: oneshot::Sender<Box<ChronicleView>> },
     /// Save the game and stop the world thread (graceful shutdown). Queued
-    /// world changes are dropped. The reply comes once the snapshot is on
-    /// its way to the store task.
+    /// world changes are dropped. The reply comes once the saver has
+    /// encoded the last save and sent it on to the store task.
     Shutdown { reply: oneshot::Sender<()> },
     /// Apply the queued requests, advance the world `ticks` ticks and push
     /// state once at the end; replies with the world tick afterwards. Used by
     /// tests in manual mode ([`RunnerConfig::manual`]) to drive the clock.
     Step { ticks: u32, reply: oneshot::Sender<u64> },
+    /// Apply the queued requests and take one possession sub-step
+    /// (`Game::substep`, as a ticking server does between ticks); replies
+    /// with the sub-steps left before the next tick. Manual mode (tests).
+    Substep { reply: oneshot::Sender<u32> },
 }
 
 pub enum TerrainReply {
@@ -91,6 +106,8 @@ pub struct Runner {
     last_state: Instant,
     /// Day of the last saved game.
     saved_day: u64,
+    /// Encodes saves off this thread.
+    saver: Saver,
 }
 
 /// Handles for the rest of the server.
@@ -107,8 +124,19 @@ impl Runner {
         let (published, published_rx) = watch::channel(initial);
         let (persist, persist_rx) = mpsc::unbounded_channel();
         let saved_day = game.world.day();
-        let runner =
-            Runner { game, cfg, rx, conns: BTreeMap::new(), queued: Vec::new(), published, persist, last_state: Instant::now(), saved_day };
+        let saver = Saver::spawn(persist.clone());
+        let runner = Runner {
+            game,
+            cfg,
+            rx,
+            conns: BTreeMap::new(),
+            queued: Vec::new(),
+            published,
+            persist,
+            last_state: Instant::now(),
+            saved_day,
+            saver,
+        };
         (runner, RunnerHandles { tx, published: published_rx, persist: persist_rx })
     }
 
@@ -121,30 +149,27 @@ impl Runner {
         if self.cfg.manual {
             return self.run_manual();
         }
+        // Possession sub-steps, evenly spaced between ticks (none when
+        // running as fast as possible).
+        let subs = if self.cfg.tick.is_zero() { 1 } else { self.game.world.config.possess_substeps.max(1) };
         let mut next = Instant::now() + self.cfg.tick;
         loop {
-            // 1. Gather requests until the tick is due.
-            loop {
-                let now = Instant::now();
-                let req = if now >= next {
-                    match self.rx.try_recv() {
-                        Ok(r) => r,
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => return,
-                    }
-                } else {
-                    match self.rx.recv_timeout(next - now) {
-                        Ok(r) => r,
-                        Err(RecvTimeoutError::Timeout) => break,
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    }
-                };
-                if let Request::Shutdown { reply } = req {
-                    self.save();
-                    let _ = reply.send(());
+            let start = next.checked_sub(self.cfg.tick).unwrap_or(next);
+            for s in 1..subs {
+                // Gather until the sub-step is due, apply what came in
+                // arrival order (so a move order takes effect now, not at
+                // the tick), then move possessed organisms and show their
+                // owners.
+                if !self.gather(start + self.cfg.tick * s / subs) {
                     return;
                 }
-                self.receive(req);
+                self.apply_queued();
+                let out = self.game.substep();
+                self.dispatch(out);
+            }
+            // 1. Gather requests until the tick is due.
+            if !self.gather(next) {
+                return;
             }
             // 2. Apply world-changing requests in arrival order.
             self.apply_queued();
@@ -160,13 +185,37 @@ impl Runner {
         }
     }
 
+    /// Answer reads and queue changes until `due`. False once the thread
+    /// should stop (shut down, or every sender dropped).
+    fn gather(&mut self, due: Instant) -> bool {
+        loop {
+            let now = Instant::now();
+            let req = if now >= due {
+                match self.rx.try_recv() {
+                    Ok(r) => r,
+                    Err(TryRecvError::Empty) => return true,
+                    Err(TryRecvError::Disconnected) => return false,
+                }
+            } else {
+                match self.rx.recv_timeout(due - now) {
+                    Ok(r) => r,
+                    Err(RecvTimeoutError::Timeout) => return true,
+                    Err(RecvTimeoutError::Disconnected) => return false,
+                }
+            };
+            if let Request::Shutdown { reply } = req {
+                self.shutdown(reply);
+                return false;
+            }
+            self.receive(req);
+        }
+    }
+
     /// The manual-clock loop: wait for requests forever, tick only on `Step`.
     fn run_manual(mut self) {
         while let Ok(req) = self.rx.recv() {
             if let Request::Shutdown { reply } = req {
-                self.save();
-                let _ = reply.send(());
-                return;
+                return self.shutdown(reply);
             }
             self.receive(req);
             self.apply_queued();
@@ -200,19 +249,27 @@ impl Runner {
         }
     }
 
-    /// Snapshot the game and hand it to the store task.
+    /// Capture the game and hand it to the saver, which encodes it and
+    /// sends it to the store task. The world thread pays only for the copy.
     fn save(&mut self) {
         let started = Instant::now();
-        let bytes = crate::snapshot::encode(&self.game);
-        let tick = self.game.world.tick();
+        let capture = Capture::new(&self.game);
         self.saved_day = self.game.world.day();
         tracing::info!(
-            "saved the game at tick {tick} (day {}): {:.1} MB in {:.0} ms",
+            "captured the game at tick {} (day {}) for saving in {:.1} ms",
+            capture.tick(),
             self.saved_day,
-            bytes.len() as f64 / 1e6,
             started.elapsed().as_secs_f64() * 1000.0
         );
-        let _ = self.persist.send(PersistEvent::Snapshot(SnapshotBlob { tick, day: self.saved_day, bytes }));
+        self.saver.submit(capture);
+    }
+
+    /// Save once more, wait until the saver has encoded it and sent it on
+    /// to the store task, then reply.
+    fn shutdown(&mut self, reply: oneshot::Sender<()>) {
+        self.save();
+        self.saver.finish();
+        let _ = reply.send(());
     }
 
     /// Answer reads now; queue changes for the tick boundary.
@@ -246,6 +303,12 @@ impl Runner {
                     self.tick(i + 1 == ticks);
                 }
                 let _ = reply.send(self.game.world.tick());
+            }
+            Request::Substep { reply } => {
+                self.apply_queued();
+                let out = self.game.substep();
+                self.dispatch(out);
+                let _ = reply.send(self.game.world.substeps_left());
             }
             req @ (Request::Found { .. } | Request::Command { .. }) => self.queued.push(req),
             // Handled by `run` before it gets here.

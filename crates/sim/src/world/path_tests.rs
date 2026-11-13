@@ -77,7 +77,7 @@ fn walk(w: &mut World, i: usize, target: Vec2, ticks: u32) -> (Option<u32>, bool
         if w.organisms[i].pos.dist(target) < 0.5 {
             return (Some(t), wet);
         }
-        w.move_toward(i, target, false);
+        w.move_toward(i, target, false, 1.0);
         w.organisms[i].needs.energy = 100.0;
         let o = &w.organisms[i];
         let tile = w.map.tile_at(o.pos);
