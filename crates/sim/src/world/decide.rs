@@ -83,7 +83,7 @@ impl World {
             }
             seen += 1;
             let gd = o.genome.distance(&q.genome);
-            if gd < cfg.species_distance {
+            if mating::is_kin(&o.genome, &q.genome, gd, cfg.species_distance, cfg.kin_body_plan_gap) {
                 kin_sum += q.pos;
                 kin += 1;
             } else {

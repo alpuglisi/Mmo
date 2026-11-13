@@ -70,8 +70,29 @@ pub const BODY_PLAN_STERILE: f32 = 0.3;
 /// almost nothing else. This keeps them (and a vole and a fox) sterile, while
 /// similar designs of different players stay fertile.
 pub fn body_plan_fertility(a: &Genome, b: &Genome) -> f32 {
-    let gap = BODY_PLAN_GENES.iter().map(|&g| (a.expr(g) - b.expr(g)).abs()).fold(0.0, f32::max);
-    ramp(gap, BODY_PLAN_FULL, BODY_PLAN_STERILE)
+    ramp(body_plan_gap(a, b), BODY_PLAN_FULL, BODY_PLAN_STERILE)
+}
+
+/// Largest difference in expressed value of any [`BODY_PLAN_GENES`].
+pub fn body_plan_gap(a: &Genome, b: &Genome) -> f32 {
+    BODY_PLAN_GENES.iter().map(|&g| (a.expr(g) - b.expr(g)).abs()).fold(0.0, f32::max)
+}
+
+/// Whether two organisms recognize each other as their own kind: never hunted
+/// or fled from, and counted for grouping, herd defense, crowding and larval
+/// competition. `distance` is `a.distance(b)`, passed in because the caller
+/// usually needs it anyway.
+///
+/// Whole-genome and body-plan differences add up:
+/// `distance / species_distance + body_plan_gap / body_plan_gap_limit < 1`
+/// (the limit is [`crate::WorldConfig::kin_body_plan_gap`]). Whole-genome
+/// distance alone lets behavior genes dilute the few that make two designs
+/// different animals (a vole and a fox differ by 0.10 overall but 0.85 in
+/// diet); the body-plan term keeps different body plans and diets apart while
+/// founders of one design and mild drift stay kin.
+pub fn is_kin(a: &Genome, b: &Genome, distance: f32, species_distance: f32, body_plan_gap_limit: f32) -> bool {
+    let rest = 1.0 - distance / species_distance;
+    rest > 0.0 && body_plan_gap(a, b) < rest * body_plan_gap_limit
 }
 
 /// 1 up to `full`, falling linearly to 0 at `sterile`.
@@ -161,6 +182,53 @@ mod tests {
         let a = FounderDesign::new("a", Thermo::Warm, BirthType::Live, 4).with(Gene::BodySize, 0.3);
         let f = fertility(&genome(&a), &genome(&a.clone().with(Gene::BodySize, 0.5)));
         assert!(f > 0.0 && f < 1.0, "{f}");
+    }
+
+    fn kin(a: &Genome, b: &Genome) -> bool {
+        let cfg = crate::WorldConfig::default();
+        is_kin(a, b, a.distance(b), cfg.species_distance, cfg.kin_body_plan_gap)
+    }
+
+    #[test]
+    fn founding_designs_recognize_only_their_own_kind() {
+        let names = [
+            "Meadow vole",
+            "Steppe antelope",
+            "Marsh newt",
+            "Red fox",
+            "Pack hunters",
+            "Herd grazers",
+            "Toxic frogs",
+            "Burrowing omnivores",
+        ];
+        let g: Vec<Genome> = names.iter().map(|n| preset(n)).collect();
+        // Similar herbivore designs of different owners still herd together.
+        let kin_pairs = [(1, 5)];
+        for i in 0..names.len() {
+            assert!(kin(&g[i], &g[i]), "{} with itself", names[i]);
+            for j in i + 1..names.len() {
+                let expected = kin_pairs.contains(&(i, j));
+                assert_eq!(kin(&g[i], &g[j]), expected, "{} vs {}", names[i], names[j]);
+            }
+        }
+        // Whole-genome distance alone would make these kin.
+        let cfg = crate::WorldConfig::default();
+        for (a, b) in [(0, 3), (0, 7), (3, 4), (3, 7)] {
+            assert!(g[a].distance(&g[b]) < cfg.species_distance, "{} vs {}", names[a], names[b]);
+        }
+    }
+
+    #[test]
+    fn founders_of_one_design_and_mild_drift_are_kin() {
+        let mut rng = crate::rng::rng_for(11, 0, 0, 0);
+        for (_, d) in crate::presets::wild_designs() {
+            let founders: Vec<Genome> = (0..60).map(|_| d.founder_genome(0, &mut rng)).collect();
+            let pairs = founders.windows(2).filter(|w| kin(&w[0], &w[1])).count();
+            assert!(pairs >= 58, "{}: {pairs}/59 founder pairs are kin", d.name);
+        }
+        let a = FounderDesign::new("a", Thermo::Warm, BirthType::Live, 4).with(Gene::BodySize, 0.3);
+        assert!(kin(&genome(&a), &genome(&a.clone().with(Gene::BodySize, 0.38))));
+        assert!(!kin(&genome(&a), &genome(&a.clone().with(Gene::BodySize, 0.6))));
     }
 
     #[test]
