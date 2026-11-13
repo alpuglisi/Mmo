@@ -128,6 +128,8 @@ pub fn player_designs() -> Vec<FounderDesign> {
             .with(Fur, 0.5)
             .with(GroupTolerance, 0.9)
             .with(Boldness, 0.3)
+            // Takes turns on watch (`GroupTrait::Sentries`).
+            .with(Vigilance, 0.7)
             .founders(40),
         FounderDesign::new("Toxic frogs", Thermo::Cold, BirthType::AbandonedEggs, 10)
             .with(BodySize, 0.12)
@@ -148,7 +150,8 @@ pub fn player_designs() -> Vec<FounderDesign> {
             .with(Nose, 0.6)
             .with(Fur, 0.5)
             .with(FatStores, 0.5)
-            .with(GroupTolerance, 0.3)
+            // Tolerant enough to share burrows (`GroupTrait::SharedBurrows`).
+            .with(GroupTolerance, 0.6)
             .with(Wanderlust, 0.3)
             // Badger-like: fattens in autumn, sleeps through hard winters.
             .with(Hibernation, 0.8)

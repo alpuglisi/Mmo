@@ -52,7 +52,8 @@ disease_emergence disease_transmission disease_damage disease_recovery disease_c
 disease_fertility disease_kin path_nodes water_response snowmelt_swell rain_growth
 storm_exposure canopy_share dormancy_temp estivation_temp dormant_metabolism
 dormancy_mismatch brumation_mismatch fat_capacity den_concealment migration_range
-migration_risk torpor_metabolism cache_capacity
+migration_risk torpor_metabolism cache_capacity shared_burrow sentry_share
+sentry_vigilance sentry_cost
 ";
 
 struct Args {

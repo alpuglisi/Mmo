@@ -52,11 +52,16 @@ fn swimmer() -> FounderDesign {
     walker().with(Gene::Swimming, 0.9).with(Gene::FatStores, 0.5)
 }
 
-/// Found one organism of `design` at `at`, rested and fed; its index.
+/// Found one organism of `design` at `at`, rested and fed; its index. It
+/// gets exactly the design's genes (no founder variation), so the outcome
+/// doesn't depend on random draws.
 fn place(w: &mut World, owner: u32, design: &FounderDesign, at: Vec2) -> usize {
     w.found_lineage_unchecked(owner, design);
     let i = w.organisms.len() - 1;
     let o = &mut w.organisms[i];
+    o.genome = crate::Genome::uniform(&design.values(), owner);
+    o.pheno = o.genome.phenotype();
+    o.traits = crate::stats::derive(&o.pheno);
     o.pos = at;
     o.needs.energy = 100.0;
     o.needs.hunger = 0.0;
@@ -125,7 +130,7 @@ fn only_swimmers_path_through_deep_water() {
             set(&mut w, 10, y, "cliff");
         }
         for x in 15..=25 {
-            for y in 0..=18 {
+            for y in 0..=21 {
                 set(&mut w, x, y, "lake");
             }
         }

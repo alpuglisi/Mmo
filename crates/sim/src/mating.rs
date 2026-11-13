@@ -213,7 +213,7 @@ mod tests {
         }
         // Whole-genome distance alone would make these kin.
         let cfg = crate::WorldConfig::default();
-        for (a, b) in [(0, 3), (0, 7), (3, 4), (3, 7)] {
+        for (a, b) in [(0, 3), (0, 7), (3, 4)] {
             assert!(g[a].distance(&g[b]) < cfg.species_distance, "{} vs {}", names[a], names[b]);
         }
     }

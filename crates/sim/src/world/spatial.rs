@@ -14,6 +14,8 @@ pub(crate) const ARMED: u8 = 1;
 /// (the breed-ready tick is checked on the organism).
 pub(crate) const COURTING: u8 = 2;
 pub(crate) const FEMALE: u8 = 4;
+/// A sentry giving a warning (`Organism::alert`).
+pub(crate) const ALERT: u8 = 8;
 
 /// What a neighbor scan needs to know about an organism to decide whether it
 /// is worth a closer look.
@@ -38,6 +40,9 @@ impl Entry {
         }
         if o.sex == Sex::Female {
             flags |= FEMALE;
+        }
+        if o.alert.is_some() {
+            flags |= ALERT;
         }
         Entry { pos: o.pos, idx: i as u32, lineage: o.lineage, mass: o.mass(), flags }
     }
