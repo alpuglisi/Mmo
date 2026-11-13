@@ -11,10 +11,10 @@ use std::time::Duration;
 use evo_server::design::{BirthSpec, DesignSpec, ThermoSpec};
 use evo_server::game::{GameConfig, WorldSettings};
 use evo_server::league::{SeasonRecord, SeasonTracker};
-use evo_server::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
+use evo_server::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind, PushKind, PushPrefs};
 use evo_server::store::{
     AccountRecord, AlertPrefsRecord, AuctionRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord,
-    MemoryStore, Store, TradeRecord, WorldStore, KEEP_SNAPSHOTS,
+    MemoryStore, PushPrefsRecord, PushSubscriptionRecord, Store, TradeRecord, WorldStore, KEEP_SNAPSHOTS,
 };
 use evo_server::worlds::DEFAULT_WORLD;
 use evo_server::{start, ServerConfig};
@@ -255,6 +255,7 @@ async fn round_trip(s: &WorldStore) {
     s.put_alert_prefs(&AlertPrefsRecord { player: 1, prefs: AlertPrefs::default() }).await.unwrap();
     s.put_alert_prefs(&alert_prefs(2)).await.unwrap();
     s.put_alert_prefs(&alert_prefs(1)).await.unwrap();
+    write_push(s).await;
     for tick in [100u64, 200, 300, 400] {
         s.put_snapshot(tick, tick / 100, &tick.to_le_bytes()).await.unwrap();
     }
@@ -318,6 +319,52 @@ async fn round_trip(s: &WorldStore) {
     check_auctions(s).await;
     check_terrains(s).await;
     check_seasons(s).await;
+    check_push(s).await;
+}
+
+fn push_sub(player: u32, n: u32, created_unix: u64) -> PushSubscriptionRecord {
+    PushSubscriptionRecord {
+        player,
+        endpoint: format!("https://fcm.googleapis.com/fcm/send/device-{n}"),
+        p256dh: format!("key{n}"),
+        auth: format!("auth{n}"),
+        created_unix,
+        label: (n % 2 == 1).then(|| format!("Device {n}")),
+    }
+}
+
+/// Push subscriptions (one per endpoint), push preferences and server
+/// secrets (global records).
+async fn write_push(s: &WorldStore) {
+    assert!(s.load_push_subscriptions(1).await.unwrap().is_empty());
+    assert_eq!(s.load_push_prefs(1).await.unwrap(), None);
+    s.put_push_subscription(&push_sub(1, 1, 30)).await.unwrap();
+    s.put_push_subscription(&push_sub(1, 2, 10)).await.unwrap();
+    s.put_push_subscription(&push_sub(2, 3, 20)).await.unwrap();
+    // The same endpoint subscribed again under another account moves.
+    s.put_push_subscription(&PushSubscriptionRecord { auth: "new".into(), ..push_sub(1, 3, 40) }).await.unwrap();
+    assert!(s.delete_push_subscription(&push_sub(1, 2, 0).endpoint).await.unwrap());
+    assert!(!s.delete_push_subscription(&push_sub(1, 2, 0).endpoint).await.unwrap());
+    let off = |kinds: &[PushKind]| PushPrefs { off: kinds.to_vec() };
+    s.put_push_prefs(&PushPrefsRecord { player: 1, prefs: off(&[PushKind::Mating, PushKind::Season]) }).await.unwrap();
+    s.put_push_prefs(&PushPrefsRecord { player: 2, prefs: off(&[]) }).await.unwrap();
+    s.put_push_prefs(&PushPrefsRecord { player: 1, prefs: off(&[PushKind::Death, PushKind::Catastrophe]) })
+        .await
+        .unwrap();
+    assert_eq!(s.put_secret_if_absent("vapid_private_key", "first").await.unwrap(), "first");
+    assert_eq!(s.put_secret_if_absent("vapid_private_key", "second").await.unwrap(), "first");
+}
+
+async fn check_push(s: &WorldStore) {
+    let subs = s.load_push_subscriptions(1).await.unwrap();
+    assert_eq!(subs, vec![push_sub(1, 1, 30), PushSubscriptionRecord { auth: "new".into(), ..push_sub(1, 3, 40) }]);
+    assert!(s.load_push_subscriptions(2).await.unwrap().is_empty());
+    let prefs = s.load_push_prefs(1).await.unwrap().unwrap().prefs;
+    assert_eq!(prefs, PushPrefs { off: vec![PushKind::Death, PushKind::Catastrophe] });
+    assert_eq!(s.load_push_prefs(2).await.unwrap().unwrap().prefs, PushPrefs::default());
+    assert_eq!(s.load_push_prefs(3).await.unwrap(), None);
+    assert_eq!(s.put_secret_if_absent("vapid_private_key", "third").await.unwrap(), "first");
+    assert_eq!(s.put_secret_if_absent("other", "x").await.unwrap(), "x");
 }
 
 /// A finished season of `world` in which `players` held a legacy share.
@@ -451,6 +498,7 @@ async fn store_round_trips(backend: Backend) {
     assert_eq!(s.load_balances().await.unwrap().len(), 2);
     assert_eq!(s.recent_ledger(None, 100).await.unwrap().len(), 5);
     assert_eq!(s.load_alert_prefs(1).await.unwrap(), Some(alert_prefs(1)));
+    check_push(&s).await;
     check_auctions(&s).await;
     check_terrains(&s).await;
     assert_eq!(s.list_seasons(0, 10).await.unwrap().1, 3);

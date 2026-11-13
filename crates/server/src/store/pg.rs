@@ -14,11 +14,11 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 
 use super::{
-    AccountRecord, AlertPrefsRecord, AuctionRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord, Store,
-    StoreError, StoreResult, TradeRecord, KEEP_SNAPSHOTS,
+    AccountRecord, AlertPrefsRecord, AuctionRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord,
+    PushPrefsRecord, PushSubscriptionRecord, Store, StoreError, StoreResult, TradeRecord, KEEP_SNAPSHOTS,
 };
 use crate::league::{Category, PlayerPlacement, PlayerSeason, SeasonHead, SeasonRecord};
-use crate::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
+use crate::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind, PushKind, PushPrefs};
 use evo_sim::PlayerId;
 
 impl From<sqlx::Error> for StoreError {
@@ -43,6 +43,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (5, "seasons", include_str!("../../migrations/0005_seasons.sql")),
     (6, "auctions", include_str!("../../migrations/0006_auctions.sql")),
     (7, "worlds", include_str!("../../migrations/0007_worlds.sql")),
+    (8, "push", include_str!("../../migrations/0008_push.sql")),
 ];
 
 #[derive(Debug)]
@@ -149,6 +150,89 @@ impl Store for PgStore {
             return Err(StoreError(format!("account {:?} exists", account.name)));
         }
         Ok(())
+    }
+
+    async fn put_push_subscription(&self, s: &PushSubscriptionRecord) -> StoreResult<()> {
+        sqlx::query(
+            "INSERT INTO push_subscriptions (endpoint, player, p256dh, auth, label, created_unix) \
+             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (endpoint) DO UPDATE SET player = EXCLUDED.player, \
+             p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, label = EXCLUDED.label, \
+             created_unix = EXCLUDED.created_unix",
+        )
+        .bind(&s.endpoint)
+        .bind(i64::from(s.player))
+        .bind(&s.p256dh)
+        .bind(&s.auth)
+        .bind(&s.label)
+        .bind(int(s.created_unix))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_push_subscription(&self, endpoint: &str) -> StoreResult<bool> {
+        let done = sqlx::query("DELETE FROM push_subscriptions WHERE endpoint = $1")
+            .bind(endpoint)
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn load_push_subscriptions(&self, player: PlayerId) -> StoreResult<Vec<PushSubscriptionRecord>> {
+        let rows = sqlx::query(
+            "SELECT endpoint, player, p256dh, auth, label, created_unix FROM push_subscriptions \
+             WHERE player = $1 ORDER BY created_unix, endpoint COLLATE \"C\"",
+        )
+        .bind(i64::from(player))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(PushSubscriptionRecord {
+                    player: get_u64(r, "player")? as PlayerId,
+                    endpoint: r.try_get("endpoint")?,
+                    p256dh: r.try_get("p256dh")?,
+                    auth: r.try_get("auth")?,
+                    created_unix: get_u64(r, "created_unix")?,
+                    label: r.try_get("label")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn put_push_prefs(&self, record: &PushPrefsRecord) -> StoreResult<()> {
+        let off: Vec<String> = record.prefs.off.iter().map(|k| k.name().to_string()).collect();
+        sqlx::query(
+            "INSERT INTO push_prefs (player, off) VALUES ($1, $2) \
+             ON CONFLICT (player) DO UPDATE SET off = EXCLUDED.off, updated_at = now()",
+        )
+        .bind(i64::from(record.player))
+        .bind(off)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_push_prefs(&self, player: PlayerId) -> StoreResult<Option<PushPrefsRecord>> {
+        let row = sqlx::query("SELECT off FROM push_prefs WHERE player = $1")
+            .bind(i64::from(player))
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else { return Ok(None) };
+        // Kinds this build doesn't know are dropped.
+        let off = row.try_get::<Vec<String>, _>("off")?.iter().filter_map(|n| PushKind::parse(n)).collect();
+        Ok(Some(PushPrefsRecord { player, prefs: PushPrefs { off } }))
+    }
+
+    async fn put_secret_if_absent(&self, name: &str, value: &str) -> StoreResult<String> {
+        sqlx::query("INSERT INTO server_secrets (name, value) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING")
+            .bind(name)
+            .bind(value)
+            .execute(&self.pool)
+            .await?;
+        let row =
+            sqlx::query("SELECT value FROM server_secrets WHERE name = $1").bind(name).fetch_one(&self.pool).await?;
+        Ok(row.try_get("value")?)
     }
 
     async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>> {

@@ -3,8 +3,8 @@
 //! Routes about one world (founding, the world summary, leaderboards,
 //! ranked seasons, terrain, the chronicle, metrics, the WebSocket) take `?world=<id>` and
 //! default to the server's first world; an unknown id is a 404
-//! (`unknown_world`). Accounts, sessions, alert preferences and the gene
-//! catalog are global. `GET /api/worlds` lists the worlds.
+//! (`unknown_world`). Accounts, sessions, alert and push preferences, push
+//! subscriptions and the gene catalog are global. `GET /api/worlds` lists the worlds.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -40,10 +40,13 @@ use crate::limits::{client_key, Bucket, Limiters};
 use crate::metrics::{Metrics, MetricsView, NetStats};
 use crate::protocol::{
     AchievementList, AlertPrefs, CatastropheList, ChronicleView, ClientEnvelope, ClientMsg, EraList, ErrorInfo,
-    LineageStats, SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic, TerrainView, WorldList, WorldListing,
+    LineageStats, PushKind, PushPrefs, SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic, TerrainView, WorldList,
+    WorldListing,
 };
 use crate::runner::{Published, Request, TerrainReply};
-use crate::store::{AlertPrefsRecord, DesignRecord, Store, WorldStore};
+use crate::store::{AlertPrefsRecord, DesignRecord, PushPrefsRecord, Store, WorldStore};
+use crate::webpush::service::SubscribeError;
+use crate::webpush::PushService;
 use crate::wire::{DeltaEncoder, KEYFRAME_EVERY, PROTO_DELTA, PROTO_JSON};
 
 /// Largest WebSocket message (and frame) a client may send.
@@ -71,6 +74,8 @@ pub struct AppState {
     pub limiters: Arc<Limiters>,
     /// Open WebSocket connections per player, over every world.
     pub ws_conns: Arc<Mutex<HashMap<PlayerId, usize>>>,
+    /// The push notification service (`None` with `--no-push`).
+    pub push: Option<Arc<PushService>>,
 }
 
 /// One hosted world: its world thread, what it publishes, its metrics and
@@ -172,6 +177,10 @@ fn api_router(state: AppState) -> Router {
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
         .route("/api/lineage/stats", get(lineage_stats))
         .route("/api/alerts/prefs", get(alert_prefs).post(set_alert_prefs))
+        .route("/api/push/subscriptions", get(push_subscriptions))
+        .route("/api/push/subscribe", post(push_subscribe))
+        .route("/api/push/unsubscribe", post(push_unsubscribe))
+        .route("/api/push/prefs", get(push_prefs).post(set_push_prefs))
         .route("/api/species", get(species))
         .route("/api/eras", get(eras))
         .route("/api/catastrophes", get(catastrophes))
@@ -190,6 +199,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/lineage", post(found_lineage))
         .route("/api/genes", get(genes))
+        .route("/api/push/key", get(push_key))
         .route("/api/worlds", get(world_list))
         .route("/api/world", get(world_summary))
         .route("/api/leaderboard", get(leaderboard))
@@ -509,6 +519,146 @@ async fn set_alert_prefs(
     if stored.map(|r| r.prefs.normalized()) != Some(prefs.clone()) {
         let record = AlertPrefsRecord { player: session.player, prefs: prefs.clone() };
         app.store.put_alert_prefs(&record).await.map_err(ApiError::internal)?;
+    }
+    // Hidden alert kinds are not pushed either.
+    if let Some(p) = &app.push {
+        p.invalidate(session.player);
+    }
+    Ok(Json(prefs))
+}
+
+/// `GET /api/push/key`: whether push notifications are on, the VAPID public
+/// key a browser subscribes with, and the push kinds.
+#[derive(Serialize)]
+struct PushKeyView {
+    enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_key: Option<String>,
+    kinds: Vec<PushKind>,
+}
+
+async fn push_key(State(app): State<AppState>) -> Json<PushKeyView> {
+    Json(PushKeyView {
+        enabled: app.push.is_some(),
+        public_key: app.push.as_ref().map(|p| p.public_key().to_string()),
+        kinds: PushKind::ALL.to_vec(),
+    })
+}
+
+fn push_service(app: &AppState) -> Result<&Arc<PushService>, ApiError> {
+    app.push.as_ref().ok_or_else(|| {
+        ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "push_disabled", "push notifications are off on this server")
+    })
+}
+
+/// One of the caller's devices, as listed (the keys stay on the server).
+#[derive(Serialize)]
+struct PushSubscriptionView {
+    endpoint: String,
+    created_unix: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PushSubscriptionList {
+    subscriptions: Vec<PushSubscriptionView>,
+}
+
+/// `GET /api/push/subscriptions`: the caller's subscribed devices, oldest first.
+async fn push_subscriptions(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<PushSubscriptionList>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let subs = app.store.load_push_subscriptions(session.player).await.map_err(ApiError::internal)?;
+    let subscriptions = subs
+        .into_iter()
+        .map(|s| PushSubscriptionView { endpoint: s.endpoint, created_unix: s.created_unix, label: s.label })
+        .collect();
+    Ok(Json(PushSubscriptionList { subscriptions }))
+}
+
+#[derive(Deserialize)]
+struct PushKeys {
+    p256dh: String,
+    auth: String,
+}
+
+/// `POST /api/push/subscribe`: a browser's `PushSubscription.toJSON()`
+/// (`expirationTime` ignored), plus an optional device label.
+#[derive(Deserialize)]
+struct SubscribeBody {
+    endpoint: String,
+    keys: PushKeys,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+async fn push_subscribe(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SubscribeBody>,
+) -> Result<Json<PushSubscriptionView>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let push = push_service(&app)?;
+    let label = body.label.or_else(|| headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).map(String::from));
+    match push.subscribe(session.player, &body.endpoint, &body.keys.p256dh, &body.keys.auth, label).await {
+        Ok(s) => Ok(Json(PushSubscriptionView { endpoint: s.endpoint, created_unix: s.created_unix, label: s.label })),
+        Err(SubscribeError::Invalid(why)) => Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_subscription", why)),
+        Err(SubscribeError::Store(e)) => Err(ApiError::internal(e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct UnsubscribeBody {
+    endpoint: String,
+}
+
+/// `POST /api/push/unsubscribe`: forget one of the caller's devices.
+async fn push_unsubscribe(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<UnsubscribeBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let removed = match &app.push {
+        Some(p) => p.unsubscribe(session.player, &body.endpoint).await,
+        // Push off: still let a player clean up.
+        None => match app.store.load_push_subscriptions(session.player).await {
+            Ok(subs) if subs.iter().any(|s| s.endpoint == body.endpoint) => {
+                app.store.delete_push_subscription(&body.endpoint).await
+            }
+            Ok(_) => Ok(false),
+            Err(e) => Err(e),
+        },
+    }
+    .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({ "removed": removed })))
+}
+
+/// The caller's push preferences (every kind on until they save some).
+async fn push_prefs(State(app): State<AppState>, headers: HeaderMap) -> Result<Json<PushPrefs>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let stored = app.store.load_push_prefs(session.player).await.map_err(ApiError::internal)?;
+    Ok(Json(stored.map(|r| r.prefs.normalized()).unwrap_or_default()))
+}
+
+/// Replace the caller's push preferences; replies with them normalized.
+async fn set_push_prefs(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Json(prefs): Json<PushPrefs>,
+) -> Result<Json<PushPrefs>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let prefs = prefs.normalized();
+    let stored = app.store.load_push_prefs(session.player).await.map_err(ApiError::internal)?;
+    if stored.map(|r| r.prefs.normalized()) != Some(prefs.clone()) {
+        let record = PushPrefsRecord { player: session.player, prefs: prefs.clone() };
+        app.store.put_push_prefs(&record).await.map_err(ApiError::internal)?;
+    }
+    if let Some(p) = &app.push {
+        p.invalidate(session.player);
     }
     Ok(Json(prefs))
 }

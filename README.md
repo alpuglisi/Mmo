@@ -265,7 +265,10 @@ expiry, default 60 min idle and 24 h), `--no-rate-limits`, `--lod` (level
 of detail, below), `--no-catastrophes` (catastrophes are on by default in
 the game, never in the first year), `--season-days N` (length of a ranked
 season, default 60; see [Ranked seasons](#ranked-seasons)), `--fresh` (ignore the saved world: new
-world, stored designs re-founded; see [Persistence](#persistence)).
+world, stored designs re-founded; see [Persistence](#persistence)), `--no-push`,
+`--vapid-private-key KEY` / `--vapid-subject mailto:...` (or `EVO_VAPID_PRIVATE_KEY` /
+`EVO_VAPID_SUBJECT`), `--push-per-hour N` and `--push-allow-any-endpoint` (see
+[Push notifications](#push-notifications)).
 `RUST_LOG=debug` for more logging. SIGINT (Ctrl-C) or SIGTERM stops the
 server gracefully: it stops serving, saves every world (in parallel) and
 waits for the store to finish writing.
@@ -423,6 +426,9 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   milestones, a new generation, extinction, a possessed organism that is
   parched or starving, catastrophes beginning and ending, era ends (with the
   player's rank) and achievements. The last 50 per player are kept for the dashboard.
+  The important ones also become push notices for players not connected to
+  the world, handed to the push service without waiting (see
+  [Push notifications](#push-notifications)).
 - **Possessed organisms' needs:** the sim drops a move order once the
   organism arrives (within 0.75 tiles) and lets danger or severe thirst or
   hunger (`possess_danger`, `possess_urgency` = 85) win over the order until
@@ -470,6 +476,12 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/lineage/stats` | Bearer | The genetics dashboard: counts (alive, adults, young, pregnant, newest generation), `age_bands` (up to six equal bands by sex), `vitals` (births and deaths by cause per recorded day, the last entry today so far, at most 30), `genes` (every gene's mean, spread and founding mean with the daily means, largest drift first, and `bins`: members per tenth of the 0–1 range, a histogram), `origins` (whose alleles the living members carry: `[{player, name, lineage?, alleles, share}]`, largest share first; 0 is the wild), `legacy` (share per recorded day) and recent `alerts` |
 | `GET /api/alerts/prefs` | Bearer | The caller's alert preferences, `{hidden: [kind], toast: [kind]}` (kinds as in `alert` messages); the defaults `{hidden: [], toast: ["death", "need", "market"]}` until saved |
 | `POST /api/alerts/prefs` | Bearer | Replace them; the reply is the normalized form (sorted, no duplicates, nothing hidden is toasted). An unknown kind is refused (422) |
+| `GET /api/push/key` | | `{enabled, public_key?, kinds}`: whether the server sends push notifications, its VAPID public key (base64url, the browser's `applicationServerKey`) and the push kinds |
+| `POST /api/push/subscribe` | Bearer | A browser's `PushSubscription.toJSON()` (`{endpoint, keys: {p256dh, auth}}`) plus an optional `label` (default: the user agent): stores it for the account, replacing one with the same endpoint. `{endpoint, created_unix, label?}`; `400 bad_subscription` (endpoint not a known push service, keys not a P-256 point and a 16-byte secret); `503 push_disabled` |
+| `POST /api/push/unsubscribe` `{endpoint}` | Bearer | Forget one of the caller's devices: `{removed}` |
+| `GET /api/push/subscriptions` | Bearer | The caller's devices, oldest first: `{subscriptions: [{endpoint, created_unix, label?}]}` (keys stay on the server) |
+| `GET /api/push/prefs` | Bearer | The push kinds the caller switched off, `{off: [kind]}` (`mating`, `death`, `market`, `species`, `season`, `catastrophe`); `{off: []}` until saved |
+| `POST /api/push/prefs` | Bearer | Replace them; the reply is normalized (sorted, no duplicates); an unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
 | `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`) and the process's `cpu_seconds` and `rss_bytes` (Linux) |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
@@ -477,8 +489,8 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 Routes about a world (founding, `world`, the leaderboards, terrain, species,
 eras, catastrophes, achievements, lineage stats, map, metrics and the
 WebSocket) take `?world=<id>` and use the first world without it; an unknown
-id is `404 unknown_world`. Accounts, alert preferences, the gene catalog and
-`/api/worlds` are global. `/api/metrics` reports one world (its `world`
+id is `404 unknown_world`. Accounts, alert and push preferences, push
+subscriptions, the gene catalog and `/api/worlds` are global. `/api/metrics` reports one world (its `world`
 field; `players_online` is distinct players connected) plus the process's
 CPU and memory, which all worlds share.
 
@@ -758,6 +770,68 @@ marketplace for trading genetics", on a minimal economy (`economy.rs`,
   as organisms age). A request with no fields (an older client) gets the
   newest 20 listings of every kind, so its reply stays bounded.
 
+### Push notifications
+
+Players hear about important events while the game's tab is closed, with
+standard Web Push (`webpush/`): the client's service worker subscribes with
+the Push API and the server's VAPID public key, the server encrypts each
+message for the subscription (RFC 8291, `aes128gcm`) and POSTs it to the
+browser's push service with a VAPID signature (RFC 8292). The crypto is
+RustCrypto (`p256` for ECDH and ES256, `hkdf`, `aes-gcm`), the HTTPS client
+`reqwest` on rustls with ring, so no OpenSSL; the `web-push` crate (0.11)
+was passed over: it brings OpenSSL (the `ece` crate's default backend, and
+libcurl or `hyper-tls` for its clients) and hyper 0.14 next to our hyper 1,
+and leaves retries, `Retry-After` and coalescing to the caller anyway. The
+encryption is checked byte for byte against the RFC 8291 example.
+
+- **What is pushed** (`PushKind`): `mating` (another player asks to mate
+  with one of yours), `death` (a founder or a possessed organism died: the
+  game has no other "favourite" organisms), `market` (outbid, an auction won,
+  sold or closed without a bid, a bid on your auction, a listing bought, a
+  sale paid, a listing expired; not escrow payments you made, refunds after
+  an offer, or achievement bonuses), `species` (a species founded by your
+  lineage), `season` (a ranked season or an era ended, with your places) and
+  `catastrophe` (one began; not its end). The game records a `Notice` next
+  to the alert (`Game::take_notices`).
+- **Never the world thread's problem.** The runner drains the notices after
+  each command and tick, drops those of players with a connection to that
+  world (they see it in the game) and hands the rest to its
+  `WorldNotifier`: a `try_send` on a bounded channel (8192; a full queue
+  drops the notice and counts it). One push service task (per process,
+  shared by every world) does the rest.
+- **Preferences.** Each kind has a push switch per account (`/api/push/prefs`,
+  all on by default: subscribing a device is the opt-in), and an alert kind
+  hidden from the feed (alert preferences) is never pushed (`mating` has no
+  alert kind and follows its switch only). The service caches a player's
+  preferences and whether they have a subscription for 5 minutes; changes
+  through this server apply at once.
+- **Coalescing and rate limits** (`webpush/coalesce.rs`): a notice opens a
+  batch for its player that is released 30 s later, so a burst becomes one
+  notification ("3 events · Main", the most important first, one a line,
+  "…and N more" past four). Pushes to a player are at least 5 minutes apart
+  and at most 4 in any rolling hour (`--push-per-hour`); notices arriving
+  meanwhile join the waiting batch. A notification names its world
+  (`[Isle] …` lines when a batch spans worlds) and carries the world and tab
+  a click opens; its tag (`evo-<world>`) makes a newer one replace it.
+- **Delivery** (`webpush/sender.rs`): one task per batch (16 at once), one
+  request per subscription with `TTL` 12 h, `Urgency` high for mating and
+  death, a VAPID JWT per push service origin (12 h, reused while an hour is
+  left). 2xx delivered; 404/410 deletes the subscription; 429 waits
+  `Retry-After` (seconds; past 10 minutes it gives up) or backs off; 5xx and
+  network errors back off (2 s doubling, ±20 % jitter); 4 attempts per
+  message; other statuses are logged and dropped.
+- **VAPID key**: `--vapid-private-key` (raw P-256 scalar, base64url), else the
+  one in the store (`server_secrets`), else generated on first start and
+  stored there, so subscriptions survive restarts; several servers on one
+  database agree on the first one written. Set `--vapid-subject` to a real
+  `mailto:` or `https:` contact (push services may refuse the placeholder).
+- **Subscriptions** are per account, global across worlds, at most 10 (an
+  11th drops the oldest); the endpoint identifies one, so a shared device
+  subscribing under another account moves to it. By default an endpoint must
+  be `https` on a known browser push service (FCM, Mozilla, WNS, Apple), so
+  the server can't be made to POST to arbitrary addresses;
+  `--push-allow-any-endpoint` lifts that for tests and private push servers.
+
 ### Persistence
 
 `Store` (`store.rs`) is an async trait with three implementations: a
@@ -766,12 +840,13 @@ JSON-file one (`FileStore`, the default, in `--data DIR`), PostgreSQL
 `DATABASE_URL` environment variable; `--data`/`--memory` after it override
 it) and an in-memory one (`--memory`, tests).
 
-Accounts and alert preferences are global; every other record belongs to
-one world (`shard`: the configured world id). In the file store the global
+Accounts, alert and push preferences, push subscriptions and server secrets
+are global; every other record belongs to one world (`shard`: the
+configured world id). In the file store the global
 tables stay at the top of the data directory and each world's files live in
 `worlds/<id>/` (the paths below); in PostgreSQL every per-world table has a
 `shard` column in its key (migration 7, `0007_worlds.sql`; 6 is the
-marketplace auctions').
+marketplace auctions', 8, `0008_push.sql`, push notifications').
 
 | Persisted | File | PostgreSQL table |
 | --- | --- | --- |
@@ -782,6 +857,9 @@ marketplace auctions').
 | How each auction ended (seller, organism, reserve, deadline, bids, highest bid, winner and their organism, outcome `sold`/`unsold`/`failed`/`ended`/`withdrawn`, the agreement it became, day); a world replaying a day replaces its record | `worlds/<id>/auctions.jsonl` | `auctions` (PK `(shard, world_id, listing)`, upsert; `id` keeps write order; migration 6, `shard` from 7) |
 | Renown balances, upserted on every change | `worlds/<id>/balances.json` | `balances` (PK `(shard, player)`, balance, day, updated_at) |
 | Alert preferences (hidden and toasted alert kinds), upserted when a player saves them | `alert_prefs.json` | `alert_prefs` (player PK, hidden and toast `text[]` of kind names, updated_at; migration 3) |
+| Web Push subscriptions (player, endpoint, `p256dh` and `auth` keys, label, created), one per endpoint | `push_subscriptions.json` | `push_subscriptions` (endpoint PK, indexed by player; migration 8) |
+| Push preferences (the kinds switched off), upserted when a player saves them | `push_prefs.json` | `push_prefs` (player PK, off `text[]` of kind names, updated_at; migration 8) |
+| Server secrets: the generated VAPID private key | `secrets.json` (mode 0600 on Unix) | `server_secrets` (name PK, value; insert-if-absent, so servers sharing the database agree; migration 8) |
 | Finished ranked seasons: head (winners, summary) and full standings; a replayed rollover (same world and season) replaces the record in its place | `worlds/<id>/seasons.jsonl` (last line per key wins) | `seasons` (PK `(shard, world_id, season)`, upsert, `seq` keeps write order, head and standings `jsonb`) and `season_placements` (one row per player and category: rank, value, players ranked; indexed by player for the per-player history; rewritten with its season; migration 5) |
 | The ledger: every balance change with world id and sequence number (a replayed entry, same world and sequence, replaces the earlier one) | `worlds/<id>/ledger.jsonl` | `ledger` (PK `(shard, world_id, seq)`, upsert; `id` keeps write order) |
 | Saved games: the whole `World` except its static terrain, plus the game state around it (including players' alerts), every simulated day and at a graceful shutdown; the newest 3 kept | `worlds/<id>/snapshots/world-<tick>.snap` | `snapshots` (PK `(shard, tick)`, day, size, snapshot format version, `terrain_hash` (migration 4; NULL for saves from before world snapshot version 6), saved_at, data `bytea`) |
@@ -1115,6 +1193,17 @@ Checked and judged acceptable:
 - **Panics from client input.** Commands index offers and organisms only
   after looking them up; malformed JSON gets `bad_message` (WebSocket) or a
   4xx (HTTP).
+- **Push notifications.** The server POSTs to URLs players give it, so a
+  subscription endpoint must be `https` on a known browser push service
+  host (or a subdomain of one), port 443, without credentials; redirects are
+  not followed (`--push-allow-any-endpoint` is for tests and private push
+  services only). Subscription keys are checked (a P-256 point, a 16-byte
+  secret) before they are stored; the subscription list never returns them.
+  A player can unsubscribe only their own endpoints. The generated VAPID
+  private key is a server secret (`secrets.json` 0600, or `server_secrets`);
+  anyone holding it could push to every subscriber, so back it up like the
+  database. Pushes are rate-limited per player (above), so the game can't
+  be used to flood a device.
 - **Left as is:** names are case-sensitive (`Ann` and `ann` are different
   accounts); a reverse proxy makes every client one IP for the limits;
   `GET /api/leaderboard/seasons` reads up to 100 000 daily records per call
@@ -1263,7 +1352,16 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   an unread badge on the tab. **Alert preferences** (a collapsible table
   above the feed) switch each alert kind's *Show* (in the feed and the
   badge) and *Toast* (pop up on arrival); deaths, needs and market alerts
-  toast by default.
+  toast by default. **Push notifications** (a second collapsible card,
+  `ui/push.ts`) say what this device can do (no Push API or a native app
+  shell, no https, push off on the server, notifications blocked, off, on),
+  offer *Enable on this device* / *Turn off on this device*, and switch each
+  push kind (mating offers, deaths, market, new species, season results,
+  catastrophes) for the account; the card also counts the account's
+  devices. Enable asks for the notification permission only when pressed.
+  A click on a notification opens the game on its world and tab (an open
+  game window switches world, restarting the session there, and tab; a new
+  one opens with `?world=…&tab=…`).
 
   *Allele origins* need no new simulation state: every allele already
   carries the id of the player it originated with (founder alleles the
@@ -1423,6 +1521,9 @@ socket.ts    GameSocket: ids paired with `result`, 10 s reply timeout, reconnect
 wire.ts      protocol 2 decoder (mirror of crates/server/src/wire.rs; wire.fixture.json pins them)
 model.ts     GameModel: latest state, offer table (requests, updates, outcomes), alerts feed, toasts; pub/sub
 alertPrefs.ts  alert preferences: normalize, per-kind show/toast switches, feed filter
+push.ts      push notifications: device status, per-kind switches, subscribe/unsubscribe (browser APIs behind PushDeps)
+sw.ts        the service worker (built to dist/sw.js): shows pushes, focuses or opens the game on a click
+swLogic.ts   the service worker's decisions (payload check, notification, target URL, which window), unit-tested
 cost.ts      design point cost and validation (mirror of crates/sim/src/design.rs)
 ui/          DOM screens and panels; panels re-render at most 4×/s and rebuild buttons only
              when their content changes, so they stay clickable under 10 Hz state pushes
@@ -1536,7 +1637,7 @@ phone controls hidden, sprite cache stats (textures shared per class), and
 a gallery of 20 body plans drawn with the game's sprite code. Screenshots:
 `iphone13-*.png`, `pixel7-*.png`, `desktop-world.png`,
 `desktop-sprite-gallery.png`.
-`e2e/onboarding.mjs` (last in `npm run e2e`; alone with
+`e2e/onboarding.mjs` (after the mobile test in `npm run e2e`; alone with
 `npm run e2e:onboarding`) opens the client without `?tour=off`: on a
 1280×800 desktop a new player gets the tour after founding with focus on
 Next, walks steps with highlights (the inspector step opens the Organism
@@ -1547,12 +1648,33 @@ alert shows the death hint once ("Show me" opens Genetics), not again, nor
 after a reload. On a Pixel 7 every step's card and highlight fit the screen
 with no sideways scroll, Finish completes the tour, the tab bar works and a
 reload keeps it closed. Screenshots: `onboarding-*.png`.
+`e2e/push.mjs` (last in `npm run e2e`; alone with `npm run e2e:push`)
+starts a server with `--push-allow-any-endpoint` and runs the full Chromium
+in new headless mode (the headless shell reports notifications as denied
+whatever is granted; without the full build it falls back to the shell with
+the permission stubbed), the notifications permission granted. A real
+`pushManager.subscribe()` would register with Google's push service, which
+no test may contact, so `PushManager` is stubbed: `subscribe()` returns a
+subscription with a real P-256 key (WebCrypto) and an endpoint on
+127.0.0.1's discard port. With the real service worker active, it checks
+that the settings card lists every kind, Enable subscribes with the
+server's 65-byte key and POSTs the subscription, which
+`/api/push/subscriptions` then lists; a kind switched off is saved; after a
+reload the device is still on and the kind still off; Turn off removes it
+on the server; and with notifications blocked, or no `PushManager`, the
+card explains and offers no button. Screenshot: `push-settings.png`.
+The server side of delivery is tested in Rust (`crates/server/tests/push.rs`)
+against a mock push service.
 
 **Not yet:** allele origins traced to the
 founding *lineage* rather than the player (a player founds one lineage per
 world, so the two coincide until re-founding exists), alert preferences
 applied server-side (muted kinds are still sent), animated sprites, native builds tested on devices (the Capacitor projects
-are generated but not built here), and push notifications.
+are generated but not built here), and push notifications in the native
+apps (their WebViews have no Web Push: that needs FCM/APNs through a
+Capacitor plugin; the card says push is not available there). Safari on
+iOS has Web Push only for a site added to the home screen
+(`manifest.webmanifest` is there for it; not tested on a device).
 
 ## Benchmark
 

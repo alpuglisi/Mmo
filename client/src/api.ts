@@ -8,7 +8,7 @@
 
 import type {
   AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, CurrentSeason, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
-  LineageStats, PlayerId, PlayerSeasonHistory, RankedSeasonList, RankedSeasonPage, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldList,
+  LineageStats, PlayerId, PlayerSeasonHistory, PushKeyView, PushPrefs, PushSubscriptionView, RankedSeasonList, RankedSeasonPage, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldList,
   WorldSummary,
 } from './protocol';
 import { PROTO_DELTA } from './wire';
@@ -87,7 +87,7 @@ async function request<T>(method: string, path: string, body?: unknown, token?: 
   return json as T;
 }
 
-// Global: accounts, alert preferences, the gene catalog, the world list.
+// Global: accounts, alert and push preferences, push subscriptions, the gene catalog, the world list.
 // Everything else is about the chosen world (`withWorld`).
 export const api = {
   register: (name: string, password: string) => request<AuthResponse>('POST', '/api/register', { name, password }),
@@ -104,6 +104,14 @@ export const api = {
   lineageStats: (token: string) => request<LineageStats>('GET', withWorld('/api/lineage/stats'), undefined, token),
   alertPrefs: (token: string) => request<AlertPrefs>('GET', '/api/alerts/prefs', undefined, token),
   setAlertPrefs: (token: string, prefs: AlertPrefs) => request<AlertPrefs>('POST', '/api/alerts/prefs', prefs, token),
+  // Push notifications: global (one account, every world; a notification names its world).
+  pushKey: () => request<PushKeyView>('GET', '/api/push/key'),
+  pushSubscriptions: (token: string) => request<{ subscriptions: PushSubscriptionView[] }>('GET', '/api/push/subscriptions', undefined, token),
+  pushSubscribe: (token: string, sub: PushSubscriptionJSON, label?: string) =>
+    request<PushSubscriptionView>('POST', '/api/push/subscribe', { ...sub, label }, token),
+  pushUnsubscribe: (token: string, endpoint: string) => request<{ removed: boolean }>('POST', '/api/push/unsubscribe', { endpoint }, token),
+  pushPrefs: (token: string) => request<PushPrefs>('GET', '/api/push/prefs', undefined, token),
+  setPushPrefs: (token: string, prefs: PushPrefs) => request<PushPrefs>('POST', '/api/push/prefs', prefs, token),
   species: () => request<SpeciesList>('GET', withWorld('/api/species')),
   eras: () => request<EraList>('GET', withWorld('/api/eras')),
   catastrophes: () => request<CatastropheList>('GET', withWorld('/api/catastrophes')),

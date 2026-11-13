@@ -10,6 +10,7 @@ import { GameSocket } from './socket';
 import { designScreen } from './ui/design';
 import { gameScreen, type GameScreen } from './ui/game';
 import { loginScreen } from './ui/login';
+import { isOpenMessage, openParams, registerServiceWorker } from './push';
 import { h } from './ui/dom';
 
 const root = document.getElementById('app')!;
@@ -23,6 +24,8 @@ interface Running {
 }
 
 let running: Running | null = null;
+/** A tab to open once the game screen is up (a notification click). */
+let pendingTab: string | null = null;
 
 declare global {
   interface Window {
@@ -123,9 +126,45 @@ async function showGame(r: Running): Promise<void> {
   });
   if (running !== r) return screen.destroy();
   r.screen = screen;
+  if (pendingTab) {
+    screen.showTab(pendingTab);
+    pendingTab = null;
+  }
+}
+
+/** A notification was clicked while the game is open: switch to its world (restarting the session there) and tab. */
+async function openFromNotification(world: string, tab: string): Promise<void> {
+  const r = running;
+  if (!r) return;
+  let current = r.session.world ?? '';
+  if (!current) {
+    try {
+      current = (await api.worlds()).default;
+    } catch {
+      /* unknown: compare with '' */
+    }
+  }
+  if (world && world !== current) {
+    pendingTab = tab;
+    start({ ...r.session, world });
+  } else if (r.screen) {
+    r.screen.showTab(tab);
+  } else {
+    pendingTab = tab;
+  }
 }
 
 setApiBase(initialOrigin());
+void registerServiceWorker();
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e: MessageEvent) => {
+    if (isOpenMessage(e.data)) void openFromNotification(e.data.world, e.data.tab);
+  });
+}
+// A notification click that opened a new window: `?world=…&tab=…`.
+const opened = openParams(window.location.href);
+if (opened.world !== null || opened.tab !== null) window.history.replaceState(null, '', opened.clean);
+pendingTab = opened.tab;
 const saved = loadSession();
-if (saved) start(saved);
+if (saved) start(opened.world ? { ...saved, world: opened.world } : saved);
 else showLogin();

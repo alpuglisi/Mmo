@@ -36,6 +36,9 @@
 //!   marketplace's listings.
 //! - [`worlds`]: the worlds (shards) one process hosts, each with its own
 //!   world thread, saver, store task and metrics; accounts are shared.
+//! - [`webpush`]: Web Push notifications (VAPID, RFC 8291 encryption,
+//!   coalescing and rate limits, delivery with retries) for players whose
+//!   game tab is closed.
 
 pub mod accounts;
 pub mod appearance;
@@ -55,6 +58,7 @@ pub mod seasons;
 pub mod snapshot;
 pub mod store;
 pub mod terrain;
+pub mod webpush;
 pub mod wire;
 pub mod worlds;
 
@@ -121,6 +125,8 @@ pub struct ServerConfig {
     /// Ignore saved games: generate new worlds and re-found the stored
     /// designs (`--fresh`). Applies to every world.
     pub fresh: bool,
+    /// Web Push notifications (`--no-push`, `--vapid-*`).
+    pub push: webpush::PushConfig,
 }
 
 impl Default for ServerConfig {
@@ -142,6 +148,7 @@ impl Default for ServerConfig {
             limits: Limits::default(),
             sessions: SessionPolicy::default(),
             fresh: false,
+            push: webpush::PushConfig::default(),
         }
     }
 }
@@ -277,12 +284,16 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         games.push((spec, wstore, game));
     }
     let accounts = Arc::new(Accounts::with_policy(store.clone(), accounts, cfg.sessions));
+    let push = webpush::start(store.clone(), cfg.push.clone()).await?.map(Arc::new);
 
     let mut handles = Vec::new();
     let mut running = Vec::new();
     for (spec, wstore, game) in games {
         let map_id: Arc<str> = game.world_id().into();
-        let (runner, h) = Runner::new(game, cfg.runner.clone());
+        let (mut runner, h) = Runner::new(game, cfg.runner.clone());
+        if let Some(p) = &push {
+            runner.set_notifier(p.notifier(&spec.id, &spec.display_name()));
+        }
         runner.spawn_named(format!("world-{}", spec.id));
         let persist = tokio::spawn(persist_task(wstore.clone(), h.persist, h.metrics.clone()));
         running.push(RunningWorld { id: spec.id.clone(), tx: h.tx.clone(), persist });
@@ -305,6 +316,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         next_conn: Arc::new(AtomicU64::new(1)),
         limiters: Arc::new(Limiters::new(cfg.limits)),
         ws_conns: Default::default(),
+        push,
     };
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     let addr = listener.local_addr()?;

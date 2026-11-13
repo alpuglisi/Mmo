@@ -4,7 +4,8 @@
 //! PostgreSQL (sqlx): `PgStore` (cargo feature `postgres`, on by default;
 //! `--database-url`) keeps them in one table per record type (`accounts`,
 //! `designs`, `daily_history`, `trades`, `snapshots`, `terrains`,
-//! `balances`, `ledger`, `alert_prefs`, `seasons`, `season_placements`, `auctions`). [`FileStore`] (the default) keeps the same records as JSON
+//! `balances`, `ledger`, `alert_prefs`, `seasons`, `season_placements`, `auctions`,
+//! `push_subscriptions`, `push_prefs`, `server_secrets`). [`FileStore`] (the default) keeps the same records as JSON
 //! files in a data directory, and [`MemoryStore`] serves tests.
 //!
 //! What is persisted: accounts (name, player id, argon2 hash), founder
@@ -18,10 +19,12 @@
 //! game state around it, `crate::snapshot`, which includes players' alerts;
 //! the newest [`KEEP_SNAPSHOTS`] are kept) and, once per world, its static
 //! terrain, which saved games name by world id and content hash instead of
-//! carrying it. Not persisted: login sessions (clients log in again after a
-//! restart).
+//! carrying it. Also players' Web Push subscriptions and push preferences
+//! (`crate::webpush`) and server secrets (the generated VAPID key). Not
+//! persisted: login sessions (clients log in again after a restart).
 //!
-//! Accounts and alert preferences are global (one account plays in every
+//! Accounts, alert and push preferences, push subscriptions and server
+//! secrets are global (one account plays in every
 //! world); everything else belongs to one configured world (`shard`, see
 //! [`Store`] and `crate::worlds`), so each world has its own designs,
 //! history, trades, saved games, terrains, balances, ledger, auction results and ranked seasons. Data
@@ -45,7 +48,7 @@ use tokio::sync::Mutex;
 
 use crate::design::DesignSpec;
 use crate::league::{self, PlayerSeason, SeasonHead, SeasonRecord};
-use crate::protocol::{AlertPrefs, LedgerEntry};
+use crate::protocol::{AlertPrefs, LedgerEntry, PushPrefs};
 
 #[cfg(feature = "postgres")]
 mod pg;
@@ -219,8 +222,41 @@ pub struct AlertPrefsRecord {
     pub prefs: AlertPrefs,
 }
 
-/// Persistence for every world of the server. Accounts and alert
-/// preferences are global; every other record belongs to one world, named
+/// A browser's Web Push subscription (`PushSubscription.toJSON()`), owned
+/// by one player. The endpoint identifies it: subscribing it again (or
+/// under another account, on a shared device) replaces the record.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PushSubscriptionRecord {
+    pub player: PlayerId,
+    /// The push service URL to POST messages to.
+    pub endpoint: String,
+    /// The user agent's P-256 public key, base64url (uncompressed point).
+    pub p256dh: String,
+    /// The 16-byte authentication secret, base64url.
+    pub auth: String,
+    pub created_unix: u64,
+    /// What the player called the device (or the browser's user agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// A player's push preferences (upserted when they change them).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PushPrefsRecord {
+    pub player: PlayerId,
+    #[serde(flatten)]
+    pub prefs: PushPrefs,
+}
+
+/// Subscriptions oldest first (ties by endpoint), the order every store
+/// lists them in.
+fn sort_subscriptions(v: &mut [PushSubscriptionRecord]) {
+    v.sort_by(|a, b| (a.created_unix, &a.endpoint).cmp(&(b.created_unix, &b.endpoint)));
+}
+
+/// Persistence for every world of the server. Accounts, alert and push
+/// preferences, push subscriptions and server secrets are global; every
+/// other record belongs to one world, named
 /// by `shard`: the configured world id (`crate::worlds`, `main` for a
 /// single-world server). Records of one shard are never seen through
 /// another. [`WorldStore`] binds a shard for code that serves one world.
@@ -233,6 +269,20 @@ pub trait Store: Send + Sync {
     async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()>;
     /// A player's alert preferences, if they ever saved any.
     async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>>;
+    /// Insert a push subscription, or replace the one with its endpoint.
+    async fn put_push_subscription(&self, record: &PushSubscriptionRecord) -> StoreResult<()>;
+    /// Delete the subscription with this endpoint; whether there was one.
+    async fn delete_push_subscription(&self, endpoint: &str) -> StoreResult<bool>;
+    /// A player's push subscriptions, oldest first.
+    async fn load_push_subscriptions(&self, player: PlayerId) -> StoreResult<Vec<PushSubscriptionRecord>>;
+    /// Insert or replace a player's push preferences.
+    async fn put_push_prefs(&self, record: &PushPrefsRecord) -> StoreResult<()>;
+    /// A player's push preferences, if they ever saved any.
+    async fn load_push_prefs(&self, player: PlayerId) -> StoreResult<Option<PushPrefsRecord>>;
+    /// Store the server secret `name` unless one is stored already, and
+    /// return the stored value (`value` if it was absent). Several servers
+    /// sharing a database agree on the first one written.
+    async fn put_secret_if_absent(&self, name: &str, value: &str) -> StoreResult<String>;
 
     async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>>;
     /// Insert or replace the player's design in the world.
@@ -431,6 +481,9 @@ pub struct MemoryStore {
 struct MemInner {
     accounts: Vec<AccountRecord>,
     alert_prefs: BTreeMap<PlayerId, AlertPrefsRecord>,
+    push_subscriptions: BTreeMap<String, PushSubscriptionRecord>,
+    push_prefs: BTreeMap<PlayerId, PushPrefsRecord>,
+    secrets: BTreeMap<String, String>,
     worlds: BTreeMap<String, MemWorld>,
 }
 
@@ -485,6 +538,35 @@ impl Store for MemoryStore {
 
     async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
         Ok(self.inner.lock().await.alert_prefs.get(&player).cloned())
+    }
+
+    async fn put_push_subscription(&self, record: &PushSubscriptionRecord) -> StoreResult<()> {
+        self.inner.lock().await.push_subscriptions.insert(record.endpoint.clone(), record.clone());
+        Ok(())
+    }
+
+    async fn delete_push_subscription(&self, endpoint: &str) -> StoreResult<bool> {
+        Ok(self.inner.lock().await.push_subscriptions.remove(endpoint).is_some())
+    }
+
+    async fn load_push_subscriptions(&self, player: PlayerId) -> StoreResult<Vec<PushSubscriptionRecord>> {
+        let g = self.inner.lock().await;
+        let mut v: Vec<_> = g.push_subscriptions.values().filter(|s| s.player == player).cloned().collect();
+        sort_subscriptions(&mut v);
+        Ok(v)
+    }
+
+    async fn put_push_prefs(&self, record: &PushPrefsRecord) -> StoreResult<()> {
+        self.inner.lock().await.push_prefs.insert(record.player, record.clone());
+        Ok(())
+    }
+
+    async fn load_push_prefs(&self, player: PlayerId) -> StoreResult<Option<PushPrefsRecord>> {
+        Ok(self.inner.lock().await.push_prefs.get(&player).cloned())
+    }
+
+    async fn put_secret_if_absent(&self, name: &str, value: &str) -> StoreResult<String> {
+        Ok(self.inner.lock().await.secrets.entry(name.to_string()).or_insert_with(|| value.to_string()).clone())
     }
 
     async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>> {
@@ -638,8 +720,11 @@ fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
 
 /// JSON files in one directory. Global tables at the top:
 ///
-/// - `accounts.json`, `alert_prefs.json`: whole tables, rewritten
-///   atomically (write to a temp file, then rename) on every change;
+/// - `accounts.json`, `alert_prefs.json`, `push_subscriptions.json`,
+///   `push_prefs.json`: whole tables, rewritten atomically (write to a temp
+///   file, then rename) on every change;
+/// - `secrets.json`: server secrets (the generated VAPID private key),
+///   written the same way, readable by the owner only (mode 0600 on Unix);
 ///
 /// and each world's records in `worlds/<world id>/`:
 ///
@@ -666,6 +751,9 @@ pub struct FileStore {
 struct Tables {
     accounts: Vec<AccountRecord>,
     alert_prefs: Vec<AlertPrefsRecord>,
+    push_subscriptions: Vec<PushSubscriptionRecord>,
+    push_prefs: Vec<PushPrefsRecord>,
+    secrets: BTreeMap<String, String>,
     /// Each world's small tables, read on first use.
     worlds: BTreeMap<String, WorldTables>,
 }
@@ -690,6 +778,9 @@ pub const FILE_STORE_WORLD_FILES: &[&str] = &[
 ];
 
 const WORLDS_DIR: &str = "worlds";
+const PUSH_SUBSCRIPTIONS_FILE: &str = "push_subscriptions.json";
+const PUSH_PREFS_FILE: &str = "push_prefs.json";
+const SECRETS_FILE: &str = "secrets.json";
 
 impl FileStore {
     pub async fn open(dir: impl AsRef<Path>) -> StoreResult<Self> {
@@ -698,7 +789,30 @@ impl FileStore {
         migrate_single_world_layout(&dir).await?;
         let accounts = read_table(&dir.join("accounts.json")).await?;
         let alert_prefs = read_table(&dir.join("alert_prefs.json")).await?;
-        Ok(Self { dir, tables: Mutex::new(Tables { accounts, alert_prefs, worlds: BTreeMap::new() }) })
+        let push_subscriptions = read_table(&dir.join(PUSH_SUBSCRIPTIONS_FILE)).await?;
+        let push_prefs = read_table(&dir.join(PUSH_PREFS_FILE)).await?;
+        let secrets = match tokio::fs::read(dir.join(SECRETS_FILE)).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let tables = Tables { accounts, alert_prefs, push_subscriptions, push_prefs, secrets, worlds: BTreeMap::new() };
+        Ok(Self { dir, tables: Mutex::new(tables) })
+    }
+
+    /// Write the secrets, readable by the owner only.
+    async fn write_secrets(&self, secrets: &BTreeMap<String, String>) -> StoreResult<()> {
+        let tmp = self.dir.join(format!("{SECRETS_FILE}.tmp"));
+        let mut opts = tokio::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        let mut f = opts.open(&tmp).await?;
+        f.write_all(&serde_json::to_vec_pretty(secrets)?).await?;
+        f.sync_all().await?;
+        drop(f);
+        tokio::fs::rename(&tmp, self.dir.join(SECRETS_FILE)).await?;
+        Ok(())
     }
 
     /// The directory of a world's records.
@@ -855,6 +969,61 @@ impl Store for FileStore {
 
     async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
         Ok(self.tables.lock().await.alert_prefs.iter().find(|r| r.player == player).cloned())
+    }
+
+    async fn put_push_subscription(&self, record: &PushSubscriptionRecord) -> StoreResult<()> {
+        let mut t = self.tables.lock().await;
+        let before = t.push_subscriptions.clone();
+        t.push_subscriptions.retain(|s| s.endpoint != record.endpoint);
+        t.push_subscriptions.push(record.clone());
+        if let Err(e) = self.write_table(&self.dir, PUSH_SUBSCRIPTIONS_FILE, &t.push_subscriptions).await {
+            t.push_subscriptions = before;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    async fn delete_push_subscription(&self, endpoint: &str) -> StoreResult<bool> {
+        let mut t = self.tables.lock().await;
+        let n = t.push_subscriptions.len();
+        t.push_subscriptions.retain(|s| s.endpoint != endpoint);
+        if t.push_subscriptions.len() == n {
+            return Ok(false);
+        }
+        self.write_table(&self.dir, PUSH_SUBSCRIPTIONS_FILE, &t.push_subscriptions).await?;
+        Ok(true)
+    }
+
+    async fn load_push_subscriptions(&self, player: PlayerId) -> StoreResult<Vec<PushSubscriptionRecord>> {
+        let t = self.tables.lock().await;
+        let mut v: Vec<_> = t.push_subscriptions.iter().filter(|s| s.player == player).cloned().collect();
+        sort_subscriptions(&mut v);
+        Ok(v)
+    }
+
+    async fn put_push_prefs(&self, record: &PushPrefsRecord) -> StoreResult<()> {
+        let mut t = self.tables.lock().await;
+        match t.push_prefs.iter_mut().find(|r| r.player == record.player) {
+            Some(r) => *r = record.clone(),
+            None => t.push_prefs.push(record.clone()),
+        }
+        self.write_table(&self.dir, PUSH_PREFS_FILE, &t.push_prefs).await
+    }
+
+    async fn load_push_prefs(&self, player: PlayerId) -> StoreResult<Option<PushPrefsRecord>> {
+        Ok(self.tables.lock().await.push_prefs.iter().find(|r| r.player == player).cloned())
+    }
+
+    async fn put_secret_if_absent(&self, name: &str, value: &str) -> StoreResult<String> {
+        let mut t = self.tables.lock().await;
+        if let Some(v) = t.secrets.get(name) {
+            return Ok(v.clone());
+        }
+        let mut secrets = t.secrets.clone();
+        secrets.insert(name.to_string(), value.to_string());
+        self.write_secrets(&secrets).await?;
+        t.secrets = secrets;
+        Ok(value.to_string())
     }
 
     async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>> {

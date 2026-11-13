@@ -5,6 +5,8 @@
 //!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
 //!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
 //!            [--season-days N] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
+//!            [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:...] [--push-per-hour N]
+//!            [--push-allow-any-endpoint]
 //! ```
 //!
 //! `--database-url` (or the `DATABASE_URL` environment variable) keeps
@@ -17,6 +19,14 @@
 //! separated by `;`. Command-line worlds replace the variable's. A world's
 //! missing seed and size come from `--seed` and `--size`.
 //!
+//! Push notifications are on unless `--no-push`. The VAPID key comes from
+//! `--vapid-private-key` (or `EVO_VAPID_PRIVATE_KEY`: the raw P-256 private
+//! key, base64url), else from the store, where the server keeps the one it
+//! generates on first start. `--vapid-subject` (or `EVO_VAPID_SUBJECT`) is
+//! the contact push services see. `--push-allow-any-endpoint` accepts
+//! subscription endpoints outside the browsers' push services, plain http
+//! included (tests, private push servers).
+//!
 //! SIGINT (Ctrl-C) or SIGTERM stops it gracefully, saving the world first.
 
 use std::time::Duration;
@@ -28,13 +38,23 @@ const USAGE: &str =
     "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory | --database-url URL] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
 [--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] \
-[--season-days 60] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]";
+[--season-days 60] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE] \
+[--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:you@example.org] [--push-per-hour 4] \
+[--push-allow-any-endpoint]";
 
 fn parse_args() -> Result<ServerConfig, String> {
     let mut cfg = ServerConfig {
         database_url: std::env::var("DATABASE_URL").ok().filter(|u| !u.is_empty()),
         ..Default::default()
     };
+    if let Ok(k) = std::env::var("EVO_VAPID_PRIVATE_KEY") {
+        cfg.push.vapid_private_key = Some(k).filter(|k| !k.trim().is_empty());
+    }
+    if let Ok(s) = std::env::var("EVO_VAPID_SUBJECT") {
+        if !s.trim().is_empty() {
+            cfg.push.subject = s;
+        }
+    }
     let mut worlds = match std::env::var("EVO_WORLDS") {
         Ok(v) if !v.trim().is_empty() => WorldSpec::parse_list(&v).map_err(|e| format!("EVO_WORLDS: {e}"))?,
         _ => Vec::new(),
@@ -100,6 +120,24 @@ fn parse_args() -> Result<ServerConfig, String> {
                 cfg.game.season_days = n;
             }
             "--fresh" => cfg.fresh = true,
+            "--no-push" => cfg.push.enabled = false,
+            "--vapid-private-key" => cfg.push.vapid_private_key = Some(value("--vapid-private-key")?),
+            "--vapid-subject" => {
+                let s = value("--vapid-subject")?;
+                if !(s.starts_with("mailto:") || s.starts_with("https://")) {
+                    return Err("--vapid-subject must be a mailto: or https: URL".into());
+                }
+                cfg.push.subject = s;
+            }
+            "--push-per-hour" => {
+                let n: u32 = value("--push-per-hour")?.parse().map_err(|e| format!("--push-per-hour: {e}"))?;
+                if !(1..=60).contains(&n) {
+                    return Err("--push-per-hour must be in 1..=60".into());
+                }
+                cfg.push.limits.per_hour = n;
+                cfg.push.limits.min_gap = cfg.push.limits.min_gap.min(Duration::from_secs(3600 / u64::from(n)));
+            }
+            "--push-allow-any-endpoint" => cfg.push.allow_any_endpoint = true,
             "--world" => cli_worlds.push(WorldSpec::parse(&value("--world")?).map_err(|e| format!("--world: {e}"))?),
             "--worlds-file" => {
                 let path = value("--worlds-file")?;
