@@ -615,6 +615,8 @@ impl World {
 
         let bal = self.config.balance;
         let dormant_rate = self.dormant_rate(&self.organisms[i]);
+        // Group navigation: travelling with its group costs a migrant less.
+        let nav = if intent.action == Action::Migrate { self.navigation_bonus(&self.organisms[i]) } else { 0.0 };
         let o = &mut self.organisms[i];
         let st = o.traits.stats;
         let deep = o.dormancy.is_deep();
@@ -671,11 +673,12 @@ impl World {
         let pregnant = if o.pregnancy.is_some() { 1.0 + bal.pregnancy_cost * o.traits.litter_burden } else { 1.0 };
         let size = o.pheno[Gene::BodySize];
         let watch = if intent.action == Action::Sentry { 1.0 + bal.sentry_cost } else { 1.0 };
+        let travel = (1.0 - bal.group_navigation / 3.0 * nav).max(0.0);
         // Carnivores eat big, infrequent meals: hunger rises more slowly.
         let diet = 1.0 - bal.carnivore_hunger_discount * o.traits.carnivory;
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
-        let mut hunger = bal.hunger_rate * st.metabolism * diet * crowd * thermo * activity_mult * pregnant * watch * dt;
+        let mut hunger = bal.hunger_rate * st.metabolism * diet * crowd * thermo * activity_mult * pregnant * watch * travel * dt;
         let mut thirst = bal.thirst_rate * (1.0 + 0.05 * heat) * (0.8 + 0.4 * size) * if o.traits.warm { 1.0 } else { 0.7 } * dt;
         if o.dormancy != Dormancy::Awake {
             hunger *= dormant_rate;

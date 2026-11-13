@@ -467,7 +467,13 @@ impl World {
             }
             Action::Group => intent.target = kin_centroid,
             Action::Wander => self.wander(o, &mut intent, &mut rng, 2.0 + 8.0 * p[Gene::Wanderlust]),
-            Action::Migrate => intent.target = season_dest.or_else(|| self.migrate_orders.get(&o.owner).copied()),
+            // Navigating with its group, it keeps up with the group.
+            Action::Migrate => {
+                intent.target = match season_dest {
+                    Some(d) => Some(self.migration_target(o, d, kin_centroid)),
+                    None => self.migrate_orders.get(&o.owner).copied(),
+                }
+            }
             Action::Cache => self.choose_cache_spot(o, &mut intent, &mut rng),
             Action::FollowParent => intent.target = mother_pos,
             Action::Guard => intent.target = o.nest,
@@ -680,7 +686,7 @@ impl World {
     fn choose_cache_spot(&self, o: &Organism, intent: &mut Intent, rng: &mut SimRng) {
         let eff = 1.0 - o.traits.carnivory;
         let bite = 25.0 * o.food_per_hunger();
-        if let Some(c) = o.cache_pos.filter(|&c| o.cache > 0.5 && o.pos.dist(c) > super::seasonal::CACHE_RANGE - 1.0) {
+        if let Some(c) = self.cache_home(o).filter(|&c| o.pos.dist(c) > super::seasonal::CACHE_RANGE - 1.0) {
             intent.target = Some(c);
         } else if self.map.tile_at(o.pos).veg * eff > 0.5 * bite {
             intent.target = None;

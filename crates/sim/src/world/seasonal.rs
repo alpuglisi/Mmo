@@ -8,6 +8,14 @@
 //! | Food caching | Gathers plant food into a cache in summer and autumn, eats from it in winter and spring. Anyone else can raid it. |
 //! | Torpor | On cold nights while resting: cheaper metabolism, cold costs nothing extra, but still exposed and slow to react until morning. |
 //!
+//! With group tolerance they become critical-mass group traits (`group`):
+//!
+//! | Group trait | Rule |
+//! | --- | --- |
+//! | Communal dens | A winter-sleeping carrier with dormant carrier den mates close by burns fat and water more slowly (`communal_den`). Solitary sleepers get nothing. |
+//! | Group navigation | A migrating carrier travelling with kin where the trait holds runs less journey risk, uses less food on the way, keeps up with its group and picks its winter pasture from a wider scan (`group_navigation`). |
+//! | Shared caches | Where the trait holds, carriers gather into one regional cache per lineage: bigger (`shared_cache`) and slower to spoil than a private hoard. Any plant-eating group member of the lineage may eat from it, free riders included; anyone hungry on its tile can raid it. |
+//!
 //! Everything is a few comparisons per organism per tick; deep sleepers skip
 //! perception entirely, so a hibernating population is cheaper than an
 //! active one.
@@ -16,6 +24,7 @@ use rand::Rng;
 
 use super::{Intent, World};
 use crate::genome::Gene;
+use crate::group::{is_group_forager, GroupTrait};
 use crate::math::Vec2;
 use crate::organism::{Action, DeathCause, Dormancy, Organism};
 use crate::rng::SimRng;
@@ -52,6 +61,37 @@ const CACHE_DIET: f32 = 0.3;
 const ESTIVATION_DRYNESS: f32 = 1.0 - crate::terrain::DROUGHT_WETNESS;
 /// Dryness drop below [`ESTIVATION_DRYNESS`] at which a drought sleeper wakes.
 const DRYNESS_MARGIN: f32 = 0.1;
+/// Communal dens: side of a den cell in tiles; den mates are the dormant
+/// carriers in the 3×3 cells around a sleeper's.
+const DEN_CELL: usize = 2;
+/// Den mates for the full communal-den saving.
+const DEN_MATES: f32 = 3.0;
+/// Kin needed nearby to travel as a group (group navigation).
+const NAV_KIN: u16 = 2;
+/// How far ahead (tiles) a navigator's group may be before it hurries after
+/// it instead of heading straight for its range.
+const NAV_STRAGGLE: f32 = 3.0;
+/// Pasture spots along the range latitude a migrator compares: the first 9
+/// alone, all 13 navigating with its group.
+const RANGE_SPOTS: [f32; 13] = [0.0, 4.0, -4.0, 8.0, -8.0, 12.0, -12.0, 16.0, -16.0, 20.0, -20.0, 24.0, -24.0];
+/// Spoilage of a shared cache as a share of a private hoard's.
+const SHARED_SPOIL: f32 = 0.5;
+
+/// A lineage's shared food cache in one group region (`GroupTrait::SharedCaches`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SharedCache {
+    pub pos: Vec2,
+    /// Plant food units.
+    pub food: f32,
+    pub cap: f32,
+}
+
+/// Where a cache is: an organism's private hoard or a shared cache.
+#[derive(Clone, Copy)]
+enum Store {
+    Own(usize),
+    Shared((usize, u32)),
+}
 
 impl World {
     /// Seasonal mean temperature at `p` (no day/night swing or storms).
@@ -92,13 +132,67 @@ impl World {
         let s = &o.traits.seasonal;
         match o.dormancy {
             Dormancy::Awake => 1.0,
-            Dormancy::Winter => match s.winter {
-                Some((WinterForm::WarmBrumator, k)) => bal.dormant_metabolism * (2.0 - k) * bal.brumation_mismatch,
-                Some((_, k)) => bal.dormant_metabolism * (2.0 - k),
-                None => 1.0,
-            },
+            Dormancy::Winter => {
+                let den = 1.0 - bal.communal_den * self.den_heat(o);
+                match s.winter {
+                    Some((WinterForm::WarmBrumator, k)) => bal.dormant_metabolism * (2.0 - k) * bal.brumation_mismatch * den,
+                    Some((_, k)) => bal.dormant_metabolism * (2.0 - k) * den,
+                    None => 1.0,
+                }
+            }
             Dormancy::Summer => bal.dormant_metabolism * (2.0 - s.estivation),
             Dormancy::Torpor => 1.0 - (1.0 - bal.torpor_metabolism) * s.torpor,
+        }
+    }
+
+    /// Communal-den warmth of a winter sleeper in [0, 1]: the regional
+    /// benefit, scaled by its dormant carrier den mates (full at
+    /// [`DEN_MATES`]); 0 for a non-carrier or a solitary sleeper.
+    pub(crate) fn den_heat(&self, o: &Organism) -> f32 {
+        let t = GroupTrait::CommunalDens;
+        if self.config.balance.communal_den <= 0.0 || o.dormancy != Dormancy::Winter || !t.is_carrier(&o.pheno) {
+            return 0.0;
+        }
+        let (x, y) = self.map.tile_coords(o.pos);
+        let (cx, cy) = (x / DEN_CELL, y / DEN_CELL);
+        let mut sleepers = 0u32;
+        for gy in cy.saturating_sub(1)..=cy + 1 {
+            for gx in cx.saturating_sub(1)..=cx + 1 {
+                sleepers += self.den_cells.get(&(gx, gy)).copied().unwrap_or(0) as u32;
+            }
+        }
+        // The count includes the sleeper itself once it has been counted
+        // (hourly).
+        let mates = sleepers.saturating_sub(1) as f32;
+        if mates <= 0.0 {
+            return 0.0;
+        }
+        self.group.benefit(t, o.pos) * (mates / DEN_MATES).min(1.0)
+    }
+
+    /// Group-navigation benefit of a migrator: a carrier travelling with kin,
+    /// where the trait holds at its summer range or where it is now.
+    pub(crate) fn navigation_bonus(&self, o: &Organism) -> f32 {
+        let t = GroupTrait::GroupNavigation;
+        if self.config.balance.group_navigation <= 0.0 || o.kin_nearby < NAV_KIN || !t.is_carrier(&o.pheno) {
+            return 0.0;
+        }
+        self.group.benefit(t, o.pos).max(self.group.benefit(t, o.range))
+    }
+
+    /// A navigator's migration target: its group's centroid while the group
+    /// is more than [`NAV_STRAGGLE`] tiles ahead on the way, else `dest`.
+    pub(crate) fn migration_target(&self, o: &Organism, dest: Vec2, kin_centroid: Option<Vec2>) -> Vec2 {
+        let Some(c) = kin_centroid.filter(|_| self.navigation_bonus(o) > 0.5) else {
+            return dest;
+        };
+        let (ahead, to) = (c - o.pos, dest - o.pos);
+        let (a, d) = (ahead.len(), to.len());
+        let dot = ahead.x * to.x + ahead.y * to.y;
+        if a > NAV_STRAGGLE && a < d && dot > 0.7 * a * d {
+            c
+        } else {
+            dest
         }
     }
 
@@ -201,8 +295,10 @@ impl World {
         }
         // The best pasture with water nearby among a few spots on that
         // latitude, nearer the range's longitude first (ties keep the nearer).
+        // Navigating with its group, it compares more spots.
+        let spots = if self.navigation_bonus(o) > 0.5 { RANGE_SPOTS.len() } else { 9 };
         let mut best: Option<(f32, Vec2)> = None;
-        for dx in [0.0, 4.0, -4.0, 8.0, -8.0, 12.0, -12.0, 16.0, -16.0] {
+        for &dx in &RANGE_SPOTS[..spots] {
             let p = self.map.clamp(Vec2::new(o.range.x + dx, ty));
             if !self.passable_for(o, p) {
                 continue;
@@ -219,14 +315,14 @@ impl World {
     }
 
     /// Death risk of a migration leg: per tile travelled, worse for low
-    /// endurance, halved by group navigation.
+    /// endurance, cut by group navigation.
     pub(crate) fn journey_death(&self, i: usize, moved: f32, rng: &mut SimRng) -> bool {
         let o = &self.organisms[i];
         let risk = self.config.balance.migration_risk;
         if risk <= 0.0 || moved <= 0.0 || o.traits.seasonal.migration <= 0.0 {
             return false;
         }
-        let nav = if o.kin_nearby >= 3 { 1.0 - 0.5 * o.pheno[Gene::GroupTolerance] } else { 1.0 };
+        let nav = 1.0 - self.config.balance.group_navigation * self.navigation_bonus(o);
         let hazard = risk * moved * (1.5 - o.traits.stats.endurance).max(0.2) * nav;
         rng.gen::<f32>() < hazard
     }
@@ -248,8 +344,47 @@ impl World {
         {
             return 0.0;
         }
-        let room = 1.0 - o.cache / self.cache_capacity(o).max(1e-6);
+        let room = match self.shared_gather_key(o) {
+            Some(key) => {
+                let food = self.shared_caches.get(&key).map_or(0.0, |c| c.food);
+                1.0 - food / self.shared_capacity(o).max(1e-6)
+            }
+            None => 1.0 - o.cache / self.cache_capacity(o).max(1e-6),
+        };
         0.3 * room.max(0.0)
+    }
+
+    /// Shared cache that a plant-eating group member may eat from: its
+    /// lineage's in the region it is in.
+    fn shared_key(&self, o: &Organism) -> Option<(usize, u32)> {
+        is_group_forager(&o.pheno).then(|| (self.group.region(o.pos), o.lineage))
+    }
+
+    /// Shared cache a carrier gathers into: where the trait holds (benefit
+    /// above half), its group's cache in the region (a new one if empty or
+    /// none yet).
+    fn shared_gather_key(&self, o: &Organism) -> Option<(usize, u32)> {
+        let t = GroupTrait::SharedCaches;
+        if self.config.balance.shared_cache <= 0.0 || !t.is_carrier(&o.pheno) || self.group.benefit(t, o.pos) <= 0.5 {
+            return None;
+        }
+        Some((self.group.region(o.pos), o.lineage))
+    }
+
+    /// Where a cacher gathers around: its group's shared cache where it
+    /// gathers into one, else its own hoard (none for a new cache).
+    pub(crate) fn cache_home(&self, o: &Organism) -> Option<Vec2> {
+        match self.shared_gather_key(o) {
+            Some(key) => self.shared_caches.get(&key).filter(|c| c.food > 0.5).map(|c| c.pos),
+            None => o.cache_pos.filter(|_| o.cache > 0.5),
+        }
+    }
+
+    /// Capacity of a shared cache, in `o`'s food units: `shared_cache` full
+    /// private hoards.
+    fn shared_capacity(&self, o: &Organism) -> f32 {
+        let eff = (1.0 - o.traits.carnivory).max(0.05);
+        self.config.balance.shared_cache * self.config.balance.cache_capacity * o.food_per_hunger() / eff
     }
 
     /// Whether a hungry cacher should go eat from its cache: in winter and
@@ -257,12 +392,22 @@ impl World {
     pub(crate) fn cache_to_eat(&self, o: &Organism, bite: f32) -> Option<Vec2> {
         let lean = matches!(self.season(), Season::Winter | Season::Spring) || o.needs.hunger > 70.0;
         let eff = 1.0 - o.traits.carnivory;
-        o.cache_pos.filter(|_| lean && o.cache * eff >= bite)
+        if !lean {
+            return None;
+        }
+        o.cache_pos.filter(|_| o.cache * eff >= bite).or_else(|| {
+            let c = self.shared_caches.get(&self.shared_key(o)?)?;
+            (c.food * eff >= bite).then_some(c.pos)
+        })
     }
 
     /// Gather plant food from the current tile into the cache. The cache is
     /// placed where gathering starts and stays there until emptied.
     pub(crate) fn gather(&mut self, i: usize) {
+        if let Some(key) = self.shared_gather_key(&self.organisms[i]) {
+            self.gather_shared(i, key);
+            return;
+        }
         let dt = self.config.dt_days();
         let cap = self.cache_capacity(&self.organisms[i]);
         let o = &self.organisms[i];
@@ -284,34 +429,100 @@ impl World {
         o.cache_pos = Some(home);
     }
 
-    /// Eat food out of a cache on this tile: one's own when grazing at it, or
-    /// anyone's when hungry (`raider`).
+    /// Gather plant food from the current tile into the group's shared
+    /// cache `key`, starting it here if it is empty.
+    fn gather_shared(&mut self, i: usize, key: (usize, u32)) {
+        let dt = self.config.dt_days();
+        let o = &self.organisms[i];
+        let cap = self.shared_capacity(o);
+        let eff = 1.0 - o.traits.carnivory;
+        let pos = o.pos;
+        let rate = 0.5 * super::apply::MAX_INTAKE_PER_DAY * dt * o.food_per_hunger() / eff;
+        let c = self.shared_caches.entry(key).or_insert(SharedCache { pos, food: 0.0, cap });
+        if c.food <= 0.5 {
+            c.pos = pos;
+        } else if c.pos.dist(pos) > CACHE_RANGE {
+            return;
+        }
+        c.cap = c.cap.max(cap);
+        let tile = self.map.tile_at_mut(pos);
+        let got = rate.min(tile.veg).min((c.cap - c.food).max(0.0));
+        tile.veg -= got;
+        c.food += got;
+        let home = self.map.tile_coords(c.pos);
+        self.shared_cache_at.insert(home, key);
+    }
+
+    /// Eat food out of a cache on this tile: one's own, or its group's shared
+    /// cache, when grazing at it; anyone's, shared ones included, when hungry
+    /// (`raider`).
     pub(crate) fn eat_cache(&mut self, i: usize, raider: bool) {
         let o = &self.organisms[i];
         let eff = 1.0 - o.traits.carnivory;
         if eff < CACHE_DIET || o.needs.hunger < if raider { 30.0 } else { 5.0 } {
             return;
         }
-        let owner = if raider {
-            match self.cache_at.get(&self.map.tile_coords(o.pos)) {
-                Some(&j) if j != i => j,
+        let here = self.map.tile_coords(o.pos);
+        let shared_here = self.shared_cache_at.get(&here).copied();
+        let store = if raider {
+            match (self.cache_at.get(&here), shared_here) {
+                (Some(&j), _) if j != i => Store::Own(j),
+                (_, Some(k)) => Store::Shared(k),
                 _ => return,
             }
+        } else if o.cache > 0.0 && o.cache_pos.is_some_and(|c| self.map.tile_coords(c) == here) {
+            Store::Own(i)
         } else {
-            i
+            match (self.shared_key(o), shared_here) {
+                (Some(k), Some(at)) if k == at => Store::Shared(k),
+                _ => return,
+            }
         };
-        let c = &self.organisms[owner];
-        let Some(at) = c.cache_pos else {
-            return;
+        let (at, food) = match store {
+            Store::Own(j) => {
+                let c = &self.organisms[j];
+                match c.cache_pos {
+                    Some(at) => (at, c.cache),
+                    None => return,
+                }
+            }
+            Store::Shared(k) => match self.shared_caches.get(&k) {
+                Some(c) => (c.pos, c.food),
+                None => return,
+            },
         };
-        if c.cache <= 0.0 || self.map.tile_coords(at) != self.map.tile_coords(o.pos) {
+        if food <= 0.0 || self.map.tile_coords(at) != here {
             return;
         }
         let want = (super::apply::MAX_INTAKE_PER_DAY * self.config.dt_days()).min(o.needs.hunger);
         let fph = o.food_per_hunger();
-        let got = (want * fph / eff).min(c.cache);
-        self.organisms[owner].cache -= got;
+        let got = (want * fph / eff).min(food);
+        match store {
+            Store::Own(j) => self.organisms[j].cache -= got,
+            Store::Shared(k) => {
+                if let Some(c) = self.shared_caches.get_mut(&k) {
+                    c.food -= got;
+                }
+            }
+        }
         self.feed(i, got * eff / fph, 0.0);
+    }
+
+    /// Hourly spoilage of shared caches; empty ones are dropped.
+    pub(crate) fn spoil_shared_caches(&mut self) {
+        if self.shared_caches.is_empty() {
+            return;
+        }
+        let keep = 1.0 - CACHE_SPOIL * SHARED_SPOIL / 24.0;
+        self.shared_caches.retain(|_, c| {
+            c.food *= keep;
+            c.food > 0.01
+        });
+    }
+
+    /// Food in shared caches per lineage, for reports.
+    pub fn shared_cache_food(&self, lineage: u32) -> f32 {
+        self.shared_caches.iter().filter(|((_, l), _)| *l == lineage).map(|(_, c)| c.food).sum()
     }
 
     /// Tile → organism index of every cache, for raids. Rebuilt hourly and
@@ -325,6 +536,20 @@ impl World {
             }
         }
         self.cache_at = at;
+        self.shared_cache_at.clear();
+        for (&key, c) in &self.shared_caches {
+            self.shared_cache_at.insert(self.map.tile_coords(c.pos), key);
+        }
+        // Communal-den sleepers per den cell.
+        self.den_cells.clear();
+        if self.config.balance.communal_den > 0.0 {
+            for o in &self.organisms {
+                if o.alive && o.dormancy == Dormancy::Winter && GroupTrait::CommunalDens.is_carrier(&o.pheno) {
+                    let (x, y) = self.map.tile_coords(o.pos);
+                    *self.den_cells.entry((x / DEN_CELL, y / DEN_CELL)).or_default() += 1;
+                }
+            }
+        }
     }
 }
 
@@ -610,5 +835,144 @@ mod tests {
         }
         w.step();
         assert!(t.iter().all(|&k| w.organisms[k].dormancy != Dormancy::Torpor));
+    }
+
+    fn set_benefit(w: &mut World, t: GroupTrait, b: f32) {
+        for r in &mut w.group.benefit {
+            r[t as usize] = b;
+        }
+    }
+
+    /// Den mates where communal dens hold burn fat more slowly than loners
+    /// and than solitary sleepers huddled together.
+    #[test]
+    fn den_mates_lose_less_fat_than_loners() {
+        let mut w = flat_world(0.0, 0.0, 95);
+        let hib = |gt: f32| design(Thermo::Warm).with(Gene::Hibernation, 0.9).with(Gene::GroupTolerance, gt);
+        let den = add(&mut w, &hib(0.9), 6);
+        let loner = add(&mut w, &hib(0.9), 1)[0];
+        let solitary = add(&mut w, &hib(0.1), 6);
+        // A den in one group region, a lone carrier and a huddle of
+        // non-carriers in others.
+        let place = |w: &mut World, k: usize, x: f32, y: f32| w.organisms[k].pos = Vec2::new(x, y);
+        for (n, &k) in den.iter().enumerate() {
+            place(&mut w, k, 4.0 + (n % 3) as f32, 4.0 + (n / 3) as f32);
+        }
+        place(&mut w, loner, 20.0, 4.0);
+        for (n, &k) in solitary.iter().enumerate() {
+            place(&mut w, k, 20.0 + (n % 3) as f32, 20.0 + (n / 3) as f32);
+        }
+        let all: Vec<usize> = den.iter().chain(&solitary).copied().chain([loner]).collect();
+        for &k in &all {
+            assert_eq!(GroupTrait::CommunalDens.is_carrier(&w.organisms[k].pheno), !solitary.contains(&k));
+            w.organisms[k].fat = 30.0;
+        }
+        w.run_days(2);
+        assert!(all.iter().all(|&k| w.organisms[k].dormancy == Dormancy::Winter));
+        let lost = |k: usize| 30.0 - w.organisms[k].fat;
+        let den_lost = den.iter().map(|&k| lost(k)).sum::<f32>() / den.len() as f32;
+        let huddle_lost = solitary.iter().map(|&k| lost(k)).sum::<f32>() / solitary.len() as f32;
+        assert!(w.den_heat(&w.organisms[den[0]]) > 0.9);
+        assert_eq!(w.den_heat(&w.organisms[loner]), 0.0, "no mates, no shared heat");
+        assert_eq!(w.den_heat(&w.organisms[solitary[0]]), 0.0, "non-carriers share nothing");
+        assert!(den_lost > 0.0 && den_lost < 0.7 * lost(loner), "den {den_lost} loner {}", lost(loner));
+        assert!(den_lost < 0.7 * huddle_lost, "den {den_lost} huddle {huddle_lost}");
+        // Below threshold the den is just a hole in the ground.
+        set_benefit(&mut w, GroupTrait::CommunalDens, 0.0);
+        assert_eq!(w.den_heat(&w.organisms[den[0]]), 0.0);
+    }
+
+    /// Migrants that navigate as a group lose fewer to the journey.
+    #[test]
+    fn group_migrants_lose_fewer_to_the_journey() {
+        let trip = |gt: f32| {
+            let mut w = flat_world(15.0, 40.0, 65);
+            w.config.balance.migration_risk = 0.05;
+            let d = design(Thermo::Warm).with(Gene::Migration, 1.0).with(Gene::GroupTolerance, gt);
+            let m = add(&mut w, &d, 40);
+            for (n, &k) in m.iter().enumerate() {
+                w.organisms[k].range = Vec2::new(6.0, 0.5);
+                w.organisms[k].pos = Vec2::new(4.0 + (n % 5) as f32, 1.0);
+            }
+            w.run_days(1);
+            let carrier = GroupTrait::GroupNavigation.is_carrier(&w.organisms[m[0]].pheno);
+            let lost = w.counters.deaths.get(&DeathCause::Journey).copied().unwrap_or(0);
+            (carrier, lost, w)
+        };
+        let (carrier, solo, _) = trip(0.1);
+        assert!(!carrier);
+        let (carrier, group, mut w) = trip(0.9);
+        assert!(carrier);
+        assert!(solo >= 6, "{solo} of 40 lost travelling alone");
+        assert!(group * 2 <= solo, "{group} of 40 lost navigating as a group vs {solo}");
+        // Navigation needs the trait to hold and kin around.
+        let mut o = w.organisms.iter().find(|o| o.alive).unwrap().clone();
+        o.kin_nearby = 10;
+        set_benefit(&mut w, GroupTrait::GroupNavigation, 1.0);
+        assert_eq!(w.navigation_bonus(&o), 1.0);
+        o.kin_nearby = 0;
+        assert_eq!(w.navigation_bonus(&o), 0.0);
+        o.kin_nearby = 10;
+        set_benefit(&mut w, GroupTrait::GroupNavigation, 0.0);
+        assert_eq!(w.navigation_bonus(&o), 0.0);
+    }
+
+    /// Where shared caches hold, carriers stock one big group cache; a group
+    /// member that never caches eats from it too, and strangers can raid it.
+    #[test]
+    fn shared_caches_feed_the_group_free_riders_included() {
+        let t = GroupTrait::SharedCaches;
+        let mut w = flat_world(15.0, 40.0, 65);
+        let d = design(Thermo::Warm).with(Gene::Caching, 1.0).with(Gene::GroupTolerance, 0.9);
+        let group = add(&mut w, &d, 7);
+        for (n, &k) in group.iter().enumerate() {
+            w.organisms[k].pos = Vec2::new(4.0 + (n % 3) as f32, 4.0 + (n / 3) as f32);
+            w.organisms[k].needs.hunger = 0.0;
+        }
+        // One member never caches: a free rider.
+        let rider = group[6];
+        {
+            let o = &mut w.organisms[rider];
+            o.pheno.0[Gene::Caching.index()] = 0.0;
+            o.traits.seasonal.caching = 0.0;
+        }
+        assert!(!t.is_carrier(&w.organisms[rider].pheno) && t.is_eligible(&w.organisms[rider].pheno));
+        w.run_days(1);
+        let lineage = w.organisms[rider].lineage;
+        let key = (w.group.region(w.organisms[group[0]].pos), lineage);
+        let shared = *w.shared_caches.get(&key).expect("a shared cache");
+        let hoard = w.cache_capacity(&w.organisms[group[0]]);
+        assert!(shared.food > hoard, "shared {} vs one hoard {hoard}", shared.food);
+        assert!(group.iter().all(|&k| w.organisms[k].cache < 1.0), "nobody hoards alone");
+        // Winter: the free rider eats from the group's cache.
+        set_day(&mut w, 95);
+        w.rebuild_caches();
+        let o = &mut w.organisms[rider];
+        (o.pos, o.needs.hunger) = (shared.pos, 60.0);
+        let bite = 25.0 * w.organisms[rider].food_per_hunger();
+        assert_eq!(w.cache_to_eat(&w.organisms[rider], bite), Some(shared.pos));
+        w.eat_cache(rider, false);
+        let left = w.shared_caches[&key].food;
+        assert!(left < shared.food && w.organisms[rider].needs.hunger < 60.0);
+        // A stranger can't graze it, but raids it when hungry.
+        let s = add(&mut w, &design(Thermo::Warm), 2)[0];
+        (w.organisms[s].pos, w.organisms[s].needs.hunger) = (shared.pos, 80.0);
+        assert_eq!(w.cache_to_eat(&w.organisms[s], bite), None);
+        w.eat_cache(s, false);
+        assert_eq!(w.shared_caches[&key].food, left);
+        w.eat_cache(s, true);
+        assert!(w.shared_caches[&key].food < left && w.organisms[s].needs.hunger < 80.0);
+        // Below threshold, carriers hoard for themselves again.
+        set_day(&mut w, 65);
+        set_benefit(&mut w, t, 0.2);
+        let c = group[0];
+        w.organisms[c].pos = Vec2::new(12.0, 12.0);
+        let before = w.shared_caches[&key].food;
+        w.gather(c);
+        assert!(w.organisms[c].cache > 0.0 && w.shared_caches[&key].food == before);
+        // Shared caches spoil at half a hoard's rate.
+        w.spoil_shared_caches();
+        let kept = w.shared_caches[&key].food / before;
+        assert!((kept - (1.0 - CACHE_SPOIL * SHARED_SPOIL / 24.0)).abs() < 1e-6);
     }
 }

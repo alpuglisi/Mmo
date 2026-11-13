@@ -16,6 +16,7 @@ impl World {
         self.season_offset = crate::terrain::Map::seasonal_offset(doy, dpy);
         self.update_clutches(&mut rng);
         self.density.rebuild(&self.organisms, self.lineages.len());
+        self.spoil_shared_caches();
         self.rebuild_caches();
     }
 

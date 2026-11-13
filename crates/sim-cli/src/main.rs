@@ -53,7 +53,7 @@ disease_fertility disease_kin path_nodes water_response snowmelt_swell rain_grow
 storm_exposure canopy_share dormancy_temp estivation_temp dormant_metabolism
 dormancy_mismatch brumation_mismatch fat_capacity den_concealment migration_range
 migration_risk torpor_metabolism cache_capacity shared_burrow sentry_share
-sentry_vigilance sentry_cost
+sentry_vigilance sentry_cost communal_den group_navigation shared_cache
 ";
 
 struct Args {
@@ -348,6 +348,7 @@ fn print_seasonal(world: &World) {
         adults: usize,
         fat: f32,
         cached: f32,
+        shared: f32,
     }
     let mut rows: BTreeMap<u32, Row> = BTreeMap::new();
     for o in world.organisms.iter().filter(|o| o.alive) {
@@ -367,19 +368,23 @@ fn print_seasonal(world: &World) {
         }
         r.cached += o.cache;
     }
+    for (&l, r) in rows.iter_mut() {
+        r.shared = world.shared_cache_food(l);
+    }
     for (l, r) in rows {
-        if r.winter + r.summer + r.torpid + r.migrating == 0 && r.fat + r.cached < 1.0 {
+        if r.winter + r.summer + r.torpid + r.migrating == 0 && r.fat + r.cached + r.shared < 1.0 {
             continue;
         }
+        let shared = if r.shared >= 0.5 { format!(" (shared {:.0})", r.shared) } else { String::new() };
         println!(
-            "    {:<20} seasonal: hibernating {} · estivating {} · torpid {} · migrating {} · fat {:.0}/adult · cached {:.0}",
+            "    {:<20} seasonal: hibernating {} · estivating {} · torpid {} · migrating {} · fat {:.0}/adult · cached {:.0}{shared}",
             world.lineages[l as usize].name,
             r.winter,
             r.summer,
             r.torpid,
             r.migrating,
             r.fat / r.adults.max(1) as f32,
-            r.cached
+            r.cached + r.shared
         );
     }
 }

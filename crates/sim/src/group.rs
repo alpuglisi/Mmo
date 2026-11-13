@@ -7,11 +7,13 @@
 //! scaled down when there are fewer carriers than the trait needs.
 //!
 //! Implemented: cooperative hunting, warning coloration, herd defense, alarm
-//! calls, shared burrows, sentries. Group navigation, communal dens and
-//! shared caches wait on migration, hibernation and caching.
+//! calls, shared burrows, sentries, and the seasonal-strategy combinations
+//! communal dens, group navigation and shared caches (their effects live in
+//! `world::seasonal`).
 
 use crate::genome::{Gene, Phenotype};
 use crate::math::Vec2;
+use crate::stats::STRATEGY_THRESHOLD;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupTrait {
@@ -21,9 +23,12 @@ pub enum GroupTrait {
     AlarmCalls,
     SharedBurrows,
     Sentries,
+    CommunalDens,
+    GroupNavigation,
+    SharedCaches,
 }
 
-pub const GROUP_TRAIT_COUNT: usize = 6;
+pub const GROUP_TRAIT_COUNT: usize = 9;
 
 impl GroupTrait {
     pub const ALL: [GroupTrait; GROUP_TRAIT_COUNT] = [
@@ -33,6 +38,9 @@ impl GroupTrait {
         GroupTrait::AlarmCalls,
         GroupTrait::SharedBurrows,
         GroupTrait::Sentries,
+        GroupTrait::CommunalDens,
+        GroupTrait::GroupNavigation,
+        GroupTrait::SharedCaches,
     ];
 
     pub fn label(self) -> &'static str {
@@ -43,6 +51,9 @@ impl GroupTrait {
             GroupTrait::AlarmCalls => "alarm calls",
             GroupTrait::SharedBurrows => "shared burrows",
             GroupTrait::Sentries => "sentries",
+            GroupTrait::CommunalDens => "communal dens",
+            GroupTrait::GroupNavigation => "group navigation",
+            GroupTrait::SharedCaches => "shared caches",
         }
     }
 
@@ -55,6 +66,9 @@ impl GroupTrait {
             GroupTrait::AlarmCalls => p[Ears] > 0.5 && p[Vocal] > 0.5,
             GroupTrait::SharedBurrows => is_digger(p) && p[GroupTolerance] > 0.5,
             GroupTrait::Sentries => p[GroupTolerance] > 0.6 && p[Vigilance] > 0.5,
+            GroupTrait::CommunalDens => is_winter_sleeper(p) && p[GroupTolerance] > 0.5,
+            GroupTrait::GroupNavigation => p[Migration] >= STRATEGY_THRESHOLD && p[GroupTolerance] > 0.5,
+            GroupTrait::SharedCaches => is_group_forager(p) && p[Caching] >= STRATEGY_THRESHOLD,
         }
     }
 
@@ -72,6 +86,13 @@ impl GroupTrait {
             GroupTrait::SharedBurrows => is_digger(p),
             // Group species: herd members that never stand watch dilute it.
             GroupTrait::Sentries => p[GroupTolerance] > 0.6,
+            // Solitary sleepers share no heat and crowd out the den.
+            GroupTrait::CommunalDens => is_winter_sleeper(p),
+            // Migrants that go their own way scatter the group.
+            GroupTrait::GroupNavigation => p[Migration] >= STRATEGY_THRESHOLD,
+            // Free riders: plant-eating group members that never cache but
+            // may draw from the shared cache.
+            GroupTrait::SharedCaches => is_group_forager(p),
         }
     }
 
@@ -83,6 +104,9 @@ impl GroupTrait {
             GroupTrait::AlarmCalls => 0.4,
             GroupTrait::SharedBurrows => 0.5,
             GroupTrait::Sentries => 0.4,
+            GroupTrait::CommunalDens => 0.5,
+            GroupTrait::GroupNavigation => 0.5,
+            GroupTrait::SharedCaches => 0.5,
         }
     }
 
@@ -95,6 +119,9 @@ impl GroupTrait {
             GroupTrait::AlarmCalls => 3,
             GroupTrait::SharedBurrows => 4,
             GroupTrait::Sentries => 4,
+            GroupTrait::CommunalDens => 4,
+            GroupTrait::GroupNavigation => 4,
+            GroupTrait::SharedCaches => 4,
         }
     }
 }
@@ -102,6 +129,17 @@ impl GroupTrait {
 /// Can dig (claws or burrowing): the first half of the shared-burrow test.
 fn is_digger(p: &Phenotype) -> bool {
     p[Gene::Claws] > 0.5 || p[Gene::Burrowing] > 0.4
+}
+
+/// Expresses hibernation or brumation: the first half of the communal-den test.
+fn is_winter_sleeper(p: &Phenotype) -> bool {
+    p[Gene::Hibernation] >= STRATEGY_THRESHOLD || p[Gene::Brumation] >= STRATEGY_THRESHOLD
+}
+
+/// A group member that can eat cached plant food (`seasonal::CACHE_DIET`):
+/// who may draw from a shared cache.
+pub(crate) fn is_group_forager(p: &Phenotype) -> bool {
+    p[Gene::GroupTolerance] > 0.5 && p[Gene::Carnivory] <= 0.7
 }
 
 /// `1 / (1 + e^(-k (freq - threshold)))`.
@@ -134,7 +172,7 @@ impl GroupField {
         }
     }
 
-    fn region(&self, p: Vec2) -> usize {
+    pub(crate) fn region(&self, p: Vec2) -> usize {
         let c = ((p.x.max(0.0) as usize) / self.region_size).min(self.cols - 1);
         let r = ((p.y.max(0.0) as usize) / self.region_size).min(self.rows - 1);
         r * self.cols + c
@@ -269,5 +307,59 @@ mod tests {
         // Herd members that never stand watch dilute it.
         let diluted = benefit_of(t, &sentry, 6, &member, 24);
         assert!(diluted < 0.15, "diluted {diluted}");
+    }
+
+    fn seasonal(strategy: Gene, gt: f32) -> Phenotype {
+        pheno(FounderDesign::new("s", Thermo::Warm, BirthType::Live, 2).with(strategy, 0.8).with(Gene::GroupTolerance, gt))
+    }
+
+    #[test]
+    fn communal_dens_need_sleepers_that_tolerate_each_other() {
+        let t = GroupTrait::CommunalDens;
+        let (social, solitary) = (seasonal(Gene::Hibernation, 0.8), seasonal(Gene::Hibernation, 0.2));
+        let brumator =
+            pheno(FounderDesign::new("b", Thermo::Cold, BirthType::Live, 2).with(Gene::Brumation, 0.8).with(Gene::GroupTolerance, 0.8));
+        let awake = pheno(FounderDesign::new("a", Thermo::Warm, BirthType::Live, 2).with(Gene::GroupTolerance, 0.9));
+        assert!(t.is_carrier(&social) && t.is_carrier(&brumator));
+        assert!(!t.is_carrier(&solitary) && t.is_eligible(&solitary));
+        assert!(!t.is_carrier(&awake) && !t.is_eligible(&awake));
+        assert!(benefit_of(t, &social, 6, &awake, 20) > 0.9);
+        assert!(benefit_of(t, &social, 2, &solitary, 4) < 0.2);
+        assert!(benefit_of(t, &social, 6, &solitary, 12) < 0.2);
+    }
+
+    #[test]
+    fn group_navigation_needs_migrants_that_keep_together() {
+        let t = GroupTrait::GroupNavigation;
+        let (social, solitary) = (seasonal(Gene::Migration, 0.8), seasonal(Gene::Migration, 0.2));
+        let resident = seasonal(Gene::Hibernation, 0.9);
+        assert!(t.is_carrier(&social) && !t.is_carrier(&solitary) && t.is_eligible(&solitary));
+        assert!(!t.is_eligible(&resident));
+        assert!(benefit_of(t, &social, 6, &resident, 20) > 0.9);
+        assert!(benefit_of(t, &social, 6, &solitary, 12) < 0.2);
+    }
+
+    /// Group members that never cache dilute shared caches: free riders.
+    #[test]
+    fn shared_caches_are_diluted_by_free_riders() {
+        let t = GroupTrait::SharedCaches;
+        let cacher = seasonal(Gene::Caching, 0.8);
+        let free_rider = pheno(FounderDesign::new("f", Thermo::Warm, BirthType::Live, 2).with(Gene::GroupTolerance, 0.8));
+        let loner = seasonal(Gene::Caching, 0.2);
+        let hunter = pheno(
+            FounderDesign::new("h", Thermo::Warm, BirthType::Live, 2)
+                .with(Gene::Caching, 0.8)
+                .with(Gene::GroupTolerance, 0.8)
+                .with(Gene::Carnivory, 0.9),
+        );
+        assert!(t.is_carrier(&cacher));
+        assert!(!t.is_carrier(&free_rider) && t.is_eligible(&free_rider));
+        // A solitary hoarder shares nothing and takes nothing; a carnivore
+        // can't eat cached plants.
+        assert!(!t.is_eligible(&loner) && !t.is_eligible(&hunter));
+        assert!(benefit_of(t, &cacher, 6, &loner, 30) > 0.9);
+        assert!(benefit_of(t, &cacher, 6, &free_rider, 3) > 0.8);
+        let flooded = benefit_of(t, &cacher, 6, &free_rider, 18);
+        assert!(flooded < 0.1, "flooded {flooded}");
     }
 }

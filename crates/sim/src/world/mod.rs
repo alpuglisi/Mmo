@@ -153,6 +153,12 @@ pub struct World {
     season_offset: f32,
     /// Tile → organism index of every food cache (`seasonal::rebuild_caches`).
     cache_at: HashMap<(usize, usize), usize>,
+    /// Shared caches by (group region, lineage), and tile → key for raids
+    /// (`seasonal`, `GroupTrait::SharedCaches`).
+    shared_caches: BTreeMap<(usize, u32), seasonal::SharedCache>,
+    shared_cache_at: HashMap<(usize, usize), (usize, u32)>,
+    /// Winter-dormant communal-den carriers per den cell (`seasonal`).
+    den_cells: HashMap<(usize, usize), u16>,
 }
 
 /// The decision for one organism this tick.
@@ -216,6 +222,9 @@ impl World {
             path_scratch: PathScratch::default(),
             season_offset: Map::seasonal_offset(0, config.days_per_year),
             cache_at: HashMap::new(),
+            shared_caches: BTreeMap::new(),
+            shared_cache_at: HashMap::new(),
+            den_cells: HashMap::new(),
             config,
         }
     }

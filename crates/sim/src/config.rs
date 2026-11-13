@@ -213,8 +213,7 @@ pub struct Balance {
     /// fraction of the map height at full gene expression.
     pub migration_range: f32,
     /// Death chance per tile travelled on a seasonal migration, times
-    /// `1.5 - endurance` and halved by group navigation (group tolerance
-    /// with kin around).
+    /// `1.5 - endurance` and cut by group navigation (`group_navigation`).
     pub migration_risk: f32,
     /// Hunger-rate multiplier while in torpor on a cold night, at full gene
     /// expression (cold costs nothing extra while torpid).
@@ -238,6 +237,24 @@ pub struct Balance {
     pub sentry_vigilance: f32,
     /// Extra hunger rate while on watch (an alert posture, no foraging).
     pub sentry_cost: f32,
+    /// Communal dens (`GroupTrait::CommunalDens`): how much shared body heat
+    /// cuts a winter sleeper's hunger and thirst rate (so its fat lasts
+    /// longer) at full benefit, for a carrier with 3 or more dormant carrier
+    /// den mates within a few tiles (fewer mates, less). Solitary sleepers
+    /// get nothing. 0 disables.
+    pub communal_den: f32,
+    /// Group navigation (`GroupTrait::GroupNavigation`): how much travelling
+    /// with kin cuts a carrier's journey risk at full benefit (where the
+    /// trait holds at its summer range or where it is). Navigators also keep
+    /// together, scan wider for the best winter pasture, and travel on
+    /// `group_navigation / 3` less hunger. 0 disables.
+    pub group_navigation: f32,
+    /// Shared caches (`GroupTrait::SharedCaches`): capacity of a group's
+    /// regional cache in full individual hoards (`cache_capacity`). Where the
+    /// trait holds, carriers gather into it; any plant-eating group member of
+    /// the lineage in the region may eat from it, free riders included, and
+    /// it spoils at half the rate of a private hoard. 0 disables.
+    pub shared_cache: f32,
 }
 
 impl Default for Balance {
@@ -303,12 +320,15 @@ impl Default for Balance {
             sentry_share: 0.25,
             sentry_vigilance: 0.5,
             sentry_cost: 0.2,
+            communal_den: 0.5,
+            group_navigation: 0.6,
+            shared_cache: 6.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 58;
+    pub const FIELD_COUNT: usize = 61;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -376,6 +396,9 @@ impl Balance {
             ("sentry_share", &mut self.sentry_share),
             ("sentry_vigilance", &mut self.sentry_vigilance),
             ("sentry_cost", &mut self.sentry_cost),
+            ("communal_den", &mut self.communal_den),
+            ("group_navigation", &mut self.group_navigation),
+            ("shared_cache", &mut self.shared_cache),
         ]
     }
 
