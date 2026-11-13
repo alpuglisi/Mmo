@@ -18,6 +18,22 @@ jobs:
   rust:
     name: Rust (build, test, clippy)
     runs-on: ubuntu-latest
+    # The persistence tests run against this database too (PgStore), each
+    # test in a schema of its own.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: evo
+          POSTGRES_PASSWORD: evo
+          POSTGRES_DB: evo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U evo -d evo_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -27,9 +43,15 @@ jobs:
       - name: Build
         run: cargo build --release --workspace
       - name: Test
+        env:
+          DATABASE_URL: postgres://evo:evo@localhost:5432/evo_test
+          # Fail instead of skipping the PostgreSQL tests if the URL is lost.
+          EVO_REQUIRE_DATABASE: "1"
         run: cargo test --release --workspace
       - name: Clippy
         run: cargo clippy --release --all-targets -- -D warnings
+      - name: Clippy (evo-server without the postgres feature)
+        run: cargo clippy --release -p evo-server --no-default-features --all-targets -- -D warnings
 
   balance:
     name: Balance smoke check
