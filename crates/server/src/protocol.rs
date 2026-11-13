@@ -528,6 +528,14 @@ pub struct OwnOrganism {
     pub generation: u32,
     /// Visible body plan, for the client's sprite.
     pub look: Appearance,
+    /// Possessed only: the move order's target `[x, y]` (tiles) while it has
+    /// one, so the client can predict the walk between state messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<[f32; 2]>,
+    /// Possessed only: tiles per tick it walks toward an order on open
+    /// ground (`World::move_speed`, before the terrain's speed factor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f32>,
 }
 
 /// Someone else's organism inside the view window: only what can be seen.
@@ -988,6 +996,8 @@ impl OwnOrganism {
             pregnant: o.pregnancy.is_some(),
             generation: o.generation,
             look: Appearance::of(o),
+            order: o.possessed_by.and(o.order).map(|t| [t.x, t.y]),
+            speed: None,
         }
     }
 }

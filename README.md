@@ -310,7 +310,10 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   world clock multiplies the cost of every organism to help a handful;
   prediction alone would show movement the server hasn't made (and gets
   terrain and paths wrong); sub-stepping only possessed movement costs a few
-  microseconds per sub-step and keeps the server authoritative.
+  microseconds per sub-step and keeps the server authoritative. The client
+  adds a bounded prediction on top (see [Client](#client), "Smooth
+  movement"), for which the possessed organism's state carries its `order`
+  and `speed`.
   `WorldConfig::possess_substeps` = 1 turns it off; it is off when the
   server runs as fast as possible (`--tick-ms 0`). A manual-clock server
   takes one with `RunningServer::substep`.
@@ -441,7 +444,7 @@ Server → client:
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage}` | On connect |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`), `nearby` (others in the window, also with `look`), `leaderboard`, `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard`, `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
 | `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
@@ -893,7 +896,8 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   stays crisp as markers grow with zoom); a marker is four sprites sharing
   those textures, so hundreds of organisms cost no per-frame drawing.
   Markers live in screen space so they stay readable at any zoom (scaled
-  0.75–1.9× with it), and glide between state pushes. Drag to pan, wheel,
+  0.75–1.9× with it), and move smoothly between state pushes (see "Smooth
+  movement" below). Drag to pan, wheel,
   pinch or +/− to zoom; **Follow** keeps the camera on the server's view window (your
   possessed organism or your lineage's centroid), drawn as a blue square.
   Click an organism to inspect it: yours show action, sex, age, stage,
@@ -978,6 +982,42 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   and after and how many player lineages survived, and achievement tallies
   per player with the latest achievements.
 
+**Smooth movement** (`world/motion.ts`, pure and unit-tested; wired in
+`worldView.ts`). The server pushes `state` once per state interval, and
+after each possession sub-step (a quarter tick) to the owner of a walking
+possessed organism; drawn as received, markers would hop.
+
+- *Interpolation, every marker.* A new server position starts a glide from
+  where the marker is drawn to that position, lasting as long as the
+  previous move took (from when its position last changed; clamped to
+  50–1200 ms). An organism that moves once a tick is therefore always
+  moving and arrives as the next position comes in: continuous, one message
+  behind. Repeated positions (a state that isn't a move) keep the glide
+  going; a jump of more than 6 tiles (a reconnect) snaps. Per marker this is
+  a handful of numbers and a lerp per frame, nothing allocated per state.
+- *Prediction, the possessed organism.* The state carries its `speed`
+  (tiles per tick on open ground: genes, size, condition, sprint and the
+  possession bonus, from `World::move_speed`) and its move `order`; the
+  client measures the tick length from `clock.tick` against arrival times
+  (`TickClock`). The drawn organism walks on from its last server position
+  straight toward the order at that speed, starting the moment the player
+  clicks (before the server confirms the order). Bounds, so it never shows
+  the organism where the server wouldn't put it: at most half a tick of
+  movement ahead of the last server position; stopping at the arrival
+  distance (0.75 tiles) and before the first tile that isn't plainly open
+  ground in the client's terrain (water, a mountain, flooded land, an
+  unfrozen river: the server knows the body and routes around them,
+  straight-line prediction can't); and no prediction at all once the server
+  has the order but its action isn't `ordered` (thirst, hunger or danger
+  took over), when its last move left the straight line (a route around an
+  obstacle), when it hasn't moved for 1.5 ticks (blocked), after arrival or
+  release, when the server refuses the order, or when an unconfirmed order
+  is 1.5 s old. *Reconciliation:* the drawn position eases toward the
+  predicted one (or, without prediction, toward its glide) with a 90 ms time
+  constant, so a server correction slides; it snaps only beyond 3 tiles.
+  The camera, when following, follows the drawn position, and the order
+  line is drawn from it (to the server's order after a reload).
+
 **Phones and touch.** Below 760 px wide the map fills the screen and the
 sidebar becomes a **bottom sheet** with a tab bar at the bottom (48 px
 targets, safe-area insets): a tab tap slides the sheet up over the map, a
@@ -1059,7 +1099,14 @@ floods, dry river beds, dried lakes, the season tint) and painting; chart
 data prep (scales, axis maxima, gap-aware line paths, deaths stacked by
 cause with rare causes folded into "other", the age pyramid, gene drift
 ranking, legacy percentages, histogram bars, allele-origin rows with colors
-and the folded tail) and the alerts feed merge; alert preferences
+and the folded tail) and the alerts feed merge; smooth movement (the
+measured tick length, the open-ground test, prediction speed, lead cap,
+arrival and terrain stop, frame-rate-independent easing and the snap,
+glides over the previous move interval that stay continuous, start from the
+drawn point and snap long jumps, 600 markers per frame, and the predictor:
+an immediate start on a local order, confirmation, repeated positions not
+pulling it back, stopping on a refused or stale order, a need or danger,
+arrival, release, a detour, a stall or a channel of deep water); alert preferences
 (normalizing like the server, show/toast switches, the feed filter that keeps
 offer events, the model toasting only preferred kinds); the point cost and
 validation against the server's own examples (the README design costs
@@ -1096,7 +1143,8 @@ the most room around its marker, checked with the view's hit test, retried
 if the selection isn't its own), possesses it, clicks a dry-land spot clear
 of markers and checks it walks toward the target (closest approach tracked,
 an arrival counts, the order re-issued if a click misses or the organism
-breaks off for a need), migrates, sees an error toast, checks the seasonal
+breaks off for a need) while the state carries its `speed` and the drawn
+(predicted) marker stays within 3 tiles of the server position, migrates, sees an error toast, checks the seasonal
 leaderboard and the genetics dashboard (at least four charts with drawn
 lines, drift sparklines, every gene in the table with histogram bars, the
 allele-origin card naming you, alerts in the feed), hides daily summaries in
@@ -1838,8 +1886,7 @@ in use, 10.71 with the presets' strategies).
    tags, trait caches, paths), so a leaner organism encoding is next for
    save size, and the world-thread capture (about 32 ms) is now the
    organisms' clone; per-world tables once there are
-   several shards; client-side prediction of a possessed organism's
-   movement between sub-step states; interest
+   several shards; interest
    management through the sim's spatial grid instead of a scan per
    connection; session expiry and rate limits; a stud marketplace and an
    economy behind the recorded prices; seasonal leaderboard aggregation;
