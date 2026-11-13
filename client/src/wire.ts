@@ -7,7 +7,7 @@
 // FILE IN SYNC), and wire.fixture.json, written by a Rust test, pins the two
 // together (wire.test.ts).
 
-import type { Appearance, ClockView, LeaderRow, NearbyOrganism, OfferView, OwnOrganism, StateView, ViewWindow, WeatherView } from './protocol';
+import type { Appearance, ClockView, GroupView, LeaderRow, NearbyOrganism, OfferView, OwnOrganism, StateView, ViewWindow, WeatherView } from './protocol';
 
 /** The protocol this client asks for. */
 export const PROTO_DELTA = 2;
@@ -48,6 +48,7 @@ interface OwnQ {
   look: number;
   order: [number, number] | null;
   speed: number | null;
+  group: number;
 }
 
 interface NearQ {
@@ -62,7 +63,7 @@ interface NearQ {
 
 const newOwn = (): OwnQ => ({
   lineage: 0, x: 0, y: 0, action: 0, flags: 0, age: 0, growth: 0, health: 0, needs: [0, 0, 0, 0, 0, 0, 0, 0],
-  generation: 0, look: 0, order: null, speed: null,
+  generation: 0, look: 0, order: null, speed: null, group: 0,
 });
 
 const newNear = (): NearQ => ({ owner: 0, lineage: 0, x: 0, y: 0, action: 0, flags: 0, look: 0 });
@@ -75,6 +76,7 @@ interface Head {
   slots_left: number;
   population: number;
   migration: [number, number] | null;
+  groups: GroupView[];
   view: ViewWindow;
   balance: number;
   escrow: number;
@@ -82,7 +84,7 @@ interface Head {
 }
 
 const HEAD_KEYS: (keyof Head)[] = [
-  'clock', 'weather', 'player', 'lineage', 'slots_left', 'population', 'migration', 'view', 'balance', 'escrow', 'leaderboard',
+  'clock', 'weather', 'player', 'lineage', 'slots_left', 'population', 'migration', 'groups', 'view', 'balance', 'escrow', 'leaderboard',
 ];
 
 const malformed = (what: string) => new WireError('malformed', what);
@@ -141,7 +143,7 @@ class Reader {
 }
 
 function readOwn(r: Reader, o: OwnQ, m: number): void {
-  if (m >= 1 << 19) throw malformed('unknown own field');
+  if (m >= 1 << 20) throw malformed('unknown own field');
   if (m & (1 << 0)) o.lineage = r.v();
   if (m & (1 << 1)) {
     o.x += r.z();
@@ -157,6 +159,10 @@ function readOwn(r: Reader, o: OwnQ, m: number): void {
   if (m & (1 << 16)) o.look = r.v();
   if (m & (1 << 17)) o.order = r.u8() === 0 ? null : [r.z(), r.z()];
   if (m & (1 << 18)) o.speed = r.u8() === 0 ? null : r.f32();
+  if (m & (1 << 19)) {
+    o.group = r.v();
+    if (o.group > 255) throw malformed('group out of range');
+  }
 }
 
 function readNear(r: Reader, o: NearQ, m: number): void {
@@ -310,6 +316,7 @@ export class DeltaDecoder {
       };
       if (o.order) own.order = [o.order[0] / POS, o.order[1] / POS];
       if (o.speed !== null) own.speed = o.speed;
+      if (o.group !== 0) own.group = o.group;
       return own;
     });
     const nearby: NearbyOrganism[] = [...this.near].sort(byId).map(([id, o]) => ({
@@ -331,6 +338,7 @@ export class DeltaDecoder {
       slots_left: h.slots_left,
       population: h.population,
       migration: h.migration,
+      groups: h.groups,
       view: h.view,
       organisms,
       nearby,

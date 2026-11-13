@@ -38,13 +38,15 @@
 //! 3 flags (`u8`: 1 male, 2 matured, 4 possessed, 8 pregnant), 4 age,
 //! 5 growth, 6 health, 7–14 needs (hunger, thirst, energy, cold, heat,
 //! safety, breeding, social), 15 generation, 16 look, 17 order (`u8` 0 or
-//! 1, then `z x, z y` absolute), 18 speed (`u8` 0 or 1, then `f32` LE).
+//! 1, then `z x, z y` absolute), 18 speed (`u8` 0 or 1, then `f32` LE),
+//! 19 group (`v`).
 //! Nearby fields: 0 owner, 1 lineage, 2 position, 3 action, 4 flags (1 male,
 //! 2 matured), 5 look.
 //!
 //! The meta JSON holds the other [`StateView`] fields that changed, under
 //! their own names (`clock`, `weather`, `player`, `lineage`, `slots_left`,
-//! `population`, `migration`, `view`, `balance`, `escrow`), `leaderboard`
+//! `population`, `migration`, `groups` (the whole list when any of it
+//! changed), `view`, `balance`, `escrow`), `leaderboard`
 //! as `{day, breeding_adults}` with its rows keyed by player (`lb_set`:
 //! new or changed rows, `lb_del`: players gone), offers keyed by id
 //! (`offers_set`, `offers_del`) and the palette additions (`looks`,
@@ -67,8 +69,8 @@ use serde::{Deserialize, Deserializer};
 
 use crate::appearance::Appearance;
 use crate::protocol::{
-    ClockView, LeaderRow, Leaderboard, NearbyOrganism, NeedsView, OfferView, OrgId, OwnOrganism, StateView, ViewWindow,
-    WeatherView,
+    ClockView, GroupView, LeaderRow, Leaderboard, NearbyOrganism, NeedsView, OfferView, OrgId, OwnOrganism, StateView,
+    ViewWindow, WeatherView,
 };
 use evo_sim::PlayerId;
 
@@ -115,6 +117,7 @@ const OWN_GENERATION: u32 = 1 << 15;
 const OWN_LOOK: u32 = 1 << 16;
 const OWN_ORDER: u32 = 1 << 17;
 const OWN_SPEED: u32 = 1 << 18;
+const OWN_GROUP: u32 = 1 << 19;
 
 const NEAR_OWNER: u32 = 1 << 0;
 const NEAR_LINEAGE: u32 = 1 << 1;
@@ -143,6 +146,7 @@ struct OwnQ {
     look: u32,
     order: Option<[i64; 2]>,
     speed: Option<u32>,
+    group: u8,
 }
 
 /// A foreign organism as the client holds it.
@@ -338,6 +342,7 @@ struct Sent {
     slots_left: Option<u32>,
     population: Option<usize>,
     migration: Option<Option<[f32; 2]>>,
+    groups: Option<Vec<GroupView>>,
     view: Option<ViewWindow>,
     balance: Option<u64>,
     escrow: Option<u64>,
@@ -430,6 +435,7 @@ impl Record for OwnQ {
         set(OWN_LOOK, self.look != p.look);
         set(OWN_ORDER, self.order != p.order);
         set(OWN_SPEED, self.speed != p.speed);
+        set(OWN_GROUP, self.group != p.group);
         m
     }
 
@@ -485,6 +491,9 @@ impl Record for OwnQ {
                 }
                 None => out.u8(0),
             }
+        }
+        if m & OWN_GROUP != 0 {
+            out.v(self.group as u64);
         }
     }
 }
@@ -644,6 +653,7 @@ impl DeltaEncoder {
         scalar!(slots_left);
         scalar!(population);
         scalar!(migration);
+        scalar!(groups);
         scalar!(view);
         scalar!(balance);
         scalar!(escrow);
@@ -704,6 +714,7 @@ impl DeltaEncoder {
             look: self.looks.get(&o.look),
             order: o.order.map(|[x, y]| [q(x, POS), q(y, POS)]),
             speed: o.speed.map(f32::to_bits),
+            group: o.group,
         }
     }
 
@@ -811,6 +822,7 @@ struct MetaIn {
     population: Option<usize>,
     #[serde(deserialize_with = "some")]
     migration: Option<Option<[f32; 2]>>,
+    groups: Option<Vec<GroupView>>,
     view: Option<ViewWindow>,
     balance: Option<u64>,
     escrow: Option<u64>,
@@ -838,6 +850,7 @@ struct Head {
     slots_left: u32,
     population: usize,
     migration: Option<[f32; 2]>,
+    groups: Vec<GroupView>,
     view: ViewWindow,
     balance: u64,
     escrow: u64,
@@ -925,6 +938,9 @@ impl DeltaDecoder {
                 if let Some(v) = m.migration {
                     h.migration = v;
                 }
+                if let Some(v) = m.groups {
+                    h.groups = v;
+                }
                 if let Some(v) = m.view {
                     h.view = v;
                 }
@@ -949,6 +965,7 @@ impl DeltaDecoder {
                     slots_left: m.slots_left.ok_or_else(missing)?,
                     population: m.population.ok_or_else(missing)?,
                     migration: m.migration.ok_or_else(missing)?,
+                    groups: m.groups.ok_or_else(missing)?,
                     view: m.view.ok_or_else(missing)?,
                     balance: m.balance.ok_or_else(missing)?,
                     escrow: m.escrow.ok_or_else(missing)?,
@@ -1010,6 +1027,7 @@ impl DeltaDecoder {
                     look: self.look(o.look)?,
                     order: o.order.map(|[x, y]| [dq(x, POS), dq(y, POS)]),
                     speed: o.speed.map(f32::from_bits),
+                    group: o.group,
                 })
             })
             .collect::<Result<_, DecodeError>>()?;
@@ -1040,6 +1058,7 @@ impl DeltaDecoder {
             slots_left: h.slots_left,
             population: h.population,
             migration: h.migration,
+            groups: h.groups.clone(),
             view: h.view,
             organisms,
             nearby,
@@ -1080,7 +1099,7 @@ fn read_section<R: Default>(
 }
 
 fn read_own(r: &mut In, o: &mut OwnQ, m: u32) -> Result<(), DecodeError> {
-    if m >> 19 != 0 {
+    if m >> 20 != 0 {
         return Err(DecodeError::Malformed("unknown own field"));
     }
     if m & OWN_LINEAGE != 0 {
@@ -1127,6 +1146,9 @@ fn read_own(r: &mut In, o: &mut OwnQ, m: u32) -> Result<(), DecodeError> {
             0 => None,
             _ => Some(r.f32()?),
         };
+    }
+    if m & OWN_GROUP != 0 {
+        o.group = u8::try_from(r.v()?).map_err(|_| DecodeError::Malformed("group out of range"))?;
     }
     Ok(())
 }
@@ -1212,6 +1234,9 @@ mod tests {
         let org = first(&g, 1);
         g.command(1, 1, None, ClientMsg::Possess { organism: org });
         g.command(1, 1, None, ClientMsg::OrderMove { organism: org, x: 80.0, y: 80.0 });
+        // Player 1 splits its herd and has the new group hold ground.
+        g.command(1, 1, None, ClientMsg::SplitGroup { group: 0, organisms: None });
+        g.command(1, 1, None, ClientMsg::ClaimTerritory { group: 1, x: 40.0, y: 40.0, radius: 6.0 });
         g.command(2, 2, None, ClientMsg::SetView { x: 48.0, y: 48.0, radius: 30.0 });
         let (m, p) = (first(&g, 2), first(&g, 3));
         g.command(2, 2, None, ClientMsg::RequestMating { mine: m, partner: p, price: Some(1) });

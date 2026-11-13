@@ -11,7 +11,7 @@ const env = (over: Partial<PushEnv> = {}): PushEnv => ({
 
 // A 65-byte "public key" (base64url of 0x04 then 64 bytes of 1..64).
 const keyBytes = new Uint8Array([4, ...Array.from({ length: 64 }, (_, i) => i + 1)]);
-const KEY = Buffer.from(keyBytes).toString('base64url');
+const KEY = btoa(String.fromCharCode(...keyBytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
 /** A fake PushSubscription. */
 function fakeSub(endpoint: string, key: Uint8Array | null = keyBytes) {

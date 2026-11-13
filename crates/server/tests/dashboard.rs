@@ -268,6 +268,57 @@ async fn logins_and_commands_are_rate_limited() {
     srv.shutdown().await;
 }
 
+/// Group commands over the socket: a split and a territory claim show in
+/// the state, and group changes have their own, tighter rate limit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn group_commands_over_the_socket_and_their_rate_limit() {
+    let mut cfg = config();
+    cfg.limits = Limits { group_commands: Rate::new(0.01, 3.0), ..Limits::unlimited() };
+    let srv = server(cfg).await;
+    let addr = srv.addr;
+    let ann = register(addr, "ann").await;
+    found(addr, &ann, "Herd").await;
+    let mut w = ws(addr, &ann).await;
+    wait_for(&mut w, "welcome", |v| v["type"] == "welcome").await;
+    let send = |id: u64, mut m: Value| {
+        m["id"] = json!(id);
+        Message::Text(m.to_string())
+    };
+    w.send(send(1, json!({"type": "split_group"}))).await.unwrap();
+    let r = wait_for(&mut w, "split", |v| v["type"] == "result" && v["id"] == 1).await;
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["data"]["group"], 1);
+    let moved = r["data"]["moved"].as_u64().unwrap();
+    assert!(moved >= 1);
+    w.send(send(2, json!({"type": "claim_territory", "group": 1, "x": 30, "y": 20, "radius": 5}))).await.unwrap();
+    let r = wait_for(&mut w, "claim", |v| v["type"] == "result" && v["id"] == 2).await;
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!((r["data"]["x"].as_f64(), r["data"]["radius"].as_f64()), (Some(30.0), Some(5.0)));
+    let s = wait_for(&mut w, "a state with two groups", |v| {
+        v["type"] == "state" && v["groups"].as_array().is_some_and(|g| g.len() == 2)
+    })
+    .await;
+    assert_eq!(s["groups"][1]["territory"]["radius"].as_f64(), Some(5.0));
+    let in_one = s["organisms"].as_array().unwrap().iter().filter(|o| o["group"] == 1).count();
+    assert_eq!(in_one as u64, moved);
+    // A plain command isn't a group change; of three group changes, the
+    // first is answered by the world and the rest refused at once.
+    w.send(send(3, json!({"type": "clear_view"}))).await.unwrap();
+    for id in 4..=6 {
+        w.send(send(id, json!({"type": "abandon_territory", "group": 1}))).await.unwrap();
+    }
+    let mut codes = Vec::new();
+    for _ in 3..=6 {
+        let r = wait_for(&mut w, "result", |v| v["type"] == "result").await;
+        codes.push((r["id"].as_u64().unwrap(), r["error"]["code"].as_str().map(String::from)));
+    }
+    codes.sort();
+    assert_eq!(codes[0], (3, None));
+    assert_eq!(codes[1], (4, None), "the abandon went through");
+    assert_eq!(codes[2..], [(5, Some("rate_limited".into())), (6, Some("rate_limited".into()))]);
+    srv.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_sessions_expire_and_close_the_socket() {
     // Wide margins, so a slow machine can't fake either outcome: commands are

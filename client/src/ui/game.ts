@@ -22,6 +22,10 @@ import { balanceText } from './marketData';
 import { createOnboarding } from './onboarding';
 import { onboardingDisabled } from '../onboarding';
 import { pushSettings } from './push';
+import {
+  canSplit, claimWait, clearMigrationMsg, groupColor, groupName, groupOptions, groupOrders, groupsOf, migrateMsg, parseChoice,
+  targetGroup, territoryTap, validChoice, type GroupChoice, type TerritoryDraft,
+} from '../groups';
 
 export interface GameDeps {
   model: GameModel;
@@ -52,7 +56,7 @@ type Tab = 'organism' | 'matings' | 'market' | 'genetics' | 'lineage' | 'seasons
 const TAB_LABELS: Record<Tab, string> = {
   organism: 'Organism', matings: 'Matings', market: 'Market', genetics: 'Genetics', lineage: 'Lineage', seasons: 'Seasons', world: 'World',
 };
-type Mode = 'select' | 'migrate';
+type Mode = 'select' | 'migrate' | 'territory';
 /** Narrow screens (phones): the sidebar becomes a bottom sheet over the map with a tab bar. */
 const NARROW = '(max-width: 760px)';
 
@@ -100,8 +104,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   const stage = h('div', { class: 'stage', id: 'stage' });
   const followBtn = h('button', { class: 'tool', id: 'follow', title: 'Keep the camera on the view window (your possessed organism or your lineage)' }, 'Follow');
-  const migrateBtn = h('button', { class: 'tool', id: 'migrate', title: 'Click the map to send your adults there' }, 'Migrate…');
+  const migrateBtn = h('button', { class: 'tool', id: 'migrate', title: 'Click the map to send your adults there (the group picked in the group menu, or all)' }, 'Migrate…');
   const clearMigBtn = h('button', { class: 'tool', id: 'clear-migration' }, 'Clear migration');
+  // Group commands: pick a group, claim ground for it, split it.
+  const groupSelect = h('select', { class: 'tool group-select', id: 'group-select', title: 'Which of your groups the group commands act on', 'aria-label': 'Group' });
+  const territoryBtn = h('button', { class: 'tool', id: 'territory', title: 'Claim a territory for the group: tap its center, then its edge' }, 'Territory…');
+  const splitBtn = h('button', { class: 'tool', id: 'split-group', title: 'Split the group in two (the far half across its widest spread)' }, 'Split');
   const pinBtn = h('button', { class: 'tool', id: 'pin-view', title: 'Pin the server view window (what you can see of others) to the camera center' }, 'Pin view here');
   const hint = h('div', { class: 'hint', id: 'hint' });
   const toasts = h('div', { class: 'toasts', id: 'toasts', 'aria-live': 'polite' });
@@ -109,7 +117,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     followBtn,
     h('button', { class: 'tool', title: 'Zoom in', onclick: () => view.zoomBy(1.4) }, '+'),
     h('button', { class: 'tool', title: 'Zoom out', onclick: () => view.zoomBy(1 / 1.4) }, '−'),
-    migrateBtn, clearMigBtn, pinBtn);
+    groupSelect, migrateBtn, clearMigBtn, territoryBtn, splitBtn, pinBtn);
   const legendBtn = h('button', { class: 'tool narrow-only', id: 'legend-toggle', title: 'Show the map legend' }, 'Legend');
   toolbar.append(legendBtn);
   const legend = h('div', { class: 'legend', id: 'legend' },
@@ -119,6 +127,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     h('span', {}, h('i', { class: 'dot ring', style: `border-color:${cssColor(ownerColor(WILD))}` }), 'wild'),
     h('span', {}, h('i', { class: 'dot ring', style: `border-color:${cssColor(ownerColor(1))}` }), 'other players'),
     h('span', {}, h('i', { class: 'dot square', style: 'border-color:#58a6ff' }), 'view window'),
+    h('span', { title: 'Claimed with Territory…; each group has its own color' }, h('i', { class: 'dot ring', style: `border-color:${cssColor(groupColor(0))};background:${cssColor(groupColor(0))}33` }), 'territory'),
     h('span', { title: 'Body size, diet (muzzle, snout or fangs), warm or cold-blooded build, fur/scales/armor, colors, wings or fins; juveniles are drawn smaller' }, 'small = juvenile'),
     h('span', {}, 'z resting · ! fleeing · ⌖ hunting · ♥ courting'));
   const terrainLegend = h('div', { class: 'legend terrain-legend', id: 'terrain-legend' });
@@ -192,8 +201,58 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   function setMode(m: Mode): void {
     mode = m;
     migrateBtn.classList.toggle('active', m === 'migrate');
+    territoryBtn.classList.toggle('active', m === 'territory');
+    if (m !== 'territory') setDraft(null);
     updateHint();
   }
+
+  // --- Groups: the menu's choice, and a territory being drawn.
+  let groupChoice: GroupChoice = 'all';
+  let draft: TerritoryDraft | null = null;
+  function setDraft(d: TerritoryDraft | null): void {
+    draft = d;
+    view.territoryDraft = d;
+  }
+  function setGroupChoice(c: GroupChoice): void {
+    groupChoice = c;
+    groupSelect.value = String(c);
+    view.selectedGroup = c === 'all' ? null : c;
+    renderPanels();
+  }
+  let groupMenuKey = '';
+  function renderGroupMenu(): void {
+    const groups = groupsOf(model.state);
+    const opts = groupOptions(groups);
+    const key = JSON.stringify(opts);
+    if (key !== groupMenuKey) {
+      groupMenuKey = key;
+      groupSelect.replaceChildren(...opts.map((o) => h('option', { value: o.value }, o.text)));
+    }
+    const valid = validChoice(groupChoice, groups);
+    if (valid !== groupChoice || groupSelect.value !== String(valid)) setGroupChoice(valid);
+  }
+  groupSelect.addEventListener('change', () => setGroupChoice(parseChoice(groupSelect.value)));
+  /** The one group a tool acts on, or a toast asking to pick one. */
+  function toolGroup(): number | null {
+    const g = targetGroup(groupChoice, groupsOf(model.state));
+    if (g === null) model.toast('error', 'Pick a group in the group menu first');
+    return g;
+  }
+  async function splitGroup(id: number): Promise<void> {
+    const r = await send({ type: 'split_group', group: id });
+    if (!r.ok) return;
+    const d = r.data as { group: number; moved: number; kept: number };
+    model.toast('info', `${groupName(id)} split: ${d.moved} went to ${groupName(d.group)}, ${d.kept} stayed`);
+    groupChoice = d.group; // picked once the next state lists it
+  }
+  territoryBtn.addEventListener('click', () => {
+    if (mode === 'territory') return setMode('select');
+    if (toolGroup() !== null) setMode('territory');
+  });
+  splitBtn.addEventListener('click', () => {
+    const id = toolGroup();
+    if (id !== null) void splitGroup(id);
+  });
   function possessed(): OwnOrganism | undefined {
     return model.state?.organisms.find((o) => o.possessed);
   }
@@ -201,7 +260,16 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const p = possessed();
     const touch = narrow() || window.matchMedia('(pointer: coarse)').matches;
     const tap = touch ? 'Tap' : 'Click';
-    hint.textContent = mode === 'migrate'
+    const territoryHint = () => {
+      const groups = groupsOf(model.state);
+      const id = targetGroup(groupChoice, groups);
+      const who = id === null ? 'the group' : groupName(id);
+      return draft
+        ? `${tap} the edge of ${who}'s territory (radius up to ${draft.radius.toFixed(0)} tiles)${touch ? '' : ' (Esc cancels)'}.`
+        : `${tap} the center of ${who}'s territory${touch ? '' : ' (Esc cancels)'}.`;
+    };
+    hint.textContent = mode === 'territory' ? territoryHint()
+      : mode === 'migrate'
       ? `${tap} the map to set the migration target${touch ? '' : ' (Esc cancels)'}.`
       : p ? `Possessing #${p.id}: ${tap.toLowerCase()} the map to walk there.`
       : touch ? 'Tap an organism to inspect it, long-press yours to possess. Drag to pan, pinch to zoom.'
@@ -239,7 +307,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   followBtn.classList.add('active');
   followBtn.addEventListener('click', () => view.setFollow(!view.follow));
   migrateBtn.addEventListener('click', () => setMode(mode === 'migrate' ? 'select' : 'migrate'));
-  clearMigBtn.addEventListener('click', () => void send({ type: 'clear_migration' }));
+  clearMigBtn.addEventListener('click', () => void send(clearMigrationMsg(groupChoice)));
   let pinned = false;
   pinBtn.addEventListener('click', async () => {
     const r = pinned ? await send({ type: 'clear_view' }) : await send({ type: 'set_view', x: view.cam.x, y: view.cam.y, radius: 24 });
@@ -258,10 +326,29 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   view.onClick = async (c) => {
     if (mode === 'migrate') {
       setMode('select');
-      const r = await send({ type: 'migrate', x: c.x, y: c.y });
+      const r = await send(migrateMsg(groupChoice, c.x, c.y));
       // The server clamps the target to the map and echoes it.
       const t = (r.data as { x: number; y: number } | undefined) ?? c;
-      if (r.ok) model.toast('info', `Adults migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})`);
+      const who = groupChoice === 'all' ? 'Adults' : `${groupName(groupChoice)} adults`;
+      if (r.ok) model.toast('info', `${who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})`);
+      return;
+    }
+    if (mode === 'territory') {
+      const groups = groupsOf(model.state);
+      const g = groups.find((x) => x.id === targetGroup(groupChoice, groups));
+      if (!g) return setMode('select');
+      const step = territoryTap(draft, g, c);
+      setDraft(step.draft);
+      updateHint();
+      if (!step.claim) return;
+      setMode('select');
+      const r = await send(step.claim);
+      if (r.ok) {
+        const t = r.data as { x: number; y: number; radius: number };
+        model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})`);
+      } else if (r.error) {
+        model.toast('error', `Territory: ${r.error.message}`);
+      }
       return;
     }
     if (c.organism !== null) {
@@ -513,6 +600,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           ['Stage', own.matured ? 'adult' : `juvenile (growth ${pct(own.growth, 0)})`],
           ['Health', meter(own.health, 100, 'good')], ['Lineage', `${own.lineage} · generation ${own.generation}`],
           ['Position', `${own.x.toFixed(1)}, ${own.y.toFixed(1)}`],
+          ['Group', groupName(own.group ?? 0)],
           ['Body plan', own.look ? describeLook(own.look) : '—'],
           ['Status', [own.possessed && 'possessed', own.pregnant && 'pregnant'].filter(Boolean).join(', ') || '—'],
         ]),
@@ -777,7 +865,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const boardEl = h('div', { id: 'leaderboard' });
   const seasonsEl = h('div', { id: 'season-boards' });
   const listEl = h('div', { id: 'organism-list', class: 'org-list' });
-  append(tabs.lineage, [statsEl, h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter; the Seasons tab has the ranked seasons' }, 'By world season'), seasonsEl,
+  const groupsEl = h('div', { id: 'group-list' });
+  append(tabs.lineage, [statsEl,
+    h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
+    h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter; the Seasons tab has the ranked seasons' }, 'By world season'), seasonsEl,
     h('h3', {}, 'My organisms'), listEl]);
 
   function renderSeasons(): void {
@@ -818,6 +909,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ['Mating slots left', h('span', { id: 'slots-left' }, String(s.slots_left))],
       ['Migration', s.migration ? `toward ${s.migration[0].toFixed(0)}, ${s.migration[1].toFixed(0)}` : 'none'],
     ]));
+    renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb), () => lb.rows.length === 0
       ? [h('p', { class: 'muted small' }, lb.day === null ? 'The first legacy snapshot comes at the end of day 1.' : 'No breeding adults.')]
@@ -839,6 +931,37 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (orgs.length > shown.length) append(listEl, [h('p', { class: 'muted small' }, `…and ${orgs.length - shown.length} more`)]);
   }
 
+  function renderGroups(s: StateView): void {
+    const groups = groupsOf(s);
+    const tick = s.clock.tick;
+    // The cards (and their buttons) are rebuilt only when the buttons
+    // change; sizes and orders are updated in place, so a button isn't
+    // replaced under the cursor at every birth.
+    const key = JSON.stringify([groupChoice, groups.map((g) => [g.id, !!g.territory, claimWait(g, tick) > 0, g.members === 0, canSplit(g, groups)])]);
+    keyed(groupsEl, key, () => groups.map((g) => {
+      const wait = claimWait(g, tick);
+      const swatch = h('span', { class: 'swatch', style: `background:${cssColor(groupColor(g.id))}` });
+      return h('div', { class: `group-card${groupChoice === g.id ? ' chosen' : ''}`, 'data-group': g.id },
+        h('div', { class: 'row wrap' }, swatch, h('strong', {}, groupName(g.id)), h('span', { class: 'muted small group-summary' })),
+        h('div', { class: 'row wrap group-actions' },
+          h('button', { class: 'secondary small', 'data-action': 'pick', onclick: () => setGroupChoice(g.id) }, groupChoice === g.id ? 'Picked' : 'Pick'),
+          h('button', { class: 'secondary small', 'data-action': 'territory', title: wait > 0 ? 'Claimed recently: wait a little' : `Radius up to ${g.max_radius.toFixed(1)} tiles`,
+            disabled: wait > 0 || g.members === 0, onclick: () => { setGroupChoice(g.id); setMode('territory'); if (narrow()) setSheet(false); } }, 'Claim territory…'),
+          g.territory && h('button', { class: 'secondary small', 'data-action': 'abandon', onclick: () => void send({ type: 'abandon_territory', group: g.id }) }, 'Abandon territory'),
+          canSplit(g, groups) && h('button', { class: 'secondary small', 'data-action': 'split', onclick: () => void splitGroup(g.id) }, 'Split'),
+          g.id !== 0 && h('button', { class: 'secondary small', 'data-action': 'merge', onclick: () => void send({ type: 'merge_groups', from: g.id, into: 0 }) }, 'Merge into A'),
+          g.territory && h('button', { class: 'secondary small', 'data-action': 'center', onclick: () => {
+            const t = groupsOf(model.state).find((x) => x.id === g.id)?.territory;
+            if (t) { view.setFollow(false); view.centerOn(t.x, t.y); }
+          } }, 'Center')));
+    }));
+    for (const g of groups) {
+      const el = groupsEl.querySelector(`.group-card[data-group="${g.id}"] .group-summary`);
+      const text = `${g.members} (${g.adults} adults) · ${groupOrders(g)}`;
+      if (el && el.textContent !== text) el.textContent = text;
+    }
+  }
+
   function renderToasts(): void {
     clear(toasts);
     for (const t of model.toasts.slice(-4)) append(toasts, [h('div', { class: `toast ${t.kind}` }, t.text)]);
@@ -848,6 +971,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   cleanups.push(
     model.on('state', () => {
       view.setState(model.state!);
+      renderGroupMenu();
       updateHint();
       renderPanels();
     }),
@@ -861,7 +985,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       toastTimer = setTimeout(() => { model.toasts = []; renderToasts(); }, 6000);
     }),
   );
-  if (model.state) view.setState(model.state);
+  if (model.state) {
+    view.setState(model.state);
+    renderGroupMenu();
+  }
   renderConn();
   updateHint();
   showTab('lineage');

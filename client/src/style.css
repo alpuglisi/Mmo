@@ -105,6 +105,11 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .toolbar { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
 .tool { background: rgba(22, 27, 34, 0.88); border-color: var(--border); color: var(--text); padding: 0.3em 0.7em; }
 .tool.active { background: var(--accent); }
+.group-select { padding: 0.3em 0.4em; max-width: 13em; }
+.group-card { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; }
+.group-card.chosen { border-color: var(--accent); }
+.group-actions { margin-top: 4px; gap: 4px; }
+.group-actions button { padding: 0.2em 0.6em; }
 .hint { position: absolute; bottom: 10px; left: 10px; background: rgba(13, 17, 23, 0.8); padding: 4px 10px; border-radius: 6px; color: var(--muted); pointer-events: none; }
 /* Both legends stack in one bottom-right column, so neither covers the other when they wrap. */
 .legends { position: absolute; bottom: 10px; right: 10px; max-width: 60%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; pointer-events: none; }
@@ -187,6 +192,8 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .toolbar { right: 8px; left: 8px; top: 8px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   .toolbar::-webkit-scrollbar { display: none; }
   .tool { flex-shrink: 0; min-height: 38px; min-width: 38px; }
+  .group-select { max-width: 9.5em; }
+  .group-actions button { min-height: 36px; }
   .hint { left: 8px; right: 8px; bottom: 8px; font-size: 12px; }
   .fab { display: block; bottom: 48px; }
   .fab[hidden] { display: none; }

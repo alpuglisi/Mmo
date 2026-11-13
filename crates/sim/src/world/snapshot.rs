@@ -52,6 +52,9 @@
 //! to the saved config (`Balance::threat_caution`, `alert_guard`,
 //! `pasture_search`). Version 9 adds each hunter's search image
 //! (`Organism::search_image`) and the `Balance::search_image` parameter.
+//! Version 10 adds player groups and territories (`Organism::group`,
+//! migration orders keyed by player and group, the world's claimed
+//! territories and claim times).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -71,7 +74,7 @@ use crate::terrain::Terrain;
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 9;
+pub const SNAPSHOT_VERSION: u32 = 10;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
