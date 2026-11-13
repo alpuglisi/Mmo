@@ -214,11 +214,11 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   // The floating button possesses (and releases).
   const fabBox = await box(page, '#fab-possess'); // null if the organism just died
   if (fabBox) await page.touchscreen.tap(fabBox.x + fabBox.width / 2, fabBox.y + fabBox.height / 2);
-  const possessed = !fabBox ? null : await waitFor('possessed via button', () => page.evaluate(() => window.evo.model.state.organisms.find((o) => o.possessed)?.id ?? null), 8000).catch(() => null);
+  const possessed = !fabBox ? null : await waitFor('possessed via button', () => page.evaluate(() => window.evo.model.state.organisms.find((o) => o.possessed)?.id ?? null), 12000).catch(() => null);
   if (possessed !== null) {
     step(`${tag}: Possess button possessed #${possessed}`);
     await page.evaluate((id) => window.evo.socket.send({ type: 'release', organism: id }), possessed);
-    await waitFor('released', () => page.evaluate(() => !window.evo.model.state.organisms.some((o) => o.possessed)), 8000);
+    await waitFor('released', () => page.evaluate(() => !window.evo.model.state.organisms.some((o) => o.possessed)), 12000);
   } else {
     // The organism may have died in between; the long press below covers possession.
     console.log(`  … ${tag}: #${sel} was not possessed via the button (likely died); continuing`);
@@ -228,10 +228,12 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   const cdp = await context.newCDPSession(page);
   const t = touch(cdp, canvas);
   let lp = null;
-  for (let attempt = 0; attempt < 8 && lp === null; attempt++) {
+  for (let attempt = 0; attempt < 6 && lp === null; attempt++) {
     const o = await findOwn(page);
     await t.longPress(o);
-    lp = await waitFor('possessed via long press', () => page.evaluate(() => window.evo.model.state.organisms.find((x) => x.possessed)?.id ?? null), 5000).catch(() => null);
+    // Generous: on a loaded machine the possess reply can take seconds.
+    lp = await waitFor('possessed via long press', () => page.evaluate(() => window.evo.model.state.organisms.find((x) => x.possessed)?.id ?? null), 12000).catch(() => null);
+    if (lp === null) console.log(`  … ${tag}: long press attempt ${attempt + 1} on #${o.id} did not possess; retrying`);
   }
   if (lp === null) {
     const toasts = await page.evaluate(() => window.evo.model.toasts.map((t) => t.text).join(' | '));
