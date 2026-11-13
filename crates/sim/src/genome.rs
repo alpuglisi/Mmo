@@ -266,10 +266,9 @@ pub struct MutationParams {
     pub sd: f32,
 }
 
+/// In snapshots a genome is written compactly and exactly ([`wire`]).
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Genome {
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::array"))]
     loci: [Locus; Gene::COUNT],
     /// Hidden-recessive loci: not genes, never expressed in the phenotype or
     /// counted in [`Genome::distance`].
@@ -445,6 +444,228 @@ fn mutate_load(allele: Allele, owner: PlayerId, rate: f32, rng: &mut impl Rng) -
         Allele::harmful(owner)
     } else {
         allele
+    }
+}
+
+/// Alleles in a genome: two per gene and per load locus.
+pub const ALLELES: usize = 2 * (Gene::COUNT + LOAD_LOCI);
+
+/// The compact, exact snapshot form of a [`Genome`] (feature `serde`): one
+/// byte string of
+///
+/// 1. `n`, the number of distinct origin tags (u8), then those tags (u32
+///    little-endian each) in order of first appearance;
+/// 2. a 2-bit class per allele: `0` the value is exactly 0.0, `1` exactly
+///    1.0, `2` bit for bit the previous allele's value, `3` stored;
+/// 3. a bit stream (least significant bit first): each allele's origin as
+///    an index into the tags, `ceil(log2 n)` bits (none when the genome has
+///    one tag), then each stored value: values in `[2^-7, 1)` as a 3-bit
+///    exponent (0–6, the f32 exponent less 120) and their 23-bit mantissa,
+///    any other as `7` and its 32 bits.
+///
+/// Alleles run gene by gene (`a` then `b`), then over the load loci. Values
+/// are kept to the bit (packed, not quantized), so a restored world
+/// continues exactly. A founder genome (one tag, load loci 0.0) takes about
+/// 31 bytes plus 3.25 per stored value, against 816 in memory.
+#[cfg(feature = "serde")]
+pub mod wire {
+    use serde::de::{Error, SeqAccess, Visitor};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::*;
+
+    const ZERO: u32 = 0;
+    const ONE: u32 = 0x3f80_0000;
+    const CLASS_BYTES: usize = ALLELES.div_ceil(4);
+    /// Lowest f32 exponent (sign included) of a packed value: 2^-7.
+    const LOW_EXP: u32 = 120;
+    const ESCAPE: u32 = 7;
+
+    fn bits_for(tags: usize) -> u32 {
+        usize::BITS - (tags.max(1) - 1).leading_zeros()
+    }
+
+    impl Genome {
+        pub(super) fn alleles(&self) -> impl Iterator<Item = &Allele> {
+            self.loci.iter().chain(&self.load).flat_map(|l| [&l.a, &l.b])
+        }
+
+        pub(super) fn alleles_mut(&mut self) -> impl Iterator<Item = &mut Allele> {
+            self.loci.iter_mut().chain(&mut self.load).flat_map(|l| [&mut l.a, &mut l.b])
+        }
+
+        /// The genome in its compact snapshot form (see [`wire`]).
+        pub fn to_wire(&self) -> Vec<u8> {
+            let mut tags: Vec<PlayerId> = Vec::new();
+            let mut index = [0u8; ALLELES];
+            let mut classes = [0u8; CLASS_BYTES];
+            let mut stored = [0u32; ALLELES];
+            let (mut n_stored, mut prev) = (0, None);
+            for (k, a) in self.alleles().enumerate() {
+                index[k] = match tags.iter().position(|&t| t == a.origin) {
+                    Some(i) => i as u8,
+                    None => {
+                        tags.push(a.origin);
+                        (tags.len() - 1) as u8
+                    }
+                };
+                let v = a.value.to_bits();
+                let class = match v {
+                    ZERO => 0,
+                    ONE => 1,
+                    _ if prev == Some(v) => 2,
+                    _ => {
+                        stored[n_stored] = v;
+                        n_stored += 1;
+                        3
+                    }
+                };
+                classes[k / 4] |= class << (2 * (k % 4));
+                prev = Some(v);
+            }
+            let bits = bits_for(tags.len());
+            let mut out =
+                Vec::with_capacity(1 + 4 * tags.len() + CLASS_BYTES + ALLELES * bits as usize / 8 + 4 * n_stored);
+            out.push(tags.len() as u8);
+            for t in &tags {
+                out.extend_from_slice(&t.to_le_bytes());
+            }
+            out.extend_from_slice(&classes);
+            let mut w = BitWriter { out, acc: 0, len: 0 };
+            for &i in &index {
+                w.put(i as u32, bits);
+            }
+            for &v in &stored[..n_stored] {
+                let exp = v >> 23;
+                if (LOW_EXP..LOW_EXP + ESCAPE).contains(&exp) {
+                    w.put(exp - LOW_EXP, 3);
+                    w.put(v & 0x7f_ffff, 23);
+                } else {
+                    w.put(ESCAPE, 3);
+                    w.put(v, 32);
+                }
+            }
+            w.finish()
+        }
+
+        /// A genome from [`Genome::to_wire`] bytes.
+        pub fn from_wire(bytes: &[u8]) -> Result<Genome, String> {
+            let (&n, rest) = bytes.split_first().ok_or("empty genome")?;
+            let n = n as usize;
+            let (tag_bytes, rest) = rest.split_at_checked(4 * n).ok_or("genome cut short (tags)")?;
+            let tags: Vec<PlayerId> =
+                tag_bytes.chunks_exact(4).map(|c| PlayerId::from_le_bytes(c.try_into().unwrap())).collect();
+            let (classes, rest) = rest.split_at_checked(CLASS_BYTES).ok_or("genome cut short (classes)")?;
+            let bits = bits_for(n);
+            let mut r = BitReader { bytes: rest, at: 0, acc: 0, len: 0 };
+            let blank = Locus { a: Allele { value: 0.0, origin: WILD }, b: Allele { value: 0.0, origin: WILD } };
+            let mut g = Genome { loci: [blank; Gene::COUNT], load: [blank; LOAD_LOCI] };
+            for a in g.alleles_mut() {
+                let i = r.get(bits)? as usize;
+                a.origin = *tags.get(i).ok_or("genome origin out of range")?;
+            }
+            let mut prev = None;
+            for (k, a) in g.alleles_mut().enumerate() {
+                let v = match (classes[k / 4] >> (2 * (k % 4))) & 3 {
+                    0 => ZERO,
+                    1 => ONE,
+                    2 => prev.ok_or("genome repeats a value before the first")?,
+                    _ => match r.get(3)? {
+                        ESCAPE => r.get(32)?,
+                        e => ((e + LOW_EXP) << 23) | r.get(23)?,
+                    },
+                };
+                prev = Some(v);
+                a.value = f32::from_bits(v);
+            }
+            if r.at != rest.len() || r.len >= 8 || r.acc != 0 {
+                return Err("genome has trailing bytes".into());
+            }
+            Ok(g)
+        }
+    }
+
+    struct BitWriter {
+        out: Vec<u8>,
+        acc: u64,
+        len: u32,
+    }
+
+    impl BitWriter {
+        fn put(&mut self, v: u32, bits: u32) {
+            debug_assert!(bits <= 32 && (bits == 32 || v >> bits == 0));
+            self.acc |= (v as u64) << self.len;
+            self.len += bits;
+            while self.len >= 8 {
+                self.out.push(self.acc as u8);
+                self.acc >>= 8;
+                self.len -= 8;
+            }
+        }
+
+        fn finish(mut self) -> Vec<u8> {
+            if self.len > 0 {
+                self.out.push(self.acc as u8);
+            }
+            self.out
+        }
+    }
+
+    struct BitReader<'a> {
+        bytes: &'a [u8],
+        /// Bytes taken into `acc`.
+        at: usize,
+        acc: u64,
+        len: u32,
+    }
+
+    impl BitReader<'_> {
+        fn get(&mut self, bits: u32) -> Result<u32, String> {
+            while self.len < bits {
+                let &b = self.bytes.get(self.at).ok_or("genome cut short")?;
+                self.acc |= (b as u64) << self.len;
+                self.at += 1;
+                self.len += 8;
+            }
+            let v = (self.acc & ((1u64 << bits) - 1)) as u32;
+            self.acc >>= bits;
+            self.len -= bits;
+            Ok(v)
+        }
+    }
+
+    impl Serialize for Genome {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            s.serialize_bytes(&self.to_wire())
+        }
+    }
+
+    struct WireVisitor;
+
+    impl<'de> Visitor<'de> for WireVisitor {
+        type Value = Genome;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a compact genome (bytes)")
+        }
+
+        fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Genome, E> {
+            Genome::from_wire(v).map_err(E::custom)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Genome, A::Error> {
+            let mut v = Vec::new();
+            while let Some(b) = seq.next_element::<u8>()? {
+                v.push(b);
+            }
+            self.visit_bytes(&v)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Genome {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Genome, D::Error> {
+            d.deserialize_bytes(WireVisitor)
+        }
     }
 }
 
@@ -634,6 +855,54 @@ mod tests {
         assert!(tags > 0);
         assert!(inbred > 0.25, "inbred line shows defects in {inbred:.2} of offspring");
         assert_eq!(outcrossed, 0.0, "outcrossing to clean mates never pairs two harmful alleles");
+    }
+
+    /// The compact snapshot form keeps every allele to the bit, with any
+    /// number of origin tags.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn wire_form_is_exact_and_compact() {
+        let mut rng = rng_for(4, 0, 0, 0);
+        let mut v = flat(0.3);
+        v[Gene::Migration.index()] = 0.0;
+        v[Gene::Fur.index()] = 1.0;
+        let founder = Genome::founder(&v, 3, 0.05, &mut rng);
+        let other = Genome::founder(&flat(0.6), 8, 0.05, &mut rng);
+        let always = MutationParams { rate: 1.0, sd: 0.1 };
+        let mut hybrid = Genome::inherit(&founder, &other, 5, MutationParams { rate: 0.2, sd: 0.1 }, 0.5, &mut rng);
+        let three = hybrid.clone();
+        hybrid.set_load(2, true, Allele { value: 0.25, origin: u32::MAX });
+        hybrid.loci[4].a.value = -0.0;
+        hybrid.loci[5].b.value = 1e-9;
+        hybrid.loci[6].a.value = f32::from_bits(0x3f7f_ffff);
+        // As many tags as alleles: 7 bits each.
+        let mut many = Genome::inherit(&founder, &other, 1, always, 0.0, &mut rng);
+        for (k, a) in many.alleles_mut().enumerate() {
+            a.origin = 1000 + k as u32;
+        }
+        let uniform = Genome::uniform(&flat(0.5), 2);
+        for g in [&founder, &other, &hybrid, &three, &many, &uniform] {
+            let w = g.to_wire();
+            let back = Genome::from_wire(&w).unwrap();
+            let bits = |g: &Genome| g.alleles().map(|a| (a.value.to_bits(), a.origin)).collect::<Vec<_>>();
+            assert_eq!(bits(&back), bits(g));
+            assert!(Genome::from_wire(&w[..w.len() - 1]).is_err());
+            let mut long = w.clone();
+            long.push(0);
+            assert!(Genome::from_wire(&long).is_err());
+            let raw: Vec<u8> = bincode::serialize(g).unwrap();
+            assert_eq!(bincode::deserialize::<Genome>(&raw).unwrap(), *g);
+        }
+        // One tag (no origin bits), load loci 0.0 (not stored), and 0.5
+        // stored once (26 bits) then repeated.
+        assert_eq!(uniform.to_wire().len(), 1 + 4 + ALLELES.div_ceil(4) + 4);
+        assert!(founder.to_wire().len() <= 1 + 4 + ALLELES.div_ceil(4) + (35 * 2 * Gene::COUNT).div_ceil(8));
+        // An origin index beyond the tags is refused.
+        let mut w = three.to_wire();
+        let n = w[0] as usize;
+        assert_eq!(n, 3, "tags 3, 8 and 5");
+        w[1 + 4 * n + ALLELES.div_ceil(4)] |= 0xff;
+        assert!(Genome::from_wire(&w).is_err());
     }
 
     #[test]

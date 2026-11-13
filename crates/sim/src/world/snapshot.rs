@@ -24,21 +24,31 @@
 //! | 8 | payload length before compression |
 //! | 8 | FNV-1a 64 checksum of the stored payload |
 //! | 8 | terrain content hash ([`Terrain::hash`]; from version 6) |
-//! | … | payload: `bincode` of `World`, LZ4 block-compressed |
+//! | … | payload: `bincode` of `World` (varint integers from version 7), LZ4 block-compressed |
 //!
 //! The header stays readable across format versions, so a server can say
 //! why it refuses a snapshot, and can look up the terrain before decoding.
 //! Skipped and rebuilt on restore: the id → index map, the spatial grid
-//! (rebuilt every tick anyway), A* scratch buffers and phase timings.
-//! Everything else, caches that steer the future included (hourly density,
-//! cohort representatives, LOD passability, cache and clutch lookups), is
-//! stored.
+//! (rebuilt every tick anyway), A* scratch buffers, phase timings, and each
+//! organism's genome-derived caches (phenotype, traits, recessive load:
+//! pure functions of the genome, recomputed by `Organism::refresh_derived`
+//! to the bit). Everything else, caches that steer the future included
+//! (A* paths, hourly density, cohort representatives, LOD passability,
+//! cache and clutch lookups), is stored.
+//!
+//! Genomes are written compactly but exactly (`genome::wire`: origin tags
+//! interned per genome, 0.0 and 1.0 alleles in two bits, other values
+//! bit-packed with their exponent in three bits), and a pregnancy's father
+//! genome as the index of the father while he is in the world
+//! (`serde_util::father`), so the restore shares it with him again.
 //!
 //! Only snapshots of this format version restore. Version 5 moved the
 //! terrain out of the snapshot; version 6 added lakes and floodplains to map
 //! generation (`Ground::plain`, `Tile::silt`) and a wind direction to the
 //! weather cells, which older maps can't be given deterministically, so
 //! saves from before version 6 don't load (start the world afresh).
+//! Version 7 is the leaner organism encoding above; a version 6 save is
+//! refused like any other version.
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -49,6 +59,8 @@
 use std::fmt;
 use std::sync::Arc;
 
+use bincode::Options;
+
 use super::spatial::SpatialGrid;
 use super::World;
 use crate::config::WorldConfig;
@@ -56,7 +68,7 @@ use crate::terrain::Terrain;
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 6;
+pub const SNAPSHOT_VERSION: u32 = 7;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
@@ -144,6 +156,15 @@ fn fnv1a(bytes: &[u8]) -> u64 {
         h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
+}
+
+/// `bincode` settings of a world payload (from version 7): integers as
+/// varints (small counts, ids, ticks and enum tags take a byte or two
+/// instead of four or eight), little-endian, no trailing bytes. Floats are
+/// written whole either way. Terrain blobs and hashes keep plain
+/// `bincode::serialize` (fixed-width integers).
+fn payload_options() -> impl bincode::Options {
+    bincode::DefaultOptions::new()
 }
 
 fn decode_err(e: impl fmt::Display) -> SnapshotError {
@@ -291,7 +312,7 @@ impl World {
     /// (`self.map.terrain()`), which the snapshot names by hash (see the
     /// module docs for the format). [`World::restore`] continues it exactly.
     pub fn snapshot(&self) -> Vec<u8> {
-        let raw = bincode::serialize(self).expect("world serializes");
+        let raw = payload_options().serialize(self).expect("world serializes");
         let payload = lz4_flex::block::compress(&raw);
         let header = SnapshotHeader {
             version: SNAPSHOT_VERSION,
@@ -324,7 +345,7 @@ impl World {
         if terrain.hash() != hash {
             return Err(SnapshotError::WrongTerrain { expected: hash, found: terrain.hash() });
         }
-        let mut w: World = bincode::deserialize(&raw).map_err(decode_err)?;
+        let mut w: World = payload_options().deserialize(&raw).map_err(decode_err)?;
         let m = &w.map;
         if m.terrain().hash() != hash
             || (terrain.width, terrain.height) != (m.width, m.height)

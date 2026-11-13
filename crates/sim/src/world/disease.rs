@@ -266,7 +266,7 @@ mod tests {
         w.config.balance.recessive_hazard = 1e6;
         let i = w.organisms.iter().position(|o| o.lineage == 1).unwrap();
         let (owner, pos) = (w.organisms[i].owner, w.organisms[i].pos);
-        let mut carrier = w.organisms[i].genome.clone();
+        let mut carrier = crate::Genome::clone(&w.organisms[i].genome);
         carrier.set_load(0, false, Allele::harmful(9));
         let mut affected = carrier.clone();
         affected.set_load(0, true, Allele::harmful(9));

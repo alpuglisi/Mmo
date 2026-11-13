@@ -9,15 +9,15 @@
 //! rivers: most of a large map) and names it by content hash; the store
 //! keeps it once per world ([`TerrainBlob`], `Store::put_terrain`), keyed by
 //! the saved game's world id and that hash. [`terrain_key`] reads both from
-//! a saved game, and [`decode`] needs the terrain back. Saved games from
-//! before world snapshot version 6 don't restore (a new world is generated,
-//! as for any other format version).
+//! a saved game, and [`decode`] needs the terrain back. Saved games of
+//! another world snapshot version (before 7: version 7 made organisms
+//! leaner) don't restore (a new world is generated).
 //!
 //! Saving is split so the world thread never stalls on encoding: it takes a
-//! [`Capture`] (a clone of the world, which shares the terrain, and the
-//! game state: tens of ms on a large world), and the background saver
-//! (`crate::saver`) encodes it (bincode + LZ4, hundreds of ms) and hands the
-//! bytes to the store task.
+//! [`Capture`] (a clone of the world, which shares the terrain and the
+//! genomes, and the game state: about 10 ms at 26k agents), and the
+//! background saver (`crate::saver`) encodes it (bincode + LZ4, over 100
+//! ms) and hands the bytes to the store task.
 
 use std::sync::Arc;
 

@@ -27,11 +27,46 @@ fn busy_world() -> World {
     w
 }
 
+/// Give some organisms mutations tagged by a third player, so their
+/// genomes carry several origin tags.
+fn tag_mutations(w: &mut World) {
+    let mut rng = crate::rng::rng_for(21, 99, 0, 0);
+    let mutation = crate::genome::MutationParams { rate: 0.1, sd: 0.01 };
+    for i in (0..w.organisms.len()).step_by(5) {
+        let a = &w.organisms[i].genome;
+        let g = crate::Genome::inherit(a, a, 9, mutation, 0.0, &mut rng);
+        w.organisms[i].genome = Arc::new(g);
+        w.organisms[i].refresh_derived();
+    }
+}
+
 fn order_possessed(w: &mut World) {
     let o = possessed(w).expect("possessed organism alive");
     let (id, pos) = (o.id, o.pos);
     let target = w.map.clamp(pos + Vec2::new(12.0, -9.0));
     w.order_move(1, id, target).unwrap();
+}
+
+/// Pregnancies whose father genome is shared with an organism in the world
+/// (written as an index), and those with their own copy (written in full).
+fn shared_fathers(w: &World) -> (usize, usize) {
+    let genomes: std::collections::HashSet<_> = w.organisms.iter().map(|o| Arc::as_ptr(&o.genome)).collect();
+    let fathers = w.organisms.iter().filter_map(|o| o.pregnancy.as_ref());
+    fathers.fold((0, 0), |(s, n), p| if genomes.contains(&Arc::as_ptr(&p.father)) { (s + 1, n) } else { (s, n + 1) })
+}
+
+/// The genome-derived caches a snapshot leaves out came back exactly.
+fn assert_same_caches(a: &World, b: &World) {
+    assert_eq!(a.organisms.len(), b.organisms.len());
+    for (x, y) in a.organisms.iter().zip(&b.organisms) {
+        assert_eq!(x.genome, y.genome, "genome of {}", x.id);
+        let bits = |p: &crate::genome::Phenotype| p.0.map(f32::to_bits);
+        assert_eq!(bits(&x.pheno), bits(&y.pheno), "phenotype of {}", x.id);
+        assert_eq!(format!("{:?}", x.traits), format!("{:?}", y.traits), "traits of {}", x.id);
+        assert_eq!(x.recessive_load, y.recessive_load, "recessive load of {}", x.id);
+        assert_eq!(x.path, y.path, "path of {}", x.id);
+        assert_eq!(x.pregnancy, y.pregnancy, "pregnancy of {}", x.id);
+    }
 }
 
 /// Everything a divergence would show up in first, for a readable failure.
@@ -44,6 +79,7 @@ fn assert_same(a: &World, b: &World) {
         assert_eq!(x.needs, y.needs, "needs of {}", x.id);
         assert_eq!(x.health, y.health, "health of {}", x.id);
     }
+    assert_same_caches(a, b);
     assert_eq!(a.next_id, b.next_id);
     assert_eq!(format!("{:?}", a.counters), format!("{:?}", b.counters), "counters");
     assert_eq!(a.legacy, b.legacy, "legacy");
@@ -95,18 +131,32 @@ fn restored_world_continues_exactly() {
     assert!(cohorts > 0, "want LOD cohorts");
     assert!(a.chronicle.catastrophes.iter().any(|c| c.started), "want a catastrophe");
     assert!(possessed(&a).is_some_and(|o| o.order.is_some()), "want a possessed organism with an order");
+    assert!(pathing > 0, "want paths");
+    assert!(alive().any(|o| o.genome.harmful_alleles() > 0), "want harmful recessives");
+    tag_mutations(&mut a);
+    // Fathers of pregnancies by a re-tagged genome no longer share it.
+    let fathers = shared_fathers(&a);
+    assert!(fathers.0 > 0 && fathers.1 > 0, "want shared and own father genomes: {fathers:?}");
+    assert!(a.organisms.iter().any(|o| o.genome.loci().iter().any(|l| l.a.origin != l.b.origin)), "want mixed tags");
 
     let bytes = a.snapshot();
     let mut b = World::restore(&bytes, Some(a.map.terrain().clone())).expect("restore");
     assert!(Arc::ptr_eq(a.map.terrain(), b.map.terrain()));
+    // The caches left out of the snapshot (phenotype, traits, recessive
+    // load) are recomputed on restore to the bit; paths are kept. Father
+    // genomes come back shared with the fathers.
+    assert_same_caches(&a, &b);
+    assert_eq!(shared_fathers(&b), fathers);
     // A restored world snapshots to the same bytes.
     assert!(b.snapshot() == bytes, "round trip changes the snapshot");
     // A clone (what a server encodes off its world thread) snapshots to the
     // same bytes and continues the same way.
     let mut c = a.clone();
     assert!(c.snapshot() == bytes, "a clone snapshots differently");
-    // The clone shares the static terrain instead of copying it.
+    // The clone shares the static terrain instead of copying it, and the
+    // genomes (immutable) too.
     assert!(Arc::ptr_eq(a.map.terrain(), c.map.terrain()));
+    assert!(a.organisms.iter().zip(&c.organisms).all(|(x, y)| Arc::ptr_eq(&x.genome, &y.genome)));
     // From the stored terrain blob, too.
     let stored = Arc::new(Terrain::decode(&a.map.terrain().encode()).unwrap());
     let mut d = World::restore(&bytes, Some(stored)).expect("restore from a stored terrain");
@@ -219,12 +269,21 @@ fn terrain_is_stored_apart_and_must_be_the_right_one() {
     assert_eq!(w.map.terrain().hash(), hash);
 }
 
-/// Snapshots from before version 6 (terrain embedded until version 5; no
-/// lakes, floodplains or wind direction before 6) are refused, naming the
-/// version, even when the header is readable.
+/// Snapshots of older versions (terrain embedded until version 5; no
+/// lakes, floodplains or wind direction before 6; full organisms before 7)
+/// are refused, naming the version, even when the header is readable.
 #[test]
 fn older_snapshots_are_refused_by_version() {
     let bytes = fixture_world().snapshot();
+    // Version 6 has the terrain hash in its header.
+    let mut b = bytes.clone();
+    b[8..12].copy_from_slice(&6u32.to_le_bytes());
+    let h = SnapshotHeader::read(&b).unwrap();
+    assert_eq!((h.version, h.terrain), (6, Some(fixture_world().map.terrain().hash())));
+    assert_eq!(
+        World::restore(&b, Some(fixture_world().map.terrain().clone())).err(),
+        Some(SnapshotError::Version { found: 6, expected: SNAPSHOT_VERSION })
+    );
     for old in [4u32, 5] {
         let mut b = bytes.clone();
         b[8..12].copy_from_slice(&old.to_le_bytes());

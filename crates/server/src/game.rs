@@ -1994,7 +1994,7 @@ impl Game {
         genes.sort_by(|a, b| {
             (b.mean - b.founding_mean).abs().total_cmp(&(a.mean - a.founding_mean).abs()).then(a.gene.cmp(&b.gene))
         });
-        let origins = crate::genetics::allele_origins(members.iter().map(|o| &o.genome), |p| {
+        let origins = crate::genetics::allele_origins(members.iter().map(|o| &*o.genome), |p| {
             let lineage = self.lineage_of(p).and_then(|l| self.world.lineages.get(l as usize)).map(|l| l.name.clone());
             (self.name(p), lineage)
         });

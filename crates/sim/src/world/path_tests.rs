@@ -62,7 +62,7 @@ fn place(w: &mut World, owner: u32, design: &FounderDesign, at: Vec2) -> usize {
     w.found_lineage_unchecked(owner, design);
     let i = w.organisms.len() - 1;
     let o = &mut w.organisms[i];
-    o.genome = crate::Genome::uniform(&design.values(), owner);
+    o.genome = crate::Genome::uniform(&design.values(), owner).into();
     o.pheno = o.genome.phenotype();
     o.traits = crate::stats::derive(&o.pheno);
     o.pos = at;

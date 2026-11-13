@@ -704,7 +704,7 @@ impl World {
     pub(crate) fn conceive(&mut self, f: usize, m: usize, fertility: f32) {
         let tpd = self.config.ticks_per_day as f32;
         let tick = self.tick;
-        let father = Box::new(self.organisms[m].genome.clone());
+        let father = self.organisms[m].genome.clone();
         let father_id = self.organisms[m].id;
         let father_lineage = self.organisms[m].lineage;
         let female = &mut self.organisms[f];
@@ -1187,7 +1187,7 @@ impl World {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_newborn(
         &mut self,
-        genome: Genome,
+        genome: impl Into<std::sync::Arc<Genome>>,
         owner: PlayerId,
         lineage: u32,
         pos: Vec2,
@@ -1352,7 +1352,7 @@ mod tests {
     fn make_pregnant(w: &mut World, i: usize) {
         let o = &mut w.organisms[i];
         o.pregnancy = Some(Pregnancy {
-            father: Box::new(o.genome.clone()),
+            father: o.genome.clone(),
             father_id: o.id,
             father_lineage: o.lineage,
             fertility: 1.0,
