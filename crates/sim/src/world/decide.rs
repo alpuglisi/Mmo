@@ -153,9 +153,13 @@ impl World {
         let boldness = p[Gene::Boldness];
         let mother_pos = self.parent_pos(o);
         let juvenile_care = !o.matured && o.growth < 0.7 && o.traits.birth != crate::BirthType::AbandonedEggs;
+        // A burrower on dry ground escapes by going to ground, which costs it
+        // nothing, so it takes cover at lower threat than a runner would flee.
+        let can_dig = o.traits.body.burrow > 0.5 && self.map.tile_at(o.pos).water_depth == 0.0;
+        let flee_weight = cfg.balance.flee_weight * if can_dig { cfg.balance.burrow_caution } else { 1.0 };
 
         let mut options: [(Action, f32); 12] = [
-            (Action::Flee, threat * (1.3 - boldness) * cfg.balance.flee_weight),
+            (Action::Flee, threat * (1.3 - boldness) * flee_weight),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 }),
             (Action::Drink, thirst.powf(1.5) * 1.3 + if thirst > 0.8 { 0.5 } else { 0.0 }),
             (Action::Rest, tired * tired * 1.1),
@@ -198,6 +202,11 @@ impl World {
         // --- Targets -------------------------------------------------------
         intent.action = action;
         match action {
+            // Going to ground: stay put, sheltered (see `update_needs`) and
+            // unseen by hunters.
+            Action::Flee if can_dig => {
+                intent.action = Action::Rest;
+            }
             Action::Flee => {
                 let away = (o.pos - threat_pos).norm();
                 let away = if away == Vec2::ZERO { Vec2::new(1.0, 0.0) } else { away };

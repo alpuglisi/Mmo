@@ -69,6 +69,12 @@ pub struct Balance {
     pub crowding: f32,
     /// Health a predator loses biting fully toxic prey.
     pub toxin_damage: f32,
+    /// Fraction of attacks a sheltered burrower escapes, per unit of
+    /// burrowing (burrowing 0.8 at 1.0 turns away 80% of attacks).
+    pub burrow_shelter: f32,
+    /// Flee-weight multiplier for burrowers that can go to ground (hiding is
+    /// cheap, so they take cover at lower threat than runners flee).
+    pub burrow_caution: f32,
 }
 
 impl Default for Balance {
@@ -93,12 +99,14 @@ impl Default for Balance {
             ambush: 0.4,
             crowding: 0.03,
             toxin_damage: 48.0,
+            burrow_shelter: 1.0,
+            burrow_caution: 2.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 17;
+    pub const FIELD_COUNT: usize = 19;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -125,6 +133,8 @@ impl Balance {
             ("ambush", &mut self.ambush),
             ("crowding", &mut self.crowding),
             ("toxin_damage", &mut self.toxin_damage),
+            ("burrow_shelter", &mut self.burrow_shelter),
+            ("burrow_caution", &mut self.burrow_caution),
         ]
     }
 
