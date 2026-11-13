@@ -92,8 +92,9 @@ async function shot(page, name) {
 const box = (page, sel) => page.locator(sel).boundingBox();
 
 /**
- * Zoom in on one of our organisms with room around it and return its screen
- * position once the view's hit test agrees (markers keep moving).
+ * Zoom in on one of our organisms with room around it (standing still if
+ * possible) and return its screen position once the view's hit test agrees
+ * (markers keep moving).
  */
 async function findOwn(page, exclude = []) {
   for (let attempt = 0; attempt < 15; attempt++) {
@@ -107,7 +108,9 @@ async function findOwn(page, exclude = []) {
         const m = v.markers.get(o.id);
         let room = Infinity;
         for (const [id, n] of v.markers) if (id !== o.id) room = Math.min(room, Math.hypot(n.x - m.x, n.y - m.y));
-        const score = Math.min(room, 3) + (o.matured ? 3 : 0) + o.health / 100;
+        // The fast world moves walkers several tiles a second: prefer ones standing still.
+        const still = ['rest', 'dormant', 'drink', 'idle', 'bask', 'sentry', 'guard'].includes(o.action) ? 4 : 0;
+        const score = Math.min(room, 3) + (o.matured ? 3 : 0) + o.health / 100 + still;
         if (!best || score > best.score) best = { id: o.id, x: m.x, y: m.y, score };
       }
       if (best) v.centerOn(best.x, best.y);
@@ -225,6 +228,40 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   }
 
   // Long press on an own organism possesses it.
+  // Record possess commands and replies, to explain a failed long press.
+  await page.evaluate(() => {
+    window.__cmds = [];
+    const sock = window.evo.socket;
+    const orig = sock.send.bind(sock);
+    sock.send = async (m) => {
+      const r = await orig(m);
+      window.__cmds.push(`${m.type} #${m.organism ?? ''}: ${r.ok ? 'ok' : r.error?.code}`);
+      return r;
+    };
+  });
+  // And what each long press hit, and the pointer events the canvas saw (in
+  // the fast world a marker can walk out from under the finger in between).
+  await page.evaluate(() => {
+    const v = window.evo.screen().view;
+    const orig = v.onLongPress;
+    v.onLongPress = (c) => {
+      window.__cmds.push(`long press hit ${c.organism ?? 'nothing'}`);
+      return orig(c);
+    };
+    for (const t of ['pointerdown', 'pointerup', 'pointercancel', 'contextmenu']) {
+      v.app.canvas.addEventListener(t, (e) => {
+        const r = v.app.canvas.getBoundingClientRect();
+        const x = e.clientX - r.left, y = e.clientY - r.top;
+        let near = '';
+        if (t === 'pointerdown') {
+          let best = Infinity, id = null;
+          for (const [k] of v.markers) { const p = v.markerScreenPos(k); const d = Math.hypot(p.x - x, p.y - y); if (d < best) { best = d; id = k; } }
+          near = ` at ${x.toFixed(0)},${y.toFixed(0)}, nearest #${id} ${best.toFixed(0)} px away`;
+        }
+        window.__cmds.push(`${t}${near}`);
+      });
+    }
+  });
   const cdp = await context.newCDPSession(page);
   const t = touch(cdp, canvas);
   let lp = null;
@@ -233,7 +270,10 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
     await t.longPress(o);
     // Generous: on a loaded machine the possess reply can take seconds.
     lp = await waitFor('possessed via long press', () => page.evaluate(() => window.evo.model.state.organisms.find((x) => x.possessed)?.id ?? null), 12000).catch(() => null);
-    if (lp === null) console.log(`  … ${tag}: long press attempt ${attempt + 1} on #${o.id} did not possess; retrying`);
+    if (lp === null) {
+      const why = await page.evaluate(() => window.__cmds.splice(0).join(', ') || 'no command sent');
+      console.log(`  … ${tag}: long press attempt ${attempt + 1} on #${o.id} at ${o.x.toFixed(0)},${o.y.toFixed(0)} did not possess (${why}); retrying`);
+    }
   }
   if (lp === null) {
     const toasts = await page.evaluate(() => window.evo.model.toasts.map((t) => t.text).join(' | '));
@@ -365,13 +405,13 @@ async function desktopChecks(browser, base, errors) {
 
 /**
  * Run `fn` against a fresh server: each device gets a young world, so its
- * lineage is not yet thinned out by predators (the fast world runs a day a
- * second, and a long earlier section would leave the next one little to tap).
+ * lineage is not yet thinned out (the fast world runs a day a second, and a
+ * long earlier section would leave the next one little to tap).
  */
-async function withServer(seed, fn) {
+async function withServer(seed, fn, extra = []) {
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
-  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', String(seed), '--days-per-year', '480', '--bind', `127.0.0.1:${port}`, '--static', dist], {
+  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', String(seed), '--days-per-year', '480', '--bind', `127.0.0.1:${port}`, '--static', dist, ...extra], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';
@@ -396,8 +436,10 @@ async function main() {
   const browser = await chromium.launch({ headless: !process.env.HEADED });
   const errors = [];
   try {
-    await withServer(9, (base) => phoneChecks(browser, base, 'iPhone 13', 'iphone13', errors));
-    await withServer(10, (base) => phoneChecks(browser, base, 'Pixel 7', 'pixel7', errors));
+    // The phone sections tap and hold their own organisms for minutes: no
+    // wild predators, so the lineage outlives the test on a slow machine.
+    await withServer(9, (base) => phoneChecks(browser, base, 'iPhone 13', 'iphone13', errors), ['--no-wild']);
+    await withServer(10, (base) => phoneChecks(browser, base, 'Pixel 7', 'pixel7', errors), ['--no-wild']);
     await withServer(11, (base) => desktopChecks(browser, base, errors));
     if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);
     console.log(`mobile test passed; screenshots in ${shots}`);
