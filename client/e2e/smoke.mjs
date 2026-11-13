@@ -656,8 +656,11 @@ async function main() {
       }, bobCard), 10000).catch(() => false);
       if (enabled) {
         await bob.evaluate(() => { window.__results = []; });
-        await bob.click(`${bobCard} button.bid`);
-        bid = await waitFor('bid result', () => bob.evaluate(() => window.__results.find((r) => r.type === 'bid')));
+        // The card re-renders as the world moves and may disable the button
+        // again (the picked adult no longer fits): then there is no bid.
+        const clicked = await bob.click(`${bobCard} button.bid`, { timeout: 5000 }).then(() => true, () => false);
+        if (clicked) bid = await waitFor('bid result', () => bob.evaluate(() => window.__results.find((r) => r.type === 'bid')));
+        else console.log('  … the bid button was disabled again before the click');
         if (!bid.ok && !['already_pregnant', 'not_found', 'not_mature', 'died', 'organism_busy', 'incompatible_body_plans', 'genetically_incompatible', 'no_slots_left', 'too_many_offers', 'auction_closed', 'unknown_listing'].includes(bid.error?.code)) {
           throw new Error(`bid failed: ${JSON.stringify(bid.error)}`);
         }

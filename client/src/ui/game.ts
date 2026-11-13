@@ -21,6 +21,7 @@ import { buildMarket } from './market';
 import { balanceText } from './marketData';
 import { createOnboarding } from './onboarding';
 import { onboardingDisabled } from '../onboarding';
+import { pushSettings } from './push';
 
 export interface GameDeps {
   model: GameModel;
@@ -59,6 +60,8 @@ export interface GameScreen {
   el: HTMLElement;
   /** Exposed for the end-to-end test and debugging (`window.evo`). */
   view: WorldView;
+  /** Open a tab by name ('matings', 'market', ...; unknown names are ignored), as a notification click asks. */
+  showTab: (tab: string) => void;
   destroy: () => void;
 }
 
@@ -716,7 +719,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     h('summary', {}, 'Alert preferences'),
     h('p', { class: 'muted small' }, 'Saved to your account. Hidden kinds stay out of the feed and the badge; switch one back on to see its recent alerts.'),
     prefsEl);
-  append(tabs.genetics, [dashEl, h('h3', {}, 'Alerts'), prefsBox, feedEl]);
+  const push = pushSettings({ token: deps.token, onUnauthorized: deps.onUnauthorized, toast: (k, t) => model.toast(k, t) });
+  cleanups.push(push.destroy);
+  append(tabs.genetics, [dashEl, h('h3', {}, 'Alerts'), prefsBox, push.el, feedEl]);
 
   function renderPrefs(): void {
     prefsEl.replaceChildren(renderAlertPrefs(model.prefs, (p) => void savePrefs(p)));
@@ -887,6 +892,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   return {
     el,
     view,
+    showTab: (t: string) => {
+      if (!(t in tabs)) return;
+      if (narrow()) setSheet(true);
+      showTab(t as Tab);
+    },
     destroy: () => {
       for (const c of cleanups) c();
       if (toastTimer) clearTimeout(toastTimer);

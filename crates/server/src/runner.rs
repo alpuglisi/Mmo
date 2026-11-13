@@ -41,6 +41,7 @@ use crate::push::{PushError, PushSender, Pushed};
 use crate::saver::Saver;
 use crate::snapshot::Capture;
 use crate::terrain::{dynamic_raw, terrain_raw, DynamicRaw, TerrainRaw};
+use crate::webpush::WorldNotifier;
 
 pub enum Request {
     Found {
@@ -154,6 +155,8 @@ pub struct Runner {
     saver: Saver,
     /// Timings and counters for `GET /api/metrics`.
     metrics: Arc<Mutex<Metrics>>,
+    /// Push notifications (`crate::webpush`), when on.
+    notifier: Option<WorldNotifier>,
 }
 
 /// Handles for the rest of the server.
@@ -185,8 +188,15 @@ impl Runner {
             saved_day,
             saver,
             metrics: metrics.clone(),
+            notifier: None,
         };
         (runner, RunnerHandles { tx, published: published_rx, persist: persist_rx, metrics })
+    }
+
+    /// Hand the game's push notices (`Game::take_notices`) to the push
+    /// service.
+    pub fn set_notifier(&mut self, notifier: WorldNotifier) {
+        self.notifier = Some(notifier);
     }
 
     /// Run on a dedicated OS thread until every request sender is dropped.
@@ -432,7 +442,21 @@ impl Runner {
         players.len()
     }
 
+    /// Pass the game's push notices on to the push service without waiting
+    /// (`WorldNotifier::notify` never blocks), except those of players
+    /// connected to this world: they see it in the game.
+    fn forward_notices(&mut self) {
+        let notices = self.game.take_notices();
+        let Some(n) = &self.notifier else { return };
+        for x in notices {
+            if !self.conns.values().any(|(p, _)| *p == x.player) {
+                n.notify(x.player, x.kind, x.text, x.organism);
+            }
+        }
+    }
+
     fn dispatch(&mut self, out: Outbox) {
+        self.forward_notices();
         for (target, msg) in out {
             let conns: Vec<ConnId> = match target {
                 Target::Conn(c) => vec![c],

@@ -405,6 +405,102 @@ impl Default for AlertPrefs {
     }
 }
 
+/// What a push notification is about (`crate::webpush`). Each kind can be
+/// switched off on its own ([`PushPrefs`]); kinds that come from an alert
+/// also follow the alert preferences: an alert kind hidden from the feed is
+/// never pushed.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PushKind {
+    /// Another player asks to mate their organism with yours.
+    Mating,
+    /// A possessed organism or a founder died (`AlertKind::Death`).
+    Death,
+    /// The marketplace: outbid, an auction won or sold, a bid received, a
+    /// listing bought, a sale paid, a listing closed (`AlertKind::Market`;
+    /// escrow payments, refunds after an offer and bonuses are not pushed).
+    Market,
+    /// A new species arose from your lineage (`AlertKind::Achievement`).
+    Species,
+    /// A ranked season or an era ended, with your places (`AlertKind::World`).
+    Season,
+    /// A catastrophe began (`AlertKind::World`).
+    Catastrophe,
+}
+
+impl PushKind {
+    /// In order of importance (a coalesced notification leads with the
+    /// most important).
+    pub const ALL: [PushKind; 6] = [
+        PushKind::Mating,
+        PushKind::Death,
+        PushKind::Market,
+        PushKind::Species,
+        PushKind::Season,
+        PushKind::Catastrophe,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PushKind::Mating => "mating",
+            PushKind::Death => "death",
+            PushKind::Market => "market",
+            PushKind::Species => "species",
+            PushKind::Season => "season",
+            PushKind::Catastrophe => "catastrophe",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+
+    /// The alert kind whose preferences also apply (none for mating offers:
+    /// they are not alerts and always show).
+    pub fn alert_kind(self) -> Option<AlertKind> {
+        match self {
+            PushKind::Mating => None,
+            PushKind::Death => Some(AlertKind::Death),
+            PushKind::Market => Some(AlertKind::Market),
+            PushKind::Species => Some(AlertKind::Achievement),
+            PushKind::Season | PushKind::Catastrophe => Some(AlertKind::World),
+        }
+    }
+
+    /// The client tab a notification of this kind opens.
+    pub fn tab(self) -> &'static str {
+        match self {
+            PushKind::Mating => "matings",
+            PushKind::Death => "genetics",
+            PushKind::Market => "market",
+            PushKind::Species | PushKind::Catastrophe => "world",
+            PushKind::Season => "seasons",
+        }
+    }
+}
+
+/// `GET` / `POST /api/push/prefs`: the push kinds a player switched off.
+/// Every kind is on by default (subscribing a device is the opt-in); stored
+/// per account (`Store`), global across worlds.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PushPrefs {
+    #[serde(default)]
+    pub off: Vec<PushKind>,
+}
+
+impl PushPrefs {
+    /// Sorted, without duplicates.
+    pub fn normalized(mut self) -> Self {
+        self.off.sort_unstable();
+        self.off.dedup();
+        self
+    }
+
+    pub fn wants(&self, kind: PushKind) -> bool {
+        !self.off.contains(&kind)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AlertView {
     pub tick: u64,

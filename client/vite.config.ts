@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 // `npm run dev` proxies the API and the WebSocket to a local evo-server
@@ -16,6 +17,17 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    rollupOptions: {
+      // The page, and the service worker (src/sw.ts) at a fixed name next
+      // to index.html: its scope is the directory it is served from.
+      input: {
+        index: fileURLToPath(new URL('./index.html', import.meta.url)),
+        sw: fileURLToPath(new URL('./src/sw.ts', import.meta.url)),
+      },
+      output: {
+        entryFileNames: (chunk) => (chunk.name === 'sw' ? 'sw.js' : 'assets/[name]-[hash].js'),
+      },
+    },
     // PixiJS alone is ~500 kB minified; that's expected.
     chunkSizeWarningLimit: 1500,
   },

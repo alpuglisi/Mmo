@@ -72,6 +72,16 @@ pub enum Target {
 
 pub type Outbox = Vec<(Target, ServerMsg)>;
 
+/// Something worth a push notification to a player (`crate::webpush`),
+/// drained by the world thread with [`Game::take_notices`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notice {
+    pub player: PlayerId,
+    pub kind: PushKind,
+    pub text: String,
+    pub organism: Option<OrgId>,
+}
+
 /// Records for the store, drained by the world thread.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PersistEvent {
@@ -294,6 +304,9 @@ pub struct Game {
     last_legacy_day: Option<u64>,
     last_season: Season,
     persist: Vec<PersistEvent>,
+    /// What is worth a push notification since the last
+    /// [`Game::take_notices`] (`crate::webpush`).
+    notices: Vec<Notice>,
     /// The daily records since the server started, oldest first.
     history: VecDeque<DailyRecord>,
     /// Cumulative birth and death counters at the last day boundary.
@@ -446,6 +459,7 @@ impl Game {
             last_legacy_day,
             last_season,
             persist: Vec::new(),
+            notices: Vec::new(),
             history: VecDeque::new(),
             prev_born: BTreeMap::new(),
             prev_deaths: BTreeMap::new(),
@@ -712,6 +726,11 @@ impl Game {
         std::mem::take(&mut self.persist)
     }
 
+    /// What is worth a push notification since the last call.
+    pub fn take_notices(&mut self) -> Vec<Notice> {
+        std::mem::take(&mut self.notices)
+    }
+
     /// Found the player's lineage (one per player per world).
     pub fn found(&mut self, player: PlayerId, design: &FounderDesign) -> Result<FoundOk, FoundError> {
         if let Some(&lineage) = self.lineage_of.get(&player) {
@@ -913,6 +932,9 @@ impl Game {
         // owner's acceptance (see `hold_consented_females`).
         self.hold_consented_females();
         let view = self.offer_view(id);
+        let price = view.price.map_or(String::new(), |p| format!(" for {p} renown"));
+        let text = format!("{} asks to mate their #{mine} with your #{partner}{price}.", view.from_name);
+        self.notice(to, PushKind::Mating, text, Some(partner));
         out.push((Target::Player(to), ServerMsg::MatingRequest { offer: view.clone() }));
         Ok(Some(serde_json::json!({ "offer": view })))
     }
@@ -1746,13 +1768,15 @@ impl Game {
             self.alert(o.to, AlertKind::Market, format!("{text}."), Some(o.partner), out);
             let paid =
                 format!("Paid {amount} renown to {to} from escrow: the mating of #{} with #{} ran.", o.mine, o.partner);
-            self.alert(o.from, AlertKind::Market, paid, Some(o.mine), out);
+            // The payer asked for it: no push.
+            self.alert_push(o.from, AlertKind::Market, None, paid, Some(o.mine), out);
             Some("paid")
         } else {
             let how = serde_json::to_value(status).unwrap().as_str().unwrap_or_default().to_string();
             let text = format!("Refund: {amount} renown back from offer #{} with {to} ({how})", o.id);
             let _ = self.post(o.from, amount as i64, LedgerKind::Refund, text.clone(), Some(o.id), o.listing);
-            self.alert(o.from, AlertKind::Market, format!("{text}."), Some(o.mine), out);
+            // The offer's own update says why; the refund is no news.
+            self.alert_push(o.from, AlertKind::Market, None, format!("{text}."), Some(o.mine), out);
             Some("refunded")
         }
     }
@@ -1849,7 +1873,7 @@ impl Game {
                     }
                     None => format!("Season {} has ended; you were not ranked.", finished.head.season),
                 };
-                self.alert(p, AlertKind::World, text, None, out);
+                self.alert_push(p, AlertKind::World, Some(PushKind::Season), text, None, out);
             }
             self.season = self.season.next(record.day, self.cfg.season_days);
             self.persist.push(PersistEvent::Season(Box::new(finished.clone())));
@@ -1888,7 +1912,36 @@ impl Game {
         self.last_season_record.as_ref()
     }
 
+    /// Alert a player; deaths and market alerts are also worth a push.
     fn alert(&mut self, player: PlayerId, kind: AlertKind, text: String, organism: Option<OrgId>, out: &mut Outbox) {
+        let push = match kind {
+            AlertKind::Death => Some(PushKind::Death),
+            AlertKind::Market => Some(PushKind::Market),
+            _ => None,
+        };
+        self.alert_push(player, kind, push, text, organism, out);
+    }
+
+    /// Record a push notice (`crate::webpush`) for a player.
+    fn notice(&mut self, player: PlayerId, kind: PushKind, text: String, organism: Option<OrgId>) {
+        if player != WILD {
+            self.notices.push(Notice { player, kind, text, organism });
+        }
+    }
+
+    /// Alert a player, and record a push notice of kind `push` with it.
+    fn alert_push(
+        &mut self,
+        player: PlayerId,
+        kind: AlertKind,
+        push: Option<PushKind>,
+        text: String,
+        organism: Option<OrgId>,
+        out: &mut Outbox,
+    ) {
+        if let Some(p) = push {
+            self.notice(player, p, text.clone(), organism);
+        }
         let alert = AlertView { tick: self.world.tick(), day: self.world.day(), kind, text, organism };
         let list = self.alerts.entry(player).or_default();
         list.push_back(alert.clone());
@@ -2126,7 +2179,8 @@ impl Game {
     fn chronicle_alerts(&mut self, out: &mut Outbox) {
         let players: Vec<PlayerId> = self.lineage_of.keys().copied().collect();
         let ch = &self.world.chronicle;
-        let mut alerts: Vec<(PlayerId, AlertKind, String)> = Vec::new();
+        // (Player, alert kind, push kind, text.)
+        let mut alerts: Vec<(PlayerId, AlertKind, Option<PushKind>, String)> = Vec::new();
         self.seen_catastrophes.resize(ch.catastrophes.len(), (false, false));
         for (c, seen) in ch.catastrophes.iter().zip(self.seen_catastrophes.iter_mut()) {
             let what = catastrophe_text(c.kind);
@@ -2136,6 +2190,7 @@ impl Game {
                     alerts.push((
                         p,
                         AlertKind::World,
+                        Some(PushKind::Catastrophe),
                         format!("Catastrophe: {what} has begun (until about day {}).", c.end_day + 1),
                     ));
                 }
@@ -2147,6 +2202,7 @@ impl Game {
                     alerts.push((
                         p,
                         AlertKind::World,
+                        None,
                         format!("The {what} is over: {lost} fewer organisms in the world than at its start."),
                     ));
                 }
@@ -2155,8 +2211,12 @@ impl Game {
         let mut bonuses: Vec<(PlayerId, u64, String)> = Vec::new();
         for a in &ch.achievements[self.seen_achievements.min(ch.achievements.len())..] {
             let text = achievement_text(&self.world, &a.kind);
+            let mut push = None;
             match a.kind {
-                AchievementKind::SpeciesFounded { .. } => self.season.add_species(a.player),
+                AchievementKind::SpeciesFounded { .. } => {
+                    self.season.add_species(a.player);
+                    push = Some(PushKind::Species);
+                }
                 AchievementKind::SurvivedCatastrophe { .. } => self.season.add_survival(a.player),
                 _ => {}
             }
@@ -2164,7 +2224,7 @@ impl Game {
             if bonus > 0 && a.player != WILD {
                 bonuses.push((a.player, bonus, text.clone()));
             }
-            alerts.push((a.player, AlertKind::Achievement, text));
+            alerts.push((a.player, AlertKind::Achievement, push, text));
         }
         self.seen_achievements = ch.achievements.len();
         for e in &ch.eras[self.seen_eras.min(ch.eras.len())..] {
@@ -2179,12 +2239,12 @@ impl Game {
                     ),
                     None => format!("Era {} has ended; your alleles were not among the breeding adults.", e.era + 1),
                 };
-                alerts.push((p, AlertKind::World, text));
+                alerts.push((p, AlertKind::World, Some(PushKind::Season), text));
             }
         }
         self.seen_eras = ch.eras.len();
-        for (p, kind, text) in alerts {
-            self.alert(p, kind, text, None, out);
+        for (p, kind, push, text) in alerts {
+            self.alert_push(p, kind, push, text, None, out);
         }
         for (p, bonus, text) in bonuses {
             let what = text.split(':').next().unwrap_or("Achievement").to_string();
@@ -2192,7 +2252,9 @@ impl Game {
                 .post(p, bonus as i64, LedgerKind::Achievement, format!("{what}: achievement bonus"), None, None)
                 .is_ok()
             {
-                self.alert(p, AlertKind::Market, format!("+{bonus} renown for an achievement ({what})."), None, out);
+                // The achievement itself is the news.
+                let text = format!("+{bonus} renown for an achievement ({what}).");
+                self.alert_push(p, AlertKind::Market, None, text, None, out);
             }
         }
     }
@@ -3259,6 +3321,12 @@ mod tests {
         assert!(alerts_in(&out, 2).iter().all(|x| x.organism != Some(a[1])), "only the owner hears");
         assert_eq!(g.alerts(1).len(), alerts.len());
         assert!(g.lineage_stats(1).alerts.iter().any(|x| x.kind == AlertKind::Death));
+        // The death is worth a push; daily summaries are not.
+        let notices = g.take_notices();
+        let n = notices.iter().find(|n| n.organism == Some(a[1])).expect("a death notice");
+        assert_eq!((n.player, n.kind, &n.text), (1, PushKind::Death, &death.text));
+        assert!(notices.iter().all(|n| n.kind == PushKind::Death), "{notices:?}");
+        assert!(g.take_notices().is_empty());
     }
 
     #[test]
@@ -3417,6 +3485,11 @@ mod tests {
             alerts.iter().any(|a| a.kind == AlertKind::World && a.text.contains("severe winter has begun")),
             "{alerts:?}"
         );
+        let begun = g.take_notices();
+        assert!(
+            begun.iter().any(|n| n.kind == PushKind::Catastrophe && n.text.contains("severe winter has begun")),
+            "{begun:?}"
+        );
         let state = g.state_for(10).unwrap();
         let c = state.weather.catastrophe.expect("banner while active");
         assert_eq!((c.id, c.kind.as_str(), c.active), (id, "severe_winter", true));
@@ -3433,6 +3506,10 @@ mod tests {
             "{alerts:?}"
         );
         assert!(g.state_for(10).unwrap().weather.catastrophe.is_none());
+        // Pushed: the era's end; not: the catastrophe's end, other achievements.
+        let notices = g.take_notices();
+        assert!(notices.iter().any(|n| n.kind == PushKind::Season && n.text.starts_with("Era 1 has ended")));
+        assert!(!notices.iter().any(|n| n.text.contains("is over") || n.text.starts_with("Survivor")), "{notices:?}");
 
         let ch = g.chronicle();
         assert_eq!(ch.catastrophes.history.len(), 1);
@@ -3706,6 +3783,14 @@ mod tests {
         assert_eq!(g.balance(1), start);
         let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: Some(30) });
         let id = offer_id(&out);
+        // The partner's owner is asked: worth a push.
+        let asked = Notice {
+            player: 2,
+            kind: PushKind::Mating,
+            text: format!("ann asks to mate their #{fa} with your #{mb} for 30 renown."),
+            organism: Some(mb),
+        };
+        assert_eq!(g.take_notices(), vec![asked]);
         assert_eq!((g.balance(1), g.escrow(1)), (start - 30, 30));
         assert_eq!(g.state_for(10).unwrap().escrow, 30);
         assert_eq!(g.state_for(10).unwrap().offers[0].escrow, 30);
@@ -3720,6 +3805,10 @@ mod tests {
         let bob_alert = alerts_in(&out, 2).into_iter().find(|x| x.kind == AlertKind::Market).expect("sale alert");
         assert!(bob_alert.text.starts_with("Sale: 30 renown from ann"), "{}", bob_alert.text);
         assert!(alerts_in(&out, 1).iter().any(|x| x.kind == AlertKind::Market && x.text.starts_with("Paid 30")));
+        // The sale is news to the seller; the buyer's payment is not.
+        let notices = g.take_notices();
+        assert!(notices.iter().any(|n| n.player == 2 && n.kind == PushKind::Market && n.text == bob_alert.text));
+        assert!(notices.iter().all(|n| n.player != 1), "{notices:?}");
         assert_eq!(ledger_kinds(&g, 1), vec![LedgerKind::Grant, LedgerKind::Escrow]);
         assert_eq!(ledger_kinds(&g, 2), vec![LedgerKind::Grant, LedgerKind::Sale]);
         let t = trades(&mut g);
@@ -4899,6 +4988,12 @@ mod tests {
         assert_eq!(market.rows.iter().map(|p| (p.player, p.value)).collect::<Vec<_>>(), vec![(1, 7.0)]);
         assert!(r.standings[1].rows.iter().all(|p| p.value >= 6.0), "founders count for the lineage board");
         assert!(alerts_in(&out, 1).iter().any(|x| x.text.starts_with("Season 1 has ended: you placed #")));
+        let notices = g.take_notices();
+        for p in [1, 2] {
+            let ended =
+                |n: &&Notice| n.player == p && n.kind == PushKind::Season && n.text.starts_with("Season 1 has ended");
+            assert!(notices.iter().any(|n| ended(&n)), "{notices:?}");
+        }
         assert_eq!(g.last_season(), Some(r));
         // Season 2 started with the record that ended season 1.
         let cur = g.current_season(0, 10, Some(1));

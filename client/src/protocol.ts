@@ -309,6 +309,43 @@ export interface AlertPrefs {
 /** What the server answers before a player saves any preferences. */
 export const DEFAULT_ALERT_PREFS: AlertPrefs = { hidden: [], toast: ['death', 'need', 'market'] };
 
+/** What a push notification is about (crates/server/src/protocol.rs `PushKind`). */
+export type PushKind = 'mating' | 'death' | 'market' | 'species' | 'season' | 'catastrophe';
+
+/** Every push kind, in the server's order (most important first). */
+export const PUSH_KINDS: readonly PushKind[] = ['mating', 'death', 'market', 'species', 'season', 'catastrophe'];
+
+/** `GET` / `POST /api/push/prefs`: the push kinds switched off (every kind is on by default). */
+export interface PushPrefs {
+  off: PushKind[];
+}
+
+/** `GET /api/push/key`: whether the server sends push notifications, and the VAPID key to subscribe with. */
+export interface PushKeyView {
+  enabled: boolean;
+  public_key?: string;
+  kinds: PushKind[];
+}
+
+/** One subscribed device (`GET /api/push/subscriptions`, `POST /api/push/subscribe`). */
+export interface PushSubscriptionView {
+  endpoint: string;
+  created_unix: number;
+  label?: string;
+}
+
+/** What the service worker receives in a push (crates/server/src/webpush/service.rs `Payload`). */
+export interface PushPayload {
+  title: string;
+  body: string;
+  world: string;
+  tab: string;
+  kind: PushKind;
+  count: number;
+  tag: string;
+  organism?: number;
+}
+
 export interface AlertView {
   tick: number;
   day: number;
