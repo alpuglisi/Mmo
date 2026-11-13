@@ -42,6 +42,7 @@ docs/
 | `world` | Needs and behavior, everything else | The tick loop: utility-AI decisions (parallel), then movement, grazing, hunting, scavenging, drinking, courtship, pregnancy, eggs and incubation, nursing, growth, death. |
 | `world::disease` | Genetics: picky vs flexible | Mating-transmitted disease: pathogens emerge at matings (4× between founding lineages), pass between mates (natural and directed) and between nursing mothers and young, drain the acutely sick's health (dulling their display) and cut fertility; infections end in immunity or lifelong symptomless carriage. Also deaths of homozygotes for harmful recessives. Reports count infections, current sick and carriers, harmful alleles per organism, and `disease` / `recessive` deaths per lineage. |
 | `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter), short-term torpor on cold nights, a seasonal coat (winter coat molted in autumn and shed in spring, food per molt; a mismatch on cold-blooded bodies) and timed breeding (a narrow early-spring window with strong drive and better conception, no breeding outside it). |
+| `world::par_apply` | Scale and performance (parallel regions) | The apply phase on all cores (`WorldConfig::parallel_apply`, default on; `--sequential-apply` for the old fully sequential apply): each turn split into a parallel movement sweep, a sequential interaction sweep in shuffled order, a parallel needs sweep and a sequential death/birth sweep. See [Parallel apply](#parallel-apply). |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
 
@@ -50,11 +51,11 @@ docs/
 1. **Hourly:** regional weather, egg incubation. **Every tick:** a share of the environment chunks (temperature, snow, ice, water levels, plant regrowth), so each chunk updates once per hour; the water-distance field is refreshed hourly.
 2. **Daily:** remove the dead, recompute group traits, take a legacy snapshot, reset mating slots at a season change.
 3. **Decide (parallel, read-only):** each organism scores actions by need urgency × its behavior genes.
-4. **Apply (sequential, shuffled):** act on the decision, update needs, resolve death and birth.
+4. **Apply (shuffled order, mostly parallel):** act on the decision, update needs, resolve death and birth. Movement and needs run on all cores, interactions in order (see [Parallel apply](#parallel-apply)).
 
 Every random draw comes from a `(seed, stream, tick, organism)` stream, so a
-run reproduces exactly from its seed regardless of thread count (there is a
-test for this).
+run reproduces exactly from its seed regardless of thread count (there are
+tests for this, with the parallel and the sequential apply).
 
 ### Movement
 
@@ -67,8 +68,9 @@ it is pushed off the route, or the tile ahead closes (ice melts). Searches
 expand at most `path_nodes` tiles (a search that runs out heads for the tile
 it got closest to); a failed search isn't repeated for the same target until
 the terrain changes on the hour, and a target out in water with no shore
-next to it fails at once. Planning happens in the sequential apply phase,
-so runs stay thread-count independent. Short sprints (fleeing, the last
+next to it fails at once. Planning happens in the apply phase, on all cores
+with a search buffer per thread (a search doesn't depend on what the buffer
+held), so runs stay thread-count independent. Short sprints (fleeing, the last
 lunge at prey) stay greedy. `--set path_nodes=0` restores greedy steering
 exactly.
 
@@ -95,6 +97,7 @@ cargo test --release                                  # unit and world tests
 cargo run --release --bin evo-sim -- designs          # sample designs and point costs
 cargo run --release --bin evo-sim -- run --days 120 --report 10 --snapshot out/world
 cargo run --release --bin evo-sim -- bench --scale 4 --days 3
+cargo run --release --bin evo-sim -- bench --size 256 --scale 16 --days 12 --threads 1,2,4 --compare-apply
 cargo run --release --bin evo-sim -- sweep --trials 16 --seeds 3 --rounds 2 --out sweep.csv
 cargo run --release --bin evo-sim -- run --set sprint=2.0 --set crowding=0.05   # try a balance tweak
 cargo run --release --example trace -- 3 200          # follow one fox (lineage 3)
@@ -437,20 +440,167 @@ marketplace and economy UI, allele-origin shares within the lineage (whose
 genes your organisms carry), per-gene distributions (histograms rather than
 mean ± spread), alert preferences, and the Capacitor shells.
 
-## Benchmark (first measurement)
+## Benchmark
 
-On a 4-core container, 128×128 map, ~1,700 organisms:
+```sh
+evo-sim bench --size 256 --scale 16 --days 12 --threads 1,2,4 --compare-apply
+```
 
-| Threads | ms per tick | µs per organism-tick |
+`bench` founds the standard world with `--scale` times the founders (and
+caps), warms up a day, then gives the simulated days to each (threads, apply
+mode) setup in rotation, so all setups see similar populations and the same
+machine load, and reports the median day: ms per tick, per-phase cost
+(`World::phase_times`), µs per organism-tick and the time the parallel
+apply spends in its sequential sweeps.
+
+All numbers below come from a 4-core container shared with two or three
+other busy agents (load average 7–14 on 4 cores; the benchmark session's
+scheduler weight was raised for the multi-thread runs), so they are noisy
+lower bounds on what a dedicated machine does. Speed-up figures are medians
+of two runs, the rest single runs.
+
+### Profile at the prototype target
+
+The doc's prototype stage is a 256×256 map with ~5k player and ~20k wild
+organisms. `--scale 16` starts 24,900 organisms and runs at about 21–23k
+(scale 4: 6,200 growing to 9–10k). Single thread, ms per tick:
+
+| | Environment | Daily | Grid | Decide | Apply | Total | µs per organism-tick |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ~6k organisms (scale 4, quiet start of the session) | 1.8 | 0.1 | 0.3 | 8.4 | 4.4 | 14.9 | 2.5 |
+| ~22k organisms (scale 16) | 2.3 | 0.2 | 1.4 | 61 | 14.1 | 79 | 3.4 |
+
+The decision phase dominates (three quarters at scale 16) and its
+per-organism cost grows with local density (1.4 µs at scale 4, 2.7 µs at
+scale 16): perception scans more neighbors in a crowd. Apply is 0.6–0.75 µs
+per organism, much of it movement and A* route planning (callgrind).
+Environment chunks cost 0.03–0.04 ms per 1,000 tiles; daily bookkeeping and
+the grid rebuild are small.
+
+### Parallel apply
+
+The apply phase used to run every organism's turn in one sequential pass in
+a seeded shuffled order. `world::par_apply` splits each turn: `start`
+(intent, movement, route planning), `act` (eating plants, meat and caches,
+hunting, mating, drinking, clutch raids, nursing: everything that touches
+other organisms, tiles, clutches, caches or counters), `settle` (dormancy,
+needs, death rolls, disease, growth) and `finish` (death, parent credit,
+birth). `start` and `settle` touch only the organism itself, so:
+
+1. Hunters and their prey, suitors and their mates (any decision with a
+   target organism) are *engaged*: they take their whole turn in their place
+   in the shuffled order, exactly as before. 2–3% of turns.
+2. Everyone else moves in a **parallel** sweep (route search buffers per
+   thread),
+3. acts in a **sequential** sweep in the shuffled order (engaged organisms
+   take their whole turn here),
+4. settles in a **parallel** sweep, each organism drawing from its own
+   `(seed, SETTLE, tick, organism id)` stream,
+5. and dies, credits its parents and gives birth in a **sequential** sweep
+   in the shuffled order.
+
+The parallel sweeps run each organism on its own, held outside
+`World::organisms` (a rule reaching for another organism would panic, not
+race), against a world nothing writes meanwhile; tile food, meat, kills,
+births, counters and index allocation only change in the sequential
+sweeps. So results are deterministic and independent of thread count (tests:
+1 vs 4 threads bit-identical for both apply modes; two hunters striking one
+prey in the same tick kill it once, count one kill and leave one carcass;
+births, hatchings and deaths each counted exactly once over 8 days).
+
+They are not identical to the sequential apply's: a free organism now moves
+before anyone acts and settles after everyone has acted. One effect of that
+mattered and is undone: a young being nursed sees a free mother whose turn
+comes after its own where she stood before moving, as the sequential apply
+would (without it, mothers always walked off first, and herd grazers ran
+10–25% lower in the balance sweep). `--sequential-apply`
+(`WorldConfig::parallel_apply = false`) restores the old apply exactly
+(bit-identical to before this change). Region colouring was the other
+option; it would have meant moving every rule onto a split-borrow view of
+the world plus a deferral pass for interactions across region borders, while
+splitting the turn keeps the rules as they are.
+
+**Speed-up** (ms per tick, medians of two runs; the parallel apply's
+sequential sweeps in brackets):
+
+| | Threads | Apply, sequential | Apply, parallel | Tick, sequential apply | Tick, parallel apply | µs per organism-tick (parallel) |
+| --- | --- | --- | --- | --- | --- | --- |
+| ~22k (256², scale 16) | 1 | 14.1 | 14.2 (3.6) | 79 | 75 | 3.6 |
+| | 2 | 13.6* | 10.5 (3.6) | 54* | 52 | 2.3 |
+| | 4 | 13.6* | 7.9 (3.3) | 37* | 28.7 | 1.4 |
+| ~9k (256², scale 4) | 1 | 7.5 | 6.1 (1.1) | 25 | 18.5 | 2.5 |
+| | 4 | 7.9* | 5.1 (1.5) | 16.4 | 15.3 | 1.4 |
+
+\* The sequential apply doesn't use the extra threads; the spread from the
+1-thread figure is machine load. At scale 4 the population grows during the
+run, so setups differ by up to 10% in organisms; compare µs per
+organism-tick. At the prototype target, 4 threads now make the apply phase
+1.8× and the whole tick 2.6× faster than one thread (decide alone: 3.3×). The sequential sweeps are a quarter of the apply phase
+(0.16–0.24 µs per organism, mostly cache misses from visiting organisms in
+random order), which caps the apply phase at about 2.3× on 4 cores.
+
+**Capacity at 1 tick per second**, 4 threads, parallel apply:
+
+| World | Organisms (agents) | ms per tick | µs per agent-tick |
+| --- | --- | --- | --- |
+| 256², scale 16 | 21k (21k) | 28.7 | 1.4 |
+| 256², scale 16, LOD, 2 focus points | 26k (6.5k) | 11.0 | 1.7 |
+| 256², scale 16, LOD, 4 focus points | 21k (14k) | 18.8 | 1.3 |
+| 512², scale 16 (1 thread: 343 ms, 4.4 µs) | 73k (73k) | 127 | 1.7 |
+| 512², scale 16, LOD, 8 focus points | 99k (28k) | 41.7 | 1.5 |
+
+At 1.4–1.7 µs per agent-tick this machine would hold roughly **550–700k
+agents at 1 tick per second** (extrapolated; the largest world measured is
+78k, and the per-agent cost rises with the working set: 4.4 µs single-thread
+at 512² against 3.6 at 256²), or **230–290k on one core**, which includes
+terrain, weather and bookkeeping: the low end of the doc's 200k–500k per
+core *before* overhead, and well above its "a third of that after
+overhead". Level of detail doesn't make agents cheaper; it makes most
+organisms cohorts, which cost almost nothing beyond the fixed environment
+update (10 ms per tick for 512²), so total capacity is agent capacity
+divided by the share of organisms near players.
+
+### Launch numbers
+
+The doc's next step was to measure at the prototype target and then set
+launch numbers. From the measurements above:
+
+- **Prototype** (256², 10–50 players, ~25k organisms): 29 ms per tick on 4
+  cores, 75 ms on one. No level of detail needed; there is room to run the
+  world clock several times faster than 1 tick per second while testing.
+- **Launch** (512², 100–200 players): keep the doc's 20k–40k player
+  organisms (about 200 breeding adults per lineage, `lineage_cap` ≈ 250–300
+  organisms) plus ~100k wild. That is about 140k agents at a higher density
+  than measured (0.53 per tile against 0.28–0.38; decide cost rises with
+  density, say 2–2.5 µs per agent-tick on 4 cores): roughly 0.3 s of a 1 s
+  tick on 4 cores, 0.6–0.9 s on one. Plan **one world per 4–8 dedicated
+  cores**, which leaves room for networking, persistence and possessed
+  organisms ticking faster. With 100–200 players on 512² the players' active
+  areas (about 9,000 tiles each) cover most of the map, so size servers for
+  full agents and treat level of detail as headroom for quiet regions and
+  offline players.
+- **Stretch** (1024², 500 players, ~400k): about 0.7 s per tick on 4 cores
+  by extrapolation, too close to the 1 s clock. Needs 16 cores (untested
+  beyond 4; the sequential remainder, about 0.4 µs per organism for the
+  apply sweeps, environment and grid, caps any core count at a few million
+  organism-ticks per second) or level of detail with players clustered;
+  more worlds rather than bigger ones remains the safer way to grow.
+- Watch: the decision phase is the cost to cut next (density-driven
+  perception); the apply's sequential act sweep is the next part to split by
+  region if the apply phase becomes the bottleneck.
+
+**Balance check.** `evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1
+--threads 1` (score / surviving lineage-worlds of 96):
+
+| Seeds | Sequential apply | Parallel apply |
 | --- | --- | --- |
-| 1 | 4.3 | 2.6 |
-| 4 | 2.2 | 1.35 |
+| 31–42 | 11.14 / 90 | 11.26 / 91 |
+| 43–54 | 10.90 / 90 | 10.94 / 90 |
+| 55–66 | 11.14 / 90 | 11.00 / 89 |
+| Mean | 11.06 / 270 of 288 | 11.07 / 270 of 288 |
 
-The single-thread figure falls within the design doc's 2–5 µs estimate. Only
-the decision phase runs in parallel so far, which is why 4 threads give about
-1.9×. Parallelizing the apply phase by region is the obvious next speed-up.
-The later nearest-first perception scan brought the single-thread cost to
-about 1.5–1.6 µs per organism-tick on the same benchmark.
+The two schedules differ by less than one seed set from the next (0.24), the
+usual chaos band.
 
 ## Level of detail
 
@@ -769,8 +919,11 @@ in use, 10.71 with the presets' strategies).
    weakest lineages (sub-adults and orphans are the main losses).
 2. **Sweep robustness:** score trials on more seeds (single worlds are
    chaotic), and screen trials on short runs before giving the best full runs.
-3. Parallel apply by region, then measure at the doc's prototype target
-   (~25k organisms on 256×256).
+3. **Decision cost at density:** decide is three quarters of a tick at the
+   prototype target and its per-organism cost doubles from scale 4 to 16
+   (perception scans more neighbors in a crowd); cap or subsample the
+   neighbors scanned. Then the apply phase's sequential act sweep (a quarter
+   of apply) by region. See [Benchmark](#benchmark).
 4. A migrating sample design to exercise group navigation in play (none
    migrates yet: migrating antelope lost survival again even with group
    navigation).

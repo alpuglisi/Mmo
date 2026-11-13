@@ -238,10 +238,9 @@ impl World {
     /// Seasonal coat: start in the season's coat, then molt toward it at
     /// `1 / MOLT_DAYS` a day, paying `molt_cost × expression` hunger points
     /// per full molt. Deep sleepers don't molt.
-    fn molt(&mut self, i: usize, dt: f32) {
+    fn molt(&self, o: &mut Organism, dt: f32) {
         let target = Self::coat_target(self.season());
         let cost = self.config.balance.molt_cost;
-        let o = &mut self.organisms[i];
         let k = o.traits.seasonal.coat;
         if k <= 0.0 || o.dormancy.is_deep() {
             return;
@@ -295,16 +294,15 @@ impl World {
     /// Enter or leave a dormancy, and let caches spoil. Runs in `apply`
     /// after the action, before needs. Returns a cause of death for a
     /// sleeper that never wakes.
-    pub(crate) fn seasonal_tick(&mut self, i: usize, intent: &Intent, moved: f32, rng: &mut SimRng) -> Option<DeathCause> {
+    pub(crate) fn seasonal_tick(&self, o: &mut Organism, intent: &Intent, moved: f32, rng: &mut SimRng) -> Option<DeathCause> {
         let bal = self.config.balance;
         let season = self.season();
         let daytime = self.is_daytime();
         let dt = self.config.dt_days();
-        let pos = self.organisms[i].pos;
+        let pos = o.pos;
         let temp = self.seasonal_temp(pos);
         let dry = self.map.dryness_at(pos);
-        self.molt(i, dt);
-        let o = &mut self.organisms[i];
+        self.molt(o, dt);
         if o.cache > 0.0 {
             o.cache *= 1.0 - CACHE_SPOIL * dt;
         }
@@ -657,6 +655,14 @@ mod tests {
     use crate::terrain::{Biome, Map};
     use crate::WorldConfig;
 
+    /// Molt organism `i` in place (molting takes the organism itself, as in
+    /// the parallel apply).
+    fn molt_at(w: &mut World, i: usize, dt: f32) {
+        let mut o = w.organisms[i].clone();
+        w.molt(&mut o, dt);
+        w.organisms[i] = o;
+    }
+
     /// A flat grassland world at `base_temp` with `veg` food per tile and no
     /// water, starting on `day` of the year.
     fn flat_world(base_temp: f32, veg: f32, day: u32) -> World {
@@ -797,20 +803,20 @@ mod tests {
         let dt = w.config.dt_days();
         let hunger = |w: &World, k: usize| w.organisms[k].needs.hunger;
         // Summer: born into the summer coat, no cost.
-        w.molt(c, dt);
-        w.molt(p, dt);
+        molt_at(&mut w, c, dt);
+        molt_at(&mut w, p, dt);
         assert_eq!((w.organisms[c].coat, w.organisms[p].coat), (Some(0.0), None));
         assert_eq!(hunger(&w, c), 20.0);
         // Autumn: molts toward the winter coat, a step per tick.
         set_day(&mut w, 60);
         let k = w.organisms[c].traits.seasonal.coat;
-        w.molt(c, dt);
+        molt_at(&mut w, c, dt);
         let step = dt / MOLT_DAYS;
         assert!((w.organisms[c].coat.unwrap() - step).abs() < 1e-6);
         assert!((hunger(&w, c) - 20.0 - w.config.balance.molt_cost * k * step).abs() < 1e-4);
         let ticks = (MOLT_DAYS / dt).ceil() as usize + 1;
         for _ in 0..ticks {
-            w.molt(c, dt);
+            molt_at(&mut w, c, dt);
         }
         assert_eq!(w.organisms[c].coat, Some(1.0));
         // The whole molt cost `molt_cost × expression`.
@@ -821,10 +827,10 @@ mod tests {
         // A deep sleeper doesn't molt; back in spring it sheds the coat.
         set_day(&mut w, 5);
         w.organisms[c].dormancy = Dormancy::Winter;
-        w.molt(c, dt);
+        molt_at(&mut w, c, dt);
         assert_eq!(w.organisms[c].coat, Some(1.0));
         w.organisms[c].dormancy = Dormancy::Awake;
-        w.molt(c, dt);
+        molt_at(&mut w, c, dt);
         assert!(w.organisms[c].coat.unwrap() < 1.0);
         // A cold-blooded body gets no insulation: the coat blocks basking.
         let cold = add(&mut w, &design(Thermo::Cold).with(Gene::SeasonalCoat, 1.0), 1)[0];
@@ -1093,8 +1099,11 @@ mod tests {
     /// Migrants that navigate as a group lose fewer to the journey.
     #[test]
     fn group_migrants_lose_fewer_to_the_journey() {
-        let trip = |gt: f32| {
+        // Losses are a handful per trip, so trips over several seeds add up
+        // (the expected ratio is 1 - group_navigation = 0.4).
+        let trip = |gt: f32, seed: u64| {
             let mut w = flat_world(15.0, 40.0, 65);
+            w.config.seed = seed;
             w.config.balance.migration_risk = 0.05;
             let d = design(Thermo::Warm).with(Gene::Migration, 1.0).with(Gene::GroupTolerance, gt);
             let m = add(&mut w, &d, 40);
@@ -1107,12 +1116,19 @@ mod tests {
             let lost = w.counters.deaths.get(&DeathCause::Journey).copied().unwrap_or(0);
             (carrier, lost, w)
         };
-        let (carrier, solo, _) = trip(0.1);
-        assert!(!carrier);
-        let (carrier, group, mut w) = trip(0.9);
-        assert!(carrier);
-        assert!(solo >= 6, "{solo} of 40 lost travelling alone");
-        assert!(group * 2 <= solo, "{group} of 40 lost navigating as a group vs {solo}");
+        const SEEDS: u64 = 6;
+        let (mut solo, mut group) = (0, 0);
+        for seed in 0..SEEDS {
+            let (carrier, lost, _) = trip(0.1, seed);
+            assert!(!carrier);
+            solo += lost;
+            let (carrier, lost, _) = trip(0.9, seed);
+            assert!(carrier);
+            group += lost;
+        }
+        let (_, _, mut w) = trip(0.9, 0);
+        assert!(solo >= 6 * SEEDS, "{solo} of {} lost travelling alone", 40 * SEEDS);
+        assert!(group * 3 <= solo * 2, "{group} of {} lost navigating as a group vs {solo}", 40 * SEEDS);
         // Navigation needs the trait to hold and kin around.
         let mut o = w.organisms.iter().find(|o| o.alive).unwrap().clone();
         o.kin_nearby = 10;

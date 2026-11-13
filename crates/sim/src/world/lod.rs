@@ -1553,6 +1553,11 @@ mod tests {
         w.run_days(1);
         assert!(!w.region_is_active(far), "far corner should be abstract");
         assert!(w.abstract_count() > 0);
+        // Strays are absorbed once a day, so agents may cross into an
+        // abstract region between day boundaries; right after absorption none
+        // are left outside active regions.
+        let mut rng = rng_for(w.config.seed, stream::LOD, w.tick(), 7);
+        w.absorb_agents(&mut rng);
         assert!(w.organisms.iter().filter(|o| o.alive).all(|o| w.region_is_active(w.region_of(o.pos))));
         // Total population carried over (allowing a day of births and deaths).
         assert!(w.population() as f32 > start as f32 * 0.7);

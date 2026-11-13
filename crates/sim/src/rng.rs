@@ -22,6 +22,10 @@ pub mod stream {
     pub const GENETICS: u64 = 7;
     /// Level of detail: collapsing, expanding and evolving cohorts.
     pub const LOD: u64 = 8;
+    /// The parallel apply's settle sweep: needs, death rolls and growth of
+    /// organisms not in a chase (`world::par_apply`), one stream per
+    /// (tick, organism).
+    pub const SETTLE: u64 = 9;
 }
 
 pub fn splitmix64(x: u64) -> u64 {
