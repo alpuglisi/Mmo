@@ -3,17 +3,26 @@
 use super::World;
 use crate::legacy::LegacySnapshot;
 use crate::rng::SimRng;
-use crate::terrain::{next_weather, weather_rng};
+use crate::terrain::weather_rng;
 
 impl World {
     pub(super) fn hourly(&mut self) {
         let hour_index = self.tick / self.config.ticks_per_hour();
         let mut rng = weather_rng(self.config.seed, hour_index);
-        self.weather = next_weather(&self.weather, &mut rng);
-        let (doy, hour, dpy) = (self.day_of_year(), self.hour(), self.config.days_per_year);
-        self.map.update_environment(doy, hour, dpy, &self.weather, self.config.balance.veg_regrowth);
+        let bal = self.config.balance;
+        self.map.advance_weather(hour_index, self.day_of_year(), self.config.days_per_year, &bal);
+        self.weather = self.map.mean_weather();
         self.update_clutches(&mut rng);
         self.density.rebuild(&self.organisms, self.lineages.len());
+    }
+
+    /// Every tick: this tick's share of the environment chunks, so each chunk
+    /// updates once per simulated hour and the cost is spread evenly.
+    pub(super) fn environment_slice(&mut self) {
+        let tph = self.config.ticks_per_hour();
+        let (doy, hour, dpy) = (self.day_of_year(), self.hour(), self.config.days_per_year);
+        let bal = self.config.balance;
+        self.map.update_chunks(self.tick % tph, tph, doy, hour, dpy, &bal);
     }
 
     pub(super) fn daily(&mut self) {

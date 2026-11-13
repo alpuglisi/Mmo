@@ -49,7 +49,8 @@ pregnancy_cost meat_per_kg flee_weight ambush crowding toxin_damage larval_compe
 adult_mortality burrow_shelter burrow_caution parent_defense breeding_density escape
 escape_window home_buffer injury_aversion fight_damage recessive_mutation recessive_hazard
 disease_emergence disease_transmission disease_damage disease_recovery disease_chronic
-disease_fertility disease_kin path_nodes
+disease_fertility disease_kin path_nodes water_response snowmelt_swell rain_growth
+storm_exposure canopy_share
 ";
 
 struct Args {
@@ -233,13 +234,15 @@ fn run(args: &Args) {
 fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f64) {
     let c = &world.counters;
     println!(
-        "\n── Year {} day {} ({:?}) · {} alive · {} clutches · wind {:.2} · {:.2} µs/org-tick ──",
+        "\n── Year {} day {} ({:?}) · {} alive · {} clutches · wind {:.2} · drought {:.0}% · flood {:.0}% · {:.2} µs/org-tick ──",
         world.year() + 1,
         world.day_of_year() + 1,
         world.season(),
         world.alive_count(),
         world.clutches.len(),
         world.weather.wind,
+        world.map.drought * 100.0,
+        world.map.flood * 100.0,
         us_per_org_tick
     );
     let legacy = world.latest_legacy();

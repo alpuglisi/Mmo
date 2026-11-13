@@ -11,7 +11,7 @@ use crate::math::Vec2;
 use crate::organism::{Action, DeathCause, Infection, OrgId, Organism, Pregnancy, Sex};
 use crate::pathfinding::{enter_cost, Outcome, Path, MAX_TILE_SPEED};
 use crate::rng::{rng_for, stream, SimRng};
-use crate::terrain::{traverse, Map, Traverse};
+use crate::terrain::{traverse, Map, Traverse, Weather};
 
 /// Most hunger points an organism can eat per day (so a meal takes a few ticks).
 const MAX_INTAKE_PER_DAY: f32 = 1200.0;
@@ -175,10 +175,10 @@ impl World {
         let body = o.traits.body;
         let pos = o.pos;
         let endurance = st.endurance;
-        let fly = body.can_fly && o.needs.energy > 25.0 && !self.weather.grounds_flyers();
+        let fly = body.can_fly && o.needs.energy > 25.0 && !self.map.weather_at(pos).grounds_flyers();
         // Stuck on a tile the body can't use (e.g. ice melted underneath):
         // struggle toward the target regardless.
-        let stranded = !fly && traverse(&body, self.map.tile_at(pos), &self.weather, false) == Traverse::Blocked;
+        let stranded = !fly && traverse(&body, self.map.tile_at(pos), &self.map.weather_at(pos), false) == Traverse::Blocked;
         let effort = Effort { sprint: if sprinting { 2.5 } else { 1.0 }, endurance };
 
         // Walkers follow a route planned earlier, or plan one when the direct
@@ -198,14 +198,14 @@ impl World {
             let rule = if stranded {
                 Traverse::Passable { speed: 0.3, energy: 2.0 }
             } else {
-                traverse(&body, self.map.tile_at(dest), &self.weather, fly)
+                traverse(&body, self.map.tile_at(dest), &self.map.weather_at(dest), fly)
             };
             if let Traverse::Passable { speed: s, energy: e } = rule {
                 let dist = (step * s.min(MAX_TILE_SPEED)).min(d);
                 let new_pos = self.map.clamp(pos + dd * dist);
                 // The end point can fall short of the checked tile (or cut a
                 // corner): never step onto a tile the body can't use.
-                if stranded || traverse(&body, self.map.tile_at(new_pos), &self.weather, fly) != Traverse::Blocked {
+                if stranded || traverse(&body, self.map.tile_at(new_pos), &self.map.weather_at(new_pos), fly) != Traverse::Blocked {
                     let o = &mut self.organisms[i];
                     o.pos = new_pos;
                     o.needs.energy = (o.needs.energy - effort.cost(dist, e)).max(0.0);
@@ -246,13 +246,12 @@ impl World {
         // Reuse the old route's allocation.
         let mut path = o.path.take().unwrap_or_else(|| Box::new(Path::new(target)));
         let budget = self.config.balance.path_nodes as usize;
-        let weather = self.weather;
         let outcome = self.path_scratch.search(
             &self.map,
             from,
             target,
             budget,
-            |t| enter_cost(traverse(&body, t, &weather, false)),
+            |t| enter_cost(traverse(&body, t, &Weather { wind: t.wind }, false)),
             &mut path.waypoints,
         );
         path.goal = target;
@@ -279,7 +278,10 @@ impl World {
         let body = o.traits.body;
         let w = self.map.width;
         let center = |k: u32| Map::tile_center(k as usize % w, k as usize / w);
-        let rule = |k: u32| traverse(&body, &self.map.tiles[k as usize], &self.weather, false);
+        let rule = |k: u32| {
+            let t = &self.map.tiles[k as usize];
+            traverse(&body, t, &Weather { wind: t.wind }, false)
+        };
         let (cx, cy) = self.map.tile_coords(pos);
         let on_route = (first as usize % w).abs_diff(cx) <= 1 && (first as usize / w).abs_diff(cy) <= 1;
         let ahead = if on_route && path.serves(pos, target) { rule(first) } else { Traverse::Blocked };
@@ -319,9 +321,10 @@ impl World {
         }
         let want = (MAX_INTAKE_PER_DAY * self.config.dt_days() * rate).min(o.needs.hunger);
         let fph = o.food_per_hunger();
-        let pos = o.pos;
+        let (pos, body) = (o.pos, o.traits.body);
+        let share = self.config.balance.canopy_share;
         let tile = self.map.tile_at_mut(pos);
-        let got = (want * fph / eff).min(tile.veg);
+        let got = (want * fph / eff).min(tile.reachable_veg(&body, share));
         tile.veg -= got;
         self.organisms[i].needs.hunger -= got * eff / fph;
     }
@@ -373,6 +376,8 @@ impl World {
         if b.sheltered {
             p *= 1.0 - self.config.balance.burrow_shelter * b.traits.body.burrow;
         }
+        // A climber up in the canopy is mostly out of reach of ground hunters.
+        p *= 1.0 - crate::terrain::canopy_refuge(self.map.tile_at(b.pos), &b.traits.body, &a.traits.body);
         let tox = b.pheno[Gene::Toxins];
         if tox > 0.3 {
             p *= 1.0 - 0.6 * tox;
@@ -576,7 +581,7 @@ impl World {
         let tile = self.map.tile_at(pos);
         let (tile_temp, open, water) = (tile.temp, tile.is_open(), tile.water_depth);
         let body = self.organisms[i].traits.body;
-        let drowning = !body.can_fly && traverse(&body, tile, &self.weather, false) == Traverse::Blocked;
+        let drowning = !body.can_fly && traverse(&body, tile, &self.map.weather_at(pos), false) == Traverse::Blocked;
 
         let bal = self.config.balance;
         let o = &mut self.organisms[i];

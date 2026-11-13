@@ -1,8 +1,9 @@
 //! The world and its tick loop.
 //!
 //! One tick:
-//! 1. On the hour: environment (temperature, snow, ice, regrowth), weather,
-//!    clutches.
+//! 1. On the hour: regional weather, clutches. Every tick: a share of the
+//!    environment chunks (temperature, snow, ice, water levels, regrowth),
+//!    so each chunk updates once per simulated hour.
 //! 2. On the day: remove the dead, recompute group traits, take a legacy
 //!    snapshot, reset mating slots at a season change.
 //! 3. Rebuild the spatial index.
@@ -124,6 +125,8 @@ pub struct Counters {
 pub struct World {
     pub config: WorldConfig,
     pub map: Map,
+    /// Map-wide mean weather, for reports. Movement rules use the local
+    /// weather, `map.weather_at(pos)`.
     pub weather: Weather,
     pub organisms: Vec<Organism>,
     pub clutches: Vec<Clutch>,
@@ -178,11 +181,12 @@ impl World {
     pub fn new(config: WorldConfig) -> Self {
         assert!(config.ticks_per_day >= 24 && config.ticks_per_day.is_multiple_of(24), "ticks_per_day must be a multiple of 24");
         let map = Map::generate(config.seed, config.width, config.height);
+        let weather = map.mean_weather();
         let group = GroupField::new(config.width, config.height, 16);
         let grid = SpatialGrid::new(config.width, config.height, 4.0);
         World {
             map,
-            weather: Weather { wind: 0.2 },
+            weather,
             organisms: Vec::new(),
             clutches: Vec::new(),
             group,
@@ -498,7 +502,7 @@ impl World {
     }
 
     fn passable_for(&self, o: &Organism, p: Vec2) -> bool {
-        matches!(traverse(&o.traits.body, self.map.tile_at(p), &self.weather, false), Traverse::Passable { .. })
+        matches!(traverse(&o.traits.body, self.map.tile_at(p), &self.map.weather_at(p), false), Traverse::Passable { .. })
     }
 
     fn insert(&mut self, mut o: Organism) -> OrgId {
@@ -546,6 +550,7 @@ impl World {
         if self.tick.is_multiple_of(self.config.ticks_per_hour()) {
             self.hourly();
         }
+        self.environment_slice();
         if self.tick.is_multiple_of(tpd) {
             self.daily();
         }

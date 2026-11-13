@@ -1,5 +1,5 @@
-//! Debug rendering of the world to an RGB buffer (biomes, snow, ice,
-//! vegetation and organisms colored by owner).
+//! Debug rendering of the world to an RGB buffer (biomes, rivers, dried-out
+//! water, snow, ice, vegetation and organisms colored by owner).
 
 use crate::genome::{PlayerId, WILD};
 use crate::terrain::{Biome, Tile};
@@ -36,6 +36,18 @@ fn tile_color(t: &Tile) -> [u8; 3] {
     // Grazed-out land looks browner.
     let veg = if t.veg_max > 0.0 { t.veg / t.veg_max } else { 1.0 };
     let mut c = base.map(|v| v * (0.6 + 0.4 * veg));
+    // Rivers: brighter blue, darker when swollen; a dry bed shows as sand.
+    if t.is_river() {
+        c = if t.water_depth > 0.0 {
+            let deep = t.water_depth.min(1.0);
+            [70.0 - 40.0 * deep, 140.0 - 60.0 * deep, 225.0 - 40.0 * deep]
+        } else {
+            [175.0, 160.0, 120.0]
+        };
+    } else if t.base_water > 0.0 && t.base_water < 1.0 && t.water_depth == 0.0 {
+        // Dried-out lake shore or marsh: cracked mud.
+        c = [150.0, 130.0, 95.0];
+    }
     if t.water_depth > 0.0 && t.ice > 0.3 {
         c = [190.0, 215.0, 235.0];
     }

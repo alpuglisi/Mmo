@@ -406,7 +406,7 @@ impl World {
                     }
                 }
                 let reachable = || {
-                    matches!(traverse(&o.traits.body, self.map.tile_at(q.pos), &self.weather, false), Traverse::Passable { .. })
+                    matches!(traverse(&o.traits.body, self.map.tile_at(q.pos), &self.map.weather_at(q.pos), false), Traverse::Passable { .. })
                 };
                 if v.hunter && q.mass() < max_prey_mass(o, coop) && !q.sheltered && reachable() {
                     // Learned avoidance of bright prey where warning coloration holds.
@@ -461,11 +461,14 @@ impl World {
         let c = o.traits.carnivory;
         let plant_eff = 1.0 - c;
         let here = self.map.tile_at(o.pos);
+        // Browse in the canopy only counts if the body can reach it.
+        let (body, share) = (&o.traits.body, self.config.balance.canopy_share);
+        let veg = |t: &crate::terrain::Tile| t.reachable_veg(body, share);
 
         // Value of each option in rough "food I can get" terms.
         let hunt_value = prey.map(|(s, _)| s * 4.0 * c).unwrap_or(0.0);
         let meat_here = here.meat * c;
-        let graze_here = here.veg * plant_eff;
+        let graze_here = veg(here) * plant_eff;
 
         if meat_here > 1.0 && meat_here >= graze_here {
             intent.action = Action::Scavenge;
@@ -501,12 +504,12 @@ impl World {
         // Keep heading for the patch chosen earlier while it still has food.
         if let Some(t) = o.forage_target {
             let tile = self.map.tile_at(t);
-            if tile.veg * plant_eff + tile.meat * c >= bite {
+            if veg(tile) * plant_eff + tile.meat * c >= bite {
                 intent.target = Some(t);
                 return;
             }
         }
-        match self.find_tile(o, rng, 2.0 * bite, |t| t.veg * plant_eff + t.meat * c) {
+        match self.find_tile(o, rng, 2.0 * bite, |t| veg(t) * plant_eff + t.meat * c) {
             Some(t) => {
                 intent.target = Some(t);
                 intent.new_forage = Some(Some(t));
@@ -537,7 +540,7 @@ impl World {
             let r = if k < 8 { near } else { near * 3.0 };
             let cand = self.map.clamp(o.pos + Vec2::new(rng.gen_range(-r..r), rng.gen_range(-r..r)));
             let t = self.map.tile_at(cand);
-            if !matches!(traverse(&o.traits.body, t, &self.weather, false), Traverse::Passable { .. }) {
+            if !matches!(traverse(&o.traits.body, t, &self.map.weather_at(cand), false), Traverse::Passable { .. }) {
                 continue;
             }
             let v = value(t);
@@ -552,7 +555,7 @@ impl World {
     fn wander(&self, o: &Organism, intent: &mut Intent, rng: &mut SimRng, range: f32) {
         // A target the body can't stand on is never reached, and would pin the
         // organism against the shore forever (starving next to the water).
-        let usable = |t: Vec2| matches!(traverse(&o.traits.body, self.map.tile_at(t), &self.weather, false), Traverse::Passable { .. });
+        let usable = |t: Vec2| matches!(traverse(&o.traits.body, self.map.tile_at(t), &self.map.weather_at(t), false), Traverse::Passable { .. });
         if let Some(t) = o.wander_target {
             if o.pos.dist(t) > 0.5 && usable(t) {
                 intent.target = Some(t);
@@ -580,7 +583,7 @@ mod tests {
     fn wander_drops_a_target_the_body_cannot_reach() {
         let mut w = presets::standard_world(WorldConfig { seed: 9, width: 48, height: 48, ..Default::default() }, 1);
         let i = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
-        let blocked = |w: &World, p: Vec2| traverse(&w.organisms[i].traits.body, w.map.tile_at(p), &w.weather, false) == Traverse::Blocked;
+        let blocked = |w: &World, p: Vec2| traverse(&w.organisms[i].traits.body, w.map.tile_at(p), &w.map.weather_at(p), false) == Traverse::Blocked;
         let water = (0..48 * 48).map(|k| Map::tile_center(k % 48, k / 48)).find(|&p| blocked(&w, p)).expect("map has deep water");
         w.organisms[i].wander_target = Some(water);
         let mut intent = Intent::idle();
