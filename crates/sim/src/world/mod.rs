@@ -24,6 +24,7 @@ mod disease;
 mod environment;
 #[cfg(test)]
 mod path_tests;
+mod seasonal;
 mod spatial;
 
 use std::collections::{BTreeMap, HashMap};
@@ -146,6 +147,10 @@ pub struct World {
     slots_used: BTreeMap<PlayerId, u32>,
     clutch_at: HashMap<(usize, usize), usize>,
     path_scratch: PathScratch,
+    /// Seasonal part of today's temperature (`Map::seasonal_offset`).
+    season_offset: f32,
+    /// Tile → organism index of every food cache (`seasonal::rebuild_caches`).
+    cache_at: HashMap<(usize, usize), usize>,
 }
 
 /// The decision for one organism this tick.
@@ -204,6 +209,8 @@ impl World {
             slots_used: BTreeMap::new(),
             clutch_at: HashMap::new(),
             path_scratch: PathScratch::default(),
+            season_offset: Map::seasonal_offset(0, config.days_per_year),
+            cache_at: HashMap::new(),
             config,
         }
     }

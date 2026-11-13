@@ -24,7 +24,7 @@ docs/
 
 | Module | Design-doc section | What it does |
 | --- | --- | --- |
-| `genome` | Scoring, Genetics | 38 diploid genes (body, behavior *and* mate preference). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. |
+| `genome` | Scoring, Genetics | 44 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, grounded flyers) and rain or snow; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
@@ -34,6 +34,7 @@ docs/
 | `legacy` | Scoring: genetic legacy | Share of origin-tagged alleles among living breeding adults, raw and weighted by offspring raised to adulthood. |
 | `world` | Needs and behavior, everything else | The tick loop: utility-AI decisions (parallel), then movement, grazing, hunting, scavenging, drinking, courtship, pregnancy, eggs and incubation, nursing, growth, death. |
 | `world::disease` | Genetics: picky vs flexible | Mating-transmitted disease: pathogens emerge at matings (4× between founding lineages), pass between mates (natural and directed) and between nursing mothers and young, drain the acutely sick's health (dulling their display) and cut fertility; infections end in immunity or lifelong symptomless carriage. Also deaths of homozygotes for harmful recessives. Reports count infections, current sick and carriers, harmful alleles per organism, and `disease` / `recessive` deaths per lineage. |
+| `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter) and short-term torpor on cold nights. |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
 
 ### Tick structure
@@ -133,7 +134,9 @@ Validation uses 12 seeds (31–42) that no tuning run or agent touched, on a
 | Original rules (first sweep, 3–4 seeds) | 6.5 | 100% | 100% | 100% | 0% | 0% | 100% | 100%, capped | 75% |
 | After the first tuning sweep (3 seeds) | 9.3 | 100% | 100% | 100% | 100% | 67% | 100% | 100%, capped | 67% |
 | Greedy steering (12 unseen seeds) | 11.3 | 100% | 83% | 100% | 100% | 92% | 92% | 100% | 100% |
-| **Current: pathfinding (12 unseen seeds)** | **11.1** | 100% | 67% | 100% | 100% | 100% | 92% | 100% | 92% |
+| Pathfinding (12 unseen seeds) | 11.1 | 100% | 67% | 100% | 100% | 100% | 92% | 100% | 92% |
+| Environment upgrade (12 unseen seeds) | 11.05 | 100% | 75% | 92% | 100% | 92% | 92% | 100% | 100% |
+| **Current: seasonal strategies (12 unseen seeds)** | **10.94** | 100% | 58% | 92% | 100% | 100% | 92% | 100% | 100% |
 
 Pathfinding cost 0.2 points, within the noise of a no-op change (`sprint`
 2.45 → 2.4501 under greedy steering scores 11.04 with antelope at 67%).
@@ -142,6 +145,12 @@ Mean numbers lean toward predators: voles 257 → 188, newts 252 → 179, frogs
 Deaths by cause on single seeds show no consistent mechanism yet (predation
 up on one of three, down on another), so judge it on more seeds before
 retuning.
+
+Seasonal strategies, merged onto greedy steering, scored 11.3 there too (antelope
+75%, pack hunters 100%). On top of pathfinding and the new environment the
+0.1 drop is the appended genes reshuffling randomness, not the strategies: with the
+presets' strategies switched off (`dormancy_temp=-100 cache_capacity=0`) the
+same seeds score 10.92, antelope (which use no strategy) also at 58%.
 
 Toxic frogs now average about half their cap instead of sitting at it, and no
 lineage spends the run pinned at a cap.
@@ -189,13 +198,26 @@ stream, so they change a world only through their effects.
   those pairs share a body plan.
 - A 12-seed, 120-day validation takes about 35 seconds on 4 cores.
 
-Not yet implemented from the design doc: the other five group traits, seasonal strategies
-(hibernation, migration, estivation as genes), level-of-detail statistical
-populations. On the environment side: rivers do not overflow onto
+Not yet implemented from the design doc: the other five group traits, the
+seasonal coat, timed breeding and the strategy × group-trait combinations
+(communal dens, group navigation beyond a risk discount, shared caches),
+level-of-detail statistical populations. On the environment side: rivers do not overflow onto
 their floodplain (flooding only deepens the channel), wind has no direction
 and does not interact with wing loading or gliding, and lakes do not form in
 filled depressions. The point costs in `design.rs` are placeholders, as the
 doc lists them as an open question.
+
+**Seasonal strategies** (`world::seasonal`, tunables `dormancy_temp` …
+`cache_capacity` in `Balance`): the sample designs use them where they
+clearly fit: voles cache, newts and toxic frogs brumate, burrowing omnivores
+hibernate. Antelope were tried as migrators, but on both 12-seed sets
+migration cost them survival (67% vs 75% and 50% vs 67%), mostly to
+predators met on the autumn trek, so they stay year-round. Seasonal genes
+are left out of the genetic distance (`genome::IN_DISTANCE`): counted, they
+diluted it enough to make foxes and pack hunters kin. Appending genes still
+reshuffles founder and mutation randomness, which alone moved a 12-seed score by up to
+0.4 (seeds 43–54: 11.13 before, 10.70 with the new genes and no strategies
+in use, 10.71 with the presets' strategies).
 
 ## Suggested next steps
 
@@ -205,6 +227,6 @@ doc lists them as an open question.
    chaotic), and screen trials on short runs before giving the best full runs.
 3. Parallel apply by region, then measure at the doc's prototype target
    (~25k organisms on 256×256).
-4. Seasonal strategies as genes, then the remaining group traits.
+4. The remaining group traits.
 5. Step 2 of the build order: the Tokio/Axum server around `World`, using
    `world::commands` for player actions.

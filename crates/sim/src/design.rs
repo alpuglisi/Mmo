@@ -129,6 +129,13 @@ pub fn trait_cost(g: Gene) -> f32 {
         Toxins => 15.0,
         Coloration => 3.0,
         Vocal => 5.0,
+        // Seasonal strategies.
+        Hibernation => 8.0,
+        Brumation => 6.0,
+        Migration => 8.0,
+        Estivation => 6.0,
+        Caching => 5.0,
+        Torpor => 4.0,
         // Set through the design's own fields, never through `traits`.
         Endothermy | BirthMode | LitterSize => 0.0,
         Carnivory | Boldness | Aggression | Wanderlust | GroupTolerance | ForagingRange

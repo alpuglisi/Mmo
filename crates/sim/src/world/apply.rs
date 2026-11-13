@@ -8,13 +8,13 @@ use crate::design::BirthType;
 use crate::genome::{Gene, Genome, PlayerId};
 use crate::mating;
 use crate::math::Vec2;
-use crate::organism::{Action, DeathCause, Infection, OrgId, Organism, Pregnancy, Sex};
+use crate::organism::{Action, DeathCause, Dormancy, Infection, OrgId, Organism, Pregnancy, Sex};
 use crate::pathfinding::{enter_cost, Outcome, Path, MAX_TILE_SPEED};
 use crate::rng::{rng_for, stream, SimRng};
 use crate::terrain::{traverse, Map, Traverse, Weather};
 
 /// Most hunger points an organism can eat per day (so a meal takes a few ticks).
-const MAX_INTAKE_PER_DAY: f32 = 1200.0;
+pub(crate) const MAX_INTAKE_PER_DAY: f32 = 1200.0;
 const MAX_DRINK_PER_DAY: f32 = 1500.0;
 /// Energy per tile walked at endurance 1.0.
 const ENERGY_PER_TILE: f32 = 0.6;
@@ -76,13 +76,19 @@ impl World {
             };
             moved = self.move_toward(i, target, intent.sprint);
         }
+        if intent.action == Action::Migrate && self.journey_death(i, moved, rng) {
+            self.kill(i, DeathCause::Journey);
+            return;
+        }
 
         // The chosen action's effect.
         match intent.action {
             Action::Graze => {
                 self.eat_plants(i, 1.0);
                 self.eat_meat(i, 1.0);
+                self.eat_cache(i, false);
             }
+            Action::Cache => self.gather(i),
             Action::Scavenge => self.eat_meat(i, 1.0),
             Action::Hunt => {
                 if let Some(j) = intent.target_org {
@@ -103,7 +109,8 @@ impl World {
         }
 
         // Opportunistic eating and drinking while doing something else.
-        if !matches!(intent.action, Action::Flee | Action::Graze | Action::Scavenge | Action::Hunt) {
+        let dormant = intent.action == Action::Dormant;
+        if !dormant && !matches!(intent.action, Action::Flee | Action::Graze | Action::Scavenge | Action::Hunt) {
             let o = &self.organisms[i];
             if o.needs.hunger > 30.0 {
                 self.eat_plants(i, 0.3);
@@ -113,9 +120,16 @@ impl World {
                 self.drink(i);
             }
         }
-        self.raid_clutch(i, rng);
+        if !dormant {
+            self.eat_cache(i, true);
+            self.raid_clutch(i, rng);
+        }
         self.nurse(i);
 
+        if let Some(cause) = self.seasonal_tick(i, intent, moved, rng) {
+            self.kill(i, cause);
+            return;
+        }
         let cause = self.update_needs(i, intent, moved, dt);
         if let Some(cause) = cause {
             self.kill(i, cause);
@@ -313,35 +327,41 @@ impl World {
         Some(dist)
     }
 
+    /// Graze the current tile. Fattening organisms (`seasonal::fat_room`)
+    /// keep eating past full and store the surplus as fat.
     fn eat_plants(&mut self, i: usize, rate: f32) {
         let o = &self.organisms[i];
         let eff = 1.0 - o.traits.carnivory;
-        if eff < 0.05 || o.needs.hunger < 5.0 {
+        let fat_room = self.fat_room(o);
+        let room = o.needs.hunger + fat_room;
+        if eff < 0.05 || room < 5.0 {
             return;
         }
-        let want = (MAX_INTAKE_PER_DAY * self.config.dt_days() * rate).min(o.needs.hunger);
+        let want = (MAX_INTAKE_PER_DAY * self.config.dt_days() * rate).min(room);
         let fph = o.food_per_hunger();
         let (pos, body) = (o.pos, o.traits.body);
         let share = self.config.balance.canopy_share;
         let tile = self.map.tile_at_mut(pos);
         let got = (want * fph / eff).min(tile.reachable_veg(&body, share));
         tile.veg -= got;
-        self.organisms[i].needs.hunger -= got * eff / fph;
+        self.feed(i, got * eff / fph, fat_room);
     }
 
     fn eat_meat(&mut self, i: usize, rate: f32) {
         let o = &self.organisms[i];
         let eff = o.traits.carnivory;
-        if eff < 0.2 || o.needs.hunger < 5.0 {
+        let fat_room = self.fat_room(o);
+        let room = o.needs.hunger + fat_room;
+        if eff < 0.2 || room < 5.0 {
             return;
         }
-        let want = (MAX_INTAKE_PER_DAY * self.config.dt_days() * rate).min(o.needs.hunger);
+        let want = (MAX_INTAKE_PER_DAY * self.config.dt_days() * rate).min(room);
         let fph = o.food_per_hunger();
         let pos = o.pos;
         let tile = self.map.tile_at_mut(pos);
         let got = (want * fph / eff).min(tile.meat);
         tile.meat -= got;
-        self.organisms[i].needs.hunger -= got * eff / fph;
+        self.feed(i, got * eff / fph, fat_room);
     }
 
     fn drink(&mut self, i: usize) {
@@ -584,9 +604,13 @@ impl World {
         let drowning = !body.can_fly && traverse(&body, tile, &self.map.weather_at(pos), false) == Traverse::Blocked;
 
         let bal = self.config.balance;
+        let dormant_rate = self.dormant_rate(&self.organisms[i]);
         let o = &mut self.organisms[i];
         let st = o.traits.stats;
-        let resting = matches!(intent.action, Action::Rest | Action::Bask | Action::Guard | Action::Idle) && moved < 0.01;
+        let deep = o.dormancy.is_deep();
+        let torpid = o.dormancy == Dormancy::Torpor;
+        let resting =
+            matches!(intent.action, Action::Rest | Action::Bask | Action::Guard | Action::Idle | Action::Dormant) && moved < 0.01;
         o.sheltered = resting && body.burrow > 0.5 && water == 0.0;
         // Burrows buffer temperature toward 10 °C.
         let temp = if o.sheltered { tile_temp + (10.0 - tile_temp) * 0.6 } else { tile_temp };
@@ -603,6 +627,16 @@ impl World {
             o.activity = ((body_t - 2.0) / 20.0).clamp(0.15, 1.0);
             ((6.0 - body_t).max(0.0), (body_t - 38.0).max(0.0))
         };
+        // A deep sleeper in its den is safe from the weather.
+        let (cold, heat) = if deep {
+            o.activity = 0.15;
+            (0.0, 0.0)
+        } else {
+            if torpid {
+                o.activity = o.activity.min(0.4);
+            }
+            (cold, heat)
+        };
         o.needs.cold = cold;
         o.needs.heat = heat;
 
@@ -615,17 +649,37 @@ impl World {
         } else {
             1.0
         };
-        let thermo = if o.traits.warm { 1.0 + 0.04 * cold } else { 0.4 + 0.6 * o.activity };
+        let thermo = if torpid {
+            1.0
+        } else if o.traits.warm {
+            1.0 + 0.04 * cold
+        } else {
+            0.4 + 0.6 * o.activity
+        };
         // Pregnancy costs scale with the litter's total mass.
         let pregnant = if o.pregnancy.is_some() { 1.0 + bal.pregnancy_cost * o.traits.litter_burden } else { 1.0 };
         let size = o.pheno[Gene::BodySize];
-        let n = &mut o.needs;
         // Carnivores eat big, infrequent meals: hunger rises more slowly.
         let diet = 1.0 - bal.carnivore_hunger_discount * o.traits.carnivory;
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
-        n.hunger += bal.hunger_rate * st.metabolism * diet * crowd * thermo * activity_mult * pregnant * dt;
-        n.thirst += bal.thirst_rate * (1.0 + 0.05 * heat) * (0.8 + 0.4 * size) * if o.traits.warm { 1.0 } else { 0.7 } * dt;
+        let mut hunger = bal.hunger_rate * st.metabolism * diet * crowd * thermo * activity_mult * pregnant * dt;
+        let mut thirst = bal.thirst_rate * (1.0 + 0.05 * heat) * (0.8 + 0.4 * size) * if o.traits.warm { 1.0 } else { 0.7 } * dt;
+        if o.dormancy != Dormancy::Awake {
+            hunger *= dormant_rate;
+            if deep {
+                thirst *= dormant_rate;
+            }
+        }
+        // Stored fat pays for a dormancy, and for hard times.
+        if o.fat > 0.0 && (deep || o.needs.hunger > 50.0) {
+            let paid = hunger.min(o.fat);
+            o.fat -= paid;
+            hunger -= paid;
+        }
+        let n = &mut o.needs;
+        n.hunger += hunger;
+        n.thirst += thirst;
         n.energy += if resting { 120.0 * if o.sheltered { 1.2 } else { 1.0 } } else { 15.0 } * dt;
         if n.hunger >= 90.0 {
             n.energy -= 30.0 * dt;
@@ -855,6 +909,10 @@ impl World {
         *self.counters.born.entry(lineage).or_default() += 1;
         o.mother = Some(mother);
         o.father = Some(father);
+        // A migrator's young share their mother's summer range.
+        if let Some(&mi) = self.index.get(&mother) {
+            o.range = self.organisms[mi].range;
+        }
         o.growth = growth;
         o.needs.hunger = 30.0;
         self.insert(o)

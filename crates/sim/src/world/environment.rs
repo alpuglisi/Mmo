@@ -10,10 +10,13 @@ impl World {
         let hour_index = self.tick / self.config.ticks_per_hour();
         let mut rng = weather_rng(self.config.seed, hour_index);
         let bal = self.config.balance;
-        self.map.advance_weather(hour_index, self.day_of_year(), self.config.days_per_year, &bal);
+        let (doy, dpy) = (self.day_of_year(), self.config.days_per_year);
+        self.map.advance_weather(hour_index, doy, dpy, &bal);
         self.weather = self.map.mean_weather();
+        self.season_offset = crate::terrain::Map::seasonal_offset(doy, dpy);
         self.update_clutches(&mut rng);
         self.density.rebuild(&self.organisms, self.lineages.len());
+        self.rebuild_caches();
     }
 
     /// Every tick: this tick's share of the environment chunks, so each chunk
@@ -42,6 +45,7 @@ impl World {
             }
             self.lineage_alive[l] += 1;
         }
+        self.rebuild_caches();
 
         let adults = || self.organisms.iter().filter(|o| o.is_breeding_adult());
         self.group.update(adults().map(|o| (o.pos, &o.pheno)));
