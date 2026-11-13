@@ -15,7 +15,8 @@
 //! - [`mating`]: mate preference, override cost, outbreeding depression.
 //! - [`group`]: critical-mass group traits.
 //! - [`legacy`]: the genetic-legacy score.
-//! - [`world`]: the tick loop (needs, utility AI, predation, breeding).
+//! - [`world`]: the tick loop (needs, utility AI, predation, breeding), and
+//!   level of detail (`world::lod`: statistical cohorts far from players).
 
 pub mod config;
 pub mod design;
@@ -33,7 +34,7 @@ pub mod stats;
 pub mod terrain;
 pub mod world;
 
-pub use config::{Balance, WorldConfig};
+pub use config::{Balance, LodConfig, WorldConfig};
 pub use design::{BirthType, FounderDesign, Thermo};
 pub use genome::{Gene, Genome, PlayerId, WILD};
 pub use world::World;

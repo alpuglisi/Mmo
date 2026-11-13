@@ -50,7 +50,10 @@ impl World {
 
         let adults = || self.organisms.iter().filter(|o| o.is_breeding_adult());
         self.group.update(adults().map(|o| (o.pos, &o.pheno)));
-        let snapshot = LegacySnapshot::compute(self.day(), adults().map(|o| (&o.genome, o.offspring_raised)));
+        let mut snapshot = LegacySnapshot::compute(self.day(), adults().map(|o| (&o.genome, o.offspring_raised)));
+        if self.config.lod.enabled {
+            self.lod_legacy(&mut snapshot);
+        }
         self.legacy.push(snapshot);
 
         if self.day_of_year().is_multiple_of(self.config.days_per_season()) {
