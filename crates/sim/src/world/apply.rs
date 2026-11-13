@@ -635,8 +635,10 @@ impl World {
         }
 
         if rng.gen::<f32>() < p {
+            let prey_lineage = self.organisms[j].lineage;
             self.kill_by(j, i);
             self.counters.kills += 1;
+            self.organisms[i].search_image = Some(prey_lineage);
             self.map.tile_at_mut(prey_pos).meat += prey_mass * self.config.balance.meat_per_kg;
             if self.organisms[i].alive {
                 self.eat_meat(i, 1.0);

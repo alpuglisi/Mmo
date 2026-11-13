@@ -337,7 +337,7 @@ pub struct SavedGame {
     world_id: String,
     lineage_of: BTreeMap<PlayerId, u32>,
     /// The main groups' migration orders, for reading only: the world
-    /// snapshot holds every group's orders (since world snapshot version 9;
+    /// snapshot holds every group's orders (since world snapshot version 10;
     /// earlier saves don't restore).
     migrations: BTreeMap<PlayerId, Vec2>,
     offers: BTreeMap<u64, Offer>,

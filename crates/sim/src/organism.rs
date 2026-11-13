@@ -237,6 +237,11 @@ pub struct Organism {
     pub alert: Option<(Vec2, f32)>,
     /// Learned after being poisoned by brightly colored prey: avoid bright prey.
     pub bright_aversion: bool,
+    /// Search image: the lineage of the last prey this hunter killed. It
+    /// overlooks other kinds of prey some of the time
+    /// (`Balance::search_image`), so hunters switch to whatever prey is
+    /// common and a rare kind is spared.
+    pub search_image: Option<u32>,
     /// Tick from which this organism can strike again: prey that broke free
     /// leaves the hunter recovering for a while (`Balance::escape_window`).
     pub strike_ready_tick: u64,
@@ -321,6 +326,7 @@ impl Organism {
             sheltered: false,
             alert: None,
             bright_aversion: false,
+            search_image: None,
             strike_ready_tick: 0,
             possessed_by: None,
             order: None,
