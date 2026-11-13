@@ -1,7 +1,8 @@
 //! Coarse per-species density: living members of each lineage per cell of a
-//! fixed grid, rebuilt hourly. Unlike `kin_nearby` (what an organism saw this
-//! tick, which saturates in a crowd), this keeps counting however dense a
-//! colony gets, so it can drive density-dependent breeding.
+//! fixed grid, rebuilt hourly, to drive density-dependent breeding. Unlike
+//! `kin_nearby` (kin within an organism's perception radius this tick) it is
+//! per lineage and per fixed 8×8-tile cell, so it doesn't vary with how far
+//! an organism can see.
 
 use crate::math::Vec2;
 use crate::organism::Organism;

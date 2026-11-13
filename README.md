@@ -122,7 +122,7 @@ piled up and the spring hatch refilled the cap in year 2.
 Live-bearers and egg-guarders get a third brake, density-dependent breeding
 (`breeding_density`): a mother's litter shrinks by `1 / (1 + (d / K)^4)`,
 where `d` is her species' members per tile in her 8×8-tile cell (counted
-hourly, so it doesn't saturate the way the 48-neighbor kin count does) times
+hourly, independent of how far each organism can see) times
 `1 - group tolerance` times the square root of pace of life. Voles used to
 boom past 2,500 on food that ran out only after they had overshot, then crash
 by 97% in winter; now they level off at a few hundred to ~900. The wild cap is
