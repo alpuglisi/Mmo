@@ -66,7 +66,10 @@ const MAX_ZOOM = 48;
 const HIT_PX = 12;
 const TOUCH_HIT_PX = 20;
 /** A press held this long without moving is a long press. */
-const LONG_PRESS_MS = 550;
+// Shorter than the browser's own long-press gesture (~500 ms in Chromium),
+// which would otherwise cancel the pointer first; the `contextmenu` that
+// gesture raises also counts as a long press.
+const LONG_PRESS_MS = 450;
 /** Movement (px) that turns a press into a drag. */
 const DRAG_PX = 6;
 /** Zoom (pixels per tile) from which tile edges are outlined. */
@@ -352,7 +355,7 @@ export class WorldView {
     // Active pointers (mouse, pen or fingers) by id, at their latest position.
     const pointers = new Map<number, { x: number; y: number }>();
     // The single-pointer gesture in progress: a tap, a long press or a drag.
-    let press: { id: number; x: number; y: number; camX: number; camY: number; touch: boolean; dragging: boolean; timer: number | null; done: boolean } | null = null;
+    let press: { id: number; x: number; y: number; camX: number; camY: number; touch: boolean; dragging: boolean; timer: number | null; done: boolean; hit: OrgId | null } | null = null;
     // The two-finger gesture in progress: distance and midpoint at the last move.
     let pinch: { d: number; mx: number; my: number } | null = null;
     const local = (e: PointerEvent | WheelEvent) => {
@@ -370,6 +373,15 @@ export class WorldView {
     const click = (x: number, y: number, touch: boolean): WorldClick => {
       const w = this.screenToWorld(x, y);
       return { x: w.x, y: w.y, organism: this.hitTest(x, y, touch) };
+    };
+
+    const longPress = (pr: NonNullable<typeof press>) => {
+      if (press !== pr || pr.dragging || pr.done) return;
+      pr.done = true;
+      if (pr.timer != null) clearTimeout(pr.timer);
+      pr.timer = null;
+      const c = click(pr.x, pr.y, pr.touch);
+      this.onLongPress(pr.hit !== null && this.markers.has(pr.hit) ? { ...c, organism: pr.hit } : c);
     };
 
     canvas.addEventListener('pointerdown', (e) => {
@@ -390,15 +402,11 @@ export class WorldView {
       if (pointers.size > 2) return;
       cancelPress();
       const touch = e.pointerType === 'touch' || e.pointerType === 'pen';
-      const pr = { id: e.pointerId, x: p.x, y: p.y, camX: this.cam.x, camY: this.cam.y, touch, dragging: false, timer: null as number | null, done: false };
-      if (e.button === 0 || touch) {
-        pr.timer = window.setTimeout(() => {
-          if (press !== pr || pr.dragging) return;
-          pr.done = true;
-          pr.timer = null;
-          this.onLongPress(click(pr.x, pr.y, pr.touch));
-        }, LONG_PRESS_MS);
-      }
+      // The organism under the finger when it went down: a long press acts on
+      // it even if its marker glides away during the hold.
+      const pr = { id: e.pointerId, x: p.x, y: p.y, camX: this.cam.x, camY: this.cam.y, touch, dragging: false, timer: null as number | null, done: false,
+        hit: this.hitTest(p.x, p.y, touch) };
+      if (e.button === 0 || touch) pr.timer = window.setTimeout(() => longPress(pr), LONG_PRESS_MS);
       press = pr;
     });
     canvas.addEventListener('pointermove', (e) => {
@@ -440,13 +448,20 @@ export class WorldView {
       if (!cancelled && !pr.dragging && !pr.done) this.onClick(click(pr.x, pr.y, pr.touch));
     };
     canvas.addEventListener('pointerup', (e) => up(e, false));
-    canvas.addEventListener('pointercancel', (e) => up(e, true));
+    canvas.addEventListener('pointercancel', (e) => {
+      // A touch held still that the browser cancels is its long-press gesture.
+      if (press && e.pointerId === press.id && press.touch && !press.dragging && !press.done && !pinch) longPress(press);
+      up(e, true);
+    });
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const p = local(e);
       this.zoomBy(Math.exp(-e.deltaY * 0.0015), p.x, p.y);
     }, { passive: false });
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (press && press.touch && !press.dragging) longPress(press);
+    });
   }
 }
 

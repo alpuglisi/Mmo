@@ -610,7 +610,7 @@ sidebar becomes a **bottom sheet** with a tab bar at the bottom (48 px
 targets, safe-area insets): a tab tap slides the sheet up over the map, a
 second tap on the open tab (or the handle, or a tap on empty map) closes
 it. Tap an organism to select it; a floating **Possess #id / Release #id**
-button appears for your own, and a long press (550 ms held still) on one of
+button appears for your own, and a long press (450 ms held still, or the browser's own long-press gesture) on one of
 yours possesses it directly. One-finger drag pans, two-finger pinch zooms
 about the fingers' midpoint (and pans with it). The top bar shrinks to the
 clock, connection and log out; the toolbar scrolls sideways; the legends

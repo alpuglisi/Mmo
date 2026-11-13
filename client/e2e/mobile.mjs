@@ -212,9 +212,9 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   await shot(page, `${tag}-selected.png`);
 
   // The floating button possesses (and releases).
-  const fabBox = await box(page, '#fab-possess');
-  await page.touchscreen.tap(fabBox.x + fabBox.width / 2, fabBox.y + fabBox.height / 2);
-  const possessed = await waitFor('possessed via button', () => page.evaluate(() => window.evo.model.state.organisms.find((o) => o.possessed)?.id ?? null), 8000).catch(() => null);
+  const fabBox = await box(page, '#fab-possess'); // null if the organism just died
+  if (fabBox) await page.touchscreen.tap(fabBox.x + fabBox.width / 2, fabBox.y + fabBox.height / 2);
+  const possessed = !fabBox ? null : await waitFor('possessed via button', () => page.evaluate(() => window.evo.model.state.organisms.find((o) => o.possessed)?.id ?? null), 8000).catch(() => null);
   if (possessed !== null) {
     step(`${tag}: Possess button possessed #${possessed}`);
     await page.evaluate((id) => window.evo.socket.send({ type: 'release', organism: id }), possessed);
@@ -228,25 +228,34 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   const cdp = await context.newCDPSession(page);
   const t = touch(cdp, canvas);
   let lp = null;
-  for (let attempt = 0; attempt < 6 && lp === null; attempt++) {
+  for (let attempt = 0; attempt < 8 && lp === null; attempt++) {
     const o = await findOwn(page);
     await t.longPress(o);
     lp = await waitFor('possessed via long press', () => page.evaluate(() => window.evo.model.state.organisms.find((x) => x.possessed)?.id ?? null), 5000).catch(() => null);
   }
-  if (lp === null) throw new Error(`${tag}: long press did not possess`);
+  if (lp === null) {
+    const toasts = await page.evaluate(() => window.evo.model.toasts.map((t) => t.text).join(' | '));
+    throw new Error(`${tag}: long press did not possess (toasts: ${toasts})`);
+  }
   step(`${tag}: long press possessed #${lp}`);
   await page.waitForTimeout(400);
   await shot(page, `${tag}-possessed.png`);
   await page.evaluate((id) => window.evo.socket.send({ type: 'release', organism: id }), lp);
 
   // One-finger drag pans (and stops following); a pinch zooms.
-  await page.evaluate(() => { const v = window.evo.screen().view; v.setFollow(true); v.cam.zoom = 8; });
+  // From the middle of the map, so the camera clamp at the edges can't eat the pan.
+  await page.evaluate(() => { const v = window.evo.screen().view; v.setFollow(false); v.cam.zoom = 8; v.centerOn(32, 32); });
   await page.waitForTimeout(100);
   const before = await page.evaluate(() => ({ ...window.evo.screen().view.cam }));
   const mid = { x: canvas.width / 2, y: canvas.height / 2 };
   await t.drag({ x: mid.x + 60, y: mid.y }, { x: mid.x - 60, y: mid.y - 40 });
-  const panned = await page.evaluate(() => ({ ...window.evo.screen().view.cam, follow: window.evo.screen().view.follow }));
-  if (panned.follow || Math.abs(panned.x - before.x) < 5) throw new Error(`${tag}: drag did not pan ${JSON.stringify({ before, panned })}`);
+  const panned = await page.evaluate(() => ({ ...window.evo.screen().view.cam }));
+  if (Math.abs(panned.x - before.x) < 5 || Math.abs(panned.y - before.y) < 2) throw new Error(`${tag}: drag did not pan ${JSON.stringify({ before, panned })}`);
+  // A drag also stops following the view window.
+  await page.evaluate(() => window.evo.screen().view.setFollow(true));
+  await t.drag({ x: mid.x - 40, y: mid.y }, { x: mid.x + 40, y: mid.y });
+  if (await page.evaluate(() => window.evo.screen().view.follow)) throw new Error(`${tag}: drag did not stop following`);
+  await page.evaluate(() => window.evo.screen().view.centerOn(32, 32));
   await t.pinch(mid, 60, 220);
   const zoomed = await page.evaluate(() => window.evo.screen().view.cam.zoom);
   if (zoomed < before.zoom * 2) throw new Error(`${tag}: pinch did not zoom (${before.zoom} → ${zoomed})`);
