@@ -8,7 +8,8 @@
 // organism selects it and shows the floating Possess button; the button and
 // a long press possess; one-finger drag pans and a two-finger pinch zooms.
 // Desktop: sidebar on the right, tabs on top, sprite cache stats, and a
-// gallery of body-plan sprites for the screenshots.
+// gallery of body-plan sprites for the screenshots. Pages open with
+// `?tour=off` (e2e/onboarding.mjs tests the first-session tour).
 //
 //   npm run build && node e2e/mobile.mjs     (env as for smoke.mjs)
 
@@ -65,7 +66,7 @@ function device(name) {
 }
 
 async function register(page, base, name, lineage) {
-  await page.goto(base);
+  await page.goto(`${base}/?tour=off`);
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
@@ -162,7 +163,7 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   const vw = page.viewportSize();
 
   // Login screen fits the phone.
-  await page.goto(base);
+  await page.goto(`${base}/?tour=off`);
   await page.waitForSelector('#login-name');
   const form = await box(page, 'form.login');
   if (form.x < 0 || form.x + form.width > vw.width + 1) throw new Error(`${tag}: login form overflows ${JSON.stringify(form)}`);

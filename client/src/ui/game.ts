@@ -19,6 +19,8 @@ import { renderSeasons as renderRanked, seasonKey, type SeasonsData } from './se
 import { compatSummary } from './mating';
 import { buildMarket } from './market';
 import { balanceText } from './marketData';
+import { createOnboarding } from './onboarding';
+import { onboardingDisabled } from '../onboarding';
 
 export interface GameDeps {
   model: GameModel;
@@ -74,9 +76,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const weatherEl = h('span', { class: 'muted', id: 'weather' });
   const bannerEl = h('span', { class: 'catastrophe-pill', id: 'catastrophe-banner', hidden: true });
   const balanceEl = h('button', { class: 'pill balance-pill', id: 'balance', title: 'Renown: earned from your legacy share, spent on stud fees (open the Market tab)', onclick: () => showTab('market') });
+  const helpBtn = h('button', { class: 'secondary help-btn', id: 'help-btn', type: 'button', title: 'Help: controls and the guided tour', 'aria-label': 'Help and guided tour', 'aria-haspopup': 'dialog' },
+    h('span', { class: 'help-word' }, 'Help'), h('span', { class: 'help-mark', 'aria-hidden': 'true' }, '?'));
   const top = h('header', { class: 'topbar' },
     h('strong', {}, 'Evolution MMO'), h('span', { class: 'muted' }, model.name), clockEl, weatherEl, bannerEl,
-    h('span', { class: 'spacer' }), balanceEl, connPill,
+    h('span', { class: 'spacer' }), balanceEl, connPill, helpBtn,
     h('button', { class: 'secondary', id: 'logout', onclick: deps.onLogout }, 'Log out'));
 
   const stage = h('div', { class: 'stage', id: 'stage' });
@@ -844,6 +848,29 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   renderConn();
   updateHint();
   showTab('lineage');
+
+  // First-session onboarding: the guided tour (once per account on this
+  // device), one-time hints and the Help dialog. `?tour=off` turns it off.
+  const touchInput = () => narrow() || window.matchMedia('(pointer: coarse)').matches;
+  const onboarding = createOnboarding({
+    model, host: el, hintHost: stageWrap, helpBtn, narrow, touch: touchInput,
+    openTab: (t, sheet) => {
+      if (sheet && narrow()) setSheet(true);
+      showTab(t);
+    },
+    selectOwn: () => {
+      const orgs = model.state?.organisms ?? [];
+      if (orgs.length === 0 || orgs.some((o) => o.id === model.selected)) return;
+      model.select((orgs.find((o) => o.matured) ?? orgs[0]).id);
+    },
+    disabled: onboardingDisabled(window.location.search),
+  });
+  cleanups.push(
+    onboarding.destroy,
+    model.on('state', onboarding.check),
+    model.on('alerts', onboarding.check),
+    model.on('offers', onboarding.check),
+  );
 
   return {
     el,

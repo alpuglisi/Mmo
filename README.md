@@ -1052,7 +1052,7 @@ npm run dev          # Vite on :5173, proxies /api and /ws to 127.0.0.1:8080 (EV
 npm run build        # typecheck + static bundle in client/dist
 npm run typecheck
 npm test             # Vitest unit tests
-npm run e2e          # Playwright smoke + phone-emulation tests (needs `npm run build` and `cargo build --release -p evo-server`)
+npm run e2e          # Playwright smoke, phone-emulation and onboarding tests (needs `npm run build` and `cargo build --release -p evo-server`)
 ```
 
 Serve the built client from the game server (one origin, no proxy):
@@ -1212,6 +1212,35 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   allele owner and share, founder), the catastrophes with population before
   and after and how many player lineages survived, and achievement tallies
   per player with the latest achievements.
+- **First-session onboarding** (`ui/onboarding.ts`; steps, state machine,
+  hint triggers and storage pure in `onboarding.ts`, unit-tested in
+  `onboarding.test.ts`). After the first login and founding a short guided
+  tour opens by itself: welcome (the three levers and the legacy score), the
+  map and camera toolbar, finding your lineage (Lineage tab), the inspector
+  (one of your organisms is selected), possessing (pointing at Possess, or
+  the floating button on phones), matings and the Market, Seasons, alerts
+  (the Genetics tab's badge and feed), and Help. Each step highlights its
+  target (a ring that dims the rest but never takes the pointer) beside a
+  small non-modal dialog (`role="dialog"`, labelled by its title) with Back,
+  Next / Finish and Skip; focus goes to Next, Esc skips, ←/→ step, and on
+  closing everything is removed and focus returns where it was. On a wide
+  screen a step opens its tab; on a phone the sheet stays closed, the card
+  spans the width less 16 px gutters above or below the target, and nothing
+  scrolls sideways. After the tour, **one-time hints** appear in the map's
+  corner the first time something new happens: a pregnancy in your lineage,
+  a death (a `death` alert), a species split (a "Species founded"
+  achievement) and a mating offer received; "Show me" opens the tab that
+  explains it. Hints announce through a polite live region and never take
+  focus. A **Help** button in the top bar ("?" on phones) opens a modal
+  dialog (focus trapped, Esc or a click outside closes it) with the controls,
+  **Replay the tour** and **Show tips again**. Progress (tour new / active
+  at step *n* / completed / skipped, and the hints seen) is kept per account
+  in `localStorage` (`evo.onboarding.v1.<player>.<name>`, every access in
+  try/catch; without storage it lasts for the page), so the tour shows once
+  per user and device and resumes at its step after a reload mid-tour. It
+  is client-only: the server is unchanged. `?tour=off` (or
+  `?onboarding=off`) turns the tour and the hints off for the page; the
+  other e2e tests open the client with it.
 
 **Smooth movement** (`world/motion.ts`, pure and unit-tested; wired in
 `worldView.ts`). The server pushes `state` once per state interval, and
@@ -1411,6 +1440,17 @@ phone controls hidden, sprite cache stats (textures shared per class), and
 a gallery of 20 body plans drawn with the game's sprite code. Screenshots:
 `iphone13-*.png`, `pixel7-*.png`, `desktop-world.png`,
 `desktop-sprite-gallery.png`.
+`e2e/onboarding.mjs` (last in `npm run e2e`; alone with
+`npm run e2e:onboarding`) opens the client without `?tour=off`: on a
+1280×800 desktop a new player gets the tour after founding with focus on
+Next, walks steps with highlights (the inspector step opens the Organism
+tab), skips, the map and tabs take input, a reload keeps it closed; Help is
+modal (Tab stays inside, Esc closes it and focus returns to Help), Replay
+reopens the tour and Esc skips it; after "Show tips again" an injected death
+alert shows the death hint once ("Show me" opens Genetics), not again, nor
+after a reload. On a Pixel 7 every step's card and highlight fit the screen
+with no sideways scroll, Finish completes the tour, the tab bar works and a
+reload keeps it closed. Screenshots: `onboarding-*.png`.
 
 **Not yet:** allele origins traced to the
 founding *lineage* rather than the player (a player founds one lineage per

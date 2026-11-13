@@ -9,7 +9,8 @@
 //
 // The world keeps running throughout, so every step waits on explicit state
 // conditions (generous timeouts, no fixed sleeps for correctness) and retries
-// what the living world can legitimately interrupt.
+// what the living world can legitimately interrupt. The page opens with
+// `?tour=off`: e2e/onboarding.mjs tests the first-session tour.
 //
 //   npm run build && npm run e2e
 //
@@ -88,7 +89,7 @@ async function main() {
     const pageErrors = [];
     pages.push(page);
     page.on('pageerror', (e) => pageErrors.push(e.message));
-    await page.goto(base);
+    await page.goto(`${base}/?tour=off`);
 
     // Register.
     const name = `e2e_${Date.now().toString(36)}`;
@@ -190,7 +191,7 @@ async function main() {
     const bob = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
     pages.push(bob);
     bob.on('pageerror', (e) => pageErrors.push(`bob: ${e.message}`));
-    await bob.goto(base);
+    await bob.goto(`${base}/?tour=off`);
     await bob.fill('#login-name', `${name}_b`);
     await bob.fill('#login-password', 'a long password');
     await bob.click('#register-submit');
