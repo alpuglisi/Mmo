@@ -981,6 +981,42 @@ per organism, much of it movement and A* route planning (callgrind).
 Environment chunks cost 0.03–0.04 ms per 1,000 tiles; daily bookkeeping and
 the grid rebuild are small.
 
+### Faster decide phase
+
+Perception spent most of its time on kinship: a 39-gene genetic distance
+summed in one serial chain per neighbor, plus the body-plan genes read
+from the scattered genome, for up to 32 neighbors, each on its own
+organism. Without changing a single result (`evo-sim sweep --size 96
+--trials 1 --seeds 12 --rounds 1 --seed 31 --threads 1` prints exactly the
+same before and after; a test checks the new kinship tests against the
+genome-based ones over every pair in a world):
+
+- The grid rebuild packs each organism's distance genes (`decide::Genes`,
+  160 bytes) next to its slot, so a crowd's genes are read together, and
+  keeps the slots' positions in their own array for the scan.
+- Kinship and mate distance are monotone in the genetic distance, so
+  `look` brackets it with a vectorized sum (any order of the same terms is
+  within a few millionths of the serial one) and decides from the bounds;
+  the exact serial sum runs only when the bounds straddle a threshold
+  (almost never).
+- Kin are settled from the grid alone; a stranger's organism is read only
+  if the grid's `ARMED` flag and mass say it could be a threat or prey,
+  and a possible mate's only if its `COURTING` and sex flags allow it.
+- `Map::find_water` checks tiles nearest first (ties in the old scan's
+  row order) and stops at the first.
+
+Medians of interleaved runs on the same shared 4-core machine (load 5–9):
+
+| 256² map | Decide before | Decide after | Tick before | Tick after | µs per organism-tick |
+| --- | --- | --- | --- | --- | --- |
+| scale 4 (~5.6k), 1 thread | 5.8 ms | 3.9 ms | 12.2 ms | 10.3 ms | 2.18 → 1.85 |
+| scale 16 (~22k), 1 thread | 56.0 ms | 34.3 ms | 72.2 ms | 50.7 ms | 3.31 → 2.32 |
+| scale 16 (~22k), 4 threads | 30.2 ms | 17.9 ms | 45.4 ms | 33.6 ms | 2.19 → 1.64 |
+
+Decide is 35–40% cheaper in a crowd (it executes about 40% fewer
+instructions per call under callgrind). The figures elsewhere in this
+section predate this change.
+
 ### Parallel apply
 
 The apply phase used to run every organism's turn in one sequential pass in

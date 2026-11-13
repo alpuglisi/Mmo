@@ -160,6 +160,37 @@ impl Tile {
 /// and takes refuge from ground predators.
 pub const CLIMB_CANOPY: f32 = 0.4;
 
+/// Search radius up to which [`Map::find_water`] looks nearest first.
+const NEAR_RADIUS: i32 = 3;
+const NEAR_SIDE: usize = 2 * NEAR_RADIUS as usize + 1;
+
+/// Tile offsets `(dx, dy)` within [`NEAR_RADIUS`], by squared distance and
+/// then row by row (`dy`, then `dx`), the order in which a row-major scan
+/// keeping the first strictly nearer tile settles ties.
+const NEAR_OFFSETS: [(i32, i32); NEAR_SIDE * NEAR_SIDE] = {
+    let mut out = [(0, 0); NEAR_SIDE * NEAR_SIDE];
+    let mut n = 0;
+    let mut dy = -NEAR_RADIUS;
+    while dy <= NEAR_RADIUS {
+        let mut dx = -NEAR_RADIUS;
+        while dx <= NEAR_RADIUS {
+            // Insertion sort by squared distance; row-major arrival keeps it
+            // stable, so equal distances stay in row order.
+            let d = dx * dx + dy * dy;
+            let mut k = n;
+            while k > 0 && out[k - 1].0 * out[k - 1].0 + out[k - 1].1 * out[k - 1].1 > d {
+                out[k] = out[k - 1];
+                k -= 1;
+            }
+            out[k] = (dx, dy);
+            n += 1;
+            dx += 1;
+        }
+        dy += 1;
+    }
+    out
+};
+
 /// How much a canopy shelters a climbing prey from a non-climbing,
 /// non-flying attacker: the chance its attack succeeds is cut by this share.
 pub fn canopy_refuge(tile: &Tile, prey: &Body, attacker: &Body) -> f32 {
@@ -510,6 +541,26 @@ impl Map {
 
     /// Nearest drinkable tile within a square radius.
     pub fn find_water(&self, p: Vec2, radius: i32) -> Option<Vec2> {
+        let (cx, cy) = self.tile_coords(p);
+        if radius <= NEAR_RADIUS {
+            // Nearest first, ties in row order: the first water found is the
+            // one the full scan below would pick.
+            for &(dx, dy) in &NEAR_OFFSETS {
+                let (x, y) = (cx as i32 + dx, cy as i32 + dy);
+                if dx.abs() > radius || dy.abs() > radius || x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+                    continue;
+                }
+                if self.tiles[self.idx(x as usize, y as usize)].water_source() {
+                    return Some(Map::tile_center(x as usize, y as usize));
+                }
+            }
+            return None;
+        }
+        self.find_water_scan(p, radius)
+    }
+
+    /// [`Map::find_water`] by scanning the whole square, row by row.
+    fn find_water_scan(&self, p: Vec2, radius: i32) -> Option<Vec2> {
         let (cx, cy) = self.tile_coords(p);
         let mut best: Option<(f32, Vec2)> = None;
         for dy in -radius..=radius {
@@ -1304,5 +1355,27 @@ mod tests {
         assert_eq!(a.catchment, b.catchment);
         let land = a.land_fraction();
         assert!(land > 0.3 && land < 0.98, "land fraction {land}");
+    }
+
+    /// The nearest-first water search picks the tile the full scan does,
+    /// ties included, at every radius it handles and off the map's edges.
+    #[test]
+    fn nearest_first_water_search_matches_full_scan() {
+        for seed in 0..4 {
+            let mut map = Map::generate(seed, 40, 36);
+            // Speckle water about so that ties and misses both occur.
+            for (k, t) in map.tiles.iter_mut().enumerate() {
+                let h = crate::rng::splitmix64(k as u64 ^ (seed << 32));
+                (t.water_depth, t.ice, t.snow) = (if h.is_multiple_of(23) { 0.5 } else { 0.0 }, if h.is_multiple_of(7) { 1.0 } else { 0.0 }, 0.0);
+            }
+            for y in 0..36 {
+                for x in 0..40 {
+                    let p = Vec2::new(x as f32 + 0.3, y as f32 + 0.6);
+                    for r in 0..=NEAR_RADIUS {
+                        assert_eq!(map.find_water(p, r), map.find_water_scan(p, r), "seed {seed} at {x},{y} radius {r}");
+                    }
+                }
+            }
+        }
     }
 }

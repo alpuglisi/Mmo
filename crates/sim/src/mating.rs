@@ -70,7 +70,12 @@ pub const BODY_PLAN_STERILE: f32 = 0.3;
 /// almost nothing else. This keeps them (and a vole and a fox) sterile, while
 /// similar designs of different players stay fertile.
 pub fn body_plan_fertility(a: &Genome, b: &Genome) -> f32 {
-    ramp(body_plan_gap(a, b), BODY_PLAN_FULL, BODY_PLAN_STERILE)
+    fertility_from_gap(body_plan_gap(a, b))
+}
+
+/// [`body_plan_fertility`] from an already computed [`body_plan_gap`].
+pub fn fertility_from_gap(gap: f32) -> f32 {
+    ramp(gap, BODY_PLAN_FULL, BODY_PLAN_STERILE)
 }
 
 /// Largest difference in expressed value of any [`BODY_PLAN_GENES`].
@@ -93,6 +98,12 @@ pub fn body_plan_gap(a: &Genome, b: &Genome) -> f32 {
 pub fn is_kin(a: &Genome, b: &Genome, distance: f32, species_distance: f32, body_plan_gap_limit: f32) -> bool {
     let rest = 1.0 - distance / species_distance;
     rest > 0.0 && body_plan_gap(a, b) < rest * body_plan_gap_limit
+}
+
+/// [`is_kin`] from an already computed [`body_plan_gap`] (`gap`).
+pub fn is_kin_by_gap(gap: f32, distance: f32, species_distance: f32, body_plan_gap_limit: f32) -> bool {
+    let rest = 1.0 - distance / species_distance;
+    rest > 0.0 && gap < rest * body_plan_gap_limit
 }
 
 /// 1 up to `full`, falling linearly to 0 at `sterile`.
