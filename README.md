@@ -4,9 +4,11 @@ A persistent multiplayer world where each player designs a founding organism
 and steers its lineage through breeding rather than direct editing. The full
 design is in [`docs/game-design.md`](docs/game-design.md).
 
-This repository is at **build step 1** of that design: prototype the
-simulation rules (genetics, needs, terrain) headless, with no players attached,
-and measure per-organism tick cost before building the server.
+Build step 1 of that design (prototype the simulation rules headless, with
+no players attached, and measure per-organism tick cost) is done and still
+being tuned. **Build step 2 has started:** `evo-server`, the authoritative
+Rust server around the simulation (accounts, founding, WebSocket play,
+directed-mating consent, persistence behind a trait; see [Server](#server)).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
 
@@ -16,6 +18,7 @@ and measure per-organism tick cost before building the server.
 crates/
   sim/       evo-sim: the rules engine (library, no I/O)
   sim-cli/   evo-sim binary: run worlds, print reports, benchmark, render PNGs
+  server/    evo-server: authoritative game server (Tokio + Axum, WebSockets)
 docs/
   game-design.md
 ```
@@ -96,6 +99,142 @@ cargo run --release --example stuck -- 120 1 2        # how often organisms get 
 player lineages (pack hunters, herd grazers, toxic frogs, burrowing
 omnivores), then prints population, legacy share, deaths by cause, active
 group traits and gene drift per lineage.
+
+## Server
+
+`crates/server` (binary `evo-server`) is build step 2: the authoritative
+server. Clients only display state and send commands.
+
+```sh
+cargo run --release --bin evo-server                          # 128×128 world, 1 tick/s, data in ./data
+cargo run --release --bin evo-server -- --fast --memory --size 64   # 20 ms ticks, nothing saved
+cargo run --release --bin evo-server -- --bind 0.0.0.0:8080 --data /var/lib/evo --seed 7 --tick-ms 500
+cargo test -p evo-server                                      # unit + end-to-end tests (64×64 worlds)
+```
+
+Other flags: `--no-wild` (no wild ecosystem), `--state-ms` (state push
+interval). `RUST_LOG=debug` for more logging.
+
+### Architecture
+
+```
+HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game + World)
+        ▲                       bounded queue        │ tick loop, fixed rate
+        └──── per-connection queue ◀── results, events, state pushes
+                                    ◀── watch: world summary + leaderboard
+                       store task ◀── daily records, finished trades
+```
+
+- **One world thread** owns the `World` exclusively (no locks around it).
+  Handlers send `Request`s over a bounded channel (a full queue answers
+  `busy`). Each tick it waits for the deadline (default 1 s, `--tick-ms`),
+  answering reads at once (connect, map snapshot) and queueing world changes
+  (commands, foundings); then applies the queue **in arrival order**, calls
+  `World::step`, runs the game bookkeeping, publishes a summary and pushes
+  state. A run is reproducible given the same commands in the same ticks.
+- **`Game`** (`game.rs`) is the pure logic around the world: one lineage per
+  player, the mating-offer table and consent flow, migration orders, views and
+  interest management. It returns messages instead of sending them, so it is
+  unit-tested without sockets.
+- **Interest management:** a state message carries the player's own organisms
+  in full and other organisms only inside a square view window (default
+  half-side 16 tiles, at most 32; at most 256 foreign organisms, nearest
+  first). The window follows the possessed organism, else the lineage's
+  centroid, unless the client pins it with `set_view`. Foreign organisms show
+  only what can be seen (position, action, sex, maturity), not needs.
+- **Slow clients:** each connection has a 256-message queue. A full queue
+  drops state frames (the next replaces them); a connection that can't take
+  replies or events is closed.
+- **Accounts:** argon2id password hashes, random 256-bit bearer tokens held in
+  memory. Each account owns a `PlayerId` (1, 2, …; 0 is the wild ecosystem).
+
+### HTTP API (JSON)
+
+| Method and path | Auth | What it does |
+| --- | --- | --- |
+| `POST /api/register` `{name, password}` | | Create an account (name 3–24 of `[A-Za-z0-9_-]`, password ≥ 8). `201 {token, player, name}`; `409 name_taken` |
+| `POST /api/login` `{name, password}` | | `{token, player, name}`; `401 bad_credentials` |
+| `POST /api/logout` | Bearer | End the session |
+| `POST /api/lineage` (design) | Bearer | Found your lineage (one per player per world). `201 {lineage, founders: [ids], cost}`; `400` with `over_budget {cost, budget}`, `value_out_of_range {gene}`, `reserved_gene`, `litter_size`, `no_founders`, `unknown_gene`, `bad_name`; `409 already_founded` |
+| `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices |
+| `GET /api/world` | | Clock, season, weather, map size, organism and lineage counts |
+| `GET /api/leaderboard` | | Legacy shares from the latest daily snapshot: `{day, breeding_adults, rows: [{player, name, share, weighted_share, alive}]}` |
+| `GET /api/leaderboard/history?limit=30` | | The stored daily records (legacy shares and lineage sizes) |
+| `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile), for debugging |
+| `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
+
+Errors are `{"code": "...", "message": "...", ...detail}`. A design:
+
+```json
+{"name": "Marsh striders", "thermo": "warm", "birth": "live", "litter_size": 2,
+ "traits": {"body_size": 0.4, "leg_length": 0.5, "fur": 0.4, "keen_nose": 0.3}, "founders": 20}
+```
+
+`thermo` is `warm`/`cold`, `birth` is `live`/`incubated_eggs`/`abandoned_eggs`;
+gene names are the sim's labels in `snake_case` (`GET /api/genes` lists them).
+
+### WebSocket protocol
+
+Every message is a JSON object with a `type`. A client message may carry an
+`id`, echoed in its `result`.
+
+Client → server:
+
+| `type` | Fields | |
+| --- | --- | --- |
+| `possess` | `organism` | Take control of one of your organisms |
+| `order_move` | `organism, x, y` | Walk a possessed organism to a point (tiles) |
+| `release` | `organism` | Back to genetic behavior |
+| `request_mating` | `mine, partner, price?` | Directed mating. Your own pair runs at once; another player's organism sends them a `mating_request` |
+| `respond_mating` | `request, accept` | The partner's owner answers |
+| `complete_mating` | `request` | Retry an accepted agreement now |
+| `cancel_mating` | `request` | Either side withdraws an open offer |
+| `migrate` / `clear_migration` | `x, y` / – | Group command for your adults |
+| `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window |
+
+Server → client:
+
+| `type` | When |
+| --- | --- |
+| `welcome` `{player, name, lineage}` | On connect |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime), `weather` (mean wind, storm, drought and flood shares), `lineage`, `slots_left`, `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation), `nearby` (others in the window), `leaderboard`, `offers` (your open offers) |
+| `result` `{id, command, ok, error?: {code, message}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy` |
+| `mating_request` `{offer}` | Someone asks to mate with your organism |
+| `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
+
+**Directed-mating consent:** `request_mating` checks ownership, maturity, sex,
+pregnancy and slots, then creates a `pending` offer (price recorded; no
+economy yet) and asks the partner's owner. Wild organisms can't consent. On
+`accept` the server tries the mating at once with `partner_consent`; if the
+two are farther apart than the meeting distance the agreement stays
+`accepted` (both get `too_far`) and runs on the first tick they meet, so
+escorting a possessed organism to the meeting is the trip the design
+describes. Outcomes: `completed` (with mismatch, override cost, failure
+chance, fertility, conceived), `declined`, `cancelled`, `failed` (the rules
+refused it, e.g. an organism died) or `expired` (season change, when slots
+reset). The requester's seasonal slot is spent.
+
+### Persistence
+
+`Store` (`store.rs`) is an async trait with a JSON-file implementation
+(`FileStore`, the default, in `--data DIR`) and an in-memory one (`--memory`,
+tests). A PostgreSQL/sqlx `PgStore` would implement the same methods, one
+table per record.
+
+| Persisted | File |
+| --- | --- |
+| Accounts (name, player id, argon2 hash) | `accounts.json` |
+| Founder designs | `designs.json` |
+| One record per simulated day: legacy shares (raw and weighted) and every lineage's size | `history.jsonl` |
+| Finished directed-mating agreements with price and outcome | `trades.jsonl` |
+
+**Not persisted yet:** the `World` itself and login sessions. A restart
+generates a fresh world from the seed and re-founds every stored design in
+player order (a design that no longer fits the budget is skipped with a
+warning); players log in again. World snapshots need serde on the sim types
+(organisms, genomes, map, weather, counters, the world's private fields);
+the RNG is derived from `(seed, stream, tick, organism)`, so a snapshot is
+just data plus the tick.
 
 ## Benchmark (first measurement)
 
@@ -206,5 +345,10 @@ doc lists them as an open question.
 3. Parallel apply by region, then measure at the doc's prototype target
    (~25k organisms on 256×256).
 4. Seasonal strategies as genes, then the remaining group traits.
-5. Step 2 of the build order: the Tokio/Axum server around `World`, using
-   `world::commands` for player actions.
+5. **Server (step 2, started):** world snapshots (serde on the sim types,
+   then a snapshot every simulated day and on shutdown); a `PgStore` on
+   sqlx; possessed organisms ticking faster than the world clock; interest
+   management through the sim's spatial grid instead of a scan per
+   connection; session expiry and rate limits; a stud marketplace and an
+   economy behind the recorded prices; seasonal leaderboard aggregation;
+   several worlds (shards) per process.

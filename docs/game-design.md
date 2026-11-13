@@ -285,8 +285,8 @@ The server is written entirely in Rust; web and mobile share one TypeScript clie
 
 **Build order**
 
-1. Prototype simulation rules (genetics, needs, terrain) with no players.
-2. Build the Rust server around the proven rules.
+1. Prototype simulation rules (genetics, needs, terrain) with no players. *(Done: `crates/sim`; balance still being tuned.)*
+2. Build the Rust server around the proven rules. *(Started: `crates/server`, see the README.)*
 3. Build the TypeScript client against the server's API.
 
 The simulation and account services could later split into separate Rust services if scale requires it.
