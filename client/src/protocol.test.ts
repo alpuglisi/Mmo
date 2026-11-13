@@ -14,6 +14,7 @@ const state: StateView = {
   player: 1,
   lineage: 3,
   slots_left: 6,
+  population: 2,
   migration: null,
   view: { x: 30, y: 31, radius: 16 },
   organisms: [{

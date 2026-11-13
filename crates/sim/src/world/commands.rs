@@ -17,6 +17,12 @@ use crate::rng::{rng_for, stream};
 pub const MEETING_DISTANCE: f32 = 1.5;
 /// Hunger added to both organisms per unit of override cost.
 pub const HUNGER_PER_COST: f32 = 15.0;
+/// A possessed organism this close to its move target has arrived: the
+/// order is dropped and it goes back to looking after itself.
+pub const ORDER_ARRIVAL: f32 = 0.75;
+/// Need level a possessed organism that broke off its order to eat or drink
+/// (`Balance::possess_urgency`) brings it down to before going back.
+pub const ORDER_RESUME: f32 = 30.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CommandError {
@@ -167,6 +173,18 @@ impl World {
         Ok(())
     }
 
+    /// Drop the move orders of possessed organisms that have arrived (or
+    /// died, or are no longer possessed). Runs once per tick, before decide.
+    pub(crate) fn settle_orders(&mut self) {
+        for o in &mut self.organisms {
+            if let Some(t) = o.order {
+                if !o.alive || o.possessed_by.is_none() || o.pos.dist(t) <= ORDER_ARRIVAL {
+                    o.order = None;
+                }
+            }
+        }
+    }
+
     /// Return a possessed organism to its genetic behavior.
     pub fn release(&mut self, player: PlayerId, id: OrgId) -> Result<(), CommandError> {
         let i = self.live_index(id)?;
@@ -254,5 +272,67 @@ mod tests {
         assert_eq!(o.action, crate::organism::Action::Ordered);
         w.release(1, a).unwrap();
         assert!(w.organism(a).unwrap().possessed_by.is_none());
+    }
+
+    /// A possessed organism with a move order toward a far corner.
+    fn ordered(thirst: f32) -> (World, OrgId, Vec2) {
+        let (mut w, a, _) = world_with_pair(false);
+        let i = w.index[&a];
+        w.organisms[i].needs.thirst = thirst;
+        w.organisms[i].needs.hunger = 0.0;
+        w.possess(1, a).unwrap();
+        let p = w.organisms[i].pos;
+        let target = w.map.clamp(Vec2::new(if p.x < 24.0 { 47.0 } else { 0.0 }, p.y));
+        w.order_move(1, a, target).unwrap();
+        (w, a, target)
+    }
+
+    #[test]
+    fn arrival_clears_the_order() {
+        let (mut w, a, _) = world_with_pair(false);
+        w.possess(1, a).unwrap();
+        let start = w.organism(a).unwrap().pos;
+        let target = w.map.clamp(start + Vec2::new(3.0, 0.0));
+        w.order_move(1, a, target).unwrap();
+        for _ in 0..w.config.ticks_per_day {
+            if w.organism(a).unwrap().order.is_none() {
+                break;
+            }
+            w.step();
+        }
+        let o = w.organism(a).unwrap();
+        assert!(o.order.is_none(), "still ordered at {:?} (target {target:?})", o.pos);
+        assert!(o.pos.dist(target) <= ORDER_ARRIVAL + 0.5);
+        // Still possessed, but back to its own behavior.
+        assert_eq!(o.possessed_by, Some(1));
+        w.step();
+        assert_ne!(w.organism(a).unwrap().action, crate::organism::Action::Ordered);
+    }
+
+    #[test]
+    fn parched_possessed_organism_goes_to_drink() {
+        let (mut w, a, _) = ordered(95.0);
+        w.step();
+        assert_eq!(w.organism(a).unwrap().action, crate::organism::Action::Drink);
+        // It drinks its fill (and keeps its order for afterwards).
+        let mut least = 100.0f32;
+        for _ in 0..2 * w.config.ticks_per_day {
+            w.step();
+            least = least.min(w.organism(a).unwrap().needs.thirst);
+        }
+        assert!(least <= ORDER_RESUME, "never drank: thirst stayed at {least}");
+        assert!(w.organism(a).is_some_and(|o| o.alive));
+    }
+
+    #[test]
+    fn moderately_thirsty_possessed_organism_follows_the_order() {
+        let (mut w, a, target) = ordered(60.0);
+        let before = w.organism(a).unwrap().pos.dist(target);
+        w.step();
+        w.step();
+        let o = w.organism(a).unwrap();
+        assert_eq!(o.action, crate::organism::Action::Ordered);
+        assert_eq!(o.order, Some(target));
+        assert!(o.pos.dist(target) < before);
     }
 }

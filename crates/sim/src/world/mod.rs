@@ -591,6 +591,7 @@ impl World {
             self.daily();
         }
 
+        self.settle_orders();
         self.grid.rebuild(&self.organisms);
         let n = self.organisms.len();
         let this = &*self;

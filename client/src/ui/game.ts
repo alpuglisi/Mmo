@@ -534,7 +534,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const maxGen = orgs.reduce((m, o) => Math.max(m, o.generation), 0);
     statsEl.replaceChildren(dl([
       ['Lineage', s.lineage === null ? 'not founded' : `#${s.lineage}`],
-      ['Alive', h('strong', { id: 'lineage-size' }, String(orgs.length))],
+      ['Alive', h('span', {}, h('strong', { id: 'lineage-size' }, String(s.population)),
+        s.population > orgs.length
+          ? h('span', { class: 'muted small', title: 'Level of detail: members far from any player run as statistical cohorts and are not drawn' }, ` · ${orgs.length} on the map`)
+          : null)],
       ['Adults / young', `${adults} / ${orgs.length - adults}`],
       ['Pregnant', String(orgs.filter((o) => o.pregnant).length)],
       ['Newest generation', String(maxGen)],

@@ -125,8 +125,8 @@ Other flags: `--no-wild` (no wild ecosystem), `--days-per-year N` (short
 years for demos), `--state-ms` (state push interval), `--static DIR` (serve
 the built web client from `DIR`, e.g. `client/dist`, on every path the API
 doesn't use), `--session-idle-min N` / `--session-max-hours N` (session
-expiry, default 60 min idle and 24 h), `--no-rate-limits`. `RUST_LOG=debug`
-for more logging.
+expiry, default 60 min idle and 24 h), `--no-rate-limits`, `--lod` (level
+of detail, below). `RUST_LOG=debug` for more logging.
 
 ### Architecture
 
@@ -179,13 +179,25 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   population (25, 50, 100, …) and legacy-share (1, 5, 10, 25, 50 %)
   milestones, a new generation, extinction, and a possessed organism that is
   parched or starving. The last 50 per player are kept for the dashboard.
-- **Possessed organisms at their destination:** the sim keeps a possessed
-  organism's order after it arrives, so it stands there `ordered` and only
-  drinks or eats what is on its tile (an organism left at its destination
-  dies of thirst in about four days). Until the sim lets urgent needs win,
-  the server clears an order once the organism has arrived and thirst or
-  hunger reaches 75: it stays possessed and forages on its own until the
-  next order, and the owner gets a `need` alert.
+- **Possessed organisms' needs:** the sim drops a move order once the
+  organism arrives (within 0.75 tiles) and lets danger or severe thirst or
+  hunger (`possess_danger`, `possess_urgency` = 85) win over the order until
+  the need is down to 30, then resumes it. The server only tells the owner:
+  a `need` alert (once a day per organism) at thirst or hunger 75.
+- **Level of detail** (`--lod`, off by default): on the hour, each connected
+  player's view windows (pinned, else the possessed organism, else the
+  lineage centroid, which falls back to the lineage's cohorts when it has no
+  agents) become that player's focus (`World::set_focus`); a player with no
+  connection has none, so their lineage goes on as statistical cohorts
+  wherever no one else is watching (possessed organisms keep their region
+  active), and expands back into agents within the hour of reconnecting.
+  At startup, before anyone connects, the whole world collapses to cohorts.
+  Lineage sizes count cohort members (`World::population_counts`): the
+  daily history, milestones, leaderboard `alive`, `state.population`, the
+  lineage stats (`alive`, `adults`, `juveniles`; `agents` is the visible
+  part) and `GET /api/world` (`organisms`; `agents` separately). Cohort
+  members are not agents, so they are never in `organisms` or `nearby`; age
+  bands, pregnancies and gene statistics cover agents only.
 
 ### HTTP API (JSON)
 
@@ -240,7 +252,7 @@ Server → client:
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage}` | On connect |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime), `weather` (mean wind, storm, drought and flood shares), `lineage`, `slots_left`, `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation), `nearby` (others in the window), `leaderboard`, `offers` (your open offers) |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime), `weather` (mean wind, storm, drought and flood shares), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration`, `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation), `nearby` (others in the window), `leaderboard`, `offers` (your open offers) |
 | `result` `{id, command, ok, error?: {code, message}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, and `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
@@ -364,7 +376,9 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   needs, daily summaries) merged with mating offers and their outcomes,
   newest first, organism ids linking to the inspector; an unread badge on
   the tab.
-- **Lineage** tab: lineage size, adults and young, pregnancies, newest
+- **Lineage** tab: lineage size (with level of detail on, also how many of
+  them are agents on the map; the Genetics tab adds an "On the map" tile),
+  adults and young, pregnancies, newest
   generation, mating slots left this season, migration target, the legacy
   leaderboard (share and weighted share per player, yours highlighted), the
   **seasonal leaderboards** (`GET /api/leaderboard/seasons`, the current
@@ -405,11 +419,12 @@ validation against the server's own examples (the README design costs
 backoff, reconnect and give-up; the offer table through request, accept
 and outcome. `e2e/smoke.mjs` (Playwright, pre-installed Chromium) starts
 `evo-server --fast --memory --static client/dist` on a free port, registers,
-checks the live cost (10.1, and the server's founding response agrees) and
-the client-side over-budget refusal, founds a lineage, waits for markers and
+checks the live cost against the prices in `/api/genes` (and that the
+server's founding response agrees) and the client-side over-budget refusal, founds a lineage, waits for markers and
 the tile map (64×64 texture, at least 3 biomes and 20 tile colors, a dynamic
-refresh, the terrain legend), clicks an organism, possesses it, clicks the
-map and checks it walks toward the target, migrates, sees an error toast,
+refresh, the terrain legend), clicks one of its own organisms (the one with
+the most room around its marker, checked with the view's hit test, retried
+if the selection isn't its own), possesses it, clicks the map and checks it walks toward the target, migrates, sees an error toast,
 checks the seasonal leaderboard and the genetics dashboard (at least four
 charts with drawn lines, drift sparklines, every gene in the table, alerts in
 the feed), then registers a second player and runs a directed mating through
@@ -469,6 +484,8 @@ X,Y`) or a possessed organism, and becomes **abstract** beyond
   dependent young next to a mother.
 - Legacy snapshots and population caps count cohort members; reports show
   agents and cohorts. Group traits and disease state are agent-only.
+- The server enables it with `evo-server --lod` and keeps each connected
+  player's focus on their view windows (see [Server](#server)).
 
 Measured with `cargo run --release --example lod -- 256 90 1 64,64 192,192`
 (one thread, standard world, two focus points, default radius):

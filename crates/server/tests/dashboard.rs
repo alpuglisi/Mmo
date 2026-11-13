@@ -26,7 +26,7 @@ fn config() -> ServerConfig {
     ServerConfig {
         bind: SocketAddr::from(([127, 0, 0, 1], 0)),
         data_dir: None,
-        world: WorldSettings { seed: 11, width: 64, height: 48, wild: true, days_per_year: 8 },
+        world: WorldSettings { seed: 11, width: 64, height: 48, wild: true, days_per_year: 8, lod: false },
         ..Default::default()
     }
     .fast()
