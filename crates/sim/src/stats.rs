@@ -169,7 +169,30 @@ impl Seasonal {
     }
 }
 
+/// What keeping both guts costs a mixed diet: `1 - tax * (4c(1 - c))^3`
+/// for carnivory `c` and `tax` = `Balance::generalist_tax`. The full tax
+/// falls on an even omnivore (carnivory 0.5: a quarter of each food at the
+/// default 0.5 instead of half); it fades fast toward either specialist
+/// (carnivory 0.1 keeps 98%, 0.85 keeps 93%, 0.3 or 0.7 keeps 70%), so
+/// specializing pays and herbivores and carnivores barely notice.
+pub fn generalist_factor(carnivory: f32, tax: f32) -> f32 {
+    let mix = 4.0 * carnivory * (1.0 - carnivory);
+    1.0 - tax * mix.clamp(0.0, 1.0).powi(3)
+}
+
 impl Traits {
+    /// Share of plant food's value the gut extracts: `(1 - carnivory)`
+    /// times the generalist factor (see [`generalist_factor`]).
+    pub fn plant_efficiency(&self, tax: f32) -> f32 {
+        (1.0 - self.carnivory).clamp(0.0, 1.0) * generalist_factor(self.carnivory, tax)
+    }
+
+    /// Share of meat's value the gut extracts: `carnivory` times the
+    /// generalist factor (see [`generalist_factor`]).
+    pub fn meat_efficiency(&self, tax: f32) -> f32 {
+        self.carnivory.clamp(0.0, 1.0) * generalist_factor(self.carnivory, tax)
+    }
+
     pub fn litter_fraction(&self) -> f32 {
         (self.litter - 1) as f32 / (MAX_LITTER - 1) as f32
     }
@@ -288,6 +311,31 @@ mod tests {
         assert!(big.stats.strength > small.stats.strength);
         assert!(big.stats.speed < small.stats.speed);
         assert!(big.body.mass > 10.0 * small.body.mass);
+    }
+
+    /// Specialists keep (nearly) full value of their food; a generalist at
+    /// carnivory 0.5 gets clearly less than half of each once taxed.
+    #[test]
+    fn diet_efficiency_taxes_generalists() {
+        let eff = |c: f32, tax: f32| {
+            let t = traits_of(&FounderDesign::new("d", Thermo::Warm, BirthType::Live, 2).with(Gene::Carnivory, c));
+            (t.plant_efficiency(tax), t.meat_efficiency(tax))
+        };
+        // Untaxed: the old linear rule.
+        let (pl, me) = eff(0.5, 0.0);
+        assert!((pl - 0.5).abs() < 1e-6 && (me - 0.5).abs() < 1e-6);
+        let tax = crate::Balance::default().generalist_tax;
+        assert!(tax > 0.0);
+        let (pl, me) = eff(0.5, tax);
+        assert!((pl - 0.5 * (1.0 - tax)).abs() < 1e-5 && pl < 0.4 && (me - pl).abs() < 1e-6, "{pl} {me}");
+        assert_eq!(eff(0.0, tax).0, 1.0);
+        assert_eq!(eff(1.0, tax).1, 1.0);
+        // Near-specialists lose little.
+        assert!(eff(0.1, tax).0 > 0.95 * 0.9);
+        assert!(eff(0.85, tax).1 > 0.93 * 0.85);
+        // Specializing pays: total extraction is lowest in the middle.
+        let total = |c| eff(c, tax).0 + eff(c, tax).1;
+        assert!(total(0.5) < total(0.3) && total(0.3) < total(0.1) && total(0.5) < total(0.85));
     }
 
     #[test]

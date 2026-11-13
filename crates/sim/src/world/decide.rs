@@ -110,8 +110,10 @@ pub(crate) fn can_threaten(predator: &Organism, prey: &Organism) -> bool {
 
 /// How hard `o` fights back when attacked: a meat eater turns on its
 /// attacker with fangs and claws, a plant eater mostly tries to get away.
-pub(crate) fn fight_back(o: &Organism) -> f32 {
-    o.power() * o.traits.carnivory
+/// Follows the taxed diet (`Traits::meat_efficiency` with
+/// `Balance::generalist_tax`): a generalist is a half-hearted fighter.
+pub(crate) fn fight_back(o: &Organism, tax: f32) -> f32 {
+    o.power() * o.traits.meat_efficiency(tax)
 }
 
 /// Factor on a hunter's prey score for the risk of being hurt by prey that
@@ -586,7 +588,7 @@ impl World {
                     let roll = (splitmix64(v.salt ^ q.id) >> 40) as f32 / (1u64 << 24) as f32;
                     // Prey that fights back is only worth the risk to a hungry
                     // hunter, and less so to one that could graze instead.
-                    let injury = injury_discount(o, v.fight_power, fight_back(q), cfg.balance.injury_aversion);
+                    let injury = injury_discount(o, v.fight_power, fight_back(q, cfg.balance.generalist_tax), cfg.balance.injury_aversion);
                     if roll >= avoid && (guard == 0.0 || my_power > q.resistance() + guard) && injury >= v.risk_floor {
                         let odds = my_power / (my_power + q.resistance() + guard + 1e-3);
                         let chase = if q.traits.stats.speed * q.activity < o.traits.stats.speed * o.activity { MAX_CHASE } else { 0.6 };
@@ -619,8 +621,10 @@ impl World {
 
     /// Hunger: graze, hunt or scavenge depending on diet and what's around.
     fn choose_food(&self, o: &Organism, prey: Option<(f32, usize)>, intent: &mut Intent, rng: &mut SimRng) {
-        let c = o.traits.carnivory;
-        let plant_eff = 1.0 - c;
+        // Food values use what the gut extracts (`Traits::plant_efficiency`):
+        // a generalist values both foods less than a specialist would.
+        let tax = self.config.balance.generalist_tax;
+        let (plant_eff, c) = (o.traits.plant_efficiency(tax), o.traits.meat_efficiency(tax));
         let here = self.map.tile_at(o.pos);
         // Browse in the canopy only counts if the body can reach it.
         let (body, share) = (&o.traits.body, self.config.balance.canopy_share);
@@ -636,7 +640,7 @@ impl World {
             return;
         }
         if let Some((_, j)) = prey {
-            if hunt_value > graze_here * 0.05 && c > HUNTER_CARNIVORY {
+            if hunt_value > graze_here * 0.05 && o.traits.carnivory > HUNTER_CARNIVORY {
                 let q = &self.organisms[j];
                 intent.action = Action::Hunt;
                 intent.target = Some(q.pos);
@@ -645,7 +649,7 @@ impl World {
                 return;
             }
         }
-        if plant_eff < 0.3 {
+        if o.traits.carnivory > 0.7 {
             // Carnivore with nothing in sight: look for carcasses, else roam.
             if let Some(t) = self.find_tile(o, rng, 1.0, |t| t.meat * c) {
                 intent.action = Action::Scavenge;
@@ -841,6 +845,7 @@ mod tests {
         // The most herbivorous grazer founder (founders vary around the design).
         let grazer = w.organisms.iter().filter(|o| o.lineage == 5).min_by(|a, b| a.traits.carnivory.total_cmp(&b.traits.carnivory)).unwrap();
         let k = w.config.balance.injury_aversion;
+        let fight_back = |o| fight_back(o, w.config.balance.generalist_tax);
         assert!(fight_back(grazer) < 0.05 * fight_back(fox));
         // Founder variation can leave a grazer a few hundredths of carnivory.
         assert!(injury_discount(pack, pack.power(), fight_back(grazer), k) > 0.8);

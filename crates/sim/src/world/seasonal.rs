@@ -56,7 +56,7 @@ const AROUSAL_HUNGER: f32 = 90.0;
 /// below which it settles into a dormancy.
 const AROUSAL_THIRST: f32 = 80.0;
 const THIRST_LIMIT: f32 = 50.0;
-/// Plant efficiency (1 - carnivory) needed to cache or raid caches.
+/// Plant share of the diet (1 - carnivory) needed to cache or raid caches.
 const CACHE_DIET: f32 = 0.3;
 /// Regional dryness (`Map::dryness_at`) above which an estivator also goes
 /// dormant in summer, heat or not: the drought line of `terrain`.
@@ -424,7 +424,7 @@ impl World {
 
     /// Most plant food (food units) the organism hoards.
     pub(crate) fn cache_capacity(&self, o: &Organism) -> f32 {
-        let eff = (1.0 - o.traits.carnivory).max(0.05);
+        let eff = o.traits.plant_efficiency(self.config.balance.generalist_tax).max(0.05);
         self.config.balance.cache_capacity * o.traits.seasonal.caching * o.food_per_hunger() / eff
     }
 
@@ -486,7 +486,7 @@ impl World {
     /// spring, or when very hungry, if the cache holds a bite.
     pub(crate) fn cache_to_eat(&self, o: &Organism, bite: f32) -> Option<Vec2> {
         let lean = matches!(self.season(), Season::Winter | Season::Spring) || o.needs.hunger > 70.0;
-        let eff = 1.0 - o.traits.carnivory;
+        let eff = o.traits.plant_efficiency(self.config.balance.generalist_tax);
         if !lean {
             return None;
         }
@@ -506,13 +506,13 @@ impl World {
         let dt = self.config.dt_days();
         let cap = self.cache_capacity(&self.organisms[i]);
         let o = &self.organisms[i];
-        let eff = 1.0 - o.traits.carnivory;
+        let eff = o.traits.plant_efficiency(self.config.balance.generalist_tax);
         let pos = o.pos;
         let home = match o.cache_pos {
             Some(c) if o.cache > 0.5 => c,
             _ => pos,
         };
-        if pos.dist(home) > CACHE_RANGE || o.cache >= cap || eff < CACHE_DIET {
+        if pos.dist(home) > CACHE_RANGE || o.cache >= cap || 1.0 - o.traits.carnivory < CACHE_DIET {
             return;
         }
         let rate = 0.5 * super::apply::MAX_INTAKE_PER_DAY * dt * o.food_per_hunger() / eff;
@@ -553,8 +553,8 @@ impl World {
     /// (`raider`).
     pub(crate) fn eat_cache(&mut self, i: usize, raider: bool) {
         let o = &self.organisms[i];
-        let eff = 1.0 - o.traits.carnivory;
-        if eff < CACHE_DIET || o.needs.hunger < if raider { 30.0 } else { 5.0 } {
+        let eff = o.traits.plant_efficiency(self.config.balance.generalist_tax);
+        if 1.0 - o.traits.carnivory < CACHE_DIET || o.needs.hunger < if raider { 30.0 } else { 5.0 } {
             return;
         }
         let here = self.map.tile_coords(o.pos);
