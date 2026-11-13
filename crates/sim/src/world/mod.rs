@@ -182,6 +182,7 @@ pub struct World {
     /// Map-wide mean weather, for reports. Movement rules use the local
     /// weather, `map.weather_at(pos)`.
     pub weather: Weather,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::organisms"))]
     pub organisms: Vec<Organism>,
     pub clutches: Vec<Clutch>,
     pub group: GroupField,

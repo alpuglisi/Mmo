@@ -81,6 +81,7 @@ pub struct PoolEntry {
 struct Rep {
     /// An adult organism from the first pool genome: body for passability,
     /// reachable browse and prey size.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "crate::serde_util::organism::deserialize"))]
     probe: Organism,
     mass: f32,
     metabolism: f32,
@@ -643,7 +644,7 @@ impl World {
             }
             let owner = self.lineages.get(o.lineage as usize).map_or(o.owner, |l| l.owner);
             let birth_day = today - o.age_ticks as f64 / tpd;
-            let entry = PoolEntry { genome: o.genome.clone(), generation: o.generation };
+            let entry = PoolEntry { genome: Genome::clone(&o.genome), generation: o.generation };
             let (sex, hunger, health, fat, raised, lineage) =
                 (o.sex, o.needs.hunger, o.health, o.fat, o.offspring_raised, o.lineage);
             let c = cohort_mut(&mut self.lod.regions[r], lineage, owner);
@@ -1486,7 +1487,7 @@ mod tests {
             if w.organisms[i].alive && w.organisms[j].alive && w.organisms[i].lineage != w.organisms[j].lineage {
                 let none = MutationParams { rate: 0.0, sd: 0.0 };
                 let g = Genome::inherit(&w.organisms[i].genome, &w.organisms[j].genome, 0, none, 0.0, &mut rng);
-                w.organisms[i].genome = g;
+                w.organisms[i].genome = g.into();
             }
         }
         // Clutches would join as newborns; leave them out of the comparison.
@@ -1494,7 +1495,7 @@ mod tests {
         w.clutch_at.clear();
         let before = w.lineage_counts();
         let alive: Vec<&Organism> = w.organisms.iter().filter(|o| o.alive).collect();
-        let shares_before = allele_shares(&alive.iter().map(|o| &o.genome).collect::<Vec<_>>());
+        let shares_before = allele_shares(&alive.iter().map(|o| &*o.genome).collect::<Vec<_>>());
         let adults_before: usize = before.iter().map(|c| c.adults).sum();
 
         // Collapse everything.
@@ -1528,7 +1529,7 @@ mod tests {
         for o in &alive {
             assert!(w.passable_for(o, o.pos), "{} placed on an unusable tile", w.lineages[o.lineage as usize].name);
         }
-        let shares_after = allele_shares(&alive.iter().map(|o| &o.genome).collect::<Vec<_>>());
+        let shares_after = allele_shares(&alive.iter().map(|o| &*o.genome).collect::<Vec<_>>());
         for (p, s) in &shares_before {
             let t = shares_after.get(p).copied().unwrap_or(0.0);
             assert!((s - t).abs() <= share_tolerance, "player {p}: allele share {s:.4} -> {t:.4}");
@@ -1645,7 +1646,8 @@ mod tests {
 
     fn fill(w: &mut World, r: usize, lineage: u32, n: u32) {
         let mut rng = rng_for(7, 7, lineage as u64, 0);
-        let src: Vec<Genome> = w.organisms.iter().filter(|o| o.lineage == lineage).map(|o| o.genome.clone()).collect();
+        let src: Vec<Genome> =
+            w.organisms.iter().filter(|o| o.lineage == lineage).map(|o| Genome::clone(&o.genome)).collect();
         let owner = w.lineages[lineage as usize].owner;
         let today = w.today();
         let c = cohort_mut(&mut w.lod.regions[r], lineage, owner);

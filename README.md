@@ -631,9 +631,23 @@ added to them deterministically, so the server treats them like any other
 format version and generates a new world. Every state type derives serde (long gene arrays through
 `serde_util`; hash maps are written sorted, so equal worlds give equal
 bytes). Skipped and rebuilt on restore: the id → index map, the spatial grid,
-A* scratch buffers and phase timings. Caches that steer the future (hourly
-density, cohort representatives, LOD passability, cache and clutch lookups)
-are stored. Any change to a serialized type needs a `SNAPSHOT_VERSION` bump;
+A* scratch buffers, phase timings, and each organism's genome-derived caches
+(phenotype, traits, recessive load: pure functions of the genome,
+recomputed to the bit by `Organism::refresh_derived` as organisms are
+read). Caches that steer the future (A* paths, hourly density, cohort
+representatives, LOD passability, cache and clutch lookups) are stored.
+From version 7 genomes are written compactly but exactly
+(`genome::wire`: the genome's distinct origin tags once, then per allele a
+2-bit class (exactly 0.0, exactly 1.0, same as the previous allele, or
+stored), the origin as a `ceil(log2 tags)`-bit index (no bits with one
+tag), and stored values bit-packed as a 3-bit exponent and the 23-bit
+mantissa for values in [2^-7, 1), whole otherwise: about 30 bytes plus 3.25
+per distinct value, against 816 bytes in memory); a pregnancy's father
+genome is written as the index of the father while he is in the world
+(`serde_util::father`) and shared with him again on restore; and the
+payload's integers are varints. In memory an organism's genome is an
+`Arc<Genome>` (immutable once born), shared by clones of the world and by
+pregnancies, so `Organism` is 688 bytes instead of 1,496. Any change to a serialized type needs a `SNAPSHOT_VERSION` bump;
 a snapshot of another version is refused with both versions named. Version
 3 added the possession sub-step counter and `WorldConfig::possess_substeps`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
@@ -697,6 +711,31 @@ With the terrain stored apart, two interleaved rounds of the same example
 gave a capture of 32.8 and 32.5 ms against 37.9 and 38.9 ms for the last
 version 4 build, and a saved game of 31.9 MB against 36.5 MB (the 4.9 MB
 terrain stored once per world).
+
+**Leaner organisms (version 7)**: genome-derived caches left out, compact
+genomes, father genomes by reference, varint integers, and genomes shared
+behind an `Arc` (so a clone copies 688 bytes per organism, not 1,496, and
+no genome). 512², scale 5, 2 days, 26.6k agents, the last version 6 build
+and this one interleaved on the same shared 4-core machine (noisy):
+
+| | Version 6 | Version 7 |
+| --- | --- | --- |
+| Snapshot stored (raw bincode), `examples/snapshot` | 30.1 MB (61.4 MB), 1,090 B/agent | **15.3 MB** (24.2 MB), 555 B/agent |
+| `World::clone`, two runs | 30.5, 30.2 ms | **8.6, 7.9 ms** |
+| `World::snapshot` / `World::restore` | 209–212 / 196–216 ms | 157–162 / 107–114 ms |
+| Saved game (`examples/save_stall`) | 31.6 MB | **17.7 MB** |
+| Capture on the world thread, three runs (medians of 5) | 47.5, 30.3, 29.3 ms | **17.2, 17.0, 9.2 ms** |
+
+What is left of a 512² snapshot: genomes about 6.9 MB (two days in, most
+alleles are still distinct founder values, which don't compress; in an
+older world more of them are shared copies), the map's changing tiles
+about 5.9 MB, the rest of the organisms about 2.5 MB. A restore is faster
+too: recomputing the caches costs less than reading them. Simulation
+results are unchanged: the 12-seed sweep (`evo-sim sweep --size 96 --trials
+1 --seeds 12 --rounds 1 --seed 31 --threads 1`) prints the same table before
+and after, timing aside, and the snapshot test also requires the restored
+caches, paths and pregnancies to match the original's exactly, father
+genomes to come back shared, and a clone to share every genome.
 
 **Saved games** (`snapshot.rs` in the server): magic, the game-side state
 as JSON (player → lineage, open offers with their escrow, migration orders,
@@ -2084,11 +2123,12 @@ in use, 10.71 with the presets' strategies).
    migrates yet: migrating antelope lost survival again even with group
    navigation).
 5. **Server (step 2, started):** the static terrain is now stored once
-   per world (see [World snapshots](#persistence)); at 26k agents the daily
-   save is still about 30 MB, nearly all organisms (genomes with origin
-   tags, trait caches, paths), so a leaner organism encoding is next for
-   save size, and the world-thread capture (about 32 ms) is now the
-   organisms' clone; per-world tables once there are
+   per world and organisms are encoded leanly (see
+   [World snapshots](#persistence)): at 26k agents the daily save is about
+   18 MB (genomes about 7 MB, the map's changing tiles about 6 MB) and the
+   world-thread capture about 10–17 ms; next for save size, perhaps the
+   changing tiles as a delta against the previous save; per-world tables
+   once there are
    several shards; smaller states (compression, delta states or shorter
    `look`s: a steering player gets ~115 KB/s, see
    [Load and soak test](#load-and-soak-test)); seasonal leaderboard

@@ -1,5 +1,7 @@
 //! A single organism: genome, derived traits, needs and life-cycle state.
 
+use std::sync::Arc;
+
 use crate::genome::{Gene, Genome, Phenotype, PlayerId};
 use crate::math::Vec2;
 use crate::mating::Display;
@@ -113,7 +115,10 @@ impl Default for Needs {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Pregnancy {
-    pub father: Box<Genome>,
+    /// The father's genome, shared with him (genomes never change). A
+    /// snapshot writes it as his index while he is in the world.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::father"))]
+    pub father: Arc<Genome>,
     pub father_id: OrgId,
     /// The father's lineage (offspring take the mother's).
     pub father_lineage: u32,
@@ -179,8 +184,15 @@ pub struct Organism {
     /// from (through the mother).
     pub lineage: u32,
     pub sex: Sex,
-    pub genome: Genome,
+    /// Immutable once born, so shared: a clone of the organism (the
+    /// server's save capture) or a pregnancy by it doesn't copy it.
+    pub genome: Arc<Genome>,
+    /// Cache: `genome.phenotype()`. Not in snapshots; recomputed on restore
+    /// ([`Organism::refresh_derived`]).
+    #[cfg_attr(feature = "serde", serde(skip, default = "unset_pheno"))]
     pub pheno: Phenotype,
+    /// Cache: `derive(&pheno)`. Not in snapshots, like `pheno`.
+    #[cfg_attr(feature = "serde", serde(skip, default = "unset_traits"))]
     pub traits: Traits,
     pub pos: Vec2,
     pub age_ticks: u32,
@@ -225,7 +237,9 @@ pub struct Organism {
     pub strike_ready_tick: u64,
     pub possessed_by: Option<PlayerId>,
     pub order: Option<Vec2>,
-    /// Load loci homozygous for a harmful recessive (cached at birth).
+    /// Load loci homozygous for a harmful recessive (cached at birth; not
+    /// in snapshots, like `pheno`).
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub recessive_load: u32,
     pub infection: Infection,
     /// Route to `target` around terrain the body can't cross, if the direct
@@ -247,8 +261,19 @@ pub struct Organism {
     pub coat: Option<f32>,
 }
 
+#[cfg(feature = "serde")]
+fn unset_pheno() -> Phenotype {
+    Phenotype([0.0; crate::genome::Gene::COUNT])
+}
+
+#[cfg(feature = "serde")]
+fn unset_traits() -> Traits {
+    derive(&unset_pheno())
+}
+
 impl Organism {
-    pub fn new(id: OrgId, owner: PlayerId, genome: Genome, sex: Sex, pos: Vec2) -> Self {
+    pub fn new(id: OrgId, owner: PlayerId, genome: impl Into<Arc<Genome>>, sex: Sex, pos: Vec2) -> Self {
+        let genome = genome.into();
         let pheno = genome.phenotype();
         let traits = derive(&pheno);
         let recessive_load = genome.homozygous_load();
@@ -299,6 +324,15 @@ impl Organism {
             cache_pos: None,
             coat: None,
         }
+    }
+
+    /// Recompute the caches derived from the genome (`pheno`, `traits`,
+    /// `recessive_load`) exactly as [`Organism::new`] computes them: a
+    /// snapshot leaves them out and a restore calls this.
+    pub fn refresh_derived(&mut self) {
+        self.pheno = self.genome.phenotype();
+        self.traits = derive(&self.pheno);
+        self.recessive_load = self.genome.homozygous_load();
     }
 
     pub fn age_days(&self, ticks_per_day: u32) -> f32 {
