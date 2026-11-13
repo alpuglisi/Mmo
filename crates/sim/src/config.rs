@@ -72,25 +72,27 @@ pub struct Balance {
 }
 
 impl Default for Balance {
+    /// Tuned by `evo-sim sweep` (2 rounds × 16 trials × 3 seeds, 96×96 map,
+    /// 120 days), rounded. Re-run the sweep after changing rules.
     fn default() -> Self {
         Self {
-            hunger_rate: 60.0,
-            thirst_rate: 50.0,
-            starvation_damage: 25.0,
-            veg_regrowth: 0.25,
-            base_speed: 0.6,
-            sprint: 1.8,
-            attack_reach: 1.3,
-            stealth_effect: 0.6,
-            perception_range: 6.0,
-            attack_power: 1.0,
-            carnivore_hunger_discount: 0.3,
-            pregnancy_cost: 0.8,
-            meat_per_kg: 6.0,
-            flee_weight: 1.5,
+            hunger_rate: 57.0,
+            thirst_rate: 36.5,
+            starvation_damage: 33.5,
+            veg_regrowth: 0.35,
+            base_speed: 0.82,
+            sprint: 2.45,
+            attack_reach: 1.2,
+            stealth_effect: 0.4,
+            perception_range: 4.6,
+            attack_power: 0.75,
+            carnivore_hunger_discount: 0.44,
+            pregnancy_cost: 0.74,
+            meat_per_kg: 5.75,
+            flee_weight: 1.33,
             ambush: 0.4,
             crowding: 0.03,
-            toxin_damage: 40.0,
+            toxin_damage: 48.0,
         }
     }
 }
