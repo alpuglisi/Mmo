@@ -706,7 +706,8 @@ step waits on explicit state with generous timeouts. Screenshots go to `SCREENSH
 is a screenshot helper (not a test): a 16-day-year world played into winter.
 `e2e/mobile.mjs` (run by `npm run e2e` after the smoke test; alone with
 `npm run e2e:mobile`) emulates an iPhone 13 and a Pixel 7 in Chromium
-(viewport, touch, mobile UA), each against a fresh server: the login form
+(viewport, touch, mobile UA), each against a fresh `--no-wild` server (so its
+lineage outlives the test): the login form
 fits; the map spans the width with the tab bar at the bottom and the sheet
 closed, no sideways scroll; a tab tap opens the sheet and a second closes
 it; a touch tap selects an own organism and shows the floating button,
