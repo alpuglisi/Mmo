@@ -17,6 +17,7 @@ use super::{
     AccountRecord, AlertPrefsRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord, Store, StoreError,
     StoreResult, TradeRecord, KEEP_SNAPSHOTS,
 };
+use crate::league::{Category, PlayerPlacement, PlayerSeason, SeasonHead, SeasonRecord};
 use crate::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind};
 use evo_sim::PlayerId;
 
@@ -39,6 +40,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (2, "economy", include_str!("../../migrations/0002_economy.sql")),
     (3, "alert_prefs", include_str!("../../migrations/0003_alert_prefs.sql")),
     (4, "terrain", include_str!("../../migrations/0004_terrain.sql")),
+    (5, "seasons", include_str!("../../migrations/0005_seasons.sql")),
 ];
 
 #[derive(Debug)]
@@ -451,5 +453,139 @@ impl Store for PgStore {
             })
         })
         .transpose()
+    }
+
+    async fn put_season(&self, record: &SeasonRecord) -> StoreResult<()> {
+        let h = &record.head;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO seasons (world_id, season, first_day, last_day, ended_unix, head, standings) \
+             VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb) \
+             ON CONFLICT (world_id, season) DO UPDATE SET first_day = EXCLUDED.first_day, \
+             last_day = EXCLUDED.last_day, ended_unix = EXCLUDED.ended_unix, head = EXCLUDED.head, \
+             standings = EXCLUDED.standings",
+        )
+        .bind(&h.world_id)
+        .bind(i64::from(h.season))
+        .bind(int(h.first_day))
+        .bind(int(h.last_day))
+        .bind(int(h.ended_unix))
+        .bind(serde_json::to_string(h)?)
+        .bind(serde_json::to_string(&record.standings)?)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM season_placements WHERE world_id = $1 AND season = $2")
+            .bind(&h.world_id)
+            .bind(i64::from(h.season))
+            .execute(&mut *tx)
+            .await?;
+        let (mut players, mut categories, mut ranks, mut values, mut ranked) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for st in &record.standings {
+            for r in &st.rows {
+                players.push(i64::from(r.player));
+                categories.push(st.category.name().to_string());
+                ranks.push(i64::from(r.rank));
+                values.push(r.value);
+                ranked.push(st.rows.len() as i64);
+            }
+        }
+        sqlx::query(
+            "INSERT INTO season_placements (world_id, season, player, category, rank, value, ranked) \
+             SELECT $1, $2, * FROM UNNEST($3::bigint[], $4::text[], $5::bigint[], $6::float8[], $7::bigint[])",
+        )
+        .bind(&h.world_id)
+        .bind(i64::from(h.season))
+        .bind(players)
+        .bind(categories)
+        .bind(ranks)
+        .bind(values)
+        .bind(ranked)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn list_seasons(&self, offset: usize, limit: usize) -> StoreResult<(Vec<SeasonHead>, usize)> {
+        let total: i64 = sqlx::query_scalar("SELECT count(*) FROM seasons").fetch_one(&self.pool).await?;
+        let rows = sqlx::query("SELECT head::text AS head FROM seasons ORDER BY seq DESC OFFSET $1 LIMIT $2")
+            .bind(int(offset as u64))
+            .bind(int(limit as u64))
+            .fetch_all(&self.pool)
+            .await?;
+        let heads = rows
+            .iter()
+            .map(|r| Ok(serde_json::from_str(r.try_get::<&str, _>("head")?)?))
+            .collect::<StoreResult<Vec<SeasonHead>>>()?;
+        Ok((heads, total as usize))
+    }
+
+    async fn load_season(&self, world_id: &str, season: u32) -> StoreResult<Option<SeasonRecord>> {
+        let row = sqlx::query(
+            "SELECT head::text AS head, standings::text AS standings FROM seasons WHERE world_id = $1 AND season = $2",
+        )
+        .bind(world_id)
+        .bind(i64::from(season))
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|r| {
+            Ok(SeasonRecord {
+                head: serde_json::from_str(r.try_get::<&str, _>("head")?)?,
+                standings: serde_json::from_str(r.try_get::<&str, _>("standings")?)?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn player_seasons(&self, player: PlayerId, limit: usize) -> StoreResult<Vec<PlayerSeason>> {
+        let rows = sqlx::query(
+            "WITH mine AS ( \
+                 SELECT s.seq FROM seasons s JOIN season_placements p USING (world_id, season) \
+                 WHERE p.player = $1 GROUP BY s.seq ORDER BY s.seq DESC LIMIT $2) \
+             SELECT s.seq, s.world_id, s.season, s.first_day, s.last_day, s.ended_unix, \
+                    p.category, p.rank, p.value, p.ranked \
+             FROM seasons s JOIN season_placements p USING (world_id, season) \
+             WHERE p.player = $1 AND s.seq IN (SELECT seq FROM mine) ORDER BY s.seq DESC",
+        )
+        .bind(i64::from(player))
+        .bind(int(limit as u64))
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out: Vec<(i64, PlayerSeason)> = Vec::new();
+        for r in &rows {
+            let seq: i64 = r.try_get("seq")?;
+            if out.last().is_none_or(|(s, _)| *s != seq) {
+                out.push((
+                    seq,
+                    PlayerSeason {
+                        world_id: r.try_get("world_id")?,
+                        season: get_u64(r, "season")? as u32,
+                        first_day: get_u64(r, "first_day")?,
+                        last_day: get_u64(r, "last_day")?,
+                        ended_unix: get_u64(r, "ended_unix")?,
+                        placements: Vec::new(),
+                    },
+                ));
+            }
+            // A category this build doesn't know is left out.
+            let Some(category) = Category::parse(r.try_get::<&str, _>("category")?) else { continue };
+            if let Some((_, s)) = out.last_mut() {
+                s.placements.push(PlayerPlacement {
+                    category,
+                    rank: get_u64(r, "rank")? as u32,
+                    value: r.try_get("value")?,
+                    of: get_u64(r, "ranked")? as usize,
+                });
+            }
+        }
+        Ok(out
+            .into_iter()
+            .map(|(_, mut s)| {
+                s.placements.sort_by_key(|p| p.category);
+                s
+            })
+            .filter(|s| !s.placements.is_empty())
+            .collect())
     }
 }

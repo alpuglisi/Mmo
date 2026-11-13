@@ -268,3 +268,15 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .server-box { margin-top: 0.8em; color: var(--muted); font-size: 0.9em; }
 .server-box summary { cursor: pointer; }
 .server-box label { margin-top: 0.4em; }
+
+/* ------------------------------------------------ ranked seasons */
+.standings { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; }
+.standing h4 { margin: 6px 0 2px; font-size: 0.85em; font-weight: 500; color: var(--muted); }
+.standing .board td.rank { width: 2em; color: var(--muted); }
+.standing .board td.num { text-align: right; white-space: nowrap; }
+.standing .board td { overflow-wrap: anywhere; }
+#season-more { margin-top: 6px; }
+/* Seven tabs share a phone's width: smaller labels, no side padding to spare. */
+@media (max-width: 760px) {
+  .tab { font-size: 11px; padding-left: 1px; padding-right: 1px; min-width: 0; letter-spacing: -0.01em; }
+}

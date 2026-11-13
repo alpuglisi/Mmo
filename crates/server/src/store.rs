@@ -4,7 +4,7 @@
 //! PostgreSQL (sqlx): `PgStore` (cargo feature `postgres`, on by default;
 //! `--database-url`) keeps them in one table per record type (`accounts`,
 //! `designs`, `daily_history`, `trades`, `snapshots`, `terrains`,
-//! `balances`, `ledger`, `alert_prefs`). [`FileStore`] (the default) keeps the same records as JSON
+//! `balances`, `ledger`, `alert_prefs`, `seasons`, `season_placements`). [`FileStore`] (the default) keeps the same records as JSON
 //! files in a data directory, and [`MemoryStore`] serves tests.
 //!
 //! What is persisted: accounts (name, player id, argon2 hash), founder
@@ -12,7 +12,8 @@
 //! simulated day (legacy shares and lineage counts), directed-mating
 //! agreements with their price, listing and escrow settlement, renown
 //! balances and the ledger (`crate::economy`), players' alert preferences
-//! (which alert kinds they see and get toasts for), and saved games (a world snapshot with the
+//! (which alert kinds they see and get toasts for), finished ranked seasons
+//! (`crate::league`: final standings per category, winners, summary), and saved games (a world snapshot with the
 //! game state around it, `crate::snapshot`, which includes players' alerts;
 //! the newest [`KEEP_SNAPSHOTS`] are kept) and, once per world, its static
 //! terrain, which saved games name by world id and content hash instead of
@@ -33,6 +34,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::design::DesignSpec;
+use crate::league::{self, PlayerSeason, SeasonHead, SeasonRecord};
 use crate::protocol::{AlertPrefs, LedgerEntry};
 
 #[cfg(feature = "postgres")]
@@ -218,6 +220,18 @@ pub trait Store: Send + Sync {
     async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()>;
     /// A player's alert preferences, if they ever saved any.
     async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>>;
+    /// Record a finished ranked season; replaces an earlier record of the
+    /// same world and season (a rollover replayed after a restart), which
+    /// keeps its place in order.
+    async fn put_season(&self, record: &SeasonRecord) -> StoreResult<()>;
+    /// Finished seasons of every world, newest first (in the order first
+    /// written): `limit` from `offset`, and how many are stored.
+    async fn list_seasons(&self, offset: usize, limit: usize) -> StoreResult<(Vec<SeasonHead>, usize)>;
+    /// One finished season with its standings.
+    async fn load_season(&self, world_id: &str, season: u32) -> StoreResult<Option<SeasonRecord>>;
+    /// The latest `limit` finished seasons a player was ranked in, newest
+    /// first.
+    async fn player_seasons(&self, player: PlayerId, limit: usize) -> StoreResult<Vec<PlayerSeason>>;
 }
 
 fn same_entry(a: &LedgerRecord, b: &LedgerRecord) -> bool {
@@ -250,6 +264,8 @@ struct MemInner {
     balances: BTreeMap<PlayerId, BalanceRecord>,
     ledger: Vec<LedgerRecord>,
     alert_prefs: BTreeMap<PlayerId, AlertPrefsRecord>,
+    /// Write order.
+    seasons: Vec<SeasonRecord>,
 }
 
 impl MemoryStore {
@@ -378,6 +394,23 @@ impl Store for MemoryStore {
     async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
         Ok(self.inner.lock().await.alert_prefs.get(&player).cloned())
     }
+
+    async fn put_season(&self, record: &SeasonRecord) -> StoreResult<()> {
+        league::upsert(&mut self.inner.lock().await.seasons, record);
+        Ok(())
+    }
+
+    async fn list_seasons(&self, offset: usize, limit: usize) -> StoreResult<(Vec<SeasonHead>, usize)> {
+        Ok(league::list_page(&self.inner.lock().await.seasons, offset, limit))
+    }
+
+    async fn load_season(&self, world_id: &str, season: u32) -> StoreResult<Option<SeasonRecord>> {
+        Ok(self.inner.lock().await.seasons.iter().find(|r| r.key() == (world_id, season)).cloned())
+    }
+
+    async fn player_seasons(&self, player: PlayerId, limit: usize) -> StoreResult<Vec<PlayerSeason>> {
+        Ok(league::player_history(&self.inner.lock().await.seasons, player, limit))
+    }
 }
 
 /// Records of the same world and day (records without a world id are never
@@ -391,9 +424,9 @@ fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
 /// - `accounts.json`, `designs.json`, `balances.json`, `alert_prefs.json`:
 ///   whole tables, rewritten atomically
 ///   (write to a temp file, then rename) on every change;
-/// - `history.jsonl`, `trades.jsonl`: append-only, one record per line (a
-///   replayed day is appended again and replaces the earlier line when
-///   read);
+/// - `history.jsonl`, `trades.jsonl`, `ledger.jsonl`, `seasons.jsonl`:
+///   append-only, one record per line (a replayed day, ledger entry or
+///   season is appended again and replaces the earlier line when read);
 /// - `snapshots/world-<tick>.snap`: saved games, written to a temp file,
 ///   synced and renamed into place, the newest [`KEEP_SNAPSHOTS`] kept;
 /// - `terrain/<world id>-<hash>.terrain`: each world's static terrain,
@@ -668,5 +701,43 @@ impl Store for FileStore {
 
     async fn load_alert_prefs(&self, player: PlayerId) -> StoreResult<Option<AlertPrefsRecord>> {
         Ok(self.tables.lock().await.alert_prefs.iter().find(|r| r.player == player).cloned())
+    }
+
+    async fn put_season(&self, record: &SeasonRecord) -> StoreResult<()> {
+        self.append_line(SEASONS_FILE, record).await
+    }
+
+    async fn list_seasons(&self, offset: usize, limit: usize) -> StoreResult<(Vec<SeasonHead>, usize)> {
+        Ok(league::list_page(&self.seasons().await?, offset, limit))
+    }
+
+    async fn load_season(&self, world_id: &str, season: u32) -> StoreResult<Option<SeasonRecord>> {
+        Ok(self.seasons().await?.into_iter().find(|r| r.key() == (world_id, season)))
+    }
+
+    async fn player_seasons(&self, player: PlayerId, limit: usize) -> StoreResult<Vec<PlayerSeason>> {
+        Ok(league::player_history(&self.seasons().await?, player, limit))
+    }
+}
+
+const SEASONS_FILE: &str = "seasons.jsonl";
+
+impl FileStore {
+    /// Every stored season in write order, a rewritten one in its first
+    /// place.
+    async fn seasons(&self) -> StoreResult<Vec<SeasonRecord>> {
+        let mut records: Vec<SeasonRecord> = Vec::new();
+        let mut index: std::collections::HashMap<(String, u32), usize> = std::collections::HashMap::new();
+        for r in self.read_lines::<SeasonRecord>(SEASONS_FILE).await? {
+            let key = (r.head.world_id.clone(), r.head.season);
+            match index.get(&key) {
+                Some(&i) => records[i] = r,
+                None => {
+                    index.insert(key, records.len());
+                    records.push(r);
+                }
+            }
+        }
+        Ok(records)
     }
 }

@@ -4,7 +4,8 @@
 // mating with a second player of the same body plan (preview its
 // compatibility, request, accept, escort until the two meet, and check it
 // completes and conceives), possess an organism and walk it, open the
-// genetics dashboard, the seasonal leaderboard and the World tab.
+// genetics dashboard, the seasonal leaderboard, the World tab and the
+// Seasons tab (ranked seasons; three days long here).
 //
 // The world keeps running throughout, so every step waits on explicit state
 // conditions (generous timeouts, no fixed sleeps for correctness) and retries
@@ -72,7 +73,7 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
   // 120-day seasons (two minutes in fast mode): a season change expires open
   // mating offers, which would race the mating step on a slow machine.
-  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', '7', '--days-per-year', '480', '--bind', `127.0.0.1:${port}`, '--static', dist], {
+  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', '7', '--days-per-year', '480', '--season-days', '3', '--bind', `127.0.0.1:${port}`, '--static', dist], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverLog = '';
@@ -850,6 +851,29 @@ async function main() {
     }), 15000);
     step(`world tab: ${world.species} species, ${world.players} player tallies; ${world.era.split('.')[0]}`);
     await page.screenshot({ path: path.join(shots, 'world-chronicle.png') });
+
+    // Seasons tab (three-day ranked seasons here): the season under way, the
+    // hall of fame with finished seasons' winners, your own record, and a
+    // finished season's full standings.
+    await page.click('#tab-seasons');
+    const ranked = await waitFor('ranked seasons', () => page.evaluate(() => {
+      const clock = document.querySelector('#season-clock')?.textContent ?? '';
+      const finished = document.querySelectorAll('#season-history details').length;
+      const record = document.querySelector('#season-record')?.textContent ?? '';
+      return clock && finished > 0 && record.includes('ranked') ? { clock, finished, record } : null;
+    }), 20000);
+    const summary = await page.evaluate(() => document.querySelector('#season-history details p')?.textContent ?? '');
+    if (!/^Season \d+ \(days \d+–\d+\): /.test(summary)) throw new Error(`season summary: ${summary}`);
+    await page.click('#season-history details summary');
+    await page.waitForSelector('#season-history details[open] .standings table.board', { timeout: 10000 });
+    const api = await page.evaluate(async () => {
+      const me = window.evo.model.player;
+      const [list, mine] = await Promise.all([(await fetch('/api/seasons')).json(), (await fetch(`/api/seasons/player/${me}`)).json()]);
+      return { total: list.total, mine: mine.seasons.length };
+    });
+    if (api.total < 1 || api.mine < 1) throw new Error(`seasons API: ${JSON.stringify(api)}`);
+    step(`seasons tab: ${ranked.clock.split('·')[0].trim()} under way, ${ranked.finished} finished shown (${api.total} stored, ${api.mine} with you ranked)`);
+    await page.screenshot({ path: path.join(shots, 'seasons.png') });
 
     if (pageErrors.length) throw new Error(`page errors: ${pageErrors.join('; ')}`);
     // Every delta state applied (none needed a resync).

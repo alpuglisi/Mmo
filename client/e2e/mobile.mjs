@@ -196,6 +196,40 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   await waitFor('sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')), 5000);
   step(`${tag}: tab tap opens the bottom sheet, a second tap closes it`);
 
+  // Seasons tab: the season under way, your record and the hall of fame fit
+  // the phone; a finished season opens onto its standings.
+  await page.tap('#tab-seasons');
+  const fits = () => page.evaluate(() => {
+    const p = document.querySelector('#panel-seasons');
+    if (getComputedStyle(p).display === 'none' || !document.querySelector('#season-clock')) return null;
+    const tabs = [...document.querySelectorAll('#tabbar .tab')].map((t) => t.getBoundingClientRect().right);
+    return {
+      finished: document.querySelectorAll('#season-history details').length,
+      panelScrollW: p.scrollWidth, panelW: p.clientWidth, docW: document.documentElement.scrollWidth, tabsRight: Math.max(...tabs),
+    };
+  });
+  const seasons = await waitFor('a finished season in the seasons tab', async () => {
+    const f = await fits();
+    return f && f.finished > 0 ? f : null;
+  }, 20000);
+  const overflow = (f) => f.docW > vw.width + 1 || f.panelScrollW > f.panelW + 1 || f.tabsRight > vw.width + 1;
+  if (overflow(seasons)) throw new Error(`${tag}: seasons tab overflows ${JSON.stringify(seasons)} (viewport ${vw.width})`);
+  await page.tap('#season-history details summary');
+  await waitFor('season standings', () => page.evaluate(() => {
+    // The list re-renders as new seasons end: open the newest again if a
+    // re-render raced the tap.
+    const d = document.querySelector('#season-history details');
+    if (d && !document.querySelector('#season-history details[open]')) d.open = true;
+    return document.querySelector('#season-history details[open] .standings table') !== null;
+  }), 10000);
+  const opened = await fits();
+  if (overflow(opened)) throw new Error(`${tag}: season standings overflow ${JSON.stringify(opened)} (viewport ${vw.width})`);
+  await page.waitForTimeout(300);
+  await shot(page, `${tag}-sheet-seasons.png`);
+  await page.tap('#tab-seasons');
+  await waitFor('sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')), 5000);
+  step(`${tag}: seasons tab fits (${seasons.finished} finished seasons, standings open without sideways scroll)`);
+
   // Tap to select an own organism: the floating Possess button appears.
   const canvas = await box(page, '#world-canvas');
   let sel = null;
@@ -438,8 +472,9 @@ async function main() {
   try {
     // The phone sections tap and hold their own organisms for minutes: no
     // wild predators, so the lineage outlives the test on a slow machine.
-    await withServer(9, (base) => phoneChecks(browser, base, 'iPhone 13', 'iphone13', errors), ['--no-wild']);
-    await withServer(10, (base) => phoneChecks(browser, base, 'Pixel 7', 'pixel7', errors), ['--no-wild']);
+    // Two-day ranked seasons, so the hall of fame fills within seconds.
+    await withServer(9, (base) => phoneChecks(browser, base, 'iPhone 13', 'iphone13', errors), ['--no-wild', '--season-days', '2']);
+    await withServer(10, (base) => phoneChecks(browser, base, 'Pixel 7', 'pixel7', errors), ['--no-wild', '--season-days', '2']);
     await withServer(11, (base) => desktopChecks(browser, base, errors));
     if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);
     console.log(`mobile test passed; screenshots in ${shots}`);

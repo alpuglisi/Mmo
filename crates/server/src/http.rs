@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, Request as HttpRequest, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path as UrlPath, Query, Request as HttpRequest, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -62,6 +62,9 @@ pub struct AppState {
     pub net: Arc<NetStats>,
     /// Open WebSocket connections per player.
     pub ws_conns: Arc<Mutex<HashMap<PlayerId, usize>>>,
+    /// The running world's id: `/api/seasons/:n` means its seasons unless
+    /// the request names another world.
+    pub world_id: Arc<str>,
 }
 
 /// One of a player's WebSocket connections, counted while it lives.
@@ -116,6 +119,10 @@ fn api_router(state: AppState) -> Router {
         .route("/api/eras", get(eras))
         .route("/api/catastrophes", get(catastrophes))
         .route("/api/achievements", get(achievements))
+        .route("/api/seasons", get(seasons_list))
+        .route("/api/seasons/current", get(season_current))
+        .route("/api/seasons/player/:player", get(season_player))
+        .route("/api/seasons/:season", get(season_one))
         .route("/api/terrain", get(terrain))
         .route("/api/terrain/dynamic", get(terrain_dynamic))
         .route("/api/map.png", get(map_png))
@@ -695,4 +702,76 @@ async fn catastrophes(State(st): State<AppState>) -> Result<Json<CatastropheList
 /// `GET /api/achievements`: per-player tallies and the latest achievements.
 async fn achievements(State(st): State<AppState>) -> Result<Json<AchievementList>, ApiError> {
     Ok(Json(chronicle(&st).await?.achievements))
+}
+
+#[derive(Deserialize)]
+struct SeasonPaging {
+    offset: Option<usize>,
+    limit: Option<usize>,
+    /// Always include this player's row in each category.
+    player: Option<PlayerId>,
+    /// The world whose season is meant (default: the running one).
+    world: Option<String>,
+}
+
+/// `GET /api/seasons?offset=0&limit=20`: finished ranked seasons of every
+/// world, newest first (heads: winners and summary, no standings).
+async fn seasons_list(
+    State(app): State<AppState>,
+    Query(q): Query<SeasonPaging>,
+) -> Result<Json<crate::league::SeasonList>, ApiError> {
+    let offset = q.offset.unwrap_or(0);
+    let limit = q.limit.unwrap_or(20).clamp(1, 100);
+    let (seasons, total) = app.store.list_seasons(offset, limit).await.map_err(ApiError::internal)?;
+    Ok(Json(crate::league::SeasonList { total, offset, seasons }))
+}
+
+/// `GET /api/seasons/current?offset=0&limit=10&player=N`: the ranked season
+/// under way, standings so far.
+async fn season_current(
+    State(app): State<AppState>,
+    Query(q): Query<SeasonPaging>,
+) -> Result<Json<crate::league::CurrentSeason>, ApiError> {
+    let (offset, limit) = crate::league::paging(q.offset, q.limit);
+    let (reply, rx) = oneshot::channel();
+    send_request(&app.world, Request::Season { offset, limit, player: q.player, reply })?;
+    Ok(Json(*rx.await.map_err(ApiError::internal)?))
+}
+
+/// `GET /api/seasons/:n?world=ID&offset=0&limit=10&player=N`: one finished
+/// season with every category's standings, a page at a time.
+async fn season_one(
+    State(app): State<AppState>,
+    UrlPath(season): UrlPath<String>,
+    Query(q): Query<SeasonPaging>,
+) -> Result<Json<crate::league::SeasonPage>, ApiError> {
+    let season: u32 = season
+        .parse()
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "bad_season", "a season is a positive number"))?;
+    let world = q.world.unwrap_or_else(|| app.world_id.to_string());
+    let (offset, limit) = crate::league::paging(q.offset, q.limit);
+    let record = app.store.load_season(&world, season).await.map_err(ApiError::internal)?.ok_or_else(|| {
+        ApiError::new(StatusCode::NOT_FOUND, "no_season", format!("season {season} of world {world} has not ended"))
+    })?;
+    let standings = crate::league::page(&record.standings, offset, limit, q.player);
+    Ok(Json(crate::league::SeasonPage { head: record.head, offset, limit, standings }))
+}
+
+#[derive(Deserialize)]
+struct PlayerSeasonsQuery {
+    limit: Option<usize>,
+}
+
+/// `GET /api/seasons/player/:player?limit=50`: the finished seasons a
+/// player was ranked in, newest first, with every placement.
+async fn season_player(
+    State(app): State<AppState>,
+    UrlPath(player): UrlPath<String>,
+    Query(q): Query<PlayerSeasonsQuery>,
+) -> Result<Json<crate::league::PlayerHistory>, ApiError> {
+    let player: PlayerId =
+        player.parse().map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "bad_player", "a player is a number"))?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let seasons = app.store.player_seasons(player, limit).await.map_err(ApiError::internal)?;
+    Ok(Json(crate::league::PlayerHistory { player, seasons }))
 }

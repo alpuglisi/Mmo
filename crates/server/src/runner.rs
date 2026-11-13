@@ -83,6 +83,13 @@ pub enum Request {
     Chronicle {
         reply: oneshot::Sender<Box<ChronicleView>>,
     },
+    /// The ranked season under way (`Game::current_season`).
+    Season {
+        offset: usize,
+        limit: usize,
+        player: Option<PlayerId>,
+        reply: oneshot::Sender<Box<crate::league::CurrentSeason>>,
+    },
     /// Save the game and stop the world thread (graceful shutdown). Queued
     /// world changes are dropped. The reply comes once the saver has
     /// encoded the last save and sent it on to the store task.
@@ -370,6 +377,9 @@ impl Runner {
             }
             Request::Chronicle { reply } => {
                 let _ = reply.send(Box::new(self.game.chronicle()));
+            }
+            Request::Season { offset, limit, player, reply } => {
+                let _ = reply.send(Box::new(self.game.current_season(offset, limit, player)));
             }
             Request::Step { ticks, reply } => {
                 self.apply_queued();
