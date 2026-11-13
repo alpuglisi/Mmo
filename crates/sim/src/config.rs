@@ -36,6 +36,108 @@ pub struct WorldConfig {
     /// Upper bound on perception radius in tiles (also bounds neighbor queries).
     pub max_perception: f32,
     pub balance: Balance,
+    /// Level of detail: full agents near focus points, statistical cohorts
+    /// elsewhere (`world::lod`). Off by default.
+    pub lod: LodConfig,
+}
+
+/// Level-of-detail settings (`world::lod`, "Scale and performance" in the
+/// design doc). Regions are the 16-tile environment chunks. With `enabled`
+/// false (the default) nothing here is read and a world runs exactly as
+/// without LOD.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LodConfig {
+    pub enabled: bool,
+    /// A region is active (full agents) when any part of it is within this
+    /// many tiles of a focus point (`World::set_focus`) or a possessed
+    /// organism.
+    pub active_radius: f32,
+    /// Extra distance beyond `active_radius` before an active region
+    /// collapses into cohorts, so a focus moving back and forth doesn't
+    /// thrash regions.
+    pub hysteresis: f32,
+    /// Genomes kept per cohort. Up to this many members the pool holds
+    /// every member's genome exactly; above it, a uniform sample, and
+    /// expanded organisms get recombinants of two sampled genomes.
+    pub pool_size: f32,
+    /// Share of a region's reachable plant food its grazing cohorts can eat
+    /// in a day (they only graze where they are).
+    pub graze_fraction: f32,
+    /// Daily background death hazard of juveniles (orphans, exposure,
+    /// accidents) in cohorts.
+    pub juvenile_mortality: f32,
+    /// Prey per tile at which a predator cohort catches half of what it
+    /// needs (Holling type II functional response).
+    pub prey_half_density: f32,
+    /// Plant-digesting efficiency (1 - carnivory) from which a cohort can
+    /// live on plants alone; below it plants cover at most
+    /// `efficiency / plant_diet` of its need (agents that digest plants
+    /// poorly only graze in passing, between kills).
+    pub plant_diet: f32,
+    /// Share of a kill's carcass (`Balance::meat_per_kg` per kg) the killer
+    /// eats.
+    pub carcass_use: f32,
+    /// Daily chance per member of moving to a neighboring region, at
+    /// wanderlust 0.75; tripled by hunger, quadrupled without water.
+    pub migration: f32,
+    /// Days an adult female spends finding a mate per breeding cycle, divided
+    /// by the season's breeding factor (long in winter).
+    pub mate_search_days: f32,
+    /// How much denser than the region average organisms live where they
+    /// gather (agents clump in groups), for density-dependent breeding and
+    /// larval competition.
+    pub clump: f32,
+}
+
+impl Default for LodConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active_radius: 40.0,
+            hysteresis: 16.0,
+            pool_size: 64.0,
+            graze_fraction: 0.5,
+            juvenile_mortality: 0.01,
+            prey_half_density: 0.1,
+            plant_diet: 0.1,
+            carcass_use: 1.0,
+            migration: 0.01,
+            mate_search_days: 3.0,
+            clump: 1.0,
+        }
+    }
+}
+
+impl LodConfig {
+    pub const FIELD_COUNT: usize = 11;
+
+    /// The numeric fields by name (everything but `enabled`).
+    pub fn fields_mut(&mut self) -> [(&'static str, &mut f32); Self::FIELD_COUNT] {
+        [
+            ("active_radius", &mut self.active_radius),
+            ("hysteresis", &mut self.hysteresis),
+            ("pool_size", &mut self.pool_size),
+            ("graze_fraction", &mut self.graze_fraction),
+            ("juvenile_mortality", &mut self.juvenile_mortality),
+            ("prey_half_density", &mut self.prey_half_density),
+            ("plant_diet", &mut self.plant_diet),
+            ("carcass_use", &mut self.carcass_use),
+            ("migration", &mut self.migration),
+            ("mate_search_days", &mut self.mate_search_days),
+            ("clump", &mut self.clump),
+        ]
+    }
+
+    /// Set a field by name. Returns false if there is no such field.
+    pub fn set(&mut self, name: &str, value: f32) -> bool {
+        match self.fields_mut().into_iter().find(|(n, _)| *n == name) {
+            Some((_, v)) => {
+                *v = value;
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// Tunable rates that shape the ecosystem. Kept together so the sweep tool
@@ -385,6 +487,7 @@ impl Default for WorldConfig {
             mating_slots_per_season: 6,
             max_perception: 8.0,
             balance: Balance::default(),
+            lod: LodConfig::default(),
         }
     }
 }

@@ -9,7 +9,8 @@ use std::time::Instant;
 
 use evo_sim::group::GroupTrait;
 use evo_sim::organism::{Action, DeathCause, Dormancy, Infection};
-use evo_sim::{presets, render, Balance, Gene, PlayerId, World, WorldConfig, WILD};
+use evo_sim::math::Vec2;
+use evo_sim::{presets, render, Balance, Gene, LodConfig, PlayerId, World, WorldConfig, WILD};
 
 mod sweep;
 
@@ -17,8 +18,8 @@ const USAGE: &str = "\
 evo-sim — Evolution MMO simulation prototype
 
 USAGE:
-    evo-sim run    [--seed N] [--size N] [--days N] [--report N] [--snapshot PATH] [--threads N]
-    evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N]
+    evo-sim run    [--seed N] [--size N] [--days N] [--report N] [--snapshot PATH] [--threads N] [--lod] [--focus X,Y]
+    evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N] [--lod] [--focus X,Y]
     evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH]
     evo-sim designs
 
@@ -42,6 +43,11 @@ OPTIONS:
     --rounds N      Sweep: rounds, each recentered on the best with half the spread (default 2)
     --spread F      Sweep: max log-factor per parameter in round 1 (default 0.5, i.e. ×0.61–×1.65)
     --out PATH      Sweep: write every trial to a CSV file
+    --lod           Level of detail: full agents only near focus points, statistical
+                    cohorts elsewhere (run and bench)
+    --focus X,Y     A focus point in tiles (repeatable; implies --lod). Without any,
+                    --lod runs the whole world as cohorts
+    --lod-set NAME=V  Override a level-of-detail parameter (repeatable)
 
 Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_speed sprint
 attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
@@ -53,6 +59,9 @@ disease_fertility disease_kin path_nodes water_response snowmelt_swell rain_grow
 storm_exposure canopy_share dormancy_temp estivation_temp dormant_metabolism
 dormancy_mismatch brumation_mismatch fat_capacity den_concealment migration_range
 migration_risk torpor_metabolism cache_capacity
+
+Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
+juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump
 ";
 
 struct Args {
@@ -65,6 +74,8 @@ struct Args {
     scale: u32,
     threads: Option<usize>,
     balance: Balance,
+    lod: LodConfig,
+    focus: Vec<Vec2>,
     trials: usize,
     seeds: u64,
     rounds: u32,
@@ -85,6 +96,8 @@ fn parse_args() -> Result<Args, String> {
         scale: 4,
         threads: None,
         balance: Balance::default(),
+        lod: LodConfig::default(),
+        focus: Vec::new(),
         trials: 16,
         seeds: 3,
         rounds: 2,
@@ -116,6 +129,22 @@ fn parse_args() -> Result<Args, String> {
                 let x: f32 = x.parse().map_err(|_| format!("--set {name}: '{x}' is not a number"))?;
                 if !a.balance.set(name, x) {
                     return Err(format!("--set: unknown balance parameter '{name}'"));
+                }
+            }
+            "--lod" => a.lod.enabled = true,
+            "--focus" => {
+                let v = value()?;
+                let (x, y) = v.split_once(',').ok_or(format!("--focus expects X,Y, got '{v}'"))?;
+                let parse = |t: &str| t.trim().parse::<f32>().map_err(|_| format!("--focus: '{t}' is not a number"));
+                a.focus.push(Vec2::new(parse(x)?, parse(y)?));
+                a.lod.enabled = true;
+            }
+            "--lod-set" => {
+                let v = value()?;
+                let (name, x) = v.split_once('=').ok_or(format!("--lod-set expects NAME=VALUE, got '{v}'"))?;
+                let x: f32 = x.parse().map_err(|_| format!("--lod-set {name}: '{x}' is not a number"))?;
+                if !a.lod.set(name, x) {
+                    return Err(format!("--lod-set: unknown level-of-detail parameter '{name}'"));
                 }
             }
             "-h" | "--help" => a.command = "help".into(),
@@ -170,8 +199,19 @@ fn player_names() -> BTreeMap<PlayerId, String> {
 }
 
 fn build_world(args: &Args, scale: u32) -> World {
-    let config = WorldConfig { seed: args.seed, width: args.size, height: args.size, balance: args.balance, ..Default::default() };
-    presets::standard_world(config, scale)
+    let config = WorldConfig {
+        seed: args.seed,
+        width: args.size,
+        height: args.size,
+        balance: args.balance,
+        lod: args.lod,
+        ..Default::default()
+    };
+    let mut world = presets::standard_world(config, scale);
+    if args.lod.enabled {
+        world.set_focus(1, args.focus.clone());
+    }
+    world
 }
 
 fn run(args: &Args) {
@@ -188,6 +228,13 @@ fn run(args: &Args) {
         world.config.ticks_per_day,
         world.config.days_per_year
     );
+    if args.lod.enabled {
+        println!(
+            "Level of detail on: {} focus point(s), active radius {} tiles",
+            args.focus.len(),
+            args.lod.active_radius
+        );
+    }
     let mut org_ticks: u64 = 0;
     let started = Instant::now();
     let mut window = Instant::now();
@@ -211,7 +258,7 @@ fn run(args: &Args) {
             window = Instant::now();
             window_org_ticks = 0;
         }
-        if world.alive_count() == 0 {
+        if world.population() == 0 {
             println!("All life has ended on day {}.", world.day());
             break;
         }
@@ -236,11 +283,16 @@ fn run(args: &Args) {
 fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f64) {
     let c = &world.counters;
     println!(
-        "\n── Year {} day {} ({:?}) · {} alive · {} clutches · wind {:.2} · drought {:.0}% · flood {:.0}% · {:.2} µs/org-tick ──",
+        "\n── Year {} day {} ({:?}) · {} alive{} · {} clutches · wind {:.2} · drought {:.0}% · flood {:.0}% · {:.2} µs/org-tick ──",
         world.year() + 1,
         world.day_of_year() + 1,
         world.season(),
-        world.alive_count(),
+        world.population(),
+        if world.config.lod.enabled {
+            format!(" ({} agents, {} in cohorts)", world.alive_count(), world.abstract_count())
+        } else {
+            String::new()
+        },
         world.clutches.len(),
         world.weather.wind,
         world.map.drought * 100.0,
@@ -257,6 +309,17 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
             e.1 += 1;
         }
         e.2 = e.2.max(o.generation);
+    }
+    // Cohort members of abstract regions.
+    let abstract_counts = world.abstract_counts();
+    for (l, c) in abstract_counts.iter().enumerate() {
+        let e = adults.entry(world.lineages[l].owner).or_default();
+        e.0 += c.alive;
+        e.1 += c.adults;
+    }
+    for (_, c) in world.cohorts() {
+        let e = adults.entry(c.owner).or_default();
+        e.2 = e.2.max(c.pool.iter().map(|p| p.generation).max().unwrap_or(0));
     }
     for (owner, name) in names {
         let (alive, grown, gen) = adults.get(owner).copied().unwrap_or_default();
@@ -286,7 +349,8 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
         c.kills + c.failed_hunts
     );
     println!("  deaths: {}", deaths.join(" · "));
-    let counts = world.lineage_counts();
+    let agents = world.lineage_counts();
+    let counts = world.population_counts();
     // Per lineage: [acute, chronic, harmful alleles carried, homozygous].
     let mut genetic = vec![[0u32; 4]; world.lineages.len()];
     for o in world.organisms.iter().filter(|o| o.alive) {
@@ -318,7 +382,7 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
             c.infections.get(&l32).copied().unwrap_or(0),
             g[0],
             g[1],
-            g[2] as f32 / counts[l].alive.max(1) as f32,
+            g[2] as f32 / agents[l].alive.max(1) as f32,
             g[3]
         );
     }
@@ -333,6 +397,19 @@ fn report(world: &World, names: &BTreeMap<PlayerId, String>, us_per_org_tick: f6
         .collect();
     println!("  group traits active (regions): {}", groups.join(" · "));
     print_drift(world, names);
+    if world.config.lod.enabled {
+        let s = world.lod_stats();
+        let active = (0..world.map.chunks_x * world.map.chunks_y).filter(|&r| world.region_is_active(r)).count();
+        println!(
+            "  level of detail: {active}/{} regions active · {} collapses, {} expansions · {} absorbed, {} expanded, {} emigrated as agents",
+            world.map.chunks_x * world.map.chunks_y,
+            s.collapses,
+            s.expansions,
+            s.absorbed,
+            s.expanded,
+            s.emigrated
+        );
+    }
 }
 
 /// Seasonal strategies at work, per lineage that uses any: dormant (winter or
@@ -406,33 +483,39 @@ fn bench(args: &Args) {
     let days = args.days.unwrap_or(10);
     let mut world = build_world(args, args.scale);
     println!(
-        "Bench: {}×{} map, {} organisms, {} days, {} threads",
+        "Bench: {}×{} map, {} organisms, {} days, {} threads{}",
         args.size,
         args.size,
-        world.alive_count(),
+        world.population(),
         days,
-        rayon::current_num_threads()
+        rayon::current_num_threads(),
+        if args.lod.enabled { format!(", level of detail on ({} focus points)", args.focus.len()) } else { String::new() }
     );
     // Warm up one day so caches and populations settle.
     world.run_days(1);
     let mut org_ticks = 0u64;
+    let mut pop_ticks = 0u64;
     let searches = world.counters.path_searches;
     let start = Instant::now();
     for _ in 0..days * world.config.ticks_per_day {
         org_ticks += world.alive_count() as u64;
+        pop_ticks += world.population() as u64;
         world.step();
     }
     let secs = start.elapsed().as_secs_f64();
     let ticks = (days * world.config.ticks_per_day) as f64;
     let us = secs * 1e6 / org_ticks.max(1) as f64;
-    println!("  {:.0} organisms on average", org_ticks as f64 / ticks);
+    println!("  {:.0} organisms on average", pop_ticks as f64 / ticks);
+    if args.lod.enabled {
+        println!("  {:.0} of them agents, the rest in cohorts", org_ticks as f64 / ticks);
+        println!("  {:.2} µs per organism-tick counting cohort members", secs * 1e6 / pop_ticks.max(1) as f64);
+    }
     println!("  {:.2} ms per tick", secs * 1e3 / ticks);
-    println!("  {us:.2} µs per organism-tick (wall clock, all threads)");
     println!("  {:.2} path searches per tick", (world.counters.path_searches - searches) as f64 / ticks);
-    println!(
-        "  ≈ {:.0}k organisms at 1 tick/second on this machine",
-        1e6 / us / 1e3
-    );
+    if org_ticks > 0 {
+        println!("  {us:.2} µs per organism-tick (agents only; wall clock, all threads)");
+        println!("  ≈ {:.0}k organisms at 1 tick/second on this machine", 1e6 / us / 1e3);
+    }
 }
 
 fn designs() {

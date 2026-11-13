@@ -1,6 +1,9 @@
 //! The world and its tick loop.
 //!
 //! One tick:
+//! 0. With level of detail on (`lod`), on the hour: expand regions that came
+//!    into focus; on the day: collapse regions out of focus into cohorts and
+//!    advance every cohort one day.
 //! 1. On the hour: regional weather, clutches. Every tick: a share of the
 //!    environment chunks (temperature, snow, ice, water levels, regrowth),
 //!    so each chunk updates once per simulated hour.
@@ -22,6 +25,7 @@ mod decide;
 mod density;
 mod disease;
 mod environment;
+pub mod lod;
 #[cfg(test)]
 mod path_tests;
 mod seasonal;
@@ -45,6 +49,7 @@ use crate::rng::{rng_for, stream};
 use crate::terrain::{traverse, Map, Season, Traverse, Weather};
 
 use density::SpeciesDensity;
+pub use lod::{Cohort, LodStats, PoolEntry};
 use spatial::SpatialGrid;
 
 /// Founding: longest walk (tiles) from a home to a spot where it can drink
@@ -151,6 +156,8 @@ pub struct World {
     season_offset: f32,
     /// Tile → organism index of every food cache (`seasonal::rebuild_caches`).
     cache_at: HashMap<(usize, usize), usize>,
+    /// Level of detail: focus points and the cohorts of abstract regions.
+    lod: lod::Lod,
 }
 
 /// The decision for one organism this tick.
@@ -189,6 +196,7 @@ impl World {
         let weather = map.mean_weather();
         let group = GroupField::new(config.width, config.height, 16);
         let grid = SpatialGrid::new(config.width, config.height, 4.0);
+        let lod = lod::Lod::new(map.cells.len());
         World {
             map,
             weather,
@@ -211,6 +219,7 @@ impl World {
             path_scratch: PathScratch::default(),
             season_offset: Map::seasonal_offset(0, config.days_per_year),
             cache_at: HashMap::new(),
+            lod,
             config,
         }
     }
@@ -263,13 +272,15 @@ impl World {
         if l.owner == crate::WILD {
             let wild_founders: u64 = self.lineages.iter().filter(|w| w.owner == crate::WILD).map(|w| w.founders as u64).sum();
             let cap = self.config.wild_cap as u64 * l.founders as u64 / wild_founders.max(1);
-            (self.lineage_alive.get(lineage as usize).copied().unwrap_or(0), cap as usize)
+            let alive = self.lineage_alive.get(lineage as usize).copied().unwrap_or(0);
+            (alive + self.lod.lineage_count(lineage).alive, cap as usize)
         } else {
-            (self.owner_count(l.owner), self.config.cap_for(l.owner))
+            (self.owner_count(l.owner) + self.lod.owner_count(l.owner), self.config.cap_for(l.owner))
         }
     }
 
     /// Births `lineage` can still add before reaching its cap.
+    /// Cohort members of abstract regions (`lod`) count like agents.
     pub fn cap_room(&self, lineage: u32) -> usize {
         let (count, cap) = self.cap_usage(lineage);
         cap.saturating_sub(count)
@@ -279,7 +290,8 @@ impl World {
         self.index.get(&id).map(|&i| &self.organisms[i]).filter(|o| o.alive)
     }
 
-    /// Living members per lineage, indexed like `lineages`.
+    /// Living agents per lineage, indexed like `lineages` (cohort members of
+    /// abstract regions are in `population_counts`).
     pub fn lineage_counts(&self) -> Vec<LineageCount> {
         let mut counts = vec![LineageCount::default(); self.lineages.len()];
         for o in self.organisms.iter().filter(|o| o.alive) {
@@ -554,6 +566,9 @@ impl World {
     /// Advance one tick.
     pub fn step(&mut self) {
         let tpd = self.config.ticks_per_day as u64;
+        if self.config.lod.enabled && self.tick.is_multiple_of(self.config.ticks_per_hour()) {
+            self.lod_update();
+        }
         if self.tick.is_multiple_of(self.config.ticks_per_hour()) {
             self.hourly();
         }

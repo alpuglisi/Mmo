@@ -20,6 +20,8 @@ pub mod stream {
     /// Disease and hidden-recessive inheritance, kept off the apply stream
     /// so these rules change a world only through their effects.
     pub const GENETICS: u64 = 7;
+    /// Level of detail: collapsing, expanding and evolving cohorts.
+    pub const LOD: u64 = 8;
 }
 
 pub fn splitmix64(x: u64) -> u64 {

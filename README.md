@@ -36,6 +36,7 @@ docs/
 | `world::disease` | Genetics: picky vs flexible | Mating-transmitted disease: pathogens emerge at matings (4× between founding lineages), pass between mates (natural and directed) and between nursing mothers and young, drain the acutely sick's health (dulling their display) and cut fertility; infections end in immunity or lifelong symptomless carriage. Also deaths of homozygotes for harmful recessives. Reports count infections, current sick and carriers, harmful alleles per organism, and `disease` / `recessive` deaths per lineage. |
 | `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter) and short-term torpor on cold nights. |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
+| `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
 
 ### Tick structure
 
@@ -91,6 +92,8 @@ cargo run --release --bin evo-sim -- sweep --trials 16 --seeds 3 --rounds 2 --ou
 cargo run --release --bin evo-sim -- run --set sprint=2.0 --set crowding=0.05   # try a balance tweak
 cargo run --release --example trace -- 3 200          # follow one fox (lineage 3)
 cargo run --release --example stuck -- 120 1 2        # how often organisms get stuck
+cargo run --release --bin evo-sim -- run --size 256 --focus 64,64 --focus 192,192   # level of detail
+cargo run --release --example lod -- 256 90 1 64,64 192,192   # LOD vs full simulation
 ```
 
 `run` founds a wild ecosystem (voles, antelope, newts, foxes) plus four sample
@@ -112,6 +115,61 @@ the decision phase runs in parallel so far, which is why 4 threads give about
 1.9×. Parallelizing the apply phase by region is the obvious next speed-up.
 The later nearest-first perception scan brought the single-thread cost to
 about 1.5–1.6 µs per organism-tick on the same benchmark.
+
+## Level of detail
+
+Opt-in (`WorldConfig::lod.enabled`, default off: with it off a run is
+bit-identical to before). Regions are the 16-tile environment chunks. A
+region is **active** (full agents) while any part of it is within
+`active_radius` (40) tiles of a focus point (`World::set_focus`, `--focus
+X,Y`) or a possessed organism, and becomes **abstract** beyond
+`active_radius + hysteresis` (16 more).
+
+- **Collapse** (daily): agents and clutches in abstract regions fold into
+  one cohort per (region, lineage): counts per 5-day birth bucket and sex, a
+  genome pool (every member's exact genome up to `pool_size` = 64, a uniform
+  sample above), mean hunger, health, fat, offspring raised. Agents that
+  wander into an abstract region are absorbed the same way.
+- **Abstract day**: cohorts eat their region's vegetation (removed from its
+  tiles, so regrowth and seasons drive them), hunt prey cohorts in their own
+  and the 8 surrounding regions (type II response; prey by mass, pack
+  hunting, toxins, stealth, burrows, dens, guarded young; hunters survive on
+  plants between kills but breed on meat), burn fat and go dormant, starve,
+  go thirsty without water in reach, die of old age, attrition and larval
+  competition as agents do, give birth by litter, gestation, recovery,
+  season, condition and density (genomes recombined from the pool, mutations
+  tagged with the owner), find mates in neighboring regions, and migrate to
+  neighbors (entering an active region as agents). Births and deaths go into
+  the normal counters.
+- **Expand** (within the hour a focus arrives): members become agents with
+  ages drawn within their bucket, on tiles their body can use, with pool
+  genomes (exact while the pool holds everyone, else recombinants of two pool
+  genomes, so alleles and origin tags are conserved in expectation), and
+  dependent young next to a mother.
+- Legacy snapshots and population caps count cohort members; reports show
+  agents and cohorts. Group traits and disease state are agent-only.
+
+Measured with `cargo run --release --example lod -- 256 90 1 64,64 192,192`
+(one thread, standard world, two focus points, default radius):
+
+| | ms per tick | organisms at day 90 | agents at day 90 |
+| --- | --- | --- | --- |
+| Full simulation | 18.4 | 8,983 | 8,983 |
+| LOD | 8.4 (2.2× faster) | 12,466 | 4,417 |
+
+Per-lineage populations stay close for the first two months (mean
+|log ratio| over lineages and 10-day checkpoints 0.19; at day 90 0.31):
+voles 3,619 vs 4,367, foxes 1,135 vs 1,034, pack hunters 105 vs 83, frogs 461
+vs 511; newts (2,486 vs 4,897), antelope and burrowers run high in cohorts.
+Legacy shares agree to about a point (wild 85.3% vs 88.6%, players 1–4
+1.5/2.0/4.5/6.8% vs 0.8/0.9/3.3/6.4%). With the *whole* 128×128 world
+abstract (the hardest case; seeds 1–2, 120 days) the error is 0.42 and the
+cost 0.3 ms per tick against about 5 ms (16×). The cohort update itself is cheap: a
+256×256 world with no agents at all costs 1.5 ms per tick, almost all of it
+the environment chunks, so the speed-up is the share of organisms that stay
+abstract (`bench --size 256 --scale 1`: 4.5 ms per tick full, 2.8 with two
+focus points, 2.1 with one focus of radius 24). The rates in `LodConfig`
+were calibrated by hand against full runs on 128×128 seeds 1–2.
 
 ## Balance
 
@@ -200,8 +258,8 @@ stream, so they change a world only through their effects.
 
 Not yet implemented from the design doc: the other five group traits, the
 seasonal coat, timed breeding and the strategy × group-trait combinations
-(communal dens, group navigation beyond a risk discount, shared caches),
-level-of-detail statistical populations. On the environment side: rivers do not overflow onto
+(communal dens, group navigation beyond a risk discount, shared caches).
+On the environment side: rivers do not overflow onto
 their floodplain (flooding only deepens the channel), wind has no direction
 and does not interact with wing loading or gliding, and lakes do not form in
 filled depressions. The point costs in `design.rs` are placeholders, as the
