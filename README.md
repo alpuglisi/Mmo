@@ -105,6 +105,8 @@ cargo run --release --bin evo-sim -- run --days 120 --report 10 --snapshot out/w
 cargo run --release --bin evo-sim -- bench --scale 4 --days 3
 cargo run --release --bin evo-sim -- bench --size 256 --scale 16 --days 12 --threads 1,2,4 --compare-apply
 cargo run --release --bin evo-sim -- sweep --trials 16 --seeds 3 --rounds 2 --out sweep.csv
+cargo run --release --bin evo-sim -- sweep --trials 24 --seeds 12 --screen-days 40 --screen-seeds 4 --eta 4   # screened sweep
+cargo run --release --bin evo-sim -- compare --seed 31 --seeds 24 --set larval_competition=18 vs defaults   # is A better than B?
 cargo run --release --bin evo-sim -- run --set sprint=2.0 --set crowding=0.05   # try a balance tweak
 cargo run --release --example trace -- 3 200          # follow one fox (lineage 3)
 cargo run --release --example stuck -- 120 1 2        # how often organisms get stuck
@@ -1589,6 +1591,64 @@ tunes them by random search: each round perturbs every parameter of the
 current best, runs every trial on several seeds in parallel, and recenters on
 the winner with half the spread.
 
+**Judging scores statistically.** Single worlds are chaotic, so a score is
+only meaningful with its spread over seeds:
+
+- Every sweep trial's score is printed with the half-width of its 95%
+  confidence interval (Student t over its seeds), and every finalist with its
+  **paired difference to the round's center** (`Δ center`, ± its 95% CI,
+  `*` where the CI excludes 0). All trials of a round run on the same seeds,
+  so the paired difference cancels most of the map-to-map variation, which
+  dominates a trial's own CI. When a round's winner is not significantly
+  better than its center the sweep says so. The best trial gets a per-lineage
+  table: survival with its Wilson 95% interval and mean alive ± 95% CI. The
+  CSV keeps its original columns and appends `days`, `seeds`, `score se`,
+  `score ci95`, `delta center`, `delta ci95` and per lineage `wilson lo`,
+  `wilson hi` and `se alive`.
+- **Screens (successive halving).** `--screen-days 40` first runs every
+  trial for 40 days on `--screen-seeds` seeds (default `--seeds`), keeps the
+  best `ceil(trials / eta)` (`--eta`, default 3) plus the round center (the
+  reference for the paired differences), and continues only those worlds to
+  the full `--days`, on `--seeds` seeds (worlds on screen seeds are resumed,
+  not rerun, and resuming gives exactly the straight run's world). A comma
+  list (`--screen-days 20,50`) gives several screens. The score is
+  normalised by run length, so screens rank trials on the same scale; the
+  sweep prints each screen's cut and the world-days it saved. Without
+  `--screen-days` a sweep runs as before: `sweep --size 96 --trials 1 --seeds
+  12 --rounds 1 --seed 31` still prints 11.61. With the budget the screens
+  free, give the finalists more seeds: `--seeds 12 --screen-seeds 4`.
+- **`evo-sim compare`** answers "is this change better?": `compare --set
+  larval_competition=18 vs defaults` (or `--set a=1 vs --set a=2`; B
+  defaults to the default balance) runs both on the same seeds (default 12
+  from `--seed`, 96×96, 120 days), prints per-seed scores and the lineages
+  each lost, the paired difference A − B with its 95% CI, t and win/loss
+  count, what the CI would be unpaired, per-lineage paired differences in
+  survival and mean alive, and a verdict, including roughly how many seeds a
+  difference of the observed size would need to resolve. Adopt a change only
+  when the paired CI excludes 0 on seeds no tuning run saw (31 onward).
+
+**Validation of `compare`** (`compare --seed 31 --seeds 24 --set
+larval_competition=18 vs defaults`, the value the pace-of-life term replaced
+with 13; 48 worlds, 6 minutes on a busy 4-core machine): A 10.69 ± 0.51,
+B (defaults) 11.29 ± 0.33, paired difference **−0.60 ± 0.35** (95% CI −0.95
+… −0.25, t = −3.6), B better on 19 seeds, A on 4, one tie. Unpaired, the
+same worlds would give ±0.59, which would barely resolve it; pairing cuts the
+interval by 40%. Per lineage the cause is significant: at 18 toxic frogs hold
++162 ± 37 more members and newts +84 ± 46 (the fast breeders swell, as the
+original change predicted), while no lineage's survival changes
+significantly (antelope +12 ± 19 points). So 13 stays, now on statistical
+grounds, not two single 12-seed sums. Seeds 31–42 of B reproduce the
+standard check's 11.61.
+
+A screened sweep (`sweep --trials 12 --seeds 6 --rounds 1 --spread 0.25
+--screen-days 40 --screen-seeds 3 --eta 4`) simulated 3840 world-days
+instead of 8640 (44%). At 40 days nearly every trial still scores 11.9–12
+(best 12.00, cut at 11.99), so short screens mostly discard trials that
+collapse early and rank the top poorly; its winner beat the center by
++0.20 ± 1.07, not significant on 6 seeds. Use screens to cut the obvious
+losers cheaply (a high `--eta`, or 60 days for a sharper rank), give the
+finalists many seeds, and confirm a winner with `compare` on held-out seeds.
+
 A run's score (max 12) gives each of the 8 lineages 1 point for surviving the
 year and up to 0.5 for holding its founding size, minus up to 3 for time spent
 pinned at a population cap. Per-species births and deaths by cause are in
@@ -2073,8 +2133,11 @@ in use, 10.71 with the presets' strategies).
 
 1. **Slow breeders under predation:** antelope and herd grazers are now the
    weakest lineages (sub-adults and orphans are the main losses).
-2. **Sweep robustness:** score trials on more seeds (single worlds are
-   chaotic), and screen trials on short runs before giving the best full runs.
+2. **Sweep robustness (done):** confidence intervals, paired differences,
+   successive-halving screens and `evo-sim compare` (see
+   [Balance](#balance)). Next: an adaptive `compare` that adds seeds until
+   the CI resolves, and checking how well 40-day screen ranks predict
+   120-day ranks.
 3. **Decision cost at density:** decide is three quarters of a tick at the
    prototype target and its per-organism cost doubles from scale 4 to 16
    (perception scans more neighbors in a crowd); cap or subsample the
