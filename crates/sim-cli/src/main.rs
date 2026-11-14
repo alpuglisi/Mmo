@@ -13,6 +13,8 @@ use evo_sim::math::Vec2;
 use evo_sim::organism::{Action, DeathCause, Dormancy, Infection};
 use evo_sim::{presets, render, Balance, Gene, LodConfig, PlayerId, ScoringConfig, World, WorldConfig, WILD};
 
+mod adaptive;
+mod rankcheck;
 mod stats;
 mod sweep;
 
@@ -26,6 +28,8 @@ USAGE:
     evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH] [--sequential-apply]
                    [--screen-days D,..] [--screen-seeds N] [--eta F] [--migrants]
     evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--set NAME=V ..] [vs [defaults | --set NAME=V ..]]
+                    [--adaptive] [--max-seeds N] [--batch N] [--tolerance F]
+    evo-sim rankcheck [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--spread F] [--screen-days D,..] [--eta F] [--out PATH]
     evo-sim designs
 
 COMMANDS:
@@ -34,6 +38,8 @@ COMMANDS:
     sweep    Random-search the balance parameters, scoring lineage coexistence
     compare  Run two balance configurations on the same seeds and report the paired
              score difference with a 95% confidence interval (is A better than B?)
+    rankcheck  Run one sweep round's trials and report how well short-run (screen)
+             ranks predict full-run ranks (Spearman correlation, top-1/eta kept)
     designs  List the sample player designs (and the migrating one) and their point costs
 
 OPTIONS:
@@ -56,10 +62,19 @@ OPTIONS:
                     those worlds to the full --days (default: no screens)
     --screen-seeds N    Sweep: seeds per trial in the screens (default --seeds)
     --eta F         Sweep: a screen keeps ceil(trials / F) trials (default 3)
+                    rankcheck: the checkpoints to rank against --days (default 20,40,60,80)
     --rounds N      Sweep: rounds, each recentered on the best with half the spread (default 2)
     --spread F      Sweep: max log-factor per parameter in round 1 (default 0.5, i.e. ×0.61–×1.65)
     --out PATH      Sweep: write every trial to a CSV file (score, its SE and 95% CI,
                     the paired difference to the center); compare: per-seed scores
+    --adaptive      Compare: start with --seeds seeds (default 12) and add batches until
+                    the paired difference's CI excludes 0, lies within ±tolerance, or
+                    --max-seeds is reached. Each look uses Pocock's sequential level
+                    (5% overall), so the printed interval is wider than a one-shot CI
+    --max-seeds N   Compare: seed cap for --adaptive (default 48; implies --adaptive)
+    --batch N       Compare: seeds added per look (default --seeds)
+    --tolerance F   Compare: equivalence margin in score points; stop when the whole
+                    sequential CI lies within ±F (default 0.3; 0 turns it off)
     vs              Compare: the --set flags after it configure B; before it, A.
                     B defaults to the default balance (`vs defaults` says so)
     --lod           Level of detail: full agents only near focus points, statistical
@@ -129,6 +144,11 @@ struct Args {
     eta: f64,
     /// Compare: the configuration after `vs` (defaults unless `--set` follows).
     balance_b: Option<Balance>,
+    /// Compare: `--adaptive` (or `--max-seeds`) given.
+    adaptive: bool,
+    max_seeds: u64,
+    batch: Option<u64>,
+    tolerance: f64,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -161,6 +181,10 @@ fn parse_args() -> Result<Args, String> {
         screen_seeds: None,
         eta: 3.0,
         balance_b: None,
+        adaptive: false,
+        max_seeds: 48,
+        batch: None,
+        tolerance: 0.3,
     };
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or(format!("{flag} needs a value"));
@@ -204,6 +228,19 @@ fn parse_args() -> Result<Args, String> {
                 a.balance_b = Some(Balance::default());
             }
             "defaults" if a.command == "compare" => {}
+            "--adaptive" => a.adaptive = true,
+            "--max-seeds" => {
+                a.max_seeds = num(value()?)?.max(1);
+                a.adaptive = true;
+            }
+            "--batch" => a.batch = Some(num(value()?)?.max(1)),
+            "--tolerance" => {
+                let v = value()?;
+                a.tolerance = v.parse().map_err(|_| format!("--tolerance: '{v}' is not a number"))?;
+                if a.tolerance.is_nan() || a.tolerance < 0.0 {
+                    return Err(format!("--tolerance must be at least 0, got '{v}'"));
+                }
+            }
             "--rounds" => a.rounds = (num(value()?)? as u32).max(1),
             "--spread" => {
                 let v = value()?;
@@ -266,6 +303,8 @@ fn main() -> ExitCode {
         rayon::ThreadPoolBuilder::new().num_threads(n).build_global().expect("thread pool");
     }
     let size_given = std::env::args().any(|a| a == "--size");
+    let trials_given = std::env::args().any(|a| a == "--trials");
+    let spread_given = std::env::args().any(|a| a == "--spread");
     let size = if args.size == 128 && !size_given { 96 } else { args.size };
     match args.command.as_str() {
         "run" => run(&args),
@@ -287,18 +326,38 @@ fn main() -> ExitCode {
             migrants: args.migrants,
         }),
         "compare" => {
+            let seeds = args.seeds.unwrap_or(12);
             sweep::compare(&sweep::CompareArgs {
                 base_seed: args.seed,
                 size,
                 days: args.days.unwrap_or(120),
-                seeds: args.seeds.unwrap_or(12),
+                seeds,
                 a: args.balance,
                 b: args.balance_b.unwrap_or_default(),
                 out: args.out.clone(),
                 parallel_apply: !args.sequential_apply,
                 migrants: args.migrants,
+                adaptive: args.adaptive.then(|| adaptive::AdaptiveArgs {
+                    initial: seeds,
+                    batch: args.batch.unwrap_or(seeds),
+                    max_seeds: args.max_seeds,
+                    tolerance: args.tolerance,
+                }),
             });
         }
+        "rankcheck" => rankcheck::rankcheck(&rankcheck::RankCheckArgs {
+            base_seed: args.seed,
+            size,
+            days: args.days.unwrap_or(120),
+            trials: if trials_given { args.trials } else { 24 },
+            seeds: args.seeds.unwrap_or(4),
+            spread: if spread_given { args.spread } else { 0.25 },
+            center: args.balance,
+            checkpoints: if args.screen_days.is_empty() { vec![20, 40, 60, 80] } else { args.screen_days.clone() },
+            eta: args.eta,
+            parallel_apply: !args.sequential_apply,
+            out: args.out.clone(),
+        }),
         "designs" => designs(),
         "help" | "-h" | "--help" => print!("{USAGE}"),
         other => {
