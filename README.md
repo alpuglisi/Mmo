@@ -324,7 +324,11 @@ season, default 60; see [Ranked seasons](#ranked-seasons)), `--fresh` (ignore th
 world, stored designs re-founded; see [Persistence](#persistence)), `--no-push`,
 `--vapid-private-key KEY` / `--vapid-subject mailto:...` (or `EVO_VAPID_PRIVATE_KEY` /
 `EVO_VAPID_SUBJECT`), `--push-per-hour N` and `--push-allow-any-endpoint` (see
-[Push notifications](#push-notifications)).
+[Push notifications](#push-notifications)), `--hash-concurrency N` /
+`--hash-queue N` (or `EVO_HASH_CONCURRENCY` / `EVO_HASH_QUEUE`: password
+hashes run at once, default half the cores and at least 1, and requests
+allowed to wait for one, default 16 per concurrent hash; see Accounts under
+[Architecture](#architecture)).
 `RUST_LOG=debug` for more logging. SIGINT (Ctrl-C) or SIGTERM stops the
 server gracefully: it stops serving, saves every world (in parallel) and
 waits for the store to finish writing.
@@ -459,6 +463,24 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   WebSocket command) or 24 hours after login (`SessionPolicy`); an open
   WebSocket checks every `min(idle, max_age)/4` (at most 30 s), sends
   `session_ended` and closes.
+- **Password hashing is bounded** (`accounts::HashLimiter`): a registration
+  or login hashes (or verifies) a password with argon2id, 19 MiB and tens of
+  ms of CPU each. At most `--hash-concurrency` run at once on the blocking
+  pool (default half the cores, at least 1), at most `--hash-queue` more wait
+  for a slot (default 16 per slot), and past that the request is refused at
+  once with `503 busy`, `retry_after_ms` (about the time the queue takes to
+  drain, 0.25–5 s) and `Retry-After`. A refused registration reserves no
+  name or player id; a waiter whose client goes away frees its place, and a
+  hash already running keeps its slot until it ends. Token checks (every
+  authenticated request, the WebSocket and its liveness checks) never hash,
+  so only password logins count. The web client retries `busy` and
+  `rate_limited` itself (`client/src/retry.ts`: the server's hint or a
+  doubling backoff from 0.5 s, whichever is longer, ×0.5–1.5 jitter, capped
+  at 10 s, 5 retries), showing "The server is busy; retrying in N s". The
+  queue is behind the per-IP login limit, so a refused attempt still uses
+  one of that client's login tokens. Before the bound, Tokio ran up to 512
+  hashes at once, and a burst of logins starved every world thread (see
+  [Several worlds: capacity](#several-worlds-capacity)).
 - **Rate limits** (`limits.rs`, token buckets, `Limits` in `ServerConfig`):
   logins and registrations per client IP (burst 10, then one per 6 s; checked
   before any password hashing, `429 rate_limited` with `retry_after_ms` and
@@ -540,7 +562,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/push/prefs` | Bearer | The push kinds the caller switched off, `{off: [kind]}` (`mating`, `death`, `market`, `species`, `season`, `catastrophe`); `{off: []}` until saved |
 | `POST /api/push/prefs` | Bearer | Replace them; the reply is normalized (sorted, no duplicates); an unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
-| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`) and the process's `cpu_seconds` and `rss_bytes` (Linux) |
+| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`), the process's `cpu_seconds` and `rss_bytes` (Linux), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
 Routes about a world (founding, `world`, the leaderboards, terrain, species,
@@ -1246,7 +1268,8 @@ Checked and judged acceptable:
   a proxy in front might.
 - **Password hashing.** argon2id with the crate defaults (19 MiB, 2 passes,
   1 lane; OWASP's minimum), a random 16-byte salt, PHC strings; hashing and
-  verifying run on the blocking pool behind the login rate limit.
+  verifying run on the blocking pool behind the login rate limit and a
+  bound on concurrent hashes (`--hash-concurrency`, `--hash-queue`).
 - **CORS.** Any origin, no credentials: auth is a bearer token the page
   holds, never a cookie, so another origin can't act as a user it has no
   token for.
@@ -2263,7 +2286,8 @@ baseline twice more); the second runs agree except where noted:
   up to 512 at once, so a burst of logins becomes hundreds of CPU-bound
   threads that starve the world threads and hold ~19 MB each. With the
   ramp at 12.5 a second (as in every other run) the same 1,000 players
-  ramped without a stall (load 12–14 and 9–13 in the two runs).
+  ramped without a stall (load 12–14 and 9–13 in the two runs). Hashing
+  is now bounded (see below).
 - One world × 500 matches the earlier single-world runs (tick 82 / 163–204,
   command p99 253–270 ms, 0.26–0.27 cores) in both runs.
 
@@ -2288,10 +2312,50 @@ What it shows:
   suggests a dedicated box holds more, up to about 1 world per core, but
   that is extrapolated: measure before going past 2 worlds per 4 cores.
   Budget 0.5 GB of memory and 1.4 MB/s (11 Mbit/s) of egress per
-  500-player world with protocol 2 clients. Spread logins: until password
-  hashing is bounded (a few concurrent hashes per core), a login storm of
-  more than ~12 a second per 4 cores (a restart that sends every client
-  back at once, for instance) stalls every world in the process.
+  500-player world with protocol 2 clients. Login storms no longer stall
+  the worlds (next section); the default hash bound (2 at once on 4 cores,
+  ~45 hashes a second) admits about 22 new players a second (a registration
+  and a login each) and makes the rest wait a few seconds.
+
+#### Login bursts with bounded hashing
+
+The fast ramp again, with `--hash-concurrency` at its default (2 on this
+4-core box, queue 32): 2 worlds × 500, the 1,000 players registering and
+logging in over 40 s (25 a second, 50 hashes a second) and over 10 s (100
+a second), 100 s after the ramp, before (the previous commit's server) and
+after, from the same 512² warm-up (22k organisms per world, snapshot
+version 9). Same shared 4-core box, loaded by other jobs; the loadgen now
+retries `busy` and `rate_limited` as the client does. "Slowest 10 s" is the
+fewest ticks a world made in one 10 s report over the whole run, ramp
+included; tick p99 is the median of the reports after the ramp.
+
+| | before, 25/s (run 1) | before, 25/s (run 2) | after, 25/s (run 1) | after, 25/s (run 2) | before, 100/s | after, 100/s |
+| --- | --- | --- | --- | --- | --- | --- |
+| Load average (1 min): min / median / max | 6.0 / 7.3 / 9.3 | 6.3 / 9.8 / 10.4 | 6.0 / 8.3 / 8.8 | 6.2 / 7.0 / 8.2 | 9.0 / 17 / 34 | 7.8 / 10.7 / 12.4 |
+| Slowest 10 s, ticks per second (target 1) | 0.6 | **0.1** (main ticked 0.2–0.5 for 30 s) | 0.9 | 0.9 | — | 0.8 |
+| Worst tick p99 over the run (ms) | 335 | 479 | 326 | 297 | — | 380 |
+| Tick p99 after the ramp, `main`, `w2` (ms) | 298, 252 | 384, 373 | 269, 277 | 229, 223 | — | 346, 276 |
+| Command p99 (ms) | 932 | 2,692 | 652 | 499 | — | 810 |
+| RSS, max (MB) | 1,046 | 1,289 | 829 | 882 | **killed** at 12.8 GB | 949 |
+| Busy replies retried / hashes / peak at once | — | — | 843 / 2,000 / 2 | 42 / 2,000 / 2 | — | 4,582 / 2,000 / 2 |
+| Every player in (s after the start) | 50 | 50 | 60 | 50 | none | 70 |
+
+- **Before**, a 25-a-second burst slowed both worlds in the run at load
+  ~10 (`main` made 2–5 ticks per 10 s for 30 s, `w2` once only 1; command
+  p99 2.7 s);
+  at load ~7 it cost 40% of the ticks for 10 s. At 100 a second the
+  unbounded hashes took the process to 12.8 GB and the kernel killed it
+  (out of memory) within seconds: no player got in.
+- **After**, at most 2 hashes ever ran (`peak_in_flight`), the worlds kept
+  0.8–1 tick a second through every burst, and RSS stayed under 1 GB. The
+  cost is latency for the players logging in: at 25 a second, demand
+  (50 hashes a second at ~40 ms each) is just over what 2 slots do, so some
+  were told `busy` and got in up to 10 s later; at 100 a second all 1,000
+  were in 70 s after the start, 60 s after the ramp ended, with 4.6
+  `busy` retries per player and no failures.
+- A server with more cores to spare for logins can raise
+  `--hash-concurrency`; each slot costs one core and 19 MiB while a burst
+  lasts. Watch `hashing.rejected` and `hashing.waiting` in `/api/metrics`.
 
 ## Level of detail
 
@@ -3098,21 +3162,17 @@ sections above).
    real iOS and Android devices (login with a remote server, touch
    gestures, the bottom sheet, the onboarding tour, reconnects when the app
    is backgrounded), and add the result to CI if it can run headless.
-2. **Push notifications.** Alerts reach a player only while the client is
-   open. The design's typical session ("check the dashboard and alerts …
-   log off while the lineage carries on") needs offline delivery: native
-   push through Capacitor (and web push for the browser) for the toasted
-   alert kinds and mating requests, with the existing alert preferences
-   deciding what is sent, which also means applying them server-side.
+2. **Native push notifications.** Web Push is implemented for the browser
+   (see [Push notifications](#push-notifications)). What remains is native
+   push in the Capacitor apps through FCM (Android) and APNs (iOS), and
+   trying Web Push from an iOS home-screen web app on a real device.
 3. **Capacity with several worlds.** Measured up to two 512² worlds of
    500 players in one process on a shared 4-core box (see [Several worlds:
    capacity](#several-worlds-capacity)): a second world costs what the
    first did, nothing serializes them, and about 2 cores per 500-player
    world holds the clock. Still open: where one process stops scaling (3+
    worlds, on dedicated cores, where the measured 0.3 cores per world
-   suggests up to one world per core), and bounding concurrent password
-   hashes, since a login burst over ~12 a second per 4 cores stalled every
-   world thread for 40 s in that test.
+   suggests up to one world per core).
 4. **Incubated eggs still win tournaments**: after the final balance pass
    and egg thermal risk they won 29.1% of entries pooled over 144 worlds
    (a fair share is 25%), abandoned eggs 16.8%; see [Balance](#balance). Next: find what
@@ -3125,31 +3185,26 @@ sections above).
    switching), measured with `compare` on 48+ seeds, and check whether the
    prey-side rules cost predators seeds systematically (the sign was
    negative, not significant).
-6. **Flaky test.** `idle_sessions_expire_and_close_the_socket`
-   (`crates/server/tests/dashboard.rs`) runs on a 600 ms idle timeout with
-   300 ms sleeps between commands, so a loaded CI machine can let the
-   session expire early. Drive it from a manual session clock, or widen
-   the margins.
-7. **World-thread cost.** Decide is most of a tick at the prototype target
+6. **World-thread cost.** Decide is most of a tick at the prototype target
    and its per-organism cost rises with density: cap or subsample the
    neighbors scanned, then split the apply phase's sequential act sweep by
    region (see [Benchmark](#benchmark)). Possession sub-step states still
    build a whole `StateView` for every steering player three times a tick
    though only the possessed organism's delta goes out.
-8. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
+7. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
    protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
    doesn't offer it; revisit when it does (states are already ~1 KB/s a
    client, so this is low priority). For save size, store the map's
    changing tiles (about 6 MB of an 18 MB save at 26k agents) as a delta
    against the previous save.
-9. **Design-doc features not built.** Offline protection (home ranges or
+8. **Design-doc features not built.** Offline protection (home ranges or
    surviving founder groups; a territory could become one), group commands
    as genes (the doc's open question; wanderlust and group tolerance
    already shape how a group moves), and the doc's open question on
    duplicate mutations; `GET /api/leaderboard/seasons` would also want a
    cache instead of reading the whole history per call.
-10. **Tooling.** An adaptive `compare` that adds seeds until the CI
-    resolves, and a check of how well 40-day screen ranks predict 120-day
-    ranks; what migrating buys a design (the caribou with and without the
-    gene, paired) and a reason for winter ranges to exist (better
-    cold-season pasture than the summer range).
+9. **Tooling.** An adaptive `compare` that adds seeds until the CI
+   resolves, and a check of how well 40-day screen ranks predict 120-day
+   ranks; what migrating buys a design (the caribou with and without the
+   gene, paired) and a reason for winter ranges to exist (better
+   cold-season pasture than the summer range).
