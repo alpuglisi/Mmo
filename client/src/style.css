@@ -59,6 +59,12 @@ input, select {
   padding: 0.35em 0.5em;
   width: 100%;
 }
+/* iOS zooms the page in when a field with text under 16px gets focus, and
+   stays zoomed (labelled fields here are 12.6px: the app was left at 127%,
+   its cards cut off at the right). Keep fields at 16px on touch screens. */
+@media (pointer: coarse) {
+  input, select { font-size: max(16px, 1em); }
+}
 input[type='radio'] { width: auto; margin-right: 0.4em; }
 input[type='range'] { padding: 0; accent-color: var(--accent); }
 label { display: block; margin: 0.5em 0; color: var(--muted); font-size: 0.9em; }
