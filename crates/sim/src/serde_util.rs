@@ -9,6 +9,9 @@
 //!   (skipped in snapshots) are recomputed as they are read.
 //! - `father`: a pregnancy's father genome, written as an organism index
 //!   when the father is still in the world.
+//! - `clutches` / `by_parents`: from version 17, organisms' and eggs'
+//!   genomes written beside them, against their parents' genomes when the
+//!   parents are in the world (`Genome::to_wire_by_parents`).
 //! - `tiles`: the map's tiles, written as an empty list while a world
 //!   snapshot writes them in a section of their own.
 //! - `before_v12`: `Balance::cold_gestation`, left out while a version 10 or
@@ -21,6 +24,8 @@
 //!   of version 14 or before is read.
 //! - `before_v16`: `Balance::migration_onset`, left out while a world snapshot
 //!   of version 15 or before is read.
+//! - `before_v17`: genomes written whole inside their organisms and clutches,
+//!   while a world snapshot of version 16 or before is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -123,14 +128,24 @@ pub mod sorted_map {
 /// snapshot leaves out recomputed (`Organism::refresh_derived`) and shared
 /// father genomes resolved:
 /// `#[serde(with = "crate::serde_util::organisms")]`.
+///
+/// From world snapshot version 17 (unless a [`before_v17::Guard`] lives)
+/// each organism is written as a pair: its genome, then the organism
+/// without it ([`by_parents::genome`] writes nothing there). The genome is
+/// written against its parents' ([`Genome::to_wire_by_parents`]) when both
+/// are earlier in the list, so a reader has them already, and whole
+/// otherwise. The organisms' genomes are then left for [`clutches`], whose
+/// eggs are written against them too.
 pub mod organisms {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use super::by_parents::{self, GenomeIn, GenomeOut, Genomes};
     use super::father::{Reading, Writing, READING, WRITING};
     use super::*;
+    use crate::genome::wire::Parents;
     use crate::genome::Genome;
-    use crate::organism::Organism;
+    use crate::organism::{OrgId, Organism};
 
     /// Clears a thread-local context however serialization ends.
     struct Clear<T: 'static>(&'static std::thread::LocalKey<std::cell::RefCell<Option<T>>>);
@@ -148,14 +163,77 @@ pub mod organisms {
         }
         WRITING.with(|c| *c.borrow_mut() = Some(Writing { index }));
         let _clear = Clear(&WRITING);
-        s.collect_seq(v)
+        if before_v17::active() {
+            return s.collect_seq(v);
+        }
+        let at: HashMap<OrgId, usize> = v.iter().enumerate().map(|(k, o)| (o.id, k)).collect();
+        // A parent's genome, if it is earlier in the list than organism `k`.
+        let earlier = |id: Option<OrgId>, k: usize| id.and_then(|id| at.get(&id)).filter(|&&p| p < k);
+        let pairs = v.iter().enumerate().map(|(k, o)| {
+            let genome = match (earlier(o.mother, k), earlier(o.father, k)) {
+                (Some(&m), Some(&f)) => GenomeOut::new(&o.genome, &Parents::new(&v[m].genome, &v[f].genome)),
+                _ => GenomeOut::Whole(&o.genome),
+            };
+            (genome, o)
+        });
+        let out = {
+            let _apart = by_parents::Apart::new();
+            s.collect_seq(pairs)
+        };
+        by_parents::leave_genomes(Genomes { at, genomes: v.iter().map(|o| o.genome.clone()).collect() });
+        out
+    }
+
+    /// The (genome, organism) pairs of version 17, each genome resolved
+    /// as it is read: a genome against its parents' needs them earlier in
+    /// the list.
+    struct Pairs;
+
+    impl<'de> Visitor<'de> for Pairs {
+        /// The organisms, and their indices by id.
+        type Value = (Vec<Organism>, HashMap<OrgId, usize>);
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("organisms with their genomes")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let n = seq.size_hint().unwrap_or(0).min(1 << 20);
+            let (mut v, mut at) = (Vec::<Organism>::with_capacity(n), HashMap::<OrgId, usize>::with_capacity(n));
+            while let Some((genome, mut o)) = seq.next_element::<(GenomeIn, Organism)>()? {
+                o.genome = match genome {
+                    GenomeIn::Whole(g) => Arc::from(g),
+                    GenomeIn::ByParents(bytes) => {
+                        let parent = |id: Option<OrgId>| {
+                            id.and_then(|id| at.get(&id))
+                                .map(|&p| &v[p].genome)
+                                .ok_or_else(|| A::Error::custom("a genome's parent is not earlier in the world"))
+                        };
+                        let g = Parents::new(parent(o.mother)?, parent(o.father)?).decode(&bytes.0);
+                        Arc::new(g.map_err(A::Error::custom)?)
+                    }
+                };
+                at.insert(o.id, v.len());
+                v.push(o);
+            }
+            Ok((v, at))
+        }
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Organism>, D::Error> {
         let placeholder = Arc::new(Genome::uniform(&[0.0; crate::genome::Gene::COUNT], 0));
         READING.with(|c| *c.borrow_mut() = Some(Reading { placeholder: placeholder.clone(), pending: Vec::new() }));
         let clear = Clear(&READING);
-        let mut v = Vec::<Organism>::deserialize(d)?;
+        let mut v = if before_v17::active() {
+            Vec::<Organism>::deserialize(d)?
+        } else {
+            let (v, at) = {
+                let _apart = by_parents::Apart::new();
+                d.deserialize_seq(Pairs)?
+            };
+            by_parents::leave_genomes(Genomes { at, genomes: v.iter().map(|o| o.genome.clone()).collect() });
+            v
+        };
         let pending = READING.with(|c| c.borrow_mut().take()).map(|r| r.pending).unwrap_or_default();
         drop(clear);
         let mut pending = pending.into_iter();
@@ -173,6 +251,274 @@ pub mod organisms {
         }
         v.iter_mut().for_each(Organism::refresh_derived);
         Ok(v)
+    }
+}
+
+/// A world's clutches (`World::clutches`):
+/// `#[serde(with = "crate::serde_util::clutches")]`. From world snapshot
+/// version 17 (unless a [`before_v17::Guard`] lives) each clutch is written
+/// as a pair: its eggs, then the clutch without them
+/// ([`by_parents::eggs`] writes nothing there). An egg is written against
+/// its parents' genomes ([`Genome::to_wire_by_parents`]) when both are in
+/// the world's organisms, written just before (see [`organisms`]), and
+/// whole otherwise. Eggs are most of a snapshot's genomes while a world is
+/// laying (a 512² world three days in holds about 20,000).
+pub mod clutches {
+    use std::sync::Arc;
+
+    use super::by_parents::{self, GenomeIn, GenomeOut};
+    use super::*;
+    use crate::genome::wire::Parents;
+    use crate::genome::Genome;
+    use crate::world::Clutch;
+
+    pub fn serialize<S: Serializer>(v: &[Clutch], s: S) -> Result<S::Ok, S::Error> {
+        if before_v17::active() {
+            return s.collect_seq(v);
+        }
+        let genomes = by_parents::take_genomes().unwrap_or_default();
+        let pairs = v.iter().map(|c| {
+            let parents = genomes.get(&c.mother).zip(genomes.get(&c.father)).map(|(m, f)| Parents::new(m, f));
+            let eggs: Vec<GenomeOut> = c
+                .eggs
+                .iter()
+                .map(|e| match &parents {
+                    Some(p) => GenomeOut::new(e, p),
+                    None => GenomeOut::Whole(e),
+                })
+                .collect();
+            (eggs, c)
+        });
+        let _apart = by_parents::Apart::new();
+        s.collect_seq(pairs)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Clutch>, D::Error> {
+        if before_v17::active() {
+            return Vec::<Clutch>::deserialize(d);
+        }
+        let genomes = by_parents::take_genomes();
+        let pairs = {
+            let _apart = by_parents::Apart::new();
+            Vec::<(Vec<GenomeIn>, Clutch)>::deserialize(d)?
+        };
+        let parent = |id| -> Result<&Arc<Genome>, D::Error> {
+            genomes
+                .as_ref()
+                .and_then(|g| g.get(&id))
+                .ok_or_else(|| D::Error::custom("an egg's parent is not in the world"))
+        };
+        pairs
+            .into_iter()
+            .map(|(eggs, mut c)| {
+                let mut parents = None;
+                c.eggs = eggs
+                    .into_iter()
+                    .map(|e| match e {
+                        GenomeIn::Whole(g) => Ok(*g),
+                        GenomeIn::ByParents(bytes) => {
+                            let p = match &parents {
+                                Some(p) => p,
+                                None => parents.insert(Parents::new(parent(c.mother)?, parent(c.father)?)),
+                            };
+                            p.decode(&bytes.0).map_err(D::Error::custom)
+                        }
+                    })
+                    .collect::<Result<_, _>>()?;
+                Ok(c)
+            })
+            .collect()
+    }
+}
+
+/// Genomes written against their parents' (world snapshots from version 17;
+/// see [`organisms`] and [`clutches`]).
+pub mod by_parents {
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
+    use std::sync::{Arc, LazyLock};
+
+    use super::*;
+    use crate::genome::wire::Parents;
+    use crate::genome::Genome;
+    use crate::organism::OrgId;
+
+    thread_local! {
+        /// Inside the pairs `organisms` and `clutches` write: the organism's
+        /// genome and the clutch's eggs are written beside it.
+        static APART: Cell<bool> = const { Cell::new(false) };
+        /// The organisms' genomes by id, left by `organisms` for `clutches`.
+        static GENOMES: RefCell<Option<Genomes>> = const { RefCell::new(None) };
+    }
+
+    /// Stands for an organism's genome until `organisms` reads it.
+    static PLACEHOLDER: LazyLock<Arc<Genome>> =
+        LazyLock::new(|| Arc::new(Genome::uniform(&[0.0; crate::genome::Gene::COUNT], 0)));
+
+    /// Genomes and eggs written beside their organisms and clutches on this
+    /// thread while this guard lives.
+    pub(super) struct Apart(bool);
+
+    impl Apart {
+        pub(super) fn new() -> Apart {
+            Apart(APART.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Apart {
+        fn drop(&mut self) {
+            APART.with(|c| c.set(self.0));
+        }
+    }
+
+    /// A world's organisms' genomes, by organism id.
+    #[derive(Default)]
+    pub(super) struct Genomes {
+        /// Organism id → index into `genomes`.
+        pub at: HashMap<OrgId, usize>,
+        pub genomes: Vec<Arc<Genome>>,
+    }
+
+    impl Genomes {
+        pub(super) fn get(&self, id: &OrgId) -> Option<&Arc<Genome>> {
+            self.at.get(id).map(|&k| &self.genomes[k])
+        }
+    }
+
+    pub(super) fn leave_genomes(g: Genomes) {
+        GENOMES.with(|c| *c.borrow_mut() = Some(g));
+    }
+
+    pub(super) fn take_genomes() -> Option<Genomes> {
+        GENOMES.with(|c| c.borrow_mut().take())
+    }
+
+    /// Forgets the genomes [`organisms`] left on this thread when dropped,
+    /// should a world's serialization stop before [`clutches`] takes them.
+    pub struct Scope(());
+
+    impl Scope {
+        pub fn new() -> Scope {
+            Scope(())
+        }
+    }
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            take_genomes();
+        }
+    }
+
+    /// A genome's bytes from [`Genome::to_wire_by_parents`].
+    pub(super) struct Bytes(pub Vec<u8>);
+
+    impl Serialize for Bytes {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            s.serialize_bytes(&self.0)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Bytes {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Bytes, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = Bytes;
+
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str("a genome against its parents (bytes)")
+                }
+
+                fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Bytes, E> {
+                    Ok(Bytes(v.to_vec()))
+                }
+
+                fn visit_byte_buf<E: Error>(self, v: Vec<u8>) -> Result<Bytes, E> {
+                    Ok(Bytes(v))
+                }
+
+                fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Bytes, A::Error> {
+                    let mut v = Vec::new();
+                    while let Some(b) = seq.next_element::<u8>()? {
+                        v.push(b);
+                    }
+                    Ok(Bytes(v))
+                }
+            }
+            d.deserialize_bytes(V)
+        }
+    }
+
+    #[derive(Serialize)]
+    pub(super) enum GenomeOut<'a> {
+        Whole(&'a Genome),
+        ByParents(Bytes),
+    }
+
+    impl<'a> GenomeOut<'a> {
+        /// `g` against its parents' genomes, or whole if it is not mostly
+        /// inherited from them.
+        pub(super) fn new(g: &'a Genome, parents: &Parents) -> GenomeOut<'a> {
+            match parents.encode(g) {
+                Some(b) => GenomeOut::ByParents(Bytes(b)),
+                None => GenomeOut::Whole(g),
+            }
+        }
+    }
+
+    #[derive(Deserialize)]
+    pub(super) enum GenomeIn {
+        Whole(Box<Genome>),
+        ByParents(Bytes),
+    }
+
+    /// An organism's genome (`Organism::genome`):
+    /// `#[serde(with = "crate::serde_util::by_parents::genome")]`. Written
+    /// as nothing inside the pairs [`organisms`] writes (the genome is
+    /// beside it) and read as a placeholder there; in full anywhere else.
+    pub mod genome {
+        use super::*;
+
+        pub fn serialize<S: Serializer>(g: &Arc<Genome>, s: S) -> Result<S::Ok, S::Error> {
+            if APART.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                g.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<Genome>, D::Error> {
+            if APART.with(Cell::get) {
+                <()>::deserialize(d)?;
+                Ok(PLACEHOLDER.clone())
+            } else {
+                Arc::<Genome>::deserialize(d)
+            }
+        }
+    }
+
+    /// A clutch's eggs (`Clutch::eggs`):
+    /// `#[serde(with = "crate::serde_util::by_parents::eggs")]`. Written as
+    /// nothing inside the pairs [`clutches`] writes (the eggs are beside
+    /// it) and read as none there; in full anywhere else.
+    pub mod eggs {
+        use super::*;
+
+        pub fn serialize<S: Serializer>(v: &Vec<Genome>, s: S) -> Result<S::Ok, S::Error> {
+            if APART.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Genome>, D::Error> {
+            if APART.with(Cell::get) {
+                <()>::deserialize(d)?;
+                Ok(Vec::new())
+            } else {
+                Vec::<Genome>::deserialize(d)
+            }
+        }
     }
 }
 
@@ -580,6 +926,39 @@ pub mod before_v16 {
             Ok(OLD_MIGRATION_ONSET)
         } else {
             f32::deserialize(d)
+        }
+    }
+}
+
+/// Organisms' and eggs' genomes written against their parents', from world
+/// snapshot version 17 ([`organisms`], [`clutches`]). On a thread holding a
+/// [`before_v17::Guard`] (reading or hashing a snapshot of version 16 or
+/// before) every genome is written whole inside its organism or clutch, as
+/// before.
+pub mod before_v17 {
+    use std::cell::Cell;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Whether the old layout is in force on this thread.
+    pub fn active() -> bool {
+        OLD.with(Cell::get)
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
         }
     }
 }

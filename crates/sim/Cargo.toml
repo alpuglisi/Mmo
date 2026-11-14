@@ -27,3 +27,7 @@ required-features = ["serde"]
 [[example]]
 name = "tile_delta"
 required-features = ["serde"]
+
+[[example]]
+name = "genome_bytes"
+required-features = ["serde"]
