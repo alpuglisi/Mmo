@@ -82,6 +82,168 @@ pub fn wilson(k: usize, n: usize) -> (f64, f64) {
     ((centre - half).max(0.0), (centre + half).min(1.0))
 }
 
+/// Two-sided critical value of Student's t at level `alpha` with `df`
+/// degrees of freedom: the `t` with `P(|T| > t) = alpha`. Found by bisection
+/// on the exact tail (a regularized incomplete beta function), so any level
+/// works, not only 5% (the sequential compare uses stricter per-look levels).
+pub fn t_crit(alpha: f64, df: usize) -> f64 {
+    if df == 0 || alpha <= 0.0 {
+        return f64::INFINITY;
+    }
+    if alpha >= 1.0 {
+        return 0.0;
+    }
+    let tail = |t: f64| {
+        let d = df as f64;
+        incomplete_beta(d / 2.0, 0.5, d / (d + t * t))
+    };
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    while tail(hi) > alpha {
+        hi *= 2.0;
+        if hi > 1e12 {
+            return f64::INFINITY;
+        }
+    }
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if tail(mid) > alpha {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+        if hi - lo < 1e-12 * hi.max(1.0) {
+            break;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Natural log of the gamma function (Lanczos approximation, |error| < 1e-10
+/// for positive arguments).
+fn ln_gamma(x: f64) -> f64 {
+    const G: [f64; 6] = [
+        76.18009172947146,
+        -86.50532032941677,
+        24.01409824083091,
+        -1.231739572450155,
+        0.1208650973866179e-2,
+        -0.5395239384953e-5,
+    ];
+    let mut y = x;
+    let tmp = x + 5.5;
+    let tmp = tmp - (x + 0.5) * tmp.ln();
+    let mut ser = 1.000000000190015;
+    for g in G {
+        y += 1.0;
+        ser += g / y;
+    }
+    -tmp + (2.5066282746310005 * ser / x).ln()
+}
+
+/// Regularized incomplete beta function `I_x(a, b)` (continued fraction, as
+/// in Numerical Recipes' `betai`).
+fn incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let front = (ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln()).exp();
+    if x < (a + 1.0) / (a + b + 2.0) {
+        front * beta_cf(a, b, x) / a
+    } else {
+        1.0 - front * beta_cf(b, a, 1.0 - x) / b
+    }
+}
+
+fn beta_cf(a: f64, b: f64, x: f64) -> f64 {
+    const TINY: f64 = 1e-300;
+    let (qab, qap, qam) = (a + b, a + 1.0, a - 1.0);
+    let mut c = 1.0;
+    let mut d = 1.0 - qab * x / qap;
+    if d.abs() < TINY {
+        d = TINY;
+    }
+    d = 1.0 / d;
+    let mut h = d;
+    for m in 1..300 {
+        let m = m as f64;
+        let m2 = 2.0 * m;
+        let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        h *= d * c;
+        let aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < TINY {
+            d = TINY;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        d = 1.0 / d;
+        let del = d * c;
+        h *= del;
+        if (del - 1.0).abs() < 1e-14 {
+            break;
+        }
+    }
+    h
+}
+
+/// Ranks of `values` (1 = smallest), ties sharing their average rank.
+pub fn ranks(values: &[f64]) -> Vec<f64> {
+    let mut idx: Vec<usize> = (0..values.len()).collect();
+    idx.sort_by(|&a, &b| values[a].total_cmp(&values[b]));
+    let mut r = vec![0.0; values.len()];
+    let mut i = 0;
+    while i < idx.len() {
+        let mut j = i;
+        while j + 1 < idx.len() && values[idx[j + 1]] == values[idx[i]] {
+            j += 1;
+        }
+        let avg = (i + j) as f64 / 2.0 + 1.0;
+        for &k in &idx[i..=j] {
+            r[k] = avg;
+        }
+        i = j + 1;
+    }
+    r
+}
+
+/// Pearson correlation of two equally long series (NaN if either is constant).
+pub fn pearson(x: &[f64], y: &[f64]) -> f64 {
+    let n = x.len().min(y.len());
+    if n < 2 {
+        return f64::NAN;
+    }
+    let mx = x[..n].iter().sum::<f64>() / n as f64;
+    let my = y[..n].iter().sum::<f64>() / n as f64;
+    let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+    for i in 0..n {
+        let (dx, dy) = (x[i] - mx, y[i] - my);
+        sxy += dx * dy;
+        sxx += dx * dx;
+        syy += dy * dy;
+    }
+    sxy / (sxx * syy).sqrt()
+}
+
+/// Spearman rank correlation: the Pearson correlation of the ranks (ties get
+/// average ranks).
+pub fn spearman(x: &[f64], y: &[f64]) -> f64 {
+    pearson(&ranks(x), &ranks(y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +287,27 @@ mod tests {
         assert!(lo == 0.0 && hi > 0.2 && hi < 0.3);
         let (lo, hi) = wilson(6, 12);
         assert!((lo + hi - 1.0).abs() < 1e-12 && lo > 0.2);
+    }
+
+    #[test]
+    fn t_crit_matches_tables() {
+        assert!((t_crit(0.05, 11) - 2.201).abs() < 1e-3);
+        assert!((t_crit(0.05, 1) - 12.706).abs() < 1e-2);
+        for df in [2, 5, 23, 47, 100] {
+            assert!((t_crit(0.05, df) - t95(df)).abs() < 2e-3, "df {df}");
+        }
+        // 1% level: t(0.995, 10) = 3.169, t(0.995, 30) = 2.750.
+        assert!((t_crit(0.01, 10) - 3.169).abs() < 1e-3);
+        assert!((t_crit(0.01, 30) - 2.750).abs() < 1e-3);
+        assert!(t_crit(0.05, 0).is_infinite());
+    }
+
+    #[test]
+    fn rank_correlation() {
+        assert_eq!(ranks(&[3.0, 1.0, 2.0, 1.0]), vec![4.0, 1.5, 3.0, 1.5]);
+        assert!((spearman(&[1.0, 2.0, 3.0], &[10.0, 20.0, 90.0]) - 1.0).abs() < 1e-12);
+        assert!((spearman(&[1.0, 2.0, 3.0], &[3.0, 2.0, 1.0]) + 1.0).abs() < 1e-12);
+        // Hand-computed: ranks (1,2,3,4) vs (2,1,4,3): 1 − 6·4/(4·15) = 0.6.
+        assert!((spearman(&[1.0, 2.0, 3.0, 4.0], &[2.0, 1.0, 4.0, 3.0]) - 0.6).abs() < 1e-12);
     }
 }

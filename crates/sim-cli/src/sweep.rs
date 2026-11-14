@@ -24,6 +24,7 @@ use evo_sim::{presets, Balance, World, WorldConfig};
 use rand::Rng;
 use rayon::prelude::*;
 
+use crate::adaptive::{self, AdaptiveArgs, Stop};
 use crate::stats::{wilson, Summary};
 
 pub struct SweepArgs {
@@ -244,7 +245,7 @@ impl Trial {
     }
 }
 
-fn perturb(center: &Balance, spread: f32, seed: u64, round: u32, index: usize) -> Balance {
+pub(crate) fn perturb(center: &Balance, spread: f32, seed: u64, round: u32, index: usize) -> Balance {
     let mut b = *center;
     if index == 0 || spread <= 0.0 {
         return b;
@@ -257,7 +258,7 @@ fn perturb(center: &Balance, spread: f32, seed: u64, round: u32, index: usize) -
 }
 
 /// How many of `n` trials a screen promotes on merit: `ceil(n / eta)`.
-fn keep_count(n: usize, eta: f64) -> usize {
+pub(crate) fn keep_count(n: usize, eta: f64) -> usize {
     ((n as f64 / eta.max(1.0)).ceil() as usize).clamp(1, n.max(1))
 }
 
@@ -284,7 +285,7 @@ fn stages(args: &SweepArgs) -> Vec<(u32, u64)> {
     v
 }
 
-fn lineage_names(migrants: bool) -> Vec<String> {
+pub(crate) fn lineage_names(migrants: bool) -> Vec<String> {
     let config = WorldConfig { width: 16, height: 16, ..Default::default() };
     let world = if migrants { presets::extended_world(config, 1) } else { presets::standard_world(config, 1) };
     world.lineages.iter().map(|l| l.name.clone()).collect()
@@ -636,6 +637,9 @@ pub struct CompareArgs {
     pub parallel_apply: bool,
     /// Both sides found the extra migrating lineage (`SweepArgs::migrants`).
     pub migrants: bool,
+    /// Add seeds in batches until the difference resolves (`--adaptive`);
+    /// `seeds` is then ignored in favour of its looks.
+    pub adaptive: Option<AdaptiveArgs>,
 }
 
 /// Label of a configuration: its parameters that differ from the defaults.
@@ -659,27 +663,54 @@ fn label(b: &Balance) -> String {
 pub fn compare(args: &CompareArgs) -> Summary {
     let names = lineage_names(args.migrants);
     let (la, lb) = (label(&args.a), label(&args.b));
+    let seed_range = match &args.adaptive {
+        Some(ad) => format!(
+            "seeds from {} in looks of {} (adaptive)",
+            args.base_seed,
+            ad.looks().iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+        ),
+        None => format!("seeds {}–{}", args.base_seed, args.base_seed + args.seeds - 1),
+    };
     println!(
-        "Compare: A = {la} vs B = {lb} · seeds {}–{} · {}×{} map · {} days · {} threads",
-        args.base_seed,
-        args.base_seed + args.seeds - 1,
+        "Compare: A = {la} vs B = {lb} · {seed_range} · {}×{} map · {} days · {} threads",
         args.size,
         args.size,
         args.days,
         rayon::current_num_threads()
     );
     let started = Instant::now();
-    let jobs: Vec<(usize, u64)> = (0..2).flat_map(|c| (0..args.seeds).map(move |s| (c, s))).collect();
-    let results: Vec<(usize, u64, RunMetrics)> = jobs
-        .par_iter()
-        .map(|&(c, s)| {
-            let balance = if c == 0 { args.a } else { args.b };
-            (c, s, run_one(balance, args.base_seed + s, args.size, args.days, args.parallel_apply, args.migrants))
-        })
-        .collect();
     let mut sides = [Scored { runs: Vec::new() }, Scored { runs: Vec::new() }];
-    for (c, s, m) in results {
-        sides[c].runs.push((args.base_seed + s, m));
+    // Run seed offsets `from..to` on both sides in parallel, appending.
+    let extend = |sides: &mut [Scored; 2], from: u64, to: u64| {
+        let jobs: Vec<(usize, u64)> = (0..2).flat_map(|c| (from..to).map(move |s| (c, s))).collect();
+        let results: Vec<(usize, u64, RunMetrics)> = jobs
+            .par_iter()
+            .map(|&(c, s)| {
+                let balance = if c == 0 { args.a } else { args.b };
+                (c, s, run_one(balance, args.base_seed + s, args.size, args.days, args.parallel_apply, args.migrants))
+            })
+            .collect();
+        for (c, s, m) in results {
+            sides[c].runs.push((args.base_seed + s, m));
+        }
+    };
+    let adaptive = args.adaptive.map(|ad| {
+        let (looks, stop) = adaptive::run(&ad, |from, to| {
+            extend(&mut sides, from, to);
+            let d = sides[0].paired(&sides[1], RunMetrics::score);
+            let s = Summary::of(&d);
+            println!(
+                "  look at {to:>3} seeds: A − B {:+.2} (naive 95% ±{}) · {:.0}s",
+                s.mean,
+                fmt_ci(s.ci95),
+                started.elapsed().as_secs_f64()
+            );
+            d
+        });
+        (ad, looks, stop)
+    });
+    if adaptive.is_none() {
+        extend(&mut sides, 0, args.seeds);
     }
     let [a, b] = &sides;
 
@@ -757,7 +788,35 @@ pub fn compare(args: &CompareArgs) -> Summary {
     }
     println!("  (* : the 95% CI of the paired difference excludes 0)");
 
-    let verdict = if d.n < 2 {
+    let verdict = if let Some((ad, looks, stop)) = &adaptive {
+        let last = looks.last().expect("at least one look");
+        println!(
+            "\n  Adaptive: {} looks planned, each at the {:.2}% level (Pocock; 5% overall); sequential 95% CI \
+             {:+.2} … {:+.2} on {} seeds{}",
+            ad.looks().len(),
+            ad.alpha() * 100.0,
+            d.mean - last.half_width,
+            d.mean + last.half_width,
+            last.seeds,
+            if ad.tolerance > 0.0 { format!(", tolerance ±{}", ad.tolerance) } else { String::new() }
+        );
+        match stop {
+            Stop::Resolved { a_better } => format!(
+                "{} is better (sequential 95% CI excludes 0 after {} seeds)",
+                if *a_better { "A" } else { "B" },
+                last.seeds
+            ),
+            Stop::Equivalent => format!(
+                "no difference that matters: the sequential CI lies within ±{} after {} seeds",
+                ad.tolerance, last.seeds
+            ),
+            Stop::Cap if ad.tolerance > 0.0 => format!(
+                "unresolved at the cap of {} seeds (the CI neither excludes 0 nor fits within ±{})",
+                last.seeds, ad.tolerance
+            ),
+            Stop::Cap => format!("unresolved at the cap of {} seeds (the CI does not exclude 0)", last.seeds),
+        }
+    } else if d.n < 2 {
         "need at least 2 seeds for a confidence interval".to_string()
     } else if d.significant() {
         format!("{} is better (95% CI excludes 0)", if d.mean > 0.0 { "A" } else { "B" })

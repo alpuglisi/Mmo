@@ -168,6 +168,8 @@ cargo run --release --bin evo-sim -- bench --size 256 --scale 16 --days 12 --thr
 cargo run --release --bin evo-sim -- sweep --trials 16 --seeds 3 --rounds 2 --out sweep.csv
 cargo run --release --bin evo-sim -- sweep --trials 24 --seeds 12 --screen-days 40 --screen-seeds 4 --eta 4   # screened sweep
 cargo run --release --bin evo-sim -- compare --seed 31 --seeds 24 --set larval_competition=18 vs defaults   # is A better than B?
+cargo run --release --bin evo-sim -- compare --seed 31 --adaptive --set larval_competition=18 vs defaults   # add seeds until it resolves
+cargo run --release --bin evo-sim -- rankcheck --trials 24 --seeds 4 --spread 0.5   # do 40-day screen ranks predict 120-day ranks?
 cargo run --release --bin evo-sim -- run --set sprint=2.0 --set crowding=0.05   # try a balance tweak
 cargo run --release --example trace -- 3 200          # follow one fox (lineage 3)
 cargo run --release --example stuck -- 120 1 2        # how often organisms get stuck
@@ -2683,6 +2685,48 @@ only meaningful with its spread over seeds:
   survival and mean alive, and a verdict, including roughly how many seeds a
   difference of the observed size would need to resolve. Adopt a change only
   when the paired CI excludes 0 on seeds no tuning run saw (31 onward).
+- **Adaptive `compare`** (`--adaptive`, or `--max-seeds N` which implies
+  it) adds seeds until the answer is clear instead of guessing a seed count:
+  it runs `--seeds` seeds (default 12), then batches of `--batch` (default
+  `--seeds`), both sides of a batch in parallel across cores like the plain
+  compare, and stops at the first look where the paired difference's
+  interval excludes 0 (a winner), lies entirely inside ±`--tolerance`
+  (default 0.3 points, "no difference that matters"; 0 turns it off), or the
+  cap is reached (default 48 seeds, so looks at 12, 24, 36, 48). Seeds are
+  the same contiguous run from `--seed` as a plain compare, so its first 12
+  seeds are exactly `compare --seeds 12`. Decisions:
+  - **Sequential level, not a naive 95% CI at every look.** Stopping the
+    first time a plain 95% interval excludes 0 gives a false winner far more
+    often than 5%: on simulated null differences with looks at 12/24/36/48
+    it did so 12.8% of the time. Each look therefore uses Pocock's
+    group-sequential level for the planned number of looks (2.94% for 2,
+    1.82% for 4, 1.06% for 10; 5% overall), with Student's t (`t_crit`, an
+    exact inverse via the incomplete beta) instead of the normal. A unit test
+    measures the overall rate on 4000 simulated null comparisons: 5.6%
+    (Pocock is exact for normal statistics at equal spacing; the t
+    adaptation is close). The printed per-seed table and "Paired difference"
+    line keep the one-shot 95% CI for reference; the `Adaptive:` line gives
+    the sequential interval and the verdict uses it. Pocock rather than
+    O'Brien-Fleming because the point is to stop early on clear differences;
+    the price is a slightly wider interval at the last look.
+  - **Equivalence stop.** "Within tolerance" means the whole sequential
+    interval fits in ±tolerance (an interval test of equivalence), not a
+    narrow interval around a non-zero mean. Seed-to-seed SD of a paired
+    difference is about 0.8–0.9 points, so ±0.3 is reachable around 40–48
+    seeds when the true difference is near 0; ±0.5 at about 24. A larger
+    `--max-seeds` adds looks and so lowers the per-look level.
+  - Each look prints the running difference and its naive CI with elapsed
+    time; the verdict names which stop fired and after how many seeds.
+
+  Example (`compare --seed 31 --adaptive --set larval_competition=18 vs
+  defaults`, current rules, 4 cores shared with other jobs): at 12 seeds
+  A − B = −0.48 (naive ±0.54, unresolved); at 24 seeds −0.82, sequential 95%
+  CI −1.26 … −0.37 (naive ±0.36), B 21 seeds to 2, so it stops with "B is
+  better" after 48 of the up to 96 worlds (518 s). The same check on a
+  short 48×48, 15-day toy (`--seeds 4 --max-seeds 12 --set hunger_rate=90`)
+  shows the guard working: the naive 12-seed CI (−0.66 … −0.05) excludes 0
+  but the sequential one (−0.72 … +0.01) does not, so it reports unresolved
+  at the cap.
 
 **Validation of `compare`** (`compare --seed 31 --seeds 24 --set
 larval_competition=18 vs defaults`, the value the pace-of-life term replaced
@@ -2705,6 +2749,62 @@ collapse early and rank the top poorly; its winner beat the center by
 +0.20 ± 1.07, not significant on 6 seeds. Use screens to cut the obvious
 losers cheaply (a high `--eta`, or 60 days for a sharper rank), give the
 finalists many seeds, and confirm a winner with `compare` on held-out seeds.
+
+**Do screen ranks predict full-run ranks? (`evo-sim rankcheck`).** The
+command builds one sweep round's trials (`perturb`, trial 0 the center),
+runs every trial on the same seeds once to the full `--days`, scoring each
+world at the checkpoints on the way (`--screen-days`, default 20,40,60,80;
+resumed, so the checkpoints cost nothing extra and equal straight runs of
+that length), and reports per checkpoint the Spearman correlation of trial
+means with the full-run means (ρ trials) and of single worlds (ρ worlds),
+how many of the full-run top `ceil(n/eta)` a screen there would keep, and
+whether it keeps the full-run best. It also gives the split-half
+reliability of the full-run ranking itself (even vs odd seeds, stepped up
+with Spearman-Brown), the best ρ any screen could reach on that many
+seeds. `--out` writes every world's score at every checkpoint. Two runs,
+24 trials × 4 seeds (1–4), 96×96, 120 days, 23 minutes in all on a shared
+4-core machine:
+
+| | spread 0.5 (round 1) | | | spread 0.25 (round 2) | | |
+| --- | --- | --- | --- | --- | --- | --- |
+| checkpoint | ρ trials | ρ worlds | top 8 kept (eta 3) | ρ trials | ρ worlds | top 8 kept |
+| 20 days | 0.53 | 0.35 | 6/8 | 0.16 | 0.03 | 2/8 |
+| **40 days** | **0.65** | 0.53 | 5/8 (best lost) | **0.31** | 0.27 | 3/8 |
+| 60 days | 0.78 | 0.71 | 6/8 | 0.54 | 0.50 | 4/8 |
+| 80 days | 0.83 | 0.74 | 5/8 | 0.68 | 0.76 | 6/8 |
+| 120-day split-half reliability (4 seeds) | 0.89 | | | 0.55 | | |
+| 120-day trial means | 7.67–11.98 (SD 1.16) | | | 10.38–11.96 (SD 0.46) | | |
+
+With 24 trials a ρ is uncertain by roughly ±0.2–0.3 (Fisher 95% interval for
+0.65: 0.33 … 0.83; for 0.31: −0.11 … 0.64), so read the pattern, not the
+second digit. What it says:
+
+- **40-day ranks predict 120-day ranks moderately in a wide first round and
+  barely in a narrow later one** (0.65 and 0.31). Part of the second number
+  is the reference itself: with 4 seeds the 120-day ranking of near-equal
+  trials (spread of means 0.46 against a seed-to-seed SD of 0.70) only
+  agrees with itself at 0.55, so no screen could do much better there.
+- **The screen is a loser filter, not a ranker.** At 40 days 6 (round 1)
+  and 9 (round 2) of the 24 trials still score a perfect 12.00, so the top
+  of a 40-day ranking is a tie (broken by trial index) and a 40-day screen
+  cannot tell good from best. What it does reliably is cut collapses: with
+  eta 3 it removed 7 and 6 of the 8 worst 120-day trials, and the kept set
+  contained the 120-day best in round 2 and missed it by 0.31 points (less
+  than the 0.48 SE of a 4-seed mean) in round 1.
+- **60 days is the better screen for the same budget.** A 40-day screen
+  with eta 3 runs 56% of a full sweep's world-days; a 60-day screen with
+  eta 3, or a 40-day screen with eta 2, runs 67%. The 60-day screen ranked
+  better (ρ 0.78 / 0.54), cut 8/8 and 7/8 of the worst third and kept the
+  best in both runs; the gentle 40-day eta 2 screen also kept the best
+  (it keeps half) but on a weaker rank. 20-day screens are close to useless
+  in later rounds (ρ 0.16).
+- So for the sweep's screening stage: in round 1 (spread 0.5) use
+  `--screen-days 40 --eta 3` or better `--screen-days 60`; in narrower
+  rounds use `--screen-days 60` (or 80) with a mild eta (2–3), and spend the
+  saved budget on finalist seeds (`--seeds 12 --screen-seeds 4`), since the
+  bottleneck there is noise in the full-run ranking itself. A winner still
+  needs `compare` (now `compare --adaptive`) on held-out seeds. The sweep's
+  defaults are unchanged (no screens unless asked).
 
 A run's score (max 12) gives each of the 8 lineages 1 point for surviving the
 year and up to 0.5 for holding its founding size, minus up to 3 for time spent
@@ -3534,8 +3634,12 @@ sections above).
    per gene and a world-wide registry of first appearances, touching legacy
    scoring and the snapshot format): a scoring-design change, not part of
    offline protection, left open until the design doc picks a rule.
-9. **Tooling.** An adaptive `compare` that adds seeds until the CI
-   resolves, and a check of how well 40-day screen ranks predict 120-day
-   ranks; what migrating buys a design (the caribou with and without the
+9. **Tooling.** Done: `compare --adaptive` (sequential, Pocock-level
+   looks until the CI excludes 0, fits within ±tolerance or hits
+   `--max-seeds`) and `rankcheck` (40-day screens predict 120-day ranks at
+   ρ ≈ 0.65 in a wide round, ≈ 0.31 in a narrow one; prefer 60-day screens
+   as loser filters). Open: a `rankcheck` with more seeds per trial (8–12)
+   to separate screen error from full-run noise in narrow rounds, and
+   what migrating buys a design (the caribou with and without the
    gene, paired) and a reason for winter ranges to exist (better
    cold-season pasture than the summer range).
