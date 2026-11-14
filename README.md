@@ -371,7 +371,8 @@ parallel jobs:
 | Rust | `cargo fmt --all --check` (`rustfmt.toml`: width 120), `cargo build --release --workspace`, `cargo test --release --workspace` with a `postgres:16` service container (`DATABASE_URL` set, so the persistence tests also run against `PgStore`; `EVO_REQUIRE_DATABASE=1` makes them fail rather than skip if it goes missing), `cargo clippy --release --all-targets -- -D warnings`, and clippy on `evo-server --no-default-features` (no sqlx) (stable toolchain, cargo cache) |
 | Balance smoke check | `scripts/balance-smoke.sh`: `evo-sim sweep --size 64 --trials 1 --seeds 3 --rounds 1 --days 60` with the default `Balance`, failing if fewer than 14 of the 24 lineage-worlds (8 lineages × 3 seeds) still hold 4 members with 2 adults, or the score drops below 7 of 12. The current rules make 21 of 24 and 10.4, so only a rule change that wrecks coexistence trips it; thresholds are env-overridable (`MIN_SURVIVORS`, `MIN_SCORE`, `SEEDS`, `DAYS`, `SIZE`). |
 | Client | `npm ci`, `npm run typecheck`, `npm test`, `npm run build` |
-| Android app | builds the client, generates the Capacitor project (`npx cap add android`), installs JDK 21 and the Android SDK (`android-actions/setup-android`: platform-tools, platform 36, build-tools 35.0.0), runs `./gradlew assembleDebug` and uploads `app-debug.apk` as the `evolution-mmo-debug-apk` artifact (14 days). No iOS job: it needs a macOS runner with Xcode (see "Mobile apps" in [Client](#client)) |
+| Android app | builds the client, generates the Capacitor project (`npx cap add android`), installs JDK 21 and the Android SDK (`android-actions/setup-android`: platform-tools, platform 36, build-tools 35.0.0), runs `./gradlew assembleDebug` and uploads `app-debug.apk` as the `evolution-mmo-debug-apk` artifact (14 days); then a second, plain-http build (`EVO_CAP_CLEARTEXT=1 npx cap sync android`, checked for `usesCleartextTraffic="true"` in the merged manifest) as `evolution-mmo-debug-apk-cleartext` for the emulator job. No iOS job: it needs a macOS runner with Xcode (see "Mobile apps" in [Client](#client)) |
+| Android emulator | after the Android job: enables KVM (GitHub's udev rule), builds `evo-server`, boots an API 34 `google_apis` x86_64 emulator (`reactivecircus/android-emulator-runner`, Pixel 6 profile, SwiftShader GPU; the AVD and a booted snapshot are cached) and runs `client/e2e/android-emulator.sh` on the cleartext APK: login, register, founder design, map and state frames, 25 s in the background and back with the socket recovered (see "Mobile apps" in [Client](#client)). Screenshots, logcat, the server log and `report.json` are uploaded as `android-emulator-smoke` (always) |
 | End-to-end | builds `evo-server` and the client, installs Playwright and Chromium (CI only; developer machines have them pre-installed), runs `npm run e2e` and uploads the screenshots as an artifact when it fails |
 
 Run the same checks locally before pushing:
@@ -1584,7 +1585,7 @@ npm run dev          # Vite on :5173, proxies /api and /ws to 127.0.0.1:8080 (EV
 npm run build        # typecheck + static bundle in client/dist
 npm run typecheck
 npm test             # Vitest unit tests
-npm run e2e          # Playwright smoke, phone-emulation and onboarding tests (needs `npm run build` and `cargo build --release -p evo-server`)
+npm run e2e          # Playwright smoke, phone-emulation, onboarding, push and Android-driver tests (needs `npm run build` and `cargo build --release -p evo-server`)
 ```
 
 Serve the built client from the game server (one origin, no proxy):
@@ -1895,8 +1896,8 @@ changes needed): `assembleDebug` succeeds and gives a 4.4 MB APK for
 `EVO_CAP_CLEARTEXT=1 npx cap sync android` the built manifest carries
 `android:usesCleartextTraffic="true"` and the app's config
 `allowMixedContent: true` (a plain `npm run cap:sync` turns both off again,
-so rerun it with the variable when you switch). The app has not been run:
-the build machine has no KVM for an emulator, and no device was attached.
+so rerun it with the variable when you switch). It has not been played on
+a physical device yet; an emulator smoke run (below) covers the basics.
 iOS needs macOS with Xcode; a CI job for it would be a `macos-latest`
 runner doing `npx cap add ios` and `xcodebuild -workspace` (or
 `-project` with SPM) `-scheme App -sdk iphonesimulator
@@ -1911,7 +1912,57 @@ reopens at once, and `main.ts` calls `socket.wake()` when the page becomes
 visible again, gets focus, comes back `online`, or receives Capacitor's
 `resume`: a pending retry runs immediately, and an open socket that
 delivers nothing within 4 s is reopened (unit-tested in `socket.test.ts`
-with a fake WebSocket; not yet seen on a device).
+with a fake WebSocket, and by the emulator smoke run below; not yet seen
+on a physical device).
+
+**Emulator smoke run.** `client/e2e/android-emulator.sh [apk]` checks the
+app on an Android emulator (or a device) against a local server, and is
+what the `android-emulator` CI job runs:
+
+```sh
+cd client && npm run build && EVO_CAP_CLEARTEXT=1 npx cap sync android && (cd android && ./gradlew assembleDebug)
+emulator -avd <your AVD> -no-window -gpu swiftshader_indirect -no-snapshot-save &   # needs KVM (or a device on adb)
+cargo build --release -p evo-server
+client/e2e/android-emulator.sh       # default APK: client/android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+It waits for the device to boot, turns animations off, starts `evo-server
+--fast --memory --size 64 --no-rate-limits` on `127.0.0.1:8080` (the
+emulator reaches it as `http://10.0.2.2:8080`), installs the APK, records
+logcat, and per attempt (2 by default, each after `pm clear`) launches the
+app and runs `e2e/android-webview.mjs`. That script forwards the WebView's
+DevTools socket (`webview_devtools_remote_<pid>`; WebView debugging is on
+in debug builds) and drives the page over the DevTools protocol with
+`e2e/android/cdp.mjs`, a small dependency-free client (Playwright's
+`connectOverCDP` wants a whole browser, which a WebView socket is not).
+The scenario (`e2e/android/scenario.mjs`): the login screen appears (Server
+field open on a native shell); the Server field gets the test server and a
+new player registers (typed with `Input.insertText`, buttons tapped with
+real input events); the founder design founds a lineage; the map is up with
+own organisms on a `connected` socket and state frames counted by a probe
+around `WebSocket`; the tour, when it opens, is skipped; a page screenshot
+of the map must show more than a flat color; then HOME, 25 s away (over the
+20 s watchdog), the launcher intent brings the app back, and within 30 s the
+socket must be connected again with new ticks and a frame under 3 s old
+(the reconnects, the page's visibility/focus events and the recovery time
+go into `report.json`). Screenshots (whole screen from `adb screencap` and
+page from DevTools), `logcat.txt`, `logcat-app.txt` (Capacitor, chromium
+and crash lines), `server.log` and `report.json` land in `OUT` (default
+`client/e2e/out/android`). Env: `ADB`, `ANDROID_SERIAL`, `EVO_PORT`,
+`EVO_BIND`/`EVO_APP_SERVER` (a device on the LAN: `EVO_BIND=0.0.0.0
+EVO_APP_SERVER=http://<host IP>:8080`), `EVO_APP_PAGE` (page URL regex, for
+an `EVO_CAP_LIVE_URL` build), `ATTEMPTS`, `BG_SECONDS`.
+
+The same scenario runs against desktop Chromium in `npm run e2e`
+(`e2e/android-desktop.mjs`): a phone-sized page served from its own origin
+like the app's, the server typed into the Server field, the raw DevTools
+client on `--remote-debugging-port`; "background" freezes the page (Page
+Lifecycle) and silently drops its connections through a proxy without
+closing them, so it must come back through a reconnect. The shell script
+was checked against a fake `adb` forwarding to that desktop Chromium
+(install, `pm clear`, forward retries, a failed first attempt and a passing
+second, HOME/resume, screencap, logcat filtering). Written on a machine
+without KVM, so the emulator itself only runs in CI.
 
 The app's page is `https://localhost` (Android) or `capacitor://localhost`
 (iOS), so it talks to a remote game server. The origin comes from, in
@@ -4263,15 +4314,19 @@ sections above).
    artifact; see "Mobile apps" in [Client](#client)), the cleartext switch
    for http dev servers is checked in the built manifest, and the socket
    now recovers from a backgrounded app (silent-socket watchdog, `wake()`
-   on resume). Still open: install the APK on a real Android device (or an
-   emulator on a machine with KVM) and play a session (login with a remote
+   on resume). An emulator smoke run is in CI (the `android-emulator` job:
+   login over the Server field to an http server with `EVO_CAP_CLEARTEXT=1`,
+   founder design, map and state frames, 25 s in the background and back
+   with the socket recovered; screenshots and logcat as artifacts). Still
+   open: install the APK on a real Android device and play a session (login with a remote
    server over https and a LAN http server with `EVO_CAP_CLEARTEXT=1`,
    touch gestures, the bottom sheet, the onboarding tour, reconnects after
    backgrounding and network switches); build iOS on macOS, add a
    `macos-latest` CI job for it (`xcodebuild … -sdk iphonesimulator
-   CODE_SIGNING_ALLOWED=NO`), and play the same session on an iPhone; an
-   emulator smoke run in CI (`reactivecircus/android-emulator-runner` on
-   a KVM-enabled Linux runner) once a device run shows what to check.
+   CODE_SIGNING_ALLOWED=NO`), and play the same session on an iPhone;
+   extend the emulator run with what a device run shows matters (touch
+   gestures on the map, the bottom sheet, a network switch with
+   `adb shell svc wifi`/`data`, an https server).
 2. **Native push notifications.** Web Push is implemented for the browser
    (see [Push notifications](#push-notifications)). What remains is native
    push in the Capacitor apps through FCM (Android) and APNs (iOS), and

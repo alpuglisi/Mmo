@@ -127,6 +127,105 @@ jobs:
           path: client/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      # A second, plain-http build for the emulator smoke run (its server is
+      # http://10.0.2.2:8080): EVO_CAP_CLEARTEXT=1 turns on cleartext and
+      # mixed content. Incremental, so it costs little; the shipped APK
+      # above stays https-only.
+      - name: Assemble the cleartext debug APK (for the emulator run)
+        run: |
+          EVO_CAP_CLEARTEXT=1 npx cap sync android
+          (cd android && ./gradlew assembleDebug --console=plain)
+          grep -rlq --include=AndroidManifest.xml 'usesCleartextTraffic="true"' android/app/build/intermediates \
+            || { echo "the cleartext build's merged manifest has no usesCleartextTraffic=\"true\""; exit 1; }
+          mkdir -p ../target/apk-cleartext
+          cp android/app/build/outputs/apk/debug/app-debug.apk ../target/apk-cleartext/app-debug-cleartext.apk
+      - name: Upload the cleartext APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: evolution-mmo-debug-apk-cleartext
+          path: target/apk-cleartext/app-debug-cleartext.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  android-emulator:
+    name: Android app on an emulator (smoke)
+    needs: android
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      API_LEVEL: 34
+      EMU_TARGET: google_apis
+      EMU_ARCH: x86_64
+      EMU_PROFILE: pixel_6
+      EMU_OPTIONS: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+    steps:
+      - uses: actions/checkout@v4
+      # GitHub's documented way to let the runner user open /dev/kvm.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build evo-server
+        run: cargo build --release -p evo-server --bin evo-server
+      - name: Download the cleartext APK
+        uses: actions/download-artifact@v4
+        with:
+          name: evolution-mmo-debug-apk-cleartext
+          path: target/apk-cleartext
+      # A booted emulator snapshot, made once per image and reused: a cold
+      # boot is minutes, a snapshot boot well under one.
+      - name: Cache the AVD
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.API_LEVEL }}-${{ env.EMU_TARGET }}-${{ env.EMU_ARCH }}-${{ env.EMU_PROFILE }}-v1
+      - name: Create the AVD and its snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          target: ${{ env.EMU_TARGET }}
+          arch: ${{ env.EMU_ARCH }}
+          profile: ${{ env.EMU_PROFILE }}
+          force-avd-creation: false
+          emulator-options: ${{ env.EMU_OPTIONS }}
+          disable-animations: false
+          script: echo "AVD snapshot made for the cache"
+      # The runner runs each line of `script` as its own shell; the whole run
+      # is one script (client/e2e/android-emulator.sh), which retries the
+      # scenario once from a clean app state. The step itself is not retried:
+      # a second emulator boot would double the job's time for little.
+      - name: Smoke-run the app
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          OUT: ${{ github.workspace }}/client/e2e/out/android
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          target: ${{ env.EMU_TARGET }}
+          arch: ${{ env.EMU_ARCH }}
+          profile: ${{ env.EMU_PROFILE }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save ${{ env.EMU_OPTIONS }}
+          disable-animations: true
+          emulator-boot-timeout: 900
+          script: bash client/e2e/android-emulator.sh target/apk-cleartext/app-debug-cleartext.apk
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-emulator-smoke
+          path: client/e2e/out/android/
+          if-no-files-found: warn
+          retention-days: 14
 
   e2e:
     name: End-to-end (Playwright)
