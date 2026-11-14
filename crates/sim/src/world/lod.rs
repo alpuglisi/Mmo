@@ -143,6 +143,7 @@ impl Rep {
             r.insulation += t.stats.insulation / n;
             r.carnivory += t.carnivory / n;
             r.litter += t.litter as f32 / n;
+            // At a warm body's temperature (`Balance::cold_gestation` applies at use).
             r.gestation += t.gestation_days / n;
             r.recovery += t.recovery_days / n;
             r.maturity += t.maturity_days / n;
@@ -1388,7 +1389,9 @@ impl World {
                     let dd = density * (1.0 - rep.group_tolerance) * rep.pace.sqrt();
                     1.0 / (1.0 + (dd / bal.breeding_density).powi(4))
                 };
-                let cycle = rep.gestation + rep.recovery + cfg.mate_search_days / breed_factor.max(0.05);
+                let cold_live = !rep.warm() && rep.birth() == BirthType::Live;
+                let gestation = if cold_live { rep.gestation * bal.cold_gestation } else { rep.gestation };
+                let cycle = gestation + rep.recovery + cfg.mate_search_days / breed_factor.max(0.05);
                 let lambda = a[0] as f32 * rep.litter * condition * fed.min(breed_s) * suppression / cycle;
                 let births = (poisson(lambda as f64, rng) as usize).min(*room_l);
                 *room_l -= births;

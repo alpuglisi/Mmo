@@ -1126,7 +1126,9 @@ planes and deflated (`flate2` on its pure-Rust miniz_oxide backend, fast
 level), on a second thread while the rest is encoded. Smooth fields
 (temperature, wind, wetness) leave long runs of zero high bytes, so the
 tiles take about 60% of what LZ4 made of them interleaved. Version 10
-snapshots (the tiles inside the payload) still restore.
+snapshots (the tiles inside the payload) and version 11 ones still restore:
+both lack `Balance::cold_gestation` (added in version 12), which then reads
+as 1.4, the rule they ran under (`serde_util::before_v12`).
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1172,7 +1174,7 @@ version 8 added the balance parameters `threat_caution`, `alert_guard` and
 `pasture_search` to the saved config; version 9 the hunters' search image; version 10 added groups and
 territories (`Organism::group`, migration orders per player and group,
 claimed territories and claim times); version 11 writes the tiles apart
-(above).
+(above); version 12 adds the balance parameter `cold_gestation`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -3113,7 +3115,8 @@ all from the doc's birth-type and offspring tradeoffs:
   live bearer: about 2 + 5 days against 8 + 6 for a mid-sized litter of 6.
 - **Cold-blooded gestation.** Embryos develop at body temperature: a
   cold-blooded live bearer now carries her young as much longer (×1.4) as
-  cold-blooded eggs take to incubate.
+  cold-blooded eggs take to incubate. (Later set back to the warm rate,
+  `cold_gestation` 1.0: see *Thermoregulation × birth mode*.)
 
 On the same 96 worlds (pooled; the brood-recovery rule was designed after
 seeing them) the shares moved from abandoned/incubated/live 13% / 35% / 27%
@@ -3397,7 +3400,78 @@ cold-blooded abandoned eggs 36.9% (warm 9.1%, the doc's mismatch), cold
 incubated 28.2% (warm 27.2%), cold live birth 15.1% (warm 34.4%).
 Cold-blooded live bearers carry their young 1.4× longer (cold-blooded
 gestation) and lose; cold-blooded egg layers that leave their eggs at the
-best nest site win. That is listed as the next birth-mode item.
+best nest site win. *Thermoregulation × birth mode* (below) takes it up.
+
+**Thermoregulation × birth mode.** Paired re-runs of the same tournament
+designs (`calibrate tournament --deaths`, tuning seeds 10001–10096, 96
+worlds, 384 entries) with one rule changed at a time, against the
+unchanged rules (win share of the six thermoregulation × birth classes;
+paired difference of mean final share, ± one standard error):
+
+| Change (one at a time) | Cold abandoned / incubated / live | Warm abandoned / incubated / live | What moved |
+| --- | --- | --- | --- |
+| None | 39.4% / 24.5% / 16.7% | 8.3% / 24.3% / 36.7% | |
+| Cold live bearers gestate as fast as warm ones | 38.0% / 26.4% / 24.1% | 9.7% / 21.6% / 31.7% | cold live share +0.013 ± 0.004, adults 114 → 134, born 232 → 301 |
+| Abandoned-egg layers not exempt from breeding suppression | 31.0% / 37.7% / 18.5% | 9.7% / 21.6% / 35.0% | cold abandoned laid 1028 → 575 per lineage, share −0.003 ± 0.003 |
+| Cold-blooded eggs develop at their temperature (none below 10 °C, full speed from 22 °C) | 35.2% / 24.5% / 22.2% | 9.7% / 21.6% / 38.3% | cold incubated share −0.007 ± 0.003 |
+| Both of the first two | 29.6% / 35.8% / 25.9% | 9.7% / 18.9% / 35.0% | |
+
+What each gains or loses:
+
+- **Cold-blooded live bearers lose to their gestation.** Carrying 1.4×
+  longer (8 · (0.6 + size) · (1 + 0.3 · litter) days, ×1.4) leaves them
+  fewer births per adult (232 born per lineage against 360 for warm live
+  bearers) and nothing else differs much: their deaths are few and spread
+  over causes (36 eaten, 22 thirst, 14 attrition per lineage). Gestating
+  at the warm rate alone gives them back 8 points of wins and a
+  significant share. It is also what live-bearing ectotherms do: a
+  basking mother keeps her embryos near her active temperature, which is
+  why lizards and snakes of cold climates bear live young; eggs in a nest
+  get no such help.
+- **Cold-blooded abandoned eggs gain from breeding fastest.** A mother
+  lays 2 days after mating and recovers 3–9 days, against a live bearer's
+  7–15 days of gestation plus recovery and a brooder's incubation; cold
+  eggs rarely chill (10 °C floor, 14% of eggs lost to cold, heat and
+  raids, against 83% of warm-blooded abandoned eggs chilled), and their
+  mothers skip density-dependent breeding (larval competition thins their
+  young instead). They lay 3× as many eggs as cold incubators (1028 per
+  lineage against 336), and half their young starve as larvae (383 of 689
+  hatched). Applying breeding suppression to them as well halves their
+  laying and cuts their wins by 8 points, but their mean share barely
+  moves (−0.003 ± 0.003) and the wins go to cold incubators (24.5% →
+  37.7%), so it trades one cold egg mode's edge for the other's; with the
+  gestation change the six classes spread wider than with that change
+  alone (sum of squared distances from 25%: 510 against 462).
+  Temperature-dependent development of cold eggs costs brooders more than
+  abandoned eggs (a brooder's 4 °C lift doesn't make up for it). Neither
+  was kept.
+
+The rule kept: **`cold_gestation`** (1.0; the old rule was 1.4): a
+cold-blooded live bearer carries her young `cold_gestation` times as long
+as a warm-blooded one of the same size and litter (`Traits::gestation`);
+cold-blooded eggs still take 1.4× as long, and cold-blooded growth and
+lifespan are unchanged. Judged on 96 fresh worlds (seeds 50001–50096,
+designs unseen by any probe), paired with `--set cold_gestation=1.4`:
+
+| Win share (mean final share) | `cold_gestation` 1.4 | 1.0 |
+| --- | --- | --- |
+| Cold abandoned eggs (63 entries) | 36.5% (0.103) | 34.9% (0.104) |
+| Cold incubated eggs (58) | 25.9% (0.080) | 25.9% (0.080) |
+| Cold live birth (73) | 19.2% (0.072) | 27.4% (0.085; +0.012 ± 0.003) |
+| Warm abandoned eggs (65) | 10.8% (0.036) | 7.7% (0.036) |
+| Warm incubated eggs (68) | 25.0% (0.086) | 25.0% (0.082) |
+| Warm live birth (57) | 35.1% (0.093) | 29.8% (0.092) |
+
+Pooled over both sets (192 worlds) cold-blooded live bearers win 18.1% →
+26.0% and cold-blooded abandoned eggs 38.1% → 36.6%: both toward fair,
+the second only slightly. `compare` on seeds 101–148 (48,
+`--set cold_gestation=1.4 vs defaults`) scores 11.39 for both, identical
+on every seed: the sample designs have no cold-blooded live bearer, so the
+ecosystem and the standard sweeps are untouched (the client wire fixture
+too). Snapshots move to format version 12 (the new `Balance` field;
+versions 10 and 11 still restore with it at 1.4). New tunable:
+`cold_gestation`. What is left is
+cold-blooded abandoned eggs' fast cycle (Suggested next steps).
 
 Do eggs count toward population? They don't, by design, and it changes no
 result here. The legacy score counts breeding adults (the doc), and the
@@ -3634,13 +3708,17 @@ sections above).
    world holds the clock. Still open: where one process stops scaling (3+
    worlds, on dedicated cores, where the measured 0.3 cores per world
    suggests up to one world per core).
-4. **Thermoregulation × birth mode.** Incubated eggs no longer win
-   tournaments (27.7% of 240 worlds, fair 25%; see *Birth modes,
-   re-measured* in [Balance](#balance)), but cold-blooded abandoned eggs
-   win 36.9% and cold-blooded live bearers 15.1%. Find what each gains or
-   loses (paired re-runs of the same designs with one rule changed, as in
-   the dominant-design work) and judge any fix with `compare` and fresh
-   tournament seeds.
+4. **Cold-blooded abandoned eggs.** Cold-blooded live bearers are back
+   near fair (`cold_gestation`; see *Thermoregulation × birth mode* in
+   [Balance](#balance)), but cold-blooded abandoned eggs still win about
+   35–38% of tournaments (fair 25%) with the highest mean share, from the
+   fastest breeding cycle (lay 2 days after mating, recover 3–9 days, no
+   breeding suppression, cold eggs rarely lost). Breeding suppression for
+   them and temperature-dependent development of cold eggs only moved the
+   wins to cold incubators or cost brooders more. Candidates: tie an
+   abandoned-egg mother's recovery to her clutch's mass or the eggs she
+   provisions (yolk), or larval competition across lineages of the same
+   diet, judged as before with paired tournaments and `compare`.
 5. **Founding packs of hunters.** The prey-side rules move about four
    lineage losses in 48 worlds from prey to predators (see *Predators under
    the prey-side rules* in [Balance](#balance)): pack hunters are lost on

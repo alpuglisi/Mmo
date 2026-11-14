@@ -198,6 +198,17 @@ impl Traits {
         self.carnivory.clamp(0.0, 1.0) * generalist_factor(self.carnivory, tax)
     }
 
+    /// Days from conception to birth (live bearers) or laying (eggs):
+    /// `gestation_days`, times `cold_gestation` for a cold-blooded live
+    /// bearer (`Balance::cold_gestation`).
+    pub fn gestation(&self, cold_gestation: f32) -> f32 {
+        if !self.warm && self.birth == BirthType::Live {
+            self.gestation_days * cold_gestation
+        } else {
+            self.gestation_days
+        }
+    }
+
     pub fn litter_fraction(&self) -> f32 {
         (self.litter - 1) as f32 / (MAX_LITTER - 1) as f32
     }
@@ -274,10 +285,10 @@ pub fn derive(p: &Phenotype) -> Traits {
     };
 
     let newborn_growth = 0.05 + 0.2 * (1.0 - litter_frac);
-    // Embryos develop at body temperature: a cold-blooded mother carries her
-    // young as much longer as cold-blooded eggs take to incubate.
+    // At a warm body's temperature; a cold-blooded live bearer's factor is
+    // `Balance::cold_gestation` (`Traits::gestation`).
     let gestation_days = match birth {
-        BirthType::Live => 8.0 * (0.6 + size) * (1.0 + 0.3 * litter_frac) * cold_factor,
+        BirthType::Live => 8.0 * (0.6 + size) * (1.0 + 0.3 * litter_frac),
         _ => 2.0,
     };
 
@@ -353,16 +364,21 @@ mod tests {
         assert!(cold.fur_mismatch > 0.0 && warm.fur_mismatch == 0.0);
     }
 
-    /// Young develop at body temperature, in the womb as in the egg: a
-    /// cold-blooded mother carries as much longer as her eggs would take.
+    /// Cold-blooded eggs take 1.4× as long; a cold-blooded live bearer's
+    /// young take `cold_gestation` times as long (a basking mother keeps
+    /// them near her active temperature), and egg layers lay as soon.
     #[test]
     fn cold_blooded_young_develop_slower() {
         let t = |thermo, birth| traits_of(&FounderDesign::new("t", thermo, birth, 3));
         let (warm, cold) = (t(Thermo::Warm, BirthType::Live), t(Thermo::Cold, BirthType::Live));
-        let ratio = cold.gestation_days / warm.gestation_days;
-        let eggs = t(Thermo::Cold, BirthType::IncubatedEggs).incubation_days
-            / t(Thermo::Warm, BirthType::IncubatedEggs).incubation_days;
-        assert!(ratio > 1.3 && (ratio - eggs).abs() < 1e-5, "gestation ×{ratio}, incubation ×{eggs}");
+        for k in [1.0, 1.4] {
+            let ratio = cold.gestation(k) / warm.gestation(k);
+            assert!((ratio - k).abs() < 1e-5, "gestation ×{ratio} for cold_gestation {k}");
+        }
+        let eggs = t(Thermo::Cold, BirthType::IncubatedEggs);
+        assert_eq!(eggs.gestation(1.4), t(Thermo::Warm, BirthType::IncubatedEggs).gestation(1.4));
+        let incubation = eggs.incubation_days / t(Thermo::Warm, BirthType::IncubatedEggs).incubation_days;
+        assert!((incubation - 1.4).abs() < 1e-5, "incubation ×{incubation}");
     }
 
     #[test]

@@ -108,7 +108,7 @@ migration_risk torpor_metabolism cache_capacity shared_burrow sentry_share
 sentry_vigilance sentry_cost communal_den group_navigation shared_cache molt_cost
 coat_insulation breeding_window timed_conception breeding_recklessness courtship_caution
 brood_recovery egg_overheat brood_warmth brood_cost threat_caution alert_guard pasture_search
-search_image possess_urgency possess_danger
+search_image cold_gestation possess_urgency possess_danger
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
 juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump

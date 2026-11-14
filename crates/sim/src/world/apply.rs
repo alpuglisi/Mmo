@@ -731,7 +731,7 @@ impl World {
             father_id,
             father_lineage,
             fertility,
-            due_tick: tick + (female.traits.gestation_days * tpd) as u64,
+            due_tick: tick + (female.traits.gestation(self.config.balance.cold_gestation) * tpd) as u64,
         });
         female.needs.breeding = 0.0;
         if female.lineage != father_lineage {

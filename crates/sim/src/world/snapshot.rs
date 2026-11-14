@@ -55,9 +55,10 @@
 //! genome as the index of the father while he is in the world
 //! (`serde_util::father`), so the restore shares it with him again.
 //!
-//! Snapshots of this format version restore, and of version 10, which holds
-//! the same state with the tiles inside the payload
-//! ([`SnapshotHeader::restorable`]). Version 5 moved the
+//! Snapshots of this format version restore, and of versions 10 and 11
+//! ([`SnapshotHeader::restorable`]): version 10 holds the tiles inside the
+//! payload, and both lack `Balance::cold_gestation`, which reads as 1.4 (the
+//! rule they ran under; `serde_util::before_v12`). Version 5 moved the
 //! terrain out of the snapshot; version 6 added lakes and floodplains to map
 //! generation (`Ground::plain`, `Tile::silt`) and a wind direction to the
 //! weather cells, which older maps can't be given deterministically, so
@@ -70,6 +71,8 @@
 //! Version 10 adds player groups and territories (`Organism::group`,
 //! migration orders keyed by player and group, the world's claimed
 //! territories and claim times). Version 11 writes the tiles apart (above).
+//! Version 12 adds the `Balance::cold_gestation` parameter to the saved
+//! config.
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -90,10 +93,12 @@ use crate::terrain::{Terrain, Tile};
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 11;
-/// The oldest format version that still restores: the same state as
-/// version 11, with the tiles inside the payload.
+pub const SNAPSHOT_VERSION: u32 = 12;
+/// The oldest format version that still restores: version 11's state with
+/// the tiles inside the payload, and both without `Balance::cold_gestation`.
 const OLDEST_RESTORABLE: u32 = 10;
+/// The first format version with `Balance::cold_gestation`.
+const COLD_GESTATION_VERSION: u32 = 12;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
@@ -134,7 +139,7 @@ impl SnapshotHeader {
     }
 
     /// Whether [`World::restore`] reads snapshots of this format version
-    /// (this one, or the previous one with the same state).
+    /// (this one, or versions 10 and 11).
     pub fn restorable(&self) -> bool {
         (OLDEST_RESTORABLE..=SNAPSHOT_VERSION).contains(&self.version)
     }
@@ -464,15 +469,17 @@ impl World {
         out
     }
 
-    /// A version 10 snapshot (tiles inside the payload), as earlier builds
-    /// wrote, to test that they still restore.
+    /// A version 10 snapshot (tiles inside the payload, no
+    /// `Balance::cold_gestation`), as earlier builds wrote, to test that they
+    /// still restore.
     #[cfg(test)]
     fn snapshot_v10(&self) -> Vec<u8> {
+        let _old = crate::serde_util::before_v12::Guard::new();
         let raw = payload_options().serialize(self).expect("world serializes");
         self.snapshot_with(OLDEST_RESTORABLE, FLAG_LZ4, raw.len(), &lz4_flex::block::compress(&raw))
     }
 
-    /// A world from [`World::snapshot`] bytes (or a version 10 snapshot's)
+    /// A world from [`World::snapshot`] bytes (or a version 10 or 11 snapshot's)
     /// and the terrain it names (`SnapshotHeader::terrain`), with its
     /// derived lookups rebuilt. Fails on another format version, a corrupt
     /// payload, or a missing or wrong terrain.
@@ -482,6 +489,8 @@ impl World {
             return Err(SnapshotError::Version { found: h.version, expected: SNAPSHOT_VERSION });
         }
         let hash = h.terrain.ok_or(SnapshotError::BadHeader)?;
+        // Read (and hash) the config without the parameters added since.
+        let _old = (h.version < COLD_GESTATION_VERSION).then(crate::serde_util::before_v12::Guard::new);
         let body = &bytes[h.len()..];
         if fnv1a(body) != h.checksum {
             return Err(SnapshotError::Checksum);

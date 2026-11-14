@@ -11,6 +11,8 @@
 //!   when the father is still in the world.
 //! - `tiles`: the map's tiles, written as an empty list while a world
 //!   snapshot writes them in a section of their own.
+//! - `before_v12`: `Balance::cold_gestation`, left out while a version 10 or
+//!   11 world snapshot is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -280,6 +282,56 @@ pub mod tiles {
             s.collect_seq(std::iter::empty::<&Tile>())
         } else {
             s.collect_seq(v)
+        }
+    }
+}
+
+/// `Balance::cold_gestation`, added in world snapshot version 12:
+/// `#[serde(with = "crate::serde_util::before_v12")]`. On a thread holding a
+/// [`before_v12::Guard`] (reading or hashing a version 10 or 11 snapshot)
+/// it is neither written nor read, so the config has its old layout, and
+/// reads as 1.4, the rule those saves ran under. bincode writes a unit as
+/// nothing.
+pub mod before_v12 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// `cold_gestation` before version 12 (`stats::derive` had it built in).
+    pub const OLD_COLD_GESTATION: f32 = 1.4;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_COLD_GESTATION)
+        } else {
+            f32::deserialize(d)
         }
     }
 }

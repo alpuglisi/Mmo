@@ -313,11 +313,16 @@ fn older_snapshots_are_refused_by_version() {
 }
 
 /// Version 10 snapshots (the tiles inside the payload, as builds before
-/// version 11 wrote them) still restore, to the same world.
+/// version 11 wrote them, and no `Balance::cold_gestation`) still restore,
+/// to the same world, with the rule they ran under.
 #[test]
 fn version_10_snapshots_still_restore() {
-    let w = fixture_world();
+    let mut w = fixture_world();
+    w.config.balance.cold_gestation = crate::serde_util::before_v12::OLD_COLD_GESTATION;
     let old = w.snapshot_v10();
+    // Without the parameter the payload is 4 bytes (one f32) shorter.
+    let raw = payload_options().serialize(&w).unwrap();
+    assert_eq!(SnapshotHeader::read(&old).unwrap().raw_len + 4, raw.len() as u64);
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!((h.version, h.flags), (10, FLAG_LZ4));
     assert!(h.restorable());

@@ -552,6 +552,15 @@ pub struct Balance {
     /// so most carry its image and a rare kind is taken less than its
     /// encounter rate alone would have it. 0 disables.
     pub search_image: f32,
+    /// How many times as long a cold-blooded live bearer carries her young
+    /// as a warm-blooded one of the same size and litter
+    /// (`Traits::gestation`). Cold-blooded eggs take 1.4× as long, but a
+    /// live-bearing ectotherm basks and keeps her embryos near her active
+    /// temperature (why reptiles of cold climates bear live young). At 1.4,
+    /// the old rule, cold-blooded live bearers won 15–17% of tournaments
+    /// (fair 25%) and cold-blooded egg layers that leave their eggs 37–39%.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v12"))]
+    pub cold_gestation: f32,
 }
 
 impl Default for Balance {
@@ -641,12 +650,13 @@ impl Default for Balance {
             alert_guard: 0.5,
             pasture_search: 6.0,
             search_image: 0.7,
+            cold_gestation: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 82;
+    pub const FIELD_COUNT: usize = 83;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -738,6 +748,7 @@ impl Balance {
             ("alert_guard", &mut self.alert_guard),
             ("pasture_search", &mut self.pasture_search),
             ("search_image", &mut self.search_image),
+            ("cold_gestation", &mut self.cold_gestation),
         ]
     }
 
