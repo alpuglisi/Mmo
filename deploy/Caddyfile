@@ -1,0 +1,18 @@
+# HTTPS for the game: a certificate for EVO_DOMAIN from Let's Encrypt (or
+# Caddy's own CA for `localhost`), renewed automatically; plain http on
+# port 80 redirects to https.
+{
+	email {$ACME_EMAIL}
+}
+
+{$EVO_DOMAIN} {
+	# Compresses the client bundle and the JSON API. WebSocket upgrades
+	# (/ws) pass through untouched: reverse_proxy needs no extra settings.
+	encode zstd gzip
+	# Sets X-Forwarded-For to the client's address (replacing whatever the
+	# client sent); evo-server believes it from this proxy only
+	# (--trusted-proxy), for its per-client rate limits.
+	reverse_proxy evo:8080
+	# No access log on purpose: WebSocket URLs carry the session token
+	# (README "Security notes").
+}

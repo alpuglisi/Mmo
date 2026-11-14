@@ -8,6 +8,7 @@
 //!            [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:...] [--push-per-hour N]
 //!            [--push-allow-any-endpoint] [--fcm-service-account FILE] [--apns-key FILE --apns-key-id ID
 //!            --apns-team-id ID [--apns-topic BUNDLE_ID] [--apns-sandbox]] [--hash-concurrency N] [--hash-queue N]
+//!            [--trusted-proxy ADDR[/BITS][,...]]...
 //! ```
 //!
 //! `--database-url` (or the `DATABASE_URL` environment variable) keeps
@@ -44,6 +45,11 @@
 //! wait, by default 16 per concurrent hash. Past that a login or
 //! registration is refused at once with 503 `busy` and `retry_after_ms`.
 //!
+//! `--trusted-proxy` (or `EVO_TRUSTED_PROXIES`, comma-separated) names the
+//! reverse proxies, by address or CIDR network, whose `X-Forwarded-For`
+//! header gives the client's address for the per-client rate limits.
+//! Without it every client behind a proxy shares the proxy's limits.
+//!
 //! SIGINT (Ctrl-C) or SIGTERM stops it gracefully, saving the world first.
 
 use std::time::Duration;
@@ -61,7 +67,8 @@ const USAGE: &str =
 [--season-days 60] [--offline-protection-hours 12] [--home-range-hours 12] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE] \
 [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:you@example.org] [--push-per-hour 4] \
 [--push-allow-any-endpoint] [--fcm-service-account FILE] [--apns-key FILE --apns-key-id ID --apns-team-id ID \
-[--apns-topic org.evolutionmmo.client] [--apns-sandbox]] [--hash-concurrency N] [--hash-queue N]";
+[--apns-topic org.evolutionmmo.client] [--apns-sandbox]] [--hash-concurrency N] [--hash-queue N] \
+[--trusted-proxy ADDR[/BITS][,...]]";
 
 /// A credential given as a file path, or inline (text containing `marker`).
 fn read_credential(name: &str, value: &str, marker: &str) -> Result<String, String> {
@@ -156,6 +163,8 @@ fn parse_args() -> Result<ServerConfig, String> {
     let mut offline_hours: Option<f64> = None;
     let mut home_hours: Option<f64> = None;
     let mut native = NativeArgs::from_env();
+    let mut proxies = env("EVO_TRUSTED_PROXIES").unwrap_or_default();
+    let mut cli_proxies = String::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -258,6 +267,10 @@ fn parse_args() -> Result<ServerConfig, String> {
                 hash_concurrency = Some(positive("--hash-concurrency", &value("--hash-concurrency")?)?)
             }
             "--hash-queue" => hash_queue = Some(count("--hash-queue", &value("--hash-queue")?)?),
+            "--trusted-proxy" => {
+                cli_proxies.push(',');
+                cli_proxies.push_str(&value("--trusted-proxy")?);
+            }
             "--world" => cli_worlds.push(WorldSpec::parse(&value("--world")?).map_err(|e| format!("--world: {e}"))?),
             "--worlds-file" => {
                 let path = value("--worlds-file")?;
@@ -294,6 +307,12 @@ fn parse_args() -> Result<ServerConfig, String> {
     if !cli_worlds.is_empty() {
         worlds = cli_worlds;
     }
+    // Like the worlds: command-line proxies replace the variable's.
+    if !cli_proxies.is_empty() {
+        proxies = cli_proxies;
+    }
+    cfg.trusted_proxies =
+        evo_server::limits::TrustedProxies::parse(&proxies).map_err(|e| format!("--trusted-proxy: {e}"))?;
     if !worlds.is_empty() {
         evo_server::worlds::validate(&worlds)?;
     }

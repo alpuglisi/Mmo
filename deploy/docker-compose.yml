@@ -1,0 +1,113 @@
+# Evolution MMO: evo-server + PostgreSQL + Caddy (automatic HTTPS).
+#
+#   cd deploy && cp .env.example .env && $EDITOR .env
+#   docker compose up -d --build
+#
+# See deploy/README.md. Only Caddy publishes ports; evo-server and
+# PostgreSQL are reachable only on the compose networks.
+
+name: evo
+
+# Docker's default log driver keeps everything; cap it per container.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: "5"
+
+services:
+  evo:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ${EVO_IMAGE:-evo-server:latest}
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # The flags not covered by environment variables. Add world, size or
+    # season flags here (README "Server" and "Several worlds").
+    command:
+      - --bind
+      - 0.0.0.0:8080
+      - --static
+      - /usr/share/evo/client
+      - --trusted-proxy
+      - ${EVO_PROXY_IP:-172.30.89.10}
+    environment:
+      DATABASE_URL: postgres://evo:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/evo
+      RUST_LOG: ${RUST_LOG:-info}
+      EVO_WORLDS: ${EVO_WORLDS:-}
+      EVO_HASH_CONCURRENCY: ${EVO_HASH_CONCURRENCY:-}
+      EVO_VAPID_SUBJECT: ${EVO_VAPID_SUBJECT:-}
+      EVO_VAPID_PRIVATE_KEY: ${EVO_VAPID_PRIVATE_KEY:-}
+      EVO_FCM_SERVICE_ACCOUNT: ${EVO_FCM_SERVICE_ACCOUNT:-}
+      EVO_APNS_KEY: ${EVO_APNS_KEY:-}
+      EVO_APNS_KEY_ID: ${EVO_APNS_KEY_ID:-}
+      EVO_APNS_TEAM_ID: ${EVO_APNS_TEAM_ID:-}
+      EVO_APNS_TOPIC: ${EVO_APNS_TOPIC:-}
+      EVO_APNS_SANDBOX: ${EVO_APNS_SANDBOX:-}
+    volumes:
+      # FCM / APNs key files (see .env.example), read-only.
+      - ./secrets:/run/secrets/evo:ro
+    # SIGTERM saves every world before exiting: give it time.
+    stop_grace_period: 2m
+    networks:
+      - web
+      - db
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: evo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: evo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "evo", "-d", "evo"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    stop_grace_period: 1m
+    networks:
+      - db
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      - evo
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      EVO_DOMAIN: ${EVO_DOMAIN:?set EVO_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      web:
+        # Fixed, so evo-server can trust exactly this address's
+        # X-Forwarded-For (--trusted-proxy) and no other.
+        ipv4_address: ${EVO_PROXY_IP:-172.30.89.10}
+
+networks:
+  web:
+    ipam:
+      config:
+        - subnet: ${EVO_WEB_SUBNET:-172.30.89.0/24}
+  db:
+    internal: true
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

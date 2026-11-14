@@ -36,6 +36,8 @@ crates/
   sim-cli/   evo-sim binary: run worlds, print reports, benchmark, render PNGs
   server/    evo-server: authoritative game server (Tokio + Axum, WebSockets)
 client/      web client: TypeScript, PixiJS 8, Vite (npm)
+deploy/      docker compose deployment: evo-server, PostgreSQL, Caddy (HTTPS); see Deployment
+Dockerfile   image with evo-server and the built client
 docs/
   game-design.md
 ```
@@ -375,6 +377,7 @@ jobs (the Android emulator job waits for the Android one):
 | Android emulator | after the Android job: enables KVM (GitHub's udev rule), builds `evo-server`, boots an API 34 `google_apis` x86_64 emulator (`reactivecircus/android-emulator-runner`, Pixel 6 profile, SwiftShader GPU; the AVD and a booted snapshot are cached) and runs `client/e2e/android-emulator.sh` on the cleartext APK: login, register, founder design, map and state frames, 25 s in the background and back with the socket recovered (see "Mobile apps" in [Client](#client)). Screenshots, logcat, the server log and `report.json` are uploaded as `android-emulator-smoke` (always) |
 | iOS app | on `macos-latest` (45 min limit): builds the client, generates the Capacitor project (`npx cap add ios`, Swift Package Manager), builds it for the simulator unsigned (`client/scripts/ios-build-sim.sh`: `xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO`), checks its `Info.plist` has no App Transport Security exception and uploads `App.app` zipped as `evolution-mmo-ios-simulator-app` (14 days); then a plain-http build (`EVO_CAP_CLEARTEXT=1 npx cap sync ios`, checked for `NSAllowsArbitraryLoadsInWebContent`), builds `evo-server`, installs Appium 3.9.0 with the XCUITest driver 12.22.7 and runs `client/e2e/ios-simulator.sh` on it: the Android scenario (login, register, founder design, map and state frames, home button for 25 s and back with the socket recovered) in an iPhone simulator, plus the server's `/api/metrics` showing the app's socket and state frames. Cargo, the Swift packages, the Appium driver and WebDriverAgent's build are cached. Screenshots, the app's log, Appium's and the server's logs, `metrics.json` and `report.json` are uploaded as `ios-simulator-smoke` (always) |
 | End-to-end | builds `evo-server` and the client, installs Playwright and Chromium (CI only; developer machines have them pre-installed), runs `npm run e2e` and uploads the screenshots as an artifact when it fails |
+| Docker image and deployment | `hadolint` on the `Dockerfile`, `shellcheck` on `scripts/deploy-smoke.sh`, `docker compose config` on `deploy/`, builds the image (Buildx, GitHub Actions cache, not pushed) and runs `scripts/deploy-smoke.sh`: the compose stack (evo-server, PostgreSQL, Caddy for `localhost`), health endpoint, client page, http → https redirect, registration, a WebSocket upgrade through Caddy, per-client rate limits behind Caddy (`--trusted-proxy`), an account surviving a restart in PostgreSQL, and a non-root image user (see [Deployment](#deployment)) |
 
 Run the same checks locally before pushing:
 
@@ -437,7 +440,11 @@ the apps, off without them; see [Native push in the apps](#native-push-in-the-ap
 `--hash-queue N` (or `EVO_HASH_CONCURRENCY` / `EVO_HASH_QUEUE`: password
 hashes run at once, default half the cores and at least 1, and requests
 allowed to wait for one, default 16 per concurrent hash; see Accounts under
-[Architecture](#architecture)).
+[Architecture](#architecture)), `--trusted-proxy ADDR[/BITS][,...]` (or
+`EVO_TRUSTED_PROXIES`: reverse proxies, by address or CIDR network, whose
+`X-Forwarded-For` gives the client address for the per-client rate limits;
+the last entry that is not itself a trusted proxy counts, and the header is
+ignored from any other peer).
 `RUST_LOG=debug` for more logging. SIGINT (Ctrl-C) or SIGTERM stops the
 server gracefully: it stops serving, saves every world (in parallel) and
 waits for the store to finish writing.
@@ -1822,14 +1829,33 @@ Checked and judged acceptable:
   anyone holding it could push to every subscriber, so back it up like the
   database. Pushes are rate-limited per player (above), so the game can't
   be used to flood a device.
+- **Reverse proxies.** Behind a proxy every client connects from the
+  proxy's address, which would make the per-client limits one limit for
+  everybody: `--trusted-proxy` names the proxies whose `X-Forwarded-For` is
+  believed (the last entry not itself a proxy; from any other peer the
+  header is ignored, so a client can't pick its own key). The compose
+  deployment trusts only Caddy's fixed address.
 - **Left as is:** names are case-sensitive (`Ann` and `ann` are different
-  accounts); a reverse proxy makes every client one IP for the limits;
+  accounts);
   `GET /api/leaderboard/seasons` reads up to 100 000 daily records per call
   (rate-limited now; a cache would be the next step); `accounts.json` is
   written with the process umask; after a crash and a restart from an older
   saved game, the store's balances and ledger can hold entries from the
   abandoned timeline until they are overwritten, which a later `--fresh`
   refund (that trusts the store after the newest save) inherits.
+
+## Deployment
+
+[`deploy/README.md`](deploy/README.md) is the guide for running a public
+server on one machine: the repository's multi-stage `Dockerfile` (evo-server
+in release and the client bundle in a `debian:trixie-slim` image, non-root,
+health check on `/api/metrics`) and `deploy/docker-compose.yml` with
+PostgreSQL and Caddy (automatic HTTPS, WebSocket passthrough), configured
+from `deploy/.env` (`.env.example`: domain, database password, VAPID
+subject, FCM/APNs key files). It covers sizing from the
+[capacity](#several-worlds-capacity) numbers, the first start, upgrades
+(migrations apply themselves at start-up), backups and restore of the
+database (which holds the world saves too), logs, and push setup.
 
 ## Client
 

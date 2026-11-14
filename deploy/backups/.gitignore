@@ -1,0 +1,4 @@
+# Database dumps (deploy/README.md, Backups). Copy them off the machine;
+# never commit them.
+*
+!.gitignore

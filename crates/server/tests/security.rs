@@ -9,7 +9,7 @@ use std::time::Duration;
 use evo_server::accounts::HashPolicy;
 use evo_server::game::WorldSettings;
 use evo_server::http::{map_scale, MAX_BODY, MAX_CLIENT_MESSAGE, MAX_CONNS_PER_PLAYER, MAX_MAP_SIDE};
-use evo_server::limits::{Limits, Rate};
+use evo_server::limits::{Limits, Rate, TrustedProxies};
 use evo_server::{start, RunningServer, ServerConfig};
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
@@ -156,6 +156,41 @@ async fn expensive_reads_are_rate_limited_per_client() {
         assert_eq!(s, StatusCode::OK);
     }
     srv.shutdown().await;
+}
+
+async fn get_forwarded(addr: SocketAddr, path: &str, forwarded_for: &str) -> StatusCode {
+    let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
+    let r = Request::get(format!("http://{addr}{path}")).header("x-forwarded-for", forwarded_for);
+    client.request(r.body(Full::new(Bytes::new())).unwrap()).await.expect("request").status()
+}
+
+/// Behind a trusted reverse proxy (`--trusted-proxy`) each client gets its
+/// own limit by `X-Forwarded-For`; from an untrusted peer the header is
+/// ignored, so it can't be used to dodge the limit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_trusted_proxy_forwards_the_client_address_for_the_limits() {
+    for trusted in [true, false] {
+        let mut cfg = config();
+        cfg.limits = Limits { reads: Rate::new(0.01, 2.0), ..Limits::unlimited() };
+        if trusted {
+            cfg.trusted_proxies = TrustedProxies::parse("127.0.0.0/8").unwrap();
+        }
+        let srv = server(cfg).await;
+        let addr = srv.addr;
+        for _ in 0..2 {
+            assert_eq!(get_forwarded(addr, "/api/species", "203.0.113.1").await, StatusCode::OK);
+        }
+        assert_eq!(get_forwarded(addr, "/api/species", "203.0.113.1").await, StatusCode::TOO_MANY_REQUESTS);
+        // A spoofed first entry doesn't help: the proxy's (last) one counts.
+        assert_eq!(
+            get_forwarded(addr, "/api/species", "198.51.100.7, 203.0.113.1").await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        let other = get_forwarded(addr, "/api/species", "203.0.113.2").await;
+        let expect = if trusted { StatusCode::OK } else { StatusCode::TOO_MANY_REQUESTS };
+        assert_eq!(other, expect, "trusted: {trusted}");
+        srv.shutdown().await;
+    }
 }
 
 /// A login burst past the hash queue gets 503 `busy` with a retry time at

@@ -220,7 +220,7 @@ async fn limit_reads(
     req: HttpRequest,
     next: Next,
 ) -> Response {
-    match app.limiters.reads.check(&client_ip(&info)) {
+    match app.limiters.reads.check(&client_ip(&app, &info, req.headers())) {
         Ok(()) => next.run(req).await,
         Err(wait) => ApiError::rate_limited(wait).into_response(),
     }
@@ -287,9 +287,13 @@ impl IntoResponse for ApiError {
 }
 
 /// The client's rate-limit key: its IP, or its IPv6 /64 (`limits::client_key`;
-/// unspecified when the server runs without connect info).
-fn client_ip(info: &Option<ConnectInfo<SocketAddr>>) -> IpAddr {
-    client_key(info.as_ref().map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip()))
+/// unspecified when the server runs without connect info). Behind a trusted
+/// reverse proxy (`--trusted-proxy`) the IP is the one the proxy puts in
+/// `X-Forwarded-For`.
+fn client_ip(app: &AppState, info: &Option<ConnectInfo<SocketAddr>>, headers: &HeaderMap) -> IpAddr {
+    let peer = info.as_ref().map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
+    let forwarded = headers.get_all("x-forwarded-for").iter().filter_map(|v| v.to_str().ok());
+    client_key(app.limiters.proxies.client_addr(peer, forwarded))
 }
 
 impl From<AuthError> for ApiError {
@@ -349,9 +353,10 @@ pub struct AuthResponse {
 async fn register(
     State(app): State<AppState>,
     info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     Json(c): Json<Credentials>,
 ) -> Result<(StatusCode, Json<AuthResponse>), ApiError> {
-    app.limiters.logins.check(&client_ip(&info)).map_err(ApiError::rate_limited)?;
+    app.limiters.logins.check(&client_ip(&app, &info, &headers)).map_err(ApiError::rate_limited)?;
     let (token, s) = app.accounts.register(c.name.trim(), &c.password).await?;
     Ok((StatusCode::CREATED, Json(AuthResponse { token, player: s.player, name: s.name })))
 }
@@ -359,9 +364,10 @@ async fn register(
 async fn login(
     State(app): State<AppState>,
     info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     Json(c): Json<Credentials>,
 ) -> Result<Json<AuthResponse>, ApiError> {
-    app.limiters.logins.check(&client_ip(&info)).map_err(ApiError::rate_limited)?;
+    app.limiters.logins.check(&client_ip(&app, &info, &headers)).map_err(ApiError::rate_limited)?;
     let (token, s) = app.accounts.login(c.name.trim(), &c.password).await?;
     Ok(Json(AuthResponse { token, player: s.player, name: s.name }))
 }
@@ -853,7 +859,7 @@ async fn ws_upgrade(
         )
     })?;
     let token = token.to_string();
-    let ip = client_ip(&info);
+    let ip = client_ip(&app, &info, &headers);
     let proto = if q.proto.unwrap_or(PROTO_JSON) >= PROTO_DELTA { PROTO_DELTA } else { PROTO_JSON };
     // A frame is read whole before the message limit applies: bound both.
     Ok(ws.max_message_size(MAX_CLIENT_MESSAGE).max_frame_size(MAX_CLIENT_MESSAGE).on_upgrade(

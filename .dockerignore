@@ -1,0 +1,16 @@
+# Only what the image build reads: Cargo.toml, Cargo.lock, crates/, client/.
+**/target/
+target/
+.git/
+.github/
+.claude/
+docs/
+deploy/
+scripts/
+client/node_modules/
+client/dist/
+client/e2e/out/
+client/android/
+client/ios/
+**/*.md
+!client/**/*.md

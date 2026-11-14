@@ -368,3 +368,39 @@ jobs:
           path: client/e2e/out/
           if-no-files-found: ignore
           retention-days: 14
+
+  # The deployment in deploy/: lint, build the image (not pushed) and run the
+  # compose stack with it (evo-server, PostgreSQL, Caddy for localhost).
+  docker:
+    name: Docker image and deployment (build, smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint the Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+      - name: Shellcheck the smoke script
+        run: shellcheck scripts/deploy-smoke.sh
+      - name: Check the compose file
+        run: |
+          cp deploy/.env.example "$RUNNER_TEMP/evo.env"
+          echo "POSTGRES_PASSWORD=ci" >>"$RUNNER_TEMP/evo.env"
+          docker compose --env-file "$RUNNER_TEMP/evo.env" -f deploy/docker-compose.yml config --quiet
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: evo-server:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke-test the compose stack
+        env:
+          EVO_IMAGE: evo-server:smoke
+        run: scripts/deploy-smoke.sh
+      - name: Image size
+        run: docker image ls evo-server:smoke

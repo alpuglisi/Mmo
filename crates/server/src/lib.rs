@@ -132,6 +132,9 @@ pub struct ServerConfig {
     pub fresh: bool,
     /// Web Push notifications (`--no-push`, `--vapid-*`).
     pub push: webpush::PushConfig,
+    /// Reverse proxies whose `X-Forwarded-For` names the client for the
+    /// per-client rate limits (`--trusted-proxy`); empty: none.
+    pub trusted_proxies: limits::TrustedProxies,
 }
 
 impl Default for ServerConfig {
@@ -156,6 +159,7 @@ impl Default for ServerConfig {
             hashing: HashPolicy::default(),
             fresh: false,
             push: webpush::PushConfig::default(),
+            trusted_proxies: limits::TrustedProxies::default(),
         }
     }
 }
@@ -333,7 +337,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         accounts,
         store,
         next_conn: Arc::new(AtomicU64::new(1)),
-        limiters: Arc::new(Limiters::new(cfg.limits)),
+        limiters: Arc::new(Limiters::new(cfg.limits, cfg.trusted_proxies.clone())),
         ws_conns: Default::default(),
         push,
     };

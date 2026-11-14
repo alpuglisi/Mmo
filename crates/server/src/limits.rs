@@ -182,21 +182,109 @@ impl Limits {
     }
 }
 
+/// Reverse proxies whose `X-Forwarded-For` header is believed
+/// (`--trusted-proxy`): addresses or CIDR networks. Behind a proxy every
+/// client connects from the proxy's address, so without this the per-client
+/// limits would be one limit for everybody.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TrustedProxies(Vec<(IpAddr, u8)>);
+
+impl TrustedProxies {
+    /// A comma-separated list of addresses (`10.0.0.2`, `::1`) and networks
+    /// (`172.30.89.0/24`, `fd00::/8`); blanks are skipped.
+    pub fn parse(list: &str) -> Result<Self, String> {
+        let mut nets = Vec::new();
+        for item in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (addr, bits) = match item.split_once('/') {
+                Some((a, b)) => (a, Some(b)),
+                None => (item, None),
+            };
+            let ip: IpAddr = addr.parse().map_err(|_| format!("{item:?} is not an IP address or network"))?;
+            let max = if ip.is_ipv4() { 32 } else { 128 };
+            let bits = match bits {
+                None => max,
+                Some(b) => match b.parse::<u8>() {
+                    Ok(n) if n <= max => n,
+                    _ => return Err(format!("{item:?}: the prefix length must be in 0..={max}")),
+                },
+            };
+            nets.push((ip, bits));
+        }
+        Ok(Self(nets))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether `ip` is one of the proxies (IPv4-mapped IPv6 counts as IPv4).
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        let ip = canonical(ip);
+        self.0.iter().any(|&(net, bits)| match (canonical(net), ip) {
+            (IpAddr::V4(n), IpAddr::V4(a)) => prefix_eq(&n.octets(), &a.octets(), bits),
+            (IpAddr::V6(n), IpAddr::V6(a)) => prefix_eq(&n.octets(), &a.octets(), bits),
+            _ => false,
+        })
+    }
+
+    /// The client's address: `peer`, or when `peer` is a trusted proxy, the
+    /// last address in `forwarded_for` (`X-Forwarded-For`, one or more
+    /// headers in order) that is not itself a trusted proxy. Entries left of
+    /// that one were written by the client and are ignored. A malformed
+    /// entry ends the walk at the last trusted hop.
+    pub fn client_addr<'a>(&self, peer: IpAddr, forwarded_for: impl DoubleEndedIterator<Item = &'a str>) -> IpAddr {
+        if !self.contains(peer) {
+            return peer;
+        }
+        let mut addr = peer;
+        for entry in forwarded_for.rev().flat_map(|h| h.rsplit(',')) {
+            match entry.trim().parse::<IpAddr>() {
+                Ok(ip) => {
+                    addr = ip;
+                    if !self.contains(ip) {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        addr
+    }
+}
+
+fn canonical(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    }
+}
+
+fn prefix_eq(a: &[u8], b: &[u8], bits: u8) -> bool {
+    let (whole, rest) = (usize::from(bits / 8), bits % 8);
+    if a[..whole] != b[..whole] {
+        return false;
+    }
+    rest == 0 || (a[whole] ^ b[whole]) >> (8 - rest) == 0
+}
+
 /// The shared limiters of a running server.
 pub struct Limiters {
     pub limits: Limits,
     pub logins: KeyedLimiter<IpAddr>,
     pub ip_commands: KeyedLimiter<IpAddr>,
     pub reads: KeyedLimiter<IpAddr>,
+    /// Proxies whose `X-Forwarded-For` names the client.
+    pub proxies: TrustedProxies,
 }
 
 impl Limiters {
-    pub fn new(limits: Limits) -> Self {
+    pub fn new(limits: Limits, proxies: TrustedProxies) -> Self {
         Self {
             limits,
             logins: KeyedLimiter::new(limits.logins),
             ip_commands: KeyedLimiter::new(limits.ip_commands),
             reads: KeyedLimiter::new(limits.reads),
+            proxies,
         }
     }
 }
@@ -204,6 +292,45 @@ impl Limiters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trusted_proxies_parse_addresses_and_networks() {
+        let p = TrustedProxies::parse(" 172.30.89.0/24, 10.0.0.2 ,fd00::/8,").unwrap();
+        assert!(p.contains("172.30.89.7".parse().unwrap()));
+        assert!(!p.contains("172.30.90.7".parse().unwrap()));
+        assert!(p.contains("10.0.0.2".parse().unwrap()));
+        assert!(p.contains("::ffff:10.0.0.2".parse().unwrap()));
+        assert!(!p.contains("10.0.0.3".parse().unwrap()));
+        assert!(p.contains("fd12::1".parse().unwrap()));
+        assert!(!p.contains("fe80::1".parse().unwrap()));
+        assert!(TrustedProxies::parse("").unwrap().is_empty());
+        assert!(TrustedProxies::parse("0.0.0.0/0").unwrap().contains("8.8.8.8".parse().unwrap()));
+        assert!(TrustedProxies::parse("10.0.0.0/33").is_err());
+        assert!(TrustedProxies::parse("example.org").is_err());
+        let odd = TrustedProxies::parse("10.0.0.0/7").unwrap();
+        assert!(odd.contains("11.255.0.1".parse().unwrap()));
+        assert!(!odd.contains("12.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn forwarded_for_is_believed_only_from_a_trusted_proxy() {
+        let p = TrustedProxies::parse("172.30.89.0/24").unwrap();
+        let proxy: IpAddr = "172.30.89.2".parse().unwrap();
+        let outsider: IpAddr = "198.51.100.9".parse().unwrap();
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // Not from the proxy: the header is the client's own claim.
+        assert_eq!(p.client_addr(outsider, ["203.0.113.5"].into_iter()), outsider);
+        // From the proxy: the last entry not a proxy itself.
+        assert_eq!(p.client_addr(proxy, ["203.0.113.5"].into_iter()), ip("203.0.113.5"));
+        assert_eq!(p.client_addr(proxy, ["1.2.3.4, 203.0.113.5"].into_iter()), ip("203.0.113.5"));
+        assert_eq!(p.client_addr(proxy, ["1.2.3.4", "203.0.113.5, 172.30.89.3"].into_iter()), ip("203.0.113.5"));
+        assert_eq!(p.client_addr(proxy, ["2001:db8::1"].into_iter()), ip("2001:db8::1"));
+        // No header, or garbage: the proxy's own address.
+        assert_eq!(p.client_addr(proxy, std::iter::empty()), proxy);
+        assert_eq!(p.client_addr(proxy, ["unknown"].into_iter()), proxy);
+        // Nothing trusted: always the peer.
+        assert_eq!(TrustedProxies::default().client_addr(proxy, ["203.0.113.5"].into_iter()), proxy);
+    }
 
     #[test]
     fn bucket_allows_a_burst_then_refills() {
