@@ -16,7 +16,8 @@
 //! - `pulse`: the `rally` spot every `PULSE_EVERY` days, cancelled a day
 //!   later (a short gathering, then free).
 //!
-//! `POLICIES=none,pulse` runs a subset (`none` first).
+//! `POLICIES=none,pulse` runs a subset (`none` first); `PER_RUN=1` also
+//! prints each run, to pair runs across two builds.
 //!
 //! Each (seed, policy) runs both obedience levels on the same seed, so the
 //! difference is paired. Per policy: the herd's living members at the end
@@ -227,6 +228,20 @@ fn orders(days: u32, seeds: &[u64], policies: &[Policy]) {
         seeds.iter().flat_map(|&s| policies.iter().flat_map(move |&p| [LOW, HIGH].map(|o| (s, p, o)))).collect();
     let out: Vec<Outcome> = jobs.par_iter().map(|&(s, p, o)| run(s, days, p, o)).collect();
     let get = |s: u64, p: Policy, o: f32| out[jobs.iter().position(|&j| j == (s, p, o)).unwrap()];
+    // `PER_RUN=1` also prints every run (to pair runs across builds).
+    if std::env::var_os("PER_RUN").is_some() {
+        for (&(s, p, o), r) in jobs.iter().zip(&out) {
+            println!(
+                "run {s} {} {o} end {} mean {:.2} inside {:.4} starved {} killed {}",
+                p.name(),
+                r.end,
+                r.mean,
+                r.inside,
+                r.starved,
+                r.killed
+            );
+        }
+    }
     println!(
         "{:<10} {:>13} {:>13} {:>11} {:>11} {:>11} {:>11}",
         "policy", "end low/high", "mean low/high", "inside l/h", "starved l/h", "killed l/h", "obed. l/h"

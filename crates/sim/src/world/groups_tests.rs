@@ -325,6 +325,9 @@ fn a_rally_gathers_the_group_and_holds_it_until_it_lapses() {
     assert_eq!(w.rally_group(HERD, 9, point), Err(CommandError::NoSuchGroup(9)));
     assert_eq!(w.cancel_rally(1, 0), Err(CommandError::NoRally(0)));
     assert_eq!(World::rally_radius(100_000), RALLY_MAX_RADIUS);
+    // A big herd isn't crammed: the cap is the largest territory's.
+    assert_eq!((World::rally_radius(100), World::rally_radius(400)), (12.0, 22.0));
+    assert_eq!(RALLY_MAX_RADIUS, TERRITORY_MAX_RADIUS);
 
     // A member outside, fed and rested, walks to the point; the headstrong
     // stop to graze at a hunger the obedient walk through.
