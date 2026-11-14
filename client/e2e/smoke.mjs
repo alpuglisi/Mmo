@@ -1008,8 +1008,17 @@ async function main() {
     if (Math.abs(shown.t.radius - claim.data.radius) > 1e-3 || shown.t.radius < 3) throw new Error(`territory ${JSON.stringify(shown.t)} vs claim ${JSON.stringify(claim.data)}`);
     await page.waitForTimeout(400);
     await page.screenshot({ path: path.join(shots, 'territory.png') });
+    // The only territory is the player's home range (shielded while they
+    // are offline): flagged in the state, ringed on the map, explained on
+    // the group's card.
+    await waitFor('the territory as the home range', () => page.evaluate((g) =>
+      window.evo.model.state.groups.find((x) => x.id === g)?.home_range === true
+        && window.evo.screen().view.overlayInfo().home === g, newGroup), 20000);
     await page.click('#tab-lineage');
     await page.waitForSelector(`#group-list .group-card[data-group="${newGroup}"] button[data-action="abandon"]`, { timeout: 15000 });
+    const homeNote = await waitFor('the home range on its group card', () => page.evaluate((g) =>
+      document.querySelector(`#group-list .group-card[data-group="${g}"] .home-range`)?.textContent ?? null, newGroup), 15000);
+    if (!/^Home range: when you log off/.test(homeNote)) throw new Error(`home range card note: ${homeNote}`);
     const cards = await page.evaluate(() => document.querySelectorAll('#group-list .group-card').length);
     // Two claims at once: the second lands within the first's cooldown (the
     // fast test world runs a day a second, so only back-to-back claims hit it).

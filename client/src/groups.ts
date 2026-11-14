@@ -148,6 +148,22 @@ export function groupObedience(g: GroupView): string {
   return `${word} (obedience ${o.toFixed(2)})`;
 }
 
+/** The group whose territory is the player's home range, if any. */
+export function homeRangeGroup(groups: GroupView[]): GroupView | null {
+  return groups.find((g) => g.home_range && g.territory) ?? null;
+}
+
+/**
+ * What the home range does, for the group card and the map's legend: the
+ * territory shielded while the player is offline (`game::offline`). Empty
+ * for any other group.
+ */
+export function homeRangeNote(g: GroupView): string {
+  if (!g.home_range || !g.territory) return '';
+  return 'Home range: when you log off, members inside this territory are hunted less ' +
+    '(from 10 minutes after you leave, fading after 12 hours). Hunger and thirst still bite.';
+}
+
 /** Members of each group among the drawn organisms, by group id. */
 export function memberCounts(s: StateView): Map<number, number> {
   const m = new Map<number, number>();

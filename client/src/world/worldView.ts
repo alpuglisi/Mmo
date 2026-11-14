@@ -19,7 +19,7 @@ import { actionHint, bodyRadius, creatureKey, markerScaleFor, specOf, type Creat
 import { CreatureSprites, type MarkerParts } from './sprites';
 import type { NearbyOrganism, OrgId, OwnOrganism, StateView } from '../protocol';
 import { OWN_COLOR, ownerColor } from './colors';
-import { groupColor, groupsOf, type TerritoryDraft } from '../groups';
+import { groupColor, groupsOf, homeRangeGroup, type TerritoryDraft } from '../groups';
 import { paintTerrain, type TerrainGrid } from './terrain';
 import { isOpenGround, newTrack, Predictor, RECONCILE_SNAP, RECONCILE_TAU_MS, retarget, smoothToward, TickClock, trackAt, type Point, type Track } from './motion';
 
@@ -260,11 +260,13 @@ export class WorldView {
     territories: { group: number; x: number; y: number; radius: number }[];
     rallies: { group: number; x: number; y: number; radius: number }[];
     draft: TerritoryDraft | null;
+    /** The group whose territory is drawn as the home range, or null. */
+    home: number | null;
   } {
     const groups = groupsOf(this.state);
     const territories = groups.flatMap((g) => (g.territory ? [{ group: g.id, x: g.territory.x, y: g.territory.y, radius: g.territory.radius }] : []));
     const rallies = groups.flatMap((g) => (g.rally ? [{ group: g.id, x: g.rally.x, y: g.rally.y, radius: g.rally.radius }] : []));
-    return { territories, rallies, draft: this.territoryDraft };
+    return { territories, rallies, draft: this.territoryDraft, home: homeRangeGroup(groups)?.id ?? null };
   }
 
   private upsert(o: OwnOrganism | NearbyOrganism, own: boolean, now: number): void {
@@ -391,6 +393,15 @@ export class WorldView {
         const tint = groupColor(grp.id);
         g.circle(t.x, t.y, t.radius).fill({ color: tint, alpha: picked ? 0.2 : 0.12 });
         g.circle(t.x, t.y, t.radius).stroke({ width: (picked ? 3 : 1.5) * px, color: tint, alpha: 0.9 });
+        if (grp.home_range) {
+          // The home range (shielded while the player is offline): a gold
+          // second ring just outside and a small house at the center.
+          const gold = 0xe3b341;
+          g.circle(t.x, t.y, t.radius + 4 * px).stroke({ width: 1.5 * px, color: gold, alpha: 0.9 });
+          const hs = 5 * px;
+          g.rect(t.x - hs, t.y - hs * 0.2, 2 * hs, 1.2 * hs).fill({ color: gold, alpha: 0.95 });
+          g.poly([t.x - 1.4 * hs, t.y - 0.2 * hs, t.x, t.y - 1.4 * hs, t.x + 1.4 * hs, t.y - 0.2 * hs]).fill({ color: gold, alpha: 0.95 });
+        }
       }
       const r = grp.rally;
       if (r) {

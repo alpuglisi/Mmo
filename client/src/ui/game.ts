@@ -24,7 +24,7 @@ import { onboardingDisabled } from '../onboarding';
 import { pushSettings } from './push';
 import {
   canSplit, claimWait, clearMigrationMsg, groupColor, groupName, groupObedience, groupOptions, groupOrders, groupsOf, migrateMsg, parseChoice,
-  rallyLeft, rallyMsg, targetGroup, territoryTap, validChoice, type GroupChoice, type TerritoryDraft,
+  homeRangeNote, rallyLeft, rallyMsg, targetGroup, territoryTap, validChoice, type GroupChoice, type TerritoryDraft,
 } from '../groups';
 
 export interface GameDeps {
@@ -138,6 +138,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     h('span', {}, h('i', { class: 'dot square', style: 'border-color:#58a6ff' }), 'view window'),
     h('span', { title: 'Claimed with Territory…; each group has its own color' }, h('i', { class: 'dot ring', style: `border-color:${cssColor(groupColor(0))};background:${cssColor(groupColor(0))}33` }), 'territory'),
     h('span', { title: 'Set with Rally…: the group gathers in the ring around the point' }, h('i', { class: 'dot ring', style: `border-color:${cssColor(groupColor(0))}` }), 'rally'),
+    h('span', { title: 'Your largest group\'s territory: while you are offline its members inside are hunted less' }, h('i', { class: 'dot ring home-ring' }), '⌂ home range'),
     h('span', { title: 'Body size, diet (muzzle, snout or fangs), warm or cold-blooded build, fur/scales/armor, colors, wings or fins; juveniles are drawn smaller' }, 'small = juvenile'),
     h('span', {}, 'z resting · ! fleeing · ⌖ hunting · ♥ courting'));
   const terrainLegend = h('div', { class: 'legend terrain-legend', id: 'terrain-legend' });
@@ -1012,12 +1013,16 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // The cards (and their buttons) are rebuilt only when the buttons
     // change; sizes and orders are updated in place, so a button isn't
     // replaced under the cursor at every birth.
-    const key = JSON.stringify([groupChoice, groups.map((g) => [g.id, !!g.territory, !!g.rally, claimWait(g, tick) > 0, g.members === 0, canSplit(g, groups)])]);
+    const key = JSON.stringify([groupChoice, groups.map((g) => [g.id, !!g.territory, !!g.rally, claimWait(g, tick) > 0, g.members === 0, canSplit(g, groups), !!g.home_range])]);
     keyed(groupsEl, key, () => groups.map((g) => {
       const wait = claimWait(g, tick);
       const swatch = h('span', { class: 'swatch', style: `background:${cssColor(groupColor(g.id))}` });
+      const home = homeRangeNote(g);
       return h('div', { class: `group-card${groupChoice === g.id ? ' chosen' : ''}`, 'data-group': g.id },
-        h('div', { class: 'row wrap' }, swatch, h('strong', {}, groupName(g.id)), h('span', { class: 'muted small group-summary' })),
+        h('div', { class: 'row wrap' }, swatch, h('strong', {}, groupName(g.id)),
+          home && h('span', { class: 'home-badge', title: home }, '⌂ home range'),
+          h('span', { class: 'muted small group-summary' })),
+        home && h('p', { class: 'muted small home-range' }, home),
         h('div', { class: 'row wrap group-actions' },
           h('button', { class: 'secondary small', 'data-action': 'pick', onclick: () => setGroupChoice(g.id) }, groupChoice === g.id ? 'Picked' : 'Pick'),
           h('button', { class: 'secondary small', 'data-action': 'territory', title: wait > 0 ? 'Claimed recently: wait a little' : `Radius up to ${g.max_radius.toFixed(1)} tiles`,

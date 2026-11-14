@@ -1144,7 +1144,7 @@ impl World {
                         * (1.0 - bal.stealth_effect * qrep.stealth)
                         * (1.0 - 0.5 * bal.burrow_shelter * qrep.burrow).max(0.0)
                         * if dormant { 1.0 - bal.den_concealment } else { 1.0 }
-                        * self.offline_cohort_factors(qc.lineage).0;
+                        * self.offline_cohort_predation(qc.lineage, nr);
                     let a = qc.adults(today);
                     let adults = (a[0] + a[1]) as f32;
                     let juveniles = qc.count() as f32 - adults;

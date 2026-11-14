@@ -444,13 +444,34 @@ fn version_15_snapshots_restore_without_migration_onset() {
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 15);
     assert!(h.restorable());
-    // Without the parameter the payload is 4 bytes (one f32) shorter.
-    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    // Without the parameter the payload is 4 bytes (one f32) shorter, and
+    // 12 more without the home range's (version 17).
+    assert_eq!(h.raw_len + 4 + 12, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.migration_onset, crate::serde_util::before_v16::OLD_MIGRATION_ONSET);
     w.config.balance.migration_onset = r.config.balance.migration_onset;
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
+}
+
+/// Version 16 snapshots (before `Balance::home_range`) restore with its
+/// defaults, and are otherwise the same world.
+#[test]
+fn version_16_snapshots_restore_without_the_home_range() {
+    let mut w = fixture_world();
+    w.config.balance.home_range.predation = 0.9;
+    let old = w.snapshot_v16();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 16);
+    assert!(h.restorable());
+    // Without the parameters the payload is 12 bytes (three f32) shorter.
+    assert_eq!(h.raw_len + 12, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.home_range, crate::config::HomeRangeBalance::default());
+    w.config.balance.home_range = r.config.balance.home_range;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v16() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

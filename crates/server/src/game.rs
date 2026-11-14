@@ -25,7 +25,11 @@ use crate::league::{self, CurrentSeason, SeasonRecord, SeasonTracker};
 use crate::protocol::*;
 mod offline;
 mod states;
-pub use offline::{OfflineTracker, Spell, DEFAULT_PROTECTION_HOURS, DEFAULT_PROTECTION_TICKS};
+pub use offline::{
+    home_group, HomeClaim, OfflineTracker, Spell, DEFAULT_HOME_RANGE_FADE_TICKS, DEFAULT_HOME_RANGE_HOURS,
+    DEFAULT_HOME_RANGE_ONSET_TICKS, DEFAULT_HOME_RANGE_TICKS, DEFAULT_PROTECTION_HOURS, DEFAULT_PROTECTION_TICKS,
+    HOME_RANGE_ONSET_MINUTES,
+};
 
 use crate::store::{AuctionRecord, BalanceRecord, DailyRecord, LedgerRecord, LegacyEntry, LineageEntry, TradeRecord};
 
@@ -163,6 +167,13 @@ pub struct GameConfig {
     /// Longest offline protection after a logout, in ticks; 0 turns it off
     /// (`game::offline`).
     pub offline_protection_ticks: u64,
+    /// Ticks after a logout during which the home range shields at full
+    /// strength; 0 turns home ranges off (`game::offline`).
+    pub home_range_ticks: u64,
+    /// Ticks offline before the home range applies.
+    pub home_range_onset_ticks: u64,
+    /// Ticks over which the home range then fades to nothing.
+    pub home_range_fade_ticks: u64,
 }
 
 impl Default for GameConfig {
@@ -175,6 +186,9 @@ impl Default for GameConfig {
             max_open_offers: 8,
             season_days: league::DEFAULT_SEASON_DAYS,
             offline_protection_ticks: DEFAULT_PROTECTION_TICKS,
+            home_range_ticks: DEFAULT_HOME_RANGE_TICKS,
+            home_range_onset_ticks: DEFAULT_HOME_RANGE_ONSET_TICKS,
+            home_range_fade_ticks: DEFAULT_HOME_RANGE_FADE_TICKS,
         }
     }
 }
@@ -4801,7 +4815,7 @@ mod tests {
             slots_left: g.world.mating_slots_left(player),
             population: g.owner_population(player),
             migration: g.world.migration_order(player, 0).map(|p| [p.x, p.y]),
-            groups: g.world.groups(player).iter().map(GroupView::from).collect(),
+            groups: g.group_views(&g.world.groups(player)),
             view,
             organisms: own,
             nearby: nearby.into_iter().map(|(_, n)| n).collect(),

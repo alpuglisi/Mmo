@@ -587,6 +587,35 @@ pub struct Balance {
     /// leaves at the first day of autumn (the old rule).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v16"))]
     pub migration_onset: f32,
+    /// The home-range form of offline protection (`world::offline`): how a
+    /// claimed territory shields its residents while their owner is away.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v17"))]
+    pub home_range: HomeRangeBalance,
+}
+
+/// How a shielded home range softens predation (`World::set_home_ranges`).
+/// Inert until the caller shields a range: the simulation never does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct HomeRangeBalance {
+    /// Factor on the kill chance of a strike against a resident of a range
+    /// at full strength (and on the exposure of a resident cohort to
+    /// hunting cohorts). 1 turns the home range off.
+    pub predation: f32,
+    /// Residents shielded in full: above this many, the same softening is
+    /// spread over all of them (each gets `residents / count` of it), so a
+    /// big herd gains little more than a small one.
+    pub residents: f32,
+    /// Lowest kill-chance factor when the home range and the surviving-core
+    /// protection both apply (their product, floored here). Either rule
+    /// alone is never raised by it.
+    pub stack_floor: f32,
+}
+
+impl Default for HomeRangeBalance {
+    fn default() -> Self {
+        Self { predation: 0.5, residents: 20.0, stack_floor: 0.2 }
+    }
 }
 
 impl Default for Balance {
@@ -680,12 +709,13 @@ impl Default for Balance {
             nest_predation: 0.06,
             tameness: 0.4,
             migration_onset: 0.2,
+            home_range: HomeRangeBalance::default(),
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 86;
+    pub const FIELD_COUNT: usize = 89;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -781,6 +811,9 @@ impl Balance {
             ("nest_predation", &mut self.nest_predation),
             ("tameness", &mut self.tameness),
             ("migration_onset", &mut self.migration_onset),
+            ("home_range_predation", &mut self.home_range.predation),
+            ("home_range_residents", &mut self.home_range.residents),
+            ("offline_stack_floor", &mut self.home_range.stack_floor),
         ]
     }
 
