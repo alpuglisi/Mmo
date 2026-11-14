@@ -18,6 +18,7 @@
 //                        and mixed content below; iOS: an App Transport
 //                        Security exception in Info.plist, set or removed by
 //                        scripts/ios-ats.mjs (the capacitor:copy:after hook).
+//                        Also makes the iOS web view inspectable.
 //   EVO_CAP_LIVE_URL     load the page from a dev server for live reload
 //                        (e.g. http://192.168.1.20:5173) instead of dist/.
 
@@ -42,6 +43,11 @@ const config: CapacitorConfig = {
   },
   ios: {
     contentInset: 'never',
+    // The WKWebView is inspectable (Safari Web Inspector, Appium's WEBVIEW
+    // context; e2e/ios-simulator.sh) only with this from iOS 16.4. Capacitor
+    // ties its default to a DEBUG flag the prebuilt package doesn't see, so
+    // dev/test builds (the cleartext ones) set it; release builds don't.
+    webContentsDebuggingEnabled: cleartext,
   },
   plugins: {
     // Native push (src/nativePush.ts). A notification that arrives while
