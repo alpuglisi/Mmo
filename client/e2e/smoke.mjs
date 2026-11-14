@@ -646,14 +646,25 @@ async function main() {
     let auctionId = null;
     let lotSex = null;
     let lotOrg = null;
-    for (let attempt = 0; attempt < 6 && auctionId === null; attempt++) {
+    const lotTried = [];
+    for (let attempt = 0; attempt < 8 && auctionId === null; attempt++) {
       await page.evaluate(() => { window.__results = []; });
       await page.click('#market-refresh');
-      const options = await page.$$eval('#market-list-organism option', (os) => os.map((o) => ({ value: o.value, text: o.textContent ?? '' })));
+      const options = await page.$$eval('#market-list-organism option', (os) => os.map((o) => o.value));
       if (options.length === 0) throw new Error('no adult of ann to auction');
-      const females = options.filter((o) => o.text.includes(' female') && !o.text.includes('pregnant'));
-      const pool = females.length ? females : options;
-      await page.selectOption('#market-list-organism', pool[attempt % pool.length].value);
+      // An open female from the live state (in fast mode most adult females
+      // are pregnant for a while: wait a little for one); else any adult.
+      const females = await waitFor('an open adult female of ann\'s to auction', () => page.evaluate((options) => {
+        const l = window.evo.model.state.organisms.filter((o) => o.matured && o.sex === 'female' && !o.pregnant && !o.possessed && options.includes(String(o.id)))
+          .sort((a, b) => b.health - a.health).map((o) => String(o.id));
+        return l.length ? l : null;
+      }, options), 15000).catch(() => []);
+      const lot = females.find((id) => !lotTried.includes(id)) ?? females[0] ?? options[attempt % options.length];
+      lotTried.push(lot);
+      if (!(await page.selectOption('#market-list-organism', lot, { timeout: 10000 }).then(() => true, () => false))) {
+        console.log(`  … #${lot} is no longer in the list; picking again`);
+        continue;
+      }
       await page.fill('#market-fee', String(reserve));
       await page.fill('#market-auction-days', '30');
       await page.click('#market-list-submit');
