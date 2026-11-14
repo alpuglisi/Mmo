@@ -19,6 +19,8 @@
 //!   a world snapshot of version 13 or before is read.
 //! - `before_v15`: the world's rally orders, left out while a world snapshot
 //!   of version 14 or before is read.
+//! - `before_v16`: `Balance::migration_onset`, left out while a world snapshot
+//!   of version 15 or before is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -529,6 +531,55 @@ pub mod before_v15 {
             Ok(T::default())
         } else {
             T::deserialize(d)
+        }
+    }
+}
+
+/// `Balance::migration_onset`, added in world snapshot version 16:
+/// `#[serde(with = "crate::serde_util::before_v16")]`. On a thread holding a
+/// [`before_v16::Guard`] (reading or hashing a snapshot of version 15 or
+/// before) it is neither written nor read and reads as 1, the rule those
+/// saves ran under (migrators leave on the first day of autumn).
+pub mod before_v16 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// `migration_onset` before version 16.
+    pub const OLD_MIGRATION_ONSET: f32 = 1.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_MIGRATION_ONSET)
+        } else {
+            f32::deserialize(d)
         }
     }
 }

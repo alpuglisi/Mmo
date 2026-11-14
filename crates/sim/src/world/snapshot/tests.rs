@@ -331,6 +331,7 @@ fn older_snapshots_are_refused_by_version() {
 fn without_obedience(w: &World) -> World {
     let mut w = World::restore(&w.snapshot_v13(), Some(w.map.terrain().clone())).unwrap();
     w.config.balance.tameness = crate::config::Balance::default().tameness;
+    w.config.balance.migration_onset = crate::serde_util::before_v16::OLD_MIGRATION_ONSET;
     w
 }
 
@@ -425,10 +426,31 @@ fn version_14_snapshots_restore_without_rallies() {
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!((h.version, h.flags), (14, FLAG_LZ4 | FLAG_TILES_APART));
     assert!(h.restorable());
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let mut r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.rally(owner, group), None);
+    // Version 14 also predates `migration_onset` (version 16).
+    r.config.balance.migration_onset = w.config.balance.migration_onset;
     assert!(r.snapshot() == plain);
     assert!(r.snapshot_v14() == old);
+}
+
+/// Version 15 snapshots (before `Balance::migration_onset`) restore with it
+/// at 1, the rule they ran under, and are otherwise the same world.
+#[test]
+fn version_15_snapshots_restore_without_migration_onset() {
+    let mut w = fixture_world();
+    w.config.balance.migration_onset = 0.3;
+    let old = w.snapshot_v15();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 15);
+    assert!(h.restorable());
+    // Without the parameter the payload is 4 bytes (one f32) shorter.
+    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.migration_onset, crate::serde_util::before_v16::OLD_MIGRATION_ONSET);
+    w.config.balance.migration_onset = r.config.balance.migration_onset;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

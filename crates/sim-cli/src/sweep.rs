@@ -20,7 +20,7 @@ use std::io::Write as _;
 use std::time::Instant;
 
 use evo_sim::rng::rng_for;
-use evo_sim::{presets, Balance, World, WorldConfig};
+use evo_sim::{presets, Balance, FounderDesign, Gene, World, WorldConfig};
 use rand::Rng;
 use rayon::prelude::*;
 
@@ -65,6 +65,9 @@ pub struct RunMetrics {
     pub capped_days: u32,
     pub days: u32,
     pub mean_population: f64,
+    /// Each lineage's owner's genetic legacy at the end: share of all alleles
+    /// in breeding adults tagged with the owner (`LegacySnapshot::share`).
+    pub legacy: Vec<f64>,
     /// Lineages that count toward the score: the standard world's eight.
     /// Extra lineages (`--migrants`) come after them and are only reported.
     pub scored: usize,
@@ -108,9 +111,20 @@ pub struct ScoredRun {
 }
 
 impl ScoredRun {
-    pub fn new(balance: Balance, seed: u64, size: usize, parallel_apply: bool, migrants: bool) -> ScoredRun {
+    /// `migrants`: the extra fifth player lineage to found, if any (the
+    /// migrating caribou, or a variant of it).
+    pub fn new(
+        balance: Balance,
+        seed: u64,
+        size: usize,
+        parallel_apply: bool,
+        migrants: Option<&FounderDesign>,
+    ) -> ScoredRun {
         let config = WorldConfig { seed, width: size, height: size, balance, parallel_apply, ..Default::default() };
-        let world = if migrants { presets::extended_world(config, 1) } else { presets::standard_world(config, 1) };
+        let world = match migrants {
+            Some(d) => presets::extended_world_with(config, 1, d),
+            None => presets::standard_world(config, 1),
+        };
         let n = world.lineages.len();
         ScoredRun { world, extinct_day: vec![None; n], capped_days: 0, pop_sum: 0.0, days_run: 0, collapsed: false }
     }
@@ -149,6 +163,7 @@ impl ScoredRun {
     /// was run to; a collapsed world counts its empty remaining days).
     pub fn metrics(&self, days: u32) -> RunMetrics {
         let counts = self.world.lineage_counts();
+        let legacy = self.world.legacy.last().cloned().unwrap_or_default();
         RunMetrics {
             names: self.world.lineages.iter().map(|l| l.name.clone()).collect(),
             founders: self.world.lineages.iter().map(|l| l.founders).collect(),
@@ -158,6 +173,7 @@ impl ScoredRun {
             capped_days: self.capped_days,
             days,
             mean_population: self.pop_sum / days as f64,
+            legacy: self.world.lineages.iter().map(|l| legacy.share(l.owner)).collect(),
             scored: SCORED_LINEAGES,
         }
     }
@@ -172,7 +188,7 @@ pub fn run_one(
     size: usize,
     days: u32,
     parallel_apply: bool,
-    migrants: bool,
+    migrants: Option<&FounderDesign>,
 ) -> RunMetrics {
     let mut run = ScoredRun::new(balance, seed, size, parallel_apply, migrants);
     run.advance_to(days);
@@ -296,6 +312,7 @@ pub fn sweep(args: &SweepArgs) {
     let mut csv = String::new();
     let mut all: Vec<Trial> = Vec::new();
     let lineage_names = lineage_names(args.migrants);
+    let migrant = args.migrants.then(presets::migrant_design);
     let stages = stages(args);
 
     println!(
@@ -339,7 +356,13 @@ pub fn sweep(args: &SweepArgs) {
                 .into_par_iter()
                 .map(|(k, s, run)| {
                     let mut run = run.unwrap_or_else(|| {
-                        ScoredRun::new(balances[k], args.base_seed + s, args.size, args.parallel_apply, args.migrants)
+                        ScoredRun::new(
+                            balances[k],
+                            args.base_seed + s,
+                            args.size,
+                            args.parallel_apply,
+                            migrant.as_ref(),
+                        )
                     });
                     run.advance_to(days);
                     let m = run.metrics(days);
@@ -637,6 +660,10 @@ pub struct CompareArgs {
     pub parallel_apply: bool,
     /// Both sides found the extra migrating lineage (`SweepArgs::migrants`).
     pub migrants: bool,
+    /// Gene overrides of the migrating lineage on side A and side B
+    /// (`--migrant-gene`, which implies `migrants`): e.g. the caribou with
+    /// migration 0 against the preset, to measure what a gene buys a design.
+    pub migrant_genes: [Vec<(Gene, f32)>; 2],
     /// Add seeds in batches until the difference resolves (`--adaptive`);
     /// `seeds` is then ignored in favour of its looks.
     pub adaptive: Option<AdaptiveArgs>,
@@ -658,11 +685,21 @@ fn label(b: &Balance) -> String {
     }
 }
 
+/// Label of a migrating-lineage gene override (`--migrant-gene`).
+fn gene_label(genes: &[(Gene, f32)]) -> String {
+    genes.iter().map(|(g, v)| format!(" caribou {}={v}", g.label().replace(' ', "_"))).collect()
+}
+
 /// Paired comparison: run `a` and `b` on the same seeds and report the
 /// per-seed difference `a − b` with a 95% CI. Returns that difference.
 pub fn compare(args: &CompareArgs) -> Summary {
-    let names = lineage_names(args.migrants);
-    let (la, lb) = (label(&args.a), label(&args.b));
+    let migrants = args.migrants || args.migrant_genes.iter().any(|g| !g.is_empty());
+    let names = lineage_names(migrants);
+    let migrant: [Option<FounderDesign>; 2] = std::array::from_fn(|c| {
+        migrants.then(|| args.migrant_genes[c].iter().fold(presets::migrant_design(), |d, &(g, v)| d.with(g, v)))
+    });
+    let (la, lb) =
+        (label(&args.a) + &gene_label(&args.migrant_genes[0]), label(&args.b) + &gene_label(&args.migrant_genes[1]));
     let seed_range = match &args.adaptive {
         Some(ad) => format!(
             "seeds from {} in looks of {} (adaptive)",
@@ -687,7 +724,18 @@ pub fn compare(args: &CompareArgs) -> Summary {
             .par_iter()
             .map(|&(c, s)| {
                 let balance = if c == 0 { args.a } else { args.b };
-                (c, s, run_one(balance, args.base_seed + s, args.size, args.days, args.parallel_apply, args.migrants))
+                (
+                    c,
+                    s,
+                    run_one(
+                        balance,
+                        args.base_seed + s,
+                        args.size,
+                        args.days,
+                        args.parallel_apply,
+                        migrant[c].as_ref(),
+                    ),
+                )
             })
             .collect();
         for (c, s, m) in results {
@@ -769,13 +817,18 @@ pub fn compare(args: &CompareArgs) -> Summary {
         fmt_ci(unpaired)
     );
 
-    println!("\n  {:<22} {:>9} {:>9} {:>16} {:>18}", "lineage", "survival A", "B", "Δ survival", "Δ mean alive");
+    println!(
+        "\n  {:<22} {:>9} {:>9} {:>16} {:>18} {:>9} {:>16}",
+        "lineage", "survival A", "B", "Δ survival", "Δ mean alive", "legacy A", "Δ legacy (pp)"
+    );
     for (l, name) in names.iter().enumerate() {
         let ds = Summary::of(&a.paired(b, |r| r.persisted(l) as u8 as f64));
         let dn = Summary::of(&a.paired(b, |r| r.alive[l] as f64));
+        let dl = Summary::of(&a.paired(b, |r| r.legacy[l] * 100.0));
+        let la = a.runs.iter().map(|(_, r)| r.legacy[l]).sum::<f64>() / a.runs.len() as f64;
         let star = |s: &Summary| if s.significant() { "*" } else { " " };
         println!(
-            "  {:<22} {:>9.0}% {:>8.0}% {:>15}{} {:>+9.0} ± {:<5}{}",
+            "  {:<22} {:>9.0}% {:>8.0}% {:>15}{} {:>+9.0} ± {:<5}{} {:>8.2}% {:>+8.2} ± {:<5.2}{}",
             name,
             a.survival(l) * 100.0,
             b.survival(l) * 100.0,
@@ -783,9 +836,16 @@ pub fn compare(args: &CompareArgs) -> Summary {
             star(&ds),
             dn.mean,
             whole(dn.ci95),
-            star(&dn)
+            star(&dn),
+            la * 100.0,
+            dl.mean,
+            dl.ci95,
+            star(&dl)
         );
     }
+    println!(
+        "  (legacy: the owner's share of all alleles in breeding adults at the end; the wild rows share one owner)"
+    );
     println!("  (* : the 95% CI of the paired difference excludes 0)");
 
     let verdict = if let Some((ad, looks, stop)) = &adaptive {
@@ -848,8 +908,8 @@ mod tests {
     #[test]
     fn resumed_runs_match_straight_runs() {
         let b = Balance::default();
-        let straight = run_one(b, 5, 48, 6, true, false);
-        let mut run = ScoredRun::new(b, 5, 48, true, false);
+        let straight = run_one(b, 5, 48, 6, true, None);
+        let mut run = ScoredRun::new(b, 5, 48, true, None);
         run.advance_to(2);
         let early = run.metrics(2);
         assert_eq!(early.days, 2);

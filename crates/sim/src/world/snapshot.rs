@@ -60,7 +60,7 @@
 //! payload, 10 and 11 lack `Balance::cold_gestation`, which reads as 1.4 (the
 //! rule they ran under; `serde_util::before_v12`), and all three lack
 //! `Balance::nest_predation`, which reads as 0 (`serde_util::before_v13`);
-//! and version 13 restores too. Versions 10 to 13 lack `Gene::Obedience`
+//! and versions 13 and 14 restore too. Versions 10 to 13 lack `Gene::Obedience`
 //! (every organism's obedience locus reads as the design default, 0.5, with
 //! its wanderlust alleles' origin tags) and `Balance::tameness`
 //! (`serde_util::before_v14`). Versions 10 to 14 lack the rally orders
@@ -81,7 +81,9 @@
 //! config, version 13 the `Balance::nest_predation` parameter. Version 14
 //! adds the `Gene::Obedience` locus to every genome and species
 //! representative, and the `Balance::tameness` parameter. Version 15 adds
-//! the world's rally orders (`World::rally_group`).
+//! the world's rally orders (`World::rally_group`). Version 16 adds the
+//! `Balance::migration_onset` parameter; versions 10 to 15 read it as 1,
+//! the rule they ran under (`serde_util::before_v16`).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -102,7 +104,7 @@ use crate::terrain::{Terrain, Tile};
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 15;
+pub const SNAPSHOT_VERSION: u32 = 16;
 /// The oldest format version that still restores: version 11's state with
 /// the tiles inside the payload, and both without `Balance::cold_gestation`
 /// (nor, with version 12, `Balance::nest_predation`).
@@ -115,6 +117,8 @@ const NEST_PREDATION_VERSION: u32 = 13;
 const OBEDIENCE_VERSION: u32 = 14;
 /// The first format version with rally orders.
 const RALLY_VERSION: u32 = 15;
+/// The first format version with `Balance::migration_onset`.
+const MIGRATION_ONSET_VERSION: u32 = 16;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
@@ -494,6 +498,7 @@ impl World {
         let _old13 = crate::serde_util::before_v13::Guard::new();
         let _old14 = crate::serde_util::before_v14::Guard::new();
         let _old15 = crate::serde_util::before_v15::Guard::new();
+        let _old16 = crate::serde_util::before_v16::Guard::new();
         let raw = payload_options().serialize(self).expect("world serializes");
         self.snapshot_with(OLDEST_RESTORABLE, FLAG_LZ4, raw.len(), &lz4_flex::block::compress(&raw))
     }
@@ -505,6 +510,7 @@ impl World {
         let _old13 = crate::serde_util::before_v13::Guard::new();
         let _old14 = crate::serde_util::before_v14::Guard::new();
         let _old15 = crate::serde_util::before_v15::Guard::new();
+        let _old16 = crate::serde_util::before_v16::Guard::new();
         // The header's layout is unchanged since version 6: only the version
         // field differs.
         let mut out = self.snapshot();
@@ -519,6 +525,7 @@ impl World {
     fn snapshot_v13(&self) -> Vec<u8> {
         let _old14 = crate::serde_util::before_v14::Guard::new();
         let _old15 = crate::serde_util::before_v15::Guard::new();
+        let _old16 = crate::serde_util::before_v16::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&NEST_PREDATION_VERSION.to_le_bytes());
         out
@@ -529,12 +536,23 @@ impl World {
     #[cfg(test)]
     fn snapshot_v14(&self) -> Vec<u8> {
         let _old15 = crate::serde_util::before_v15::Guard::new();
+        let _old16 = crate::serde_util::before_v16::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&OBEDIENCE_VERSION.to_le_bytes());
         out
     }
 
-    /// A world from [`World::snapshot`] bytes (or a version 10 to 14 snapshot's)
+    /// A version 15 snapshot (no `Balance::migration_onset`), as the builds
+    /// before version 16 wrote, to test that they still restore.
+    #[cfg(test)]
+    fn snapshot_v15(&self) -> Vec<u8> {
+        let _old16 = crate::serde_util::before_v16::Guard::new();
+        let mut out = self.snapshot();
+        out[8..12].copy_from_slice(&RALLY_VERSION.to_le_bytes());
+        out
+    }
+
+    /// A world from [`World::snapshot`] bytes (or a version 10 to 15 snapshot's)
     /// and the terrain it names (`SnapshotHeader::terrain`), with its
     /// derived lookups rebuilt. Fails on another format version, a corrupt
     /// payload, or a missing or wrong terrain.
@@ -549,6 +567,7 @@ impl World {
         let _old13 = (h.version < NEST_PREDATION_VERSION).then(crate::serde_util::before_v13::Guard::new);
         let _old14 = (h.version < OBEDIENCE_VERSION).then(crate::serde_util::before_v14::Guard::new);
         let _old15 = (h.version < RALLY_VERSION).then(crate::serde_util::before_v15::Guard::new);
+        let _old16 = (h.version < MIGRATION_ONSET_VERSION).then(crate::serde_util::before_v16::Guard::new);
         let body = &bytes[h.len()..];
         if fnv1a(body) != h.checksum {
             return Err(SnapshotError::Checksum);

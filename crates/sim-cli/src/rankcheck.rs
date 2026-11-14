@@ -213,7 +213,7 @@ fn simulate(args: &RankCheckArgs) -> Data {
     let results: Vec<Vec<f64>> = jobs
         .par_iter()
         .map(|&(k, s)| {
-            let mut run = ScoredRun::new(balances[k], args.base_seed + s, args.size, args.parallel_apply, false);
+            let mut run = ScoredRun::new(balances[k], args.base_seed + s, args.size, args.parallel_apply, None);
             checkpoints
                 .iter()
                 .map(|&d| {

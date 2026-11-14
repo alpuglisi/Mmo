@@ -1000,6 +1000,12 @@ impl Map {
     }
 }
 
+/// Share of the full plant regrowth rate at temperature `temp` (°C): none
+/// at or below freezing, full from 12 °C.
+pub fn growth_warmth(temp: f32) -> f32 {
+    (temp / 12.0).clamp(0.0, 1.0)
+}
+
 /// One hour of a tile's environment. Returns the snow that melted.
 fn update_tile(g: &Ground, t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
     t.wind = e.wind;
@@ -1062,7 +1068,7 @@ fn update_tile(g: &Ground, t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
 
     // Vegetation: logistic regrowth, slowed by cold, snow cover and drought.
     if g.veg_max > 0.0 && !flooded {
-        let warmth = (t.temp / 12.0).clamp(0.0, 1.0);
+        let warmth = growth_warmth(t.temp);
         let cover = (1.0 - t.snow * 3.0).clamp(0.0, 1.0);
         let wet = 1.0 - bal.rain_growth + bal.rain_growth * (e.wet / 0.5).clamp(0.0, 1.4);
         let growth = bal.veg_regrowth * warmth * cover * wet * (1.0 + SILT_BOOST * t.silt) / 24.0;
