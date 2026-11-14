@@ -26,9 +26,37 @@
 //                                    error hook installed in the page,
 //                                    drained with every evaluate
 //
-// No dependencies: Node 22's fetch.
+// No dependencies (node:http).
+
+import http from 'node:http';
+import https from 'node:https';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * One HTTP request with only our own deadline. Not fetch: its client gives
+ * up after 300 s without response headers whatever the abort signal says,
+ * and creating the session (building WebDriverAgent on a cold cache) takes
+ * longer than that (CI: "fetch failed" after 5 min while Appium went on).
+ */
+function httpRequest(url, method, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = (u.protocol === 'https:' ? https : http).request(u, {
+      method,
+      headers: body === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => { clearTimeout(timer); resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString('utf8') }); });
+      res.on('error', (e) => { clearTimeout(timer); reject(e); });
+    });
+    const timer = setTimeout(() => req.destroy(new Error(`${method} ${u.pathname}: no answer within ${timeoutMs} ms`)), timeoutMs);
+    req.on('error', (e) => { clearTimeout(timer); reject(e); });
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
 
 export class WebDriverError extends Error {
   constructor(method, path, status, value) {
@@ -46,20 +74,15 @@ export class WebDriver {
   }
 
   async request(method, path, body, timeoutMs = 60000) {
-    const res = await fetch(`${this.base}${path}`, {
-      method,
-      headers: body === undefined ? {} : { 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const text = await res.text();
+    const res = await httpRequest(`${this.base}${path}`, method, body === undefined ? undefined : JSON.stringify(body), timeoutMs);
+    const text = res.text;
     let json;
     try {
       json = text ? JSON.parse(text) : {};
     } catch {
       throw new WebDriverError(method, path, res.status, { message: text.slice(0, 200) });
     }
-    if (!res.ok || (json.value && json.value.error)) throw new WebDriverError(method, path, res.status, json.value);
+    if (res.status >= 400 || (json.value && json.value.error)) throw new WebDriverError(method, path, res.status, json.value);
     return json.value;
   }
 
@@ -283,10 +306,11 @@ export class WebViewSession {
           el.focus?.();
           el.dispatchEvent(new MouseEvent('mouseup', opts));
           el.click();
-          return true;
+          const t = el.closest('button, a, input, select, label') ?? el;
+          return `${t.tagName.toLowerCase()}${t.id ? `#${t.id}` : ''}${t.disabled ? ' (disabled)' : ''}`;
         }, params.x, params.y);
         if (!hit) throw new Error(`nothing at (${params.x}, ${params.y}) to tap`);
-        return {};
+        return { hit };
       }
       case 'Input.insertText': {
         await this.evaluate((text) => {

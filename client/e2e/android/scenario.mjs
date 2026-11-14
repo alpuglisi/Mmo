@@ -194,8 +194,10 @@ export async function runScenario(device, { outDir, backgroundSeconds = 25, name
       return;
     }
     for (const type of ['mousePressed', 'mouseReleased']) {
-      await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+      const r = await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+      if (r?.hit) box.hit = r.hit; // the iOS driver says what it clicked
     }
+    (report.taps ??= []).push({ selector, ...box });
   };
 
   /** Focus a field, clear it and type `text` as keyboard input. */
@@ -290,7 +292,20 @@ export async function runScenario(device, { outDir, backgroundSeconds = 25, name
     await tap('#design-submit');
 
     // 4. The map and the first state frames.
-    await waitFor('the world map', () => cdp.evaluate(() => !!document.querySelector('#world-canvas')));
+    await waitFor('the world map', async () => {
+      const r = await cdp.evaluate(() => {
+        const submit = document.querySelector('#design-submit');
+        return {
+          map: !!document.querySelector('#world-canvas'),
+          design: !!submit,
+          submitDisabled: submit?.disabled ?? null,
+          problem: document.querySelector('#design-problem')?.textContent || '',
+          serverError: document.querySelector('#design-server-error')?.textContent || '',
+        };
+      });
+      if (r.map) return true;
+      throw new Error(JSON.stringify(r)); // what the timeout reports
+    });
     const first = await waitFor('a state frame with own organisms on a connected socket', async () => {
       const s = await status(cdp);
       return s.conn === 'connected' && s.organisms > 0 && s.tick > 0 && s.frames > 0 ? s : null;
