@@ -8,6 +8,10 @@
 // time, or open the app with ?server=… during development. evo-server
 // answers cross-origin API calls for this.
 //
+// Native push: the Android app needs `android/app/google-services.json` from
+// a Firebase project (see README "Native push in the apps"), the iOS app the
+// Push Notifications capability.
+//
 // Env when running `cap sync` / `cap run`:
 //   EVO_CAP_CLEARTEXT=1  allow plain-http servers (a LAN dev server); off by
 //                        default, as stores expect https.
@@ -35,6 +39,14 @@ const config: CapacitorConfig = {
   },
   ios: {
     contentInset: 'never',
+  },
+  plugins: {
+    // Native push (src/nativePush.ts). A notification that arrives while
+    // the app is open (from another world than the one being played) still
+    // shows.
+    PushNotifications: {
+      presentationOptions: ['badge', 'sound', 'alert'],
+    },
   },
 };
 

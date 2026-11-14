@@ -26,9 +26,11 @@ png = "0.17"
 # push services.
 aes-gcm = "0.10"
 hkdf = "0.12"
-p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
+p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
 sha2 = "0.10"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "http2"] }
+# RS256 for the FCM service-account token (already in the tree under rustls).
+ring = "0.17"
 rand.workspace = true
 # The sim's parallel phases run on rayon's global pool (`main` sets it up).
 rayon.workspace = true
@@ -45,6 +47,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+# HTTP/2 (h2c) for the mock APNs server in the native push tests.
+axum = { version = "0.7", features = ["ws", "http2"] }
+# Throwaway RSA keys for the FCM service-account tests.
+rsa = "0.9"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }

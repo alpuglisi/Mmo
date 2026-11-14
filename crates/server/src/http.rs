@@ -40,8 +40,8 @@ use crate::limits::{client_key, Bucket, Limiters};
 use crate::metrics::{Metrics, MetricsView, NetStats};
 use crate::protocol::{
     AchievementList, AlertPrefs, CatastropheList, ChronicleView, ClientEnvelope, ClientMsg, EraList, ErrorInfo,
-    LineageStats, PushKind, PushPrefs, SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic, TerrainView, WorldList,
-    WorldListing,
+    LineageStats, NativeService, PushKind, PushPrefs, SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic, TerrainView,
+    WorldList, WorldListing,
 };
 use crate::runner::{Published, Request, TerrainReply};
 use crate::store::{AlertPrefsRecord, DesignRecord, PushPrefsRecord, Store, WorldStore};
@@ -180,6 +180,8 @@ fn api_router(state: AppState) -> Router {
         .route("/api/push/subscriptions", get(push_subscriptions))
         .route("/api/push/subscribe", post(push_subscribe))
         .route("/api/push/unsubscribe", post(push_unsubscribe))
+        .route("/api/push/native/subscribe", post(push_native_subscribe))
+        .route("/api/push/native/unsubscribe", post(push_native_unsubscribe))
         .route("/api/push/prefs", get(push_prefs).post(set_push_prefs))
         .route("/api/species", get(species))
         .route("/api/eras", get(eras))
@@ -543,13 +545,16 @@ async fn set_alert_prefs(
 }
 
 /// `GET /api/push/key`: whether push notifications are on, the VAPID public
-/// key a browser subscribes with, and the push kinds.
+/// key a browser subscribes with, the push kinds, and the native push
+/// services the apps can register with (left out when none is configured).
 #[derive(Serialize)]
 struct PushKeyView {
     enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     public_key: Option<String>,
     kinds: Vec<PushKind>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    native: Vec<NativeService>,
 }
 
 async fn push_key(State(app): State<AppState>) -> Json<PushKeyView> {
@@ -557,6 +562,7 @@ async fn push_key(State(app): State<AppState>) -> Json<PushKeyView> {
         enabled: app.push.is_some(),
         public_key: app.push.as_ref().map(|p| p.public_key().to_string()),
         kinds: PushKind::ALL.to_vec(),
+        native: app.push.as_ref().map(|p| p.native_services()).unwrap_or_default(),
     })
 }
 
@@ -575,9 +581,22 @@ struct PushSubscriptionView {
     label: Option<String>,
 }
 
+/// One of the caller's app devices, as listed (the token stays on the
+/// server).
+#[derive(Serialize)]
+struct PushDeviceView {
+    service: NativeService,
+    created_unix: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+}
+
 #[derive(Serialize)]
 struct PushSubscriptionList {
     subscriptions: Vec<PushSubscriptionView>,
+    /// App devices (native push), left out when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    devices: Vec<PushDeviceView>,
 }
 
 /// `GET /api/push/subscriptions`: the caller's subscribed devices, oldest first.
@@ -591,7 +610,12 @@ async fn push_subscriptions(
         .into_iter()
         .map(|s| PushSubscriptionView { endpoint: s.endpoint, created_unix: s.created_unix, label: s.label })
         .collect();
-    Ok(Json(PushSubscriptionList { subscriptions }))
+    let devices = app.store.load_push_devices(session.player).await.map_err(ApiError::internal)?;
+    let devices = devices
+        .into_iter()
+        .map(|d| PushDeviceView { service: d.service, created_unix: d.created_unix, label: d.label })
+        .collect();
+    Ok(Json(PushSubscriptionList { subscriptions, devices }))
 }
 
 #[derive(Deserialize)]
@@ -620,9 +644,63 @@ async fn push_subscribe(
     let label = body.label.or_else(|| headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).map(String::from));
     match push.subscribe(session.player, &body.endpoint, &body.keys.p256dh, &body.keys.auth, label).await {
         Ok(s) => Ok(Json(PushSubscriptionView { endpoint: s.endpoint, created_unix: s.created_unix, label: s.label })),
-        Err(SubscribeError::Invalid(why)) => Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_subscription", why)),
-        Err(SubscribeError::Store(e)) => Err(ApiError::internal(e)),
+        Err(e) => Err(subscribe_error(e)),
     }
+}
+
+fn subscribe_error(e: SubscribeError) -> ApiError {
+    match e {
+        SubscribeError::Invalid(why) => ApiError::new(StatusCode::BAD_REQUEST, "bad_subscription", why),
+        SubscribeError::Unavailable(why) => ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "push_disabled", why),
+        SubscribeError::Store(e) => ApiError::internal(e),
+    }
+}
+
+/// `POST /api/push/native/subscribe`: a native app's device token (from
+/// `@capacitor/push-notifications`): `fcm` for Android, `apns` for iOS.
+#[derive(Deserialize)]
+struct NativeSubscribeBody {
+    service: NativeService,
+    token: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+async fn push_native_subscribe(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<NativeSubscribeBody>,
+) -> Result<Json<PushDeviceView>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let push = push_service(&app)?;
+    match push.register_device(session.player, body.service, &body.token, body.label).await {
+        Ok(d) => Ok(Json(PushDeviceView { service: d.service, created_unix: d.created_unix, label: d.label })),
+        Err(e) => Err(subscribe_error(e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct NativeUnsubscribeBody {
+    service: NativeService,
+    token: String,
+}
+
+/// `POST /api/push/native/unsubscribe`: forget one of the caller's app
+/// devices (also while push is off).
+async fn push_native_unsubscribe(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<NativeUnsubscribeBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let removed = match &app.push {
+        Some(p) => p.unregister_device(session.player, body.service, &body.token).await,
+        None => {
+            crate::webpush::service::unregister_device(&*app.store, session.player, body.service, &body.token).await
+        }
+    }
+    .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({ "removed": removed })))
 }
 
 #[derive(Deserialize)]

@@ -59,7 +59,11 @@ describe('push status', () => {
     expect(pushStatus(env({ permission: 'granted' }), true, true)).toBe('on');
     // A subscription without permission (revoked since) is not "on".
     expect(pushStatus(env({ permission: 'default' }), true, true)).toBe('off');
-    for (const s of ['unsupported', 'insecure', 'disabled', 'denied', 'off', 'on'] as const) expect(statusText(s).length).toBeGreaterThan(10);
+    for (const s of ['unsupported', 'unavailable', 'insecure', 'disabled', 'denied', 'off', 'on'] as const) {
+      expect(statusText(s).length).toBeGreaterThan(10);
+      expect(statusText(s, true).length).toBeGreaterThan(10);
+    }
+    expect(statusText('denied', true)).toContain('phone');
   });
 });
 

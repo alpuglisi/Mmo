@@ -8,7 +8,7 @@
 
 import type {
   AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, CurrentSeason, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
-  LineageStats, PlayerId, PlayerSeasonHistory, PushKeyView, PushPrefs, PushSubscriptionView, RankedSeasonList, RankedSeasonPage, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldList,
+  LineageStats, NativeService, PlayerId, PlayerSeasonHistory, PushDeviceView, PushKeyView, PushPrefs, PushSubscriptionView, RankedSeasonList, RankedSeasonPage, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldList,
   WorldSummary,
 } from './protocol';
 import { PROTO_DELTA } from './wire';
@@ -106,10 +106,16 @@ export const api = {
   setAlertPrefs: (token: string, prefs: AlertPrefs) => request<AlertPrefs>('POST', '/api/alerts/prefs', prefs, token),
   // Push notifications: global (one account, every world; a notification names its world).
   pushKey: () => request<PushKeyView>('GET', '/api/push/key'),
-  pushSubscriptions: (token: string) => request<{ subscriptions: PushSubscriptionView[] }>('GET', '/api/push/subscriptions', undefined, token),
+  pushSubscriptions: (token: string) =>
+    request<{ subscriptions: PushSubscriptionView[]; devices?: PushDeviceView[] }>('GET', '/api/push/subscriptions', undefined, token),
   pushSubscribe: (token: string, sub: PushSubscriptionJSON, label?: string) =>
     request<PushSubscriptionView>('POST', '/api/push/subscribe', { ...sub, label }, token),
   pushUnsubscribe: (token: string, endpoint: string) => request<{ removed: boolean }>('POST', '/api/push/unsubscribe', { endpoint }, token),
+  // Native push in the apps: a device token for FCM (Android) or APNs (iOS).
+  pushNativeSubscribe: (token: string, service: NativeService, deviceToken: string, label?: string) =>
+    request<PushDeviceView>('POST', '/api/push/native/subscribe', { service, token: deviceToken, label }, token),
+  pushNativeUnsubscribe: (token: string, service: NativeService, deviceToken: string) =>
+    request<{ removed: boolean }>('POST', '/api/push/native/unsubscribe', { service, token: deviceToken }, token),
   pushPrefs: (token: string) => request<PushPrefs>('GET', '/api/push/prefs', undefined, token),
   setPushPrefs: (token: string, prefs: PushPrefs) => request<PushPrefs>('POST', '/api/push/prefs', prefs, token),
   species: () => request<SpeciesList>('GET', withWorld('/api/species')),

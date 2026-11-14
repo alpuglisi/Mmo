@@ -11,10 +11,11 @@ use std::time::Duration;
 use evo_server::design::{BirthSpec, DesignSpec, ThermoSpec};
 use evo_server::game::{GameConfig, WorldSettings};
 use evo_server::league::{SeasonRecord, SeasonTracker};
-use evo_server::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind, PushKind, PushPrefs};
+use evo_server::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind, NativeService, PushKind, PushPrefs};
 use evo_server::store::{
     AccountRecord, AlertPrefsRecord, AuctionRecord, BalanceRecord, DailyRecord, DesignRecord, FileStore, LedgerRecord,
-    MemoryStore, PushPrefsRecord, PushSubscriptionRecord, Store, TradeRecord, WorldStore, KEEP_SNAPSHOTS,
+    MemoryStore, PushDeviceRecord, PushPrefsRecord, PushSubscriptionRecord, Store, TradeRecord, WorldStore,
+    KEEP_SNAPSHOTS,
 };
 use evo_server::worlds::DEFAULT_WORLD;
 use evo_server::{start, ServerConfig};
@@ -333,8 +334,18 @@ fn push_sub(player: u32, n: u32, created_unix: u64) -> PushSubscriptionRecord {
     }
 }
 
-/// Push subscriptions (one per endpoint), push preferences and server
-/// secrets (global records).
+fn push_device(player: u32, service: NativeService, n: u32, created_unix: u64) -> PushDeviceRecord {
+    PushDeviceRecord {
+        player,
+        service,
+        token: format!("token-{n}"),
+        created_unix,
+        label: (n % 2 == 1).then(|| format!("Phone {n}")),
+    }
+}
+
+/// Push subscriptions (one per endpoint), native device tokens (one per
+/// service and token), push preferences and server secrets (global records).
 async fn write_push(s: &WorldStore) {
     assert!(s.load_push_subscriptions(1).await.unwrap().is_empty());
     assert_eq!(s.load_push_prefs(1).await.unwrap(), None);
@@ -345,6 +356,17 @@ async fn write_push(s: &WorldStore) {
     s.put_push_subscription(&PushSubscriptionRecord { auth: "new".into(), ..push_sub(1, 3, 40) }).await.unwrap();
     assert!(s.delete_push_subscription(&push_sub(1, 2, 0).endpoint).await.unwrap());
     assert!(!s.delete_push_subscription(&push_sub(1, 2, 0).endpoint).await.unwrap());
+    assert!(s.load_push_devices(1).await.unwrap().is_empty());
+    s.put_push_device(&push_device(1, NativeService::Fcm, 1, 30)).await.unwrap();
+    s.put_push_device(&push_device(1, NativeService::Apns, 1, 30)).await.unwrap();
+    s.put_push_device(&push_device(1, NativeService::Fcm, 2, 10)).await.unwrap();
+    s.put_push_device(&push_device(2, NativeService::Apns, 3, 20)).await.unwrap();
+    // The same token registered again under another account moves.
+    s.put_push_device(&push_device(1, NativeService::Apns, 3, 40)).await.unwrap();
+    assert!(s.delete_push_device(NativeService::Fcm, "token-2").await.unwrap());
+    assert!(!s.delete_push_device(NativeService::Fcm, "token-2").await.unwrap());
+    // Same token, other service: another device.
+    assert!(!s.delete_push_device(NativeService::Fcm, "token-3").await.unwrap());
     let off = |kinds: &[PushKind]| PushPrefs { off: kinds.to_vec() };
     s.put_push_prefs(&PushPrefsRecord { player: 1, prefs: off(&[PushKind::Mating, PushKind::Season]) }).await.unwrap();
     s.put_push_prefs(&PushPrefsRecord { player: 2, prefs: off(&[]) }).await.unwrap();
@@ -359,6 +381,14 @@ async fn check_push(s: &WorldStore) {
     let subs = s.load_push_subscriptions(1).await.unwrap();
     assert_eq!(subs, vec![push_sub(1, 1, 30), PushSubscriptionRecord { auth: "new".into(), ..push_sub(1, 3, 40) }]);
     assert!(s.load_push_subscriptions(2).await.unwrap().is_empty());
+    let devices = s.load_push_devices(1).await.unwrap();
+    let want = vec![
+        push_device(1, NativeService::Apns, 1, 30),
+        push_device(1, NativeService::Fcm, 1, 30),
+        push_device(1, NativeService::Apns, 3, 40),
+    ];
+    assert_eq!(devices, want);
+    assert!(s.load_push_devices(2).await.unwrap().is_empty());
     let prefs = s.load_push_prefs(1).await.unwrap().unwrap().prefs;
     assert_eq!(prefs, PushPrefs { off: vec![PushKind::Death, PushKind::Catastrophe] });
     assert_eq!(s.load_push_prefs(2).await.unwrap().unwrap().prefs, PushPrefs::default());

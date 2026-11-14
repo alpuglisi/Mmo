@@ -9,12 +9,14 @@ use evo_sim::PlayerId;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Semaphore};
 
+use super::apns::Apns;
 use super::coalesce::{Batch, Coalescer};
+use super::fcm::Fcm;
 use super::sender::{Outcome, Sender};
 use super::vapid::VapidKey;
-use super::{b64_decode, b64_encode, check_endpoint, ece, Msg, PushConfig, PushStats, WorldNotifier};
-use crate::protocol::{AlertPrefs, PushKind, PushPrefs};
-use crate::store::{PushSubscriptionRecord, Store, StoreError};
+use super::{b64_decode, b64_encode, check_endpoint, ece, native, Msg, PushConfig, PushStats, WorldNotifier};
+use crate::protocol::{AlertPrefs, NativeService, PushKind, PushPrefs};
+use crate::store::{PushDeviceRecord, PushSubscriptionRecord, Store, StoreError};
 
 /// Notices queued between the world threads and the service.
 pub const QUEUE: usize = 8192;
@@ -115,6 +117,8 @@ pub fn payload(batch: &Batch) -> Payload {
 #[derive(Debug)]
 pub enum SubscribeError {
     Invalid(String),
+    /// The device's push service is not configured on this server.
+    Unavailable(String),
     Store(StoreError),
 }
 
@@ -125,6 +129,8 @@ struct Shared {
     stats: Arc<PushStats>,
     store: Arc<dyn Store>,
     filters: Mutex<HashMap<PlayerId, Filter>>,
+    fcm: Option<Fcm>,
+    apns: Option<Apns>,
 }
 
 /// The running push service (shared by the HTTP handlers and the world
@@ -148,7 +154,8 @@ impl Shared {
         }
         let push = self.store.load_push_prefs(player).await?.map(|r| r.prefs.normalized()).unwrap_or_default();
         let alerts = self.store.load_alert_prefs(player).await?.map(|r| r.prefs.normalized()).unwrap_or_default();
-        let subscribed = !self.store.load_push_subscriptions(player).await?.is_empty();
+        let subscribed = !self.store.load_push_subscriptions(player).await?.is_empty()
+            || !self.store.load_push_devices(player).await?.is_empty();
         let f = Filter { push, alerts, subscribed, loaded: Instant::now() };
         self.filters.lock().unwrap().insert(player, f.clone());
         Ok(f)
@@ -167,6 +174,18 @@ impl PushService {
 
     pub fn stats(&self) -> &PushStats {
         &self.shared.stats
+    }
+
+    /// The native push services configured (the apps that can register).
+    pub fn native_services(&self) -> Vec<NativeService> {
+        let mut v = Vec::new();
+        if self.shared.fcm.is_some() {
+            v.push(NativeService::Fcm);
+        }
+        if self.shared.apns.is_some() {
+            v.push(NativeService::Apns);
+        }
+        v
     }
 
     /// A notifier for one world's thread.
@@ -221,6 +240,57 @@ impl PushService {
         Ok(record)
     }
 
+    /// Store a native app's device token for `player` (its service must be
+    /// configured); an account over [`PushConfig::max_subscriptions`]
+    /// devices loses its oldest.
+    pub async fn register_device(
+        &self,
+        player: PlayerId,
+        service: NativeService,
+        token: &str,
+        label: Option<String>,
+    ) -> Result<PushDeviceRecord, SubscribeError> {
+        if !self.native_services().contains(&service) {
+            return Err(SubscribeError::Unavailable(format!(
+                "{} push is not configured on this server",
+                service.name()
+            )));
+        }
+        let token = native::check_token(service, token).map_err(SubscribeError::Invalid)?;
+        let store = &self.shared.store;
+        let label = label.map(|l| l.trim().chars().take(MAX_LABEL).collect::<String>()).filter(|l| !l.is_empty());
+        let record = PushDeviceRecord {
+            player,
+            service,
+            token,
+            created_unix: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()),
+            label,
+        };
+        store.put_push_device(&record).await.map_err(SubscribeError::Store)?;
+        let devices = store.load_push_devices(player).await.map_err(SubscribeError::Store)?;
+        let excess = devices.len().saturating_sub(self.shared.cfg.max_subscriptions.max(1));
+        let same = |d: &PushDeviceRecord| d.service == record.service && d.token == record.token;
+        for old in devices.iter().filter(|d| !same(d)).take(excess) {
+            store.delete_push_device(old.service, &old.token).await.map_err(SubscribeError::Store)?;
+        }
+        // The token may have belonged to another account (a shared device).
+        self.shared.filters.lock().unwrap().clear();
+        Ok(record)
+    }
+
+    /// Delete one of `player`'s device tokens; false if they have no such
+    /// device.
+    pub async fn unregister_device(
+        &self,
+        player: PlayerId,
+        service: NativeService,
+        token: &str,
+    ) -> Result<bool, StoreError> {
+        let removed = unregister_device(&*self.shared.store, player, service, token).await?;
+        self.invalidate(player);
+        Ok(removed)
+    }
+
     /// Delete one of `player`'s subscriptions; false if they have none with
     /// that endpoint.
     pub async fn unsubscribe(&self, player: PlayerId, endpoint: &str) -> Result<bool, StoreError> {
@@ -233,6 +303,23 @@ impl PushService {
         self.invalidate(player);
         Ok(removed)
     }
+}
+
+/// Delete one of `player`'s device tokens from the store (also used while
+/// push is off, so a player can still clean up).
+pub async fn unregister_device(
+    store: &dyn Store,
+    player: PlayerId,
+    service: NativeService,
+    token: &str,
+) -> Result<bool, StoreError> {
+    // Stored normalized (APNs tokens lower-case).
+    let token = native::check_token(service, token).unwrap_or_else(|_| token.trim().to_string());
+    let owned = store.load_push_devices(player).await?.iter().any(|d| d.service == service && d.token == token);
+    if !owned {
+        return Ok(false);
+    }
+    store.delete_push_device(service, &token).await
 }
 
 /// Start the push service: the VAPID key from the config, else the one in
@@ -264,10 +351,25 @@ pub async fn start(store: Arc<dyn Store>, cfg: PushConfig) -> Result<Option<Push
     let cfg = Arc::new(cfg);
     let stats = Arc::new(PushStats::default());
     let sender = Arc::new(Sender::new(key.clone(), cfg.clone(), stats.clone())?);
+    let fcm = match &cfg.fcm {
+        Some(f) => Some(Fcm::new(f.clone(), cfg.clone(), stats.clone())?),
+        None => None,
+    };
+    let apns = match &cfg.apns {
+        Some(a) => Some(Apns::new(a.clone(), cfg.clone(), stats.clone())?),
+        None => None,
+    };
     let (tx, rx) = mpsc::channel(QUEUE);
-    let shared = Arc::new(Shared { key, cfg, stats, store, filters: Mutex::default() });
+    let shared = Arc::new(Shared { key, cfg, stats, store, filters: Mutex::default(), fcm, apns });
     tokio::spawn(run(shared.clone(), sender, rx));
     tracing::info!("push notifications on (VAPID public key {})", shared.key.public_b64());
+    if let Some(f) = &shared.fcm {
+        tracing::info!("native push for Android on (FCM project {})", f.project());
+    }
+    if let Some(a) = &shared.apns {
+        let c = a.config();
+        tracing::info!("native push for iOS on (APNs {} for {}, key {})", c.api(), c.topic, c.key_id);
+    }
     Ok(Some(PushService { tx, shared }))
 }
 
@@ -307,9 +409,68 @@ async fn run(shared: Arc<Shared>, sender: Arc<Sender>, mut rx: mpsc::Receiver<Ms
     }
 }
 
-/// Send a batch to every subscription of its player.
+/// Send a batch to every subscription and device of its player.
 async fn deliver(shared: &Shared, sender: &Sender, batch: Batch) {
-    let player = batch.player;
+    let p = payload(&batch);
+    let web = deliver_web(shared, sender, batch.player, &p);
+    let native = deliver_native(shared, batch.player, &p);
+    futures_util::future::join(web, native).await;
+}
+
+/// Count and log how a delivery ended; true if the subscription or device
+/// is gone (the caller deletes it).
+fn record(stats: &PushStats, player: PlayerId, what: &str, outcome: Outcome) -> bool {
+    match outcome {
+        Outcome::Delivered => {
+            stats.delivered.fetch_add(1, Ordering::Relaxed);
+        }
+        Outcome::Gone(status) => {
+            stats.gone.fetch_add(1, Ordering::Relaxed);
+            tracing::info!("push: a {what} of player {player} is gone ({status}); deleting it");
+            return true;
+        }
+        Outcome::Rejected(status) => {
+            stats.failed.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!("push: a message to a {what} of player {player} was refused ({status})");
+        }
+        Outcome::Failed(why) => {
+            stats.failed.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!("push: a message to a {what} of player {player} failed: {why}");
+        }
+    }
+    false
+}
+
+/// Send a notification to every device token of a player whose service is
+/// configured.
+async fn deliver_native(shared: &Shared, player: PlayerId, p: &Payload) {
+    let devices = match shared.store.load_push_devices(player).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("push: could not read the devices of player {player}: {e}");
+            return;
+        }
+    };
+    let sends = devices.iter().filter_map(|d| {
+        let send: futures_util::future::BoxFuture<'_, Outcome> = match d.service {
+            NativeService::Fcm => Box::pin(shared.fcm.as_ref()?.send(&d.token, p)),
+            NativeService::Apns => Box::pin(shared.apns.as_ref()?.send(&d.token, p)),
+        };
+        Some(async move { (d, send.await) })
+    });
+    for (d, outcome) in futures_util::future::join_all(sends).await {
+        let what = format!("{} device", d.service.name());
+        if record(&shared.stats, player, &what, outcome) {
+            if let Err(e) = shared.store.delete_push_device(d.service, &d.token).await {
+                tracing::warn!("push: could not delete a gone device token: {e}");
+            }
+            shared.invalidate(player);
+        }
+    }
+}
+
+/// Send a notification to every Web Push subscription of a player.
+async fn deliver_web(shared: &Shared, sender: &Sender, player: PlayerId, p: &Payload) {
     let subs = match shared.store.load_push_subscriptions(player).await {
         Ok(s) => s,
         Err(e) => {
@@ -317,9 +478,8 @@ async fn deliver(shared: &Shared, sender: &Sender, batch: Batch) {
             return;
         }
     };
-    let p = payload(&batch);
     let urgency = if matches!(p.kind, PushKind::Mating | PushKind::Death) { "high" } else { "normal" };
-    let json = serde_json::to_vec(&p).expect("payload serializes");
+    let json = serde_json::to_vec(p).expect("payload serializes");
     let sends = subs.iter().map(|s| {
         let json = &json;
         async move {
@@ -334,28 +494,12 @@ async fn deliver(shared: &Shared, sender: &Sender, batch: Batch) {
             (s, outcome)
         }
     });
-    let stats = &shared.stats;
     for (s, outcome) in futures_util::future::join_all(sends).await {
-        match outcome {
-            Outcome::Delivered => {
-                stats.delivered.fetch_add(1, Ordering::Relaxed);
+        if record(&shared.stats, player, "subscription", outcome) {
+            if let Err(e) = shared.store.delete_push_subscription(&s.endpoint).await {
+                tracing::warn!("push: could not delete a gone subscription: {e}");
             }
-            Outcome::Gone(status) => {
-                stats.gone.fetch_add(1, Ordering::Relaxed);
-                tracing::info!("push: a subscription of player {player} is gone ({status}); deleting it");
-                if let Err(e) = shared.store.delete_push_subscription(&s.endpoint).await {
-                    tracing::warn!("push: could not delete a gone subscription: {e}");
-                }
-                shared.invalidate(player);
-            }
-            Outcome::Rejected(status) => {
-                stats.failed.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!("push: a message to player {player} was refused ({status})");
-            }
-            Outcome::Failed(why) => {
-                stats.failed.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!("push: a message to player {player} failed: {why}");
-            }
+            shared.invalidate(player);
         }
     }
 }

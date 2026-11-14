@@ -1,27 +1,72 @@
 // The push notification settings card (Genetics tab, under the alert
 // preferences): this device's status with an Enable / Turn off button, the
 // per-kind switches (saved to the account) and how many devices are
-// subscribed.
+// subscribed. In a browser the device subscribes with Web Push; in the
+// Android and iOS apps it registers its native push token (FCM / APNs).
 
-import { ApiError, api } from '../api';
-import { PUSH_KINDS, type PushKind, type PushPrefs } from '../protocol';
+import { ApiError, api, apiBase } from '../api';
+import {
+  ANDROID_CHANNEL, disableNative, enableNative, nativeService, nativeStatus, refreshNative, registerToken,
+  type NativePermission, type NativePushDeps, type PushPlugin,
+} from '../nativePush';
+import { PUSH_KINDS, type NativeService, type PushKind, type PushPrefs } from '../protocol';
 import {
   PUSH_HINT, PUSH_LABEL, PushError, currentSubscription, detectEnv, deviceLabel, disablePush, enablePush, normalizePushPrefs, pushStatus, sameKey,
-  setPushKind, statusText, wants, type PushDeps, type PushEnv,
+  setPushKind, statusText, wants, type PushDeps, type PushEnv, type PushStatus,
 } from '../push';
 import { h } from './dom';
 
 export interface PushSettingsDeps {
   token: string;
+  /** The logged-in player (a native registration belongs to one account). */
+  player?: number;
   onUnauthorized: () => void;
   toast: (kind: 'error' | 'info', text: string) => void;
   /** Overrides for tests. */
   env?: () => PushEnv;
+  native?: () => Promise<NativePushDeps | null>;
 }
 
 export interface PushSettings {
   el: HTMLElement;
   destroy: () => void;
+}
+
+function storage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** The app's native push plumbing: `@capacitor/push-notifications` (loaded only in the apps) and the server. */
+async function appNativeDeps(token: string, player: number | undefined): Promise<NativePushDeps | null> {
+  const cap = (window as unknown as { Capacitor?: { getPlatform?: () => string } }).Capacitor;
+  const service = nativeService(cap?.getPlatform?.() ?? 'web');
+  if (!service) return null;
+  const { PushNotifications } = await import('@capacitor/push-notifications');
+  const plugin = PushNotifications as unknown as PushPlugin;
+  return {
+    service,
+    // Registering without the Firebase config would crash the Android app.
+    available: service === 'apns' || __EVO_FCM__,
+    checkPermissions: async () => (await plugin.checkPermissions()).receive,
+    requestPermissions: async () => (await plugin.requestPermissions()).receive,
+    register: async () => {
+      if (service === 'fcm' && plugin.createChannel) {
+        await plugin.createChannel({ id: ANDROID_CHANNEL, name: 'Game events', description: 'Mating offers, deaths, the market, seasons', importance: 4 })
+          .catch(() => undefined);
+      }
+      return registerToken(plugin);
+    },
+    unregister: () => plugin.unregister(),
+    subscribe: (s: NativeService, t: string, label: string) => api.pushNativeSubscribe(token, s, t, label),
+    unsubscribe: (s: NativeService, t: string) => api.pushNativeUnsubscribe(token, s, t),
+    label: `Evolution MMO app on ${service === 'fcm' ? 'Android' : 'iOS'}`,
+    account: `${apiBase() || window.location.origin}|${player ?? ''}`,
+    storage: storage(),
+  };
 }
 
 export function pushSettings(d: PushSettingsDeps): PushSettings {
@@ -32,11 +77,15 @@ export function pushSettings(d: PushSettingsDeps): PushSettings {
     body);
   let serverEnabled: boolean | null = null;
   let publicKey = '';
+  let services: NativeService[] | null = null;
   let prefs: PushPrefs = { off: [] };
   let subscribed = false;
   let devices: number | null = null;
   let busy = false;
   let alive = true;
+  // In the apps: the native plumbing (null until loaded, or in a browser).
+  let native: NativePushDeps | null = null;
+  let permission: NativePermission | null = null;
 
   const deps: PushDeps = {
     registration: async () => {
@@ -57,20 +106,26 @@ export function pushSettings(d: PushSettingsDeps): PushSettings {
     else d.toast('error', `${what}: ${(e as Error).message}`);
   }
 
+  function status(): PushStatus {
+    if (native) return nativeStatus(native.available, native.service, services, serverEnabled, permission, subscribed);
+    return pushStatus(env(), serverEnabled, subscribed);
+  }
+
   function render(): void {
     if (!alive) return;
-    const status = pushStatus(env(), serverEnabled, subscribed);
-    const canToggle = status === 'on' || status === 'off';
+    const s = status();
+    const canToggle = s === 'on' || s === 'off';
+    const needsKey = !native && !publicKey;
     const toggle = h('button', {
-      id: 'push-toggle', class: status === 'on' ? 'secondary' : '', disabled: !canToggle || busy || (status === 'off' && !publicKey),
-      onclick: () => void (status === 'on' ? turnOff() : turnOn()),
-    }, status === 'on' ? 'Turn off on this device' : 'Enable on this device');
+      id: 'push-toggle', class: s === 'on' ? 'secondary' : '', disabled: !canToggle || busy || (s === 'off' && needsKey),
+      onclick: () => void (s === 'on' ? turnOff() : turnOn()),
+    }, s === 'on' ? 'Turn off on this device' : 'Enable on this device');
     const box = (k: PushKind) => h('input', {
       type: 'checkbox', checked: wants(prefs, k), 'data-push-kind': k, 'aria-label': `push ${PUSH_LABEL[k]}`, disabled: serverEnabled === false || busy,
       onchange: (e: Event) => void savePrefs(setPushKind(prefs, k, (e.target as HTMLInputElement).checked)),
     });
     body.replaceChildren(
-      h('p', { class: 'muted small', id: 'push-status', 'data-status': status }, statusText(status)),
+      h('p', { class: 'muted small', id: 'push-status', 'data-status': s }, statusText(s, native !== null)),
       toggle,
       h('table', { class: 'prefs-table', id: 'push-kinds' },
         h('thead', {}, h('tr', {}, h('th', {}, 'Notify me about'), h('th', {}, 'Push'))),
@@ -85,7 +140,8 @@ export function pushSettings(d: PushSettingsDeps): PushSettings {
 
   async function refreshDevices(): Promise<void> {
     try {
-      devices = (await api.pushSubscriptions(d.token)).subscriptions.length;
+      const list = await api.pushSubscriptions(d.token);
+      devices = list.subscriptions.length + (list.devices?.length ?? 0);
     } catch {
       devices = null;
     }
@@ -95,13 +151,15 @@ export function pushSettings(d: PushSettingsDeps): PushSettings {
     busy = true;
     render();
     try {
-      await enablePush(deps, publicKey);
+      if (native) await enableNative(native);
+      else await enablePush(deps, publicKey);
       subscribed = true;
-      await refreshDevices();
       d.toast('info', 'Push notifications are on for this device.');
     } catch (e) {
       failed(e, 'Push notifications not enabled');
     }
+    if (native) permission = await native.checkPermissions().catch(() => permission);
+    await refreshDevices();
     busy = false;
     render();
   }
@@ -110,7 +168,8 @@ export function pushSettings(d: PushSettingsDeps): PushSettings {
     busy = true;
     render();
     try {
-      await disablePush(deps);
+      if (native) await disableNative(native);
+      else await disablePush(deps);
       subscribed = false;
       await refreshDevices();
     } catch (e) {
@@ -133,32 +192,57 @@ export function pushSettings(d: PushSettingsDeps): PushSettings {
     render();
   }
 
+  /** Web Push: hand this browser's subscription over again if it has one. */
+  async function refreshWeb(): Promise<void> {
+    const e = env();
+    if (!serverEnabled || !publicKey || pushStatus(e, true, false) !== 'off') return;
+    try {
+      const sub = await currentSubscription(deps);
+      if (sub && sameKey(sub.options?.applicationServerKey, publicKey) && e.permission === 'granted') {
+        // Hand it over again: the server may have dropped it, or the
+        // browser rotated it.
+        await api.pushSubscribe(d.token, sub.toJSON(), deps.label);
+        subscribed = true;
+      }
+    } catch {
+      /* keep "off": Enable subscribes afresh */
+    }
+  }
+
+  /** The apps: whether this device is registered, and register it again if so. */
+  async function refreshApp(n: NativePushDeps): Promise<void> {
+    if (!n.available) return;
+    permission = await n.checkPermissions().catch(() => null);
+    if (!serverEnabled || !services?.includes(n.service)) return;
+    try {
+      subscribed = await refreshNative(n);
+    } catch {
+      /* keep "off": Enable registers afresh */
+    }
+  }
+
   void (async () => {
     render();
+    if (env().native) {
+      try {
+        native = await (d.native ?? (() => appNativeDeps(d.token, d.player)))();
+      } catch {
+        native = null;
+      }
+    }
     try {
       const key = await api.pushKey();
       serverEnabled = key.enabled;
       publicKey = key.public_key ?? '';
+      services = key.native ?? [];
       prefs = normalizePushPrefs(await api.pushPrefs(d.token));
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) return d.onUnauthorized();
       /* an older server, or offline: nothing to offer */
       serverEnabled = serverEnabled ?? false;
     }
-    const e = env();
-    if (serverEnabled && publicKey && pushStatus(e, true, false) === 'off') {
-      try {
-        const sub = await currentSubscription(deps);
-        if (sub && sameKey(sub.options?.applicationServerKey, publicKey) && e.permission === 'granted') {
-          // Hand it over again: the server may have dropped it, or the
-          // browser rotated it.
-          await api.pushSubscribe(d.token, sub.toJSON(), deps.label);
-          subscribed = true;
-        }
-      } catch {
-        /* keep "off": Enable subscribes afresh */
-      }
-    }
+    if (native) await refreshApp(native);
+    else await refreshWeb();
     await refreshDevices();
     render();
   })();

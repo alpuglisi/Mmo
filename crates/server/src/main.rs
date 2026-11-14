@@ -6,7 +6,8 @@
 //!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
 //!            [--season-days N] [--offline-protection-hours H] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
 //!            [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:...] [--push-per-hour N]
-//!            [--push-allow-any-endpoint] [--hash-concurrency N] [--hash-queue N]
+//!            [--push-allow-any-endpoint] [--fcm-service-account FILE] [--apns-key FILE --apns-key-id ID
+//!            --apns-team-id ID [--apns-topic BUNDLE_ID] [--apns-sandbox]] [--hash-concurrency N] [--hash-queue N]
 //! ```
 //!
 //! `--database-url` (or the `DATABASE_URL` environment variable) keeps
@@ -27,6 +28,16 @@
 //! subscription endpoints outside the browsers' push services, plain http
 //! included (tests, private push servers).
 //!
+//! Native push for the apps is off until its credentials are given:
+//! `--fcm-service-account FILE` (or `EVO_FCM_SERVICE_ACCOUNT`: a path, or the
+//! key file's JSON itself) turns on FCM for Android; `--apns-key FILE` (or
+//! `EVO_APNS_KEY`: a path to the `.p8` file, or its PEM text) with
+//! `--apns-key-id` and `--apns-team-id` (`EVO_APNS_KEY_ID`,
+//! `EVO_APNS_TEAM_ID`) turns on APNs for iOS, for the bundle id
+//! `--apns-topic` (`EVO_APNS_TOPIC`, default `org.evolutionmmo.client`),
+//! against Apple's development servers with `--apns-sandbox`
+//! (`EVO_APNS_SANDBOX=1`).
+//!
 //! `--hash-concurrency` (or `EVO_HASH_CONCURRENCY`) sets how many password
 //! hashes (registrations and logins) run at once, by default half the cores
 //! (at least 1); `--hash-queue` (or `EVO_HASH_QUEUE`) how many more may
@@ -38,6 +49,8 @@
 use std::time::Duration;
 
 use evo_server::accounts::HashPolicy;
+use evo_server::webpush::apns::{self, ApnsConfig};
+use evo_server::webpush::fcm::{FcmConfig, ServiceAccount};
 use evo_server::worlds::WorldSpec;
 use evo_server::{start, ServerConfig};
 
@@ -47,7 +60,70 @@ const USAGE: &str =
 [--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] \
 [--season-days 60] [--offline-protection-hours 12] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE] \
 [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:you@example.org] [--push-per-hour 4] \
-[--push-allow-any-endpoint] [--hash-concurrency N] [--hash-queue N]";
+[--push-allow-any-endpoint] [--fcm-service-account FILE] [--apns-key FILE --apns-key-id ID --apns-team-id ID \
+[--apns-topic org.evolutionmmo.client] [--apns-sandbox]] [--hash-concurrency N] [--hash-queue N]";
+
+/// A credential given as a file path, or inline (text containing `marker`).
+fn read_credential(name: &str, value: &str, marker: &str) -> Result<String, String> {
+    if value.contains(marker) {
+        return Ok(value.to_string());
+    }
+    std::fs::read_to_string(value.trim()).map_err(|e| format!("{name} {value}: {e}"))
+}
+
+/// Native push settings as given; turned into `PushConfig::fcm` and
+/// `PushConfig::apns` once every argument is read.
+#[derive(Default)]
+struct NativeArgs {
+    fcm: Option<String>,
+    apns_key: Option<String>,
+    apns_key_id: Option<String>,
+    apns_team_id: Option<String>,
+    apns_topic: Option<String>,
+    apns_sandbox: bool,
+}
+
+impl NativeArgs {
+    fn from_env() -> Self {
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        NativeArgs {
+            fcm: env("EVO_FCM_SERVICE_ACCOUNT"),
+            apns_key: env("EVO_APNS_KEY"),
+            apns_key_id: env("EVO_APNS_KEY_ID"),
+            apns_team_id: env("EVO_APNS_TEAM_ID"),
+            apns_topic: env("EVO_APNS_TOPIC"),
+            apns_sandbox: env("EVO_APNS_SANDBOX").is_some_and(|v| v.trim() == "1" || v.trim() == "true"),
+        }
+    }
+
+    fn fcm(&self) -> Result<Option<FcmConfig>, String> {
+        let Some(v) = &self.fcm else { return Ok(None) };
+        let text = read_credential("--fcm-service-account", v, "{")?;
+        Ok(Some(FcmConfig::new(ServiceAccount::from_json(&text)?)))
+    }
+
+    fn apns(&self) -> Result<Option<ApnsConfig>, String> {
+        let Some(key) = &self.apns_key else {
+            if self.apns_key_id.is_some() || self.apns_team_id.is_some() {
+                return Err("--apns-key-id and --apns-team-id need --apns-key".into());
+            }
+            return Ok(None);
+        };
+        let (Some(key_id), Some(team_id)) = (&self.apns_key_id, &self.apns_team_id) else {
+            return Err("--apns-key needs --apns-key-id and --apns-team-id".into());
+        };
+        let key_pem = read_credential("--apns-key", key, "-----BEGIN")?;
+        apns::signing_key(&key_pem)?;
+        Ok(Some(ApnsConfig {
+            key_pem,
+            key_id: key_id.trim().to_string(),
+            team_id: team_id.trim().to_string(),
+            topic: self.apns_topic.clone().unwrap_or_else(|| apns::DEFAULT_TOPIC.into()).trim().to_string(),
+            sandbox: self.apns_sandbox,
+            api: None,
+        }))
+    }
+}
 
 fn parse_args() -> Result<ServerConfig, String> {
     let mut cfg = ServerConfig {
@@ -78,6 +154,7 @@ fn parse_args() -> Result<ServerConfig, String> {
     let mut hash_concurrency = env("EVO_HASH_CONCURRENCY").map(|v| positive("EVO_HASH_CONCURRENCY", &v)).transpose()?;
     let mut hash_queue = env("EVO_HASH_QUEUE").map(|v| count("EVO_HASH_QUEUE", &v)).transpose()?;
     let mut offline_hours: Option<f64> = None;
+    let mut native = NativeArgs::from_env();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -163,6 +240,12 @@ fn parse_args() -> Result<ServerConfig, String> {
                 cfg.push.limits.min_gap = cfg.push.limits.min_gap.min(Duration::from_secs(3600 / u64::from(n)));
             }
             "--push-allow-any-endpoint" => cfg.push.allow_any_endpoint = true,
+            "--fcm-service-account" => native.fcm = Some(value("--fcm-service-account")?),
+            "--apns-key" => native.apns_key = Some(value("--apns-key")?),
+            "--apns-key-id" => native.apns_key_id = Some(value("--apns-key-id")?),
+            "--apns-team-id" => native.apns_team_id = Some(value("--apns-team-id")?),
+            "--apns-topic" => native.apns_topic = Some(value("--apns-topic")?),
+            "--apns-sandbox" => native.apns_sandbox = true,
             "--hash-concurrency" => {
                 hash_concurrency = Some(positive("--hash-concurrency", &value("--hash-concurrency")?)?)
             }
@@ -185,6 +268,8 @@ fn parse_args() -> Result<ServerConfig, String> {
     let tick_ms = if cfg.runner.tick.is_zero() { 1000.0 } else { cfg.runner.tick.as_secs_f64() * 1000.0 };
     let hours = offline_hours.unwrap_or(evo_server::game::DEFAULT_PROTECTION_HOURS);
     cfg.game.offline_protection_ticks = (hours * 3_600_000.0 / tick_ms).round() as u64;
+    cfg.push.fcm = native.fcm()?;
+    cfg.push.apns = native.apns()?;
     if let Some(n) = hash_concurrency {
         cfg.hashing = HashPolicy::with_concurrency(n);
     }

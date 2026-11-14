@@ -1,4 +1,5 @@
-// Push notifications (Web Push): whether this browser can have them, the
+// Push notifications (Web Push; the apps use native push, `nativePush.ts`):
+// whether this browser can have them, the
 // per-kind switches (stored on the server per account, `/api/push/prefs`),
 // and subscribing or unsubscribing this device. The service worker
 // (`sw.ts`) shows what arrives; the server decides what is worth a push and
@@ -11,8 +12,10 @@ import { PUSH_KINDS, type PushKind, type PushPrefs, type PushSubscriptionView } 
 
 /** What this device can do about push, in the order the settings explain it. */
 export type PushStatus =
-  /** No service worker, Push API or notifications here (or a native app shell). */
+  /** No service worker, Push API or notifications here. */
   | 'unsupported'
+  /** A native app built without push set up (the Android app needs its Firebase config). */
+  | 'unavailable'
   /** Push needs https (or localhost). */
   | 'insecure'
   /** The server has push notifications off. */
@@ -31,7 +34,7 @@ export interface PushEnv {
   pushManager: boolean;
   notification: boolean;
   permission: NotificationPermission | null;
-  /** A Capacitor native shell: its WebView has no Web Push (native push would need FCM/APNs). */
+  /** A Capacitor native shell: its WebView has no Web Push; it uses native push (FCM/APNs) instead. */
   native: boolean;
 }
 
@@ -57,12 +60,15 @@ export function pushStatus(env: PushEnv, serverEnabled: boolean | null, subscrib
   return subscribed && env.permission === 'granted' ? 'on' : 'off';
 }
 
-export function statusText(s: PushStatus): string {
+export function statusText(s: PushStatus, native = false): string {
   switch (s) {
     case 'unsupported': return 'This browser or app can’t receive push notifications. Alerts still show in the game.';
+    case 'unavailable': return 'Push notifications aren’t set up in this build of the app. Alerts still show in the game.';
     case 'insecure': return 'Push notifications need a secure (https) connection to the game.';
-    case 'disabled': return 'Push notifications are turned off on this server.';
-    case 'denied': return 'Notifications are blocked for this site. Allow them in the browser’s site settings, then come back.';
+    case 'disabled': return native ? 'This server doesn’t send push notifications to this app.' : 'Push notifications are turned off on this server.';
+    case 'denied': return native
+      ? 'Notifications are blocked for this app. Allow them in the phone’s settings for Evolution MMO, then come back.'
+      : 'Notifications are blocked for this site. Allow them in the browser’s site settings, then come back.';
     case 'off': return 'Get a notification when something important happens while the game is closed.';
     case 'on': return 'This device gets push notifications while the game is closed (at most a few an hour).';
   }

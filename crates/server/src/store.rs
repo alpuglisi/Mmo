@@ -5,7 +5,7 @@
 //! `--database-url`) keeps them in one table per record type (`accounts`,
 //! `designs`, `daily_history`, `trades`, `snapshots`, `terrains`,
 //! `balances`, `ledger`, `alert_prefs`, `seasons`, `season_placements`, `auctions`,
-//! `push_subscriptions`, `push_prefs`, `server_secrets`). [`FileStore`] (the default) keeps the same records as JSON
+//! `push_subscriptions`, `push_devices`, `push_prefs`, `server_secrets`). [`FileStore`] (the default) keeps the same records as JSON
 //! files in a data directory, and [`MemoryStore`] serves tests.
 //!
 //! What is persisted: accounts (name, player id, argon2 hash), founder
@@ -19,8 +19,8 @@
 //! game state around it, `crate::snapshot`, which includes players' alerts;
 //! the newest [`KEEP_SNAPSHOTS`] are kept) and, once per world, its static
 //! terrain, which saved games name by world id and content hash instead of
-//! carrying it. Also players' Web Push subscriptions and push preferences
-//! (`crate::webpush`) and server secrets (the generated VAPID key). Not
+//! carrying it. Also players' Web Push subscriptions, native app device
+//! tokens and push preferences (`crate::webpush`) and server secrets (the generated VAPID key). Not
 //! persisted: login sessions (clients log in again after a restart).
 //!
 //! Accounts, alert and push preferences, push subscriptions and server
@@ -48,7 +48,7 @@ use tokio::sync::Mutex;
 
 use crate::design::DesignSpec;
 use crate::league::{self, PlayerSeason, SeasonHead, SeasonRecord};
-use crate::protocol::{AlertPrefs, LedgerEntry, PushPrefs};
+use crate::protocol::{AlertPrefs, LedgerEntry, NativeService, PushPrefs};
 use crate::standings::StandingsCache;
 
 #[cfg(feature = "postgres")]
@@ -241,6 +241,27 @@ pub struct PushSubscriptionRecord {
     pub label: Option<String>,
 }
 
+/// A native app's device token (FCM for Android, APNs for iOS), owned by
+/// one player. The service and token identify it: registering it again (or
+/// under another account, on a shared device) replaces the record.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PushDeviceRecord {
+    pub player: PlayerId,
+    pub service: NativeService,
+    /// The FCM registration token, or the APNs device token (hex).
+    pub token: String,
+    pub created_unix: u64,
+    /// What the player called the device (or the app's platform).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Devices oldest first (ties by service name and token), the order every store
+/// lists them in.
+fn sort_devices(v: &mut [PushDeviceRecord]) {
+    v.sort_by(|a, b| (a.created_unix, a.service.name(), &a.token).cmp(&(b.created_unix, b.service.name(), &b.token)));
+}
+
 /// A player's push preferences (upserted when they change them).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PushPrefsRecord {
@@ -276,6 +297,13 @@ pub trait Store: Send + Sync {
     async fn delete_push_subscription(&self, endpoint: &str) -> StoreResult<bool>;
     /// A player's push subscriptions, oldest first.
     async fn load_push_subscriptions(&self, player: PlayerId) -> StoreResult<Vec<PushSubscriptionRecord>>;
+    /// Insert a native app's device token, or replace the record with its
+    /// service and token.
+    async fn put_push_device(&self, record: &PushDeviceRecord) -> StoreResult<()>;
+    /// Delete the device token; whether there was one.
+    async fn delete_push_device(&self, service: NativeService, token: &str) -> StoreResult<bool>;
+    /// A player's device tokens, oldest first.
+    async fn load_push_devices(&self, player: PlayerId) -> StoreResult<Vec<PushDeviceRecord>>;
     /// Insert or replace a player's push preferences.
     async fn put_push_prefs(&self, record: &PushPrefsRecord) -> StoreResult<()>;
     /// A player's push preferences, if they ever saved any.
@@ -502,6 +530,7 @@ struct MemInner {
     accounts: Vec<AccountRecord>,
     alert_prefs: BTreeMap<PlayerId, AlertPrefsRecord>,
     push_subscriptions: BTreeMap<String, PushSubscriptionRecord>,
+    push_devices: BTreeMap<(NativeService, String), PushDeviceRecord>,
     push_prefs: BTreeMap<PlayerId, PushPrefsRecord>,
     secrets: BTreeMap<String, String>,
     worlds: BTreeMap<String, MemWorld>,
@@ -573,6 +602,22 @@ impl Store for MemoryStore {
         let g = self.inner.lock().await;
         let mut v: Vec<_> = g.push_subscriptions.values().filter(|s| s.player == player).cloned().collect();
         sort_subscriptions(&mut v);
+        Ok(v)
+    }
+
+    async fn put_push_device(&self, record: &PushDeviceRecord) -> StoreResult<()> {
+        self.inner.lock().await.push_devices.insert((record.service, record.token.clone()), record.clone());
+        Ok(())
+    }
+
+    async fn delete_push_device(&self, service: NativeService, token: &str) -> StoreResult<bool> {
+        Ok(self.inner.lock().await.push_devices.remove(&(service, token.to_string())).is_some())
+    }
+
+    async fn load_push_devices(&self, player: PlayerId) -> StoreResult<Vec<PushDeviceRecord>> {
+        let g = self.inner.lock().await;
+        let mut v: Vec<_> = g.push_devices.values().filter(|d| d.player == player).cloned().collect();
+        sort_devices(&mut v);
         Ok(v)
     }
 
@@ -741,7 +786,7 @@ fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
 /// JSON files in one directory. Global tables at the top:
 ///
 /// - `accounts.json`, `alert_prefs.json`, `push_subscriptions.json`,
-///   `push_prefs.json`: whole tables, rewritten atomically (write to a temp
+///   `push_devices.json`, `push_prefs.json`: whole tables, rewritten atomically (write to a temp
 ///   file, then rename) on every change;
 /// - `secrets.json`: server secrets (the generated VAPID private key),
 ///   written the same way, readable by the owner only (mode 0600 on Unix);
@@ -772,6 +817,7 @@ struct Tables {
     accounts: Vec<AccountRecord>,
     alert_prefs: Vec<AlertPrefsRecord>,
     push_subscriptions: Vec<PushSubscriptionRecord>,
+    push_devices: Vec<PushDeviceRecord>,
     push_prefs: Vec<PushPrefsRecord>,
     secrets: BTreeMap<String, String>,
     /// Each world's small tables, read on first use.
@@ -799,6 +845,7 @@ pub const FILE_STORE_WORLD_FILES: &[&str] = &[
 
 const WORLDS_DIR: &str = "worlds";
 const PUSH_SUBSCRIPTIONS_FILE: &str = "push_subscriptions.json";
+const PUSH_DEVICES_FILE: &str = "push_devices.json";
 const PUSH_PREFS_FILE: &str = "push_prefs.json";
 const SECRETS_FILE: &str = "secrets.json";
 
@@ -810,13 +857,22 @@ impl FileStore {
         let accounts = read_table(&dir.join("accounts.json")).await?;
         let alert_prefs = read_table(&dir.join("alert_prefs.json")).await?;
         let push_subscriptions = read_table(&dir.join(PUSH_SUBSCRIPTIONS_FILE)).await?;
+        let push_devices = read_table(&dir.join(PUSH_DEVICES_FILE)).await?;
         let push_prefs = read_table(&dir.join(PUSH_PREFS_FILE)).await?;
         let secrets = match tokio::fs::read(dir.join(SECRETS_FILE)).await {
             Ok(bytes) => serde_json::from_slice(&bytes)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => return Err(e.into()),
         };
-        let tables = Tables { accounts, alert_prefs, push_subscriptions, push_prefs, secrets, worlds: BTreeMap::new() };
+        let tables = Tables {
+            accounts,
+            alert_prefs,
+            push_subscriptions,
+            push_devices,
+            push_prefs,
+            secrets,
+            worlds: BTreeMap::new(),
+        };
         Ok(Self { dir, tables: Mutex::new(tables) })
     }
 
@@ -1018,6 +1074,36 @@ impl Store for FileStore {
         let t = self.tables.lock().await;
         let mut v: Vec<_> = t.push_subscriptions.iter().filter(|s| s.player == player).cloned().collect();
         sort_subscriptions(&mut v);
+        Ok(v)
+    }
+
+    async fn put_push_device(&self, record: &PushDeviceRecord) -> StoreResult<()> {
+        let mut t = self.tables.lock().await;
+        let before = t.push_devices.clone();
+        t.push_devices.retain(|d| (d.service, &d.token) != (record.service, &record.token));
+        t.push_devices.push(record.clone());
+        if let Err(e) = self.write_table(&self.dir, PUSH_DEVICES_FILE, &t.push_devices).await {
+            t.push_devices = before;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    async fn delete_push_device(&self, service: NativeService, token: &str) -> StoreResult<bool> {
+        let mut t = self.tables.lock().await;
+        let n = t.push_devices.len();
+        t.push_devices.retain(|d| (d.service, d.token.as_str()) != (service, token));
+        if t.push_devices.len() == n {
+            return Ok(false);
+        }
+        self.write_table(&self.dir, PUSH_DEVICES_FILE, &t.push_devices).await?;
+        Ok(true)
+    }
+
+    async fn load_push_devices(&self, player: PlayerId) -> StoreResult<Vec<PushDeviceRecord>> {
+        let t = self.tables.lock().await;
+        let mut v: Vec<_> = t.push_devices.iter().filter(|d| d.player == player).cloned().collect();
+        sort_devices(&mut v);
         Ok(v)
     }
 

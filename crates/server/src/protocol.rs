@@ -574,6 +574,31 @@ impl PushPrefs {
     }
 }
 
+/// The push service a native app's device token belongs to
+/// (`POST /api/push/native/subscribe`): Firebase Cloud Messaging for the
+/// Android app, Apple Push Notification service for the iOS app.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeService {
+    Fcm,
+    Apns,
+}
+
+impl NativeService {
+    pub const ALL: [NativeService; 2] = [NativeService::Fcm, NativeService::Apns];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NativeService::Fcm => "fcm",
+            NativeService::Apns => "apns",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AlertView {
     pub tick: u64,

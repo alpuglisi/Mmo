@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
@@ -5,7 +6,17 @@ import { defineConfig } from 'vitest/config';
 // (default 127.0.0.1:8080; override with EVO_SERVER=http://host:port).
 const server = process.env.EVO_SERVER ?? 'http://127.0.0.1:8080';
 
+// Native push in the Android app needs its Firebase config: the app only
+// registers with FCM when google-services.json was in the generated project
+// at build time (`npm run cap:sync` builds first), or VITE_EVO_FCM=1 says so.
+const fcm = process.env.VITE_EVO_FCM !== undefined
+  ? process.env.VITE_EVO_FCM === '1'
+  : existsSync(fileURLToPath(new URL('./android/app/google-services.json', import.meta.url)));
+
 export default defineConfig({
+  define: {
+    __EVO_FCM__: JSON.stringify(fcm),
+  },
   // Relative asset paths, so the bundle works from evo-server, a sub-path or
   // a Capacitor shell alike.
   base: './',
