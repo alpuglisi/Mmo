@@ -42,6 +42,11 @@ sqlx = { version = "0.8", optional = true, default-features = false, features = 
 # the load generator also measures what permessage-deflate would save.
 flate2 = "1"
 tower-http = { version = "0.6", default-features = false, features = ["fs", "cors"] }
+# The HTTP accept loop (`serve.rs`): axum's own has no header timeout and no
+# per-client connection cap.
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+tower-service = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

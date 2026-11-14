@@ -1777,6 +1777,56 @@ store) found and fixed:
   funds check, the offer was still opened with nothing held; it is now
   refused. Prices above the cap are refused before the pair checks.
 
+A second, pre-launch review (anonymous clients and hostile players) found
+and fixed:
+
+- **Slow and idle connections were never closed.** `axum::serve` builds its
+  hyper connections without a timer, so a request head trickled in a byte
+  at a time (slowloris), or a connection that sent nothing, stayed open
+  forever, and one address could open any number of them until the process
+  ran out of file descriptors. The accept loop is now our own (`serve.rs`):
+  a request head must arrive within 30 s (`ServerConfig::header_timeout`;
+  idle keep-alive connections close after it too) and one client address
+  (its /64 for IPv6) holds at most 128 open connections
+  (`Limits::conns_per_ip`, lifted by `--no-rate-limits`); more are closed
+  on accept. Test: `slow_and_idle_connections_are_closed_and_capped_per_client`.
+- **Cache keys of any size.** `GET /api/seasons/:n?map=…` caches a miss
+  under the `map` string; with hyper's ~400 KB request-head limit, one
+  client within the read rate could fill the 1024-entry cache with about
+  400 MB of keys. Map ids longer than 64 bytes are refused (`400 bad_map`).
+- **World-thread work without a rate.** Opening a WebSocket (the world
+  thread builds a full state for it, and an online/offline transition) and
+  `POST /api/lineage` were not rate-limited: one player could churn their 8
+  connections to keep the world thread busy. Both now take from the
+  per-client read rate.
+- **Malformed WebSocket messages** were answered without touching the
+  command rate; they now count against it (`rate_limited` past it).
+- **Security headers.** Pages and API answers now carry
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer` and `Content-Security-Policy:
+  frame-ancestors 'none'; object-src 'none'; base-uri 'self'`. A script
+  policy is left out on purpose: PixiJS 8 compiles shaders with `new
+  Function` unless the client imports its `pixi.js/unsafe-eval` shim, so
+  `script-src 'self'` would break rendering; the client never assigns
+  HTML from data (no `innerHTML`), which is the XSS defence today.
+- **Negative SQL offsets.** `?offset=18446744073709551615` became `OFFSET
+  -1` in PostgreSQL (a 500 carrying the database's error text); counters
+  past `i64::MAX` now saturate.
+- **A credential echoed in an error.** `--apns-key`/`--fcm-service-account`
+  given inline without its marker was printed whole in the "could not
+  read" error; only the option is named now.
+
+Checked again and judged acceptable (on top of the list below): every
+WebSocket command acts only on the caller's own organisms, groups, offers
+and listings (`possess`/`release`/`order_move` check ownership or
+possession in the sim; a split names only the caller's organisms of that
+group; only an offer's recipient answers it, only its parties complete or
+cancel it, only the owner withdraws a listing; bids and purchases check the
+buyer's organism); push unsubscribe and native unregister check ownership;
+bid arithmetic can't underflow (a raise must beat the holder's own bid by
+at least 1); outbound push requests go only to the known push hosts with
+redirects off; nothing logs tokens, passwords, keys or URLs with tokens.
+
 Checked and judged acceptable:
 
 - **Double settlement.** Every command runs on the world thread one at a
@@ -1830,6 +1880,19 @@ Checked and judged acceptable:
   saved game, the store's balances and ledger can hold entries from the
   abandoned timeline until they are overwritten, which a later `--fresh`
   refund (that trusts the store after the newest save) inherits.
+  From the second review: logout ends only the token it is given (no "log
+  out everywhere"; sessions end within 24 h anyway); logins are limited
+  per address, not per account (per-account throttling would let anyone
+  lock a player out), so a botnet can guess one account's password at the
+  hash bound's pace; a push subscription or device token that another
+  account presents moves to it (they are capability secrets the browser or
+  OS keeps; whoever has one can already receive those pushes); a WebSocket
+  leaves the per-address connection count once upgraded (players are capped
+  at 8); `GET /api/metrics` is public; renown passed between two accounts
+  of one person still counts as sales for the season's ranking (wash
+  trading; the economy itself can't be inflated, since every sale is a
+  transfer); `ApiError::internal` still returns the error text (store and
+  channel errors) to the client.
 
 ## Client
 

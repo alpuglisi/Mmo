@@ -68,9 +68,10 @@ pub struct PgStore {
     pool: PgPool,
 }
 
-/// Game counters are unsigned and far below `i64::MAX`.
+/// Game counters are unsigned and far below `i64::MAX`; anything above it
+/// (a client's `offset`, say) is clamped rather than wrapped negative.
 fn int(v: u64) -> i64 {
-    v as i64
+    i64::try_from(v).unwrap_or(i64::MAX)
 }
 
 fn get_u64(row: &PgRow, col: &str) -> StoreResult<u64> {
@@ -838,5 +839,20 @@ impl Store for PgStore {
             })
             .filter(|s| !s.placements.is_empty())
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::int;
+
+    /// `?offset=18446744073709551615` once became `OFFSET -1`: a database
+    /// error (with its text) instead of an empty page.
+    #[test]
+    fn counters_past_i64_saturate_instead_of_wrapping() {
+        assert_eq!(int(7), 7);
+        assert_eq!(int(i64::MAX as u64), i64::MAX);
+        assert_eq!(int(u64::MAX), i64::MAX);
+        assert_eq!(int(1 << 63), i64::MAX);
     }
 }

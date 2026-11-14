@@ -56,6 +56,7 @@ pub mod push;
 pub mod runner;
 pub mod saver;
 pub mod seasons;
+pub mod serve;
 pub mod snapshot;
 pub mod standings;
 pub mod store;
@@ -132,7 +133,13 @@ pub struct ServerConfig {
     pub fresh: bool,
     /// Web Push notifications (`--no-push`, `--vapid-*`).
     pub push: webpush::PushConfig,
+    /// How long a client may take to send a request's head (and how long
+    /// an idle keep-alive connection stays open): [`DEFAULT_HEADER_TIMEOUT`].
+    pub header_timeout: Duration,
 }
+
+/// [`ServerConfig::header_timeout`] by default.
+pub const DEFAULT_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -156,6 +163,7 @@ impl Default for ServerConfig {
             hashing: HashPolicy::default(),
             fresh: false,
             push: webpush::PushConfig::default(),
+            header_timeout: DEFAULT_HEADER_TIMEOUT,
         }
     }
 }
@@ -346,16 +354,10 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         }
     }
     let app = http::router(state, cfg.static_dir.as_deref());
-    let serve = tokio::spawn(async move {
-        let result = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-            .with_graceful_shutdown(async move {
-                let _ = stop.await;
-            })
-            .await;
-        if let Err(e) = result {
-            tracing::error!("server error: {e}");
-        }
-    });
+    let limits = serve::ServeLimits { header_timeout: cfg.header_timeout, conns_per_ip: cfg.limits.conns_per_ip };
+    let serve = tokio::spawn(serve::serve(listener, app, limits, async move {
+        let _ = stop.await;
+    }));
     tracing::info!(
         "listening on http://{addr} with {} world(s): {}",
         specs.len(),

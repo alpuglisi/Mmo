@@ -302,3 +302,146 @@ async fn websocket_tokens_connections_and_frames_are_bounded() {
     drop(socks);
     srv.shutdown().await;
 }
+
+/// Read until the server closes the connection (or resets it); `false` if it
+/// is still open after `wait`.
+async fn closed_within(s: &mut tokio::net::TcpStream, wait: Duration) -> bool {
+    let mut buf = Vec::new();
+    tokio::time::timeout(wait, s.read_to_end(&mut buf)).await.is_ok()
+}
+
+/// A request head trickled in (slowloris) or an idle keep-alive connection
+/// is closed after the header timeout; one client can hold only so many
+/// connections at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_and_idle_connections_are_closed_and_capped_per_client() {
+    let srv = server(ServerConfig { header_timeout: Duration::from_millis(300), ..config() }).await;
+    let mut slow = tokio::net::TcpStream::connect(srv.addr).await.unwrap();
+    slow.write_all(b"GET /api/world HTTP/1.1\r\nHost: localhost\r\n").await.unwrap();
+    assert!(closed_within(&mut slow, Duration::from_secs(10)).await, "an unfinished request head is dropped");
+    let mut idle = tokio::net::TcpStream::connect(srv.addr).await.unwrap();
+    assert!(closed_within(&mut idle, Duration::from_secs(10)).await, "a silent connection is dropped");
+    srv.shutdown().await;
+
+    let mut cfg = config();
+    cfg.limits.conns_per_ip = 4;
+    let srv = server(cfg).await;
+    let addr = srv.addr;
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        held.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+    }
+    // The fifth is closed at once, while the four stay usable.
+    let mut extra = tokio::net::TcpStream::connect(addr).await.unwrap();
+    assert!(closed_within(&mut extra, Duration::from_secs(10)).await, "a connection past the cap is closed");
+    let s = &mut held[0];
+    s.write_all(b"GET /api/world HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut out = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), s.read_to_end(&mut out)).await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 200"), "{}", String::from_utf8_lossy(&out));
+    // Closing them frees the slots.
+    drop(held);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !raw_get(addr, "/api/world").await.starts_with("HTTP/1.1 200") {
+        assert!(tokio::time::Instant::now() < deadline, "slots free up after a close");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    srv.shutdown().await;
+}
+
+/// `?map=` names a cached season record: a long one would let a client fill
+/// the cache with huge keys.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn season_map_ids_are_bounded() {
+    let srv = server(config()).await;
+    let long = "a".repeat(10_000);
+    let (s, b) = req(srv.addr, Method::GET, &format!("/api/seasons/1?map={long}"), None, Vec::new()).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(serde_json::from_slice::<Value>(&b).unwrap()["code"], "bad_map");
+    let (s, _) = req(srv.addr, Method::GET, "/api/seasons/1?map=0123456789abcdef", None, Vec::new()).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    srv.shutdown().await;
+}
+
+/// Opening a WebSocket (the world thread builds a full state for it) and
+/// founding cost the world thread: both are rate-limited per client.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_upgrades_and_founding_are_rate_limited() {
+    let mut cfg = config();
+    cfg.limits = Limits { reads: Rate::new(0.01, 2.0), ..Limits::unlimited() };
+    let srv = server(cfg).await;
+    let addr = srv.addr;
+    let token = register(addr, "dora").await;
+    let mut socks = Vec::new();
+    for _ in 0..2 {
+        socks.push(connect_async(format!("ws://{addr}/ws?token={token}")).await.expect("within the rate").0);
+    }
+    match connect_async(format!("ws://{addr}/ws?token={token}")).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(res)) => {
+            assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS)
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    let design =
+        json!({"name": "A", "thermo": "warm", "birth": "live", "litter_size": 2, "traits": {}, "founders": 10});
+    let (s, _) = req(addr, Method::POST, "/api/lineage", Some(&token), design.to_string().into_bytes()).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    drop(socks);
+    srv.shutdown().await;
+}
+
+/// Malformed messages count against the command rate like any other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_websocket_messages_count_against_the_command_rate() {
+    let mut cfg = config();
+    cfg.limits = Limits { commands: Rate::new(0.01, 3.0), ..Limits::unlimited() };
+    let srv = server(cfg).await;
+    let addr = srv.addr;
+    let token = register(addr, "erin").await;
+    let (mut ws, _) = connect_async(format!("ws://{addr}/ws?token={token}")).await.unwrap();
+    for _ in 0..6 {
+        ws.send(Message::Text("{not json".into())).await.unwrap();
+    }
+    let (mut bad, mut limited) = (0, 0);
+    while bad + limited < 6 {
+        let Some(Ok(Message::Text(t))) = tokio::time::timeout(Duration::from_secs(10), ws.next()).await.unwrap() else {
+            continue;
+        };
+        let v: Value = serde_json::from_str(&t).unwrap();
+        if v["type"] == "result" {
+            match v["error"]["code"].as_str() {
+                Some("bad_message") => bad += 1,
+                Some("rate_limited") => limited += 1,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+    assert_eq!((bad, limited), (3, 3));
+    srv.shutdown().await;
+}
+
+/// Pages and API answers carry headers that stop sniffing, framing
+/// (clickjacking) and referrer leaks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_carry_security_headers() {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("evo-headers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("index.html"), "<html>the client</html>").unwrap();
+    let srv = server(ServerConfig { static_dir: Some(root.clone()), ..config() }).await;
+    for path in ["/", "/index.html", "/some/route", "/api/world"] {
+        let res = raw_get(srv.addr, path).await.to_ascii_lowercase();
+        let head = res.split("\r\n\r\n").next().unwrap_or_default().to_string();
+        assert!(head.starts_with("http/1.1 200"), "{path}: {head}");
+        for want in [
+            "x-content-type-options: nosniff",
+            "x-frame-options: deny",
+            "referrer-policy: no-referrer",
+            "content-security-policy: frame-ancestors 'none'",
+        ] {
+            assert!(head.contains(want), "{path} lacks {want}: {head}");
+        }
+    }
+    srv.shutdown().await;
+    let _ = std::fs::remove_dir_all(&root);
+}
