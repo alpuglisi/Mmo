@@ -2520,11 +2520,67 @@ thread; under heavier load the decide change sinks into the noise. What
 the server's world thread spends on states (`game::tests::substep_cost`, a
 512² world, 8.3k organisms, 500 players each steering one organism;
 medians of five interleaved runs, load 5–8): a push to every connection
-6.7 → 4.4 ms, a possession sub-step 7.4 → 5.1 ms. Not done: reusing
-sub-step states (commands arrive between sub-steps from most players, so
-any cache would need per-player invalidation for offers, market moves and
-possession), and the `StateIndex` pass over every organism at each sub-step,
-now the largest state cost.
+6.7 → 4.4 ms, a possession sub-step 7.4 → 5.1 ms.
+
+**Sub-step states reuse what the push built** (`game::states`). The push
+after a tick indexes the world (`StateIndex`, which now also keeps each
+organism's owner and position, so picking the neighbors in a window reads
+no organism) and keeps the index in a `StateCache` for the rest of the
+tick, with every neighbor view it made (one per organism, shared by every
+window it is in) and the own-organism views of players who steer. Between
+ticks the world changes only through sub-steps and the commands applied
+before each, so a sub-step rebuilds none of it: organisms a sub-step can
+move (the possessed ones, and any possessed or ordered since) and organisms
+a command may change (any it names, the pair of a directed mating run at
+once, all of a player's after a group order) are dirty; each moves its
+entry in the index (one cell to another at most) and drops its cached
+views, and a player's own list is patched for its dirty organisms. What is
+cheap is recomputed for every state (view window, neighbor pick and nearest
+cut, offers, balances, escrow, groups, the leaderboard cut, now by rank
+lookup instead of a scan of the board). A founding or a new tick drops the
+cache. A test (`cached_substep_states_match_the_old_build`) runs two games
+from one seed side by side, one with the old build kept verbatim in the
+test, sends 16 players' random commands to both between every sub-step
+(views, possession and orders, own-pair matings that run at once, offers,
+market, auctions, group orders, a second connection, a founding mid-tick)
+and checks that every state each client gets, as JSON and as protocol 2
+frames, is byte for byte the same; disabling any one invalidation makes it
+fail. Sim results are untouched (`sweep … --seed 31` prints 11.76 as
+before).
+
+Paired before/after runs, old and new binaries alternating; the 4-core box
+was shared with three other agents' builds and tests (load average 3–6
+during the micro-benchmark, 0.2–6 during the load test), everything under
+`nice`. `substep_cost` (500 steering players, medians of five interleaved
+runs):
+
+| World | push, before | push, after | sub-step, before | sub-step, after |
+| --- | --- | --- | --- | --- |
+| 8.3k organisms (3 days) | 5.6 ms | **4.2 ms** | 6.3 ms | **3.9 ms** |
+| 19.5k organisms (`EVO_SUBSTEP_DAYS=12`) | 9.4 ms | 8.8 ms\* | 9.4 ms | **6.1 ms**\* |
+
+\* medians of the paired ratios (0.94 and 0.65) times the old median; the
+absolute medians drifted with the load (push 8.2–16.7 ms old, 7.7–13.3 new).
+`loadgen --players 500 --ramp 40 --duration 150` against fresh copies of
+one 512² world warmed to 22k organisms (32.5k at the end), three runs per
+binary, medians:
+
+| | before | after |
+| --- | --- | --- |
+| State push p50 / p99 | 12.6 / 19.2 ms | **10.6 / 15.2 ms** |
+| Possession sub-step p99 | 18.2 ms | **14.1 ms** |
+| Tick p50 / p99 (step + bookkeeping) | 35.9 / 64.3 ms | 34.3 / 65.9 ms |
+| Command p50 / p99 | 136 / 249 ms | 136 / 249 ms |
+| Server CPU / RSS max | 0.25 cores / 442 MB | 0.23 cores / 450 MB |
+| Skipped states, dropped connections | 0 | 0 |
+
+Every pair agreed in direction (push p50 −16 to −20%, sub-step p99 −11 to
+−36%); the tick, which holds no state work, is unchanged within noise (the
+first pair ran under load 4–6: tick p50 63 / 62 ms). What is left per state
+is what a state contains: picking the neighbors, copying their views, the
+leaderboard's top rows and the own list, about 8 µs for 500 players; going
+further would mean states that share their unchanged parts (an `Arc` per
+part, a protocol type change) rather than copies.
 
 ### Launch numbers
 
@@ -2771,9 +2827,9 @@ A browse reply went from ~190 KB to ~20 KB; the server still filters
 and sorts every open listing for each page (a few thousand at most: 8 per
 player), which costs less than serializing 200 of them did.
 
-Next on the world thread is the sim tick itself, then the sub-step states
-(it still builds a whole `StateView` for every steering player three times
-a tick, though only the possessed organism's delta goes out).
+Next on the world thread is the sim tick itself (the sub-step states now
+reuse the push's index and views: see [High
+density](#high-density-decide-act-sweep-sub-step-states)).
 
 **Capacity recommendation** (512², 25–35k organisms, 1 s ticks):
 
@@ -4509,10 +4565,12 @@ sections above).
    means changing results (cap or subsample the neighbors scanned, judged
    with `compare`) or packing the grid's genes smaller (bounds widened to
    match). The sequential act sweep is half what it was; splitting the rest
-   by region is next if the apply becomes the bottleneck. Sub-steps still
-   build `StateIndex` (a pass over every organism) and a whole `StateView`
-   for every steering player three times a tick; reusing them needs
-   per-player invalidation for commands applied between sub-steps.
+   by region is next if the apply becomes the bottleneck (it must stay
+   deterministic and independent of the thread count; not attempted).
+   Sub-step states now reuse the push's index and organism views with
+   per-organism invalidation (push p50 −16%, sub-step p99 −22% at 500
+   players, results byte-identical); what remains per state is copying what
+   it contains, which only shared (`Arc`) state parts would avoid.
 6. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
    protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
    doesn't offer it; revisit when it does (states are already ~1 KB/s a

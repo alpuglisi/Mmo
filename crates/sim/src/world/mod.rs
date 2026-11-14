@@ -523,6 +523,11 @@ impl World {
         self.index.get(&id).map(|&i| &self.organisms[i]).filter(|o| o.alive)
     }
 
+    /// Where a living organism is in `organisms`.
+    pub fn organism_index(&self, id: OrgId) -> Option<usize> {
+        self.index.get(&id).copied().filter(|&i| self.organisms[i].alive)
+    }
+
     /// Living agents per lineage, indexed like `lineages` (cohort members of
     /// abstract regions are in `population_counts`).
     pub fn lineage_counts(&self) -> Vec<LineageCount> {
