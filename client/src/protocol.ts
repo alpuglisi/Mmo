@@ -28,6 +28,9 @@ export type ClientMsg =
   /** Group `group` (default 0) holds a circle (radius kept within its `max_radius`); data: `TerritoryView`. */
   | { type: 'claim_territory'; group?: number; x: number; y: number; radius: number }
   | { type: 'abandon_territory'; group?: number }
+  /** Group `group` (default 0) gathers at a point and holds near it for a few days (replaces its migration or territory); data: `RallyView`. */
+  | { type: 'rally'; group?: number; x: number; y: number }
+  | { type: 'cancel_rally'; group?: number }
   /** Divide a group in two (the named organisms, else the far half across its widest spread); data: `{group, moved, kept}`. */
   | { type: 'split_group'; group?: number; organisms?: OrgId[] }
   /** Every member of `from` joins `into` (default 0); data: `{moved}`. */
@@ -179,7 +182,7 @@ export type Sex = 'female' | 'male';
 
 export type ActionName =
   | 'idle' | 'graze' | 'hunt' | 'scavenge' | 'drink' | 'rest' | 'bask' | 'flee' | 'seek_mate'
-  | 'group' | 'wander' | 'migrate' | 'follow_parent' | 'guard' | 'ordered' | 'dormant' | 'cache' | 'sentry' | 'patrol' | 'defend';
+  | 'group' | 'wander' | 'migrate' | 'follow_parent' | 'guard' | 'ordered' | 'dormant' | 'cache' | 'sentry' | 'patrol' | 'defend' | 'rally';
 
 /** One of the player's own organisms: full detail. */
 export interface OwnOrganism {
@@ -215,6 +218,16 @@ export interface TerritoryView {
   claimed_tick: number;
 }
 
+/** A rally a group is answering. */
+export interface RallyView {
+  x: number;
+  y: number;
+  /** Members farther than this walk to the point; inside it they hold. */
+  radius: number;
+  /** Tick at which the order lapses. */
+  expires_tick: number;
+}
+
 /** One of the player's groups. */
 export interface GroupView {
   /** 0 is the main group; `split_group` makes the others (up to 4). */
@@ -223,6 +236,7 @@ export interface GroupView {
   adults: number;
   migration?: [number, number];
   territory?: TerritoryView;
+  rally?: RallyView;
   /** Largest territory radius the group could claim now. */
   max_radius: number;
   /** First tick at which it may claim again (absent: now). */

@@ -53,6 +53,8 @@ pub enum CommandError {
     ClaimCooldown {
         ticks_left: u64,
     },
+    /// The group is answering no rally.
+    NoRally(u8),
 }
 
 impl fmt::Display for CommandError {
@@ -80,6 +82,7 @@ impl fmt::Display for CommandError {
             CommandError::ClaimCooldown { ticks_left } => {
                 write!(f, "the group claimed a territory recently; it can claim again in {ticks_left} ticks")
             }
+            CommandError::NoRally(g) => write!(f, "group {g} has no rally to cancel"),
         }
     }
 }
@@ -267,8 +270,10 @@ impl World {
     }
 
     /// Drop the move orders of possessed organisms that have arrived (or
-    /// died, or are no longer possessed). Runs once per tick, before decide.
+    /// died, or are no longer possessed), and rallies that have lapsed. Runs
+    /// once per tick, before decide.
     pub(crate) fn settle_orders(&mut self) {
+        self.settle_rallies();
         for o in &mut self.organisms {
             if let Some(t) = o.order {
                 if !o.alive || o.possessed_by.is_none() || o.pos.dist(t) <= ORDER_ARRIVAL {
@@ -347,7 +352,7 @@ impl World {
 
     /// Group command: the player's adults drift toward `target` when no
     /// urgent need overrides it. Given to every group (the main group and
-    /// any with members), each of which gives up its territory.
+    /// any with members), each of which gives up its territory or rally.
     pub fn command_migrate(&mut self, player: PlayerId, target: Vec2) {
         let target = self.map.clamp(target);
         let mut groups = [false; MAX_GROUPS as usize];
@@ -360,11 +365,12 @@ impl World {
         for g in (0..MAX_GROUPS).filter(|&g| groups[g as usize]) {
             self.migrate_orders.insert((player, g), target);
             self.territories.remove(&(player, g));
+            self.rallies.remove(&(player, g));
         }
     }
 
     /// Group command for one group: its adults drift toward `target`. Replaces
-    /// the group's territory, if it held one.
+    /// the group's territory or rally, if it had one.
     pub fn command_migrate_group(&mut self, player: PlayerId, group: u8, target: Vec2) -> Result<Vec2, CommandError> {
         if group >= MAX_GROUPS {
             return Err(CommandError::NoSuchGroup(group));
@@ -372,6 +378,7 @@ impl World {
         let target = self.map.clamp(target);
         self.migrate_orders.insert((player, group), target);
         self.territories.remove(&(player, group));
+        self.rallies.remove(&(player, group));
         Ok(target)
     }
 

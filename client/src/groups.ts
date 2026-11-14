@@ -1,7 +1,7 @@
 // Player groups and territories (the design doc's group commands: migrate,
-// claim or abandon territory, split a group): naming, colors, what the
-// toolbar's group menu offers, the two-tap territory draw and the commands
-// each tool sends. Pure logic, so it is tested without the DOM
+// claim or abandon territory, split a group; and rallies): naming, colors,
+// what the toolbar's group menu offers, the two-tap territory draw and the
+// commands each tool sends. Pure logic, so it is tested without the DOM
 // (groups.test.ts); the server's rules are in crates/sim/src/world/groups.rs.
 
 import type { ClientMsg, GroupView, StateView } from './protocol';
@@ -78,6 +78,16 @@ export function clearMigrationMsg(choice: GroupChoice): ClientMsg {
   return choice === 'all' ? { type: 'clear_migration' } : { type: 'clear_migration', group: choice };
 }
 
+/** The rally command: `group` gathers at the tapped point. */
+export function rallyMsg(group: number, x: number, y: number): ClientMsg {
+  return { type: 'rally', group, x, y };
+}
+
+/** Ticks until a group's rally lapses (0: no rally). */
+export function rallyLeft(g: GroupView, tick: number): number {
+  return g.rally ? Math.max(0, g.rally.expires_tick - tick) : 0;
+}
+
 /** The territory radius a second tap at `edge` sets around `center`: the distance, kept between the minimum and the group's limit. */
 export function territoryRadius(center: { x: number; y: number }, edge: { x: number; y: number }, maxRadius: number): number {
   const d = Math.hypot(edge.x - center.x, edge.y - center.y);
@@ -117,6 +127,7 @@ export function canSplit(g: GroupView, groups: GroupView[]): boolean {
 
 /** One line on what a group is doing. */
 export function groupOrders(g: GroupView): string {
+  if (g.rally) return `rallying at ${g.rally.x.toFixed(0)}, ${g.rally.y.toFixed(0)}`;
   if (g.territory) {
     const t = g.territory;
     return `holding a territory (radius ${t.radius.toFixed(1)}) at ${t.x.toFixed(0)}, ${t.y.toFixed(0)}`;

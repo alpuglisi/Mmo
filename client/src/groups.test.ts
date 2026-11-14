@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canSplit, claimWait, clearMigrationMsg, groupName, groupObedience, groupOptions, groupOrders, groupsOf, memberCounts, migrateMsg, parseChoice,
+  canSplit, claimWait, clearMigrationMsg, groupName, groupObedience, groupOptions, groupOrders, groupsOf, memberCounts, migrateMsg, parseChoice, rallyLeft, rallyMsg,
   targetGroup, territoryRadius, territoryTap, validChoice, TERRITORY_MIN_RADIUS,
 } from './groups';
 import type { GroupView, OwnOrganism, StateView } from './protocol';
@@ -75,6 +75,12 @@ describe('groups', () => {
     expect(groupOrders(g(0))).toBe('roaming freely');
     expect(groupOrders(g(0, { migration: [4.2, 9.8] }))).toBe('migrating toward 4, 10');
     expect(groupOrders(g(0, { territory: { x: 20, y: 30, radius: 6, claimed_tick: 3 } }))).toBe('holding a territory (radius 6.0) at 20, 30');
+    const rally = { x: 7.4, y: 8.6, radius: 5, expires_tick: 100 };
+    expect(groupOrders(g(0, { rally }))).toBe('rallying at 7, 9');
+    expect(rallyLeft(g(0, { rally }), 40)).toBe(60);
+    expect(rallyLeft(g(0, { rally }), 140)).toBe(0);
+    expect(rallyLeft(g(0), 40)).toBe(0);
+    expect(rallyMsg(2, 3, 4)).toEqual({ type: 'rally', group: 2, x: 3, y: 4 });
     expect(groupObedience(g(0))).toBe('');
     expect(groupObedience(g(0, { obedience: 0.5 }))).toBe('heeds orders (obedience 0.50)');
     expect(groupObedience(g(0, { obedience: 0.8 }))).toBe('obedient (obedience 0.80)');

@@ -91,6 +91,22 @@ pub enum ClientMsg {
         #[serde(default)]
         group: u8,
     },
+    /// Group command: `group` (default 0) gathers at `x, y` and holds near
+    /// it (a circle sized by the group, `evo_sim::world::World::rally_radius`)
+    /// for `evo_sim::world::groups::RALLY_DAYS`, unless cancelled or replaced
+    /// first. Replaces the group's migration order, territory or earlier
+    /// rally. Data: the rally as given ([`RallyView`]).
+    Rally {
+        #[serde(default)]
+        group: u8,
+        x: f32,
+        y: f32,
+    },
+    /// Group command: `group` (default 0) stops answering its rally.
+    CancelRally {
+        #[serde(default)]
+        group: u8,
+    },
     /// Group command: divide `group` (default 0) in two. With `organisms`
     /// (yours, in that group, at most [`MAX_SPLIT_ORGANISMS`]), those form
     /// the new group; without, the half of the group on the far side of its
@@ -190,6 +206,8 @@ impl ClientMsg {
             ClientMsg::ClearMigration { .. } => "clear_migration",
             ClientMsg::ClaimTerritory { .. } => "claim_territory",
             ClientMsg::AbandonTerritory { .. } => "abandon_territory",
+            ClientMsg::Rally { .. } => "rally",
+            ClientMsg::CancelRally { .. } => "cancel_rally",
             ClientMsg::SplitGroup { .. } => "split_group",
             ClientMsg::MergeGroups { .. } => "merge_groups",
             ClientMsg::SetView { .. } => "set_view",
@@ -617,6 +635,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             SameGroup(_) => "same_group",
             NoTerritory(_) => "no_territory",
             ClaimCooldown { .. } => "claim_cooldown",
+            NoRally(_) => "no_rally",
         };
         let info = ErrorInfo::new(code, e.to_string());
         match e {
@@ -837,6 +856,23 @@ impl From<evo_sim::world::groups::Territory> for TerritoryView {
     }
 }
 
+/// A rally a group is answering.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RallyView {
+    pub x: f32,
+    pub y: f32,
+    /// Members farther than this walk to the point; inside it they hold.
+    pub radius: f32,
+    /// Tick at which the order lapses.
+    pub expires_tick: u64,
+}
+
+impl From<evo_sim::world::groups::Rally> for RallyView {
+    fn from(r: evo_sim::world::groups::Rally) -> Self {
+        Self { x: r.center.x, y: r.center.y, radius: r.radius, expires_tick: r.expires_tick }
+    }
+}
+
 /// One of the player's groups (`World::groups`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GroupView {
@@ -850,6 +886,8 @@ pub struct GroupView {
     pub migration: Option<[f32; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub territory: Option<TerritoryView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rally: Option<RallyView>,
     /// Largest territory radius the group could claim now.
     pub max_radius: f32,
     /// First tick at which it may claim a territory again (absent: now).
@@ -869,6 +907,7 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             adults: g.adults,
             migration: g.migration.map(|p| [p.x, p.y]),
             territory: g.territory.map(TerritoryView::from),
+            rally: g.rally.map(RallyView::from),
             max_radius: g.max_radius,
             claim_ready_tick: g.claim_ready_tick,
             obedience: g.obedience,
@@ -1339,6 +1378,7 @@ pub fn action_name(a: Action) -> &'static str {
         Action::Sentry => "sentry",
         Action::Patrol => "patrol",
         Action::Defend => "defend",
+        Action::Rally => "rally",
     }
 }
 
@@ -1480,6 +1520,13 @@ mod tests {
         assert_eq!(parse(r#"{"type":"merge_groups","from":2}"#).unwrap(), ClientMsg::MergeGroups { from: 2, into: 0 });
         assert!(parse(r#"{"type":"merge_groups"}"#).is_err(), "from is required");
         assert!(!ClientMsg::Migrate { x: 0.0, y: 0.0, group: None }.is_group_change());
+        let rally = parse(r#"{"type":"rally","group":2,"x":5,"y":6.5}"#).unwrap();
+        assert_eq!(rally, ClientMsg::Rally { group: 2, x: 5.0, y: 6.5 });
+        assert_eq!(rally.name(), "rally");
+        assert!(!rally.is_group_change(), "an order, like a migration");
+        assert_eq!(parse(r#"{"type":"rally","x":1,"y":2}"#).unwrap(), ClientMsg::Rally { group: 0, x: 1.0, y: 2.0 });
+        assert!(parse(r#"{"type":"rally","x":1}"#).is_err(), "y is required");
+        assert_eq!(parse(r#"{"type":"cancel_rally"}"#).unwrap(), ClientMsg::CancelRally { group: 0 });
     }
 
     #[test]
@@ -1492,6 +1539,7 @@ mod tests {
         assert_eq!(code(CommandError::NotInGroup(9)).code, "not_in_group");
         assert_eq!(code(CommandError::SameGroup(1)).code, "same_group");
         assert_eq!(code(CommandError::NoTerritory(1)).code, "no_territory");
+        assert_eq!(code(CommandError::NoRally(1)).code, "no_rally");
         let c = code(CommandError::ClaimCooldown { ticks_left: 7 });
         assert_eq!(c.code, "claim_cooldown");
         assert_eq!(c.detail, Some(serde_json::json!({ "ticks_left": 7 })));

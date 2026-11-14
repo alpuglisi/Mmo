@@ -1019,12 +1019,34 @@ async function main() {
       return [a, b].find((r) => !r.ok) ?? null;
     }, newGroup);
     if (!cooldown || cooldown.error.code !== 'claim_cooldown') throw new Error(`back-to-back claims: ${JSON.stringify(cooldown)}`);
+    // Rally the new group from its card with one map tap; it replaces the
+    // territory, shows on the map and on the card, and is cancelled.
+    await page.click(`#group-list .group-card[data-group="${newGroup}"] button[data-action="rally"]`);
+    await page.mouse.click(canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
+    const rally = await waitFor('rally result', () => page.evaluate(() => window.__results.find((r) => r.type === 'rally')));
+    if (!rally.ok) throw new Error(`rally failed: ${JSON.stringify(rally.error)}`);
+    // (The fast test world runs a day a second, so a rally lapses in about
+    // three: look for it, and its cancel button on the card, while it stands,
+    // and give it again if it lapsed before the page showed it.)
+    await waitFor('the rally in the state, on the map and on the card', () => page.evaluate((g) => {
+      const x = window.evo.model.state.groups.find((y) => y.id === g);
+      if (!x?.rally) void window.evo.socket.send({ type: 'rally', group: g, x: 20, y: 20 });
+      return x?.rally && !x.territory && window.evo.screen().view.overlayInfo().rallies.some((d) => d.group === g)
+        && document.querySelector(`#group-list .group-card[data-group="${g}"] button[data-action="cancel-rally"]`) !== null;
+    }, newGroup), 20000);
+    // Cancelled straight after a fresh rally (before it can lapse).
+    const cancelled = await page.evaluate(async (group) => {
+      await window.evo.socket.send({ type: 'rally', group, x: 20, y: 20 });
+      return window.evo.socket.send({ type: 'cancel_rally', group });
+    }, newGroup);
+    if (!cancelled.ok) throw new Error(`cancel_rally failed: ${JSON.stringify(cancelled.error)}`);
+    await waitFor('no rally', () => page.evaluate((g) => !window.evo.model.state.groups.find((y) => y.id === g)?.rally, newGroup), 20000);
     await page.click(`#group-list .group-card[data-group="${newGroup}"] button[data-action="merge"]`);
     const merged = await waitFor('merge_groups result', () => page.evaluate(() => window.__results.find((r) => r.type === 'merge_groups')));
     if (!merged.ok) throw new Error(`merge_groups failed: ${JSON.stringify(merged.error)}`);
     await waitFor('one group again', () => page.evaluate(() => window.evo.model.state.groups.length === 1
       && document.querySelector('#group-select').value === 'all' && !window.evo.model.state.organisms.some((o) => o.group)), 20000);
-    step(`groups: split ${split.data.moved} organisms into group ${newGroup}, territory radius ${shown.t.radius.toFixed(1)} drawn (${cards} group cards), cooldown refused a re-claim, merged back (${merged.data.moved})`);
+    step(`groups: split ${split.data.moved} organisms into group ${newGroup}, territory radius ${shown.t.radius.toFixed(1)} drawn (${cards} group cards), cooldown refused a re-claim, rallied (radius ${rally.data.radius.toFixed(1)}) and cancelled, merged back (${merged.data.moved})`);
 
     await page.evaluate(() => window.evo.screen().view.setFollow(true));
     await page.click('#tab-organism');

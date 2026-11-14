@@ -24,7 +24,7 @@ import { onboardingDisabled } from '../onboarding';
 import { pushSettings } from './push';
 import {
   canSplit, claimWait, clearMigrationMsg, groupColor, groupName, groupObedience, groupOptions, groupOrders, groupsOf, migrateMsg, parseChoice,
-  targetGroup, territoryTap, validChoice, type GroupChoice, type TerritoryDraft,
+  rallyLeft, rallyMsg, targetGroup, territoryTap, validChoice, type GroupChoice, type TerritoryDraft,
 } from '../groups';
 
 export interface GameDeps {
@@ -64,7 +64,7 @@ type Tab = 'organism' | 'matings' | 'market' | 'genetics' | 'lineage' | 'seasons
 const TAB_LABELS: Record<Tab, string> = {
   organism: 'Organism', matings: 'Matings', market: 'Market', genetics: 'Genetics', lineage: 'Lineage', seasons: 'Seasons', world: 'World',
 };
-type Mode = 'select' | 'migrate' | 'territory';
+type Mode = 'select' | 'migrate' | 'territory' | 'rally';
 /** Narrow screens (phones): the sidebar becomes a bottom sheet over the map with a tab bar. */
 const NARROW = '(max-width: 760px)';
 
@@ -117,6 +117,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   // Group commands: pick a group, claim ground for it, split it.
   const groupSelect = h('select', { class: 'tool group-select', id: 'group-select', title: 'Which of your groups the group commands act on', 'aria-label': 'Group' });
   const territoryBtn = h('button', { class: 'tool', id: 'territory', title: 'Claim a territory for the group: tap its center, then its edge' }, 'Territory…');
+  const rallyBtn = h('button', { class: 'tool', id: 'rally', title: 'Gather the group at a point: tap where; it holds there for a few days' }, 'Rally…');
   const splitBtn = h('button', { class: 'tool', id: 'split-group', title: 'Split the group in two (the far half across its widest spread)' }, 'Split');
   const pinBtn = h('button', { class: 'tool', id: 'pin-view', title: 'Pin the server view window (what you can see of others) to the camera center' }, 'Pin view here');
   const hint = h('div', { class: 'hint', id: 'hint' });
@@ -125,7 +126,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     followBtn,
     h('button', { class: 'tool', title: 'Zoom in', onclick: () => view.zoomBy(1.4) }, '+'),
     h('button', { class: 'tool', title: 'Zoom out', onclick: () => view.zoomBy(1 / 1.4) }, '−'),
-    groupSelect, migrateBtn, clearMigBtn, territoryBtn, splitBtn, pinBtn);
+    groupSelect, migrateBtn, clearMigBtn, territoryBtn, rallyBtn, splitBtn, pinBtn);
   const legendBtn = h('button', { class: 'tool narrow-only', id: 'legend-toggle', title: 'Show the map legend' }, 'Legend');
   toolbar.append(legendBtn);
   const legend = h('div', { class: 'legend', id: 'legend' },
@@ -136,6 +137,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     h('span', {}, h('i', { class: 'dot ring', style: `border-color:${cssColor(ownerColor(1))}` }), 'other players'),
     h('span', {}, h('i', { class: 'dot square', style: 'border-color:#58a6ff' }), 'view window'),
     h('span', { title: 'Claimed with Territory…; each group has its own color' }, h('i', { class: 'dot ring', style: `border-color:${cssColor(groupColor(0))};background:${cssColor(groupColor(0))}33` }), 'territory'),
+    h('span', { title: 'Set with Rally…: the group gathers in the ring around the point' }, h('i', { class: 'dot ring', style: `border-color:${cssColor(groupColor(0))}` }), 'rally'),
     h('span', { title: 'Body size, diet (muzzle, snout or fangs), warm or cold-blooded build, fur/scales/armor, colors, wings or fins; juveniles are drawn smaller' }, 'small = juvenile'),
     h('span', {}, 'z resting · ! fleeing · ⌖ hunting · ♥ courting'));
   const terrainLegend = h('div', { class: 'legend terrain-legend', id: 'terrain-legend' });
@@ -211,6 +213,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     mode = m;
     migrateBtn.classList.toggle('active', m === 'migrate');
     territoryBtn.classList.toggle('active', m === 'territory');
+    rallyBtn.classList.toggle('active', m === 'rally');
     if (m !== 'territory') setDraft(null);
     updateHint();
   }
@@ -258,6 +261,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (mode === 'territory') return setMode('select');
     if (toolGroup() !== null) setMode('territory');
   });
+  rallyBtn.addEventListener('click', () => {
+    if (mode === 'rally') return setMode('select');
+    if (toolGroup() !== null) setMode('rally');
+  });
   splitBtn.addEventListener('click', () => {
     const id = toolGroup();
     if (id !== null) void splitGroup(id);
@@ -277,7 +284,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         ? `${tap} the edge of ${who}'s territory (radius up to ${draft.radius.toFixed(0)} tiles)${touch ? '' : ' (Esc cancels)'}.`
         : `${tap} the center of ${who}'s territory${touch ? '' : ' (Esc cancels)'}.`;
     };
+    const rallyHint = () => {
+      const id = targetGroup(groupChoice, groupsOf(model.state));
+      return `${tap} the point where ${id === null ? 'the group' : groupName(id)} should gather${touch ? '' : ' (Esc cancels)'}.`;
+    };
     hint.textContent = mode === 'territory' ? territoryHint()
+      : mode === 'rally' ? rallyHint()
       : mode === 'migrate'
       ? `${tap} the map to set the migration target${touch ? '' : ' (Esc cancels)'}.`
       : p ? `Possessing #${p.id}: ${tap.toLowerCase()} the map to walk there.`
@@ -340,6 +352,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const t = (r.data as { x: number; y: number } | undefined) ?? c;
       const who = groupChoice === 'all' ? 'Adults' : `${groupName(groupChoice)} adults`;
       if (r.ok) model.toast('info', `${who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})`);
+      return;
+    }
+    if (mode === 'rally') {
+      setMode('select');
+      const id = targetGroup(groupChoice, groupsOf(model.state));
+      if (id === null) return;
+      const r = await send(rallyMsg(id, c.x, c.y));
+      if (r.ok) {
+        const t = r.data as { x: number; y: number; radius: number };
+        model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles`);
+      } else if (r.error) {
+        model.toast('error', `Rally: ${r.error.message}`);
+      }
       return;
     }
     if (mode === 'territory') {
@@ -987,7 +1012,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // The cards (and their buttons) are rebuilt only when the buttons
     // change; sizes and orders are updated in place, so a button isn't
     // replaced under the cursor at every birth.
-    const key = JSON.stringify([groupChoice, groups.map((g) => [g.id, !!g.territory, claimWait(g, tick) > 0, g.members === 0, canSplit(g, groups)])]);
+    const key = JSON.stringify([groupChoice, groups.map((g) => [g.id, !!g.territory, !!g.rally, claimWait(g, tick) > 0, g.members === 0, canSplit(g, groups)])]);
     keyed(groupsEl, key, () => groups.map((g) => {
       const wait = claimWait(g, tick);
       const swatch = h('span', { class: 'swatch', style: `background:${cssColor(groupColor(g.id))}` });
@@ -998,10 +1023,15 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           h('button', { class: 'secondary small', 'data-action': 'territory', title: wait > 0 ? 'Claimed recently: wait a little' : `Radius up to ${g.max_radius.toFixed(1)} tiles`,
             disabled: wait > 0 || g.members === 0, onclick: () => { setGroupChoice(g.id); setMode('territory'); if (narrow()) setSheet(false); } }, 'Claim territory…'),
           g.territory && h('button', { class: 'secondary small', 'data-action': 'abandon', onclick: () => void send({ type: 'abandon_territory', group: g.id }) }, 'Abandon territory'),
+          h('button', { class: 'secondary small', 'data-action': 'rally', title: 'Gather the group at a point you tap; it holds there for a few days',
+            disabled: g.members === 0, onclick: () => { setGroupChoice(g.id); setMode('rally'); if (narrow()) setSheet(false); } }, 'Rally…'),
+          g.rally && h('button', { class: 'secondary small', 'data-action': 'cancel-rally', title: `Lapses on its own in ${rallyLeft(g, tick)} ticks`,
+            onclick: () => void send({ type: 'cancel_rally', group: g.id }) }, 'Cancel rally'),
           canSplit(g, groups) && h('button', { class: 'secondary small', 'data-action': 'split', onclick: () => void splitGroup(g.id) }, 'Split'),
           g.id !== 0 && h('button', { class: 'secondary small', 'data-action': 'merge', onclick: () => void send({ type: 'merge_groups', from: g.id, into: 0 }) }, 'Merge into A'),
-          g.territory && h('button', { class: 'secondary small', 'data-action': 'center', onclick: () => {
-            const t = groupsOf(model.state).find((x) => x.id === g.id)?.territory;
+          (g.territory || g.rally) && h('button', { class: 'secondary small', 'data-action': 'center', onclick: () => {
+            const x = groupsOf(model.state).find((x) => x.id === g.id);
+            const t = x?.territory ?? x?.rally;
             if (t) { view.setFollow(false); view.centerOn(t.x, t.y); }
           } }, 'Center')));
     }));

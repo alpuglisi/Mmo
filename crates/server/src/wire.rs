@@ -1236,9 +1236,11 @@ mod tests {
         let org = first(&g, 1);
         g.command(1, 1, None, ClientMsg::Possess { organism: org });
         g.command(1, 1, None, ClientMsg::OrderMove { organism: org, x: 80.0, y: 80.0 });
-        // Player 1 splits its herd and has the new group hold ground.
+        // Player 1 splits its herd and has the new group hold ground ...
         g.command(1, 1, None, ClientMsg::SplitGroup { group: 0, organisms: None });
         g.command(1, 1, None, ClientMsg::ClaimTerritory { group: 1, x: 40.0, y: 40.0, radius: 6.0 });
+        // ... and the main group rally at a point.
+        g.command(1, 1, None, ClientMsg::Rally { group: 0, x: 30.0, y: 34.0 });
         g.command(2, 2, None, ClientMsg::SetView { x: 48.0, y: 48.0, radius: 30.0 });
         let (m, p) = (first(&g, 2), first(&g, 3));
         g.command(2, 2, None, ClientMsg::RequestMating { mine: m, partner: p, price: Some(1) });

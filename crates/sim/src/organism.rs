@@ -156,6 +156,8 @@ pub enum Action {
     Patrol,
     /// Chasing an intruder out of its group's territory.
     Defend,
+    /// Walking to its group's rally point (`World::rally_group`).
+    Rally,
 }
 
 /// Seasonal dormancy state ("Seasons and biomes" in the design doc).

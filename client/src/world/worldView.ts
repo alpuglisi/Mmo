@@ -256,9 +256,15 @@ export class WorldView {
   }
 
   /** What the overlay shows of groups, for tests and debugging. */
-  overlayInfo(): { territories: { group: number; x: number; y: number; radius: number }[]; draft: TerritoryDraft | null } {
-    const territories = groupsOf(this.state).flatMap((g) => (g.territory ? [{ group: g.id, x: g.territory.x, y: g.territory.y, radius: g.territory.radius }] : []));
-    return { territories, draft: this.territoryDraft };
+  overlayInfo(): {
+    territories: { group: number; x: number; y: number; radius: number }[];
+    rallies: { group: number; x: number; y: number; radius: number }[];
+    draft: TerritoryDraft | null;
+  } {
+    const groups = groupsOf(this.state);
+    const territories = groups.flatMap((g) => (g.territory ? [{ group: g.id, x: g.territory.x, y: g.territory.y, radius: g.territory.radius }] : []));
+    const rallies = groups.flatMap((g) => (g.rally ? [{ group: g.id, x: g.rally.x, y: g.rally.y, radius: g.rally.radius }] : []));
+    return { territories, rallies, draft: this.territoryDraft };
   }
 
   private upsert(o: OwnOrganism | NearbyOrganism, own: boolean, now: number): void {
@@ -385,6 +391,16 @@ export class WorldView {
         const tint = groupColor(grp.id);
         g.circle(t.x, t.y, t.radius).fill({ color: tint, alpha: picked ? 0.2 : 0.12 });
         g.circle(t.x, t.y, t.radius).stroke({ width: (picked ? 3 : 1.5) * px, color: tint, alpha: 0.9 });
+      }
+      const r = grp.rally;
+      if (r) {
+        // A rally: the circle the group gathers in (outline only) and a
+        // filled flag point at its center.
+        const picked = this.selectedGroup === grp.id;
+        const tint = groupColor(grp.id);
+        g.circle(r.x, r.y, r.radius).stroke({ width: (picked ? 2.5 : 1.5) * px, color: tint, alpha: 0.7 });
+        g.circle(r.x, r.y, 5 * px).fill({ color: tint, alpha: 0.95 });
+        g.circle(r.x, r.y, 5 * px).stroke({ width: 1.5 * px, color: 0xffffff, alpha: 0.9 });
       }
       if (grp.migration) {
         const [mx, my] = grp.migration;

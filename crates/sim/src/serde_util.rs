@@ -17,6 +17,8 @@
 //!   11 or 12 world snapshot is read.
 //! - `before_v14`: `Gene::Obedience` and `Balance::tameness`, left out while
 //!   a world snapshot of version 13 or before is read.
+//! - `before_v15`: the world's rally orders, left out while a world snapshot
+//!   of version 14 or before is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -476,6 +478,57 @@ pub mod before_v14 {
                     e
                 })
                 .collect())
+        }
+    }
+}
+
+/// What world snapshot version 15 added: the world's rally orders
+/// (`World::rally_group`). On a thread holding a [`before_v15::Guard`]
+/// (reading or hashing a snapshot of version 14 or before) the field is
+/// written as nothing and read as empty (no group was rallying: the command
+/// didn't exist).
+pub mod before_v15 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Whether the old layout is in force on this thread.
+    pub fn active() -> bool {
+        OLD.with(Cell::get)
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+        if active() {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+        if active() {
+            Ok(T::default())
+        } else {
+            T::deserialize(d)
         }
     }
 }

@@ -325,6 +325,10 @@ pub struct World {
     territories: BTreeMap<(PlayerId, u8), groups::Territory>,
     /// Tick of each group's last territory claim (the claim cooldown).
     territory_claims: BTreeMap<(PlayerId, u8), u64>,
+    /// Rally orders by (player, group) (`World::rally_group`); absent from
+    /// snapshots before version 15 (`serde_util::before_v15`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v15"))]
+    rallies: BTreeMap<(PlayerId, u8), groups::Rally>,
     slots_used: BTreeMap<PlayerId, u32>,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
     clutch_at: HashMap<(usize, usize), usize>,
@@ -436,6 +440,7 @@ impl World {
             migrate_orders: BTreeMap::new(),
             territories: BTreeMap::new(),
             territory_claims: BTreeMap::new(),
+            rallies: BTreeMap::new(),
             slots_used: BTreeMap::new(),
             clutch_at: HashMap::new(),
             path_scratch: PathScratch::default(),

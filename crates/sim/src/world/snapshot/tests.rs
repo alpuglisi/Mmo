@@ -159,6 +159,10 @@ fn restored_world_continues_exactly() {
     assert!(fathers.0 > 0 && fathers.1 > 0, "want shared and own father genomes: {fathers:?}");
     assert!(a.organisms.iter().any(|o| o.genome.loci().iter().any(|l| l.a.origin != l.b.origin)), "want mixed tags");
 
+    // Player 4's main group answers a rally.
+    let rp = a.organisms.iter().find(|o| o.alive && o.owner == 4 && o.group == 0).expect("player 4 alive").pos;
+    a.rally_group(4, 0, rp).unwrap();
+
     let bytes = a.snapshot();
     let mut b = World::restore(&bytes, Some(a.map.terrain().clone())).expect("restore");
     assert!(Arc::ptr_eq(a.map.terrain(), b.map.terrain()));
@@ -169,6 +173,7 @@ fn restored_world_continues_exactly() {
     assert_eq!(shared_fathers(&b), fathers);
     assert_eq!(b.groups(2), a.groups(2), "groups and their orders");
     assert!(b.territory(2, 1).is_some() && b.migration_order(2, 0).is_some());
+    assert!(b.rally(4, 0).is_some() && b.rally(4, 0) == a.rally(4, 0));
     // A restored world snapshots to the same bytes.
     assert!(b.snapshot() == bytes, "round trip changes the snapshot");
     // A clone (what a server encodes off its world thread) snapshots to the
@@ -405,6 +410,25 @@ fn version_13_snapshots_restore_with_default_obedience() {
     let again = World::restore(&r.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert!(again.snapshot() == r.snapshot());
     assert!(r.snapshot_v13() == old);
+}
+
+/// Version 14 snapshots (before the rally command) restore with no rally
+/// standing, and the rest of the world as it was.
+#[test]
+fn version_14_snapshots_restore_without_rallies() {
+    let mut w = fixture_world();
+    let plain = w.snapshot();
+    let p = w.organisms.iter().find(|o| o.alive).unwrap();
+    let (owner, group, pos) = (p.owner, p.group, p.pos);
+    w.rally_group(owner, group, pos).unwrap();
+    let old = w.snapshot_v14();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!((h.version, h.flags), (14, FLAG_LZ4 | FLAG_TILES_APART));
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.rally(owner, group), None);
+    assert!(r.snapshot() == plain);
+    assert!(r.snapshot_v14() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

@@ -38,7 +38,18 @@
 //! `1 − Balance::tameness × (obedience − 0.5)`, so in a lineage whose player
 //! gives no orders, obedience is a cost and selection can wear it down.
 //!
-//! Neither command draws randomness, and a world where nobody uses them
+//! **Rally.** [`World::rally_group`] gathers a group at a point: members
+//! farther than the rally circle's radius ([`World::rally_radius`], which
+//! grows with the group) walk to it (`Action::Rally`, weighed like the
+//! other orders: [`RALLY_UTILITY`] × [`heed`]) and, once there, roam and
+//! forage inside it until the order is cancelled ([`World::cancel_rally`]),
+//! replaced by another order, or expires after [`RALLY_DAYS`]. Like a
+//! territory, the circle holds them only while hunger is below
+//! [`stray_hunger`]; unlike one, it isn't defended and has no cooldown. A
+//! group has at most one of a migration order, a territory and a rally: the
+//! newest replaces the others.
+//!
+//! No command draws randomness, and a world where nobody uses them
 //! steps exactly as before (every lookup is behind an empty map, every
 //! organism is in group 0).
 
@@ -76,6 +87,18 @@ pub const DEFENDER_SCARE: f32 = 1.0;
 /// [`STRAY_HUNGER`] `+ OBEDIENT_STRAY × (obedience − 0.5)`, so 0.65 for
 /// the headstrong and 0.95 for the most obedient.
 pub const OBEDIENT_STRAY: f32 = 0.3;
+/// Days a rally order stands before it lapses (re-issue it to keep the
+/// group there).
+pub const RALLY_DAYS: f32 = 3.0;
+/// Utility of walking to the rally point (an ordered migration is 0.55).
+pub const RALLY_UTILITY: f32 = 0.55;
+/// Radius of a rally circle for a lone member; each member adds to it with
+/// the square root of their number ([`RALLY_RADIUS_PER_MEMBER`]), so a big
+/// herd gathers with room to graze.
+pub const RALLY_BASE_RADIUS: f32 = 2.0;
+pub const RALLY_RADIUS_PER_MEMBER: f32 = 1.0;
+/// Largest rally circle whatever the group's size.
+pub const RALLY_MAX_RADIUS: f32 = 12.0;
 
 /// How strongly `o` heeds its group's commands (`Gene::Obedience`): the
 /// factor on the utility of an ordered migration, of walking back into a
@@ -108,6 +131,24 @@ impl Territory {
     }
 }
 
+/// A point a group gathers at (`World::rally_group`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Rally {
+    pub center: Vec2,
+    /// Members farther than this walk to the point; inside it they hold.
+    pub radius: f32,
+    pub issued_tick: u64,
+    /// First tick at which the order no longer stands.
+    pub expires_tick: u64,
+}
+
+impl Rally {
+    pub fn contains(&self, p: Vec2) -> bool {
+        self.center.dist(p) <= self.radius
+    }
+}
+
 /// One of a player's groups, for reports (`World::groups`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroupInfo {
@@ -118,6 +159,8 @@ pub struct GroupInfo {
     pub adults: usize,
     pub migration: Option<Vec2>,
     pub territory: Option<Territory>,
+    /// The rally the group is answering, if any.
+    pub rally: Option<Rally>,
     /// Largest territory the group could claim now.
     pub max_radius: f32,
     /// First tick at which the group may claim a territory (0: now).
@@ -148,12 +191,44 @@ impl World {
         self.territories.get(&(o.owner, o.group))
     }
 
-    /// The circle `o` roams and forages in: its group's territory, unless it
-    /// is hungry enough to look further ([`stray_hunger`]).
+    /// The rally `o`'s group is answering, if any (and still standing).
+    #[inline]
+    pub(crate) fn rally_of(&self, o: &Organism) -> Option<&Rally> {
+        if self.rallies.is_empty() {
+            return None;
+        }
+        self.rallies.get(&(o.owner, o.group)).filter(|r| self.tick < r.expires_tick)
+    }
+
+    /// The circle `o` roams and forages in: its group's territory or rally
+    /// circle, unless it is hungry enough to look further ([`stray_hunger`]).
     #[inline]
     pub(crate) fn roam_bound(&self, o: &Organism) -> Option<(Vec2, f32)> {
-        let t = self.territory_of(o)?;
-        (o.needs.hunger / 100.0 <= stray_hunger(o)).then_some((t.center, t.radius))
+        let (c, r) = match self.territory_of(o) {
+            Some(t) => (t.center, t.radius),
+            None => {
+                let r = self.rally_of(o)?;
+                (r.center, r.radius)
+            }
+        };
+        (o.needs.hunger / 100.0 <= stray_hunger(o)).then_some((c, r))
+    }
+
+    /// Drop rally orders that have lapsed. Runs once per tick, before decide.
+    pub(crate) fn settle_rallies(&mut self) {
+        if !self.rallies.is_empty() {
+            let now = self.tick;
+            self.rallies.retain(|_, r| now < r.expires_tick);
+        }
+    }
+
+    /// Radius of the circle a group of `members` gathers in at a rally.
+    pub fn rally_radius(members: usize) -> f32 {
+        (RALLY_BASE_RADIUS + RALLY_RADIUS_PER_MEMBER * (members as f32).sqrt()).min(RALLY_MAX_RADIUS)
+    }
+
+    fn rally_ticks(&self) -> u64 {
+        ((RALLY_DAYS * self.config.ticks_per_day as f32).round() as u64).max(1)
     }
 
     /// `p` pulled inside `bound` (90% of the radius) if it lies outside.
@@ -211,7 +286,8 @@ impl World {
                 let (members, adults) = counts[g as usize];
                 let migration = self.migrate_orders.get(&key).copied();
                 let territory = self.territories.get(&key).copied();
-                if g != 0 && members == 0 && migration.is_none() && territory.is_none() {
+                let rally = self.rallies.get(&key).copied().filter(|r| self.tick < r.expires_tick);
+                if g != 0 && members == 0 && migration.is_none() && territory.is_none() && rally.is_none() {
                     return None;
                 }
                 let claim_ready_tick = self.territory_claims.get(&key).map_or(0, |&t| t + cooldown);
@@ -222,6 +298,7 @@ impl World {
                     adults,
                     migration,
                     territory,
+                    rally,
                     max_radius: Self::territory_radius_limit(adults),
                     claim_ready_tick,
                     obedience: (obedience[g as usize] / members.max(1) as f64 * 100.0).round() as f32 / 100.0,
@@ -245,7 +322,7 @@ impl World {
     /// can hold ([`World::territory_radius_limit`]); the territory as
     /// claimed is returned. Replaces the group's migration order (and any
     /// territory it held). Refused for a group without members, and within
-    /// [`CLAIM_COOLDOWN_DAYS`] of the group's last claim.
+    /// [`CLAIM_COOLDOWN_DAYS`] of the group's last claim. Ends a rally.
     pub fn claim_territory(
         &mut self,
         player: PlayerId,
@@ -274,7 +351,44 @@ impl World {
         self.territories.insert(key, t);
         self.territory_claims.insert(key, self.tick);
         self.migrate_orders.remove(&key);
+        self.rallies.remove(&key);
         Ok(t)
+    }
+
+    /// The rally a group is answering.
+    pub fn rally(&self, player: PlayerId, group: u8) -> Option<Rally> {
+        self.rallies.get(&(player, group)).copied().filter(|r| self.tick < r.expires_tick)
+    }
+
+    /// Group command: `group` gathers at `center` (clamped to the map) and
+    /// holds near it for [`RALLY_DAYS`]. The circle's radius comes from the
+    /// group's size ([`World::rally_radius`]); the rally as given is
+    /// returned. Replaces the group's migration order, territory or earlier
+    /// rally. Refused for a group without members.
+    pub fn rally_group(&mut self, player: PlayerId, group: u8, center: Vec2) -> Result<Rally, CommandError> {
+        Self::check_group(group)?;
+        let (members, _) = self.group_counts(player, group);
+        if members == 0 {
+            return Err(CommandError::NoSuchGroup(group));
+        }
+        let r = Rally {
+            center: self.map.clamp(center),
+            radius: Self::rally_radius(members),
+            issued_tick: self.tick,
+            expires_tick: self.tick + self.rally_ticks(),
+        };
+        let key = (player, group);
+        self.rallies.insert(key, r);
+        self.migrate_orders.remove(&key);
+        self.territories.remove(&key);
+        Ok(r)
+    }
+
+    /// Group command: `group` stops answering its rally.
+    pub fn cancel_rally(&mut self, player: PlayerId, group: u8) -> Result<Rally, CommandError> {
+        Self::check_group(group)?;
+        let r = self.rallies.remove(&(player, group));
+        r.filter(|r| self.tick < r.expires_tick).ok_or(CommandError::NoRally(group))
     }
 
     /// Group command: `group` gives up its territory.
@@ -353,6 +467,7 @@ impl World {
         self.migrate_orders.remove(&key);
         self.territories.remove(&key);
         self.territory_claims.remove(&key);
+        self.rallies.remove(&key);
         for &i in &moving {
             self.organisms[i].group = new;
         }
@@ -375,12 +490,14 @@ impl World {
         if self.group_counts(player, into).0 == 0 {
             self.migrate_orders.remove(&(player, into));
             self.territories.remove(&(player, into));
+            self.rallies.remove(&(player, into));
         }
         for o in self.organisms.iter_mut().filter(|o| o.alive && o.owner == player && o.group == from) {
             o.group = into;
         }
         self.migrate_orders.remove(&(player, from));
         self.territories.remove(&(player, from));
+        self.rallies.remove(&(player, from));
         Ok(members)
     }
 }

@@ -245,7 +245,8 @@ fn group_commands_are_deterministic_and_unused_ones_change_nothing() {
                 w.claim_territory(HERD, 0, c, 6.0).unwrap();
                 w.command_migrate_group(HERD, split.group, Vec2::new(60.0, 60.0)).unwrap();
                 if undo {
-                    w.abandon_territory(HERD, 0).unwrap();
+                    w.rally_group(HERD, 0, c).unwrap();
+                    w.cancel_rally(HERD, 0).unwrap();
                     w.clear_migration_group(HERD, split.group);
                     w.merge_groups(HERD, split.group, 0).unwrap();
                 }
@@ -301,4 +302,79 @@ fn obedience_weighs_orders_against_hunger() {
     assert!(w.roam_bound(&w.organisms[i]).is_some(), "the obedient keep to the territory");
     set(&mut w, 0.0, 85.0);
     assert!(w.roam_bound(&w.organisms[i]).is_none(), "the headstrong forage outside");
+}
+
+/// A rally: members far from the point walk to it (weighed through
+/// obedience like the other orders) and, once there, hold inside its circle;
+/// it replaces a migration or territory and is replaced by them, and lapses
+/// after `RALLY_DAYS`.
+#[test]
+fn a_rally_gathers_the_group_and_holds_it_until_it_lapses() {
+    use crate::genome::Gene;
+    let mut w = world();
+    let n = members(&w, HERD, 0).len();
+    let c = centroid(&members(&w, HERD, 0));
+    let point = w.map.clamp(c + Vec2::new(12.0, 0.0));
+    w.command_migrate(HERD, Vec2::new(1.0, 1.0));
+    let r = w.rally_group(HERD, 0, point).unwrap();
+    assert_eq!((r.center, r.radius), (point, World::rally_radius(n)));
+    assert_eq!(r.expires_tick, (RALLY_DAYS * w.config.ticks_per_day as f32) as u64);
+    assert_eq!(w.migration_order(HERD, 0), None, "the rally replaced the migration");
+    assert_eq!(w.groups(HERD)[0].rally, Some(r));
+    assert_eq!(w.rally_group(HERD, 1, point), Err(CommandError::NoSuchGroup(1)));
+    assert_eq!(w.rally_group(HERD, 9, point), Err(CommandError::NoSuchGroup(9)));
+    assert_eq!(w.cancel_rally(1, 0), Err(CommandError::NoRally(0)));
+    assert_eq!(World::rally_radius(100_000), RALLY_MAX_RADIUS);
+
+    // A member outside, fed and rested, walks to the point; the headstrong
+    // stop to graze at a hunger the obedient walk through.
+    w.grid.rebuild(&w.organisms);
+    let i = w.organisms.iter().position(|o| o.owner == HERD && o.matured && !r.contains(o.pos)).unwrap();
+    let set = |w: &mut World, obedience: f32, hunger: f32| {
+        let o = &mut w.organisms[i];
+        o.pheno.0[Gene::Obedience.index()] = obedience;
+        (o.needs.hunger, o.needs.thirst, o.needs.energy, o.needs.breeding) = (hunger, 5.0, 95.0, 0.0);
+    };
+    set(&mut w, 0.5, 5.0);
+    let go = w.decide(i);
+    assert_eq!((go.action, go.target), (Action::Rally, Some(point)));
+    set(&mut w, 1.0, 50.0);
+    assert_eq!(w.decide(i).action, Action::Rally);
+    set(&mut w, 0.0, 50.0);
+    assert_eq!(w.decide(i).action, Action::Graze);
+    w.organisms[i].refresh_derived();
+
+    // Over the order's days most of the herd gathers inside the circle;
+    // a herd left alone doesn't.
+    let mut free = world();
+    let held = |w: &mut World| {
+        let (mut inside, mut all) = (0usize, 0usize);
+        let tpd = w.config.ticks_per_day;
+        for k in 0..2 * tpd {
+            w.step();
+            if k >= tpd {
+                for o in members(w, HERD, 0) {
+                    all += 1;
+                    inside += usize::from(r.contains(o.pos));
+                }
+            }
+        }
+        inside as f32 / all.max(1) as f32
+    };
+    let (a, b) = (held(&mut w), held(&mut free));
+    assert!(a > 0.6 && a > b + 0.3, "inside the rally circle: rallied {a:.2}, free {b:.2}");
+    // A territory claim replaces it.
+    w.claim_territory(HERD, 0, point, 6.0).unwrap();
+    assert_eq!(w.rally(HERD, 0), None);
+    let r = w.rally_group(HERD, 0, point).unwrap();
+    assert_eq!(w.territory(HERD, 0), None, "and a rally replaces a territory");
+    // It lapses on its own.
+    while w.tick() < r.expires_tick {
+        w.step();
+    }
+    assert_eq!(w.rally(HERD, 0), None);
+    assert_eq!(w.groups(HERD)[0].rally, None);
+    assert_eq!(w.cancel_rally(HERD, 0), Err(CommandError::NoRally(0)));
+    let r = w.rally_group(HERD, 0, point).unwrap();
+    assert_eq!(w.cancel_rally(HERD, 0), Ok(r));
 }

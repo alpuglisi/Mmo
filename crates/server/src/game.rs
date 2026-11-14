@@ -861,6 +861,15 @@ impl Game {
                 self.world.abandon_territory(player, group).map_err(e)?;
                 Ok(None)
             }
+            ClientMsg::Rally { group, x, y } => {
+                finite(&[x, y])?;
+                let r = self.world.rally_group(player, group, Vec2::new(x, y)).map_err(e)?;
+                Ok(Some(serde_json::to_value(RallyView::from(r)).unwrap()))
+            }
+            ClientMsg::CancelRally { group } => {
+                self.world.cancel_rally(player, group).map_err(e)?;
+                Ok(None)
+            }
             ClientMsg::SplitGroup { group, organisms } => {
                 if organisms.as_ref().is_some_and(|o| o.len() > MAX_SPLIT_ORGANISMS) {
                     return Err(ErrorInfo::new(
@@ -3263,6 +3272,38 @@ mod tests {
         // A whole-lineage clear reaches every group.
         assert_eq!(result(&g.command(10, 1, None, ClientMsg::ClearMigration { group: None })), (true, None));
         assert_eq!(g.state_for(10).unwrap().migration, None);
+    }
+
+    /// A rally through the protocol: validated like the other group orders,
+    /// shown in the state, replaced by a migration, cancelled.
+    #[test]
+    fn rally_gathers_a_group_until_cancelled_or_replaced() {
+        let (mut g, a, _) = game();
+        let code = |g: &mut Game, conn, player, m| result(&g.command(conn, player, None, m)).1;
+        let out = g.command(10, 1, None, ClientMsg::Rally { group: 0, x: 30.0, y: 31.0 });
+        let r: RallyView = serde_json::from_value(reply_data(&out)).unwrap();
+        assert_eq!((r.x, r.y, r.radius), (30.0, 31.0, World::rally_radius(a.len())));
+        assert!(r.expires_tick > g.world.tick());
+        let s = g.state_for(10).unwrap();
+        assert_eq!(s.groups[0].rally, Some(r));
+        // Bob sees none of it.
+        assert_eq!(g.state_for(20).unwrap().groups[0].rally, None);
+        let nan = ClientMsg::Rally { group: 0, x: f32::NAN, y: 1.0 };
+        assert_eq!(code(&mut g, 10, 1, nan).as_deref(), Some("bad_coordinates"));
+        let empty = ClientMsg::Rally { group: 2, x: 1.0, y: 1.0 };
+        assert_eq!(code(&mut g, 10, 1, empty).as_deref(), Some("no_such_group"));
+        let far = ClientMsg::Rally { group: 9, x: 1.0, y: 1.0 };
+        assert_eq!(code(&mut g, 10, 1, far).as_deref(), Some("no_such_group"));
+        assert_eq!(code(&mut g, 20, 2, ClientMsg::CancelRally { group: 0 }).as_deref(), Some("no_rally"));
+        // A migration replaces it; a new rally replaces the migration.
+        g.command(10, 1, None, ClientMsg::Migrate { x: 50.0, y: 50.0, group: Some(0) });
+        let s = g.state_for(10).unwrap();
+        assert_eq!((s.groups[0].rally, s.groups[0].migration), (None, Some([50.0, 50.0])));
+        g.command(10, 1, None, ClientMsg::Rally { group: 0, x: 30.0, y: 31.0 });
+        assert_eq!(g.state_for(10).unwrap().groups[0].migration, None);
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::CancelRally { group: 0 })), (true, None));
+        assert_eq!(g.state_for(10).unwrap().groups[0].rally, None);
+        assert_eq!(code(&mut g, 10, 1, ClientMsg::CancelRally { group: 0 }).as_deref(), Some("no_rally"));
     }
 
     #[test]

@@ -59,7 +59,7 @@ docs/
 | `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter), short-term torpor on cold nights, a seasonal coat (winter coat molted in autumn and shed in spring, food per molt; a mismatch on cold-blooded bodies) and timed breeding (a narrow early-spring window with strong drive and better conception, no breeding outside it). |
 | `world::par_apply` | Scale and performance (parallel regions) | The apply phase on all cores (`WorldConfig::parallel_apply`, default on; `--sequential-apply` for the old fully sequential apply): each turn split into a parallel movement sweep, a sequential interaction sweep in shuffled order, a parallel needs sweep and a sequential death/birth sweep. See [Parallel apply](#parallel-apply). |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
-| `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends; and group commands as genes: an `obedience` gene sets how strongly each animal heeds them, paid for in tameness. See [Groups and territory](#groups-and-territory). |
+| `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends, rally a group at a point for a few days; and group commands as genes: an `obedience` gene sets how strongly each animal heeds them, paid for in tameness. See [Groups and territory](#groups-and-territory). |
 | `world::chronicle` | Scoring | The daily hook: samples adults (cohorts included) for species detection, plans, applies and ends catastrophes through existing systems (`Map::climate_temp`, `Map::climate_wet`, infections), closes eras and awards achievements. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
 | `world::offline` | Open questions (offline protection) | Softer rules for the last members of a lineage whose owner is logged out: the caller names the protected lineages and exempt organisms (`World::set_offline_protection`); at or below the floor (12 living members) kill chance against them is ×0.25 and starvation and thirst ×0.5, for agents and cohorts. Off (and bit-identical) by default. See [Offline protection](#offline-protection). |
@@ -128,8 +128,8 @@ score).
   belong to no group: agents expanded from them start in the main group.
 - **Per-group orders.** Migration orders are kept per (player, group).
   `migrate` without a group reaches every group, as before; with one, only
-  it. A group has a migration order or a territory, never both: the newer
-  order replaces the other.
+  it. A group has at most one of a migration order, a territory and a
+  rally: the newest order replaces the others.
 - **Territory** (`claim_territory`): a circle a group holds. Its radius is
   kept between 3 tiles and `4 + 2·√adults` (at most 24): a few animals
   can't hold a valley. Members roam and forage inside it (wander targets
@@ -148,6 +148,19 @@ score).
   at a sprint, and a group can claim only once every half day
   (`claim_cooldown`). Seasonal migration (a gene) still outranks the
   territory, and danger and thirst outrank both as usual.
+- **Rally** (`rally_group`, `cancel_rally`): gather a group at a point.
+  The circle it gathers in has radius `2 + √members` (at most 12), so a big
+  herd has room to graze. Members outside it walk to the point
+  (`Action::Rally`, utility 0.55 × heed, like an ordered migration and
+  walking back into a territory, so obedience weighs it the same way);
+  inside it they roam and forage within the circle, exactly as in a
+  territory (and stray to forage at the same obedience-dependent hunger),
+  but nobody is chased off and there is no cooldown. It stands until it is
+  cancelled, replaced by another order (a migration, a claim, a new rally;
+  a split or merge ends it like the other orders) or lapses after
+  `RALLY_DAYS` (3 days: re-issue it to keep the group there). Lapsed
+  rallies are dropped before decide each tick. Saved (snapshot version
+  15; older saves load with no rally standing, `serde_util::before_v15`).
 - **Obedience: group commands as genes** (the doc's open question, "keep
   as player levers, or make genetic?": both). The commands stay player
   levers; how strongly each animal heeds them is an instinct gene,
@@ -178,6 +191,54 @@ score).
   against 11.44 (+0.16 ± 0.16); the 12-seed sweeps score 11.76 from seed 31
   (11.60 with `tameness` 0, the baseline) and 11.72 from 55 (baseline
   11.73). New tunable: `tameness`.
+- **What obedience buys with real orders** (`cargo run --release --example
+  obedience -- orders 120 $(seq 101 124)`): the standard world (96×96, 120
+  days, seeds 101–124) with the herd grazers founded at obedience 0.2 or
+  0.8 (nothing else differs: the locus has its own stream), paired by seed,
+  under scripted player policies: `rally` (every 2 days, rally at the
+  disc near the herd with the most plant food, halved without water),
+  `territory` (claim that spot at the largest radius), `pulse` (that rally
+  every 6 days, cancelled a day later), `bad-rally` (rally at the barest
+  spot) and `none`. High − low, mean ± 95% CI over the 24 seeds:
+
+  | Policy | Herd at day 120 (low / high) | High − low, herd at day 120 | High − low, mean herd | Share inside the order's circle (low / high) | High − low, starved / killed |
+  | --- | --- | --- | --- | --- | --- |
+  | none | 442 / 446 | +3.9 ± 21.8 | −0.4 ± 6.8 | – | −1.5 ± 9.0 / +2.4 ± 9.1 |
+  | pulse | 438 / 426 | −12.4 ± 46.0 | −1.2 ± 11.9 | 0.55 / 0.60 | +13.0 ± 28.8 / +6.8 ± 8.1 |
+  | rally | 190 / 217 | +27.1 ± 62.1 | +0.9 ± 10.2 | 0.80 / 0.87 | −16.6 ± 53.1 / −5.1 ± 6.5 |
+  | territory | 391 / 369 | −21.3 ± 51.0 | **−14.9 ± 8.5** | 0.94 / 0.96 | −24.7 ± 50.4 / −2.1 ± 2.3 |
+  | bad-rally | 43 / 5 | **−37.3 ± 18.3** | **−36.7 ± 12.9** | 0.51 / 0.64 | −59.7 ± 26.3 / **+33.4 ± 16.5** |
+
+  Obedience does what it was built to do: obedient herds keep to the order
+  (+0.07 ± 0.02 of the herd inside a rally circle, +0.14 ± 0.06 under bad
+  orders, +0.02 ± 0.01 inside a territory, which even the headstrong
+  mostly keep to), and they follow bad orders to ruin (a barren rally point
+  costs the obedient herd 37 more animals of ~40, the dead taken by
+  predators out in the open where the headstrong would have scattered to
+  eat). But no scripted policy here made obedience pay: with good-looking
+  orders the difference is within noise, except that an obedient herd
+  holding a territory averaged 15 fewer animals over the run (it keeps to
+  a circle it has grazed down). The reason is that the orders themselves
+  cost this herd: against no orders, a standing rally ends it at 190
+  instead of 442 (−252 ± 44 at 0.2), a standing territory at 391 (−51 ±
+  73), and even the pulse is neutral (−3 ± 56). The herd grazers are
+  already near their carrying capacity on their own, and every order
+  confines them; a 12-tile rally circle is meant for gathering, not for
+  holding a 400-head herd for months. So obedience is worth breeding for
+  where a player has short, specific uses (gathering a scattered herd,
+  pulling it out of a hunting ground), and a headstrong herd is the safer
+  default against careless orders. Nothing was retuned: the order costs
+  are the design's ("every lever has a price"), not a bug.
+- **Does obedience drift down without orders?** (`-- drift 360 $(seq 101
+  112)`, the standard world for a year with `tameness` 0.4 against 0, which
+  makes obedience neutral, same seeds): no measurable drift yet. Across all
+  lineage-seeds (73) the mean obedience is 0.500 in both (tameness −
+  control +0.000 ± 0.004). Only the meadow voles, with the shortest
+  generations, show a small decline (0.490 against 0.502, −0.012 ± 0.008).
+  Every founder starts at the design default and new variation arrives
+  only by mutation, so selection has little to work with in a year;
+  lineages that never get orders lose obedience slowly, on the timescale of
+  many generations, not within a season.
 - **Determinism.** The commands draw no randomness and are applied where
   the server applies every command (between sub-steps, in arrival order).
   Every lookup sits behind an empty map and every organism is in group 0
@@ -207,6 +268,8 @@ cargo run --release --example stuck -- 120 1 2        # how often organisms get 
 cargo run --release --example calibrate -- tournament --worlds 20   # point-cost check (CSV)
 cargo run --release --example deaths -- 1,5 120 31 32 33   # who kills antelope and herd grazers, and when
 cargo run --release --example predators -- 120 1 2 3     # pack hunters vs their prey: booms, kills by prey rarity
+cargo run --release --example obedience -- orders 120 101 102   # what obedience buys a herd with scripted orders
+cargo run --release --example obedience -- drift 360 101 102    # does obedience drift down without orders?
 cargo run --release --bin evo-sim -- sweep --trials 1 --seeds 12 --rounds 1 --seed 31 --migrants   # with the migrating caribou
 cargo run --release --bin evo-sim -- run --size 256 --focus 64,64 --focus 192,192   # level of detail
 cargo run --release --example lod -- 256 90 1 64,64 192,192   # LOD vs full simulation
@@ -645,6 +708,7 @@ Client → server:
 | `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for your adults: every group without `group`, else that group (`no_such_group` past 3); `data` = the clamped `{x, y}`. Replaces the territory of the groups it reaches |
 | `claim_territory` | `group?, x, y, radius` | Group `group` (default 0) holds the circle around `x, y`: the radius is kept between 3 and the group's `max_radius`; replaces its migration order; `data` = `{x, y, radius, claimed_tick}`. `claim_cooldown` (`detail.ticks_left`) within half a day of the group's last claim; `no_such_group` for a group without members; `bad_coordinates` for a non-finite number |
 | `abandon_territory` | `group?` | Give the territory up (`no_territory` if none) |
+| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 12) for 3 days; replaces its migration order or territory; `data` = `{x, y, radius, expires_tick}`. `no_such_group` for a group without members, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
 | `split_group` | `group?, organisms?` | Divide a group (default 0) in two: the named organisms (yours, in that group, at most 2000), else the far half across its widest spread; `data` = `{group, moved, kept}`. `group_limit` at 4 groups, `group_too_small` if a side would be empty, `not_in_group`, `not_owned`, `too_many_organisms` |
 | `merge_groups` | `from, into?` | Every member of `from` joins `into` (default 0); `data` = `{moved}`; `same_group`, `no_such_group` |
 | `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window |
@@ -663,7 +727,7 @@ Server → client:
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
 | `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
@@ -1171,7 +1235,8 @@ reads as 0 (`serde_util::before_v13`). Version 13 ones restore too: versions
 10 to 13 lack the obedience gene and `Balance::tameness` (version 14), so
 every organism's obedience locus reads as the design default, 0.5, tagged
 like its wanderlust alleles (it behaves as it did), and `tameness` as its
-default (`serde_util::before_v14`).
+default (`serde_util::before_v14`). Version 14 ones restore with no rally
+standing (rallies came with version 15; `serde_util::before_v15`).
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1220,7 +1285,7 @@ claimed territories and claim times); version 11 writes the tiles apart
 (above); version 12 adds the balance parameter `cold_gestation`, version 13
 `nest_predation`; version 14 adds the `obedience` gene (a locus in every
 genome and a value in every species representative) and the balance
-parameter `tameness`.
+parameter `tameness`; version 15 the world's rally orders.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -1588,9 +1653,12 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   possessing, clicking empty map sends `order_move` (target line drawn).
   **Migrate…** then a click sends the group command; **Pin view here** sends
   `set_view` at the camera center. Group commands: the toolbar's group
-  menu picks which group **Migrate…**, **Clear migration**, **Territory…**
-  and **Split** act on ("All" reaches every group; the territory and split
-  tools want one group, the only one if there is just one). **Territory…**
+  menu picks which group **Migrate…**, **Clear migration**, **Territory…**,
+  **Rally…** and **Split** act on ("All" reaches every group; the territory,
+  rally and split tools want one group, the only one if there is just one).
+  **Rally…** (toolbar or a group's card) is one tap on the map, which sends
+  `rally`; the card then offers **Cancel rally**, and the rally is drawn
+  as a ring in the group's color around a filled point. **Territory…**
   is two taps: the center (the largest circle the group may hold is
   previewed), then the edge, which sends `claim_territory` with that radius;
   **Split** sends `split_group` and picks the new group. Each group's
@@ -4054,10 +4122,16 @@ sections above).
    still go as a delta against the previous save, at the cost of saves
    that depend on each other.
 7. **Design-doc features not built.** Group commands as genes is built as
-   the obedience gene ([Groups and territory](#groups-and-territory)); a
-   follow-up would be a rally command (gather a group at a point) for it to
-   weigh as well, and measuring with real orders what obedience buys a
-   lineage. (The seasons leaderboard is already served from cached
+   the obedience gene, with a rally command (gather a group at a point for
+   up to 3 days) for it to weigh beside migration and territory, and
+   measured with scripted orders ([Groups and territory](#groups-and-territory)):
+   obedient herds keep to orders better and are ruined by bad ones, but no
+   scripted policy made high obedience pay, because standing orders cost a
+   herd near its carrying capacity more than they give, and obedience
+   hasn't drifted measurably in a year without orders. Follow-ups: measure
+   with real players' orders once there are some (the example's policies
+   are guesses), and decide whether a rally should hold a large group
+   less tightly (its circle stops at 12 tiles). (The seasons leaderboard is already served from cached
    standings: see *Cached standings*.) Offline protection is built as the
    surviving-core form ([Offline protection](#offline-protection)); the home
    range form (a claimed territory that shields its residents while the owner
