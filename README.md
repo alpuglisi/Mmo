@@ -386,7 +386,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
                                     ◀── watch: world summary + leaderboard
                                          │ daily: Capture (a clone of the game)
                                          ▼
-                                   saver thread (bincode + LZ4)
+                                   saver thread (bincode + LZ4, deflate)
                                          │
                        store task ◀── daily records, finished trades, saved games
 ```
@@ -1008,7 +1008,14 @@ tick, id)`, so state plus tick determine the future. Format
 (`world::snapshot`): a fixed header (magic, format version
 `SNAPSHOT_VERSION`, flags, a hash of the whole `WorldConfig`, tick,
 organism count, raw length, payload checksum, and from version 6 the
-terrain's content hash) and the `World` in `bincode`, LZ4-compressed.
+terrain's content hash) and the `World` in `bincode`, LZ4-compressed;
+from version 11 the map's changing tiles are written apart, after it: per
+field, each tile's bits XORed with its western neighbour's, split into byte
+planes and deflated (`flate2` on its pure-Rust miniz_oxide backend, fast
+level), on a second thread while the rest is encoded. Smooth fields
+(temperature, wind, wetness) leave long runs of zero high bytes, so the
+tiles take about 60% of what LZ4 made of them interleaved. Version 10
+snapshots (the tiles inside the payload) still restore.
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1053,7 +1060,8 @@ a snapshot of another version is refused with both versions named. Version
 version 8 added the balance parameters `threat_caution`, `alert_guard` and
 `pasture_search` to the saved config; version 9 the hunters' search image; version 10 added groups and
 territories (`Organism::group`, migration orders per player and group,
-claimed territories and claim times).
+claimed territories and claim times); version 11 writes the tiles apart
+(above).
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -1141,6 +1149,33 @@ and after, timing aside, and the snapshot test also requires the restored
 caches, paths and pregnancies to match the original's exactly, father
 genomes to come back shared, and a clone to share every genome.
 
+**Tiles apart (world snapshot 11, saved game 5)**: `snapshot::encode` of
+a game, the last saved game 4 build and this one interleaved, two rounds
+each, on the same shared 4-core machine under heavy load from other jobs
+(load average 8–12, so times are noisy; medians of 15, or 7 at 512²):
+
+| World | Saved game before → after | Encode before / after | File write + fsync before / after |
+| --- | --- | --- | --- |
+| 96², server default settings, day 30, 826 agents | 0.537 → **0.473 MB** (−12%) | 4.6–8.6 / 5.1–5.9 ms | 4–8 / 6–10 ms |
+| 128² (`--size` default), day 30, 1,460 agents | 0.950 → **0.830 MB** (−13%) | 7.8–11.1 / 7.4–12.8 ms | 5–10 / 5–8 ms |
+| 512², scale 5, day 2, 27k agents | 15.39 → **13.15 MB** (−15%) | 113–152 / 97–179 ms | 22–28 / 20–29 ms |
+
+At 512² the tiles went from 5.6 MB (LZ4, interleaved) to 3.4 MB; the rest
+of the world (9.8 MB, mostly genomes) is unchanged: deflate would take only
+2% more off it at four times LZ4's time, and the pure-Rust zstd encoder
+(`ruzstd`, fastest level) did worse than deflate there and on the tiles,
+slower. Encoding costs about as much CPU as before (the tiles' planes and
+deflate, ~45 ms at 512², replace their share of bincode and LZ4) but runs on
+two threads, so with a free core a save encodes faster (97 against 130 ms
+in the quieter round). A delta of the tiles against the map regenerated
+from the seed was measured and rejected: weather, water and vegetation
+have moved everywhere by the first save, and XOR against the generated
+tiles came out 4% larger than against the western neighbour (it only helps
+mud, water depth and current). The static terrain is deterministic from
+the seed but stays stored in full, once per world (5.1 MB at 512²): it is
+not part of each save, and a stored copy keeps old worlds restorable when
+map generation changes.
+
 **Saved games** (`snapshot.rs` in the server): magic, the game-side state
 as JSON (player → lineage, open offers with their escrow, migration orders,
 alerts, watched organisms, milestone progress, chronicle entries already
@@ -1150,7 +1185,10 @@ and the world snapshot. The game JSON carries a layout `version`
 (`SAVED_GAME_VERSION`, 2 since the economy, 3 since ranked seasons: the
 season under way and the last finished record, 4 since auctions: open
 auctions and their highest bids among the listings, none in versions 2
-and 3); a version-1 saved game still
+and 3, 5 since the JSON is deflated (magic `EVOSAV5\0`; a version 4 saved
+game, magic `EVOSAVE\0` with the JSON as is and a version 10 world
+snapshot, still restores, `snapshot::tests::version_4_saved_games_still_load`
+on a stored fixture); a version-1 saved game still
 restores, with balances and recent ledger entries from the store instead
 (and no escrow on its open offers). A new world (no saved game, or
 `--fresh`) also starts from the stored balances, and players who have one
@@ -1170,7 +1208,8 @@ The world thread saves after the tick that starts a new simulated day and
 on `Request::Shutdown`. It only takes a `snapshot::Capture` (a clone of the
 `World`, sharing its terrain, plus the game state) and hands it to the
 **background saver** (`saver.rs`, a dedicated thread), which encodes it
-(bincode + LZ4, the expensive part) and passes the bytes to the store task,
+(bincode + LZ4, the tiles deflated on a second thread: the expensive part)
+and passes the bytes to the store task,
 so a save no longer stalls ticks (numbers below). Each save carries the
 world's terrain blob, encoded once per world and terrain hash and then
 shared; the store task writes it (`Store::put_terrain`, a no-op when the
@@ -3194,9 +3233,11 @@ sections above).
 7. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
    protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
    doesn't offer it; revisit when it does (states are already ~1 KB/s a
-   client, so this is low priority). For save size, store the map's
-   changing tiles (about 6 MB of an 18 MB save at 26k agents) as a delta
-   against the previous save.
+   client, so this is low priority). Saves (13 MB at 26k agents, see
+   [Persistence](#persistence)) are now mostly genomes (about 7 MB of
+   founder values that don't compress); the map's tiles (3.4 MB) could
+   still go as a delta against the previous save, at the cost of saves
+   that depend on each other.
 8. **Design-doc features not built.** Offline protection (home ranges or
    surviving founder groups; a territory could become one), group commands
    as genes (the doc's open question; wanderlust and group tolerance

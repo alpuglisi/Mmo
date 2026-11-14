@@ -404,7 +404,9 @@ pub struct Map {
     /// hash; `World::restore` puts the terrain back.
     #[cfg_attr(feature = "serde", serde(with = "terrain_ref"))]
     terrain: Arc<Terrain>,
-    /// The changing state of every tile, row-major.
+    /// The changing state of every tile, row-major. World snapshots write
+    /// them in a section of their own (`serde_util::tiles`).
+    #[cfg_attr(feature = "serde", serde(serialize_with = "crate::serde_util::tiles::serialize"))]
     pub tiles: Vec<Tile>,
     /// Steps to the nearest drinkable tile (BFS, recomputed hourly when chunk
     /// updates changed where water is). Lets any organism walk downhill to

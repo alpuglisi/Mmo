@@ -17,14 +17,27 @@
 //! | --- | --- |
 //! | 8 | magic `EVOSNAP\0` |
 //! | 4 | format version ([`SNAPSHOT_VERSION`]) |
-//! | 4 | flags (bit 0: payload is LZ4-compressed) |
+//! | 4 | flags (bit 0: payload is LZ4-compressed; bit 1: tiles apart, from version 11) |
 //! | 8 | config hash ([`WorldConfig::snapshot_hash`]) |
 //! | 8 | tick |
 //! | 8 | organisms (agents, dead ones not yet removed included) |
 //! | 8 | payload length before compression |
-//! | 8 | FNV-1a 64 checksum of the stored payload |
+//! | 8 | FNV-1a 64 checksum of everything after the header |
 //! | 8 | terrain content hash ([`Terrain::hash`]; from version 6) |
+//! | 8 | stored payload length (only with tiles apart) |
 //! | … | payload: `bincode` of `World` (varint integers from version 7), LZ4 block-compressed |
+//! | … | tiles (only with tiles apart): deflate of the tile planes |
+//!
+//! With tiles apart (version 11), the payload writes the map's tiles as an
+//! empty list (`serde_util::tiles`) and they follow it as planes: for each
+//! of the 12 `f32` fields of a [`Tile`](crate::terrain::Tile) in declaration
+//! order, each tile's bits XORed with those of its western neighbour (its
+//! northern one at the start of a row, nothing for the first tile), split
+//! into four byte planes (least significant first) of one byte per tile.
+//! Fields that vary smoothly across the map (temperature, wind, wetness)
+//! then leave long runs of zero high bytes, and deflate (fast level) stores
+//! the tiles in about 60% of the space LZ4 took for them interleaved. The
+//! two parts are encoded, and decoded, on two threads.
 //!
 //! The header stays readable across format versions, so a server can say
 //! why it refuses a snapshot, and can look up the terrain before decoding.
@@ -42,7 +55,9 @@
 //! genome as the index of the father while he is in the world
 //! (`serde_util::father`), so the restore shares it with him again.
 //!
-//! Only snapshots of this format version restore. Version 5 moved the
+//! Snapshots of this format version restore, and of version 10, which holds
+//! the same state with the tiles inside the payload
+//! ([`SnapshotHeader::restorable`]). Version 5 moved the
 //! terrain out of the snapshot; version 6 added lakes and floodplains to map
 //! generation (`Ground::plain`, `Tile::silt`) and a wind direction to the
 //! weather cells, which older maps can't be given deterministically, so
@@ -54,7 +69,7 @@
 //! (`Organism::search_image`) and the `Balance::search_image` parameter.
 //! Version 10 adds player groups and territories (`Organism::group`,
 //! migration orders keyed by player and group, the world's claimed
-//! territories and claim times).
+//! territories and claim times). Version 11 writes the tiles apart (above).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -63,6 +78,7 @@
 //! FNV-1a 64 of that `bincode`.
 
 use std::fmt;
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 use bincode::Options;
@@ -70,11 +86,14 @@ use bincode::Options;
 use super::spatial::SpatialGrid;
 use super::World;
 use crate::config::WorldConfig;
-use crate::terrain::Terrain;
+use crate::terrain::{Terrain, Tile};
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 10;
+pub const SNAPSHOT_VERSION: u32 = 11;
+/// The oldest format version that still restores: the same state as
+/// version 11, with the tiles inside the payload.
+const OLDEST_RESTORABLE: u32 = 10;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
@@ -83,6 +102,9 @@ const MAGIC: &[u8; 8] = b"EVOSNAP\0";
 const HEADER_LEN_OLD: usize = 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8;
 const HEADER_LEN: usize = HEADER_LEN_OLD + 8;
 const FLAG_LZ4: u32 = 1;
+const FLAG_TILES_APART: u32 = 2;
+/// `f32` fields of a [`Tile`], each written as four byte planes.
+const TILE_FIELDS: usize = 12;
 const TERRAIN_MAGIC: &[u8; 8] = b"EVOTERR\0";
 const TERRAIN_HEADER_LEN: usize = 8 + 4 + 4 + 8 * 5;
 
@@ -109,6 +131,12 @@ impl SnapshotHeader {
         } else {
             HEADER_LEN_OLD
         }
+    }
+
+    /// Whether [`World::restore`] reads snapshots of this format version
+    /// (this one, or the previous one with the same state).
+    pub fn restorable(&self) -> bool {
+        (OLDEST_RESTORABLE..=SNAPSHOT_VERSION).contains(&self.version)
     }
 }
 
@@ -187,11 +215,96 @@ fn payload(
     if fnv1a(stored) != checksum {
         return Err(SnapshotError::Checksum);
     }
+    decompress(stored, flags, raw_len)
+}
+
+/// A payload decompressed (if its flags say LZ4).
+fn decompress(stored: &[u8], flags: u32, raw_len: u64) -> Result<std::borrow::Cow<'_, [u8]>, SnapshotError> {
     if flags & FLAG_LZ4 == 0 {
         return Ok(stored.into());
     }
     let len = usize::try_from(raw_len).map_err(|_| SnapshotError::BadHeader)?;
     Ok(lz4_flex::block::decompress(stored, len).map_err(decode_err)?.into())
+}
+
+/// A tile's fields as bits, in declaration order (destructured, so a new
+/// field fails to compile here until the encoding takes it).
+fn tile_bits(t: &Tile) -> [u32; TILE_FIELDS] {
+    let Tile { temp, water_depth, current, ice, snow, mud, veg, meat, wind, rain, wetness, silt } = *t;
+    [temp, water_depth, current, ice, snow, mud, veg, meat, wind, rain, wetness, silt].map(f32::to_bits)
+}
+
+fn tile_from_bits(b: [u32; TILE_FIELDS]) -> Tile {
+    let [temp, water_depth, current, ice, snow, mud, veg, meat, wind, rain, wetness, silt] = b.map(f32::from_bits);
+    Tile { temp, water_depth, current, ice, snow, mud, veg, meat, wind, rain, wetness, silt }
+}
+
+/// The tile whose bits predict tile `i`'s: its western neighbour, else its
+/// northern one, else none.
+fn predictor(i: usize, width: usize) -> Option<usize> {
+    if !i.is_multiple_of(width) {
+        Some(i - 1)
+    } else {
+        i.checked_sub(width)
+    }
+}
+
+/// The tiles as deflated byte planes (see the module docs).
+fn encode_tiles(tiles: &[Tile], width: usize) -> Vec<u8> {
+    let n = tiles.len();
+    let bits: Vec<[u32; TILE_FIELDS]> = tiles.iter().map(tile_bits).collect();
+    let xored: Vec<[u32; TILE_FIELDS]> = (0..n)
+        .map(|i| {
+            let pred = predictor(i, width).map_or([0; TILE_FIELDS], |p| bits[p]);
+            std::array::from_fn(|f| bits[i][f] ^ pred[f])
+        })
+        .collect();
+    drop(bits);
+    // Plane by plane, writing one byte stream at a time.
+    let mut planes = vec![0u8; n * TILE_FIELDS * 4];
+    for (f, field) in planes.chunks_exact_mut(n * 4).enumerate() {
+        let (p0, rest) = field.split_at_mut(n);
+        let (p1, rest) = rest.split_at_mut(n);
+        let (p2, p3) = rest.split_at_mut(n);
+        for (i, x) in xored.iter().enumerate() {
+            let [b0, b1, b2, b3] = x[f].to_le_bytes();
+            (p0[i], p1[i], p2[i], p3[i]) = (b0, b1, b2, b3);
+        }
+    }
+    drop(xored);
+    let mut e = flate2::write::DeflateEncoder::new(Vec::with_capacity(planes.len() / 3), flate2::Compression::fast());
+    e.write_all(&planes).expect("deflate into memory");
+    e.finish().expect("deflate into memory")
+}
+
+/// The tiles of a `width × height` map from [`encode_tiles`] bytes.
+fn decode_tiles(stored: &[u8], width: usize, height: usize) -> Result<Vec<Tile>, SnapshotError> {
+    let n = width * height;
+    let len = n * TILE_FIELDS * 4;
+    let mut planes = Vec::with_capacity(len);
+    flate2::read::DeflateDecoder::new(stored).take(len as u64 + 1).read_to_end(&mut planes).map_err(decode_err)?;
+    if planes.len() != len {
+        return Err(decode_err("the tiles do not match the map's size"));
+    }
+    let mut bits = vec![[0u32; TILE_FIELDS]; n];
+    for (f, field) in planes.chunks_exact(n * 4).enumerate() {
+        let (p0, rest) = field.split_at(n);
+        let (p1, rest) = rest.split_at(n);
+        let (p2, p3) = rest.split_at(n);
+        for (i, b) in bits.iter_mut().enumerate() {
+            b[f] = u32::from_le_bytes([p0[i], p1[i], p2[i], p3[i]]);
+        }
+    }
+    drop(planes);
+    for i in 0..n {
+        if let Some(p) = predictor(i, width) {
+            let pred = bits[p];
+            for (b, q) in bits[i].iter_mut().zip(pred) {
+                *b ^= q;
+            }
+        }
+    }
+    Ok(bits.into_iter().map(tile_from_bits).collect())
 }
 
 impl Terrain {
@@ -318,40 +431,87 @@ impl World {
     /// (`self.map.terrain()`), which the snapshot names by hash (see the
     /// module docs for the format). [`World::restore`] continues it exactly.
     pub fn snapshot(&self) -> Vec<u8> {
-        let raw = payload_options().serialize(self).expect("world serializes");
-        let payload = lz4_flex::block::compress(&raw);
+        let (payload, raw_len, tiles) = std::thread::scope(|s| {
+            let tiles = s.spawn(|| encode_tiles(&self.map.tiles, self.map.width));
+            let raw = {
+                let _apart = crate::serde_util::tiles::Apart::new();
+                payload_options().serialize(self).expect("world serializes")
+            };
+            let payload = lz4_flex::block::compress(&raw);
+            (payload, raw.len(), tiles.join().expect("tile encoding panicked"))
+        });
+        let mut body = Vec::with_capacity(8 + payload.len() + tiles.len());
+        body.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        body.extend_from_slice(&payload);
+        body.extend_from_slice(&tiles);
+        self.snapshot_with(SNAPSHOT_VERSION, FLAG_LZ4 | FLAG_TILES_APART, raw_len, &body)
+    }
+
+    fn snapshot_with(&self, version: u32, flags: u32, raw_len: usize, body: &[u8]) -> Vec<u8> {
         let header = SnapshotHeader {
-            version: SNAPSHOT_VERSION,
-            flags: FLAG_LZ4,
+            version,
+            flags,
             config_hash: self.config.snapshot_hash(),
             tick: self.tick,
             organisms: self.organisms.len() as u64,
-            raw_len: raw.len() as u64,
-            checksum: fnv1a(&payload),
+            raw_len: raw_len as u64,
+            checksum: fnv1a(body),
             terrain: Some(self.map.terrain().hash()),
         };
-        let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
+        let mut out = Vec::with_capacity(HEADER_LEN + body.len());
         header.write(&mut out);
-        out.extend_from_slice(&payload);
+        out.extend_from_slice(body);
         out
     }
 
-    /// A world from [`World::snapshot`] bytes and the terrain it names
-    /// (`SnapshotHeader::terrain`), with its derived lookups rebuilt. Fails
-    /// on another format version, a corrupt payload, or a missing or wrong
-    /// terrain.
+    /// A version 10 snapshot (tiles inside the payload), as earlier builds
+    /// wrote, to test that they still restore.
+    #[cfg(test)]
+    fn snapshot_v10(&self) -> Vec<u8> {
+        let raw = payload_options().serialize(self).expect("world serializes");
+        self.snapshot_with(OLDEST_RESTORABLE, FLAG_LZ4, raw.len(), &lz4_flex::block::compress(&raw))
+    }
+
+    /// A world from [`World::snapshot`] bytes (or a version 10 snapshot's)
+    /// and the terrain it names (`SnapshotHeader::terrain`), with its
+    /// derived lookups rebuilt. Fails on another format version, a corrupt
+    /// payload, or a missing or wrong terrain.
     pub fn restore(bytes: &[u8], terrain: Option<Arc<Terrain>>) -> Result<World, SnapshotError> {
         let h = SnapshotHeader::read(bytes)?;
-        if h.version != SNAPSHOT_VERSION {
+        if !h.restorable() {
             return Err(SnapshotError::Version { found: h.version, expected: SNAPSHOT_VERSION });
         }
         let hash = h.terrain.ok_or(SnapshotError::BadHeader)?;
-        let raw = payload(&bytes[h.len()..], h.flags, h.raw_len, h.checksum)?;
+        let body = &bytes[h.len()..];
+        if fnv1a(body) != h.checksum {
+            return Err(SnapshotError::Checksum);
+        }
         let terrain = terrain.ok_or(SnapshotError::MissingTerrain { hash })?;
         if terrain.hash() != hash {
             return Err(SnapshotError::WrongTerrain { expected: hash, found: terrain.hash() });
         }
-        let mut w: World = payload_options().deserialize(&raw).map_err(decode_err)?;
+        let (stored, tiles) = if h.flags & FLAG_TILES_APART != 0 {
+            let (len, rest) = body.split_at_checked(8).ok_or(SnapshotError::BadHeader)?;
+            let len =
+                usize::try_from(u64::from_le_bytes(len.try_into().unwrap())).map_err(|_| SnapshotError::BadHeader)?;
+            let (stored, tiles) = rest.split_at_checked(len).ok_or(SnapshotError::BadHeader)?;
+            (stored, Some(tiles))
+        } else {
+            (body, None)
+        };
+        let (world, tiles) = std::thread::scope(|s| {
+            let tiles = tiles.map(|t| s.spawn(|| decode_tiles(t, terrain.width, terrain.height)));
+            let world = decompress(stored, h.flags, h.raw_len)
+                .and_then(|raw| payload_options().deserialize::<World>(&raw).map_err(decode_err));
+            (world, tiles.map(|t| t.join().expect("tile decoding panicked")))
+        });
+        let mut w = world?;
+        if let Some(tiles) = tiles {
+            if !w.map.tiles.is_empty() {
+                return Err(decode_err("tiles both inside and apart from the payload"));
+            }
+            w.map.tiles = tiles?;
+        }
         let m = &w.map;
         if m.terrain().hash() != hash
             || (terrain.width, terrain.height) != (m.width, m.height)

@@ -9,6 +9,8 @@
 //!   (skipped in snapshots) are recomputed as they are read.
 //! - `father`: a pregnancy's father genome, written as an organism index
 //!   when the father is still in the world.
+//! - `tiles`: the map's tiles, written as an empty list while a world
+//!   snapshot writes them in a section of their own.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -239,5 +241,45 @@ pub mod organism {
         let mut o = Organism::deserialize(d)?;
         o.refresh_derived();
         Ok(o)
+    }
+}
+
+/// The map's tiles (`Map::tiles`):
+/// `#[serde(serialize_with = "crate::serde_util::tiles::serialize")]`.
+/// Written in full, except on a thread holding a [`tiles::Apart`] guard (a
+/// world snapshot writing them in a section of their own, see
+/// `world::snapshot`): then as an empty list. Read as usual.
+pub mod tiles {
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::terrain::Tile;
+
+    thread_local! {
+        static APART: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Tiles serialized on this thread are written as an empty list while
+    /// this guard lives.
+    pub struct Apart(bool);
+
+    impl Apart {
+        pub fn new() -> Apart {
+            Apart(APART.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Apart {
+        fn drop(&mut self) {
+            APART.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &[Tile], s: S) -> Result<S::Ok, S::Error> {
+        if APART.with(Cell::get) {
+            s.collect_seq(std::iter::empty::<&Tile>())
+        } else {
+            s.collect_seq(v)
+        }
     }
 }
