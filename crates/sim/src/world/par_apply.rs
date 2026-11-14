@@ -28,10 +28,17 @@
 //!    the sequential apply (without this, mothers would always have walked
 //!    off first and young of caring species would miss meals: herd grazers
 //!    ran 10–25% lower in the balance sweep).
+//!    Free organisms whose act can only drink or do nothing (`local_act`:
+//!    most of them, 60–70% at high density) touch nothing but themselves
+//!    and nothing in this sweep reads what they change, so the sequential
+//!    sweep skips them (they drink, if they do, in the settle sweep, in
+//!    parallel), and it prefetches the next turns' organisms into the
+//!    cache. The outcome is the same as acting in turn, bit for bit.
 //! 4. **Settle sweep** (parallel): free survivors `settle`, each with its
 //!    own random stream `(seed, SETTLE, tick, organism id)`.
 //! 5. **Finish sweep** (sequential, shuffled order): deaths, parent credit
-//!    and births of the free organisms, drawing from the shared stream.
+//!    and births of the free organisms, drawing from the shared stream
+//!    (only those with something to finish, as the settle sweep found).
 //!
 //! The parallel sweeps run each organism on its own (held outside
 //! `World::organisms` with `std::mem::take`, so the rules can't reach
@@ -54,18 +61,20 @@
 //! counters, births), so every rule would have to move onto a split-borrow
 //! view of the world, and organisms moving, bolting or being targeted across
 //! region borders would need a deferral pass of their own. Splitting the
-//! turn instead keeps the rules as they are; the sequential remainder is
-//! about a quarter of the apply phase (`PhaseTimes::apply_serial`). If that
-//! becomes the bottleneck, the act sweep is the part to split by region.
+//! turn instead keeps the rules as they are; the sequential remainder
+//! (`PhaseTimes::apply_serial`) is about a sixth of the apply phase at high
+//! density now that local acts run in parallel. If that becomes the
+//! bottleneck, the act sweep is the part to split by region.
 
 use std::cell::RefCell;
 
 use rayon::prelude::*;
 
-use super::apply::{PathCount, Settled};
+use super::apply::{drink_from, PathCount, Settled};
 use super::{Intent, World};
 use crate::design::BirthType;
 use crate::math::Vec2;
+use crate::organism::{Action, Organism};
 use crate::pathfinding::PathScratch;
 use crate::rng::{rng_for, stream, SimRng};
 
@@ -73,6 +82,69 @@ thread_local! {
     /// Route-search buffers of this worker thread (a search's result
     /// doesn't depend on what the buffers held before).
     static SCRATCH: RefCell<PathScratch> = RefCell::new(PathScratch::default());
+}
+
+/// Turns ahead in the act sweep whose organisms are fetched into the cache
+/// early: the sweep visits organisms in random order, so each turn would
+/// otherwise start with a wait on memory.
+const PREFETCH: usize = 6;
+
+/// Ask the CPU to bring what `p` points to into the cache. A hint only: it
+/// changes nothing but timing.
+#[inline(always)]
+fn prefetch<T>(p: *const T) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: prefetching is a hint; it never faults or changes memory.
+    unsafe {
+        std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(p.cast());
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = p;
+}
+
+/// What a free organism's `act` would do, decided before the act sweep.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Local {
+    /// It may reach beyond itself: it acts in turn.
+    No,
+    /// Dead already: it doesn't act.
+    Dead,
+    /// Nothing at all.
+    Nothing,
+    /// Drink where it stands (`apply::drink_from`), nothing else.
+    Drink,
+}
+
+/// Whether `act` (with `o` as it stands when the act sweep begins) could
+/// only drink or do nothing, and which. Reaching beyond the organism is
+/// eating (plants, meat, caches, clutches), gathering, the migration hazard
+/// (the shared random stream), chasing a target and nursing. What `act`
+/// reads of the organism is its own and only its own act changes it during
+/// the sweep, except a mother's hunger (nursing), so a mother who may nurse
+/// is never local (`par_apply`).
+fn local_act(o: &Organism, intent: &Intent) -> Local {
+    use Action::*;
+    let a = intent.action;
+    if intent.target_org.is_some() || matches!(a, Graze | Cache | Scavenge | Hunt | Migrate) {
+        return Local::No;
+    }
+    // Below 30 hunger it eats nothing on the side and raids no cache or
+    // clutch; a dormant animal does neither anyway.
+    let fed = o.needs.hunger < 30.0;
+    if a != Dormant && !fed {
+        return Local::No;
+    }
+    // A dependent young that is hungry or thirsty may be nursed.
+    let dependent = !o.matured && o.growth < 0.7 && o.traits.birth != BirthType::AbandonedEggs;
+    if dependent && (o.needs.hunger >= 10.0 || o.needs.thirst >= 10.0) {
+        return Local::No;
+    }
+    let sideline = !matches!(a, Flee | Graze | Scavenge | Hunt | Dormant | Sentry);
+    if a == Drink || (sideline && o.needs.thirst > 30.0) {
+        Local::Drink
+    } else {
+        Local::Nothing
+    }
 }
 
 impl World {
@@ -137,17 +209,53 @@ impl World {
             paths.add_to(&mut self.counters);
         }
 
-        // Act sweep: everything that reaches beyond the organism.
+        // Act sweep, local part: a free organism whose act can only drink or
+        // do nothing touches nothing but itself, and nothing in the
+        // sequential part reads what it changes, so it skips its turn
+        // (`local_act`) and drinks in the settle sweep, on all cores, as it
+        // would have at its turn. Mothers who may nurse this tick act in
+        // turn: nursing raises their hunger.
+        let this = &*self;
+        let (mothers, mut local): (Vec<Option<usize>>, Vec<Local>) = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let o = &this.organisms[i];
+                if !o.alive {
+                    (None, Local::Dead)
+                } else if engaged[i] {
+                    (this.nursing_mother(i, n), Local::No)
+                } else {
+                    (this.nursing_mother(i, n), local_act(o, &intents[i]))
+                }
+            })
+            .unzip();
+        for &m in mothers.iter().flatten() {
+            if matches!(local[m], Local::Nothing | Local::Drink) {
+                local[m] = Local::No;
+            }
+        }
+        let mut acted: Vec<bool> = local.iter().map(|&l| matches!(l, Local::Nothing | Local::Drink)).collect();
+
+        // Act sweep, sequential part: everything that reaches beyond the
+        // organism, in the shuffled order.
         let clock = std::time::Instant::now();
-        let mut acted = vec![false; n];
-        for &i in order {
+        let turns: Vec<usize> = order.iter().copied().filter(|&i| local[i] == Local::No).collect();
+        for (k, &i) in turns.iter().enumerate() {
+            if let Some(&next) = turns.get(k + PREFETCH) {
+                // The parts of the organism a turn reads first.
+                let o = &self.organisms[next];
+                prefetch(&o.needs);
+                prefetch(&o.traits);
+                prefetch(&o.pos);
+                prefetch(&o.mother);
+            }
             if engaged[i] {
                 self.apply(i, &intents[i], rng);
             } else {
                 // Nursing needs the mother within reach. A free mother whose
                 // turn comes later hasn't moved yet in the sequential apply:
                 // the young sees her where she stood.
-                let later = self.nursing_mother(i, n).filter(|&m| !engaged[m] && rank[m] > rank[i]);
+                let later = mothers[i].filter(|&m| !engaged[m] && rank[m] > rank[i]);
                 let moved_to = later.map(|m| std::mem::replace(&mut self.organisms[m].pos, start_pos[m]));
                 acted[i] = self.act(i, &intents[i], started[i].0, rng);
                 if let (Some(m), Some(p)) = (later, moved_to) {
@@ -163,18 +271,26 @@ impl World {
             .into_par_iter()
             .map(|i| if acted[i] { this.burrow_inputs(&this.organisms[i]) } else { (0.0, 0.0) })
             .collect();
-        let (seed, tick) = (self.config.seed, self.tick);
+        let (seed, tick, dt) = (self.config.seed, self.tick, self.config.dt_days());
         let mut orgs = std::mem::take(&mut self.organisms);
         let this = &*self;
-        let settled: Vec<Settled> = orgs[..n]
+        // Each settled organism's outcome, and whether `finish` has anything
+        // to do with it (a death, a young come of age, a birth due): nothing
+        // in the finish sweep changes that for another organism.
+        let settled: Vec<(Settled, bool)> = orgs[..n]
             .par_iter_mut()
             .enumerate()
             .map(|(i, o)| {
                 if !acted[i] || !o.alive {
-                    return Settled::default();
+                    return (Settled::default(), false);
+                }
+                if local[i] == Local::Drink {
+                    drink_from(&this.map, dt, o);
                 }
                 let mut rng = rng_for(seed, stream::SETTLE, tick, o.id);
-                this.settle(o, &intents[i], started[i].0, burrow[i], &mut rng)
+                let s = this.settle(o, &intents[i], started[i].0, burrow[i], &mut rng);
+                let due = matches!(&o.pregnancy, Some(p) if tick >= p.due_tick);
+                (s, s.death.is_some() || s.matured || due)
             })
             .collect();
         self.organisms = orgs;
@@ -182,8 +298,8 @@ impl World {
         // Finish sweep: deaths, parent credit, births.
         let clock = std::time::Instant::now();
         for &i in order {
-            if acted[i] && self.organisms[i].alive {
-                self.finish(i, settled[i], rng);
+            if let (s, true) = settled[i] {
+                self.finish(i, s, rng);
             }
         }
         serial += clock.elapsed().as_secs_f64();

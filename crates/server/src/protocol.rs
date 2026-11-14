@@ -4,6 +4,9 @@
 //! `snake_case`. Client messages may carry an `id`, echoed in the matching
 //! [`ServerMsg::Result`] so a client can pair replies with requests.
 
+use std::borrow::Cow;
+use std::sync::Arc;
+
 use crate::appearance::Appearance;
 use evo_sim::organism::{Action, Organism, Sex};
 use evo_sim::terrain::Season;
@@ -772,8 +775,10 @@ pub struct OwnOrganism {
     pub lineage: u32,
     pub x: f32,
     pub y: f32,
-    pub action: String,
-    pub sex: String,
+    /// Static names (`action_name`, `sex_name`): no allocation per
+    /// organism per state.
+    pub action: Cow<'static, str>,
+    pub sex: Cow<'static, str>,
     pub age_days: f32,
     pub growth: f32,
     pub matured: bool,
@@ -858,8 +863,10 @@ pub struct NearbyOrganism {
     pub lineage: u32,
     pub x: f32,
     pub y: f32,
-    pub action: String,
-    pub sex: String,
+    /// Static names (`action_name`, `sex_name`): no allocation per
+    /// organism per state.
+    pub action: Cow<'static, str>,
+    pub sex: Cow<'static, str>,
     pub matured: bool,
     /// Visible body plan, for the client's sprite.
     pub look: Appearance,
@@ -868,7 +875,8 @@ pub struct NearbyOrganism {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct LeaderRow {
     pub player: PlayerId,
-    pub name: String,
+    /// Shared: every state's leaderboard holds the same rows.
+    pub name: Arc<str>,
     /// Share of alleles among living breeding adults.
     pub share: f64,
     /// Share weighted by offspring raised to adulthood.
@@ -1355,8 +1363,8 @@ impl OwnOrganism {
             lineage: o.lineage,
             x: o.pos.x,
             y: o.pos.y,
-            action: action_name(o.action).into(),
-            sex: sex_name(o.sex).into(),
+            action: Cow::Borrowed(action_name(o.action)),
+            sex: Cow::Borrowed(sex_name(o.sex)),
             age_days: o.age_days(ticks_per_day),
             growth: o.growth,
             matured: o.matured,
@@ -1390,8 +1398,8 @@ impl NearbyOrganism {
             lineage: o.lineage,
             x: o.pos.x,
             y: o.pos.y,
-            action: action_name(o.action).into(),
-            sex: sex_name(o.sex).into(),
+            action: Cow::Borrowed(action_name(o.action)),
+            sex: Cow::Borrowed(sex_name(o.sex)),
             matured: o.matured,
             look: Appearance::of(o),
         }

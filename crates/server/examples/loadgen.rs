@@ -499,7 +499,7 @@ impl From<StateView> for StateLite {
                     id: o.id,
                     x: o.x,
                     y: o.y,
-                    sex: o.sex,
+                    sex: o.sex.into_owned(),
                     matured: o.matured,
                     possessed: o.possessed,
                     pregnant: o.pregnant,
@@ -508,7 +508,7 @@ impl From<StateView> for StateLite {
             nearby: s
                 .nearby
                 .into_iter()
-                .map(|n| NearLite { id: n.id, owner: n.owner, sex: n.sex, matured: n.matured })
+                .map(|n| NearLite { id: n.id, owner: n.owner, sex: n.sex.into_owned(), matured: n.matured })
                 .collect(),
         }
     }

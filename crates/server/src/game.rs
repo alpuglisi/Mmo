@@ -2667,7 +2667,7 @@ impl Game {
             .into_iter()
             .map(|p| LeaderRow {
                 player: p,
-                name: self.name(p),
+                name: self.name(p).into(),
                 share: snap.map_or(0.0, |s| s.share(p)),
                 weighted_share: snap.map_or(0.0, |s| s.weighted_share(p)),
                 alive: self.owner_population(p),
@@ -2896,6 +2896,9 @@ impl StateIndex {
         };
         let mut by_owner: BTreeMap<PlayerId, Vec<u32>> = BTreeMap::new();
         let mut starts = vec![0u32; cols * rows + 1];
+        // One pass over the organisms (each a few cache lines), noting each
+        // living one's cell; the counting sort then reads only the cells.
+        let mut cell = vec![u32::MAX; w.organisms.len()];
         for (i, o) in w.organisms.iter().enumerate() {
             if !o.alive {
                 continue;
@@ -2903,18 +2906,19 @@ impl StateIndex {
             if o.owner != WILD {
                 by_owner.entry(o.owner).or_default().push(i as u32);
             }
-            starts[cell_of(o.pos) + 1] += 1;
+            let k = cell_of(o.pos);
+            cell[i] = k as u32;
+            starts[k + 1] += 1;
         }
         for k in 1..starts.len() {
             starts[k] += starts[k - 1];
         }
         let mut fill = starts.clone();
         let mut items = vec![0u32; starts[cols * rows] as usize];
-        for (i, o) in w.organisms.iter().enumerate() {
-            if o.alive {
-                let k = cell_of(o.pos);
-                items[fill[k] as usize] = i as u32;
-                fill[k] += 1;
+        for (i, &k) in cell.iter().enumerate() {
+            if k != u32::MAX {
+                items[fill[k as usize] as usize] = i as u32;
+                fill[k as usize] += 1;
             }
         }
         let mut offers: BTreeMap<PlayerId, Vec<u64>> = BTreeMap::new();
@@ -5199,5 +5203,55 @@ mod tests {
         let r = Game::resume(world, cfg, serde_json::from_value(old).unwrap(), Vec::new());
         let cur = r.current_season(0, 10, None);
         assert_eq!((cur.season, cur.first_day, cur.days), (1, 3, 0));
+    }
+
+    /// World-thread cost of possession sub-steps and state pushes with many
+    /// steering players, for the README (`cargo test --release -p evo-server
+    /// --lib game::tests::substep_cost -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn substep_cost() {
+        let players = 500u32;
+        let world = build_world(&WorldSettings { seed: 5, width: 512, height: 512, wild: true, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        for p in 1..=players {
+            g.set_name(p, &format!("p{p}"));
+            g.found(p, &design(&format!("L{p}"))).unwrap();
+            g.connect(p as u64, p, &format!("p{p}"));
+        }
+        g.world.run_days(3);
+        let _ = g.after_tick();
+        let (mut subs, mut pushes) = (Vec::new(), Vec::new());
+        for round in 0..12u32 {
+            // Every player steers its first organism somewhere far.
+            for p in 1..=players {
+                let Some(o) = g.world.organisms.iter().find(|o| o.alive && o.owner == p) else { continue };
+                let (id, pos) = (o.id, o.pos);
+                g.command(p as u64, p, None, ClientMsg::Possess { organism: id });
+                let (x, y) = ((pos.x + 40.0 + round as f32) % 512.0, (pos.y + 70.0) % 512.0);
+                g.command(p as u64, p, None, ClientMsg::OrderMove { organism: id, x, y });
+            }
+            let t = std::time::Instant::now();
+            let n = g.states().len();
+            pushes.push(t.elapsed().as_secs_f64() * 1e3);
+            for _ in 0..3 {
+                let t = std::time::Instant::now();
+                let m = g.substep().len();
+                subs.push(t.elapsed().as_secs_f64() * 1e3);
+                assert!(m > players as usize / 2 && n == players as usize, "{m} {n}");
+            }
+            g.world.step();
+            let _ = g.after_tick();
+        }
+        let median = |v: &mut Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            v[v.len() / 2]
+        };
+        eprintln!(
+            "{} organisms, {players} steering players: state push {:.2} ms, sub-step {:.2} ms (medians)",
+            g.world.alive_count(),
+            median(&mut pushes),
+            median(&mut subs)
+        );
     }
 }

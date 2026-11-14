@@ -88,6 +88,17 @@ pub(super) struct Settled {
     pub matured: bool,
 }
 
+/// Drinking where it stands, if it can: touches nothing but the organism
+/// (the act sweep runs these on all cores, `par_apply`).
+pub(super) fn drink_from(map: &Map, dt_days: f32, o: &mut Organism) {
+    if !map.can_drink_at(o.pos) {
+        return;
+    }
+    let amount = MAX_DRINK_PER_DAY * dt_days;
+    o.needs.thirst = (o.needs.thirst - amount).max(0.0);
+    o.last_water = Some(o.pos);
+}
+
 impl World {
     /// Apply organism `i`'s decision in one go: take on the intent, move,
     /// act, then settle needs, death, growth and birth. The parallel apply
@@ -550,14 +561,8 @@ impl World {
     }
 
     fn drink(&mut self, i: usize) {
-        let pos = self.organisms[i].pos;
-        if !self.map.can_drink_at(pos) {
-            return;
-        }
-        let amount = MAX_DRINK_PER_DAY * self.config.dt_days();
-        let o = &mut self.organisms[i];
-        o.needs.thirst = (o.needs.thirst - amount).max(0.0);
-        o.last_water = Some(pos);
+        let dt = self.config.dt_days();
+        drink_from(&self.map, dt, &mut self.organisms[i]);
     }
 
     fn attack(&mut self, i: usize, j: usize, rng: &mut SimRng) {

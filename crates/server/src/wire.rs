@@ -60,6 +60,7 @@
 //! `{"type":"resync"}`: the connection's next state is then a keyframe. The
 //! writer also sends one every [`KEYFRAME_EVERY`].
 
+use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -185,8 +186,8 @@ fn sex_flag(sex: &str) -> u8 {
     }
 }
 
-fn sex_of(flags: u8) -> String {
-    if flags & MALE != 0 { "male" } else { "female" }.into()
+fn sex_of(flags: u8) -> Cow<'static, str> {
+    Cow::Borrowed(if flags & MALE != 0 { "male" } else { "female" })
 }
 
 // ------------------------------------------------------------------ bytes
@@ -360,7 +361,7 @@ pub struct DeltaEncoder {
     lb_rows: FxMap<PlayerId, (LeaderRow, u64)>,
     offers: FxMap<u64, (OfferView, u64)>,
     looks: Palette<Appearance>,
-    actions: Palette<String>,
+    actions: Palette<Cow<'static, str>>,
 }
 
 impl Default for DeltaEncoder {
@@ -1000,8 +1001,9 @@ impl DeltaDecoder {
         self.looks.get(i as usize).copied().ok_or(DecodeError::Malformed("look not in the palette"))
     }
 
-    fn action(&self, i: u32) -> Result<String, DecodeError> {
-        self.actions.get(i as usize).cloned().ok_or(DecodeError::Malformed("action not in the palette"))
+    fn action(&self, i: u32) -> Result<Cow<'static, str>, DecodeError> {
+        let a = self.actions.get(i as usize).ok_or(DecodeError::Malformed("action not in the palette"))?;
+        Ok(Cow::Owned(a.clone()))
     }
 
     fn state(&self, h: &Head) -> Result<StateView, DecodeError> {
