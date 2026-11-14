@@ -1142,7 +1142,8 @@ impl World {
                     let exposure = (1.0 - qrep.toxins)
                         * (1.0 - bal.stealth_effect * qrep.stealth)
                         * (1.0 - 0.5 * bal.burrow_shelter * qrep.burrow).max(0.0)
-                        * if dormant { 1.0 - bal.den_concealment } else { 1.0 };
+                        * if dormant { 1.0 - bal.den_concealment } else { 1.0 }
+                        * self.offline_cohort_factors(qc.lineage).0;
                     let a = qc.adults(today);
                     let adults = (a[0] + a[1]) as f32;
                     let juveniles = qc.count() as f32 - adults;
@@ -1299,8 +1300,10 @@ impl World {
             } else if c.hunger < 70.0 {
                 c.health = (c.health + 15.0).min(100.0);
             }
-            let starve = (1.0 - fed) * 0.5 * ((c.hunger - 60.0) / 40.0).clamp(0.0, 1.0);
-            let thirst = if !x.water && !x.dormant { 0.4 } else { 0.0 };
+            // Offline protection eases starvation and thirst (`world::offline`).
+            let hardship = self.offline_cohort_factors(c.lineage).1;
+            let starve = (1.0 - fed) * 0.5 * ((c.hunger - 60.0) / 40.0).clamp(0.0, 1.0) * hardship;
+            let thirst = if !x.water && !x.dormant { 0.4 * hardship } else { 0.0 };
             let stranded = if x.tiles == 0 { 1.0 } else { 0.0 };
             let density = c.count() as f32 / x.tiles.max(1) as f32 * cfg.clump;
             let larval = if rep.birth() == BirthType::AbandonedEggs {

@@ -124,6 +124,7 @@ impl World {
             }
             self.lineage_alive[l] += 1;
         }
+        self.refresh_offline_protection();
         self.rebuild_caches();
 
         let adults = || self.organisms.iter().filter(|o| o.is_breeding_adult());

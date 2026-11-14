@@ -61,6 +61,7 @@ docs/
 | `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends. See [Groups and territory](#groups-and-territory). |
 | `world::chronicle` | Scoring | The daily hook: samples adults (cohorts included) for species detection, plans, applies and ends catastrophes through existing systems (`Map::climate_temp`, `Map::climate_wet`, infections), closes eras and awards achievements. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
+| `world::offline` | Open questions (offline protection) | Softer rules for the last members of a lineage whose owner is logged out: the caller names the protected lineages and exempt organisms (`World::set_offline_protection`); at or below the floor (12 living members) kill chance against them is ×0.25 and starvation and thirst ×0.5, for agents and cohorts. Off (and bit-identical) by default. See [Offline protection](#offline-protection). |
 
 ### Tick structure
 
@@ -320,7 +321,9 @@ doesn't use), `--session-idle-min N` / `--session-max-hours N` (session
 expiry, default 60 min idle and 24 h), `--no-rate-limits`, `--lod` (level
 of detail, below), `--no-catastrophes` (catastrophes are on by default in
 the game, never in the first year), `--season-days N` (length of a ranked
-season, default 60; see [Ranked seasons](#ranked-seasons)), `--fresh` (ignore the saved world: new
+season, default 60; see [Ranked seasons](#ranked-seasons)),
+`--offline-protection-hours H` (longest protection after a logout, default
+12, 0 turns it off; see [Offline protection](#offline-protection)), `--fresh` (ignore the saved world: new
 world, stored designs re-founded; see [Persistence](#persistence)), `--no-push`,
 `--vapid-private-key KEY` / `--vapid-subject mailto:...` (or `EVO_VAPID_PRIVATE_KEY` /
 `EVO_VAPID_SUBJECT`), `--push-per-hour N` and `--push-allow-any-endpoint` (see
@@ -722,6 +725,62 @@ chance, fertility, conceived), `declined`, `cancelled`, `failed` (`died`:
 an organism died first, with the cause; or the rules refused it) or
 `expired` (season change, when slots reset). The requester's seasonal slot
 is spent.
+
+### Offline protection
+
+The design doc leaves this open ("Offline protection: home ranges or
+surviving founder groups"). The simulation runs while a player sleeps, and
+at 1 tick per second a night offline is several hundred simulated days, so
+an unattended small lineage could be wiped out with nothing its owner could
+do. Implemented as the *surviving founder group* form, deliberately narrow so
+that logging out never pays as a strategy:
+
+- **Who.** A player's lineage is protected from the moment their last
+  connection to that world closes until they connect again, or for at most
+  12 hours (`--offline-protection-hours`, `GameConfig::offline_protection_ticks`;
+  converted to ticks at the server's clock; 0 turns protection off). Each
+  world tracks its own connections, so a player on world A is offline in
+  world B. A restart counts as everyone logging out; a spell already running
+  keeps its clock (the spells are in the saved game, `game::offline`), so a
+  restart never hands out a fresh 12 hours. A new spell needs a login in
+  between; there is no cooldown beyond that, since the floor below already
+  keeps protection from helping a lineage that is doing well.
+- **When it applies.** Only while the lineage is down to its last 12 living
+  members (agents plus cohort members of abstract regions,
+  `ProtectionRules::floor`), checked at each day boundary and whenever the
+  protected set changes, never mid-tick (so the sequential and parallel apply
+  agree). A thriving lineage plays by the normal rules: protection can save a
+  lineage from extinction, never win it legacy share.
+- **What it does.** A hunter's strike that would kill a protected organism
+  succeeds with a quarter of its usual chance (`predation` 0.25; the hunter
+  still pays for the attempt and the prey can still escape or fight back),
+  and starvation and thirst damage is halved (`hardship` 0.5). Cohorts of
+  abstract regions get the same: a quarter of their exposure to hunting
+  cohorts and half their starvation and thirst hazards. Cold, heat, old age,
+  disease, larval competition, migration losses and catastrophes are
+  untouched, and protection does nothing for breeding. Predators lose little:
+  12 organisms of a player's are a small part of any hunting range.
+- **Not protected.** Organisms in an open directed-mating agreement (either
+  side, pending or accepted), listed on the stud marketplace or an auction,
+  or put up as the organism of an auction's highest bid: the doc's "the trip
+  carries risk" stands, and a player can't shield a stud by logging off.
+  Possessed organisms aren't protected either (possession outlives a
+  disconnect; an organism still possessed while its owner is away is under
+  orders, not sheltering).
+- **What the player sees.** On login, if protection actually applied (the
+  lineage was at or below the floor while they were away), a `milestone`
+  alert: "While you were away, offline protection shielded your small
+  lineage for N simulated days …". Nothing new on the wire.
+- **Determinism and saves.** The world never decides who is online: the
+  server hands it the protected lineages and exempt organisms
+  (`World::set_offline_protection`, sent only when they change). The
+  protection is not in world snapshots (the field is skipped; snapshot format
+  unchanged) and the server sets it again on resume. With nothing protected
+  every factor is exactly 1.0, so the simulation is bit-identical to a world
+  without the feature (the 12-seed sweep at seed 31 still scores 11.54).
+  Tests: `world::offline::tests` (floor, exemptions, protected voles never
+  killed with the kill chance cut to 0) and `game::offline::tests` (logout to
+  login, the cap, exempt agreement organisms, a restart keeping clocks).
 
 ### Ranked seasons
 
@@ -3197,12 +3256,22 @@ sections above).
    client, so this is low priority). For save size, store the map's
    changing tiles (about 6 MB of an 18 MB save at 26k agents) as a delta
    against the previous save.
-8. **Design-doc features not built.** Offline protection (home ranges or
-   surviving founder groups; a territory could become one), group commands
-   as genes (the doc's open question; wanderlust and group tolerance
-   already shape how a group moves), and the doc's open question on
-   duplicate mutations; `GET /api/leaderboard/seasons` would also want a
-   cache instead of reading the whole history per call.
+8. **Design-doc features not built.** Group commands as genes (the doc's
+   open question; wanderlust and group tolerance already shape how a group
+   moves); `GET /api/leaderboard/seasons` would also want a cache instead of
+   reading the whole history per call. Offline protection is built as the
+   surviving-core form ([Offline protection](#offline-protection)); the home
+   range form (a claimed territory that shields its residents while the owner
+   is away) would be a follow-up, tuned with `compare` once there is player
+   data on how often small lineages die offline. Duplicate mutations: the
+   code already answers the doc's question as "separate tags per origin"
+   (`genome`: a mutation carries the tag of the organism's owner when it
+   appears, tags never change). Alleles are continuous, so two players never
+   produce exactly the same allele and "credit whoever had it first" would
+   need a new notion of when two alleles count as the same (a value bucket
+   per gene and a world-wide registry of first appearances, touching legacy
+   scoring and the snapshot format): a scoring-design change, not part of
+   offline protection, left open until the design doc picks a rule.
 9. **Tooling.** An adaptive `compare` that adds seeds until the CI
    resolves, and a check of how well 40-day screen ranks predict 120-day
    ranks; what migrating buys a design (the caribou with and without the

@@ -585,6 +585,7 @@ impl World {
         if tox > 0.3 {
             p *= 1.0 - 0.6 * tox;
         }
+        p *= self.offline_predation_factor(b);
         let prey_power = b.power().max(guard_power);
         let prey_fights = super::decide::fight_back(b, self.config.balance.generalist_tax);
         let prey_bright = b.pheno[Gene::Coloration] > 0.6;
@@ -921,6 +922,8 @@ impl World {
             o.fat -= paid;
             hunger -= paid;
         }
+        // Offline protection eases starvation and thirst (`world::offline`).
+        let hardship = self.offline_hardship_factor(o);
         let n = &mut o.needs;
         n.hunger += hunger;
         n.thirst += thirst;
@@ -942,10 +945,10 @@ impl World {
         };
         let mut damage = 0.0;
         if n.hunger >= 100.0 {
-            damage += harm(bal.starvation_damage * dt, DeathCause::Starvation);
+            damage += harm(bal.starvation_damage * dt * hardship, DeathCause::Starvation);
         }
         if n.thirst >= 100.0 {
-            damage += harm(40.0 * dt, DeathCause::Thirst);
+            damage += harm(40.0 * dt * hardship, DeathCause::Thirst);
         }
         if o.traits.warm && cold > 15.0 {
             damage += harm((cold - 15.0) * 1.5 * dt, DeathCause::Exposure);
