@@ -1406,6 +1406,31 @@ the seed but stays stored in full, once per world (5.1 MB at 512²): it is
 not part of each save, and a stored copy keeps old worlds restorable when
 map generation changes.
 
+**Tile deltas between saves: measured and rejected.** Saving the tiles as
+a delta against an earlier save (full saves as keyframes, deltas between
+them) was measured before building it (`cargo run --release -p evo-sim
+--features serde --example tile_delta -- 512 5 2 3`: the keyframe on day 2,
+then one save a day as the server makes them, 26–27k agents, the same
+shared 4-core machine):
+
+| Save after the keyframe | Snapshot | Tiles as stored (XOR west) | XOR the keyframe's tile | Keyframe, then west | Best of the three per field | Saved |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 day (day 3) | 16.82 MB | 3.351 MB | 3.367 MB | 3.347 MB | 3.007 MB | 0.34 MB (2.0%) |
+| 2 days (day 4) | 17.57 MB | 3.350 MB | 3.481 MB | 3.445 MB | 3.034 MB | 0.32 MB (1.8%) |
+| 3 days (day 5) | 17.51 MB | 3.322 MB | 3.532 MB | 3.486 MB | 3.038 MB | 0.28 MB (1.6%) |
+
+A day of weather, water and growth changes nearly every tile: a delta only
+helps the slow fields (water depth 320 → 185 KB, current 104 → 55, mud 83
+→ 38, silt 38 → 28 KB at a day) and does worse on the fast ones (wind 643
+→ 772, rain 468 → 653, wetness 585 → 702, snow 88 → 136 KB), so even
+choosing the better encoding per field takes 2% off a save, falling as the
+keyframe ages. Encoding costs the same (38–64 ms against 49–56 ms for the
+tiles as stored, with snapshots of 150–240 ms), so save time doesn't move
+either. Far below what would pay for saves that depend on each other
+(keyframe-aware pruning in both stores, restores that need two saves), so
+saves stay self-contained. Even a free delta would take only the tiles'
+share, about 20% of a 17 MB save; the rest is organisms, mostly genomes.
+
 **Saved games** (`snapshot.rs` in the server): magic, the game-side state
 as JSON (player → lineage, open offers with their escrow, migration orders,
 alerts, watched organisms, milestone progress, chronicle entries already
@@ -4313,11 +4338,9 @@ sections above).
 6. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
    protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
    doesn't offer it; revisit when it does (states are already ~1 KB/s a
-   client, so this is low priority). Saves (13 MB at 26k agents, see
-   [Persistence](#persistence)) are now mostly genomes (about 7 MB of
-   founder values that don't compress); the map's tiles (3.4 MB) could
-   still go as a delta against the previous save, at the cost of saves
-   that depend on each other.
+   client, so this is low priority). (Saving the map's tiles as a delta
+   against an earlier save was measured and rejected: 2% off a save; see
+   *Tile deltas between saves* in [Persistence](#persistence).)
 7. **Design-doc features not built.** Group commands as genes is built as
    the obedience gene, with a rally command (gather a group at a point for
    up to 3 days) for it to weigh beside migration and territory, and
