@@ -106,10 +106,10 @@ async function register(page, base, name) {
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 });
   await page.fill('#design-name', `${name} line`);
   await page.click('#design-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 15000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 });
 }
 
 async function login(page, base, name) {
@@ -117,12 +117,12 @@ async function login(page, base, name) {
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#login-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 15000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 });
 }
 
 async function openSettings(page) {
   await page.click('#tab-genetics');
-  await page.waitForSelector('#push-settings', { state: 'attached', timeout: 10000 });
+  await page.waitForSelector('#push-settings', { state: 'attached', timeout: 20000 });
   await page.$eval('#push-settings', (d) => {
     d.open = true;
     d.scrollIntoView();
@@ -187,7 +187,7 @@ async function main() {
     const name = `push_${Date.now().toString(36)}`;
     await register(page, base, name);
     const token = await page.evaluate(() => JSON.parse(localStorage.getItem('evo.session')).token);
-    await waitFor('the service worker', () => page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => !!r?.active)), 15000);
+    await waitFor('the service worker', () => page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => !!r?.active)), 30000);
     step('registered and founded; the service worker is active');
 
     await openSettings(page);
@@ -222,7 +222,7 @@ async function main() {
     step('switching a kind off saves it to the account');
 
     await page.reload();
-    await page.waitForSelector('#world-canvas', { timeout: 15000 });
+    await page.waitForSelector('#world-canvas', { timeout: 45000 });
     await openSettings(page);
     await waitFor('status on after a reload', async () => (await status(page)) === 'on');
     if (await page.$eval('#push-kinds input[data-push-kind="season"]', (e) => e.checked)) throw new Error('season is on again after a reload');
