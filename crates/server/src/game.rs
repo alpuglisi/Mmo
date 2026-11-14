@@ -24,6 +24,7 @@ use crate::economy::{self, Bid, Economy, Insufficient, Listing};
 use crate::league::{self, CurrentSeason, SeasonRecord, SeasonTracker};
 use crate::protocol::*;
 mod offline;
+mod states;
 pub use offline::{OfflineTracker, Spell, DEFAULT_PROTECTION_HOURS, DEFAULT_PROTECTION_TICKS};
 
 use crate::store::{AuctionRecord, BalanceRecord, DailyRecord, LedgerRecord, LegacyEntry, LineageEntry, TradeRecord};
@@ -347,6 +348,9 @@ pub struct Game {
     offline: OfflineTracker,
     /// Name changes ([`Game::set_name`]), for [`Game::live_season_key`].
     names_changed: u64,
+    /// The state index and organism views kept between the state builds
+    /// of a tick (`game::states`).
+    state_cache: states::StateCache,
 }
 
 /// The game-side state saved with each world snapshot (`crate::snapshot`):
@@ -494,6 +498,7 @@ impl Game {
             last_season_record: None,
             offline: OfflineTracker::default(),
             names_changed: 0,
+            state_cache: states::StateCache::default(),
         }
     }
 
@@ -764,6 +769,8 @@ impl Game {
         }
         let lineage = self.world.lineages.len() as u32;
         let founders = self.world.found_lineage(player, design).map_err(FoundError::Design)?;
+        // New organisms: the next state build indexes the world again.
+        self.state_cache.invalidate();
         self.lineage_of.insert(player, lineage);
         for &id in &founders {
             self.watched.insert(id, (player, Watch::Founder));
@@ -808,6 +815,7 @@ impl Game {
     pub fn command(&mut self, conn: ConnId, player: PlayerId, id: Option<u64>, msg: ClientMsg) -> Outbox {
         let name = msg.name();
         let mut out = Outbox::new();
+        self.note_command(player, &msg);
         let result = self.apply(conn, player, msg, &mut out);
         let reply = match result {
             Ok(data) => ServerMsg::ok(id, name, data),
@@ -993,6 +1001,8 @@ impl Game {
                 return Err(problem);
             }
             let req = DirectedMating { player, a: mine, b: partner, partner_consent: false };
+            self.state_cache.touch(mine);
+            self.state_cache.touch(partner);
             let outcome = self.world.directed_mating(req).map_err(e)?;
             return Ok(Some(serde_json::to_value(MatingOutcome::from(outcome)).unwrap()));
         }
@@ -1675,6 +1685,8 @@ impl Game {
             self.close(request, OfferStatus::Failed, None, Some(info.clone()), out);
             return Err(info);
         } else if partner_ok {
+            self.state_cache.touch(o.mine);
+            self.state_cache.touch(o.partner);
             self.world.directed_mating(DirectedMating {
                 player: o.from,
                 a: o.mine,
@@ -2733,264 +2745,6 @@ impl Game {
             agents: self.world.alive_count(),
             lineages: self.world.lineages.len(),
         }
-    }
-
-    /// One of the player's own organisms as sent in a state; a possessed one
-    /// also carries its walking speed for the client's prediction (its
-    /// `order` comes from [`OwnOrganism::from_org`]).
-    fn own_view(&self, o: &evo_sim::organism::Organism, tpd: u32) -> OwnOrganism {
-        let mut v = OwnOrganism::from_org(o, tpd);
-        if o.possessed_by.is_some() {
-            // An order sprints with energy to spare (`World::decide`).
-            v.speed = Some(self.world.move_speed(o, o.needs.energy > 40.0));
-        }
-        v
-    }
-
-    /// The state message for one connection: the player's organisms in full,
-    /// and other organisms inside the view window only. Builds a
-    /// [`StateIndex`] for this one message; [`Game::states`] shares one
-    /// between every connection.
-    pub fn state_for(&self, conn: ConnId) -> Option<StateView> {
-        self.conns.get(&conn)?;
-        self.state_with(conn, &StateIndex::new(self))
-    }
-
-    /// [`Game::state_for`] from a prebuilt index: the cost is the size of
-    /// the message (own organisms, the view window's cells, the player's
-    /// offers), not the size of the world.
-    fn state_with(&self, conn: ConnId, idx: &StateIndex) -> Option<StateView> {
-        let c = self.conns.get(&conn)?;
-        let player = c.player;
-        let tpd = self.world.config.ticks_per_day;
-        let orgs = &self.world.organisms;
-        let mine = idx.owned(player);
-        let own: Vec<OwnOrganism> = mine.iter().map(|&i| self.own_view(&orgs[i as usize], tpd)).collect();
-        let view = c.view.unwrap_or_else(|| {
-            // Centered on the possessed organism (the first, in organism
-            // order), else on the lineage.
-            let possessed = mine.iter().map(|&i| &orgs[i as usize]).find(|o| o.possessed_by == Some(player));
-            let center = possessed.map(|o| o.pos).unwrap_or_else(|| self.lineage_center_of(player, mine));
-            ViewWindow { x: center.x, y: center.y, radius: self.cfg.default_view_radius }
-        });
-        let center = Vec2::new(view.x, view.y);
-        // Candidates from the grid cells the window touches, back in
-        // organism order so ties and truncation match a scan of the world.
-        let mut cand = idx.in_window(&view);
-        cand.sort_unstable();
-        let mut nearby: Vec<(f32, u32)> = cand
-            .into_iter()
-            .filter(|&i| {
-                let o = &orgs[i as usize];
-                o.owner != player && (o.pos.x - view.x).abs() <= view.radius && (o.pos.y - view.y).abs() <= view.radius
-            })
-            .map(|i| (orgs[i as usize].pos.dist(center), i))
-            .collect();
-        if nearby.len() > self.cfg.max_nearby {
-            nearby.sort_by(|a, b| a.0.total_cmp(&b.0));
-            nearby.truncate(self.cfg.max_nearby);
-        }
-        let nearby: Vec<NearbyOrganism> =
-            nearby.into_iter().map(|(_, i)| NearbyOrganism::from_org(&orgs[i as usize])).collect();
-        let ids = idx.offers.get(&player).map_or(&[][..], Vec::as_slice);
-        let offers = ids.iter().map(|&id| self.offer_view(id)).collect();
-        let escrow = ids.iter().map(|id| &self.offers[id]).filter(|o| o.from == player).map(|o| o.escrow).sum::<u64>()
-            + idx.bids.get(&player).copied().unwrap_or(0);
-        let leaderboard = self.state_leaderboard(&idx.leaderboard, player, &nearby);
-        Some(StateView {
-            clock: idx.clock.clone(),
-            weather: idx.weather.clone(),
-            player,
-            lineage: self.lineage_of(player),
-            slots_left: self.world.mating_slots_left(player),
-            population: self.owner_population(player),
-            migration: self.world.migration_order(player, 0).map(|p| [p.x, p.y]),
-            groups: self
-                .world
-                .groups_of(player, mine.iter().map(|&i| &orgs[i as usize]))
-                .iter()
-                .map(GroupView::from)
-                .collect(),
-            view,
-            organisms: own,
-            nearby,
-            leaderboard,
-            offers,
-            balance: self.balance(player),
-            escrow,
-        })
-    }
-
-    /// The leaderboard as sent in a state: the whole board when it has at
-    /// most `state_leaderboard_rows` rows, else the top rows plus the
-    /// player's own and those of the owners of the organisms in view (whose
-    /// names the client shows), in rank order. `GET /api/leaderboard` has
-    /// every row.
-    fn state_leaderboard(&self, full: &Leaderboard, player: PlayerId, nearby: &[NearbyOrganism]) -> Leaderboard {
-        let top = self.cfg.state_leaderboard_rows;
-        if full.rows.len() <= top {
-            return full.clone();
-        }
-        let mut owners: Vec<PlayerId> = nearby.iter().map(|n| n.owner).collect();
-        owners.sort_unstable();
-        owners.dedup();
-        let rows = full
-            .rows
-            .iter()
-            .enumerate()
-            .filter(|(rank, r)| *rank < top || r.player == player || owners.binary_search(&r.player).is_ok())
-            .map(|(_, r)| r.clone())
-            .collect();
-        Leaderboard { day: full.day, breeding_adults: full.breeding_adults, rows }
-    }
-
-    /// A state message for every connection.
-    pub fn states(&self) -> Outbox {
-        if self.conns.is_empty() {
-            return Vec::new();
-        }
-        let idx = StateIndex::new(self);
-        self.conns
-            .keys()
-            .filter_map(|&c| self.state_with(c, &idx).map(|s| (Target::Conn(c), ServerMsg::State(Box::new(s)))))
-            .collect()
-    }
-
-    /// One possession sub-step between ticks (`World::substep`): possessed
-    /// organisms following an order move a fraction of a tick's way, and the
-    /// connections of the players who possess one that moved get a fresh
-    /// state, so steering feels responsive at the slow world clock. Everyone
-    /// else hears nothing until the next state push.
-    pub fn substep(&mut self) -> Outbox {
-        let moved = self.world.substep();
-        if moved.is_empty() {
-            return Vec::new();
-        }
-        let players: BTreeSet<PlayerId> =
-            moved.iter().filter_map(|&id| self.world.organism(id).and_then(|o| o.possessed_by)).collect();
-        if !self.conns.values().any(|c| players.contains(&c.player)) {
-            return Vec::new();
-        }
-        let idx = StateIndex::new(self);
-        self.conns
-            .iter()
-            .filter(|(_, c)| players.contains(&c.player))
-            .filter_map(|(&c, _)| self.state_with(c, &idx).map(|s| (Target::Conn(c), ServerMsg::State(Box::new(s)))))
-            .collect()
-    }
-}
-
-/// Side of a [`StateIndex`] grid cell, in tiles.
-const STATE_CELL: f32 = 16.0;
-
-/// The world sorted for building state messages, made once per push: living
-/// organisms by owner and by grid cell (indices into `World::organisms`, in
-/// organism order within each list), open offers by player, and what every
-/// state shares (clock, weather, leaderboard). Building one is a pass over
-/// the organisms; each state then costs only what it contains, so a push to
-/// N connections is O(organisms + output) instead of O(N × organisms).
-struct StateIndex {
-    by_owner: BTreeMap<PlayerId, Vec<u32>>,
-    cols: usize,
-    rows: usize,
-    /// Cell `k` holds `items[starts[k]..starts[k + 1]]`.
-    starts: Vec<u32>,
-    items: Vec<u32>,
-    /// Open offers a player made or received, by id.
-    offers: BTreeMap<PlayerId, Vec<u64>>,
-    /// Renown held as the highest bid on auctions, per bidder.
-    bids: BTreeMap<PlayerId, u64>,
-    clock: ClockView,
-    weather: WeatherView,
-    leaderboard: Leaderboard,
-}
-
-impl StateIndex {
-    fn new(g: &Game) -> Self {
-        let w = &g.world;
-        let cols = (w.map.width as f32 / STATE_CELL).ceil().max(1.0) as usize;
-        let rows = (w.map.height as f32 / STATE_CELL).ceil().max(1.0) as usize;
-        let cell_of = |p: Vec2| {
-            let cx = ((p.x / STATE_CELL).floor().max(0.0) as usize).min(cols - 1);
-            let cy = ((p.y / STATE_CELL).floor().max(0.0) as usize).min(rows - 1);
-            cy * cols + cx
-        };
-        let mut by_owner: BTreeMap<PlayerId, Vec<u32>> = BTreeMap::new();
-        let mut starts = vec![0u32; cols * rows + 1];
-        // One pass over the organisms (each a few cache lines), noting each
-        // living one's cell; the counting sort then reads only the cells.
-        let mut cell = vec![u32::MAX; w.organisms.len()];
-        for (i, o) in w.organisms.iter().enumerate() {
-            if !o.alive {
-                continue;
-            }
-            if o.owner != WILD {
-                by_owner.entry(o.owner).or_default().push(i as u32);
-            }
-            let k = cell_of(o.pos);
-            cell[i] = k as u32;
-            starts[k + 1] += 1;
-        }
-        for k in 1..starts.len() {
-            starts[k] += starts[k - 1];
-        }
-        let mut fill = starts.clone();
-        let mut items = vec![0u32; starts[cols * rows] as usize];
-        for (i, &k) in cell.iter().enumerate() {
-            if k != u32::MAX {
-                items[fill[k as usize] as usize] = i as u32;
-                fill[k as usize] += 1;
-            }
-        }
-        let mut offers: BTreeMap<PlayerId, Vec<u64>> = BTreeMap::new();
-        for o in g.offers.values().filter(|o| o.status.is_open()) {
-            offers.entry(o.from).or_default().push(o.id);
-            if o.to != o.from {
-                offers.entry(o.to).or_default().push(o.id);
-            }
-        }
-        let mut bids: BTreeMap<PlayerId, u64> = BTreeMap::new();
-        for b in g.economy.listings.values().filter_map(|l| l.auction.as_ref()?.high.as_ref()) {
-            *bids.entry(b.bidder).or_default() += b.amount;
-        }
-        StateIndex {
-            by_owner,
-            cols,
-            rows,
-            starts,
-            items,
-            offers,
-            bids,
-            clock: g.clock(),
-            weather: g.weather(),
-            leaderboard: g.leaderboard(),
-        }
-    }
-
-    /// A player's living organisms, in organism order (none for the wild).
-    fn owned(&self, player: PlayerId) -> &[u32] {
-        self.by_owner.get(&player).map_or(&[], Vec::as_slice)
-    }
-
-    /// Every living organism in a grid cell the window touches (a superset
-    /// of those inside it), in no particular order.
-    fn in_window(&self, v: &ViewWindow) -> Vec<u32> {
-        if !(v.x.is_finite() && v.y.is_finite() && v.radius.is_finite()) {
-            return Vec::new();
-        }
-        let span = |lo: f32, hi: f32, n: usize| {
-            let a = ((lo / STATE_CELL).floor().max(0.0) as usize).min(n - 1);
-            let b = ((hi / STATE_CELL).floor().max(0.0) as usize).min(n - 1);
-            a..=b
-        };
-        let mut out = Vec::new();
-        for cy in span(v.y - v.radius, v.y + v.radius, self.rows) {
-            for cx in span(v.x - v.radius, v.x + v.radius, self.cols) {
-                let k = cy * self.cols + cx;
-                out.extend_from_slice(&self.items[self.starts[k] as usize..self.starts[k + 1] as usize]);
-            }
-        }
-        out
     }
 }
 
@@ -5272,7 +5026,9 @@ mod tests {
             g.found(p, &design(&format!("L{p}"))).unwrap();
             g.connect(p as u64, p, &format!("p{p}"));
         }
-        g.world.run_days(3);
+        // A denser world with `EVO_SUBSTEP_DAYS` (default 3: 8.3k organisms).
+        let days = std::env::var("EVO_SUBSTEP_DAYS").ok().and_then(|d| d.parse().ok()).unwrap_or(3);
+        g.world.run_days(days);
         let _ = g.after_tick();
         let (mut subs, mut pushes) = (Vec::new(), Vec::new());
         for round in 0..12u32 {
