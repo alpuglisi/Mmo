@@ -47,7 +47,7 @@ function freePort() {
   });
 }
 
-async function waitFor(what, fn, timeoutMs = 20000) {
+async function waitFor(what, fn, timeoutMs = 45000) {
   const end = Date.now() + timeoutMs;
   let last;
   while (Date.now() < end) {
@@ -62,8 +62,9 @@ async function waitFor(what, fn, timeoutMs = 20000) {
   throw new Error(`timed out waiting for ${what} (last: ${last})`);
 }
 
+const started = Date.now();
 function step(msg) {
-  console.log(`  ✓ ${msg}`);
+  console.log(`  ✓ ${msg} [${((Date.now() - started) / 1000).toFixed(0)} s]`);
 }
 
 async function main() {
@@ -242,49 +243,77 @@ async function main() {
       // before the request lands: pick again on those refusals.
       let pair = null;
       for (let attempt = 0; attempt < 12 && !pair; attempt++) {
+        // Our female with bob's male: our own female is held from the moment
+        // we ask (our consent), bob's only once he accepts, and males never
+        // become pregnant. But an open female in fast mode conceives within
+        // seconds, and on a loaded machine a few Playwright round trips take
+        // that long: so she is picked from ann's live state in the same page
+        // task that fills the form and clicks Send (nothing can change in
+        // between), against bob's males (which only a death can spoil).
+        // With no such pair for a while, ann's male and bob's open female
+        // (picked from bob's live state right before the request).
         let seen = '';
+        const since = Date.now();
         const cand = await waitFor('a pair of adults', async () => {
-          const adults = (p) => p.evaluate(() => window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant)
-            .map((o) => ({ id: o.id, sex: o.sex, urge: o.needs.breeding, x: o.x, y: o.y })));
-          const [a, b] = [await adults(page), await adults(bob)];
-          const tally = (l) => `${l.filter((o) => o.sex === 'female').length}F/${l.filter((o) => o.sex === 'male').length}M`;
-          seen = `ann ${tally(a)}, bob ${tally(b)} open adults`;
+          const adults = (p) => p.evaluate(() => window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant && !o.possessed)
+            .map((o) => ({ id: o.id, sex: o.sex, urge: o.needs.breeding, action: o.action, x: o.x, y: o.y })));
+          const b = await adults(bob);
+          const bobMales = b.filter((o) => o.sex === 'male');
+          const late = Date.now() - since > 20000;
           // Prefer the closest pair: predators pick off organisms on a long
-          // trip to the meeting. Then our female with bob's male: our own
-          // female is held from the moment we ask (our consent), bob's only
-          // once he accepts, and males never become pregnant. Then the least
-          // breeding urge in the female: a courting female tends to conceive
+          // trip to the meeting. Then the least breeding urge in the female,
+          // and not one courting now: a courting female tends to conceive
           // with one of her own before the request lands.
-          let best = null;
-          for (const x of a) {
-            for (const y of b) {
-              if (x.sex === y.sex) continue;
-              const female = x.sex === 'female' ? x : y;
-              const score = Math.hypot(x.x - y.x, x.y - y.y) + (x.sex === 'female' ? 0 : 8) + female.urge / 20;
-              if (!best || score < best.score) best = { mine: x.id, partner: y.id, score };
+          const sent = await page.evaluate(({ males, females, late }) => {
+            const sel = document.querySelector('#mating-mine');
+            const listed = new Set([...sel.options].map((o) => o.value));
+            const mine = window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant && !o.possessed && listed.has(String(o.id)));
+            // (A female's breeding urge, and whether she is seeking a mate or courting now.)
+            const score = (f, m, urge) => Math.hypot(f.x - m.x, f.y - m.y) + urge / 20 + (/court|mat/.test(f.action) ? 5 : 0);
+            let best = null;
+            for (const f of mine.filter((o) => o.sex === 'female')) {
+              for (const m of males) {
+                const s = score(f, m, f.needs.breeding);
+                if (!best || s < best.score) best = { mine: f.id, partner: m.id, score: s };
+              }
             }
-          }
-          return best;
+            if (!best && late) {
+              for (const m of mine.filter((o) => o.sex === 'male')) {
+                for (const f of females) {
+                  const s = score(f, m, f.urge);
+                  if (!best || s < best.score) best = { mine: m.id, partner: f.id, score: s };
+                }
+              }
+            }
+            if (!best) return { seen: `ann ${mine.filter((o) => o.sex === 'female').length}F/${mine.filter((o) => o.sex === 'male').length}M` };
+            sel.value = String(best.mine);
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            const set = (q, v) => {
+              const el = document.querySelector(q);
+              el.value = v;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            };
+            set('#mating-partner', String(best.partner));
+            set('#mating-price', '25');
+            if (sel.value !== String(best.mine)) return { seen: 'the form did not take the pick' };
+            window.__results = [];
+            document.querySelector('#mating-submit').click();
+            return { sent: best };
+          }, { males: bobMales, females: b.filter((o) => o.sex === 'female'), late });
+          seen = `${sent.seen ?? ''} open adults, bob ${b.length - bobMales.length}F/${bobMales.length}M open adults`;
+          return sent.sent ?? null;
           // (In fast mode every adult female can be pregnant for a while.)
         }, 120000).catch((e) => { throw new Error(`${e.message}; ${seen}`); });
-        await page.evaluate(() => { window.__results = []; });
-        // The form lists living adults; if our pick died since, pick again.
-        if (!(await page.selectOption('#mating-mine', String(cand.mine), { timeout: 10000 }).then(() => true, () => false))) {
-          console.log(`  … #${cand.mine} is no longer in the form; picking again`);
-          continue;
-        }
-        await page.fill('#mating-partner', String(cand.partner));
-        await page.fill('#mating-price', '25');
-        // (The list of adults is rebuilt when one dies: check the choice held.)
-        if (Number(await page.inputValue('#mating-mine')) !== cand.mine) continue;
-        await page.click('#mating-submit');
         const req = await waitFor('request_mating result', () => page.evaluate(() => window.__results.find((r) => r.type === 'request_mating') ?? null));
         // If our pick died before the click, the form falls back to another
         // adult (which can be the partner's sex): retry then, too.
         const swapped = req.mine !== cand.mine || req.partner !== cand.partner;
         if (!req.ok) {
           if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
-          console.log(`  … request_mating refused (${req.error?.code}${swapped ? `, form sent #${req.mine} × #${req.partner}` : ''}); picking again`);
+          const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
+          const look = (p, id) => p.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => o.id === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, id);
+          const diag = `server ${server}, ann ${await look(page, req.mine)}, bob ${await look(bob, req.partner)}`;
+          console.log(`  … request_mating refused (${req.error?.code}${swapped ? `, form sent #${req.mine} × #${req.partner}` : ''}; ${diag}); picking again`);
           await page.waitForTimeout(500);
           continue;
         }
@@ -631,143 +660,255 @@ async function main() {
     // under "auctions" and bids the reserve through its card for one of his
     // adults of the other sex (held in escrow; the auction can then no
     // longer be withdrawn). The world runs fast (a simulated day is about a
-    // second), so the auction gets the longest run, 30 days.
+    // second), so the auction gets the longest run, 30 days: about 30 s of
+    // wall time, which a loaded machine can spend before bob's bid lands.
     //
-    // So that the bid doesn't race the living world, the lot is one of
-    // ann's open females (a listed female is held from breeding) and bob
-    // bids with a male (males never become pregnant): then nothing the bid
-    // checks can change but by a death. The button's state is checked and
-    // the click made in one step in the page, and a bid that can't be made
-    // or is refused is retried with another bidder. Only if every attempt
-    // fails does ann withdraw the auction instead (logged as such).
+    // So that the bid doesn't race the living world, the lot is preferably
+    // one of ann's open females (a listed female is held from breeding) and
+    // bob bids with a male (males never become pregnant): then nothing the
+    // bid checks can change but by a death. In fast mode most adult females
+    // are pregnant for a while: if none is open for a while, the lot is a
+    // male (never pregnant) and bob bids with an open female. The lot is
+    // picked from the live state right before the request; a refusal for
+    // what the world changed meanwhile picks again. The button's state is
+    // checked and the click made in one step in the page, and a bid that
+    // can't be made or is refused is retried with another bidder. If the
+    // auction closes before a bid lands (its deadline passed on a slow
+    // machine, or the lot died), the round starts over with a new auction.
+    // Only if every bid attempt fails on an auction that is still open does
+    // ann withdraw it instead (logged as such).
     const reserve = 3;
     await page.selectOption('#market-list-kind', 'auction');
     if (!(await page.isVisible('#market-auction-days'))) throw new Error('the auction length field is hidden');
-    let auctionId = null;
-    let lotSex = null;
-    let lotOrg = null;
+    const auctionOpen = async (id) => (await ownListings()).includes(id);
+    // Create one auction from the form; returns { id, sex, organism }.
     const lotTried = [];
-    for (let attempt = 0; attempt < 8 && auctionId === null; attempt++) {
-      await page.evaluate(() => { window.__results = []; });
-      await page.click('#market-refresh');
-      const options = await page.$$eval('#market-list-organism option', (os) => os.map((o) => o.value));
-      if (options.length === 0) throw new Error('no adult of ann to auction');
-      // An open female from the live state (in fast mode most adult females
-      // are pregnant for a while: wait a little for one); else any adult.
-      const females = await waitFor('an open adult female of ann\'s to auction', () => page.evaluate((options) => {
-        const l = window.evo.model.state.organisms.filter((o) => o.matured && o.sex === 'female' && !o.pregnant && !o.possessed && options.includes(String(o.id)))
-          .sort((a, b) => b.health - a.health).map((o) => String(o.id));
-        return l.length ? l : null;
-      }, options), 15000).catch(() => []);
-      const lot = females.find((id) => !lotTried.includes(id)) ?? females[0] ?? options[attempt % options.length];
-      lotTried.push(lot);
-      if (!(await page.selectOption('#market-list-organism', lot, { timeout: 10000 }).then(() => true, () => false))) {
-        console.log(`  … #${lot} is no longer in the list; picking again`);
-        continue;
+    const createLog = [];
+    async function createAuction() {
+      for (let attempt = 1; attempt <= 12; attempt++) {
+        await page.click('#market-refresh');
+        await page.fill('#market-fee', String(reserve));
+        await page.fill('#market-auction-days', '30');
+        // Wait for an adult that can be auctioned now, on the live state and
+        // the form's options: an open female for the first 20 s, then a male
+        // too; not tried before if possible. She is picked, chosen in the
+        // form and Auction clicked in one page task, so she can't conceive
+        // between the pick and the request (in fast mode an open female does
+        // within seconds, about as long as a few round trips take on a
+        // loaded machine).
+        const since = Date.now();
+        const lot = await waitFor('an adult of ann\'s to auction', () => page.evaluate(({ tried, males }) => {
+          const sel = document.querySelector('#market-list-organism');
+          const options = new Set([...sel.options].map((o) => o.value));
+          const open = window.evo.model.state.organisms
+            .filter((o) => o.matured && !o.possessed && options.has(String(o.id)) && (o.sex === 'female' ? !o.pregnant : males))
+            .sort((a, b) => (a.sex === 'female' ? 0 : 1) - (b.sex === 'female' ? 0 : 1) || b.health - a.health)
+            .map((o) => String(o.id));
+          const pick = open.find((id) => !tried.includes(id)) ?? open[0];
+          if (!pick) return null;
+          sel.value = pick;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          if (sel.value !== pick) return null;
+          window.__results = [];
+          document.querySelector('#market-list-submit').click();
+          return pick;
+        }, { tried: lotTried, males: Date.now() - since > 20000 }), 90000);
+        lotTried.push(lot);
+        const r = await waitFor('create_auction result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_auction') ?? null), 30000);
+        if (r.ok) return { id: r.data.listing.id, sex: r.data.listing.sex, organism: r.data.listing.organism };
+        if (!['already_pregnant', 'not_found', 'not_mature', 'already_listed', 'organism_busy'].includes(r.error?.code)) throw new Error(`create_auction failed: ${JSON.stringify(r.error)}`);
+        const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
+        const diag = await page.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => String(o.id) === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, lot);
+        createLog.push(`#${lot} refused (${r.error?.code}; server ${server}, ann ${diag})`);
+        console.log(`  … create_auction refused (${createLog.at(-1)}); picking again`);
       }
-      await page.fill('#market-fee', String(reserve));
-      await page.fill('#market-auction-days', '30');
-      await page.click('#market-list-submit');
-      const r = await waitFor('create_auction result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_auction') ?? null));
-      if (r.ok) [auctionId, lotSex, lotOrg] = [r.data.listing.id, r.data.listing.sex, r.data.listing.organism];
-      else if (!['already_pregnant', 'not_found', 'not_mature', 'already_listed', 'organism_busy'].includes(r.error?.code)) throw new Error(`create_auction failed: ${JSON.stringify(r.error)}`);
-      else console.log(`  … create_auction refused (${r.error?.code}); picking again`);
+      throw new Error(`no auction could be created (${createLog.join('; ')})`);
     }
-    if (auctionId === null) throw new Error('no auction could be created');
-    await page.waitForSelector(`#my-listings .listing[data-listing="${auctionId}"][data-kind="auction"] .auction-line`, { timeout: 20000 });
-    await bob.selectOption('#market-kind', 'auction');
-    const bobCard = `#market-listings .listing[data-listing="${auctionId}"]`;
-    const line = await waitFor('the auction in bob\'s market', () => bob.evaluate((c) => document.querySelector(`${c} .auction-line`)?.textContent ?? null, bobCard), 20000);
-    if (!line.includes(`reserve ${reserve}, no bids yet`)) throw new Error(`auction line: ${line}`);
-    const kinds = await bob.$$eval('#market-listings .listing', (ls) => ls.map((l) => l.dataset.kind));
-    if (kinds.some((k) => k !== 'auction')) throw new Error(`the auctions filter showed ${kinds}`);
     // Bob's candidates: open adults of the other sex, males first (never
     // pregnant), then the healthiest (the least likely to die meanwhile).
-    const bidders = () => bob.evaluate((sex) => window.evo.model.state.organisms
+    const bidders = (lotSex) => bob.evaluate((sex) => window.evo.model.state.organisms
       .filter((o) => o.matured && !o.possessed && !o.pregnant && o.sex !== sex)
       .sort((a, b) => (a.sex === 'male' ? 0 : 1) - (b.sex === 'male' ? 0 : 1) || b.health - a.health)
       .map((o) => o.id), lotSex);
     // What the living world can do to a bidder between the pick and the
-    // server's check: those refusals are retried with another bidder.
+    // server's check: those refusals are retried with another bidder. A
+    // closed auction (`unknown_listing`, `auction_closed`) starts a new round.
     const retryBid = ['already_pregnant', 'not_found', 'not_mature', 'died', 'organism_busy'];
+    const closedBid = ['unknown_listing', 'auction_closed'];
     const bidLog = [];
+    let auctionId = null;
+    let lotSex = null;
+    let lotOrg = null;
     let bid = null;
     let bidder = null;
-    const triedBidders = [];
-    for (let attempt = 1; attempt <= 6 && !bid?.ok; attempt++) {
-      const cands = await waitFor(`one of bob's adults to bid with (attempt ${attempt})`, async () => {
-        const l = await bidders();
-        return l.length ? l : null;
-      }, 30000).catch(() => []);
-      if (cands.length === 0) {
-        bidLog.push(`attempt ${attempt}: bob has no open adult of the other sex`);
-        break;
-      }
-      const cand = cands.find((id) => !triedBidders.includes(id)) ?? cands[0];
-      triedBidders.push(cand);
+    let withdrawnAuction = false;
+    const auctionRounds = 4;
+    for (let round = 1; round <= auctionRounds && !bid?.ok && !withdrawnAuction; round++) {
+      if (round > 1) await page.selectOption('#market-list-kind', 'auction');
+      ({ id: auctionId, sex: lotSex, organism: lotOrg } = await createAuction());
+      const opened = Date.now();
       bid = null;
-      if (!(await bob.selectOption('#market-mine', String(cand), { timeout: 15000 }).then(() => true, () => false))) {
-        bidLog.push(`attempt ${attempt}: #${cand} not in bob's list`);
+      const closed = (why) => {
+        bidLog.push(`round ${round}: auction ${auctionId} of #${lotOrg} closed ${why}, ${((Date.now() - opened) / 1000).toFixed(0)} s after it opened`);
+        console.log(`  … auction ${auctionId} closed ${why} (${((Date.now() - opened) / 1000).toFixed(0)} s after it opened); auctioning again (round ${round}/${auctionRounds})`);
+      };
+      const ownCard = await waitFor('the auction in ann\'s listings', async () => {
+        if (await page.$(`#my-listings .listing[data-listing="${auctionId}"][data-kind="auction"] .auction-line`)) return 'shown';
+        if (!(await auctionOpen(auctionId))) return 'closed';
+        await page.click('#market-refresh');
+        await new Promise((r) => setTimeout(r, 1000));
+        return null;
+      }, 45000);
+      if (ownCard === 'closed') {
+        closed('before it showed in ann\'s listings');
         continue;
       }
-      // The card is rebuilt for the new pick: wait for its Bid button to be
-      // enabled for it.
-      const ready = await waitFor(`the bid button enabled for #${cand}`, () => bob.evaluate(({ c, id }) => {
-        if (document.querySelector('#market-mine')?.value !== String(id)) return 'the pick changed';
-        const b = document.querySelector(`${c} button.bid`);
-        return b && !b.disabled ? 'ready' : null;
-      }, { c: bobCard, id: cand }), 20000).catch(() => null);
-      if (ready !== 'ready') {
-        const why = ready ?? await bob.evaluate((c) => document.querySelector(`${c} button.bid`)?.title ?? 'no auction card', bobCard);
-        bidLog.push(`attempt ${attempt}: #${cand} could not bid (${why})`);
+      await bob.selectOption('#market-kind', 'auction');
+      const bobCard = `#market-listings .listing[data-listing="${auctionId}"]`;
+      // Bob's market is fetched on demand: refresh it while waiting.
+      const line = await waitFor('the auction in bob\'s market', async () => {
+        const t = await bob.evaluate((c) => document.querySelector(`${c} .auction-line`)?.textContent ?? null, bobCard);
+        if (t) return t;
+        if (!(await auctionOpen(auctionId))) return 'closed';
+        await bob.click('#market-refresh');
+        await new Promise((r) => setTimeout(r, 1000));
+        return null;
+      }, 45000);
+      if (line === 'closed') {
+        closed('before bob saw it');
         continue;
       }
-      // Check and click in one step in the page: no state update can land
-      // between the two (a plain DOM click; the card may be rebuilt).
-      const clicked = await bob.evaluate(({ c, id }) => {
-        if (document.querySelector('#market-mine')?.value !== String(id)) return 'the pick changed';
-        const b = document.querySelector(`${c} button.bid`);
-        if (!b) return 'the card went away';
-        if (b.disabled) return `the button was disabled again (${b.title})`;
-        window.__results = [];
-        b.click();
-        return 'clicked';
-      }, { c: bobCard, id: cand });
-      if (clicked !== 'clicked') {
-        bidLog.push(`attempt ${attempt}: #${cand} not clicked: ${clicked}`);
+      if (!line.includes(`reserve ${reserve}, no bids yet`)) throw new Error(`auction line: ${line}`);
+      const kinds = await bob.$$eval('#market-listings .listing', (ls) => ls.map((l) => l.dataset.kind));
+      if (kinds.some((k) => k !== 'auction')) throw new Error(`the auctions filter showed ${kinds}`);
+      const triedBidders = [];
+      let gone = false;
+      for (let attempt = 1; attempt <= 6 && !bid?.ok && !gone; attempt++) {
+        const cands = await waitFor(`one of bob's adults to bid with (attempt ${attempt})`, async () => {
+          const l = await bidders(lotSex);
+          return l.length ? l : null;
+        }, 45000).catch(() => []);
+        if (cands.length === 0) {
+          bidLog.push(`round ${round} attempt ${attempt}: bob has no open adult of the other sex`);
+          break;
+        }
+        const cand = cands.find((id) => !triedBidders.includes(id)) ?? cands[0];
+        triedBidders.push(cand);
+        bid = null;
+        if (!(await bob.selectOption('#market-mine', String(cand), { timeout: 15000 }).then(() => true, () => false))) {
+          bidLog.push(`round ${round} attempt ${attempt}: #${cand} not in bob's list`);
+          continue;
+        }
+        // The card is rebuilt for the new pick: wait for its Bid button to be
+        // enabled for it (refreshing bob's market meanwhile).
+        let lastRefresh = Date.now();
+        const ready = await waitFor(`the bid button enabled for #${cand}`, async () => {
+          const s = await bob.evaluate(({ c, id }) => {
+            const sel = document.querySelector('#market-mine');
+            if (sel?.value !== String(id)) {
+              // Still one of bob's adults (the options were rebuilt under
+              // the pick): pick it again and keep waiting.
+              if ([...sel.options].some((x) => x.value === String(id))) {
+                sel.value = String(id);
+                sel.dispatchEvent(new Event('change', { bubbles: true }));
+                return null;
+              }
+              const o = window.evo.model.state?.organisms.find((o) => o.id === id);
+              return `the pick changed to "${sel?.value}" (#${id} ${o ? `${o.matured ? 'adult' : 'juvenile'}${o.possessed ? ', possessed' : ''}` : 'not in the state'}, no longer in the list)`;
+            }
+            const b = document.querySelector(`${c} button.bid`);
+            return b && !b.disabled ? 'ready' : null;
+          }, { c: bobCard, id: cand });
+          if (s) return s;
+          if (Date.now() - lastRefresh > 3000) {
+            if (!(await auctionOpen(auctionId))) return 'closed';
+            await bob.click('#market-refresh');
+            lastRefresh = Date.now();
+          }
+          return null;
+        }, 30000).catch(() => null);
+        if (ready === 'closed') {
+          gone = true;
+          break;
+        }
+        if (ready !== 'ready') {
+          const why = ready ?? await bob.evaluate((c) => document.querySelector(`${c} button.bid`)?.title ?? 'no auction card', bobCard);
+          bidLog.push(`round ${round} attempt ${attempt}: #${cand} could not bid (${why})`);
+          continue;
+        }
+        // Check and click in one step in the page: no state update can land
+        // between the two (a plain DOM click; the card may be rebuilt).
+        const clicked = await bob.evaluate(({ c, id }) => {
+          if (document.querySelector('#market-mine')?.value !== String(id)) return 'the pick changed';
+          const b = document.querySelector(`${c} button.bid`);
+          if (!b) return 'the card went away';
+          if (b.disabled) return `the button was disabled again (${b.title})`;
+          window.__results = [];
+          b.click();
+          return 'clicked';
+        }, { c: bobCard, id: cand });
+        if (clicked !== 'clicked') {
+          bidLog.push(`round ${round} attempt ${attempt}: #${cand} not clicked: ${clicked}`);
+          continue;
+        }
+        bid = await waitFor(`the bid result for #${cand} (attempt ${attempt})`, () => bob.evaluate(() => window.__results.find((r) => r.type === 'bid') ?? null), 30000);
+        if (bid.mine !== cand) throw new Error(`the Bid button bid for #${bid.mine}, not the picked #${cand}`);
+        if (bid.ok) {
+          bidder = cand;
+          bidLog.push(`round ${round} attempt ${attempt}: bid for #${cand} through the UI, ${((Date.now() - opened) / 1000).toFixed(0)} s after the auction opened`);
+        } else if (retryBid.includes(bid.error?.code)) {
+          bidLog.push(`round ${round} attempt ${attempt}: bid for #${cand} refused (${bid.error.code})`);
+        } else if (closedBid.includes(bid.error?.code) && !(await auctionOpen(auctionId))) {
+          gone = true;
+        } else {
+          throw new Error(`bid failed: ${JSON.stringify(bid.error)} (lot #${lotOrg} ${lotSex}, bidder #${cand})`);
+        }
+      }
+      if (bid?.ok) break;
+      if (gone || !(await auctionOpen(auctionId))) {
+        closed('before a bid went through');
         continue;
       }
-      bid = await waitFor(`the bid result for #${cand} (attempt ${attempt})`, () => bob.evaluate(() => window.__results.find((r) => r.type === 'bid') ?? null));
-      if (bid.mine !== cand) throw new Error(`the Bid button bid for #${bid.mine}, not the picked #${cand}`);
-      if (bid.ok) {
-        bidder = cand;
-        bidLog.push(`attempt ${attempt}: bid for #${cand} through the UI`);
-      } else if (retryBid.includes(bid.error?.code)) {
-        bidLog.push(`attempt ${attempt}: bid for #${cand} refused (${bid.error.code})`);
-      } else {
-        throw new Error(`bid failed: ${JSON.stringify(bid.error)} (lot #${lotOrg} ${lotSex}, bidder #${cand})`);
-      }
-    }
-    console.log(`  … auction bid path: ${bid?.ok ? 'bid through the UI' : 'no bid, ann withdraws'} (${bidLog.join('; ')})`);
-    if (bid?.ok) {
-      await waitFor('bob\'s bid in escrow', async () => (await renown(bob)).escrow >= reserve, 20000);
-      await page.click('#market-refresh');
-      // (Unless it closed meanwhile: then it settled with bob's bid.)
-      await waitFor('ann sees the bid', async () => !(await ownListings()).includes(auctionId) || page.evaluate(([id, reserve]) => {
-        const c = document.querySelector(`#my-listings .listing[data-listing="${id}"]`);
-        return c && c.querySelector('.auction-line')?.textContent.includes(`high bid ${reserve}`) && c.querySelector('button.withdraw')?.disabled;
-      }, [auctionId, reserve]), 20000);
-      step(`ann auctioned her ${lotSex} #${lotOrg} (listing ${auctionId}); bob bid ${reserve} renown for #${bidder} from the card (held in escrow, withdraw disabled)`);
-    } else {
+      // No bid could be made on an open auction: ann withdraws it.
       await page.click('#market-refresh');
       const withdraw = `#my-listings .listing[data-listing="${auctionId}"] button.withdraw`;
-      await page.waitForSelector(`${withdraw}:not([disabled])`, { timeout: 20000 });
+      await page.waitForSelector(`${withdraw}:not([disabled])`, { timeout: 30000 });
       await page.evaluate(() => { window.__results = []; });
       await page.click(withdraw, { timeout: 15000 });
-      const w = await waitFor('withdraw_listing result for the auction', () => page.evaluate(() => window.__results.find((r) => r.type === 'withdraw_listing') ?? null));
-      if (!w.ok) throw new Error(`withdrawing auction ${auctionId} failed: ${JSON.stringify(w.error)}`);
-      await waitFor('auction withdrawn', async () => !(await ownListings()).includes(auctionId), 20000);
+      const w = await waitFor('withdraw_listing result for the auction', () => page.evaluate(() => window.__results.find((r) => r.type === 'withdraw_listing') ?? null), 30000);
+      if (!w.ok) {
+        // Its deadline passed (or the lot died) between the check and the click.
+        if (w.error?.code === 'unknown_listing' && !(await auctionOpen(auctionId))) {
+          closed('as ann withdrew it');
+          continue;
+        }
+        throw new Error(`withdrawing auction ${auctionId} failed: ${JSON.stringify(w.error)}`);
+      }
+      await waitFor('auction withdrawn', async () => !(await auctionOpen(auctionId)), 30000);
+      withdrawnAuction = true;
+    }
+    console.log(`  … auction bid path: ${bid?.ok ? 'bid through the UI' : withdrawnAuction ? 'no bid, ann withdrew' : 'no auction stayed open'} (${bidLog.join('; ')})`);
+    if (bid?.ok) {
+      await waitFor('bob\'s bid in escrow', async () => (await renown(bob)).escrow >= reserve, 30000);
+      await page.click('#market-refresh');
+      // (Unless it closed meanwhile: then it settled with bob's bid.)
+      await waitFor('ann sees the bid', async () => {
+        if (!(await auctionOpen(auctionId))) return true;
+        const seen = await page.evaluate(([id, reserve]) => {
+          const c = document.querySelector(`#my-listings .listing[data-listing="${id}"]`);
+          return !!c && !!c.querySelector('.auction-line')?.textContent.includes(`high bid ${reserve}`) && !!c.querySelector('button.withdraw')?.disabled;
+        }, [auctionId, reserve]);
+        if (!seen) {
+          await page.click('#market-refresh');
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        return seen;
+      }, 30000);
+      step(`ann auctioned her ${lotSex} #${lotOrg} (listing ${auctionId}); bob bid ${reserve} renown for #${bidder} from the card (held in escrow, withdraw disabled)`);
+    } else if (withdrawnAuction) {
       step(`ann auctioned listing ${auctionId} and withdrew it (no bid went through: ${bidLog.join('; ')})`);
+    } else {
+      throw new Error(`every one of ${auctionRounds} auctions closed before a bid went through (${bidLog.join('; ')})`);
     }
     await bob.selectOption('#market-kind', 'any');
     await page.screenshot({ path: path.join(shots, 'market-ann.png') });
