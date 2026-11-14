@@ -1587,6 +1587,65 @@ mod tests {
         }
     }
 
+    /// Egg predators search where clutches are dense (`nest_predation`): a
+    /// lone abandoned clutch is never found, one among eight others within
+    /// two tiles is eaten whole within days, and a brooder's clutch in the
+    /// same crowd is guarded.
+    #[test]
+    fn crowded_abandoned_clutches_are_found_by_egg_predators() {
+        for (rate, crowded, guarded) in
+            [(0.06, false, false), (0.06, true, false), (0.0, true, false), (0.06, true, true)]
+        {
+            let (mut w, i) = layer(6, BirthType::AbandonedEggs);
+            w.config.balance.nest_predation = rate;
+            let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+            w.give_birth(i, &mut rng);
+            let id = w.organisms[i].id;
+            let k = w.clutches.iter().position(|c| c.mother == id).expect("a clutch");
+            w.clutches[k].hatch_tick = u64::MAX;
+            if guarded {
+                w.clutches[k].guardian = Some(id);
+            }
+            // Away from the map's edge.
+            let (cx, cy) = (32, 32);
+            let pos = Map::tile_center(cx, cy);
+            w.clutch_at.remove(&w.map.tile_coords(w.clutches[k].pos));
+            w.clutch_at.insert((cx, cy), k);
+            w.clutches[k].pos = pos;
+            let lineage = w.clutches[k].lineage;
+            for (dx, dy) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                let (x, y) = ((cx as i64 + 2 * dx) as usize, (cy as i64 + dy) as usize);
+                let at = Map::tile_center(x, y);
+                set_climate(&mut w, at, 20.0);
+                if crowded {
+                    let mut c = w.clutches[k].clone();
+                    (c.pos, c.mother, c.guardian) = (at, u64::MAX, None);
+                    w.clutch_at.insert((x, y), w.clutches.len());
+                    w.clutches.push(c);
+                }
+            }
+            set_climate(&mut w, pos, 20.0);
+            if crowded {
+                assert_eq!(w.clutches_near(pos), 8);
+            }
+            for _ in 0..24 * 10 {
+                if guarded {
+                    w.organisms[i].pos = pos;
+                }
+                w.update_clutches(&mut rng);
+            }
+            let e = w.counters.eggs[&lineage];
+            assert_eq!((e.chilled, e.overheated), (0, 0));
+            let survives = w.clutches.iter().any(|c| c.mother == id);
+            assert_eq!(
+                survives,
+                rate == 0.0 || !crowded || guarded,
+                "rate {rate}, crowded {crowded}, guarded {guarded}"
+            );
+            assert_eq!(e.raided > 0, rate > 0.0 && crowded, "rate {rate}, crowded {crowded}");
+        }
+    }
+
     /// A sitting parent shades her eggs in the heat, at a cost in water,
     /// but only by `BROOD_SHADE`: at 42 °C warm-blooded eggs stay at their
     /// 39 °C ceiling under her and cook without her.

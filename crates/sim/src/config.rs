@@ -561,6 +561,17 @@ pub struct Balance {
     /// (fair 25%) and cold-blooded egg layers that leave their eggs 37–39%.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v12"))]
     pub cold_gestation: f32,
+    /// Egg predation on nesting grounds: hourly, an unguarded clutch (left
+    /// by its mother) is found and eaten whole with a daily chance of
+    /// `nest_predation` for each other clutch, of any kind, within 2 tiles
+    /// of it (doc: eggs "can be raided"). Egg predators search where eggs
+    /// are dense, so layers that leave many clutches close together lose
+    /// the most; a brooder's clutch is guarded. Aimed at cold-blooded
+    /// abandoned eggs, whose eggs rarely chill and whose mothers lay again
+    /// within days: without it they won 35–38% of tournaments (fair 25%).
+    /// 0 disables.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v13"))]
+    pub nest_predation: f32,
 }
 
 impl Default for Balance {
@@ -651,12 +662,13 @@ impl Default for Balance {
             pasture_search: 6.0,
             search_image: 0.7,
             cold_gestation: 1.0,
+            nest_predation: 0.06,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 83;
+    pub const FIELD_COUNT: usize = 84;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -749,6 +761,7 @@ impl Balance {
             ("pasture_search", &mut self.pasture_search),
             ("search_image", &mut self.search_image),
             ("cold_gestation", &mut self.cold_gestation),
+            ("nest_predation", &mut self.nest_predation),
         ]
     }
 

@@ -13,6 +13,8 @@
 //!   snapshot writes them in a section of their own.
 //! - `before_v12`: `Balance::cold_gestation`, left out while a version 10 or
 //!   11 world snapshot is read.
+//! - `before_v13`: `Balance::nest_predation`, left out while a version 10,
+//!   11 or 12 world snapshot is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -330,6 +332,55 @@ pub mod before_v12 {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
         if OLD.with(Cell::get) {
             Ok(OLD_COLD_GESTATION)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// `Balance::nest_predation`, added in world snapshot version 13:
+/// `#[serde(with = "crate::serde_util::before_v13")]`. On a thread holding a
+/// [`before_v13::Guard`] (reading or hashing a version 10 to 12 snapshot) it
+/// is neither written nor read and reads as 0, the rule those saves ran
+/// under (no egg predation on nesting grounds).
+pub mod before_v13 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// `nest_predation` before version 13.
+    pub const OLD_NEST_PREDATION: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_NEST_PREDATION)
         } else {
             f32::deserialize(d)
         }

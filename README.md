@@ -1126,9 +1126,11 @@ planes and deflated (`flate2` on its pure-Rust miniz_oxide backend, fast
 level), on a second thread while the rest is encoded. Smooth fields
 (temperature, wind, wetness) leave long runs of zero high bytes, so the
 tiles take about 60% of what LZ4 made of them interleaved. Version 10
-snapshots (the tiles inside the payload) and version 11 ones still restore:
-both lack `Balance::cold_gestation` (added in version 12), which then reads
-as 1.4, the rule they ran under (`serde_util::before_v12`).
+snapshots (the tiles inside the payload) and version 11 and 12 ones still
+restore: 10 and 11 lack `Balance::cold_gestation` (added in version 12),
+which then reads as 1.4, the rule they ran under (`serde_util::before_v12`),
+and all three lack `Balance::nest_predation` (added in version 13), which
+reads as 0 (`serde_util::before_v13`).
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1174,7 +1176,8 @@ version 8 added the balance parameters `threat_caution`, `alert_guard` and
 `pasture_search` to the saved config; version 9 the hunters' search image; version 10 added groups and
 territories (`Organism::group`, migration orders per player and group,
 claimed territories and claim times); version 11 writes the tiles apart
-(above); version 12 adds the balance parameter `cold_gestation`.
+(above); version 12 adds the balance parameter `cold_gestation`, version 13
+`nest_predation`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -3471,8 +3474,81 @@ on every seed: the sample designs have no cold-blooded live bearer, so the
 ecosystem and the standard sweeps are untouched (the client wire fixture
 too). Snapshots move to format version 12 (the new `Balance` field;
 versions 10 and 11 still restore with it at 1.4). New tunable:
-`cold_gestation`. What is left is
-cold-blooded abandoned eggs' fast cycle (Suggested next steps).
+`cold_gestation`. What was left was
+cold-blooded abandoned eggs' fast cycle, taken up next.
+
+**The target** for the six thermoregulation × birth classes is not exact
+fairness (25% each in four-way tournaments, which no rule set gets within
+the seed noise of about ±5 points): it is that **no class wins more than
+about 30–32% of tournaments on fresh seeds**, and that none collapses.
+Classes below 25% are fine; warm-blooded abandoned eggs sit at about 10%
+on purpose (the doc's thermoregulation mismatch: their eggs chill). A
+rule change for this is kept only if it brings the top class to 32% or
+less on fresh seeds, pushes no other class above 32%, and costs no
+significant `compare` score, and the smallest such change is preferred.
+
+**Cold-blooded abandoned eggs: `nest_predation`.** After `cold_gestation`
+they were the top class (38.0% on the tuning seeds 10001–10096, 34.9% on
+50001–50096) with the highest mean share. Their edge is the cycle (lay 2
+days after mating, recover 3–9 days, exempt from breeding suppression)
+compounded by eggs that are rarely lost (14% to cold, heat and raids):
+1004 eggs laid per lineage, 3× a cold incubator's. Three fixes were tried
+on the tuning seeds, paired against the unchanged rules:
+
+| Fix (tuning seeds, 96 worlds) | Cold abandoned / incubated / live | Warm abandoned / incubated / live | Cold abandoned share | Warm abandoned share |
+| --- | --- | --- | --- | --- |
+| None | 38.0% / 26.4% / 24.1% | 9.7% / 21.6% / 31.7% | 0.083 | 0.034 |
+| Yolk: an abandoned-egg mother recovers her eggs' incubation time longer | 32.4% / 30.2% / 24.1% | 8.3% / 21.6% / 36.7% | −0.011 ± 0.003 | −0.006 ± 0.003 |
+| Egg predation by clutch density, 0.03 per neighboring clutch a day | 31.0% / 30.2% / 24.1% | 9.7% / 24.3% / 33.3% | −0.003 ± 0.003 | −0.002 ± 0.001 |
+| The same, 0.06 | 29.6% / 28.3% / 29.6% | 9.7% / 23.0% / 33.3% | −0.010 ± 0.003 | −0.005 ± 0.002 |
+| The same, 0.02 × neighbors² | 31.0% / 30.2% / 24.1% | 9.7% / 23.0% / 35.0% | −0.005 ± 0.003 | −0.002 ± 0.001 |
+
+- **Yolk recovery** (the README's candidate: tie her recovery to the eggs
+  she provisions; eggs left alone carry yolk for their whole development,
+  which takes 1.4× as long when cold-blooded) cut cold abandoned laying
+  from 1004 to 618 eggs per lineage and their share significantly, but it
+  costs warm-blooded abandoned eggs as much in proportion (they lay as
+  often, and lose most eggs to cold anyway), and the wins went to warm
+  live bearers (36.7%). Rejected.
+- **Egg predation on nesting grounds** hits the over-producers: abandoned
+  eggs go to the best site within a few tiles of where the mother stands,
+  so a lineage that lays every few days packs its clutches together, and
+  egg predators that search where eggs are dense find them. At 0.06 cold
+  abandoned eggs lost 316 eggs per lineage to it (raids 70 → 316 of 900
+  laid) and their larvae starved less (336 → 171, larval competition
+  being density dependent), so adults fell 127 → 107. Warm abandoned
+  clutches are sparser and mostly chill first. Making it quadratic in the
+  clutch count (to spare sparse nesters) spared warm-blooded abandoned eggs
+  no better than linear. Kept at 0.06, the stronger linear setting: its
+  effect on the target class is significant where 0.03's is not.
+
+Judged on fresh seeds (designs unseen by any probe), paired with
+`--set nest_predation=0`:
+
+| Win share (mean final share) | 50001–50096, 0 | 0.06 | 60001–60096, 0 | 0.06 | Both (192), 0 | 0.06 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Cold abandoned eggs | 34.9% (0.104) | 28.6% (0.090; −0.014 ± 0.003) | 28.2% (0.085) | 26.8% (0.075; −0.011 ± 0.004) | 31.3% | 27.6% |
+| Cold incubated eggs | 25.9% (0.080) | 27.6% (0.088) | 27.9% (0.078) | 27.9% (0.074) | 27.0% | 27.8% |
+| Cold live birth | 27.4% (0.085) | 26.0% (0.090) | 28.4% (0.081) | 29.9% (0.082) | 27.9% | 27.9% |
+| Warm abandoned eggs | 7.7% (0.036) | 10.8% (0.035) | 12.2% (0.045) | 12.2% (0.046) | 9.6% | 11.4% |
+| Warm incubated eggs | 25.0% (0.082) | 29.4% (0.085) | 31.7% (0.104) | 28.6% (0.101) | 28.2% | 29.0% |
+| Warm live birth | 29.8% (0.092) | 28.1% (0.095) | 18.2% (0.074) | 21.2% (0.074) | 23.6% | 24.4% |
+
+On both fresh sets every class is at 30% or less (top: 29.9%), from a
+top class of 34.9% and 31.7%. On the tuning seeds the top class went from
+38.0% to 33.3% (warm live bearers, 31.7% before), the one place a class
+stays above 32%; over all 288 worlds the classes span 10.8–28.4% (before
+9.7–33.7%), and the only significant changes in mean share are cold
+abandoned eggs (−0.011 ± 0.002) and warm abandoned eggs (−0.002 ± 0.001). `compare --adaptive` from seed 101
+(`--set nest_predation=0.06 vs defaults`, before the default changed)
+stopped after 24 seeds at −0.09 (sequential CI −0.29 … +0.11, within the
+±0.3 tolerance): no difference that matters. Held-out sweeps (12 seeds,
+96×96): seed 31 11.60 (was 11.67, marsh newts 11 of 12), seed 55 11.73
+(was 11.62); `scripts/balance-smoke.sh` 11.55 (was 11.96; newts lost on
+1 of its 3 seeds), 23 of 24 lineage-worlds. Level-of-detail cohorts have
+no clutches, so the rule applies to agents only, like egg chilling.
+Snapshots move to format version 13 (versions 10–12 restore with
+`nest_predation` 0). New tunable: `nest_predation`.
 
 Do eggs count toward population? They don't, by design, and it changes no
 result here. The legacy score counts breeding adults (the doc), and the
@@ -3750,17 +3826,13 @@ sections above).
    world holds the clock. Still open: where one process stops scaling (3+
    worlds, on dedicated cores, where the measured 0.3 cores per world
    suggests up to one world per core).
-4. **Cold-blooded abandoned eggs.** Cold-blooded live bearers are back
-   near fair (`cold_gestation`; see *Thermoregulation × birth mode* in
-   [Balance](#balance)), but cold-blooded abandoned eggs still win about
-   35–38% of tournaments (fair 25%) with the highest mean share, from the
-   fastest breeding cycle (lay 2 days after mating, recover 3–9 days, no
-   breeding suppression, cold eggs rarely lost). Breeding suppression for
-   them and temperature-dependent development of cold eggs only moved the
-   wins to cold incubators or cost brooders more. Candidates: tie an
-   abandoned-egg mother's recovery to her clutch's mass or the eggs she
-   provisions (yolk), or larval competition across lineages of the same
-   diet, judged as before with paired tournaments and `compare`.
+4. **Birth-mode balance watch.** Against the target in
+   *Thermoregulation × birth mode* ([Balance](#balance): no class above
+   about 30–32% of tournament wins on fresh seeds) the classes now span
+   about 11–30% on fresh seeds (`cold_gestation`, `nest_predation`). Warm
+   live bearers still reach 33% on the tuning seeds 10001–10096; re-check
+   with fresh tournaments after rule changes that touch breeding, and if a
+   class settles above 32%, look at warm live bearers first.
 5. **World-thread cost.** At high density decide is still most of a tick
    and is now bound by memory (neighbor genes and positions; see [High
    density](#high-density-decide-act-sweep-sub-step-states)); going further
