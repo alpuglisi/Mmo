@@ -154,6 +154,20 @@ async function openFromNotification(world: string, tab: string): Promise<void> {
   }
 }
 
+// Back from the background (a phone app resumed, a tab shown again) or back
+// online: don't wait out a reconnect backoff that grew while away, and check
+// that a socket that looks open still delivers (a phone that slept can leave
+// it dead without a close). `resume` is what Capacitor's App plugin fires on
+// `document`; `visibilitychange` covers the Android WebView and browsers.
+function wakeSocket(): void {
+  if (document.visibilityState === 'hidden') return;
+  running?.socket.wake();
+}
+document.addEventListener('visibilitychange', wakeSocket);
+document.addEventListener('resume', wakeSocket);
+window.addEventListener('online', wakeSocket);
+window.addEventListener('focus', wakeSocket);
+
 setApiBase(initialOrigin());
 void registerServiceWorker();
 if ('serviceWorker' in navigator) {
