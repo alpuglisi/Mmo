@@ -558,6 +558,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tower-http",
+ "tower-service",
  "tracing",
  "tracing-subscriber",
 ]

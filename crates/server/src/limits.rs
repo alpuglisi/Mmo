@@ -149,8 +149,13 @@ pub struct Limits {
     /// for a whole herd, so a client has no reason to send many.
     pub group_commands: Rate,
     /// Public reads that cost the world thread or the store (terrain, map,
-    /// chronicle, history, lineage stats) per client IP.
+    /// chronicle, history, lineage stats, founding, WebSocket upgrades) per
+    /// client IP.
     pub reads: Rate,
+    /// Open HTTP connections per client IP (its /64 for IPv6); more are
+    /// closed as soon as they are accepted. Bounds what one client can hold
+    /// open by trickling requests (slowloris).
+    pub conns_per_ip: usize,
 }
 
 impl Default for Limits {
@@ -166,6 +171,9 @@ impl Default for Limits {
             // The client polls a few of these every few seconds; a dashboard
             // opens with a handful at once.
             reads: Rate::new(10.0, 60.0),
+            // A browser opens about 6 per origin; leaves room for a few
+            // players behind one NAT.
+            conns_per_ip: 128,
         }
     }
 }
@@ -178,6 +186,7 @@ impl Limits {
             ip_commands: Rate::UNLIMITED,
             group_commands: Rate::UNLIMITED,
             reads: Rate::UNLIMITED,
+            conns_per_ip: usize::MAX,
         }
     }
 }

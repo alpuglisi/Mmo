@@ -75,7 +75,9 @@ fn read_credential(name: &str, value: &str, marker: &str) -> Result<String, Stri
     if value.contains(marker) {
         return Ok(value.to_string());
     }
-    std::fs::read_to_string(value.trim()).map_err(|e| format!("{name} {value}: {e}"))
+    // Not echoed: it may be a key pasted inline without its marker.
+    std::fs::read_to_string(value.trim())
+        .map_err(|e| format!("{name}: not an inline credential (no {marker:?}) nor a readable file: {e}"))
 }
 
 /// Native push settings as given; turned into `PushConfig::fcm` and
@@ -371,5 +373,20 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = ctrl_c.await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_credential;
+
+    /// A key pasted inline without its marker (say, the base64 body of a
+    /// `.p8` without the PEM lines) is not echoed into the error and logs.
+    #[test]
+    fn a_credential_that_is_not_a_file_is_not_echoed() {
+        let secret = "MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgSECRETSECRET";
+        let err = read_credential("--apns-key", secret, "-----BEGIN").unwrap_err();
+        assert!(!err.contains("SECRET"), "{err}");
+        assert!(err.contains("--apns-key"), "{err}");
     }
 }

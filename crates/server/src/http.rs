@@ -58,6 +58,8 @@ pub const MAX_BODY: usize = 64 * 1024;
 /// Most WebSocket connections one player may hold open at once (tabs,
 /// devices); each costs the world thread a view and a state per interval.
 pub const MAX_CONNS_PER_PLAYER: usize = 8;
+/// Longest `?map=` id of `GET /api/seasons/:n` (they are 16 hex digits).
+pub const MAX_MAP_ID: usize = 64;
 /// Longest side of `GET /api/map.png`, in pixels: the scale is lowered to
 /// fit (8 pixels per tile on a 1024-tile map would be a 200 MB image).
 pub const MAX_MAP_SIDE: usize = 2048;
@@ -164,15 +166,41 @@ impl Drop for ConnSlot {
 /// on every other path. A path with no matching file gets `index.html`.
 pub fn router(state: AppState, static_dir: Option<&Path>) -> Router {
     let api = api_router(state);
-    match static_dir {
+    let app = match static_dir {
         Some(dir) => api.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))),
         None => api,
+    };
+    app.layer(middleware::map_response(security_headers))
+}
+
+/// `Content-Security-Policy` of every response: the page may not be framed
+/// (clickjacking), load plugins or change its base URL. Scripts, styles and
+/// connections are not restricted here (PixiJS compiles shaders with `new
+/// Function` unless built with its `unsafe-eval` shim).
+pub const CSP: &str = "frame-ancestors 'none'; object-src 'none'; base-uri 'self'";
+
+/// Headers on every response, pages and API alike (unless a handler set
+/// its own): no MIME sniffing, no framing, no referrer to other sites.
+async fn security_headers(mut res: Response) -> Response {
+    let h = res.headers_mut();
+    for (name, value) in [
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::X_FRAME_OPTIONS, "DENY"),
+        (header::REFERRER_POLICY, "no-referrer"),
+        (header::CONTENT_SECURITY_POLICY, CSP),
+    ] {
+        h.entry(name).or_insert(header::HeaderValue::from_static(value));
     }
+    res
 }
 
 fn api_router(state: AppState) -> Router {
-    // Reads that cost the world thread or the store: rate-limited per client.
+    // Requests that cost the world thread or the store: rate-limited per
+    // client. Founding and opening a WebSocket (the world thread builds a
+    // full state for it) too.
     let reads = Router::new()
+        .route("/api/lineage", post(found_lineage))
+        .route("/ws", get(ws_upgrade))
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
         .route("/api/lineage/stats", get(lineage_stats))
@@ -199,7 +227,6 @@ fn api_router(state: AppState) -> Router {
         .route("/api/register", post(register))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
-        .route("/api/lineage", post(found_lineage))
         .route("/api/genes", get(genes))
         .route("/api/push/key", get(push_key))
         .route("/api/worlds", get(world_list))
@@ -207,7 +234,6 @@ fn api_router(state: AppState) -> Router {
         .route("/api/leaderboard", get(leaderboard))
         .route("/api/metrics", get(metrics))
         .merge(reads)
-        .route("/ws", get(ws_upgrade))
         .with_state(state)
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(cors())
@@ -1015,7 +1041,17 @@ async fn client_session(
                         Err(TrySendError::Disconnected(_)) => break,
                     }
                 }
-                Err(e) => local(ServerMsg::err(None, "message", ErrorInfo::new("bad_message", e.to_string()))),
+                // Malformed messages count against the command rate too.
+                Err(e) => {
+                    let err = match bucket.take(rate, Instant::now()) {
+                        Ok(()) => ErrorInfo::new("bad_message", e.to_string()),
+                        Err(wait) => ErrorInfo::new(
+                            "rate_limited",
+                            format!("too many commands; retry in {} ms", wait.as_millis().max(1)),
+                        ),
+                    };
+                    local(ServerMsg::err(None, "message", err));
+                }
             },
             Message::Close(_) => break,
             _ => {}
@@ -1107,6 +1143,11 @@ async fn season_one(
         .parse()
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "bad_season", "a season is a positive number"))?;
     let map = q.map.unwrap_or_else(|| w.map_id.to_string());
+    // Map ids are 16 hex digits; the id keys a cache entry, so a long one
+    // would let a client fill the cache with huge keys.
+    if map.len() > MAX_MAP_ID {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_map", "not a map id"));
+    }
     let (offset, limit) = crate::league::paging(q.offset, q.limit);
     let record = w.store.season_record(&map, season).await.map_err(ApiError::internal)?.ok_or_else(|| {
         let msg = format!("season {season} of world {} (map {map}) has not ended", w.id);
