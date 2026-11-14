@@ -77,6 +77,11 @@ const caps = {
   'appium:simulatorStartupTimeout': 300000,
   'appium:fullContextList': true,
   'appium:includeSafariInWebviews': false,
+  // The Web Inspector lists the app's page under its process name
+  // ("process-App", from the Xcode target App), not the bundle id, and
+  // Appium matches only bundle ids it knows (seen in CI: the page
+  // capacitor://localhost was listed, but only NATIVE_APP returned).
+  'appium:additionalWebviewBundleIds': ['process-App', APP],
   'appium:webviewConnectTimeout': 60000,
   ...(process.env.WDA_DERIVED_DATA ? { 'appium:derivedDataPath': process.env.WDA_DERIVED_DATA } : {}),
 };
