@@ -564,6 +564,7 @@ name = "evo-sim"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "flate2",
  "lz4_flex",
  "rand 0.8.8",
  "rand_pcg 0.3.1",

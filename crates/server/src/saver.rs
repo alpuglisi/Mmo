@@ -1,8 +1,8 @@
 //! The background saver: encodes saved games off the world thread.
 //!
 //! The world thread hands over a [`Capture`] (a clone of the game, cheap)
-//! and goes back to ticking; a dedicated `saver` thread encodes it (bincode and
-//! LZ4, the expensive part) and sends the bytes to the store task as a
+//! and goes back to ticking; a dedicated `saver` thread encodes it (bincode,
+//! LZ4 and deflate, the expensive part) and sends the bytes to the store task as a
 //! [`PersistEvent::Snapshot`], with the world's static terrain
 //! ([`TerrainBlob`]: encoded once per world and terrain hash, then shared by
 //! every save), which the store task writes first if the store lacks it.

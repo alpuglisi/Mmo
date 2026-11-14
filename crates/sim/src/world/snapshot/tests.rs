@@ -311,3 +311,39 @@ fn older_snapshots_are_refused_by_version() {
         );
     }
 }
+
+/// Version 10 snapshots (the tiles inside the payload, as builds before
+/// version 11 wrote them) still restore, to the same world.
+#[test]
+fn version_10_snapshots_still_restore() {
+    let w = fixture_world();
+    let old = w.snapshot_v10();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!((h.version, h.flags), (10, FLAG_LZ4));
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert!(r.map.tiles == w.map.tiles);
+    assert!(r.snapshot() == w.snapshot());
+    // A newer snapshot is smaller: the tiles compress better apart.
+    assert!(w.snapshot().len() < old.len());
+}
+
+/// The tile planes round-trip every bit pattern (negative zero, NaN,
+/// subnormals), on maps whose width is not a power of two.
+#[test]
+fn tiles_round_trip_bit_exactly() {
+    let odd = [0.0f32, -0.0, f32::NAN, f32::from_bits(1), f32::MAX, -1.5, 0.1];
+    for (width, height) in [(1, 1), (7, 5), (13, 1), (1, 9)] {
+        let tiles: Vec<Tile> = (0..width * height)
+            .map(|i| {
+                let b: [u32; TILE_FIELDS] =
+                    std::array::from_fn(|f| odd[(i * 3 + f) % odd.len()].to_bits() ^ (i as u32 * 0x9e37));
+                tile_from_bits(b)
+            })
+            .collect();
+        let back = decode_tiles(&encode_tiles(&tiles, width), width, height).unwrap();
+        assert!(tiles.iter().zip(&back).all(|(a, b)| tile_bits(a) == tile_bits(b)), "{width}x{height}");
+        // Another map size is refused.
+        assert!(decode_tiles(&encode_tiles(&tiles, width), width + 1, height).is_err());
+    }
+}

@@ -4,8 +4,8 @@
 //! Builds the standard world (founding populations × `scale`), runs it for
 //! `days`, then times `World::snapshot`, `World::restore` and `World::clone`
 //! (all a server's world thread pays to save in the background; it shares
-//! the static terrain) and prints the sizes (bincode before LZ4, and the
-//! stored bytes), and those of the terrain, which is stored once per world
+//! the static terrain) and prints the sizes (bincode before LZ4, the map's
+//! tiles written apart, and the stored bytes), and those of the terrain, which is stored once per world
 //! rather than in every snapshot (`Terrain::encode`).
 
 use std::time::Instant;
@@ -58,10 +58,10 @@ fn main() {
     }
     let clone_ms = t.elapsed().as_secs_f64() * 1000.0 / reps as f64;
     println!(
-        "raw {:.2} MB, stored {:.2} MB (LZ4 {:.0}%), {:.0} B/agent stored; snapshot {snap_ms:.0} ms, restore {restore_ms:.0} ms, clone {clone_ms:.1} ms",
+        "raw {:.2} MB and tiles {:.2} MB, stored {:.2} MB, {:.0} B/agent stored; snapshot {snap_ms:.0} ms, restore {restore_ms:.0} ms, clone {clone_ms:.1} ms",
         h.raw_len as f64 / 1e6,
+        (w.map.tiles.len() * std::mem::size_of::<evo_sim::terrain::Tile>()) as f64 / 1e6,
         bytes.len() as f64 / 1e6,
-        100.0 * bytes.len() as f64 / h.raw_len as f64,
         bytes.len() as f64 / w.organisms.len().max(1) as f64
     );
     println!("terrain (stored once per world): {:.2} MB, encoded in {terrain_ms:.0} ms", terrain.len() as f64 / 1e6);

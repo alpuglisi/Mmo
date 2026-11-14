@@ -41,8 +41,10 @@ const SHARE_MILESTONES: [f64; 5] = [0.01, 0.05, 0.1, 0.25, 0.5];
 /// kept by the store instead), 3 the ranked season under way and the last
 /// finished one (older saved games start tracking at their next day), 4
 /// auctions (with their highest bids) among the listings (versions 2 and 3
-/// read as having none).
-pub const SAVED_GAME_VERSION: u32 = 4;
+/// read as having none), 5 the same state saved smaller (the JSON deflated,
+/// the world snapshot's tiles apart: `crate::snapshot`; version 4 saved
+/// games still restore).
+pub const SAVED_GAME_VERSION: u32 = 5;
 /// Ledger entries returned by the `ledger` command unless asked otherwise.
 const LEDGER_DEFAULT: usize = 50;
 /// Genes shown for a listed organism.
