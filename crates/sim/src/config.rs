@@ -579,6 +579,14 @@ pub struct Balance {
     /// 0 makes obedience free.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v14"))]
     pub tameness: f32,
+    /// When a migrator leaves for its winter range: in autumn, once plant
+    /// regrowth at its summer range (`terrain::growth_warmth` of the
+    /// seasonal mean there) has fallen to this share of the full rate, so
+    /// the winter range's pasture is saved for the cold season instead of
+    /// being grazed down through autumn; in winter it goes regardless. 1
+    /// leaves at the first day of autumn (the old rule).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v15"))]
+    pub migration_onset: f32,
 }
 
 impl Default for Balance {
@@ -671,12 +679,13 @@ impl Default for Balance {
             cold_gestation: 1.0,
             nest_predation: 0.06,
             tameness: 0.4,
+            migration_onset: 0.2,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 85;
+    pub const FIELD_COUNT: usize = 86;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -771,6 +780,7 @@ impl Balance {
             ("cold_gestation", &mut self.cold_gestation),
             ("nest_predation", &mut self.nest_predation),
             ("tameness", &mut self.tameness),
+            ("migration_onset", &mut self.migration_onset),
         ]
     }
 

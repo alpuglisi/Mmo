@@ -3,7 +3,7 @@
 //! | Strategy | Rule |
 //! | --- | --- |
 //! | Hibernation / brumation | Fatten in autumn; dormant while the seasonal mean is below `dormancy_temp` in autumn and winter: near-zero hunger and thirst, safe from weather, no breeding, found in its den only by a hunter that comes close. Warm hibernators sleep until spring (rousing early only when parched, or starving with no fat left); brumators wake with the weather. Mismatches: a cold-blooded hibernator may never wake, a warm-blooded brumator burns fat. |
-//! | Migration | Summer range at its founding spot (young inherit their mother's), winter range `migration_range` of the map further south; heads for the best pasture near water on that latitude in autumn and back in spring, with a death risk per tile travelled. |
+//! | Migration | Summer range at its founding spot (young inherit their mother's), winter range `migration_range` of the map further south; heads for the best pasture near water on that latitude once its summer pasture has nearly stopped growing in autumn (`migration_onset`; in winter regardless) and back in spring, with a death risk per tile travelled. |
 //! | Estivation | Fatten in spring; dormant while the summer seasonal mean is above `estivation_temp`, or through a summer drought (`Map::dryness_at` past the drought line). |
 //! | Food caching | Gathers plant food into a cache in summer and autumn, eats from it in winter and spring. Anyone else can raid it. |
 //! | Torpor | On cold nights while resting: cheaper metabolism, cold costs nothing extra, but still exposed and slow to react until morning. |
@@ -389,7 +389,16 @@ impl World {
         if k <= 0.0 || dependent {
             return None;
         }
-        let south = matches!(self.season(), Season::Autumn | Season::Winter);
+        let south = match self.season() {
+            Season::Winter => true,
+            // In autumn it leaves once its summer pasture has (nearly)
+            // stopped growing (`migration_onset`).
+            Season::Autumn => {
+                let onset = self.config.balance.migration_onset;
+                onset >= 1.0 || crate::terrain::growth_warmth(self.seasonal_temp(o.range)) <= onset
+            }
+            Season::Spring | Season::Summer => false,
+        };
         let h = self.map.height as f32;
         let shift = self.config.balance.migration_range * k * h;
         let ty = if south { o.range.y + shift } else { o.range.y }.clamp(0.5, h - 0.5);
@@ -960,6 +969,8 @@ mod tests {
     #[test]
     fn migrators_head_south_in_autumn_and_home_in_spring() {
         let mut w = flat_world(15.0, 10.0, 0);
+        // Leaving on the first day of autumn (the onset is tested below).
+        w.config.balance.migration_onset = 1.0;
         let k = add(&mut w, &design(Thermo::Warm).with(Gene::Migration, 1.0), 2)[0];
         let mut o = w.organisms[k].clone();
         o.traits.seasonal.migration = 1.0;
@@ -984,10 +995,38 @@ mod tests {
         assert_eq!(w.seasonal_destination(&s, false), None);
     }
 
+    /// With `migration_onset` a migrator stays on its summer range through
+    /// early autumn while the pasture there still grows, and leaves once it
+    /// has nearly stopped (or winter comes); at 1 it leaves on the first day
+    /// of autumn.
+    #[test]
+    fn migrators_leave_when_the_summer_pasture_stops_growing() {
+        let mut w = flat_world(10.0, 10.0, 0);
+        let k = add(&mut w, &design(Thermo::Warm).with(Gene::Migration, 1.0), 2)[0];
+        let mut o = w.organisms[k].clone();
+        o.traits.seasonal.migration = 1.0;
+        o.range = Vec2::new(o.range.x, 4.0);
+        o.pos = Vec2::new(o.pos.x, 4.0);
+        let mut at = |onset: f32, day: u32| {
+            w.config.balance.migration_onset = onset;
+            set_day(&mut w, day);
+            w.seasonal_destination(&o, false).is_some()
+        };
+        // Day 65: about 11.6 °C at the range, regrowth near full; day 85:
+        // about 0.5 °C, regrowth nearly stopped.
+        assert!(at(1.0, 65), "the old rule leaves on the first days of autumn");
+        assert!(!at(0.2, 65), "stays while its summer pasture grows");
+        assert!(at(0.2, 85), "leaves once it has stopped");
+        assert!(at(0.0, 100), "leaves in winter regardless");
+        assert!(!at(0.2, 40), "home for the summer");
+    }
+
     #[test]
     fn migration_journeys_are_dangerous() {
         let trip = |risk: f32| {
             let mut w = flat_world(15.0, 40.0, 65);
+            // Setting off on the first day of autumn.
+            w.config.balance.migration_onset = 1.0;
             w.config.balance.migration_risk = risk;
             let m = add(&mut w, &design(Thermo::Warm).with(Gene::Migration, 1.0), 20);
             for &k in &m {
@@ -1124,6 +1163,7 @@ mod tests {
         let trip = |gt: f32, seed: u64| {
             let mut w = flat_world(15.0, 40.0, 65);
             w.config.seed = seed;
+            w.config.balance.migration_onset = 1.0;
             w.config.balance.migration_risk = 0.05;
             let d = design(Thermo::Warm).with(Gene::Migration, 1.0).with(Gene::GroupTolerance, gt);
             let m = add(&mut w, &d, 40);

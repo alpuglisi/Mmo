@@ -27,7 +27,8 @@ USAGE:
     evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N,..] [--lod] [--focus X,Y] [--sequential-apply] [--compare-apply]
     evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH] [--sequential-apply]
                    [--screen-days D,..] [--screen-seeds N] [--eta F] [--migrants]
-    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--set NAME=V ..] [vs [defaults | --set NAME=V ..]]
+    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--set NAME=V ..] [--migrant-gene GENE=V ..]
+                    [vs [defaults | --set NAME=V .. | --migrant-gene GENE=V ..]]
                     [--adaptive] [--max-seeds N] [--batch N] [--tolerance F]
     evo-sim rankcheck [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--spread F] [--screen-days D,..] [--eta F] [--out PATH]
     evo-sim designs
@@ -86,6 +87,10 @@ OPTIONS:
                     player lineage) (run, sweep, compare). Sweep and compare report it
                     but score only the standard eight lineages, so scores keep their
                     12-point scale
+    --migrant-gene GENE=V  Compare: found the migrating caribou with GENE set to V (implies
+                    --migrants; spaces in gene names as underscores; repeatable; before `vs`
+                    for A, after it for B), e.g. `--migrant-gene migration=0 vs defaults`
+                    measures what migrating buys the herd (paired, same seeds)
     --sequential-apply  Run the apply phase fully sequentially, as before the
                     parallel apply (run, bench, sweep; worlds differ from parallel ones)
     --compare-apply Bench: measure parallel and sequential apply, rotating days
@@ -108,7 +113,7 @@ migration_risk torpor_metabolism cache_capacity shared_burrow sentry_share
 sentry_vigilance sentry_cost communal_den group_navigation shared_cache molt_cost
 coat_insulation breeding_window timed_conception breeding_recklessness courtship_caution
 brood_recovery egg_overheat brood_warmth brood_cost threat_caution alert_guard pasture_search
-search_image cold_gestation nest_predation tameness possess_urgency possess_danger
+search_image cold_gestation nest_predation tameness migration_onset possess_urgency possess_danger
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
 juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump
@@ -144,6 +149,8 @@ struct Args {
     eta: f64,
     /// Compare: the configuration after `vs` (defaults unless `--set` follows).
     balance_b: Option<Balance>,
+    /// Compare: `--migrant-gene` overrides of the migrating lineage, for A and B.
+    migrant_genes: [Vec<(Gene, f32)>; 2],
     /// Compare: `--adaptive` (or `--max-seeds`) given.
     adaptive: bool,
     max_seeds: u64,
@@ -181,6 +188,7 @@ fn parse_args() -> Result<Args, String> {
         screen_seeds: None,
         eta: 3.0,
         balance_b: None,
+        migrant_genes: [Vec::new(), Vec::new()],
         adaptive: false,
         max_seeds: 48,
         batch: None,
@@ -255,6 +263,15 @@ fn parse_args() -> Result<Args, String> {
                 if !target.set(name, x) {
                     return Err(format!("--set: unknown balance parameter '{name}'"));
                 }
+            }
+            "--migrant-gene" => {
+                let v = value()?;
+                let (name, x) = v.split_once('=').ok_or(format!("--migrant-gene expects GENE=VALUE, got '{v}'"))?;
+                let x: f32 = x.parse().map_err(|_| format!("--migrant-gene {name}: '{x}' is not a number"))?;
+                let gene = Gene::ALL.iter().copied().find(|g| g.label().replace(' ', "_") == name).ok_or(format!(
+                    "--migrant-gene: unknown gene '{name}' (spaces as underscores, e.g. group_tolerance)"
+                ))?;
+                a.migrant_genes[usize::from(a.balance_b.is_some())].push((gene, x.clamp(0.0, 1.0)));
             }
             "--lod" => a.lod.enabled = true,
             "--sequential-apply" => a.sequential_apply = true,
@@ -337,6 +354,7 @@ fn main() -> ExitCode {
                 out: args.out.clone(),
                 parallel_apply: !args.sequential_apply,
                 migrants: args.migrants,
+                migrant_genes: args.migrant_genes.clone(),
                 adaptive: args.adaptive.then(|| adaptive::AdaptiveArgs {
                     initial: seeds,
                     batch: args.batch.unwrap_or(seeds),

@@ -56,7 +56,7 @@ docs/
 | `chronicle` | Scoring (seasonal leaderboards, secondary achievements) | Eras with final legacy rankings and niche leaders, catastrophes (severe winter, megadrought, epidemic, flood year) and prestige-only achievements. |
 | `world` | Needs and behavior, everything else | The tick loop: utility-AI decisions (parallel), then movement, grazing, hunting, scavenging, drinking, courtship, pregnancy, eggs and incubation, nursing, growth, death. |
 | `world::disease` | Genetics: picky vs flexible | Mating-transmitted disease: pathogens emerge at matings (4× between founding lineages), pass between mates (natural and directed) and between nursing mothers and young, drain the acutely sick's health (dulling their display) and cut fertility; infections end in immunity or lifelong symptomless carriage. Also deaths of homozygotes for harmful recessives. Reports count infections, current sick and carriers, harmful alleles per organism, and `disease` / `recessive` deaths per lineage. |
-| `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter), short-term torpor on cold nights, a seasonal coat (winter coat molted in autumn and shed in spring, food per molt; a mismatch on cold-blooded bodies) and timed breeding (a narrow early-spring window with strong drive and better conception, no breeding outside it). |
+| `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile; it leaves in autumn once its summer pasture has nearly stopped growing, `migration_onset`), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter), short-term torpor on cold nights, a seasonal coat (winter coat molted in autumn and shed in spring, food per molt; a mismatch on cold-blooded bodies) and timed breeding (a narrow early-spring window with strong drive and better conception, no breeding outside it). |
 | `world::par_apply` | Scale and performance (parallel regions) | The apply phase on all cores (`WorldConfig::parallel_apply`, default on; `--sequential-apply` for the old fully sequential apply): each turn split into a parallel movement sweep, a sequential interaction sweep in shuffled order, a parallel needs sweep and a sequential death/birth sweep. See [Parallel apply](#parallel-apply). |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
 | `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends; and group commands as genes: an `obedience` gene sets how strongly each animal heeds them, paid for in tameness. See [Groups and territory](#groups-and-territory). |
@@ -200,6 +200,7 @@ cargo run --release --bin evo-sim -- sweep --trials 16 --seeds 3 --rounds 2 --ou
 cargo run --release --bin evo-sim -- sweep --trials 24 --seeds 12 --screen-days 40 --screen-seeds 4 --eta 4   # screened sweep
 cargo run --release --bin evo-sim -- compare --seed 31 --seeds 24 --set larval_competition=18 vs defaults   # is A better than B?
 cargo run --release --bin evo-sim -- compare --seed 31 --adaptive --set larval_competition=18 vs defaults   # add seeds until it resolves
+cargo run --release --bin evo-sim -- compare --seed 101 --adaptive --tolerance 0 --migrants vs --migrant-gene migration=0   # what migrating buys the caribou
 cargo run --release --bin evo-sim -- rankcheck --trials 24 --seeds 4 --spread 0.5   # do 40-day screen ranks predict 120-day ranks?
 cargo run --release --bin evo-sim -- run --set sprint=2.0 --set crowding=0.05   # try a balance tweak
 cargo run --release --example trace -- 3 200          # follow one fox (lineage 3)
@@ -1171,7 +1172,10 @@ reads as 0 (`serde_util::before_v13`). Version 13 ones restore too: versions
 10 to 13 lack the obedience gene and `Balance::tameness` (version 14), so
 every organism's obedience locus reads as the design default, 0.5, tagged
 like its wanderlust alleles (it behaves as it did), and `tameness` as its
-default (`serde_util::before_v14`).
+default (`serde_util::before_v14`). Version 14 ones restore too: versions
+10 to 14 lack `Balance::migration_onset` (version 15), which reads as 1,
+the rule they ran under (migrators leave on the first day of autumn;
+`serde_util::before_v15`).
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1220,7 +1224,7 @@ claimed territories and claim times); version 11 writes the tiles apart
 (above); version 12 adds the balance parameter `cold_gestation`, version 13
 `nest_predation`; version 14 adds the `obedience` gene (a locus in every
 genome and a value in every species representative) and the balance
-parameter `tameness`.
+parameter `tameness`; version 15 the balance parameter `migration_onset`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -2876,8 +2880,16 @@ only meaningful with its spread over seeds:
   from `--seed`, 96×96, 120 days), prints per-seed scores and the lineages
   each lost, the paired difference A − B with its 95% CI, t and win/loss
   count, what the CI would be unpaired, per-lineage paired differences in
-  survival and mean alive, and a verdict, including roughly how many seeds a
-  difference of the observed size would need to resolve. Adopt a change only
+  survival, mean alive and legacy (the owner's share of all alleles in
+  breeding adults at the end, in percentage points; the four wild lineages
+  share one owner, so their rows show the wild total), and a verdict,
+  including roughly how many seeds a difference of the observed size would
+  need to resolve. `--migrant-gene GENE=V` (repeatable, gene names with
+  underscores for spaces; before `vs` for A, after it for B; implies
+  `--migrants`) founds the migrating caribou with that gene changed, so a
+  design's gene can be measured paired on the same seeds and rules:
+  `compare --migrants vs --migrant-gene migration=0` is what migrating buys
+  the herd (see *Migration and winter ranges* in [Balance](#balance)). Adopt a change only
   when the paired CI excludes 0 on seeds no tuning run saw (31 onward).
 - **Adaptive `compare`** (`--adaptive`, or `--max-seeds N` which implies
   it) adds seeds until the answer is clear instead of guessing a seed count:
@@ -3474,7 +3486,7 @@ group-navigation carrier. At body size 0.55 (antelope size) the herd was
 lost on 3 of 8 test seeds to pack hunters on its autumn trek and in its
 winter range (autumn predation 300 of 478 deaths on two seeds); at 0.72 it
 is out of reach of most packs. A test (`caribou_migrate_south_as_a_group`)
-checks that in autumn the herd is on the move south with most migrants
+checks that by late autumn the herd is on the move south with most migrants
 navigating as a group. Founding it changes the other lineages' worlds, and
 an extra lineage would raise the score's maximum from 12 to 13.5, so it is
 an **extra lineage**: `run`, `sweep` and `compare` take `--migrants`
@@ -3994,6 +4006,95 @@ reshuffles founder and mutation randomness, which alone moved a 12-seed score by
 0.4 (seeds 43–54: 11.13 before, 10.70 with the new genes and no strategies
 in use, 10.71 with the presets' strategies).
 
+**Migration and winter ranges** (`migration_onset`). What does migrating
+buy a design? Paired runs of the Migrating caribou with and without the
+gene (`compare --migrants vs --migrant-gene migration=0`, same seeds and
+rules; the gene does nothing else, so the worlds differ only by the herd's
+journeys):
+
+| Rules, horizon (seeds) | Score A − B | Caribou mean alive | Caribou legacy (A; A − B) |
+| --- | --- | --- | --- |
+| Old rules, 120 days (101–148, `--adaptive --tolerance 0`) | −0.04 ± 0.16 (sequential CI −0.23 … +0.15) | −34 ± 27 * | 11.22%; −0.13 ± 0.97 pp |
+| Old rules, 240 days (101–124) | +0.18 ± 0.34 | −81 ± 34 * | 8.24%; −0.11 ± 0.93 pp |
+| `migration_onset` 0.2, 120 days (101–148, adaptive) | −0.03 ± 0.17 (−0.23 … +0.18) | −28 ± 29 | 11.50%; +0.15 ± 1.00 pp |
+| `migration_onset` 0.2, 240 days (101–124) | −0.01 ± 0.27 | −80 ± 36 * | 7.89%; −0.47 ± 0.99 pp |
+
+(± is the 95% CI of the paired difference; * excludes 0; survival 100%
+on both sides everywhere.) Migrating buys the caribou nothing: no legacy,
+and fewer members. A diagnostic run (seeds 101–106, the herd's mean
+latitude at mid-season, spring … winter; the summer range is at y ≈ 28 of
+96, the winter range 27 tiles south) shows why:
+
+- **Non-migrants winter in the south anyway.** Without the gene the herd
+  sits at y 27.5 / 29.4 / 29.3 / 54.9: when its northern pasture stops
+  growing (regrowth follows temperature, `terrain::growth_warmth`: none at
+  or below 0 °C, full from 12 °C; the seasonal mean is 2 + 26 · latitude
+  °C ± 12) hunger and pasture search walk it south in early winter, to
+  the latitude a migrator heads for, with no journey risk. The winter
+  range already has the better cold-season pasture: at the summer range
+  the late-winter mean is about −3 °C (no growth, snow), at the winter
+  range about +5 °C (40% of full regrowth). So a pasture-by-latitude rule
+  would not give winter ranges a reason to exist; it is there already.
+- **Migrants leave too early.** With the gene the herd sits at 26.6 /
+  26.9 / 40.7 / 52.7: it sets off on the first day of autumn, while its
+  summer pasture still grows, grazes its winter range down through autumn
+  and spends the winter on less (standing forage under the herd in late
+  winter 1.27 against the non-migrants' 1.90, hunger 35 against 28), and
+  it pays the trek (148 of about 1,050 deaths on the journey).
+
+Tried for winter-range pasture, neither kept: migrators choosing their
+winter spot by the forage standing there rather than its capacity
+(`veg_max`): no change (late-winter hunger 35.6 against 35.3, 6 seeds);
+and day-length plant growth (±50%: faster in the northern summer, slower
+in the northern winter, the reverse in the south), which feeds every
+herbivore and still left non-migrants ahead (240 days, 6 seeds: 444 alive
+against 361, legacy 9.9% against 9.7%).
+
+The rule kept: **`migration_onset`** (0.2; 1 is the old rule): in autumn a
+migrator leaves for its winter range only once plant regrowth at its
+summer range (`growth_warmth` of the seasonal mean there) has fallen to
+that share of the full rate, and in winter regardless, so the winter
+range's pasture is saved for the cold season. The caribou now leave about
+day 80 instead of 60 (mid-autumn latitude 29.7 instead of 40.7). Judged
+with `compare --adaptive --tolerance 0` on seeds 101–148 with
+`--migrants`, `--set migration_onset=0.2` against the old rule: score
++0.02 ± 0.10 (sequential CI −0.10 … +0.14, 48 seeds), no lineage's
+survival or mean alive changed significantly, caribou +5 ± 14 alive and
++0.28 ± 0.54 pp legacy: harmless to non-migrants, and not enough to make
+migrating pay for the caribou (table above). In tournaments it pays:
+fresh seeds 70001–70096 and 80001–80096 (`calibrate tournament`, 90 days,
+192 worlds, 768 entries), paired with `--set migration_onset=1`:
+
+| Win share | 70001–, old | 0.2 | 80001–, old | 0.2 | Both (192), old | 0.2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Cold abandoned eggs | 19.7% | 19.7% | 23.1% | 26.2% | 21.4% | 22.9% |
+| Cold incubated eggs | 31.7% | 31.7% | 29.6% | 26.8% | 30.6% | 29.1% |
+| Cold live birth | 22.2% | 23.8% | 30.4% | 30.4% | 26.1% | 26.9% |
+| Warm abandoned eggs | 7.8% | 9.4% | 4.5% | 4.5% | 6.1% | 6.9% |
+| Warm incubated eggs | 35.8% | 35.8% | 27.0% | 28.6% | 31.5% | 32.3% |
+| Warm live birth | 32.8% | 29.5% | 37.1% | 35.5% | 35.0% | 32.5% |
+| Migrators (gene > 0.5; 81 + 64 entries) | 21.0% | 23.5% | 14.1% | 21.9% | 17.9% | 22.8% |
+
+Designs that migrate gain significantly (mean final share +0.0064 ±
+0.0015, one standard error; +0.0050 ± 0.0016 and +0.0080 ± 0.0026 on the
+two sets); no class's mean share moves by more than about two standard
+errors (cold live bearers +0.0029 ± 0.0013, the rest within one and a
+half). A 90-day tournament ends with autumn, so most migrators no
+longer leave inside it: what they gain is mostly the autumn trek they
+skip. Pooled over both sets the classes span 6.9–32.5% (old rule
+6.1–35.0%); on each set alone one warm-blooded class is above 32% with
+either rule (warm incubated eggs 35.8% on the first, unchanged; warm live
+birth 35.5% on the second, 37.1% before), the noise of one 96-world set
+being about ±5 points (see item 4 of [Suggested next
+steps](#suggested-next-steps)). The standard world has no migrators, so the
+standard sweeps and the smoke check are untouched (12-seed sweeps 11.76
+from seed 31 and 11.72 from 55, `scripts/balance-smoke.sh` 11.18 with 22 of
+24 lineage-worlds), as is the client wire fixture. Snapshots move to format
+version 15 (versions 10–14 restore with `migration_onset` 1, the old
+rule). New tunable: `migration_onset`. Tooling: `compare --migrant-gene`
+and the legacy column in `compare` (see *Judging scores statistically*
+above).
+
 ## Suggested next steps
 
 In priority order; each item is open (done work is described in the
@@ -4030,11 +4131,17 @@ sections above).
    long soak with 6 worlds.
 4. **Birth-mode balance watch.** Against the target in
    *Thermoregulation × birth mode* ([Balance](#balance): no class above
-   about 30–32% of tournament wins on fresh seeds) the classes now span
-   about 11–30% on fresh seeds (`cold_gestation`, `nest_predation`). Warm
-   live bearers still reach 33% on the tuning seeds 10001–10096; re-check
-   with fresh tournaments after rule changes that touch breeding, and if a
-   class settles above 32%, look at warm live bearers first.
+   about 30–32% of tournament wins on fresh seeds) the classes spanned
+   about 11–30% on fresh seeds 50001–60096 (`cold_gestation`,
+   `nest_predation`). On two newer fresh sets (70001–70096 and
+   80001–80096, with `migration_onset`; see *Migration and winter ranges*
+   in [Balance](#balance)) they span 6.9–32.5% pooled, but each set alone
+   has one warm-blooded class at 35–36% (warm incubated eggs on the
+   first, warm live bearers on the second, with or without
+   `migration_onset`), and warm live bearers reach 33% on the tuning
+   seeds 10001–10096. Re-check with fresh tournaments after rule changes
+   that touch breeding; warm live bearers are the first suspect if one
+   class settles above 32% over several fresh sets.
 5. **World-thread cost.** At high density decide is still most of a tick
    and is now bound by memory (neighbor genes and positions; see [High
    density](#high-density-decide-act-sweep-sub-step-states)); going further
@@ -4075,8 +4182,20 @@ sections above).
    looks until the CI excludes 0, fits within ±tolerance or hits
    `--max-seeds`) and `rankcheck` (40-day screens predict 120-day ranks at
    ρ ≈ 0.65 in a wide round, ≈ 0.31 in a narrow one; prefer 60-day screens
-   as loser filters). Open: a `rankcheck` with more seeds per trial (8–12)
-   to separate screen error from full-run noise in narrow rounds, and
-   what migrating buys a design (the caribou with and without the
-   gene, paired) and a reason for winter ranges to exist (better
-   cold-season pasture than the summer range).
+   as loser filters), `compare --migrant-gene` with a legacy column
+   (what a gene buys a design, paired). Measured with it: migrating buys
+   the caribou nothing (legacy −0.13 ± 0.97 pp, mean alive −34 ± 27 over
+   120 days; −81 ± 34 over 240), and `migration_onset` (leave once the
+   summer pasture stops growing) helps migrating tournament designs but
+   not the caribou (*Migration and winter ranges* in
+   [Balance](#balance)). The winter range already has the better
+   cold-season pasture; what keeps migration from paying is that
+   non-migrants reach it too, walking south as their pasture freezes,
+   without the journey risk (`migration_risk` applies to a migrator's
+   trek only), while a migrating herd crowds one range latitude. Open:
+   a rule that makes the gene pay against that drift (journey risk for
+   long walks by anyone, or a winter-range spread that matches the
+   non-migrants' grazing), judged with `compare --migrants vs
+   --migrant-gene migration=0` over two years; and a `rankcheck` with
+   more seeds per trial (8–12) to separate screen error from full-run
+   noise in narrow rounds.

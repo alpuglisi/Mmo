@@ -37,13 +37,19 @@ pub const MIGRANT_OWNER: PlayerId = 5;
 /// The standard world's eight lineages keep their indices, so scores over
 /// them stay comparable; the extra lineage is scored on its own.
 pub fn extended_world(config: WorldConfig, scale: u32) -> World {
+    extended_world_with(config, scale, &migrant_design())
+}
+
+/// [`extended_world`] with `design` as the fifth player lineage in place of
+/// the migrating caribou (`evo-sim compare --migrant-gene` founds a variant
+/// of it, e.g. the same herd without the migration gene).
+pub fn extended_world_with(config: WorldConfig, scale: u32, design: &FounderDesign) -> World {
     let mut world = standard_world(config, scale);
-    let design = migrant_design();
     if scale <= 1 {
-        world.found_lineage(MIGRANT_OWNER, &design).expect("preset designs fit the budget");
+        world.found_lineage(MIGRANT_OWNER, design).expect("preset designs fit the budget");
     } else {
         let n = (design.founders * scale).max(4);
-        world.found_lineage_unchecked(MIGRANT_OWNER, &design.founders(n));
+        world.found_lineage_unchecked(MIGRANT_OWNER, &design.clone().founders(n));
     }
     world
 }
@@ -247,7 +253,7 @@ mod tests {
     }
 
     /// The migrating caribou are a fifth player lineage after the standard
-    /// eight, group-navigation carriers, and in autumn their herd heads
+    /// eight, group-navigation carriers, and in late autumn their herd heads
     /// south together (`seasonal_destination`, `navigation_bonus`).
     #[test]
     fn caribou_migrate_south_as_a_group() {
@@ -261,9 +267,11 @@ mod tests {
         let herd: Vec<_> = w.organisms.iter().filter(|o| o.lineage == l).collect();
         assert!(herd.iter().all(|o| GroupTrait::GroupNavigation.is_carrier(&o.pheno)));
         let start = herd.iter().map(|o| o.pos.y).sum::<f32>() / herd.len() as f32;
-        // Into autumn: the herd is on its way, navigating as a group.
+        // Into late autumn, once its summer pasture has stopped growing
+        // (`Balance::migration_onset`): the herd is on its way, navigating as
+        // a group.
         let (mut migrating, mut navigating) = (0, 0);
-        for _ in 0..70 {
+        for _ in 0..90 {
             w.run_days(1);
             for o in w.organisms.iter().filter(|o| o.alive && o.lineage == l && o.action == Action::Migrate) {
                 migrating += 1;
