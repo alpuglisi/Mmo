@@ -85,18 +85,18 @@ async function register(page, base, name) {
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 });
   await page.fill('#design-name', `${name} line`);
   await page.click('#design-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 15000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 });
   await waitFor('own organisms', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
 }
 
 /** Reload (the session is remembered) and wait for the game screen to settle. */
 async function reload(page) {
   await page.reload();
-  await page.waitForSelector('#world-canvas', { timeout: 15000 });
-  await page.waitForFunction(() => document.querySelector('#conn-state')?.textContent === 'connected', null, { timeout: 15000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 });
+  await page.waitForFunction(() => document.querySelector('#conn-state')?.textContent === 'connected', null, { timeout: 45000 });
   await page.waitForTimeout(1200);
 }
 

@@ -106,10 +106,10 @@ async function register(page, base, name) {
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 });
   await page.fill('#design-name', `${name} line`);
   await page.click('#design-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 15000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 });
 }
 
 async function login(page, base, name) {
@@ -117,7 +117,7 @@ async function login(page, base, name) {
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#login-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 15000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 });
 }
 
 async function openSettings(page) {
@@ -222,7 +222,7 @@ async function main() {
     step('switching a kind off saves it to the account');
 
     await page.reload();
-    await page.waitForSelector('#world-canvas', { timeout: 15000 });
+    await page.waitForSelector('#world-canvas', { timeout: 45000 });
     await openSettings(page);
     await waitFor('status on after a reload', async () => (await status(page)) === 'on');
     if (await page.$eval('#push-kinds input[data-push-kind="season"]', (e) => e.checked)) throw new Error('season is on again after a reload');

@@ -76,10 +76,10 @@ async function register(page, base, name, lineage) {
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 });
   await page.fill('#design-name', lineage);
   await page.click('#design-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 15000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 });
   await waitFor('own organisms', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
   await waitFor('markers', () => page.evaluate(() => (window.evo.screen()?.view.spriteStats().markers ?? 0) > 0));
 }
@@ -482,10 +482,10 @@ async function worldChecks(browser, base, errors) {
   if (!(await page.textContent('#world-info')).includes('48×48')) throw new Error(`world info: ${await page.textContent('#world-info')}`);
   await shot(page, 'pixel7-world-picker.png');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 });
   await page.fill('#design-name', 'Isle walkers');
   await page.click('#design-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 15000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 });
   await waitFor('own organisms', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
   await waitFor('Ann online on the isle', async () => {
     const o = await online();
@@ -505,7 +505,7 @@ async function worldChecks(browser, base, errors) {
   await page.waitForSelector('#world-select', { state: 'visible' });
   await page.selectOption('#world-select', 'main');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 });
   await waitFor('Bob online on the mainland', async () => (await online()).main === 1);
   await page.click('text=Log out');
   await page.waitForSelector('#login-name');

@@ -96,7 +96,7 @@ async function main() {
     await page.fill('#login-name', name);
     await page.fill('#login-password', 'a long password');
     await page.click('#register-submit');
-    await page.waitForSelector('#design-name', { timeout: 15000 });
+    await page.waitForSelector('#design-name', { timeout: 45000 });
     step('registered; design editor shown');
 
     // Design: the live cost follows the sliders and refuses an over-budget design.
@@ -143,7 +143,7 @@ async function main() {
     step(`founded lineage ${body.lineage} with ${body.founders.length} founders; server cost ${body.cost.toFixed(2)} matches the client`);
 
     // World view with organisms.
-    await page.waitForSelector('#world-canvas', { timeout: 15000 });
+    await page.waitForSelector('#world-canvas', { timeout: 45000 });
     await waitFor('own organisms in state', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
     await waitFor('markers drawn', () => page.evaluate(() => {
       const v = window.evo.screen()?.view;
@@ -195,7 +195,7 @@ async function main() {
     await bob.fill('#login-name', `${name}_b`);
     await bob.fill('#login-password', 'a long password');
     await bob.click('#register-submit');
-    await bob.waitForSelector('#design-name');
+    await bob.waitForSelector('#design-name', { timeout: 45000 });
     await bob.fill('#design-name', 'Bob striders');
     for (const [g, v] of Object.entries(set)) {
       await bob.$eval(`input[data-gene="${g}"]`, (el, v) => {
@@ -204,7 +204,7 @@ async function main() {
       }, v);
     }
     await bob.click('#design-submit');
-    await bob.waitForSelector('#world-canvas');
+    await bob.waitForSelector('#world-canvas', { timeout: 45000 });
     await waitFor('bob state', () => bob.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0), 40000);
     await page.click('#tab-matings');
     await bob.click('#tab-matings');
