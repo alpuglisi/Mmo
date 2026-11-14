@@ -42,6 +42,7 @@ pub mod groups;
 #[cfg(test)]
 mod groups_tests;
 pub mod lod;
+pub mod offline;
 mod par_apply;
 #[cfg(test)]
 mod path_tests;
@@ -233,6 +234,9 @@ pub struct World {
     den_cells: HashMap<(usize, usize), u16>,
     /// Level of detail: focus points and the cohorts of abstract regions.
     lod: lod::Lod,
+    /// Offline protection set by the caller; not saved (`world::offline`).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    offline: offline::OfflineProtection,
     /// Wall-clock time spent in each phase of `step` (for `bench`).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub phase_times: PhaseTimes,
@@ -330,6 +334,7 @@ impl World {
             shared_cache_at: HashMap::new(),
             den_cells: HashMap::new(),
             lod,
+            offline: Default::default(),
             phase_times: PhaseTimes::default(),
             config,
         }

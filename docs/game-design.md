@@ -317,10 +317,10 @@ Server load scales with organism count: players × organisms per lineage, plus a
 ## Open questions
 
 - [ ] Dominant designs: how to keep any single build from taking over (planned next)
-- [ ] Duplicate mutations: separate tags per origin, or credit only whoever had it first?
+- [ ] Duplicate mutations: separate tags per origin, or credit only whoever had it first? *(Currently separate tags per origin: with continuous alleles, "first" needs a rule for when two alleles count as the same. See README, Suggested next steps.)*
 - [ ] Seasonal strategy: fixed at design, or an evolvable gene?
 - [ ] Group commands (migration, splitting): keep as player levers, or make genetic?
 - [ ] Point costs for each trait and for founding population size
 - [ ] Tick rate, and whether the world runs real-time or slow and async
-- [ ] Offline protection: home ranges or surviving founder groups
+- [x] Offline protection: home ranges or surviving founder groups *(Built as surviving founder groups: for up to 12 hours after logout, a lineage down to its last 12 members suffers a quarter of the kills and half the starvation and thirst; organisms in a trade or on the market are exempt. See README, Offline protection.)*
 - [ ] Server compute: full simulation near players, statistical models elsewhere
