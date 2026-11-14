@@ -149,8 +149,11 @@ score).
   (`claim_cooldown`). Seasonal migration (a gene) still outranks the
   territory, and danger and thirst outrank both as usual.
 - **Rally** (`rally_group`, `cancel_rally`): gather a group at a point.
-  The circle it gathers in has radius `2 + √members` (at most 12), so a big
-  herd has room to graze. Members outside it walk to the point
+  The circle it gathers in has radius `2 + √members`, about π tiles of
+  ground per member, up to 24 tiles (the largest territory's cap, reached
+  at 484 members), so a big herd has room to graze and a rally never holds
+  a group tighter than the largest circle it could claim (the cap was 12,
+  reached at 100 members; see the measurement below). Members outside it walk to the point
   (`Action::Rally`, utility 0.55 × heed, like an ordered migration and
   walking back into a territory, so obedience weighs it the same way);
   inside it they roam and forage within the circle, exactly as in a
@@ -204,31 +207,63 @@ score).
   | Policy | Herd at day 120 (low / high) | High − low, herd at day 120 | High − low, mean herd | Share inside the order's circle (low / high) | High − low, starved / killed |
   | --- | --- | --- | --- | --- | --- |
   | none | 442 / 446 | +3.9 ± 21.8 | −0.4 ± 6.8 | – | −1.5 ± 9.0 / +2.4 ± 9.1 |
-  | pulse | 438 / 426 | −12.4 ± 46.0 | −1.2 ± 11.9 | 0.55 / 0.60 | +13.0 ± 28.8 / +6.8 ± 8.1 |
-  | rally | 190 / 217 | +27.1 ± 62.1 | +0.9 ± 10.2 | 0.80 / 0.87 | −16.6 ± 53.1 / −5.1 ± 6.5 |
+  | pulse | 444 / 478 | +34.1 ± 34.5 | +5.4 ± 11.0 | 0.70 / 0.74 | −13.0 ± 22.9 / +7.6 ± 9.7 |
+  | rally | 309 / 282 | −27.1 ± 46.6 | **−11.2 ± 9.4** | 0.88 / 0.91 | +6.1 ± 57.1 / −0.1 ± 7.3 |
   | territory | 391 / 369 | −21.3 ± 51.0 | **−14.9 ± 8.5** | 0.94 / 0.96 | −24.7 ± 50.4 / −2.1 ± 2.3 |
-  | bad-rally | 43 / 5 | **−37.3 ± 18.3** | **−36.7 ± 12.9** | 0.51 / 0.64 | −59.7 ± 26.3 / **+33.4 ± 16.5** |
+  | bad-rally | 50 / 6 | **−44.1 ± 27.2** | **−38.3 ± 15.2** | 0.54 / 0.65 | **−70.1 ± 30.9** / **+35.0 ± 15.4** |
 
-  Obedience does what it was built to do: obedient herds keep to the order
-  (+0.07 ± 0.02 of the herd inside a rally circle, +0.14 ± 0.06 under bad
-  orders, +0.02 ± 0.01 inside a territory, which even the headstrong
-  mostly keep to), and they follow bad orders to ruin (a barren rally point
-  costs the obedient herd 37 more animals of ~40, the dead taken by
-  predators out in the open where the headstrong would have scattered to
-  eat). But no scripted policy here made obedience pay: with good-looking
-  orders the difference is within noise, except that an obedient herd
-  holding a territory averaged 15 fewer animals over the run (it keeps to
-  a circle it has grazed down). The reason is that the orders themselves
-  cost this herd: against no orders, a standing rally ends it at 190
-  instead of 442 (−252 ± 44 at 0.2), a standing territory at 391 (−51 ±
-  73), and even the pulse is neutral (−3 ± 56). The herd grazers are
+  (Rows for the rally policies are with the 24-tile rally cap; the 12-tile
+  cap's are below.) Obedience does what it was built to do: obedient herds
+  keep to the order (+0.02 ± 0.01 of the herd inside a rally circle, +0.12
+  ± 0.05 under bad orders, +0.02 ± 0.01 inside a territory, which even the
+  headstrong mostly keep to), and they follow bad orders to ruin (a barren
+  rally point costs the obedient herd 44 more animals of ~50, the dead
+  taken by predators out in the open where the headstrong would have
+  scattered to eat). But no scripted policy here made obedience pay: with
+  good-looking orders the difference is within noise or against it (an
+  obedient herd under a standing rally or holding a territory averaged 11
+  and 15 fewer animals over the run: it keeps to a circle it has grazed
+  down). The reason is that the orders themselves cost this herd: against
+  no orders, a standing rally ends it at 309 instead of 442 (−133 ± 99 at
+  0.2, −164 ± 84 at 0.8), a standing territory at 391 (−51 ± 73), and the
+  pulse is neutral (+3 ± 54 at 0.2, +33 ± 52 at 0.8). The herd grazers are
   already near their carrying capacity on their own, and every order
-  confines them; a 12-tile rally circle is meant for gathering, not for
-  holding a 400-head herd for months. So obedience is worth breeding for
+  confines them. So obedience is worth breeding for
   where a player has short, specific uses (gathering a scattered herd,
   pulling it out of a hunting ground), and a headstrong herd is the safer
   default against careless orders. Nothing was retuned: the order costs
   are the design's ("every lever has a price"), not a bug.
+- **Rally circle for big groups** (next-steps item 7: should a rally hold
+  a large group less tightly?). With the cap at 12 tiles a 400-head herd
+  had ~1.1 tiles of ground per head inside the circle; the cap is now the
+  largest territory's, 24 tiles (`RALLY_MAX_RADIUS = TERRITORY_MAX_RADIUS`;
+  the `2 + √members` slope, so every group under 100 members, is
+  unchanged, and nothing else differs: no new tunable, no snapshot change,
+  and worlds without rallies step exactly as before). Measured with the
+  same command and seeds (101–124), the new cap against the old, paired
+  by (seed, obedience), mean ± 95% CI:
+
+  | Policy | Obedience | Herd at day 120 (12 → 24) | New − old, herd at day 120 | New − old, mean herd | New − old, share inside |
+  | --- | --- | --- | --- | --- | --- |
+  | rally | 0.2 | 190 → 309 | **+119.0 ± 95.8** | **+31.1 ± 17.5** | +0.08 ± 0.02 |
+  | rally | 0.8 | 217 → 282 | +64.8 ± 89.9 | **+19.0 ± 16.0** | +0.04 ± 0.02 |
+  | pulse | 0.2 | 438 → 444 | +5.9 ± 44.5 | +0.3 ± 9.4 | +0.15 ± 0.04 |
+  | pulse | 0.8 | 426 → 478 | **+52.4 ± 51.0** | +6.9 ± 7.4 | +0.14 ± 0.03 |
+  | bad-rally | 0.2 | 43 → 50 | +7.3 ± 16.4 | +4.1 ± 4.6 | +0.03 ± 0.02 |
+  | bad-rally | 0.8 | 5 → 6 | +0.5 ± 2.4 | +2.5 ± 3.4 | +0.01 ± 0.01 |
+
+  Both obedience levels together, a standing rally now leaves +92 ± 88
+  more animals at day 120 and +25 ± 16 more on average over the run, with
+  more of the herd inside the (larger) circle, and a short pulse is no
+  worse (+29 ± 41 at day 120). A standing rally still costs a herd at its
+  carrying capacity (above), as any confinement does, but it is no longer
+  a trap; a barren rally point is as ruinous as before (the circle is
+  bigger but still barren). The 12-tile rows of the table above were:
+  rally 190 / 217, high − low +27.1 ± 62.1 at day 120 and +0.9 ± 10.2 on
+  average, inside 0.80 / 0.87; pulse 438 / 426, −12.4 ± 46.0 and −1.2 ±
+  11.9, inside 0.55 / 0.60; bad-rally 43 / 5, −37.3 ± 18.3 and −36.7 ±
+  12.9, inside 0.51 / 0.64. `PER_RUN=1` makes the example print every
+  run, to pair two builds like this.
 - **Does obedience drift down without orders?** (`-- drift 360 $(seq 101
   112)`, the standard world for a year with `tameness` 0.4 against 0, which
   makes obedience neutral, same seeds): no measurable drift yet. Across all
@@ -719,7 +754,7 @@ Client → server:
 | `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for your adults: every group without `group`, else that group (`no_such_group` past 3); `data` = the clamped `{x, y}`. Replaces the territory of the groups it reaches |
 | `claim_territory` | `group?, x, y, radius` | Group `group` (default 0) holds the circle around `x, y`: the radius is kept between 3 and the group's `max_radius`; replaces its migration order; `data` = `{x, y, radius, claimed_tick}`. `claim_cooldown` (`detail.ticks_left`) within half a day of the group's last claim; `no_such_group` for a group without members; `bad_coordinates` for a non-finite number |
 | `abandon_territory` | `group?` | Give the territory up (`no_territory` if none) |
-| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 12) for 3 days; replaces its migration order or territory; `data` = `{x, y, radius, expires_tick}`. `no_such_group` for a group without members, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
+| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 24) for 3 days; replaces its migration order or territory; `data` = `{x, y, radius, expires_tick}`. `no_such_group` for a group without members, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
 | `split_group` | `group?, organisms?` | Divide a group (default 0) in two: the named organisms (yours, in that group, at most 2000), else the far half across its widest spread; `data` = `{group, moved, kept}`. `group_limit` at 4 groups, `group_too_small` if a side would be empty, `not_in_group`, `not_owned`, `too_many_organisms` |
 | `merge_groups` | `from, into?` | Every member of `from` joins `into` (default 0); `data` = `{moved}`; `same_group`, `no_such_group` |
 | `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window |
@@ -4789,10 +4824,12 @@ sections above).
    obedient herds keep to orders better and are ruined by bad ones, but no
    scripted policy made high obedience pay, because standing orders cost a
    herd near its carrying capacity more than they give, and obedience
-   hasn't drifted measurably in a year without orders. Follow-ups: measure
-   with real players' orders once there are some (the example's policies
-   are guesses), and decide whether a rally should hold a large group
-   less tightly (its circle stops at 12 tiles). (The seasons leaderboard is already served from cached
+   hasn't drifted measurably in a year without orders. A rally now holds
+   a large group less tightly (decided and done: its circle's cap is the
+   largest territory's, 24 tiles instead of 12, which leaves a herd under
+   a standing rally +92 ± 88 animals larger at day 120; see *Rally circle
+   for big groups*). Follow-up: measure with real players' orders once
+   there are some (the example's policies are guesses). (The seasons leaderboard is already served from cached
    standings: see *Cached standings*.) Offline protection is built in both
    forms ([Offline protection](#offline-protection)): the surviving core and
    the home range (a claimed territory shields its residents from hunters

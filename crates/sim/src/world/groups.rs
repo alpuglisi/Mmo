@@ -93,12 +93,17 @@ pub const RALLY_DAYS: f32 = 3.0;
 /// Utility of walking to the rally point (an ordered migration is 0.55).
 pub const RALLY_UTILITY: f32 = 0.55;
 /// Radius of a rally circle for a lone member; each member adds to it with
-/// the square root of their number ([`RALLY_RADIUS_PER_MEMBER`]), so a big
-/// herd gathers with room to graze.
+/// the square root of their number ([`RALLY_RADIUS_PER_MEMBER`]), so the
+/// area grows with the group (about π tiles per member) and a big herd
+/// gathers with room to graze.
 pub const RALLY_BASE_RADIUS: f32 = 2.0;
 pub const RALLY_RADIUS_PER_MEMBER: f32 = 1.0;
-/// Largest rally circle whatever the group's size.
-pub const RALLY_MAX_RADIUS: f32 = 12.0;
+/// Largest rally circle whatever the group's size: the largest territory
+/// ([`TERRITORY_MAX_RADIUS`]), so a rally never holds a group tighter than
+/// the circle it could claim (the cap is reached at 484 members; it was
+/// 12 tiles, reached at 100, which crammed a 400-head herd onto ~1 tile
+/// each).
+pub const RALLY_MAX_RADIUS: f32 = TERRITORY_MAX_RADIUS;
 
 /// How strongly `o` heeds its group's commands (`Gene::Obedience`): the
 /// factor on the utility of an ordered migration, of walking back into a
