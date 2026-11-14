@@ -3443,9 +3443,60 @@ code:
 | **Earlier search-image exception** (a hunter drops its search image at hunger 70 instead of 90, before its own hunger cascade starts) | +0.10 ± 0.14 | pack hunters 3 / 4, antelope 0 / 1, newts 1 / 0 | none | — |
 
 Neither helps the prey that booms threaten nor the founding packs, so
-neither earns its complexity. The next predator item is founding-phase
-hunting success: why 24 pack hunters make about one kill a day in their
-first weeks while prey are plentiful.
+neither earns its complexity.
+
+**Why founding hunters catch so little.** Temporary counters in `decide`
+and `attack` (not kept) followed grown pack hunters over their first 60
+days on the four lost seeds (108, 128, 136, 140) and four kept ones
+(101–104):
+
+| Per grown hunter | Lost seeds | Kept seeds |
+| --- | --- | --- |
+| Kills a day | 0.07–0.18 | 0.15–0.20 |
+| Hunger met by meat / by plants / accrued, a day | 0.7–2.2 / 24–29 / 32–35 | 1.2–2.5 / 25–34 / 32–34 |
+| Food decisions with prey in sight | 7–19% | 10–21% |
+| Time hunting (chasing or roaming) / courting / drinking | 25–46% / 21–41% / 8–29% | 33–51% / 30–45% / 5–16% |
+| Chase ticks that end in a strike; strikes slipped; strikes that kill | 13–22%; 49–61%; 30–45% | 16–20%; 48–57%; 36–46% |
+
+- Hunting is not where these hunters' food comes from. A 2.6 kg hunter
+  (carnivory 0.9) catches about one prey every 5–7 days, mostly newts and
+  voles (0.3–0.4 kg; targets average 0.3–0.85 kg); an antelope (4.8 kg) is
+  struck about once per 10 chases of one and slips half the strikes. Meat
+  covers about 2 of the 33 hunger points a day it needs (the hunter eats a
+  bite of each kill, then leaves for courting; the rest rots or goes to
+  others). About 85% comes from plants nibbled at 0.3 of a full graze while
+  courting, drinking or resting, at a plant efficiency of 0.1.
+- The rates differ little between lost and kept seeds. The lost seeds are
+  the tail of the same thin budget. On 128 and 140 water is far (a fifth to
+  a quarter of hunter time is spent walking to it), and on 136 the kill
+  rate is half. Seeds 102 and 104 also fall to 10 by day 60 and recover
+  later.
+- The cascade: a hungry hunter picks the food option, which for a
+  carnivore above 0.7 with no prey in sight (80–90% of the time) is
+  roaming under `Action::Hunt`. Roaming eats nothing, so hunger buys time
+  spent with no income. Strikes, chase energy and prey seen are not
+  outliers. Of the prey in range, 60% go unseen (stealth, camouflage),
+  10% are sheltered, and 7–15% each are dropped for warning colours,
+  search image or injury risk.
+
+Three targeted fixes were tried, each on seeds 101–148 against the
+defaults; none is in the code:
+
+| Rule | Score (A − B) | Lost (A / B) | Significant mean-alive changes |
+| --- | --- | --- | --- |
+| **Roaming forage** (a hunter roaming with no prey in sight nibbles plants at 0.3 when hunger > 30, like other actions) | −0.38 ± 0.24, B better | pack hunters 0 / 4, foxes 0 / 1, antelope 4 / 1, herd grazers 2 / 0 | pack hunters +124, foxes +100; voles −319, herd grazers −126, frogs −68, antelope −53 |
+| **Starving roaming forage** (the same only at hunger > 70) | +0.14 ± 0.22, not significant | pack hunters 0 / 4, foxes 0 / 1, antelope 1 / 1, herd grazers 3 / 0 | pack hunters +77, foxes +68; voles −273, newts −115, frogs −90, herd grazers −89, antelope −44 |
+| **Feeding at the kill** (a meat eater on a carcass keeps eating instead of courting, grouping, wandering or resting while hunger > 10) | screened only: on six of the seeds above meat rose from 1.6 to 2.1 hunger points a day and packs at day 60 moved both ways (5 → 12, 7 → 2, 8 → 6, 2 → 26, 10 → 14, 10 → 7) | — | — |
+
+Both forage rules save every founding pack, but they do it by making the
+hunters (and foxes) better fed all the time. That moves the lineage losses
+back from predators to prey, mostly herd grazers. Feeding at the kill
+can't help much while kills are this rare. So the founding packs' problem
+is the design's food budget, not one bad rule. A pack hunter of this
+size lives on what it nibbles, and anything that feeds it more costs the
+prey the rules were tuned to protect. Saving founding packs without
+costing prey would need a rule that acts only in the founding phase or
+only on a pack in decline, which is a design choice, not a balance fix.
 
 ## Point costs
 
@@ -3596,10 +3647,17 @@ sections above).
    4 of 48 seeds and the lost packs shrink from 24 to a handful in their
    first 40–60 days, of starvation and of thirst at hunger 90+, while
    prey grow. Two predator-side numerical responses (ratio-dependent
-   litters, an earlier search-image exception) were neutral. Next: why
-   founding hunters catch so little (strike success, chase energy,
-   prey seen per day), measured with `examples/predators` and `compare`
-   on 48+ seeds.
+   litters, an earlier search-image exception) were neutral. Measured
+   since (*Why founding hunters catch so little*): a pack hunter gets
+   about 2 of its 33 hunger points a day from meat (0.07–0.2 kills a
+   day, mostly 0.3 kg newts and voles) and about 85% from plants nibbled
+   while courting, drinking or resting. Hunger sends it roaming with no
+   prey in sight, which earns nothing. Letting roaming hunters nibble
+   saves every founding pack but costs prey lineages (−0.38, or +0.14
+   n.s. when only starving hunters nibble, with herd grazers lost on 3
+   seeds). What's left is a design question: a founding-phase or
+   declining-pack rule, or a pack-hunter sample design with a food budget
+   that works.
 6. **World-thread cost.** At high density decide is still most of a tick
    and is now bound by memory (neighbor genes and positions; see [High
    density](#high-density-decide-act-sweep-sub-step-states)); going further
