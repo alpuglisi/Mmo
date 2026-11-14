@@ -21,7 +21,8 @@ Where the design's build order stands:
   with login and world choice, the founder design editor, the world view
   with creature sprites, the Matings, Market, Genetics, Lineage, Seasons
   and World (chronicle) tabs, a phone layout and a first-session tour; Capacitor wraps
-  it for iOS and Android (not yet built on devices); see [Client](#client).
+  it for iOS and Android (the Android debug APK builds headless and in CI; neither
+  app has run on a device yet); see [Client](#client).
 
 What remains is in [Suggested next steps](#suggested-next-steps).
 
@@ -267,7 +268,7 @@ samples of 13.5k organisms (256×256, scale 10) takes 6.7 ms, every 5 days.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push and pull request, in four
+`.github/workflows/ci.yml` runs on every push and pull request, in five
 parallel jobs:
 
 | Job | What it runs |
@@ -275,6 +276,7 @@ parallel jobs:
 | Rust | `cargo fmt --all --check` (`rustfmt.toml`: width 120), `cargo build --release --workspace`, `cargo test --release --workspace` with a `postgres:16` service container (`DATABASE_URL` set, so the persistence tests also run against `PgStore`; `EVO_REQUIRE_DATABASE=1` makes them fail rather than skip if it goes missing), `cargo clippy --release --all-targets -- -D warnings`, and clippy on `evo-server --no-default-features` (no sqlx) (stable toolchain, cargo cache) |
 | Balance smoke check | `scripts/balance-smoke.sh`: `evo-sim sweep --size 64 --trials 1 --seeds 3 --rounds 1 --days 60` with the default `Balance`, failing if fewer than 14 of the 24 lineage-worlds (8 lineages × 3 seeds) still hold 4 members with 2 adults, or the score drops below 7 of 12. The current rules make 21 of 24 and 10.4, so only a rule change that wrecks coexistence trips it; thresholds are env-overridable (`MIN_SURVIVORS`, `MIN_SCORE`, `SEEDS`, `DAYS`, `SIZE`). |
 | Client | `npm ci`, `npm run typecheck`, `npm test`, `npm run build` |
+| Android app | builds the client, generates the Capacitor project (`npx cap add android`), installs JDK 21 and the Android SDK (`android-actions/setup-android`: platform-tools, platform 36, build-tools 35.0.0), runs `./gradlew assembleDebug` and uploads `app-debug.apk` as the `evolution-mmo-debug-apk` artifact (14 days). No iOS job: it needs a macOS runner with Xcode (see "Mobile apps" in [Client](#client)) |
 | End-to-end | builds `evo-server` and the client, installs Playwright and Chromium (CI only; developer machines have them pre-installed), runs `npm run e2e` and uploads the screenshots as an artifact when it fails |
 
 Run the same checks locally before pushing:
@@ -1754,6 +1756,46 @@ npm run cap:sync           # build + copy dist/ and plugins into both projects (
 npx cap open android       # or: npx cap run android / npx cap open ios
 ```
 
+Without Android Studio, the command-line SDK is enough for a debug APK
+(this is what the CI job does; the SDK goes under the git-ignored `target/`):
+
+```sh
+# from the repository root
+export ANDROID_HOME=$PWD/target/android-sdk
+mkdir -p $ANDROID_HOME/cmdline-tools
+curl -sSfL -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+unzip -q /tmp/cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools && mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null
+$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+(cd client && npm run build && npx cap add android)    # or `npx cap sync android` once added
+(cd client/android && ./gradlew assembleDebug)         # → app/build/outputs/apk/debug/app-debug.apk
+```
+
+Verified on Linux with JDK 21 (Capacitor 8.6.2's generated project as is:
+AGP 8.13.0, Gradle 8.14.3, minSdk 24, compile/target SDK 36; no project
+changes needed): `assembleDebug` succeeds and gives a 4.4 MB APK for
+`org.evolutionmmo.client` with only the `INTERNET` permission; with
+`EVO_CAP_CLEARTEXT=1 npx cap sync android` the built manifest carries
+`android:usesCleartextTraffic="true"` and the app's config
+`allowMixedContent: true` (a plain `npm run cap:sync` turns both off again,
+so rerun it with the variable when you switch). The app has not been run:
+the build machine has no KVM for an emulator, and no device was attached.
+iOS needs macOS with Xcode; a CI job for it would be a `macos-latest`
+runner doing `npx cap add ios` and `xcodebuild -workspace` (or
+`-project` with SPM) `-scheme App -sdk iphonesimulator
+CODE_SIGNING_ALLOWED=NO build`, not added because it has not been tried.
+
+**Backgrounded apps.** A phone that sleeps, or switches between Wi-Fi and
+cellular, can leave the game socket dead without a close event, and a
+backoff that grew while away could keep a resumed app waiting up to 15 s.
+The server pushes a state every state interval (1 s by default), so
+`GameSocket` abandons an open socket that has heard nothing for 20 s and
+reopens at once, and `main.ts` calls `socket.wake()` when the page becomes
+visible again, gets focus, comes back `online`, or receives Capacitor's
+`resume`: a pending retry runs immediately, and an open socket that
+delivers nothing within 4 s is reopened (unit-tested in `socket.test.ts`
+with a fake WebSocket; not yet seen on a device).
+
 The app's page is `https://localhost` (Android) or `capacitor://localhost`
 (iOS), so it talks to a remote game server. The origin comes from, in
 order: `?server=https://host:port` on the page URL (remembered), the
@@ -1778,6 +1820,7 @@ protocol.ts  wire types written by hand from crates/server/src/protocol.rs (keep
 api.ts       fetch wrapper for the HTTP API (ApiError carries code and detail)
 socket.ts    GameSocket: ids paired with `result`, 10 s reply timeout, reconnect with
              exponential backoff (0.5 s doubling to 15 s, ±20 % jitter), connection state;
+             reopens a socket silent for 20 s; `wake()` on resume skips the backoff;
              asks for protocol 2 and rebuilds its binary delta states into whole `state`s
 wire.ts      protocol 2 decoder (mirror of crates/server/src/wire.rs; wire.fixture.json pins them)
 model.ts     GameModel: latest state, offer table (requests, updates, outcomes), alerts feed, toasts; pub/sub
@@ -1935,8 +1978,8 @@ card explains and offers no button. Screenshot: `push-settings.png`.
 The server side of delivery is tested in Rust (`crates/server/tests/push.rs`)
 against a mock push service.
 
-**Not yet:** native builds tested on devices (the Capacitor projects are
-generated but not built here), push notifications in the native apps (their
+**Not yet:** native apps run on devices (the Android debug APK builds,
+locally and in CI; iOS has not been built), push notifications in the native apps (their
 WebViews have no Web Push: that needs FCM/APNs through a Capacitor plugin;
 the card says push is not available there; Safari on iOS has Web Push only
 for a site added to the home screen, `manifest.webmanifest` is there for it,
@@ -3810,11 +3853,20 @@ in use, 10.71 with the presets' strategies).
 In priority order; each item is open (done work is described in the
 sections above).
 
-1. **Mobile apps on devices.** The Capacitor projects are generated but
-   have never been built or run on a phone. Build both, play a session on
-   real iOS and Android devices (login with a remote server, touch
-   gestures, the bottom sheet, the onboarding tour, reconnects when the app
-   is backgrounded), and add the result to CI if it can run headless.
+1. **Mobile apps on devices.** The Android debug APK now builds headless
+   with the command-line SDK and in CI (the `android` job uploads it as an
+   artifact; see "Mobile apps" in [Client](#client)), the cleartext switch
+   for http dev servers is checked in the built manifest, and the socket
+   now recovers from a backgrounded app (silent-socket watchdog, `wake()`
+   on resume). Still open: install the APK on a real Android device (or an
+   emulator on a machine with KVM) and play a session (login with a remote
+   server over https and a LAN http server with `EVO_CAP_CLEARTEXT=1`,
+   touch gestures, the bottom sheet, the onboarding tour, reconnects after
+   backgrounding and network switches); build iOS on macOS, add a
+   `macos-latest` CI job for it (`xcodebuild … -sdk iphonesimulator
+   CODE_SIGNING_ALLOWED=NO`), and play the same session on an iPhone; an
+   emulator smoke run in CI (`reactivecircus/android-emulator-runner` on
+   a KVM-enabled Linux runner) once a device run shows what to check.
 2. **Native push notifications.** Web Push is implemented for the browser
    (see [Push notifications](#push-notifications)). What remains is native
    push in the Capacitor apps through FCM (Android) and APNs (iOS), and

@@ -94,6 +94,71 @@ describe('GameSocket', () => {
     expect(states.at(-1)).toBe('closed');
   });
 
+  it('reopens a socket that goes silent without closing', async () => {
+    const states: ConnState[] = [];
+    const sock = new GameSocket({
+      url: () => 'ws://x',
+      onMessage: () => {},
+      onState: (s) => states.push(s),
+      WebSocketImpl: FakeWs as unknown as typeof WebSocket,
+      staleMs: 5000,
+    });
+    sock.start();
+    FakeWs.all[0].open();
+    // Messages keep it alive.
+    for (let i = 0; i < 8; i++) {
+      await vi.advanceTimersByTimeAsync(1000);
+      FakeWs.all[0].receive({ type: 'welcome', player: 1, name: 'a', lineage: null });
+    }
+    expect(FakeWs.all).toHaveLength(1);
+    const pending = sock.send({ type: 'clear_view' });
+    // Silence: abandoned (its late events ignored) and reopened at once.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(FakeWs.all).toHaveLength(2);
+    expect((await pending).error?.code).toBe('disconnected');
+    expect(states.at(-1)).toBe('reconnecting');
+    FakeWs.all[0].onclose?.();
+    FakeWs.all[1].open();
+    expect(states.at(-1)).toBe('open');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeWs.all).toHaveLength(2);
+    sock.stop();
+  });
+
+  it('wake() skips the backoff and checks an open socket', async () => {
+    const sock = new GameSocket({
+      url: () => 'ws://x',
+      onMessage: () => {},
+      onState: () => {},
+      WebSocketImpl: FakeWs as unknown as typeof WebSocket,
+      minDelayMs: 10000,
+      maxDelayMs: 10000,
+      wakeGraceMs: 3000,
+    });
+    sock.start();
+    FakeWs.all[0].open();
+    FakeWs.all[0].drop();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeWs.all).toHaveLength(1); // waiting out ~10 s
+    sock.wake();
+    expect(FakeWs.all).toHaveLength(2);
+    FakeWs.all[1].open();
+    // Open and delivering after a wake: kept.
+    sock.wake();
+    await vi.advanceTimersByTimeAsync(500);
+    FakeWs.all[1].receive({ type: 'welcome', player: 1, name: 'a', lineage: null });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(FakeWs.all).toHaveLength(2);
+    // Open but silent after a wake: reopened.
+    sock.wake();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(FakeWs.all).toHaveLength(3);
+    sock.stop();
+    sock.wake();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(FakeWs.all).toHaveLength(3);
+  });
+
   it('stops retrying when told the token is bad', async () => {
     const states: ConnState[] = [];
     const sock = new GameSocket({

@@ -88,6 +88,46 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  android:
+    name: Android app (debug APK)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Build the client
+        run: |
+          npm ci
+          npm run build
+      # The native project is generated, not committed (client/android/ is
+      # git-ignored); the locked @capacitor/cli makes the same one each time.
+      - name: Generate the Android project
+        run: npx cap add android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-36 build-tools;35.0.0
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Assemble the debug APK
+        working-directory: client/android
+        run: ./gradlew assembleDebug --console=plain
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: evolution-mmo-debug-apk
+          path: client/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
   e2e:
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest
