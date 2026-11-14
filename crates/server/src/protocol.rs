@@ -161,6 +161,18 @@ pub enum ClientMsg {
     /// connection's next state is a keyframe. Handled by the connection (no
     /// `result`), never by the world.
     Resync,
+    /// Receive the ranked season under way as `season` messages (rows
+    /// `0..limit` of each category, default 5, at most
+    /// [`crate::league::MAX_ROWS`], plus your own row): one at once, then
+    /// one whenever the standings change (at most about once a second).
+    /// `on: false` stops them. Every watcher pages one shared copy of the
+    /// standings (`crate::standings`); answered by the world thread between
+    /// ticks, never queued behind world changes.
+    WatchSeason {
+        on: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
 }
 
 impl ClientMsg {
@@ -190,6 +202,7 @@ impl ClientMsg {
             ClientMsg::BrowseMarket { .. } => "browse_market",
             ClientMsg::Ledger { .. } => "ledger",
             ClientMsg::Resync => "resync",
+            ClientMsg::WatchSeason { .. } => "watch_season",
         }
     }
 }
@@ -341,6 +354,9 @@ pub enum ServerMsg {
     SessionEnded {
         reason: String,
     },
+    /// The ranked season under way, to a connection that sent
+    /// `watch_season` (same body as `GET /api/seasons/current`).
+    Season(Box<crate::league::CurrentSeason>),
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isOpen, parseServerMsg, type StateView } from './protocol';
+import { GameModel } from './model';
 
 const offer = {
   id: 4, from_player: 1, from_name: 'ann', to_player: 2, to_name: 'bob',
@@ -64,6 +65,22 @@ describe('parseServerMsg', () => {
     expect(alert?.type === 'alert' && alert.alert.organism).toBe(3);
     expect(parseServerMsg('{"type":"session_ended","reason":"expired"}')).toEqual({ type: 'session_ended', reason: 'expired' });
     expect(parseServerMsg('{"type":"alert","alert":{"kind":"death"}}')).toBeNull();
+  });
+
+  it('parses pushed season standings and keeps them in the model', () => {
+    const body = {
+      world_id: 'm', season: 3, first_day: 4, last_day: 5, length: 2, days: 1, days_left: 1, offset: 0, limit: 5,
+      standings: [{ category: 'legacy', total: 1, rows: [{ player: 1, name: 'ann', rank: 1, value: 0.5 }] }],
+    };
+    const m = parseServerMsg(JSON.stringify({ type: 'season', ...body }));
+    expect(m?.type === 'season' && m.standings[0].rows[0].name).toBe('ann');
+    expect(parseServerMsg('{"type":"season","season":3}')).toBeNull();
+    const model = new GameModel();
+    let seen = 0;
+    model.on('season', () => { seen += 1; });
+    model.apply(m!);
+    expect(model.season).toEqual(body);
+    expect(seen).toBe(1);
   });
 
   it('rejects malformed or unknown messages', () => {

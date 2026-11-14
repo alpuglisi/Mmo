@@ -617,6 +617,7 @@ Client → server:
 | `browse_market` | `mine?, limit?, cursor?, sort?, kind?, role?, max_price?, lineage?, species?, compatible?, hide_own?, with_own?` | One page: `data` = `{balance, escrow, slots_left, total, next_cursor?, own?, listings: [{id, owner, owner_name, organism, role (stud/dam), sex, fee, created_tick, expires_tick?, sales, busy, pregnant, lineage, lineage_name, generation, mother?, father?, offspring_raised, age_days, health, x, y, traits: [{gene, value}], preview?, kind (fixed/auction), auction?: {reserve, deadline_tick, high_bid?, high_bidder?, bids, min_bid}}]}`. `limit` default 20, at most 50; `next_cursor` (absent on the last page) goes back as `cursor` for the next page in the same order and filters; `total` counts the matches. `sort`: `newest` (default), `price_asc`, `price_desc` (price: the fee, or an auction's highest bid, its reserve before any), `ending` (deadline or expiry, none last), `fertility` (with `mine`: compatible first by expected fertility). Filters: `kind` `fixed`/`auction`, `role` `stud`/`dam`, `max_price`, `lineage`, `species` (its lineages, `GET /api/species`), `compatible` (with `mine`), `hide_own`; `with_own` adds `own`, all your listings. `preview` is `preview_mating` of your `mine` with the listed organism. `bad_cursor` for a cursor the server didn't make |
 | `ledger` | `limit?` | `data` = `{balance, escrow, entries: [{seq, player, tick, day, delta, balance, kind, text, offer?, listing?}]}`, newest first (default 50, at most 100); `kind`: `grant`, `income`, `achievement`, `escrow`, `sale`, `refund` |
 | `resync` | – | Protocol 2 only: the next state is a keyframe (no `result`; see below) |
+| `watch_season` | `on`, `limit?` | `on: true`: a `season` message at once (after the `result`) and then one whenever the ranked season's standings change, at most one a second (rows `0..limit` per category, default 5, at most 200, plus yours); `on: false` stops them. A new connection starts unwatched. Answered between ticks, never queued behind world changes |
 
 Server → client:
 
@@ -629,6 +630,7 @@ Server → client:
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
 | `session_ended` `{reason}` | The session expired; the socket closes next |
+| `season` `{world_id, season, first_day, last_day, length, days, days_left, offset, limit, standings}` | To a connection that sent `watch_season`: the ranked season under way (as `GET /api/seasons/current`), at once and on each change |
 
 **Protocol 2: binary delta states** (`wire.rs`, the client's `wire.ts`).
 A client that connects with `/ws?token=…&proto=2` gets `welcome` with
@@ -829,6 +831,54 @@ seasons (spring…winter, `GET /api/leaderboard/seasons`, the Lineage tab's
   (`world_id` tells them apart); `/api/seasons/:n` means the running map's
   unless `?map=<world_id>` names another. (Before several worlds this
   parameter was `?world=`, which now picks the world.)
+- **Cached standings** (`standings.rs`). Reads never recompute or reach the
+  store per request. The season under way is computed on the world thread
+  only when its standings change (`Game::live_season_key`: a generation the
+  tracker bumps on every counted day, species, stud fee and survival, the
+  season number, the days left and player names), published as one
+  `Arc<LiveSeason>` with the summary, and paged from that copy by
+  `/api/seasons/current` (which no longer queues a request on the world
+  thread) and by the `season` pushes to every `watch_season` connection
+  (each gets a page of the shared copy, with its own row found by index;
+  pushes are coalesced to one a second). Finished seasons, the season list,
+  player histories and the weather-season boards (`/api/leaderboard/seasons`,
+  which read the whole daily history) are cached per world in its
+  `WorldStore` (shared by the HTTP routes and the persist task) and
+  invalidated by the writes that change them: a season record written (a
+  rollover, or a replayed one) drops the lists and histories and replaces
+  the record, a "not ended" answer included; a daily record drops the
+  weather boards. Loads and season writes take one lock, so a load that
+  raced a write can't keep a stale answer, and a crowd missing one entry
+  loads it once. Invalidation is event-driven rather than a short expiry:
+  every change happens in this process and they are rare (one record per
+  rollover, one daily record per simulated day), so the cache is exact,
+  shows a rollover the moment it is written, and a steady crowd of readers
+  never reaches the store. (A second process writing the same world's
+  store would not be seen; one process serves a world.) Tested:
+  `standings::tests` (invalidation on writes, worlds kept apart, a load
+  racing a write), `league::tests` (generation per score change and
+  rollover), and `tests/standings.rs` (over HTTP and WebSocket, two worlds,
+  days and rollovers). Measured with `examples/standings_load.rs` (128²
+  world, 60 players, 4 finished seasons, 100 ms ticks, 200 clients, load
+  generator on the same 4-core box; server CPU per request above idle):
+
+  | Route | Before | After |
+  | --- | --- | --- |
+  | `/api/seasons/current` | 30.7k req/s, 25 µs | 57.3k req/s, 17 µs (off the world thread) |
+  | `/api/seasons` (file / PostgreSQL) | 1.5k / 2.6k req/s, 572 / 335 µs | 9.4k / 8.5k req/s, 134 / 119 µs |
+  | `/api/seasons/1` | 1.7k / 8.9k req/s, 538 / 111 µs | 34.0k / 30.8k req/s, 34 / 25 µs |
+  | `/api/seasons/player/:p` | 1.7k / 3.4k req/s, 551 / 131 µs | 49.0k / 42.9k req/s, 17 / 15 µs |
+  | `/api/leaderboard/seasons` | 120 req/s, 8.8 ms | 7.1k req/s, 155 µs |
+  | Seasons-tab poll (3 requests) | 1.8k polls/s | 15.9k polls/s |
+
+  At the web client's real rate (200 open tabs, one poll each 5 s), the
+  seasons tab costs 1.9% of a core instead of 5.6%, the lineage tab's
+  weather boards 2.1% instead of 35.5%. With `watch_season` the tab sends
+  no standings requests at all; 400 watching sockets cost about 1.5% of a
+  core more than 400 sockets that don't watch (7 pushes each in 30 s).
+  Under closed-loop load the world thread's tick p99 rises after the
+  change only because the server then answers 5–30× more requests on the
+  same 4 cores; at equal load it is unchanged or lower.
 
 ### Economy and stud marketplace
 
@@ -1586,8 +1636,11 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   under way (from `state.weather.catastrophe`), the renown balance (with
   escrow; a click opens the Market tab) and the connection state.
 - **Seasons** tab (`ui/seasons.ts`, pure helpers unit-tested in
-  `seasons.test.ts`), from `/api/seasons/current`, `/api/seasons` and
-  `/api/seasons/player/:me` every 5 s while open: the ranked season under way
+  `seasons.test.ts`), from `watch_season` pushes (the standings under way),
+  `/api/seasons` and `/api/seasons/player/:me` (on opening, at each rollover
+  the pushes show, at most every 5 s, and every 30 s; the current season
+  too while the socket is down; a push redraws only the season under way,
+  so opened seasons below stay put): the ranked season under way
   (clock, days left, your places, the top 5 per category plus your row), your
   record (seasons ranked, legacy crowns, titles, best place per category,
   recent placements), and the hall of fame (most titles; finished seasons

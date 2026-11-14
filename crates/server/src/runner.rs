@@ -35,8 +35,9 @@ use evo_sim::{FounderDesign, PlayerId};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::game::{ConnId, FoundError, FoundOk, Game, Outbox, PersistEvent, Target};
+use crate::league::LiveSeason;
 use crate::metrics::Metrics;
-use crate::protocol::{ChronicleView, ClientMsg, Leaderboard, LineageStats, WorldSummary};
+use crate::protocol::{ChronicleView, ClientMsg, Leaderboard, LineageStats, ServerMsg, WorldSummary};
 use crate::push::{PushError, PushSender, Pushed};
 use crate::saver::Saver;
 use crate::snapshot::Capture;
@@ -84,13 +85,6 @@ pub enum Request {
     Chronicle {
         reply: oneshot::Sender<Box<ChronicleView>>,
     },
-    /// The ranked season under way (`Game::current_season`).
-    Season {
-        offset: usize,
-        limit: usize,
-        player: Option<PlayerId>,
-        reply: oneshot::Sender<Box<crate::league::CurrentSeason>>,
-    },
     /// Save the game and stop the world thread (graceful shutdown). Queued
     /// world changes are dropped. The reply comes once the saver has
     /// encoded the last save and sent it on to the store task.
@@ -122,7 +116,19 @@ pub enum TerrainReply {
 pub struct Published {
     pub summary: WorldSummary,
     pub leaderboard: Leaderboard,
+    /// The ranked season under way with its full standings: recomputed only
+    /// when they change (`Game::live_season_key`), the same `Arc` otherwise
+    /// (`crate::standings`).
+    pub season: Arc<LiveSeason>,
 }
+
+/// Least wall time between two `season` pushes to the watchers (a busy
+/// market can change the standings every tick); a change in between goes
+/// out when it has passed. Not in manual mode (tests), which pushes at once.
+pub const SEASON_PUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Rows per category in a `season` push unless `watch_season` asks.
+pub const SEASON_PUSH_ROWS: usize = 5;
 
 #[derive(Clone, Debug)]
 pub struct RunnerConfig {
@@ -157,6 +163,13 @@ pub struct Runner {
     metrics: Arc<Mutex<Metrics>>,
     /// Push notifications (`crate::webpush`), when on.
     notifier: Option<WorldNotifier>,
+    /// The published ranked-season standings (see [`Published::season`]).
+    season: Arc<LiveSeason>,
+    /// Connections that sent `watch_season`, with their rows per category.
+    season_watchers: BTreeMap<ConnId, usize>,
+    /// The standings changed since the last push to the watchers.
+    season_dirty: bool,
+    season_pushed: Instant,
 }
 
 /// Handles for the rest of the server.
@@ -170,7 +183,9 @@ pub struct RunnerHandles {
 impl Runner {
     pub fn new(game: Game, cfg: RunnerConfig) -> (Self, RunnerHandles) {
         let (tx, rx) = std::sync::mpsc::sync_channel(REQUEST_QUEUE);
-        let initial = Arc::new(Published { summary: game.summary(), leaderboard: game.leaderboard() });
+        let season = Arc::new(game.live_season());
+        let initial =
+            Arc::new(Published { summary: game.summary(), leaderboard: game.leaderboard(), season: season.clone() });
         let (published, published_rx) = watch::channel(initial);
         let (persist, persist_rx) = mpsc::unbounded_channel();
         let saved_day = game.world.day();
@@ -189,6 +204,10 @@ impl Runner {
             saver,
             metrics: metrics.clone(),
             notifier: None,
+            season,
+            season_watchers: BTreeMap::new(),
+            season_dirty: false,
+            season_pushed: Instant::now(),
         };
         (runner, RunnerHandles { tx, published: published_rx, persist: persist_rx, metrics })
     }
@@ -299,6 +318,10 @@ impl Runner {
         for req in queued {
             self.apply(req);
         }
+        // A command can change the standings (a stud fee): publish them now
+        // rather than at the end of the next tick.
+        self.republish_season();
+        self.push_season();
         let mut m = self.metrics.lock().unwrap();
         m.apply.push(ms_since(started));
         m.applied += n as u64;
@@ -315,8 +338,13 @@ impl Runner {
         for ev in self.game.take_persist() {
             let _ = self.persist.send(ev);
         }
-        self.published
-            .send_replace(Arc::new(Published { summary: self.game.summary(), leaderboard: self.game.leaderboard() }));
+        self.refresh_season();
+        self.published.send_replace(Arc::new(Published {
+            summary: self.game.summary(),
+            leaderboard: self.game.leaderboard(),
+            season: self.season.clone(),
+        }));
+        self.push_season();
         let tick_ms = ms_since(started);
         let states_ms = push_state.then(|| {
             let started = Instant::now();
@@ -376,6 +404,7 @@ impl Runner {
             }
             Request::Disconnect { conn } => {
                 self.conns.remove(&conn);
+                self.season_watchers.remove(&conn);
                 self.game.disconnect(conn);
             }
             Request::Snapshot { scale, reply } => {
@@ -395,8 +424,8 @@ impl Runner {
             Request::Chronicle { reply } => {
                 let _ = reply.send(Box::new(self.game.chronicle()));
             }
-            Request::Season { offset, limit, player, reply } => {
-                let _ = reply.send(Box::new(self.game.current_season(offset, limit, player)));
+            Request::Command { conn, id, msg: ClientMsg::WatchSeason { on, limit }, .. } => {
+                self.watch_season(conn, id, on, limit);
             }
             Request::Step { ticks, reply } => {
                 self.apply_queued();
@@ -488,9 +517,72 @@ impl Runner {
                     Err(PushError::Closed) => {}
                 }
                 self.conns.remove(&c);
+                self.season_watchers.remove(&c);
                 self.game.disconnect(c);
             }
         }
+    }
+
+    /// Recompute the ranked-season standings if they changed since they
+    /// were last computed; true if they did.
+    fn refresh_season(&mut self) -> bool {
+        if self.game.live_season_key() == self.season.key {
+            return false;
+        }
+        self.season = Arc::new(self.game.live_season());
+        self.season_dirty = true;
+        true
+    }
+
+    /// [`Self::refresh_season`], and publish them if they changed (between
+    /// ticks; a tick publishes everything anyway).
+    fn republish_season(&mut self) {
+        if self.refresh_season() {
+            let season = self.season.clone();
+            self.published.send_modify(|p| *p = Arc::new(Published { season, ..(**p).clone() }));
+        }
+    }
+
+    /// Push changed standings to the watchers, at most once per
+    /// [`SEASON_PUSH_INTERVAL`] (the last change waits for it). Each
+    /// watcher gets a page of the shared standings: nothing is recomputed.
+    fn push_season(&mut self) {
+        if self.season_watchers.is_empty() {
+            self.season_dirty = false;
+            return;
+        }
+        if !self.season_dirty {
+            return;
+        }
+        if !self.cfg.manual && self.season_pushed.elapsed() < SEASON_PUSH_INTERVAL {
+            return;
+        }
+        self.season_dirty = false;
+        self.season_pushed = Instant::now();
+        let out: Outbox = self
+            .season_watchers
+            .iter()
+            .filter_map(|(&c, &limit)| {
+                let (player, _) = self.conns.get(&c)?;
+                Some((Target::Conn(c), ServerMsg::Season(Box::new(self.season.page(0, limit, Some(*player))))))
+            })
+            .collect();
+        self.dispatch(out);
+    }
+
+    /// `watch_season`: answer, and send a watcher the standings at once.
+    fn watch_season(&mut self, conn: ConnId, id: Option<u64>, on: bool, limit: Option<usize>) {
+        let Some(&(player, _)) = self.conns.get(&conn) else { return };
+        self.republish_season();
+        let mut out: Outbox = vec![(Target::Conn(conn), ServerMsg::ok(id, "watch_season", None))];
+        if on {
+            let limit = limit.unwrap_or(SEASON_PUSH_ROWS).clamp(1, crate::league::MAX_ROWS);
+            self.season_watchers.insert(conn, limit);
+            out.push((Target::Conn(conn), ServerMsg::Season(Box::new(self.season.page(0, limit, Some(player))))));
+        } else {
+            self.season_watchers.remove(&conn);
+        }
+        self.dispatch(out);
     }
 }
 

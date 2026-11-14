@@ -345,6 +345,8 @@ pub struct Game {
     last_season_record: Option<SeasonRecord>,
     /// Offline players' protection spells (`game::offline`).
     offline: OfflineTracker,
+    /// Name changes ([`Game::set_name`]), for [`Game::live_season_key`].
+    names_changed: u64,
 }
 
 /// The game-side state saved with each world snapshot (`crate::snapshot`):
@@ -491,6 +493,7 @@ impl Game {
             season,
             last_season_record: None,
             offline: OfflineTracker::default(),
+            names_changed: 0,
         }
     }
 
@@ -727,7 +730,10 @@ impl Game {
     }
 
     pub fn set_name(&mut self, player: PlayerId, name: &str) {
-        self.names.insert(player, name.to_string());
+        if self.names.get(&player).map(String::as_str) != Some(name) {
+            self.names.insert(player, name.to_string());
+            self.names_changed += 1;
+        }
     }
 
     fn name(&self, player: PlayerId) -> String {
@@ -942,7 +948,8 @@ impl Game {
                 Ok(Some(serde_json::to_value(view).unwrap()))
             }
             // The connection answers it (`http.rs`); nothing to do here.
-            ClientMsg::Resync => Ok(None),
+            // Answered by the world thread (`crate::runner`) before it gets here.
+            ClientMsg::Resync | ClientMsg::WatchSeason { .. } => Ok(None),
         }
     }
 
@@ -1949,21 +1956,26 @@ impl Game {
     /// The ranked season under way: rows `offset..offset + limit` of each
     /// category, plus `player`'s row.
     pub fn current_season(&self, offset: usize, limit: usize, player: Option<PlayerId>) -> CurrentSeason {
+        self.live_season().page(offset, limit, player)
+    }
+
+    /// What the ranked season's standings depend on: when it is unchanged,
+    /// so is [`Self::live_season`] (`crate::standings`). Cheap.
+    pub fn live_season_key(&self) -> league::LiveKey {
         let t = &self.season;
-        let standings = t.standings(|p| self.name(p));
         let next = self.last_legacy_day.map_or(t.first_day, |d| d + 1).max(t.first_day);
-        CurrentSeason {
-            world_id: self.world_id.clone(),
+        league::LiveKey {
             season: t.season,
-            first_day: t.first_day,
-            last_day: t.end_day.saturating_sub(1),
-            length: t.length(),
-            days: t.days,
+            generation: t.generation(),
             days_left: t.end_day.saturating_sub(next),
-            offset,
-            limit,
-            standings: league::page(&standings, offset, limit, player),
+            names: self.names_changed,
         }
+    }
+
+    /// The ranked season under way with its full standings (computed).
+    pub fn live_season(&self) -> league::LiveSeason {
+        let standings = self.season.standings(|p| self.name(p));
+        league::LiveSeason::new(self.live_season_key(), &self.world_id, &self.season, standings)
     }
 
     /// The last finished ranked season (since this world started).

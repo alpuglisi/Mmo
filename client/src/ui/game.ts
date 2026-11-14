@@ -15,7 +15,7 @@ import { describeLook } from '../world/creature';
 import { append, clear, h, label, pct } from './dom';
 import { renderAlertPrefs, renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
-import { renderSeasons as renderRanked, seasonKey, type SeasonsData } from './seasons';
+import { renderCurrentSeason, renderSeasons as renderRanked, seasonKey, type SeasonsData } from './seasons';
 import { compatSummary } from './mating';
 import { buildMarket } from './market';
 import { balanceText } from './marketData';
@@ -47,7 +47,15 @@ const TERRAIN_REFRESH_MS = 4000;
 const STATS_REFRESH_MS = 5000;
 const SEASONS_REFRESH_MS = 15000;
 const CHRONICLE_REFRESH_MS = 10000;
-const RANKED_REFRESH_MS = 5000;
+/**
+ * The seasons tab's fallback refresh. The standings under way are pushed over the socket while the tab is open
+ * (`watch_season`); finished seasons only change at a rollover, which a push shows.
+ */
+const RANKED_REFRESH_MS = 30000;
+/** Least time between two fetches of the finished seasons after rollovers. */
+const RANKED_ROLLOVER_MS = 5000;
+/** Rows per category of the season under way. */
+const RANKED_ROWS = 5;
 /** Finished seasons listed at first; "Older seasons" adds as many again. */
 const RANKED_PAGE = 10;
 const MARKET_REFRESH_MS = 5000;
@@ -187,6 +195,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (t === 'lineage') void refreshSeasons();
     if (t === 'world') void refreshChronicle();
     if (t === 'seasons') void refreshRanked();
+    watchSeason(t === 'seasons');
     if (t === 'market') void market.refresh();
     renderPanels(true);
   }
@@ -471,24 +480,65 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       void refreshRanked();
     },
   };
+  // The whole panel is redrawn when the finished seasons change; the season
+  // under way (pushed on every change) redraws only its own part.
   let rankedKey = '';
+  let currentKey = '';
   function drawRanked(force = false): void {
-    const key = JSON.stringify([ranked.current, ranked.list, ranked.mine, ranked.details.size]);
-    if (!force && key === rankedKey && tabs.seasons.childElementCount > 0) return;
+    const key = JSON.stringify([ranked.current !== null, ranked.list, ranked.mine, ranked.details.size]);
+    const cur = JSON.stringify(ranked.current);
+    if (!force && key === rankedKey && tabs.seasons.childElementCount > 0) {
+      if (cur !== currentKey && ranked.current && renderCurrentSeason(tabs.seasons, ranked.current, model.player)) currentKey = cur;
+      return;
+    }
     rankedKey = key;
+    currentKey = cur;
     renderRanked(tabs.seasons, ranked, model.player, rankedHandlers);
   }
+  /** Finished seasons, the player's history and (unless the socket pushes it) the season under way. */
+  let rankedFetched = 0;
   async function refreshRanked(): Promise<void> {
+    rankedFetched = Date.now();
     try {
+      const pushed = watching && model.conn === 'open';
       const [current, list, mine] = await Promise.all([
-        api.currentSeason(model.player, 5), api.rankedSeasons(0, rankedShown), api.playerSeasons(model.player, 50),
+        pushed ? Promise.resolve(ranked.current) : api.currentSeason(model.player, RANKED_ROWS),
+        api.rankedSeasons(0, rankedShown), api.playerSeasons(model.player, 50),
       ]);
-      Object.assign(ranked, { current, list, mine: mine.seasons });
+      Object.assign(ranked, { current: ranked.current && pushed ? ranked.current : current, list, mine: mine.seasons });
       if (tab === 'seasons') drawRanked();
     } catch {
       /* next time */
     }
   }
+  // The standings under way come over the socket while the tab is open: one
+  // shared copy on the server, pushed when it changes, instead of every open
+  // tab polling for it.
+  let watching = false;
+  let rolloverTimer: ReturnType<typeof setTimeout> | undefined;
+  function watchSeason(on: boolean): void {
+    if (on === watching) return;
+    watching = on;
+    if (model.conn === 'open') void deps.send({ type: 'watch_season', on, limit: RANKED_ROWS }).catch(() => { /* resent on reconnect */ });
+  }
+  cleanups.push(
+    // A new connection starts unwatched.
+    model.on('welcome', () => {
+      if (watching) void deps.send({ type: 'watch_season', on: true, limit: RANKED_ROWS }).catch(() => { /* next reconnect */ });
+    }),
+    model.on('season', () => {
+      const before = ranked.current?.season;
+      ranked.current = model.season;
+      if (tab === 'seasons') drawRanked();
+      // A rollover: the finished season and the player's places are new
+      // (fetched at most every RANKED_ROLLOVER_MS, for very short seasons).
+      if (before !== undefined && before !== model.season?.season && !rolloverTimer) {
+        const wait = Math.max(0, rankedFetched + RANKED_ROLLOVER_MS - Date.now());
+        rolloverTimer = setTimeout(() => { rolloverTimer = undefined; void refreshRanked(); }, wait);
+      }
+    }),
+    () => clearTimeout(rolloverTimer),
+  );
   const rankedTimer = setInterval(() => {
     if (tab === 'seasons') void refreshRanked();
   }, RANKED_REFRESH_MS);

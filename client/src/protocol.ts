@@ -48,7 +48,13 @@ export type ClientMsg =
   /** Balance and recent ledger entries; data: `LedgerView`. */
   | { type: 'ledger'; limit?: number }
   /** Protocol 2: the delta states stopped decoding; the next state is a keyframe (no reply). */
-  | { type: 'resync' };
+  | { type: 'resync' }
+  /**
+   * Get the ranked season under way as `season` messages (rows `0..limit` per category, default 5, plus your
+   * own row): one at once, then one per change (at most about once a second). `on: false` stops them; a new
+   * connection starts without.
+   */
+  | { type: 'watch_season'; on: boolean; limit?: number };
 
 /** `ClientEnvelope`: a command plus an optional id echoed in its `result`. */
 export type ClientEnvelope = ClientMsg & { id?: number };
@@ -401,7 +407,12 @@ export interface SessionEndedMsg {
   reason: string;
 }
 
-export type ServerMsg = WelcomeMsg | StateMsg | ResultMsg | MatingRequestMsg | MatingUpdateMsg | AlertMsg | SessionEndedMsg;
+/** The ranked season under way, to a connection that sent `watch_season` (the body of `GET /api/seasons/current`). */
+export interface SeasonMsg extends CurrentSeason {
+  type: 'season';
+}
+
+export type ServerMsg = WelcomeMsg | StateMsg | ResultMsg | MatingRequestMsg | MatingUpdateMsg | AlertMsg | SessionEndedMsg | SeasonMsg;
 
 // ---------------------------------------------------------------- economy and marketplace
 // Data of the `ledger`, `browse_market` and `create_listing` commands.
@@ -1065,6 +1076,8 @@ export function parseServerMsg(text: string): ServerMsg | null {
         ? (v as unknown as AlertMsg) : null;
     case 'session_ended':
       return isStr(v.reason) ? { type: 'session_ended', reason: v.reason } : null;
+    case 'season':
+      return isNum(v.season) && isNum(v.days_left) && Array.isArray(v.standings) ? (v as unknown as SeasonMsg) : null;
     default:
       return null;
   }
