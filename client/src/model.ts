@@ -4,7 +4,8 @@
 
 import { normalizePrefs, toasts, visibleFeed } from './alertPrefs';
 import {
-  DEFAULT_ALERT_PREFS, isOpen, type AlertKind, type AlertPrefs, type AlertView, type ErrorInfo, type MatingOutcome, type OfferView, type OrgId, type ServerMsg, type StateView,
+  DEFAULT_ALERT_PREFS, isOpen, type AlertKind, type AlertPrefs, type AlertView, type CurrentSeason, type ErrorInfo, type MatingOutcome, type OfferView, type OrgId,
+  type ServerMsg, type StateView,
 } from './protocol';
 import type { ConnState } from './socket';
 
@@ -31,7 +32,7 @@ export interface FeedEntry {
   organism?: OrgId;
 }
 
-export type Topic = 'state' | 'offers' | 'conn' | 'select' | 'toast' | 'welcome' | 'alerts' | 'session_ended';
+export type Topic = 'state' | 'offers' | 'conn' | 'select' | 'toast' | 'welcome' | 'alerts' | 'session_ended' | 'season';
 
 /** Closed offers kept for display. */
 const MAX_CLOSED = 20;
@@ -64,6 +65,8 @@ export class GameModel {
   /** The protocol of the connection (2: binary delta states; 1: whole JSON states). */
   proto = 1;
   state: StateView | null = null;
+  /** The ranked season under way, as last pushed (`watch_season`). */
+  season: CurrentSeason | null = null;
   offers = new Map<number, OfferEntry>();
   selected: OrgId | null = null;
   conn: ConnState = 'closed';
@@ -159,6 +162,12 @@ export class GameModel {
       case 'session_ended':
         this.emit('session_ended');
         break;
+      case 'season': {
+        const { type: _t, ...season } = m;
+        this.season = season;
+        this.emit('season');
+        break;
+      }
       case 'mating_update': {
         const prev = this.offers.get(m.offer.id);
         this.offers.set(m.offer.id, {

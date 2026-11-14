@@ -475,23 +475,32 @@ async fn leaderboard_seasons(
     World(w): World,
     Query(q): Query<SeasonsQuery>,
 ) -> Result<Json<Vec<SeasonBoard>>, ApiError> {
-    let limit = q.limit.unwrap_or(8).clamp(1, 100);
-    let records = w.store.recent_daily(100_000).await.map_err(ApiError::internal)?;
+    const MAX_BOARDS: usize = 100;
+    let limit = q.limit.unwrap_or(8).clamp(1, MAX_BOARDS);
     let clock = w.published.borrow().summary.clock.clone();
-    let accounts = app.accounts.clone();
-    let name_of = move |p: evo_sim::PlayerId| {
-        if p == evo_sim::WILD {
-            "wild".to_string()
-        } else {
-            accounts.name_of(p).unwrap_or_else(|| format!("player {p}"))
-        }
-    };
-    let boards = tokio::task::spawn_blocking(move || {
-        crate::seasons::season_boards(&records, Some((clock.year, &clock.season)), name_of, limit)
-    })
-    .await
-    .map_err(ApiError::internal)?;
-    Ok(Json(boards))
+    // Computed once per new daily record or weather season, for the most
+    // boards anyone may ask for; a request takes the newest `limit`.
+    let boards = w
+        .store
+        .cache()
+        .weather(clock.year, &clock.season.clone(), || async {
+            let records = w.store.recent_daily(100_000).await.map_err(ApiError::internal)?;
+            let accounts = app.accounts.clone();
+            let name_of = move |p: evo_sim::PlayerId| {
+                if p == evo_sim::WILD {
+                    "wild".to_string()
+                } else {
+                    accounts.name_of(p).unwrap_or_else(|| format!("player {p}"))
+                }
+            };
+            tokio::task::spawn_blocking(move || {
+                crate::seasons::season_boards(&records, Some((clock.year, &clock.season)), name_of, MAX_BOARDS)
+            })
+            .await
+            .map_err(ApiError::internal)
+        })
+        .await?;
+    Ok(Json(boards.iter().take(limit).cloned().collect()))
 }
 
 async fn lineage_stats(
@@ -990,15 +999,16 @@ async fn seasons_list(
 }
 
 /// `GET /api/seasons/current?offset=0&limit=10&player=N`: the ranked season
-/// under way, standings so far.
+/// under way, standings so far: a page of the standings the world thread
+/// published when they last changed (`crate::standings`), so a request
+/// neither waits for the world thread nor recomputes them.
 async fn season_current(
     World(w): World,
     Query(q): Query<SeasonPaging>,
 ) -> Result<Json<crate::league::CurrentSeason>, ApiError> {
     let (offset, limit) = crate::league::paging(q.offset, q.limit);
-    let (reply, rx) = oneshot::channel();
-    send_request(&w.tx, Request::Season { offset, limit, player: q.player, reply })?;
-    Ok(Json(*rx.await.map_err(ApiError::internal)?))
+    let season = w.published.borrow().season.clone();
+    Ok(Json(season.page(offset, limit, q.player)))
 }
 
 /// `GET /api/seasons/:n?world=ID&map=ID&offset=0&limit=10&player=N`: one
@@ -1014,12 +1024,12 @@ async fn season_one(
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "bad_season", "a season is a positive number"))?;
     let map = q.map.unwrap_or_else(|| w.map_id.to_string());
     let (offset, limit) = crate::league::paging(q.offset, q.limit);
-    let record = w.store.load_season(&map, season).await.map_err(ApiError::internal)?.ok_or_else(|| {
+    let record = w.store.season_record(&map, season).await.map_err(ApiError::internal)?.ok_or_else(|| {
         let msg = format!("season {season} of world {} (map {map}) has not ended", w.id);
         ApiError::new(StatusCode::NOT_FOUND, "no_season", msg)
     })?;
     let standings = crate::league::page(&record.standings, offset, limit, q.player);
-    Ok(Json(crate::league::SeasonPage { head: record.head, offset, limit, standings }))
+    Ok(Json(crate::league::SeasonPage { head: record.head.clone(), offset, limit, standings }))
 }
 
 #[derive(Deserialize)]

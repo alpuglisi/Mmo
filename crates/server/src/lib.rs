@@ -16,6 +16,7 @@
 //! - [`seasons`]: leaderboards per weather season from the daily history.
 //! - [`league`]: ranked seasons: standings tracked over a fixed number of
 //!   days, frozen into stored season records at each rollover.
+//! - [`standings`]: caches for leaderboard and season standings reads.
 //! - [`limits`]: token-bucket rate limits on logins and commands.
 //! - [`metrics`]: tick, state-push and save timings, queue and traffic
 //!   counters, process CPU and memory (`GET /api/metrics`).
@@ -56,6 +57,7 @@ pub mod runner;
 pub mod saver;
 pub mod seasons;
 pub mod snapshot;
+pub mod standings;
 pub mod store;
 pub mod terrain;
 pub mod webpush;

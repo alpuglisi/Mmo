@@ -171,6 +171,29 @@ function standingTables(standings: StandingPage[], me: PlayerId, idPrefix: strin
           h('td', { class: 'rank' }, String(r.rank)), h('td', {}, swatch(r.player, me), r.name), h('td', { class: 'num' }, formatValue(s.category, r.value)))))))));
 }
 
+function currentParts(cur: CurrentSeason, me: PlayerId): Node[] {
+  const mine = myPlaces(cur.standings, me).filter((p) => p.place);
+  return [
+    h('h3', {}, `Season ${cur.season}`),
+    h('p', { class: 'muted small', id: 'season-clock' }, `${seasonClock(cur)}. At the end the standings are final and the winners join the hall of fame.`),
+    h('p', { class: 'small', id: 'season-mine' }, mine.length === 0
+      ? 'You are not ranked yet this season.'
+      : `You: ${mine.map((p) => `${categoryLabel(p.category)} ${ordinal(p.place!.rank)} of ${p.place!.of}`).join(' · ')}`),
+    h('div', { id: 'season-current' }, standingTables(cur.standings, me, 'season-now')),
+  ];
+}
+
+/**
+ * Redraw only the season under way in a panel `renderSeasons` drew (pushed standings change often; the hall of
+ * fame below stays as it is, opened seasons and all). False if the panel has no such part yet.
+ */
+export function renderCurrentSeason(el: HTMLElement, cur: CurrentSeason, me: PlayerId): boolean {
+  const part = el.querySelector('#season-now');
+  if (!part) return false;
+  part.replaceChildren(...currentParts(cur, me));
+  return true;
+}
+
 export function renderSeasons(el: HTMLElement, d: SeasonsData, me: PlayerId, on: SeasonsHandlers): void {
   if (!d.current && !d.list) {
     el.replaceChildren(h('p', { class: 'muted' }, 'Loading the seasons…'));
@@ -179,17 +202,7 @@ export function renderSeasons(el: HTMLElement, d: SeasonsData, me: PlayerId, on:
   const open = new Set([...el.querySelectorAll<HTMLDetailsElement>('details[data-key]')].filter((x) => x.open).map((x) => x.dataset.key));
   const parts: (Node | null)[] = [];
   const cur = d.current;
-  if (cur) {
-    const mine = myPlaces(cur.standings, me).filter((p) => p.place);
-    parts.push(
-      h('h3', {}, `Season ${cur.season}`),
-      h('p', { class: 'muted small', id: 'season-clock' }, `${seasonClock(cur)}. At the end the standings are final and the winners join the hall of fame.`),
-      h('p', { class: 'small', id: 'season-mine' }, mine.length === 0
-        ? 'You are not ranked yet this season.'
-        : `You: ${mine.map((p) => `${categoryLabel(p.category)} ${ordinal(p.place!.rank)} of ${p.place!.of}`).join(' · ')}`),
-      h('div', { id: 'season-current' }, standingTables(cur.standings, me, 'season-now')),
-    );
-  }
+  if (cur) parts.push(h('div', { id: 'season-now' }, ...currentParts(cur, me)));
   if (d.mine) {
     const rec = myRecord(d.mine);
     parts.push(h('h3', {}, 'Your record'),

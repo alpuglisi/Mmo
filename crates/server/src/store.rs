@@ -49,6 +49,7 @@ use tokio::sync::Mutex;
 use crate::design::DesignSpec;
 use crate::league::{self, PlayerSeason, SeasonHead, SeasonRecord};
 use crate::protocol::{AlertPrefs, LedgerEntry, PushPrefs};
+use crate::standings::StandingsCache;
 
 #[cfg(feature = "postgres")]
 mod pg;
@@ -357,6 +358,9 @@ pub trait Store: Send + Sync {
 pub struct WorldStore {
     store: Arc<dyn Store>,
     shard: Arc<str>,
+    /// This world's standings cache (`crate::standings`), shared by clones:
+    /// season and daily writes through this view invalidate it.
+    cache: Arc<StandingsCache>,
 }
 
 impl std::ops::Deref for WorldStore {
@@ -369,7 +373,12 @@ impl std::ops::Deref for WorldStore {
 
 impl WorldStore {
     pub fn new(store: Arc<dyn Store>, shard: &str) -> Self {
-        WorldStore { store, shard: shard.into() }
+        WorldStore { store, shard: shard.into(), cache: Arc::default() }
+    }
+
+    /// This world's standings cache.
+    pub fn cache(&self) -> &StandingsCache {
+        &self.cache
     }
 
     /// The world id this view is bound to.
@@ -389,7 +398,9 @@ impl WorldStore {
         self.store.put_design(&self.shard, design).await
     }
     pub async fn append_daily(&self, record: &DailyRecord) -> StoreResult<()> {
-        self.store.append_daily(&self.shard, record).await
+        let result = self.store.append_daily(&self.shard, record).await;
+        self.cache.daily_appended();
+        result
     }
     pub async fn recent_daily(&self, limit: usize) -> StoreResult<Vec<DailyRecord>> {
         self.store.recent_daily(&self.shard, limit).await
@@ -436,17 +447,26 @@ impl WorldStore {
     pub async fn recent_auctions(&self, limit: usize) -> StoreResult<Vec<AuctionRecord>> {
         self.store.recent_auctions(&self.shard, limit).await
     }
+    // Ranked seasons go through the standings cache: reads are answered
+    // from it until a write through this view invalidates them.
     pub async fn put_season(&self, record: &SeasonRecord) -> StoreResult<()> {
-        self.store.put_season(&self.shard, record).await
+        self.cache.write_season(record, || self.store.put_season(&self.shard, record)).await
     }
     pub async fn list_seasons(&self, offset: usize, limit: usize) -> StoreResult<(Vec<SeasonHead>, usize)> {
-        self.store.list_seasons(&self.shard, offset, limit).await
+        let page = self.cache.list(offset, limit, || self.store.list_seasons(&self.shard, offset, limit)).await?;
+        Ok((*page).clone())
     }
     pub async fn load_season(&self, world_id: &str, season: u32) -> StoreResult<Option<SeasonRecord>> {
-        self.store.load_season(&self.shard, world_id, season).await
+        Ok(self.season_record(world_id, season).await?.map(|r| (*r).clone()))
+    }
+    /// [`Self::load_season`], shared with the cache (no copy).
+    pub async fn season_record(&self, world_id: &str, season: u32) -> StoreResult<Option<Arc<SeasonRecord>>> {
+        self.cache.record(world_id, season, || self.store.load_season(&self.shard, world_id, season)).await
     }
     pub async fn player_seasons(&self, player: PlayerId, limit: usize) -> StoreResult<Vec<PlayerSeason>> {
-        self.store.player_seasons(&self.shard, player, limit).await
+        let seasons =
+            self.cache.player(player, limit, || self.store.player_seasons(&self.shard, player, limit)).await?;
+        Ok((*seasons).clone())
     }
 }
 

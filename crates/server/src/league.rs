@@ -21,7 +21,7 @@
 //! groups the daily history by those); "season" in the `/api/seasons` routes
 //! always means a ranked season.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use evo_sim::{PlayerId, WILD};
 use serde::{Deserialize, Serialize};
@@ -284,11 +284,41 @@ pub struct SeasonTracker {
     species: BTreeMap<PlayerId, u64>,
     sales: BTreeMap<PlayerId, u64>,
     survived: BTreeMap<PlayerId, u64>,
+    /// Bumped by every change to the standings (not saved; see
+    /// [`Generation`]).
+    #[serde(skip)]
+    generation: Generation,
+}
+
+/// A change counter that is not part of the value it counts changes of: it
+/// compares equal always and is not saved. A restored tracker starts again
+/// from 0, which is fine for its one use, telling the world thread's
+/// standings cache (`crate::standings`) that the standings changed since it
+/// last looked (the cache starts empty with the process too).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Generation(pub u64);
+
+impl PartialEq for Generation {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Generation {
+    fn bump(&mut self) {
+        self.0 = self.0.wrapping_add(1);
+    }
 }
 
 impl SeasonTracker {
     pub fn new(season: u32, first_day: u64, length: u64) -> Self {
         Self { season, first_day, end_day: first_day + length.max(1), ..Default::default() }
+    }
+
+    /// Changes to the standings so far (see [`Generation`]); with the
+    /// season number, what identifies the standings' current state.
+    pub fn generation(&self) -> u64 {
+        self.generation.0
     }
 
     pub fn length(&self) -> u64 {
@@ -305,7 +335,10 @@ impl SeasonTracker {
     pub fn next(&self, day: u64, length: u64) -> Self {
         let length = length.max(1);
         let first = if day >= self.end_day + length { day } else { self.end_day };
-        Self::new(self.season + 1, first, length)
+        // The generation carries on, so it alone also tells seasons apart.
+        let mut generation = self.generation;
+        generation.bump();
+        Self { generation, ..Self::new(self.season + 1, first, length) }
     }
 
     /// Count a daily record (once; an earlier or repeated day is ignored).
@@ -315,6 +348,7 @@ impl SeasonTracker {
         }
         self.last_day = Some(r.day);
         self.days += 1;
+        self.generation.bump();
         for v in self.final_share.values_mut() {
             *v = 0.0;
         }
@@ -335,18 +369,21 @@ impl SeasonTracker {
     pub fn add_species(&mut self, player: PlayerId) {
         if player != WILD {
             *self.species.entry(player).or_default() += 1;
+            self.generation.bump();
         }
     }
 
     pub fn add_sale(&mut self, player: PlayerId, renown: u64) {
         if player != WILD && renown > 0 {
             *self.sales.entry(player).or_default() += renown;
+            self.generation.bump();
         }
     }
 
     pub fn add_survival(&mut self, player: PlayerId) {
         if player != WILD {
             *self.survived.entry(player).or_default() += 1;
+            self.generation.bump();
         }
     }
 
@@ -411,6 +448,86 @@ impl SeasonTracker {
             winners,
         };
         SeasonRecord { head, standings }
+    }
+}
+
+/// What the standings of the season under way were computed from
+/// (`Game::live_season_key`): when it changes, they are recomputed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LiveKey {
+    pub season: u32,
+    /// [`SeasonTracker::generation`].
+    pub generation: u64,
+    pub days_left: u64,
+    /// Bumped when a player's name changes (names are in the rows).
+    pub names: u64,
+}
+
+/// The season under way with its full standings, computed once per change
+/// ([`LiveKey`]) on the world thread and shared (`Arc`) by every request
+/// and push that pages it (`crate::standings`).
+#[derive(Clone, Debug, Default)]
+pub struct LiveSeason {
+    pub key: LiveKey,
+    pub world_id: String,
+    pub season: u32,
+    pub first_day: u64,
+    pub last_day: u64,
+    pub length: u64,
+    pub days: u32,
+    pub days_left: u64,
+    /// Every category in [`Category::ALL`] order, all rows.
+    pub standings: Vec<Standing>,
+    /// Per category: player → row index, for a player's own row.
+    index: Vec<HashMap<PlayerId, usize>>,
+}
+
+impl LiveSeason {
+    pub fn new(key: LiveKey, world_id: &str, t: &SeasonTracker, standings: Vec<Standing>) -> Self {
+        let index = standings.iter().map(|s| s.rows.iter().enumerate().map(|(k, r)| (r.player, k)).collect()).collect();
+        LiveSeason {
+            key,
+            world_id: world_id.to_string(),
+            season: t.season,
+            first_day: t.first_day,
+            last_day: t.end_day.saturating_sub(1),
+            length: t.length(),
+            days: t.days,
+            days_left: key.days_left,
+            standings,
+            index,
+        }
+    }
+
+    /// Rows `offset..offset + limit` of each category plus `player`'s row:
+    /// what [`page`] gives, without scanning for the player.
+    pub fn page(&self, offset: usize, limit: usize, player: Option<PlayerId>) -> CurrentSeason {
+        let standings = self
+            .standings
+            .iter()
+            .zip(&self.index)
+            .map(|(s, index)| {
+                let mut rows: Vec<Placement> = s.rows.iter().skip(offset).take(limit).cloned().collect();
+                if let Some(&k) = player.and_then(|p| index.get(&p)) {
+                    if k < offset || k >= offset.saturating_add(limit) {
+                        rows.push(s.rows[k].clone());
+                    }
+                }
+                StandingPage { category: s.category, total: s.rows.len(), rows }
+            })
+            .collect();
+        CurrentSeason {
+            world_id: self.world_id.clone(),
+            season: self.season,
+            first_day: self.first_day,
+            last_day: self.last_day,
+            length: self.length,
+            days: self.days,
+            days_left: self.days_left,
+            offset,
+            limit,
+            standings,
+        }
     }
 }
 
@@ -595,6 +712,57 @@ mod tests {
             vec![(Category::Legacy, 2, 3), (Category::Lineage, 3, 3), (Category::Survival, 1, 1)]
         );
         assert!(r.player_season(9).is_none());
+    }
+
+    /// Every score change bumps the generation (what the standings cache
+    /// keys on); ignored days and the wild don't; the next season carries on
+    /// from it. It is not saved and not part of equality.
+    #[test]
+    fn score_changes_and_rollovers_bump_the_generation() {
+        let mut t = SeasonTracker::new(1, 0, 3);
+        let mut seen = vec![t.generation()];
+        let mut changed = |t: &SeasonTracker, expect: bool| {
+            assert_eq!(t.generation() != *seen.last().unwrap(), expect, "generation {}", t.generation());
+            seen.push(t.generation());
+        };
+        t.record_day(&day(0, &[(1, 0.5)], &[(1, 4)]));
+        changed(&t, true);
+        t.record_day(&day(0, &[(1, 0.9)], &[]));
+        changed(&t, false);
+        t.add_species(1);
+        changed(&t, true);
+        t.add_species(WILD);
+        changed(&t, false);
+        t.add_sale(2, 10);
+        changed(&t, true);
+        t.add_sale(2, 0);
+        changed(&t, false);
+        t.add_survival(3);
+        changed(&t, true);
+        let n = t.next(3, 3);
+        changed(&n, true);
+        let restored: SeasonTracker = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(restored.generation(), 0);
+        assert_eq!(restored, t);
+    }
+
+    /// A live season's pages are [`page`]'s, own row included.
+    #[test]
+    fn live_pages_match_page() {
+        let mut t = SeasonTracker::new(1, 0, 2);
+        let shares: Vec<(PlayerId, f64)> = (1..=30).map(|p| (p, p as f64 / 1000.0)).collect();
+        t.record_day(&day(0, &shares, &[(4, 9), (5, 3)]));
+        t.add_sale(7, 5);
+        let s = t.standings(name);
+        let key = LiveKey { season: 1, generation: t.generation(), days_left: 1, names: 0 };
+        let live = LiveSeason::new(key, "w", &t, s.clone());
+        for (offset, limit, player) in
+            [(0, 5, Some(1)), (5, 5, Some(28)), (0, 5, Some(30)), (0, 200, None), (40, 5, Some(2))]
+        {
+            let got = live.page(offset, limit, player);
+            assert_eq!(got.standings, page(&s, offset, limit, player), "{offset} {limit} {player:?}");
+            assert_eq!((got.season, got.days, got.days_left, got.last_day, got.offset), (1, 1, 1, 1, offset));
+        }
     }
 
     #[test]
