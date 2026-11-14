@@ -31,6 +31,10 @@ pub(crate) struct Entry {
     pub lineage: u32,
     /// `Organism::mass()`.
     pub mass: f32,
+    /// `Organism::owner` and `Organism::group`: whether a kin neighbor
+    /// belongs to the viewer's herd, without reading the organism.
+    pub owner: u32,
+    pub group: u8,
     pub flags: u8,
 }
 
@@ -52,7 +56,7 @@ impl Entry {
         if o.action == Action::Defend {
             flags |= DEFENDING;
         }
-        Entry { pos: o.pos, idx: i as u32, lineage: o.lineage, mass: o.mass(), flags }
+        Entry { pos: o.pos, idx: i as u32, lineage: o.lineage, mass: o.mass(), owner: o.owner, group: o.group, flags }
     }
 }
 
@@ -72,6 +76,10 @@ pub(crate) struct SpatialGrid {
     /// `items`: a crowd's genes lie together instead of scattered over the
     /// organisms.
     genes: Vec<Genes>,
+    /// `rebuild`'s buffer: each organism's cell and entry, if alive.
+    placed: Vec<Option<(u32, Entry)>>,
+    /// Slot of each living organism, by organism index.
+    slot_of: Vec<u32>,
 }
 
 impl SpatialGrid {
@@ -86,6 +94,8 @@ impl SpatialGrid {
             items: Vec::new(),
             pos: Vec::new(),
             genes: Vec::new(),
+            placed: Vec::new(),
+            slot_of: Vec::new(),
         }
     }
 
@@ -97,24 +107,40 @@ impl SpatialGrid {
 
     pub fn rebuild(&mut self, orgs: &[Organism]) {
         let n = self.cols * self.rows;
+        // Each living organism's cell and summary, on all cores: reading
+        // them touches several cache lines of every organism.
+        let mut placed = std::mem::take(&mut self.placed);
+        let this = &*self;
+        orgs.par_iter()
+            .enumerate()
+            .map(|(i, o)| {
+                o.alive.then(|| {
+                    let (c, r) = this.cell_of(o.pos);
+                    ((r * this.cols + c) as u32, Entry::of(i, o))
+                })
+            })
+            .collect_into_vec(&mut placed);
+        // Counting sort by cell, in organism order within a cell.
         self.starts.iter_mut().for_each(|s| *s = 0);
-        for o in orgs.iter().filter(|o| o.alive) {
-            let (c, r) = self.cell_of(o.pos);
-            self.starts[r * self.cols + c + 1] += 1;
+        for &(cell, _) in placed.iter().flatten() {
+            self.starts[cell as usize + 1] += 1;
         }
         for k in 0..n {
             self.starts[k + 1] += self.starts[k];
         }
         let mut cursor = self.starts.clone();
-        let blank = Entry { pos: Vec2::ZERO, idx: 0, lineage: 0, mass: 0.0, flags: 0 };
+        let blank = Entry { pos: Vec2::ZERO, idx: 0, lineage: 0, mass: 0.0, owner: 0, group: 0, flags: 0 };
         self.items.clear();
         self.items.resize(self.starts[n] as usize, blank);
-        for (i, o) in orgs.iter().enumerate().filter(|(_, o)| o.alive) {
-            let (c, r) = self.cell_of(o.pos);
-            let slot = &mut cursor[r * self.cols + c];
-            self.items[*slot as usize] = Entry::of(i, o);
+        self.slot_of.clear();
+        self.slot_of.resize(orgs.len(), u32::MAX);
+        for &(cell, e) in placed.iter().flatten() {
+            let slot = &mut cursor[cell as usize];
+            self.items[*slot as usize] = e;
+            self.slot_of[e.idx as usize] = *slot;
             *slot += 1;
         }
+        self.placed = placed;
         self.pos.clear();
         self.pos.extend(self.items.iter().map(|e| e.pos));
         self.items.par_iter().map(|e| genes_of(&orgs[e.idx as usize].pheno)).collect_into_vec(&mut self.genes);
@@ -123,6 +149,11 @@ impl SpatialGrid {
     /// Kinship genes of the organism in `slot` (`decide::Genes`).
     pub fn genes(&self, slot: u32) -> &Genes {
         &self.genes[slot as usize]
+    }
+
+    /// Slot of living organism `i` (as of the last rebuild).
+    pub fn slot_of(&self, i: usize) -> u32 {
+        self.slot_of[i]
     }
 
     pub fn entry(&self, slot: u32) -> &Entry {

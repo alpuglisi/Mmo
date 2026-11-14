@@ -87,6 +87,117 @@ const PREY_SHARE: f32 = 0.15;
 /// Spatial index cell side in tiles.
 const GRID_CELL: f32 = 4.0;
 
+/// Founding: side in tiles of a [`PointGrid`] cell.
+const HOME_CELL: f32 = 8.0;
+
+/// Points with a payload in coarse cells, for founding's home search: which
+/// points could lie within a radius, without a scan of all of them.
+struct PointGrid<T> {
+    cols: usize,
+    rows: usize,
+    cells: Vec<Vec<(Vec2, T)>>,
+}
+
+impl<T> PointGrid<T> {
+    fn new(map: &Map) -> Self {
+        let cols = (map.width as f32 / HOME_CELL).ceil().max(1.0) as usize;
+        let rows = (map.height as f32 / HOME_CELL).ceil().max(1.0) as usize;
+        Self { cols, rows, cells: (0..cols * rows).map(|_| Vec::new()).collect() }
+    }
+
+    fn cell_of(&self, p: Vec2) -> (usize, usize) {
+        let c = ((p.x / HOME_CELL).max(0.0) as usize).min(self.cols - 1);
+        let r = ((p.y / HOME_CELL).max(0.0) as usize).min(self.rows - 1);
+        (c, r)
+    }
+
+    fn insert(&mut self, p: Vec2, v: T) {
+        let (c, r) = self.cell_of(p);
+        self.cells[r * self.cols + c].push((p, v));
+    }
+
+    /// Calls `f` for every point within `radius` of `p` (and some farther
+    /// ones), in no particular order.
+    fn near(&self, p: Vec2, radius: f32, mut f: impl FnMut(Vec2, &T)) {
+        let (c0, r0) = self.cell_of(Vec2::new(p.x - radius, p.y - radius));
+        let (c1, r1) = self.cell_of(Vec2::new(p.x + radius, p.y + radius));
+        for r in r0..=r1 {
+            for cell in &self.cells[r * self.cols + c0..=r * self.cols + c1] {
+                for (q, v) in cell {
+                    f(*q, v);
+                }
+            }
+        }
+    }
+}
+
+/// What founding's home search (`World::pick_home`) reads of the other
+/// lineages, gathered once per founded lineage.
+struct HomeSearch {
+    /// `World::passable_regions` of the probe.
+    region: Vec<u32>,
+    /// Predators that could eat the founders, packs that only take them
+    /// together included, weighted by their odds in a fight (as prey judge
+    /// threats when deciding), in organism order.
+    threats: Vec<(Vec2, f32)>,
+    /// Index into `threats`, by position.
+    threat_grid: PointGrid<u32>,
+    /// Prey a hunter can reach: position, lineage, region.
+    prey: Vec<(Vec2, u32, u32)>,
+    prey_grid: PointGrid<u32>,
+    /// Every organism (founders placed since included), with its carnivory.
+    crowd: PointGrid<f32>,
+}
+
+impl HomeSearch {
+    fn new(w: &World, probe: &Organism, lineage: u32) -> Self {
+        let region = w.passable_regions(probe);
+        let region_at = |p: Vec2| {
+            let (x, y) = w.map.tile_coords(p);
+            region[w.map.idx(x, y)]
+        };
+        let hunter = probe.traits.carnivory > 0.45;
+        // Prey it can take alone: a pack placed by big prey it can only
+        // take together eats through that prey lineage before it settles.
+        let max_prey = decide::max_prey_mass(probe, 0.0);
+        let others = || w.organisms.iter().filter(move |o| o.alive && o.lineage != lineage);
+        let resistance = probe.resistance();
+        let threats: Vec<(Vec2, f32)> = others()
+            .filter_map(|o| {
+                let coop = if GroupTrait::CooperativeHunting.is_carrier(&o.pheno) { 1.0 } else { 0.0 };
+                let can_take = o.traits.carnivory > 0.45 && probe.mass() < decide::max_prey_mass(o, coop);
+                (decide::can_threaten(o, probe) || can_take).then(|| {
+                    let power = o.power() * (1.0 + coop);
+                    (o.pos, (2.0 * power / (power + resistance + 1e-3)).min(1.0))
+                })
+            })
+            .collect();
+        // Reachable prey: land hunters can't take newts in deep water.
+        let prey: Vec<(Vec2, u32, u32)> = if hunter {
+            others()
+                .filter(|o| o.traits.carnivory < 0.4 && o.mass() < max_prey && !decide::can_threaten(o, probe))
+                .filter(|o| w.passable_for(probe, o.pos))
+                .map(|o| (o.pos, o.lineage, region_at(o.pos)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut threat_grid = PointGrid::new(&w.map);
+        for (k, t) in threats.iter().enumerate() {
+            threat_grid.insert(t.0, k as u32);
+        }
+        let mut prey_grid = PointGrid::new(&w.map);
+        for (k, q) in prey.iter().enumerate() {
+            prey_grid.insert(q.0, k as u32);
+        }
+        let mut crowd = PointGrid::new(&w.map);
+        for o in &w.organisms {
+            crowd.insert(o.pos, o.traits.carnivory);
+        }
+        HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd }
+    }
+}
+
 /// Eggs waiting to hatch.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -439,9 +550,14 @@ impl World {
         let mut home = Vec2::ZERO;
         let lineage = self.lineages.len() as u32;
         self.lineages.push(Lineage { name: design.name.clone(), owner, founders: design.founders });
+        // What the home search reads of the world, gathered once: founding
+        // only adds this lineage's organisms, which it ignores except as a
+        // crowd.
+        let mut search = None;
         for k in 0..design.founders {
             if k % group_size == 0 {
-                home = self.pick_home(&probe, lineage, &mut rng);
+                let s = search.get_or_insert_with(|| HomeSearch::new(self, &probe, lineage));
+                home = self.pick_home(&probe, s, &mut rng);
             }
             let genome = design.founder_genome(owner, &mut rng);
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
@@ -462,6 +578,9 @@ impl World {
             o.age_ticks = ((o.traits.maturity_days + rng.gen_range(0.0..o.traits.lifespan_days * 0.3))
                 * self.config.ticks_per_day as f32) as u32;
             o.needs.breeding = rng.gen_range(0.0..40.0);
+            if let Some(s) = search.as_mut() {
+                s.crowd.insert(o.pos, o.traits.carnivory);
+            }
             ids.push(self.insert(o));
         }
         ids
@@ -472,9 +591,12 @@ impl World {
     /// organisms already placed, and out of reach of anything that could eat
     /// it. A hunter's prey only counts if it can reach it, and prey so close
     /// that the hunters would start on top of it counts against the spot.
-    fn pick_home(&self, probe: &Organism, lineage: u32, rng: &mut impl Rng) -> Vec2 {
+    /// Every sum and count is the same as a scan of all organisms: the grids
+    /// in `search` only skip those too far away to add anything, and sums
+    /// add the rest in organism order.
+    fn pick_home(&self, probe: &Organism, search: &HomeSearch, rng: &mut impl Rng) -> Vec2 {
         let buffer = self.config.balance.home_buffer.max(0.0);
-        let region = self.passable_regions(probe);
+        let HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd } = search;
         let region_at = |p: Vec2| {
             let (x, y) = self.map.tile_coords(p);
             region[self.map.idx(x, y)]
@@ -482,40 +604,12 @@ impl World {
         let carn = probe.traits.carnivory;
         let tax = self.config.balance.generalist_tax;
         let (plant_eff, meat_eff) = (probe.traits.plant_efficiency(tax), probe.traits.meat_efficiency(tax));
-        let hunter = carn > 0.45;
-        // Prey it can take alone: a pack placed by big prey it can only
-        // take together eats through that prey lineage before it settles.
-        let max_prey = decide::max_prey_mass(probe, 0.0);
-        let others = || self.organisms.iter().filter(move |o| o.alive && o.lineage != lineage);
-        // Predators that could eat the founders, packs that only take them
-        // together included, weighted by their odds in a fight (as prey judge
-        // threats when deciding).
-        let resistance = probe.resistance();
-        let threats: Vec<(Vec2, f32)> = others()
-            .filter_map(|o| {
-                let coop = if GroupTrait::CooperativeHunting.is_carrier(&o.pheno) { 1.0 } else { 0.0 };
-                let can_take = o.traits.carnivory > 0.45 && probe.mass() < decide::max_prey_mass(o, coop);
-                (decide::can_threaten(o, probe) || can_take).then(|| {
-                    let power = o.power() * (1.0 + coop);
-                    (o.pos, (2.0 * power / (power + resistance + 1e-3)).min(1.0))
-                })
-            })
-            .collect();
-        let threat_pos: Vec<Vec2> = threats.iter().map(|t| t.0).collect();
         // How far founders scatter from home (`found_lineage_unchecked`),
         // plus a margin.
         let scatter = 3.0 + 10.0 * (1.0 - probe.pheno[crate::Gene::GroupTolerance]) + 8.0;
-        // Reachable prey: land hunters can't take newts in deep water.
-        let prey: Vec<(Vec2, u32, u32)> = if hunter {
-            others()
-                .filter(|o| o.traits.carnivory < 0.4 && o.mass() < max_prey && !decide::can_threaten(o, probe))
-                .filter(|o| self.passable_for(probe, o.pos))
-                .map(|o| (o.pos, o.lineage, region_at(o.pos)))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let reach = buffer.max(1e-3).max(scatter);
         let mut per_lineage: BTreeMap<u32, f32> = BTreeMap::new();
+        let mut near: Vec<u32> = Vec::new();
         let mut best = (f32::MIN, Map::tile_center(self.map.width / 2, self.map.height / 2));
         for _ in 0..200 {
             let p = Vec2::new(rng.gen_range(0.0..self.map.width as f32), rng.gen_range(0.0..self.map.height as f32));
@@ -529,34 +623,44 @@ impl World {
                 -(18.0 - t.base_temp).max(0.0) * 0.1
             };
             // A short walk to drinking water that avoids the threats.
-            let water = if self.water_reachable(probe, p, &threat_pos) { 1.0 } else { -2.0 };
+            let water = if self.water_reachable(probe, p, threat_grid) { 1.0 } else { -2.0 };
             // Competitors share a diet: an omnivore competes with grazers and
             // hunters alike (diet overlap `1 - |carnivory difference|` above
             // 0.45), specialists only with their own kind.
-            let crowd = self
-                .organisms
-                .iter()
-                .filter(|o| o.pos.dist(p) < 12.0 && (o.traits.carnivory - carn).abs() < 0.55)
-                .count() as f32;
-            let danger: f32 = threats.iter().map(|&(q, w)| w * (1.0 - q.dist(p) / buffer.max(1e-3)).max(0.0)).sum();
+            let mut crowd_n = 0u32;
+            crowd.near(p, 12.0, |q, &c| {
+                if q.dist(p) < 12.0 && (c - carn).abs() < 0.55 {
+                    crowd_n += 1;
+                }
+            });
+            let crowd_n = crowd_n as f32;
+            // Threats that could reach the spot, in organism order (farther
+            // ones add exactly zero to `danger` and nothing to `close`).
+            near.clear();
+            threat_grid.near(p, reach, |_, &k| near.push(k));
+            near.sort_unstable();
+            let terms = || near.iter().map(|&k| threats[k as usize]);
+            let danger: f32 = terms().map(|(q, w)| w * (1.0 - q.dist(p) / buffer.max(1e-3)).max(0.0)).sum();
             // A threat within the founders' scatter (plus a margin) would start
             // among them: weigh it heavily, not just as a slice of `danger`.
-            let close: f32 = threats.iter().filter(|t| t.0.dist(p) < scatter).map(|t| t.1).sum();
+            let close: f32 = terms().filter(|t| t.0.dist(p) < scatter).map(|t| t.1).sum();
             // Reachable prey nearby. Each prey lineage counts up to a share of
             // its founders and counts against the spot beyond twice that, so
             // hunters don't settle on most of one prey lineage; prey right on
             // the spot counts against it too.
             let home_region = region_at(p);
             per_lineage.clear();
-            let mut on_top = 0.0f32;
-            for &(q, l, r) in &prey {
+            let mut on_top = 0u32;
+            prey_grid.near(p, PREY_RANGE, |_, &k| {
+                let (q, l, r) = prey[k as usize];
                 let d = q.dist(p);
                 if d < PREY_ON_TOP {
-                    on_top += 1.0;
+                    on_top += 1;
                 } else if d < PREY_RANGE && r == home_region {
                     *per_lineage.entry(l).or_default() += 1.0;
                 }
-            }
+            });
+            let on_top = on_top as f32;
             let prey_count: f32 = per_lineage
                 .iter()
                 .map(|(&l, &n)| {
@@ -567,7 +671,7 @@ impl World {
             let productivity = (t.base_temp / 12.0).clamp(0.2, 1.0);
             let food = t.veg_max / 40.0 * productivity * plant_eff + meat_eff * 0.04 * prey_count.min(60.0);
             let score = water + food + comfort
-                - 0.05 * crowd
+                - 0.05 * crowd_n
                 - (0.3 * danger).min(4.0)
                 - (0.1 * carn * on_top).min(2.0)
                 - 2.0 * close
@@ -612,7 +716,7 @@ impl World {
 
     /// A spot where it can drink within `WATER_STEPS` steps (8-neighbor) of
     /// `p`, walking only over passable tiles that keep clear of `threats`.
-    fn water_reachable(&self, o: &Organism, p: Vec2, threats: &[Vec2]) -> bool {
+    fn water_reachable(&self, o: &Organism, p: Vec2, threats: &PointGrid<u32>) -> bool {
         const STEPS: usize = WATER_STEPS;
         const CLEARANCE: f32 = 5.0;
         let side = 2 * STEPS + 1;
@@ -639,7 +743,12 @@ impl World {
                         }
                         seen[k] = true;
                         let q = Map::tile_center(nx, ny);
-                        if self.passable_for(o, q) && threats.iter().all(|t| t.dist(q) >= CLEARANCE) {
+                        let clear = || {
+                            let mut clear = true;
+                            threats.near(q, CLEARANCE, |t, _| clear &= t.dist(q) >= CLEARANCE);
+                            clear
+                        };
+                        if self.passable_for(o, q) && clear() {
                             next.push((nx, ny));
                         }
                     }

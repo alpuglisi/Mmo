@@ -440,8 +440,9 @@ impl World {
         SCAN.with(|buf| {
             let mut near = buf.take();
             near.clear();
+            let me = self.grid.slot_of(i);
             self.grid.query(o.pos, radius, |slot, d2| {
-                if self.grid.entry(slot).idx as usize != i {
+                if slot != me {
                     near.push((d2, slot));
                 }
             });
@@ -781,7 +782,7 @@ impl World {
         }
         // The player's other groups go their own way: their members aren't
         // counted with the viewer's herd (cohesion, herd size, company).
-        let herd = kin && (q.group == o.group || q.owner != o.owner);
+        let herd = kin && (e.group == o.group || e.owner != o.owner);
         if count {
             let lineage = usize::from(e.lineage != o.lineage);
             seen.looked[lineage] += 1;
@@ -799,7 +800,7 @@ impl World {
         // A territory holder notes the nearest stranger inside its territory
         // that couldn't beat it (`Action::Defend`).
         if let (true, false, Some((c, r))) = (count, kin, v.territory) {
-            if q.owner != o.owner
+            if e.owner != o.owner
                 && !q.dormancy.is_deep()
                 && q.pos.dist(c) <= r
                 && !(can_threaten(q, o) && q.power() > o.power())
@@ -809,7 +810,7 @@ impl World {
             }
         }
         // A defender chasing the viewer out of its territory.
-        let defender = e.flags & DEFENDING != 0 && q.owner != o.owner;
+        let defender = e.flags & DEFENDING != 0 && e.owner != o.owner;
         if !kin && (could_threaten || could_be_prey || defender) {
             // Sheltered burrowers and stealthy organisms are harder to see.
             // A shared burrow hides its sleepers better. A deep sleeper's den
