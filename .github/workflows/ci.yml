@@ -227,6 +227,108 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # The iOS app on a macOS runner, in one job to pay for one macOS machine:
+  # an unsigned simulator build (uploaded), then a plain-http build driven in
+  # a simulator through Appium against a local evo-server. macOS minutes
+  # cost more than Linux ones: everything slow is cached (cargo, Swift
+  # packages, the Appium driver, WebDriverAgent's build).
+  ios:
+    name: iOS app (simulator build and smoke)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      APPIUM_VERSION: 3.9.0
+      XCUITEST_VERSION: 12.22.7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Xcode and simulators
+        id: xcode
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+          echo "version=$(xcodebuild -version | tr -s '\n ' '__')" >>"$GITHUB_OUTPUT"
+      - name: Build the client
+        working-directory: client
+        run: |
+          npm ci
+          npm run build
+      # Generated, not committed (client/ios/ is git-ignored), like Android:
+      # Capacitor 8 makes a Swift Package Manager project (no CocoaPods).
+      # Its capacitor:copy:after hook (scripts/ios-ats.mjs) leaves Info.plist
+      # https-only without EVO_CAP_CLEARTEXT.
+      - name: Generate the iOS project
+        working-directory: client
+        run: npx cap add ios
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: target/ios-spm
+          key: ios-spm-${{ steps.xcode.outputs.version }}-${{ hashFiles('client/package-lock.json') }}
+          restore-keys: ios-spm-${{ steps.xcode.outputs.version }}-
+      - name: Build the app for the simulator (unsigned)
+        run: |
+          bash client/scripts/ios-build-sim.sh target/ios-sim
+          if plutil -extract NSAppTransportSecurity xml1 -o - target/ios-sim/App.app/Info.plist >/dev/null 2>&1; then
+            echo "the shipped build has an App Transport Security exception"; exit 1
+          fi
+          (cd target/ios-sim && ditto -c -k --keepParent App.app evolution-mmo-simulator.zip)
+      - name: Upload the simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: evolution-mmo-ios-simulator-app
+          path: target/ios-sim/evolution-mmo-simulator.zip
+          if-no-files-found: error
+          retention-days: 14
+      # The plain-http build for the simulator run (its server is
+      # http://127.0.0.1:8080): EVO_CAP_CLEARTEXT=1 puts the ATS web-content
+      # exception into Info.plist. Incremental; the app above stays https-only.
+      - name: Build the cleartext app (for the simulator run)
+        run: |
+          (cd client && EVO_CAP_CLEARTEXT=1 npx cap sync ios)
+          bash client/scripts/ios-build-sim.sh target/ios-sim-cleartext
+          ats="$(plutil -extract NSAppTransportSecurity.NSAllowsArbitraryLoadsInWebContent raw -o - target/ios-sim-cleartext/App.app/Info.plist || true)"
+          [ "$ats" = true ] || { echo "the cleartext build has no NSAllowsArbitraryLoadsInWebContent (got: $ats)"; exit 1; }
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build evo-server
+        run: cargo build --release -p evo-server --bin evo-server
+      - name: Cache the Appium driver
+        uses: actions/cache@v4
+        with:
+          path: ~/.appium
+          key: appium-${{ runner.os }}-${{ runner.arch }}-${{ env.APPIUM_VERSION }}-xcuitest-${{ env.XCUITEST_VERSION }}
+      # Appium is not a client dependency (only this job uses it).
+      - name: Install Appium and the XCUITest driver
+        run: |
+          npm install -g "appium@$APPIUM_VERSION"
+          if ! appium driver list --installed 2>&1 | grep -q xcuitest; then
+            appium driver install "xcuitest@$XCUITEST_VERSION"
+          fi
+      # WebDriverAgent is built by the first Appium session; with its derived
+      # data restored the build is incremental.
+      - name: Cache WebDriverAgent's build
+        uses: actions/cache@v4
+        with:
+          path: ~/wda-derived
+          key: wda-${{ steps.xcode.outputs.version }}-${{ runner.arch }}-xcuitest-${{ env.XCUITEST_VERSION }}
+      - name: Smoke-run the app in a simulator
+        env:
+          OUT: ${{ github.workspace }}/client/e2e/out/ios
+        run: WDA_DERIVED_DATA="$HOME/wda-derived" bash client/e2e/ios-simulator.sh target/ios-sim-cleartext/App.app
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-smoke
+          path: client/e2e/out/ios/
+          if-no-files-found: warn
+          retention-days: 14
+
   e2e:
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest

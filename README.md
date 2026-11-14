@@ -363,16 +363,17 @@ samples of 13.5k organisms (256×256, scale 10) takes 6.7 ms, every 5 days.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push and pull request, in five
-parallel jobs:
+`.github/workflows/ci.yml` runs on every push and pull request, in parallel
+jobs (the Android emulator job waits for the Android one):
 
 | Job | What it runs |
 | --- | --- |
 | Rust | `cargo fmt --all --check` (`rustfmt.toml`: width 120), `cargo build --release --workspace`, `cargo test --release --workspace` with a `postgres:16` service container (`DATABASE_URL` set, so the persistence tests also run against `PgStore`; `EVO_REQUIRE_DATABASE=1` makes them fail rather than skip if it goes missing), `cargo clippy --release --all-targets -- -D warnings`, and clippy on `evo-server --no-default-features` (no sqlx) (stable toolchain, cargo cache) |
 | Balance smoke check | `scripts/balance-smoke.sh`: `evo-sim sweep --size 64 --trials 1 --seeds 3 --rounds 1 --days 60` with the default `Balance`, failing if fewer than 14 of the 24 lineage-worlds (8 lineages × 3 seeds) still hold 4 members with 2 adults, or the score drops below 7 of 12. The current rules make 21 of 24 and 10.4, so only a rule change that wrecks coexistence trips it; thresholds are env-overridable (`MIN_SURVIVORS`, `MIN_SCORE`, `SEEDS`, `DAYS`, `SIZE`). |
 | Client | `npm ci`, `npm run typecheck`, `npm test`, `npm run build` |
-| Android app | builds the client, generates the Capacitor project (`npx cap add android`), installs JDK 21 and the Android SDK (`android-actions/setup-android`: platform-tools, platform 36, build-tools 35.0.0), runs `./gradlew assembleDebug` and uploads `app-debug.apk` as the `evolution-mmo-debug-apk` artifact (14 days); then a second, plain-http build (`EVO_CAP_CLEARTEXT=1 npx cap sync android`, checked for `usesCleartextTraffic="true"` in the merged manifest) as `evolution-mmo-debug-apk-cleartext` for the emulator job. No iOS job: it needs a macOS runner with Xcode (see "Mobile apps" in [Client](#client)) |
+| Android app | builds the client, generates the Capacitor project (`npx cap add android`), installs JDK 21 and the Android SDK (`android-actions/setup-android`: platform-tools, platform 36, build-tools 35.0.0), runs `./gradlew assembleDebug` and uploads `app-debug.apk` as the `evolution-mmo-debug-apk` artifact (14 days); then a second, plain-http build (`EVO_CAP_CLEARTEXT=1 npx cap sync android`, checked for `usesCleartextTraffic="true"` in the merged manifest) as `evolution-mmo-debug-apk-cleartext` for the emulator job |
 | Android emulator | after the Android job: enables KVM (GitHub's udev rule), builds `evo-server`, boots an API 34 `google_apis` x86_64 emulator (`reactivecircus/android-emulator-runner`, Pixel 6 profile, SwiftShader GPU; the AVD and a booted snapshot are cached) and runs `client/e2e/android-emulator.sh` on the cleartext APK: login, register, founder design, map and state frames, 25 s in the background and back with the socket recovered (see "Mobile apps" in [Client](#client)). Screenshots, logcat, the server log and `report.json` are uploaded as `android-emulator-smoke` (always) |
+| iOS app | on `macos-latest` (45 min limit): builds the client, generates the Capacitor project (`npx cap add ios`, Swift Package Manager), builds it for the simulator unsigned (`client/scripts/ios-build-sim.sh`: `xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO`), checks its `Info.plist` has no App Transport Security exception and uploads `App.app` zipped as `evolution-mmo-ios-simulator-app` (14 days); then a plain-http build (`EVO_CAP_CLEARTEXT=1 npx cap sync ios`, checked for `NSAllowsArbitraryLoadsInWebContent`), builds `evo-server`, installs Appium 3.9.0 with the XCUITest driver 12.22.7 and runs `client/e2e/ios-simulator.sh` on it: the Android scenario (login, register, founder design, map and state frames, home button for 25 s and back with the socket recovered) in an iPhone simulator, plus the server's `/api/metrics` showing the app's socket and state frames. Cargo, the Swift packages, the Appium driver and WebDriverAgent's build are cached. Screenshots, the app's log, Appium's and the server's logs, `metrics.json` and `report.json` are uploaded as `ios-simulator-smoke` (always) |
 | End-to-end | builds `evo-server` and the client, installs Playwright and Chromium (CI only; developer machines have them pre-installed), runs `npm run e2e` and uploads the screenshots as an artifact when it fails |
 
 Run the same checks locally before pushing:
@@ -1996,7 +1997,7 @@ not committed (`client/android/`, `client/ios/` are git-ignored):
 cd client
 npm run build
 npx cap add android        # once; needs Android Studio / SDK to build
-npx cap add ios            # once; needs macOS with Xcode (CocoaPods or SPM)
+npx cap add ios            # once; needs macOS with Xcode to build (Swift Package Manager project)
 npm run cap:sync           # build + copy dist/ and plugins into both projects (after every client change)
 npx cap open android       # or: npx cap run android / npx cap open ios
 ```
@@ -2026,10 +2027,18 @@ the push plugin; see below); with
 `allowMixedContent: true` (a plain `npm run cap:sync` turns both off again,
 so rerun it with the variable when you switch). It has not been played on
 a physical device yet; an emulator smoke run (below) covers the basics.
-iOS needs macOS with Xcode; a CI job for it would be a `macos-latest`
-runner doing `npx cap add ios` and `xcodebuild -workspace` (or
-`-project` with SPM) `-scheme App -sdk iphonesimulator
-CODE_SIGNING_ALLOWED=NO build`, not added because it has not been tried.
+iOS needs macOS with Xcode. Without an Apple account, an unsigned
+simulator build is (this is what the `ios` CI job does):
+
+```sh
+cd client && npm run build && npx cap add ios          # or `npx cap sync ios` once added
+scripts/ios-build-sim.sh                               # → target/ios-sim/App.app (Debug, iphonesimulator, CODE_SIGNING_ALLOWED=NO)
+xcrun simctl install booted ../target/ios-sim/App.app && xcrun simctl launch booted org.evolutionmmo.client
+```
+
+`npx cap add ios` works on Linux too (it only writes the project: checked,
+Capacitor 8.6.2 makes `ios/App/App.xcodeproj` with a `CapApp-SPM` package
+that includes the push plugin), but the build itself has only run in CI.
 
 **Push notifications in the apps** use FCM and APNs, not Web Push; the
 Android app needs `android/app/google-services.json` from a Firebase project
@@ -2103,6 +2112,52 @@ was checked against a fake `adb` forwarding to that desktop Chromium
 second, HOME/resume, screencap, logcat filtering). Written on a machine
 without KVM, so the emulator itself only runs in CI.
 
+**Simulator smoke run (iOS).** `client/e2e/ios-simulator.sh [App.app]`
+runs the same scenario in an iOS simulator, and is what the `ios` CI job
+runs (macOS with Xcode only):
+
+```sh
+cd client && npm run build && EVO_CAP_CLEARTEXT=1 npx cap sync ios && scripts/ios-build-sim.sh
+npm install -g appium@3.9.0 && appium driver install xcuitest@12.22.7
+cargo build --release -p evo-server
+client/e2e/ios-simulator.sh          # default app: target/ios-sim/App.app
+```
+
+It picks a simulator (`SIM_UDID`, or the first available device matching
+`SIM_DEVICE`, default `^iPhone`, on the newest iOS runtime) and boots it,
+starts `evo-server` on `127.0.0.1:8080` (the simulator shares the Mac's
+network, so the app reaches it as `http://127.0.0.1:8080`; the cleartext
+build's ATS exception lets the WKWebView use plain http), starts Appium,
+records the app's log (`simctl spawn … log stream`, process `App`; Capacitor
+prints the page's console there), and per attempt (2 by default, each on a
+fresh install) runs `e2e/ios-webview.mjs`. iOS has no DevTools protocol:
+Appium's XCUITest driver reaches the WKWebView through the simulator's Web
+Inspector service (a Debug build sets `CAPACITOR_DEBUG`, so the web view is
+inspectable) and runs JavaScript in its `WEBVIEW_*` context, and
+`e2e/ios/webdriver.mjs` (a small dependency-free WebDriver client) gives
+`e2e/android/scenario.mjs` a DevTools-shaped session over it: `evaluate`
+through `execute/sync` (a promise is parked in the page and polled), taps
+as mouse events and `click()` on the element at the point (or a real
+XCUITest tap with `EVO_IOS_NATIVE_TAP=1`), typing with
+`execCommand('insertText')`, screenshots from `simctl io … screenshot` (the
+web view fills the screen), console lines and uncaught errors from a hook
+in the page. Backgrounding is the home button (`mobile: pressButton`),
+resuming `mobile: activateApp` (with `simctl launch` as the fallback for
+both); iOS suspends the app within seconds, so the socket must come back
+through `wake()` or the watchdog. Afterwards the server's `/api/metrics`
+must show at least one socket opened and state frames sent. Screenshots,
+`app.log`, `appium.log`, `server.log`, `metrics.json` and `report.json`
+land in `OUT` (default `client/e2e/out/ios`). Env: `SIM_UDID`,
+`SIM_DEVICE`, `EVO_PORT`, `EVO_APP_SERVER`, `EVO_APP_PAGE` (default
+`^capacitor://localhost`), `APPIUM`, `APPIUM_PORT`, `WDA_DERIVED_DATA`,
+`ATTEMPTS`, `BG_SECONDS`. Written on Linux: the script and the WebDriver
+session were checked against a fake `xcrun` and a fake Appium that serves
+the page from desktop Chromium (simulator choice from `simctl list -j`, an
+install that fails once, a first session that fails and a passing second
+attempt, home/activate, screenshots, the metrics check), and the ATS hook
+with `npx cap add ios`/`sync` and unit tests (`scripts/ios-ats.test.mjs`),
+but the simulator, Xcode build, Appium and WebDriverAgent only run in CI.
+
 The app's page is `https://localhost` (Android) or `capacitor://localhost`
 (iOS), so it talks to a remote game server. The origin comes from, in
 order: `?server=https://host:port` on the page URL (remembered), the
@@ -2112,8 +2167,13 @@ npm run build`; otherwise the page's own origin (`setApiBase()` in
 `api.ts`, `serverOrigin.ts`). The WebSocket follows the same origin
 (`wss://` for https). For a plain-http LAN server during development, run
 `EVO_CAP_CLEARTEXT=1 npm run cap:sync` (cleartext and mixed content on
-Android; iOS also needs an App Transport Security exception in
-`ios/App/App/Info.plist`); `EVO_CAP_LIVE_URL=http://192.168.1.20:5173`
+Android; on iOS an App Transport Security exception in
+`ios/App/App/Info.plist`: `NSAllowsArbitraryLoadsInWebContent` and
+`NSAllowsLocalNetworking`, which `scripts/ios-ats.mjs` adds after every
+`cap copy`/`sync`/`add` through the `capacitor:copy:after` hook in
+`package.json`, and takes out again on a sync without the variable, leaving
+any other ATS keys alone; so sync without it before a release build);
+`EVO_CAP_LIVE_URL=http://192.168.1.20:5173`
 loads the page from `npm run dev -- --host` for live reload.
 
 **Architecture.**
@@ -4513,14 +4573,20 @@ sections above).
    on resume). An emulator smoke run is in CI (the `android-emulator` job:
    login over the Server field to an http server with `EVO_CAP_CLEARTEXT=1`,
    founder design, map and state frames, 25 s in the background and back
-   with the socket recovered; screenshots and logcat as artifacts). Still
-   open: install the APK on a real Android device and play a session (login with a remote
+   with the socket recovered; screenshots and logcat as artifacts). An iOS
+   job on `macos-latest` builds the app for the simulator unsigned
+   (uploaded as an artifact) and runs the same scenario in an iPhone
+   simulator through Appium, with the ATS exception for http only in its
+   `EVO_CAP_CLEARTEXT=1` build; it was written without a Mac, so its first
+   CI runs are its first runs (expect to fix details there: the Xcode and
+   simulator versions on the runner, Appium reaching the web view, the
+   home button and resume). Still open: install the APK on a real Android
+   device and play a session (login with a remote
    server over https and a LAN http server with `EVO_CAP_CLEARTEXT=1`,
    touch gestures, the bottom sheet, the onboarding tour, reconnects after
-   backgrounding and network switches); build iOS on macOS, add a
-   `macos-latest` CI job for it (`xcodebuild … -sdk iphonesimulator
-   CODE_SIGNING_ALLOWED=NO`), and play the same session on an iPhone;
-   extend the emulator run with what a device run shows matters (touch
+   backgrounding and network switches); play the same session on an
+   iPhone (needs signing with an Apple Developer account);
+   extend the emulator and simulator runs with what a device run shows matters (touch
    gestures on the map, the bottom sheet, a network switch with
    `adb shell svc wifi`/`data`, an https server).
 2. **Push notifications on real devices.** Web Push works in browsers, and

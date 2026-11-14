@@ -21,7 +21,10 @@
     "cap:add:ios": "cap add ios",
     "cap:sync": "npm run build && cap sync",
     "cap:open:android": "cap open android",
-    "cap:open:ios": "cap open ios"
+    "cap:open:ios": "cap open ios",
+    "capacitor:copy:after": "node scripts/ios-ats.mjs",
+    "ios:build-sim": "bash scripts/ios-build-sim.sh",
+    "e2e:ios": "bash e2e/ios-simulator.sh"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.2",

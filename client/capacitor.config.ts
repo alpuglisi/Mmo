@@ -14,7 +14,10 @@
 //
 // Env when running `cap sync` / `cap run`:
 //   EVO_CAP_CLEARTEXT=1  allow plain-http servers (a LAN dev server); off by
-//                        default, as stores expect https.
+//                        default, as stores expect https. Android: cleartext
+//                        and mixed content below; iOS: an App Transport
+//                        Security exception in Info.plist, set or removed by
+//                        scripts/ios-ats.mjs (the capacitor:copy:after hook).
 //   EVO_CAP_LIVE_URL     load the page from a dev server for live reload
 //                        (e.g. http://192.168.1.20:5173) instead of dist/.
 

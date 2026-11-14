@@ -15,9 +15,15 @@
 //      (the reconnects it took, the visibility changes the page saw and how
 //      long recovery took go into the report).
 //
-// `device` supplies what differs between the two:
+// It also drives the iOS app's WKWebView in a simulator
+// (e2e/ios-webview.mjs), through Appium and a DevTools-shaped session over
+// WebDriver (e2e/ios/webdriver.mjs).
+//
+// `device` supplies what differs between them:
 //   endpoint()      → the DevTools HTTP endpoint (re-forwarded if the app restarted)
 //   match(target)   → whether a /json/list page target is the app
+//   connect()       → instead of endpoint()/match: a ready session with the
+//                     same send/evaluate/on/close/closed surface (iOS)
 //   serverOrigin    → what to type into the Server field
 //   screenshot(file)→ a whole-screen screenshot (optional)
 //   background(), resume()
@@ -98,7 +104,9 @@ export async function runScenario(device, { outDir, backgroundSeconds = 25, name
 
   const attach = async () => {
     cdp?.close();
-    cdp = await connectPage(await device.endpoint(), { match: device.match, timeoutMs: 90000 });
+    cdp = device.connect
+      ? await device.connect()
+      : await connectPage(await device.endpoint(), { match: device.match, timeoutMs: 90000 });
     cdp.on('Runtime.consoleAPICalled', (e) => {
       const text = e.args.map((a) => a.value ?? a.description ?? a.type).join(' ');
       report.console.push(`[${e.type}] ${text}`);
