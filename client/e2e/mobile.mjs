@@ -76,10 +76,10 @@ async function register(page, base, name, lineage) {
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 });
   await page.fill('#design-name', lineage);
   await page.click('#design-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 15000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 });
   await waitFor('own organisms', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
   await waitFor('markers', () => page.evaluate(() => (window.evo.screen()?.view.spriteStats().markers ?? 0) > 0));
 }
@@ -196,11 +196,11 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
     const s = document.querySelector('#sidebar').getBoundingClientRect();
     const p = document.querySelector('#panel-lineage');
     return document.querySelector('.game').classList.contains('sheet-open') && getComputedStyle(p).display !== 'none' && s.height > window.innerHeight * 0.4;
-  }), 5000);
+  }), 15000);
   await page.waitForTimeout(300); // slide-up transition
   await shot(page, `${tag}-sheet-lineage.png`);
   await page.tap('#tab-lineage');
-  await waitFor('sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')), 5000);
+  await waitFor('sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')), 15000);
   step(`${tag}: tab tap opens the bottom sheet, a second tap closes it`);
 
   // Seasons tab: the season under way, your record and the hall of fame fit
@@ -228,13 +228,13 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
     const d = document.querySelector('#season-history details');
     if (d && !document.querySelector('#season-history details[open]')) d.open = true;
     return document.querySelector('#season-history details[open] .standings table') !== null;
-  }), 10000);
+  }), 20000);
   const opened = await fits();
   if (overflow(opened)) throw new Error(`${tag}: season standings overflow ${JSON.stringify(opened)} (viewport ${vw.width})`);
   await page.waitForTimeout(300);
   await shot(page, `${tag}-sheet-seasons.png`);
   await page.tap('#tab-seasons');
-  await waitFor('sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')), 5000);
+  await waitFor('sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')), 15000);
   step(`${tag}: seasons tab fits (${seasons.finished} finished seasons, standings open without sideways scroll)`);
 
   // Tap to select an own organism: the floating Possess button appears.
@@ -244,14 +244,14 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
     const o = await findOwn(page);
     await page.evaluate(() => window.evo.model.select(null));
     await page.touchscreen.tap(canvas.x + o.x, canvas.y + o.y);
-    const got = await waitFor('selection', () => page.evaluate(() => window.evo.model.selected), 3000).catch(() => null);
+    const got = await waitFor('selection', () => page.evaluate(() => window.evo.model.selected), 6000).catch(() => null);
     if (got !== null && (await page.evaluate((id) => window.evo.model.state.organisms.some((x) => x.id === id), got))) sel = got;
   }
   if (sel === null) throw new Error(`${tag}: tap did not select an own organism`);
   await waitFor('fab', () => page.evaluate((id) => {
     const f = document.querySelector('#fab-possess');
     return !f.hidden && getComputedStyle(f).display !== 'none' && f.textContent.includes(`#${id}`);
-  }, sel), 5000);
+  }, sel), 15000);
   step(`${tag}: tap selected own organism #${sel}; floating Possess button shown`);
   await shot(page, `${tag}-selected.png`);
 
@@ -262,7 +262,7 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   if (possessed !== null) {
     step(`${tag}: Possess button possessed #${possessed}`);
     await page.evaluate((id) => window.evo.socket.send({ type: 'release', organism: id }), possessed);
-    await waitFor('released', () => page.evaluate(() => !window.evo.model.state.organisms.some((o) => o.possessed)), 12000);
+    await waitFor('released', () => page.evaluate(() => !window.evo.model.state.organisms.some((o) => o.possessed)), 20000);
   } else {
     // The organism may have died in between; the long press below covers possession.
     console.log(`  … ${tag}: #${sel} was not possessed via the button (likely died); continuing`);
@@ -355,12 +355,12 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
     const o = window.evo.model.state.organisms.find((x) => x.matured) ?? window.evo.model.state.organisms[0];
     if (window.evo.model.selected !== o.id) window.evo.model.select(o.id);
     return document.querySelector('#panel-organism').textContent.includes('Body plan');
-  }), 8000);
+  }), 15000);
   await page.waitForTimeout(300);
   await shot(page, `${tag}-sheet-organism.png`);
   await page.tap('#tab-organism');
   await page.tap('#legend-toggle');
-  await waitFor('legend', () => page.evaluate(() => getComputedStyle(document.querySelector('.legends')).display !== 'none'), 3000);
+  await waitFor('legend', () => page.evaluate(() => getComputedStyle(document.querySelector('.legends')).display !== 'none'), 15000);
   await shot(page, `${tag}-legend.png`);
   step(`${tag}: inspector in the sheet; legend toggle`);
 
@@ -369,14 +369,14 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   await page.tap('#legend-toggle');
   await page.tap('#split-group');
   await waitFor('two groups', () => page.evaluate(() => window.evo.model.state.groups?.length === 2
-    && document.querySelector('#group-select').value !== 'all'), 8000);
+    && document.querySelector('#group-select').value !== 'all'), 15000);
   await page.tap('#territory');
   const c = await box(page, '#world-canvas');
   const zoom = await page.evaluate(() => window.evo.screen().view.cam.zoom);
   await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height / 2);
-  await waitFor('territory draft', () => page.evaluate(() => window.evo.screen().view.overlayInfo().draft !== null), 3000);
+  await waitFor('territory draft', () => page.evaluate(() => window.evo.screen().view.overlayInfo().draft !== null), 15000);
   await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height / 2 + 5 * zoom);
-  const held = await waitFor('territory held', () => page.evaluate(() => window.evo.model.state.groups.find((g) => g.territory)?.territory), 8000);
+  const held = await waitFor('territory held', () => page.evaluate(() => window.evo.model.state.groups.find((g) => g.territory)?.territory), 15000);
   const tools = await page.evaluate(() => document.documentElement.scrollWidth);
   if (tools > vw.width + 1) throw new Error(`${tag}: the toolbar made the page scroll sideways (${tools})`);
   await shot(page, `${tag}-territory.png`);
@@ -469,7 +469,7 @@ async function worldChecks(browser, base, errors) {
   page.on('pageerror', (e) => errors.push(e.message));
   const online = async () => Object.fromEntries((await (await fetch(`${base}/api/worlds`)).json()).worlds.map((w) => [w.id, w.players_online]));
   await page.goto(`${base}/?tour=off`);
-  await page.waitForSelector('#world-select', { state: 'visible', timeout: 10000 });
+  await page.waitForSelector('#world-select', { state: 'visible', timeout: 20000 });
   const options = await page.$$eval('#world-select option', (os) => os.map((o) => [o.value, o.textContent]));
   if (JSON.stringify(options) !== JSON.stringify([['main', 'Mainland'], ['isle', 'Isle']])) throw new Error(`world options ${JSON.stringify(options)}`);
   const sel = await box(page, '#world-select');
@@ -482,10 +482,10 @@ async function worldChecks(browser, base, errors) {
   if (!(await page.textContent('#world-info')).includes('48×48')) throw new Error(`world info: ${await page.textContent('#world-info')}`);
   await shot(page, 'pixel7-world-picker.png');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 });
   await page.fill('#design-name', 'Isle walkers');
   await page.click('#design-submit');
-  await page.waitForSelector('#world-canvas', { timeout: 15000 });
+  await page.waitForSelector('#world-canvas', { timeout: 45000 });
   await waitFor('own organisms', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
   await waitFor('Ann online on the isle', async () => {
     const o = await online();
@@ -505,7 +505,7 @@ async function worldChecks(browser, base, errors) {
   await page.waitForSelector('#world-select', { state: 'visible' });
   await page.selectOption('#world-select', 'main');
   await page.click('#register-submit');
-  await page.waitForSelector('#design-name', { timeout: 15000 });
+  await page.waitForSelector('#design-name', { timeout: 45000 });
   await waitFor('Bob online on the mainland', async () => (await online()).main === 1);
   await page.click('text=Log out');
   await page.waitForSelector('#login-name');

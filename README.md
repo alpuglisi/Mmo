@@ -61,6 +61,7 @@ docs/
 | `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends. See [Groups and territory](#groups-and-territory). |
 | `world::chronicle` | Scoring | The daily hook: samples adults (cohorts included) for species detection, plans, applies and ends catastrophes through existing systems (`Map::climate_temp`, `Map::climate_wet`, infections), closes eras and awards achievements. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
+| `world::offline` | Open questions (offline protection) | Softer rules for the last members of a lineage whose owner is logged out: the caller names the protected lineages and exempt organisms (`World::set_offline_protection`); at or below the floor (12 living members) kill chance against them is ×0.25 and starvation and thirst ×0.5, for agents and cohorts. Off (and bit-identical) by default. See [Offline protection](#offline-protection). |
 
 ### Tick structure
 
@@ -320,7 +321,9 @@ doesn't use), `--session-idle-min N` / `--session-max-hours N` (session
 expiry, default 60 min idle and 24 h), `--no-rate-limits`, `--lod` (level
 of detail, below), `--no-catastrophes` (catastrophes are on by default in
 the game, never in the first year), `--season-days N` (length of a ranked
-season, default 60; see [Ranked seasons](#ranked-seasons)), `--fresh` (ignore the saved world: new
+season, default 60; see [Ranked seasons](#ranked-seasons)),
+`--offline-protection-hours H` (longest protection after a logout, default
+12, 0 turns it off; see [Offline protection](#offline-protection)), `--fresh` (ignore the saved world: new
 world, stored designs re-founded; see [Persistence](#persistence)), `--no-push`,
 `--vapid-private-key KEY` / `--vapid-subject mailto:...` (or `EVO_VAPID_PRIVATE_KEY` /
 `EVO_VAPID_SUBJECT`), `--push-per-hour N` and `--push-allow-any-endpoint` (see
@@ -386,7 +389,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
                                     ◀── watch: world summary + leaderboard
                                          │ daily: Capture (a clone of the game)
                                          ▼
-                                   saver thread (bincode + LZ4)
+                                   saver thread (bincode + LZ4, deflate)
                                          │
                        store task ◀── daily records, finished trades, saved games
 ```
@@ -723,6 +726,62 @@ an organism died first, with the cause; or the rules refused it) or
 `expired` (season change, when slots reset). The requester's seasonal slot
 is spent.
 
+### Offline protection
+
+The design doc leaves this open ("Offline protection: home ranges or
+surviving founder groups"). The simulation runs while a player sleeps, and
+at 1 tick per second a night offline is several hundred simulated days, so
+an unattended small lineage could be wiped out with nothing its owner could
+do. Implemented as the *surviving founder group* form, deliberately narrow so
+that logging out never pays as a strategy:
+
+- **Who.** A player's lineage is protected from the moment their last
+  connection to that world closes until they connect again, or for at most
+  12 hours (`--offline-protection-hours`, `GameConfig::offline_protection_ticks`;
+  converted to ticks at the server's clock; 0 turns protection off). Each
+  world tracks its own connections, so a player on world A is offline in
+  world B. A restart counts as everyone logging out; a spell already running
+  keeps its clock (the spells are in the saved game, `game::offline`), so a
+  restart never hands out a fresh 12 hours. A new spell needs a login in
+  between; there is no cooldown beyond that, since the floor below already
+  keeps protection from helping a lineage that is doing well.
+- **When it applies.** Only while the lineage is down to its last 12 living
+  members (agents plus cohort members of abstract regions,
+  `ProtectionRules::floor`), checked at each day boundary and whenever the
+  protected set changes, never mid-tick (so the sequential and parallel apply
+  agree). A thriving lineage plays by the normal rules: protection can save a
+  lineage from extinction, never win it legacy share.
+- **What it does.** A hunter's strike that would kill a protected organism
+  succeeds with a quarter of its usual chance (`predation` 0.25; the hunter
+  still pays for the attempt and the prey can still escape or fight back),
+  and starvation and thirst damage is halved (`hardship` 0.5). Cohorts of
+  abstract regions get the same: a quarter of their exposure to hunting
+  cohorts and half their starvation and thirst hazards. Cold, heat, old age,
+  disease, larval competition, migration losses and catastrophes are
+  untouched, and protection does nothing for breeding. Predators lose little:
+  12 organisms of a player's are a small part of any hunting range.
+- **Not protected.** Organisms in an open directed-mating agreement (either
+  side, pending or accepted), listed on the stud marketplace or an auction,
+  or put up as the organism of an auction's highest bid: the doc's "the trip
+  carries risk" stands, and a player can't shield a stud by logging off.
+  Possessed organisms aren't protected either (possession outlives a
+  disconnect; an organism still possessed while its owner is away is under
+  orders, not sheltering).
+- **What the player sees.** On login, if protection actually applied (the
+  lineage was at or below the floor while they were away), a `milestone`
+  alert: "While you were away, offline protection shielded your small
+  lineage for N simulated days …". Nothing new on the wire.
+- **Determinism and saves.** The world never decides who is online: the
+  server hands it the protected lineages and exempt organisms
+  (`World::set_offline_protection`, sent only when they change). The
+  protection is not in world snapshots (the field is skipped; snapshot format
+  unchanged) and the server sets it again on resume. With nothing protected
+  every factor is exactly 1.0, so the simulation is bit-identical to a world
+  without the feature (the 12-seed sweep at seed 31 still scores 11.54).
+  Tests: `world::offline::tests` (floor, exemptions, protected voles never
+  killed with the kill chance cut to 0) and `game::offline::tests` (logout to
+  login, the cap, exempt agreement organisms, a restart keeping clocks).
+
 ### Ranked seasons
 
 The design doc's "seasonal leaderboards: snapshot and rank at the end of
@@ -1008,7 +1067,14 @@ tick, id)`, so state plus tick determine the future. Format
 (`world::snapshot`): a fixed header (magic, format version
 `SNAPSHOT_VERSION`, flags, a hash of the whole `WorldConfig`, tick,
 organism count, raw length, payload checksum, and from version 6 the
-terrain's content hash) and the `World` in `bincode`, LZ4-compressed.
+terrain's content hash) and the `World` in `bincode`, LZ4-compressed;
+from version 11 the map's changing tiles are written apart, after it: per
+field, each tile's bits XORed with its western neighbour's, split into byte
+planes and deflated (`flate2` on its pure-Rust miniz_oxide backend, fast
+level), on a second thread while the rest is encoded. Smooth fields
+(temperature, wind, wetness) leave long runs of zero high bytes, so the
+tiles take about 60% of what LZ4 made of them interleaved. Version 10
+snapshots (the tiles inside the payload) still restore.
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1053,7 +1119,8 @@ a snapshot of another version is refused with both versions named. Version
 version 8 added the balance parameters `threat_caution`, `alert_guard` and
 `pasture_search` to the saved config; version 9 the hunters' search image; version 10 added groups and
 territories (`Organism::group`, migration orders per player and group,
-claimed territories and claim times).
+claimed territories and claim times); version 11 writes the tiles apart
+(above).
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -1141,6 +1208,33 @@ and after, timing aside, and the snapshot test also requires the restored
 caches, paths and pregnancies to match the original's exactly, father
 genomes to come back shared, and a clone to share every genome.
 
+**Tiles apart (world snapshot 11, saved game 5)**: `snapshot::encode` of
+a game, the last saved game 4 build and this one interleaved, two rounds
+each, on the same shared 4-core machine under heavy load from other jobs
+(load average 8–12, so times are noisy; medians of 15, or 7 at 512²):
+
+| World | Saved game before → after | Encode before / after | File write + fsync before / after |
+| --- | --- | --- | --- |
+| 96², server default settings, day 30, 826 agents | 0.537 → **0.473 MB** (−12%) | 4.6–8.6 / 5.1–5.9 ms | 4–8 / 6–10 ms |
+| 128² (`--size` default), day 30, 1,460 agents | 0.950 → **0.830 MB** (−13%) | 7.8–11.1 / 7.4–12.8 ms | 5–10 / 5–8 ms |
+| 512², scale 5, day 2, 27k agents | 15.39 → **13.15 MB** (−15%) | 113–152 / 97–179 ms | 22–28 / 20–29 ms |
+
+At 512² the tiles went from 5.6 MB (LZ4, interleaved) to 3.4 MB; the rest
+of the world (9.8 MB, mostly genomes) is unchanged: deflate would take only
+2% more off it at four times LZ4's time, and the pure-Rust zstd encoder
+(`ruzstd`, fastest level) did worse than deflate there and on the tiles,
+slower. Encoding costs about as much CPU as before (the tiles' planes and
+deflate, ~45 ms at 512², replace their share of bincode and LZ4) but runs on
+two threads, so with a free core a save encodes faster (97 against 130 ms
+in the quieter round). A delta of the tiles against the map regenerated
+from the seed was measured and rejected: weather, water and vegetation
+have moved everywhere by the first save, and XOR against the generated
+tiles came out 4% larger than against the western neighbour (it only helps
+mud, water depth and current). The static terrain is deterministic from
+the seed but stays stored in full, once per world (5.1 MB at 512²): it is
+not part of each save, and a stored copy keeps old worlds restorable when
+map generation changes.
+
 **Saved games** (`snapshot.rs` in the server): magic, the game-side state
 as JSON (player → lineage, open offers with their escrow, migration orders,
 alerts, watched organisms, milestone progress, chronicle entries already
@@ -1150,7 +1244,10 @@ and the world snapshot. The game JSON carries a layout `version`
 (`SAVED_GAME_VERSION`, 2 since the economy, 3 since ranked seasons: the
 season under way and the last finished record, 4 since auctions: open
 auctions and their highest bids among the listings, none in versions 2
-and 3); a version-1 saved game still
+and 3, 5 since the JSON is deflated (magic `EVOSAV5\0`; a version 4 saved
+game, magic `EVOSAVE\0` with the JSON as is and a version 10 world
+snapshot, still restores, `snapshot::tests::version_4_saved_games_still_load`
+on a stored fixture); a version-1 saved game still
 restores, with balances and recent ledger entries from the store instead
 (and no escrow on its open offers). A new world (no saved game, or
 `--fresh`) also starts from the stored balances, and players who have one
@@ -1170,7 +1267,8 @@ The world thread saves after the tick that starts a new simulated day and
 on `Request::Shutdown`. It only takes a `snapshot::Capture` (a clone of the
 `World`, sharing its terrain, plus the game state) and hands it to the
 **background saver** (`saver.rs`, a dedicated thread), which encodes it
-(bincode + LZ4, the expensive part) and passes the bytes to the store task,
+(bincode + LZ4, the tiles deflated on a second thread: the expensive part)
+and passes the bytes to the store task,
 so a save no longer stalls ticks (numbers below). Each save carries the
 world's terrain blob, encoded once per world and terrain hash and then
 shared; the store task writes it (`Store::put_terrain`, a no-op when the
@@ -3273,15 +3371,27 @@ sections above).
 7. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
    protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
    doesn't offer it; revisit when it does (states are already ~1 KB/s a
-   client, so this is low priority). For save size, store the map's
-   changing tiles (about 6 MB of an 18 MB save at 26k agents) as a delta
-   against the previous save.
-8. **Design-doc features not built.** Offline protection (home ranges or
-   surviving founder groups; a territory could become one), group commands
-   as genes (the doc's open question; wanderlust and group tolerance
-   already shape how a group moves), and the doc's open question on
-   duplicate mutations; `GET /api/leaderboard/seasons` would also want a
-   cache instead of reading the whole history per call.
+   client, so this is low priority). Saves (13 MB at 26k agents, see
+   [Persistence](#persistence)) are now mostly genomes (about 7 MB of
+   founder values that don't compress); the map's tiles (3.4 MB) could
+   still go as a delta against the previous save, at the cost of saves
+   that depend on each other.
+8. **Design-doc features not built.** Group commands as genes (the doc's
+   open question; wanderlust and group tolerance already shape how a group
+   moves); `GET /api/leaderboard/seasons` would also want a cache instead of
+   reading the whole history per call. Offline protection is built as the
+   surviving-core form ([Offline protection](#offline-protection)); the home
+   range form (a claimed territory that shields its residents while the owner
+   is away) would be a follow-up, tuned with `compare` once there is player
+   data on how often small lineages die offline. Duplicate mutations: the
+   code already answers the doc's question as "separate tags per origin"
+   (`genome`: a mutation carries the tag of the organism's owner when it
+   appears, tags never change). Alleles are continuous, so two players never
+   produce exactly the same allele and "credit whoever had it first" would
+   need a new notion of when two alleles count as the same (a value bucket
+   per gene and a world-wide registry of first appearances, touching legacy
+   scoring and the snapshot format): a scoring-design change, not part of
+   offline protection, left open until the design doc picks a rule.
 9. **Tooling.** An adaptive `compare` that adds seeds until the CI
    resolves, and a check of how well 40-day screen ranks predict 120-day
    ranks; what migrating buys a design (the caribou with and without the

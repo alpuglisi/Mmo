@@ -114,6 +114,9 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       sort: sortSel.value as MarketSort,
     };
     pages = pages.slice(0, 1);
+    // Rebuild the cards for a new buyer organism at once (their buttons
+    // act for it), then fetch its compatibility.
+    renderListings();
     void refresh();
   };
   for (const el of [roleSel, kindSel, sortSel, compatOnly, mineSel]) el.addEventListener('change', readFilter);
@@ -256,12 +259,14 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const shown = mergePages(pages);
     const mine = chosen();
     // What the cards show: the listing data and whether (and why not) it
-    // can be bought, not the balance itself (which changes every day).
+    // can be bought, not the balance itself (which changes every day). And
+    // the buyer organism: the Buy and Bid buttons act for the one picked
+    // when the card was built, so a new pick must rebuild them.
     const balance = s?.balance ?? market?.balance ?? 0;
     const slots = s?.slots_left ?? 0;
     const why = (l: ListingView) => (l.auction ? bidProblem(l, model.player, balance, slots, mine, l.auction.min_bid) : buyProblem(l, model.player, balance, slots, mine));
     const key = JSON.stringify([shown.map((l) => [l.id, l.sales, l.busy, l.pregnant, l.preview?.fertility, l.preview?.distance?.toFixed(0),
-      l.auction?.high_bid, l.auction?.high_bidder, why(l)]), market === null]);
+      l.auction?.high_bid, l.auction?.high_bidder, why(l)]), market === null, mine?.id ?? null]);
     if (key !== listingsKey) {
       listingsKey = key;
       listingsEl.replaceChildren(...(market === null ? [h('p', { class: 'muted small' }, 'Loading…')]

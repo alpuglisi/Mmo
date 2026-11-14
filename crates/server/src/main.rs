@@ -4,7 +4,7 @@
 //! evo-server [--bind ADDR] [--data DIR | --memory | --database-url URL] [--size N] [--seed N]
 //!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
 //!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
-//!            [--season-days N] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
+//!            [--season-days N] [--offline-protection-hours H] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
 //!            [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:...] [--push-per-hour N]
 //!            [--push-allow-any-endpoint] [--hash-concurrency N] [--hash-queue N]
 //! ```
@@ -45,7 +45,7 @@ const USAGE: &str =
     "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory | --database-url URL] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
 [--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] \
-[--season-days 60] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE] \
+[--season-days 60] [--offline-protection-hours 12] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE] \
 [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:you@example.org] [--push-per-hour 4] \
 [--push-allow-any-endpoint] [--hash-concurrency N] [--hash-queue N]";
 
@@ -77,6 +77,7 @@ fn parse_args() -> Result<ServerConfig, String> {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
     let mut hash_concurrency = env("EVO_HASH_CONCURRENCY").map(|v| positive("EVO_HASH_CONCURRENCY", &v)).transpose()?;
     let mut hash_queue = env("EVO_HASH_QUEUE").map(|v| count("EVO_HASH_QUEUE", &v)).transpose()?;
+    let mut offline_hours: Option<f64> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -136,6 +137,13 @@ fn parse_args() -> Result<ServerConfig, String> {
                 }
                 cfg.game.season_days = n;
             }
+            "--offline-protection-hours" => {
+                let v = value("--offline-protection-hours")?;
+                match v.trim().parse::<f64>() {
+                    Ok(h) if (0.0..=24.0 * 365.0).contains(&h) => offline_hours = Some(h),
+                    _ => return Err("--offline-protection-hours must be a number of hours in 0..=8760".into()),
+                }
+            }
             "--fresh" => cfg.fresh = true,
             "--no-push" => cfg.push.enabled = false,
             "--vapid-private-key" => cfg.push.vapid_private_key = Some(value("--vapid-private-key")?),
@@ -172,6 +180,11 @@ fn parse_args() -> Result<ServerConfig, String> {
             other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
         }
     }
+    // Offline protection is set in hours of wall-clock time: ticks at the
+    // configured clock (counted as 1 s ticks when it runs as fast as it can).
+    let tick_ms = if cfg.runner.tick.is_zero() { 1000.0 } else { cfg.runner.tick.as_secs_f64() * 1000.0 };
+    let hours = offline_hours.unwrap_or(evo_server::game::DEFAULT_PROTECTION_HOURS);
+    cfg.game.offline_protection_ticks = (hours * 3_600_000.0 / tick_ms).round() as u64;
     if let Some(n) = hash_concurrency {
         cfg.hashing = HashPolicy::with_concurrency(n);
     }

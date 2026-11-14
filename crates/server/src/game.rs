@@ -23,6 +23,9 @@ use crate::design::gene_key;
 use crate::economy::{self, Bid, Economy, Insufficient, Listing};
 use crate::league::{self, CurrentSeason, SeasonRecord, SeasonTracker};
 use crate::protocol::*;
+mod offline;
+pub use offline::{OfflineTracker, Spell, DEFAULT_PROTECTION_HOURS, DEFAULT_PROTECTION_TICKS};
+
 use crate::store::{AuctionRecord, BalanceRecord, DailyRecord, LedgerRecord, LegacyEntry, LineageEntry, TradeRecord};
 
 /// Daily records kept in memory for the genetics dashboard.
@@ -38,8 +41,10 @@ const SHARE_MILESTONES: [f64; 5] = [0.01, 0.05, 0.1, 0.25, 0.5];
 /// kept by the store instead), 3 the ranked season under way and the last
 /// finished one (older saved games start tracking at their next day), 4
 /// auctions (with their highest bids) among the listings (versions 2 and 3
-/// read as having none).
-pub const SAVED_GAME_VERSION: u32 = 4;
+/// read as having none), 5 the same state saved smaller (the JSON deflated,
+/// the world snapshot's tiles apart: `crate::snapshot`; version 4 saved
+/// games still restore).
+pub const SAVED_GAME_VERSION: u32 = 5;
 /// Ledger entries returned by the `ledger` command unless asked otherwise.
 const LEDGER_DEFAULT: usize = 50;
 /// Genes shown for a listed organism.
@@ -154,6 +159,9 @@ pub struct GameConfig {
     /// Length of a ranked season in simulated days (`crate::league`). A
     /// change applies from the next season.
     pub season_days: u64,
+    /// Longest offline protection after a logout, in ticks; 0 turns it off
+    /// (`game::offline`).
+    pub offline_protection_ticks: u64,
 }
 
 impl Default for GameConfig {
@@ -165,6 +173,7 @@ impl Default for GameConfig {
             state_leaderboard_rows: 50,
             max_open_offers: 8,
             season_days: league::DEFAULT_SEASON_DAYS,
+            offline_protection_ticks: DEFAULT_PROTECTION_TICKS,
         }
     }
 }
@@ -334,6 +343,8 @@ pub struct Game {
     /// The last finished ranked season, kept so a restart can write it
     /// again if the store missed it.
     last_season_record: Option<SeasonRecord>,
+    /// Offline players' protection spells (`game::offline`).
+    offline: OfflineTracker,
 }
 
 /// The game-side state saved with each world snapshot (`crate::snapshot`):
@@ -371,6 +382,9 @@ pub struct SavedGame {
     /// Version 3 on: the ranked season under way and the last one finished.
     season: Option<SeasonTracker>,
     last_season_record: Option<SeasonRecord>,
+    /// Offline protection spells (absent in older saves: every player with
+    /// a lineage starts one at the restore).
+    offline: Option<OfflineTracker>,
 }
 
 impl SavedGame {
@@ -476,6 +490,7 @@ impl Game {
             economy_restored: false,
             season,
             last_season_record: None,
+            offline: OfflineTracker::default(),
         }
     }
 
@@ -503,6 +518,7 @@ impl Game {
             economy: Some(self.economy.clone()),
             season: Some(self.season.clone()),
             last_season_record: self.last_season_record.clone(),
+            offline: Some(self.offline.clone()),
         }
     }
 
@@ -571,8 +587,10 @@ impl Game {
             g.persist.push(PersistEvent::Season(Box::new(r.clone())));
             g.last_season_record = Some(r);
         }
-        // Nobody is connected: drop the level-of-detail focus of views.
+        // Nobody is connected: drop the level-of-detail focus of views, and
+        // every lineage is unattended.
         g.sync_focus();
+        g.offline_resume(saved.offline);
         g
     }
 
@@ -753,11 +771,15 @@ impl Game {
 
     pub fn connect(&mut self, conn: ConnId, player: PlayerId, name: &str) -> Outbox {
         self.set_name(player, name);
+        let first = !self.conns.values().any(|c| c.player == player);
         self.conns.insert(conn, Conn { player, view: None });
         let mut out = vec![(
             Target::Conn(conn),
             ServerMsg::Welcome { player, name: name.into(), lineage: self.lineage_of(player), proto: None },
         )];
+        if first {
+            self.offline_login(player, &mut out);
+        }
         if let Some(s) = self.state_for(conn) {
             out.push((Target::Conn(conn), ServerMsg::State(Box::new(s))));
         }
@@ -765,7 +787,11 @@ impl Game {
     }
 
     pub fn disconnect(&mut self, conn: ConnId) {
-        self.conns.remove(&conn);
+        if let Some(c) = self.conns.remove(&conn) {
+            if !self.conns.values().any(|o| o.player == c.player) {
+                self.offline_logout(c.player);
+            }
+        }
     }
 
     pub fn conn_player(&self, conn: ConnId) -> Option<PlayerId> {
@@ -1864,6 +1890,7 @@ impl Game {
         }
         self.watch_possessed(&mut out);
         self.announce_deaths(&mut out);
+        self.offline_after_tick();
         if self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) {
             self.sync_focus();
         }
