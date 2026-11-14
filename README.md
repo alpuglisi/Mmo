@@ -2286,7 +2286,8 @@ baseline twice more); the second runs agree except where noted:
   up to 512 at once, so a burst of logins becomes hundreds of CPU-bound
   threads that starve the world threads and hold ~19 MB each. With the
   ramp at 12.5 a second (as in every other run) the same 1,000 players
-  ramped without a stall (load 12–14 and 9–13 in the two runs).
+  ramped without a stall (load 12–14 and 9–13 in the two runs). Hashing
+  is now bounded (see below).
 - One world × 500 matches the earlier single-world runs (tick 82 / 163–204,
   command p99 253–270 ms, 0.26–0.27 cores) in both runs.
 
@@ -2311,10 +2312,50 @@ What it shows:
   suggests a dedicated box holds more, up to about 1 world per core, but
   that is extrapolated: measure before going past 2 worlds per 4 cores.
   Budget 0.5 GB of memory and 1.4 MB/s (11 Mbit/s) of egress per
-  500-player world with protocol 2 clients. Spread logins: until password
-  hashing is bounded (a few concurrent hashes per core), a login storm of
-  more than ~12 a second per 4 cores (a restart that sends every client
-  back at once, for instance) stalls every world in the process.
+  500-player world with protocol 2 clients. Login storms no longer stall
+  the worlds (next section); the default hash bound (2 at once on 4 cores,
+  ~45 hashes a second) admits about 22 new players a second (a registration
+  and a login each) and makes the rest wait a few seconds.
+
+#### Login bursts with bounded hashing
+
+The fast ramp again, with `--hash-concurrency` at its default (2 on this
+4-core box, queue 32): 2 worlds × 500, the 1,000 players registering and
+logging in over 40 s (25 a second, 50 hashes a second) and over 10 s (100
+a second), 100 s after the ramp, before (the previous commit's server) and
+after, from the same 512² warm-up (22k organisms per world, snapshot
+version 9). Same shared 4-core box, loaded by other jobs; the loadgen now
+retries `busy` and `rate_limited` as the client does. "Slowest 10 s" is the
+fewest ticks a world made in one 10 s report over the whole run, ramp
+included; tick p99 is the median of the reports after the ramp.
+
+| | before, 25/s (run 1) | before, 25/s (run 2) | after, 25/s (run 1) | after, 25/s (run 2) | before, 100/s | after, 100/s |
+| --- | --- | --- | --- | --- | --- | --- |
+| Load average (1 min): min / median / max | 6.0 / 7.3 / 9.3 | 6.3 / 9.8 / 10.4 | 6.0 / 8.3 / 8.8 | 6.2 / 7.0 / 8.2 | 9.0 / 17 / 34 | 7.8 / 10.7 / 12.4 |
+| Slowest 10 s, ticks per second (target 1) | 0.6 | **0.1** (main ticked 0.2–0.5 for 30 s) | 0.9 | 0.9 | — | 0.8 |
+| Worst tick p99 over the run (ms) | 335 | 479 | 326 | 297 | — | 380 |
+| Tick p99 after the ramp, `main`, `w2` (ms) | 298, 252 | 384, 373 | 269, 277 | 229, 223 | — | 346, 276 |
+| Command p99 (ms) | 932 | 2,692 | 652 | 499 | — | 810 |
+| RSS, max (MB) | 1,046 | 1,289 | 829 | 882 | **killed** at 12.8 GB | 949 |
+| Busy replies retried / hashes / peak at once | — | — | 843 / 2,000 / 2 | 42 / 2,000 / 2 | — | 4,582 / 2,000 / 2 |
+| Every player in (s after the start) | 50 | 50 | 60 | 50 | none | 70 |
+
+- **Before**, a 25-a-second burst slowed both worlds in the run at load
+  ~10 (`main` made 2–5 ticks per 10 s for 30 s, `w2` once only 1; command
+  p99 2.7 s);
+  at load ~7 it cost 40% of the ticks for 10 s. At 100 a second the
+  unbounded hashes took the process to 12.8 GB and the kernel killed it
+  (out of memory) within seconds: no player got in.
+- **After**, at most 2 hashes ever ran (`peak_in_flight`), the worlds kept
+  0.8–1 tick a second through every burst, and RSS stayed under 1 GB. The
+  cost is latency for the players logging in: at 25 a second, demand
+  (50 hashes a second at ~40 ms each) is just over what 2 slots do, so some
+  were told `busy` and got in up to 10 s later; at 100 a second all 1,000
+  were in 70 s after the start, 60 s after the ramp ended, with 4.6
+  `busy` retries per player and no failures.
+- A server with more cores to spare for logins can raise
+  `--hash-concurrency`; each slot costs one core and 19 MiB while a burst
+  lasts. Watch `hashing.rejected` and `hashing.waiting` in `/api/metrics`.
 
 ## Level of detail
 
