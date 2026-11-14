@@ -543,13 +543,17 @@ impl World {
         let fatten = self.fat_room(o) / self.fat_capacity(o).max(1e-6);
         let season_dest = self.seasonal_destination(o, juvenile_care);
         let ordered = self.migrate_orders.contains_key(&(o.owner, o.group)) && o.matured;
+        // Group commands as genes: obedience weighs the orders against the
+        // instincts, and its price is tameness (a later flight).
+        let heed = super::groups::heed(o);
+        let tame = 1.0 - cfg.balance.tameness * (p[Gene::Obedience] - 0.5);
         // Group territory: walk back in when outside it (unless hungry enough
         // to forage further), and see off strangers inside it.
         let territory = self.territory_of(o).map(|t| (t.center, t.radius));
         let outside = self.roam_bound(o).is_some_and(|(c, r)| o.pos.dist(c) > r);
         let defend = match intruder {
             Some(_) if o.matured && territory.is_some() => {
-                DEFEND_UTILITY * (0.3 + 0.7 * p[Gene::Aggression].max(boldness)) * (1.0 - hunger)
+                DEFEND_UTILITY * (0.3 + 0.7 * p[Gene::Aggression].max(boldness)) * (1.0 - hunger) * heed
             }
             _ => 0.0,
         };
@@ -567,7 +571,7 @@ impl World {
         let calm = 1.0 - cfg.balance.threat_caution * threat.min(1.0);
 
         let mut options: [(Action, f32); 16] = [
-            (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless)),
+            (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless) * tame),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
             (Action::Drink, thirst.powf(1.5) * 1.3 * calm + if thirst > 0.8 { 0.5 } else { 0.0 }),
             (Action::Rest, tired * tired * 1.1 * calm),
@@ -603,7 +607,7 @@ impl World {
                 if season_dest.is_some() {
                     0.6
                 } else if ordered {
-                    0.55
+                    0.55 * heed
                 } else {
                     0.0
                 },
@@ -619,7 +623,7 @@ impl World {
             (Action::Guard, if o.nest.is_some() { 0.6 } else { 0.0 }),
             (Action::Sentry, watch),
             (Action::Idle, 0.0),
-            (Action::Patrol, if outside { RETURN_UTILITY } else { 0.0 }),
+            (Action::Patrol, if outside { RETURN_UTILITY * heed } else { 0.0 }),
             (Action::Defend, defend),
         ];
         // Aggressive organisms hunt a little before they're hungry.

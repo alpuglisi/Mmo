@@ -103,6 +103,8 @@ pub fn default_value(g: Gene) -> f32 {
     match g {
         BodySize => 0.3,
         Boldness | Aggression | Wanderlust | GroupTolerance | ForagingRange | PackInstinct | Pickiness => 0.5,
+        // Obeys as the group commands were tuned (`world::groups`).
+        Obedience => 0.5,
         TolColoration | TolBodySize => 0.5,
         Carnivory => 0.0,
         Vigilance => 0.0,
@@ -160,6 +162,8 @@ pub fn trait_cost(g: Gene) -> f32 {
         Endothermy | BirthMode | LitterSize => 0.0,
         Carnivory | Boldness | Aggression | Wanderlust | GroupTolerance | ForagingRange | PackInstinct | Pickiness
         | PrefColoration | TolColoration | PrefBodySize | TolBodySize => 0.0,
+        // A tradeoff like the other instincts: heeding commands for tameness.
+        Obedience => 0.0,
     }
 }
 

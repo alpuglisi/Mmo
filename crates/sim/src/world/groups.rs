@@ -26,13 +26,25 @@
 //! animals can't hold a valley), and a group can claim only once every
 //! [`CLAIM_COOLDOWN_DAYS`]. Seasonal migration (genes) still wins over it.
 //!
+//! **Obedience** (group commands as genes, the design doc's open
+//! question). How strongly each organism heeds its group's orders is a
+//! heritable instinct, `Gene::Obedience`: [`heed`] scales the utility of an
+//! ordered migration, of walking back into a territory and of seeing off
+//! an intruder (1 at the design default, 0.5, where the commands were
+//! tuned), and [`stray_hunger`] moves the hunger at which a territory
+//! holder forages outside. Obedient groups follow orders through hunger
+//! (and starve under bad ones); headstrong ones break off to eat. The price
+//! is tameness: every animal's urge to flee is weighted by
+//! `1 − Balance::tameness × (obedience − 0.5)`, so in a lineage whose player
+//! gives no orders, obedience is a cost and selection can wear it down.
+//!
 //! Neither command draws randomness, and a world where nobody uses them
 //! steps exactly as before (every lookup is behind an empty map, every
 //! organism is in group 0).
 
 use super::commands::CommandError;
 use super::World;
-use crate::genome::PlayerId;
+use crate::genome::{Gene, PlayerId};
 use crate::math::Vec2;
 use crate::organism::{OrgId, Organism};
 
@@ -60,6 +72,26 @@ pub const DEFEND_UTILITY: f32 = 0.7;
 /// How frightening a defender is to the intruder it chases, against an
 /// armed hunter of the same power (1).
 pub const DEFENDER_SCARE: f32 = 1.0;
+/// How far obedience moves the hunger at which a territory holder strays:
+/// [`STRAY_HUNGER`] `+ OBEDIENT_STRAY × (obedience − 0.5)`, so 0.65 for
+/// the headstrong and 0.95 for the most obedient.
+pub const OBEDIENT_STRAY: f32 = 0.3;
+
+/// How strongly `o` heeds its group's commands (`Gene::Obedience`): the
+/// factor on the utility of an ordered migration, of walking back into a
+/// territory and of seeing off an intruder. 1 at the design default (0.5),
+/// as the commands were tuned; from 0.5 (orders only when nothing else
+/// presses) to 1.5 (orders over all but danger and severe need).
+#[inline]
+pub(crate) fn heed(o: &Organism) -> f32 {
+    0.5 + o.pheno[Gene::Obedience]
+}
+
+/// Hunger (0–1) above which `o` forages outside its group's territory.
+#[inline]
+pub(crate) fn stray_hunger(o: &Organism) -> f32 {
+    STRAY_HUNGER + OBEDIENT_STRAY * (o.pheno[Gene::Obedience] - 0.5)
+}
 
 /// A circle a group holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,6 +122,9 @@ pub struct GroupInfo {
     pub max_radius: f32,
     /// First tick at which the group may claim a territory (0: now).
     pub claim_ready_tick: u64,
+    /// Mean expressed obedience (`Gene::Obedience`) of its members, rounded
+    /// to hundredths (0 with no members): how strongly it heeds orders.
+    pub obedience: f32,
 }
 
 /// What [`World::split_group`] did.
@@ -114,11 +149,11 @@ impl World {
     }
 
     /// The circle `o` roams and forages in: its group's territory, unless it
-    /// is hungry enough to look further ([`STRAY_HUNGER`]).
+    /// is hungry enough to look further ([`stray_hunger`]).
     #[inline]
     pub(crate) fn roam_bound(&self, o: &Organism) -> Option<(Vec2, f32)> {
         let t = self.territory_of(o)?;
-        (o.needs.hunger / 100.0 <= STRAY_HUNGER).then_some((t.center, t.radius))
+        (o.needs.hunger / 100.0 <= stray_hunger(o)).then_some((t.center, t.radius))
     }
 
     /// `p` pulled inside `bound` (90% of the radius) if it lies outside.
@@ -160,11 +195,13 @@ impl World {
     /// always, by id.
     pub fn groups_of<'a>(&self, player: PlayerId, orgs: impl IntoIterator<Item = &'a Organism>) -> Vec<GroupInfo> {
         let mut counts = [(0usize, 0usize); MAX_GROUPS as usize];
+        let mut obedience = [0f64; MAX_GROUPS as usize];
         for o in orgs {
             if o.alive && o.owner == player && o.group < MAX_GROUPS {
                 let c = &mut counts[o.group as usize];
                 c.0 += 1;
                 c.1 += usize::from(o.matured);
+                obedience[o.group as usize] += o.pheno[Gene::Obedience] as f64;
             }
         }
         let cooldown = self.claim_cooldown_ticks();
@@ -187,6 +224,7 @@ impl World {
                     territory,
                     max_radius: Self::territory_radius_limit(adults),
                     claim_ready_tick,
+                    obedience: (obedience[g as usize] / members.max(1) as f64 * 100.0).round() as f32 / 100.0,
                 })
             })
             .collect()

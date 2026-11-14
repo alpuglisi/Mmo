@@ -125,6 +125,18 @@ export function groupOrders(g: GroupView): string {
   return 'roaming freely';
 }
 
+/**
+ * How a group heeds its orders, from its members' mean obedience gene
+ * (`Gene::Obedience`; 0.5 obeys as the commands were tuned). Empty when the
+ * server doesn't say or the group has no members.
+ */
+export function groupObedience(g: GroupView): string {
+  if (g.obedience === undefined || g.members === 0) return '';
+  const o = g.obedience;
+  const word = o >= 0.65 ? 'obedient' : o > 0.35 ? 'heeds orders' : 'headstrong';
+  return `${word} (obedience ${o.toFixed(2)})`;
+}
+
 /** Members of each group among the drawn organisms, by group id. */
 export function memberCounts(s: StateView): Map<number, number> {
   const m = new Map<number, number>();

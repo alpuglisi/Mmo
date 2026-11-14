@@ -269,3 +269,36 @@ fn group_commands_are_deterministic_and_unused_ones_change_nothing() {
     assert_eq!(state(&c), state(&d));
     assert_ne!(state(&a), state(&d));
 }
+
+/// Group commands as genes (`Gene::Obedience`): with the same moderate
+/// hunger, an obedient herd member keeps to an ordered migration and a
+/// headstrong one stops to graze; an obedient territory holder keeps to
+/// the territory at a hunger that sends a headstrong one foraging outside.
+/// At the design default the orders weigh what they always did.
+#[test]
+fn obedience_weighs_orders_against_hunger() {
+    use crate::genome::Gene;
+    let mut w = world();
+    w.grid.rebuild(&w.organisms);
+    let i = w.organisms.iter().position(|o| o.owner == HERD && o.matured).unwrap();
+    w.command_migrate(HERD, Vec2::new(60.0, 60.0));
+    let set = |w: &mut World, obedience: f32, hunger: f32| {
+        let o = &mut w.organisms[i];
+        o.pheno.0[Gene::Obedience.index()] = obedience;
+        (o.needs.hunger, o.needs.thirst, o.needs.energy, o.needs.breeding) = (hunger, 5.0, 95.0, 0.0);
+    };
+    set(&mut w, 1.0, 50.0);
+    assert_eq!(w.decide(i).action, Action::Migrate);
+    set(&mut w, 0.0, 50.0);
+    assert_eq!(w.decide(i).action, Action::Graze);
+    set(&mut w, 0.5, 0.0);
+    assert!((heed(&w.organisms[i]) - 1.0).abs() < 1e-6);
+    assert!((stray_hunger(&w.organisms[i]) - STRAY_HUNGER).abs() < 1e-6);
+
+    let c = w.organisms[i].pos;
+    w.claim_territory(HERD, 0, c, 6.0).unwrap();
+    set(&mut w, 1.0, 85.0);
+    assert!(w.roam_bound(&w.organisms[i]).is_some(), "the obedient keep to the territory");
+    set(&mut w, 0.0, 85.0);
+    assert!(w.roam_bound(&w.organisms[i]).is_none(), "the headstrong forage outside");
+}

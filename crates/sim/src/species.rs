@@ -191,7 +191,7 @@ pub struct Species {
     pub last_seen: u64,
     /// Detections in a row that missed it.
     pub missed: u32,
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::array_vec"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v14::reps"))]
     reps: Vec<Expr>,
 }
 

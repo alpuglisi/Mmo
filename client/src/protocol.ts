@@ -227,6 +227,8 @@ export interface GroupView {
   max_radius: number;
   /** First tick at which it may claim again (absent: now). */
   claim_ready_tick?: number;
+  /** Mean obedience gene of its members (0–1; absent from older servers): how strongly it heeds orders. */
+  obedience?: number;
 }
 
 /** Someone else's organism inside the view window: only what can be seen. */

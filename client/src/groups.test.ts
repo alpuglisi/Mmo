@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canSplit, claimWait, clearMigrationMsg, groupName, groupOptions, groupOrders, groupsOf, memberCounts, migrateMsg, parseChoice,
+  canSplit, claimWait, clearMigrationMsg, groupName, groupObedience, groupOptions, groupOrders, groupsOf, memberCounts, migrateMsg, parseChoice,
   targetGroup, territoryRadius, territoryTap, validChoice, TERRITORY_MIN_RADIUS,
 } from './groups';
 import type { GroupView, OwnOrganism, StateView } from './protocol';
@@ -75,6 +75,11 @@ describe('groups', () => {
     expect(groupOrders(g(0))).toBe('roaming freely');
     expect(groupOrders(g(0, { migration: [4.2, 9.8] }))).toBe('migrating toward 4, 10');
     expect(groupOrders(g(0, { territory: { x: 20, y: 30, radius: 6, claimed_tick: 3 } }))).toBe('holding a territory (radius 6.0) at 20, 30');
+    expect(groupObedience(g(0))).toBe('');
+    expect(groupObedience(g(0, { obedience: 0.5 }))).toBe('heeds orders (obedience 0.50)');
+    expect(groupObedience(g(0, { obedience: 0.8 }))).toBe('obedient (obedience 0.80)');
+    expect(groupObedience(g(0, { obedience: 0.2 }))).toBe('headstrong (obedience 0.20)');
+    expect(groupObedience(g(0, { obedience: 0.5, members: 0 }))).toBe('');
     expect(claimWait(g(0, { claim_ready_tick: 120 }), 100)).toBe(20);
     expect(claimWait(g(0), 100)).toBe(0);
     expect(canSplit(g(0), [g(0)])).toBe(true);

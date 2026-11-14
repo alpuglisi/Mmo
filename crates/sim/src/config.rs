@@ -572,6 +572,13 @@ pub struct Balance {
     /// 0 disables.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v13"))]
     pub nest_predation: f32,
+    /// The price of obedience (`Gene::Obedience`, group commands as genes):
+    /// tameness. An animal's flight from a threat is weighted by
+    /// `1 − tameness × (obedience − 0.5)`, so the biddable flee later and
+    /// the headstrong sooner; at the design default (0.5) nothing changes.
+    /// 0 makes obedience free.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v14"))]
+    pub tameness: f32,
 }
 
 impl Default for Balance {
@@ -663,12 +670,13 @@ impl Default for Balance {
             search_image: 0.7,
             cold_gestation: 1.0,
             nest_predation: 0.06,
+            tameness: 0.4,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 84;
+    pub const FIELD_COUNT: usize = 85;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -762,6 +770,7 @@ impl Balance {
             ("search_image", &mut self.search_image),
             ("cold_gestation", &mut self.cold_gestation),
             ("nest_predation", &mut self.nest_predation),
+            ("tameness", &mut self.tameness),
         ]
     }
 

@@ -59,7 +59,7 @@ docs/
 | `world::seasonal` | Seasons and biomes (strategies) | Seasonal strategies as genes, each switched on above expression 0.5 and stronger the higher it is: hibernation and brumation (fatten in autumn, dormant through the cold with near-zero hunger and thirst, no breeding, den findable; thermoregulation mismatches per the affinity table), migration (summer range ↔ winter range further south, death risk per tile), estivation (dormant through summer heat or a regional drought, `Map::dryness_at`), food caching (raidable hoards for winter), short-term torpor on cold nights, a seasonal coat (winter coat molted in autumn and shed in spring, food per molt; a mismatch on cold-blooded bodies) and timed breeding (a narrow early-spring window with strong drive and better conception, no breeding outside it). |
 | `world::par_apply` | Scale and performance (parallel regions) | The apply phase on all cores (`WorldConfig::parallel_apply`, default on; `--sequential-apply` for the old fully sequential apply): each turn split into a parallel movement sweep, a sequential interaction sweep in shuffled order, a parallel needs sweep and a sequential death/birth sweep. See [Parallel apply](#parallel-apply). |
 | `world::commands` | Player controls | Directed matings (consent, meeting distance, seasonal slots, override cost), possession, migration orders. |
-| `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends. See [Groups and territory](#groups-and-territory). |
+| `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends; and group commands as genes: an `obedience` gene sets how strongly each animal heeds them, paid for in tameness. See [Groups and territory](#groups-and-territory). |
 | `world::chronicle` | Scoring | The daily hook: samples adults (cohorts included) for species detection, plans, applies and ends catastrophes through existing systems (`Map::climate_temp`, `Map::climate_wet`, infections), closes eras and awards achievements. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
 | `world::offline` | Open questions (offline protection) | Softer rules for the last members of a lineage whose owner is logged out: the caller names the protected lineages and exempt organisms (`World::set_offline_protection`); at or below the floor (12 living members) kill chance against them is ×0.25 and starvation and thirst ×0.5, for agents and cohorts. Off (and bit-identical) by default. See [Offline protection](#offline-protection). |
@@ -143,11 +143,41 @@ score).
   an armed hunter of the defender's power would be) and flees.
 - **Costs** (the doc: every lever has a price; holding territory is what
   year-round residents do): the group lives on the food inside the circle
-  until hunger passes 80 (then it forages anywhere, "hungry organisms
+  until hunger passes 80 at the default obedience (then it forages anywhere, "hungry organisms
   prioritize food over everything except immediate danger"), chasing is
   at a sprint, and a group can claim only once every half day
   (`claim_cooldown`). Seasonal migration (a gene) still outranks the
   territory, and danger and thirst outrank both as usual.
+- **Obedience: group commands as genes** (the doc's open question, "keep
+  as player levers, or make genetic?": both). The commands stay player
+  levers; how strongly each animal heeds them is an instinct gene,
+  `obedience` (default 0.5, free like the other instincts, appended as the
+  last gene and left out of `Genome::distance` so kin and fertility
+  thresholds don't move). `heed = 0.5 + obedience` multiplies the utility
+  of an ordered migration (0.55), of walking back into a territory and of
+  seeing off an intruder, so at the default the commands weigh exactly what
+  they were tuned at; at 1 an order outranks moderate hunger and thirst
+  (0.825), at 0 it is followed only when nothing presses (0.275). A
+  territory holder strays to forage at hunger `0.8 + 0.3 × (obedience −
+  0.5)` (0.65 to 0.95). So an obedient group follows orders through hunger,
+  and starves under bad ones, while a headstrong one breaks off to eat. The
+  price, paid with or without orders, is **tameness**: every animal's urge
+  to flee a threat is weighted by `1 − tameness × (obedience − 0.5)`
+  (`Balance::tameness` 0.4: the most obedient flee at 0.8×, the most
+  headstrong at 1.2×), as tamer animals are in domestication. A lineage
+  whose player gives good orders can breed for obedience; one left alone
+  pays for it in predation. The obedience locus draws from a stream of its
+  own, seeded by the genome's other alleles (`Genome::own_rng`), so
+  founding, inheritance and mutation of every other gene are bit for bit
+  as before: with `tameness` 0 a world steps exactly as it did without the
+  gene. The server sends each group's mean obedience (`GroupView::obedience`)
+  and the client's group card names it. Measured against `tameness` 0 (the
+  old behaviour): `compare` on seeds 101–148 (96×96, 120 days) scores 11.77
+  against 11.66 (+0.11 ± 0.15, not significant; red fox survival 98% vs
+  92%), and on smoke-sized worlds (64×64, 60 days, the same 48 seeds) 11.60
+  against 11.44 (+0.16 ± 0.16); the 12-seed sweeps score 11.76 from seed 31
+  (11.60 with `tameness` 0, the baseline) and 11.72 from 55 (baseline
+  11.73). New tunable: `tameness`.
 - **Determinism.** The commands draw no randomness and are applied where
   the server applies every command (between sub-steps, in arrival order).
   Every lookup sits behind an empty map and every organism is in group 0
@@ -628,7 +658,7 @@ Server → client:
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, max_radius, claim_ready_tick?}`), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
 | `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
@@ -1132,7 +1162,11 @@ snapshots (the tiles inside the payload) and version 11 and 12 ones still
 restore: 10 and 11 lack `Balance::cold_gestation` (added in version 12),
 which then reads as 1.4, the rule they ran under (`serde_util::before_v12`),
 and all three lack `Balance::nest_predation` (added in version 13), which
-reads as 0 (`serde_util::before_v13`).
+reads as 0 (`serde_util::before_v13`). Version 13 ones restore too: versions
+10 to 13 lack the obedience gene and `Balance::tameness` (version 14), so
+every organism's obedience locus reads as the design default, 0.5, tagged
+like its wanderlust alleles (it behaves as it did), and `tameness` as its
+default (`serde_util::before_v14`).
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1179,7 +1213,9 @@ version 8 added the balance parameters `threat_caution`, `alert_guard` and
 territories (`Organism::group`, migration orders per player and group,
 claimed territories and claim times); version 11 writes the tiles apart
 (above); version 12 adds the balance parameter `cold_gestation`, version 13
-`nest_predation`.
+`nest_predation`; version 14 adds the `obedience` gene (a locus in every
+genome and a value in every species representative) and the balance
+parameter `tameness`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -1555,7 +1591,9 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   **Split** sends `split_group` and picks the new group. Each group's
   territory is drawn as a tinted disc in its color (the picked group's
   outline bolder) and its migration target as a ringed cross; the
-  inspector names an organism's group. On phones the same tools sit in the
+  inspector names an organism's group. Each group's card says how it heeds
+  orders, from its mean obedience gene ("headstrong" up to 0.35,
+  "obedient" from 0.65, "heeds orders" between). On phones the same tools sit in the
   scrolling toolbar and both taps work by touch. The logic (names, colors,
   the menu, the two-tap draw, the commands sent) is in `groups.ts`.
 - **Matings** tab: request a directed mating (one of your adults, a partner
@@ -3903,10 +3941,12 @@ sections above).
    founder values that don't compress); the map's tiles (3.4 MB) could
    still go as a delta against the previous save, at the cost of saves
    that depend on each other.
-7. **Design-doc features not built.** Group commands as genes (the doc's
-   open question; wanderlust and group tolerance already shape how a group
-   moves); `GET /api/leaderboard/seasons` would also want a cache instead of
-   reading the whole history per call. Offline protection is built as the
+7. **Design-doc features not built.** Group commands as genes is built as
+   the obedience gene ([Groups and territory](#groups-and-territory)); a
+   follow-up would be a rally command (gather a group at a point) for it to
+   weigh as well, and measuring with real orders what obedience buys a
+   lineage. (The seasons leaderboard is already served from cached
+   standings: see *Cached standings*.) Offline protection is built as the
    surviving-core form ([Offline protection](#offline-protection)); the home
    range form (a claimed territory that shields its residents while the owner
    is away) would be a follow-up, tuned with `compare` once there is player

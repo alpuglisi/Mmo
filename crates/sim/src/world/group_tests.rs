@@ -357,3 +357,36 @@ fn a_forager_on_bare_ground_eats_the_remnant_next_door() {
     let next = crate::terrain::Map::tile_center(x + 1, y);
     assert_eq!(intent.target, Some(next), "{:?}", intent.target);
 }
+
+/// Obedience's price, tameness (`Balance::tameness`): under the same
+/// threat, a biddable animal (obedience 1) goes back to courting at a lower
+/// breeding drive than a headstrong one (obedience 0); at the design
+/// default nothing changes, and with no tameness obedience is free.
+#[test]
+fn obedient_animals_flee_later() {
+    let mut w = world();
+    let a = isolate(&mut w, 5);
+    set_gene(&mut w.organisms[a], Gene::Vigilance, 0.0);
+    w.organisms[a].breed_ready_tick = 0;
+    let sex = w.organisms[a].sex;
+    let m = w.organisms.iter().position(|o| o.lineage == 5 && o.sex != sex).unwrap();
+    let o = &mut w.organisms[m];
+    (o.growth, o.matured, o.mother, o.pos, o.breed_ready_tick) = (1.0, true, None, CENTER + Vec2::new(-1.0, 0.0), 0);
+    (o.needs.breeding, o.needs.hunger, o.pregnancy) = (100.0, 10.0, None);
+    big_hunter(&mut w, CENTER + Vec2::new(2.0, 0.0));
+    w.grid.rebuild(&w.organisms);
+    w.config.balance.courtship_caution = 0.0;
+    // The lowest breeding drive at which it courts instead of fleeing.
+    let courts_from = |w: &mut World, obedience: f32| {
+        set_gene(&mut w.organisms[a], Gene::Obedience, obedience);
+        (0..=100).find(|&b| {
+            w.organisms[a].needs.breeding = b as f32;
+            w.decide(a).action == Action::SeekMate
+        })
+    };
+    let (tame, plain, wild) = (courts_from(&mut w, 1.0), courts_from(&mut w, 0.5), courts_from(&mut w, 0.0));
+    let (tame, plain) = (tame.expect("courts at full drive"), plain.expect("courts at full drive"));
+    assert!(tame < plain && wild.is_none_or(|x| plain < x), "tame {tame}, plain {plain}, wild {wild:?}");
+    w.config.balance.tameness = 0.0;
+    assert_eq!(courts_from(&mut w, 1.0), courts_from(&mut w, 0.0));
+}

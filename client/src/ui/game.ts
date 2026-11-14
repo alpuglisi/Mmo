@@ -23,7 +23,7 @@ import { createOnboarding } from './onboarding';
 import { onboardingDisabled } from '../onboarding';
 import { pushSettings } from './push';
 import {
-  canSplit, claimWait, clearMigrationMsg, groupColor, groupName, groupOptions, groupOrders, groupsOf, migrateMsg, parseChoice,
+  canSplit, claimWait, clearMigrationMsg, groupColor, groupName, groupObedience, groupOptions, groupOrders, groupsOf, migrateMsg, parseChoice,
   targetGroup, territoryTap, validChoice, type GroupChoice, type TerritoryDraft,
 } from '../groups';
 
@@ -1007,7 +1007,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }));
     for (const g of groups) {
       const el = groupsEl.querySelector(`.group-card[data-group="${g.id}"] .group-summary`);
-      const text = `${g.members} (${g.adults} adults) · ${groupOrders(g)}`;
+      const heed = groupObedience(g);
+      const text = `${g.members} (${g.adults} adults) · ${groupOrders(g)}${heed ? ` · ${heed}` : ''}`;
       if (el && el.textContent !== text) el.textContent = text;
     }
   }

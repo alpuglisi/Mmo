@@ -28,7 +28,7 @@ use std::ops::Index;
 
 use rand::Rng;
 
-use crate::rng::normal;
+use crate::rng::{normal, splitmix64};
 
 pub type PlayerId = u32;
 
@@ -52,6 +52,12 @@ pub const SEASONAL_GENES: [Gene; 8] = [
     Gene::TimedBreeding,
 ];
 
+/// Genes besides the [`SEASONAL_GENES`] that [`Genome::distance`] leaves
+/// out. `Obedience` sets how a group heeds its player's commands, not what
+/// an animal is: counting it would only dilute the distance, and kin,
+/// mating and fertility thresholds stay as tuned on the other genes.
+pub const OUT_OF_DISTANCE: [Gene; 1] = [Gene::Obedience];
+
 /// Which genes count toward [`Genome::distance`], by gene index.
 pub const IN_DISTANCE: [bool; Gene::COUNT] = {
     let mut mask = [true; Gene::COUNT];
@@ -60,11 +66,16 @@ pub const IN_DISTANCE: [bool; Gene::COUNT] = {
         mask[SEASONAL_GENES[k] as usize] = false;
         k += 1;
     }
+    let mut k = 0;
+    while k < OUT_OF_DISTANCE.len() {
+        mask[OUT_OF_DISTANCE[k] as usize] = false;
+        k += 1;
+    }
     mask
 };
 
 /// Number of genes [`Genome::distance`] averages over.
-pub const DISTANCE_GENES: f32 = (Gene::COUNT - SEASONAL_GENES.len()) as f32;
+pub const DISTANCE_GENES: f32 = (Gene::COUNT - SEASONAL_GENES.len() - OUT_OF_DISTANCE.len()) as f32;
 
 macro_rules! define_genes {
     ($( $(#[$m:meta])* $name:ident => $label:literal ),* $(,)?) => {
@@ -172,7 +183,19 @@ define_genes! {
     /// Timed breeding (add-on): breeds only in a narrow early-spring window,
     /// with a strong drive and better conception there, and none outside it.
     TimedBreeding => "timed breeding",
+    // Group commands as genes (appended last; kept out of
+    // `Genome::distance`, see [`OUT_OF_DISTANCE`]).
+    /// How strongly its group's commands (an ordered migration, a held
+    /// territory) outweigh its own instincts, and how long it keeps to them
+    /// when hungry. 0.5 obeys as the commands were tuned; the price is
+    /// tameness: an obedient animal flees a threat later
+    /// (`Balance::tameness`). See `world::groups`.
+    Obedience => "obedience",
 }
+
+/// Index of `Gene::Obedience`, the last gene (see [`Genome::founder`]).
+const OBEDIENCE: usize = Gene::Obedience as usize;
+const _: () = assert!(OBEDIENCE == Gene::COUNT - 1, "obedience is the last gene");
 
 /// Dominance coefficient `h` of a gene, in `[-1, 1]`: expressed =
 /// `mean + h * |a - b| / 2` (see the module docs).
@@ -289,14 +312,36 @@ impl Genome {
 
     /// A founder: each allele varies around the design value so selection has
     /// material from day one.
+    ///
+    /// The obedience locus draws from a stream of its own ([`Genome::own_rng`]),
+    /// so the caller's stream, and every founder drawn after this one, is
+    /// what it was before `Gene::Obedience` existed.
     pub fn founder(values: &[f32; Gene::COUNT], origin: PlayerId, variation: f32, rng: &mut impl Rng) -> Self {
         let mut g = Self::uniform(values, origin);
-        for locus in g.loci.iter_mut() {
+        for locus in &mut g.loci[..OBEDIENCE] {
             for allele in [&mut locus.a, &mut locus.b] {
                 allele.value = (allele.value + normal(rng) * variation).clamp(0.0, 1.0);
             }
         }
+        let mut own = g.own_rng(0);
+        let locus = &mut g.loci[OBEDIENCE];
+        for allele in [&mut locus.a, &mut locus.b] {
+            allele.value = (allele.value + normal(&mut own) * variation).clamp(0.0, 1.0);
+        }
         g
+    }
+
+    /// A random stream for the obedience locus, seeded by every other gene
+    /// allele (and `salt`): the locus added last draws nothing from the
+    /// shared streams, so worlds found, breed and mutate the other genes
+    /// exactly as before it existed, and its own alleles still vary and
+    /// mutate at the usual rates.
+    fn own_rng(&self, salt: u64) -> crate::rng::SimRng {
+        let h = self.loci[..OBEDIENCE].iter().fold(splitmix64(salt ^ 0x0bed_1e5c), |h, l| {
+            let bits = (l.a.value.to_bits() as u64) << 32 | l.b.value.to_bits() as u64;
+            splitmix64(h ^ bits ^ ((l.a.origin as u64) << 7) ^ ((l.b.origin as u64) << 19))
+        });
+        <crate::rng::SimRng as rand::SeedableRng>::seed_from_u64(h)
     }
 
     pub fn locus(&self, gene: Gene) -> &Locus {
@@ -318,6 +363,14 @@ impl Genome {
             *v = locus.expressed(h);
         }
         Phenotype(p)
+    }
+
+    /// Set both alleles of `gene` (keeping their origin tags): a test or
+    /// tool that needs a particular genotype.
+    pub fn set_gene_alleles(&mut self, gene: Gene, a: f32, b: f32) {
+        let locus = &mut self.loci[gene.index()];
+        locus.a.value = a.clamp(0.0, 1.0);
+        locus.b.value = b.clamp(0.0, 1.0);
     }
 
     /// The hidden-recessive loci.
@@ -372,15 +425,23 @@ impl Genome {
         rng: &mut impl Rng,
     ) -> Genome {
         let mut loci = mother.loci;
-        for (k, locus) in loci.iter_mut().enumerate() {
-            let m = &mother.loci[k];
-            let f = &father.loci[k];
+        fn pick(m: &Locus, f: &Locus, owner: PlayerId, mutation: MutationParams, rng: &mut impl Rng) -> Locus {
             let from_m = if rng.gen::<bool>() { m.a } else { m.b };
             let from_f = if rng.gen::<bool>() { f.a } else { f.b };
-            *locus =
-                Locus { a: mutate(from_m, child_owner, mutation, rng), b: mutate(from_f, child_owner, mutation, rng) };
+            Locus { a: mutate(from_m, owner, mutation, rng), b: mutate(from_f, owner, mutation, rng) }
         }
-        Genome { loci, load: mother.load }
+        for (k, locus) in loci[..OBEDIENCE].iter_mut().enumerate() {
+            *locus = pick(&mother.loci[k], &father.loci[k], child_owner, mutation, rng);
+        }
+        let mut child = Genome { loci, load: mother.load };
+        // The obedience locus on a stream of its own (see `own_rng`), salted
+        // with the parents' obedience alleles.
+        let (m, f) = (&mother.loci[OBEDIENCE], &father.loci[OBEDIENCE]);
+        let salt =
+            [m.a, m.b, f.a, f.b].iter().fold(child_owner as u64, |h, a| splitmix64(h ^ a.value.to_bits() as u64));
+        let mut own = child.own_rng(salt);
+        child.loci[OBEDIENCE] = pick(m, f, child_owner, mutation, &mut own);
+        child
     }
 
     /// The load-loci half of [`Genome::inherit`]: one allele from each
@@ -486,22 +547,40 @@ pub mod wire {
     }
 
     impl Genome {
+        #[cfg(test)]
         pub(super) fn alleles(&self) -> impl Iterator<Item = &Allele> {
-            self.loci.iter().chain(&self.load).flat_map(|l| [&l.a, &l.b])
+            self.alleles_of(Gene::COUNT)
         }
 
+        /// The alleles of the first `genes` loci, then of the load loci.
+        fn alleles_of(&self, genes: usize) -> impl Iterator<Item = &Allele> {
+            self.loci[..genes].iter().chain(&self.load).flat_map(|l| [&l.a, &l.b])
+        }
+
+        #[cfg(test)]
         pub(super) fn alleles_mut(&mut self) -> impl Iterator<Item = &mut Allele> {
-            self.loci.iter_mut().chain(&mut self.load).flat_map(|l| [&mut l.a, &mut l.b])
+            self.alleles_mut_of(Gene::COUNT)
+        }
+
+        fn alleles_mut_of(&mut self, genes: usize) -> impl Iterator<Item = &mut Allele> {
+            self.loci[..genes].iter_mut().chain(&mut self.load).flat_map(|l| [&mut l.a, &mut l.b])
         }
 
         /// The genome in its compact snapshot form (see [`wire`]).
         pub fn to_wire(&self) -> Vec<u8> {
+            self.to_wire_of(Gene::COUNT)
+        }
+
+        /// [`Genome::to_wire`] of the first `genes` gene loci only (the
+        /// layout before `Gene::Obedience` with [`OLD_GENES`]).
+        fn to_wire_of(&self, genes: usize) -> Vec<u8> {
+            let alleles = 2 * (genes + LOAD_LOCI);
             let mut tags: Vec<PlayerId> = Vec::new();
             let mut index = [0u8; ALLELES];
             let mut classes = [0u8; CLASS_BYTES];
             let mut stored = [0u32; ALLELES];
             let (mut n_stored, mut prev) = (0, None);
-            for (k, a) in self.alleles().enumerate() {
+            for (k, a) in self.alleles_of(genes).enumerate() {
                 index[k] = match tags.iter().position(|&t| t == a.origin) {
                     Some(i) => i as u8,
                     None => {
@@ -523,16 +602,17 @@ pub mod wire {
                 classes[k / 4] |= class << (2 * (k % 4));
                 prev = Some(v);
             }
+            let (index, classes) = (&index[..alleles], &classes[..alleles.div_ceil(4)]);
             let bits = bits_for(tags.len());
             let mut out =
-                Vec::with_capacity(1 + 4 * tags.len() + CLASS_BYTES + ALLELES * bits as usize / 8 + 4 * n_stored);
+                Vec::with_capacity(1 + 4 * tags.len() + classes.len() + alleles * bits as usize / 8 + 4 * n_stored);
             out.push(tags.len() as u8);
             for t in &tags {
                 out.extend_from_slice(&t.to_le_bytes());
             }
-            out.extend_from_slice(&classes);
+            out.extend_from_slice(classes);
             let mut w = BitWriter { out, acc: 0, len: 0 };
-            for &i in &index {
+            for &i in index {
                 w.put(i as u32, bits);
             }
             for &v in &stored[..n_stored] {
@@ -550,22 +630,32 @@ pub mod wire {
 
         /// A genome from [`Genome::to_wire`] bytes.
         pub fn from_wire(bytes: &[u8]) -> Result<Genome, String> {
+            Self::from_wire_of(bytes, Gene::COUNT)
+        }
+
+        /// A genome from bytes holding its first `genes` gene loci. With
+        /// [`OLD_GENES`] (a snapshot from before `Gene::Obedience`), the
+        /// missing obedience locus takes the design default (the value the
+        /// commands were tuned at, so the organism behaves as before) and the
+        /// origin tags of the organism's wanderlust alleles.
+        fn from_wire_of(bytes: &[u8], genes: usize) -> Result<Genome, String> {
             let (&n, rest) = bytes.split_first().ok_or("empty genome")?;
             let n = n as usize;
             let (tag_bytes, rest) = rest.split_at_checked(4 * n).ok_or("genome cut short (tags)")?;
             let tags: Vec<PlayerId> =
                 tag_bytes.chunks_exact(4).map(|c| PlayerId::from_le_bytes(c.try_into().unwrap())).collect();
-            let (classes, rest) = rest.split_at_checked(CLASS_BYTES).ok_or("genome cut short (classes)")?;
+            let class_bytes = (2 * (genes + LOAD_LOCI)).div_ceil(4);
+            let (classes, rest) = rest.split_at_checked(class_bytes).ok_or("genome cut short (classes)")?;
             let bits = bits_for(n);
             let mut r = BitReader { bytes: rest, at: 0, acc: 0, len: 0 };
             let blank = Locus { a: Allele { value: 0.0, origin: WILD }, b: Allele { value: 0.0, origin: WILD } };
             let mut g = Genome { loci: [blank; Gene::COUNT], load: [blank; LOAD_LOCI] };
-            for a in g.alleles_mut() {
+            for a in g.alleles_mut_of(genes) {
                 let i = r.get(bits)? as usize;
                 a.origin = *tags.get(i).ok_or("genome origin out of range")?;
             }
             let mut prev = None;
-            for (k, a) in g.alleles_mut().enumerate() {
+            for (k, a) in g.alleles_mut_of(genes).enumerate() {
                 let v = match (classes[k / 4] >> (2 * (k % 4))) & 3 {
                     0 => ZERO,
                     1 => ONE,
@@ -580,6 +670,12 @@ pub mod wire {
             }
             if r.at != rest.len() || r.len >= 8 || r.acc != 0 {
                 return Err("genome has trailing bytes".into());
+            }
+            if genes < Gene::COUNT {
+                let w = g.loci[Gene::Wanderlust.index()];
+                let v = crate::design::default_value(Gene::Obedience);
+                g.loci[Gene::Obedience.index()] =
+                    Locus { a: Allele { value: v, origin: w.a.origin }, b: Allele { value: v, origin: w.b.origin } };
             }
             Ok(g)
         }
@@ -634,9 +730,24 @@ pub mod wire {
         }
     }
 
+    /// Gene loci in a genome's wire form before `Gene::Obedience` (world
+    /// snapshots before version 14): every gene but that last one.
+    pub const OLD_GENES: usize = Gene::COUNT - 1;
+    const _: () = assert!(Gene::Obedience as usize == OLD_GENES, "obedience is the last gene");
+
+    /// Gene loci written and read on this thread: [`OLD_GENES`] while a
+    /// `serde_util::before_v14::Guard` lives.
+    fn stored_genes() -> usize {
+        if crate::serde_util::before_v14::active() {
+            OLD_GENES
+        } else {
+            Gene::COUNT
+        }
+    }
+
     impl Serialize for Genome {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            s.serialize_bytes(&self.to_wire())
+            s.serialize_bytes(&self.to_wire_of(stored_genes()))
         }
     }
 
@@ -650,7 +761,7 @@ pub mod wire {
         }
 
         fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Genome, E> {
-            Genome::from_wire(v).map_err(E::custom)
+            Genome::from_wire_of(v, stored_genes()).map_err(E::custom)
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Genome, A::Error> {

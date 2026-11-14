@@ -855,6 +855,10 @@ pub struct GroupView {
     /// First tick at which it may claim a territory again (absent: now).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub claim_ready_tick: u64,
+    /// Mean obedience gene of its members, to hundredths (0 with none): how
+    /// strongly the group heeds its orders against its instincts.
+    #[serde(default)]
+    pub obedience: f32,
 }
 
 impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
@@ -867,6 +871,7 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             territory: g.territory.map(TerritoryView::from),
             max_radius: g.max_radius,
             claim_ready_tick: g.claim_ready_tick,
+            obedience: g.obedience,
         }
     }
 }

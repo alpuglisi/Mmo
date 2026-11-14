@@ -15,6 +15,8 @@
 //!   11 world snapshot is read.
 //! - `before_v13`: `Balance::nest_predation`, left out while a version 10,
 //!   11 or 12 world snapshot is read.
+//! - `before_v14`: `Gene::Obedience` and `Balance::tameness`, left out while
+//!   a world snapshot of version 13 or before is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -383,6 +385,97 @@ pub mod before_v13 {
             Ok(OLD_NEST_PREDATION)
         } else {
             f32::deserialize(d)
+        }
+    }
+}
+
+/// What world snapshot version 14 added: `Gene::Obedience` (a locus in every
+/// genome, a value in every species representative) and
+/// `Balance::tameness`. On a thread holding a [`before_v14::Guard`]
+/// (reading or hashing a snapshot of version 13 or before) the old layout
+/// is written and read: genomes without the obedience locus (`genome::wire`
+/// fills it in at the design default), species representatives one value
+/// shorter (`before_v14::reps`), and no `tameness`
+/// (`#[serde(with = "crate::serde_util::before_v14")]`, read as its
+/// default; with every obedience allele at the default it changes nothing).
+pub mod before_v14 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Whether the old layout is in force on this thread.
+    pub fn active() -> bool {
+        OLD.with(Cell::get)
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if active() {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if active() {
+            Ok(crate::config::Balance::default().tameness)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+
+    /// Species representatives (`Species::reps`, expressed values by gene):
+    /// `array_vec`, but in the old layout without the last value (obedience),
+    /// which reads as the design default.
+    pub mod reps {
+        use super::*;
+        use crate::genome::Gene;
+        use crate::species::Expr;
+
+        const OLD: usize = Gene::COUNT - 1;
+
+        pub fn serialize<S: Serializer>(v: &[Expr], s: S) -> Result<S::Ok, S::Error> {
+            if active() {
+                let old: Vec<[f32; OLD]> = v.iter().map(|e| e[..OLD].try_into().unwrap()).collect();
+                array_vec::serialize(&old, s)
+            } else {
+                array_vec::serialize(v, s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Expr>, D::Error> {
+            if !active() {
+                return array_vec::deserialize(d);
+            }
+            let old: Vec<[f32; OLD]> = array_vec::deserialize(d)?;
+            let fill = crate::design::default_value(Gene::Obedience);
+            Ok(old
+                .into_iter()
+                .map(|o| {
+                    let mut e = [fill; Gene::COUNT];
+                    e[..OLD].copy_from_slice(&o);
+                    e
+                })
+                .collect())
         }
     }
 }

@@ -40,7 +40,7 @@ Players never set behavior directly. They act through three levers; everything e
 | --- | --- | --- |
 | Possession | Take direct control of one organism: move, forage, hunt, fight, scout, court | Returns to genetic behavior when released. A small bonus (perception, reaction) rewards active play without dominating |
 | Directed matings | Pair two organisms, including with another player's organism | Limited slots per season. Other player must consent and may set a price. The organisms must physically meet, so the trip carries risk. Stud marketplace for trading genetics |
-| Group commands | Order migration, claim or abandon territory, split a group | May later become genetic (for example, wanderlust) |
+| Group commands | Order migration, claim or abandon territory, split a group | How strongly a group follows them is genetic: the obedience gene weighs orders against instinct, and obedient animals are tamer (slower to flee) |
 
 **Directed-mating override cost.** When a directed mating falls outside an organism's genetic mate preferences, it costs more the further outside it is. See Genetics.
 
@@ -161,7 +161,7 @@ Optional: mismatch penalties are partly genetic, so selection can slowly reduce 
 | Covering | Fur, scales, armor plates |
 | Head | Fangs, large eyes, large ears, keen nose |
 | Other | Diet (carnivore, herbivore, omnivore, scavenger), camouflage, toxins |
-| Instinct genes | Boldness, aggression, wanderlust, group tolerance, mate preference and pickiness |
+| Instinct genes | Boldness, aggression, wanderlust, group tolerance, obedience, mate preference and pickiness |
 
 **Stats layer.** Physical traits set stats; stats feed needs and decide how well behaviors succeed. Most traits carry a built-in cost.
 
@@ -319,7 +319,7 @@ Server load scales with organism count: players × organisms per lineage, plus a
 - [ ] Dominant designs: how to keep any single build from taking over (planned next)
 - [ ] Duplicate mutations: separate tags per origin, or credit only whoever had it first? *(Currently separate tags per origin: with continuous alleles, "first" needs a rule for when two alleles count as the same. See README, Suggested next steps.)*
 - [ ] Seasonal strategy: fixed at design, or an evolvable gene?
-- [ ] Group commands (migration, splitting): keep as player levers, or make genetic?
+- [x] Group commands (migration, splitting): keep as player levers, or make genetic? *(Both: the commands stay player levers, and an obedience gene sets how strongly a group heeds them against its own instincts. Obedience is paid for in tameness: an obedient animal flees a threat later. See README, Groups and territory.)*
 - [ ] Point costs for each trait and for founding population size
 - [ ] Tick rate, and whether the world runs real-time or slow and async
 - [x] Offline protection: home ranges or surviving founder groups *(Built as surviving founder groups: for up to 12 hours after logout, a lineage down to its last 12 members suffers a quarter of the kills and half the starvation and thirst; organisms in a trade or on the market are exempt. See README, Offline protection.)*

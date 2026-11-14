@@ -119,6 +119,11 @@ fn restored_world_continues_exactly() {
         }
         a.step();
     }
+    // Fed, watered and awake, so no need overrides its order.
+    let i = a.organisms.iter().position(|o| o.alive && o.possessed_by == Some(1)).expect("possessed organism alive");
+    let o = &mut a.organisms[i];
+    (o.needs.hunger, o.needs.thirst, o.needs.energy, o.needs.safety) = (10.0, 10.0, 90.0, 0.0);
+    o.dormancy = Dormancy::Awake;
     order_possessed(&mut a);
     // Between ticks, part way through the possession sub-steps.
     assert_eq!(a.substep().len(), 1, "want the possessed organism to move in a sub-step");
@@ -314,18 +319,26 @@ fn older_snapshots_are_refused_by_version() {
     }
 }
 
+/// `w` as a snapshot from before `Gene::Obedience` restores it: every
+/// genome's obedience locus at the design default with its wanderlust
+/// alleles' tags (pregnancies' fathers and cohort pools included), species
+/// representatives at the default, and `tameness` at its default.
+fn without_obedience(w: &World) -> World {
+    let mut w = World::restore(&w.snapshot_v13(), Some(w.map.terrain().clone())).unwrap();
+    w.config.balance.tameness = crate::config::Balance::default().tameness;
+    w
+}
+
 /// Version 10 snapshots (the tiles inside the payload, as builds before
-/// version 11 wrote them, and no `Balance::cold_gestation`) still restore,
-/// to the same world, with the rule they ran under.
+/// version 11 wrote them, no `Balance::cold_gestation` and no obedience)
+/// still restore, to the same world, with the rule they ran under.
 #[test]
 fn version_10_snapshots_still_restore() {
     let mut w = fixture_world();
     w.config.balance.cold_gestation = crate::serde_util::before_v12::OLD_COLD_GESTATION;
     w.config.balance.nest_predation = crate::serde_util::before_v13::OLD_NEST_PREDATION;
+    let w = without_obedience(&w);
     let old = w.snapshot_v10();
-    // Without the two parameters the payload is 8 bytes (two f32) shorter.
-    let raw = payload_options().serialize(&w).unwrap();
-    assert_eq!(SnapshotHeader::read(&old).unwrap().raw_len + 8, raw.len() as u64);
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!((h.version, h.flags), (10, FLAG_LZ4));
     assert!(h.restorable());
@@ -343,16 +356,55 @@ fn version_10_snapshots_still_restore() {
 fn version_12_snapshots_still_restore() {
     let mut w = fixture_world();
     w.config.balance.nest_predation = crate::serde_util::before_v13::OLD_NEST_PREDATION;
+    let w = without_obedience(&w);
     let old = w.snapshot_v12();
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 12);
     assert!(h.restorable());
-    // Without the parameter the payload is 4 bytes (one f32) shorter.
-    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    // Without the parameter the payload is 4 bytes (one f32) shorter than
+    // a version 13 one.
+    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot_v13()).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.nest_predation, 0.0);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
+}
+
+/// Version 13 snapshots (before `Gene::Obedience` and `Balance::tameness`)
+/// restore with every obedience locus at the design default, tagged like
+/// the organism's wanderlust alleles, so their organisms behave as before;
+/// restored again they give the same world.
+#[test]
+fn version_13_snapshots_restore_with_default_obedience() {
+    use crate::genome::Gene;
+    let mut w = fixture_world();
+    // Some organisms carry other obedience alleles: the old form drops them.
+    for o in w.organisms.iter_mut().step_by(3) {
+        let mut g = (*o.genome).clone();
+        g.set_gene_alleles(Gene::Obedience, 0.9, 0.1);
+        o.genome = Arc::new(g);
+        o.refresh_derived();
+    }
+    w.config.balance.tameness = 0.9;
+    let old = w.snapshot_v13();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!((h.version, h.flags), (13, FLAG_LZ4 | FLAG_TILES_APART));
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.tameness, crate::config::Balance::default().tameness);
+    assert_eq!(r.organisms.len(), w.organisms.len());
+    for (a, b) in r.organisms.iter().zip(&w.organisms) {
+        let (o, wl) = (a.genome.locus(Gene::Obedience), a.genome.locus(Gene::Wanderlust));
+        assert_eq!((o.a.value, o.b.value), (0.5, 0.5));
+        assert_eq!((o.a.origin, o.b.origin), (wl.a.origin, wl.b.origin));
+        assert_eq!(a.pheno[Gene::Obedience], 0.5);
+        for &g in Gene::ALL.iter().filter(|&&g| g != Gene::Obedience) {
+            assert_eq!(a.genome.locus(g), b.genome.locus(g), "{g:?} of {}", a.id);
+        }
+    }
+    let again = World::restore(&r.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert!(again.snapshot() == r.snapshot());
+    assert!(r.snapshot_v13() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,
