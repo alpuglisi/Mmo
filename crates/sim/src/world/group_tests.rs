@@ -27,6 +27,18 @@ fn set_gene(o: &mut Organism, g: Gene, v: f32) {
     }
 }
 
+/// A grown pack hunter at `pos`, with the 2.6 kg body (body size 0.42) the
+/// threat levels below were set for: the sample design's own 0.8 kg hunter
+/// is too small to threaten a herd grazer or an antelope.
+fn big_hunter(w: &mut World, pos: Vec2) -> usize {
+    let h = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
+    let o = &mut w.organisms[h];
+    o.pheno.0[Gene::BodySize.index()] = 0.42;
+    o.traits = crate::stats::derive(&o.pheno);
+    (o.growth, o.matured, o.pos) = (1.0, true, pos);
+    h
+}
+
 /// A grown member of `lineage`, everyone else moved to a far corner.
 fn isolate(w: &mut World, lineage: u32) -> usize {
     let i = w.organisms.iter().position(|o| o.lineage == lineage).unwrap();
@@ -216,9 +228,7 @@ fn breeding_drive_blunts_threat_response() {
     let mut w = world();
     let a = isolate(&mut w, 5);
     set_gene(&mut w.organisms[a], Gene::Vigilance, 0.0);
-    let h = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
-    let o = &mut w.organisms[h];
-    (o.growth, o.matured, o.pos) = (1.0, true, CENTER + Vec2::new(2.0, 0.0));
+    big_hunter(&mut w, CENTER + Vec2::new(2.0, 0.0));
     w.grid.rebuild(&w.organisms);
     w.organisms[a].needs.breeding = 60.0;
     w.config.balance.breeding_recklessness = 0.0;
@@ -249,9 +259,7 @@ fn a_seen_threat_puts_courting_on_hold() {
     let o = &mut w.organisms[m];
     (o.growth, o.matured, o.mother, o.pos, o.breed_ready_tick) = (1.0, true, None, CENTER + Vec2::new(-1.0, 0.0), 0);
     (o.needs.breeding, o.needs.hunger, o.pregnancy) = (100.0, 10.0, None);
-    let h = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
-    let o = &mut w.organisms[h];
-    (o.growth, o.matured, o.pos) = (1.0, true, CENTER + Vec2::new(2.0, 0.0));
+    let h = big_hunter(&mut w, CENTER + Vec2::new(2.0, 0.0));
     w.grid.rebuild(&w.organisms);
     w.config.balance.courtship_caution = 0.0;
     let reckless = w.decide(a);
@@ -308,9 +316,7 @@ fn a_seen_threat_puts_drinking_and_resting_on_hold() {
     let mut w = world();
     let a = isolate(&mut w, 1);
     set_gene(&mut w.organisms[a], Gene::Vigilance, 0.0);
-    let h = w.organisms.iter().position(|o| o.lineage == 4).unwrap();
-    let o = &mut w.organisms[h];
-    (o.growth, o.matured, o.pos) = (1.0, true, CENTER + Vec2::new(2.5, 0.0));
+    big_hunter(&mut w, CENTER + Vec2::new(2.5, 0.0));
     w.grid.rebuild(&w.organisms);
     w.organisms[a].needs.thirst = 75.0;
     w.config.balance.threat_caution = 0.0;

@@ -140,7 +140,13 @@ pub fn player_designs() -> Vec<FounderDesign> {
     use Gene::*;
     vec![
         FounderDesign::new("Pack hunters", Thermo::Warm, BirthType::Live, 4)
-            .with(BodySize, 0.42)
+            // Small (0.8 kg, weasel-like): voles and newts are its prey,
+            // and a kill or a mouthful of plants covers about twice as much
+            // of a small hunter's day (hunger per food unit ~ mass^-0.5). At
+            // 0.42 (2.6 kg) meat covered 2 of 33 hunger points a day and
+            // founding packs starved on 4 of 48 seeds. Not 0.32: fox-sized
+            // hunters would count foxes as their own kind.
+            .with(BodySize, 0.22)
             .with(Carnivory, 0.9)
             .with(PackInstinct, 0.9)
             .with(GroupTolerance, 0.8)

@@ -2903,7 +2903,8 @@ stream, so they change a world only through their effects.
   on 48 seeds (*Predators under the prey-side rules*, below), the rules
   together move about four lineage losses from prey to predators, and the
   pack hunters they lose are founding packs that starve in their first
-  weeks.
+  weeks. A smaller pack-hunter design (body size 0.22) now saves those
+  packs without losing prey (*A pack-hunter design whose budget works*).
 - A 12-seed, 120-day validation takes about 35 seconds on 4 cores.
 
 **Shared burrows and sentries.** Shared burrows: carriers are diggers
@@ -3572,6 +3573,47 @@ prey the rules were tuned to protect. Saving founding packs without
 costing prey would need a rule that acts only in the founding phase or
 only on a pack in decline, which is a design choice, not a balance fix.
 
+**A pack-hunter design whose budget works.** The fix went into the sample
+design instead of the rules: pack hunters are now body size 0.22 (0.8 kg,
+weasel-sized) instead of 0.42 (2.6 kg), 41.7 points instead of 38.5. What
+a hunter gets from a kill or a mouthful of plants is food units divided by
+`food_per_hunger` (mass^0.75), while its hunger points a day only grow
+with `size_burn` (mass^-0.25), so the same vole or the same nibble covers
+about mass^-0.5 of its day: 1.8 times as much at 0.8 kg as at 2.6 kg. The
+smaller hunter can't take an adult antelope any more (cooperative limit
+4.5 × own mass is 3.6 kg) and lives on voles and newts, the prey it was
+catching anyway. Five design changes were tried against the defaults; a
+4-seed screen on the lost seeds (108, 128, 136, 140) saved 2–3 of the 4
+packs for every change (any change re-rolls a tail event), so it told the
+candidates apart badly, and the 48-seed runs (101–148) decided:
+
+| Pack-hunter design change | Score (A − B) | Lost (A / B) | Significant mean-alive changes |
+| --- | --- | --- | --- |
+| **Body size 0.32** (1.4 kg) | +0.14 ± 0.20 | pack hunters 1 / 4, foxes 2 / 1, antelope 1 / 1 | pack hunters +16; voles −77, antelope −21 |
+| **Body size 0.32, carnivory 0.75** (doubles plant income) | −0.20 ± 0.25 | pack hunters 0 / 4, antelope 3 / 1, foxes 3 / 1, herd grazers 1 / 0 | pack hunters +87, newts +58; antelope −27 |
+| **Litter 2, 30 founders** (less pregnancy cost, more founders) | −0.21 ± 0.26 | pack hunters 3 / 4, foxes 3 / 1, burrowers 1 / 0, antelope 0 / 1 | pack hunters −17; voles +83, newts +54 |
+| **Camouflage 0.4** (screened only) | — | screen: 2 of 4 lost packs kept | — |
+| **Body size 0.22** (kept) | **+0.33 ± 0.20, A better** | pack hunters 0 / 4, antelope 0 / 1, foxes 1 / 1 | pack hunters +12, herd grazers +146, antelope +27; voles −169, newts −98, burrowers −14 |
+
+Body size 0.32 makes the hunters fox-sized, and with carnivory 0.9
+against the foxes' 0.85 the two designs' founders count each other as
+their own kind (`is_kin`; the presets test rejects it), so it was not an
+option on its own. Its kin-safe variant with carnivory 0.75 feeds the
+hunters on plants and, like roaming forage, moves the losses to prey.
+Body size 0.22 saves every founding pack while no prey lineage is lost:
+the hunters press harder on voles and newts, which are the most numerous
+lineages, and less on antelope and herd grazers. On held-out seeds
+(`compare --adaptive` from 201) it stopped after 24 seeds at +0.45
+(sequential CI +0.09 … +0.80), pack hunters lost 0 / 1, herd grazers
+0 / 2, newts 1 / 1. Held-out sweeps (12 seeds, 96×96): seed 31 11.67
+(was 11.54), seed 55 11.62 (was 11.41); `scripts/balance-smoke.sh` 11.96
+(was 11.21), 24 of 24 lineage-worlds. Three group tests that used a pack
+hunter as the threat to an antelope or herd grazer now give it the old
+2.6 kg body: the 0.8 kg hunter can't threaten them (`can_threaten` needs
+more than 0.3 of the prey's mass). The snapshot round-trip test's busy
+world moved from seed 22 to 23, since seed 22 no longer formed LOD
+cohorts.
+
 ## Point costs
 
 The costs in `design.rs` are calibrated with `examples/calibrate.rs`
@@ -3719,24 +3761,7 @@ sections above).
    abandoned-egg mother's recovery to her clutch's mass or the eggs she
    provisions (yolk), or larval competition across lineages of the same
    diet, judged as before with paired tournaments and `compare`.
-5. **Founding packs of hunters.** The prey-side rules move about four
-   lineage losses in 48 worlds from prey to predators (see *Predators under
-   the prey-side rules* in [Balance](#balance)): pack hunters are lost on
-   4 of 48 seeds and the lost packs shrink from 24 to a handful in their
-   first 40–60 days, of starvation and of thirst at hunger 90+, while
-   prey grow. Two predator-side numerical responses (ratio-dependent
-   litters, an earlier search-image exception) were neutral. Measured
-   since (*Why founding hunters catch so little*): a pack hunter gets
-   about 2 of its 33 hunger points a day from meat (0.07–0.2 kills a
-   day, mostly 0.3 kg newts and voles) and about 85% from plants nibbled
-   while courting, drinking or resting. Hunger sends it roaming with no
-   prey in sight, which earns nothing. Letting roaming hunters nibble
-   saves every founding pack but costs prey lineages (−0.38, or +0.14
-   n.s. when only starving hunters nibble, with herd grazers lost on 3
-   seeds). What's left is a design question: a founding-phase or
-   declining-pack rule, or a pack-hunter sample design with a food budget
-   that works.
-6. **World-thread cost.** At high density decide is still most of a tick
+5. **World-thread cost.** At high density decide is still most of a tick
    and is now bound by memory (neighbor genes and positions; see [High
    density](#high-density-decide-act-sweep-sub-step-states)); going further
    means changing results (cap or subsample the neighbors scanned, judged
@@ -3746,7 +3771,7 @@ sections above).
    build `StateIndex` (a pass over every organism) and a whole `StateView`
    for every steering player three times a tick; reusing them needs
    per-player invalidation for commands applied between sub-steps.
-7. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
+6. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
    protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
    doesn't offer it; revisit when it does (states are already ~1 KB/s a
    client, so this is low priority). Saves (13 MB at 26k agents, see
@@ -3754,7 +3779,7 @@ sections above).
    founder values that don't compress); the map's tiles (3.4 MB) could
    still go as a delta against the previous save, at the cost of saves
    that depend on each other.
-8. **Design-doc features not built.** Group commands as genes (the doc's
+7. **Design-doc features not built.** Group commands as genes (the doc's
    open question; wanderlust and group tolerance already shape how a group
    moves); `GET /api/leaderboard/seasons` would also want a cache instead of
    reading the whole history per call. Offline protection is built as the
@@ -3770,7 +3795,7 @@ sections above).
    per gene and a world-wide registry of first appearances, touching legacy
    scoring and the snapshot format): a scoring-design change, not part of
    offline protection, left open until the design doc picks a rule.
-9. **Tooling.** Done: `compare --adaptive` (sequential, Pocock-level
+8. **Tooling.** Done: `compare --adaptive` (sequential, Pocock-level
    looks until the CI excludes 0, fits within ±tolerance or hits
    `--max-seeds`) and `rankcheck` (40-day screens predict 120-day ranks at
    ρ ≈ 0.65 in a wide round, ≈ 0.31 in a narrow one; prefer 60-day screens

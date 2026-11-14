@@ -12,9 +12,11 @@ fn possessed(w: &World) -> Option<&crate::organism::Organism> {
 /// A world exercising as much state as possible: level of detail with a
 /// focus, catastrophes (an epidemic early on), short years so winter
 /// dormancy comes quickly, a possessed organism with a move order, daily
-/// species detection.
+/// species detection. The seed is one whose world has every kind of state
+/// the test asserts (seed 22 lost its LOD cohorts when the pack-hunter
+/// design shrank).
 fn busy_world() -> World {
-    let mut config = WorldConfig { seed: 22, width: 96, height: 96, days_per_year: 16, ..Default::default() };
+    let mut config = WorldConfig { seed: 23, width: 96, height: 96, days_per_year: 16, ..Default::default() };
     config.lod.enabled = true;
     config.scoring.catastrophes = true;
     config.scoring.catastrophe_first_year = 0;
