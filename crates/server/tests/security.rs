@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use evo_server::accounts::HashPolicy;
 use evo_server::game::WorldSettings;
 use evo_server::http::{map_scale, MAX_BODY, MAX_CLIENT_MESSAGE, MAX_CONNS_PER_PLAYER, MAX_MAP_SIDE};
 use evo_server::limits::{Limits, Rate};
@@ -154,6 +155,64 @@ async fn expensive_reads_are_rate_limited_per_client() {
         let (s, _) = req(addr, Method::GET, "/api/world", None, Vec::new()).await;
         assert_eq!(s, StatusCode::OK);
     }
+    srv.shutdown().await;
+}
+
+/// A login burst past the hash queue gets 503 `busy` with a retry time at
+/// once; the metrics show the bound held; tokens (requests, the WebSocket)
+/// never hash.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn password_hashing_is_bounded_and_a_burst_gets_busy() {
+    let mut cfg = config();
+    cfg.limits = Limits::unlimited();
+    cfg.hashing = HashPolicy { concurrency: 1, queue: 1 };
+    let srv = server(cfg).await;
+    let addr = srv.addr;
+    let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
+    let burst = (0..16).map(|i| {
+        let client = client.clone();
+        async move {
+            let body = json!({"name": format!("burst{i}"), "password": "a long password"}).to_string();
+            let r = Request::post(format!("http://{addr}/api/register"))
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body)))
+                .unwrap();
+            let res = client.request(r).await.expect("request");
+            let (status, retry) = (res.status(), res.headers().get("retry-after").cloned());
+            let body: Value = serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+            (status, retry, body)
+        }
+    });
+    let results = futures_util::future::join_all(burst).await;
+    let created = results.iter().filter(|r| r.0 == StatusCode::CREATED).count();
+    let busy: Vec<_> = results.iter().filter(|r| r.0 == StatusCode::SERVICE_UNAVAILABLE).collect();
+    assert_eq!(created + busy.len(), 16, "{results:?}");
+    assert!(created >= 2 && !busy.is_empty(), "{created} created, {} busy", busy.len());
+    for (_, retry, body) in &busy {
+        assert_eq!(body["code"], "busy");
+        assert!(body["retry_after_ms"].as_u64().is_some_and(|ms| (250..=5000).contains(&ms)), "{body}");
+        assert!(retry.is_some(), "Retry-After header");
+    }
+    let metrics = |path: &'static str| async move {
+        let (s, b) = req(addr, Method::GET, path, None, Vec::new()).await;
+        assert_eq!(s, StatusCode::OK);
+        serde_json::from_slice::<Value>(&b).unwrap()["hashing"].clone()
+    };
+    let h = metrics("/api/metrics").await;
+    assert_eq!((h["concurrency"].as_u64(), h["queue"].as_u64()), (Some(1), Some(1)), "{h}");
+    assert_eq!(h["peak_in_flight"], 1, "{h}");
+    assert_eq!(h["rejected"].as_u64(), Some(busy.len() as u64), "{h}");
+    assert_eq!(h["hashes"].as_u64(), Some(created as u64), "{h}");
+    assert_eq!((h["in_flight"].as_u64(), h["waiting"].as_u64()), (Some(0), Some(0)), "{h}");
+
+    // A retry after the burst works, and the token then never hashes.
+    let token = register(addr, "after").await;
+    let hashes = metrics("/api/metrics").await["hashes"].as_u64().unwrap();
+    let (s, _) = req(addr, Method::GET, "/api/lineage/stats", Some(&token), Vec::new()).await;
+    assert_ne!(s, StatusCode::UNAUTHORIZED);
+    let (ws, _) = connect_async(format!("ws://{addr}/ws?token={token}")).await.expect("socket opens");
+    drop(ws);
+    assert_eq!(metrics("/api/metrics").await["hashes"].as_u64(), Some(hashes));
     srv.shutdown().await;
 }
 

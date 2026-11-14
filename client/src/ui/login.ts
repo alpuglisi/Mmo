@@ -1,5 +1,6 @@
 import { api, apiBase, ApiError, setApiBase } from '../api';
 import type { WorldList } from '../protocol';
+import { withRetry } from '../retry';
 import { isNativeShell, normalizeOrigin, saveOrigin } from '../serverOrigin';
 import type { Session } from '../session';
 import { describeWorld, loadMemory, pickWorld, remember, remembered, saveMemory } from '../worldChoice';
@@ -101,7 +102,13 @@ export function loginScreen(onLogin: (s: Session) => void, notice?: string): HTM
     login.disabled = register.disabled = true;
     try {
       await loadWorlds();
-      const s = kind === 'login' ? await api.login(name.value.trim(), password.value) : await api.register(name.value.trim(), password.value);
+      const [n, p] = [name.value.trim(), password.value];
+      // A server busy with other logins (after a restart, everyone at
+      // once) says when to come back: wait and retry rather than fail.
+      const s = await withRetry(() => (kind === 'login' ? api.login(n, p) : api.register(n, p)), {
+        onWait: (ms) => { error.textContent = `The server is busy; retrying in ${Math.max(1, Math.round(ms / 1000))} s…`; },
+      });
+      error.textContent = '';
       const world = worlds ? pickWorld(worlds, worldSelect.value) : '';
       if (world) saveMemory(remember(loadMemory(), apiBase(), s.name, world));
       onLogin({ ...s, world });
@@ -130,6 +137,8 @@ function describe(e: ApiError): string {
   switch (e.code) {
     case 'bad_credentials': return 'Wrong name or password.';
     case 'name_taken': return 'That name is taken.';
+    case 'busy': return 'The server is busy; try again in a moment.';
+    case 'rate_limited': return 'Too many attempts; try again in a minute.';
     default: return e.message;
   }
 }
