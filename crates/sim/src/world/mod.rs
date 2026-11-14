@@ -209,6 +209,7 @@ pub struct Clutch {
     pub father: OrgId,
     pub generation: u32,
     pub lineage: u32,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::by_parents::eggs"))]
     pub eggs: Vec<Genome>,
     pub hatch_tick: u64,
     /// Incubated by the mother; `None` for abandoned eggs.
@@ -299,6 +300,7 @@ pub struct World {
     pub weather: Weather,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::organisms"))]
     pub organisms: Vec<Organism>,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::clutches"))]
     pub clutches: Vec<Clutch>,
     pub group: GroupField,
     pub counters: Counters,

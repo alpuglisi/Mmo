@@ -681,6 +681,163 @@ pub mod wire {
         }
     }
 
+    /// Most alleles a genome written against its parents may take from
+    /// elsewhere (mutations, re-tagged genomes); with more it is written
+    /// whole, which is then about as small.
+    const MAX_EXCEPTIONS: usize = 16;
+    /// Bytes of one exception: allele index, value bits, origin.
+    const EXCEPTION_BYTES: usize = 1 + 4 + 4;
+    const _: () = assert!(ALLELES <= 128, "a genome's choice bits fit a u128");
+
+    /// An allele as one number: its value bits (so 0.0 and -0.0 differ) and
+    /// its origin.
+    fn key(a: &Allele) -> u64 {
+        (a.value.to_bits() as u64) << 32 | a.origin as u64
+    }
+
+    fn allele(k: u64) -> Allele {
+        Allele { value: f32::from_bits((k >> 32) as u32), origin: k as u32 }
+    }
+
+    impl Genome {
+        /// Every allele as its [`key`], in [`wire`] order.
+        pub(super) fn keys(&self) -> [u64; ALLELES] {
+            let mut out = [0; ALLELES];
+            for (l, locus) in self.loci.iter().chain(&self.load).enumerate() {
+                (out[2 * l], out[2 * l + 1]) = (key(&locus.a), key(&locus.b));
+            }
+            out
+        }
+
+        fn from_keys(k: &[u64; ALLELES]) -> Genome {
+            let locus = |l: usize| Locus { a: allele(k[2 * l]), b: allele(k[2 * l + 1]) };
+            Genome { loci: std::array::from_fn(locus), load: std::array::from_fn(|l| locus(Gene::COUNT + l)) }
+        }
+
+        /// The genome written against its parents' ([`Parents::encode`]),
+        /// or `None` if it is not mostly inherited from them.
+        pub fn to_wire_by_parents(&self, mother: &Genome, father: &Genome) -> Option<Vec<u8>> {
+            Parents::new(mother, father).encode(self)
+        }
+
+        /// A genome from [`Genome::to_wire_by_parents`] bytes and the same
+        /// parents' genomes.
+        pub fn from_wire_by_parents(bytes: &[u8], mother: &Genome, father: &Genome) -> Result<Genome, String> {
+            Parents::new(mother, father).decode(bytes)
+        }
+    }
+
+    /// Two parents' genomes, to write their young's (a child's or an egg's)
+    /// against (world snapshots from version 18). Inheritance gives allele
+    /// `a` of every locus one of the mother's two alleles at that locus and
+    /// allele `b` one of the father's ([`Genome::inherit`]), so each allele
+    /// is a choice bit, and none where that parent's two alleles are the
+    /// same. Bytes:
+    ///
+    /// 1. `e`, the number of exceptions (alleles that are neither of the
+    ///    parent's: mutations), u8, then per exception its allele index (u8,
+    ///    in [`wire`] order), value bits and origin (u32 little-endian
+    ///    each);
+    /// 2. the choice bits (least significant first; 0 the parent's `a`, 1
+    ///    its `b`) of the other alleles in order, skipping those whose parent
+    ///    is homozygous there, zero-padded to a byte.
+    ///
+    /// About 11 bytes for an egg or a newborn, against about 250 whole.
+    pub struct Parents {
+        /// Per allele of a child, the two its parent had at its locus (the
+        /// mother for an `a`, the father for a `b`), as [`key`]s.
+        from: [[u64; 2]; ALLELES],
+    }
+
+    impl Parents {
+        pub fn new(mother: &Genome, father: &Genome) -> Parents {
+            let (m, f) = (mother.keys(), father.keys());
+            Parents {
+                from: std::array::from_fn(|k| {
+                    let p = if k % 2 == 0 { &m } else { &f };
+                    [p[k & !1], p[k | 1]]
+                }),
+            }
+        }
+
+        /// `g` against these parents, or `None` if more than a few of its
+        /// alleles are not inherited unchanged from them (it is then written
+        /// whole).
+        pub fn encode(&self, g: &Genome) -> Option<Vec<u8>> {
+            let child = g.keys();
+            let mut exceptions = [0u8; MAX_EXCEPTIONS];
+            let (mut e, mut bits, mut n) = (0, 0u128, 0usize);
+            for (k, (&c, &[a, b])) in child.iter().zip(&self.from).enumerate() {
+                if c == a || c == b {
+                    if a != b {
+                        bits |= u128::from(c != a) << n;
+                        n += 1;
+                    }
+                } else if e == MAX_EXCEPTIONS {
+                    return None;
+                } else {
+                    exceptions[e] = k as u8;
+                    e += 1;
+                }
+            }
+            let bytes = n.div_ceil(8);
+            let mut out = Vec::with_capacity(1 + EXCEPTION_BYTES * e + bytes);
+            out.push(e as u8);
+            for &k in &exceptions[..e] {
+                let a = allele(child[k as usize]);
+                out.push(k);
+                out.extend_from_slice(&a.value.to_bits().to_le_bytes());
+                out.extend_from_slice(&a.origin.to_le_bytes());
+            }
+            out.extend_from_slice(&bits.to_le_bytes()[..bytes]);
+            Some(out)
+        }
+
+        /// A genome from [`Parents::encode`] bytes.
+        pub fn decode(&self, bytes: &[u8]) -> Result<Genome, String> {
+            let (&e, mut rest) = bytes.split_first().ok_or("empty genome")?;
+            let mut child = [0u64; ALLELES];
+            let mut exception = [false; ALLELES];
+            let mut last = None;
+            for _ in 0..e {
+                let (x, r) = rest.split_at_checked(EXCEPTION_BYTES).ok_or("genome cut short (exceptions)")?;
+                rest = r;
+                let k = x[0] as usize;
+                if k >= ALLELES || last.is_some_and(|l| k <= l) {
+                    return Err("genome exception out of order".into());
+                }
+                last = Some(k);
+                let value = f32::from_bits(u32::from_le_bytes(x[1..5].try_into().unwrap()));
+                child[k] = key(&Allele { value, origin: PlayerId::from_le_bytes(x[5..9].try_into().unwrap()) });
+                exception[k] = true;
+            }
+            let n = (0..ALLELES).filter(|&k| !exception[k] && self.from[k][0] != self.from[k][1]).count();
+            if rest.len() != n.div_ceil(8) {
+                return Err("genome has the wrong number of choice bytes".into());
+            }
+            let mut buf = [0u8; 16];
+            buf[..rest.len()].copy_from_slice(rest);
+            let mut bits = u128::from_le_bytes(buf);
+            if n < 128 && bits >> n != 0 {
+                return Err("genome has trailing bits".into());
+            }
+            for (k, c) in child.iter_mut().enumerate() {
+                if exception[k] {
+                    continue;
+                }
+                let [a, b] = self.from[k];
+                *c = if a == b {
+                    a
+                } else {
+                    let pick = if bits & 1 == 0 { a } else { b };
+                    bits >>= 1;
+                    pick
+                };
+            }
+            Ok(Genome::from_keys(&child))
+        }
+    }
+
     struct BitWriter {
         out: Vec<u8>,
         acc: u64,
@@ -1014,6 +1171,57 @@ mod tests {
         assert_eq!(n, 3, "tags 3, 8 and 5");
         w[1 + 4 * n + ALLELES.div_ceil(4)] |= 0xff;
         assert!(Genome::from_wire(&w).is_err());
+    }
+
+    /// A child's or an egg's genome written against its parents' comes back
+    /// to the bit: inherited alleles as choice bits (none where the parent
+    /// is homozygous), mutations and odd values as exceptions; a genome
+    /// with too many of those is left to the whole form.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn wire_form_by_parents_is_exact() {
+        let bits = |g: &Genome| g.alleles().map(|a| (a.value.to_bits(), a.origin)).collect::<Vec<_>>();
+        let mut rng = rng_for(5, 0, 0, 0);
+        let mut v = flat(0.4);
+        v[Gene::Migration.index()] = 0.0;
+        let mother = Genome::founder(&v, 3, 0.05, &mut rng);
+        let mut father = Genome::founder(&flat(0.6), 8, 0.05, &mut rng);
+        father.set_load(1, true, Allele::harmful(8));
+        let none = MutationParams { rate: 0.0, sd: 0.0 };
+        let some = MutationParams { rate: 0.05, sd: 0.1 };
+        let plain = Genome::inherit(&mother, &father, 3, none, 0.0, &mut rng);
+        let mutated = Genome::inherit(&mother, &father, 3, some, 0.2, &mut rng);
+        let mut odd = plain.clone();
+        odd.loci[2].a.value = -0.0;
+        odd.loci[3].b.value = f32::NAN;
+        odd.loci[4].a.origin = 99;
+        odd.load[3].b = Allele { value: 1e-30, origin: u32::MAX };
+        let mut cases = 0;
+        for g in [&plain, &mutated, &odd, &mother] {
+            let Some(w) = g.to_wire_by_parents(&mother, &father) else { continue };
+            cases += 1;
+            let back = Genome::from_wire_by_parents(&w, &mother, &father).unwrap();
+            assert_eq!(bits(&back), bits(g));
+            assert!(Genome::from_wire_by_parents(&w[..w.len() - 1], &mother, &father).is_err());
+            let mut long = w.clone();
+            long.push(0);
+            assert!(Genome::from_wire_by_parents(&long, &mother, &father).is_err());
+        }
+        assert!(cases >= 3, "plain, mutated and odd are written against the parents");
+        // No exceptions: a byte, then a bit per allele whose parent is
+        // heterozygous there (most genes of a founder, one load locus of
+        // the father's).
+        let w = plain.to_wire_by_parents(&mother, &father).unwrap();
+        assert_eq!(w[0], 0);
+        let het = (0..ALLELES).filter(|&k| {
+            let p = if k % 2 == 0 { mother.keys() } else { father.keys() };
+            p[k & !1] != p[k | 1]
+        });
+        assert_eq!(w.len(), 1 + het.count().div_ceil(8));
+        assert_eq!(odd.to_wire_by_parents(&mother, &father).unwrap()[0], 4);
+        // Unrelated genomes are mostly exceptions: written whole instead.
+        let stranger = Genome::founder(&flat(0.5), 4, 0.05, &mut rng);
+        assert!(stranger.to_wire_by_parents(&mother, &father).is_none());
     }
 
     #[test]

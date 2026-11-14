@@ -193,6 +193,7 @@ pub struct Organism {
     pub sex: Sex,
     /// Immutable once born, so shared: a clone of the organism (the
     /// server's save capture) or a pregnancy by it doesn't copy it.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::by_parents::genome"))]
     pub genome: Arc<Genome>,
     /// Cache: `genome.phenotype()`. Not in snapshots; recomputed on restore
     /// ([`Organism::refresh_derived`]).

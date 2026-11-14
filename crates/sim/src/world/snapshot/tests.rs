@@ -62,6 +62,32 @@ fn order_possessed(w: &mut World) {
     w.order_move(1, id, target).unwrap();
 }
 
+/// Genomes a snapshot writes against their parents' (organisms with both
+/// parents earlier in the list, eggs with both parents in the world, and
+/// mostly inherited from them), and those it writes whole.
+fn by_parents(w: &World) -> (usize, usize, usize) {
+    let at: std::collections::HashMap<_, _> = w.organisms.iter().enumerate().map(|(k, o)| (o.id, k)).collect();
+    let (mut orgs, mut eggs, mut whole) = (0, 0, 0);
+    for (k, o) in w.organisms.iter().enumerate() {
+        let parent =
+            |id: Option<u64>| id.and_then(|id| at.get(&id)).filter(|&&p| p < k).map(|&p| &w.organisms[p].genome);
+        match (parent(o.mother), parent(o.father)) {
+            (Some(m), Some(f)) if o.genome.to_wire_by_parents(m, f).is_some() => orgs += 1,
+            _ => whole += 1,
+        }
+    }
+    for c in &w.clutches {
+        let parent = |id: u64| at.get(&id).map(|&p| &w.organisms[p].genome);
+        for e in &c.eggs {
+            match (parent(c.mother), parent(c.father)) {
+                (Some(m), Some(f)) if e.to_wire_by_parents(m, f).is_some() => eggs += 1,
+                _ => whole += 1,
+            }
+        }
+    }
+    (orgs, eggs, whole)
+}
+
 /// Pregnancies whose father genome is shared with an organism in the world
 /// (written as an index), and those with their own copy (written in full).
 fn shared_fathers(w: &World) -> (usize, usize) {
@@ -158,6 +184,10 @@ fn restored_world_continues_exactly() {
     let fathers = shared_fathers(&a);
     assert!(fathers.0 > 0 && fathers.1 > 0, "want shared and own father genomes: {fathers:?}");
     assert!(a.organisms.iter().any(|o| o.genome.loci().iter().any(|l| l.a.origin != l.b.origin)), "want mixed tags");
+    // Genomes written against their parents' (organisms and eggs) and whole.
+    let (orgs, eggs, whole) = by_parents(&a);
+    eprintln!("genomes by parents: {orgs} organisms, {eggs} eggs; {whole} whole");
+    assert!(orgs > 0 && eggs > 0 && whole > 0, "want genomes by parents and whole: {orgs}, {eggs}, {whole}");
 
     // Player 4's main group answers a rally.
     let rp = a.organisms.iter().find(|o| o.alive && o.owner == 4 && o.group == 0).expect("player 4 alive").pos;
@@ -446,7 +476,7 @@ fn version_15_snapshots_restore_without_migration_onset() {
     assert!(h.restorable());
     // Without the parameter the payload is 4 bytes (one f32) shorter, and
     // 12 more without the home range's (version 17).
-    assert_eq!(h.raw_len + 4 + 12, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    assert_eq!(h.raw_len + 4 + 12, SnapshotHeader::read(&w.snapshot_v17()).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.migration_onset, crate::serde_util::before_v16::OLD_MIGRATION_ONSET);
     w.config.balance.migration_onset = r.config.balance.migration_onset;
@@ -465,13 +495,45 @@ fn version_16_snapshots_restore_without_the_home_range() {
     assert_eq!(h.version, 16);
     assert!(h.restorable());
     // Without the parameters the payload is 12 bytes (three f32) shorter.
-    assert_eq!(h.raw_len + 12, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    assert_eq!(h.raw_len + 12, SnapshotHeader::read(&w.snapshot_v17()).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.home_range, crate::config::HomeRangeBalance::default());
     w.config.balance.home_range = r.config.balance.home_range;
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v16() == old);
+}
+
+/// A world laying eggs and raising young, for the genomes written against
+/// their parents': day 9 of a small world.
+fn laying_world() -> World {
+    let mut w = presets::standard_world(WorldConfig { seed: 5, width: 64, height: 64, ..Default::default() }, 1);
+    w.run_days(9);
+    w
+}
+
+/// Version 17 snapshots (every genome written whole) still restore, to the
+/// same world; written against their parents, the genomes of young and eggs
+/// take a fraction of the space.
+#[test]
+fn version_17_snapshots_restore_with_whole_genomes() {
+    let w = laying_world();
+    let (orgs, eggs, whole) = by_parents(&w);
+    assert!(orgs > 0 && eggs > 0 && whole > 0, "want genomes by parents and whole: {orgs}, {eggs}, {whole}");
+    let old = w.snapshot_v17();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!((h.version, h.flags), (17, FLAG_LZ4 | FLAG_TILES_APART));
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_same_caches(&w, &r);
+    assert!(r.clutches.iter().zip(&w.clutches).all(|(a, b)| a.eggs == b.eggs));
+    let new = w.snapshot();
+    assert!(r.snapshot() == new);
+    assert!(r.snapshot_v17() == old);
+    // Smaller (more so in bigger worlds, where eggs are a third of a save).
+    let (o, n) = (h.raw_len, SnapshotHeader::read(&new).unwrap().raw_len);
+    eprintln!("raw payload: version 17 {o} B, version 18 {n} B; stored {} B -> {} B", old.len(), new.len());
+    assert!(n < o && new.len() < old.len());
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

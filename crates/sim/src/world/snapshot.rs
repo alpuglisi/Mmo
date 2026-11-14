@@ -53,9 +53,15 @@
 //! interned per genome, 0.0 and 1.0 alleles in two bits, other values
 //! bit-packed with their exponent in three bits), and a pregnancy's father
 //! genome as the index of the father while he is in the world
-//! (`serde_util::father`), so the restore shares it with him again.
+//! (`serde_util::father`), so the restore shares it with him again. From
+//! version 18 an organism's genome is written just before it, and a
+//! clutch's eggs just before it, against the parents' genomes when both
+//! parents are in the world (earlier in the list, for an organism):
+//! a choice bit per allele whose parent is heterozygous there, and the few
+//! mutated alleles in full (`genome::wire::Parents`, `serde_util::organisms`,
+//! `serde_util::clutches`), about 11 bytes instead of about 250.
 //!
-//! Snapshots of this format version restore, and of versions 10 to 14
+//! Snapshots of this format version restore, and of versions 10 to 16
 //! ([`SnapshotHeader::restorable`]): version 10 holds the tiles inside the
 //! payload, 10 and 11 lack `Balance::cold_gestation`, which reads as 1.4 (the
 //! rule they ran under; `serde_util::before_v12`), and all three lack
@@ -85,7 +91,9 @@
 //! `Balance::migration_onset` parameter; versions 10 to 15 read it as 1,
 //! the rule they ran under (`serde_util::before_v16`). Version 17 adds the
 //! `Balance::home_range` parameters (offline protection's home range);
-//! versions 10 to 16 read them as their defaults (`serde_util::before_v17`).
+//! versions 10 to 16 read them as their defaults (`serde_util::before_v17`). Version 18 writes
+//! the genomes of young and eggs against their parents' (above); versions
+//! 10 to 17 have every genome whole (`serde_util::before_v18`).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -106,7 +114,7 @@ use crate::terrain::{Terrain, Tile};
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 17;
+pub const SNAPSHOT_VERSION: u32 = 18;
 /// The oldest format version that still restores: version 11's state with
 /// the tiles inside the payload, and both without `Balance::cold_gestation`
 /// (nor, with version 12, `Balance::nest_predation`).
@@ -123,6 +131,8 @@ const RALLY_VERSION: u32 = 15;
 const MIGRATION_ONSET_VERSION: u32 = 16;
 /// The first format version with `Balance::home_range`.
 const HOME_RANGE_VERSION: u32 = 17;
+/// The first format version with genomes written against their parents'.
+const BY_PARENTS_VERSION: u32 = 18;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
@@ -163,7 +173,7 @@ impl SnapshotHeader {
     }
 
     /// Whether [`World::restore`] reads snapshots of this format version
-    /// (this one, or versions 10 to 14).
+    /// (this one, or versions 10 to 16).
     pub fn restorable(&self) -> bool {
         (OLDEST_RESTORABLE..=SNAPSHOT_VERSION).contains(&self.version)
     }
@@ -464,6 +474,7 @@ impl World {
             let tiles = s.spawn(|| encode_tiles(&self.map.tiles, self.map.width));
             let raw = {
                 let _apart = crate::serde_util::tiles::Apart::new();
+                let _scope = crate::serde_util::by_parents::Scope::new();
                 payload_options().serialize(self).expect("world serializes")
             };
             let payload = lz4_flex::block::compress(&raw);
@@ -504,6 +515,7 @@ impl World {
         let _old15 = crate::serde_util::before_v15::Guard::new();
         let _old16 = crate::serde_util::before_v16::Guard::new();
         let _old17 = crate::serde_util::before_v17::Guard::new();
+        let _old18 = crate::serde_util::before_v18::Guard::new();
         let raw = payload_options().serialize(self).expect("world serializes");
         self.snapshot_with(OLDEST_RESTORABLE, FLAG_LZ4, raw.len(), &lz4_flex::block::compress(&raw))
     }
@@ -517,6 +529,7 @@ impl World {
         let _old15 = crate::serde_util::before_v15::Guard::new();
         let _old16 = crate::serde_util::before_v16::Guard::new();
         let _old17 = crate::serde_util::before_v17::Guard::new();
+        let _old18 = crate::serde_util::before_v18::Guard::new();
         // The header's layout is unchanged since version 6: only the version
         // field differs.
         let mut out = self.snapshot();
@@ -533,6 +546,7 @@ impl World {
         let _old15 = crate::serde_util::before_v15::Guard::new();
         let _old16 = crate::serde_util::before_v16::Guard::new();
         let _old17 = crate::serde_util::before_v17::Guard::new();
+        let _old18 = crate::serde_util::before_v18::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&NEST_PREDATION_VERSION.to_le_bytes());
         out
@@ -545,6 +559,7 @@ impl World {
         let _old15 = crate::serde_util::before_v15::Guard::new();
         let _old16 = crate::serde_util::before_v16::Guard::new();
         let _old17 = crate::serde_util::before_v17::Guard::new();
+        let _old18 = crate::serde_util::before_v18::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&OBEDIENCE_VERSION.to_le_bytes());
         out
@@ -556,22 +571,34 @@ impl World {
     fn snapshot_v15(&self) -> Vec<u8> {
         let _old16 = crate::serde_util::before_v16::Guard::new();
         let _old17 = crate::serde_util::before_v17::Guard::new();
+        let _old18 = crate::serde_util::before_v18::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&RALLY_VERSION.to_le_bytes());
         out
     }
 
-    /// A version 16 snapshot (no `Balance::home_range`), as the builds
+    /// A version 16 snapshot (no `Balance::home_range`, every genome whole), as the builds
     /// before version 17 wrote, to test that they still restore.
     #[cfg(test)]
     fn snapshot_v16(&self) -> Vec<u8> {
         let _old17 = crate::serde_util::before_v17::Guard::new();
+        let _old18 = crate::serde_util::before_v18::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MIGRATION_ONSET_VERSION.to_le_bytes());
         out
     }
 
-    /// A world from [`World::snapshot`] bytes (or a version 10 to 16 snapshot's)
+    /// A version 17 snapshot (every genome written whole), as the builds
+    /// before version 18 wrote, to test that they still restore.
+    #[cfg(test)]
+    fn snapshot_v17(&self) -> Vec<u8> {
+        let _old18 = crate::serde_util::before_v18::Guard::new();
+        let mut out = self.snapshot();
+        out[8..12].copy_from_slice(&HOME_RANGE_VERSION.to_le_bytes());
+        out
+    }
+
+    /// A world from [`World::snapshot`] bytes (or a version 10 to 17 snapshot's)
     /// and the terrain it names (`SnapshotHeader::terrain`), with its
     /// derived lookups rebuilt. Fails on another format version, a corrupt
     /// payload, or a missing or wrong terrain.
@@ -588,6 +615,7 @@ impl World {
         let _old15 = (h.version < RALLY_VERSION).then(crate::serde_util::before_v15::Guard::new);
         let _old16 = (h.version < MIGRATION_ONSET_VERSION).then(crate::serde_util::before_v16::Guard::new);
         let _old17 = (h.version < HOME_RANGE_VERSION).then(crate::serde_util::before_v17::Guard::new);
+        let _old18 = (h.version < BY_PARENTS_VERSION).then(crate::serde_util::before_v18::Guard::new);
         let body = &bytes[h.len()..];
         if fnv1a(body) != h.checksum {
             return Err(SnapshotError::Checksum);
@@ -607,6 +635,7 @@ impl World {
         };
         let (world, tiles) = std::thread::scope(|s| {
             let tiles = tiles.map(|t| s.spawn(|| decode_tiles(t, terrain.width, terrain.height)));
+            let _scope = crate::serde_util::by_parents::Scope::new();
             let world = decompress(stored, h.flags, h.raw_len)
                 .and_then(|raw| payload_options().deserialize::<World>(&raw).map_err(decode_err));
             (world, tiles.map(|t| t.join().expect("tile decoding panicked")))

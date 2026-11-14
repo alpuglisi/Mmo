@@ -1417,7 +1417,10 @@ default (`serde_util::before_v14`). Version 14 ones restore with no rally
 standing (rallies came with version 15; `serde_util::before_v15`), and
 versions 10 to 15 lack `Balance::migration_onset` (version 16), which
 reads as 1, the rule they ran under (migrators leave on the first day of
-autumn; `serde_util::before_v16`).
+autumn; `serde_util::before_v16`). Versions 10 to 16 lack `Balance::home_range`
+(version 17), which reads as its defaults (`serde_util::before_v17`).
+Versions 10 to 17 have every genome written whole (`serde_util::before_v18`;
+see *Genomes by parents* below).
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1467,7 +1470,9 @@ claimed territories and claim times); version 11 writes the tiles apart
 `nest_predation`; version 14 adds the `obedience` gene (a locus in every
 genome and a value in every species representative) and the balance
 parameter `tameness`; version 15 the world's rally orders; version 16 the
-balance parameter `migration_onset`.
+balance parameter `migration_onset`; version 17 the `home_range` balance
+parameters; version 18 writes the genomes of
+young and eggs against their parents' (*Genomes by parents*, below).
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -1606,6 +1611,62 @@ either. Far below what would pay for saves that depend on each other
 (keyframe-aware pruning in both stores, restores that need two saves), so
 saves stay self-contained. Even a free delta would take only the tiles'
 share, about 20% of a 17 MB save; the rest is organisms, mostly genomes.
+
+**Genomes by parents (world snapshot 18).** Where a save's bytes go was
+measured first (`cargo run --release -p evo-sim --features serde --example
+genome_bytes -- 512 5 2 3`: every world field and every organism field as a
+column, raw and LZ4-compressed alone, then the genomes in candidate
+encodings; 512², scale 5, the saves of days 2 to 5). The 13.3 → 17.5 MB
+growth after day 2 is not the organisms: it is the **clutches**, about
+20,000 eggs from day 3, each a whole genome (4.3–5.5 MB raw, 3.7–4.8 MB
+after LZ4). The organisms' genomes (6.7–7.2 MB, LZ4 takes 2% off) barely
+change, and they really are the founders' values: a third of the alleles
+are exactly 0.0, and of the rest 93% are values no other allele in the world
+has (1.85 million distinct bit patterns in 2.88 million alleles on day 2, no
+organism yet with a parent in the world). So a dictionary of exact bit
+patterns can't pay: a global one would take 15.0 MB (21-bit indices plus
+the values), one per locus 7.6–8.0 MB, column-wise raw bits 7.7 MB
+deflated, against 7.1 MB as stored; residuals against each lineage's median
+at the locus with entropy-coded lengths would come to 24 bits a value
+against 26 (−15% of the genomes, about 1 MB, for an entropy coder in the
+save path). Origin tags are already nearly free (0.14 MB). What does repeat
+exactly is inheritance: an egg (or a young organism) has at every locus one
+of its mother's two alleles and one of its father's, unchanged unless one of
+its ~0.3 alleles mutated. So from version 18 a genome whose parents are both
+in the world (earlier in the list, for an organism; anywhere among the
+organisms, for a clutch's eggs) is written against them
+(`genome::wire::Parents`): a byte counting the exceptions, each exception
+as allele index, value bits and origin, then one choice bit per allele whose
+parent is heterozygous at that locus (82 of 102 on average), about 11 bytes
+against about 250; any other genome, or one with more than 16 exceptions, is
+written whole as before. An organism's genome now precedes it in the
+payload, and a clutch's eggs precede it (`serde_util::organisms`,
+`serde_util::clutches`, `by_parents`); restores resolve each genome as it is
+read, and are bit-exact (the busy-world test also requires genomes by
+parents and whole ones, and `version_16_snapshots_restore_with_whole_genomes`
+an older save to restore to the same world and snapshot the same way).
+
+| `World::snapshot`, 512², scale 5 (both layouts interleaved in one process by a throwaway harness, medians of 9; 7 on day 10) | Version 16 | Version 17 | Snapshot CPU, all threads, 16 → 17 |
+| --- | --- | --- | --- |
+| Day 2, 27.0k agents, no eggs yet | 13.31 MB | 13.37 MB (+0.4%) | 155 → 162 ms |
+| Day 3, 26.4k agents, 16k eggs | 16.82 MB | **13.62 MB (−19%)** | 211 → 196 ms |
+| Day 4, 25.9k agents, 20k eggs | 17.57 MB | **13.70 MB (−22%)** | 216 → 202 ms |
+| Day 5, 25.3k agents, 21k eggs | 17.51 MB | **13.67 MB (−22%)** | 219 → 200 ms |
+| Day 10, 55.7k agents (26k with both parents in the world) | 22.73 MB | **16.55 MB (−27%)** | 262 → 281 ms |
+| 128², scale 1, day 30, 1.4k agents (half with both parents) | 0.80 MB | **0.50 MB (−37%)** | |
+
+The machine was under heavy load from other jobs (load average 20–24 on
+4 cores), so wall times swung by ±50% between repetitions; CPU time (all
+threads, and the calling thread alone) is the steadier measure, and it moved
+by −9% to +7%: the smaller payload makes LZ4 cheaper, which pays for the
+encoding against parents until most organisms are young (day 10). Restores
+took about as long (213–287 ms against 216–483 ms, medians). The 25% target
+was met only from about day 10 on and in older, smaller worlds; on day 2 there
+is nothing to refer to (founders, no eggs), and on days 3 to 5 the saving is
+19–22%: the rest of those saves is the founders' genomes (6.7 MB,
+incompressible to within 15% as above), the tiles (3.4 MB) and the rest of
+the organisms (3.4 MB). Simulation results are unchanged (the 12-seed sweep
+prints 11.76 as before).
 
 **Saved games** (`snapshot.rs` in the server): magic, the game-side state
 as JSON (player → lineage, open offers with their escrow, migration orders,
@@ -4714,7 +4775,13 @@ sections above).
    doesn't offer it; revisit when it does (states are already ~1 KB/s a
    client, so this is low priority). (Saving the map's tiles as a delta
    against an earlier save was measured and rejected: 2% off a save; see
-   *Tile deltas between saves* in [Persistence](#persistence).)
+   *Tile deltas between saves* in [Persistence](#persistence).) Saves:
+   eggs' and young organisms' genomes are now written against their
+   parents' (world snapshot 18: −19 to −22% on days 3–5 of a 512² world,
+   −27% on day 10, −37% at 128² on day 30; see *Genomes by parents*). What
+   is left is founders' values, which no dictionary shrinks (measured); an
+   entropy coder for residuals against each lineage's median would take
+   about 1 MB more off a 512² save and isn't worth its complexity. Closed.
 7. **Design-doc features not built.** Group commands as genes is built as
    the obedience gene, with a rally command (gather a group at a point for
    up to 3 days) for it to weigh beside migration and territory, and
