@@ -211,6 +211,12 @@ async fn main() {
         // filled the disk and that killed the saver thread, stopping saves.
         .log_internal_errors(false)
         .init();
+    // Every world's parallel decide and apply run on rayon's global pool
+    // (one thread per core, shared by all worlds). Name its threads so
+    // `top -H` and per-thread CPU tell them from the Tokio workers.
+    if let Err(e) = rayon::ThreadPoolBuilder::new().thread_name(|i| format!("sim-{i}")).build_global() {
+        tracing::warn!("could not set up the sim thread pool: {e}");
+    }
     let cfg = match parse_args() {
         Ok(c) => c,
         Err(e) => {

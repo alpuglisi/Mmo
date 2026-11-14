@@ -141,10 +141,30 @@ pub struct RunnerConfig {
     /// arrive (in arrival order) instead of at the next tick, so a test sees
     /// exactly the ticks it asks for and nothing races a timer.
     pub manual: bool,
+    /// Delay of this world's first tick (and so of every later tick and
+    /// sub-step) against the moment its thread starts. A process with
+    /// several worlds spreads their ticks evenly over the tick
+    /// ([`world_phase`]) so that they don't start at once and queue for the
+    /// same cores and the shared sim thread pool. Ignored in manual mode and
+    /// when running as fast as possible.
+    pub phase: Duration,
 }
 
 /// Queue depth of the request channel; a full queue answers "busy".
 pub const REQUEST_QUEUE: usize = 4096;
+
+/// [`RunnerConfig::phase`] of world `i` of `worlds` in one process: their
+/// ticks spread evenly over the tick (`tick × i / worlds`). A tick (the
+/// sim step, on the shared sim pool) costs several times a possession
+/// sub-step, so ticks get as far apart as they can; a tick may coincide
+/// with another world's sub-step. Spreading the worlds over one sub-step
+/// interval instead, so that no two events coincide, packed the ticks
+/// closer together and measured worse with 8 worlds (README, "Several
+/// worlds: capacity").
+pub fn world_phase(tick: Duration, i: usize, worlds: usize) -> Duration {
+    let worlds = worlds.max(1) as u32;
+    tick * (i as u32 % worlds) / worlds
+}
 
 pub struct Runner {
     game: Game,
@@ -236,7 +256,8 @@ impl Runner {
         // Possession sub-steps, evenly spaced between ticks (none when
         // running as fast as possible).
         let subs = if self.cfg.tick.is_zero() { 1 } else { self.game.world.config.possess_substeps.max(1) };
-        let mut next = Instant::now() + self.cfg.tick;
+        let phase = if self.cfg.tick.is_zero() { Duration::ZERO } else { self.cfg.phase.min(self.cfg.tick) };
+        let mut next = Instant::now() + self.cfg.tick + phase;
         loop {
             let start = next.checked_sub(self.cfg.tick).unwrap_or(next);
             for s in 1..subs {
@@ -588,4 +609,20 @@ impl Runner {
 
 fn ms_since(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn world_ticks_spread_over_the_tick() {
+        let tick = Duration::from_secs(1);
+        let phases: Vec<u128> = (0..4).map(|i| world_phase(tick, i, 4).as_millis()).collect();
+        assert_eq!(phases, [0, 250, 500, 750]);
+        let phases: Vec<u128> = (0..3).map(|i| world_phase(tick, i, 3).as_millis()).collect();
+        assert_eq!(phases, [0, 333, 666]);
+        assert_eq!(world_phase(tick, 0, 1), Duration::ZERO);
+        assert_eq!(world_phase(Duration::ZERO, 3, 4), Duration::ZERO);
+    }
 }

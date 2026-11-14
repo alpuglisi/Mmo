@@ -547,6 +547,7 @@ dependencies = [
  "p256",
  "png",
  "rand 0.8.8",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",

@@ -392,9 +392,14 @@ The first world is the default. `--world`/`--worlds-file` replace
 - **Each world is a full stack**: its own world thread (`world-<id>`),
   saver thread, store task, published summary, `Metrics` and `NetStats`.
   Worlds share only the Tokio runtime (HTTP and WebSocket handlers),
-  accounts and sessions, the rate limiters, the per-player connection cap
-  (8 over all worlds) and the store. Every world is loaded before any
-  starts, so a world that can't restore stops the start-up.
+  the sim thread pool (rayon's global pool, one `sim-<n>` thread per core,
+  which runs every world's parallel decide and apply), accounts and
+  sessions, the rate limiters, the per-player connection cap (8 over all
+  worlds) and the store. Every world is loaded before any starts, so a
+  world that can't restore stops the start-up. The worlds' clocks are
+  staggered: world `i` of `n` ticks `i/n` of a tick after the first
+  (`runner::world_phase`), so their ticks don't all land on the shared
+  cores at once (see [Several worlds: capacity](#several-worlds-capacity)).
 - **Choosing a world**: every per-world route takes `?world=<id>`
   (default: the first world), the WebSocket too (`/ws?token=…&world=isle`);
   an unknown id is `404 unknown_world` with the list of ids.
@@ -2547,9 +2552,9 @@ a tick, though only the possessed organism's delta goes out).
   second world costs what a second process would, without the second
   process. The p99 spread is the box's noise (one stalled sample sets a
   p99 of the 256-tick window). The 512², 500-player runs below replace the
-  4–6 cores per world above with about 2; add worlds to a process while its
-  cores have headroom, and past that run more processes (each with its own
-  world list) behind the same accounts store.
+  4–6 cores per world above with 1.5 worlds per core (6 on 4 cores); past
+  that run more processes (each with its own world list) behind the same
+  accounts store.
 
 ### Several worlds: capacity
 
@@ -2620,16 +2625,119 @@ What it shows:
   players; it buys nothing in latency at this size. Split by world size
   and community, not for performance.
 - **Recommendation (512², 25–35k organisms, 1 s ticks):** **500 players
-  per world** and **about 2 cores per world**: two 500-player worlds held
-  the clock on 4 shared cores with command p99 under 0.5 s, so 1 world per
-  2 cores is measured with margin. The mean use (0.3 cores per world)
-  suggests a dedicated box holds more, up to about 1 world per core, but
-  that is extrapolated: measure before going past 2 worlds per 4 cores.
-  Budget 0.5 GB of memory and 1.4 MB/s (11 Mbit/s) of egress per
-  500-player world with protocol 2 clients. Login storms no longer stall
-  the worlds (next section); the default hash bound (2 at once on 4 cores,
-  ~45 hashes a second) admits about 22 new players a second (a registration
-  and a login each) and makes the rest wait a few seconds.
+  per world**. This round's "about 2 cores per world" was the shared box's
+  limit, not the server's: on a quiet box, with the worlds' clocks
+  staggered, one process holds **6 worlds per 4 cores** with every latency
+  at its floor, and 8 per 4 cores is where it stops scaling (see
+  [Three to eight worlds](#three-to-eight-worlds-where-one-process-stops-scaling)
+  for the measurements and the rule of thumb). Budget 0.5 GB of memory and
+  1.4 MB/s (11 Mbit/s) of egress per 500-player world with protocol 2
+  clients. Login storms no longer stall the worlds (below); the default
+  hash bound (2 at once on 4 cores, ~45 hashes a second) admits about 22
+  new players a second (a registration and a login each) and makes the
+  rest wait a few seconds.
+
+#### Three to eight worlds: where one process stops scaling
+
+1, 2, 3, 4, 6 and 8 worlds of 500 players each in one process
+(`loadgen --worlds N --players 500N`, ramp at 12.5 registrations a second,
+150 s after the ramp), 512² worlds warmed to 22k organisms (1–4 worlds:
+one 4-world warm-up; 6 and 8: an 8-world warm-up, 22–27k), growing to
+34–36k (36–42k with 6 and 8) during the run; 1 s ticks, 1 s states,
+protocol 2. This time the 4-core box was **quiet**: nothing else ran
+(load average under 0.5 before the first run), except the load generator
+itself, which used 0.15 cores per 500 players on the same cores. Per-world
+values are the medians of the 10 s reports after the ramp; where worlds
+differ, the range over the worlds. Per-thread CPU comes from sampling
+`/proc/<pid>/task` (the sim pool's threads are now named `sim-<n>`).
+
+| Worlds × 500 players | 1 | 2 | 3 | 4 | 6 | 8 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Ticks per second (target 1), before / after | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 / **0.99–1.0** |
+| Tick p50 / p99 (ms), clocks aligned (before) | 36 / 58 | 61 / 89 | 87–90 / 121–128 | 108–115 / 163–179 | 183–204 / 368–383 | 253–328 / 533–592 |
+| Tick p50 / p99 (ms), staggered (after) | 36 / 58 | 47–48 / 63–71 | 41–46 / 64–79 | 59–77 / 100–114 | 51–53 / 73–119 | 86–94 / 300–433 |
+| State push p99 (ms), before / after | 18 | 29–33 / 18–20 | 37–39 / 21–22 | 38–43 / 20–27 | 55–60 / 21–36 | 62–80 / 56–83 |
+| Command → result p99 (ms), before / after | 249 | 250 / 249 | 251 / 250 | 251–257 / 250–257 | 365–387 / 253–255 | 655–726 / 378–508 |
+| Skipped state frames, before / after | 0 | 0 / 0 | 0 / 0 | 0 / 0 | **8,691** / 0 | **30,050** / 252–1,236 |
+| Server CPU (cores), whole process | 0.27 | 0.54 | 0.81–0.90 | 1.07–1.20 | 1.66–1.69 | 2.23–2.30 |
+| … world threads / sim pool / Tokio (before) | 0.10 / 0.08 / 0.09 | 0.20 / 0.17 / 0.17 | 0.30 / 0.26 / 0.25 | 0.40 / 0.34 / 0.32 | 0.62 / 0.53 / 0.45 | 0.87 / 0.76 / 0.62 |
+| Load generator CPU (cores) | 0.15 | 0.30 | 0.43–0.52 | 0.55–0.60 | 0.85–0.92 | 1.09–1.16 |
+| Load average (1 min) at the end, after | 0.2 | 0.2 | 2.8 | 1.7–6.8 | 5.4 | 10.3 |
+| RSS, all players on / max (MB) | 398 / 429 | 663–679 / 776–790 | 972–1,007 / 1,140–1,182 | 1,327–1,460 / 1,574–1,639 | 2,009–2,081 / 2,291–2,348 | 2,739–3,029 / 3,118–3,229 |
+| Outbound, all worlds (MB/s) | 1.35 | 2.7 | 4.15 | 5.6–5.7 | 8.7 | 11.7–12.0 |
+
+"Before" is this branch's server with every world's clock started at the
+same moment (as before); "after" staggers them (below). Both runs of a
+column share the warm-up. 4 and 8 worlds "after" were run twice (with the
+first and final build of the change); the ranges cover both. Dropped
+connections and panics were 0 in every run; command p50 was 135–177 ms
+(its floor, half a sub-step, plus the round trip) throughout.
+
+What it found:
+
+- **The worlds' clocks were a serialization point.** With the clocks
+  aligned, each world added 25–35 ms to *every* world's tick (p50 36, 61,
+  88, 110, 195, 290 ms for 1–8 worlds) while the process used a quarter to
+  a half of the cores. Every world thread starts its clock when it is
+  spawned, and they are spawned together, so all worlds ticked in the same
+  millisecond, every second: their parallel decide and apply phases queued
+  in the one sim pool (rayon's global pool runs the work a thread injects
+  mostly after the work already in it, so the worlds' parallel phases ran
+  nearly one after the other) and their sequential parts queued for the
+  cores beside them. The mean load was low; the burst once a second was
+  not. At 6 worlds the burst held state pushes long enough to skip 8.7k
+  state frames, at 8 worlds 30k, and command p99 rose to 0.4 and 0.7 s.
+- **Fix: staggered clocks.** World `i` of `n` now starts its clock `i/n` of
+  a tick later (`RunnerConfig::phase`, `runner::world_phase`), so ticks
+  land on the shared cores one at a time. Tick p50 with 6 worlds fell from
+  ~195 to ~52 ms, p99 from ~375 to 73–119 ms, command p99 back to its
+  floor (255 ms) and skipped states to 0; with 2–6 worlds every latency is
+  within a few ms of its single-world value. Nothing in the sim changed:
+  only when, in wall time, each world ticks (sim results are bit-identical).
+  Two alternatives measured worse and were not kept: spreading the worlds
+  over one sub-step interval (250 ms) so that no tick met another world's
+  sub-step put the ticks closer together (8 worlds: tick p50 100–260 ms);
+  a rayon pool per world (each world thread `install`ed in its own
+  4-thread pool) was slower with 4 worlds (tick p50 72–84 against 66–77,
+  p99 119–134 against 110–114) at the same CPU and cost 460 MB more RSS
+  (per-thread route buffers and allocator arenas), and with 8 worlds traded
+  a lower tick p99 (228–270 ms) for a higher p50 (93–104) and command p99
+  (410–429 against 378–396 ms). The shared pool is not the bottleneck once
+  the ticks don't coincide.
+- **Where it stops: 8 worlds on 4 cores.** With 8 worlds the process used
+  2.3 cores and the load generator 1.2, 3.5 of 4 cores on average and all
+  of them in bursts (load average ~10; the sim threads waited 1.6–1.7 s
+  per second for a core, against 0.4–0.6 s with 4–6 worlds): ticks held
+  (0.99–1.0 per second) but tick p99 rose to 300–430 ms, command p99 to
+  380–500 ms and a few hundred state frames were skipped. That is CPU saturation; no lock
+  or shared thread shows in the profile (the world threads use 0.10–0.12
+  cores each at every N, the Tokio runtime's 4 workers 0.08 cores per
+  world, the store and saver threads next to nothing).
+- **Cost per world is flat.** CPU 0.27–0.29 cores per 500-player world
+  (world thread 0.10, sim pool 0.09, network 0.08), RSS 0.39 GB per world
+  plus ~50 MB, egress 1.4–1.5 MB/s per world (2.8–3 KB/s per client) at
+  every N.
+
+**Capacity rule of thumb** (512², 500 heavy players and 30–40k organisms
+per world, 1 s ticks, protocol 2 clients):
+
+- **CPU:** 0.3 cores per world on average, but the work comes in bursts
+  (a tick, three sub-steps and a push per second per world), so keep the
+  process's mean below about 60% of its cores: **1.5 worlds per core**
+  (6 worlds on 4 cores measured with every latency at its floor, with the
+  load generator's 0.9 cores on the same box). A dedicated 4-core box
+  would likely hold 8 (2.3 cores without the load generator), unmeasured.
+- **Memory:** 0.4 GB per world measured, **budget 0.5 GB** (save copies,
+  growth to 40k+ organisms) plus 0.1 GB for the process.
+- **Bandwidth:** **1.5 MB/s (12 Mbit/s) per world** of egress; a 100 Mbit/s
+  link carries 8 worlds, a 1 Gbit/s link any box's CPU limit.
+- **Worlds per process:** **at most 1.5 per core, 6 on a 4-core box**; past
+  that, run another process (or box) with its own world list behind the
+  same store. The sim pool and the Tokio runtime both size themselves to
+  the cores, and nothing else is shared per world, so a bigger box should
+  scale with its cores; only 4 cores were measured. Worlds with fewer
+  players should cost less network CPU (0.08 of the 0.28 cores) but about
+  the same sim time; unmeasured.
 
 #### Login bursts with bounded hashing
 
@@ -3909,13 +4017,17 @@ sections above).
    (see [Push notifications](#push-notifications)). What remains is native
    push in the Capacitor apps through FCM (Android) and APNs (iOS), and
    trying Web Push from an iOS home-screen web app on a real device.
-3. **Capacity with several worlds.** Measured up to two 512² worlds of
-   500 players in one process on a shared 4-core box (see [Several worlds:
-   capacity](#several-worlds-capacity)): a second world costs what the
-   first did, nothing serializes them, and about 2 cores per 500-player
-   world holds the clock. Still open: where one process stops scaling (3+
-   worlds, on dedicated cores, where the measured 0.3 cores per world
-   suggests up to one world per core).
+3. **Capacity with several worlds.** Measured 1–8 512² worlds of 500
+   players in one process on a quiet 4-core box (see [Three to eight
+   worlds](#three-to-eight-worlds-where-one-process-stops-scaling)): the
+   worlds' aligned clocks were the one serialization point (each world
+   added 25–35 ms to every world's tick) and are now staggered; after that
+   6 worlds hold every latency at its floor and 8 saturate the box (tick
+   p99 0.3–0.4 s, command p99 0.4–0.5 s). Rule of thumb: 0.3 cores, 0.5 GB
+   and 1.5 MB/s per world, at most 1.5 worlds per core. Still open: the
+   same runs on a bigger dedicated box (8–16 cores, load generator on
+   another machine) to check that a process scales with its cores, and a
+   long soak with 6 worlds.
 4. **Birth-mode balance watch.** Against the target in
    *Thermoregulation × birth mode* ([Balance](#balance): no class above
    about 30–32% of tournament wins on fresh seeds) the classes now span

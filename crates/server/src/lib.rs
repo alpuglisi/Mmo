@@ -147,6 +147,7 @@ impl Default for ServerConfig {
                 tick: Duration::from_secs(1),
                 state_interval: Duration::from_secs(1),
                 manual: false,
+                phase: Duration::ZERO,
             },
             game: GameConfig::default(),
             static_dir: None,
@@ -162,8 +163,12 @@ impl Default for ServerConfig {
 impl ServerConfig {
     /// Fast mode for tests and demos: 20 ms ticks, state 10 times a second.
     pub fn fast(mut self) -> Self {
-        self.runner =
-            RunnerConfig { tick: Duration::from_millis(20), state_interval: Duration::from_millis(100), manual: false };
+        self.runner = RunnerConfig {
+            tick: Duration::from_millis(20),
+            state_interval: Duration::from_millis(100),
+            manual: false,
+            phase: Duration::ZERO,
+        };
         self
     }
 
@@ -294,9 +299,17 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
 
     let mut handles = Vec::new();
     let mut running = Vec::new();
-    for (spec, wstore, game) in games {
+    let n_worlds = games.len();
+    for (i, (spec, wstore, game)) in games.into_iter().enumerate() {
         let map_id: Arc<str> = game.world_id().into();
-        let (mut runner, h) = Runner::new(game, cfg.runner.clone());
+        // Spread the worlds' ticks evenly over the tick (see
+        // `RunnerConfig::phase`). Started together, every world ticked in
+        // the same instant and they queued for the cores and the shared sim
+        // pool: each world's tick grew by ~25 ms per world in the process
+        // (see "Several worlds: capacity" in the README).
+        let phase = runner::world_phase(cfg.runner.tick, i, n_worlds);
+        let rcfg = RunnerConfig { phase, ..cfg.runner.clone() };
+        let (mut runner, h) = Runner::new(game, rcfg);
         if let Some(p) = &push {
             runner.set_notifier(p.notifier(&spec.id, &spec.display_name()));
         }

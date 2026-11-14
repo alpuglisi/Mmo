@@ -30,6 +30,8 @@ p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
 rand.workspace = true
+# The sim's parallel phases run on rayon's global pool (`main` sets it up).
+rayon.workspace = true
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 # Runtime-checked queries only (no `macros`): builds need no database.
