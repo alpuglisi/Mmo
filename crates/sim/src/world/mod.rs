@@ -848,6 +848,7 @@ impl World {
         }
         if self.tick.is_multiple_of(self.config.ticks_per_hour()) {
             self.hourly();
+            self.refresh_home_ranges();
         }
         self.environment_slice();
         self.phase_times.environment += lap();

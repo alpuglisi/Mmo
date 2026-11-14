@@ -243,6 +243,8 @@ export interface GroupView {
   claim_ready_tick?: number;
   /** Mean obedience gene of its members (0–1; absent from older servers): how strongly it heeds orders. */
   obedience?: number;
+  /** Its territory is the player's home range, shielded while they are offline (absent: no). */
+  home_range?: boolean;
 }
 
 /** Someone else's organism inside the view window: only what can be seen. */

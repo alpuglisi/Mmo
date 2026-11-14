@@ -29,7 +29,7 @@ USAGE:
                    [--screen-days D,..] [--screen-seeds N] [--eta F] [--migrants]
     evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--set NAME=V ..] [--migrant-gene GENE=V ..]
                     [vs [defaults | --set NAME=V .. | --migrant-gene GENE=V ..]]
-                    [--adaptive] [--max-seeds N] [--batch N] [--tolerance F]
+                    [--adaptive] [--max-seeds N] [--batch N] [--tolerance F] [--offline-owner P ..]
     evo-sim rankcheck [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--spread F] [--screen-days D,..] [--eta F] [--out PATH]
                       [--from PATH]
     evo-sim designs
@@ -79,6 +79,12 @@ OPTIONS:
                     (5% overall), so the printed interval is wider than a one-shot CI
     --max-seeds N   Compare: seed cap for --adaptive (default 48; implies --adaptive)
     --batch N       Compare: seeds added per look (default --seeds)
+    --offline-owner P  Compare: player P (1-4, the sample lineages in `designs` order) claims a
+                    territory for its main group around its founders on day 0 and stays
+                    logged off for the whole run, on both sides: its lineage gets the
+                    surviving-core offline protection and its territory is its shielded
+                    home range (repeatable). Measure the home range with
+                    `--offline-owner P vs --offline-owner P --set home_range_predation=1`
     --tolerance F   Compare: equivalence margin in score points; stop when the whole
                     sequential CI lies within ±F (default 0.3; 0 turns it off)
     vs              Compare: the --set flags after it configure B; before it, A.
@@ -119,6 +125,7 @@ sentry_vigilance sentry_cost communal_den group_navigation shared_cache molt_cos
 coat_insulation breeding_window timed_conception breeding_recklessness courtship_caution
 brood_recovery egg_overheat brood_warmth brood_cost threat_caution alert_guard pasture_search
 search_image cold_gestation nest_predation tameness migration_onset possess_urgency possess_danger
+home_range_predation home_range_residents offline_stack_floor
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
 juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump
@@ -163,6 +170,8 @@ struct Args {
     tolerance: f64,
     /// Rankcheck: re-analyze this `--out` CSV.
     from: Option<String>,
+    /// Compare: `--offline-owner` players (both sides).
+    offline: Vec<PlayerId>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -201,6 +210,7 @@ fn parse_args() -> Result<Args, String> {
         batch: None,
         tolerance: 0.3,
         from: None,
+        offline: Vec::new(),
     };
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or(format!("{flag} needs a value"));
@@ -251,6 +261,16 @@ fn parse_args() -> Result<Args, String> {
                 a.adaptive = true;
             }
             "--batch" => a.batch = Some(num(value()?)?.max(1)),
+            "--offline-owner" => {
+                let p = num(value()?)?;
+                let players = presets::player_designs().len() as u64;
+                if !(1..=players).contains(&p) {
+                    return Err(format!("--offline-owner: player {p} is not one of 1..={players}"));
+                }
+                if !a.offline.contains(&(p as PlayerId)) {
+                    a.offline.push(p as PlayerId);
+                }
+            }
             "--tolerance" => {
                 let v = value()?;
                 a.tolerance = v.parse().map_err(|_| format!("--tolerance: '{v}' is not a number"))?;
@@ -364,6 +384,7 @@ fn main() -> ExitCode {
                 parallel_apply: !args.sequential_apply,
                 migrants: args.migrants,
                 migrant_genes: args.migrant_genes.clone(),
+                offline: args.offline.clone(),
                 adaptive: args.adaptive.then(|| adaptive::AdaptiveArgs {
                     initial: seeds,
                     batch: args.batch.unwrap_or(seeds),

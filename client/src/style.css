@@ -108,6 +108,9 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .group-select { padding: 0.3em 0.4em; max-width: 13em; }
 .group-card { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; }
 .group-card.chosen { border-color: var(--accent); }
+.home-badge { font-size: 0.75em; padding: 0 6px; border-radius: 8px; border: 1px solid #e3b341; color: #e3b341; margin-left: 4px; white-space: nowrap; }
+.group-card .home-range { margin: 2px 0 4px; }
+.legend .dot.home-ring { border-color: #e3b341; border-style: double; border-width: 3px; }
 .group-actions { margin-top: 4px; gap: 4px; }
 .group-actions button { padding: 0.2em 0.6em; }
 .hint { position: absolute; bottom: 10px; left: 10px; background: rgba(13, 17, 23, 0.8); padding: 4px 10px; border-radius: 6px; color: var(--muted); pointer-events: none; }

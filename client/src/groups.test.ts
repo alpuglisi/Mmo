@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canSplit, claimWait, clearMigrationMsg, groupName, groupObedience, groupOptions, groupOrders, groupsOf, memberCounts, migrateMsg, parseChoice, rallyLeft, rallyMsg,
+  canSplit, claimWait, clearMigrationMsg, groupName, groupObedience, groupOptions, groupOrders, groupsOf, homeRangeGroup, homeRangeNote, memberCounts, migrateMsg, parseChoice, rallyLeft, rallyMsg,
   targetGroup, territoryRadius, territoryTap, validChoice, TERRITORY_MIN_RADIUS,
 } from './groups';
 import type { GroupView, OwnOrganism, StateView } from './protocol';
@@ -91,5 +91,18 @@ describe('groups', () => {
     expect(canSplit(g(0), [g(0)])).toBe(true);
     expect(canSplit(g(0, { members: 1 }), [g(0)])).toBe(false);
     expect(canSplit(g(0), [g(0), g(1), g(2), g(3)])).toBe(false);
+  });
+
+  it('names the home range: the territory shielded while the player is offline', () => {
+    const territory = { x: 10, y: 12, radius: 6, claimed_tick: 3 };
+    const home = g(1, { territory, home_range: true });
+    expect(homeRangeGroup([g(0, { territory }), home])).toBe(home);
+    expect(homeRangeGroup([g(0, { territory })])).toBeNull();
+    // A flag without a territory (an older or inconsistent state) shows nothing.
+    expect(homeRangeGroup([g(0, { home_range: true })])).toBeNull();
+    expect(homeRangeNote(home)).toMatch(/^Home range: when you log off, members inside this territory are hunted less/);
+    expect(homeRangeNote(home)).toContain('Hunger and thirst still bite');
+    expect(homeRangeNote(g(0, { territory }))).toBe('');
+    expect(homeRangeNote(g(0, { home_range: true }))).toBe('');
   });
 });

@@ -1,33 +1,74 @@
 //! Offline protection, the game side: who is logged out and since when.
 //!
-//! The rules themselves are in the simulation (`evo_sim::world::offline`):
-//! a protected lineage at or below its floor (12 living members) is hunted
-//! with a quarter of the usual kill chance and takes half the starvation and
-//! thirst damage. This module decides which lineages are protected:
+//! The rules themselves are in the simulation (`evo_sim::world::offline`).
+//! Two forms run side by side:
 //!
-//! - A player's lineage is protected from the moment their last connection
-//!   to this world closes (or the server restarts) until they connect again
-//!   or [`GameConfig::offline_protection_ticks`] ticks have passed (12 hours
-//!   at the default 1 s tick), whichever comes first. A spell's clock is
-//!   saved, so a restart doesn't give a fresh one.
+//! - **Surviving core**: a protected lineage at or below its floor (12
+//!   living members) is hunted with a quarter of the usual kill chance and
+//!   takes half the starvation and thirst damage.
+//! - **Home range**: the territory one of the player's groups claimed
+//!   before they logged off shields the group's members inside it: a strike
+//!   that would kill one succeeds with half its usual chance, the softening
+//!   shared out once more than 20 are inside. Predation only.
+//!
+//! This module decides who is protected, and when:
+//!
+//! - A player's spell runs from the moment their last connection to this
+//!   world closes (or the server restarts) until they connect again. A
+//!   spell's clock is saved, so a restart doesn't give a fresh one.
+//! - The surviving core applies for the first
+//!   [`GameConfig::offline_protection_ticks`] ticks of a spell (12 hours at
+//!   the default 1 s tick).
+//! - The home range is picked at logout: the territory held by the
+//!   player's group with the most members (ties to the lower group id), so
+//!   one per player, claimed before logging off. It applies from
+//!   [`GameConfig::home_range_onset_ticks`] after logout (10 minutes: logging
+//!   off can't be used to slip out of a fight), at full strength until
+//!   [`GameConfig::home_range_ticks`] (12 hours), then fades linearly to
+//!   nothing over [`GameConfig::home_range_fade_ticks`] (24 hours more), in
+//!   steps of 5%. It ends early if the territory is abandoned or replaced.
 //! - Organisms in an open directed-mating agreement (either side, pending or
 //!   accepted), listed on the marketplace, or offered as a bidder's organism
-//!   on an auction are exempt: the trip and the trade carry risk by design.
+//!   on an auction are exempt from both: the trip and the trade carry risk
+//!   by design.
 //! - On login, a player whose lineage was actually shielded (it was small
-//!   enough for protection to apply) gets an alert saying for how long.
+//!   enough for the surviving core to apply, or its home range had residents)
+//!   gets an alert saying for how long.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use evo_sim::world::groups::GroupInfo;
+use evo_sim::world::offline::HomeRange;
 use evo_sim::PlayerId;
 use serde::{Deserialize, Serialize};
 
-use super::{AlertKind, Game, OrgId, Outbox};
+use super::{AlertKind, Game, GroupView, OrgId, Outbox};
 
 /// Default length of a protection spell in hours (`--offline-protection-hours`).
 pub const DEFAULT_PROTECTION_HOURS: f64 = 12.0;
 /// [`DEFAULT_PROTECTION_HOURS`] in ticks at 1 tick per second (the
 /// `GameConfig` default; the server binary converts the hours at its clock).
 pub const DEFAULT_PROTECTION_TICKS: u64 = 12 * 3600;
+/// Default hours a home range shields at full strength (`--home-range-hours`;
+/// it then fades over twice as long).
+pub const DEFAULT_HOME_RANGE_HOURS: f64 = 12.0;
+/// Minutes offline before the home range applies.
+pub const HOME_RANGE_ONSET_MINUTES: f64 = 10.0;
+/// The home range's timings in ticks at 1 tick per second.
+pub const DEFAULT_HOME_RANGE_TICKS: u64 = 12 * 3600;
+pub const DEFAULT_HOME_RANGE_ONSET_TICKS: u64 = 10 * 60;
+pub const DEFAULT_HOME_RANGE_FADE_TICKS: u64 = 24 * 3600;
+/// Steps in which a fading home range loses strength (5% each), so the world
+/// is told of a change at most this many times in a fade.
+const FADE_STEPS: f32 = 20.0;
+
+/// The territory a spell shields: the group holding it and when it was
+/// claimed (a later claim is another territory, not shielded).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeClaim {
+    pub group: u8,
+    pub claimed_tick: u64,
+}
 
 /// One logged-out stretch of a player's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,8 +78,16 @@ pub struct Spell {
     /// Ticks the protection actually applied (the lineage was at or below
     /// the floor).
     pub engaged: u64,
-    /// The cap ran out; kept only to report on the next login.
+    /// The surviving core's cap ran out; kept only to report on the next
+    /// login (the home range may still apply).
     pub over: bool,
+    /// The home range picked at logout (absent: none was held, or saved
+    /// before home ranges).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<HomeClaim>,
+    /// Ticks the home range applied with residents inside it.
+    #[serde(default)]
+    pub home_engaged: u64,
 }
 
 /// Offline players' protection spells. Saved with the game.
@@ -49,6 +98,8 @@ pub struct OfflineTracker {
     /// What the world was last given, to skip unchanged updates.
     #[serde(skip)]
     sent: Option<(BTreeSet<u32>, BTreeSet<OrgId>)>,
+    #[serde(skip)]
+    sent_ranges: Option<Vec<HomeRange>>,
 }
 
 impl OfflineTracker {
@@ -58,13 +109,65 @@ impl OfflineTracker {
     }
 }
 
+/// The group whose territory would be shielded: of the groups holding a
+/// territory, the one with the most members (ties to the lower id).
+pub fn home_group(groups: &[GroupInfo]) -> Option<u8> {
+    groups
+        .iter()
+        .filter(|g| g.territory.is_some() && g.members > 0)
+        .max_by_key(|g| (g.members, std::cmp::Reverse(g.id)))
+        .map(|g| g.id)
+}
+
 impl Game {
+    /// A player's groups as sent in a state, the home range marked.
+    pub(super) fn group_views(&self, groups: &[GroupInfo]) -> Vec<GroupView> {
+        let home = if self.home_ranges_on() { home_group(groups) } else { None };
+        (groups.iter()).map(|g| GroupView { home_range: home == Some(g.id), ..GroupView::from(g) }).collect()
+    }
+
+    /// Whether home ranges are on (`GameConfig::home_range_ticks`).
+    pub(super) fn home_ranges_on(&self) -> bool {
+        self.cfg.home_range_ticks > 0
+    }
+
+    /// The home range `player` would have if they logged off now.
+    fn home_claim(&self, player: PlayerId) -> Option<HomeClaim> {
+        if !self.home_ranges_on() {
+            return None;
+        }
+        let group = home_group(&self.world.groups(player))?;
+        let t = self.world.territory(player, group)?;
+        Some(HomeClaim { group, claimed_tick: t.claimed_tick })
+    }
+
+    /// Strength of `spell`'s home range at `tick`: 0 before the onset, 1
+    /// until `home_range_ticks`, then fading to 0 (in 5% steps).
+    fn home_strength(&self, spell: &Spell, tick: u64) -> f32 {
+        let c = &self.cfg;
+        if spell.home.is_none() || c.home_range_ticks == 0 {
+            return 0.0;
+        }
+        let t = tick.saturating_sub(spell.start);
+        if t < c.home_range_onset_ticks {
+            0.0
+        } else if t < c.home_range_ticks {
+            1.0
+        } else if c.home_range_fade_ticks == 0 {
+            0.0
+        } else {
+            let left = 1.0 - (t - c.home_range_ticks) as f64 / c.home_range_fade_ticks as f64;
+            ((left.max(0.0) as f32) * FADE_STEPS).ceil() / FADE_STEPS
+        }
+    }
+
     /// `player`'s last connection closed: start their spell (an existing
-    /// one, from before a restart, keeps its clock).
+    /// one, from before a restart, keeps its clock and home range).
     pub(super) fn offline_logout(&mut self, player: PlayerId) {
-        if self.lineage_of.contains_key(&player) && self.cfg.offline_protection_ticks > 0 {
+        if self.lineage_of.contains_key(&player) && (self.cfg.offline_protection_ticks > 0 || self.home_ranges_on()) {
             let start = self.world.tick();
-            self.offline.spells.entry(player).or_insert(Spell { start, ..Spell::default() });
+            let home = self.home_claim(player);
+            self.offline.spells.entry(player).or_insert(Spell { start, home, ..Spell::default() });
         }
         self.sync_offline_protection();
     }
@@ -74,15 +177,30 @@ impl Game {
     pub(super) fn offline_login(&mut self, player: PlayerId, out: &mut Outbox) {
         let Some(spell) = self.offline.spells.remove(&player) else { return };
         self.sync_offline_protection();
-        if spell.engaged == 0 {
+        let tpd = self.world.config.ticks_per_day.max(1) as u64;
+        let days = |ticks: u64| {
+            let d = ticks.div_ceil(tpd);
+            format!("{d} simulated day{}", if d == 1 { "" } else { "s" })
+        };
+        let mut parts = Vec::new();
+        if spell.engaged > 0 {
+            parts.push(format!(
+                "offline protection shielded your small lineage for {} \
+                 (fewer kills by hunters, half the starvation and thirst damage)",
+                days(spell.engaged)
+            ));
+        }
+        if let (Some(home), true) = (spell.home, spell.home_engaged > 0) {
+            parts.push(format!(
+                "your home range (group {}'s territory) kept hunters off the members inside it for {}",
+                (b'A' + home.group) as char,
+                days(spell.home_engaged)
+            ));
+        }
+        if parts.is_empty() {
             return;
         }
-        let days = spell.engaged.div_ceil(self.world.config.ticks_per_day.max(1) as u64);
-        let text = format!(
-            "While you were away, offline protection shielded your small lineage for {days} simulated day{} \
-             (fewer kills by hunters, half the starvation and thirst damage).",
-            if days == 1 { "" } else { "s" }
-        );
+        let text = format!("While you were away, {}.", parts.join("; and "));
         self.alert(player, AlertKind::Milestone, text, None, out);
     }
 
@@ -100,28 +218,61 @@ impl Game {
     }
 
     /// Once per tick: count ticks the protection applied, end spells that
-    /// ran out, and give the world the protected lineages and the exempt
-    /// organisms if they changed.
+    /// ran out, and give the world the protected lineages, the exempt
+    /// organisms and the home ranges if they changed.
     pub(super) fn offline_after_tick(&mut self) {
         let (tick, cap) = (self.world.tick(), self.cfg.offline_protection_ticks);
-        for (p, s) in self.offline.spells.iter_mut().filter(|(_, s)| !s.over) {
-            if tick.saturating_sub(s.start) >= cap {
-                s.over = true;
-            } else if self.lineage_of.get(p).is_some_and(|&l| self.world.offline_protection().engaged(l)) {
-                s.engaged += 1;
+        let p = self.world.offline_protection();
+        for (player, s) in self.offline.spells.iter_mut() {
+            if !s.over {
+                if tick.saturating_sub(s.start) >= cap {
+                    s.over = true;
+                } else if self.lineage_of.get(player).is_some_and(|&l| p.engaged(l)) {
+                    s.engaged += 1;
+                }
+            }
+            if s.home.is_some() && p.shielded(*player) > 0 {
+                s.home_engaged += 1;
             }
         }
         self.sync_offline_protection();
     }
 
-    /// Hand the world the lineages of running spells and the organisms in
-    /// open agreements or on the market, when either changed.
+    /// The home ranges of running spells: those past the onset and not yet
+    /// faded, whose territory still stands as it was claimed.
+    fn home_ranges(&self) -> Vec<HomeRange> {
+        let tick = self.world.tick();
+        (self.offline.spells.iter())
+            .filter_map(|(&owner, s)| {
+                let home = s.home?;
+                let strength = self.home_strength(s, tick);
+                let t = self.world.territory(owner, home.group).filter(|t| t.claimed_tick == home.claimed_tick)?;
+                let &lineage = self.lineage_of.get(&owner)?;
+                (strength > 0.0).then_some(HomeRange {
+                    owner,
+                    lineage,
+                    group: home.group,
+                    center: t.center,
+                    radius: t.radius,
+                    strength,
+                })
+            })
+            .collect()
+    }
+
+    /// Hand the world the lineages of running spells, the organisms in open
+    /// agreements or on the market, and the home ranges, when any changed.
     fn sync_offline_protection(&mut self) {
-        let lineages: BTreeSet<u32> = (self.offline.spells.iter())
-            .filter(|(_, s)| !s.over)
-            .filter_map(|(p, _)| self.lineage_of.get(p).copied())
-            .collect();
-        let exempt: BTreeSet<OrgId> = if lineages.is_empty() {
+        let lineages: BTreeSet<u32> = if self.cfg.offline_protection_ticks == 0 {
+            BTreeSet::new()
+        } else {
+            (self.offline.spells.iter())
+                .filter(|(_, s)| !s.over)
+                .filter_map(|(p, _)| self.lineage_of.get(p).copied())
+                .collect()
+        };
+        let ranges = self.home_ranges();
+        let exempt: BTreeSet<OrgId> = if lineages.is_empty() && ranges.is_empty() {
             BTreeSet::new()
         } else {
             let offers = self.offers.values().filter(|o| o.status.is_open()).flat_map(|o| [o.mine, o.partner]);
@@ -131,12 +282,15 @@ impl Game {
             offers.chain(listed).collect()
         };
         let next = (lineages, exempt);
-        if self.offline.sent.as_ref() == Some(&next) {
-            return;
+        if self.offline.sent.as_ref() != Some(&next) {
+            let (lineages, exempt) = next.clone();
+            self.world.set_offline_protection(lineages, exempt.into_iter().collect::<HashSet<_>>());
+            self.offline.sent = Some(next);
         }
-        let (lineages, exempt) = next.clone();
-        self.world.set_offline_protection(lineages, exempt.into_iter().collect::<HashSet<_>>());
-        self.offline.sent = Some(next);
+        if self.offline.sent_ranges.as_ref() != Some(&ranges) {
+            self.world.set_home_ranges(ranges.clone());
+            self.offline.sent_ranges = Some(ranges);
+        }
     }
 }
 
@@ -242,5 +396,132 @@ mod tests {
         assert_eq!(r.offline.spells()[&1].start, started, "Ann's spell keeps its clock");
         assert_eq!(r.offline.spells()[&2].start, r.world.tick(), "Bob was online: his spell starts now");
         assert_eq!(protected(&r).len(), 2);
+    }
+
+    /// Ann's game with home ranges from 5 ticks after logout, full until 20,
+    /// faded out at 40, and the surviving core off (so only the home range
+    /// acts); her main group holds a territory around its founders.
+    fn home_game() -> (Game, u32) {
+        let (mut g, a, _) = game(0);
+        g.cfg.home_range_onset_ticks = 5;
+        g.cfg.home_range_ticks = 20;
+        g.cfg.home_range_fade_ticks = 20;
+        let center = g.world.organism(a[0]).unwrap().pos;
+        g.world.claim_territory(1, 0, center, 6.0).unwrap();
+        let l = g.lineage_of(1).unwrap();
+        (g, l)
+    }
+
+    fn ranges(g: &Game) -> Vec<evo_sim::world::offline::HomeRange> {
+        g.world.offline_protection().home_ranges().to_vec()
+    }
+
+    fn told_home(out: &Outbox) -> bool {
+        out.iter().any(|(_, m)| matches!(m, ServerMsg::Alert { alert } if alert.text.contains("home range")))
+    }
+
+    #[test]
+    fn the_home_range_applies_after_the_onset_and_fades() {
+        let (mut g, l) = home_game();
+        let t = g.world.territory(1, 0).unwrap();
+        // Online, the territory is marked as the home range on the group card.
+        let s = g.state_for(10).unwrap();
+        assert!(s.groups.iter().any(|x| x.id == 0 && x.home_range));
+        g.disconnect(10);
+        let spell = g.offline.spells()[&1];
+        assert_eq!(spell.home, Some(HomeClaim { group: 0, claimed_tick: t.claimed_tick }));
+        assert!(protected(&g).is_empty(), "the surviving core is off");
+        assert!(ranges(&g).is_empty(), "not before the onset");
+        for _ in 0..5 {
+            tick(&mut g);
+        }
+        let r = ranges(&g);
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].owner, r[0].lineage, r[0].group, r[0].strength), (1, l, 0, 1.0));
+        assert_eq!((r[0].center, r[0].radius), (t.center, t.radius));
+        assert!(g.world.offline_protection().shielded(1) > 0, "founders inside their territory");
+        for _ in 0..25 {
+            tick(&mut g);
+        }
+        // Ten ticks into a twenty-tick fade.
+        assert_eq!(ranges(&g)[0].strength, 0.5);
+        for _ in 0..10 {
+            tick(&mut g);
+        }
+        assert!(ranges(&g).is_empty(), "faded out");
+        let engaged = g.offline.spells()[&1].home_engaged;
+        assert!((30..=35).contains(&engaged), "{engaged} ticks shielded");
+        // Back online: Ann hears what it did.
+        let out = g.connect(12, 1, "ann");
+        assert!(told_home(&out));
+        assert!(ranges(&g).is_empty());
+    }
+
+    #[test]
+    fn only_a_territory_held_at_logout_is_shielded() {
+        // No territory at logout: none later.
+        let (mut g, a, _) = game(0);
+        g.cfg.home_range_onset_ticks = 0;
+        g.disconnect(10);
+        assert_eq!(g.offline.spells()[&1].home, None);
+        let center = g.world.organism(a[0]).unwrap().pos;
+        g.world.claim_territory(1, 0, center, 6.0).unwrap();
+        tick(&mut g);
+        assert!(ranges(&g).is_empty(), "claimed after logout");
+        // Abandoned (or replaced) after logout: the shield ends.
+        let (mut g, _) = home_game();
+        g.cfg.home_range_onset_ticks = 0;
+        g.disconnect(10);
+        tick(&mut g);
+        assert_eq!(ranges(&g).len(), 1);
+        g.world.abandon_territory(1, 0).unwrap();
+        tick(&mut g);
+        assert!(ranges(&g).is_empty(), "abandoned");
+        assert_eq!(g.world.offline_protection().shielded(1), 0);
+    }
+
+    #[test]
+    fn the_largest_group_holding_a_territory_is_the_home_range() {
+        let info = |id: u8, members: usize, held: bool| evo_sim::world::groups::GroupInfo {
+            id,
+            members,
+            adults: members,
+            migration: None,
+            territory: held.then_some(evo_sim::world::groups::Territory {
+                center: Vec2::ZERO,
+                radius: 4.0,
+                claimed_tick: 0,
+            }),
+            rally: None,
+            max_radius: 8.0,
+            claim_ready_tick: 0,
+            obedience: 0.5,
+        };
+        assert_eq!(home_group(&[info(0, 9, false), info(1, 3, true), info(2, 5, true)]), Some(2));
+        assert_eq!(home_group(&[info(0, 5, true), info(1, 5, true)]), Some(0), "ties to the lower id");
+        assert_eq!(home_group(&[info(0, 5, false)]), None);
+        assert_eq!(home_group(&[info(0, 0, true)]), None, "no members");
+    }
+
+    #[test]
+    fn home_ranges_turn_off_and_survive_a_restart() {
+        // Off: no mark on the card, no claim in the spell.
+        let (mut g, _) = home_game();
+        g.cfg.home_range_ticks = 0;
+        assert!(g.state_for(10).unwrap().groups.iter().all(|x| !x.home_range));
+        g.disconnect(10);
+        assert!(!g.offline.spells().contains_key(&1), "both forms off: no spell");
+        // A restart keeps the claim and the clock.
+        let (mut g, _) = home_game();
+        g.disconnect(10);
+        for _ in 0..6 {
+            tick(&mut g);
+        }
+        let home = g.offline.spells()[&1].home;
+        assert!(home.is_some());
+        let (saved, world, cfg) = (g.saved(), g.world.clone(), g.cfg.clone());
+        let r = Game::resume(world, cfg, saved, Vec::new());
+        assert_eq!(r.offline.spells()[&1].home, home);
+        assert_eq!(ranges(&r).len(), 1, "shielding again at once after the restart");
     }
 }

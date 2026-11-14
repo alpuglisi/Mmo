@@ -4,7 +4,7 @@
 //! evo-server [--bind ADDR] [--data DIR | --memory | --database-url URL] [--size N] [--seed N]
 //!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
 //!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
-//!            [--season-days N] [--offline-protection-hours H] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
+//!            [--season-days N] [--offline-protection-hours H] [--home-range-hours H] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
 //!            [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:...] [--push-per-hour N]
 //!            [--push-allow-any-endpoint] [--fcm-service-account FILE] [--apns-key FILE --apns-key-id ID
 //!            --apns-team-id ID [--apns-topic BUNDLE_ID] [--apns-sandbox]] [--hash-concurrency N] [--hash-queue N]
@@ -58,7 +58,7 @@ const USAGE: &str =
     "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory | --database-url URL] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
 [--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] \
-[--season-days 60] [--offline-protection-hours 12] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE] \
+[--season-days 60] [--offline-protection-hours 12] [--home-range-hours 12] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE] \
 [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:you@example.org] [--push-per-hour 4] \
 [--push-allow-any-endpoint] [--fcm-service-account FILE] [--apns-key FILE --apns-key-id ID --apns-team-id ID \
 [--apns-topic org.evolutionmmo.client] [--apns-sandbox]] [--hash-concurrency N] [--hash-queue N]";
@@ -154,6 +154,7 @@ fn parse_args() -> Result<ServerConfig, String> {
     let mut hash_concurrency = env("EVO_HASH_CONCURRENCY").map(|v| positive("EVO_HASH_CONCURRENCY", &v)).transpose()?;
     let mut hash_queue = env("EVO_HASH_QUEUE").map(|v| count("EVO_HASH_QUEUE", &v)).transpose()?;
     let mut offline_hours: Option<f64> = None;
+    let mut home_hours: Option<f64> = None;
     let mut native = NativeArgs::from_env();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -221,6 +222,13 @@ fn parse_args() -> Result<ServerConfig, String> {
                     _ => return Err("--offline-protection-hours must be a number of hours in 0..=8760".into()),
                 }
             }
+            "--home-range-hours" => {
+                let v = value("--home-range-hours")?;
+                match v.trim().parse::<f64>() {
+                    Ok(h) if (0.0..=24.0 * 365.0).contains(&h) => home_hours = Some(h),
+                    _ => return Err("--home-range-hours must be a number of hours in 0..=8760".into()),
+                }
+            }
             "--fresh" => cfg.fresh = true,
             "--no-push" => cfg.push.enabled = false,
             "--vapid-private-key" => cfg.push.vapid_private_key = Some(value("--vapid-private-key")?),
@@ -268,6 +276,13 @@ fn parse_args() -> Result<ServerConfig, String> {
     let tick_ms = if cfg.runner.tick.is_zero() { 1000.0 } else { cfg.runner.tick.as_secs_f64() * 1000.0 };
     let hours = offline_hours.unwrap_or(evo_server::game::DEFAULT_PROTECTION_HOURS);
     cfg.game.offline_protection_ticks = (hours * 3_600_000.0 / tick_ms).round() as u64;
+    // The home range: full strength for H hours after a logout (from 10
+    // minutes in), then fading over 2H more.
+    let ticks = |hours: f64| (hours * 3_600_000.0 / tick_ms).round() as u64;
+    let home = home_hours.unwrap_or(evo_server::game::DEFAULT_HOME_RANGE_HOURS);
+    cfg.game.home_range_ticks = ticks(home);
+    cfg.game.home_range_onset_ticks = ticks(evo_server::game::HOME_RANGE_ONSET_MINUTES / 60.0);
+    cfg.game.home_range_fade_ticks = ticks(2.0 * home);
     cfg.push.fcm = native.fcm()?;
     cfg.push.apns = native.apns()?;
     if let Some(n) = hash_concurrency {

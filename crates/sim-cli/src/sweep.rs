@@ -19,8 +19,10 @@ use std::fs::File;
 use std::io::Write as _;
 use std::time::Instant;
 
+use evo_sim::math::Vec2;
 use evo_sim::rng::rng_for;
-use evo_sim::{presets, Balance, FounderDesign, Gene, World, WorldConfig};
+use evo_sim::world::offline::HomeRange;
+use evo_sim::{presets, Balance, FounderDesign, Gene, PlayerId, World, WorldConfig};
 use rand::Rng;
 use rayon::prelude::*;
 
@@ -159,6 +161,46 @@ impl ScoredRun {
         self.days_run
     }
 
+    /// The offline-owner scenario (`compare --offline-owner`): each player
+    /// in `players` claims a territory for its main group around its
+    /// founders (as large as the group may hold) and then logs off for the
+    /// whole run, as the server treats an owner who is away: its lineage
+    /// gets the surviving-core protection and its territory is its shielded
+    /// home range, at full strength throughout (`world::offline`).
+    pub fn go_offline(&mut self, players: &[PlayerId]) {
+        if players.is_empty() {
+            return;
+        }
+        let w = &mut self.world;
+        let mut lineages = std::collections::BTreeSet::new();
+        let mut ranges = Vec::new();
+        for &p in players {
+            let Some(l) = w.lineages.iter().position(|x| x.owner == p) else { continue };
+            let l = l as u32;
+            let (sum, n, adults) = w
+                .organisms
+                .iter()
+                .filter(|o| o.alive && o.lineage == l)
+                .fold((Vec2::ZERO, 0usize, 0usize), |(s, n, a), o| (s + o.pos, n + 1, a + usize::from(o.matured)));
+            if n == 0 {
+                continue;
+            }
+            let center = sum * (1.0 / n as f32);
+            let Ok(t) = w.claim_territory(p, 0, center, World::territory_radius_limit(adults)) else { continue };
+            lineages.insert(l);
+            ranges.push(HomeRange {
+                owner: p,
+                lineage: l,
+                group: 0,
+                center: t.center,
+                radius: t.radius,
+                strength: 1.0,
+            });
+        }
+        w.set_offline_protection(lineages, Default::default());
+        w.set_home_ranges(ranges);
+    }
+
     /// Metrics of a run scored over a horizon of `days` days (the length it
     /// was run to; a collapsed world counts its empty remaining days).
     pub fn metrics(&self, days: u32) -> RunMetrics {
@@ -189,8 +231,10 @@ pub fn run_one(
     days: u32,
     parallel_apply: bool,
     migrants: Option<&FounderDesign>,
+    offline: &[PlayerId],
 ) -> RunMetrics {
     let mut run = ScoredRun::new(balance, seed, size, parallel_apply, migrants);
+    run.go_offline(offline);
     run.advance_to(days);
     run.metrics(days)
 }
@@ -664,6 +708,9 @@ pub struct CompareArgs {
     /// (`--migrant-gene`, which implies `migrants`): e.g. the caribou with
     /// migration 0 against the preset, to measure what a gene buys a design.
     pub migrant_genes: [Vec<(Gene, f32)>; 2],
+    /// Players whose owners are away for the whole run on both sides
+    /// (`--offline-owner`, [`ScoredRun::go_offline`]).
+    pub offline: Vec<PlayerId>,
     /// Add seeds in batches until the difference resolves (`--adaptive`);
     /// `seeds` is then ignored in favour of its looks.
     pub adaptive: Option<AdaptiveArgs>,
@@ -708,8 +755,17 @@ pub fn compare(args: &CompareArgs) -> Summary {
         ),
         None => format!("seeds {}–{}", args.base_seed, args.base_seed + args.seeds - 1),
     };
+    let offline = if args.offline.is_empty() {
+        String::new()
+    } else {
+        let designs = presets::player_designs();
+        let name =
+            |p: PlayerId| designs.get((p as usize).wrapping_sub(1)).map_or(format!("player {p}"), |d| short(&d.name));
+        let v: Vec<String> = args.offline.iter().map(|&p| name(p)).collect();
+        format!(" · offline owners: {}", v.join(", "))
+    };
     println!(
-        "Compare: A = {la} vs B = {lb} · {seed_range} · {}×{} map · {} days · {} threads",
+        "Compare: A = {la} vs B = {lb}{offline} · {seed_range} · {}×{} map · {} days · {} threads",
         args.size,
         args.size,
         args.days,
@@ -734,6 +790,7 @@ pub fn compare(args: &CompareArgs) -> Summary {
                         args.days,
                         args.parallel_apply,
                         migrant[c].as_ref(),
+                        &args.offline,
                     ),
                 )
             })
@@ -908,7 +965,7 @@ mod tests {
     #[test]
     fn resumed_runs_match_straight_runs() {
         let b = Balance::default();
-        let straight = run_one(b, 5, 48, 6, true, None);
+        let straight = run_one(b, 5, 48, 6, true, None, &[]);
         let mut run = ScoredRun::new(b, 5, 48, true, None);
         run.advance_to(2);
         let early = run.metrics(2);

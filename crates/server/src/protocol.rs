@@ -922,6 +922,10 @@ pub struct GroupView {
     /// strongly the group heeds its orders against its instincts.
     #[serde(default)]
     pub obedience: f32,
+    /// Its territory is the player's home range: the one shielded while
+    /// they are offline (`game::offline`; absent: no).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub home_range: bool,
 }
 
 impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
@@ -936,6 +940,7 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             max_radius: g.max_radius,
             claim_ready_tick: g.claim_ready_tick,
             obedience: g.obedience,
+            home_range: false,
         }
     }
 }

@@ -62,7 +62,7 @@ docs/
 | `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends, rally a group at a point for a few days; and group commands as genes: an `obedience` gene sets how strongly each animal heeds them, paid for in tameness. See [Groups and territory](#groups-and-territory). |
 | `world::chronicle` | Scoring | The daily hook: samples adults (cohorts included) for species detection, plans, applies and ends catastrophes through existing systems (`Map::climate_temp`, `Map::climate_wet`, infections), closes eras and awards achievements. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
-| `world::offline` | Open questions (offline protection) | Softer rules for the last members of a lineage whose owner is logged out: the caller names the protected lineages and exempt organisms (`World::set_offline_protection`); at or below the floor (12 living members) kill chance against them is ×0.25 and starvation and thirst ×0.5, for agents and cohorts. Off (and bit-identical) by default. See [Offline protection](#offline-protection). |
+| `world::offline` | Open questions (offline protection) | Softer rules for the last members of a lineage whose owner is logged out: the caller names the protected lineages and exempt organisms (`World::set_offline_protection`); at or below the floor (12 living members) kill chance against them is ×0.25 and starvation and thirst ×0.5, for agents and cohorts. And the home-range form (`World::set_home_ranges`): a claimed territory shields the members of its group inside it, kill chance ×0.5 shared out above 20 residents, predation only, stacking with the core down to ×0.2 at most. Off (and bit-identical) by default. See [Offline protection](#offline-protection). |
 
 ### Tick structure
 
@@ -424,7 +424,9 @@ of detail, below), `--no-catastrophes` (catastrophes are on by default in
 the game, never in the first year), `--season-days N` (length of a ranked
 season, default 60; see [Ranked seasons](#ranked-seasons)),
 `--offline-protection-hours H` (longest protection after a logout, default
-12, 0 turns it off; see [Offline protection](#offline-protection)), `--fresh` (ignore the saved world: new
+12, 0 turns it off; see [Offline protection](#offline-protection)),
+`--home-range-hours H` (the home range's full-strength hours after a logout,
+default 12, then fading over 2H; 0 turns it off), `--fresh` (ignore the saved world: new
 world, stored designs re-founded; see [Persistence](#persistence)), `--no-push`,
 `--vapid-private-key KEY` / `--vapid-subject mailto:...` (or `EVO_VAPID_PRIVATE_KEY` /
 `EVO_VAPID_SUBJECT`), `--push-per-hour N` and `--push-allow-any-endpoint` (see
@@ -895,6 +897,76 @@ that logging out never pays as a strategy:
   Tests: `world::offline::tests` (floor, exemptions, protected voles never
   killed with the kill chance cut to 0) and `game::offline::tests` (logout to
   login, the cap, exempt agreement organisms, a restart keeping clocks).
+
+**Home range.** The doc's other form, built beside the surviving core: a
+territory a group claimed ([Groups and territory](#groups-and-territory))
+shields its residents while the owner is away. It helps a lineage of any
+size a little where the core helps a tiny one a lot, so it is narrower in
+what it softens and has more limits on when:
+
+- **Which territory.** Picked when the player logs off: of their groups
+  holding a territory, the one with the most members (ties to the lower
+  group id). So at most one range per player, and only a territory claimed
+  before logging off: the spell remembers the group and the claim's tick,
+  and the shield ends if that territory is abandoned or replaced. A player
+  without a territory at logout gets none for that spell.
+- **When.** From 10 minutes after logout (logging off is no escape from a
+  fight under way), at full strength until 12 hours (`--home-range-hours`,
+  `GameConfig::home_range_ticks`; 0 turns it off), then fading linearly to
+  nothing over 24 hours more (2× the setting, `home_range_fade_ticks`), in
+  5% steps. Like the core, a login ends the spell and a restart keeps its
+  clock and its claim (`Spell::home`, saved with the game; spells saved
+  before this have none).
+- **Who.** Residents are the living agents of that group standing inside
+  the circle, and with level of detail on, the lineage's cohort members in
+  abstract regions whose center lies inside it. Exempt organisms (trades,
+  market) and possessed ones are not residents. Who is a resident is
+  decided on the hour, never mid-tick.
+- **What.** Predation only: a strike that would kill a resident succeeds
+  with `1 − strength × share × (1 − home_range_predation)` of its usual
+  chance (×0.5 at full strength), and a resident cohort's exposure to
+  hunting cohorts is scaled the same. Starvation and thirst are untouched,
+  so a herd that outgrows its range still starves: nothing is immortal.
+  The residents share one shield: up to `home_range_residents` (20) get it
+  in full, above that each gets `20 / residents` of it, so a big herd gains
+  little more than a small one.
+- **Stacking.** An organism under both forms (a lineage down to 12 inside
+  its range) gets the product of the two factors, floored at
+  `offline_stack_floor` (×0.2) on account of the stacking; either form
+  alone keeps its own factor (the core's ×0.25 is untouched).
+- **What the player sees.** The group card marks the territory that would
+  be shielded (`⌂ home range`, with a line on what it does), the map draws
+  it with a gold outer ring and a house at its center, and the legend
+  explains it (`GroupView::home_range` on the wire, a flag, absent when
+  false). On login, if the range had residents while they were away, the
+  same `milestone` alert says for how long.
+- **Saves and determinism.** The three rules are new `Balance` fields
+  (`home_range_predation` 0.5, `home_range_residents` 20,
+  `offline_stack_floor` 0.2; snapshot version 17, older snapshots read them
+  as these defaults, `serde_util::before_v17`). The world never shields a
+  range on its own: with none set every factor is exactly 1.0 and the
+  12-seed sweep at seed 31 still prints 11.76.
+- **Effect** (`compare --offline-owner P`: player P claims the largest
+  territory its main group may hold around its founders on day 0 and stays
+  offline for the whole run on both sides, with the surviving core as
+  well; B turns the home range off with `--set home_range_predation=1`):
+  `compare --size 96 --seeds 12 --seed 31 --offline-owner 2 --offline-owner 4
+  vs --set home_range_predation=1` (herd grazers and burrowing omnivores away
+  for 120 days) gives a paired score difference of −0.03 ± 0.04 (n = 12, not
+  significant; 9 seeds tied), and no lineage's survival or mean alive moves
+  outside its CI (herd grazers −0 ± 3, burrowing omnivores −2 ± 3 alive).
+  Even with the shield undiluted (`--set home_range_residents=1000000`) the
+  difference is −0.11 ± 0.20, none significant. In this world these lineages
+  are limited by food in their range, not by hunters, so softening
+  predation inside it buys them nothing measurable: logging off doesn't pay,
+  which is the intent. What it is for, a small herd sheltering in its range
+  through a bad night, is too rare to show here; it is checked in the unit
+  tests (shielded voles are hunted at most a quarter as often). Not tuned.
+  Tests: `world::offline::tests` (residents only, strength, one range per
+  owner, the shared shield, exemptions, stacking and its floor, shielded
+  voles hunted far less, cohorts) and `game::offline::tests` (onset and
+  fade, only a territory held at logout, abandonment, the largest group,
+  off, a restart).
 
 ### Ranked seasons
 
@@ -4654,11 +4726,13 @@ sections above).
    with real players' orders once there are some (the example's policies
    are guesses), and decide whether a rally should hold a large group
    less tightly (its circle stops at 12 tiles). (The seasons leaderboard is already served from cached
-   standings: see *Cached standings*.) Offline protection is built as the
-   surviving-core form ([Offline protection](#offline-protection)); the home
-   range form (a claimed territory that shields its residents while the owner
-   is away) would be a follow-up, tuned with `compare` once there is player
-   data on how often small lineages die offline. Duplicate mutations: the
+   standings: see *Cached standings*.) Offline protection is built in both
+   forms ([Offline protection](#offline-protection)): the surviving core and
+   the home range (a claimed territory shields its residents from hunters
+   while the owner is away, from 10 minutes after logout, fading after 12
+   hours). Both run on sensible defaults, not tuned: tune them with
+   `compare --offline-owner` once there is player data on how often small
+   lineages die offline and how players use territories. Duplicate mutations: the
    code already answers the doc's question as "separate tags per origin"
    (`genome`: a mutation carries the tag of the organism's owner when it
    appears, tags never change). Alleles are continuous, so two players never
