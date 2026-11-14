@@ -1944,6 +1944,79 @@ organisms cohorts, which cost almost nothing beyond the fixed environment
 update (10 ms per tick for 512²), so total capacity is agent capacity
 divided by the share of organisms near players.
 
+### High density: decide, act sweep, sub-step states
+
+Profiled at 512², `bench --scale 16` (81k organisms, 0.31 per tile, the
+largest world above) with `perf` on one thread, then the server's
+sub-steps with 500 steering players. Where the tick went: decide 60%
+(`look` 31%, of which a third was one cache miss per neighbor reading
+`Organism::group` for the herd test, and 10% the vectorized gene distance
+on the grid's packed genes, bound by memory; the neighbor query 10%);
+the parallel apply 30% (movement 11%, settle 6%, the sequential act and
+finish sweeps 8–9%); the grid rebuild 4.5%; environment 3%. Founding the
+world took longer than a day of ticks: 4–5 minutes, because every 12-founder
+wild group flood-filled the whole map's passable regions and scanned every
+organism 200 times. Each change below leaves every result bit for bit as it
+was (`evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`
+prints 11.54 and `--seed 55` 11.41, the same output as before apart from
+timings; the bench's organism counts and route searches are identical;
+`balance-smoke.sh` still scores 11.21):
+
+- **Decide:** the grid's entries carry the owner and group, so a kin
+  neighbor is settled without touching its organism, and the scan skips the
+  viewer by its slot rather than by reading each entry's index.
+- **Grid rebuild:** entries (several cache lines of each organism) are
+  computed on all cores and only the counting sort stays sequential.
+- **Act sweep:** before it, a parallel pass marks free organisms whose act
+  could only drink or do nothing (`par_apply::local_act`: below 30 hunger,
+  not eating, gathering, migrating, chasing, nursing or about to nurse;
+  60–70% of free organisms at this density). They touch nothing but
+  themselves and nothing in the sweep reads what they change, so the
+  sweep skips them and they drink in the parallel settle sweep. The sweep
+  prefetches the organisms of the turns six ahead, and the finish sweep
+  visits only organisms with a death, a coming of age or a birth due
+  (found in the settle sweep). Determinism and thread independence are as
+  before: the sequential sweeps still run in the shuffled order on one
+  shared stream.
+- **Founding:** the home search gathers the probe's passable regions,
+  threats and prey once per lineage and looks them up in an 8-tile grid,
+  summing in organism order: 4–5 minutes became about 5 seconds for this
+  world (it also costs a live server less per founding player).
+- **Sub-step and push states (server):** `action` and `sex` of own and
+  nearby organisms are static strings (`Cow<'static, str>`) and leaderboard
+  names shared (`Arc<str>`): a state no longer allocates two strings per
+  organism in view and one per leaderboard row; `StateIndex` reads each
+  organism once. JSON and decoded states are unchanged (the wire fixture and
+  the protocol 1 / 2 comparisons pass as they were).
+
+Medians of six interleaved runs per binary, old and new alternating, ms per
+tick (`bench --size 512 --scale 16 --days 4 --threads 1,4`, two days per
+setup). The machine was shared with other agents throughout, load average
+2–18 on 4 cores (mostly 9–16), so the 4-thread figures are especially
+noisy:
+
+| Phase | 1 thread, before | 1 thread, after | 4 threads, before | 4 threads, after |
+| --- | --- | --- | --- | --- |
+| Environment | 10.0 | 10.2 | 13.5 | 12.7 |
+| Grid | 11.3 | 11.7 | 13.1 | 11.1 |
+| Decide | 133.2 | 126.5 | 95.4 | 86.6 |
+| Apply | 67.7 | 64.1 | 71.7 | 57.4 |
+| of which sequential sweeps | 20.1 | **9.9** | 28.6 | **13.8** |
+| Tick | 223.9 | 213.8 | 194.9 | 169.8 |
+
+The sequential sweeps, the part of the apply that no core count shortens,
+halved. A quieter pair of single runs (load 6–7, same tick code before)
+gave decide 117.8 → 106.2 ms and sequential sweeps 14.5 → 8.4 ms on one
+thread; under heavier load the decide change sinks into the noise. What
+the server's world thread spends on states (`game::tests::substep_cost`, a
+512² world, 8.3k organisms, 500 players each steering one organism;
+medians of five interleaved runs, load 5–8): a push to every connection
+6.7 → 4.4 ms, a possession sub-step 7.4 → 5.1 ms. Not done: reusing
+sub-step states (commands arrive between sub-steps from most players, so
+any cache would need per-player invalidation for offers, market moves and
+possession), and the `StateIndex` pass over every organism at each sub-step,
+now the largest state cost.
+
 ### Launch numbers
 
 The doc's next step was to measure at the prototype target and then set
@@ -1970,8 +2043,10 @@ launch numbers. From the measurements above:
   organism-ticks per second) or level of detail with players clustered;
   more worlds rather than bigger ones remains the safer way to grow.
 - Watch: the decision phase is the cost to cut next (density-driven
-  perception); the apply's sequential act sweep is the next part to split by
-  region if the apply phase becomes the bottleneck.
+  perception, now bound by memory); the apply's sequential act sweep, halved
+  by running local acts in parallel (see [High density](#high-density-decide-act-sweep-sub-step-states)),
+  is the next part to split by region if the apply phase becomes the
+  bottleneck.
 
 **Balance check.** `evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1
 --threads 1` (score / surviving lineage-worlds of 96):
@@ -3185,12 +3260,16 @@ sections above).
    switching), measured with `compare` on 48+ seeds, and check whether the
    prey-side rules cost predators seeds systematically (the sign was
    negative, not significant).
-6. **World-thread cost.** Decide is most of a tick at the prototype target
-   and its per-organism cost rises with density: cap or subsample the
-   neighbors scanned, then split the apply phase's sequential act sweep by
-   region (see [Benchmark](#benchmark)). Possession sub-step states still
-   build a whole `StateView` for every steering player three times a tick
-   though only the possessed organism's delta goes out.
+6. **World-thread cost.** At high density decide is still most of a tick
+   and is now bound by memory (neighbor genes and positions; see [High
+   density](#high-density-decide-act-sweep-sub-step-states)); going further
+   means changing results (cap or subsample the neighbors scanned, judged
+   with `compare`) or packing the grid's genes smaller (bounds widened to
+   match). The sequential act sweep is half what it was; splitting the rest
+   by region is next if the apply becomes the bottleneck. Sub-steps still
+   build `StateIndex` (a pass over every organism) and a whole `StateView`
+   for every steering player three times a tick; reusing them needs
+   per-player invalidation for commands applied between sub-steps.
 7. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
    protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
    doesn't offer it; revisit when it does (states are already ~1 KB/s a
