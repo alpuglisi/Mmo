@@ -55,10 +55,11 @@
 //! genome as the index of the father while he is in the world
 //! (`serde_util::father`), so the restore shares it with him again.
 //!
-//! Snapshots of this format version restore, and of versions 10 and 11
+//! Snapshots of this format version restore, and of versions 10 to 12
 //! ([`SnapshotHeader::restorable`]): version 10 holds the tiles inside the
-//! payload, and both lack `Balance::cold_gestation`, which reads as 1.4 (the
-//! rule they ran under; `serde_util::before_v12`). Version 5 moved the
+//! payload, 10 and 11 lack `Balance::cold_gestation`, which reads as 1.4 (the
+//! rule they ran under; `serde_util::before_v12`), and all three lack
+//! `Balance::nest_predation`, which reads as 0 (`serde_util::before_v13`). Version 5 moved the
 //! terrain out of the snapshot; version 6 added lakes and floodplains to map
 //! generation (`Ground::plain`, `Tile::silt`) and a wind direction to the
 //! weather cells, which older maps can't be given deterministically, so
@@ -72,7 +73,7 @@
 //! migration orders keyed by player and group, the world's claimed
 //! territories and claim times). Version 11 writes the tiles apart (above).
 //! Version 12 adds the `Balance::cold_gestation` parameter to the saved
-//! config.
+//! config, version 13 the `Balance::nest_predation` parameter.
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -93,12 +94,15 @@ use crate::terrain::{Terrain, Tile};
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 12;
+pub const SNAPSHOT_VERSION: u32 = 13;
 /// The oldest format version that still restores: version 11's state with
-/// the tiles inside the payload, and both without `Balance::cold_gestation`.
+/// the tiles inside the payload, and both without `Balance::cold_gestation`
+/// (nor, with version 12, `Balance::nest_predation`).
 const OLDEST_RESTORABLE: u32 = 10;
 /// The first format version with `Balance::cold_gestation`.
 const COLD_GESTATION_VERSION: u32 = 12;
+/// The first format version with `Balance::nest_predation`.
+const NEST_PREDATION_VERSION: u32 = 13;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
@@ -470,16 +474,29 @@ impl World {
     }
 
     /// A version 10 snapshot (tiles inside the payload, no
-    /// `Balance::cold_gestation`), as earlier builds wrote, to test that they
-    /// still restore.
+    /// `Balance::cold_gestation` or `nest_predation`), as earlier builds
+    /// wrote, to test that they still restore.
     #[cfg(test)]
     fn snapshot_v10(&self) -> Vec<u8> {
         let _old = crate::serde_util::before_v12::Guard::new();
+        let _old13 = crate::serde_util::before_v13::Guard::new();
         let raw = payload_options().serialize(self).expect("world serializes");
         self.snapshot_with(OLDEST_RESTORABLE, FLAG_LZ4, raw.len(), &lz4_flex::block::compress(&raw))
     }
 
-    /// A world from [`World::snapshot`] bytes (or a version 10 or 11 snapshot's)
+    /// A version 12 snapshot (no `Balance::nest_predation`), as the builds
+    /// before version 13 wrote, to test that they still restore.
+    #[cfg(test)]
+    fn snapshot_v12(&self) -> Vec<u8> {
+        let _old13 = crate::serde_util::before_v13::Guard::new();
+        // The header's layout is unchanged since version 6: only the version
+        // field differs.
+        let mut out = self.snapshot();
+        out[8..12].copy_from_slice(&COLD_GESTATION_VERSION.to_le_bytes());
+        out
+    }
+
+    /// A world from [`World::snapshot`] bytes (or a version 10 to 12 snapshot's)
     /// and the terrain it names (`SnapshotHeader::terrain`), with its
     /// derived lookups rebuilt. Fails on another format version, a corrupt
     /// payload, or a missing or wrong terrain.
@@ -491,6 +508,7 @@ impl World {
         let hash = h.terrain.ok_or(SnapshotError::BadHeader)?;
         // Read (and hash) the config without the parameters added since.
         let _old = (h.version < COLD_GESTATION_VERSION).then(crate::serde_util::before_v12::Guard::new);
+        let _old13 = (h.version < NEST_PREDATION_VERSION).then(crate::serde_util::before_v13::Guard::new);
         let body = &bytes[h.len()..];
         if fnv1a(body) != h.checksum {
             return Err(SnapshotError::Checksum);

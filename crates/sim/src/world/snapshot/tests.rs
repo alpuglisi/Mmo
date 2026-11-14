@@ -321,10 +321,11 @@ fn older_snapshots_are_refused_by_version() {
 fn version_10_snapshots_still_restore() {
     let mut w = fixture_world();
     w.config.balance.cold_gestation = crate::serde_util::before_v12::OLD_COLD_GESTATION;
+    w.config.balance.nest_predation = crate::serde_util::before_v13::OLD_NEST_PREDATION;
     let old = w.snapshot_v10();
-    // Without the parameter the payload is 4 bytes (one f32) shorter.
+    // Without the two parameters the payload is 8 bytes (two f32) shorter.
     let raw = payload_options().serialize(&w).unwrap();
-    assert_eq!(SnapshotHeader::read(&old).unwrap().raw_len + 4, raw.len() as u64);
+    assert_eq!(SnapshotHeader::read(&old).unwrap().raw_len + 8, raw.len() as u64);
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!((h.version, h.flags), (10, FLAG_LZ4));
     assert!(h.restorable());
@@ -333,6 +334,25 @@ fn version_10_snapshots_still_restore() {
     assert!(r.snapshot() == w.snapshot());
     // A newer snapshot is smaller: the tiles compress better apart.
     assert!(w.snapshot().len() < old.len());
+}
+
+/// Version 12 snapshots (no `Balance::nest_predation`) still restore, to
+/// the same world, with the rule they ran under (no egg predation on
+/// nesting grounds).
+#[test]
+fn version_12_snapshots_still_restore() {
+    let mut w = fixture_world();
+    w.config.balance.nest_predation = crate::serde_util::before_v13::OLD_NEST_PREDATION;
+    let old = w.snapshot_v12();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 12);
+    assert!(h.restorable());
+    // Without the parameter the payload is 4 bytes (one f32) shorter.
+    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.nest_predation, 0.0);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

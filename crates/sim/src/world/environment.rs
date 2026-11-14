@@ -5,6 +5,11 @@ use crate::config::Balance;
 use crate::legacy::LegacySnapshot;
 use crate::rng::SimRng;
 use crate::terrain::{weather_rng, Ground, Map, Tile};
+use rand::Rng;
+
+/// Tiles around a clutch in which other clutches draw egg predators to it
+/// (`Balance::nest_predation`).
+const NEST_CROWD_RADIUS: usize = 2;
 
 /// Chilling per hour per °C an egg sits below its floor.
 const CHILL_RATE: f32 = 0.006;
@@ -141,14 +146,47 @@ impl World {
         self.chronicle_daily();
     }
 
+    /// Other clutches within `NEST_CROWD_RADIUS` tiles of `pos` (one per
+    /// tile: `clutch_at`), what egg predators key on.
+    pub(crate) fn clutches_near(&self, pos: crate::math::Vec2) -> u32 {
+        let (cx, cy) = self.map.tile_coords(pos);
+        let r = NEST_CROWD_RADIUS;
+        let mut n = 0;
+        for y in cy.saturating_sub(r)..=(cy + r).min(self.map.height - 1) {
+            for x in cx.saturating_sub(r)..=(cx + r).min(self.map.width - 1) {
+                if (x, y) != (cx, cy) && self.clutch_at.contains_key(&(x, y)) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
     /// Incubation: eggs chill without enough heat, hatch on schedule.
     pub(crate) fn update_clutches(&mut self, rng: &mut SimRng) {
         let tick = self.tick;
+        // Egg predators search nesting grounds (`Balance::nest_predation`):
+        // count each clutch's neighbors before any is removed.
+        let predation = self.config.balance.nest_predation;
+        let crowd: Vec<u32> = if predation > 0.0 {
+            self.clutches.iter().map(|c| self.clutches_near(c.pos)).collect()
+        } else {
+            Vec::new()
+        };
         let clutches = std::mem::take(&mut self.clutches);
         let mut keep = Vec::with_capacity(clutches.len());
-        for mut c in clutches {
+        for (ci, mut c) in clutches.into_iter().enumerate() {
             let guardian = c.guardian.and_then(|g| self.index.get(&g).copied()).filter(|&gi| self.organisms[gi].alive);
             let mut done = c.eggs.is_empty();
+            // An unguarded clutch may be found and eaten whole.
+            if !done
+                && c.guardian.is_none()
+                && crowd.get(ci).is_some_and(|&n| n > 0 && rng.gen::<f32>() < predation * n as f32 / 24.0)
+            {
+                self.counters.eggs.entry(c.lineage).or_default().raided += c.eggs.len() as u64;
+                self.counters.eggs_lost += c.eggs.len() as u64;
+                done = true;
+            }
 
             if !done && tick >= c.hatch_tick {
                 let room = self.cap_room(c.lineage);
