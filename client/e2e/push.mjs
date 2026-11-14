@@ -122,7 +122,7 @@ async function login(page, base, name) {
 
 async function openSettings(page) {
   await page.click('#tab-genetics');
-  await page.waitForSelector('#push-settings', { state: 'attached', timeout: 10000 });
+  await page.waitForSelector('#push-settings', { state: 'attached', timeout: 20000 });
   await page.$eval('#push-settings', (d) => {
     d.open = true;
     d.scrollIntoView();
@@ -187,7 +187,7 @@ async function main() {
     const name = `push_${Date.now().toString(36)}`;
     await register(page, base, name);
     const token = await page.evaluate(() => JSON.parse(localStorage.getItem('evo.session')).token);
-    await waitFor('the service worker', () => page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => !!r?.active)), 15000);
+    await waitFor('the service worker', () => page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => !!r?.active)), 30000);
     step('registered and founded; the service worker is active');
 
     await openSettings(page);

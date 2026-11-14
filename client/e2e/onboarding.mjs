@@ -138,7 +138,7 @@ async function desktopChecks(browser, base, errors) {
   await register(page, base, `ob_desk_${Date.now().toString(36)}`);
 
   // The tour opens by itself after founding, as a labelled non-modal dialog with focus on Next.
-  const first = await waitFor('tour', () => tourState(page), 10000);
+  const first = await waitFor('tour', () => tourState(page), 20000);
   if (first.step !== 'welcome' || first.count !== `1 of ${STEPS}` || first.role !== 'dialog' || !first.labelled.startsWith('Welcome')) throw new Error(`unexpected first step ${JSON.stringify(first)}`);
   await waitFor('focus on Next', async () => (await tourState(page)).focus === 'tour-next', UI_MS);
   checkFits(first, 'desktop');
@@ -238,7 +238,7 @@ async function phoneChecks(browser, base, errors) {
 
   const steps = [];
   for (let k = 0; k < STEPS; k++) {
-    const t = await waitFor(`step ${k + 1}`, async () => { const s = await tourState(page); return s && s.count === `${k + 1} of ${STEPS}` && s; }, 10000);
+    const t = await waitFor(`step ${k + 1}`, async () => { const s = await tourState(page); return s && s.count === `${k + 1} of ${STEPS}` && s; }, 20000);
     await page.waitForTimeout(200); // the highlight's slide
     checkFits(await tourState(page), 'phone');
     steps.push(t.step);

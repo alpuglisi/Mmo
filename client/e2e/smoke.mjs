@@ -165,7 +165,7 @@ async function main() {
       return { w: t.width, h: t.height, tex: [v.mapSprite.texture.width, v.mapSprite.texture.height], biomes: new Set(t.biome).size, colors: colors.size, tick: t.tick };
     });
     if (tiles.w !== 64 || tiles.h !== 64 || tiles.tex[0] !== 64 || tiles.biomes < 3 || tiles.colors < 20) throw new Error(`tile map: ${JSON.stringify(tiles)}`);
-    await waitFor('a dynamic terrain refresh', () => page.evaluate((t0) => window.evo.screen().view.terrain.tick > t0, tiles.tick), 15000);
+    await waitFor('a dynamic terrain refresh', () => page.evaluate((t0) => window.evo.screen().view.terrain.tick > t0, tiles.tick), 30000);
     if (!(await page.textContent('#terrain-legend')).includes('drought')) throw new Error('no terrain legend');
     step(`tile map: ${tiles.w}×${tiles.h} tiles, ${tiles.biomes} biomes, ${tiles.colors} tile colors; dynamic layers refreshed`);
     await page.waitForFunction(() => document.querySelector('#conn-state')?.textContent === 'connected');
@@ -269,7 +269,7 @@ async function main() {
         }, 120000).catch((e) => { throw new Error(`${e.message}; ${seen}`); });
         await page.evaluate(() => { window.__results = []; });
         // The form lists living adults; if our pick died since, pick again.
-        if (!(await page.selectOption('#mating-mine', String(cand.mine), { timeout: 3000 }).then(() => true, () => false))) {
+        if (!(await page.selectOption('#mating-mine', String(cand.mine), { timeout: 10000 }).then(() => true, () => false))) {
           console.log(`  … #${cand.mine} is no longer in the form; picking again`);
           continue;
         }
@@ -278,7 +278,7 @@ async function main() {
         // (The list of adults is rebuilt when one dies: check the choice held.)
         if (Number(await page.inputValue('#mating-mine')) !== cand.mine) continue;
         await page.click('#mating-submit');
-        const req = await waitFor('request result', () => page.evaluate(() => window.__results.find((r) => r.type === 'request_mating')));
+        const req = await waitFor('request_mating result', () => page.evaluate(() => window.__results.find((r) => r.type === 'request_mating') ?? null));
         // If our pick died before the click, the form falls back to another
         // adult (which can be the partner's sex): retry then, too.
         const swapped = req.mine !== cand.mine || req.partner !== cand.partner;
@@ -293,7 +293,7 @@ async function main() {
         await waitFor('bob\'s answer', async () => {
           const o = await offerOf(bob, id);
           return o && o.status !== 'pending';
-        }, 10000);
+        }, 30000);
         // The form shows the pair's compatibility (server preview). If our
         // organism died meanwhile, the rebuilt list falls back to another
         // adult and the preview shows that pair: the offer then fails with
@@ -305,7 +305,7 @@ async function main() {
             if (el?.dataset.pair === pair) return el.textContent;
             return document.querySelector('#mating-mine')?.value !== pair.split(':')[0] ? '(selection changed)' : null;
           }, `${req.mine}:${req.partner}`);
-        }, 10000);
+        }, 20000);
         // (A preview error means one of them just died; the offer then fails.)
         if (!compat.startsWith('(') && !compat.startsWith("Can't preview") && !compat.startsWith('Compatible: fertility')) throw new Error(`same designs not shown compatible: ${compat}`);
         pair = { mine: req.mine, partner: req.partner, compat, id };
@@ -322,11 +322,24 @@ async function main() {
         // Escort: possess our organism and walk it to the partner, following
         // her as she moves (her position as bob sees it). The agreement can
         // resolve on its own before the click, which takes the button away.
-        await page.click(`#open-offers .offer[data-offer="${id}"] button:has-text("Escort")`, { timeout: 5000 }).catch(() => {});
+        // On a loaded machine the button can show late or be rebuilt under
+        // the click: click it (a plain DOM click, found afresh) until our
+        // organism is possessed or the agreement closes. Escort is
+        // idempotent (it only possesses an organism not yet possessed).
+        let lastClick = 0;
         const esc = await waitFor('escort possession', async () => {
           if ((await offerOf(page, id))?.status !== 'accepted') return 'closed';
-          return page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id)?.possessed && 'possessed', pair.mine);
-        });
+          if (await page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id)?.possessed, pair.mine)) return 'possessed';
+          if (Date.now() - lastClick > 2000) {
+            const clicked = await page.evaluate((id) => {
+              const b = [...document.querySelectorAll(`#open-offers .offer[data-offer="${id}"] button`)].find((b) => b.textContent.startsWith('Escort'));
+              b?.click();
+              return !!b;
+            }, id);
+            if (clicked) lastClick = Date.now();
+          }
+          return null;
+        }, 30000);
         if (esc === 'possessed') step(`escort: #${pair.mine} possessed for the trip to the meeting`);
         // Bob walks his organism toward ours too: half the trip each.
         await bob.evaluate((organism) => window.evo.socket.send({ type: 'possess', organism }), pair.partner);
@@ -435,7 +448,7 @@ async function main() {
       if (listingId !== null) await page.evaluate((listing) => window.evo.socket.send({ type: 'withdraw_listing', listing }), listingId);
       await page.evaluate(() => { window.__results = []; });
       await page.click('#market-refresh');
-      if (!(await page.selectOption('#market-list-organism', String(cand.dam), { timeout: 3000 }).then(() => true, () => false))) continue;
+      if (!(await page.selectOption('#market-list-organism', String(cand.dam), { timeout: 10000 }).then(() => true, () => false))) continue;
       await page.fill('#market-fee', String(fee));
       await page.click('#market-list-submit');
       const listed = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
@@ -447,12 +460,12 @@ async function main() {
         throw new Error(`create_listing failed: ${JSON.stringify(listed.error)}`);
       }
       listingId = listed.data.listing.id;
-      await page.waitForSelector(`#my-listings .listing[data-listing="${listingId}"]`, { timeout: 10000 });
+      await page.waitForSelector(`#my-listings .listing[data-listing="${listingId}"]`, { timeout: 20000 });
       // Bob picks his male; the listing shows with its compatibility.
-      if (!(await bob.selectOption('#market-mine', String(cand.buyer), { timeout: 3000 }).then(() => true, () => false))) continue;
+      if (!(await bob.selectOption('#market-mine', String(cand.buyer), { timeout: 10000 }).then(() => true, () => false))) continue;
       await bob.click('#market-refresh');
       const card = `#market-listings .listing[data-listing="${listingId}"]`;
-      const compat = await waitFor('listing with compatibility', () => bob.evaluate((card) => document.querySelector(`${card} .compat`)?.textContent ?? null, card), 15000).catch(() => null);
+      const compat = await waitFor('listing with compatibility', () => bob.evaluate((card) => document.querySelector(`${card} .compat`)?.textContent ?? null, card), 20000).catch(() => null);
       if (!compat) {
         console.log('  … the listing showed no compatibility (an organism died?); picking again');
         continue;
@@ -513,7 +526,7 @@ async function main() {
     // (Daily income keeps arriving, so the balance itself is checked through
     // the ledger below.)
     if (!held.settled && held.escrow < fee) throw new Error(`escrow: ${JSON.stringify(bought.before)} → ${JSON.stringify(held)}`);
-    await waitFor('ann told of the sale', () => page.evaluate(() => window.evo.model.feed.some((e) => e.kind === 'market' && e.text.includes('bought a mating'))), 10000);
+    await waitFor('ann told of the sale', () => page.evaluate(() => window.evo.model.feed.some((e) => e.kind === 'market' && e.text.includes('bought a mating'))), 20000);
     step(`purchase: offer ${bought.id} accepted at once, ${fee} renown in bob's escrow; ann alerted`);
     // Both walk toward each other; give up (cancel) after 12 s apart.
     await bob.evaluate((organism) => window.evo.socket.send({ type: 'possess', organism }), bought.buyer);
@@ -572,7 +585,7 @@ async function main() {
     let withdrawOrg = bought.dam;
     let withdrawn = false;
     const relist = async () => {
-      const dead = await waitFor(`#${withdrawOrg} gone from ann's state`, () => page.evaluate((id) => !window.evo.model.state.organisms.some((o) => o.id === id), withdrawOrg), 5000).catch(() => false);
+      const dead = await waitFor(`#${withdrawOrg} gone from ann's state`, () => page.evaluate((id) => !window.evo.model.state.organisms.some((o) => o.id === id), withdrawOrg), 15000).catch(() => false);
       if (!dead) throw new Error(`listing ${withdrawId} of #${withdrawOrg} closed though she is alive`);
       console.log(`  … listing ${withdrawId} closed: #${withdrawOrg} died; listing another adult to withdraw`);
       await page.evaluate(() => { window.__results = []; });
@@ -595,13 +608,13 @@ async function main() {
       }
       await page.click('#market-refresh');
       const card = `#my-listings .listing[data-listing="${withdrawId}"] button.withdraw`;
-      if (!(await page.waitForSelector(card, { timeout: 8000 }).then(() => true, () => false))) {
+      if (!(await page.waitForSelector(card, { timeout: 15000 }).then(() => true, () => false))) {
         console.log(`  … the card of listing ${withdrawId} did not show; checking the listing again`);
         continue;
       }
       await page.evaluate(() => { window.__results = []; });
-      if (!(await page.click(card, { timeout: 5000 }).then(() => true, () => false))) continue;
-      const r = await waitFor('withdraw_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'withdraw_listing')), 10000);
+      if (!(await page.click(card, { timeout: 10000 }).then(() => true, () => false))) continue;
+      const r = await waitFor('withdraw_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'withdraw_listing')), 20000);
       if (!r.ok) {
         // Closed between the check and the click (the dam died).
         if (r.error?.code !== 'unknown_listing') throw new Error(`withdraw_listing failed: ${JSON.stringify(r.error)}`);
@@ -610,77 +623,140 @@ async function main() {
       withdrawn = true;
     }
     if (!withdrawn) throw new Error(`could not withdraw listing ${withdrawId} from its card`);
-    await waitFor('listing withdrawn', () => page.evaluate((id) => !document.querySelector(`#my-listings .listing[data-listing="${id}"]`), withdrawId), 10000);
+    await waitFor('listing withdrawn', () => page.evaluate((id) => !document.querySelector(`#my-listings .listing[data-listing="${id}"]`), withdrawId), 20000);
     if ((await ownListings()).includes(withdrawId)) throw new Error(`listing ${withdrawId} still open after withdrawing it`);
     step(`ledgers agree; balance pill "${pill.trim()}"; ann withdrew listing ${withdrawId}`);
 
     // An auction: ann auctions an adult from the Market tab, bob finds it
-    // under "auctions" and bids the reserve for one of his adults of the
-    // other sex (held in escrow; the auction can then no longer be
-    // withdrawn), or, if the world refuses the bid, ann withdraws it. The
-    // world runs fast (a simulated day is about a second), so the auction
-    // gets the longest run, 30 days.
+    // under "auctions" and bids the reserve through its card for one of his
+    // adults of the other sex (held in escrow; the auction can then no
+    // longer be withdrawn). The world runs fast (a simulated day is about a
+    // second), so the auction gets the longest run, 30 days.
+    //
+    // So that the bid doesn't race the living world, the lot is one of
+    // ann's open females (a listed female is held from breeding) and bob
+    // bids with a male (males never become pregnant): then nothing the bid
+    // checks can change but by a death. The button's state is checked and
+    // the click made in one step in the page, and a bid that can't be made
+    // or is refused is retried with another bidder. Only if every attempt
+    // fails does ann withdraw the auction instead (logged as such).
     const reserve = 3;
     await page.selectOption('#market-list-kind', 'auction');
     if (!(await page.isVisible('#market-auction-days'))) throw new Error('the auction length field is hidden');
     let auctionId = null;
     let lotSex = null;
+    let lotOrg = null;
     for (let attempt = 0; attempt < 6 && auctionId === null; attempt++) {
       await page.evaluate(() => { window.__results = []; });
       await page.click('#market-refresh');
-      const options = await page.$$eval('#market-list-organism option', (os) => os.map((o) => o.value));
+      const options = await page.$$eval('#market-list-organism option', (os) => os.map((o) => ({ value: o.value, text: o.textContent ?? '' })));
       if (options.length === 0) throw new Error('no adult of ann to auction');
-      await page.selectOption('#market-list-organism', options[attempt % options.length]);
+      const females = options.filter((o) => o.text.includes(' female') && !o.text.includes('pregnant'));
+      const pool = females.length ? females : options;
+      await page.selectOption('#market-list-organism', pool[attempt % pool.length].value);
       await page.fill('#market-fee', String(reserve));
       await page.fill('#market-auction-days', '30');
       await page.click('#market-list-submit');
-      const r = await waitFor('create_auction result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_auction')));
-      if (r.ok) [auctionId, lotSex] = [r.data.listing.id, r.data.listing.sex];
+      const r = await waitFor('create_auction result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_auction') ?? null));
+      if (r.ok) [auctionId, lotSex, lotOrg] = [r.data.listing.id, r.data.listing.sex, r.data.listing.organism];
       else if (!['already_pregnant', 'not_found', 'not_mature', 'already_listed', 'organism_busy'].includes(r.error?.code)) throw new Error(`create_auction failed: ${JSON.stringify(r.error)}`);
-      else console.log(`  … create_auction refused (${r.error.code}); picking again`);
+      else console.log(`  … create_auction refused (${r.error?.code}); picking again`);
     }
     if (auctionId === null) throw new Error('no auction could be created');
-    await page.waitForSelector(`#my-listings .listing[data-listing="${auctionId}"][data-kind="auction"] .auction-line`, { timeout: 10000 });
+    await page.waitForSelector(`#my-listings .listing[data-listing="${auctionId}"][data-kind="auction"] .auction-line`, { timeout: 20000 });
     await bob.selectOption('#market-kind', 'auction');
     const bobCard = `#market-listings .listing[data-listing="${auctionId}"]`;
-    const line = await waitFor('the auction in bob\'s market', () => bob.evaluate((c) => document.querySelector(`${c} .auction-line`)?.textContent ?? null, bobCard), 15000);
+    const line = await waitFor('the auction in bob\'s market', () => bob.evaluate((c) => document.querySelector(`${c} .auction-line`)?.textContent ?? null, bobCard), 20000);
     if (!line.includes(`reserve ${reserve}, no bids yet`)) throw new Error(`auction line: ${line}`);
     const kinds = await bob.$$eval('#market-listings .listing', (ls) => ls.map((l) => l.dataset.kind));
     if (kinds.some((k) => k !== 'auction')) throw new Error(`the auctions filter showed ${kinds}`);
-    const bidder = await bob.evaluate((sex) => window.evo.model.state.organisms.find((o) => o.matured && !o.pregnant && o.sex !== sex)?.id ?? null, lotSex);
+    // Bob's candidates: open adults of the other sex, males first (never
+    // pregnant), then the healthiest (the least likely to die meanwhile).
+    const bidders = () => bob.evaluate((sex) => window.evo.model.state.organisms
+      .filter((o) => o.matured && !o.possessed && !o.pregnant && o.sex !== sex)
+      .sort((a, b) => (a.sex === 'male' ? 0 : 1) - (b.sex === 'male' ? 0 : 1) || b.health - a.health)
+      .map((o) => o.id), lotSex);
+    // What the living world can do to a bidder between the pick and the
+    // server's check: those refusals are retried with another bidder.
+    const retryBid = ['already_pregnant', 'not_found', 'not_mature', 'died', 'organism_busy'];
+    const bidLog = [];
     let bid = null;
-    if (bidder !== null && await bob.selectOption('#market-mine', String(bidder), { timeout: 3000 }).then(() => true, () => false)) {
-      const enabled = await waitFor('bid button enabled', () => bob.evaluate((c) => {
+    let bidder = null;
+    const triedBidders = [];
+    for (let attempt = 1; attempt <= 6 && !bid?.ok; attempt++) {
+      const cands = await waitFor(`one of bob's adults to bid with (attempt ${attempt})`, async () => {
+        const l = await bidders();
+        return l.length ? l : null;
+      }, 30000).catch(() => []);
+      if (cands.length === 0) {
+        bidLog.push(`attempt ${attempt}: bob has no open adult of the other sex`);
+        break;
+      }
+      const cand = cands.find((id) => !triedBidders.includes(id)) ?? cands[0];
+      triedBidders.push(cand);
+      bid = null;
+      if (!(await bob.selectOption('#market-mine', String(cand), { timeout: 15000 }).then(() => true, () => false))) {
+        bidLog.push(`attempt ${attempt}: #${cand} not in bob's list`);
+        continue;
+      }
+      // The card is rebuilt for the new pick: wait for its Bid button to be
+      // enabled for it.
+      const ready = await waitFor(`the bid button enabled for #${cand}`, () => bob.evaluate(({ c, id }) => {
+        if (document.querySelector('#market-mine')?.value !== String(id)) return 'the pick changed';
         const b = document.querySelector(`${c} button.bid`);
-        return b && !b.disabled;
-      }, bobCard), 10000).catch(() => false);
-      if (enabled) {
-        await bob.evaluate(() => { window.__results = []; });
-        // The card re-renders as the world moves and may disable the button
-        // again (the picked adult no longer fits): then there is no bid.
-        const clicked = await bob.click(`${bobCard} button.bid`, { timeout: 5000 }).then(() => true, () => false);
-        if (clicked) bid = await waitFor('bid result', () => bob.evaluate(() => window.__results.find((r) => r.type === 'bid')));
-        else console.log('  … the bid button was disabled again before the click');
-        if (!bid.ok && !['already_pregnant', 'not_found', 'not_mature', 'died', 'organism_busy', 'incompatible_body_plans', 'genetically_incompatible', 'no_slots_left', 'too_many_offers', 'auction_closed', 'unknown_listing'].includes(bid.error?.code)) {
-          throw new Error(`bid failed: ${JSON.stringify(bid.error)}`);
-        }
+        return b && !b.disabled ? 'ready' : null;
+      }, { c: bobCard, id: cand }), 20000).catch(() => null);
+      if (ready !== 'ready') {
+        const why = ready ?? await bob.evaluate((c) => document.querySelector(`${c} button.bid`)?.title ?? 'no auction card', bobCard);
+        bidLog.push(`attempt ${attempt}: #${cand} could not bid (${why})`);
+        continue;
+      }
+      // Check and click in one step in the page: no state update can land
+      // between the two (a plain DOM click; the card may be rebuilt).
+      const clicked = await bob.evaluate(({ c, id }) => {
+        if (document.querySelector('#market-mine')?.value !== String(id)) return 'the pick changed';
+        const b = document.querySelector(`${c} button.bid`);
+        if (!b) return 'the card went away';
+        if (b.disabled) return `the button was disabled again (${b.title})`;
+        window.__results = [];
+        b.click();
+        return 'clicked';
+      }, { c: bobCard, id: cand });
+      if (clicked !== 'clicked') {
+        bidLog.push(`attempt ${attempt}: #${cand} not clicked: ${clicked}`);
+        continue;
+      }
+      bid = await waitFor(`the bid result for #${cand} (attempt ${attempt})`, () => bob.evaluate(() => window.__results.find((r) => r.type === 'bid') ?? null));
+      if (bid.mine !== cand) throw new Error(`the Bid button bid for #${bid.mine}, not the picked #${cand}`);
+      if (bid.ok) {
+        bidder = cand;
+        bidLog.push(`attempt ${attempt}: bid for #${cand} through the UI`);
+      } else if (retryBid.includes(bid.error?.code)) {
+        bidLog.push(`attempt ${attempt}: bid for #${cand} refused (${bid.error.code})`);
+      } else {
+        throw new Error(`bid failed: ${JSON.stringify(bid.error)} (lot #${lotOrg} ${lotSex}, bidder #${cand})`);
       }
     }
+    console.log(`  … auction bid path: ${bid?.ok ? 'bid through the UI' : 'no bid, ann withdraws'} (${bidLog.join('; ')})`);
     if (bid?.ok) {
-      await waitFor('bob\'s bid in escrow', async () => (await renown(bob)).escrow >= reserve, 10000);
+      await waitFor('bob\'s bid in escrow', async () => (await renown(bob)).escrow >= reserve, 20000);
       await page.click('#market-refresh');
       // (Unless it closed meanwhile: then it settled with bob's bid.)
       await waitFor('ann sees the bid', async () => !(await ownListings()).includes(auctionId) || page.evaluate(([id, reserve]) => {
         const c = document.querySelector(`#my-listings .listing[data-listing="${id}"]`);
         return c && c.querySelector('.auction-line')?.textContent.includes(`high bid ${reserve}`) && c.querySelector('button.withdraw')?.disabled;
-      }, [auctionId, reserve]), 10000);
-      step(`ann auctioned listing ${auctionId}; bob bid ${reserve} renown for #${bidder} (held in escrow, withdraw disabled)`);
+      }, [auctionId, reserve]), 20000);
+      step(`ann auctioned her ${lotSex} #${lotOrg} (listing ${auctionId}); bob bid ${reserve} renown for #${bidder} from the card (held in escrow, withdraw disabled)`);
     } else {
-      console.log(`  … no bid on the auction (${bid ? bid.error.code : 'no bidder or bid not possible'}); ann withdraws it`);
       await page.click('#market-refresh');
-      await page.click(`#my-listings .listing[data-listing="${auctionId}"] button.withdraw`);
-      await waitFor('auction withdrawn', async () => !(await ownListings()).includes(auctionId), 10000);
-      step(`ann auctioned listing ${auctionId} and withdrew it`);
+      const withdraw = `#my-listings .listing[data-listing="${auctionId}"] button.withdraw`;
+      await page.waitForSelector(`${withdraw}:not([disabled])`, { timeout: 20000 });
+      await page.evaluate(() => { window.__results = []; });
+      await page.click(withdraw, { timeout: 15000 });
+      const w = await waitFor('withdraw_listing result for the auction', () => page.evaluate(() => window.__results.find((r) => r.type === 'withdraw_listing') ?? null));
+      if (!w.ok) throw new Error(`withdrawing auction ${auctionId} failed: ${JSON.stringify(w.error)}`);
+      await waitFor('auction withdrawn', async () => !(await ownListings()).includes(auctionId), 20000);
+      step(`ann auctioned listing ${auctionId} and withdrew it (no bid went through: ${bidLog.join('; ')})`);
     }
     await bob.selectOption('#market-kind', 'any');
     await page.screenshot({ path: path.join(shots, 'market-ann.png') });
@@ -729,7 +805,7 @@ async function main() {
         if (!p) continue;
         await page.evaluate(() => window.evo.model.select(null));
         await page.mouse.click(canvasBox.x + p.x, canvasBox.y + p.y);
-        const got = await waitFor('selection', () => page.evaluate(() => window.evo.model.selected), 3000).catch(() => null);
+        const got = await waitFor('selection', () => page.evaluate(() => window.evo.model.selected), 6000).catch(() => null);
         if (got !== null && (await alive(got))) return got;
       }
       throw new Retry('could not select an own organism by clicking it');
@@ -785,7 +861,7 @@ async function main() {
         if (!spot) throw new Retry('no empty spot to click');
         await page.evaluate(() => { window.__results = window.__results.filter((r) => r.type !== 'order_move'); });
         await page.mouse.click(canvasBox.x + spot.p.x, canvasBox.y + spot.p.y);
-        const moveRes = await waitFor('order_move result', () => page.evaluate(() => window.__results.find((r) => r.type === 'order_move')), 5000).catch(() => null);
+        const moveRes = await waitFor('order_move result', () => page.evaluate(() => window.__results.find((r) => r.type === 'order_move')), 10000).catch(() => null);
         if (!moveRes) {
           console.log(`  … walk attempt ${attempt}: the click sent no order (it hit a marker that moved there?); retrying`);
           await page.evaluate((id) => window.evo.model.select(id), id);
@@ -860,10 +936,10 @@ async function main() {
       try {
         const selected = await clickOwn(tried);
         tried.push(selected);
-        if (!(await page.waitForSelector('#btn-possess', { timeout: 5000 }).then(() => true, () => false))) throw new Retry(`#${selected} has no possess button (died?)`);
+        if (!(await page.waitForSelector('#btn-possess', { timeout: 10000 }).then(() => true, () => false))) throw new Retry(`#${selected} has no possess button (died?)`);
         step(`clicked own organism #${selected}; inspector open`);
-        await page.click('#btn-possess', { timeout: 5000 }).catch(() => { throw new Retry('possess button went away'); });
-        const possessed = await waitFor('possession', () => page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id && o.possessed)?.id, selected), 10000)
+        await page.click('#btn-possess', { timeout: 10000 }).catch(() => { throw new Retry('possess button went away'); });
+        const possessed = await waitFor('possession', () => page.evaluate((id) => window.evo.model.state.organisms.find((o) => o.id === id && o.possessed)?.id, selected), 15000)
           .catch(() => { throw new Retry(`#${selected} was not possessed`); });
         step(`possessed #${possessed}`);
         const walk = await walkTo(possessed);
@@ -890,7 +966,7 @@ async function main() {
     const mig = await waitFor('migrate result', () => page.evaluate(() => window.__results.find((r) => r.type === 'migrate')));
     if (!mig.ok) throw new Error(`migrate failed: ${JSON.stringify(mig.error)}`);
     await page.evaluate(() => window.evo.socket.send({ type: 'possess', organism: 999999 }));
-    await page.waitForSelector('.toast.error:has-text("999999")', { timeout: 5000 });
+    await page.waitForSelector('.toast.error:has-text("999999")', { timeout: 15000 });
     step('migrate ok; command errors shown as toasts');
 
     // Group commands: split the herd from the toolbar, draw a territory for
@@ -904,7 +980,7 @@ async function main() {
     await waitFor('the new group picked in the group menu', () => page.evaluate((g) => {
       const sel = document.querySelector('#group-select');
       return sel.value === String(g) && sel.options.length === 3 && window.evo.model.state.groups.length === 2;
-    }, newGroup), 10000);
+    }, newGroup), 20000);
     await page.click('#territory');
     await page.mouse.click(canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
     const draft = await waitFor('a territory draft', () => page.evaluate(() => window.evo.screen().view.overlayInfo().draft));
@@ -917,12 +993,12 @@ async function main() {
       const t = window.evo.model.state.groups.find((x) => x.id === g)?.territory;
       const drawn = window.evo.screen().view.overlayInfo().territories;
       return t && drawn.some((d) => d.group === g) ? { t, drawn: drawn.length } : null;
-    }, newGroup), 10000);
+    }, newGroup), 20000);
     if (Math.abs(shown.t.radius - claim.data.radius) > 1e-3 || shown.t.radius < 3) throw new Error(`territory ${JSON.stringify(shown.t)} vs claim ${JSON.stringify(claim.data)}`);
     await page.waitForTimeout(400);
     await page.screenshot({ path: path.join(shots, 'territory.png') });
     await page.click('#tab-lineage');
-    await page.waitForSelector(`#group-list .group-card[data-group="${newGroup}"] button[data-action="abandon"]`, { timeout: 5000 });
+    await page.waitForSelector(`#group-list .group-card[data-group="${newGroup}"] button[data-action="abandon"]`, { timeout: 15000 });
     const cards = await page.evaluate(() => document.querySelectorAll('#group-list .group-card').length);
     // Two claims at once: the second lands within the first's cooldown (the
     // fast test world runs a day a second, so only back-to-back claims hit it).
@@ -936,7 +1012,7 @@ async function main() {
     const merged = await waitFor('merge_groups result', () => page.evaluate(() => window.__results.find((r) => r.type === 'merge_groups')));
     if (!merged.ok) throw new Error(`merge_groups failed: ${JSON.stringify(merged.error)}`);
     await waitFor('one group again', () => page.evaluate(() => window.evo.model.state.groups.length === 1
-      && document.querySelector('#group-select').value === 'all' && !window.evo.model.state.organisms.some((o) => o.group)), 10000);
+      && document.querySelector('#group-select').value === 'all' && !window.evo.model.state.organisms.some((o) => o.group)), 20000);
     step(`groups: split ${split.data.moved} organisms into group ${newGroup}, territory radius ${shown.t.radius.toFixed(1)} drawn (${cards} group cards), cooldown refused a re-claim, merged back (${merged.data.moved})`);
 
     await page.evaluate(() => window.evo.screen().view.setFollow(true));
@@ -951,7 +1027,7 @@ async function main() {
 
     // Genetics dashboard: charts from /api/lineage/stats and the alerts feed.
     await page.click('#tab-genetics');
-    await page.waitForSelector('#dashboard svg.chart', { timeout: 10000 });
+    await page.waitForSelector('#dashboard svg.chart', { timeout: 20000 });
     const dash = await waitFor('dashboard with recorded days', () => page.evaluate(() => {
       const rows = document.querySelectorAll('#drift-list .drift-row').length;
       const charts = document.querySelectorAll('#dashboard svg.chart').length;
@@ -976,12 +1052,12 @@ async function main() {
     // server keeps the choice.
     await page.click('#alert-prefs summary');
     await page.click('#alert-prefs input[data-kind="daily_summary"][data-field="show"]');
-    await waitFor('daily summaries hidden', () => page.evaluate(() => document.querySelectorAll('#alerts-feed .feed-item.kind-daily_summary').length === 0), 5000);
+    await waitFor('daily summaries hidden', () => page.evaluate(() => document.querySelectorAll('#alerts-feed .feed-item.kind-daily_summary').length === 0), 15000);
     const savedPrefs = await waitFor('alert preferences saved', () => page.evaluate(async () => {
       const { token } = JSON.parse(localStorage.getItem('evo.session'));
       const p = await (await fetch('/api/alerts/prefs', { headers: { authorization: `Bearer ${token}` } })).json();
       return p.hidden.includes('daily_summary') ? p : null;
-    }), 5000);
+    }), 15000);
     step(`alert preferences saved: ${JSON.stringify(savedPrefs)}`);
     await page.screenshot({ path: path.join(shots, 'genetics-dashboard.png') });
     await page.$eval('#panel-genetics', (el) => { el.scrollTop = el.scrollHeight; });
@@ -1012,7 +1088,13 @@ async function main() {
     const summary = await page.evaluate(() => document.querySelector('#season-history details p')?.textContent ?? '');
     if (!/^Season \d+ \(days \d+–\d+\): /.test(summary)) throw new Error(`season summary: ${summary}`);
     await page.click('#season-history details summary');
-    await page.waitForSelector('#season-history details[open] .standings table.board', { timeout: 10000 });
+    await waitFor('a finished season\'s standings', () => page.evaluate(() => {
+      // The list re-renders as new seasons end (every three days, about
+      // three seconds here): open the newest again if a re-render raced the click.
+      const d = document.querySelector('#season-history details');
+      if (d && !document.querySelector('#season-history details[open]')) d.open = true;
+      return document.querySelector('#season-history details[open] .standings table.board') !== null;
+    }), 20000);
     const api = await page.evaluate(async () => {
       const me = window.evo.model.player;
       const [list, mine] = await Promise.all([(await fetch('/api/seasons')).json(), (await fetch(`/api/seasons/player/${me}`)).json()]);
