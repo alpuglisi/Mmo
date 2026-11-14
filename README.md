@@ -197,10 +197,11 @@ cargo run --release --bin evo-sim -- run --days 120 --report 10 --snapshot out/w
 cargo run --release --bin evo-sim -- bench --scale 4 --days 3
 cargo run --release --bin evo-sim -- bench --size 256 --scale 16 --days 12 --threads 1,2,4 --compare-apply
 cargo run --release --bin evo-sim -- sweep --trials 16 --seeds 3 --rounds 2 --out sweep.csv
-cargo run --release --bin evo-sim -- sweep --trials 24 --seeds 12 --screen-days 40 --screen-seeds 4 --eta 4   # screened sweep
+cargo run --release --bin evo-sim -- sweep --trials 24 --seeds 12 --screen-days 60 --screen-seeds 4 --eta 3   # screened sweep (44% of the cost)
 cargo run --release --bin evo-sim -- compare --seed 31 --seeds 24 --set larval_competition=18 vs defaults   # is A better than B?
 cargo run --release --bin evo-sim -- compare --seed 31 --adaptive --set larval_competition=18 vs defaults   # add seeds until it resolves
-cargo run --release --bin evo-sim -- rankcheck --trials 24 --seeds 4 --spread 0.5   # do 40-day screen ranks predict 120-day ranks?
+cargo run --release --bin evo-sim -- rankcheck --trials 24 --seeds 12 --spread 0.25 --out rc.csv   # do screen ranks predict 120-day ranks? noise or screen error?
+cargo run --release --bin evo-sim -- rankcheck --from rc.csv   # re-analyze without simulating
 cargo run --release --bin evo-sim -- run --set sprint=2.0 --set crowding=0.05   # try a balance tweak
 cargo run --release --example trace -- 3 200          # follow one fox (lineage 3)
 cargo run --release --example stuck -- 120 1 2        # how often organisms get stuck
@@ -3000,6 +3001,94 @@ second digit. What it says:
   needs `compare` (now `compare --adaptive`) on held-out seeds. The sweep's
   defaults are unchanged (no screens unless asked).
 
+**Noise or screen error? (`rankcheck` with 12 seeds).** With 4 or more
+seeds `rankcheck` now also splits the seeds into 200 random halves (95%
+intervals bootstrap the trials) and simulates whole screened sweeps on the
+measured trials. Per checkpoint it reports the screen's own split-half ρ,
+the *cross* ρ (screen on one half against the full run on the other half, so
+no seed noise is shared) and the **true-score ρ** = cross ρ / √(screen
+split-half ρ × full-run split-half ρ): the agreement left once both rankings
+are freed of seed noise (≈ 1 means only noise separates screen and full
+run; well below 1 means the short run measures something else, which more
+seeds cannot fix). It also gives the full-run reliability with its CI and the
+seeds needed for 0.8 and 0.9, and, from the simulated sweeps (worlds
+resampled per trial around shrunken trial means, screen worlds resumed as in
+`sweep`), the chance the true best survives a top-`ceil(n/eta)` cut, the
+chance the winner is the true best, and the points lost (regret) against an
+unscreened sweep. `--from PATH` re-analyzes a CSV written by `--out`
+without simulating. Two narrow rounds (spread 0.25, 24 trials × 12 seeds,
+96×96, 120 days; `--seed 1` uses the same trials as the 4-seed round-2 run
+above, `--seed 101` an independent set), about 2.5 CPU-hours in all:
+
+| | seed 1 (seeds 1–12) | seed 101 (seeds 101–112) |
+| --- | --- | --- |
+| 120-day trial means | 10.65–11.98 (SD 0.37; seed SD 0.70) | 10.87–11.84 (SD 0.27; seed SD 0.63) |
+| 120-day split-half ρ (6 vs 6 seeds) | 0.73 (0.50…0.86) | 0.53 (0.14…0.73) |
+| reliability of the 12-seed / 4-seed ranking | **0.85** (0.66…0.93) / 0.65 | **0.69** (0.25…0.84) / 0.42 |
+| seeds for reliability 0.8 / 0.9 | 9 / 20 | 22 / 49 |
+| ρ trials (same seeds) 20 / 40 / 60 / 80 / 100 days | −0.03 / 0.22 / 0.88 / 0.94 / 0.96 | 0.44 / 0.64 / 0.73 / 0.77 / 0.83 |
+| true-score ρ at 20 days | −0.02 (−0.86…0.56) | 0.67 (0.19…1.02) |
+| true-score ρ at 40 days | **0.29** (−0.33…0.75) | **0.79** (0.39…1.42) |
+| true-score ρ at 60 days | 1.18 (1.04…2.28) | 1.01 (0.78…2.74) |
+| true-score ρ at 80 / 100 days | 1.00 (0.92…1.09) / 0.98 (0.91…1.01) | 0.93 (0.77…1.16) / 0.94 (0.76…1.04) |
+
+(At 20–60 days most worlds still score 12.00, so the screen's split-half ρ
+rests on a few early dips and a true-score ρ above 1 means "about 1".)
+Simulated sweeps, finalists on 12 seeds, eta 3 unless noted; cost in
+world-days against an unscreened 12-seed sweep; "best kept" = the true best
+survives the cut, "pick" = the winner is the true best, regret in score
+points:
+
+| design | cost | seed 1: best kept · pick · regret | seed 101: best kept · pick · regret |
+| --- | --- | --- | --- |
+| no screen, 12 seeds | 100% | – · 90% · 0.01 | – · 28% · 0.13 |
+| no screen, 6 seeds | 50% | – · 67% · 0.13 | – · 11% · 0.23 |
+| no screen, 4 seeds | 33% | – · 43% · 0.29 | – · 6% · 0.30 |
+| 40 days × 4 seeds | 41% | 2% · 2% · 0.14 | 14% · 9% · 0.19 |
+| **60 days × 4 seeds** | **44%** | **100% · 90% · 0.01** | **62% · 35% · 0.14** |
+| 60 days × 4 seeds, eta 4 | 39% | 93% · – · – | 40% · – · – |
+| 80 days × 4 seeds | 48% | 96% · 88% · 0.02 | 43% · 22% · 0.14 |
+| 100 days × 4 seeds | 52% | 100% · 90% · 0.01 | 59% · 25% · 0.13 |
+
+What it says:
+
+- **Full-run noise is real but not the whole story.** With 12 seeds the
+  120-day ranking of a narrow round reproduces itself at reliability 0.85
+  and 0.69; with 4 seeds only 0.65 and 0.42 (so the old 4-seed numbers
+  above understated every screen). Reliability 0.8 takes 9–22 seeds when the
+  trials' true spread (SD 0.16–0.27 after shrinkage) is below the 0.2 SE of a
+  12-seed mean.
+- **40-day (and 20-day) screens add screen error of their own, and how much
+  depends on the round.** Their true-score ρ is 0.29 in one round and 0.79
+  in the other, both with wide intervals: what scores well at 40 days is at
+  best loosely what scores well at 120, and no seed count fixes that. In the
+  simulated sweeps a 40-day screen loses the true best most of the time and
+  costs 0.14–0.19 points of regret, against 0.01–0.13 unscreened.
+- **From 60 days on a screen ranks like the full run** (true-score ρ ≈ 1 in
+  both rounds; 0.93–1.00 at 80–100 days): what remains is seed noise, which
+  the screen's 4 seeds and the finalists' 12 seeds handle. A 60-day × 4-seed
+  screen with eta 3 costs 44% of an unscreened 12-seed sweep and loses
+  nothing measurable (regret 0.01 vs 0.01, 0.14 vs 0.13); spending the same
+  budget unscreened (6 seeds, 50%) costs 0.12 and 0.10 points more. eta 4
+  saves only 5 points of budget and keeps the best 93% / 40% of the time.
+- **A very narrow round is past what a sweep resolves.** In the seed-101
+  round even the unscreened 12-seed sweep picks the true best only 28% of
+  the time (regret 0.13), whatever the screen.
+
+**Guidance.** Never screen shorter than 60 days in a narrow round (spread
+≤ 0.25); in a wide first round 40 days still works as a loser filter (ρ 0.65
+above), but 60 is as cheap at eta 3 and safer. The default recipe for a
+screened round is `--seeds 12 --screen-days 60 --screen-seeds 4 --eta 3`
+(44% of the world-days, same winner quality as unscreened); use 80 days if a
+round's early scores are all 12.00. Give finalists at least 12 seeds (9–22
+for a reliable narrow-round ranking). When `rankcheck` (or the sweep's own
+CIs) shows a full-run reliability below about 0.7 with 12 seeds, stop
+narrowing: the remaining differences are a few hundredths of a point, and
+the candidate should go to `compare --adaptive` on held-out seeds. The
+sweep's defaults are unchanged (no screens unless asked; `--seeds 3` is for
+quick looks), since one recipe does not fit wide and narrow rounds and the
+evidence covers two narrow rounds.
+
 A run's score (max 12) gives each of the 8 lineages 1 point for surviving the
 year and up to 0.5 for holding its founding size, minus up to 3 for time spent
 pinned at a population cap. Per-species births and deaths by cause are in
@@ -4074,9 +4163,13 @@ sections above).
 8. **Tooling.** Done: `compare --adaptive` (sequential, Pocock-level
    looks until the CI excludes 0, fits within ±tolerance or hits
    `--max-seeds`) and `rankcheck` (40-day screens predict 120-day ranks at
-   ρ ≈ 0.65 in a wide round, ≈ 0.31 in a narrow one; prefer 60-day screens
-   as loser filters). Open: a `rankcheck` with more seeds per trial (8–12)
-   to separate screen error from full-run noise in narrow rounds, and
-   what migrating buys a design (the caribou with and without the
+   ρ ≈ 0.65 in a wide round, ≈ 0.31 in a narrow one), now with seed splits
+   and simulated screened sweeps: with 12 seeds in two narrow rounds the
+   12-seed full-run ranking reproduces at reliability 0.85 and 0.69, 40-day
+   screens carry screen error of their own (true-score ρ 0.29 and 0.79),
+   and from 60 days the screen ranks like the full run (≈ 1); so screen at
+   60 days × 4 seeds with eta 3 and 12 finalist seeds (44% of the cost, no
+   loss), never at 40 in narrow rounds (see *Noise or screen error?*).
+   Open: what migrating buys a design (the caribou with and without the
    gene, paired) and a reason for winter ranges to exist (better
    cold-season pasture than the summer range).

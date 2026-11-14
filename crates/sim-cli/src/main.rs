@@ -30,6 +30,7 @@ USAGE:
     evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--set NAME=V ..] [vs [defaults | --set NAME=V ..]]
                     [--adaptive] [--max-seeds N] [--batch N] [--tolerance F]
     evo-sim rankcheck [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--spread F] [--screen-days D,..] [--eta F] [--out PATH]
+                      [--from PATH]
     evo-sim designs
 
 COMMANDS:
@@ -39,7 +40,9 @@ COMMANDS:
     compare  Run two balance configurations on the same seeds and report the paired
              score difference with a 95% confidence interval (is A better than B?)
     rankcheck  Run one sweep round's trials and report how well short-run (screen)
-             ranks predict full-run ranks (Spearman correlation, top-1/eta kept)
+             ranks predict full-run ranks (Spearman correlation, top-1/eta kept); with
+             4+ seeds also seed-split reliabilities (noise vs screen error) and
+             simulated screened sweeps (chance the true best survives a cut)
     designs  List the sample player designs (and the migrating one) and their point costs
 
 OPTIONS:
@@ -66,7 +69,9 @@ OPTIONS:
     --rounds N      Sweep: rounds, each recentered on the best with half the spread (default 2)
     --spread F      Sweep: max log-factor per parameter in round 1 (default 0.5, i.e. ×0.61–×1.65)
     --out PATH      Sweep: write every trial to a CSV file (score, its SE and 95% CI,
-                    the paired difference to the center); compare: per-seed scores
+                    the paired difference to the center); compare: per-seed scores;
+                    rankcheck: every world's score at every checkpoint
+    --from PATH     Rankcheck: re-analyze a CSV written by its --out instead of simulating
     --adaptive      Compare: start with --seeds seeds (default 12) and add batches until
                     the paired difference's CI excludes 0, lies within ±tolerance, or
                     --max-seeds is reached. Each look uses Pocock's sequential level
@@ -149,6 +154,8 @@ struct Args {
     max_seeds: u64,
     batch: Option<u64>,
     tolerance: f64,
+    /// Rankcheck: re-analyze this `--out` CSV.
+    from: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -185,6 +192,7 @@ fn parse_args() -> Result<Args, String> {
         max_seeds: 48,
         batch: None,
         tolerance: 0.3,
+        from: None,
     };
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or(format!("{flag} needs a value"));
@@ -229,6 +237,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "defaults" if a.command == "compare" => {}
             "--adaptive" => a.adaptive = true,
+            "--from" => a.from = Some(value()?),
             "--max-seeds" => {
                 a.max_seeds = num(value()?)?.max(1);
                 a.adaptive = true;
@@ -345,19 +354,25 @@ fn main() -> ExitCode {
                 }),
             });
         }
-        "rankcheck" => rankcheck::rankcheck(&rankcheck::RankCheckArgs {
-            base_seed: args.seed,
-            size,
-            days: args.days.unwrap_or(120),
-            trials: if trials_given { args.trials } else { 24 },
-            seeds: args.seeds.unwrap_or(4),
-            spread: if spread_given { args.spread } else { 0.25 },
-            center: args.balance,
-            checkpoints: if args.screen_days.is_empty() { vec![20, 40, 60, 80] } else { args.screen_days.clone() },
-            eta: args.eta,
-            parallel_apply: !args.sequential_apply,
-            out: args.out.clone(),
-        }),
+        "rankcheck" => {
+            if let Err(e) = rankcheck::rankcheck(&rankcheck::RankCheckArgs {
+                base_seed: args.seed,
+                size,
+                days: args.days.unwrap_or(120),
+                trials: if trials_given { args.trials } else { 24 },
+                seeds: args.seeds.unwrap_or(4),
+                spread: if spread_given { args.spread } else { 0.25 },
+                center: args.balance,
+                checkpoints: if args.screen_days.is_empty() { vec![20, 40, 60, 80] } else { args.screen_days.clone() },
+                eta: args.eta,
+                parallel_apply: !args.sequential_apply,
+                out: args.out.clone(),
+                from: args.from.clone(),
+            }) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
         "designs" => designs(),
         "help" | "-h" | "--help" => print!("{USAGE}"),
         other => {
