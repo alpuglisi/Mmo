@@ -39,7 +39,7 @@
 //!   world thread, saver, store task and metrics; accounts are shared.
 //! - [`webpush`]: Web Push notifications (VAPID, RFC 8291 encryption,
 //!   coalescing and rate limits, delivery with retries) for players whose
-//!   game tab is closed.
+//!   game tab is closed, and native push to the apps (FCM, APNs).
 
 pub mod accounts;
 pub mod appearance;

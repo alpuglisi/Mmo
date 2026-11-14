@@ -377,11 +377,23 @@ export interface PushPrefs {
   off: PushKind[];
 }
 
-/** `GET /api/push/key`: whether the server sends push notifications, and the VAPID key to subscribe with. */
+/** The push service of a native app's device token (crates/server/src/protocol.rs `NativeService`): FCM for Android, APNs for iOS. */
+export type NativeService = 'fcm' | 'apns';
+
+/** `GET /api/push/key`: whether the server sends push notifications, the VAPID key to subscribe with, and the native services the apps can register with. */
 export interface PushKeyView {
   enabled: boolean;
   public_key?: string;
   kinds: PushKind[];
+  /** Left out when no native push service is configured. */
+  native?: NativeService[];
+}
+
+/** One app device (`GET /api/push/subscriptions` `devices`, `POST /api/push/native/subscribe`); the token stays on the server. */
+export interface PushDeviceView {
+  service: NativeService;
+  created_unix: number;
+  label?: string;
 }
 
 /** One subscribed device (`GET /api/push/subscriptions`, `POST /api/push/subscribe`). */

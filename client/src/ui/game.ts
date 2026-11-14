@@ -882,7 +882,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     h('summary', {}, 'Alert preferences'),
     h('p', { class: 'muted small' }, 'Saved to your account. Hidden kinds stay out of the feed and the badge; switch one back on to see its recent alerts.'),
     prefsEl);
-  const push = pushSettings({ token: deps.token, onUnauthorized: deps.onUnauthorized, toast: (k, t) => model.toast(k, t) });
+  const push = pushSettings({ token: deps.token, player: model.player, onUnauthorized: deps.onUnauthorized, toast: (k, t) => model.toast(k, t) });
   cleanups.push(push.destroy);
   append(tabs.genetics, [dashEl, h('h3', {}, 'Alerts'), prefsBox, push.el, feedEl]);
 

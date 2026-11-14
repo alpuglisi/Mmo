@@ -10,7 +10,8 @@
 //!   backoff (`retry_base`, doubling, ±20 % jitter).
 //! - Any other status (400, 401, 403, 413): rejected, not retried.
 //!
-//! At most `max_attempts` requests per message.
+//! At most `max_attempts` requests per message. The native senders
+//! (`super::fcm`, `super::apns`) retry the same way ([`with_retries`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -35,10 +36,55 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// What to do after one attempt.
-enum Attempt {
+/// What to do after one attempt (shared by the Web Push, FCM and APNs
+/// senders).
+pub(crate) enum Attempt {
     Done(Outcome),
     Retry { wait: Option<Duration>, why: String },
+}
+
+/// The HTTPS client for a push service: the configured timeout, no
+/// redirects; `http2_only` for services that speak nothing else (APNs).
+pub(crate) fn client(cfg: &PushConfig, http2_only: bool) -> Result<reqwest::Client, String> {
+    let mut b = reqwest::Client::builder().timeout(cfg.request_timeout).redirect(reqwest::redirect::Policy::none());
+    if http2_only {
+        b = b.http2_prior_knowledge();
+    }
+    b.build().map_err(|e| format!("push client: {e}"))
+}
+
+fn backoff(cfg: &PushConfig, attempt: u32) -> Duration {
+    let base = cfg.retry_base.saturating_mul(1 << attempt.min(16));
+    base.mul_f64(rand::thread_rng().gen_range(0.8..1.2))
+}
+
+/// Run `attempt` (given the attempt number) until it is done, at most
+/// `max_attempts` times, waiting as the module docs say in between.
+pub(crate) async fn with_retries<F, Fut>(cfg: &PushConfig, stats: &PushStats, mut attempt: F) -> Outcome
+where
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = Attempt>,
+{
+    let attempts = cfg.max_attempts.max(1);
+    let mut last = String::new();
+    for n in 0..attempts {
+        match attempt(n).await {
+            Attempt::Done(outcome) => return outcome,
+            Attempt::Retry { wait, why } => {
+                last = why;
+                if n + 1 == attempts {
+                    break;
+                }
+                let wait = wait.unwrap_or_else(|| backoff(cfg, n));
+                if wait > cfg.max_retry_wait {
+                    return Outcome::Failed(format!("{last}; asked to wait {} s", wait.as_secs()));
+                }
+                stats.retries.fetch_add(1, Ordering::Relaxed);
+                tokio::time::sleep(wait).await;
+            }
+        }
+    }
+    Outcome::Failed(last)
 }
 
 /// Valid for 12 hours (the most RFC 8292 recommends is 24); reused while
@@ -55,17 +101,13 @@ pub struct Sender {
     tokens: Mutex<HashMap<String, (String, u64)>>,
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 impl Sender {
     pub fn new(key: VapidKey, cfg: Arc<PushConfig>, stats: Arc<PushStats>) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
-            .timeout(cfg.request_timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| format!("push client: {e}"))?;
+        let client = client(&cfg, false)?;
         Ok(Sender { client, key, cfg, stats, tokens: Mutex::new(HashMap::new()) })
     }
 
@@ -87,11 +129,6 @@ impl Sender {
         header
     }
 
-    fn backoff(&self, attempt: u32) -> Duration {
-        let base = self.cfg.retry_base.saturating_mul(1 << attempt.min(16));
-        base.mul_f64(rand::thread_rng().gen_range(0.8..1.2))
-    }
-
     /// Deliver an encrypted body (`aes128gcm`) to `endpoint`, retrying as
     /// the module docs say. `urgency`: `high`, `normal` or `low`.
     pub async fn send(&self, endpoint: &str, body: &[u8], urgency: &str) -> Outcome {
@@ -100,26 +137,7 @@ impl Sender {
             Err(e) => return Outcome::Failed(format!("the endpoint does not parse: {e}")),
         };
         let audience = url.origin().ascii_serialization();
-        let attempts = self.cfg.max_attempts.max(1);
-        let mut last = String::new();
-        for attempt in 0..attempts {
-            match self.attempt(&url, &audience, body, urgency).await {
-                Attempt::Done(outcome) => return outcome,
-                Attempt::Retry { wait, why } => {
-                    last = why;
-                    if attempt + 1 == attempts {
-                        break;
-                    }
-                    let wait = wait.unwrap_or_else(|| self.backoff(attempt));
-                    if wait > self.cfg.max_retry_wait {
-                        return Outcome::Failed(format!("{last}; asked to wait {} s", wait.as_secs()));
-                    }
-                    self.stats.retries.fetch_add(1, Ordering::Relaxed);
-                    tokio::time::sleep(wait).await;
-                }
-            }
-        }
-        Outcome::Failed(last)
+        with_retries(&self.cfg, &self.stats, |_| self.attempt(&url, &audience, body, urgency)).await
     }
 
     async fn attempt(&self, url: &reqwest::Url, audience: &str, body: &[u8], urgency: &str) -> Attempt {
@@ -157,7 +175,7 @@ impl Sender {
 }
 
 /// `Retry-After` in seconds (an HTTP date is ignored: backoff instead).
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     let secs: u64 = headers.get(RETRY_AFTER)?.to_str().ok()?.trim().parse().ok()?;
     Some(Duration::from_secs(secs))
 }

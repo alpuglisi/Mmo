@@ -10,7 +10,8 @@ import { GameSocket } from './socket';
 import { designScreen } from './ui/design';
 import { gameScreen, type GameScreen } from './ui/game';
 import { loginScreen } from './ui/login';
-import { isOpenMessage, openParams, registerServiceWorker } from './push';
+import { detectEnv, isOpenMessage, openParams, registerServiceWorker } from './push';
+import { openTarget, type PushPlugin } from './nativePush';
 import { h } from './ui/dom';
 
 const root = document.getElementById('app')!;
@@ -135,7 +136,11 @@ async function showGame(r: Running): Promise<void> {
 /** A notification was clicked while the game is open: switch to its world (restarting the session there) and tab. */
 async function openFromNotification(world: string, tab: string): Promise<void> {
   const r = running;
-  if (!r) return;
+  if (!r) {
+    // Not logged in: open the tab once the game is up.
+    pendingTab = tab;
+    return;
+  }
   let current = r.session.world ?? '';
   if (!current) {
     try {
@@ -175,6 +180,18 @@ if ('serviceWorker' in navigator) {
     if (isOpenMessage(e.data)) void openFromNotification(e.data.world, e.data.tab);
   });
 }
+// The apps: a tapped native notification (FCM / APNs) carries its world and
+// tab. The plugin keeps the tap that launched the app until this listener
+// is added, so a cold start lands on the right view too.
+async function listenForNativeTaps(): Promise<void> {
+  const { PushNotifications } = await import('@capacitor/push-notifications');
+  const plugin = PushNotifications as unknown as PushPlugin;
+  await plugin.addListener('pushNotificationActionPerformed', ((a: { notification?: { data?: unknown } }) => {
+    const t = openTarget(a.notification?.data);
+    if (t) void openFromNotification(t.world, t.tab);
+  }) as (e: never) => void);
+}
+if (detectEnv().native) void listenForNativeTaps().catch(() => undefined);
 // A notification click that opened a new window: `?world=…&tab=…`.
 const opened = openParams(window.location.href);
 if (opened.world !== null || opened.tab !== null) window.history.replaceState(null, '', opened.clean);

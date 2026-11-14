@@ -22,9 +22,17 @@
 //! 30 s of notices, at least 5 minutes apart and at most 4 an hour) and
 //! delivers each batch to every subscription of the player in its own task
 //! ([`sender`]: retries, 404/410 deletes the subscription).
+//!
+//! The Android and iOS apps get the same notifications natively ([`native`]):
+//! their device tokens go to Firebase Cloud Messaging ([`fcm`]) and the Apple
+//! Push Notification service ([`apns`]), each on only when its credentials
+//! are configured ([`PushConfig::fcm`], [`PushConfig::apns`]).
 
+pub mod apns;
 pub mod coalesce;
 pub mod ece;
+pub mod fcm;
+pub mod native;
 pub mod sender;
 pub mod service;
 pub mod vapid;
@@ -112,6 +120,12 @@ pub struct PushConfig {
     /// known push service host ([`KNOWN_PUSH_HOSTS`]), so the server can't
     /// be made to POST to arbitrary addresses.
     pub allow_any_endpoint: bool,
+    /// Firebase Cloud Messaging for the Android app (`--fcm-service-account`);
+    /// `None`: Android devices can't register.
+    pub fcm: Option<fcm::FcmConfig>,
+    /// The Apple Push Notification service for the iOS app (`--apns-key`,
+    /// `--apns-key-id`, `--apns-team-id`); `None`: iOS devices can't register.
+    pub apns: Option<apns::ApnsConfig>,
 }
 
 impl std::fmt::Debug for PushConfig {
@@ -122,6 +136,8 @@ impl std::fmt::Debug for PushConfig {
             .field("subject", &self.subject)
             .field("limits", &self.limits)
             .field("allow_any_endpoint", &self.allow_any_endpoint)
+            .field("fcm", &self.fcm)
+            .field("apns", &self.apns)
             .finish_non_exhaustive()
     }
 }
@@ -141,6 +157,8 @@ impl Default for PushConfig {
             concurrency: 16,
             max_subscriptions: 10,
             allow_any_endpoint: false,
+            fcm: None,
+            apns: None,
         }
     }
 }
@@ -158,7 +176,7 @@ pub struct PushStats {
     pub batches: AtomicU64,
     /// Messages a push service accepted.
     pub delivered: AtomicU64,
-    /// Subscriptions deleted after a 404 or 410.
+    /// Subscriptions (and device tokens) the push services reported gone.
     pub gone: AtomicU64,
     /// Messages given up on (rejected, or attempts used up).
     pub failed: AtomicU64,

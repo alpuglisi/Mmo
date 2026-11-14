@@ -15,10 +15,11 @@ use sqlx::Row;
 
 use super::{
     AccountRecord, AlertPrefsRecord, AuctionRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord,
-    PushPrefsRecord, PushSubscriptionRecord, Store, StoreError, StoreResult, TradeRecord, KEEP_SNAPSHOTS,
+    PushDeviceRecord, PushPrefsRecord, PushSubscriptionRecord, Store, StoreError, StoreResult, TradeRecord,
+    KEEP_SNAPSHOTS,
 };
 use crate::league::{Category, PlayerPlacement, PlayerSeason, SeasonHead, SeasonRecord};
-use crate::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind, PushKind, PushPrefs};
+use crate::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind, NativeService, PushKind, PushPrefs};
 use evo_sim::PlayerId;
 
 impl From<sqlx::Error> for StoreError {
@@ -44,6 +45,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (6, "auctions", include_str!("../../migrations/0006_auctions.sql")),
     (7, "worlds", include_str!("../../migrations/0007_worlds.sql")),
     (8, "push", include_str!("../../migrations/0008_push.sql")),
+    (9, "push_devices", include_str!("../../migrations/0009_push_devices.sql")),
 ];
 
 #[derive(Debug)]
@@ -193,6 +195,54 @@ impl Store for PgStore {
                     endpoint: r.try_get("endpoint")?,
                     p256dh: r.try_get("p256dh")?,
                     auth: r.try_get("auth")?,
+                    created_unix: get_u64(r, "created_unix")?,
+                    label: r.try_get("label")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn put_push_device(&self, d: &PushDeviceRecord) -> StoreResult<()> {
+        sqlx::query(
+            "INSERT INTO push_devices (service, token, player, label, created_unix) VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (service, token) DO UPDATE SET player = EXCLUDED.player, label = EXCLUDED.label, \
+             created_unix = EXCLUDED.created_unix",
+        )
+        .bind(d.service.name())
+        .bind(&d.token)
+        .bind(i64::from(d.player))
+        .bind(&d.label)
+        .bind(int(d.created_unix))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_push_device(&self, service: NativeService, token: &str) -> StoreResult<bool> {
+        let done = sqlx::query("DELETE FROM push_devices WHERE service = $1 AND token = $2")
+            .bind(service.name())
+            .bind(token)
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn load_push_devices(&self, player: PlayerId) -> StoreResult<Vec<PushDeviceRecord>> {
+        let rows = sqlx::query(
+            "SELECT service, token, player, label, created_unix FROM push_devices WHERE player = $1 \
+             ORDER BY created_unix, service COLLATE \"C\", token COLLATE \"C\"",
+        )
+        .bind(i64::from(player))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                let service: String = r.try_get("service")?;
+                Ok(PushDeviceRecord {
+                    player: get_u64(r, "player")? as PlayerId,
+                    service: NativeService::parse(&service)
+                        .ok_or_else(|| StoreError(format!("unknown push service {service:?}")))?,
+                    token: r.try_get("token")?,
                     created_unix: get_u64(r, "created_unix")?,
                     label: r.try_get("label")?,
                 })

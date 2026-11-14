@@ -427,7 +427,10 @@ season, default 60; see [Ranked seasons](#ranked-seasons)),
 world, stored designs re-founded; see [Persistence](#persistence)), `--no-push`,
 `--vapid-private-key KEY` / `--vapid-subject mailto:...` (or `EVO_VAPID_PRIVATE_KEY` /
 `EVO_VAPID_SUBJECT`), `--push-per-hour N` and `--push-allow-any-endpoint` (see
-[Push notifications](#push-notifications)), `--hash-concurrency N` /
+[Push notifications](#push-notifications)), `--fcm-service-account FILE` and
+`--apns-key FILE --apns-key-id ID --apns-team-id ID [--apns-topic BUNDLE_ID]
+[--apns-sandbox]` (or `EVO_FCM_SERVICE_ACCOUNT`, `EVO_APNS_*`: native push in
+the apps, off without them; see [Native push in the apps](#native-push-in-the-apps)), `--hash-concurrency N` /
 `--hash-queue N` (or `EVO_HASH_CONCURRENCY` / `EVO_HASH_QUEUE`: password
 hashes run at once, default half the cores and at least 1, and requests
 allowed to wait for one, default 16 per concurrent hash; see Accounts under
@@ -663,10 +666,12 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/lineage/stats` | Bearer | The genetics dashboard: counts (alive, adults, young, pregnant, newest generation), `age_bands` (up to six equal bands by sex), `vitals` (births and deaths by cause per recorded day, the last entry today so far, at most 30), `genes` (every gene's mean, spread and founding mean with the daily means, largest drift first, and `bins`: members per tenth of the 0–1 range, a histogram), `origins` (whose alleles the living members carry: `[{player, name, lineage?, alleles, share}]`, largest share first; 0 is the wild), `legacy` (share per recorded day) and recent `alerts` |
 | `GET /api/alerts/prefs` | Bearer | The caller's alert preferences, `{hidden: [kind], toast: [kind]}` (kinds as in `alert` messages); the defaults `{hidden: [], toast: ["death", "need", "market"]}` until saved |
 | `POST /api/alerts/prefs` | Bearer | Replace them; the reply is the normalized form (sorted, no duplicates, nothing hidden is toasted). An unknown kind is refused (422) |
-| `GET /api/push/key` | | `{enabled, public_key?, kinds}`: whether the server sends push notifications, its VAPID public key (base64url, the browser's `applicationServerKey`) and the push kinds |
+| `GET /api/push/key` | | `{enabled, public_key?, kinds, native?}`: whether the server sends push notifications, its VAPID public key (base64url, the browser's `applicationServerKey`), the push kinds and the native push services configured (`["fcm", "apns"]`; left out when none is) |
 | `POST /api/push/subscribe` | Bearer | A browser's `PushSubscription.toJSON()` (`{endpoint, keys: {p256dh, auth}}`) plus an optional `label` (default: the user agent): stores it for the account, replacing one with the same endpoint. `{endpoint, created_unix, label?}`; `400 bad_subscription` (endpoint not a known push service, keys not a P-256 point and a 16-byte secret); `503 push_disabled` |
 | `POST /api/push/unsubscribe` `{endpoint}` | Bearer | Forget one of the caller's devices: `{removed}` |
-| `GET /api/push/subscriptions` | Bearer | The caller's devices, oldest first: `{subscriptions: [{endpoint, created_unix, label?}]}` (keys stay on the server) |
+| `POST /api/push/native/subscribe` `{service, token, label?}` | Bearer | An app's device token: `service` `fcm` (Android, an FCM registration token) or `apns` (iOS, the hex device token). Stores it for the account, replacing the same service and token. `{service, created_unix, label?}`; `400 bad_subscription` (not a token of that service); `503 push_disabled` (push off, or that service has no credentials) |
+| `POST /api/push/native/unsubscribe` `{service, token}` | Bearer | Forget one of the caller's app devices (also while push is off): `{removed}` |
+| `GET /api/push/subscriptions` | Bearer | The caller's devices, oldest first: `{subscriptions: [{endpoint, created_unix, label?}], devices?: [{service, created_unix, label?}]}` (keys and tokens stay on the server; `devices` left out when there are none) |
 | `GET /api/push/prefs` | Bearer | The push kinds the caller switched off, `{off: [kind]}` (`mating`, `death`, `market`, `species`, `season`, `catastrophe`); `{off: []}` until saved |
 | `POST /api/push/prefs` | Bearer | Replace them; the reply is normalized (sorted, no duplicates); an unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
@@ -1131,6 +1136,101 @@ encryption is checked byte for byte against the RFC 8291 example.
   the server can't be made to POST to arbitrary addresses;
   `--push-allow-any-endpoint` lifts that for tests and private push servers.
 
+#### Native push in the apps
+
+The Capacitor apps' WebViews have no Web Push, so the apps register with
+their platform's push service through `@capacitor/push-notifications` and
+hand the device token to the server (`POST /api/push/native/subscribe`):
+Firebase Cloud Messaging for Android, the Apple Push Notification service
+for iOS. The service task sends every coalesced notification to a player's
+device tokens next to their Web Push subscriptions: the same notices,
+preferences, coalescing and rate limits, the same title and body, and the
+same click data (world, tab, kind, count, tag, organism; strings), so a tap
+opens the same view. Each service is on only when its credentials are
+configured; without them the server runs exactly as before (`GET
+/api/push/key` has no `native` field and registering is refused with
+`503 push_disabled`). Browsers keep Web Push.
+
+- **FCM** (`webpush/fcm.rs`, HTTP v1 API): the service account's RSA key
+  signs a JWT (RS256, with `ring`, already in the tree under rustls), traded
+  at its `token_uri` for an OAuth2 access token (scope
+  `firebase.messaging`, reused until 5 minutes before it runs out), then
+  `POST https://fcm.googleapis.com/v1/projects/<project>/messages:send` per
+  token: `notification {title, body}`, `data`, `android {priority HIGH for
+  mating and death else NORMAL, ttl, collapse_key and notification tag per
+  world, channel_id "evo"}`. 404 / `UNREGISTERED`, 400 `INVALID_ARGUMENT`
+  about the registration token and 403 `SENDER_ID_MISMATCH` delete the
+  token; 401 fetches a new access token and retries; 429 and 5xx retry like
+  Web Push.
+- **APNs** (`webpush/apns.rs`, token-based): an ES256 provider token (`p256`)
+  from the team's `.p8` key, naming the key id and team, reused for 40
+  minutes (Apple: at most every 20, at least every 60); `POST
+  /3/device/<token>` over HTTP/2 to `api.push.apple.com` (or
+  `api.sandbox.push.apple.com` with `--apns-sandbox`) with `apns-topic`
+  (the bundle id), `apns-push-type: alert`, `apns-priority` 10 or 5,
+  `apns-expiration` (the TTL) and `apns-collapse-id` (one per world); the
+  body is `aps {alert {title, body}, sound, thread-id}` and the click data.
+  410, 400 `BadDeviceToken` and `DeviceTokenNotForTopic` delete the token;
+  403 `ExpiredProviderToken` signs a new provider token and retries; 429 and
+  5xx retry.
+- **Device tokens** are per account, global across worlds, at most 10 (an
+  11th drops the oldest), one per service and token (a shared phone moves to
+  the account that registered last), stored next to the Web Push
+  subscriptions (`push_devices`). An FCM token must be URL-safe text, an
+  APNs token hex (stored lower-case). Both bodies are cut to 3000 bytes so a
+  message stays under the services' 4 KB limit.
+- **The app** (`client/src/nativePush.ts`, `ui/push.ts`): the settings card
+  is the same; Enable asks for the notification permission, registers
+  (Android: creates the "Game events" channel first), waits for the token
+  and sends it; the token is remembered with the server and player
+  (`localStorage`), so the card shows "on" only for that account, sends the
+  token again when it opens (it may have rotated) and Turn off unregisters
+  and forgets it on the server. A tap (`pushNotificationActionPerformed`,
+  kept by the plugin until the listener is added on a cold start) switches
+  to the notification's world and tab, as a Web Push click does. The plugin
+  is loaded only inside the apps (its own chunk). Registering for FCM
+  without the Firebase config crashes the Android app, so the app only
+  offers push when `client/android/app/google-services.json` existed at
+  build time (or `VITE_EVO_FCM=1`); otherwise the card says push isn't set
+  up in this build.
+- **Tested** in Rust against a mock server (`crates/server/tests/native_push.rs`:
+  the token request and its RS256 assertion verified with the key, the FCM
+  message, the APNs request over HTTP/2 with its ES256 token verified, every
+  answer above, gone tokens deleted, the HTTP API) and unit tests for the
+  JWTs and request bodies; the client flows with fakes
+  (`nativePush.test.ts`). Nothing has been delivered to a real phone: that
+  needs a Firebase project, an Apple Developer key and devices.
+
+**Setting it up.**
+
+1. *Android (FCM).* In the [Firebase console](https://console.firebase.google.com/)
+   create a project (or use one), add an Android app with the package name
+   `org.evolutionmmo.client`, and download its `google-services.json` into
+   `client/android/app/` (the generated project; git-ignored, so keep a copy
+   and put it back after `npx cap add android`). Then `npm run cap:sync`
+   (it builds first, which sees the file) and build the app. For the
+   server, Project settings → Service accounts → *Generate new private key*
+   gives a JSON key file: run `evo-server --fcm-service-account
+   /path/to/key.json` (or `EVO_FCM_SERVICE_ACCOUNT=/path/to/key.json`, or the
+   JSON itself in the variable). Keep the file private (it can send to every
+   install of the app).
+2. *iOS (APNs).* In the Apple Developer account, Certificates, Identifiers &
+   Profiles → Keys, create a key with *Apple Push Notifications service*
+   and download the `.p8` (once); note its key id and your team id. Give
+   the app id `org.evolutionmmo.client` the Push Notifications capability,
+   and in Xcode (`npx cap open ios`) add the *Push Notifications* capability
+   to the App target and forward the token to Capacitor in
+   `AppDelegate.swift` (as the plugin's README says):
+   `didRegisterForRemoteNotificationsWithDeviceToken` posts
+   `.capacitorDidRegisterForRemoteNotifications` with the token, and
+   `didFailToRegisterForRemoteNotificationsWithError` posts
+   `.capacitorDidFailToRegisterForRemoteNotifications`. Run the server with
+   `--apns-key AuthKey_XXXXXXXXXX.p8 --apns-key-id XXXXXXXXXX --apns-team-id
+   YYYYYYYYYY` (or `EVO_APNS_KEY` as a path or the PEM text,
+   `EVO_APNS_KEY_ID`, `EVO_APNS_TEAM_ID`); `--apns-topic` if the bundle id
+   differs; `--apns-sandbox` (`EVO_APNS_SANDBOX=1`) for builds signed for
+   development, whose tokens only work against Apple's sandbox.
+
 ### Persistence
 
 `Store` (`store.rs`) is an async trait with three implementations: a
@@ -1145,7 +1245,8 @@ configured world id). In the file store the global
 tables stay at the top of the data directory and each world's files live in
 `worlds/<id>/` (the paths below); in PostgreSQL every per-world table has a
 `shard` column in its key (migration 7, `0007_worlds.sql`; 6 is the
-marketplace auctions', 8, `0008_push.sql`, push notifications').
+marketplace auctions', 8, `0008_push.sql`, push notifications', 9,
+`0009_push_devices.sql`, the apps' device tokens).
 
 | Persisted | File | PostgreSQL table |
 | --- | --- | --- |
@@ -1157,6 +1258,7 @@ marketplace auctions', 8, `0008_push.sql`, push notifications').
 | Renown balances, upserted on every change | `worlds/<id>/balances.json` | `balances` (PK `(shard, player)`, balance, day, updated_at) |
 | Alert preferences (hidden and toasted alert kinds), upserted when a player saves them | `alert_prefs.json` | `alert_prefs` (player PK, hidden and toast `text[]` of kind names, updated_at; migration 3) |
 | Web Push subscriptions (player, endpoint, `p256dh` and `auth` keys, label, created), one per endpoint | `push_subscriptions.json` | `push_subscriptions` (endpoint PK, indexed by player; migration 8) |
+| Native app device tokens (player, service `fcm`/`apns`, token, label, created), one per service and token | `push_devices.json` | `push_devices` (PK `(service, token)`, indexed by player; migration 9) |
 | Push preferences (the kinds switched off), upserted when a player saves them | `push_prefs.json` | `push_prefs` (player PK, off `text[]` of kind names, updated_at; migration 8) |
 | Server secrets: the generated VAPID private key | `secrets.json` (mode 0600 on Unix) | `server_secrets` (name PK, value; insert-if-absent, so servers sharing the database agree; migration 8) |
 | Finished ranked seasons: head (winners, summary) and full standings; a replayed rollover (same world and season) replaces the record in its place | `worlds/<id>/seasons.jsonl` (last line per key wins) | `seasons` (PK `(shard, world_id, season)`, upsert, `seq` keeps write order, head and standings `jsonb`) and `season_placements` (one row per player and category: rank, value, players ranked; indexed by player for the per-player history; rewritten with its season; migration 5) |
@@ -1916,8 +2018,9 @@ $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;an
 
 Verified on Linux with JDK 21 (Capacitor 8.6.2's generated project as is:
 AGP 8.13.0, Gradle 8.14.3, minSdk 24, compile/target SDK 36; no project
-changes needed): `assembleDebug` succeeds and gives a 4.4 MB APK for
-`org.evolutionmmo.client` with only the `INTERNET` permission; with
+changes needed): `assembleDebug` succeeds and gives a 5.9 MB APK for
+`org.evolutionmmo.client` (4.4 MB with only the `INTERNET` permission before
+the push plugin; see below); with
 `EVO_CAP_CLEARTEXT=1 npx cap sync android` the built manifest carries
 `android:usesCleartextTraffic="true"` and the app's config
 `allowMixedContent: true` (a plain `npm run cap:sync` turns both off again,
@@ -1927,6 +2030,17 @@ iOS needs macOS with Xcode; a CI job for it would be a `macos-latest`
 runner doing `npx cap add ios` and `xcodebuild -workspace` (or
 `-project` with SPM) `-scheme App -sdk iphonesimulator
 CODE_SIGNING_ALLOWED=NO build`, not added because it has not been tried.
+
+**Push notifications in the apps** use FCM and APNs, not Web Push; the
+Android app needs `android/app/google-services.json` from a Firebase project
+before `npm run cap:sync`, the iOS app the Push Notifications capability and
+two `AppDelegate` hooks (see [Native push in the apps](#native-push-in-the-apps)).
+Without them the apps build and run as before, and the settings card says
+push isn't set up. The debug APK with the plugin (Firebase Messaging) builds
+the same way (it adds `ACCESS_NETWORK_STATE`, `POST_NOTIFICATIONS`,
+`WAKE_LOCK` and the C2DM receive permission); no `google-services.json` is
+needed to build it (checked with `assembleDebug` on Linux, JDK 21, without a
+Gradle daemon left over from another SDK location: `--no-daemon`).
 
 **Backgrounded apps.** A phone that sleeps, or switches between Wi-Fi and
 cellular, can leave the game socket dead without a close event, and a
@@ -2019,6 +2133,7 @@ wire.ts      protocol 2 decoder (mirror of crates/server/src/wire.rs; wire.fixtu
 model.ts     GameModel: latest state, offer table (requests, updates, outcomes), alerts feed, toasts; pub/sub
 alertPrefs.ts  alert preferences: normalize, per-kind show/toast switches, feed filter
 push.ts      push notifications: device status, per-kind switches, subscribe/unsubscribe (browser APIs behind PushDeps)
+nativePush.ts  native push in the apps (FCM / APNs via @capacitor/push-notifications behind NativePushDeps), tap targets
 sw.ts        the service worker (built to dist/sw.js): shows pushes, focuses or opens the game on a click
 swLogic.ts   the service worker's decisions (payload check, notification, target URL, which window), unit-tested
 cost.ts      design point cost and validation (mirror of crates/sim/src/design.rs)
@@ -2168,15 +2283,15 @@ server's 65-byte key and POSTs the subscription, which
 reload the device is still on and the kind still off; Turn off removes it
 on the server; and with notifications blocked, or no `PushManager`, the
 card explains and offers no button. Screenshot: `push-settings.png`.
-The server side of delivery is tested in Rust (`crates/server/tests/push.rs`)
-against a mock push service.
+The server side of delivery is tested in Rust (`crates/server/tests/push.rs`,
+and `native_push.rs` for FCM and APNs) against mock push services.
 
 **Not yet:** native apps run on devices (the Android debug APK builds,
-locally and in CI; iOS has not been built), push notifications in the native apps (their
-WebViews have no Web Push: that needs FCM/APNs through a Capacitor plugin;
-the card says push is not available there; Safari on iOS has Web Push only
-for a site added to the home screen, `manifest.webmanifest` is there for it,
-untested on a device), animated sprites, alert preferences applied
+locally and in CI; iOS has not been built), native push received on a real
+phone (implemented with FCM and APNs, see [Native push in the
+apps](#native-push-in-the-apps), but never run against the real services;
+Safari on iOS has Web Push only for a site added to the home screen,
+`manifest.webmanifest` is there for it, untested on a device), animated sprites, alert preferences applied
 server-side to the feed (muted kinds are still sent over the socket; pushes
 do honour them), and allele origins traced to the founding *lineage* rather
 than the player (a player founds one lineage per world, so the two coincide
@@ -4352,10 +4467,18 @@ sections above).
    extend the emulator run with what a device run shows matters (touch
    gestures on the map, the bottom sheet, a network switch with
    `adb shell svc wifi`/`data`, an https server).
-2. **Native push notifications.** Web Push is implemented for the browser
-   (see [Push notifications](#push-notifications)). What remains is native
-   push in the Capacitor apps through FCM (Android) and APNs (iOS), and
-   trying Web Push from an iOS home-screen web app on a real device.
+2. **Push notifications on real devices.** Web Push works in browsers, and
+   native push in the apps is implemented (FCM for Android, APNs for iOS;
+   see [Native push in the apps](#native-push-in-the-apps)) and tested
+   against mock services only. What remains is trying it for real: a
+   Firebase project with `google-services.json` in an Android build and the
+   server's service-account key, an APNs key and an iOS build with the Push
+   Notifications capability and the `AppDelegate` hooks; then check on
+   phones that Enable registers, an offline player's notices arrive (app in
+   the background and closed), a tap opens the right world and tab, a newer
+   notification of a world replaces the older, an uninstalled app's token is
+   pruned, and the foreground presentation; and Web Push from an iOS
+   home-screen web app.
 3. **Capacity with several worlds.** Measured 1–8 512² worlds of 500
    players in one process on a quiet 4-core box (see [Three to eight
    worlds](#three-to-eight-worlds-where-one-process-stops-scaling)): the
