@@ -389,6 +389,8 @@ struct Stats {
     connected: AtomicUsize,
     founded: AtomicUsize,
     setup_failed: AtomicUsize,
+    /// Registrations and logins refused as busy or rate-limited (retried).
+    auth_busy: AtomicU64,
     unexpected_close: AtomicU64,
     msgs_in: AtomicU64,
     bytes_in: AtomicU64,
@@ -723,6 +725,25 @@ fn design(i: usize, founders: u32, rng: &mut StdRng) -> Value {
     })
 }
 
+/// A registration or login, retried as the client does when the server
+/// is busy hashing (503 `busy`) or rate-limits it (429): after the server's
+/// `retry_after_ms` (or a doubling backoff), with jitter, up to 12 times.
+async fn auth_call(ctx: &Ctx, path: &str, creds: &Value, rng: &mut StdRng) -> Result<(u16, Value), String> {
+    let mut backoff = 500.0_f64;
+    for _ in 0..12 {
+        let r = ctx.http.call(Method::POST, path, None, Some(creds.clone())).await?;
+        if r.0 != 503 && r.0 != 429 {
+            return Ok(r);
+        }
+        ctx.stats.auth_busy.fetch_add(1, Ordering::Relaxed);
+        let hint = r.1["retry_after_ms"].as_f64().unwrap_or(0.0);
+        let wait = hint.max(backoff).min(15_000.0) * rng.gen_range(0.5..1.5);
+        backoff *= 2.0;
+        tokio::time::sleep(Duration::from_secs_f64(wait / 1e3)).await;
+    }
+    ctx.http.call(Method::POST, path, None, Some(creds.clone())).await
+}
+
 async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
     let st = &ctx.stats;
     let worlds = ctx.args.world_ids();
@@ -734,9 +755,9 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
     // Register, then log in (both paths get exercised).
     let mut token = None;
     for attempt in 0..5 {
-        match ctx.http.call(Method::POST, "/api/register", None, Some(creds.clone())).await {
+        match auth_call(&ctx, "/api/register", &creds, &mut rng).await {
             Ok((201, _)) | Ok((409, _)) => {
-                if let Ok((200, v)) = ctx.http.call(Method::POST, "/api/login", None, Some(creds.clone())).await {
+                if let Ok((200, v)) = auth_call(&ctx, "/api/login", &creds, &mut rng).await {
                     token = v["token"].as_str().map(str::to_string);
                 }
                 break;
@@ -1269,6 +1290,13 @@ async fn main() {
         })
         .collect();
     drop(latency_world);
+    // The whole run, ramp included, over every world: the slowest 10 s of
+    // ticks and the worst tick p99 (a login burst shows here).
+    let all_rows = || others.iter().flatten();
+    let ticks_per_s_min =
+        samples.iter().map(|s| s.ticks_per_s).chain(all_rows().map(|r| r.ticks_per_s)).fold(f64::INFINITY, f64::min);
+    let tick_p99_max =
+        samples.iter().map(|s| s.tick_p99 as f64).chain(all_rows().map(|r| r.tick_p99 as f64)).fold(0.0, f64::max);
     let out_total_mb_s = median(out_total.iter().filter(|r| r.0 >= steady_from).map(|r| r.1).collect());
 
     let mut stopped_clean = None;
@@ -1289,6 +1317,10 @@ async fn main() {
         "connected": st.connected.load(Ordering::Relaxed),
         "founded": st.founded.load(Ordering::Relaxed),
         "setup_failed": st.setup_failed.load(Ordering::Relaxed),
+        "auth_busy_retries": st.auth_busy.load(Ordering::Relaxed),
+        "hashing": final_m.hashing,
+        "ticks_per_s_min_whole_run": if ticks_per_s_min.is_finite() { ticks_per_s_min } else { 0.0 },
+        "tick_ms_p99_max_whole_run": tick_p99_max,
         "duration_s": elapsed,
         "size": args.size,
         "tick_ms_setting": args.tick_ms,

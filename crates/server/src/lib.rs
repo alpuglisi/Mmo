@@ -75,7 +75,7 @@ use evo_sim::terrain::Terrain;
 use evo_sim::World;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::accounts::{Accounts, SessionPolicy};
+use crate::accounts::{Accounts, HashPolicy, SessionPolicy};
 use crate::game::{build_world, world_config, Game, GameConfig, PersistEvent, SavedGame, WorldSettings, HISTORY_DAYS};
 use crate::http::WorldHandle;
 use crate::limits::{Limiters, Limits};
@@ -122,6 +122,9 @@ pub struct ServerConfig {
     pub limits: Limits,
     /// Session idle timeout and maximum age.
     pub sessions: SessionPolicy,
+    /// Concurrent password hashes and how many may wait
+    /// (`--hash-concurrency`, `--hash-queue`).
+    pub hashing: HashPolicy,
     /// Ignore saved games: generate new worlds and re-found the stored
     /// designs (`--fresh`). Applies to every world.
     pub fresh: bool,
@@ -147,6 +150,7 @@ impl Default for ServerConfig {
             static_dir: None,
             limits: Limits::default(),
             sessions: SessionPolicy::default(),
+            hashing: HashPolicy::default(),
             fresh: false,
             push: webpush::PushConfig::default(),
         }
@@ -283,7 +287,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
             .map_err(|e| -> BoxError { format!("world {:?}: {e}", spec.id).into() })?;
         games.push((spec, wstore, game));
     }
-    let accounts = Arc::new(Accounts::with_policy(store.clone(), accounts, cfg.sessions));
+    let accounts = Arc::new(Accounts::with_policies(store.clone(), accounts, cfg.sessions, cfg.hashing));
     let push = webpush::start(store.clone(), cfg.push.clone()).await?.map(Arc::new);
 
     let mut handles = Vec::new();
