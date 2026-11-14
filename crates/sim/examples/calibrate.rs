@@ -22,7 +22,8 @@
 //!
 //! Options: `--seeds N` (marginal; seeds `--seed0`..), `--worlds N`
 //! (tournament), `--days N`, `--size N`, `--delta F`, `--extra-founders N`,
-//! `--seed0 N`, `--only NAME,...` (marginal options to run), `--set NAME=V`
+//! `--seed0 N`, `--world0 N` (tournament: first world index, to split a
+//! tournament across processes; world `w` uses seed `seed0 + w`), `--only NAME,...` (marginal options to run), `--set NAME=V`
 //! (override a `Balance` parameter, repeatable), `--deaths` (print each
 //! player lineage's deaths by cause to stderr: `deaths,seed,slot,cause=n,...`).
 //!
@@ -48,6 +49,7 @@ struct Opts {
     delta: f32,
     extra_founders: u32,
     seed0: u64,
+    world0: u64,
     only: Option<Vec<String>>,
     balance: Balance,
     deaths: bool,
@@ -62,6 +64,7 @@ fn parse(args: &[String]) -> Opts {
         delta: 0.3,
         extra_founders: 16,
         seed0: 1,
+        world0: 0,
         only: None,
         balance: Balance::default(),
         deaths: false,
@@ -77,6 +80,7 @@ fn parse(args: &[String]) -> Opts {
             "--delta" => o.delta = v().parse().unwrap(),
             "--extra-founders" => o.extra_founders = v().parse().unwrap(),
             "--seed0" => o.seed0 = v().parse().unwrap(),
+            "--world0" => o.world0 = v().parse().unwrap(),
             "--only" => o.only = Some(v().split(',').map(str::to_string).collect()),
             "--deaths" => o.deaths = true,
             "--set" => {
@@ -288,7 +292,7 @@ fn random_design(rng: &mut impl Rng, name: String) -> FounderDesign {
 }
 
 fn tournament(o: &Opts) {
-    for w in 0..o.worlds {
+    for w in o.world0..o.world0 + o.worlds {
         let seed = o.seed0 + w;
         let mut rng = rng_for(seed, 0xca1, w, 0);
         let designs: Vec<FounderDesign> = (0..4).map(|k| random_design(&mut rng, format!("R{w}.{k}"))).collect();

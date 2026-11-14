@@ -2622,13 +2622,19 @@ stream, so they change a world only through their effects.
   by-catch. Prey switching (below) halves how often a prey lineage is
   wiped out, but the booms themselves are as large as before (hunter
   peak-to-mean about 1.6 either way), and the one breeding rule tried on
-  the predator side (embryo resorption) suppressed the hunters too much. Hybrids between antelope and herd grazers
+  the predator side (embryo resorption) suppressed the hunters too much;
+  ratio-dependent litters only scale the hunters down (below). On 48
+  seeds (101–148) antelope are now lost once. Hybrids between antelope and herd grazers
   still occur, as do fox × pack hunter hybrids, since those pairs share a
   body plan.
 - The prey-side changes below lean the balance toward prey: voles, newts,
   frogs and burrowers hold significantly more members and predators lose a
   seed or two more often (pack hunters 92% vs 100% on seeds 101–124). The
-  score difference is not significant, but its sign is negative.
+  score difference is not significant, but its sign is negative. Measured
+  on 48 seeds (*Predators under the prey-side rules*, below), the rules
+  together move about four lineage losses from prey to predators, and the
+  pack hunters they lose are founding packs that starve in their first
+  weeks.
 - A 12-seed, 120-day validation takes about 35 seconds on 4 cores.
 
 **Shared burrows and sentries.** Shared burrows: carriers are diggers
@@ -3097,6 +3103,83 @@ unchanged. Snapshots move to format version 9
 (`Organism::search_image` and the new `Balance` field). New tunable:
 `search_image`.
 
+**Birth modes, re-measured.** The 29.1% win share of incubated eggs
+(Suggested next steps) was measured before vigilance at water,
+stripped-ground foraging and prey switching. Re-run on the current rules
+with `calibrate tournament --deaths` (90 days, 4 random full-budget designs
+per world, win = highest final legacy share, fair 25%; `--world0` splits
+a tournament across processes without changing its designs):
+
+| Worlds | Abandoned / incubated / live: win share | Mean final share |
+| --- | --- | --- |
+| Tuning set, seeds 10001–10096 (96) | 23.8% / 24.4% / 27.2% | 0.060 / 0.074 / 0.090 |
+| Held-out set, seeds 10201–10248 (48) | 19.4% / 26.3% / 28.8% | 0.064 / 0.075 / 0.085 |
+| Both (the 144 worlds behind 16.8% / 29.1% / 30.2%) | 22.4% / 25.0% / 27.8% | 0.061 / 0.074 / 0.088 |
+| Fresh seeds 30001–30096 (96) | 23.0% / 31.7% / 20.5% | 0.067 / 0.091 / 0.076 |
+| **All 240** | **22.7% / 27.7% / 24.9%** | **0.063 / 0.081 / 0.083** |
+
+With about 310 entries per mode a win share has a standard error of about
+2.5 points, so incubated eggs are now within noise of fair (27.7 ± 5),
+their mean final share is below live birth's, and on the very worlds that
+gave 29.1% they win 25.0%. No rule aimed at them: the later prey-side rules
+changed the worlds. Two sets of 96 worlds differ by 7 points (24.4% vs
+31.7%), which is the sampling noise of one tournament, so the item is closed
+on the pooled numbers, and no birth-mode rule was added. What is left is an
+interaction of thermoregulation and birth mode (240 worlds, win share):
+cold-blooded abandoned eggs 36.9% (warm 9.1%, the doc's mismatch), cold
+incubated 28.2% (warm 27.2%), cold live birth 15.1% (warm 34.4%).
+Cold-blooded live bearers carry their young 1.4× longer (cold-blooded
+gestation) and lose; cold-blooded egg layers that leave their eggs at the
+best nest site win. That is listed as the next birth-mode item.
+
+Do eggs count toward population? They don't, by design, and it changes no
+result here. The legacy score counts breeding adults (the doc), and the
+sweep's survival counts living organisms at the end of the run, so a
+lineage reduced to eggs survives only if the eggs hatch. Eggs also don't
+count toward the per-owner cap: live births are clipped to the room left
+at birth, clutches when they hatch, so both fill the places free when the
+young arrive. Only 12 of the 960 tournament entries ended at the cap (843
+on a 96×96 map; 6 live bearers, 5 abandoned-egg and 1 incubating design),
+too few to explain any mode's wins.
+
+**Predators under the prey-side rules.** The open question from the
+antelope work: do the prey-side rules cost predators seeds
+systematically? `compare` on seeds 101–148 (48), all four off
+(`threat_caution=0 alert_guard=0 pasture_search=0 search_image=0`) against
+the defaults:
+
+| | Off | On (defaults) |
+| --- | --- | --- |
+| Score | 11.58 | 11.39 (difference −0.19 ± 0.21, not significant) |
+| Prey lineages lost (antelope + herd grazers) | 6 (4 + 2) | 1 (1 + 0) |
+| Predator lineages lost (pack hunters + foxes) | 2 (1 + 1) | 5 (4 + 1) |
+| Mean alive, significant differences (on − off) | | voles +327, newts +112, herd grazers +94, burrowers +62, toxic frogs +56, antelope +40; pack hunters −12, foxes −13 |
+
+So yes: the rules move about four lineage losses from prey to predators
+and cost both predators members. The pack hunters lost with the rules on
+are not lost to a bust after a boom: on seeds 108, 128, 136 and 140
+(`examples/predators`) the founding pack shrinks from 24 to 2–8 by day
+40–60 while every prey lineage grows. Over the first 60 days on those four
+seeds and 101–104, 102 of 215 pack-hunter deaths were thirst and 100
+starvation; of the thirst deaths, 75 were at hunger 90 or more, 91 with
+energy below 30 and 80 while walking to water; 87 died 3–14 tiles from
+it, and 71 had no threat in sight. They are the doc's hunger cascade (hunger above 90
+drains energy and slows the walk) in hunters that catch too little in
+their first weeks, not vigilance keeping them from water.
+
+Two predator-side rules were tried on the same 48 seeds; neither is in the
+code:
+
+| Rule | Score (A − B) | Lost (A / B) | Significant mean-alive changes | Effect on booms |
+| --- | --- | --- | --- | --- |
+| **Ratio-dependent litters** (`prey_scarcity` 0.5: a meat eater's litter × `r²/(r²+0.5²)`, `r` the prey kg per kg of her own kind in the 3×3 density cells around her; median `r` at a pack-hunter birth was 1.0, foxes 8.3) | +0.03 ± 0.18 | pack hunters 3 / 4, antelope 1 / 1, foxes 0 / 1 | pack hunters −8 | Seeds 101–124: hunter peak 81 → 65 and mean 50 → 40, peak-to-mean 1.67 → 1.72: hunters scale down, booms keep their shape |
+| **Earlier search-image exception** (a hunter drops its search image at hunger 70 instead of 90, before its own hunger cascade starts) | +0.10 ± 0.14 | pack hunters 3 / 4, antelope 0 / 1, newts 1 / 0 | none | — |
+
+Neither helps the prey that booms threaten nor the founding packs, so
+neither earns its complexity. The next predator item is founding-phase
+hunting success: why 24 pack hunters make about one kill a day in their
+first weeks while prey are plentiful.
+
 ## Point costs
 
 The costs in `design.rs` are calibrated with `examples/calibrate.rs`
@@ -3193,8 +3276,9 @@ newts (100%, 214) barely move. Burrowing omnivores stay at 100% survival
 but average 119 alive instead of 426; the toxic frogs (cold, carnivory 0.1)
 are unchanged (100%, 448). Birth mode (incubated eggs winning 35–38%,
 abandoned eggs 13–14%) was narrowed in the final balance pass and by egg
-thermal risk (Balance section), but incubated eggs still win tournaments
-most often. Doc counters that already work: warm-blooded designs with
+thermal risk (Balance section); re-measured on 240 worlds after the later
+rules, incubated eggs no longer win out of proportion (27.7%, mean share
+below live birth's; see *Birth modes, re-measured* in Balance). Doc counters that already work: warm-blooded designs with
 abandoned eggs survive only 62% of the time (thermoregulation mismatch), and
 herd grazers lose herd defense when shrunk below 0.45.
 
@@ -3232,18 +3316,23 @@ sections above).
    world holds the clock. Still open: where one process stops scaling (3+
    worlds, on dedicated cores, where the measured 0.3 cores per world
    suggests up to one world per core).
-4. **Incubated eggs still win tournaments**: after the final balance pass
-   and egg thermal risk they won 29.1% of entries pooled over 144 worlds
-   (a fair share is 25%), abandoned eggs 16.8%; see [Balance](#balance). Next: find what
-   incubators gain (the paired-rule method of the dominant-design work)
-   and judge any fix with `compare` and fresh tournament seeds.
-5. **Slow breeders under predation.** Antelope now survive the held-out
-   sets, but seeds that lose them are those where pack hunters boom on
-   other prey (apparent competition). Try a predator-side numerical
-   response (pack hunters starving faster when prey thins, or prey
-   switching), measured with `compare` on 48+ seeds, and check whether the
-   prey-side rules cost predators seeds systematically (the sign was
-   negative, not significant).
+4. **Thermoregulation × birth mode.** Incubated eggs no longer win
+   tournaments (27.7% of 240 worlds, fair 25%; see *Birth modes,
+   re-measured* in [Balance](#balance)), but cold-blooded abandoned eggs
+   win 36.9% and cold-blooded live bearers 15.1%. Find what each gains or
+   loses (paired re-runs of the same designs with one rule changed, as in
+   the dominant-design work) and judge any fix with `compare` and fresh
+   tournament seeds.
+5. **Founding packs of hunters.** The prey-side rules move about four
+   lineage losses in 48 worlds from prey to predators (see *Predators under
+   the prey-side rules* in [Balance](#balance)): pack hunters are lost on
+   4 of 48 seeds and the lost packs shrink from 24 to a handful in their
+   first 40–60 days, of starvation and of thirst at hunger 90+, while
+   prey grow. Two predator-side numerical responses (ratio-dependent
+   litters, an earlier search-image exception) were neutral. Next: why
+   founding hunters catch so little (strike success, chase energy,
+   prey seen per day), measured with `examples/predators` and `compare`
+   on 48+ seeds.
 6. **World-thread cost.** Decide is most of a tick at the prototype target
    and its per-organism cost rises with density: cap or subsample the
    neighbors scanned, then split the apply phase's sequential act sweep by
