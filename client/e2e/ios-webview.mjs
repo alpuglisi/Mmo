@@ -22,7 +22,7 @@
 //   XCRUN            xcrun binary (default xcrun)
 
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,16 +47,36 @@ if (!UDID) throw new Error('SIM_UDID is not set (the booted simulator)');
 const simctl = (...args) => run(XCRUN, ['simctl', ...args], { maxBuffer: 64 * 1024 * 1024 });
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'evo-ios-shot-'));
 
+// While the game screen renders (WebGL, no GPU in CI's simulator) one
+// simulator screenshot took 3 to 6 minutes (CI: the smoke passed but ran past
+// the job's limit). Screenshots are for people reading the artifacts, so a
+// slow one is given up, and the page screenshot that follows a screen
+// screenshot (the same image on iOS) reuses it instead of taking another.
+const SHOT_MS = 45000;
+let lastShot = { file: null, at: 0 };
+
 /** The simulator's screen as PNG (whole screen, device pixels). */
 async function screenPng(file) {
-  await simctl('io', UDID, 'screenshot', '--type=png', file);
+  try {
+    await run(XCRUN, ['simctl', 'io', UDID, 'screenshot', '--type=png', file], { timeout: SHOT_MS, maxBuffer: 64 * 1024 * 1024 });
+    lastShot = { file, at: Date.now() };
+  } catch (e) {
+    lastShot = { file: null, at: Date.now() };
+    throw e.killed ? new Error(`simulator screenshot took over ${SHOT_MS / 1000} s`) : e;
+  }
 }
 
 /** A screen PNG as base64 for the scenario's page screenshot, scaled down when `sips` is there (it is on macOS). */
 let shotSeq = 0;
 async function pageShot() {
   const file = path.join(tmp, `page-${++shotSeq}.png`);
-  await screenPng(file);
+  if (Date.now() - lastShot.at < 10000) {
+    // A screen screenshot was just taken (or just given up): use it.
+    if (!lastShot.file) throw new Error('the simulator screenshot just before failed');
+    copyFileSync(lastShot.file, file);
+  } else {
+    await screenPng(file);
+  }
   try {
     await run('sips', ['--resampleWidth', '600', file, '--out', file]);
   } catch { /* full size then */ }

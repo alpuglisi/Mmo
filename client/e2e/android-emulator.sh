@@ -103,6 +103,18 @@ retry 3 "$ADB" install -r -t "$APK"
 "$ADB" logcat -v threadtime >"$OUT/logcat.txt" 2>&1 &
 pids+=($!)
 
+# Start the app and check it is still running a moment later: `pm clear`
+# returns before the system has finished clearing, and the clear's own
+# force-stop can kill an app started right after it (CI: "Killing ...
+# org.evolutionmmo.client ... due to clearApplicationUserData" 350 ms after
+# START, then "is not running").
+# shellcheck disable=SC2329  # run through retry
+launch() {
+  "$ADB" shell am start -W -n "$APP_ID/.MainActivity" || return 1
+  sleep 2
+  [ -n "$("$ADB" shell pidof "$APP_ID" 2>/dev/null | tr -d '\r')" ]
+}
+
 status=1
 for attempt in $(seq 1 "$ATTEMPTS"); do
   log "attempt $attempt of $ATTEMPTS"
@@ -111,7 +123,7 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   # A clean start: no saved server, session or tour progress.
   "$ADB" shell am force-stop "$APP_ID" || true
   "$ADB" shell pm clear "$APP_ID" >/dev/null || true
-  retry 3 "$ADB" shell am start -W -n "$APP_ID/.MainActivity"
+  retry 3 launch
   if SCREENSHOT_DIR="$shots" node "$client/e2e/android-webview.mjs"; then
     status=0
     break
