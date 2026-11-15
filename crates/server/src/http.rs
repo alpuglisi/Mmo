@@ -488,14 +488,27 @@ async fn leaderboard(World(w): World) -> Json<crate::protocol::Leaderboard> {
 #[derive(Deserialize)]
 struct HistoryQuery {
     limit: Option<usize>,
+    /// First and last day (inclusive) of the newest world's records.
+    from: Option<u64>,
+    to: Option<u64>,
+    /// `false` leaves out the lineages' gene means.
+    genes: Option<bool>,
 }
 
+/// The stored daily records (thinned with age: [`crate::history`]), oldest
+/// first: the newest `limit` (30 by default, at most
+/// [`crate::history::MAX_LIMIT`]) in the day range.
 async fn leaderboard_history(
     World(w): World,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<Vec<crate::store::DailyRecord>>, ApiError> {
-    let limit = q.limit.unwrap_or(30).clamp(1, 1000);
-    Ok(Json(w.store.recent_daily(limit).await.map_err(ApiError::internal)?))
+    let query = crate::history::DailyQuery {
+        from_day: q.from,
+        to_day: q.to,
+        limit: q.limit.unwrap_or(30).clamp(1, crate::history::MAX_LIMIT),
+        genes: q.genes.unwrap_or(true),
+    };
+    Ok(Json(w.store.daily_range(&query).await.map_err(ApiError::internal)?))
 }
 
 #[derive(Deserialize)]
@@ -518,7 +531,10 @@ async fn leaderboard_seasons(
         .store
         .cache()
         .weather(clock.year, &clock.season.clone(), || async {
-            let records = w.store.recent_daily(100_000).await.map_err(ApiError::internal)?;
+            // The whole stored history (bounded by its retention), without
+            // the gene means the boards don't use.
+            let query = crate::history::DailyQuery { genes: false, ..crate::history::DailyQuery::recent(usize::MAX) };
+            let records = w.store.daily_range(&query).await.map_err(ApiError::internal)?;
             let accounts = app.accounts.clone();
             let name_of = move |p: evo_sim::PlayerId| {
                 if p == evo_sim::WILD {

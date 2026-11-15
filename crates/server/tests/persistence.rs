@@ -543,6 +543,83 @@ async fn store_round_trips(backend: Backend) {
 
 on_every_store!(store_round_trips, file_store_round_trips, pg_store_round_trips);
 
+/// A record with a living player lineage (with gene means) and an extinct
+/// one.
+fn rich_day(world: &str, d: u64) -> DailyRecord {
+    let lineage = |k: u32, alive: usize| evo_server::store::LineageEntry {
+        lineage: k,
+        name: format!("L{k}"),
+        owner: k + 1,
+        alive,
+        adults: alive,
+        born: 0,
+        deaths: Default::default(),
+        genes: [("fur".to_string(), 0.5f32), ("claws".to_string(), 0.25)].into_iter().collect(),
+    };
+    DailyRecord { lineages: vec![lineage(0, 9), lineage(1, 0)], ..day(world, d, d as usize) }
+}
+
+/// The retention policy in every store: an older world's 100 days, then
+/// 900 days of the current one.
+async fn daily_history_is_bounded(s: &WorldStore) {
+    use evo_server::history::{self, DailyQuery};
+    for d in 0..100 {
+        s.append_daily(&rich_day("old", d)).await.unwrap();
+    }
+    let last = 899;
+    for d in 0..=last {
+        s.append_daily(&rich_day("w", d)).await.unwrap();
+    }
+    let all = s.daily_range(&DailyQuery::recent(usize::MAX)).await.unwrap();
+    // Every day of the window, the newest whole, then thinned and sampled
+    // (compacted at most 32 days ago).
+    let window: Vec<u64> =
+        all.iter().filter(|r| r.world_id == "w" && last - r.day < history::WINDOW_DAYS).map(|r| r.day).collect();
+    assert_eq!(window, (last + 1 - history::WINDOW_DAYS..=last).collect::<Vec<_>>());
+    let bound = history::WINDOW_DAYS as usize + 2 * (history::WINDOW_DAYS / history::ARCHIVE_STRIDE) as usize + 32;
+    assert!(all.len() <= bound, "{} records", all.len());
+    for r in &all {
+        let age = if r.world_id == "w" { last - r.day } else { last + 100 - r.day };
+        if age >= history::WINDOW_DAYS + 32 {
+            assert!(r.day.is_multiple_of(history::ARCHIVE_STRIDE), "{} day {} kept", r.world_id, r.day);
+        }
+        if age >= history::FULL_DAYS + 32 {
+            assert_eq!(r.lineages.len(), 1, "{} day {}: extinct lineage kept", r.world_id, r.day);
+            if !r.day.is_multiple_of(history::GENE_STRIDE) {
+                assert!(r.lineages[0].genes.is_empty(), "{} day {}: genes kept", r.world_id, r.day);
+            }
+        }
+        if age < history::FULL_DAYS {
+            assert_eq!(r.lineages, rich_day("w", r.day).lineages);
+        }
+    }
+    assert!(all.iter().any(|r| r.world_id == "old"), "the older world's samples are kept");
+    // Ranges and records without gene means.
+    let range = DailyQuery { from_day: Some(last - 4), to_day: Some(last - 2), limit: 10, genes: false };
+    let got = s.daily_range(&range).await.unwrap();
+    assert_eq!(got.iter().map(|r| r.day).collect::<Vec<_>>(), [last - 4, last - 3, last - 2]);
+    assert!(got.iter().all(|r| r.lineages.iter().all(|l| l.genes.is_empty())));
+    assert_eq!(s.recent_daily(2).await.unwrap().iter().map(|r| r.day).collect::<Vec<_>>(), [last - 1, last]);
+}
+
+#[tokio::test]
+async fn memory_store_bounds_the_daily_history() {
+    daily_history_is_bounded(&WorldStore::new(Arc::new(MemoryStore::default()), DEFAULT_WORLD)).await;
+}
+
+async fn store_bounds_the_daily_history(backend: Backend) {
+    daily_history_is_bounded(&backend.open().await).await;
+    // A newly opened store reads the same.
+    let s = backend.open().await;
+    let all = s.daily_range(&evo_server::history::DailyQuery::recent(usize::MAX)).await.unwrap();
+    assert_eq!(all.last().map(|r| r.day), Some(899));
+    assert!(all.len() < 500, "{}", all.len());
+    drop(s);
+    backend.cleanup().await;
+}
+
+on_every_store!(store_bounds_the_daily_history, file_store_bounds_the_daily_history, pg_store_bounds_the_daily_history);
+
 /// World ids name terrain files: nothing that could leave the directory.
 #[tokio::test]
 async fn file_store_refuses_odd_world_ids() {
