@@ -187,6 +187,12 @@ pub struct MetricsView {
     pub cpu_seconds: Option<f64>,
     /// Resident memory of the server process (Linux only).
     pub rss_bytes: Option<u64>,
+    /// The allocator (`jemalloc`, `glibc`, ...) and its heap statistics
+    /// (`crate::alloc`), where it reports them.
+    #[serde(default)]
+    pub allocator: String,
+    #[serde(default)]
+    pub heap: Option<crate::alloc::HeapStats>,
     /// Password hashing, shared by every world.
     #[serde(default)]
     pub hashing: HashStats,
@@ -230,6 +236,8 @@ impl MetricsView {
             delta_conns: get(&net.delta_conns),
             cpu_seconds,
             rss_bytes,
+            allocator: crate::alloc::ALLOCATOR.to_string(),
+            heap: crate::alloc::heap_stats(),
             hashing,
         }
     }

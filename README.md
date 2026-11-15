@@ -720,7 +720,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/push/prefs` | Bearer | The push kinds the caller switched off, `{off: [kind]}` (`mating`, `death`, `market`, `species`, `season`, `catastrophe`); `{off: []}` until saved |
 | `POST /api/push/prefs` | Bearer | Replace them; the reply is normalized (sorted, no duplicates); an unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
-| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`), the process's `cpu_seconds` and `rss_bytes` (Linux), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash |
+| `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`), the process's `cpu_seconds` and `rss_bytes` (Linux), the `allocator` (`jemalloc` by default, `glibc` without the feature) and its `heap` statistics (`allocated`: live allocations; `retained`: resident memory the allocator holds but has not handed out; read at most every 2 s), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
 Routes about a world (founding, `world`, the leaderboards, terrain, species,
@@ -1466,7 +1466,12 @@ production persistence in PostgreSQL, so the normal binary should be able
 to use a database without a rebuild, and it costs nothing at run time
 unless a URL is given. `cargo build -p evo-server --no-default-features`
 leaves sqlx (and its TLS stack) out for a faster, smaller build; a database
-URL then stops the server with an error. The persistence tests
+URL then stops the server with an error. The other default feature, `jemalloc`, makes
+jemalloc the process's allocator (`alloc.rs`; its C build needs `make`,
+which the Dockerfile installs): glibc malloc kept the memory freed after a
+population peak (see *Memory after a population peak* under [Six worlds
+for three hours](#six-worlds-for-three-hours-soak)); without the feature
+the server uses the system allocator. The persistence tests
 (`tests/persistence.rs`) run the store round trip (terrains included),
 restart-keeps-accounts and restart-continues-the-saved-world (which also
 deletes the stored terrain behind the server's back and requires it to
@@ -3010,7 +3015,7 @@ target/release/examples/loadgen --worlds 6 --players 3000 --ramp 240 --duration 
 and apply timings, ticks per second, that world's players' command latency
 p50/p99/max *since the last report*, egress, queue depth, dropped
 connections, skipped states, the last save's capture/encode/write times and
-size, process CPU and RSS, and the load generator's own counters), so a
+size, process CPU and RSS, the allocator's live and retained heap, and the load generator's own counters), so a
 multi-hour run can be compared hour by hour; the summary's medians would
 hide a trend.
 
@@ -3527,8 +3532,9 @@ What it shows:
   outside the sim state; the likely cause is glibc malloc keeping the
   peak's freed memory in its per-thread arenas (no custom allocator; ~20
   threads allocate: Tokio, the sim pool, 6 world threads, the saver) or
-  per-connection buffers keeping their high-water capacity. Not proven;
-  see next steps.
+  per-connection buffers keeping their high-water capacity. **Since
+  confirmed and fixed** (glibc kept the peak's freed memory; jemalloc is
+  now the allocator): *Memory after a population peak* below.
 - **Found and fixed: the world kept every day's legacy snapshot.**
   `World::legacy` got a `LegacySnapshot` (two maps of every player's
   allele share) each simulated day and never dropped one, though only the
@@ -3558,6 +3564,61 @@ What it shows:
   way (~250 MB of JSON per 500-player world before, ~80 MB now); it was
   still filling during this run, so it may account for part of the RSS
   growth above (not measured).
+
+**Memory after a population peak.** To find the creep above without
+another 3-hour run: one process with 2 512² worlds × 500 players (1,000
+WebSockets), the clock at 2× (`--tick-ms 500`, states every 1 s), both
+worlds warmed to 22.4k organisms once and that save copied for each run,
+120 s ramp, 30 minutes; one run per allocator, one after another, nothing
+else heavy on the box (load average ~3). Each run went through the same
+population curve: 45k organisms (both worlds) after the ramp, a peak of
+143–145k at 22 minutes, 105–109k at the end. `GET /api/metrics` now reports
+the allocator's own statistics (`heap`: live allocations and what it holds
+besides; glibc's `mallinfo2`, jemalloc's `stats`) next to RSS, so a leak
+(live heap growing) can be told from allocator retention (RSS growing while
+the live heap does not). MB:
+
+| | glibc (before) | glibc, `MALLOC_ARENA_MAX=2` | mimalloc | **jemalloc** |
+| --- | --- | --- | --- | --- |
+| RSS at the peak / at the end / max | 1,349 / 1,433 / 1,433 | 965 / 1,000 / 1,015 | 1,158 / 1,211 / 1,358 | **882 / 865 / 1,032** |
+| RSS 2 min after the ramp (72k organisms) | 756 | 513 | 652 | **479** |
+| Live heap at the peak / at the end | 777 / 734 | 780 / 733 | – | 796 / 742 |
+| Held by the allocator, not live, at the end | 726 | 285 | – | 190 |
+| RSS slope after the peak (MB/h) | **+717** | +335 | +156 | **−343** |
+| Live heap slope after the peak (MB/h) | −411 | −544 | – | −588 |
+| Tick p50 / p99, medians of the 30 s rows (ms) | 87 / 187 | 82 / 193 | 80 / 155 | 81 / 155 |
+| … at 120–145k organisms | 96 / 206 | 102 / 213 | 95 / 201 | 93 / 192 |
+| Command p99 (ms) / server CPU (cores) | 151 / 1.47 | 160 / 1.48 | 140 / 1.26 | 140 / 1.34 |
+
+- **It is the allocator, not a leak.** With glibc, after the peak the live
+  heap fell (−411 MB/h) while RSS kept climbing (+717 MB/h): at the end
+  half of the resident memory (726 of 1,433 MB) was free memory glibc held
+  in its arenas. That is the soak's creep, faster here because the clock
+  ran at 2× and the peak was steeper. The live heap fell with the
+  population in every run, so nothing in the server or the sim grows on
+  its own.
+- **jemalloc fixes it at no cost in tick time:** RSS follows the
+  population back down (−343 MB/h after the peak, 865 MB at the end
+  against 1,433), 35–40% less memory throughout, tick and command times
+  equal or a little better (the differences are within this box's noise).
+  `MALLOC_ARENA_MAX=2` halves glibc's retention but still creeps (+335
+  MB/h) and its tick p99 at the peak was the worst; mimalloc creeps less
+  than glibc but holds 300–350 MB more than jemalloc. So `evo-server` now
+  uses jemalloc (`tikv-jemallocator`), behind the default-on cargo feature
+  `jemalloc` (`alloc.rs`; `--no-default-features` builds with the system
+  allocator; the Docker image installs `make` for jemalloc's C build). No
+  dropped connections, unexpected closes, decode errors or panics in any
+  run (the glibc run's final summary was cut off at 29.5 minutes; its CSV
+  is complete to there).
+- **Code review for anything else that grows** (server and sim): the
+  per-world and per-player maps are pruned (offers, watched and alerted
+  organisms on death, alerts and ledger capped per player, closed
+  listings, sessions, rate-limit buckets, standings cache) or keyed by
+  what is saved, and the saved game did not creep; per-connection state
+  (the delta encoder's records, its `look` and action palettes, which are
+  small closed sets) is bounded by what one state holds; the world-thread
+  queues and metric windows are fixed size. Nothing unbounded was found
+  besides the two fixed above (legacy snapshots, daily history).
 
 #### Login bursts with bounded hashing
 
@@ -5056,11 +5117,11 @@ sections above).
    legacy list and daily history (both fixed). Still open: the same runs on a bigger dedicated box
    (8–16 cores, load generator on another machine) to check that a process
    scales with its cores; size the worlds-per-core rule for 60–70k
-   organisms, not 30–40k; find the RSS creep after a population peak
-   (+0.25–0.37 GB/h at 6 worlds; rerun the soak with `MALLOC_ARENA_MAX=2`
-   or jemalloc/mimalloc and a heap profile, on a box nobody else uses;
-   the daily history's in-memory window, thinned since, grew by up to
-   ~250 MB of JSON per world while it filled).
+   organisms, not 30–40k; rerun the 3-hour 6-world soak with jemalloc
+   (the RSS creep after a population peak was glibc keeping freed memory:
+   *Memory after a population peak*; the 30-minute 2-world runs show RSS
+   now falls with the population) to confirm it stays flat for hours,
+   and re-measure memory per world for the capacity rule.
 4. **Birth-mode balance watch.** Against the target in
    *Thermoregulation × birth mode* ([Balance](#balance): no class above
    about 30–32% of tournament wins on fresh seeds) the classes spanned

@@ -42,6 +42,7 @@
 //!   game tab is closed, and native push to the apps (FCM, APNs).
 
 pub mod accounts;
+pub mod alloc;
 pub mod appearance;
 pub mod design;
 pub mod economy;
