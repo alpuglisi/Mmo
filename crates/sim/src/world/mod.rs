@@ -55,7 +55,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use rand::seq::SliceRandom;
 use rand::Rng;
-use rayon::prelude::*;
 
 use crate::config::WorldConfig;
 use crate::design::{DesignError, FounderDesign};
@@ -87,6 +86,56 @@ const PREY_ON_TOP: f32 = 8.0;
 const PREY_SHARE: f32 = 0.15;
 /// Spatial index cell side in tiles.
 const GRID_CELL: f32 = 4.0;
+
+/// Hasher of the world's lookup maps (organism index by id, things by
+/// tile): small integer keys, looked up many times a tick, never chosen by
+/// an adversary, so the multiply-rotate hash of rustc's `FxHasher` instead
+/// of the standard library's SipHash. Nothing iterates these maps in an
+/// order that matters (snapshots write them sorted), so the hasher changes
+/// no result.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct IdHasher(u64);
+
+impl IdHasher {
+    #[inline]
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl std::hash::Hasher for IdHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    #[inline]
+    fn write_u32(&mut self, n: u32) {
+        self.add(n as u64);
+    }
+
+    #[inline]
+    fn write_u64(&mut self, n: u64) {
+        self.add(n);
+    }
+
+    #[inline]
+    fn write_usize(&mut self, n: usize) {
+        self.add(n as u64);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A `HashMap` with [`IdHasher`].
+pub(crate) type IdMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
 
 /// Founding: side in tiles of a [`PointGrid`] cell.
 const HOME_CELL: f32 = 8.0;
@@ -316,7 +365,7 @@ pub struct World {
     substep: u32,
     next_id: OrgId,
     #[cfg_attr(feature = "serde", serde(skip))]
-    index: HashMap<OrgId, usize>,
+    index: IdMap<OrgId, usize>,
     #[cfg_attr(feature = "serde", serde(skip))]
     grid: SpatialGrid,
     owner_counts: BTreeMap<PlayerId, usize>,
@@ -335,22 +384,22 @@ pub struct World {
     rallies: BTreeMap<(PlayerId, u8), groups::Rally>,
     slots_used: BTreeMap<PlayerId, u32>,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
-    clutch_at: HashMap<(usize, usize), usize>,
+    clutch_at: IdMap<(usize, usize), usize>,
     #[cfg_attr(feature = "serde", serde(skip))]
     path_scratch: PathScratch,
     /// Seasonal part of today's temperature (`Map::seasonal_offset`).
     season_offset: f32,
     /// Tile → organism index of every food cache (`seasonal::rebuild_caches`).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
-    cache_at: HashMap<(usize, usize), usize>,
+    cache_at: IdMap<(usize, usize), usize>,
     /// Shared caches by (group region, lineage), and tile → key for raids
     /// (`seasonal`, `GroupTrait::SharedCaches`).
     shared_caches: BTreeMap<(usize, u32), seasonal::SharedCache>,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
-    shared_cache_at: HashMap<(usize, usize), (usize, u32)>,
+    shared_cache_at: IdMap<(usize, usize), (usize, u32)>,
     /// Winter-dormant communal-den carriers per den cell (`seasonal`).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
-    den_cells: HashMap<(usize, usize), u16>,
+    den_cells: IdMap<(usize, usize), u16>,
     /// Level of detail: focus points and the cohorts of abstract regions.
     lod: lod::Lod,
     /// Offline protection set by the caller; not saved (`world::offline`).
@@ -436,7 +485,7 @@ impl World {
             tick: 0,
             substep: 0,
             next_id: 1,
-            index: HashMap::new(),
+            index: IdMap::default(),
             grid,
             owner_counts: BTreeMap::new(),
             lineage_alive: Vec::new(),
@@ -446,13 +495,13 @@ impl World {
             territory_claims: BTreeMap::new(),
             rallies: BTreeMap::new(),
             slots_used: BTreeMap::new(),
-            clutch_at: HashMap::new(),
+            clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
             season_offset: Map::seasonal_offset(0, config.days_per_year),
-            cache_at: HashMap::new(),
+            cache_at: IdMap::default(),
             shared_caches: BTreeMap::new(),
-            shared_cache_at: HashMap::new(),
-            den_cells: HashMap::new(),
+            shared_cache_at: IdMap::default(),
+            den_cells: IdMap::default(),
             lod,
             offline: Default::default(),
             phase_times: PhaseTimes::default(),
@@ -865,8 +914,7 @@ impl World {
         self.grid.rebuild(&self.organisms);
         self.phase_times.grid += lap();
         let n = self.organisms.len();
-        let this = &*self;
-        let intents: Vec<Intent> = (0..n).into_par_iter().map(|i| this.decide(i)).collect();
+        let intents = self.decide_all();
         self.phase_times.decide += lap();
 
         let mut rng = rng_for(self.config.seed, stream::APPLY, self.tick, 0);

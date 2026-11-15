@@ -59,8 +59,10 @@ fn sample_of(genome: &Genome, weight: f64, lineage: u32, owner: PlayerId) -> Sam
     for &g in Gene::ALL {
         expr[g.index()] = genome.expr(g);
     }
-    let mut origins = BTreeMap::new();
-    genome.tally_origins(1.0, &mut origins);
+    // Whole-number counts: the same values as `tally_origins` with weight 1.
+    let mut counts = Vec::new();
+    genome.count_origins(&mut counts);
+    let origins = counts.into_iter().map(|(p, n)| (p, n as f64)).collect();
     Sample { expr, weight, lineage, owner, origins }
 }
 

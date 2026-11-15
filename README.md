@@ -312,6 +312,7 @@ cargo run --release --example obedience -- drift 360 101 102    # does obedience
 cargo run --release --bin evo-sim -- sweep --trials 1 --seeds 12 --rounds 1 --seed 31 --migrants   # with the migrating caribou
 cargo run --release --bin evo-sim -- run --size 256 --focus 64,64 --focus 192,192   # level of detail
 cargo run --release --example lod -- 256 90 1 64,64 192,192   # LOD vs full simulation
+cargo run --release -p evo-sim --features serde --example highpop -- bench /tmp/hp/day0050.snap   # tick cost at 60–70k (after `highpop -- warm /tmp/hp`)
 cargo run --release --bin evo-sim -- run --days 361 --report 30 --catastrophes --catastrophe severe_winter@210   # eras, species, a catastrophe
 ```
 
@@ -2950,6 +2951,155 @@ leaderboard's top rows and the own list, about 8 µs for 500 players; going
 further would mean states that share their unchanged parts (an `Arc` per
 part, a protocol type change) rather than copies.
 
+### A server-sized world at 60–70k organisms
+
+The soak below found that 500 heavy players grow a 512² world to 60–72k
+organisms, where a tick cost 170–260 ms (p50) and 830–930 ms (p99) with six
+worlds on four cores, against 64–70 / 150–190 ms at ~45k, and that the same
+population cost more later in the run. To measure that without a server:
+
+```sh
+cargo run --release -p evo-sim --features serde --example highpop -- warm /tmp/hp --until 62000 --every 15 --keep 4
+cargo run --release -p evo-sim --features serde --example highpop -- bench /tmp/hp/day0050.snap --ticks 96 --threads 1
+cargo run --release -p evo-sim --features serde --example highpop -- stats /tmp/hp/day0050.snap
+```
+
+`warm` builds the world as `evo-server` does (`game::build_world`: the wild
+ecosystem scaled to the map, catastrophes on) and founds 500 player
+lineages with the load generator's designs (12 founders, one body plan, a
+tenth cold-blooded egg layers), then runs it without commands. It grew much as
+the soak's worlds did (11.7k founders; 25k on day 12, 45k on day 36, 62k on
+day 50 with 23k in player lineages, 93k on day 80, then 67k on day 95 in
+winter with 17k), and saves snapshots from the day it passes `--until`.
+`bench` restores one and times every tick and every phase
+(`World::phase_times`, ticks p50 / p99 / mean, the daily tick apart, route
+searches) and prints a hash of the final snapshot: the check that an
+optimisation changes nothing, at any thread count. `stats` counts what a
+decision's neighbor scan meets.
+
+**Why it grows faster than the population.** Every organism's decision
+scans the organisms within its perception radius (up to 8 tiles), looks
+closely at the nearest 32 and screens the rest; the scan, the screening
+and the selection of the nearest grow with local density, so a tick costs
+roughly population × neighbors, and neighbors grow with the population and
+with how tightly the herds pack:
+
+| Snapshot | Organisms (in player lineages) | Neighbors within 8 tiles: mean / p50 / p99 | More than 32 | Decide, 1 thread (before) |
+| --- | --- | --- | --- | --- |
+| day 50, summer | 62.1k (23.1k) | 79 / 71 / 199 | 91% | 124 ms |
+| day 65, autumn | 82.2k (31.6k) | 104 / 94 / 260 | 96% | |
+| day 80, autumn | 93.5k (38.7k) | 120 / 108 / 295 | 97% | |
+| day 95, winter | 66.8k (17.5k) | 124 / 101 / 401 | 94% | 186 ms |
+
+That is the soak's "same population, later in the run": on day 95 the
+world holds as many organisms as on day 50 but in tighter winter herds
+(5k dormant in dens, fewer player lineages and organisms), each
+organism has 57% more neighbors (twice as many at p99), and the decide
+phase cost 50% more. 70% of neighbors are of another lineage.
+
+**Where the time went** (day 50, one thread; phases from the timers, the
+rest from callgrind): decide 59% of the tick (the close looks at the
+nearest 32 more than half of it, the 39-gene distance 30% of a look; the
+neighbor query, the selection of the nearest and the screening of the
+rest a fifth), the parallel apply 31% (route searches alone 9% of all
+instructions, 70% of that in searches that fail after the full
+1,500-node budget), environment 5%, grid 4%. The daily tick added 55–60 ms of
+bookkeeping on one core (140–210 ms on the days with species detection)
+on top of a normal tick, which is the p99 of every run: one tick in 48 is
+a daily one. Of that, 42 ms were the legacy tally (a map update per allele
+of every breeding adult), 80 ms the species clustering (6,085 samples: the
+500 lineages make far more strata than `species_max_samples`, and every
+pair of samples was compared), 9 ms removing the dead.
+
+Changes, each leaving every result bit for bit as it was:
+
+- **Decide in grid order.** Decisions are made in the spatial grid's slot
+  order instead of organism order (each depends only on the world and its
+  own random stream) and scattered back, so neighbors that decide one
+  after another scan the same cells and their packed genes stay in cache.
+- **Cheaper close looks.** The 39-gene distance is summed only when a test
+  needs it (a body-plan gap at the kinship limit rules kinship out at any
+  distance), with eight running sums instead of four, and the body-plan
+  genes sit first in the packed genes so the gap reads four fixed slots.
+- **Legacy tally:** each genome's alleles are counted per origin with a
+  short linear scan (`Genome::count_origins`), all adults on all cores
+  (`LegacySnapshot::compute_par`), in integers; all tallies are whole
+  numbers, so the totals are exactly the old ones.
+- **Species clustering:** samples are bucketed by body plan (a pair can
+  only link if every body-plan gene differs by less than the kinship gap),
+  pairs already in one component are skipped, and the distance is bounded
+  from a vectorized sum, falling back to the exact test only when the
+  bounds straddle a threshold. The components are the same (a test runs
+  the old pairwise union-find beside it over every preset body plan and
+  four link rules).
+- **Environment:** the chunks due this tick update on all cores, one chunk
+  row each (a chunk writes only its own tiles), and the hourly
+  distance-to-water field is a two-pass distance transform instead of a
+  breadth-first search (a test compares them).
+- **Maps:** the organism index and the per-tile maps (clutches, caches,
+  dens) hash with a multiply-rotate hasher instead of SipHash (nothing
+  iterates them in an order that matters); route search keeps each tile's
+  state in one record.
+
+Medians of interleaved runs, old and new binaries alternating (96 ticks,
+two simulated days including one species detection; 5 runs on day 50, 3 on
+day 95). The box was shared (load average 1–2.5 from other agents), so
+compare the columns, not other tables. ms per tick:
+
+| Day 50 (62–64k), phase | 1 thread, before | 1 thread, after | 4 threads, before | 4 threads, after |
+| --- | --- | --- | --- | --- |
+| Environment | 11.1 | 9.5 | 11.8 | **6.1** |
+| Daily (mean over all ticks) | 2.09 | 0.78 | 2.18 | 0.66 |
+| Grid | 8.3 | 8.6 | 4.1 | 4.0 |
+| Decide | 123.6 | **97.8** | 32.4 | 28.1 |
+| Apply (of which sequential) | 66.5 (9.3) | 64.7 (8.2) | 27.5 (9.4) | 24.6 (7.8) |
+| Tick mean | 211.3 | **181.6** (−14%) | 77.8 | **63.4** (−19%) |
+| Tick p50 / p99 | 205 / 286 | 180 / 238 | 73.6 / 134 | 61.9 / **90** |
+| Daily phase, ordinary / species day | 55–60 / 138–212 | 21–24 / 52–69 | 55–84 / 146–178 | 14–19 / 45–58 |
+
+| Day 95 (67k, winter), phase | 1 thread, before | 1 thread, after | 4 threads, before | 4 threads, after |
+| --- | --- | --- | --- | --- |
+| Environment | 12.3 | 11.1 | 11.9 | 7.3 |
+| Decide | 186.4 | **128.1** | 43.6 | 39.2 |
+| Apply (of which sequential) | 87.0 (14.0) | 81.6 (11.9) | 33.2 (12.8) | 32.8 (11.5) |
+| Tick mean | 298.2 | **231.7** (−22%) | 95.1 | 85.0 (−11%) |
+| Tick p50 / p99 | 287 / 376 | 227 / 314 | 92.3 / 151 | 82.4 / **118** |
+| Daily phase, ordinary / species day | 59–61 / 126–148 | 28–33 / 54–60 | 57–61 / 130–138 | 17–19 / 43–62 |
+
+On one thread, the measure of what a world costs a shared box, a tick at
+60–70k is 14–22% cheaper, most where the herds are densest; on four
+threads the daily bookkeeping spike is a quarter of what it was and tick
+p99 fell by a fifth to a third. Every run's final state hash matched the
+old binary's at 1 and 4 threads; `sweep --size 96 --trials 1 --seeds 12
+--rounds 1 --seed 31` prints 11.76 with output identical to before apart
+from the timing; `run` with the parallel apply, with `--sequential-apply`
+and with level of detail, migrants and catastrophes prints the same as
+before.
+
+Not done, because they would change results (open items):
+
+- **The neighbor scan itself.** What still grows with density is the scan:
+  every neighbor within the radius is collected, the nearest 32 selected
+  (`select_nth_unstable`) and the rest screened. It could be fused into
+  the grid query and skip the selection, but the kin centroid and the
+  far neighbors' position sums are float sums in the order the selection
+  leaves the neighbors, so any other order moves results at the rounding
+  level. Summing positions in fixed point (or in slot order) would free
+  it; that is a (tiny) rule change.
+- **Failed route searches.** 36 of ~160 searches a tick fail after
+  expanding the whole 1,500-node budget (a target across water with
+  nothing closer reachable) and are repeated every simulated hour by each
+  organism stuck that way: 6–7% of the tick. A failure could be reused
+  until the terrain it explored changes, but a tile's crossing cost
+  follows snow, mud and water depth continuously and the terrain versions
+  only track 0.1 steps of some of them, so reuse would not be exact; a
+  cheaper reachability test (or a smaller budget for repeats) changes
+  movement.
+- **Removing the dead each day** (`retain` moving every survivor, most of
+  the 8 ms the daily phase still spends on one core before its tallies):
+  keeping organisms in place with a free list would change the index
+  order, and with it the order of everything indexed by it.
+
 ### Launch numbers
 
 The doc's next step was to measure at the prototype target and then set
@@ -3427,10 +3577,15 @@ per world, 1 s ticks, protocol 2 clients):
   load generator's 0.9 cores on the same box). A dedicated 4-core box
   would likely hold 8 (2.3 cores without the load generator), unmeasured.
   That is at 30–40k organisms per world: over hours, 500 heavy players
-  grow a 512² world to 60–72k, where a world costs ~0.5 cores (6 worlds
+  grow a 512² world to 60–72k, where a world cost ~0.5 cores (6 worlds
   took 2.8–2.9) and tick p99 reached ~1 s on this box (see [the
-  soak](#six-worlds-for-three-hours-soak)): budget about 1 world per core
-  if worlds run that full.
+  soak](#six-worlds-for-three-hours-soak)). A tick at that population is
+  now 14–22% cheaper in CPU and its daily spike a quarter of what it was
+  ([A server-sized world at 60–70k organisms](#a-server-sized-world-at-6070k-organisms)),
+  so such a world should cost ~0.4 cores and six of them ~2.4 cores
+  (estimated from the sim benchmark, not yet re-measured with the load
+  generator): still budget about **1 world per core** if worlds run that
+  full, 1.2 on a dedicated box.
 - **Memory:** 0.4 GB per world measured, **budget 0.5 GB** (save copies,
   growth to 40k+ organisms) plus 0.1 GB for the process.
 - **Bandwidth:** **1.5 MB/s (12 Mbit/s) per world** of egress; a 100 Mbit/s
@@ -3517,7 +3672,12 @@ What it shows:
   and 73–79/198–207 at 2–2.7 h, and the hourly medians do not climb: the
   cost follows what the world is doing (season, species mix and where the
   herds are; player organisms fell from 15k to 2–5k per world as most of
-  the 500 player lineages died out), not time alone. What part of the
+  the 500 player lineages died out), not time alone. Since measured: it is
+  how tightly the herds pack. At the same population, a winter world has
+  57% more neighbors per organism within the 8-tile perception radius
+  than a summer one, and a decision's cost follows its neighbors (see
+  [A server-sized world at 60–70k organisms](#a-server-sized-world-at-6070k-organisms),
+  which also made that case 22% cheaper). What part of the
   last 15 minutes is the other agents' load cannot be separated; command
   p99 was at or near its floor (250–290 ms) whenever the box was quiet
   and the population under ~50k.

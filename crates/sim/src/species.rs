@@ -111,34 +111,150 @@ fn ramp(x: f32, full: f32, sterile: f32) -> f32 {
     }
 }
 
-fn find(parent: &mut [usize], mut i: usize) -> usize {
-    while parent[i] != i {
-        parent[i] = parent[parent[i]];
-        i = parent[i];
+/// Slots of [`Packed`]: the distance genes, padded to whole groups of four.
+const PACKED: usize = (DISTANCE_GENES as usize).div_ceil(4) * 4;
+
+/// A sample's distance genes, packed in gene order (then zeros), for a
+/// quick sum of differences that vectorizes.
+type Packed = [f32; PACKED];
+
+fn pack(e: &Expr) -> Packed {
+    let mut out = [0.0; PACKED];
+    let mut n = 0;
+    for (k, &v) in e.iter().enumerate() {
+        if IN_DISTANCE[k] {
+            out[n] = v;
+            n += 1;
+        }
     }
-    i
+    out
+}
+
+impl LinkRule {
+    /// [`Self::linked`], deciding from bounds on the distance where it can.
+    /// `linked` sums the differences in one serial chain; four running sums
+    /// over the packed genes add the same non-negative terms in another
+    /// order, which moves the sum by a few millionths of itself at most
+    /// (`SLACK` is far wider). Past the body-plan test, `linked` is true
+    /// below some distance and false above it (the early stop, kinship and
+    /// fertility all fall with distance), so when both bounds give the same
+    /// answer it is `linked`'s; otherwise (rarely) `linked` decides.
+    fn linked_packed(&self, a: &Expr, b: &Expr, pa: &Packed, pb: &Packed) -> bool {
+        const SLACK: f32 = 1e-4;
+        let gap = BODY_PLAN_GENES.iter().map(|g| (a[g.index()] - b[g.index()]).abs()).fold(0.0, f32::max);
+        if gap >= self.kin_body_plan_gap || ramp(gap, BODY_PLAN_FULL, BODY_PLAN_STERILE) < self.min_fertility {
+            return false;
+        }
+        let mut lanes = [0.0f32; 4];
+        for (a, b) in pa.chunks_exact(4).zip(pb.chunks_exact(4)) {
+            for (l, lane) in lanes.iter_mut().enumerate() {
+                *lane += (a[l] - b[l]).abs();
+            }
+        }
+        let sum = (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]);
+        let limit = self.species_distance * DISTANCE_GENES;
+        let pass = |sum: f32| {
+            if sum >= limit {
+                return false;
+            }
+            let distance = sum / DISTANCE_GENES;
+            let rest = 1.0 - distance / self.species_distance;
+            rest > 0.0 && gap < rest * self.kin_body_plan_gap && distance_fertility(distance) >= self.min_fertility
+        };
+        if pass(sum * (1.0 + SLACK)) {
+            true
+        } else if !pass(sum * (1.0 - SLACK)) {
+            false
+        } else {
+            self.linked(a, b)
+        }
+    }
 }
 
 /// Single-linkage clusters of `samples` under `rule`: each cluster is a list
 /// of sample indices in ascending order; clusters are ordered by their first
-/// index.
+/// index. These are the connected components of the link graph, so they do
+/// not depend on which pairs are tested in what order, only on every linked
+/// pair ending up in one component:
+///
+/// - Two samples can only be linked if every body-plan gene differs by less
+///   than `kin_body_plan_gap`, so samples are bucketed by body plan (cells
+///   a little wider than the gap in each of the four genes) and each is
+///   tested only against samples in its own and the adjacent cells.
+/// - Pairs already in one component are not tested. Each sample carries its
+///   component's label (its smallest index), and a merge relabels the
+///   members of the one with the larger label.
 pub fn cluster(samples: &[Sample], rule: &LinkRule) -> Vec<Vec<usize>> {
     let n = samples.len();
-    let mut parent: Vec<usize> = (0..n).collect();
+    let limit = rule.kin_body_plan_gap;
+    if limit.is_nan() || limit <= 0.0 {
+        // `linked` needs a body-plan gap below the limit: nothing links.
+        return (0..n).map(|i| vec![i]).collect();
+    }
+    let packed: Vec<Packed> = samples.iter().map(|s| pack(&s.expr)).collect();
+    // Cells 0.1% wider than the gap limit: a pair within the limit in a gene
+    // lies in the same or adjacent cells of it, rounding included.
+    let width = limit * 1.001;
+    let cell_of = |s: &Sample| BODY_PLAN_GENES.map(|g| (s.expr[g.index()] / width).floor() as i32);
+    let mut cells: BTreeMap<[i32; 4], Vec<u32>> = BTreeMap::new();
+    for (i, s) in samples.iter().enumerate() {
+        cells.entry(cell_of(s)).or_default().push(i as u32);
+    }
+    let cells: Vec<([i32; 4], Vec<u32>)> = cells.into_iter().collect();
+    // Each cell's neighborhood: itself and the adjacent occupied cells.
+    let near: Vec<Vec<usize>> = cells
+        .iter()
+        .map(|(c, _)| (0..cells.len()).filter(|&d| cells[d].0.iter().zip(c).all(|(a, b)| (a - b).abs() <= 1)).collect())
+        .collect();
+    // Each sample's cell and place in it.
+    let mut at = vec![(0usize, 0usize); n];
+    for (k, (_, list)) in cells.iter().enumerate() {
+        for (p, &i) in list.iter().enumerate() {
+            at[i as usize] = (k, p);
+        }
+    }
+    // Labels, by cell in the cells' order, so the scan past a component's
+    // members reads them contiguously.
+    let mut labels: Vec<Vec<u32>> = cells.iter().map(|(_, list)| list.clone()).collect();
+    let mut members: Vec<Vec<u32>> = (0..n as u32).map(|i| vec![i]).collect();
     for i in 0..n {
-        for j in i + 1..n {
-            let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
-            if ri != rj && rule.linked(&samples[i].expr, &samples[j].expr) {
-                parent[ri.max(rj)] = ri.min(rj);
+        for &d in &near[at[i].0] {
+            // Samples after `i` in the cell (each cell's list is ascending).
+            let list = &cells[d].1;
+            let mut p = list.partition_point(|&j| j as usize <= i);
+            while p < list.len() {
+                let li = labels[at[i].0][at[i].1];
+                // Skip samples already in i's component, eight at a time (a
+                // single species is often most of a cell).
+                while p + 8 <= list.len() && labels[d][p..p + 8].iter().all(|&l| l == li) {
+                    p += 8;
+                }
+                if p == list.len() {
+                    break;
+                }
+                let (j, lj) = (list[p] as usize, labels[d][p]);
+                if li != lj && rule.linked_packed(&samples[i].expr, &samples[j].expr, &packed[i], &packed[j]) {
+                    let (keep, gone) = (li.min(lj), li.max(lj));
+                    let moved = std::mem::take(&mut members[gone as usize]);
+                    for &m in &moved {
+                        let (c, q) = at[m as usize];
+                        labels[c][q] = keep;
+                    }
+                    members[keep as usize].extend(moved);
+                }
+                p += 1;
             }
         }
     }
-    let mut by_root: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for i in 0..n {
-        let r = find(&mut parent, i);
-        by_root.entry(r).or_default().push(i);
-    }
-    by_root.into_values().collect()
+    members
+        .into_iter()
+        .filter(|m| !m.is_empty())
+        .map(|m| {
+            let mut m: Vec<usize> = m.into_iter().map(|k| k as usize).collect();
+            m.sort_unstable();
+            m
+        })
+        .collect()
 }
 
 /// How a species came to be.
@@ -531,6 +647,77 @@ mod tests {
             }
         }
         assert!(agree > genomes.len(), "some pairs beyond self-pairs are linked");
+    }
+
+    /// `cluster` as it was: every pair, union-find, the plain link test.
+    fn cluster_pairwise(samples: &[Sample], rule: &LinkRule) -> Vec<Vec<usize>> {
+        fn find(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        let n = samples.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        for i in 0..n {
+            for j in i + 1..n {
+                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                if ri != rj && rule.linked(&samples[i].expr, &samples[j].expr) {
+                    parent[ri.max(rj)] = ri.min(rj);
+                }
+            }
+        }
+        let mut by_root: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for i in 0..n {
+            let r = find(&mut parent, i);
+            by_root.entry(r).or_default().push(i);
+        }
+        by_root.into_values().collect()
+    }
+
+    /// The bucketed clustering and the bounded link test give exactly what
+    /// testing every pair with `linked` does, over every preset body plan
+    /// with drifted variants (clines that link across body-plan cells
+    /// included), under the default rule and tighter and looser ones.
+    #[test]
+    fn fast_clustering_matches_every_pair() {
+        let mut rng = crate::rng::rng_for(9, 0, 0, 0);
+        let designs: Vec<FounderDesign> = crate::presets::wild_designs()
+            .into_iter()
+            .map(|(_, d)| d)
+            .chain(crate::presets::player_designs())
+            .collect();
+        let mut samples = Vec::new();
+        for (l, d) in designs.iter().enumerate() {
+            for k in 0..12 {
+                let size = (d.values()[Gene::BodySize.index()] + 0.02 * k as f32).min(1.0);
+                let carn = (d.values()[Gene::Carnivory.index()] + 0.015 * k as f32).min(1.0);
+                let d2 = d.clone().with(Gene::BodySize, size).with(Gene::Carnivory, carn);
+                for _ in 0..3 {
+                    samples.push(sample(&d2.founder_genome(1, &mut rng), l as u32, 1));
+                }
+            }
+        }
+        // Interleave the lineages so components are found out of order.
+        let n = samples.len();
+        let order: Vec<usize> = (0..n).map(|k| (k * 37) % n).collect();
+        assert_eq!(order.iter().collect::<std::collections::BTreeSet<_>>().len(), n);
+        let samples: Vec<Sample> = order.iter().map(|&k| samples[k].clone()).collect();
+        for (sd, gap, fert) in [(0.12, 0.25, 0.5), (0.05, 0.1, 0.9), (0.3, 0.6, 0.1), (0.12, 0.0, 0.5)] {
+            let r = LinkRule { species_distance: sd, kin_body_plan_gap: gap, min_fertility: fert };
+            let packed: Vec<Packed> = samples.iter().map(|s| pack(&s.expr)).collect();
+            for (a, pa) in samples.iter().zip(&packed) {
+                for (b, pb) in samples.iter().zip(&packed) {
+                    assert_eq!(r.linked_packed(&a.expr, &b.expr, pa, pb), r.linked(&a.expr, &b.expr));
+                }
+            }
+            let want = cluster_pairwise(&samples, &r);
+            assert_eq!(cluster(&samples, &r), want, "rule {r:?}");
+            if gap > 0.0 {
+                assert!(want.len() > 1 && want.len() < n, "rule {r:?}: {} clusters of {n}", want.len());
+            }
+        }
     }
 
     #[test]

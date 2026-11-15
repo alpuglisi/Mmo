@@ -6,6 +6,7 @@ use crate::legacy::{LegacySnapshot, LEGACY_KEPT};
 use crate::rng::SimRng;
 use crate::terrain::{weather_rng, Ground, Map, Tile};
 use rand::Rng;
+use rayon::prelude::*;
 
 /// Tiles around a clutch in which other clutches draw egg predators to it
 /// (`Balance::nest_predation`).
@@ -134,7 +135,8 @@ impl World {
 
         let adults = || self.organisms.iter().filter(|o| o.is_breeding_adult());
         self.group.update(adults().map(|o| (o.pos, &o.pheno)));
-        let mut snapshot = LegacySnapshot::compute(self.day(), adults().map(|o| (&*o.genome, o.offspring_raised)));
+        let breeding = self.organisms.par_iter().filter(|o| o.is_breeding_adult());
+        let mut snapshot = LegacySnapshot::compute_par(self.day(), breeding.map(|o| (&*o.genome, o.offspring_raised)));
         if self.config.lod.enabled {
             self.lod_legacy(&mut snapshot);
         }
