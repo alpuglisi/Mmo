@@ -85,8 +85,19 @@ export class GameModel {
     return () => s!.delete(fn);
   }
 
+  /**
+   * Call every subscriber of `topic`. One that throws (e.g. drawing on a lost
+   * WebGL context) is logged and skipped: the others still run, and the
+   * caller (the socket's message handler) carries on with the next message.
+   */
   emit(topic: Topic): void {
-    for (const fn of this.subs.get(topic) ?? []) fn();
+    for (const fn of [...(this.subs.get(topic) ?? [])]) {
+      try {
+        fn();
+      } catch (e) {
+        console.error(`[model] a '${topic}' subscriber failed:`, e);
+      }
+    }
   }
 
   toast(kind: Toast['kind'], text: string): void {

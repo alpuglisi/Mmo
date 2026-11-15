@@ -196,7 +196,7 @@ export class GameSocket {
           p.resolve(m);
         }
       }
-      this.opts.onMessage(m);
+      this.deliver(m);
     };
     ws.onclose = () => {
       if (this.ws !== ws) return; // superseded or stopped
@@ -227,7 +227,7 @@ export class GameSocket {
       return;
     }
     this.lastResync = -Infinity;
-    this.opts.onMessage({ type: 'state', ...state });
+    this.deliver({ type: 'state', ...state });
   }
 
   private async scheduleRetry(wasOpen: boolean): Promise<void> {
@@ -258,7 +258,23 @@ export class GameSocket {
 
   private setState(s: ConnState, retryInMs?: number): void {
     this.state = s;
-    this.opts.onState(s, { attempt: this.attempt, retryInMs });
+    try {
+      this.opts.onState(s, { attempt: this.attempt, retryInMs });
+    } catch (e) {
+      console.error('[socket] connection state handler failed:', e);
+    }
+  }
+
+  /**
+   * Hand a message to the app. Its handler's errors (drawing, UI) are logged
+   * and stop here: they must not break the connection's own bookkeeping.
+   */
+  private deliver(m: ServerMsg): void {
+    try {
+      this.opts.onMessage(m);
+    } catch (e) {
+      console.error(`[socket] handling a '${m.type}' message failed:`, e);
+    }
   }
 }
 

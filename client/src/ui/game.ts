@@ -1054,9 +1054,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // The map is drawn from the state; a drawing error must not stop the
+  // panels (or the connection pill) from following it.
+  function showState(): void {
+    try {
+      view.setState(model.state!);
+    } catch (e) {
+      console.error('[game] drawing the state failed:', e);
+    }
+  }
+
   cleanups.push(
     model.on('state', () => {
-      view.setState(model.state!);
+      showState();
       renderGroupMenu();
       updateHint();
       renderPanels();
@@ -1072,7 +1082,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }),
   );
   if (model.state) {
-    view.setState(model.state);
+    showState();
     renderGroupMenu();
   }
   renderConn();
