@@ -11,14 +11,14 @@
 # macOS with Xcode only. The app must be a Debug simulator build (its web
 # view is inspectable) made for a plain-http server:
 #   cd client && npm run build && EVO_CAP_CLEARTEXT=1 npx cap sync ios \
-#     && scripts/ios-build-sim.sh            # → target/ios-sim/App.app
+#     && scripts/ios-build-sim.sh            # → ios-out/sim/App.app
 # and Appium 3 with the XCUITest driver must be installed:
 #   npm install -g appium@3.9.0 && appium driver install xcuitest@12.22.7
 #
 #   client/e2e/ios-simulator.sh [path/to/App.app]
 #
 # Env:
-#   APP              the .app (default target/ios-sim/App.app)
+#   APP              the .app (default ios-out/sim/App.app)
 #   SIM_UDID         simulator to use (default: the first available device whose
 #                    name matches SIM_DEVICE on the newest iOS runtime; booted
 #                    here if it is not)
@@ -38,7 +38,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 client="$(cd "$here/.." && pwd)"
 root="$(cd "$client/.." && pwd)"
 
-APP="${1:-${APP:-$root/target/ios-sim/App.app}}"
+APP="${1:-${APP:-$root/ios-out/sim/App.app}}"
 XCRUN="${XCRUN:-xcrun}"
 APP_ID="${EVO_APP_ID:-org.evolutionmmo.client}"
 SERVER_BIN="${EVO_SERVER_BIN:-$root/target/release/evo-server}"

@@ -14,3 +14,4 @@ client/android/
 client/ios/
 **/*.md
 !client/**/*.md
+ios-out

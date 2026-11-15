@@ -3,7 +3,7 @@
 # from the generated project (`npx cap add ios`, then `npx cap sync ios`
 # after client changes), and copy App.app to an output directory.
 #
-#   client/scripts/ios-build-sim.sh [out-dir]        (default target/ios-sim, from the repository root)
+#   client/scripts/ios-build-sim.sh [out-dir]        (default ios-out/sim, from the repository root)
 #
 # Debug configuration (CAPACITOR_DEBUG=true: the WKWebView is inspectable,
 # which the simulator smoke run needs). Works with Capacitor 8's default
@@ -12,8 +12,8 @@
 #
 # Env:
 #   CONFIGURATION       Debug (default) or Release
-#   DERIVED_DATA        xcodebuild -derivedDataPath (default target/ios-build)
-#   SPM_PACKAGES        -clonedSourcePackagesDirPath (default target/ios-spm; cached in CI)
+#   DERIVED_DATA        xcodebuild -derivedDataPath (default ios-out/build)
+#   SPM_PACKAGES        -clonedSourcePackagesDirPath (default ios-out/spm; cached in CI)
 #   XCODEBUILD          xcodebuild binary (default xcodebuild)
 set -euo pipefail
 
@@ -21,10 +21,10 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 client="$(cd "$here/.." && pwd)"
 root="$(cd "$client/.." && pwd)"
 
-OUT="${1:-$root/target/ios-sim}"
+OUT="${1:-$root/ios-out/sim}"
 CONFIGURATION="${CONFIGURATION:-Debug}"
-DERIVED_DATA="${DERIVED_DATA:-$root/target/ios-build}"
-SPM_PACKAGES="${SPM_PACKAGES:-$root/target/ios-spm}"
+DERIVED_DATA="${DERIVED_DATA:-$root/ios-out/build}"
+SPM_PACKAGES="${SPM_PACKAGES:-$root/ios-out/spm}"
 XCODEBUILD="${XCODEBUILD:-xcodebuild}"
 ios="$client/ios/App"
 

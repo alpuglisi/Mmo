@@ -264,24 +264,26 @@ jobs:
       - name: Generate the iOS project
         working-directory: client
         run: npx cap add ios
+      # iOS outputs live in ios-out/, not target/: rust-cache restores target/
+      # after these builds and overlaid a stale App.app (simctl: "Missing bundle ID").
       - name: Cache Swift packages
         uses: actions/cache@v4
         with:
-          path: target/ios-spm
+          path: ios-out/spm
           key: ios-spm-${{ steps.xcode.outputs.version }}-${{ hashFiles('client/package-lock.json') }}
           restore-keys: ios-spm-${{ steps.xcode.outputs.version }}-
       - name: Build the app for the simulator (unsigned)
         run: |
-          bash client/scripts/ios-build-sim.sh target/ios-sim
-          if plutil -extract NSAppTransportSecurity xml1 -o - target/ios-sim/App.app/Info.plist >/dev/null 2>&1; then
+          bash client/scripts/ios-build-sim.sh ios-out/sim
+          if plutil -extract NSAppTransportSecurity xml1 -o - ios-out/sim/App.app/Info.plist >/dev/null 2>&1; then
             echo "the shipped build has an App Transport Security exception"; exit 1
           fi
-          (cd target/ios-sim && ditto -c -k --keepParent App.app evolution-mmo-simulator.zip)
+          (cd ios-out/sim && ditto -c -k --keepParent App.app evolution-mmo-simulator.zip)
       - name: Upload the simulator app
         uses: actions/upload-artifact@v4
         with:
           name: evolution-mmo-ios-simulator-app
-          path: target/ios-sim/evolution-mmo-simulator.zip
+          path: ios-out/sim/evolution-mmo-simulator.zip
           if-no-files-found: error
           retention-days: 14
       # The plain-http build for the simulator run (its server is
@@ -290,8 +292,8 @@ jobs:
       - name: Build the cleartext app (for the simulator run)
         run: |
           (cd client && EVO_CAP_CLEARTEXT=1 npx cap sync ios)
-          bash client/scripts/ios-build-sim.sh target/ios-sim-cleartext
-          ats="$(plutil -extract NSAppTransportSecurity.NSAllowsArbitraryLoadsInWebContent raw -o - target/ios-sim-cleartext/App.app/Info.plist || true)"
+          bash client/scripts/ios-build-sim.sh ios-out/sim-cleartext
+          ats="$(plutil -extract NSAppTransportSecurity.NSAllowsArbitraryLoadsInWebContent raw -o - ios-out/sim-cleartext/App.app/Info.plist || true)"
           [ "$ats" = true ] || { echo "the cleartext build has no NSAllowsArbitraryLoadsInWebContent (got: $ats)"; exit 1; }
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
@@ -319,7 +321,7 @@ jobs:
       - name: Smoke-run the app in a simulator
         env:
           OUT: ${{ github.workspace }}/client/e2e/out/ios
-        run: WDA_DERIVED_DATA="$HOME/wda-derived" bash client/e2e/ios-simulator.sh target/ios-sim-cleartext/App.app
+        run: WDA_DERIVED_DATA="$HOME/wda-derived" bash client/e2e/ios-simulator.sh ios-out/sim-cleartext/App.app
       - name: Upload screenshots and logs
         if: always()
         uses: actions/upload-artifact@v4

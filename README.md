@@ -2341,8 +2341,8 @@ simulator build is (this is what the `ios` CI job does):
 
 ```sh
 cd client && npm run build && npx cap add ios          # or `npx cap sync ios` once added
-scripts/ios-build-sim.sh                               # → target/ios-sim/App.app (Debug, iphonesimulator, CODE_SIGNING_ALLOWED=NO)
-xcrun simctl install booted ../target/ios-sim/App.app && xcrun simctl launch booted org.evolutionmmo.client
+scripts/ios-build-sim.sh                               # → ios-out/sim/App.app (Debug, iphonesimulator, CODE_SIGNING_ALLOWED=NO)
+xcrun simctl install booted ../ios-out/sim/App.app && xcrun simctl launch booted org.evolutionmmo.client
 ```
 
 `npx cap add ios` works on Linux too (it only writes the project: checked,
@@ -2429,7 +2429,7 @@ runs (macOS with Xcode only):
 cd client && npm run build && EVO_CAP_CLEARTEXT=1 npx cap sync ios && scripts/ios-build-sim.sh
 npm install -g appium@3.9.0 && appium driver install xcuitest@12.22.7
 cargo build --release -p evo-server
-client/e2e/ios-simulator.sh          # default app: target/ios-sim/App.app
+client/e2e/ios-simulator.sh          # default app: ios-out/sim/App.app
 ```
 
 It picks a simulator (`SIM_UDID`, or the first available device matching
