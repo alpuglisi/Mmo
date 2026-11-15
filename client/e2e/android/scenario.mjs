@@ -146,28 +146,89 @@ export async function runScenario(device, { outDir, backgroundSeconds = 25, name
     return null;
   };
 
-  /** Tap the element's center with real input events (falls back to el.click() when something else is on top). */
-  const tap = async (selector) => {
-    const box = await cdp.evaluate((sel) => {
-      document.activeElement?.blur?.();
-      const el = document.querySelector(sel);
-      if (!el) return null;
+  /** Where the element's center is now, and the viewport it was measured in. */
+  const locate = (selector, scroll) => cdp.evaluate((sel, scrollIt) => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    let r = el.getBoundingClientRect();
+    if (scrollIt || r.bottom < 0 || r.top > innerHeight) {
       el.scrollIntoView({ block: 'center', inline: 'center' });
-      const r = el.getBoundingClientRect();
-      const x = r.left + r.width / 2;
-      const y = r.top + r.height / 2;
-      const hit = document.elementFromPoint(x, y);
-      return { x, y, onTop: !!hit && (hit === el || el.contains(hit)) };
-    }, selector);
+      r = el.getBoundingClientRect();
+    }
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    const vv = window.visualViewport;
+    return {
+      x, y, onTop: !!hit && (hit === el || el.contains(hit)),
+      view: [innerWidth, innerHeight, scrollX, scrollY, vv?.width ?? 0, vv?.height ?? 0, vv?.offsetTop ?? 0, vv?.scale ?? 1].map((v) => Math.round(v)),
+    };
+  }, selector, scroll);
+
+  /**
+   * Tap the element's center with real input events (falls back to el.click() when something else is on top).
+   * Typing raises the soft keyboard and the blur here dismisses it: while it
+   * animates the viewport resizes or scrolls (the login card is centered, the
+   * page scrolls back), so a point measured then is somewhere else when the
+   * tap lands (seen in CI: the tap missed Create account / Found lineage, or
+   * hit the Name field). Measure until the element and the viewport have held
+   * still for about a second, then tap.
+   */
+  const tap = async (selector) => {
+    await cdp.evaluate(() => document.activeElement?.blur?.());
+    let box = await locate(selector, true);
     if (!box) throw new Error(`no ${selector} to tap`);
+    const same = (a, b) => !!a && !!b && Math.abs(a.x - b.x) < 1 && Math.abs(a.y - b.y) < 1 && a.view.join() === b.view.join();
+    let still = 0;
+    for (const end = Date.now() + 10000; still < 4 && Date.now() < end;) {
+      await sleep(300);
+      const next = await locate(selector, false);
+      if (!next) throw new Error(`${selector} went away before the tap`);
+      still = same(box, next) ? still + 1 : 0;
+      box = next;
+    }
+    if (still < 4) console.log(`    (${selector} kept moving for 10 s; tapping where it is now)`);
     if (!box.onTop) {
       console.log(`    (${selector} is covered; clicking it directly)`);
       await cdp.evaluate((sel) => document.querySelector(sel).click(), selector);
       return;
     }
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+    // The input events the page sees during the tap, and whether the element got its click.
+    const watch = () => cdp.evaluate((sel) => {
+      const seen = (window.__e2eTap = { clicked: false, events: [] });
+      const el = document.querySelector(sel);
+      for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        document.addEventListener(t, (e) => {
+          if (window.__e2eTap !== seen) return;
+          seen.events.push(`${t}:${e.target?.id || e.target?.tagName?.toLowerCase()}`);
+          if (t === 'click' && (e.target === el || el?.contains(e.target))) seen.clicked = true;
+        }, { capture: true });
+      }
+    }, selector);
+    const record = { selector, ...box, tries: [] };
+    (report.taps ??= []).push(record);
+    // A synthetic press and release can come to nothing on the emulator's
+    // WebView (CI: hover styling showed the pointer reached Create account,
+    // but no click; the button never ran). Only input the page never turned
+    // into a click is sent again: a click that arrived is never repeated.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await watch();
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        const r = await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+        if (r?.hit) record.hit = r.hit; // the iOS driver says what it clicked
+      }
+      let seen = null;
+      for (const end = Date.now() + 2000; Date.now() < end;) {
+        seen = await cdp.evaluate(() => window.__e2eTap ?? null).catch(() => null);
+        if (!seen || seen.clicked) break; // clicked, or the page moved on (navigated)
+        await sleep(200);
+      }
+      record.tries.push(seen?.events ?? 'page changed');
+      if (!seen || seen.clicked) return;
+      console.log(`    (tap on ${selector} produced no click, saw [${seen.events.join(' ')}]; tapping again)`);
+      box = (await locate(selector, false)) ?? box;
     }
+    throw new Error(`three taps on ${selector} produced no click`);
   };
 
   /** Focus a field, clear it and type `text` as keyboard input. */
@@ -193,30 +254,41 @@ export async function runScenario(device, { outDir, backgroundSeconds = 25, name
     }
   };
 
-  /** The canvas area of a page screenshot shows more than a flat fill: count distinct colors on a grid. */
-  const mapColors = async (png) => cdp.evaluate(async (data) => {
-    const c = document.querySelector('#world-canvas')?.getBoundingClientRect();
-    if (!c || c.width < 10 || c.height < 10) return { colors: 0, why: 'no canvas box' };
-    const img = new Image();
-    img.src = `data:image/png;base64,${data}`;
-    await img.decode();
-    const scale = img.width / window.innerWidth;
+  /**
+   * The map canvas shows more than a flat fill: count distinct colors on a
+   * grid of the canvas's own pixels. Read from the canvas, not from a page
+   * screenshot: the Android WebView's DevTools screenshot leaves the WebGL
+   * canvas out (CI: the page screenshot was blank where the device's own
+   * showed the map; a pass counted the toasts' text on top of it), and
+   * overlays must not count as map. With preserveDrawingBuffer off, the
+   * drawing buffer is readable only in the frame it was drawn: the copy is
+   * made in an animation frame callback queued after the renderer's (Pixi
+   * queues its next frame while drawing the current one), over a few frames.
+   */
+  const mapColors = () => cdp.evaluate(async () => {
+    const c = document.querySelector('#world-canvas');
+    const box = c?.getBoundingClientRect();
+    if (!c || !box || box.width < 10 || box.height < 10 || c.width < 16 || c.height < 16) return { colors: 0, why: 'no canvas box' };
     const cv = document.createElement('canvas');
-    cv.width = img.width;
-    cv.height = img.height;
-    const g = cv.getContext('2d');
-    g.drawImage(img, 0, 0);
-    const seen = new Set();
-    for (let i = 1; i < 16; i++) {
-      for (let j = 1; j < 16; j++) {
-        const x = Math.floor((c.left + (c.width * i) / 16) * scale);
-        const y = Math.floor((c.top + (c.height * j) / 16) * scale);
-        const [r, gg, b] = g.getImageData(x, y, 1, 1).data;
-        seen.add(`${r >> 3},${gg >> 3},${b >> 3}`);
+    cv.width = c.width;
+    cv.height = c.height;
+    const g = cv.getContext('2d', { willReadFrequently: true });
+    let best = 0;
+    for (let frame = 0; frame < 10 && best < 6; frame++) {
+      await new Promise((r) => requestAnimationFrame(r));
+      g.clearRect(0, 0, cv.width, cv.height);
+      g.drawImage(c, 0, 0);
+      const seen = new Set();
+      for (let i = 1; i < 16; i++) {
+        for (let j = 1; j < 16; j++) {
+          const [r, gg, b] = g.getImageData(Math.floor((cv.width * i) / 16), Math.floor((cv.height * j) / 16), 1, 1).data;
+          seen.add(`${r >> 3},${gg >> 3},${b >> 3}`);
+        }
       }
+      best = Math.max(best, seen.size);
     }
-    return { colors: seen.size, canvas: [Math.round(c.width), Math.round(c.height)] };
-  }, png);
+    return { colors: best, canvas: [Math.round(box.width), Math.round(box.height)] };
+  });
 
   const save = () => writeFileSync(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2));
   try {
@@ -251,7 +323,20 @@ export async function runScenario(device, { outDir, backgroundSeconds = 25, name
     await tap('#design-submit');
 
     // 4. The map and the first state frames.
-    await waitFor('the world map', () => cdp.evaluate(() => !!document.querySelector('#world-canvas')));
+    await waitFor('the world map', async () => {
+      const r = await cdp.evaluate(() => {
+        const submit = document.querySelector('#design-submit');
+        return {
+          map: !!document.querySelector('#world-canvas'),
+          design: !!submit,
+          submitDisabled: submit?.disabled ?? null,
+          problem: document.querySelector('#design-problem')?.textContent || '',
+          serverError: document.querySelector('#design-server-error')?.textContent || '',
+        };
+      });
+      if (r.map) return true;
+      throw new Error(JSON.stringify(r)); // what the timeout reports
+    });
     const first = await waitFor('a state frame with own organisms on a connected socket', async () => {
       const s = await status(cdp);
       return s.conn === 'connected' && s.organisms > 0 && s.tick > 0 && s.frames > 0 ? s : null;
@@ -264,14 +349,10 @@ export async function runScenario(device, { outDir, backgroundSeconds = 25, name
       step('onboarding tour shown and skipped');
     }
     await sleep(2000); // a terrain fetch and a few frames
-    const mapPng = await shoot('map');
-    if (mapPng) {
-      const m = await mapColors(mapPng);
-      if (m.colors < 6) throw new Error(`the map looks blank: ${JSON.stringify(m)}`);
-      step('map renders', m);
-    } else {
-      console.log('    (no page screenshot: map pixels not checked)');
-    }
+    await shoot('map');
+    const m = await mapColors();
+    if (m.colors < 6) throw new Error(`the map looks blank: ${JSON.stringify(m)}`);
+    step('map renders', m);
 
     // 5. Background past the 20 s watchdog, resume, and recover.
     const before = await status(cdp);
