@@ -3069,11 +3069,15 @@ compare the columns, not other tables. ms per tick:
 On one thread, the measure of what a world costs a shared box, a tick at
 60–70k is 14–22% cheaper, most where the herds are densest; on four
 threads the daily bookkeeping spike is a quarter of what it was and tick
-p99 fell by a fifth to a third. Every run's final state hash matched the
-old binary's at 1 and 4 threads; `sweep --size 96 --trials 1 --seeds 12
---rounds 1 --seed 31` prints 11.76 with output identical to before apart
-from the timing; `run` with the parallel apply, with `--sequential-apply`
-and with level of detail, migrants and catastrophes prints the same as
+p99 fell by a fifth to a third. The soak's *Confirmation run* (six worlds
+of 500 players for 90 minutes; [Six worlds for three
+hours](#six-worlds-for-three-hours-soak)) measured it in the server: at
+60–70k six worlds took 2.3–2.5 cores (2.8–2.9 before) with tick p99
+0.27–0.30 s (0.8–1.2 s before) and command p99 at its floor. Every run's
+final state hash matched the old binary's at 1 and 4 threads; `sweep
+--size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` prints 11.76 with
+output identical to before apart from the timing; `run` with the parallel
+apply, with `--sequential-apply` and with level of detail, migrants and catastrophes prints the same as
 before.
 
 Not done, because they would change results (open items):
@@ -3579,18 +3583,23 @@ per world, 1 s ticks, protocol 2 clients):
   That is at 30–40k organisms per world: over hours, 500 heavy players
   grow a 512² world to 60–72k, where a world cost ~0.5 cores (6 worlds
   took 2.8–2.9) and tick p99 reached ~1 s on this box (see [the
-  soak](#six-worlds-for-three-hours-soak)). A tick at that population is
-  now 14–22% cheaper in CPU and its daily spike a quarter of what it was
-  ([A server-sized world at 60–70k organisms](#a-server-sized-world-at-6070k-organisms)),
-  so such a world should cost ~0.4 cores and six of them ~2.4 cores
-  (estimated from the sim benchmark, not yet re-measured with the load
-  generator): still budget about **1 world per core** if worlds run that
-  full, 1.2 on a dedicated box.
-- **Memory:** 0.4 GB per world measured, **budget 0.5 GB** (save copies,
-  growth to 40k+ organisms) plus 0.1 GB for the process.
+  soak](#six-worlds-for-three-hours-soak)). With the cheaper tick of
+  [A server-sized world at 60–70k organisms](#a-server-sized-world-at-6070k-organisms)
+  a 60–70k world now costs **0.4 cores** (measured: six took 2.3–2.5 in the
+  soak's *Confirmation run*, every latency at or near its floor, with the
+  load generator's 0.6 cores on the same box), but six worlds still
+  saturated 4 cores at the 70–73k peak (2.8 cores, tick p99 0.7 s,
+  command p99 0.5 s). If worlds run that full, budget **1.25 worlds per
+  core** (5 on 4 cores) with headroom for the peak; a dedicated 4-core box
+  (no load generator) would likely hold 6, unmeasured.
+- **Memory:** 0.4 GB per world measured at 30–40k organisms and again at
+  60–70k with jemalloc (2.45 GB for six worlds and the process, flat for
+  hours), **budget 0.5 GB** (save copies, peaks) plus 0.1 GB for the
+  process.
 - **Bandwidth:** **1.5 MB/s (12 Mbit/s) per world** of egress; a 100 Mbit/s
   link carries 8 worlds, a 1 Gbit/s link any box's CPU limit.
-- **Worlds per process:** **at most 1.5 per core, 6 on a 4-core box**; past
+- **Worlds per process:** **at most 1.5 per core, 6 on a 4-core box**
+  (1.25 per core if the worlds grow to 60–75k organisms); past
   that, run another process (or box) with its own world list behind the
   same store. The sim pool and the Tokio runtime both size themselves to
   the cores, and nothing else is shared per world, so a bigger box should
@@ -3779,6 +3788,87 @@ the live heap does not). MB:
   small closed sets) is bounded by what one state holds; the world-thread
   queues and metric windows are fixed size. Nothing unbounded was found
   besides the two fixed above (legacy snapshots, daily history).
+
+**Confirmation run** (jemalloc, bounded history and legacy snapshots, the
+cheaper high-population tick of [A server-sized world at 60–70k
+organisms](#a-server-sized-world-at-6070k-organisms)): the same setup as
+the 3-hour soak (the `--worlds 6 --players 3000 --ramp 240 --report 30
+--warm-until 22000 --csv` command of [Load and soak
+test](#load-and-soak-test); 6 512² worlds × 500 players, 1 s ticks, 1 s
+states, protocol 2, warmed to 22.1–24.7k organisms in 128 s) for **90
+minutes** after the ramp (`--duration 5400`). This time the 4-core box was
+**quiet** for all of it: sampled every minute, no process besides the
+server and the load generator used more than 1% of a core (load average
+0.9–9.6, median 5.3, all of it the server's and the load generator's
+threads). The population followed the same curve: 44–48k per world 15
+minutes after the ramp, a peak of 67–73k per world (429k in all) at 0.67 h,
+a winter low of 282k in all at 1.1 h, 52–63k per world at the end.
+Medians of the 30 s rows; ranges are over the 6 worlds:
+
+| | first 15 min after the ramp | 15 min around the population peak | last 15 min |
+| --- | --- | --- | --- |
+| Organisms per world | 43.9–48.0k | 66.3–71.7k | 51.9–63.3k |
+| Ticks per second (target 1) | 1.0 | 1.0 | 1.0 |
+| Tick p50 / p99 (ms) | 60–64 / 128–148 | 169–257 / 570–733 | 84–167 / 152–295 |
+| State push p99 (ms) | 35–44 | 121–164 | 42–68 |
+| Command → result p50 / p99 (ms) | 131–132 / 250–252 | 139–148 / 386–500 | 128–133 / 250–260 |
+| Save: capture / encode / write (ms) | 46–52 / 352–436 / 44–60 | 90–158 / 912–1,101 / 70–83 | 66–99 / 644–780 / 52–66 |
+| Save size (MB) | 12.9–13.7 | 20.6–22.2 | 18.3–20.6 |
+| Server CPU (cores) / load generator | 1.89 / 0.71 | 2.73 / 0.63 | 2.08 / 0.39 |
+| RSS median / max (MB) | 1,716 / 1,975 | 2,461 / 2,615 | 2,394 / 2,498 |
+| Heap: live (allocated) / held by jemalloc besides (MB) | 1,716 / 223 | 2,375 / 315 | 2,214 / 387 |
+
+Against the 3-hour soak at the same population (per-report medians over
+the worlds, binned by organisms per world; "first hour" is the first hour
+after the ramp here, of the run there):
+
+| Organisms per world | 45–50k, first hour | 45–50k, later | 55–60k, first hour | 55–60k, later | 60–70k | 70–73k |
+| --- | --- | --- | --- | --- | --- | --- |
+| Tick p50 / p99 (ms), 3-hour soak | 70 / 199 | 163–164 / 350–359 | 92 / 311 | 226–285 / 402–530 | 270–470 / 800–1,200 (60–72k) | |
+| Tick p50 / p99 (ms), now | 68 / 145 | 102 / 189 | 102 / 283 | 123 / 207 | 102–106 / 273–301 | 242 / 679 |
+| Command p99 (ms), now (soak at 60–72k: 700–1,000) | 250 | 250 | 256 | 254 | 254–291 | 462 |
+| Server CPU (cores), now (soak at 60–72k: 2.8–2.9) | 1.92 | 1.80 | 2.28 | 2.08 | 2.30–2.52 | 2.77 |
+
+Over the whole run: all 3,000 players stayed connected (0 unexpected
+closes, 0 dropped connections, 0 decode errors, 0 resyncs), 6.68 million
+commands (6.19 million accepted, 0.49 million refused by the rules; all but
+the 91 in flight at the stop answered), 707 saves, no panic, a clean
+shutdown, no error in the log; the only warnings were 9 "store is slow"
+(at 0.3 h and at the peak, 0.7 h). 182k state frames were coalesced away
+(about 0.5% of those due, against about 5% in the 3-hour soak), the first
+at 0.2 h (1.4k in the first 15 minutes), most at the peak.
+
+- **The cheaper tick shows at 60–70k.** Where the 3-hour soak saturated
+  the box (60–72k per world: 2.8–2.9 cores, tick p99 0.8–1.2 s, command
+  p99 0.7–1 s), six worlds now used **2.3–2.5 cores (0.38–0.42 per
+  world)**, tick p50 / p99 were 102–106 / 273–301 ms and command p99 stayed
+  at its floor (254–291 ms), with the load generator's 0.6 cores on the
+  same box. That confirms the estimate from the sim benchmark (~0.4 cores
+  per world, ~2.4 for six). Later in the run the same population costs far
+  less extra than before (55–60k: tick p99 207 ms after the first hour
+  against 402–530). At 45–50k, early, CPU is about 5% lower (1.89 against
+  2.0 cores) and tick p99 a quarter lower.
+- **Six worlds still saturate 4 cores at the peak, now at 70–73k.** For
+  the 12 minutes the worlds were above 70k, the process used 2.8 cores
+  (2.6–3.0; plus 0.6 for the load generator), tick p99 rose to 0.6–0.7 s, command
+  p99 to 0.4–0.5 s and state frames were skipped; ticks held at 1 per
+  second (the slowest 30 s report 0.96) and everything recovered as the
+  population fell, without a restart. The ceiling moved from about 60k to
+  about 70k organisms per world.
+- **Memory stays flat.** RSS was 1.37 GB with all players on, 2.47 GB at
+  the population peak (2.62 GB max), and **−77 MB/h** after the peak
+  (fitted; live heap −170 MB/h) against the 3-hour soak's +250–370 MB/h
+  creep; over the last hour it stayed within 2.34–2.45 GB while the
+  population fell to 282k and rose again to 348k. At the same point of the
+  run (1–1.5 h, ~310k organisms in all) RSS was 2.32–2.55 GB against
+  4.09–4.45 GB, 44% less, and 15 minutes after the ramp 1.7 GB against
+  2.55. jemalloc held 0.2–0.46 GB beyond the live heap. The live heap is
+  about 10% higher on the way down than at the same population on the way
+  up (2.22 GB at 315k organisms at 0.9 h, 2.05 GB at 328k at 0.27 h; the
+  365-day in-memory daily-record window is still filling at this age), but
+  it falls with the population and did not grow over the last hour. At
+  60–70k organisms a world takes about **0.4 GB** (2.45 GB for six with
+  the process), the same as at 30–40k: the 0.5 GB budget holds.
 
 #### Login bursts with bounded hashing
 
@@ -5268,20 +5358,26 @@ sections above).
    added 25–35 ms to every world's tick) and are now staggered; after that
    6 worlds hold every latency at its floor and 8 saturate the box (tick
    p99 0.3–0.4 s, command p99 0.4–0.5 s). Rule of thumb: 0.3 cores, 0.5 GB
-   and 1.5 MB/s per world, at most 1.5 worlds per core. A 3-hour soak of
+   and 1.5 MB/s per world, at most 1.5 worlds per core (at 30–40k
+   organisms; 0.4 cores and 1.25 per core at 60–70k). A 3-hour soak of
    6 × 500 ([Six worlds for three
    hours](#six-worlds-for-three-hours-soak)) ran without a disconnect,
    error or panic, but showed that 500 heavy players grow a 512² world to
    60–72k organisms, where 6 worlds saturate 4 cores (tick p99 ~1 s,
    commands p99 0.7–1 s, ticks still 1/s), and found the unbounded daily
-   legacy list and daily history (both fixed). Still open: the same runs on a bigger dedicated box
-   (8–16 cores, load generator on another machine) to check that a process
-   scales with its cores; size the worlds-per-core rule for 60–70k
-   organisms, not 30–40k; rerun the 3-hour 6-world soak with jemalloc
-   (the RSS creep after a population peak was glibc keeping freed memory:
-   *Memory after a population peak*; the 30-minute 2-world runs show RSS
-   now falls with the population) to confirm it stays flat for hours,
-   and re-measure memory per world for the capacity rule.
+   legacy list and daily history (both fixed). A 90-minute confirmation
+   run of the same soak with jemalloc and the cheaper high-population tick
+   (*Confirmation run* in that section) measured 0.4 cores and 0.4 GB per
+   world at 60–70k organisms with every latency at or near its floor, RSS
+   flat after the population peak (−77 MB/h, against +250–370 MB/h with
+   glibc), no disconnect, error or panic; six worlds still saturate 4 cores
+   at the 70–73k peak (tick p99 0.7 s, command p99 0.5 s), so the rule for
+   worlds that full is now 1.25 worlds per core. Still open: the same runs
+   on a bigger dedicated box (8–16 cores, load generator on another
+   machine) to check that a process scales with its cores and whether a
+   dedicated 4-core box holds six full worlds through the peak; a soak of
+   a day or more to see the live heap level off once the 365-day daily
+   window is full (this run ended on simulated day ~150).
 4. **Birth-mode balance watch.** Against the target in
    *Thermoregulation × birth mode* ([Balance](#balance): no class above
    about 30–32% of tournament wins on fresh seeds) the classes spanned
