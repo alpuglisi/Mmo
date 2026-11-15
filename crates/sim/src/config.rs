@@ -603,6 +603,13 @@ pub struct Balance {
     /// bearers*).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v19"))]
     pub lactation: f32,
+    /// Extra upkeep of endothermy: a warm-blooded body's hunger is
+    /// `1 + warm_upkeep` times the base (doc: warm-blooded food needs
+    /// "high, constant"), on top of its extra burn in the cold; the
+    /// same for level-of-detail cohorts. 0 is the old rule (and the
+    /// default: see *Endothermy upkeep* in the README's Balance section).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v19"))]
+    pub warm_upkeep: f32,
 }
 
 /// How a shielded home range softens predation (`World::set_home_ranges`).
@@ -723,12 +730,13 @@ impl Default for Balance {
             migration_onset: 0.2,
             home_range: HomeRangeBalance::default(),
             lactation: 0.0,
+            warm_upkeep: 0.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 90;
+    pub const FIELD_COUNT: usize = 91;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -828,6 +836,7 @@ impl Balance {
             ("home_range_residents", &mut self.home_range.residents),
             ("offline_stack_floor", &mut self.home_range.stack_floor),
             ("lactation", &mut self.lactation),
+            ("warm_upkeep", &mut self.warm_upkeep),
         ]
     }
 

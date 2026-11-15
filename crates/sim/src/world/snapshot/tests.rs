@@ -536,6 +536,30 @@ fn version_17_snapshots_restore_with_whole_genomes() {
     assert!(n < o && new.len() < old.len());
 }
 
+/// Version 18 snapshots (before `Balance::lactation` and
+/// `Balance::warm_upkeep`) restore with both at 0, the rules they ran under,
+/// and are otherwise the same world.
+#[test]
+fn version_18_snapshots_restore_without_warm_costs() {
+    let mut w = fixture_world();
+    w.config.balance.lactation = 0.7;
+    w.config.balance.warm_upkeep = 0.25;
+    let old = w.snapshot_v18();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 18);
+    assert!(h.restorable());
+    // Without the two parameters the payload is 8 bytes (two f32s) shorter.
+    assert_eq!(h.raw_len + 8, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let off = crate::serde_util::before_v19::OLD_VALUE;
+    assert_eq!((r.config.balance.lactation, r.config.balance.warm_upkeep), (off, off));
+    w.config.balance.lactation = off;
+    w.config.balance.warm_upkeep = off;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v18() == old);
+}
+
 /// The tile planes round-trip every bit pattern (negative zero, NaN,
 /// subnormals), on maps whose width is not a power of two.
 #[test]
@@ -554,24 +578,4 @@ fn tiles_round_trip_bit_exactly() {
         // Another map size is refused.
         assert!(decode_tiles(&encode_tiles(&tiles, width), width + 1, height).is_err());
     }
-}
-
-/// Version 18 snapshots (before `Balance::lactation`) restore with it at 0,
-/// the rule they ran under, and are otherwise the same world.
-#[test]
-fn version_18_snapshots_restore_without_lactation() {
-    let mut w = fixture_world();
-    w.config.balance.lactation = 0.7;
-    let old = w.snapshot_v18();
-    let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 18);
-    assert!(h.restorable());
-    // Without the parameter the payload is 4 bytes (one f32) shorter.
-    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.lactation, crate::serde_util::before_v19::OLD_LACTATION);
-    w.config.balance.lactation = r.config.balance.lactation;
-    assert_eq!(r.config.balance, w.config.balance);
-    assert!(r.snapshot() == w.snapshot());
-    assert!(r.snapshot_v18() == old);
 }

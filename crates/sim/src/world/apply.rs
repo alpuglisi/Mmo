@@ -881,7 +881,7 @@ impl World {
         let thermo = if torpid {
             1.0
         } else if o.traits.warm {
-            1.0 + 0.04 * cold
+            (1.0 + bal.warm_upkeep) * (1.0 + 0.04 * cold)
         } else {
             cold_blooded_thermo(o.activity, body_t, bal.cold_heat_burn)
         };

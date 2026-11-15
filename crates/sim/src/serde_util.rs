@@ -28,6 +28,8 @@
 //!   version 16 or before is read.
 //! - `before_v18`: genomes written whole inside their organisms and clutches,
 //!   while a world snapshot of version 17 or before is read.
+//! - `before_v19`: `Balance::lactation` and `Balance::warm_upkeep`, left out
+//!   while a world snapshot of version 18 or before is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1016,12 +1018,12 @@ pub mod before_v18 {
     }
 }
 
-/// `Balance::lactation`, added in world snapshot version 19:
-/// `#[serde(with = "crate::serde_util::before_v19")]`. On a thread holding a
-/// [`before_v19::Guard`] (reading or hashing a snapshot of version 18 or
-/// before) it is neither written nor read and reads as 0, the rule those
-/// saves ran under (a warm-blooded live bearer conceives again after her
-/// recovery alone).
+/// `Balance::lactation` and `Balance::warm_upkeep`, added in world snapshot
+/// version 19: `#[serde(with = "crate::serde_util::before_v19")]`. On a
+/// thread holding a [`before_v19::Guard`] (reading or hashing a snapshot of
+/// version 18 or before) they are neither written nor read and read as 0,
+/// the rules those saves ran under (a warm-blooded live bearer conceives
+/// again after her recovery alone; no extra upkeep of endothermy).
 pub mod before_v19 {
     use std::cell::Cell;
 
@@ -1031,8 +1033,8 @@ pub mod before_v19 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// `lactation` before version 19.
-    pub const OLD_LACTATION: f32 = 0.0;
+    /// `lactation` and `warm_upkeep` before version 19: both off.
+    pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.
     pub struct Guard(bool);
@@ -1059,7 +1061,7 @@ pub mod before_v19 {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
         if OLD.with(Cell::get) {
-            Ok(OLD_LACTATION)
+            Ok(OLD_VALUE)
         } else {
             f32::deserialize(d)
         }

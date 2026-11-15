@@ -94,8 +94,9 @@
 //! versions 10 to 16 read them as their defaults (`serde_util::before_v17`). Version 18 writes
 //! the genomes of young and eggs against their parents' (above); versions
 //! 10 to 17 have every genome whole (`serde_util::before_v18`). Version 19
-//! adds the `Balance::lactation` parameter; versions 10 to 18 read it as 0,
-//! the rule they ran under (`serde_util::before_v19`).
+//! adds the `Balance::lactation` and `Balance::warm_upkeep` parameters;
+//! versions 10 to 18 read both as 0, the rules they ran under
+//! (`serde_util::before_v19`).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -135,8 +136,9 @@ const MIGRATION_ONSET_VERSION: u32 = 16;
 const HOME_RANGE_VERSION: u32 = 17;
 /// The first format version with genomes written against their parents'.
 const BY_PARENTS_VERSION: u32 = 18;
-/// The first format version with `Balance::lactation`.
-const LACTATION_VERSION: u32 = 19;
+/// The first format version with `Balance::lactation` and
+/// `Balance::warm_upkeep` (endotherms' costs).
+const WARM_COSTS_VERSION: u32 = 19;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
@@ -609,8 +611,9 @@ impl World {
         out
     }
 
-    /// A version 18 snapshot (no `Balance::lactation`), as the builds before
-    /// version 19 wrote, to test that they still restore.
+    /// A version 18 snapshot (no `Balance::lactation` nor
+    /// `Balance::warm_upkeep`), as the builds before version 19 wrote, to
+    /// test that they still restore.
     #[cfg(test)]
     fn snapshot_v18(&self) -> Vec<u8> {
         let _old19 = crate::serde_util::before_v19::Guard::new();
@@ -637,7 +640,7 @@ impl World {
         let _old16 = (h.version < MIGRATION_ONSET_VERSION).then(crate::serde_util::before_v16::Guard::new);
         let _old17 = (h.version < HOME_RANGE_VERSION).then(crate::serde_util::before_v17::Guard::new);
         let _old18 = (h.version < BY_PARENTS_VERSION).then(crate::serde_util::before_v18::Guard::new);
-        let _old19 = (h.version < LACTATION_VERSION).then(crate::serde_util::before_v19::Guard::new);
+        let _old19 = (h.version < WARM_COSTS_VERSION).then(crate::serde_util::before_v19::Guard::new);
         let body = &bytes[h.len()..];
         if fnv1a(body) != h.checksum {
             return Err(SnapshotError::Checksum);
