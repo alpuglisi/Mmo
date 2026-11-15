@@ -1391,7 +1391,12 @@ impl World {
                 };
                 let cold_live = !rep.warm() && rep.birth() == BirthType::Live;
                 let gestation = if cold_live { rep.gestation * bal.cold_gestation } else { rep.gestation };
-                let cycle = gestation + rep.recovery + cfg.mate_search_days / breed_factor.max(0.05);
+                let lactation = if rep.warm() && rep.birth() == BirthType::Live {
+                    bal.lactation * crate::stats::weaning_days(rep.maturity, rep.newborn_growth)
+                } else {
+                    0.0
+                };
+                let cycle = gestation + rep.recovery + lactation + cfg.mate_search_days / breed_factor.max(0.05);
                 let lambda = a[0] as f32 * rep.litter * condition * fed.min(breed_s) * suppression / cycle;
                 let births = (poisson(lambda as f64, rng) as usize).min(*room_l);
                 *room_l -= births;

@@ -1015,3 +1015,53 @@ pub mod before_v18 {
         }
     }
 }
+
+/// `Balance::lactation`, added in world snapshot version 19:
+/// `#[serde(with = "crate::serde_util::before_v19")]`. On a thread holding a
+/// [`before_v19::Guard`] (reading or hashing a snapshot of version 18 or
+/// before) it is neither written nor read and reads as 0, the rule those
+/// saves ran under (a warm-blooded live bearer conceives again after her
+/// recovery alone).
+pub mod before_v19 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// `lactation` before version 19.
+    pub const OLD_LACTATION: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_LACTATION)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}

@@ -591,6 +591,18 @@ pub struct Balance {
     /// claimed territory shields its residents while their owner is away.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v17"))]
     pub home_range: HomeRangeBalance,
+    /// Lactation: after a litter, a warm-blooded live bearer conceives again
+    /// only once her young are `lactation` of the way to weaning (growth 0.7,
+    /// when nursing and a mother's guard end; `Traits::weaning_days`), on
+    /// top of her recovery: milk is an endotherm's long, costly care, and
+    /// lactating mammals don't come into heat. Cold-blooded live bearers and
+    /// egg layers don't nurse that way and are unaffected. 0 disables (the
+    /// default). Tried at 1 against warm-blooded live bearers' tournament
+    /// lead: it slows the wild mammals they compete with as much, so their
+    /// wins didn't fall and incubators gained (README, *Warm-blooded live
+    /// bearers*).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v19"))]
+    pub lactation: f32,
 }
 
 /// How a shielded home range softens predation (`World::set_home_ranges`).
@@ -710,12 +722,13 @@ impl Default for Balance {
             tameness: 0.4,
             migration_onset: 0.2,
             home_range: HomeRangeBalance::default(),
+            lactation: 0.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 89;
+    pub const FIELD_COUNT: usize = 90;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -814,6 +827,7 @@ impl Balance {
             ("home_range_predation", &mut self.home_range.predation),
             ("home_range_residents", &mut self.home_range.residents),
             ("offline_stack_floor", &mut self.home_range.stack_floor),
+            ("lactation", &mut self.lactation),
         ]
     }
 

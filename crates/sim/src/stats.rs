@@ -209,6 +209,12 @@ impl Traits {
         }
     }
 
+    /// Days from birth until this kind's young are weaned
+    /// ([`weaning_days`]).
+    pub fn weaning_days(&self) -> f32 {
+        weaning_days(self.maturity_days, self.newborn_growth)
+    }
+
     pub fn litter_fraction(&self) -> f32 {
         (self.litter - 1) as f32 / (MAX_LITTER - 1) as f32
     }
@@ -309,6 +315,17 @@ pub fn derive(p: &Phenotype) -> Traits {
         fur_mismatch,
         seasonal: Seasonal::from_phenotype(p, warm),
     }
+}
+
+/// The growth at which young stop depending on their mother: no more
+/// nursing (`World::nurse`), guarding or following her.
+pub const WEANED_GROWTH: f32 = 0.7;
+
+/// Days from birth until young that grow from `newborn_growth` to adult
+/// size over `maturity_days` reach [`WEANED_GROWTH`] (growth is linear in
+/// age): about 7–19 days for warm-blooded live bearers.
+pub fn weaning_days(maturity_days: f32, newborn_growth: f32) -> f32 {
+    maturity_days * ((WEANED_GROWTH - newborn_growth) / (1.0 - newborn_growth)).max(0.0)
 }
 
 #[cfg(test)]
