@@ -1066,7 +1066,7 @@ impl World {
                 })
                 .sum();
             let thermo = if rep.warm() {
-                1.0 + 0.04 * (12.0 - 30.0 * rep.insulation - temp).max(0.0)
+                (1.0 + bal.warm_upkeep) * (1.0 + 0.04 * (12.0 - 30.0 * rep.insulation - temp).max(0.0))
             } else {
                 let activity = ((temp + 5.0 - 2.0) / 20.0).clamp(0.15, 1.0);
                 0.4 + 0.6 * activity

@@ -28,6 +28,8 @@
 //!   version 16 or before is read.
 //! - `before_v18`: genomes written whole inside their organisms and clutches,
 //!   while a world snapshot of version 17 or before is read.
+//! - `before_v19`: `Balance::warm_upkeep`, left out while a world snapshot of
+//!   version 18 or before is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1012,6 +1014,55 @@ pub mod before_v18 {
     impl Drop for Guard {
         fn drop(&mut self) {
             OLD.with(|c| c.set(self.0));
+        }
+    }
+}
+
+/// `Balance::warm_upkeep`, added in world snapshot version 19:
+/// `#[serde(with = "crate::serde_util::before_v19")]`. On a thread holding a
+/// [`before_v19::Guard`] (reading or hashing a snapshot of version 18 or
+/// before) it is neither written nor read and reads as 0, the rule those
+/// saves ran under (no extra upkeep of endothermy).
+pub mod before_v19 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// `warm_upkeep` before version 19.
+    pub const OLD_WARM_UPKEEP: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_WARM_UPKEEP)
+        } else {
+            f32::deserialize(d)
         }
     }
 }
