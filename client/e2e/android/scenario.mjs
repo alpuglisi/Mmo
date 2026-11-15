@@ -193,11 +193,42 @@ export async function runScenario(device, { outDir, backgroundSeconds = 25, name
       await cdp.evaluate((sel) => document.querySelector(sel).click(), selector);
       return;
     }
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      const r = await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
-      if (r?.hit) box.hit = r.hit; // the iOS driver says what it clicked
+    // The input events the page sees during the tap, and whether the element got its click.
+    const watch = () => cdp.evaluate((sel) => {
+      const seen = (window.__e2eTap = { clicked: false, events: [] });
+      const el = document.querySelector(sel);
+      for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        document.addEventListener(t, (e) => {
+          if (window.__e2eTap !== seen) return;
+          seen.events.push(`${t}:${e.target?.id || e.target?.tagName?.toLowerCase()}`);
+          if (t === 'click' && (e.target === el || el?.contains(e.target))) seen.clicked = true;
+        }, { capture: true });
+      }
+    }, selector);
+    const record = { selector, ...box, tries: [] };
+    (report.taps ??= []).push(record);
+    // A synthetic press and release can come to nothing on the emulator's
+    // WebView (CI: hover styling showed the pointer reached Create account,
+    // but no click; the button never ran). Only input the page never turned
+    // into a click is sent again: a click that arrived is never repeated.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await watch();
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        const r = await cdp.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+        if (r?.hit) record.hit = r.hit; // the iOS driver says what it clicked
+      }
+      let seen = null;
+      for (const end = Date.now() + 2000; Date.now() < end;) {
+        seen = await cdp.evaluate(() => window.__e2eTap ?? null).catch(() => null);
+        if (!seen || seen.clicked) break; // clicked, or the page moved on (navigated)
+        await sleep(200);
+      }
+      record.tries.push(seen?.events ?? 'page changed');
+      if (!seen || seen.clicked) return;
+      console.log(`    (tap on ${selector} produced no click, saw [${seen.events.join(' ')}]; tapping again)`);
+      box = (await locate(selector, false)) ?? box;
     }
-    (report.taps ??= []).push({ selector, ...box });
+    throw new Error(`three taps on ${selector} produced no click`);
   };
 
   /** Focus a field, clear it and type `text` as keyboard input. */
