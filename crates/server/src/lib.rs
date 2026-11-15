@@ -47,6 +47,7 @@ pub mod design;
 pub mod economy;
 pub mod game;
 pub mod genetics;
+pub mod history;
 pub mod http;
 pub mod league;
 pub mod limits;

@@ -47,10 +47,12 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::design::DesignSpec;
+use crate::history::{self, DailyQuery};
 use crate::league::{self, PlayerSeason, SeasonHead, SeasonRecord};
 use crate::protocol::{AlertPrefs, LedgerEntry, NativeService, PushPrefs};
 use crate::standings::StandingsCache;
 
+mod history_files;
 #[cfg(feature = "postgres")]
 mod pg;
 #[cfg(feature = "postgres")]
@@ -317,10 +319,15 @@ pub trait Store: Send + Sync {
     /// Insert or replace the player's design in the world.
     async fn put_design(&self, shard: &str, design: &DesignRecord) -> StoreResult<()>;
     /// Record a day; replaces an earlier record of the same world and day
-    /// (a day replayed after a restart), which keeps its place in order.
+    /// (a day replayed after a restart). Older records are thinned and
+    /// dropped by the retention policy ([`crate::history`]).
     async fn append_daily(&self, shard: &str, record: &DailyRecord) -> StoreResult<()>;
+    /// The daily records `query` reads, oldest first.
+    async fn daily_range(&self, shard: &str, query: &DailyQuery) -> StoreResult<Vec<DailyRecord>>;
     /// The most recent `limit` daily records, oldest first.
-    async fn recent_daily(&self, shard: &str, limit: usize) -> StoreResult<Vec<DailyRecord>>;
+    async fn recent_daily(&self, shard: &str, limit: usize) -> StoreResult<Vec<DailyRecord>> {
+        self.daily_range(shard, &DailyQuery::recent(limit)).await
+    }
     async fn append_trade(&self, shard: &str, record: &TradeRecord) -> StoreResult<()>;
     /// Every trade record, oldest first.
     async fn load_trades(&self, shard: &str) -> StoreResult<Vec<TradeRecord>>;
@@ -432,6 +439,9 @@ impl WorldStore {
     }
     pub async fn recent_daily(&self, limit: usize) -> StoreResult<Vec<DailyRecord>> {
         self.store.recent_daily(&self.shard, limit).await
+    }
+    pub async fn daily_range(&self, query: &DailyQuery) -> StoreResult<Vec<DailyRecord>> {
+        self.store.daily_range(&self.shard, query).await
     }
     pub async fn append_trade(&self, record: &TradeRecord) -> StoreResult<()> {
         self.store.append_trade(&self.shard, record).await
@@ -653,13 +663,13 @@ impl Store for MemoryStore {
             Some(r) => *r = record.clone(),
             None => w.daily.push(record.clone()),
         }
+        history::compact(&mut w.daily);
         Ok(())
     }
 
-    async fn recent_daily(&self, shard: &str, limit: usize) -> StoreResult<Vec<DailyRecord>> {
+    async fn daily_range(&self, shard: &str, query: &DailyQuery) -> StoreResult<Vec<DailyRecord>> {
         let mut g = self.inner.lock().await;
-        let w = g.world(shard)?;
-        Ok(w.daily[w.daily.len().saturating_sub(limit)..].to_vec())
+        Ok(history::select(&g.world(shard)?.daily, query))
     }
 
     async fn append_trade(&self, shard: &str, record: &TradeRecord) -> StoreResult<()> {
@@ -794,10 +804,13 @@ fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
 /// and each world's records in `worlds/<world id>/`:
 ///
 /// - `designs.json`, `balances.json`: whole tables, as above;
-/// - `history.jsonl`, `trades.jsonl`, `ledger.jsonl`, `seasons.jsonl`,
-///   `auctions.jsonl`: append-only, one record per line (a replayed day,
-///   ledger entry, ranked season or auction is appended again and replaces
-///   the earlier line when read);
+/// - `trades.jsonl`, `ledger.jsonl`, `seasons.jsonl`, `auctions.jsonl`:
+///   append-only, one record per line (a replayed ledger entry, ranked
+///   season or auction is appended again and replaces the earlier line when
+///   read);
+/// - `history/<n>.jsonl`: the daily records in segment files, compacted by
+///   the retention policy (`history_files`; a `history.jsonl` from before
+///   segments is split into them on first use);
 /// - `snapshots/world-<tick>.snap`: saved games, written to a temp file,
 ///   synced and renamed into place, the newest [`KEEP_SNAPSHOTS`] kept;
 /// - `terrain/<generated world id>-<hash>.terrain`: each generated map's
@@ -811,7 +824,12 @@ pub struct FileStore {
     dir: PathBuf,
     /// Serializes writers and caches the small tables.
     tables: Mutex<Tables>,
+    /// Each world's daily history segments, opened on first use; one lock
+    /// per world (compacting one world's history blocks no other).
+    histories: std::sync::Mutex<BTreeMap<String, HistorySlot>>,
 }
+
+type HistorySlot = Arc<std::sync::Mutex<Option<history_files::HistoryFiles>>>;
 
 struct Tables {
     accounts: Vec<AccountRecord>,
@@ -873,7 +891,7 @@ impl FileStore {
             secrets,
             worlds: BTreeMap::new(),
         };
-        Ok(Self { dir, tables: Mutex::new(tables) })
+        Ok(Self { dir, tables: Mutex::new(tables), histories: Default::default() })
     }
 
     /// Write the secrets, readable by the owner only.
@@ -895,6 +913,32 @@ impl FileStore {
     fn world_dir(&self, shard: &str) -> StoreResult<PathBuf> {
         check_shard(shard)?;
         Ok(self.dir.join(WORLDS_DIR).join(shard))
+    }
+
+    /// Run `f` on a world's daily history (opened on first use) on a
+    /// blocking thread.
+    async fn with_history<R: Send + 'static>(
+        &self,
+        shard: &str,
+        f: impl FnOnce(&mut history_files::HistoryFiles) -> StoreResult<R> + Send + 'static,
+    ) -> StoreResult<R> {
+        let dir = self.world_dir(shard)?;
+        let slot =
+            self.histories.lock().unwrap_or_else(|e| e.into_inner()).entry(shard.to_string()).or_default().clone();
+        tokio::task::spawn_blocking(move || {
+            let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
+            if g.is_none() {
+                *g = Some(history_files::HistoryFiles::open(&dir)?);
+            }
+            f(g.as_mut().expect("opened"))
+        })
+        .await
+        .map_err(|e| StoreError(format!("daily history task: {e}")))?
+    }
+
+    /// Bytes and segment files of a world's daily history on disk.
+    pub async fn history_usage(&self, shard: &str) -> StoreResult<(u64, usize)> {
+        self.with_history(shard, |h| h.usage()).await
     }
 
     /// A world's small tables, read from disk on first use.
@@ -1146,26 +1190,13 @@ impl Store for FileStore {
     }
 
     async fn append_daily(&self, shard: &str, record: &DailyRecord) -> StoreResult<()> {
-        self.append_line(shard, "history.jsonl", record).await
+        let record = record.clone();
+        self.with_history(shard, move |h| h.append(&record)).await
     }
 
-    async fn recent_daily(&self, shard: &str, limit: usize) -> StoreResult<Vec<DailyRecord>> {
-        let mut records: Vec<DailyRecord> = Vec::new();
-        let mut index: std::collections::HashMap<(String, u64), usize> = std::collections::HashMap::new();
-        for r in self.read_lines::<DailyRecord>(shard, "history.jsonl").await? {
-            if r.world_id.is_empty() {
-                records.push(r);
-                continue;
-            }
-            match index.get(&(r.world_id.clone(), r.day)) {
-                Some(&i) => records[i] = r,
-                None => {
-                    index.insert((r.world_id.clone(), r.day), records.len());
-                    records.push(r);
-                }
-            }
-        }
-        Ok(last_n(records, limit))
+    async fn daily_range(&self, shard: &str, query: &DailyQuery) -> StoreResult<Vec<DailyRecord>> {
+        let query = *query;
+        self.with_history(shard, move |h| h.read(&query)).await
     }
 
     async fn append_trade(&self, shard: &str, record: &TradeRecord) -> StoreResult<()> {

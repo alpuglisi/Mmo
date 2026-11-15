@@ -18,9 +18,14 @@ use super::{
     PushDeviceRecord, PushPrefsRecord, PushSubscriptionRecord, Store, StoreError, StoreResult, TradeRecord,
     KEEP_SNAPSHOTS,
 };
+use crate::history::{self, AgeWalk, DailyQuery, Keep, QueryWalk, Step};
 use crate::league::{Category, PlayerPlacement, PlayerSeason, SeasonHead, SeasonRecord};
 use crate::protocol::{AlertKind, AlertPrefs, LedgerEntry, LedgerKind, NativeService, PushKind, PushPrefs};
 use evo_sim::PlayerId;
+
+/// Days between compactions of a world's daily history (on days divisible
+/// by it), as the file store's segments.
+const HISTORY_COMPACT_EVERY: u64 = super::history_files::SEGMENT_LINES as u64;
 
 impl From<sqlx::Error> for StoreError {
     fn from(e: sqlx::Error) -> Self {
@@ -46,6 +51,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (7, "worlds", include_str!("../../migrations/0007_worlds.sql")),
     (8, "push", include_str!("../../migrations/0008_push.sql")),
     (9, "push_devices", include_str!("../../migrations/0009_push_devices.sql")),
+    (10, "history_retention", include_str!("../../migrations/0010_history_retention.sql")),
 ];
 
 #[derive(Debug)]
@@ -93,6 +99,58 @@ fn kinds(row: &PgRow, col: &str) -> StoreResult<Vec<AlertKind>> {
 }
 
 impl PgStore {
+    /// Apply the daily history's retention policy to a world's rows:
+    /// delete what their ages drop, thin the rows not yet thinned enough.
+    pub async fn compact_history(&self, shard: &str) -> StoreResult<()> {
+        let keys = sqlx::query("SELECT seq, day, thinned FROM daily_history WHERE shard = $1 ORDER BY seq DESC")
+            .bind(shard)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut ages = AgeWalk::default();
+        let (mut drop, mut thin): (Vec<i64>, Vec<(i64, Keep)>) = (Vec::new(), Vec::new());
+        for k in &keys {
+            let day = get_u64(k, "day")?;
+            let seq: i64 = k.try_get("seq")?;
+            match history::keep(day, ages.next(day)) {
+                Keep::Drop => drop.push(seq),
+                keep if keep.level() > k.try_get::<i16, _>("thinned")? => thin.push((seq, keep)),
+                _ => {}
+            }
+        }
+        if !drop.is_empty() {
+            sqlx::query("DELETE FROM daily_history WHERE shard = $1 AND seq = ANY($2)")
+                .bind(shard)
+                .bind(&drop)
+                .execute(&self.pool)
+                .await?;
+        }
+        for (seq, keep) in thin {
+            let row = sqlx::query("SELECT lineages::text AS lineages FROM daily_history WHERE shard = $1 AND seq = $2")
+                .bind(shard)
+                .bind(seq)
+                .fetch_one(&self.pool)
+                .await?;
+            let mut record = DailyRecord {
+                world_id: String::new(),
+                day: 0,
+                year: 0,
+                season: String::new(),
+                breeding_adults: 0,
+                legacy: Vec::new(),
+                lineages: serde_json::from_str(row.try_get::<&str, _>("lineages")?)?,
+            };
+            history::thin(&mut record, keep);
+            sqlx::query("UPDATE daily_history SET lineages = $3::jsonb, thinned = $4 WHERE shard = $1 AND seq = $2")
+                .bind(shard)
+                .bind(seq)
+                .bind(serde_json::to_string(&record.lineages)?)
+                .bind(keep.level())
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Connect (e.g. `postgres://user:pass@host/db`) and bring the schema
     /// up to date.
     pub async fn connect(url: &str) -> StoreResult<Self> {
@@ -328,7 +386,8 @@ impl Store for PgStore {
             "INSERT INTO daily_history (shard, world_id, day, year, season, breeding_adults, legacy, lineages) \
              VALUES ($8, $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb) \
              ON CONFLICT (shard, world_id, day) DO UPDATE SET year = EXCLUDED.year, season = EXCLUDED.season, \
-             breeding_adults = EXCLUDED.breeding_adults, legacy = EXCLUDED.legacy, lineages = EXCLUDED.lineages",
+             breeding_adults = EXCLUDED.breeding_adults, legacy = EXCLUDED.legacy, lineages = EXCLUDED.lineages, \
+             thinned = 0",
         )
         .bind(&record.world_id)
         .bind(int(record.day))
@@ -340,21 +399,42 @@ impl Store for PgStore {
         .bind(shard)
         .execute(&self.pool)
         .await?;
+        if record.day.is_multiple_of(HISTORY_COMPACT_EVERY) {
+            self.compact_history(shard).await?;
+        }
         Ok(())
     }
 
-    async fn recent_daily(&self, shard: &str, limit: usize) -> StoreResult<Vec<DailyRecord>> {
+    async fn daily_range(&self, shard: &str, query: &DailyQuery) -> StoreResult<Vec<DailyRecord>> {
+        // The keys newest first (a few hundred rows: the history is
+        // bounded), the query applied to them, then only the rows it took.
+        let keys = sqlx::query("SELECT seq, day FROM daily_history WHERE shard = $1 ORDER BY seq DESC")
+            .bind(shard)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut walk = QueryWalk::new(*query);
+        let mut seqs: Vec<i64> = Vec::new();
+        for k in &keys {
+            match walk.step(get_u64(k, "day")?) {
+                Step::Take => seqs.push(k.try_get("seq")?),
+                Step::Skip => {}
+                Step::Stop => break,
+            }
+        }
+        if seqs.is_empty() {
+            return Ok(Vec::new());
+        }
         let rows = sqlx::query(
             "SELECT world_id, day, year, season, breeding_adults, legacy::text AS legacy, lineages::text AS lineages \
-             FROM (SELECT * FROM daily_history WHERE shard = $2 ORDER BY seq DESC LIMIT $1) recent ORDER BY seq",
+             FROM daily_history WHERE shard = $1 AND seq = ANY($2) ORDER BY seq",
         )
-        .bind(int(limit as u64))
         .bind(shard)
+        .bind(&seqs)
         .fetch_all(&self.pool)
         .await?;
         rows.iter()
             .map(|r| {
-                Ok(DailyRecord {
+                let record = DailyRecord {
                     world_id: r.try_get("world_id")?,
                     day: get_u64(r, "day")?,
                     year: get_u64(r, "year")?,
@@ -362,7 +442,8 @@ impl Store for PgStore {
                     breeding_adults: get_u64(r, "breeding_adults")? as usize,
                     legacy: serde_json::from_str(r.try_get::<&str, _>("legacy")?)?,
                     lineages: serde_json::from_str(r.try_get::<&str, _>("lineages")?)?,
-                })
+                };
+                Ok(history::strip_genes(record, query.genes))
             })
             .collect()
     }

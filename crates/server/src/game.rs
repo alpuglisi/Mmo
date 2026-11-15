@@ -33,8 +33,9 @@ pub use offline::{
 
 use crate::store::{AuctionRecord, BalanceRecord, DailyRecord, LedgerRecord, LegacyEntry, LineageEntry, TradeRecord};
 
-/// Daily records kept in memory for the genetics dashboard.
-pub const HISTORY_DAYS: usize = 365;
+/// Daily records kept in memory for the genetics dashboard (thinned with
+/// age as the store thins them: [`crate::history`]).
+pub const HISTORY_DAYS: usize = crate::history::WINDOW_DAYS as usize;
 /// Alerts kept per player.
 pub const MAX_ALERTS: usize = 50;
 /// Thirst or hunger at which a possessed organism raises a `need` alert.
@@ -563,6 +564,7 @@ impl Game {
         while kept.len() > HISTORY_DAYS {
             kept.pop_front();
         }
+        crate::history::compact_window(&mut kept);
         g.history = kept;
         if !saved.world_id.is_empty() {
             g.world_id = saved.world_id;
@@ -1948,6 +1950,7 @@ impl Game {
             if self.history.len() > HISTORY_DAYS {
                 self.history.pop_front();
             }
+            crate::history::compact_window(&mut self.history);
             self.persist.push(PersistEvent::Daily(record));
         }
         out

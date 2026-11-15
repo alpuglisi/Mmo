@@ -654,8 +654,8 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   closes the connection), at most 8 WebSocket connections per player
   (`429 too_many_connections`), map images up to 2048 px a side.
 - **Alerts and history** (`game.rs`): the world thread keeps the daily records
-  since start (up to 365) with each lineage's births, deaths by cause and
-  mean gene values, and raises per-player alerts: deaths of founders and
+  since start (up to 365, thinned with age as the store keeps them) with each
+  lineage's births, deaths by cause and mean gene values, and raises per-player alerts: deaths of founders and
   possessed organisms (with the cause), the day's births and deaths,
   population (25, 50, 100, …) and legacy-share (1, 5, 10, 25, 50 %)
   milestones, a new generation, extinction, a possessed organism that is
@@ -696,7 +696,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices |
 | `GET /api/world` | | Clock, season, weather, map size, organism and lineage counts |
 | `GET /api/leaderboard` | | Legacy shares from the latest daily snapshot: `{day, breeding_adults, rows: [{player, name, share, weighted_share, alive}]}` |
-| `GET /api/leaderboard/history?limit=30` | | The stored daily records (legacy shares, lineage sizes, daily births and deaths by cause, player lineages' mean genes) |
+| `GET /api/leaderboard/history?limit=30&from=&to=&genes=true` | | The stored daily records, oldest first (legacy shares, lineage sizes, daily births and deaths by cause, player lineages' mean genes; thinned with age: see *Daily history retention*): the newest `limit` (at most 365) with a day in `from..=to` (the newest world's days; both optional); `genes=false` leaves out the gene means |
 | `GET /api/leaderboard/seasons?limit=8` | | Seasonal leaderboards from the whole stored history, newest first: `[{year, season, first_day, last_day, days, current, rows: [{player, name, mean_share, final_share, peak_share, mean_weighted_share, peak_alive, days}]}]`, ranked by mean share over the season's recorded days (a missing day counts as 0; a restart, whose world starts again at day 0, starts a new run) |
 | `GET /api/terrain` | | The tile grid: `{width, height, terrain_version, biome, elevation, river, base_water, dynamic}`; every layer is one byte per tile, row-major, base64 (biome index 0–7; elevation 0–255 lowest..highest; river 0–255; depths in cm, capped at 255) |
 | `GET /api/terrain/dynamic` | | Only what changes (the sim updates it hourly): `{tick, day, hour, season, water (cm), ice, snow (0–255 for 0–0.5 m), veg (share of the tile's maximum), wetness (0.5 normal, < 0.3 drought)}`, about 110 KB of JSON for 128×128 |
@@ -1068,7 +1068,8 @@ seasons (spring…winter, `GET /api/leaderboard/seasons`, the Lineage tab's
   (each gets a page of the shared copy, with its own row found by index;
   pushes are coalesced to one a second). Finished seasons, the season list,
   player histories and the weather-season boards (`/api/leaderboard/seasons`,
-  which read the whole daily history) are cached per world in its
+  which read the whole stored daily history, bounded by its retention and
+  read without gene means) are cached per world in its
   `WorldStore` (shared by the HTTP routes and the persist task) and
   invalidated by the writes that change them: a season record written (a
   rollover, or a replayed one) drops the lists and histories and replaces
@@ -1361,13 +1362,14 @@ tables stay at the top of the data directory and each world's files live in
 `worlds/<id>/` (the paths below); in PostgreSQL every per-world table has a
 `shard` column in its key (migration 7, `0007_worlds.sql`; 6 is the
 marketplace auctions', 8, `0008_push.sql`, push notifications', 9,
-`0009_push_devices.sql`, the apps' device tokens).
+`0009_push_devices.sql`, the apps' device tokens; 10,
+`0010_history_retention.sql`, the daily history's `thinned` level).
 
 | Persisted | File | PostgreSQL table |
 | --- | --- | --- |
 | Accounts (name, player id, argon2 hash) | `accounts.json` | `accounts` (name PK, player unique) |
 | Founder designs (one per player per world) | `worlds/<id>/designs.json` | `designs` (PK `(shard, player)`, design `jsonb`, upsert) |
-| One record per simulated day and world: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines) | `worlds/<id>/history.jsonl` | `daily_history` (PK `(shard, world_id, day)`, upsert; legacy and lineages `jsonb`; `seq` keeps write order) |
+| One record per simulated day and world: legacy shares (raw and weighted), every lineage's size, births and deaths by cause that day, player lineages' mean gene values (the new fields default when reading older lines); thinned and sampled with age (see *Daily history retention* below) | `worlds/<id>/history/<n>.jsonl`, segments of up to 32 lines in write order (a `worlds/<id>/history.jsonl` from before segments is split into them on first use) | `daily_history` (PK `(shard, world_id, day)`, upsert; legacy and lineages `jsonb`; `seq` keeps write order; `thinned` 0–2, migration 10) |
 | Finished directed-mating agreements with price and outcome, the listing they were bought from and how the escrow settled (`paid`/`refunded`) | `worlds/<id>/trades.jsonl` | `trades` (`bigserial` id, `shard`; `listing`, `settlement` from migration 2) |
 | How each auction ended (seller, organism, reserve, deadline, bids, highest bid, winner and their organism, outcome `sold`/`unsold`/`failed`/`ended`/`withdrawn`, the agreement it became, day); a world replaying a day replaces its record | `worlds/<id>/auctions.jsonl` | `auctions` (PK `(shard, world_id, listing)`, upsert; `id` keeps write order; migration 6, `shard` from 7) |
 | Renown balances, upserted on every change | `worlds/<id>/balances.json` | `balances` (PK `(shard, player)`, balance, day, updated_at) |
@@ -1409,8 +1411,49 @@ generated, kept in its saved games and written into each daily record. A
 world restored from a saved game older than its last records (a crash
 between saves) replays those days; the replayed record replaces the earlier
 one of the same world and day (an upsert in PostgreSQL; `FileStore` appends
-and keeps the last line per `(world_id, day)` when reading), so the history
-has one record per day. A `--fresh` world has a new id.
+and keeps the last line per `(world_id, day)` when reading and compacting),
+so the history has one record per day. A `--fresh` world has a new id.
+
+**Daily history retention** (`history.rs`). A daily record has a row per
+lineage, with every gene's mean for player lineages: ~690 KB a day at 500
+players, which kept whole grew each world's history by ~45 MB an hour, ~1.2
+GB a real day at the 1 s clock (the six-world soak). Every store now keeps,
+by a record's age (days before the newest record; an older world's records,
+before a `--fresh` start, age on from the newest world's day 0):
+
+| Age | Kept |
+| --- | --- |
+| under 30 days | the whole record |
+| 30–364 days (the dashboard's window) | every day; lineages with nothing to report that day (no members, births or deaths) dropped; gene means only on days divisible by 8 |
+| 365 days and more | days divisible by 8 × 2^k (k: how many times the age doubled past 365 days: 8 up to 730 days, 16 up to 1,460, 32 up to 2,920, …), without gene means |
+
+So a world keeps 365 consecutive days, the newest 30 whole and ~42 of the
+rest with gene means, and ~46 sampled days per doubling of its age past a
+year: at 500 players (690 KB whole, 102 KB lean records; `cargo test
+--release -p evo-server --lib history_sizes -- --ignored --nocapture`) 61 MB
+after the soak's 262 days, 90 MB after a real day (1,800 days; 1.2 GB
+before), 113 MB after a month (37 GB before), 129 MB after a year. The
+policy only removes detail as a record ages, and a day a larger stride keeps
+every smaller one keeps too, so compacting again changes nothing and the
+stores compact at their own cadence: the file store when a segment fills
+(every 32 days: older segments rewritten through a temp file only when
+they change, small neighbours merged, so the file count stays bounded too;
+reads walk segments from the newest and stop when answered), PostgreSQL on
+days divisible by 32 (`DELETE` the dropped rows, thin the rows whose
+`thinned` level is behind: a replayed day resets it to 0), the memory store
+on every record. The world thread's 365-day window for the genetics
+dashboard is thinned the same way (previously 365 whole records in memory,
+~250 MB of JSON at 500 players). What changes for readers: the dashboard's
+gene-drift charts have a point every day for the last 30 days and every 8th
+day before (they already plot by `history_days`); weather-season boards older
+than a year are ranked on the sampled days (`days` counts them, first and
+last day are the sampled ones; past ~4 years a season can have no sample and
+drop out); `/api/leaderboard/history` returns thinned records as stored.
+Reading an old `history.jsonl` works: the file store splits it into
+segments after any existing ones and removes it (a crash before the removal
+splits it again and the copies replace the first ones), then compacts; an
+older server run on the directory afterwards would write a new
+`history.jsonl`, which the next start appends the same way.
 
 **PostgreSQL.** sqlx 0.8 (tokio, rustls, no compile-time query macros: the
 queries are runtime strings, so building needs no database or
@@ -3498,11 +3541,23 @@ What it shows:
   (`legacy::LEGACY_KEPT`; sim results unchanged: nothing reads the older
   ones; a test checks the window; `calibrate` collects its own daily
   series). It explains none of the RSS creep above (a few MB per world).
-- **Disk: `history.jsonl` grows ~45 MB an hour per world** at 500 players
-  (one daily record a simulated day, ~700 KB: a row per lineage with its
-  mean genes), about 1 GB per world per real day with the file store,
-  and the history endpoints read the whole file. Snapshots stay bounded
-  (3 per world, 17–21 MB each here). Not changed; see next steps.
+- **Found and fixed: `history.jsonl` grew ~45 MB an hour per world** at
+  500 players (one daily record a simulated day, ~700 KB: a row per lineage
+  with its mean genes), about 1 GB per world per real day with the file
+  store, and the history endpoints read the whole file. Snapshots stay
+  bounded (3 per world, 17–21 MB each here). The daily history now has a
+  retention policy in every store (*Daily history retention* in
+  [Persistence](#persistence): 30 whole days, a year of every day with gene
+  means every 8th day, then geometrically sparser samples), the file store
+  keeps it in 32-line segment files that reads walk from the newest, and
+  `/api/leaderboard/history` takes a day range (`from`, `to`) and caps
+  `limit` at 365: at 500 players a world's history is ~90 MB after a real
+  day and ~130 MB after a real year instead of growing ~1.2 GB a day
+  (`tests/history.rs` runs a world for 830 days and checks the bound). The
+  world thread's in-memory window of 365 daily records is thinned the same
+  way (~250 MB of JSON per 500-player world before, ~80 MB now); it was
+  still filling during this run, so it may account for part of the RSS
+  growth above (not measured).
 
 #### Login bursts with bounded hashing
 
@@ -4998,14 +5053,14 @@ sections above).
    error or panic, but showed that 500 heavy players grow a 512² world to
    60–72k organisms, where 6 worlds saturate 4 cores (tick p99 ~1 s,
    commands p99 0.7–1 s, ticks still 1/s), and found the unbounded daily
-   legacy list (fixed). Still open: the same runs on a bigger dedicated box
+   legacy list and daily history (both fixed). Still open: the same runs on a bigger dedicated box
    (8–16 cores, load generator on another machine) to check that a process
    scales with its cores; size the worlds-per-core rule for 60–70k
    organisms, not 30–40k; find the RSS creep after a population peak
    (+0.25–0.37 GB/h at 6 worlds; rerun the soak with `MALLOC_ARENA_MAX=2`
-   or jemalloc/mimalloc and a heap profile, on a box nobody else uses);
-   bound or rotate `history.jsonl` in the file store (~1 GB per
-   500-player world per real day).
+   or jemalloc/mimalloc and a heap profile, on a box nobody else uses;
+   the daily history's in-memory window, thinned since, grew by up to
+   ~250 MB of JSON per world while it filled).
 4. **Birth-mode balance watch.** Against the target in
    *Thermoregulation × birth mode* ([Balance](#balance): no class above
    about 30–32% of tournament wins on fresh seeds) the classes spanned
