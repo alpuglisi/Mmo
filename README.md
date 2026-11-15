@@ -1511,7 +1511,9 @@ reads as 1, the rule they ran under (migrators leave on the first day of
 autumn; `serde_util::before_v16`). Versions 10 to 16 lack `Balance::home_range`
 (version 17), which reads as its defaults (`serde_util::before_v17`).
 Versions 10 to 17 have every genome written whole (`serde_util::before_v18`;
-see *Genomes by parents* below).
+see *Genomes by parents* below). Versions 10 to 18 lack `Balance::lactation`
+(version 19), which reads as 0, the rule they ran under
+(`serde_util::before_v19`).
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1563,7 +1565,8 @@ genome and a value in every species representative) and the balance
 parameter `tameness`; version 15 the world's rally orders; version 16 the
 balance parameter `migration_onset`; version 17 the `home_range` balance
 parameters; version 18 writes the genomes of
-young and eggs against their parents' (*Genomes by parents*, below).
+young and eggs against their parents' (*Genomes by parents*, below);
+version 19 adds the balance parameter `lactation`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -5310,6 +5313,92 @@ rule). New tunable: `migration_onset`. Tooling: `compare --migrant-gene`
 and the legacy column in `compare` (see *Judging scores statistically*
 above).
 
+**Warm-blooded live bearers: `lactation` (tried, left off).** Item 4 of
+[Suggested next steps](#suggested-next-steps) named warm live bearers the
+first suspect: 35.0% of wins on the tuning seeds 10001–10096 and 35.5%
+on 80001–80096. What they turn into wins (`calibrate tournament
+--deaths`, per entry, unchanged rules):
+
+| Per entry (tuning seeds, 96 worlds) | Born | Died young | Adults at the end | Mean final share | Win share |
+| --- | --- | --- | --- | --- | --- |
+| Cold live birth | 296 | 38 | 136 | 0.088 | 25.9% |
+| Warm incubated eggs (502 laid, 275 chilled) | 188 | 20 | 104 | 0.074 | 25.7% |
+| Warm live birth | 357 | 30 | 171 | 0.106 | 35.0% |
+
+They raise the most young of any caring mode, lose none as eggs, and
+their young mature fastest (warm blood), so they end with the most
+breeding adults and the highest mean share on every set (0.097–0.127).
+Their wins come from large litters (4–12 young: 46% wins, against 6–13%
+for litters of 1–3) of small herbivores, the vole's way. Nursing costs
+them little: a mother's milk (1.2× the food her young gain) rarely
+binds. The rule tried, **`lactation`**: after a litter a warm-blooded
+live bearer conceives again only once her young are `lactation` of the
+way to weaning (growth 0.7, when nursing and her guard end; 7–19 days),
+on top of her recovery (lactating mammals don't come into heat).
+Cold-blooded live bearers and egg layers are unaffected. A second
+candidate, doubling a warm-blooded mother's nursing cost (a temporary
+probe), changed nothing measurable on 80001–80096 (warm live births 406
+→ 404 per entry, share +0.002 ± 0.004), so the nursing price is not
+where their edge is. Paired with the unchanged rules (win share; mean
+final share's paired difference, ± one standard error):
+
+| Win share (share Δ) | 10001–, off | 0.5 | 1 | 70001–, off | 1 | 80001–, off | 1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Cold abandoned eggs | 31.0% | 31.0% (−0.000) | 33.8% (+0.007) | 19.7% | 15.2% (+0.004) | 26.2% | 24.6% (+0.008) |
+| Cold incubated eggs | 26.4% | 30.2% (+0.001) | 28.3% (+0.007) | 31.7% | 27.0% (+0.003) | 26.8% | 31.0% (+0.009) |
+| Cold live birth | 25.9% | 25.9% (+0.007) | 25.9% (+0.012) | 23.8% | 23.8% (+0.005) | 30.4% | 26.8% (+0.007) |
+| Warm abandoned eggs | 8.3% | 11.1% (+0.003) | 6.9% (+0.004) | 9.4% | 7.8% (+0.002) | 4.5% | 6.0% (+0.001) |
+| Warm incubated eggs | 25.7% | 21.6% (+0.000) | 25.7% (+0.009) | 35.8% | 41.8% (+0.008) | 28.6% | 27.0% (+0.008) |
+| Warm live birth | 35.0% | 33.3% (−0.006 ± 0.003) | 31.7% (−0.010 ± 0.004) | 29.5% | 34.4% (−0.002 ± 0.004) | 35.5% | 35.5% (+0.003 ± 0.005) |
+
+Judged on two fresh sets (designs unseen by any probe), `lactation` 1
+against 0:
+
+| Win share (mean final share) | 90001–90096, off | 1 | 100001–100096, off | 1 | Both (192), off | 1 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Cold abandoned eggs | 22.0% (0.068) | 23.7% (0.074) | 26.2% (0.094) | 26.2% (0.102) | 24.2% | 25.0% |
+| Cold incubated eggs | 40.7% (0.103) | 35.2% (0.117) | 25.9% (0.113) | 29.3% (0.120) | 33.0% | 32.1% |
+| Cold live birth | 30.8% (0.088) | 27.7% (0.096) | 30.3% (0.086) | 28.8% (0.093) | 30.5% | 28.2% |
+| Warm abandoned eggs | 6.2% (0.029) | 6.2% (0.032) | 9.6% (0.037) | 9.6% (0.041) | 7.8% | 7.8% |
+| Warm incubated eggs | 28.3% (0.096) | 32.1% (0.112) | 34.2% (0.104) | 34.2% (0.109) | 31.7% | 33.3% |
+| Warm live birth | 28.8% (0.097) | 31.5% (0.099; +0.002 ± 0.003) | 24.5% (0.101) | 22.4% (0.096; −0.004 ± 0.003) | 27.0% | 27.9% |
+
+Over all 480 worlds of the five sets, `lactation` 1 cuts warm live
+births by 15–17% per entry on every set, but their adults by only 5–14%
+(fewer births
+mean fewer of their young starve or die of thirst), and it slows every
+warm-blooded live bearer in the world: the wild voles, antelope and
+foxes, and so the very herbivores the winning designs compete with. Every
+other class gains share (+0.003 to +0.009 ± 0.001–0.002) and warm live
+bearers keep theirs (−0.002 ± 0.002): relative to the field they lose
+about 0.01, but their wins don't move (30.8% → 31.5%) and the freed room
+goes to incubators (warm incubated eggs 30.6% → 32.1%, 41.8% on
+70001–). `compare --adaptive` from seed 101 (`--set lactation=1 vs
+defaults`) stopped after 24 seeds at −0.07 (sequential CI −0.25 …
++0.12, within ±0.3), though herd grazers lost 227 ± 37 mean alive and
+5.1 ± 1.6 pp of legacy; the 12-seed sweep from seed 31 scores 11.63
+(11.76 with the rule off). Rejected: on neither fresh set is the top
+class at 32% or less (35.2% and 34.2%), and on 70001– it hands warm
+incubators 41.8%. `lactation` stays a tunable at 0 (snapshot format
+version 19; older snapshots read 0).
+
+**How noisy is one 96-world set?** The fresh baselines put a different
+class on top each time: warm live bearers on 10001– and 80001–, warm
+incubated eggs on 70001– and 100001–, cold incubated eggs (40.7%) on
+90001–. Pooled over all five sets (480 worlds, about 300 entries per
+class) no class is above 31%: cold abandoned eggs 25.2%, cold incubated
+30.1%, cold live 28.3%, warm abandoned 7.6%, warm incubated 30.6%, warm
+live 30.8% (warm live bearers do have the highest mean final share,
+0.106 against 0.092–0.094). With about 60 entries a class's win share
+on one set has a standard error near 6 points, so the top of five such
+classes is inflated: drawing 96-world sets from these 480 worlds, 93%
+of them have some class above 32% (median top class 35.9%), and even
+with the five classes exactly equal (warm abandoned eggs as weak as
+now) 84% would (median 34.6%). The per-set reading of the target ("no
+class above 32% on each fresh set") is therefore met by almost no rule
+set; judge it on pooled fresh sets (two sets give about 120 entries a
+class, a standard error near 4 points), or on mean final shares.
+
 ## Suggested next steps
 
 In priority order; each item is open (done work is described in the
@@ -5388,9 +5477,19 @@ sections above).
    has one warm-blooded class at 35–36% (warm incubated eggs on the
    first, warm live bearers on the second, with or without
    `migration_onset`), and warm live bearers reach 33% on the tuning
-   seeds 10001–10096. Re-check with fresh tournaments after rule changes
-   that touch breeding; warm live bearers are the first suspect if one
-   class settles above 32% over several fresh sets.
+   seeds 10001–10096. Two more fresh sets (90001–90096, 100001–100096)
+   put cold incubated eggs (40.7%) and warm incubated eggs (34.2%) on
+   top, warm live bearers at 28.8% and 24.5%; pooled over the five sets
+   (480 worlds) no class is above 31%, and one 96-world set shows some
+   class above 32% about nine times in ten even with equal classes (see
+   *How noisy is one 96-world set?* in [Balance](#balance)). Making
+   warm-blooded mothers nurse longer before conceiving again
+   (`lactation`) was tried and left off: it costs all warm live bearers,
+   the wild ones they compete with included, so their wins didn't fall
+   and incubators took the room (*Warm-blooded live bearers:
+   `lactation`*). Judge the target on pooled fresh sets or mean final
+   shares; warm live bearers still have the highest mean share (0.106
+   against 0.092–0.094).
 5. **World-thread cost.** At high density decide is still most of a tick
    and is now bound by memory (neighbor genes and positions; see [High
    density](#high-density-decide-act-sweep-sub-step-states)); going further

@@ -1089,8 +1089,15 @@ impl World {
         if !traits.birth.lays_eggs() {
             count = count.min(self.cap_room(mother.lineage));
         }
+        // A warm-blooded mother nursing a litter doesn't conceive again
+        // until it is (`Balance::lactation` of the way to being) weaned.
+        let lactation = if traits.warm && traits.birth == BirthType::Live && count > 0 {
+            self.config.balance.lactation * traits.weaning_days()
+        } else {
+            0.0
+        };
         let mother = &mut self.organisms[i];
-        mother.breed_ready_tick = tick + (traits.recovery_days * tpd) as u64;
+        mother.breed_ready_tick = tick + ((traits.recovery_days + lactation) * tpd) as u64;
         if count == 0 {
             return;
         }
@@ -1443,6 +1450,35 @@ mod tests {
         assert!(o.nest.is_none());
         assert_eq!(o.breed_ready_tick, w.tick + recovery);
         assert!(!o.can_breed(w.tick) && o.can_breed(w.tick + recovery));
+    }
+
+    /// A warm-blooded live bearer conceives again only once her litter is
+    /// `lactation` of the way to weaning, on top of her recovery; a
+    /// cold-blooded live bearer recovers as before.
+    #[test]
+    fn nursing_mothers_wait_for_weaning() {
+        let mut w = wild_world(5000);
+        w.config.balance.breeding_density = 0.0;
+        w.config.balance.lactation = 0.5;
+        let cold = crate::FounderDesign::new("cold", crate::Thermo::Cold, BirthType::Live, 2);
+        w.found_lineage_unchecked(1, &cold.founders(10));
+        let tpd = w.config.ticks_per_day as f32;
+        let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+        let mut ready_after = |w: &mut World, lineage: u32| {
+            let i = w.organisms.iter().position(|o| o.lineage == lineage && o.sex == Sex::Female).unwrap();
+            make_pregnant(w, i);
+            let born = w.counters.births;
+            w.give_birth(i, &mut rng);
+            assert!(w.counters.births > born);
+            let o = &w.organisms[i];
+            (o.breed_ready_tick - w.tick, o.traits)
+        };
+        let (antelope, t) = ready_after(&mut w, 1);
+        assert!(t.warm && t.weaning_days() > 5.0, "weaning {} days", t.weaning_days());
+        assert_eq!(antelope, ((t.recovery_days + 0.5 * t.weaning_days()) * tpd) as u64);
+        let (cold, t) = ready_after(&mut w, 2);
+        assert!(!t.warm);
+        assert_eq!(cold, (t.recovery_days * tpd) as u64);
     }
 
     /// A mother in a dense colony of her own species carries fewer young.
