@@ -2959,7 +2959,17 @@ target/release/examples/loadgen --url http://host:8080 --players 50             
 target/release/examples/loadgen --players 200 --proto 1 --deflate                         # JSON states, deflate estimate
 target/release/examples/loadgen --worlds 2 --players 400                                  # two worlds in one process
 target/release/examples/loadgen --url http://host:8080 --world isle --players 50          # one world of a running server
+target/release/examples/loadgen --worlds 6 --players 3000 --ramp 240 --duration 10800 --report 30 \
+  --warm-until 22000 --csv soak.csv                                                       # long soak, a CSV row per world per report
 ```
+
+`--csv FILE` appends a row per world at every report (tick, push, sub-step
+and apply timings, ticks per second, that world's players' command latency
+p50/p99/max *since the last report*, egress, queue depth, dropped
+connections, skipped states, the last save's capture/encode/write times and
+size, process CPU and RSS, and the load generator's own counters), so a
+multi-hour run can be compared hour by hour; the summary's medians would
+hide a trend.
 
 `--world ID` sends every player to that world and samples its metrics;
 `--worlds N` starts the server with N worlds (`main`, `w2`, …, seeds
@@ -3368,6 +3378,11 @@ per world, 1 s ticks, protocol 2 clients):
   (6 worlds on 4 cores measured with every latency at its floor, with the
   load generator's 0.9 cores on the same box). A dedicated 4-core box
   would likely hold 8 (2.3 cores without the load generator), unmeasured.
+  That is at 30–40k organisms per world: over hours, 500 heavy players
+  grow a 512² world to 60–72k, where a world costs ~0.5 cores (6 worlds
+  took 2.8–2.9) and tick p99 reached ~1 s on this box (see [the
+  soak](#six-worlds-for-three-hours-soak)): budget about 1 world per core
+  if worlds run that full.
 - **Memory:** 0.4 GB per world measured, **budget 0.5 GB** (save copies,
   growth to 40k+ organisms) plus 0.1 GB for the process.
 - **Bandwidth:** **1.5 MB/s (12 Mbit/s) per world** of egress; a 100 Mbit/s
@@ -3379,6 +3394,115 @@ per world, 1 s ticks, protocol 2 clients):
   scale with its cores; only 4 cores were measured. Worlds with fewer
   players should cost less network CPU (0.08 of the 0.28 cores) but about
   the same sim time; unmeasured.
+
+#### Six worlds for three hours (soak)
+
+The open question from the runs above: does a 6-world process that holds
+every latency at its floor for 150 s keep doing so for hours? One
+`evo-server` with 6 512² worlds × 500 simulated players (3,000 WebSockets),
+1 s ticks, 1 s states, protocol 2, warmed to 22–25k organisms per world
+(130 s in fast mode), 240 s ramp, then **3.0 hours** (10,800 s after the ramp; 230 saves
+per world, ~262 simulated days, a little over two simulated years); `--csv` every 30 s,
+the box's load average and free disk every 5 minutes. Same 4-core
+container. **Caveat: the box was not quiet for all of it.** Other agents
+ran mobile and browser e2e smokes (headless Chromium, Android/iOS harnesses)
+on the same cores at times, certainly over the last 25 minutes (the load
+average reached 10–12 while the server used 1.6 cores and the load
+generator 0.3, so 2+ cores went to other processes); the load-average
+samples at 1–2.5 show when they did not.
+
+Medians of the 30 s rows; ranges are over the 6 worlds:
+
+| | first 15 min after the ramp | last 15 min |
+| --- | --- | --- |
+| Organisms per world | 44.6–48.3k (growing from 36k to 55k) | 46.7–57.5k |
+| Ticks per second (target 1) | 1.0 | 1.0 |
+| Tick p50 / p99 (ms) | 64–70 / 149–191 | 167–260 / 829–932 |
+| State push p99 (ms) | 34–49 | 113–163 |
+| Command → result p50 / p99 (ms) | 136–137 / 259–265 | 154–163 / 686–846 |
+| Save: capture / encode / write (ms) | 35–69 / 347–505 / 54–73 | 101–132 / 933–1,356 / 97–141 |
+| Save size (MB) | 13.0–13.7 | 16.5–19.8 |
+| Server CPU (cores) / load generator | 2.0 / 1.0 | 1.6 / 0.3 |
+| RSS median / max (MB) | 2,550 / 2,910 | 4,836 / 4,901 |
+| Load average (1 min) | 5–7 | 10.6–12.5 (other agents' jobs) |
+
+By half hour (all worlds; "organisms" is the sum over the 6):
+
+| Hours after start | 0–0.5 | 0.5–1 | 1–1.5 | 1.5–2 | 2–2.5 | 2.5–3 | 3–3.07 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Organisms, all worlds | 307k | 414k | 312k | 364k | 351k | 250k | 325k |
+| Tick p99 (ms) | 222 | 822 | 374 | 456 | 468 | 448 | 1,356 |
+| Command p99 (ms) | 265 | 716 | 322 | 422 | 392 | 282 | 1,203 |
+| Server CPU (cores) | 2.1 | 2.8 | 2.0 | 2.2 | 2.2 | 1.5 | 1.6 |
+| RSS min / max (MB) | 2,044 / 3,527 | 3,537 / 4,129 | 4,089 / 4,452 | 4,423 / 4,682 | 4,596 / 4,727 | 4,669 / 4,883 | 4,874 / 4,901 |
+| Save size, median (MB) | 14.6 | 20.9 | 18.6 | 20.4 | 20.5 | 16.9 | 18.4 |
+
+Over the whole run: all 3,000 players stayed connected (0 unexpected
+closes, 0 dropped connections, 0 protocol 2 decode errors, 0 resyncs), 11.2
+million commands (10.5 million accepted, 0.63 million refused by the rules:
+`too_far`, `already_pregnant`, ...; all but the ~120 in flight at the stop
+answered), all 1,380 saves written, no panic, a clean shutdown, and not one
+error in the log; the only warnings were 17 "store is slow" (the saver
+waiting for the previous write) between 0.35 and 0.8 h, at the population
+peak. 2.0 million state frames (about 5% of those due; the clients got
+41 million) were coalesced away,
+nearly all at the peak and in the last 15 minutes.
+
+What it shows:
+
+- **The population, not the clock, sets the cost, and with 500 heavy
+  players a 512² world does not stay at 30–40k.** The worlds grew from 22k
+  to 71k organisms each by 0.8 h (simulated autumn of year 0; players'
+  lineages were 15k of them), then cycled with the seasons between about
+  40k (winter) and 62k (a simulated year is 120 days, 96 minutes). At
+  60–72k per world six worlds saturate the box: the process used 2.8–2.9
+  cores (plus 0.9 for the load generator), tick p50 rose to 270–470 ms,
+  p99 to 0.8–1.2 s, command p99 to 0.7–1 s, and the state frames were
+  skipped; ticks still held at 1 per second. When the population fell back
+  everything recovered without a restart.
+- **Same population, later in the run, costs more, but not steadily
+  more.** Binned by organisms per world (per-report medians over the
+  worlds): at 45–50k tick p50/p99 was 70/199 ms in the first hour and
+  163–164/350–359 ms in hours 1–2.7 (and 169/350 ms at 1.2 h with the
+  load average at 1.6, so nothing else was running); at 55–60k, 92/311
+  against 226–285/402–530 ms. But at 40–45k it was 58/138 in the first hour
+  and 73–79/198–207 at 2–2.7 h, and the hourly medians do not climb: the
+  cost follows what the world is doing (season, species mix and where the
+  herds are; player organisms fell from 15k to 2–5k per world as most of
+  the 500 player lineages died out), not time alone. What part of the
+  last 15 minutes is the other agents' load cannot be separated; command
+  p99 was at or near its floor (250–290 ms) whenever the box was quiet
+  and the population under ~50k.
+- **Memory: rose with the population, then crept.** RSS was 2.0 GB with all
+  players on, 4.1 GB at the population peak (0.9 h), and then crept from
+  4.13 to 4.90 GB over the last 2.1 hours while the worlds held fewer
+  organisms than at the peak (+0.25–0.37 GB an hour, flat for half an
+  hour at a time). The fitted slope over the whole run (+0.66 GB/h) is
+  mostly the first hour's population growth. The saved world state did not
+  creep (save size follows the organism count: 0.29–0.38 KB per organism;
+  the one field that grew with time is fixed below), so the creep is
+  outside the sim state; the likely cause is glibc malloc keeping the
+  peak's freed memory in its per-thread arenas (no custom allocator; ~20
+  threads allocate: Tokio, the sim pool, 6 world threads, the saver) or
+  per-connection buffers keeping their high-water capacity. Not proven;
+  see next steps.
+- **Found and fixed: the world kept every day's legacy snapshot.**
+  `World::legacy` got a `LegacySnapshot` (two maps of every player's
+  allele share) each simulated day and never dropped one, though only the
+  latest is read (scores, the daily record, the chronicle; the store keeps
+  the history). After this run's 262 days it held 111,766 map entries,
+  325 KB of the 17.2 MB compressed save; at the 1 s clock a world lives
+  1,800 days a real day, so a month-old 500-player world would carry on
+  the order of 0.6 GB of them in memory, clone them at every capture and
+  write ~70 MB more per save. It now keeps the last 8 days
+  (`legacy::LEGACY_KEPT`; sim results unchanged: nothing reads the older
+  ones; a test checks the window; `calibrate` collects its own daily
+  series). It explains none of the RSS creep above (a few MB per world).
+- **Disk: `history.jsonl` grows ~45 MB an hour per world** at 500 players
+  (one daily record a simulated day, ~700 KB: a row per lineage with its
+  mean genes), about 1 GB per world per real day with the file store,
+  and the history endpoints read the whole file. Snapshots stay bounded
+  (3 per world, 17–21 MB each here). Not changed; see next steps.
 
 #### Login bursts with bounded hashing
 
@@ -4868,10 +4992,20 @@ sections above).
    added 25–35 ms to every world's tick) and are now staggered; after that
    6 worlds hold every latency at its floor and 8 saturate the box (tick
    p99 0.3–0.4 s, command p99 0.4–0.5 s). Rule of thumb: 0.3 cores, 0.5 GB
-   and 1.5 MB/s per world, at most 1.5 worlds per core. Still open: the
-   same runs on a bigger dedicated box (8–16 cores, load generator on
-   another machine) to check that a process scales with its cores, and a
-   long soak with 6 worlds.
+   and 1.5 MB/s per world, at most 1.5 worlds per core. A 3-hour soak of
+   6 × 500 ([Six worlds for three
+   hours](#six-worlds-for-three-hours-soak)) ran without a disconnect,
+   error or panic, but showed that 500 heavy players grow a 512² world to
+   60–72k organisms, where 6 worlds saturate 4 cores (tick p99 ~1 s,
+   commands p99 0.7–1 s, ticks still 1/s), and found the unbounded daily
+   legacy list (fixed). Still open: the same runs on a bigger dedicated box
+   (8–16 cores, load generator on another machine) to check that a process
+   scales with its cores; size the worlds-per-core rule for 60–70k
+   organisms, not 30–40k; find the RSS creep after a population peak
+   (+0.25–0.37 GB/h at 6 worlds; rerun the soak with `MALLOC_ARENA_MAX=2`
+   or jemalloc/mimalloc and a heap profile, on a box nobody else uses);
+   bound or rotate `history.jsonl` in the file store (~1 GB per
+   500-player world per real day).
 4. **Birth-mode balance watch.** Against the target in
    *Thermoregulation × birth mode* ([Balance](#balance): no class above
    about 30–32% of tournament wins on fresh seeds) the classes spanned

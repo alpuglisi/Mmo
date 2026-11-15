@@ -2,7 +2,7 @@
 
 use super::World;
 use crate::config::Balance;
-use crate::legacy::LegacySnapshot;
+use crate::legacy::{LegacySnapshot, LEGACY_KEPT};
 use crate::rng::SimRng;
 use crate::terrain::{weather_rng, Ground, Map, Tile};
 use rand::Rng;
@@ -139,6 +139,9 @@ impl World {
             self.lod_legacy(&mut snapshot);
         }
         self.legacy.push(snapshot);
+        if self.legacy.len() > LEGACY_KEPT {
+            self.legacy.drain(..self.legacy.len() - LEGACY_KEPT);
+        }
 
         if self.day_of_year().is_multiple_of(self.config.days_per_season()) {
             self.slots_used.clear();
