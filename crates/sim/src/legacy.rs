@@ -9,6 +9,13 @@ use std::collections::BTreeMap;
 
 use crate::genome::{Genome, PlayerId};
 
+/// Daily legacy snapshots a world keeps (`World::legacy`). Only the latest
+/// is read (scores, the daily record, the chronicle); the store keeps the
+/// history (`history.jsonl`). Unbounded, the list grew by a map of every
+/// player's share each simulated day: in memory and in every save, about
+/// 1,800 days a real day at the 1 s clock.
+pub const LEGACY_KEPT: usize = 8;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LegacySnapshot {

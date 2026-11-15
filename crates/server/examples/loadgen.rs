@@ -41,7 +41,9 @@
 //! Every `--report` seconds it samples the server's `GET /api/metrics`
 //! (tick, state-push, sub-step and apply times; queue depth; dropped
 //! connections and skipped state frames; saves; bytes out; process CPU and
-//! memory) and `GET /api/world`, and prints a line. `--deflate` also runs
+//! memory) and `GET /api/world`, and prints a line; `--csv FILE` also
+//! appends a row per world per report (with the command latencies since
+//! the last report), for soaks. `--deflate` also runs
 //! every state through a per-connection deflate stream to show what
 //! permessage-deflate (with context takeover) would save. At the end it prints a
 //! summary (and writes it as JSON with `--json FILE`), stops the server
@@ -78,7 +80,7 @@ use tokio_tungstenite::tungstenite::Message;
 const USAGE: &str = "usage: loadgen [--players 50] [--duration 120] [--ramp 20] [--actions-per-min 30] \
 [--url http://HOST:PORT | --server PATH] [--data DIR] [--size 512] [--seed 1] [--tick-ms 1000] [--state-ms 1000] \
 [--fast] [--lod] [--warm-until 0] [--report 10] [--json FILE] [--dump-state FILE] [--founders 12] [--proto 2] [--deflate] \
-[--world ID | --worlds N]";
+[--world ID | --worlds N] [--csv FILE]";
 
 #[derive(Clone, Debug)]
 struct Args {
@@ -109,6 +111,9 @@ struct Args {
     world: Option<String>,
     /// Worlds the started server hosts (players spread over them).
     worlds: usize,
+    /// Append one row per world per report to this CSV file (for soaks:
+    /// the summary's medians hide trends over hours).
+    csv: Option<PathBuf>,
 }
 
 impl Args {
@@ -171,6 +176,7 @@ fn parse_args() -> Result<Args, String> {
         deflate: false,
         world: None,
         worlds: 1,
+        csv: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -201,6 +207,7 @@ fn parse_args() -> Result<Args, String> {
             "--deflate" => a.deflate = true,
             "--world" => a.world = Some(v("--world")?),
             "--worlds" => a.worlds = num("--worlds", v("--worlds")?)?,
+            "--csv" => a.csv = Some(v("--csv")?.into()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -405,6 +412,8 @@ struct Stats {
     latency_all: Mutex<Option<Reservoir>>,
     /// Command latency by world (the index in `Args::world_ids`).
     latency_world: Mutex<HashMap<usize, Reservoir>>,
+    /// Command latency by world since the last report (`--csv`).
+    latency_window: Mutex<HashMap<usize, Vec<f32>>>,
     state_sizes: Mutex<Option<Reservoir>>,
     /// The largest state message seen (`--dump-state`).
     largest_state: Mutex<String>,
@@ -414,11 +423,16 @@ struct Stats {
     decode_errors: AtomicU64,
     /// Bytes received by message kind (`state`, `result:<command>`, events).
     bytes_by_kind: Mutex<HashMap<String, u64>>,
+    /// Fill `latency_window` (`--csv`).
+    track_window: bool,
 }
 
 impl Stats {
     fn latency(&self, world: usize, command: &'static str, ms: f32) {
         self.latency_world.lock().unwrap().entry(world).or_insert_with(|| Reservoir::new(100_000)).push(ms);
+        if self.track_window {
+            self.latency_window.lock().unwrap().entry(world).or_default().push(ms);
+        }
         self.latency.lock().unwrap().entry(command).or_insert_with(|| Reservoir::new(20_000)).push(ms);
         self.latency_all.lock().unwrap().get_or_insert_with(|| Reservoir::new(100_000)).push(ms);
     }
@@ -1004,6 +1018,74 @@ fn mb(b: u64) -> f64 {
     b as f64 / 1e6
 }
 
+const CSV_HEADER: &str =
+    "t_s,world,tick,organisms,conns,players_online,tick_p50,tick_p99,tick_max,states_p50,states_p99,\
+substep_p99,apply_p99,ticks_per_s,cmds,cmd_p50,cmd_p99,cmd_max,out_mb_s,max_queued,dropped_conns,skipped_states,\
+ws_opened,ws_closed,saves,save_capture_ms,save_encode_ms,save_write_ms,save_mb,snapshots_pending,cpu_cores,rss_mb,\
+loadgen_cpu_cores,lg_connected,lg_unexpected_closes,lg_commands,lg_results,lg_decode_errors";
+
+/// One `--csv` row: world `v`'s metrics, rates against `pv` (`dt` seconds
+/// earlier), and the command latencies of its players since then.
+#[allow(clippy::too_many_arguments)]
+fn csv_row(
+    t: f64,
+    world: &str,
+    v: &MetricsView,
+    pv: &MetricsView,
+    dt: f64,
+    organisms: usize,
+    lat: &[f32],
+    loadgen_cpu_cores: f64,
+    st: &Stats,
+) -> String {
+    let mut lat = lat.to_vec();
+    lat.sort_by(f32::total_cmp);
+    let q = |x: f64| lat.get(((lat.len().max(1) - 1) as f64 * x).round() as usize).copied().unwrap_or(0.0);
+    let cpu = match (v.cpu_seconds, pv.cpu_seconds) {
+        (Some(a), Some(b)) => (a - b) / dt,
+        _ => 0.0,
+    };
+    let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
+    format!(
+        "{t:.0},{world},{},{organisms},{},{},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.3},{},{:.0},{:.0},{:.0},{:.3},{},{},{},\
+         {},{},{},{:.0},{:.0},{:.0},{:.1},{},{:.3},{:.0},{loadgen_cpu_cores:.3},{},{},{},{},{}",
+        v.tick,
+        v.conns,
+        v.players_online,
+        v.tick_ms.p50,
+        v.tick_ms.p99,
+        v.tick_ms.max,
+        v.states_ms.p50,
+        v.states_ms.p99,
+        v.substep_ms.p99,
+        v.apply_ms.p99,
+        (v.ticks - pv.ticks) as f64 / dt,
+        lat.len(),
+        q(0.5),
+        q(0.99),
+        q(1.0),
+        mb(v.bytes_out - pv.bytes_out) / dt,
+        v.max_queued,
+        v.dropped_conns,
+        v.skipped_states,
+        v.ws_opened,
+        v.ws_closed,
+        v.saves,
+        v.save_capture_ms,
+        v.save_encode_ms,
+        v.save_write_ms,
+        mb(v.save_bytes),
+        v.snapshots_pending,
+        cpu,
+        v.rss_bytes.map_or(0.0, mb),
+        st.connected.load(Ordering::Relaxed),
+        get(&st.unexpected_close),
+        get(&st.commands),
+        get(&st.results_ok) + get(&st.results_err),
+        get(&st.decode_errors),
+    )
+}
+
 #[tokio::main]
 async fn main() {
     let args = match parse_args() {
@@ -1061,7 +1143,7 @@ async fn main() {
         http: http.clone(),
         ws_base: format!("ws://{addr}"),
         run,
-        stats: Stats::default(),
+        stats: Stats { track_window: args.csv.is_some(), ..Stats::default() },
     });
     let worlds = args.world_ids();
     let main_world = worlds[0].clone();
@@ -1102,6 +1184,17 @@ async fn main() {
     let mut others_prev: Vec<Option<(Instant, MetricsView)>> = vec![None; worlds.len()];
     // Outbound bytes over all worlds, per report (MB/s).
     let mut out_total: Vec<(f64, f64)> = Vec::new();
+    // `--csv`: every world's metrics at the previous report.
+    let mut csv_prev: Vec<Option<(Instant, MetricsView)>> = vec![None; worlds.len()];
+    let mut csv = args.csv.as_ref().map(|path| {
+        let new = !path.exists();
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).expect("csv file");
+        if new {
+            use std::io::Write;
+            writeln!(f, "{CSV_HEADER}").expect("write csv");
+        }
+        f
+    });
     println!(
         "{:>6} {:>7} {:>6} {:>5} {:>13} {:>13} {:>6} {:>8} {:>8} {:>7} {:>6} {:>6} {:>7} {:>5} {:>4} {:>4}",
         "t s",
@@ -1129,10 +1222,13 @@ async fn main() {
         tokio::time::sleep(Duration::from_secs_f64(args.report).min(end - now)).await;
         let Some(m) = http.get::<MetricsView>(&in_world("/api/metrics", &main_world)).await else { continue };
         let orgs = organisms_in(&http, &main_world).await;
+        let mut views: Vec<Option<(MetricsView, usize)>> = vec![None; worlds.len()];
+        views[0] = Some((m.clone(), orgs));
         let mut others_out = 0.0;
         for (k, w) in worlds.iter().enumerate().skip(1) {
             if let Some(o) = http.get::<MetricsView>(&in_world("/api/metrics", w)).await {
                 let n = organisms_in(&http, w).await;
+                views[k] = Some((o.clone(), n));
                 let now = Instant::now();
                 if let Some((pt, pm)) = &others_prev[k] {
                     let dt = now.duration_since(*pt).as_secs_f64();
@@ -1214,6 +1310,31 @@ async fn main() {
             );
             out_total.push((s.t, s.out_mb_s + others_out));
             samples.push(s);
+        }
+        if let Some(f) = csv.as_mut() {
+            let window = std::mem::take(&mut *st.latency_window.lock().unwrap());
+            let at = Instant::now();
+            let lg_cpu_cores = prev.as_ref().map_or(0.0, |p| (lg_cpu - p.5) / t.duration_since(p.0).as_secs_f64());
+            for (k, view) in views.into_iter().enumerate() {
+                let Some((v, organisms)) = view else { continue };
+                if let Some((pt, pv)) = &csv_prev[k] {
+                    let lat = window.get(&k).map(Vec::as_slice).unwrap_or(&[]);
+                    let row = csv_row(
+                        started.elapsed().as_secs_f64(),
+                        &world_names[k],
+                        &v,
+                        pv,
+                        at.duration_since(*pt).as_secs_f64(),
+                        organisms,
+                        lat,
+                        lg_cpu_cores,
+                        st,
+                    );
+                    use std::io::Write;
+                    let _ = writeln!(f, "{row}");
+                }
+                csv_prev[k] = Some((at, v));
+            }
         }
         if first_rss.is_none() && st.connected.load(Ordering::Relaxed) >= args.players {
             first_rss = m.rss_bytes;

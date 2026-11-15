@@ -304,6 +304,8 @@ pub struct World {
     pub clutches: Vec<Clutch>,
     pub group: GroupField,
     pub counters: Counters,
+    /// The last [`crate::legacy::LEGACY_KEPT`] daily legacy snapshots,
+    /// oldest first.
     pub legacy: Vec<LegacySnapshot>,
     pub lineages: Vec<Lineage>,
     /// Species, eras, catastrophes and achievements (`world::chronicle`).
@@ -917,6 +919,21 @@ mod tests {
         let s = w.latest_legacy().unwrap();
         let total: f64 = s.alleles.values().sum();
         assert!((total - s.total_alleles).abs() < 1e-6);
+    }
+
+    /// The daily legacy snapshots are a window, not a history: a long-running
+    /// world must not grow by a map of every player's share each day.
+    #[test]
+    fn keeps_only_recent_legacy_snapshots() {
+        let mut w = small_world(5);
+        let days = crate::legacy::LEGACY_KEPT as u32 + 3;
+        w.run_days(days);
+        assert_eq!(w.legacy.len(), crate::legacy::LEGACY_KEPT);
+        let today = w.day();
+        let kept: Vec<u64> = w.legacy.iter().map(|l| l.day).collect();
+        // Each snapshot is of the day that just ended.
+        let want: Vec<u64> = (today - crate::legacy::LEGACY_KEPT as u64..today).collect();
+        assert_eq!(kept, want, "the most recent days, oldest first");
     }
 
     #[test]

@@ -115,7 +115,14 @@ fn run(seed: u64, o: &Opts, designs: &[FounderDesign]) -> Vec<(f64, f64, usize, 
     for (k, d) in designs.iter().enumerate() {
         world.found_lineage_unchecked(k as PlayerId + 1, d);
     }
-    world.run_days(o.days);
+    // The world keeps only its last few legacy snapshots: collect them.
+    let mut legacy: Vec<evo_sim::legacy::LegacySnapshot> = Vec::new();
+    for _ in 0..o.days {
+        world.run_days(1);
+        if let Some(l) = world.latest_legacy().filter(|l| legacy.last().map(|h| h.day) != Some(l.day)) {
+            legacy.push(l.clone());
+        }
+    }
     if o.deaths {
         for k in 0..designs.len() {
             let mut line = format!("deaths,{seed},{k}");
@@ -140,12 +147,12 @@ fn run(seed: u64, o: &Opts, designs: &[FounderDesign]) -> Vec<(f64, f64, usize, 
         }
     }
     let counts = world.lineage_counts();
-    let tail = world.legacy.len().saturating_sub(10);
+    let tail = legacy.len().saturating_sub(10);
     (0..designs.len())
         .map(|k| {
             let p = k as PlayerId + 1;
             let mean = |from: usize| {
-                let s = &world.legacy[from.min(world.legacy.len())..];
+                let s = &legacy[from.min(legacy.len())..];
                 s.iter().map(|l| l.share(p)).sum::<f64>() / s.len().max(1) as f64
             };
             let c = counts[first + k];
