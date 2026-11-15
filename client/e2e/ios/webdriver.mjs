@@ -260,7 +260,10 @@ export class WebViewSession {
 
   /** Evaluate `fn` (a function, run with `args`; or an expression string) and return its JSON value. */
   async evaluate(fn, ...args) {
-    const timeoutMs = 30000;
+    // Generous: the simulator renders WebGL without a GPU, and while the game
+    // screen starts its page can be busy for half a minute (CI: one script
+    // took 34 s right after the map came up; the next ones took milliseconds).
+    const timeoutMs = 90000;
     const id = `p${++pendingSeq}_${Date.now().toString(36)}`;
     const isFn = typeof fn === 'function';
     let r = await this.run(evalScript(isFn ? fn.toString() : null, id), isFn ? args : [fn], timeoutMs);
