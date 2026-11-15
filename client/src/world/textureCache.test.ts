@@ -26,6 +26,15 @@ describe('TextureCache', () => {
     expect(c.made).toBe(3);
   });
 
+  it('caches nothing when making fails (a lost context), and makes it again later', () => {
+    const c = new TextureCache<string>();
+    expect(() => c.get('x', () => { throw new Error('context lost'); })).toThrow('context lost');
+    expect(c.size).toBe(0);
+    expect(c.made).toBe(0);
+    expect(c.get('x', () => 'X')).toBe('X');
+    expect(c.made).toBe(1);
+  });
+
   it('keeps textures few for hundreds of markers', () => {
     // 600 organisms drawn from a handful of body plans: one texture per class.
     const plans: CreatureSpec[] = [

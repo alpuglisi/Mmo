@@ -13,10 +13,17 @@
 // Input: mouse drag or one-finger drag pans, wheel or two-finger pinch
 // zooms, a tap/click selects, and a long press (touch or mouse held still)
 // is reported separately (the game screen uses it to possess).
+//
+// GPU trouble is contained (`renderGuard.ts`): a drawing error is logged and
+// never escapes into the state handler or stops the ticker; a lost WebGL
+// context pauses drawing and drops the generated marker textures, which are
+// rebuilt from the current state on restore, or on a new renderer if the
+// context does not come back within a few seconds.
 
-import { Application, BufferImageSource, Container, Graphics, Sprite, Texture } from 'pixi.js';
+import { Application, BufferImageSource, Container, Graphics, Sprite, Texture, UPDATE_PRIORITY, type Renderer } from 'pixi.js';
 import { actionHint, bodyRadius, creatureKey, markerScaleFor, specOf, type CreatureSpec, type Hint } from './creature';
 import { CreatureSprites, type MarkerParts } from './sprites';
+import { ContextGuard, ErrorLog, type GuardState } from './renderGuard';
 import type { NearbyOrganism, OrgId, OwnOrganism, StateView } from '../protocol';
 import { OWN_COLOR, ownerColor } from './colors';
 import { groupColor, groupsOf, homeRangeGroup, type TerritoryDraft } from '../groups';
@@ -52,6 +59,18 @@ interface Marker {
   /** 1 facing right, -1 facing left (the last horizontal heading). */
   facing: 1 | -1;
   hint: Hint | null;
+  /** What the marker should show (its textures are made from this). */
+  look: MarkerLook | null;
+  /** The textures do not match `look` yet (not made, dropped, or making them failed). */
+  dirty: boolean;
+}
+
+interface MarkerLook {
+  spec: CreatureSpec;
+  own: boolean;
+  tint: number;
+  status: number | null;
+  hint: Hint | null;
 }
 
 /** What a marker shows, for tests and debugging. */
@@ -79,7 +98,19 @@ const DRAG_PX = 6;
 const GRID_ZOOM = 18;
 
 export class WorldView {
-  readonly app = new Application();
+  /** The PixiJS app; replaced by a new one if a lost WebGL context never comes back. */
+  app = new Application();
+  private parent: HTMLElement | null = null;
+  /** Drawing errors, logged and throttled; never thrown at callers. */
+  readonly errors = new ErrorLog();
+  readonly guard = new ContextGuard({
+    onLost: () => this.dropTextures(),
+    onRestored: () => {
+      this.dropTextures();
+      this.flushMarkers();
+    },
+    recreate: () => this.recreate(),
+  }, { log: this.errors });
   private mapLayer = new Container();
   private mapSprite = new Sprite();
   private overlay = new Graphics();
@@ -115,24 +146,101 @@ export class WorldView {
   onFollowChange: (follow: boolean) => void = () => {};
 
   async init(parent: HTMLElement): Promise<void> {
-    await this.app.init({
-      resizeTo: parent,
+    this.parent = parent;
+    this.mapLayer.addChild(this.mapSprite, this.overlay);
+    await this.startApp(this.app);
+    this.adopt(this.app);
+  }
+
+  private async startApp(app: Application): Promise<void> {
+    await app.init({
+      resizeTo: this.parent!,
       background: 0x0d1117,
       antialias: true,
       autoDensity: true,
       resolution: window.devicePixelRatio || 1,
       preference: ['webgl', 'canvas'],
     });
-    parent.appendChild(this.app.canvas);
-    this.sprites = new CreatureSprites(this.app.renderer);
-    this.app.canvas.id = 'world-canvas';
-    this.mapLayer.addChild(this.mapSprite, this.overlay);
-    this.app.stage.addChild(this.mapLayer, this.markerLayer, this.highlight);
-    this.bindInput(this.app.canvas);
-    this.app.ticker.add((t) => this.frame(t.deltaMS));
+  }
+
+  /** Make `app` the one drawing: its canvas on the page, our layers on its stage, input and the frame loop. */
+  private adopt(app: Application): void {
+    this.app = app;
+    this.parent!.appendChild(app.canvas);
+    app.canvas.id = 'world-canvas';
+    this.sprites = new CreatureSprites(app.renderer);
+    app.stage.addChild(this.mapLayer, this.markerLayer, this.highlight);
+    this.bindInput(app.canvas);
+    // PixiJS draws from a ticker callback, and a throw there stops the ticker
+    // for good: draw through a guard instead (paused while the context is lost).
+    app.ticker.remove(app.render, app);
+    app.ticker.add((t) => {
+      if (this.app !== app || this.guard.paused) return;
+      this.errors.run('frame', () => this.frame(t.deltaMS));
+    });
+    app.ticker.add(() => {
+      if (this.app !== app || this.guard.paused) return;
+      if (!this.errors.run('render', () => app.render())) this.checkContext();
+    }, undefined, UPDATE_PRIORITY.LOW);
+    // After PixiJS's own listeners, so its systems are re-initialized before we rebuild.
+    this.guard.attach(app.canvas);
+  }
+
+  /** After a drawing error: if the context is lost (the event may not have come, or came first), say so. */
+  private checkContext(): void {
+    const r = this.app.renderer as Renderer & { gl?: WebGLRenderingContext };
+    if (r?.gl?.isContextLost?.()) this.guard.lost('drawing failed on a lost context');
+  }
+
+  /**
+   * Drop the generated marker textures (their pixels live only on the GPU):
+   * markers show nothing until rebuilt by `flushMarkers`.
+   */
+  private dropTextures(): void {
+    for (const m of this.markers.values()) {
+      for (const s of [m.parts.ring, m.parts.body, m.parts.status, m.parts.icon]) s.texture = Texture.EMPTY;
+      m.dirty = true;
+    }
+    this.errors.run('drop textures', () => this.sprites?.cache.clear());
+  }
+
+  /** Make the textures of markers whose look changed (or were dropped). Stops at the first failure. */
+  private flushMarkers(): void {
+    const sprites = this.sprites;
+    if (!sprites || this.guard.paused) return;
+    for (const m of this.markers.values()) {
+      if (!m.dirty || !m.look) continue;
+      const l = m.look;
+      if (!this.errors.run('build marker textures', () => applyMarker(sprites, m.parts, l.spec, l.own, l.tint, l.status, l.hint))) {
+        this.checkContext();
+        return; // try again next frame
+      }
+      m.dirty = false;
+    }
+  }
+
+  /** The context did not come back: draw on a new app (and canvas), from the current state. */
+  private async recreate(): Promise<void> {
+    const old = this.app;
+    const app = new Application();
+    await this.startApp(app);
+    old.stage?.removeChildren();
+    this.errors.run('destroy old sprites', () => this.sprites?.destroy());
+    for (const m of this.markers.values()) m.dirty = true;
+    this.adopt(app);
+    this.errors.run('destroy old renderer', () => old.destroy({ removeView: true }, { children: false }));
+    // The guard turns live when this resolves; the next frame rebuilds the markers.
+  }
+
+  /** WebGL context handling, for tests and debugging. */
+  contextStats(): { state: GuardState; lost: number; restored: number; recreated: number; dirty: number; errors: Record<string, number> } {
+    let dirty = 0;
+    for (const m of this.markers.values()) if (m.dirty) dirty++;
+    return { state: this.guard.state, ...this.guard.stats, dirty, errors: Object.fromEntries(this.errors.counts) };
   }
 
   destroy(): void {
+    this.guard.dispose();
     this.sprites?.destroy();
     this.app.destroy(true, { children: true, texture: true });
     this.texture?.destroy(true);
@@ -179,10 +287,12 @@ export class WorldView {
     for (const o of s.nearby) this.upsert(o, false, now);
     for (const [id, m] of this.markers) {
       if (!m.seen) {
-        m.parts.root.destroy({ children: true });
         this.markers.delete(id);
+        this.errors.run('remove marker', () => m.parts.root.destroy({ children: true }));
       }
     }
+    // Textures last, and contained: the state above is in place even if the GPU is not.
+    this.flushMarkers();
     const possessed = s.organisms.find((o) => o.possessed);
     this.predictor.onState(possessed, now);
     if (!possessed) this.moveTarget = null;
@@ -276,7 +386,7 @@ export class WorldView {
     if (!m) {
       const parts = sprites.marker();
       this.markerLayer.addChild(parts.root);
-      m = { parts, x: o.x, y: o.y, track: newTrack(o.x, o.y, now), style: '', seen: true, own, r: 0, facing: 1, hint: null };
+      m = { parts, x: o.x, y: o.y, track: newTrack(o.x, o.y, now), style: '', seen: true, own, r: 0, facing: 1, hint: null, look: null, dirty: false };
       this.markers.set(o.id, m);
     }
     const dx = o.x - m.track.tx;
@@ -294,7 +404,8 @@ export class WorldView {
       m.style = key;
       m.hint = hint;
       m.r = bodyRadius(spec);
-      applyMarker(sprites, m.parts, spec, own, tint, status, hint);
+      m.look = { spec, own, tint, status, hint };
+      m.dirty = true;
     }
     m.parts.body.scale.x = m.facing;
     m.parts.root.zIndex = own ? 2 : 1;
@@ -303,6 +414,7 @@ export class WorldView {
   private frame(dtMs: number): void {
     const now = performance.now();
     const k = Math.min(1, dtMs / 120);
+    this.flushMarkers();
     this.moveMarkers(now, dtMs);
     if (this.follow && this.state) {
       // The view window follows the possessed organism: follow its drawn

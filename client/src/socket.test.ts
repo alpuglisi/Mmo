@@ -70,6 +70,35 @@ describe('GameSocket', () => {
     expect(msgs).toHaveLength(1);
   });
 
+  it('survives a throwing message or state handler', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const seen: string[] = [];
+    let failState = true;
+    const sock = new GameSocket({
+      url: () => 'ws://test/ws?token=t',
+      onMessage: (m) => {
+        seen.push(m.type);
+        throw new Error('render failed');
+      },
+      onState: () => {
+        if (failState) throw new Error('label failed');
+      },
+      WebSocketImpl: FakeWs as unknown as typeof WebSocket,
+    });
+    sock.start(); // 'connecting' throws in onState: the socket still opens
+    expect(FakeWs.all).toHaveLength(1);
+    failState = false;
+    const ws = FakeWs.all[0];
+    ws.open();
+    expect(sock.state).toBe('open');
+    ws.receive({ type: 'welcome', player: 1, name: 'ann', lineage: 1 });
+    ws.receive({ type: 'result', command: 'possess', ok: true });
+    expect(seen).toEqual(['welcome', 'result']);
+    expect(errors).toHaveBeenCalled();
+    sock.stop();
+    errors.mockRestore();
+  });
+
   it('answers locally when not connected', async () => {
     const { sock } = make();
     const r = await sock.send({ type: 'clear_view' });
@@ -207,6 +236,31 @@ describe('GameModel offers', () => {
     m.apply({ type: 'state', ...base, offers: [] });
     expect(m.offers.has(1)).toBe(false);
     expect(m.offers.get(2)?.offer.status).toBe('declined');
+  });
+
+  it('keeps delivering states when a subscriber throws (a drawing error)', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const m = new GameModel();
+    const base = {
+      clock: { tick: 0, day: 0, year: 0, hour: 0, season: 'spring', daytime: true, era: 0, era_days: 360 },
+      weather: { mean_wind: 0, storm: false, drought: 0, flood: 0 },
+      player: 1, lineage: 1, slots_left: 6, population: 0, migration: null, view: { x: 0, y: 0, radius: 16 },
+      organisms: [], nearby: [], leaderboard: { day: null, breeding_adults: 0, rows: [] }, offers: [],
+    };
+    let drawn = 0;
+    let panels = 0;
+    m.on('state', () => {
+      drawn++;
+      throw new Error('PixiJS Error: Could not retrieve shader source (WebGL context may be lost)');
+    });
+    m.on('state', () => panels++);
+    m.apply({ type: 'state', ...base });
+    m.apply({ type: 'state', ...base, clock: { ...base.clock, tick: 1 } });
+    expect(drawn).toBe(2);
+    expect(panels).toBe(2);
+    expect(m.state?.clock.tick).toBe(1);
+    expect(errors).toHaveBeenCalledTimes(2);
+    errors.mockRestore();
   });
 
   it('turns failed results into error toasts', () => {
