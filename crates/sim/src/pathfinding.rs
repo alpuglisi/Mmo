@@ -67,14 +67,24 @@ impl Path {
 #[derive(Debug, Default)]
 pub struct PathScratch {
     stamp: u32,
-    seen: Vec<u32>,
-    g: Vec<f32>,
-    parent: Vec<u32>,
-    closed: Vec<bool>,
-    /// Cost multiplier of entering each tile (`1 / speed`), or infinity if
-    /// blocked; evaluated once per tile per search.
-    enter: Vec<f32>,
+    /// Per tile, everything a search keeps about it side by side, so a
+    /// tile the search reaches costs one cache line rather than one per
+    /// field.
+    nodes: Vec<Node>,
     heap: BinaryHeap<Reverse<(u32, u32)>>,
+}
+
+/// A search's state of one tile (`PathScratch::nodes`).
+#[derive(Clone, Copy, Debug, Default)]
+struct Node {
+    /// The search that last touched it; the other fields are stale otherwise.
+    seen: u32,
+    g: f32,
+    parent: u32,
+    /// Cost multiplier of entering the tile (`1 / speed`), or infinity if
+    /// blocked; evaluated once per tile per search.
+    enter: f32,
+    closed: bool,
 }
 
 /// Result of a search.
@@ -101,30 +111,23 @@ impl Clone for PathScratch {
 
 impl PathScratch {
     fn begin(&mut self, n: usize) {
-        if self.seen.len() != n {
-            *self = PathScratch {
-                seen: vec![0; n],
-                g: vec![0.0; n],
-                parent: vec![0; n],
-                closed: vec![false; n],
-                enter: vec![0.0; n],
-                ..Default::default()
-            };
+        if self.nodes.len() != n {
+            *self = PathScratch { nodes: vec![Node::default(); n], ..Default::default() };
         }
         self.stamp = self.stamp.wrapping_add(1);
         if self.stamp == 0 {
-            self.seen.fill(0);
+            self.nodes.iter_mut().for_each(|t| t.seen = 0);
             self.stamp = 1;
         }
         self.heap.clear();
     }
 
     fn touch(&mut self, i: usize, cost: &impl Fn(&Ground, &Tile) -> Option<f32>, map: &Map) {
-        if self.seen[i] != self.stamp {
-            self.seen[i] = self.stamp;
-            self.g[i] = f32::INFINITY;
-            self.closed[i] = false;
-            self.enter[i] = cost(&map.ground()[i], &map.tiles[i]).unwrap_or(f32::INFINITY);
+        if self.nodes[i].seen != self.stamp {
+            self.nodes[i].seen = self.stamp;
+            self.nodes[i].g = f32::INFINITY;
+            self.nodes[i].closed = false;
+            self.nodes[i].enter = cost(&map.ground()[i], &map.tiles[i]).unwrap_or(f32::INFINITY);
         }
     }
 
@@ -152,7 +155,7 @@ impl PathScratch {
         let start = sy * w + sx;
         let goal = gy * w + gx;
         self.touch(goal, &cost, map);
-        let goal_open = self.enter[goal].is_finite();
+        let goal_open = self.nodes[goal].enter.is_finite();
         if !goal_open {
             // Out in a lake (or up a cliff): unless some tile next to it can
             // be stood on, nothing would reach it, however long the search.
@@ -160,7 +163,7 @@ impl PathScratch {
             for y in gy.saturating_sub(1)..=(gy + 1).min(map.height - 1) {
                 for x in gx.saturating_sub(1)..=(gx + 1).min(w - 1) {
                     self.touch(y * w + x, &cost, map);
-                    shore |= self.enter[y * w + x].is_finite();
+                    shore |= self.nodes[y * w + x].enter.is_finite();
                 }
             }
             if !shore {
@@ -179,18 +182,18 @@ impl PathScratch {
         // the admissible bound (`/ MAX_TILE_SPEED`) would expand far more.
         let h = |x: usize, y: usize| octile(x, y, gx, gy);
         self.touch(start, &cost, map);
-        self.g[start] = 0.0;
-        self.parent[start] = start as u32;
+        self.nodes[start].g = 0.0;
+        self.nodes[start].parent = start as u32;
         self.heap.push(Reverse((h(sx, sy).to_bits(), start as u32)));
         let mut best = (h(sx, sy), start);
         let mut expanded = 0usize;
         let mut found = None;
         while let Some(Reverse((_, i))) = self.heap.pop() {
             let i = i as usize;
-            if self.closed[i] {
+            if self.nodes[i].closed {
                 continue;
             }
-            self.closed[i] = true;
+            self.nodes[i].closed = true;
             let (x, y) = (i % w, i / w);
             if at_goal(x, y) {
                 found = Some(i);
@@ -204,7 +207,7 @@ impl PathScratch {
             if expanded > budget {
                 break;
             }
-            let gi = self.g[i];
+            let gi = self.nodes[i].g;
             // Orthogonal neighbors first (their passability gates diagonals).
             let mut open = [false; 4];
             for (k, (dx, dy)) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)].into_iter().enumerate() {
@@ -214,9 +217,9 @@ impl PathScratch {
                 }
                 let j = ny as usize * w + nx as usize;
                 self.touch(j, &cost, map);
-                open[k] = self.enter[j].is_finite();
+                open[k] = self.nodes[j].enter.is_finite();
                 if open[k] {
-                    self.relax(i, j, gi + self.enter[j], h(nx as usize, ny as usize));
+                    self.relax(i, j, gi + self.nodes[j].enter, h(nx as usize, ny as usize));
                 }
             }
             for (dx, dy, a, b) in [(-1i32, -1i32, 0, 2), (1, -1, 1, 2), (-1, 1, 0, 3), (1, 1, 1, 3)] {
@@ -226,8 +229,8 @@ impl PathScratch {
                 let (nx, ny) = ((x as i32 + dx) as usize, (y as i32 + dy) as usize);
                 let j = ny * w + nx;
                 self.touch(j, &cost, map);
-                if self.enter[j].is_finite() {
-                    self.relax(i, j, gi + std::f32::consts::SQRT_2 * self.enter[j], h(nx, ny));
+                if self.nodes[j].enter.is_finite() {
+                    self.relax(i, j, gi + std::f32::consts::SQRT_2 * self.nodes[j].enter, h(nx, ny));
                 }
             }
         }
@@ -239,15 +242,15 @@ impl PathScratch {
         let mut k = end;
         while k != start {
             out.push(k as u32);
-            k = self.parent[k] as usize;
+            k = self.nodes[k].parent as usize;
         }
         outcome
     }
 
     fn relax(&mut self, i: usize, j: usize, g: f32, h: f32) {
-        if !self.closed[j] && g < self.g[j] {
-            self.g[j] = g;
-            self.parent[j] = i as u32;
+        if !self.nodes[j].closed && g < self.nodes[j].g {
+            self.nodes[j].g = g;
+            self.nodes[j].parent = i as u32;
             // Positive floats order like their bits; ties go to the lower
             // tile index, so the search is deterministic.
             self.heap.push(Reverse(((g + h).to_bits(), j as u32)));

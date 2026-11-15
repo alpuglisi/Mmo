@@ -7,6 +7,7 @@
 use std::cell::Cell;
 
 use rand::Rng;
+use rayon::prelude::*;
 
 use super::groups::{DEFENDER_SCARE, DEFEND_UTILITY, RALLY_UTILITY, RETURN_UTILITY};
 use super::spatial::{ALERT, ARMED, COURTING, DEFENDING, FEMALE};
@@ -111,40 +112,40 @@ fn genetic_distance(a: &Organism, b: &Organism) -> f32 {
 /// Slots in [`Genes`]: the distance genes, padded to whole groups of four.
 pub(super) const GENE_SLOTS: usize = (crate::genome::DISTANCE_GENES as usize).div_ceil(4) * 4;
 
-/// The expressed values of the genes that count toward [`genetic_distance`],
-/// in gene order, then zeros: what kinship tests read of an organism, packed
-/// next to its neighbors' in the spatial grid.
+/// The expressed values of the genes that count toward [`genetic_distance`]:
+/// the body-plan genes (`mating::BODY_PLAN_GENES`, in that order) first,
+/// then the others in gene order, then zeros. What kinship tests read of an
+/// organism, packed next to its neighbors' in the spatial grid.
 pub(super) type Genes = [f32; GENE_SLOTS];
+
+/// Body-plan genes, the first slots of [`Genes`].
+const PLAN: usize = mating::BODY_PLAN_GENES.len();
 
 /// Gene index of each slot of [`Genes`] (padding slots repeat nothing).
 const GENE_OF_SLOT: [usize; crate::genome::DISTANCE_GENES as usize] = {
     let mut out = [0; crate::genome::DISTANCE_GENES as usize];
-    let (mut k, mut n) = (0, 0);
+    let mut n = 0;
+    while n < PLAN {
+        let g = mating::BODY_PLAN_GENES[n] as usize;
+        assert!(crate::genome::IN_DISTANCE[g], "body-plan genes count toward the distance");
+        out[n] = g;
+        n += 1;
+    }
+    let mut k = 0;
     while k < Gene::COUNT {
-        if crate::genome::IN_DISTANCE[k] {
+        let mut plan = false;
+        let mut i = 0;
+        while i < PLAN {
+            plan |= mating::BODY_PLAN_GENES[i] as usize == k;
+            i += 1;
+        }
+        if crate::genome::IN_DISTANCE[k] && !plan {
             out[n] = k;
             n += 1;
         }
         k += 1;
     }
-    out
-};
-
-/// Slot in [`Genes`] of each of `mating::BODY_PLAN_GENES`, in that order.
-const PLAN_SLOTS: [usize; mating::BODY_PLAN_GENES.len()] = {
-    let mut out = [usize::MAX; mating::BODY_PLAN_GENES.len()];
-    let mut i = 0;
-    while i < out.len() {
-        let mut n = 0;
-        while n < GENE_OF_SLOT.len() {
-            if GENE_OF_SLOT[n] == mating::BODY_PLAN_GENES[i] as usize {
-                out[i] = n;
-            }
-            n += 1;
-        }
-        assert!(out[i] != usize::MAX, "body-plan genes count toward the distance");
-        i += 1;
-    }
+    assert!(n == out.len());
     out
 };
 
@@ -160,15 +161,16 @@ pub(super) fn genes_of(p: &crate::genome::Phenotype) -> Genes {
 /// `mating::body_plan_gap` from [`Genes`] (the same value, bit for bit: the
 /// same differences, folded in the same order).
 fn body_plan_gap(a: &Genes, b: &Genes) -> f32 {
-    PLAN_SLOTS.iter().map(|&k| (a[k] - b[k]).abs()).fold(0.0, f32::max)
+    a[..PLAN].iter().zip(&b[..PLAN]).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
 }
 
 /// Bounds on [`genetic_distance`] from a quick sum that adds the same terms
-/// in another order (four running sums, which vectorize, instead of one
+/// in another order (eight running sums, which vectorize, instead of one
 /// chain). Reordering a sum of `Gene::COUNT` non-negative terms moves it by
 /// less than `Gene::COUNT * f32::EPSILON` of itself, a few millionths;
 /// `SLACK` is far wider. Every test made of the distance is monotone in it,
 /// so if it comes out the same at both bounds it is the test's exact result.
+#[derive(Clone, Copy)]
 struct DistanceBounds {
     lo: f32,
     hi: f32,
@@ -179,17 +181,22 @@ impl DistanceBounds {
 
     fn new(a: &Genes, b: &Genes) -> Self {
         use crate::genome::DISTANCE_GENES;
-        let mut lanes = [0.0f32; 4];
-        for (a, b) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        // Two groups of four running sums, so consecutive additions don't
+        // wait on each other. Dividing by multiplying with the reciprocal
+        // rounds differently by a few parts in 10^8, inside `SLACK` too.
+        let mut lanes = [0.0f32; 8];
+        let (mut ca, mut cb) = (a.chunks_exact(8), b.chunks_exact(8));
+        for (a, b) in (&mut ca).zip(&mut cb) {
             for (l, lane) in lanes.iter_mut().enumerate() {
                 *lane += (a[l] - b[l]).abs();
             }
         }
-        let sum = (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]);
-        DistanceBounds {
-            lo: sum * (1.0 - Self::SLACK) / DISTANCE_GENES,
-            hi: sum * (1.0 + Self::SLACK) / DISTANCE_GENES,
+        for (l, (a, b)) in ca.remainder().iter().zip(cb.remainder()).enumerate() {
+            lanes[l] += (a - b).abs();
         }
+        let sum = ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5])) + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]));
+        let scale = 1.0 / DISTANCE_GENES;
+        DistanceBounds { lo: sum * (1.0 - Self::SLACK) * scale, hi: sum * (1.0 + Self::SLACK) * scale }
     }
 
     /// `pass(genetic_distance(a, b))`, for a `pass` that can only go from
@@ -359,6 +366,22 @@ impl World {
         let adult_power = st.strength + 0.3 * st.agility;
         let k = share * care * herd;
         (k * adult_rs * (1.0 + 1.5 * herd), k * adult_power)
+    }
+
+    /// Every organism's intent, indexed like `World::organisms`. Each
+    /// decision depends only on the world and the organism's own random
+    /// stream, so the order they are made in changes nothing; they are made
+    /// in grid order, so neighbors that decide one after another scan the
+    /// same grid cells and their packed genes stay in cache. The dead (not
+    /// in the grid) stay idle, as `decide` would leave them.
+    pub(super) fn decide_all(&self) -> Vec<Intent> {
+        let entries = self.grid.entries();
+        let decided: Vec<Intent> = entries.par_iter().map(|e| self.decide(e.idx as usize)).collect();
+        let mut intents = vec![Intent::idle(); self.organisms.len()];
+        for (e, intent) in entries.iter().zip(decided) {
+            intents[e.idx as usize] = intent;
+        }
+        intents
     }
 
     pub(crate) fn decide(&self, i: usize) -> Intent {
@@ -771,11 +794,15 @@ impl World {
         let genes = self.grid.genes(slot);
         // Kinship and mate distance are monotone in the genetic distance
         // (`DistanceBounds`), as long as `species_distance` is positive.
-        let gd = DistanceBounds::new(&v.genes, genes);
+        // The distance is summed only when a test needs it: a body-plan gap
+        // at the limit rules kinship out at any distance (`is_kin_by_gap`
+        // allows less gap the farther apart they are, never more).
         let gap = body_plan_gap(&v.genes, genes);
+        let mut bounds = None;
+        let mut gd = || *bounds.get_or_insert_with(|| DistanceBounds::new(&v.genes, genes));
         let (sd, limit) = (cfg.species_distance, cfg.kin_body_plan_gap);
         let kin = if sd > 0.0 {
-            gd.test(o, q, |gd| mating::is_kin_by_gap(gap, gd, sd, limit))
+            gap < limit && gd().test(o, q, |gd| mating::is_kin_by_gap(gap, gd, sd, limit))
         } else {
             mating::is_kin_by_gap(gap, genetic_distance(o, q), sd, limit)
         };
@@ -909,7 +936,7 @@ impl World {
             && e.flags & COURTING != 0
             && (e.flags & FEMALE != 0) != v.female
             && q.can_breed(self.tick)
-            && gd.test(o, q, |gd| gd < cfg.mate_distance)
+            && gd().test(o, q, |gd| gd < cfg.mate_distance)
             && q.needs.breeding > 20.0
             && mating::fertility_from_gap(gap) > 0.0
         {

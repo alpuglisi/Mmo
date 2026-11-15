@@ -160,6 +160,12 @@ impl SpatialGrid {
         &self.items[slot as usize]
     }
 
+    /// Every slot's entry, in slot (cell) order: the living organisms
+    /// grouped by where they stand.
+    pub fn entries(&self) -> &[Entry] {
+        &self.items
+    }
+
     /// Calls `f(slot, squared distance)` for every organism within `radius`
     /// of `p`, in cell order. `slot` is for [`Self::entry`].
     pub fn query(&self, p: Vec2, radius: f32, mut f: impl FnMut(u32, f32)) {

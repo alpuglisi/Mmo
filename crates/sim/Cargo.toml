@@ -31,3 +31,7 @@ required-features = ["serde"]
 [[example]]
 name = "genome_bytes"
 required-features = ["serde"]
+
+[[example]]
+name = "highpop"
+required-features = ["serde"]

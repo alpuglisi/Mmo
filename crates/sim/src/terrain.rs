@@ -723,31 +723,45 @@ impl Map {
         false
     }
 
+    /// Steps (4-neighbor) from each tile to the nearest water source, or
+    /// `u16::MAX` with no water anywhere: the city-block distance, since
+    /// every tile counts as a step. The classic two-pass distance transform
+    /// computes it exactly, the same values a breadth-first search from all
+    /// sources gives, in a few sequential sweeps instead of a queue: going
+    /// down, each tile takes the nearest source above and to its left (down
+    /// the column first, then along the row); coming back up, the nearest
+    /// below and to its right, from the row below, which is final by then.
     fn recompute_water_dist(&mut self) {
-        let mut queue = std::collections::VecDeque::new();
-        for (i, t) in self.tiles.iter().enumerate() {
-            if t.water_source() {
-                self.water_dist[i] = 0;
-                queue.push_back(i);
-            } else {
-                self.water_dist[i] = u16::MAX;
+        let (w, h) = (self.width, self.height);
+        let dist = &mut self.water_dist;
+        for (d, t) in dist.iter_mut().zip(&self.tiles) {
+            *d = if t.water_source() { 0 } else { u16::MAX };
+        }
+        let step = |row: &mut [u16], from: &[u16]| {
+            for (d, &n) in row.iter_mut().zip(from) {
+                *d = (*d).min(n.saturating_add(1));
+            }
+        };
+        for y in 1..h {
+            let (done, rest) = dist.split_at_mut(y * w);
+            step(&mut rest[..w], &done[(y - 1) * w..]);
+        }
+        let back = |row: &mut [u16]| {
+            for x in (1..row.len()).rev() {
+                row[x - 1] = row[x - 1].min(row[x].saturating_add(1));
+            }
+        };
+        for row in dist.chunks_exact_mut(w) {
+            for x in 1..w {
+                row[x] = row[x].min(row[x - 1].saturating_add(1));
             }
         }
-        while let Some(i) = queue.pop_front() {
-            let (x, y) = (i % self.width, i / self.width);
-            let d = self.water_dist[i] + 1;
-            let neighbors = [
-                (x > 0).then(|| i - 1),
-                (x + 1 < self.width).then(|| i + 1),
-                (y > 0).then(|| i - self.width),
-                (y + 1 < self.height).then(|| i + self.width),
-            ];
-            for j in neighbors.into_iter().flatten() {
-                if self.water_dist[j] > d {
-                    self.water_dist[j] = d;
-                    queue.push_back(j);
-                }
-            }
+        back(&mut dist[(h - 1) * w..]);
+        for y in (0..h - 1).rev() {
+            let (row, done) = dist.split_at_mut((y + 1) * w);
+            let row = &mut row[y * w..];
+            step(row, &done[..w]);
+            back(row);
         }
     }
 
@@ -927,13 +941,50 @@ impl Map {
         days_per_year: u32,
         bal: &Balance,
     ) {
+        use rayon::prelude::*;
         let offset = Map::temperature_offset(hour, day_of_year, days_per_year) + self.climate_temp;
-        let n = self.cells.len();
-        let mut c = phase as usize;
-        while c < n {
-            self.update_chunk(c, offset, bal);
-            c += phases.max(1) as usize;
-        }
+        // This tick's chunks are those `phase` apart from each other. Each
+        // writes only its own tiles, passability signatures, melt and
+        // version, and reads the weather cells, which nothing writes here,
+        // so the chunk rows (each a contiguous slab of rows of tiles) update
+        // on all cores with the same results as one after another.
+        let every = phases.max(1) as usize;
+        let (cx, w) = (self.chunks_x, self.width);
+        let rows = CHUNK * w;
+        let this = Shared {
+            cells: &self.cells,
+            terrain: &self.terrain,
+            width: w,
+            height: self.height,
+            chunks_x: cx,
+            chunks_y: self.chunks_y,
+        };
+        let (dirty, changed) = self
+            .tiles
+            .par_chunks_mut(rows)
+            .zip(self.pass_sig.par_chunks_mut(rows))
+            .zip(self.melt_acc.par_chunks_mut(cx))
+            .zip(self.chunk_version.par_chunks_mut(cx))
+            .enumerate()
+            .map(|(cy, (((tiles, sig), melt), version))| {
+                let (mut dirty, mut changed) = (false, 0u64);
+                for k in 0..cx {
+                    let c = cy * cx + k;
+                    if c % every != phase as usize % every || c < phase as usize {
+                        continue;
+                    }
+                    let (d, ch) = this.update_chunk(c, offset, bal, tiles, sig, &mut melt[k]);
+                    dirty |= d;
+                    if ch {
+                        version[k] += 1;
+                        changed += 1;
+                    }
+                }
+                (dirty, changed)
+            })
+            .reduce(|| (false, 0), |a, b| (a.0 | b.0, a.1 + b.1));
+        self.water_dirty |= dirty;
+        self.terrain_version += changed;
         // Once per hour, after the last share of chunks.
         if self.water_dirty && phase + 1 >= phases {
             self.recompute_water_dist();
@@ -941,6 +992,24 @@ impl Map {
         }
     }
 
+    pub fn land_fraction(&self) -> f32 {
+        let land = self.tiles.iter().filter(|t| t.water_depth < 1.0).count();
+        land as f32 / self.tiles.len() as f32
+    }
+}
+
+/// What a chunk update reads of the map besides its own tiles
+/// (`Map::update_chunks`).
+struct Shared<'a> {
+    cells: &'a [WeatherCell],
+    terrain: &'a Terrain,
+    width: usize,
+    height: usize,
+    chunks_x: usize,
+    chunks_y: usize,
+}
+
+impl Shared<'_> {
     /// Weather cell values at a tile, interpolated between cell centers.
     fn sample_cells(&self, x: usize, y: usize) -> (f32, f32, f32) {
         let axis = |v: usize, n: usize| {
@@ -959,13 +1028,26 @@ impl Map {
         (mix(|c| c.wind), mix(|c| c.rain), mix(|c| c.wetness))
     }
 
-    fn update_chunk(&mut self, c: usize, offset: f32, bal: &Balance) {
+    /// One chunk's hourly update (`Map::update_chunks`): `tiles` and `sig`
+    /// are its chunk row's slab of tiles and passability signatures, `melt`
+    /// its melt accumulator. Returns whether a tile gained or lost a water
+    /// source and whether any tile's passability changed.
+    fn update_chunk(
+        &self,
+        c: usize,
+        offset: f32,
+        bal: &Balance,
+        tiles: &mut [Tile],
+        sig: &mut [u32],
+        melt_acc: &mut f32,
+    ) -> (bool, bool) {
         let (x0, y0) = ((c % self.chunks_x) * CHUNK, (c / self.chunks_x) * CHUNK);
         let (x1, y1) = ((x0 + CHUNK).min(self.width), (y0 + CHUNK).min(self.height));
-        let (mut melt, mut changed) = (0.0f32, false);
+        let (mut melt, mut changed, mut dirty) = (0.0f32, false, false);
         for y in y0..y1 {
             for x in x0..x1 {
                 let i = y * self.width + x;
+                let local = i - y0 * self.width;
                 let (wind, rain, wet) = self.sample_cells(x, y);
                 let source = &self.cells[self.terrain.catchment[i] as usize];
                 let env = TileEnv {
@@ -976,27 +1058,19 @@ impl Map {
                     river_wet: 0.5 * (wet + source.wetness),
                     river_melt: source.melt.max(self.cells[c].melt),
                 };
-                let t = &mut self.tiles[i];
+                let t = &mut tiles[local];
                 let had_water = t.water_source();
                 melt += update_tile(&self.terrain.ground[i], t, &env, bal);
-                self.water_dirty |= had_water != t.water_source();
-                let sig = t.pass_signature();
-                if sig != self.pass_sig[i] {
-                    self.pass_sig[i] = sig;
+                dirty |= had_water != t.water_source();
+                let s = t.pass_signature();
+                if s != sig[local] {
+                    sig[local] = s;
                     changed = true;
                 }
             }
         }
-        self.melt_acc[c] += melt / ((x1 - x0) * (y1 - y0)).max(1) as f32;
-        if changed {
-            self.chunk_version[c] += 1;
-            self.terrain_version += 1;
-        }
-    }
-
-    pub fn land_fraction(&self) -> f32 {
-        let land = self.tiles.iter().filter(|t| t.water_depth < 1.0).count();
-        land as f32 / self.tiles.len() as f32
+        *melt_acc += melt / ((x1 - x0) * (y1 - y0)).max(1) as f32;
+        (dirty, changed)
     }
 }
 
@@ -1484,6 +1558,56 @@ mod tests {
     }
 
     const CALM: Weather = Weather::still(0.1);
+
+    /// The two-pass distance field is the breadth-first search's, on real
+    /// maps, on a sparse scatter of sources and with no water at all.
+    #[test]
+    fn water_distance_matches_breadth_first_search() {
+        fn bfs(map: &Map) -> Vec<u16> {
+            let mut dist: Vec<u16> = map.tiles.iter().map(|t| if t.water_source() { 0 } else { u16::MAX }).collect();
+            let mut queue: std::collections::VecDeque<usize> = (0..dist.len()).filter(|&i| dist[i] == 0).collect();
+            while let Some(i) = queue.pop_front() {
+                let (x, y) = (i % map.width, i / map.width);
+                let d = dist[i] + 1;
+                let near = [
+                    (x > 0).then(|| i - 1),
+                    (x + 1 < map.width).then(|| i + 1),
+                    (y > 0).then(|| i - map.width),
+                    (y + 1 < map.height).then(|| i + map.width),
+                ];
+                for j in near.into_iter().flatten() {
+                    if dist[j] > d {
+                        dist[j] = d;
+                        queue.push_back(j);
+                    }
+                }
+            }
+            dist
+        }
+        let dry = |t: &mut Tile| {
+            t.water_depth = 0.0;
+            t.snow = 0.0;
+        };
+        for (seed, w, h) in [(1, 64, 64), (2, 96, 40), (3, 33, 71)] {
+            let mut map = Map::generate(seed, w, h);
+            map.recompute_water_dist();
+            assert_eq!(map.water_dist, bfs(&map), "seed {seed}");
+            // A few scattered sources.
+            for (i, t) in map.tiles.iter_mut().enumerate() {
+                dry(t);
+                if i % 997 == 5 {
+                    (t.water_depth, t.ice) = (0.5, 0.0);
+                }
+            }
+            map.recompute_water_dist();
+            assert!(map.water_dist.contains(&0));
+            assert_eq!(map.water_dist, bfs(&map), "seed {seed}, sparse");
+            // None at all.
+            map.tiles.iter_mut().for_each(dry);
+            map.recompute_water_dist();
+            assert!(map.water_dist.iter().all(|&d| d == u16::MAX));
+        }
+    }
 
     #[test]
     fn deep_water_blocks_non_swimmers_and_admits_swimmers() {

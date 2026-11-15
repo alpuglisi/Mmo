@@ -490,6 +490,24 @@ impl Genome {
             *out.entry(locus.b.origin).or_default() += weight;
         }
     }
+
+    /// Alleles per origin, load loci included (what `tally_origins` adds up
+    /// with weight 1), into `out` (cleared first), in order of first
+    /// appearance. A genome holds a handful of origins, so this is a short
+    /// linear scan instead of a map update per allele; adding the counts to
+    /// a tally whose values are whole numbers gives the same values, bit
+    /// for bit, as `tally_origins` with a whole-number weight.
+    pub fn count_origins(&self, out: &mut Vec<(PlayerId, u32)>) {
+        out.clear();
+        for locus in self.loci.iter().chain(&self.load) {
+            for origin in [locus.a.origin, locus.b.origin] {
+                match out.iter_mut().find(|(p, _)| *p == origin) {
+                    Some((_, n)) => *n += 1,
+                    None => out.push((origin, 1)),
+                }
+            }
+        }
+    }
 }
 
 fn mutate(allele: Allele, owner: PlayerId, m: MutationParams, rng: &mut impl Rng) -> Allele {

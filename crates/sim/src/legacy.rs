@@ -7,6 +7,8 @@
 
 use std::collections::BTreeMap;
 
+use rayon::prelude::*;
+
 use crate::genome::{Genome, PlayerId};
 
 /// Daily legacy snapshots a world keeps (`World::legacy`). Only the latest
@@ -33,11 +35,65 @@ impl LegacySnapshot {
     /// `adults` yields each breeding adult's genome and offspring raised.
     pub fn compute<'a>(day: u64, adults: impl Iterator<Item = (&'a Genome, u32)>) -> Self {
         let mut s = LegacySnapshot { day, ..Default::default() };
+        // Whole numbers throughout (allele counts times offspring raised,
+        // far below 2^53), so adding each genome's counts at once sums to
+        // exactly what adding allele by allele (`Genome::tally_origins`) did.
+        let mut counts = Vec::new();
         for (genome, raised) in adults {
             s.breeding_adults += 1;
-            genome.tally_origins(1.0, &mut s.alleles);
-            if raised > 0 {
-                genome.tally_origins(raised as f64, &mut s.weighted);
+            genome.count_origins(&mut counts);
+            for &(p, n) in &counts {
+                *s.alleles.entry(p).or_default() += n as f64;
+                if raised > 0 {
+                    *s.weighted.entry(p).or_default() += n as f64 * raised as f64;
+                }
+            }
+        }
+        s.total_alleles = s.alleles.values().sum();
+        s.weighted_total = s.weighted.values().sum();
+        s
+    }
+
+    /// [`Self::compute`] on all cores, with the same result bit for bit:
+    /// every tally is a whole number (allele counts, times offspring raised
+    /// for the weighted one), counted exactly in integers and converted
+    /// once, so the order the adults are counted in doesn't matter.
+    pub fn compute_par<'a>(day: u64, adults: impl ParallelIterator<Item = (&'a Genome, u32)>) -> Self {
+        // Per origin: alleles, and alleles times offspring raised.
+        type Tally = BTreeMap<PlayerId, (u64, u64)>;
+        let (breeding_adults, tally) = adults
+            .fold(
+                || (0, Tally::new(), Vec::new()),
+                |(mut n, mut tally, mut counts): (usize, Tally, Vec<(PlayerId, u32)>), (genome, raised)| {
+                    n += 1;
+                    genome.count_origins(&mut counts);
+                    for &(p, k) in &counts {
+                        let t = tally.entry(p).or_insert((0, 0));
+                        t.0 += k as u64;
+                        t.1 += k as u64 * raised as u64;
+                    }
+                    (n, tally, counts)
+                },
+            )
+            .map(|(n, tally, _)| (n, tally))
+            .reduce(
+                || (0, Tally::new()),
+                |(n, mut a): (usize, Tally), (m, b): (usize, Tally)| {
+                    for (p, (k, w)) in b {
+                        let t = a.entry(p).or_insert((0, 0));
+                        t.0 += k;
+                        t.1 += w;
+                    }
+                    (n + m, a)
+                },
+            );
+        let mut s = LegacySnapshot { day, breeding_adults, ..Default::default() };
+        for (p, (k, w)) in tally {
+            s.alleles.insert(p, k as f64);
+            // `compute` only lists an origin among the weighted once an
+            // adult carrying it has raised offspring.
+            if w > 0 {
+                s.weighted.insert(p, w as f64);
             }
         }
         s.total_alleles = s.alleles.values().sum();
@@ -79,5 +135,28 @@ mod tests {
         assert!((s.share(2) - 0.25).abs() < 1e-9);
         // Weighted: only the hybrid raised offspring.
         assert!((s.weighted_share(1) - 0.5).abs() < 1e-9);
+    }
+
+    /// The parallel tally is the sequential one, bit for bit, over a world's
+    /// adults (many origins, hybrids, harmful recessives, offspring raised).
+    #[test]
+    fn parallel_tally_matches_allele_by_allele() {
+        let mut w = crate::presets::standard_world(crate::WorldConfig { seed: 4, ..Default::default() }, 1);
+        w.run_days(12);
+        let adults: Vec<(&Genome, u32)> =
+            w.organisms.iter().filter(|o| o.alive).enumerate().map(|(k, o)| (&*o.genome, (k % 4) as u32)).collect();
+        assert!(adults.len() > 100);
+        let mut want = LegacySnapshot { day: 7, breeding_adults: adults.len(), ..Default::default() };
+        for &(g, raised) in &adults {
+            g.tally_origins(1.0, &mut want.alleles);
+            if raised > 0 {
+                g.tally_origins(raised as f64, &mut want.weighted);
+            }
+        }
+        want.total_alleles = want.alleles.values().sum();
+        want.weighted_total = want.weighted.values().sum();
+        assert!(want.alleles.len() > 3);
+        assert_eq!(LegacySnapshot::compute(7, adults.iter().copied()), want);
+        assert_eq!(LegacySnapshot::compute_par(7, adults.par_iter().copied()), want);
     }
 }

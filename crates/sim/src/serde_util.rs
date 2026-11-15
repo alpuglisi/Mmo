@@ -109,8 +109,8 @@ pub mod sorted_map {
 
     use super::*;
 
-    pub fn serialize<S: Serializer, K: Serialize + Ord, V: Serialize>(
-        m: &HashMap<K, V>,
+    pub fn serialize<S: Serializer, K: Serialize + Ord, V: Serialize, H>(
+        m: &HashMap<K, V, H>,
         s: S,
     ) -> Result<S::Ok, S::Error> {
         let mut entries: Vec<(&K, &V)> = m.iter().collect();
@@ -118,9 +118,13 @@ pub mod sorted_map {
         s.collect_map(entries)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>, K: Deserialize<'de> + Eq + Hash, V: Deserialize<'de>>(
-        d: D,
-    ) -> Result<HashMap<K, V>, D::Error> {
+    pub fn deserialize<'de, D, K, V, H>(d: D) -> Result<HashMap<K, V, H>, D::Error>
+    where
+        D: Deserializer<'de>,
+        K: Deserialize<'de> + Eq + Hash,
+        V: Deserialize<'de>,
+        H: std::hash::BuildHasher + Default,
+    {
         HashMap::deserialize(d)
     }
 }
