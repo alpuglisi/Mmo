@@ -1022,7 +1022,7 @@ const CSV_HEADER: &str =
     "t_s,world,tick,organisms,conns,players_online,tick_p50,tick_p99,tick_max,states_p50,states_p99,\
 substep_p99,apply_p99,ticks_per_s,cmds,cmd_p50,cmd_p99,cmd_max,out_mb_s,max_queued,dropped_conns,skipped_states,\
 ws_opened,ws_closed,saves,save_capture_ms,save_encode_ms,save_write_ms,save_mb,snapshots_pending,cpu_cores,rss_mb,\
-loadgen_cpu_cores,lg_connected,lg_unexpected_closes,lg_commands,lg_results,lg_decode_errors";
+loadgen_cpu_cores,lg_connected,lg_unexpected_closes,lg_commands,lg_results,lg_decode_errors,allocator,heap_alloc_mb,heap_retained_mb";
 
 /// One `--csv` row: world `v`'s metrics, rates against `pv` (`dt` seconds
 /// earlier), and the command latencies of its players since then.
@@ -1048,7 +1048,7 @@ fn csv_row(
     let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
     format!(
         "{t:.0},{world},{},{organisms},{},{},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.3},{},{:.0},{:.0},{:.0},{:.3},{},{},{},\
-         {},{},{},{:.0},{:.0},{:.0},{:.1},{},{:.3},{:.0},{loadgen_cpu_cores:.3},{},{},{},{},{}",
+         {},{},{},{:.0},{:.0},{:.0},{:.1},{},{:.3},{:.0},{loadgen_cpu_cores:.3},{},{},{},{},{},{},{:.0},{:.0}",
         v.tick,
         v.conns,
         v.players_online,
@@ -1083,6 +1083,9 @@ fn csv_row(
         get(&st.commands),
         get(&st.results_ok) + get(&st.results_err),
         get(&st.decode_errors),
+        v.allocator,
+        v.heap.map_or(0.0, |h| mb(h.allocated)),
+        v.heap.map_or(0.0, |h| mb(h.retained)),
     )
 }
 

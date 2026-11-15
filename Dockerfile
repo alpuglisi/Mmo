@@ -25,6 +25,12 @@ RUN npm run build
 # --- evo-server (release) ------------------------------------------------
 FROM rust:${RUST_VERSION}-slim-trixie AS server
 WORKDIR /src
+# make for jemalloc's C build (tikv-jemalloc-sys; the image has gcc). Not
+# version-pinned, as below.
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends make \
+    && rm -rf /var/lib/apt/lists/*
 # The toolchain file is left out on purpose: the image already has the
 # pinned compiler, and the file would make rustup fetch clippy and rustfmt.
 COPY Cargo.toml Cargo.lock ./

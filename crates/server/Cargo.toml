@@ -9,9 +9,13 @@ name = "evo-server"
 path = "src/main.rs"
 
 [features]
-default = ["postgres"]
+default = ["postgres", "jemalloc"]
 # PostgreSQL persistence (`store::PgStore`, `--database-url`).
 postgres = ["dep:sqlx"]
+# jemalloc as the process's allocator (`alloc`): glibc malloc kept the
+# freed memory of a population peak (RSS crept while the live heap shrank).
+# Building it needs make and a C compiler.
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [dependencies]
 evo-sim = { path = "../sim", features = ["serde"] }
@@ -49,6 +53,8 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 tower-service = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs"] }
 tracing = "0.1"
+tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemalloc-ctl = { version = "0.6", optional = true, features = ["stats"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
