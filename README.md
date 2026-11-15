@@ -5310,6 +5310,81 @@ rule). New tunable: `migration_onset`. Tooling: `compare --migrant-gene`
 and the legacy column in `compare` (see *Judging scores statistically*
 above).
 
+**Warm-blooded brooding cost: no change.** Warm incubated eggs topped
+70001–70096 (35.8%), so the cost of incubating for a warm-blooded parent
+was checked: what she converts into wins, and whether a dearer brood
+evens it. Diagnosis (`calibrate tournament --deaths`, with a temporary
+per-clutch count of the hours the brooder sat on the nest, was off it, or
+was dead; per lineage, 70001–70096 / 80001–80096):
+
+| Per lineage | Warm incubated | Cold incubated | Warm live |
+| --- | --- | --- | --- |
+| Eggs laid | 641 / 801 | 387 / 391 | — |
+| Chilled | 359 / 461 (56–58%) | 15 / 18 | — |
+| Raided | 36 / 32 | 48 / 39 | — |
+| Hatched or born | 230 / 237 | 268 / 252 | 363 / 406 |
+| Died young | 41 / 21 | 34 / 33 | 43 / 45 |
+| Clutch-hours with the brooder on / off / dead | 78–79% / 20–21% / 1% | 72–75% / 22–25% / 3% | — |
+| Adults at day 90 | 116 / 145 | 127 / 122 | 162 / 172 |
+
+Warm brooders already pay for warmth: they lay twice as often as cold
+brooders (their incubation is 1.4× shorter) and lose more than half their
+eggs to cold, under them or while they feed. What they convert into wins
+is the young that do hatch: few die before breeding age (9–18%) and
+nearly all their members are breeding adults, which is what the legacy
+share counts; raids are rare (4–6%), because a brooder's clutch is exempt
+from `nest_predation` and their nests are sparse. Their mean final share
+(0.090 / 0.099) is below warm live bearers' (0.099 / 0.127) on both sets.
+
+Tried on 70001–70096 (and 80001–80096), paired with the unchanged rules
+(win share; paired difference of mean final share, ± one standard error):
+
+| Change | Warm incubated | Warm live | Cold incubated | Note |
+| --- | --- | --- | --- | --- |
+| Clutch open to `nest_predation` while the brooder is off the nest or dead (as an unguarded one) | 35.8% → 38.8% (+0.002 ± 0.002) | 29.5% → 32.8% | 31.7% → 28.6% | raids +17 eggs per warm lineage: brooders' nests have few neighbors |
+| A brooder on her nest sits tight (60% less urge to flee) | 35.8% → 35.8% (+0.001 ± 0.002) | 31.1% | 28.6% | hunters rarely reach brooders |
+| `brood_cost` 2 (from 1) | 35.8% → 35.8% (−0.000 ± 0.003) | 32.8% | 27.0% | hatched 230 → 198 |
+| `brood_cost` 3 | 35.8% → 34.3% (−0.012 ± 0.004) | 32.8% | 27.0% | hatched 230 → 169 |
+| `brood_cost` 4 | 35.8% → 31.3% (−0.017 ± 0.004) | 36.1% (+0.009 ± 0.002) | 31.7% | 80001–: warm incubated 28.6% → 20.6%, warm live 35.5% → 35.5% |
+
+Only `brood_cost` moves them (it costs warm brooders most: a cold one
+warms her eggs by at most 4 °C), and what they lose goes to warm live
+bearers, who compete for the same designs' worlds. `brood_cost` 3 (the
+milder setting, smaller hand-over) was judged on every set, paired with
+the current rules (fresh 90001–90096 and 100001–100096 never used
+before; their baselines are the live-birth pass's runs, byte-identical
+where both ran):
+
+| Win share | 70001– | 80001– | 90001– | 100001– | Tuning 10001– | Fresh (192) | All (480) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Cold abandoned eggs | 19.7 → 19.7 | 26.2 → 26.2 | 22.0 → 16.9 | 26.2 → 27.7 | 31.0 → 29.6 | 24.2 → 22.6 | 25.2 → 24.2 |
+| Cold incubated eggs | 31.7 → 27.0 | 26.8 → 29.6 | 40.7 → 37.0 | 25.9 → 29.3 | 26.4 → 30.2 | 33.0 → 33.0 | 30.1 → 30.4 |
+| Cold live birth | 23.8 → 27.0 | 30.4 → 30.4 | 30.8 → 30.8 | 30.3 → 28.8 | 25.9 → 29.6 | 30.5 → 29.8 | 28.3 → 29.3 |
+| Warm abandoned eggs | 9.4 → 9.4 | 4.5 → 7.5 | 6.2 → 8.8 | 9.6 → 9.6 | 8.3 → 9.7 | 7.8 → 9.2 | 7.6 → 9.0 |
+| Warm incubated eggs | 35.8 → 34.3 | 28.6 → 22.2 | 28.3 → 30.2 | 34.2 → 31.5 | 25.7 → 21.6 | 31.7 → 31.0 | 30.6 → 27.9 |
+| Warm live birth | 29.5 → 32.8 | 35.5 → 35.5 | 28.8 → 31.5 | 24.5 → 24.5 | 35.0 → 33.3 | 27.0 → 28.7 | 30.8 → 31.8 |
+| Warm incubated mean share, paired | −0.012 ± 0.004 | −0.012 ± 0.005 | −0.007 ± 0.005 | −0.013 ± 0.003 | −0.016 ± 0.004 | −0.011 ± 0.003 | −0.012 ± 0.002 |
+
+Over all 480 worlds warm incubators lose a significant share (0.092 →
+0.080) and 2.7 points of wins, but the leading class is warm live birth
+(30.8%), which gains (31.8%, mean share +0.0018 ± 0.0011), and on the
+fresh pair the leader is cold incubated eggs (33.0%), which the lever
+doesn't reach. One 96-world set cannot carry the per-set target: with the
+five classes other than warm abandoned eggs exactly equal, a simulated
+96-world set shows one of them above 32% in 79% of draws (median top
+34.2%), 192 worlds in 54%, 384 in 26%, so a different class tops each
+real set. Pooled over the five sets the current rules already meet the
+target (nothing above 31%), and `brood_cost` 3 widens the mean-share
+spread at the top (0.106 → 0.108 for warm live birth) rather than
+narrowing it. `compare --adaptive` from seed 101 (`--set brood_cost=3 vs
+defaults`) stopped after 24 seeds at +0.06 ± 0.15 (sequential CI −0.12 …
++0.24): harmless to the score, though the burrowing omnivores (the warm
+incubated sample design) lost 48 ± 17 members and 3.0 ± 1.0 points of
+legacy. No rule or default changed (the 12-seed sweep from seed 31 still
+scores 11.76). If a rule slows warm live bearers (who then cede wins to
+warm incubators), `brood_cost` 3 is the measured counterweight on the
+incubator side.
+
 ## Suggested next steps
 
 In priority order; each item is open (done work is described in the
@@ -5388,9 +5463,17 @@ sections above).
    has one warm-blooded class at 35–36% (warm incubated eggs on the
    first, warm live bearers on the second, with or without
    `migration_onset`), and warm live bearers reach 33% on the tuning
-   seeds 10001–10096. Re-check with fresh tournaments after rule changes
-   that touch breeding; warm live bearers are the first suspect if one
-   class settles above 32% over several fresh sets.
+   seeds 10001–10096. Two more fresh sets (90001–90096, 100001–100096)
+   put cold incubated eggs at 40.7% on the first: one 96-world set is too
+   noisy for a per-set target (with five equal classes, 79% of simulated
+   96-world sets show one above 32%), so judge on pooled sets and paired
+   mean share. Pooled over the five sets (480 worlds) nothing is above
+   31%. A dearer brood for warm-blooded parents (`brood_cost` 3) cuts warm
+   incubators' share significantly but hands it to warm live bearers
+   (*Warm-blooded brooding cost* in [Balance](#balance)); not adopted.
+   Re-check with fresh tournaments after rule changes that touch
+   breeding; warm live bearers are the first suspect if one class settles
+   above 32% over several pooled fresh sets.
 5. **World-thread cost.** At high density decide is still most of a tick
    and is now bound by memory (neighbor genes and positions; see [High
    density](#high-density-decide-act-sweep-sub-step-states)); going further
