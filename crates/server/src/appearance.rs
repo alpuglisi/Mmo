@@ -14,6 +14,7 @@
 //! values per feature.
 
 use evo_sim::genome::Gene;
+pub use evo_sim::morph::{HornForm, Pattern};
 use evo_sim::organism::Organism;
 use serde::{Deserialize, Serialize};
 
@@ -116,6 +117,12 @@ pub struct Morphology {
     pub snout_length: f32,
     /// 0–1; no fangs below [`Morphology::NO_FANGS`].
     pub fang_size: f32,
+    /// 0–1; no horns below `evo_sim::morph::HORNS_SHOW`.
+    pub horn_size: f32,
+    pub horn_form: HornForm,
+    /// 0 broad to 1 narrow.
+    pub wing_aspect: f32,
+    pub pattern: Pattern,
 }
 
 impl Morphology {
@@ -142,6 +149,10 @@ impl Morphology {
             tail_length: m.tail_length,
             snout_length: m.snout_length,
             fang_size: m.fang_size,
+            horn_size: if m.horns_present { m.horn_size } else { 0.0 },
+            horn_form: m.horn_form,
+            wing_aspect: m.wing_aspect,
+            pattern: m.pattern,
         }
     }
 }
@@ -186,6 +197,18 @@ fn azimuth_bucket(deg: f32) -> u8 {
 
 fn medium() -> u8 {
     1
+}
+
+fn is_zero(x: &u8) -> bool {
+    *x == 0
+}
+
+fn is_curved(x: &HornForm) -> bool {
+    *x == HornForm::Curved
+}
+
+fn is_plain(x: &Pattern) -> bool {
+    *x == Pattern::Plain
 }
 
 fn is_medium(x: &u8) -> bool {
@@ -237,6 +260,19 @@ pub struct Appearance {
     pub snout: u8,
     /// Fangs: 0 none, 1 small, 2 large.
     pub fangs: u8,
+    /// Horns (Phase 3): 0 none, 1 small, 2 large. Sent only when present.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub horns: u8,
+    /// Horn form, sent only for horns that aren't curved (the default).
+    #[serde(default, skip_serializing_if = "is_curved")]
+    pub horn_form: HornForm,
+    /// Wing shape bucket of a glider or flier: 0 broad, 1 default, 2
+    /// narrow. Sent only when not the default.
+    #[serde(default = "medium", skip_serializing_if = "is_medium")]
+    pub wing_aspect: u8,
+    /// Coat pattern, sent only when not plain.
+    #[serde(default, skip_serializing_if = "is_plain")]
+    pub pattern: Pattern,
 }
 
 impl Appearance {
@@ -308,6 +344,10 @@ impl Appearance {
             tail_size: 1,
             snout: 1,
             fangs: 0,
+            horns: 0,
+            horn_form: HornForm::Curved,
+            wing_aspect: 1,
+            pattern: Pattern::Plain,
         }
         .with_morphology(&Morphology::of(o))
     }
@@ -336,7 +376,29 @@ impl Appearance {
             2
         };
         let ears = (m.ear_count.min(4) / 2) * 2;
+        let horns = if m.horn_size < evo_sim::morph::HORNS_SHOW {
+            0
+        } else if m.horn_size < 0.55 {
+            1
+        } else {
+            2
+        };
+        let winged = matches!(self.locomotion, Locomotion::Glide | Locomotion::Fly);
         Self {
+            horns,
+            horn_form: if horns == 0 { HornForm::Curved } else { m.horn_form },
+            // Broad below 0.35, narrow from 0.65 (founder variation around
+            // the default 0.5 stays in the middle bucket).
+            wing_aspect: if !winged {
+                1
+            } else if m.wing_aspect < 0.35 {
+                0
+            } else if m.wing_aspect < 0.65 {
+                1
+            } else {
+                2
+            },
+            pattern: m.pattern,
             eyes: m.eye_count.clamp(1, 6),
             eye_azimuth: azimuth_bucket(m.eye_azimuth),
             eye_size: bucket(m.eye_size),
@@ -450,8 +512,24 @@ mod tests {
             tail_length: 0.2,
             snout_length: 1.0,
             fang_size: 0.3,
+            horn_size: 0.0,
+            horn_form: HornForm::Branched,
+            wing_aspect: 0.9,
+            pattern: Pattern::Plain,
         };
         let a = base.with_morphology(&m);
+        // No horns: the form collapses; a walker's wing shape stays default.
+        assert_eq!((a.horns, a.horn_form, a.wing_aspect), (0, HornForm::Curved, 1));
+        let horned = base.with_morphology(&Morphology { horn_size: 0.8, pattern: Pattern::Spots, ..m });
+        assert_eq!((horned.horns, horned.horn_form, horned.pattern), (2, HornForm::Branched, Pattern::Spots));
+        let v = serde_json::to_value(horned).unwrap();
+        assert_eq!(
+            (v["horns"].as_u64(), v["horn_form"].as_str(), v["pattern"].as_str()),
+            (Some(2), Some("branched"), Some("spots"))
+        );
+        let flier = Appearance { locomotion: Locomotion::Fly, ..base };
+        assert_eq!(flier.with_morphology(&m).wing_aspect, 2);
+        assert_eq!(flier.with_morphology(&Morphology { wing_aspect: 0.1, ..m }).wing_aspect, 0);
         assert_eq!(a.eyes, 6);
         assert_eq!(a.eye_azimuth, 2);
         assert_eq!(base.with_morphology(&Morphology { eye_azimuth: 20.0, ..m }).eye_azimuth, 0);

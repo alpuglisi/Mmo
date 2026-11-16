@@ -761,7 +761,7 @@ fn version_23_snapshots_restore_without_morph_legacy() {
     assert!(!r.config.balance.morph_in_legacy());
     w.config.balance.morph_legacy = crate::serde_util::before_v24::OLD_VALUE;
     assert_eq!(r.config.balance, w.config.balance);
-    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v27() == w.snapshot_v27());
     assert!(r.snapshot_v23() == old);
 }
 
@@ -781,7 +781,7 @@ fn version_24_snapshots_restore_without_roaming_forage() {
     assert_eq!(r.config.balance.roaming_forage, crate::serde_util::before_v25::OLD_VALUE);
     w.config.balance.roaming_forage = crate::serde_util::before_v25::OLD_VALUE;
     assert_eq!(r.config.balance, w.config.balance);
-    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v27() == w.snapshot_v27());
     assert!(r.snapshot_v24() == old);
 }
 
@@ -808,7 +808,7 @@ fn version_25_snapshots_restore_without_carnivore_diet() {
     assert_eq!(r.config.balance.breeding_territory, crate::serde_util::before_v26::OLD_VALUE);
     carnivore_diet_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
-    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v27() == w.snapshot_v27());
     assert!(r.snapshot_v25() == old);
 }
 
@@ -827,13 +827,13 @@ fn version_26_snapshots_restore_without_predator_brakes() {
     assert_eq!(h.version, 26);
     assert!(h.restorable());
     // Without the two parameters (f32 each), against a version 27 snapshot.
-    assert_eq!(h.raw_len + 2 * 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    assert_eq!(h.raw_len + 2 * 4, SnapshotHeader::read(&w.snapshot_v27()).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.prey_switching, crate::serde_util::before_v27::OLD_VALUE);
     assert_eq!(r.config.balance.condition_litter, crate::serde_util::before_v27::OLD_VALUE);
     predator_brakes_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
-    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v27() == w.snapshot_v27());
     assert!(r.snapshot_v26() == old);
 }
 
@@ -897,6 +897,8 @@ fn version_19_to_22_snapshots_restore_with_default_morphology() {
                         MorphLocus::EarCount | MorphLocus::EarShape => Gene::Ears,
                         MorphLocus::LegCount => Gene::LegLength,
                         MorphLocus::TailShape => Gene::Tail,
+                        MorphLocus::HornForm => Gene::Armor,
+                        MorphLocus::Pattern => Gene::Camouflage,
                     }),
                 );
                 assert_eq!((p.a.value, p.b.value), (l.default_value(), l.default_value()));
@@ -942,6 +944,10 @@ fn morphology_round_trips_and_continues() {
         leg_count: 6,
         tail_shape: TailShape::Prehensile,
         snout_length: 0.8,
+        horn_size: 0.7,
+        horn_form: crate::morph::HornForm::Branched,
+        wing_aspect: 0.2,
+        pattern: crate::morph::Pattern::Spots,
     };
     w.found_lineage_unchecked(owner, &d.founders(12).with_morph(six));
     let (owner, d) = designs.next().unwrap();
@@ -958,4 +964,44 @@ fn morphology_round_trips_and_continues() {
         r.step();
     }
     assert_same(&w, &r);
+}
+
+/// A version 27 snapshot (before the Phase 3 loci) restores with every
+/// organism's core morphology as it was and the Phase 3 loci at their
+/// defaults, tagged like their anchor genes; the tunables read as 0.
+#[test]
+fn snapshots_before_v29_restore_without_the_phase3_loci() {
+    use crate::genome::Gene;
+    use crate::morph::{HornForm, MorphDesign, MorphGene, MorphLocus, Pattern};
+    let mut w = World::new(WorldConfig { seed: 5, width: 48, height: 48, ..Default::default() });
+    let mut designs = presets::wild_designs().into_iter();
+    let (owner, d) = designs.next().unwrap();
+    let m = MorphDesign {
+        leg_count: 6,
+        horn_size: 0.9,
+        horn_form: HornForm::Straight,
+        pattern: Pattern::Stripes,
+        ..Default::default()
+    };
+    w.found_lineage_unchecked(owner, &d.founders(12).with_morph(m));
+    w.run_days(4);
+    let old = w.snapshot_v27();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 27);
+    assert!(h.raw_len < SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.morph_horns, crate::serde_util::before_v29::OLD_VALUE);
+    assert_eq!(r.config.balance.morph_pattern, crate::serde_util::before_v29::OLD_VALUE);
+    for (a, b) in r.organisms.iter().zip(&w.organisms) {
+        let (ma, mb) = (a.genome.morph(), b.genome.morph());
+        assert_eq!(ma.discrete[..MorphLocus::CORE], mb.discrete[..MorphLocus::CORE]);
+        assert_eq!(ma.continuous[..MorphGene::CORE], mb.continuous[..MorphGene::CORE]);
+        assert_eq!(a.morph.leg_count, b.morph.leg_count);
+        assert!(!a.morph.horns_present && a.morph.pattern == Pattern::Plain);
+        let horn = &ma.continuous[MorphGene::HornSize.index()];
+        assert_eq!(horn.a.origin, a.genome.locus(Gene::Armor).a.origin);
+        assert_eq!(a.genome.loci(), b.genome.loci());
+    }
+    assert!(w.organisms.iter().any(|o| o.morph.horns_present && o.morph.pattern == Pattern::Stripes));
+    assert!(r.snapshot_v27() == old);
 }

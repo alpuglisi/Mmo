@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TRAIT_TEXT } from './traitText';
-import { TRAIT_NAMES, traitEnds, traitName, traitNameLower } from './traitNames';
+import { MORPH_NAMES, TRAIT_NAMES, traitEnds, traitName, traitNameLower } from './traitNames';
 import fixture from './traitNames.fixture.json';
 
 describe('trait names', () => {
@@ -44,7 +44,7 @@ describe('trait names', () => {
   // from `trait_display_name`, the names the server uses in its messages.
   it('uses the same names as the server, for the same genes', () => {
     const server = fixture as Record<string, string>;
-    expect(Object.keys(TRAIT_NAMES).sort()).toEqual(Object.keys(server).sort());
+    expect([...Object.keys(TRAIT_NAMES), ...Object.keys(MORPH_NAMES)].sort()).toEqual(Object.keys(server).sort());
     for (const [g, name] of Object.entries(server)) expect(traitName(g), g).toBe(name);
   });
 });
