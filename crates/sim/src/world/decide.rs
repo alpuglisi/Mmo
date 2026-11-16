@@ -66,6 +66,9 @@ struct Viewer<'a> {
     /// Mass below which the viewer would take prey (`max_prey_mass`).
     prey_cap: f32,
     female: bool,
+    /// A fed father with fat to spare looks for his hungry family
+    /// (`Balance::provisioning`).
+    provider: bool,
     /// Seeds per-neighbor draws, so they don't depend on visit order.
     salt: u64,
     /// The viewer's group territory (center, radius), if it holds one.
@@ -92,6 +95,9 @@ struct Perception {
     looked_kin: [u32; 2],
     /// Nearest stranger inside the viewer's territory: (-distance, index).
     intruder: Option<(f32, usize)>,
+    /// The hungriest (by hunger over distance) of a provisioning father's
+    /// pregnant mate and dependent young in sight: (score, index).
+    family: Option<(f32, usize)>,
 }
 
 /// Does `(score, index)` beat the best so far? Ties go to the lower index, so
@@ -226,6 +232,12 @@ impl DistanceBounds {
 
 /// Carnivory above which an organism hunts live prey (`choose_food`).
 pub(crate) const HUNTER_CARNIVORY: f32 = 0.45;
+/// Fat (hunger points) a father needs before he provisions his family.
+const PROVISION_FAT: f32 = 5.0;
+/// Hunger above which a pregnant mate or dependent young is provisioned.
+const PROVISION_HUNGER: f32 = 40.0;
+/// Utility of provisioning per unit of the family member's hunger.
+const PROVISION_UTILITY: f32 = 0.6;
 
 /// Grown and carnivorous enough to hunt: able to threaten something. The
 /// grid's `ARMED` flag prunes far threats with this, so it must stay in step
@@ -434,7 +446,7 @@ impl World {
 
         let coop = self.coop_bonus(o);
         let hunter = o.traits.carnivory > HUNTER_CARNIVORY && o.growth > 0.6;
-        let can_breed = o.can_breed(self.tick) && self.may_conceive(o);
+        let can_breed = o.can_breed(self.tick) && self.may_conceive(o) && !self.territory_taken(o);
         let my_power = o.power() * (1.0 + coop) * cfg.balance.attack_power;
 
         let fight_power = o.power() * cfg.balance.attack_power;
@@ -455,6 +467,12 @@ impl World {
             threat_floor,
             prey_cap,
             female,
+            provider: cfg.balance.provisioning > 0.0
+                && !female
+                && o.matured
+                && o.traits.carnivory > super::apply::OBLIGATE
+                && o.fat >= PROVISION_FAT
+                && n.hunger < 50.0,
             salt: rng.gen(),
             territory: self.territory_of(o).map(|t| (t.center, t.radius)),
         };
@@ -471,6 +489,7 @@ impl World {
             looked: [0; 2],
             looked_kin: [0; 2],
             intruder: None,
+            family: None,
         };
         // Neighbors beyond the nearest `FOCUS`, by [same lineage, other
         // lineage]: count and summed position.
@@ -520,7 +539,7 @@ impl World {
             }
             buf.set(near);
         });
-        let Perception { threat: seen_threat, threat_pos: seen_pos, prey, mate, intruder, .. } = seen;
+        let Perception { threat: seen_threat, threat_pos: seen_pos, prey, mate, intruder, family, .. } = seen;
         // A sentry's warning counts like a threat seen first hand, from
         // wherever the sentry saw it.
         let (threat, threat_pos) =
@@ -578,7 +597,16 @@ impl World {
         let flee_weight = cfg.balance.flee_weight * if can_dig { cfg.balance.burrow_caution } else { 1.0 };
         // Seasonal strategies: fattening before a dormancy, migrating
         // between seasonal ranges.
-        let fatten = self.fat_room(o) / self.fat_capacity(o).max(1e-6);
+        let mut fatten = self.fat_room(o) / self.fat_capacity(o).max(1e-6);
+        // Gorging (`Balance::carnivore_fat`): an obligate carnivore that
+        // knows of a carcass eats on past full while it has fat room.
+        let gorge = cfg.balance.carnivore_fat * (1.0 + p[Gene::FatStores]);
+        if gorge > 0.0 && cfg.balance.carcass_scent > 0.0 && o.traits.carnivory > super::apply::OBLIGATE {
+            let room = (gorge - o.fat) / gorge;
+            if room > 0.2 && self.scent_carcass(o, o.traits.meat_efficiency(cfg.balance.generalist_tax)).is_some() {
+                fatten = fatten.max(room);
+            }
+        }
         let season_dest = self.seasonal_destination(o, juvenile_care);
         let ordered = self.migrate_orders.contains_key(&(o.owner, o.group)) && o.matured;
         // Group commands as genes: obedience weighs the orders against the
@@ -675,6 +703,18 @@ impl World {
         let (action, _) =
             options.iter().copied().fold((Action::Idle, f32::MIN), |best, opt| if opt.1 > best.1 { opt } else { best });
         let action = urgent.unwrap_or(action);
+        // Provisioning: a father with fat to spare takes food to his hungry
+        // family when that beats everything else he could do.
+        let best_utility = options.iter().map(|o| o.1).fold(f32::MIN, f32::max);
+        if let (Some((_, j)), None) = (family, urgent) {
+            let q = &self.organisms[j];
+            if PROVISION_UTILITY * q.needs.hunger / 100.0 > best_utility {
+                intent.action = Action::Scavenge;
+                intent.target = Some(q.pos);
+                intent.target_org = Some(j);
+                return intent;
+            }
+        }
 
         // An exhausted hunter rests before chasing again; otherwise hunger keeps
         // it chasing at a crawl until it starves.
@@ -821,6 +861,15 @@ impl World {
         } else {
             mating::is_kin_by_gap(gap, genetic_distance(o, q), sd, limit)
         };
+        // A provisioning father notes his hungry pregnant mate or dependent
+        // young.
+        if v.provider && e.lineage == o.lineage && q.alive && q.needs.hunger > PROVISION_HUNGER {
+            let mate = q.pregnancy.as_ref().is_some_and(|p| p.father_id == o.id);
+            let young = q.father == Some(o.id) && !q.matured && q.growth < 0.7;
+            if (mate || young) && beats(q.needs.hunger / (1.0 + d), j, seen.family) {
+                seen.family = Some((q.needs.hunger / (1.0 + d), j));
+            }
+        }
         // A kin sentry's warning reaches group members where sentries hold.
         if kin && v.sentry > 0.0 && e.flags & ALERT != 0 {
             if let Some((at, level)) = q.alert {
@@ -1013,6 +1062,15 @@ impl World {
             }
         }
         if o.traits.carnivory > 0.7 {
+            // A carcass it remembers, its pregnant mate's partner's kill, or
+            // one it smells (`Balance::carcass_scent`).
+            if self.config.balance.carcass_scent > 0.0 {
+                if let Some(t) = self.scent_carcass(o, c) {
+                    intent.action = Action::Scavenge;
+                    intent.target = Some(t);
+                    return;
+                }
+            }
             // Carnivore with nothing in sight: look for carcasses, else roam.
             if let Some(t) = self.find_tile(o, rng, 1.0, |_, t| t.meat * c) {
                 intent.action = Action::Scavenge;
@@ -1061,6 +1119,86 @@ impl World {
                 self.wander(o, intent, rng, 5.0);
             }
         }
+    }
+
+    /// Breeding territories (`Balance::breeding_territory`): an obligate
+    /// carnivore female doesn't breed while a pregnant female or an unweaned
+    /// young of her lineage is within that many tiles. One litter at a time
+    /// per territory limits each predator by its own numbers, so a boom ends
+    /// before the prey do and two predators on the same prey can coexist.
+    pub(crate) fn territory_taken(&self, o: &Organism) -> bool {
+        let r = self.config.balance.breeding_territory;
+        if r <= 0.0 || o.sex != Sex::Female || o.traits.carnivory <= super::apply::OBLIGATE {
+            return false;
+        }
+        let mut taken = false;
+        self.grid.query(o.pos, r, |slot, _| {
+            let e = self.grid.entry(slot);
+            if !taken && e.lineage == o.lineage {
+                let q = &self.organisms[e.idx as usize];
+                taken = q.pregnancy.is_some() || (!q.matured && q.growth < 0.7);
+            }
+        });
+        taken
+    }
+
+    /// A carcass for obligate carnivore `o` (meat efficiency `c`) worth half
+    /// a bite, on dry ground it can stand on: the one it remembers (its
+    /// last kill, `forage_target`), else, if pregnant, the father's last
+    /// kill within three times the scent range (he leads her to it), else
+    /// the best by meat over distance within `Balance::carcass_scent` times
+    /// (0.5 + nose) tiles. None with the scent off.
+    pub(crate) fn scent_carcass(&self, o: &Organism, c: f32) -> Option<Vec2> {
+        let bal = &self.config.balance;
+        let min = 25.0 * o.food_per_hunger();
+        if let Some(t) = o.forage_target {
+            let tile = self.map.tile_at(t);
+            if tile.meat * c >= min && tile.water_depth == 0.0 {
+                return Some(t);
+            }
+        }
+        if let Some(t) = o
+            .pregnancy
+            .as_ref()
+            .and_then(|p| self.index.get(&p.father_id))
+            .map(|&f| &self.organisms[f])
+            .filter(|f| f.alive)
+            .and_then(|f| f.forage_target)
+        {
+            let tile = self.map.tile_at(t);
+            if o.pos.dist(t) < 3.0 * bal.carcass_scent && tile.meat * c >= min && tile.water_depth == 0.0 {
+                return Some(t);
+            }
+        }
+        let r = (bal.carcass_scent * (0.5 + o.pheno[Gene::Nose])).round() as i64;
+        let (x0, y0) = self.map.tile_coords(o.pos);
+        let bound = self.roam_bound(o);
+        let mut best: Option<(f32, Vec2)> = None;
+        for y in (y0 as i64 - r).max(0)..=(y0 as i64 + r).min(self.map.height as i64 - 1) {
+            for x in (x0 as i64 - r).max(0)..=(x0 as i64 + r).min(self.map.width as i64 - 1) {
+                let k = self.map.idx(x as usize, y as usize);
+                let v = self.map.tiles[k].meat * c;
+                if v < min {
+                    continue;
+                }
+                let p = crate::terrain::Map::tile_center(x as usize, y as usize);
+                let score = v / (1.0 + 0.3 * o.pos.dist(p));
+                if best.is_some_and(|(s, _)| score <= s) || self.confine(p, bound) != p {
+                    continue;
+                }
+                let (g, t) = (&self.map.ground()[k], &self.map.tiles[k]);
+                if t.water_depth > 0.0
+                    || !matches!(
+                        traverse(&o.traits.body, g, t, &Weather::still(t.wind), false),
+                        Traverse::Passable { .. }
+                    )
+                {
+                    continue;
+                }
+                best = Some((score, p));
+            }
+        }
+        best.map(|(_, p)| p)
     }
 
     /// The best of the 8 tiles around `o` by `value`, if one holds at least

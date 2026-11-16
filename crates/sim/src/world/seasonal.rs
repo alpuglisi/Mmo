@@ -121,6 +121,20 @@ impl World {
         }
     }
 
+    /// Fat the organism would still lay down from meat: the seasonal room,
+    /// or for an obligate carnivore up to `Balance::carnivore_fat` (times
+    /// one plus its fat stores) in any season, so a kill bigger than its
+    /// hunger is banked instead of left to rot.
+    pub(crate) fn meat_fat_room(&self, o: &Organism) -> f32 {
+        let room = self.fat_room(o);
+        let cap = self.config.balance.carnivore_fat;
+        if cap > 0.0 && o.traits.carnivory > super::apply::OBLIGATE {
+            room.max(cap * (1.0 + o.pheno[Gene::FatStores]) - o.fat)
+        } else {
+            room
+        }
+    }
+
     pub(crate) fn fat_capacity(&self, o: &Organism) -> f32 {
         self.config.balance.fat_capacity * (1.0 + o.pheno[Gene::FatStores])
     }

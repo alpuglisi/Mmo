@@ -15,6 +15,11 @@ use crate::terrain::{glide, traverse, wind_effect, Map, Traverse, Weather};
 
 /// How far (tiles) a mother looks for a nest site for eggs she leaves.
 const NEST_SEARCH: usize = 3;
+/// Carnivory above which an organism is an obligate carnivore: it roams
+/// for prey rather than grazing (`decide::choose_food`), and the
+/// carnivore-diet rules of version 26 apply to it (gorging on meat,
+/// carcass scent, provisioning, breeding territories).
+pub(crate) const OBLIGATE: f32 = 0.7;
 
 /// Most hunger points an organism can eat per day (so a meal takes a few ticks).
 pub(crate) const MAX_INTAKE_PER_DAY: f32 = 1200.0;
@@ -181,7 +186,14 @@ impl World {
                 self.eat_cache(i, false);
             }
             Action::Cache => self.gather(i),
-            Action::Scavenge => self.eat_meat(i, 1.0),
+            Action::Scavenge => {
+                // With a target organism: a father bringing food to his
+                // family (`Balance::provisioning`).
+                if let Some(j) = intent.target_org {
+                    self.provision(i, j);
+                }
+                self.eat_meat(i, 1.0);
+            }
             Action::Hunt => {
                 if let Some(j) = intent.target_org {
                     self.attack(i, j, rng);
@@ -190,6 +202,14 @@ impl World {
                     // by default): no prey in sight, so nibble plants as on
                     // any other errand.
                     self.eat_plants(i, 0.3);
+                }
+                // A roaming hunter drinks where it passes water (with the
+                // carnivore-diet rules, `Balance::carcass_scent`).
+                if intent.target_org.is_none()
+                    && self.config.balance.carcass_scent > 0.0
+                    && self.organisms[i].needs.thirst > 30.0
+                {
+                    self.drink(i);
                 }
                 self.eat_meat(i, 1.0);
             }
@@ -276,6 +296,16 @@ impl World {
     pub(super) fn finish(&mut self, i: usize, settled: Settled, rng: &mut SimRng) {
         if let Some(cause) = settled.death {
             self.kill(i, cause);
+            // Carrion (`Balance::carrion`): a body that died of anything
+            // but drowning is left as a carcass, a starved one at half.
+            let carrion = self.config.balance.carrion;
+            if carrion > 0.0 && cause != DeathCause::Drowning {
+                let o = &self.organisms[i];
+                let lean = if cause == DeathCause::Starvation { 0.5 } else { 1.0 };
+                let meat = o.mass() * self.config.balance.meat_per_kg * carrion * lean;
+                let pos = o.pos;
+                self.map.tile_at_mut(pos).meat += meat;
+            }
             return;
         }
         if settled.matured {
@@ -573,7 +603,7 @@ impl World {
     fn eat_meat(&mut self, i: usize, rate: f32) {
         let o = &self.organisms[i];
         let eff = o.traits.meat_efficiency(self.config.balance.generalist_tax);
-        let fat_room = self.fat_room(o);
+        let fat_room = self.meat_fat_room(o);
         let room = o.needs.hunger + fat_room;
         if o.traits.carnivory < 0.2 || room < 5.0 {
             return;
@@ -679,6 +709,10 @@ impl World {
             self.counters.kills += 1;
             self.organisms[i].search_image = Some(prey_lineage);
             self.map.tile_at_mut(prey_pos).meat += prey_mass * self.config.balance.meat_per_kg;
+            // The hunter remembers its kill (`World::scent_carcass`).
+            if self.config.balance.carcass_scent > 0.0 {
+                self.organisms[i].forage_target = Some(prey_pos);
+            }
             if self.organisms[i].alive {
                 self.eat_meat(i, 1.0);
             }
@@ -805,6 +839,23 @@ impl World {
         }
         self.organisms[mi].needs.hunger = (self.organisms[mi].needs.hunger + cost).min(100.0);
         self.contact(i, mi, (self.config.balance.disease_kin * self.config.dt_days()).min(1.0));
+    }
+
+    /// Father `i` feeds family member `j` (his pregnant mate or his
+    /// dependent young) from his fat, at `Balance::provisioning` times the
+    /// nursing rate, once next to it: a fox or wolf bringing food to the
+    /// den. The fat comes from gorging on meat (`Balance::carnivore_fat`).
+    fn provision(&mut self, i: usize, j: usize) {
+        let (f, q) = (&self.organisms[i], &self.organisms[j]);
+        if !q.alive || f.pos.dist(q.pos) > 1.5 || f.fat <= 0.0 {
+            return;
+        }
+        let rate = 300.0 * self.config.balance.provisioning * self.config.dt_days();
+        let ratio = q.food_per_hunger() / f.food_per_hunger();
+        let amount = rate.min(q.needs.hunger).min(f.fat / ratio);
+        let cost = amount * ratio;
+        self.organisms[j].needs.hunger -= amount;
+        self.organisms[i].fat -= cost;
     }
 
     fn raid_clutch(&mut self, i: usize, rng: &mut SimRng) {

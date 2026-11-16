@@ -133,7 +133,8 @@ search_image cold_gestation nest_predation tameness migration_onset possess_urge
 home_range_predation home_range_residents offline_stack_floor lactation warm_upkeep
 fang_grazing scale_cover morph_effects morph_tail_drag morph_tail_chill morph_long_legs
 directional_vision vision_scan
-morph_step_rate morph_legacy roaming_forage
+morph_step_rate morph_legacy roaming_forage carcass_keep carnivore_fat carcass_scent carrion
+provisioning breeding_territory
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
 juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump

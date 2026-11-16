@@ -5854,6 +5854,95 @@ action shares; per seed the adults' time budget by sex and state
 the seeds each predator survived. `--set NAME=V` and `--off`
 (`morphology_off`) change the rules.
 
+### Predators that live on meat
+
+The design work *Predators over the years* asked for: predators fed by
+their prey (so their numbers follow it), a winter food source, and
+something that ends a boom before the prey run out. Six rules, each a
+`Balance` tunable that is off at 0, **all off by default**
+(`Balance::carnivore_diet()` turns them on at the values below; `evo-sim
+... --set NAME=V`, `predlong --meat`). They apply to obligate carnivores
+(carnivory above 0.7: the red fox, the pack hunters and any such player
+design), except carrion and the slower rot, which feed every meat eater:
+
+| Tunable (tested value) | Rule |
+| --- | --- |
+| `carcass_keep` (0.75) | Carcasses rot a quarter as fast: tile meat loses 30% a day above 15 °C and 11% below (70% and 38% before), so one kill feeds the killer, its family and other scavengers for days. |
+| `carnivore_fat` (60) | Gorging: meat beyond hunger goes into fat (up to 60 hunger points, times one plus fat stores) in any season, not only before a dormancy, and a carnivore that knows of a carcass keeps eating while it has room. Fat pays for hunger above 50 as for any animal. |
+| `carcass_scent` (8) | A hungry carnivore with no prey in sight goes to the best carcass within 8 × (0.5 + nose) tiles before roaming, remembers its last kill (`forage_target`) and goes back to it, and a pregnant one goes to her mate's last kill; a roaming hunter also drinks where it passes water. Before, carcasses were found by sampling 8 random tiles, and roaming neither ate nor drank. |
+| `carrion` (1) | A death other than predation or drowning leaves the body as a carcass (half for a starved one): winter deaths are the scavengers' winter food. |
+| `provisioning` (1) | A fed father (hunger below 50, fat 5 or more) takes food to his hungry pregnant mate or dependent young in sight and feeds them from his fat at the nursing rate (the provider is engaged with the fed one, as a hunter with its prey, so the parallel apply keeps the sequential order). |
+| `breeding_territory` (12) | A female doesn't breed while a pregnant female or an unweaned young of her own lineage is within 12 tiles: one litter at a time per territory, so each predator is limited by its own numbers. |
+
+Snapshots move to format version 26 (the six fields; versions 10–25 read
+them as 0, `serde_util::before_v26`, test
+`version_25_snapshots_restore_without_carnivore_diet`). With the defaults
+every world runs bit for bit as before (sweep 11.60, the same predlong).
+
+**Over the years** (`predlong`, seeds 31–38, 96×96; survived = any alive,
+viable = both sexes):
+
+| Run | Red fox survived (viable) | Pack hunters survived (viable) | Prey lost |
+| --- | --- | --- | --- |
+| Defaults, 3 years | 1 of 8 (0) | 3 of 8 (0) | none |
+| Defaults, 6 years | 0 of 8 | 0 of 8 | newts on 36 |
+| `--meat`, 4 years | 6 of 8 (4) | 6 of 8 (6) | none (lowest: voles 75, newts 28, omnivores 61) |
+| `--meat`, 6 years | 3 of 8 (2: 16 and 137 foxes) | 6 of 8 (6) | none (lowest: voles 34, newts 45, omnivores 78) |
+
+Meat went from 8% of a fox's food (first year, defaults; temporary
+counters, not kept) to about half of both predators' food over 4 years,
+and the sex ratio no longer ends in males only where they persist (fox
+1:1 and 1:1.7, pack 1:1.4 to 1:2.6 at year 6). Fathers' provisioning is
+small in volume (under 1% of the predators' food), but in a 4-year run
+without it the pack hunters survived on 4 seeds instead of 6.
+
+**Why off by default.** The acceptance was both predators persisting in
+most seeds over 4–6 years without prey loss. The pack hunters do; the fox
+does not: once both live on the same prey (voles and newts), the pack
+hunters, which also take the herd grazers and their carrion and so reach
+150–275, exclude the fox on most seeds by year 6 (competitive exclusion
+on a shared prey; it was masked before because both lived on plants).
+At 120 days the rules cost a little: the standard sweep from seed 31
+scores 11.42 (11.60; a fox and a pack lost once more each in the founding
+year), `compare --seed 101 --adaptive vs` the old rules −0.26 (sequential
+95% CI −0.55 … +0.03 after 48 seeds: not significant, not within ±0.3),
+fox and pack survival 92% / 94% against 98% / 100%. Tournaments
+(`calibrate tournament`, 90 days, sets 70001– and 80001–, 96 worlds each,
+the same designs with the rules on and off): the top thermoregulation ×
+birth class wins 24.0% and 24.0% with them (26.0% and 24.0% without), no
+class moves by more than 3 points, and hunters' (carnivory ≥ 0.45) mean
+final share is 0.071 / 0.089 against 0.070 / 0.091.
+
+The genetics harness's ecology level on fresh seeds (`evo-sim genetics
+--long --level ecology --years 6`, 4 worlds of 96×96, seeds 1–4; new
+`--meat` option) says the same more sharply. Defaults: the fox dies out
+on day 200–340 and the pack hunters on day 230–520 in all four worlds.
+With the rules: the fox still dies out in all four (day 200–370); the
+pack hunters live in all four (46–442 at year 6), and they press the prey
+hard: voles down to 4 and 53 in two worlds, the newts gone in one (day
+390). All strict genetics checks pass either way. The quick ecology run
+(64×64, 2 years) loses the fox by day 60–80 either way and the pack
+hunters by day 140 without the rules (4 alive at the end with them).
+
+**What did not work** (3–6 years, seeds 31–38):
+
+| Change | Fox | Pack | Note |
+| --- | --- | --- | --- |
+| Kept carcasses, gorging, scent and roaming to the last kill site only (3 yr) | 1 | 7 | the fox's kills are too few; males still court and nibble, females starve |
+| Less nibbling for obligate carnivores (plants at half / a fifth while courting, resting, drinking), with the above | 5 (males only) / 0 | 6 / 0 | at a fifth almost nobody breeds (hunger stays above 70: drive doesn't build); meat was a fifth of a fox's food |
+| Carrion added (3 yr) | 7 | 7 | pack hunters boom to 150 on herd carrion, voles 84 on one seed |
+| Carrion and provisioning, no territory (4 yr) | 2 | 8 | packs 77–347, voles 0 and 24 on two seeds, omnivores 0 on one |
+| Territory only once a lineage numbers 2× / 3× its founders (spares the founding year: compare −0.23 / −0.04) | 2 / 2 (6 yr) | 7 / 8 | packs 200–400; voles, newts or omnivores lost on 3 seeds |
+| Territory radius × (0.5 + group tolerance) (6 yr) | 4 | 5 | voles lost on 2 seeds, newts on 1 |
+| Up to two litters per territory | | | compare −0.28 (B better after 36 seeds) |
+
+Left for the next round: what separates the two predators' niches (the
+pack hunters are fox-sized: 0.95 against 1.0 kg, so they share prey; a
+bigger pack hunter that lives on the herds, or a fox that eats more
+plants and insects than an obligate carnivore, would let them coexist)
+and the founding-year cost of the territory rule. LOD cohorts
+(`world::lod`) don't model these rules.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

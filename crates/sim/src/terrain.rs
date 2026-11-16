@@ -1151,7 +1151,19 @@ fn update_tile(g: &Ground, t: &mut Tile, e: &TileEnv, bal: &Balance) -> f32 {
         t.veg = t.veg.clamp(0.0, g.veg_max);
     }
     if t.meat > 0.0 {
-        let rot = if t.temp > 15.0 { 0.95 } else { 0.98 };
+        let warm = t.temp > 15.0;
+        // `Balance::carcass_keep` slows the rot (at 0 the factors are the
+        // literals of before version 26, bit for bit).
+        let rot = if bal.carcass_keep == 0.0 {
+            if warm {
+                0.95
+            } else {
+                0.98
+            }
+        } else {
+            let rate = if warm { 0.05 } else { 0.02 };
+            1.0 - rate * (1.0 - bal.carcass_keep)
+        };
         t.meat *= rot;
         if t.meat < 0.05 {
             t.meat = 0.0;
