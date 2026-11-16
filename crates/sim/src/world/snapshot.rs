@@ -99,6 +99,9 @@
 //! (`serde_util::before_v19`). Version 20 adds the `Balance::fang_grazing`
 //! and `Balance::scale_cover` parameters; versions 10 to 19 read both as 0,
 //! the rules they ran under (`serde_util::before_v20`).
+//! Version 21 adds the `Balance::morph_*` tunables (body plan effects);
+//! versions 10 to 20 read them as 0, the rules they ran under
+//! (`serde_util::before_v21`).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -119,7 +122,7 @@ use crate::terrain::{Terrain, Tile};
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 20;
+pub const SNAPSHOT_VERSION: u32 = 21;
 /// The oldest format version that still restores: version 11's state with
 /// the tiles inside the payload, and both without `Balance::cold_gestation`
 /// (nor, with version 12, `Balance::nest_predation`).
@@ -144,6 +147,9 @@ const WARM_COSTS_VERSION: u32 = 19;
 /// The first format version with `Balance::fang_grazing` and
 /// `Balance::scale_cover` (traits' contextual costs).
 const TRAIT_COSTS_VERSION: u32 = 20;
+/// The first format version with the `Balance::morph_*` tunables (body plan
+/// effects).
+const MORPH_EFFECTS_VERSION: u32 = 21;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
@@ -529,6 +535,7 @@ impl World {
         let _old18 = crate::serde_util::before_v18::Guard::new();
         let _old19 = crate::serde_util::before_v19::Guard::new();
         let _old20 = crate::serde_util::before_v20::Guard::new();
+        let _old21 = crate::serde_util::before_v21::Guard::new();
         let raw = payload_options().serialize(self).expect("world serializes");
         self.snapshot_with(OLDEST_RESTORABLE, FLAG_LZ4, raw.len(), &lz4_flex::block::compress(&raw))
     }
@@ -545,6 +552,7 @@ impl World {
         let _old18 = crate::serde_util::before_v18::Guard::new();
         let _old19 = crate::serde_util::before_v19::Guard::new();
         let _old20 = crate::serde_util::before_v20::Guard::new();
+        let _old21 = crate::serde_util::before_v21::Guard::new();
         // The header's layout is unchanged since version 6: only the version
         // field differs.
         let mut out = self.snapshot();
@@ -564,6 +572,7 @@ impl World {
         let _old18 = crate::serde_util::before_v18::Guard::new();
         let _old19 = crate::serde_util::before_v19::Guard::new();
         let _old20 = crate::serde_util::before_v20::Guard::new();
+        let _old21 = crate::serde_util::before_v21::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&NEST_PREDATION_VERSION.to_le_bytes());
         out
@@ -579,6 +588,7 @@ impl World {
         let _old18 = crate::serde_util::before_v18::Guard::new();
         let _old19 = crate::serde_util::before_v19::Guard::new();
         let _old20 = crate::serde_util::before_v20::Guard::new();
+        let _old21 = crate::serde_util::before_v21::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&OBEDIENCE_VERSION.to_le_bytes());
         out
@@ -593,6 +603,7 @@ impl World {
         let _old18 = crate::serde_util::before_v18::Guard::new();
         let _old19 = crate::serde_util::before_v19::Guard::new();
         let _old20 = crate::serde_util::before_v20::Guard::new();
+        let _old21 = crate::serde_util::before_v21::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&RALLY_VERSION.to_le_bytes());
         out
@@ -606,6 +617,7 @@ impl World {
         let _old18 = crate::serde_util::before_v18::Guard::new();
         let _old19 = crate::serde_util::before_v19::Guard::new();
         let _old20 = crate::serde_util::before_v20::Guard::new();
+        let _old21 = crate::serde_util::before_v21::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MIGRATION_ONSET_VERSION.to_le_bytes());
         out
@@ -618,6 +630,7 @@ impl World {
         let _old18 = crate::serde_util::before_v18::Guard::new();
         let _old19 = crate::serde_util::before_v19::Guard::new();
         let _old20 = crate::serde_util::before_v20::Guard::new();
+        let _old21 = crate::serde_util::before_v21::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&HOME_RANGE_VERSION.to_le_bytes());
         out
@@ -630,6 +643,7 @@ impl World {
     fn snapshot_v18(&self) -> Vec<u8> {
         let _old19 = crate::serde_util::before_v19::Guard::new();
         let _old20 = crate::serde_util::before_v20::Guard::new();
+        let _old21 = crate::serde_util::before_v21::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&BY_PARENTS_VERSION.to_le_bytes());
         out
@@ -641,12 +655,23 @@ impl World {
     #[cfg(test)]
     fn snapshot_v19(&self) -> Vec<u8> {
         let _old20 = crate::serde_util::before_v20::Guard::new();
+        let _old21 = crate::serde_util::before_v21::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&WARM_COSTS_VERSION.to_le_bytes());
         out
     }
 
-    /// A world from [`World::snapshot`] bytes (or a version 10 to 19 snapshot's)
+    /// A version 20 snapshot (no `Balance::morph_*` tunables), as the builds
+    /// before version 21 wrote, to test that they still restore.
+    #[cfg(test)]
+    fn snapshot_v20(&self) -> Vec<u8> {
+        let _old21 = crate::serde_util::before_v21::Guard::new();
+        let mut out = self.snapshot();
+        out[8..12].copy_from_slice(&TRAIT_COSTS_VERSION.to_le_bytes());
+        out
+    }
+
+    /// A world from [`World::snapshot`] bytes (or a version 10 to 20 snapshot's)
     /// and the terrain it names (`SnapshotHeader::terrain`), with its
     /// derived lookups rebuilt. Fails on another format version, a corrupt
     /// payload, or a missing or wrong terrain.
@@ -666,6 +691,7 @@ impl World {
         let _old18 = (h.version < BY_PARENTS_VERSION).then(crate::serde_util::before_v18::Guard::new);
         let _old19 = (h.version < WARM_COSTS_VERSION).then(crate::serde_util::before_v19::Guard::new);
         let _old20 = (h.version < TRAIT_COSTS_VERSION).then(crate::serde_util::before_v20::Guard::new);
+        let _old21 = (h.version < MORPH_EFFECTS_VERSION).then(crate::serde_util::before_v21::Guard::new);
         let body = &bytes[h.len()..];
         if fnv1a(body) != h.checksum {
             return Err(SnapshotError::Checksum);
@@ -715,6 +741,11 @@ impl World {
     /// Rebuild what snapshots skip.
     fn rebuild_derived(&mut self) {
         self.index = self.organisms.iter().enumerate().map(|(k, o)| (o.id, k)).collect();
+        // Body plan effects follow the restored config, as at birth.
+        let bal = self.config.balance;
+        for o in &mut self.organisms {
+            crate::morph_effects::apply(&mut o.traits, &o.pheno, &bal);
+        }
         self.grid = SpatialGrid::new(self.config.width, self.config.height, super::GRID_CELL);
         self.grid.rebuild(&self.organisms);
     }
