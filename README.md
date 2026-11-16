@@ -872,7 +872,8 @@ buckets 0–2 (small, medium, large) `eye_size`, `ear_size`, `tail_size`,
 `snout`, `fangs` (0 none, 1 small, 2 large; none below 0.1), plus
 `eye_azimuth` (0 forward under 35°, 2 side-set from 85°), sent only when it
 is not the default bucket 1, so default bodies' looks are unchanged (the
-client reads it but does not draw it yet). They come from
+client draws forward-set eyes at the front of the head, side-set ones high
+and back). They come from
 `Morphology::of`, the one function that reads them off the organism: its
 genome's expressed morphology (`Organism::morph`: counts, shapes, eye
 azimuth and snout from the morphology loci, sizes from the `Eyes`, `Ears`,
@@ -2137,7 +2138,9 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   morphology in `look` shows too: 0–8 legs, the near ear of each pair
   (round, as today, pointed, long or fan; round ears stay flush on
   cold-blooded and swimming bodies, as before), the near-side eyes plus a
-  midline one for odd counts (a lone eye big and frontal), a thin (today's),
+  midline one for odd counts (a lone eye big and frontal), placed forward
+  (near the snout, the far eye peeking past the near one: a predator's look)
+  or on the side (high and back on the head: a prey's look), a thin (today's),
   bushy, fin, club or curled prehensile tail or none, three snout lengths and
   small or large fangs; a look without those fields draws exactly the
   sprites from before morphology (a test hashes all 1,536 classes × stage
@@ -2148,7 +2151,7 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
 
   **Creature textures at scale.** Every morphology field is quantized (and
   what is not drawn, such as a swimmer's legs or an absent tail's length,
-  collapses to one value), so the key space is bounded: 324,000 morphology
+  collapses to one value), so the key space is bounded: 864,000 morphology
   variants per class and stage in theory, but a view holds what its
   organisms are, and organisms of a lineage mostly share a look. A
   simulated crowded view (300 organisms from 40 random lineages, each

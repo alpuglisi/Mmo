@@ -177,6 +177,27 @@ describe('avatar drawing', () => {
     expect(reach(0.9)).toBeGreaterThan(reach(0.1));
   });
 
+  it('places eyes by azimuth in side view: forward shows both near the snout, side sits high and back', () => {
+    const base = morph({});
+    // The eye highlights (one white dot per drawn eye), in drawing order.
+    const eyes = (eye_azimuth: number, eye_count = 2) =>
+      avatarDrawing({ ...base, eye_azimuth, eye_count }).shapes.filter((s) => s.part === 'head' && s.kind === 'ellipse' && s.fill === 0xffffff) as { x: number; y: number }[];
+    const [def] = eyes(60);
+    const fwd = eyes(15);
+    const [side] = eyes(110);
+    // Forward: the far eye shows too, further forward than the near one, and the near one is nearer the snout than by default.
+    expect(fwd).toHaveLength(2);
+    expect(fwd[0].x).toBeGreaterThan(fwd[1].x);
+    expect(fwd[1].x).toBeGreaterThan(def.x);
+    // Side: further back and higher.
+    expect(eyes(110)).toHaveLength(1);
+    expect(side.x).toBeLessThan(def.x);
+    expect(side.y).toBeLessThan(def.y);
+    // Only the pairs: a lone midline eye has no far partner.
+    expect(eyes(15, 1)).toHaveLength(1);
+    expect(eyes(15, 3)).toHaveLength(3);
+  });
+
   it('animates only when asked', () => {
     const m = morph({ tail: 0.6, wings: 0.8 });
     expect(avatarSvg(m, { animate: false })).not.toContain('<animate');

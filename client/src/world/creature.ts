@@ -24,7 +24,9 @@
 //   shaped round (today's ear), pointed, long or fan, in three
 //   sizes; round ears are flush on cold-blooded and swimming bodies, as today;
 // - eyes → the near-side eyes (one, a single midline eye, is bigger and more
-//   frontal), in three sizes;
+//   frontal), in three sizes; placement: forward-set eyes (predators) sit at
+//   the front of the head near the snout with the far eye peeking past the
+//   near one, side-set eyes (prey) high and back on the side of the head;
 // - tail → none, thin (today's tail for the body type), bushy, fin, club or a
 //   prehensile curl, in three lengths;
 // - snout → three lengths of the diet's muzzle or snout; fangs → none, small
@@ -49,6 +51,8 @@ export type Shape =
 export interface Morph {
   eyes: number;
   eyeSize: SizeBucket;
+  /** Eye placement: 0 forward-set, 1 the default, 2 side-set (`look.eye_azimuth`). */
+  eyeSet: SizeBucket;
   ears: number;
   earShape: EarShape;
   earSize: SizeBucket;
@@ -120,6 +124,7 @@ export function morphOf(l: Appearance): Morph {
   return {
     eyes: count(l.eyes, 1, 6, 2),
     eyeSize: bucket(l.eye_size, 1),
+    eyeSet: bucket(l.eye_azimuth, 1),
     ears: ears >= 3 ? 4 : ears >= 1 ? 2 : 0,
     earShape: EAR_SHAPES.includes(l.ear_shape as EarShape) ? (l.ear_shape as EarShape) : 'round',
     earSize: bucket(l.ear_size, 1),
@@ -146,6 +151,8 @@ export function visibleMorph(l: Appearance, far = false): Morph {
     m.earSize = 1;
   }
   if (m.tail === 'none') m.tailSize = 1;
+  // A single eye sits on the midline wherever the pairs would go.
+  if (m.eyes === 1) m.eyeSet = 1;
   return m;
 }
 
@@ -154,6 +161,8 @@ function classOf(l: Appearance): Appearance {
   return { size: l.size, diet: l.diet, warm: l.warm, locomotion: l.locomotion, cover: l.cover, coloring: l.coloring };
 }
 
+/** Eye placement in the key: nothing for the default, so default keys are unchanged. */
+const EYE_SET_CODE = ['f', '', 's'] as const;
 const TAIL_CODE: Record<TailLook, string> = { none: 'n', thin: 't', bushy: 'b', fin: 'f', club: 'c', prehensile: 'p' };
 
 /**
@@ -167,7 +176,7 @@ export function creatureKey(s: CreatureSpec): string {
   const cover = l.cover === 'scales' ? 'c' : l.cover[0];
   const m = visibleMorph(l, s.far);
   return `${l.size}${l.diet[0]}${l.warm ? 'w' : 'c'}${l.locomotion[0]}${cover}${l.coloring[0]}${s.juvenile ? 'j' : 'a'}`
-    + `-${m.eyes}${m.eyeSize}${m.ears}${m.earShape[0]}${m.earSize}${m.legs}${TAIL_CODE[m.tail]}${m.tailSize}${m.snout}${m.fangs}`;
+    + `-${m.eyes}${m.eyeSize}${EYE_SET_CODE[m.eyeSet]}${m.ears}${m.earShape[0]}${m.earSize}${m.legs}${TAIL_CODE[m.tail]}${m.tailSize}${m.snout}${m.fangs}`;
 }
 
 /** Marker scale for a zoom (pixels per tile): 1 at the default zoom, bigger zoomed in, smaller zoomed out. */
@@ -265,17 +274,25 @@ function earSlots(n: number): { dx: number; dy: number }[] {
   return n >= 4 ? [{ dx: -0.42, dy: 0.18 }, { dx: 0, dy: 0 }] : [{ dx: 0, dy: 0 }];
 }
 
+/** How far eye placement moves the paired eyes (head radii): forward, default, side. */
+const EYE_SET_SHIFT: readonly Point[] = [[0.2, -0.02], [0, 0], [-0.28, -0.24]];
+
 /**
  * Where the visible eyes sit on the head and their size relative to today's
  * eye (main eye first). Contract v1: an odd count has one eye on the midline
  * (on the forehead; alone, a big frontal eye), pairs further back show their
  * near eye higher and further back on the head.
  */
-function eyeSlots(n: number): { x: number; y: number; k: number }[] {
-  const main = { x: 0.25, y: -0.2, k: 1 };
-  const upper = { x: -0.12, y: -0.52, k: 0.75 };
-  const lower = { x: -0.3, y: -0.02, k: 0.7 };
-  const mid = { x: 0.52, y: -0.56, k: 0.75 };
+function eyeSlots(n: number, set: SizeBucket = 1): { x: number; y: number; k: number }[] {
+  // Placement moves the paired eyes: forward toward the snout, or to the
+  // side, higher and further back. The midline eye stays on the brow (a
+  // little higher and forward over forward-set pairs, to clear them).
+  const [dx, dy] = EYE_SET_SHIFT[set];
+  const pair = (x: number, y: number, k: number) => ({ x: x + dx, y: y + dy, k });
+  const main = pair(0.25, -0.2, 1);
+  const upper = pair(-0.12, -0.52, 0.75);
+  const lower = pair(-0.3, -0.02, 0.7);
+  const mid = set === 0 ? { x: 0.6, y: -0.66, k: 0.7 } : { x: 0.52, y: -0.56, k: 0.75 };
   switch (n) {
     case 1: return [{ x: 0.42, y: -0.3, k: 1.3 }];
     case 3: return [main, mid];
@@ -416,10 +433,19 @@ export function creatureShapes(s: CreatureSpec): Shape[] {
   }
   // Eyes (a brow over the main one on carnivores).
   const ek = EYE_SCALE[m.eyeSize];
-  eyeSlots(m.eyes).forEach((e, i) => {
+  eyeSlots(m.eyes, m.eyeSet).forEach((e, i) => {
     const ex = hx + headR * e.x;
     const ey = hy + headR * e.y;
     const er = headR * 0.32 * e.k * ek;
+    if (i === 0 && m.eyeSet === 0 && m.eyes >= 2) {
+      // Forward-set: the far eye of the front pair peeks over the bridge of
+      // the snout, ahead of and above the near one (binocular, predator look).
+      const fx = ex + er * 0.75;
+      const fy = ey - er * 0.8;
+      const fr = er * 0.72;
+      out.push({ kind: 'ellipse', x: fx, y: fy, rx: fr, ry: fr, fill: 0xffffff, part: 'eye' });
+      out.push({ kind: 'ellipse', x: fx + fr * 0.3, y: fy, rx: fr * 0.55, ry: fr * 0.55, fill: OUTLINE });
+    }
     out.push({ kind: 'ellipse', x: ex, y: ey, rx: er, ry: er, fill: 0xffffff, part: 'eye' });
     out.push({ kind: 'ellipse', x: ex + er * 0.25, y: ey, rx: er * 0.53125, ry: er * 0.53125, fill: OUTLINE });
     if (i === 0 && l.diet === 'carnivore') {

@@ -58,11 +58,11 @@ describe('appearance classes', () => {
     expect(hash(false, () => ({}))).toBe(BEFORE);
     // The contract defaults as a server sends them draw the same.
     const defaults = (l: Appearance): Partial<Appearance> => ({
-      eyes: 2, eye_size: 1, ears: 2, ear_shape: 'round', ear_size: 1, legs: 4, tail: 'thin', tail_size: 1, snout: 1, fangs: l.diet === 'carnivore' ? 1 : 0,
+      eyes: 2, eye_azimuth: 1, eye_size: 1, ears: 2, ear_shape: 'round', ear_size: 1, legs: 4, tail: 'thin', tail_size: 1, snout: 1, fangs: l.diet === 'carnivore' ? 1 : 0,
     });
     expect(hash(false, defaults)).toBe(BEFORE);
     // Far detail ignores the morphology: the class sprite.
-    expect(hash(true, () => ({ eyes: 6, ears: 4, ear_shape: 'long', legs: 8, tail: 'club', tail_size: 2, snout: 2, fangs: 2 }))).toBe(BEFORE);
+    expect(hash(true, () => ({ eyes: 6, eye_azimuth: 0, ears: 4, ear_shape: 'long', legs: 8, tail: 'club', tail_size: 2, snout: 2, fangs: 2 }))).toBe(BEFORE);
   });
 
   it('reads the look from an organism, with a default for older servers and juveniles from `matured`', () => {
@@ -118,7 +118,7 @@ function morphLooks(): Appearance[] {
     {}, { warm: false, cover: 'scales', diet: 'carnivore' }, { locomotion: 'swim', warm: false }, { locomotion: 'fly', size: 0 }, { size: 3, diet: 'omnivore', cover: 'armor' },
   ];
   const morphs: Partial<Appearance>[] = [];
-  for (const eyes of [1, 2, 3, 4, 5, 6]) for (const eye_size of [0, 1, 2] as const) morphs.push({ eyes, eye_size });
+  for (const eyes of [1, 2, 3, 4, 5, 6]) for (const eye_size of [0, 1, 2] as const) for (const eye_azimuth of [0, 1, 2] as const) morphs.push({ eyes, eye_size, eye_azimuth });
   for (const ears of [0, 2, 4]) for (const ear_shape of EAR_SHAPES) for (const ear_size of [0, 1, 2] as const) morphs.push({ ears, ear_shape, ear_size });
   for (const legs of [0, 2, 4, 6, 8]) morphs.push({ legs });
   for (const tail of TAIL_LOOKS) for (const tail_size of [0, 1, 2] as const) morphs.push({ tail, tail_size });
@@ -133,10 +133,10 @@ describe('morphology', () => {
     JSON.stringify(creatureShapes(adult({ ...body, ...a }))) !== JSON.stringify(creatureShapes(adult({ ...body, ...b })));
 
   it('fills defaults for older servers and clamps values from the wire', () => {
-    expect(morphOf(DEFAULT_LOOK)).toEqual({ eyes: 2, eyeSize: 1, ears: 2, earShape: 'round', earSize: 1, legs: 4, tail: 'thin', tailSize: 1, snout: 1, fangs: 0 });
+    expect(morphOf(DEFAULT_LOOK)).toEqual({ eyes: 2, eyeSize: 1, eyeSet: 1, ears: 2, earShape: 'round', earSize: 1, legs: 4, tail: 'thin', tailSize: 1, snout: 1, fangs: 0 });
     expect(morphOf(look({ diet: 'carnivore' })).fangs).toBe(1);
-    const odd = morphOf(look({ eyes: 40, ears: 3, legs: 5, tail: 'spiky' as never, ear_shape: 'x' as never, snout: 9 as never, fangs: -2 as never, eye_size: 1.4 as never }));
-    expect(odd).toMatchObject({ eyes: 6, ears: 4, legs: 4, tail: 'thin', earShape: 'round', snout: 2, fangs: 0, eyeSize: 1 });
+    const odd = morphOf(look({ eyes: 40, ears: 3, legs: 5, tail: 'spiky' as never, ear_shape: 'x' as never, snout: 9 as never, fangs: -2 as never, eye_size: 1.4 as never, eye_azimuth: 7 as never }));
+    expect(odd).toMatchObject({ eyeSet: 2, eyes: 6, ears: 4, legs: 4, tail: 'thin', earShape: 'round', snout: 2, fangs: 0, eyeSize: 1 });
     expect(morphOf(look({ ears: 1 })).ears).toBe(2);
     expect(morphOf(look({ legs: 7 })).legs).toBe(6);
   });
@@ -158,6 +158,40 @@ describe('morphology', () => {
     const eye = (eye_size: 0 | 1 | 2) => creatureShapes(adult({ eye_size })).find((x) => x.part === 'eye') as { rx: number };
     expect(eye(0).rx).toBeLessThan(eye(1).rx);
     expect(eye(2).rx).toBeGreaterThan(eye(1).rx);
+  });
+
+  it('places eyes forward (near the snout, both visible) or on the side (high and back)', () => {
+    const eyes = (over: Partial<Appearance>) => creatureShapes(adult(over)).filter((x) => x.part === 'eye') as { x: number; y: number; rx: number }[];
+    for (const body of [{}, { diet: 'carnivore' as const }, { warm: false, cover: 'scales' as const }, { locomotion: 'swim' as const }]) {
+      for (const n of [2, 3, 4, 5, 6]) {
+        const tag = `${JSON.stringify(body)} ${n} eyes`;
+        const def = eyes({ ...body, eyes: n });
+        const fwd = eyes({ ...body, eyes: n, eye_azimuth: 0 });
+        const side = eyes({ ...body, eyes: n, eye_azimuth: 2 });
+        // Forward: the far eye shows too, ahead of the near one.
+        expect(fwd.length, tag).toBe(def.length + 1);
+        // (Drawn back to front: the far eye, then the near one over it.)
+        const [far, near] = fwd;
+        expect(near.x, tag).toBeGreaterThan(def[0].x);
+        expect(far.x, tag).toBeGreaterThan(near.x);
+        expect(far.rx, tag).toBeLessThan(near.rx);
+        // Side: the main eye sits higher and further back.
+        expect(side.length, tag).toBe(def.length);
+        expect(side[0].x, tag).toBeLessThan(def[0].x);
+        expect(side[0].y, tag).toBeLessThan(def[0].y);
+        expect(differs({ eyes: n, eye_azimuth: 0 }, { eyes: n }, body), tag).toBe(true);
+        expect(differs({ eyes: n, eye_azimuth: 2 }, { eyes: n }, body), tag).toBe(true);
+      }
+    }
+    // The default bucket as sent draws (and keys) as when absent; one eye has no placement.
+    expect(differs({ eye_azimuth: 1 }, {})).toBe(false);
+    expect(creatureKey(adult({ eye_azimuth: 1 }))).toBe(creatureKey(adult()));
+    expect(differs({ eyes: 1, eye_azimuth: 0 }, { eyes: 1 })).toBe(false);
+    expect(creatureKey(adult({ eyes: 1, eye_azimuth: 2 }))).toBe(creatureKey(adult({ eyes: 1 })));
+    // Placement gets its own key, and far detail ignores it.
+    const keys = new Set([0, 1, 2].map((eye_azimuth) => creatureKey(adult({ eye_azimuth: eye_azimuth as 0 | 1 | 2 }))));
+    expect(keys.size).toBe(3);
+    expect(creatureKey({ ...adult({ eye_azimuth: 0 }), far: true })).toBe(creatureKey(adult()));
   });
 
   it('changes the drawing for every ear shape, tail shape and size bucket', () => {
@@ -212,12 +246,13 @@ describe('morphology', () => {
 
   it('bounds the number of keys', () => {
     // Every field quantized: per class and stage at most
-    // 6 eyes × 3 sizes × (1 + 2 counts × 4 shapes × 3 sizes) ears × 5 legs × (1 + 5 × 3) tails × 3 snouts × 3 fangs.
-    const perClass = 6 * 3 * (1 + 2 * 4 * 3) * 5 * (1 + 5 * 3) * 3 * 3;
-    expect(perClass).toBe(324000);
+    // (1 + 5 placed × 3 placements) eye counts × 3 sizes × (1 + 2 counts × 4 shapes × 3 sizes) ears × 5 legs × (1 + 5 × 3) tails × 3 snouts × 3 fangs.
+    const perClass = (1 + 5 * 3) * 3 * (1 + 2 * 4 * 3) * 5 * (1 + 5 * 3) * 3 * 3;
+    expect(perClass).toBe(864000);
     // Any wire value maps into those values.
     for (const v of [-5, 0.4, 2.6, 100, NaN]) {
-      const m = morphOf(look({ eyes: v, ears: v, legs: v, eye_size: v as never, snout: v as never }));
+      const m = morphOf(look({ eyes: v, ears: v, legs: v, eye_size: v as never, eye_azimuth: v as never, snout: v as never }));
+      expect([0, 1, 2]).toContain(m.eyeSet);
       expect([1, 2, 3, 4, 5, 6]).toContain(m.eyes);
       expect([0, 2, 4]).toContain(m.ears);
       expect([0, 2, 4, 6, 8]).toContain(m.legs);

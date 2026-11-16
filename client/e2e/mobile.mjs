@@ -87,10 +87,10 @@ async function register(page, base, name, lineage, onDesign = async () => {}) {
 }
 
 /** A screenshot, retried: a freshly loaded emulated-mobile page can refuse the first capture. */
-async function shot(page, name) {
+async function shot(page, name, clip) {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await page.screenshot({ path: path.join(shots, name) });
+      return await page.screenshot({ path: path.join(shots, name), ...(clip ? { clip } : {}) });
     } catch (e) {
       if (attempt >= 3) throw e;
       await page.waitForTimeout(500);
@@ -540,7 +540,10 @@ async function desktopChecks(browser, base, errors) {
   await page.evaluate(() => window.__gallery.destroy({ children: true }));
   step(`sprite gallery: ${gallery.textures} textures cached`);
 
-  // Morphology variants (legs, ears, eyes, tails, snouts and fangs, and a few
+  // A taller window, so every gallery row clears the map legend.
+  await page.setViewportSize({ width: 1280, height: 1040 });
+  await page.waitForTimeout(300);
+  // Morphology variants (legs, ears, eyes and their placement, tails, snouts and fangs, and a few
   // combinations), labelled, with the time to generate each texture.
   const morph = await page.evaluate(() => {
     const v = window.evo.screen().view;
@@ -563,6 +566,18 @@ async function desktopChecks(browser, base, errors) {
       ['eyes', [
         ['1 eye', { eyes: 1 }], ['2 eyes', { eyes: 2 }], ['3 eyes', { eyes: 3 }], ['4 eyes', { eyes: 4 }], ['5 eyes', { eyes: 5 }], ['6 eyes', { eyes: 6 }], ['2 large', { eye_size: 2 }],
       ]],
+      // Eye placement (look.eye_azimuth): forward-set (0) near the snout with
+      // the far eye showing, side-set (2) high and back on the head.
+      ['eyes fwd', [
+        ['2 eyes', { eye_azimuth: 0 }], ['carn', { diet: 'carnivore', eye_azimuth: 0 }], ['carn L', { diet: 'carnivore', eye_size: 2, eye_azimuth: 0 }],
+        ['3 eyes', { eyes: 3, eye_azimuth: 0 }], ['4 eyes', { eyes: 4, eye_azimuth: 0 }], ['6 eyes', { eyes: 6, eye_azimuth: 0 }],
+        ['cold carn', { ...cold, diet: 'carnivore', eye_azimuth: 0 }],
+      ]],
+      ['eyes side', [
+        ['2 eyes', { eye_azimuth: 2 }], ['2 large', { eye_size: 2, eye_azimuth: 2 }], ['omni', { diet: 'omnivore', eye_azimuth: 2 }],
+        ['3 eyes', { eyes: 3, eye_azimuth: 2 }], ['4 eyes', { eyes: 4, eye_azimuth: 2 }], ['6 eyes', { eyes: 6, eye_azimuth: 2 }],
+        ['cold', { ...cold, eye_azimuth: 2 }],
+      ]],
       ['tails', [
         ['none', { tail: 'none' }], ['thin L', { tail_size: 2 }], ['bushy', { tail: 'bushy' }], ['fin', { tail: 'fin' }], ['club', { tail: 'club' }], ['prehensile', { tail: 'prehensile', tail_size: 2 }],
         ['cold club L', { ...cold, tail: 'club', tail_size: 2 }],
@@ -581,9 +596,9 @@ async function desktopChecks(browser, base, errors) {
         ['fish', { locomotion: 'swim', warm: false, cover: 'scales', tail: 'fin', tail_size: 2, eyes: 1, eye_size: 2, coloring: 'camo' }],
       ]],
     ];
-    const cell = 92;
     const left = 120;
     const top = 58;
+    const cell = 92;
     const x0 = 16;
     const cols = Math.max(...rows.map((r) => r[1].length));
     bg.rect(x0, top, left + cell * cols, cell * rows.length + 16).fill({ color: 0x0d1117, alpha: 0.92 });
@@ -628,13 +643,26 @@ async function desktopChecks(browser, base, errors) {
       sprites.body({ look: { ...base, size: i % 4, eyes: 1 + (i % 6), legs: [0, 2, 4, 6, 8][i % 5], tail: ['thin', 'bushy', 'fin', 'club', 'prehensile'][Math.floor(i / 6) % 5], snout: Math.floor(i / 30) % 3 }, juvenile: false });
     }
     const burst = v.spriteStats();
+    const eyeRow = rows.findIndex((r) => r[0] === 'eyes');
     return {
+      eyes: { y: top + eyeRow * cell, x: x0 + left, w: cell * 4, h: cell * 3 + 16, canvasLeft: canvas.left, canvasTop: canvas.top, canvasW: canvas.width },
       shown: rows.reduce((n, r) => n + r[1].length, 0), made: after.made - before.made, ms,
       burstMade: burst.made - made0, burstMs: performance.now() - t1, maxMakeMs: burst.maxMakeMs, textures: burst.textures, evicted: burst.evicted, bytes: burst.bytes,
     };
   });
   await page.waitForTimeout(200);
   await shot(page, 'desktop-morphology-gallery.png');
+  // The eye rows close up (count, forward-set, side-set; their first four
+  // columns), magnified, without the labels.
+  const eyesClip = await page.evaluate((e) => {
+    const k = Math.min(2.5, (e.canvasW - 16) / e.w);
+    document.getElementById('morph-labels').style.display = 'none';
+    window.__morph.scale.set(k);
+    window.__morph.position.set(8 - e.x * k, 8 - e.y * k);
+    return { x: e.canvasLeft, y: e.canvasTop, width: Math.ceil(e.w * k) + 16, height: Math.ceil(e.h * k) + 16 };
+  }, morph.eyes);
+  await page.waitForTimeout(200);
+  await shot(page, 'desktop-morphology-eyes.png', eyesClip);
   await page.evaluate(() => { window.__morph.destroy({ children: true }); document.getElementById('morph-labels')?.remove(); });
   const per = (ms, n) => (n ? (ms / n).toFixed(2) : '-');
   step(`morphology gallery: ${morph.shown} variants, ${morph.made} new textures, ${per(morph.ms, morph.made)} ms each`);
