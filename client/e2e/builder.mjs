@@ -8,7 +8,8 @@
 // one; undo / redo; a long snout hides depth; a preset sees all round; reset.
 // The page never scrolls sideways and every handle is a 44 px target.
 // Desktop also checks the keyboard: arrows move an eye, + / − add and remove.
-// Screenshots: e2e/out/builder-*.png.
+// Then the art library's reference creatures (`?builder=gallery`).
+// Screenshots: e2e/out/builder-*.png, e2e/out/gallery-*.png.
 //
 //   npm run build && node e2e/builder.mjs     (env as for smoke.mjs)
 
@@ -225,10 +226,12 @@ async function run(browser, base, tag, contextOpts, touch) {
 
   // A long snout hides part of the depth zone.
   const depthBefore = (await state(page)).depth;
-  const snout = await center(page, '#bb-h-snout');
-  const snoutEnd = await toScreen(page, 'bb-side', 212 + 58 + 6, 76);
   await page.locator('#bb-h-snout').scrollIntoViewIfNeeded();
-  await drag(page, cdp, await center(page, '#bb-h-snout'), { x: snoutEnd.x + (await center(page, '#bb-h-snout')).x - snout.x, y: (await center(page, '#bb-h-snout')).y });
+  // The snout's track (the first one drawn in the side view) runs from the snout tip at 0 to the tip at 1:
+  // drag the knob past its far end (the drawing's geometry comes from the art library).
+  const snoutTrack = await page.$eval('#bb-side .bb-track', (l) => ({ x1: +l.getAttribute('x1'), y1: +l.getAttribute('y1'), x2: +l.getAttribute('x2'), y2: +l.getAttribute('y2') }));
+  const snoutEnd = await toScreen(page, 'bb-side', snoutTrack.x2 + (snoutTrack.x2 - snoutTrack.x1) * 0.15, snoutTrack.y2 + (snoutTrack.y2 - snoutTrack.y1) * 0.15);
+  await drag(page, cdp, await center(page, '#bb-h-snout'), snoutEnd);
   s = await waitFor('a long snout', async () => {
     const st = await state(page);
     return st.value.snout_length >= 0.95 ? st : null;
@@ -248,6 +251,14 @@ async function run(browser, base, tag, contextOpts, touch) {
     return st.value.leg_count === 6 && st.value.tail_present && st.value.tail_shape === 'bushy' && st.value.ear_shape === 'pointed' && st.value.leg_length === 1 ? st : null;
   }, UI_MS);
   step(`${tag}: 6 legs, bushy tail, pointed ears, legs dragged to full length`);
+  // The side view is the art library's creature, and every knob sits on the tip it sizes.
+  const side = await page.evaluate(() => {
+    const svg = document.getElementById('bb-side');
+    const parts = [...svg.querySelectorAll('.bb-creature [data-part]')].map((g) => g.getAttribute('data-part'));
+    return { parts, ids: [...document.querySelectorAll('[id]')].map((e) => e.id) };
+  });
+  check(side.parts.includes('body') && side.parts.includes('tail') && side.parts.includes('legs-far'), `${tag}: side view drawn by the art library`, side.parts);
+  check(new Set(side.ids).size === side.ids.length, `${tag}: duplicate ids on the page`);
   await page.screenshot({ path: path.join(shots, `builder-${tag}-body.png`), fullPage: true });
 
   // A preset that sees all round, then reset.
@@ -265,6 +276,19 @@ async function run(browser, base, tag, contextOpts, touch) {
     return st.value.eye_count === 2 && st.rear === 100 ? st : null;
   }, UI_MS);
   step(`${tag}: watcher preset sees all round; reset back to the default`);
+
+  // The art library's reference creatures (`?builder=gallery`), for review.
+  await page.goto(`${base}/?builder=gallery&tour=off`);
+  await page.waitForSelector('#avatar-gallery .gallery-card', { timeout: UI_MS });
+  const gallery = await page.evaluate(() => [...document.querySelectorAll('.gallery-card')].map((c) => ({
+    id: c.dataset.creature, svg: c.querySelector('.avatar-figure svg') !== null, caption: c.querySelector('.avatar-caption').textContent,
+    docW: document.documentElement.scrollWidth, vw: document.documentElement.clientWidth,
+  })));
+  check(gallery.length >= 12 && gallery.every((g) => g.svg && g.caption.includes('-blooded')), `${tag}: gallery`, gallery);
+  check(gallery[0].docW <= gallery[0].vw + 1, `${tag}: gallery scrolls sideways`);
+  check(gallery.find((g) => g.id === 'feathered').caption.includes(' feathers '), `${tag}: feathered caption`, gallery);
+  await page.screenshot({ path: path.join(shots, `gallery-${tag}.png`), fullPage: true });
+  step(`${tag}: gallery of ${gallery.length} reference creatures`);
 
   check(errors.length === 0, `${tag}: page errors`, errors);
   await context.close();

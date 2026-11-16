@@ -241,6 +241,15 @@ export interface Palette {
   accent: number;
 }
 
+/**
+ * How far a fur coat reaches beyond the body, as a fraction of its size: the
+ * world sprite's fringe, and the founder avatar's pelt at the fur threshold
+ * (avatar.ts `furReach`), so a furred body reads as fur in both. The covering
+ * itself is `Appearance.cover` (appearance.rs), which the caption
+ * (`describeLook`) names: one class for the words and both drawings.
+ */
+export const FUR_FRINGE = 0.18;
+
 export function palette(l: Appearance): Palette {
   switch (l.coloring) {
     case 'camo':
@@ -353,7 +362,7 @@ export function creatureShapes(s: CreatureSpec): Shape[] {
     const pts: Point[] = [];
     for (let i = 0; i < n * 2; i++) {
       const a = (i / (n * 2)) * Math.PI * 2;
-      const k = i % 2 === 0 ? 1.18 : 1.0;
+      const k = i % 2 === 0 ? 1 + FUR_FRINGE : 1.0;
       pts.push([Math.cos(a) * rx * k, Math.sin(a) * ry * k]);
     }
     out.push({ kind: 'poly', points: pts, fill: p.dark, stroke: OUTLINE, width: 0.6 });

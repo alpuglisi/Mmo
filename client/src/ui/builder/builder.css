@@ -47,14 +47,8 @@
 .bb-hint { margin: 4px 0 0; }
 
 /* drawings */
-.bb-head, .bb-bodyshape, .bb-snout, .bb-ear, .bb-leg, .bb-foot { fill: var(--bb-skin); stroke: #5c4632; stroke-width: 1; }
-.bb-ear.bb-far, .bb-leg.bb-far, .bb-foot.bb-far { fill: var(--bb-skin-far); }
-.bb-leg { fill: none; stroke: var(--bb-skin); stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }
-.bb-leg.bb-far { stroke: var(--bb-skin-far); }
-.bb-tail { color: var(--bb-skin); }
-.bb-nose { fill: #2b1d12; }
-.bb-side-eye { fill: #111; stroke: #fff; stroke-width: 0.8; }
-.bb-fang { fill: #f0ead6; stroke: #8a8270; stroke-width: 0.6; }
+/* The side view's creature is drawn by the art library, in its own colours. */
+.bb-creature { pointer-events: none; }
 .bb-ground { stroke: var(--border); stroke-width: 1.5; }
 .bb-track { stroke: var(--bb-handle); stroke-opacity: 0.35; stroke-width: 1; stroke-dasharray: 2 3; }
 
@@ -72,3 +66,7 @@
 .bb-harness-page #app, .bb-harness-page .screen { height: auto; min-height: 100%; }
 .bb-harness-body { padding: 12px; min-width: 0; }
 .bb-json { white-space: pre-wrap; word-break: break-all; margin-top: 12px; }
+.gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; padding: 12px; }
+.gallery-card h3 { margin: 0 0 4px; font-size: 1em; }
+.gallery-card .avatar-figure svg { display: block; width: 100%; height: auto; }
+.gallery-sprites { display: flex; gap: 8px; align-items: flex-end; }

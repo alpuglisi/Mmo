@@ -26,6 +26,10 @@
 
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; height: 100%; }
+/* No browser tap highlight (Android Chrome paints a teal box over a tapped
+   control, above every layer, so it showed through the sticky founder
+   preview while the editor scrolled). Buttons give their own press feedback. */
+html { -webkit-tap-highlight-color: transparent; }
 body { background: var(--bg); overflow: hidden; }
 h1, h2, h3, h4 { margin: 0 0 0.5em; font-weight: 600; }
 h1 { font-size: 1.6rem; }
@@ -52,6 +56,7 @@ button {
   cursor: pointer;
 }
 button:hover:not(:disabled) { filter: brightness(1.12); }
+button:active:not(:disabled) { filter: brightness(0.88); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 button.secondary { background: var(--panel-2); border-color: var(--border); color: var(--text); }
 button.accept { background: #238636; }
