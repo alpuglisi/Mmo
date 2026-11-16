@@ -214,7 +214,7 @@ async function run(browser, base, tag, contextOpts, touch) {
     await page.keyboard.press('-');
     check((await state(page)).value.eye_count === 3, `${tag}: - removes an eye`);
     const vt = await page.getAttribute('#bb-h-eye-1', 'aria-valuetext');
-    check(/view, .*depth/.test(vt), `${tag}: aria-valuetext`, vt);
+    check(/around, .*depth/.test(vt), `${tag}: aria-valuetext`, vt);
     // Keyboard on a side-view handle: + / − add a pair of ears.
     await page.focus('#bb-h-ears');
     await page.keyboard.press('+');

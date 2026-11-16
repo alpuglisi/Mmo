@@ -1,0 +1,101 @@
+/* The body builder's eye view (eyeView.ts). Colours are custom properties:
+   the vision palette (--vision-*, style.css :root) is shared with the map's
+   vision cones and legend; the rest default to the builder's. */
+.ev {
+  --ev-seen: var(--vision-seen, #58a6ff);
+  --ev-seen-text: var(--vision-seen-text, #79c0ff);
+  --ev-depth: var(--vision-depth, #3fb950);
+  --ev-depth-text: var(--vision-depth-text, #56d364);
+  --ev-blind: var(--vision-blind, #8b949e);
+  --ev-skin: var(--bb-skin, #b08968);
+  --ev-skin-edge: #5c4632;
+  --ev-nose: #2b1d12;
+  --ev-eye-white: #f6f8fa;
+  --ev-iris: #3a7bd5;
+  --ev-pupil: #0d1117;
+  --ev-handle: var(--bb-handle, #ffd33d);
+  --ev-ink: var(--text, #e6edf3);
+  --ev-paper: var(--panel, #161b22);
+  max-width: 400px;
+}
+.ev-ground { fill: color-mix(in srgb, var(--ev-ink) 4%, transparent); }
+.ev-rim { fill: none; stroke: var(--border); stroke-width: 1; }
+.ev-body { fill: var(--ev-skin); fill-opacity: 0.45; stroke: var(--ev-skin-edge); stroke-opacity: 0.5; stroke-width: 1; }
+
+/* Each eye's view: its own translucent wedge; crossings read darker. */
+.ev-field { fill: var(--ev-seen); fill-opacity: 0.2; }
+.ev-field-edge { fill: none; stroke: var(--ev-seen); stroke-opacity: 0.7; stroke-width: 1; stroke-linejoin: round; }
+
+/* Depth vision: green and dotted. */
+.ev-depth-fill { fill: color-mix(in srgb, var(--ev-depth) 48%, var(--ev-paper)); }
+.ev-dots-dot { fill: color-mix(in srgb, var(--ev-depth) 70%, white); }
+.ev-depth-rim { fill: none; stroke: var(--ev-depth); stroke-width: 3; stroke-linecap: round; }
+
+/* Blind spots: greyed and hatched, with the eye-slash icon. */
+.ev-hatch-bg { fill: var(--ev-blind); fill-opacity: 0.2; }
+.ev-hatch-line { stroke: var(--ev-blind); stroke-opacity: 0.55; stroke-width: 1.3; }
+.ev-blind-icon-bg { fill: var(--ev-paper); fill-opacity: 0.85; stroke: var(--ev-blind); stroke-width: 1.2; }
+.ev-blind-icon-eye { fill: none; stroke: var(--ev-ink); stroke-width: 1.8; stroke-linejoin: round; }
+.ev-blind-icon-pupil { fill: var(--ev-ink); }
+.ev-blind-icon-slash { stroke: var(--ev-ink); stroke-width: 2.4; stroke-linecap: round; }
+/* What a long snout hides of the depth zone. */
+.ev-occluded { fill: color-mix(in srgb, var(--ev-paper) 70%, transparent); stroke: var(--ev-blind); stroke-width: 0.8; stroke-dasharray: 2 2; }
+
+/* The head from above. */
+.ev-head { fill: var(--ev-skin); stroke: var(--ev-skin-edge); stroke-width: 1.2; }
+.ev-nose { fill: var(--ev-nose); }
+.ev-eye-white { fill: var(--ev-eye-white); stroke: #1b1f24; stroke-width: 0.9; }
+.ev-eye-iris { fill: var(--ev-iris); }
+.ev-eye-pupil { fill: var(--ev-pupil); }
+.ev-eye-glint { fill: #fff; }
+
+/* Labels: the zone's name, then its numbers, in the zone's colour. */
+.ev-label { font-size: 10.5px; font-weight: 700; paint-order: stroke; stroke: var(--ev-paper); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
+.ev-label-value { font-size: 9.5px; font-weight: 500; }
+.ev-label-small { font-size: 9px; }
+.ev-label-note { font-size: 8.5px; font-weight: 500; fill: var(--muted); }
+.ev-label-seen { fill: var(--ev-seen-text); }
+.ev-label-depth { fill: var(--ev-depth-text); }
+.ev-label-blind { fill: var(--ev-ink); }
+.ev-label-blind .ev-label-value, .ev-label-none { fill: var(--muted); }
+.ev-label-good { fill: var(--ev-depth-text); }
+
+/* Drag affordances: the width knob rides the outer edge of the right eye's view. */
+.ev-edge-track { stroke: var(--ev-handle); stroke-opacity: 0.85; stroke-width: 1.4; stroke-dasharray: 4 3; }
+.ev-arrow-line { fill: none; stroke: var(--ev-handle); stroke-width: 1.6; stroke-linecap: round; }
+.ev-arrow-head { fill: var(--ev-handle); }
+.ev-arrow-eye .ev-arrow-line { stroke: var(--ev-ink); stroke-width: 1.8; }
+.ev-arrow-eye .ev-arrow-head { fill: var(--ev-ink); }
+/* An eye's handle is a ring round the drawn eye, solid when held or focused. */
+.ev .bb-handle[data-feature='eyes']:not([data-handle='eye-size']) .bb-knob { fill: transparent; stroke: var(--ev-ink); stroke-opacity: 0.8; stroke-width: 1.3; stroke-dasharray: 3 2.4; }
+.ev .bb-handle[data-feature='eyes'].bb-fixed .bb-knob { stroke-opacity: 0; }
+.ev .bb-handle[data-feature='eyes']:not([data-handle='eye-size']):is(:hover, :focus-visible, .bb-dragging) .bb-knob { stroke: var(--ev-handle); stroke-opacity: 1; stroke-width: 2; stroke-dasharray: none; }
+.ev .bb-handle[data-handle='eye-size'] .bb-knob { stroke-width: 1.5; }
+/* The held (or focused) eye's own view stands out. */
+.ev:has(.bb-handle[data-handle='eye-0']:is(:hover, :focus-visible, .bb-dragging)) .ev-field[data-eye='0'] { fill-opacity: 0.34; }
+.ev:has(.bb-handle[data-handle='eye-0']:is(:hover, :focus-visible, .bb-dragging)) .ev-field-edge[data-eye='0'] { stroke-width: 2.2; stroke-opacity: 1; }
+.ev:has(.bb-handle[data-handle='eye-1']:is(:hover, :focus-visible, .bb-dragging)) .ev-field[data-eye='1'] { fill-opacity: 0.34; }
+.ev:has(.bb-handle[data-handle='eye-1']:is(:hover, :focus-visible, .bb-dragging)) .ev-field-edge[data-eye='1'] { stroke-width: 2.2; stroke-opacity: 1; }
+.ev:has(.bb-handle[data-handle='eye-2']:is(:hover, :focus-visible, .bb-dragging)) .ev-field[data-eye='2'] { fill-opacity: 0.34; }
+.ev:has(.bb-handle[data-handle='eye-2']:is(:hover, :focus-visible, .bb-dragging)) .ev-field-edge[data-eye='2'] { stroke-width: 2.2; stroke-opacity: 1; }
+.ev:has(.bb-handle[data-handle='eye-3']:is(:hover, :focus-visible, .bb-dragging)) .ev-field[data-eye='3'] { fill-opacity: 0.34; }
+.ev:has(.bb-handle[data-handle='eye-3']:is(:hover, :focus-visible, .bb-dragging)) .ev-field-edge[data-eye='3'] { stroke-width: 2.2; stroke-opacity: 1; }
+.ev:has(.bb-handle[data-handle='eye-4']:is(:hover, :focus-visible, .bb-dragging)) .ev-field[data-eye='4'] { fill-opacity: 0.34; }
+.ev:has(.bb-handle[data-handle='eye-4']:is(:hover, :focus-visible, .bb-dragging)) .ev-field-edge[data-eye='4'] { stroke-width: 2.2; stroke-opacity: 1; }
+.ev:has(.bb-handle[data-handle='eye-5']:is(:hover, :focus-visible, .bb-dragging)) .ev-field[data-eye='5'] { fill-opacity: 0.34; }
+.ev:has(.bb-handle[data-handle='eye-5']:is(:hover, :focus-visible, .bb-dragging)) .ev-field-edge[data-eye='5'] { stroke-width: 2.2; stroke-opacity: 1; }
+.ev:has(.bb-handle[data-handle='eye-size']:is(:hover, :focus-visible, .bb-dragging)) .ev-field-edge { stroke-width: 2; stroke-opacity: 1; }
+
+/* First use: a ghost finger slides the right eye along the head. */
+.ev-hint { animation: ev-hint-life 18s ease forwards; pointer-events: none; }
+.ev-hint-track { fill: none; stroke: var(--ev-ink); stroke-opacity: 0.5; stroke-width: 7; stroke-linecap: round; }
+.ev-hint-finger { fill: var(--ev-handle); fill-opacity: 0.45; stroke: var(--ev-handle); stroke-width: 1.6; }
+.ev-hint-pill { fill: var(--ev-handle); }
+.ev-hint-text { font-size: 9.5px; font-weight: 700; fill: #1b1f24; }
+@keyframes ev-hint-life { 0% { opacity: 0; } 4% { opacity: 1; } 92% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .ev-hint { animation: none; }
+  .ev-hint-finger { display: none; }
+}
+
+.ev-legend { justify-content: center; margin: 0 0 4px; }

@@ -8,14 +8,19 @@
 // world coordinates run. An eye at head azimuth `a` (0 ahead, +90 right) on
 // an animal facing `h` looks along `h + a`: facing east, its right is south.
 //
-// The style follows the founder builder (`ui/builder/builder.ts`): the area
-// any eye sees is a light fill, the binocular depth zone in front is green
-// and dotted, blind spots are red and hatched, each eye's field a dashed
-// outline. Patterns as well as colours, so the zones read without colour.
+// The style follows the body builder's eye view (`ui/builder/eyeView.ts`):
+// each eye's field is a translucent blue wedge (crossings read darker) with
+// a dashed blue outline, the binocular depth zone in front is green and
+// dotted, blind spots are greyed and hatched. Patterns as well as colours,
+// so the zones read without colour. The colours are `VISION_COLORS`, the
+// same as the `--vision-*` custom properties in style.css (the legend).
 
 import type { VisionView } from '../protocol';
 import { eyePlacements } from '../morphology';
 import { analyseVision, type Arc, type EyeField, type VisionStats } from '../vision';
+
+/** The vision palette (mirrors `--vision-seen` / `--vision-depth` / `--vision-blind` in style.css). */
+export const VISION_COLORS = { seen: 0x58a6ff, depth: 0x3fb950, blind: 0x8b949e } as const;
 
 /** Directions a server heading is quantized to (`vision::HEADINGS`). */
 export const HEADINGS = 32;

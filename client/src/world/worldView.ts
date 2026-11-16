@@ -34,7 +34,7 @@ import { OWN_COLOR, ownerColor } from './colors';
 import { groupColor, groupsOf, homeRangeGroup, type TerritoryDraft } from '../groups';
 import { paintTerrain, type TerrainGrid } from './terrain';
 import { isOpenGround, newTrack, Predictor, RECONCILE_SNAP, RECONCILE_TAU_MS, retarget, smoothToward, TickClock, trackAt, type Point, type Track } from './motion';
-import { arcPoints, coneLayout, dotGrid, easeAngle, facingOf, hatchSegments, headingDeg, wedgePolygon, type ConeLayout } from './visionCones';
+import { arcPoints, coneLayout, dotGrid, easeAngle, facingOf, hatchSegments, headingDeg, VISION_COLORS, wedgePolygon, type ConeLayout } from './visionCones';
 
 export interface Camera {
   /** World point (tiles) at the center of the screen. */
@@ -99,10 +99,10 @@ export interface VisionInfo {
   y: number;
 }
 
-/** Cone colours, after the founder builder's (`builder.css`). */
-const CONE_COVER = 0x8b949e;
-const CONE_DEPTH = 0x3fb950;
-const CONE_BLIND = 0xf85149;
+/** Cone colours: the builder's eye view and the legend use the same (`VISION_COLORS`). */
+const CONE_SEEN = VISION_COLORS.seen;
+const CONE_DEPTH = VISION_COLORS.depth;
+const CONE_BLIND = VISION_COLORS.blind;
 /** Easing time constant of the drawn heading toward the server's (ms). */
 const TURN_TAU_MS = 140;
 
@@ -823,18 +823,19 @@ export class WorldView {
 
 /** Draw the cones of `l` around a screen point; returns the hatch strokes and dots drawn. */
 function drawCones(g: Graphics, cx: number, cy: number, r: number, l: ConeLayout): { hatch: number; dots: number } {
-  // Any eye: a light fill and a faint rim.
-  for (const w of l.covered) g.poly(wedgePolygon(cx, cy, r, w)).fill({ color: CONE_COVER, alpha: 0.16 });
-  // Blind spots: red, hatched at 45° like the builder's pattern.
+  // Each eye's field: its own translucent blue wedge, so crossings read darker.
+  for (const w of l.eyes) g.poly(wedgePolygon(cx, cy, r, w)).fill({ color: CONE_SEEN, alpha: 0.13 });
+  // Blind spots: greyed out and hatched at 45° like the builder's pattern.
   let hatch = 0;
   for (const w of l.blind) {
-    g.poly(wedgePolygon(cx, cy, r, w)).fill({ color: CONE_BLIND, alpha: w.kind === 'rear' ? 0.14 : 0.1 });
+    g.poly(wedgePolygon(cx, cy, r, w)).fill({ color: 0x0d1117, alpha: 0.3 });
+    g.poly(wedgePolygon(cx, cy, r, w)).fill({ color: CONE_BLIND, alpha: 0.16 });
     for (const [x1, y1, x2, y2] of hatchSegments(cx, cy, r, w, 6)) {
       g.moveTo(x1, y1).lineTo(x2, y2);
       hatch++;
     }
-    g.stroke({ width: 1.4, color: CONE_BLIND, alpha: 0.65 });
-    g.poly(wedgePolygon(cx, cy, r, w)).stroke({ width: 1, color: CONE_BLIND, alpha: 0.8 });
+    g.stroke({ width: 1.3, color: CONE_BLIND, alpha: 0.6 });
+    g.poly(wedgePolygon(cx, cy, r, w)).stroke({ width: 1, color: CONE_BLIND, alpha: 0.75 });
   }
   // The depth zone in front: green and dotted.
   let dots = 0;
@@ -848,7 +849,7 @@ function drawCones(g: Graphics, cx: number, cy: number, r: number, l: ConeLayout
     g.poly(wedgePolygon(cx, cy, r, w)).stroke({ width: 1, color: CONE_DEPTH, alpha: 0.9 });
   }
   if (l.occluded) g.poly(wedgePolygon(cx, cy, r * 0.8, l.occluded)).fill({ color: 0x0d1117, alpha: 0.35 });
-  // Each eye's field: a dashed outline just inside the rim.
+  // Each eye's field: a dashed blue outline just inside the rim.
   l.eyes.forEach((w, i) => {
     const rr = r - 3 - 3 * i;
     const pts = arcPoints(cx, cy, rr, w, 3);
@@ -858,7 +859,7 @@ function drawCones(g: Graphics, cx: number, cy: number, r: number, l: ConeLayout
       for (let t = 0.25; t < 0.95; t += 0.2) g.moveTo(cx + dx * t, cy + dy * t).lineTo(cx + dx * (t + 0.1), cy + dy * (t + 0.1));
     }
   });
-  g.stroke({ width: 1, color: 0xc9d1d9, alpha: 0.55 });
+  g.stroke({ width: 1, color: CONE_SEEN, alpha: 0.75 });
   // Facing: a small arrowhead on the rim.
   const a = (l.heading * Math.PI) / 180;
   const tip = { x: cx + Math.cos(a) * (r + 7), y: cy + Math.sin(a) * (r + 7) };

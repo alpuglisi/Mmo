@@ -676,7 +676,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         h('p', { class: 'muted small', id: 'vision-mechanic', 'data-directional': String(!!v.directional) }, lines.mechanic),
         h('label', { class: 'vision-toggle' }, toggle, h('span', {}, 'Show vision on the map')),
         view.showVision && h('p', { class: 'vision-legend small' },
-          key('seen', 'seen'), key('depth', 'depth (two eyes)'), key('blind', 'blind spot')),
+          key('seen', 'seen by an eye'), key('depth', 'depth vision (two eyes)'), key('blind', 'blind spot')),
       ];
     });
   }

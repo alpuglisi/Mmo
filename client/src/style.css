@@ -10,6 +10,12 @@
   --good: #3fb950;
   --warn: #d29922;
   --bad: #f85149;
+  /* Vision: the builder's eye view and the map's cones share these. */
+  --vision-seen: #58a6ff;
+  --vision-seen-text: #79c0ff;
+  --vision-depth: #3fb950;
+  --vision-depth-text: #56d364;
+  --vision-blind: #8b949e;
   --tabbar-h: 50px;
   color-scheme: dark;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -385,6 +391,6 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .vision-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 2px 0 6px; color: var(--muted); }
 .vision-key { display: inline-flex; align-items: center; gap: 4px; }
 .vision-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border); }
-.vision-swatch.seen { background: rgba(139, 148, 158, 0.3); }
-.vision-swatch.depth { background: radial-gradient(circle, rgba(63, 185, 80, 1) 1.3px, transparent 1.6px) 0 0 / 5px 5px, rgba(63, 185, 80, 0.3); border-color: rgba(63, 185, 80, 0.9); }
-.vision-swatch.blind { background: repeating-linear-gradient(45deg, rgba(248, 81, 73, 0.75) 0 1.5px, rgba(248, 81, 73, 0.12) 1.5px 4.5px); border-color: rgba(248, 81, 73, 0.8); }
+.vision-swatch.seen { background: color-mix(in srgb, var(--vision-seen) 30%, transparent); border-color: color-mix(in srgb, var(--vision-seen) 75%, transparent); }
+.vision-swatch.depth { background: radial-gradient(circle, color-mix(in srgb, var(--vision-depth) 70%, white) 1.2px, transparent 1.5px) 0 0 / 5px 5px, color-mix(in srgb, var(--vision-depth) 48%, var(--panel)); border-color: var(--vision-depth); }
+.vision-swatch.blind { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--vision-blind) 60%, transparent) 0 1.3px, color-mix(in srgb, var(--vision-blind) 20%, transparent) 1.3px 4.2px); border-color: var(--vision-blind); }
