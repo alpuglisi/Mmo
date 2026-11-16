@@ -961,7 +961,7 @@ impl World {
         // Food values use what the gut extracts (`Traits::plant_efficiency`):
         // a generalist values both foods less than a specialist would.
         let tax = self.config.balance.generalist_tax;
-        let (plant_eff, c) = (o.traits.plant_efficiency(tax), o.traits.meat_efficiency(tax));
+        let (plant_eff, c) = (o.traits.plant_efficiency(&self.config.balance), o.traits.meat_efficiency(tax));
         let bound = self.roam_bound(o);
         let here = self.map.tile_at(o.pos);
         // Browse in the canopy only counts if the body can reach it.

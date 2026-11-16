@@ -171,6 +171,12 @@ impl Rep {
         self.probe.traits.warm
     }
 
+    /// Mean insulation, less the fur warmth the probe's scales displace
+    /// (`Traits::insulation`).
+    fn insulation(&self, bal: &crate::Balance) -> f32 {
+        (self.insulation - bal.scale_cover * self.probe.traits.scaled_fur).max(0.0)
+    }
+
     fn food_per_hunger(&self) -> f32 {
         0.04 * self.mass.powf(0.75)
     }
@@ -1066,7 +1072,7 @@ impl World {
                 })
                 .sum();
             let thermo = if rep.warm() {
-                (1.0 + bal.warm_upkeep) * (1.0 + 0.04 * (12.0 - 30.0 * rep.insulation - temp).max(0.0))
+                (1.0 + bal.warm_upkeep) * (1.0 + 0.04 * (12.0 - 30.0 * rep.insulation(&bal) - temp).max(0.0))
             } else {
                 let activity = ((temp + 5.0 - 2.0) / 20.0).clamp(0.15, 1.0);
                 0.4 + 0.6 * activity

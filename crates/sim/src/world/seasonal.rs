@@ -443,7 +443,7 @@ impl World {
 
     /// Most plant food (food units) the organism hoards.
     pub(crate) fn cache_capacity(&self, o: &Organism) -> f32 {
-        let eff = o.traits.plant_efficiency(self.config.balance.generalist_tax).max(0.05);
+        let eff = o.traits.plant_efficiency(&self.config.balance).max(0.05);
         self.config.balance.cache_capacity * o.traits.seasonal.caching * o.food_per_hunger() / eff
     }
 
@@ -505,7 +505,7 @@ impl World {
     /// spring, or when very hungry, if the cache holds a bite.
     pub(crate) fn cache_to_eat(&self, o: &Organism, bite: f32) -> Option<Vec2> {
         let lean = matches!(self.season(), Season::Winter | Season::Spring) || o.needs.hunger > 70.0;
-        let eff = o.traits.plant_efficiency(self.config.balance.generalist_tax);
+        let eff = o.traits.plant_efficiency(&self.config.balance);
         if !lean {
             return None;
         }
@@ -525,7 +525,7 @@ impl World {
         let dt = self.config.dt_days();
         let cap = self.cache_capacity(&self.organisms[i]);
         let o = &self.organisms[i];
-        let eff = o.traits.plant_efficiency(self.config.balance.generalist_tax);
+        let eff = o.traits.plant_efficiency(&self.config.balance);
         let pos = o.pos;
         let home = match o.cache_pos {
             Some(c) if o.cache > 0.5 => c,
@@ -572,7 +572,7 @@ impl World {
     /// (`raider`).
     pub(crate) fn eat_cache(&mut self, i: usize, raider: bool) {
         let o = &self.organisms[i];
-        let eff = o.traits.plant_efficiency(self.config.balance.generalist_tax);
+        let eff = o.traits.plant_efficiency(&self.config.balance);
         if 1.0 - o.traits.carnivory < CACHE_DIET || o.needs.hunger < if raider { 30.0 } else { 5.0 } {
             return;
         }

@@ -671,7 +671,8 @@ impl World {
         };
         let carn = probe.traits.carnivory;
         let tax = self.config.balance.generalist_tax;
-        let (plant_eff, meat_eff) = (probe.traits.plant_efficiency(tax), probe.traits.meat_efficiency(tax));
+        let (plant_eff, meat_eff) =
+            (probe.traits.plant_efficiency(&self.config.balance), probe.traits.meat_efficiency(tax));
         // How far founders scatter from home (`found_lineage_unchecked`),
         // plus a margin.
         let scatter = 3.0 + 10.0 * (1.0 - probe.pheno[crate::Gene::GroupTolerance]) + 8.0;

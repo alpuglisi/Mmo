@@ -526,7 +526,7 @@ impl World {
     /// keep eating past full and store the surplus as fat.
     fn eat_plants(&mut self, i: usize, rate: f32) {
         let o = &self.organisms[i];
-        let eff = o.traits.plant_efficiency(self.config.balance.generalist_tax);
+        let eff = o.traits.plant_efficiency(&self.config.balance);
         let fat_room = self.fat_room(o);
         let room = o.needs.hunger + fat_room;
         if o.traits.carnivory > 0.95 || eff <= 0.0 || room < 5.0 {
@@ -845,7 +845,8 @@ impl World {
         let mut body_t = temp;
         let (cold, heat) = if o.traits.warm {
             o.activity = 1.0;
-            let insulation = st.insulation + coat_insulation;
+            // Scales displace fur's warmth (`Traits::insulation`).
+            let insulation = o.traits.insulation(bal.scale_cover) + coat_insulation;
             let low = 12.0 - 30.0 * insulation;
             let high = 30.0 - 8.0 * insulation;
             ((low - temp).max(0.0), (temp - high).max(0.0))
