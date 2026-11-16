@@ -66,7 +66,7 @@ export function rasterBody(s: CreatureSpec, resolution: number): Texture {
   const ctx = canvas.getContext('2d')!;
   const px = resolution * sd.k;
   ctx.setTransform(px, 0, 0, px, canvas.width / 2, canvas.height / 2 + sd.ground * resolution);
-  paintDrawing(ctx, sd.drawing, { outline: sd.outline, rim: sd.rim, flatFar: true }, canvas.width, canvas.height, newCanvas);
+  paintDrawing(ctx, sd.drawing, { outline: sd.outline, rim: sd.rim }, canvas.width, canvas.height, newCanvas);
   source.update();
   return new Texture({ source, label: `body:${creatureKey(s)}` });
 }

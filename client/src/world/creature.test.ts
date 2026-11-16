@@ -5,10 +5,13 @@ import {
   actionHint, bodyRadius, describeLook, creatureKey, DEFAULT_LOOK, EAR_SHAPES, hintShapes, JUVENILE_SCALE, morphOf, palette, specOf,
   spriteExtent, TAIL_LOOKS, visibleMorph, type CreatureSpec,
 } from './creature';
-import { EYE_AZIMUTH, SPRITE_OUTLINE_PX, spriteDrawing, spriteModel, type SpriteDrawing } from './spriteArt';
-import { avatarDrawing, drawingShapes } from './avatar';
+import { EYE_AZIMUTH, FAR_PARTS, FAR_SHIFT_PX, shiftFar, SPRITE_OUTLINE_PX, spriteDrawing, spriteModel, type SpriteDrawing } from './spriteArt';
+import { avatarDrawing, drawingShapes, paintOf } from './avatar';
 import { drawingBounds } from '../art/render';
 import type { Shape as ArtShape } from '../art/geom';
+
+/** Time for the tests that draw every class (thousands of drawings): more than the default 5 s, for a loaded CI machine. */
+const EXHAUSTIVE_MS = 30_000;
 
 const look = (over: Partial<Appearance> = {}): Appearance => ({ ...DEFAULT_LOOK, ...over });
 const adult = (over: Partial<Appearance> = {}): CreatureSpec => ({ look: look(over), juvenile: false });
@@ -63,11 +66,44 @@ describe('appearance classes', () => {
         const fins = sd.drawing.groups.flatMap((g) => g.pieces.filter((p) => p.tag === 'fin'));
         expect(fins.length, creatureKey(s)).toBe(l.locomotion === 'swim' ? 1 : 0);
         const strip = (d: typeof lib) => d.groups.map((g) => ({ ...g, pieces: g.pieces.filter((p) => p.tag !== 'fin'), detail: g.detail.filter((x) => x.tag !== 'fin') }));
+        // The far-side groups sit FAR_SHIFT_PX forward and up (clear of the near parts' outline); the rest is the library's.
+        shiftFar(lib, FAR_SHIFT_PX.x / sd.k, FAR_SHIFT_PX.y / sd.k);
         expect(JSON.stringify(strip(sd.drawing)) === JSON.stringify(strip(lib)), creatureKey(s)).toBe(true);
+        for (const g of sd.drawing.groups) if (FAR_PARTS.has(g.part)) expect(g.tones, creatureKey(s)).toEqual(paintOf(sd.model).far);
         // Sprite detail: no fine textures (scales come as a coarse pattern).
         const tags = new Set(drawingShapes(sd.drawing).map((x) => x.tag));
         for (const t of ['hair', 'feather', 'crease', 'whisker', 'scute']) expect(tags.has(t), `${creatureKey(s)} ${t}`).toBe(false);
       }
+    }
+  }, EXHAUSTIVE_MS);
+
+  it('sets the far-side legs, ears and wing back in the far ramp, a pixel forward and up, clear of the near outline', () => {
+    for (const juvenile of [false, true]) for (const size of [0, 3] as const) {
+      const s: CreatureSpec = { look: look({ size, locomotion: 'fly', cover: 'skin' }), juvenile };
+      const sd = draw(s);
+      const lib = avatarDrawing(spriteModel(s), { lod: 'sprite' });
+      const pal = paintOf(sd.model);
+      const parts = new Set<string>();
+      sd.drawing.groups.forEach((g, i) => {
+        const L = lib.groups[i];
+        expect(g.part).toBe(L.part);
+        const [a, b] = [g.pieces[0].points[0], L.pieces[0].points[0]];
+        if (FAR_PARTS.has(g.part)) {
+          parts.add(g.part);
+          expect(g.tones).toEqual(pal.far);
+          // In screen px at marker scale 1: about the outline width forward, half that up, whatever the size.
+          expect((a[0] - b[0]) * sd.k).toBeCloseTo(FAR_SHIFT_PX.x, 6);
+          expect((a[1] - b[1]) * sd.k).toBeCloseTo(FAR_SHIFT_PX.y, 6);
+          expect(FAR_SHIFT_PX.x).toBeGreaterThanOrEqual(SPRITE_OUTLINE_PX * 0.75);
+        } else {
+          expect(a).toEqual(b);
+        }
+      });
+      expect([...parts].sort()).toEqual(['ears-far', 'legs-far', 'wing-far']);
+      // The library's own points are left alone (they may be its anchors).
+      const before = JSON.stringify(lib);
+      shiftFar({ ...lib }, 5, -5);
+      expect(JSON.stringify(lib)).toBe(before);
     }
   });
 
@@ -84,7 +120,7 @@ describe('appearance classes', () => {
     expect(hash(false, defaults)).toBe(absent);
     // Far detail ignores the morphology: the class sprite.
     expect(hash(true, () => ({ eyes: 6, eye_azimuth: 0, ears: 4, ear_shape: 'long', legs: 8, tail: 'club', tail_size: 2, snout: 2, fangs: 2 }))).toBe(absent);
-  });
+  }, EXHAUSTIVE_MS);
 
   it('maps every class and stage to the same sprite model (golden)', () => {
     // sha256 of the sprite models of all 1,536 classes × stage: what each
@@ -213,7 +249,7 @@ describe('appearance classes', () => {
         expect(Math.max(sd.half.w, sd.half.h), creatureKey(s)).toBeLessThanOrEqual(spriteExtent(s) * 1.6);
       }
     }
-  });
+  }, EXHAUSTIVE_MS);
 
   it('draws visibly different body plans', () => {
     expect(differs({ diet: 'carnivore' }, {})).toBe(true);
@@ -390,7 +426,7 @@ describe('morphology', () => {
     expect(creatureKey(adult({ tail: 'none', tail_size: 2 }))).toBe(creatureKey(adult({ tail: 'none', tail_size: 0 })));
     expect(creatureKey({ ...adult({ legs: 8 }), far: true })).toBe(creatureKey(adult()));
     expect(visibleMorph(look({ legs: 8 }), true).legs).toBe(4);
-  });
+  }, EXHAUSTIVE_MS);
 
   it('bounds the number of keys', () => {
     // Every field quantized: per class and stage at most
@@ -421,7 +457,7 @@ describe('morphology', () => {
         expect(Math.max(sd.half.w, sd.half.h), creatureKey(s)).toBeLessThanOrEqual(spriteExtent(s) * 1.6);
       }
     }
-  });
+  }, EXHAUSTIVE_MS);
 });
 
 describe('describeLook', () => {

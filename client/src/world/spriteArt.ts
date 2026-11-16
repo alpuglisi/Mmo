@@ -13,11 +13,15 @@
 // the visible morphology and the life stage), so one key is one drawing.
 // The buckets map to gene values well inside each bucket, a little past the
 // middle where that helps a feature read at marker size (eyes, ears, fangs).
-// Sprite-only touches: swimmers grow a dorsal fin (their legs are fins).
+// Sprite-only touches: swimmers grow a dorsal fin (their legs are fins), and
+// the far-side groups (far legs, ears, wing) sit a pixel up and forward, so
+// they clear the near parts' bold outline and their darker far ramp shows,
+// as it does in the builder's side view (at sprite size the library's
+// offsets are thinner than the ink line, which would hide them).
 
 import type { Appearance, SizeBucket } from '../protocol';
 import { drawingBounds } from '../art/render';
-import type { Piece, Point } from '../art/geom';
+import type { Part, Piece, Point, Shape } from '../art/geom';
 import { avatarDrawing, type AvatarDrawing, type AvatarModel } from './avatar';
 import { bodyRadius, palette, visibleMorph, type CreatureSpec, type Morph } from './creature';
 
@@ -44,6 +48,16 @@ export const UNIT_PER_RADIUS = 1 / 40;
 export const GROUND_PER_RADIUS = 0.95;
 /** Outline width on screen (px at marker scale 1): bolder than the portrait's, as STYLE.md asks of small sprites. */
 export const SPRITE_OUTLINE_PX = 1.15;
+
+/**
+ * How far the far-side groups move, in px at marker scale 1 (forward, up):
+ * about the outline width, so a far leg, ear or wing peeks out past the near
+ * one's ink line instead of hiding under it. Raised a little, as the far side
+ * of an animal seen slightly from above.
+ */
+export const FAR_SHIFT_PX = { x: 0.9, y: -0.5 } as const;
+/** The far-side groups: drawn in the palette's `far` ramp, behind the main silhouette. */
+export const FAR_PARTS: ReadonlySet<Part> = new Set<Part>(['legs-far', 'ears-far', 'wing-far']);
 
 /** The drawing of one sprite texture, with how it sits on the marker. */
 export interface SpriteDrawing {
@@ -131,6 +145,21 @@ function dorsalFin(d: AvatarDrawing): void {
   main.detail.push({ part: 'body', tag: 'fin', kind: 'line', points: [[-rx * 0.15, cy - ry * 0.85], [-rx * 0.04, cy - ry * 1.4]], stroke: main.tones.shade, width: 2.2, alpha: 0.7 });
 }
 
+/** Move the far-side groups by (dx, dy) creature units (new point arrays: the library's may be shared with its anchors). */
+export function shiftFar(d: AvatarDrawing, dx: number, dy: number): void {
+  const mv = (pts: Point[]): Point[] => pts.map(([x, y]) => [x + dx, y + dy]);
+  const shape = (s: Shape): Shape => (s.kind === 'ellipse' ? { ...s, x: s.x + dx, y: s.y + dy } : { ...s, points: mv(s.points) });
+  d.groups = d.groups.map((g) => (FAR_PARTS.has(g.part)
+    ? {
+        ...g,
+        pieces: g.pieces.map((p) => ({ ...p, points: mv(p.points) })),
+        detail: g.detail.map(shape),
+        over: g.over.map(shape),
+        ...(g.sway ? { sway: { ...g.sway, pivot: mv([g.sway.pivot])[0] } } : {}),
+      }
+    : g));
+}
+
 /** The drawing of a creature's sprite texture, sized for a marker at scale 1. */
 export function spriteDrawing(s: CreatureSpec): SpriteDrawing {
   const model = spriteModel(s);
@@ -138,6 +167,7 @@ export function spriteDrawing(s: CreatureSpec): SpriteDrawing {
   if (s.look.locomotion === 'swim') dorsalFin(drawing);
   const r = bodyRadius(s);
   const k = r * UNIT_PER_RADIUS;
+  shiftFar(drawing, FAR_SHIFT_PX.x / k, FAR_SHIFT_PX.y / k);
   const ground = r * GROUND_PER_RADIUS;
   const outline = SPRITE_OUTLINE_PX / k;
   // Rims in px: one highlight and one shade step that still read at 10-30 px.
