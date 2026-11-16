@@ -90,7 +90,9 @@ describe('DeltaDecoder', () => {
       for (const o of s.organisms) {
         expect(o.heading).toBeGreaterThanOrEqual(0);
         expect(o.heading).toBeLessThan(32);
-        expect(o.vision).toMatchObject({ eyes: 2, azimuth: 60 });
+        // Founders vary a little around the default 60° eye angle.
+        expect(o.vision).toMatchObject({ eyes: 2 });
+        expect(Math.abs(o.vision!.azimuth - 60)).toBeLessThanOrEqual(20);
       }
       for (const n of s.nearby) expect('heading' in n || 'vision' in n).toBe(false);
     }
