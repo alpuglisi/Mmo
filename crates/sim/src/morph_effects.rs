@@ -356,8 +356,8 @@ pub struct MorphEffects {
     /// Factor on the fang term of strength (fang size, 0 below
     /// `stats::FANG_THRESHOLD`), `1.3 − 0.6·s`.
     pub bite_factor: f32,
-    /// Binocular overlap the snout hides, `40°·max(0, s − 0.5)` (for the
-    /// vision package).
+    /// Binocular overlap the snout hides, `40°·max(0, s − 0.5)`
+    /// (`vision::snout_occlusion`, which the eye geometry uses too).
     pub snout_occlusion_deg: f32,
     // Context terms (see `MorphContext`).
     pub heat_tolerance: f32,
@@ -517,7 +517,7 @@ pub fn derive(p: &Phenotype, plan: &BodyPlan, k: Knobs, base: &Traits) -> MorphE
         burrow_factor,
         smell: 0.02 + 0.3 * nose + km * smell_delta,
         bite_factor,
-        snout_occlusion_deg: 40.0 * ds.max(0.0),
+        snout_occlusion_deg: crate::vision::snout_occlusion(plan.snout_length),
         heat_tolerance,
         rest_insulation,
         fight_back,
@@ -605,7 +605,7 @@ pub fn apply(t: &mut Traits, p: &Phenotype, bal: &Balance) {
     if k.is_off() {
         return;
     }
-    derive(p, &body_plan(p), k, t).apply_to(t);
+    apply_plan(t, p, &body_plan(p), k);
 }
 
 /// [`apply`] with an explicit body plan (tests, readouts, and the genome
@@ -615,6 +615,15 @@ pub fn apply_plan(t: &mut Traits, p: &Phenotype, plan: &BodyPlan, k: Knobs) {
         return;
     }
     derive(p, plan, k, t).apply_to(t);
+    // The eyes' share of the changed perception, and the plan's eyes and
+    // snout (`Balance::directional_vision`). The sight channel itself is
+    // unchanged: hearing and smell carry the body plan's perception terms.
+    let eyes = p[Gene::Eyes];
+    t.vision = crate::vision::Vision::new(
+        &crate::vision::EyeLayout::of_plan(plan, eyes),
+        crate::vision::sight(eyes),
+        t.stats.perception,
+    );
 }
 
 #[cfg(test)]

@@ -856,8 +856,18 @@ impl World {
             let burrow = if q.sheltered { 0.5 + 0.3 * (self.burrow_depth(q) - q.traits.body.burrow) } else { 0.0 };
             let den = if q.dormancy.is_deep() { cfg.balance.den_concealment } else { 0.0 };
             let hidden = burrow.max(den);
-            let detect =
+            let mut detect =
                 radius * (1.0 - cfg.balance.stealth_effect * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
+            // Directional vision: a neighbor in a blind sector is noticed
+            // by ear and nose, and by sight only as far as a viewer standing
+            // still (no target last tick) scans around (`vision::detect_factor`).
+            // Only ever shortens `detect`, so the far-neighbor bounds hold.
+            let k = cfg.balance.directional_vision;
+            if k > 0.0 && d < detect {
+                let vis = &o.traits.vision;
+                let eyes = vis.eyes_on(o.heading, q.pos - o.pos);
+                detect *= crate::vision::detect_factor(eyes, vis, k, o.target.is_none(), cfg.balance.vision_scan);
+            }
             if d < detect {
                 if defender && self.territory_of(q).is_some_and(|t| t.contains(o.pos)) {
                     let odds = q.power() / (q.power() + o.resistance() + 1e-3);
@@ -1206,6 +1216,39 @@ mod tests {
         let intent = w.decide(vole);
         assert!(intent.threat > 0.0, "fox unseen");
         assert_eq!(intent.kin_nearby, 150);
+    }
+
+    /// Directional vision: a fox at the edge of a vole's notice is missed
+    /// when it stands in the vole's blind spot (behind it), seen when in
+    /// front; with `directional_vision` 0 the heading changes nothing.
+    #[test]
+    fn blind_spot_hides_a_stalker_only_with_directional_vision() {
+        let mut w = presets::standard_world(WorldConfig { seed: 4, width: 48, height: 48, ..Default::default() }, 1);
+        let vole = w.organisms.iter().position(|o| o.lineage == 0 && o.matured).unwrap();
+        let fox = w.organisms.iter().position(|o| o.lineage == 3 && o.growth > 0.5).unwrap();
+        for o in w.organisms.iter_mut() {
+            o.pos = Vec2::new(1.0, 1.0);
+        }
+        let center = Vec2::new(24.0, 24.0);
+        w.organisms[vole].pos = center;
+        w.organisms[vole].needs = crate::organism::Needs::default();
+        // Walking somewhere, so not scanning (`Balance::vision_scan`).
+        w.organisms[vole].target = Some(center + Vec2::new(0.0, 5.0));
+        // Where the vole notices the fox without directional vision.
+        let fox_at = |w: &mut World, d: f32| {
+            w.organisms[fox].pos = center + Vec2::new(d, 0.0);
+            w.grid.rebuild(&w.organisms);
+            w.decide(vole).threat > 0.0
+        };
+        let reach = (1..200).map(|k| k as f32 * 0.05).take_while(|&d| fox_at(&mut w, d)).last().unwrap();
+        let near_edge = 0.95 * reach;
+        let vis = w.organisms[vole].traits.vision;
+        assert!(vis.blind > 0.0 && vis.visual_share > 0.1);
+        for (k, heading, seen) in [(0.0, -1.0, true), (1.0, 1.0, true), (1.0, -1.0, false)] {
+            w.config.balance.directional_vision = k;
+            w.organisms[vole].heading = Vec2::new(heading, 0.0);
+            assert_eq!(fox_at(&mut w, near_edge), seen, "k {k}, heading {heading}");
+        }
     }
 
     /// A burrowing omnivore (carnivory 0.5) hunts voles, so a vole must see

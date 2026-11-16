@@ -65,6 +65,7 @@ docs/
 | `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends, rally a group at a point for a few days; and group commands as genes: an `obedience` gene sets how strongly each animal heeds them, paid for in tameness. See [Groups and territory](#groups-and-territory). |
 | `world::chronicle` | Scoring | The daily hook: samples adults (cohorts included) for species detection, plans, applies and ends catastrophes through existing systems (`Map::climate_temp`, `Map::climate_wet`, infections), closes eras and awards achievements. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
+| `vision` | Morphology: eyes (`docs/morphology.md`) | Directional vision behind `Balance::directional_vision` (off by default, bit-identical off): eye layouts (count, pair azimuth, size; snout occlusion) → coverage, binocular depth field, front and rear blind spots and a 2-bit-per-bin bearing table, computed once at birth (`Traits::vision`); each organism faces its last movement (`Organism::heading`). See [Directional vision](#directional-vision). |
 | `world::offline` | Open questions (offline protection) | Softer rules for the last members of a lineage whose owner is logged out: the caller names the protected lineages and exempt organisms (`World::set_offline_protection`); at or below the floor (12 living members) kill chance against them is ×0.25 and starvation and thirst ×0.5, for agents and cohorts. And the home-range form (`World::set_home_ranges`): a claimed territory shields the members of its group inside it, kill chance ×0.5 shared out above 20 residents, predation only, stacking with the core down to ×0.2 at most. Off (and bit-identical) by default. See [Offline protection](#offline-protection). |
 
 ### Tick structure
@@ -1530,7 +1531,11 @@ ran under (`serde_util::before_v19`). Versions 10 to 19 lack
 `Balance::fang_grazing` and `Balance::scale_cover` (version 20), which read
 as 0, the rules they ran under (`serde_util::before_v20`). Versions 10 to
 20 lack the `Balance::morph_*` tunables (version 21, *Body plan effects*),
-which read as 0, no body plan effects (`serde_util::before_v21`).
+which read as 0, no body plan effects (`serde_util::before_v21`). Versions
+10 to 21 lack `Balance::directional_vision` and `Balance::vision_scan`
+(version 22, *Directional vision*), which read as their defaults (0 and
+1: off), and organisms' headings, which restore as each one's birth heading
+(`serde_util::before_v22`).
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1586,7 +1591,8 @@ young and eggs against their parents' (*Genomes by parents*, below);
 version 19 adds the balance parameters `lactation` and `warm_upkeep`;
 version 20 `fang_grazing` and `scale_cover` (trait downsides); version 21
 the body plan effects tunables `morph_effects`, `morph_tail_drag`,
-`morph_tail_chill` and `morph_long_legs`.
+`morph_tail_chill` and `morph_long_legs`; version 22 each organism's
+heading and the balance parameters `directional_vision` and `vision_scan`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -5411,6 +5417,71 @@ Old saves keep the old rules: snapshots move to format version 21, and
 versions 10–20 read all four tunables as 0 (`serde_util::before_v21`).
 New tunables: `morph_effects`, `morph_tail_drag`, `morph_tail_chill`,
 `morph_long_legs`.
+
+### Directional vision
+
+`vision`, `Balance::directional_vision`, off by default. Eyes see fields
+around the way the animal faces, as in the morphology spec (`docs/morphology.md`, contract v1):
+
+- **Heading.** `Organism::heading` is the unit vector of its last movement
+  (set in `step_toward` whenever it moves; kept while it stands still), and a
+  fixed direction from its id until it first moves (`vision::birth_heading`).
+  It is in snapshots from version 22 (`serde_util::before_v22`); older saves
+  restore with each organism facing its birth heading and with
+  `directional_vision` 0 and `vision_scan` 1.
+- **Geometry, once at birth** (`Traits::vision`, `Vision::new`). Eyes: an odd
+  count puts one on the midline, pair *k* sits at ±min(170°, azimuth + 50°·k),
+  each sees `140° + 60°·eye_size`. Derived exactly (the eye count only changes
+  at field edges): coverage, binocular depth field (degrees within ±60° seen
+  by two or more eyes, less the snout's `40°·max(0, snout − 0.5)`), front gap
+  and rear blind spot, plus a 32-bin table of 0 / 1 / ≥2 eyes over the folded
+  bearing (2 bits per bin, one `u64`). Per neighbor the cost is one dot and
+  one cross product, a division (a trig-free pseudo-angle) and a table lookup
+  (`Vision::eyes_on`). Until the genome carries eye loci, `vision::eye_layout`
+  reads the contract defaults (2 eyes at ±60°, snout 0.5) with the `Eyes` gene
+  as size: the one function to swap for the genome's `Morphology`.
+  The defaults give `20 + 60·Eyes` degrees of depth field and a
+  `100 − 60·Eyes` degree rear blind spot.
+- **Detection** (`decide::look`). Perception splits into channels: sight
+  `0.10 + 0.3·Eyes`, hearing `0.03 + 0.3·Ears`, smell `0.02 + 0.3·Nose`. With
+  `k = directional_vision`, a neighbor in a blind sector (no eye on it) is
+  noticed at `1 − k·visual_share·(1 − g)` of the usual distance, where
+  `visual_share = sight / perception` (0.42 for eyes, ears and nose at 0.5)
+  and `g` is 0, or `0.5·vision_scan·coverage` for an animal standing still (no
+  movement target: it scans; `vision_scan` 1). Hearing and smell keep working,
+  so blind spots shorten detection rather than erase it. This only ever
+  shortens the detection distance, so the far-neighbor pruning bounds hold.
+  It applies to threats, prey and territory defenders alike, and to possessed
+  animals too.
+- **Depth judgment** (`World::attack`). A hunter's kill chance is multiplied
+  by `1 + 0.35·k·(min(binocular, 90) − 20) / 90` (`Vision::depth_factor`):
+  1 for the contract's default eyes (size 0), up to +0.27 for a forward-eyed
+  stalker, below 1 for side eyes. Ambush needs no rule of its own: a hunter
+  coming from a blind sector simply isn't noticed, so `ambush_on` applies.
+
+Measurements (12 seeds, 96×96, 120 days; with today's fixed layout only the
+`Eyes` gene varies, so this measures the mechanic on default-eyed animals):
+
+| | Off (default) | `directional_vision=1` |
+| --- | --- | --- |
+| Sweep, seed 31 (`sweep --size 96 --trials 1 --seeds 12 --rounds 1`) | 11.76 ± 0.28 (unchanged; 11.74 once merged after the trait downsides) | 11.53 ± 0.50 (marsh newts and pack hunters each lost on one seed) |
+| `compare --adaptive` from seed 101, A − B | | −0.05 (sequential CI −0.25 … +0.15; stopped at 12 seeds: no difference that matters) |
+
+In the paired compare every lineage survived on every seed under both; mean
+alive moved within noise: marsh newts −62 ± 69, toxic frogs −41 ± 74, herd
+grazers −15 ± 56, meadow voles −2 ± 101, antelope +6 ± 26, red foxes −3 ± 16,
+pack hunters +1 ± 21, burrowing omnivores +8 ± 13 (the only significant
+change is the burrowers' legacy, +1.0 ± 0.9 pp). The rear blind spot costs
+the newts and frogs (small eyes, so big blind spots) a little; hunters gain
+little because they also have blind spots and the default depth multiplier is
+about 1. The real trade-offs appear once designs choose eye layouts.
+
+Cost (callgrind, `evo-sim bench --days 5 --threads 1`, same world): off,
+`World::step` +0.36% instructions over the build without the mechanic
+(heading updates and the birth-time geometry; decide +0.26%), the world's
+results bit-identical. On, the decide phase costs 6,236 instructions per
+call against 6,265 off (the world differs, so only per-call figures
+compare): the per-neighbor lookup is lost in the noise.
 
 ## Point costs
 

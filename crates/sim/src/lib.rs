@@ -19,6 +19,7 @@
 //! - [`species`]: species detection (clusters of mutually kin, fertile
 //!   adults) with stable ids, splits and extinctions.
 //! - [`chronicle`]: eras, catastrophes and secondary achievements.
+//! - [`vision`]: eye layouts, fields of view and directional detection.
 //! - [`world`]: the tick loop (needs, utility AI, predation, breeding), and
 //!   level of detail (`world::lod`: statistical cohorts far from players).
 
@@ -41,6 +42,7 @@ mod serde_util;
 pub mod species;
 pub mod stats;
 pub mod terrain;
+pub mod vision;
 pub mod world;
 
 pub use config::{Balance, LodConfig, ScoringConfig, WorldConfig};

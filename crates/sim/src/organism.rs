@@ -277,6 +277,11 @@ pub struct Organism {
     /// Group commands (migration, territory) are given per group. Young are
     /// born into their mother's group.
     pub group: u8,
+    /// Facing: unit vector of its last movement, kept while it stands
+    /// still (from [`crate::vision::birth_heading`] until it first moves).
+    /// What its eyes see is measured from it (`Balance::directional_vision`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v22"))]
+    pub heading: Vec2,
 }
 
 #[cfg(feature = "serde")]
@@ -343,6 +348,7 @@ impl Organism {
             cache_pos: None,
             coat: None,
             group: 0,
+            heading: crate::vision::birth_heading(id),
         }
     }
 

@@ -385,6 +385,23 @@ fn snout_trades_smell_for_bite() {
     assert_eq!(derive(&p, &BodyPlan { snout_length: 0.2, ..plan(&p) }, ON, &mid).snout_occlusion_deg, 0.0);
 }
 
+/// The eye geometry (`Traits::vision`) follows the body plan: its snout
+/// hides the same overlap `snout_occlusion_deg` reports, and the sight
+/// channel's share is of the perception the body plan changed.
+#[test]
+fn vision_follows_the_body_plan() {
+    let p = pheno(&base_design());
+    let mid = traits(&p, &plan(&p), ON);
+    let long = traits(&p, &BodyPlan { snout_length: 1.0, ..plan(&p) }, ON);
+    let e = derive(&p, &BodyPlan { snout_length: 1.0, ..plan(&p) }, ON, &derive_traits(&p));
+    assert!((mid.vision.binocular - long.vision.binocular - e.snout_occlusion_deg).abs() < 1e-4);
+    let sight = crate::vision::sight(p[Gene::Eyes]);
+    assert!((long.vision.visual_share - sight / long.stats.perception).abs() < 1e-6);
+    assert!((sight + long.morph.hearing + long.morph.smell - long.stats.perception).abs() < 1e-5);
+    // Off, the geometry is the birth-time one.
+    assert_eq!(traits(&p, &plan(&p), Knobs::OFF).vision, derive_traits(&p).vision);
+}
+
 /// Half strength gives half of each additive change.
 #[test]
 fn effects_scale_with_their_tunable() {

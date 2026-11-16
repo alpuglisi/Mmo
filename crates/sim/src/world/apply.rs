@@ -339,6 +339,28 @@ impl World {
         scratch: &mut PathScratch,
         paths: &mut PathCount,
     ) -> f32 {
+        let from = o.pos;
+        let moved = self.step_toward_inner(o, target, sprint, frac, scratch, paths);
+        // Facing follows the last movement (`Organism::heading`).
+        if moved > 0.0 {
+            let dir = (o.pos - from).norm();
+            if dir != Vec2::ZERO {
+                o.heading = dir;
+            }
+        }
+        moved
+    }
+
+    /// [`Self::step_toward`] without the heading update.
+    fn step_toward_inner(
+        &self,
+        o: &mut Organism,
+        target: Vec2,
+        sprint: bool,
+        frac: f32,
+        scratch: &mut PathScratch,
+        paths: &mut PathCount,
+    ) -> f32 {
         let to = target - o.pos;
         let d = to.len();
         if d < 0.05 {
@@ -591,6 +613,12 @@ impl World {
             p *= 1.0 - 0.6 * tox;
         }
         p *= self.offline_predation_factor(b);
+        // Depth judgment (`Balance::directional_vision`): binocular overlap
+        // sharpens the strike (`Vision::depth_factor`, 1 at default eyes).
+        let k = self.config.balance.directional_vision;
+        if k > 0.0 {
+            p = (p * a.traits.vision.depth_factor(k)).min(1.0);
+        }
         let prey_power = b.power().max(guard_power);
         let prey_fights = super::decide::fight_back(b, self.config.balance.generalist_tax);
         let prey_bright = b.pheno[Gene::Coloration] > 0.6;
