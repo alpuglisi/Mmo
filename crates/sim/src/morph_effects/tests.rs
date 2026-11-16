@@ -134,7 +134,7 @@ fn default_body_is_exactly_neutral() {
         assert_eq!(t, raw, "{}", d.name);
         // And through the Balance knob.
         let mut t = raw;
-        apply(&mut t, &p, &plan(&p), &Balance { morph_effects: 1.0, ..Balance::default() });
+        apply(&mut t, &p, &plan(&p), &Balance { morph_effects: 1.0, ..Balance::default().morphology_off() });
         assert_eq!(t, raw, "{}", d.name);
     }
 }
@@ -154,7 +154,7 @@ fn knobs_off_change_nothing() {
     };
     assert_eq!(traits(&p, &odd, Knobs::OFF), raw);
     let mut t = raw;
-    apply(&mut t, &p, &odd, &Balance::default());
+    apply(&mut t, &p, &odd, &Balance::default().morphology_off());
     assert_eq!(t, raw);
 }
 
@@ -429,7 +429,7 @@ fn effects_scale_with_their_tunable() {
 fn default_world_feels_only_its_snouts() {
     let world = |k: f32| {
         let mut config = crate::WorldConfig { seed: 7, width: 48, height: 48, ..Default::default() };
-        config.balance.morph_effects = k;
+        config.balance = Balance { morph_effects: k, ..config.balance.morphology_off() };
         crate::presets::standard_world(config, 1)
     };
     let (on, off) = (world(1.0), world(0.0));

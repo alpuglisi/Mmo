@@ -25,9 +25,11 @@ const BUG: MorphDesign = MorphDesign {
 
 /// A world with one designed lineage (voles with a tail and some swimming,
 /// built as [`BUG`]) and one default lineage, at tunable strength `k` for
-/// both the body plan effects and directional vision.
+/// both the body plan effects and directional vision (the other morphology
+/// rules off).
 fn world(k: f32) -> (World, u32, u32) {
     let mut config = WorldConfig { seed: 5, width: 48, height: 48, ..Default::default() };
+    config.balance = config.balance.morphology_off();
     config.balance.morph_effects = k;
     config.balance.directional_vision = k;
     let mut w = World::new(config);

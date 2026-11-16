@@ -46,10 +46,10 @@ docs/
 
 | Module | Design-doc section | What it does |
 | --- | --- | --- |
-| `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. A separate **morphology segment** (`morph`, `docs/morphology-contract.md`) holds discrete loci for eye count (1–6), ear count (0/2/4), ear shape, leg count (0/2/4/6/8) and tail shape (small-integer alleles with origin tags; one allele expressed, never an average: the wild type over any other, then the one nearer the default, the lower count on a tie, shapes in a fixed order) and additive loci for eye azimuth and snout length; `tail_present` is derived from `Tail` ≥ 0.05. Founders carry the design's counts exactly. The segment has its own random stream (no draws from the shared ones), its own choice bits in the by-parents snapshot form, and stays out of the phenotype and the legacy tally. Expressed counts and shapes add `min(1, steps/2)` per locus to the genetic distance's numerator (divisor unchanged), and eye and leg counts 0.1 per step to the body-plan gap; equal morphologies add exactly 0, so default-morphology worlds run bit for bit as before. Discrete step mutation (`Balance::morph_step_rate`, spec value 0.0005) is off by default for the same reason. `Organism::morph` (`morph::Morphology`) caches the expressed parameters and derived eye field width at birth; it is the one body plan everything reads (see [Body plan wiring](#body-plan-wiring)): the eye geometry and ear localization (`stats::derive_with`), the body plan effects (`morph_effects`, behind their tunables), LOD cohort representatives and the server's `look`. |
+| `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. A separate **morphology segment** (`morph`, `docs/morphology-contract.md`) holds discrete loci for eye count (1–6), ear count (0/2/4), ear shape, leg count (0/2/4/6/8) and tail shape (small-integer alleles with origin tags; one allele expressed, never an average: the wild type over any other, then the one nearer the default, the lower count on a tie, shapes in a fixed order) and additive loci for eye azimuth and snout length; `tail_present` is derived from `Tail` ≥ 0.05. Founders carry the design's counts exactly. The segment has its own random stream (no draws from the shared ones), its own choice bits in the by-parents snapshot form, and stays out of the phenotype; its alleles count in the legacy tally under `Balance::morph_legacy` (on by default, see [Morphology on by default](#morphology-on-by-default)). Expressed counts and shapes add `min(1, steps/2)` per locus to the genetic distance's numerator (divisor unchanged), and eye and leg counts 0.1 per step to the body-plan gap; equal morphologies add exactly 0. Discrete step mutation (`Balance::morph_step_rate`) runs at the spec's 0.0005 by default (0 in saves from before *Morphology on by default*, where worlds run bit for bit as before these loci). `Organism::morph` (`morph::Morphology`) caches the expressed parameters and derived eye field width at birth; it is the one body plan everything reads (see [Body plan wiring](#body-plan-wiring)): the eye geometry and ear localization (`stats::derive_with`), the body plan effects (`morph_effects`, behind their tunables, on by default), LOD cohort representatives and the server's `look`. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
-| `morph_effects` | `docs/morphology.md` §3 (package D) | Body plan → derived effects of ear count and shape, leg count, tail shape and snout length, computed once at birth and folded into stats and body behind the `morph_*` tunables (off by default, exactly neutral at the default body). The body plan is the organism's genome `Organism::morph`. See [Body plan effects](#body-plan-effects). |
+| `morph_effects` | `docs/morphology.md` §3 (package D) | Body plan → derived effects of ear count and shape, leg count, tail shape and snout length, computed once at birth and folded into stats and body behind the `morph_*` tunables (on by default since [Morphology on by default](#morphology-on-by-default); exactly neutral at the default body). The body plan is the organism's genome `Organism::morph`. See [Body plan effects](#body-plan-effects). |
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge; depressions fed by more rain than evaporates off their surface fill into lakes (priority flood). Rivers in flood overflow onto their floodplain (low land up to two tiles from the channel): standing water that swimmers cross and that strands and drowns small non-swimmers, drowned plants, then silt that speeds regrowth for weeks. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, costly and risky flight) and rain or snow; the wind has a direction (prevailing westerly, swinging over days and veering regionally) that speeds or slows flyers and gliders by wing loading; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`; `Map::climate_temp`/`climate_wet` are climate anomalies (0 normally) that catastrophes set. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
 | `pathfinding` | Movement and terrain | Bounded A* over tiles for one body: blocked tiles are avoided, slow ones cost time. Used only when the direct step is blocked (see Movement below). |
 | `mating` | Override cost | Root-sum-of-squares preference mismatch, `cost = k·max(0, mismatch−1)²`, outbreeding depression by genetic distance, and sterility between different body plans (thermoregulation, birth mode, body size or diet more than 0.3 apart; `cargo run --release --example distances` prints the founders' matrix). Display coloration is condition-dependent (an honest signal). |
@@ -65,7 +65,7 @@ docs/
 | `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends, rally a group at a point for a few days; and group commands as genes: an `obedience` gene sets how strongly each animal heeds them, paid for in tameness. See [Groups and territory](#groups-and-territory). |
 | `world::chronicle` | Scoring | The daily hook: samples adults (cohorts included) for species detection, plans, applies and ends catastrophes through existing systems (`Map::climate_temp`, `Map::climate_wet`, infections), closes eras and awards achievements. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
-| `vision` | Morphology: eyes (`docs/morphology.md`) | Directional vision behind `Balance::directional_vision` (off by default, bit-identical off): eye layouts (count, pair azimuth, size; snout occlusion) → coverage, binocular depth field, front and rear blind spots and a 2-bit-per-bin bearing table, computed once at birth (`Traits::vision`); each organism faces its last movement (`Organism::heading`). See [Directional vision](#directional-vision). |
+| `vision` | Morphology: eyes (`docs/morphology.md`) | Directional vision behind `Balance::directional_vision` (on by default since [Morphology on by default](#morphology-on-by-default); bit-identical at 0): eye layouts (count, pair azimuth, size; snout occlusion) → coverage, binocular depth field, front and rear blind spots and a 2-bit-per-bin bearing table, computed once at birth (`Traits::vision`); each organism faces its last movement (`Organism::heading`). See [Directional vision](#directional-vision). |
 | `world::offline` | Open questions (offline protection) | Softer rules for the last members of a lineage whose owner is logged out: the caller names the protected lineages and exempt organisms (`World::set_offline_protection`); at or below the floor (12 living members) kill chance against them is ×0.25 and starvation and thirst ×0.5, for agents and cohorts. And the home-range form (`World::set_home_ranges`): a claimed territory shields the members of its group inside it, kill chance ×0.5 shared out above 20 residents, predation only, stacking with the core down to ×0.2 at most. Off (and bit-identical) by default. See [Offline protection](#offline-protection). |
 
 ### Tick structure
@@ -409,7 +409,7 @@ jobs (the Android emulator job waits for the Android one):
 | Job | What it runs |
 | --- | --- |
 | Rust | `cargo fmt --all --check` (`rustfmt.toml`: width 120), `cargo build --release --workspace`, `cargo test --release --workspace` with a `postgres:16` service container (`DATABASE_URL` set, so the persistence tests also run against `PgStore`; `EVO_REQUIRE_DATABASE=1` makes them fail rather than skip if it goes missing), `cargo clippy --release --all-targets -- -D warnings`, and clippy on `evo-server --no-default-features` (no sqlx) (stable toolchain, cargo cache) |
-| Balance smoke check | `scripts/balance-smoke.sh`: `evo-sim sweep --size 64 --trials 1 --seeds 3 --rounds 1 --days 60` with the default `Balance`, failing if fewer than 14 of the 24 lineage-worlds (8 lineages × 3 seeds) still hold 4 members with 2 adults, or the score drops below 7 of 12. The current rules make 21 of 24 and 10.4, so only a rule change that wrecks coexistence trips it; thresholds are env-overridable (`MIN_SURVIVORS`, `MIN_SCORE`, `SEEDS`, `DAYS`, `SIZE`). |
+| Balance smoke check | `scripts/balance-smoke.sh`: `evo-sim sweep --size 64 --trials 1 --seeds 3 --rounds 1 --days 60` with the default `Balance`, failing if fewer than 14 of the 24 lineage-worlds (8 lineages × 3 seeds) still hold 4 members with 2 adults, or the score drops below 7 of 12. The current rules make 23 of 24 and 11.54 (with the morphology on by default), so only a rule change that wrecks coexistence trips it; thresholds are env-overridable (`MIN_SURVIVORS`, `MIN_SCORE`, `SEEDS`, `DAYS`, `SIZE`). |
 | Client | `npm ci`, `npm run typecheck`, `npm test`, `npm run build` |
 | Android app | builds the client, generates the Capacitor project (`npx cap add android`), installs JDK 21 and the Android SDK (`android-actions/setup-android`: platform-tools, platform 36, build-tools 35.0.0), runs `./gradlew assembleDebug` and uploads `app-debug.apk` as the `evolution-mmo-debug-apk` artifact (14 days); then a second, plain-http build (`EVO_CAP_CLEARTEXT=1 npx cap sync android`, checked for `usesCleartextTraffic="true"` in the merged manifest) as `evolution-mmo-debug-apk-cleartext` for the emulator job |
 | Android emulator | after the Android job: enables KVM (GitHub's udev rule), builds `evo-server`, boots an API 34 `google_apis` x86_64 emulator (`reactivecircus/android-emulator-runner`, Pixel 6 profile, SwiftShader GPU; the AVD and a booted snapshot are cached) and runs `client/e2e/android-emulator.sh` on the cleartext APK: login, register, founder design, map and state frames, 25 s in the background and back with the socket recovered (see "Mobile apps" in [Client](#client)). Screenshots, logcat, the server log and `report.json` are uploaded as `android-emulator-smoke` (always) |
@@ -1554,7 +1554,13 @@ restores with the default morphology, each locus's origin tags copied from
 its anchor gene (eye loci from `Eyes`, ear loci from `Ears`, legs from
 `LegLength`, tail shape from `Tail`, snout from `Nose`), species
 representatives with the default morphology key, and
-`Balance::morph_step_rate` as 0 (`serde_util::before_v23`).
+`Balance::morph_step_rate` as 0 (`serde_util::before_v23`). Versions 10
+to 23 lack `Balance::morph_legacy` (version 24), which reads as 0:
+morphology alleles stay out of the legacy tally (`serde_util::before_v24`).
+Saves keep the rules they were made under: a world saved with the
+morphology tunables at 0 (every save from before *Morphology on by
+default*, which hold them as 0 or read them as 0) restores with them at 0;
+only new worlds get the new defaults.
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1615,7 +1621,8 @@ heading and the balance parameters `directional_vision` and `vision_scan`;
 version 23 the genomes' morphology segment (written whole after the
 stored values, and against the parents as a second section with its own
 exceptions and choice bits), species representatives' morphology keys and
-the balance parameter `morph_step_rate`.
+the balance parameter `morph_step_rate`; version 24 the balance parameter
+`morph_legacy`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -5340,8 +5347,9 @@ default-designed lineage does feel small snout effects either way
 bodies differ from their bare traits only through the snout, and not at
 all with the tunables at 0).
 
-Tunables (all 0 by default; with all four at 0 `apply` returns at once, so
-results are bit-identical; the spec's values are 1):
+Tunables (all 1, the spec's values, by default since [Morphology on by
+default](#morphology-on-by-default); saves from before read 0, and with all
+four at 0 `apply` returns at once, so results are bit-identical):
 
 | Tunable | Scales | Spec value |
 | --- | --- | --- |
@@ -5447,8 +5455,8 @@ dense vegetation and burrows (not in the open); long legs are tippy on
 slopes; fan ears raise heat tolerance and cost insulation (less with
 fur); four ears hear and locate better, no ears only feel vibration; a
 long snout smells better and snaps small prey, a flat face bites
-hardest. These tunables stay at 0 until the calibration pass of
-`docs/morphology.md` §4.
+hardest. The calibration pass of `docs/morphology.md` §4 turned all four
+on (see [Morphology on by default](#morphology-on-by-default)).
 
 Old saves keep the old rules: snapshots move to format version 21, and
 versions 10–20 read all four tunables as 0 (`serde_util::before_v21`).
@@ -5464,8 +5472,8 @@ restore) from the genome's expressed loci and the phenotype
 
 | Reader | What | Behind |
 | --- | --- | --- |
-| `stats::derive_with(pheno, morph)` | the eye geometry (`Traits::vision`: count, azimuth, size, snout occlusion) and the ears' localization in `Traits::morph` | the geometry is read only by directional vision, `directional_vision` (0); no rule reads localization yet |
-| `morph_effects::apply` (`World::insert`, restore) | ear count and shape, leg count, tail shape and snout effects on stats and body | `morph_effects`, `morph_tail_drag`, `morph_tail_chill`, `morph_long_legs` (all 0) |
+| `stats::derive_with(pheno, morph)` | the eye geometry (`Traits::vision`: count, azimuth, size, snout occlusion) and the ears' localization in `Traits::morph` | the geometry is read only by directional vision, `directional_vision` (1); no rule reads localization yet |
+| `morph_effects::apply` (`World::insert`, restore) | ear count and shape, leg count, tail shape and snout effects on stats and body | `morph_effects`, `morph_tail_drag`, `morph_tail_chill`, `morph_long_legs` (all 1) |
 | `GroupTrait::is_carrier_with` | an earless body carries no alarm calls | structural (always on; only designed earless bodies are affected) |
 | LOD cohorts (`Rep::compute`) | the same effects for cohort representatives | the `morph_*` tunables |
 | kinship, species, fertility | the morphology key (`morph_terms`) | always on; exactly 0 between equal body plans |
@@ -5474,21 +5482,23 @@ restore) from the genome's expressed loci and the phenotype
 `stats::derive(pheno)` remains for code with only a phenotype: it uses
 `Morphology::wild_type(pheno)` (the contract defaults with that phenotype's
 sizes). Every preset and wild species has the default discrete body plan,
-so with every tunable at its default the worlds run bit for bit as before:
-the sweep from seed 31 still prints 11.74 and the client wire fixture is
-unchanged. A designed body plan (the editor's Builder mode sends `morph`)
+so with every morphology tunable at 0 the worlds run bit for bit as before
+the morphology work (the sweep from seed 31 prints 11.74); with today's
+defaults (all on) it prints 11.60, see [Morphology on by
+default](#morphology-on-by-default). A designed body plan (the editor's Builder mode sends `morph`)
 founds organisms that carry it, look it (`designed_morphology_shows_in_state_frames`,
 and the browser smoke test checks a third eye in `look` and in the sprite
 key) and pass it on by the dominance rule (`world::morph_tests`: young of a
 six-legged, three-eyed, fin-tailed design are the same; a cross with a
 default lineage shows the wild type and carries the design, which returns
 in a quarter of the second generation). Its stat effects and eye geometry
-play out once the tunables are turned on by the calibration pass of
+play out under the tunables, on by default since the calibration pass of
 `docs/morphology.md` §4.
 
 ### Directional vision
 
-`vision`, `Balance::directional_vision`, off by default. Eyes see fields
+`vision`, `Balance::directional_vision`, on (1) by default since
+[Morphology on by default](#morphology-on-by-default). Eyes see fields
 around the way the animal faces, as in the morphology spec (`docs/morphology.md`, contract v1):
 
 - **Heading.** `Organism::heading` is the unit vector of its last movement
@@ -5552,6 +5562,109 @@ Cost (callgrind, `evo-sim bench --days 5 --threads 1`, same world): off,
 results bit-identical. On, the decide phase costs 6,236 instructions per
 call against 6,265 off (the world differs, so only per-call figures
 compare): the per-neighbor lookup is lost in the noise.
+
+### Morphology on by default
+
+The calibration pass of `docs/morphology.md` §4 (decision 16). Every
+morphology mechanic that was built behind a tunable at 0 is now on by
+default, at the spec's value:
+
+| Group | Tunables (default now) |
+| --- | --- |
+| Body plan effects | `morph_effects`, `morph_tail_drag`, `morph_tail_chill`, `morph_long_legs` (1) |
+| Directional vision | `directional_vision` (1; `vision_scan` 1, unchanged) |
+| Step mutation of counts and shapes | `morph_step_rate` (0.0005) |
+| Morphology alleles in the legacy tally | `morph_legacy` (1, new: snapshot version 24) |
+
+`morph_legacy` is new: above 0.5 the legacy tally (`LegacySnapshot`, cohorts
+included) and niche leaders count each genome's 14 morphology alleles under
+their own origin tags (`Genome::count_origins_with` /
+`tally_origins_with`), as the spec's decision 5 asks; the allele origins
+shown to players (`genetics::allele_origins`) and species samples still
+count the 100 gene alleles only. A founder's morphology alleles carry its
+designer's tag like its genes, so a pure lineage's share is unchanged; the
+morphology segment only shifts shares through hybrids and mutations.
+`Balance::morphology_off()` gives any rule set with all seven off (default
+worlds then run bit for bit as before the morphology work).
+
+**Old saves keep their rules.** The first six tunables are in every save
+since versions 21–23 (written as the 0 they ran under), and older saves read
+them as 0; `morph_legacy` is new in snapshot version 24 and versions 10–23
+read it as 0 (`serde_util::before_v24`). So a restored world keeps the rules
+it was saved under, and only new worlds start with the morphology on; a
+server that wants an old world under the new rules sets them by hand at a
+season boundary (the spec's decision 5 deploys the legacy change then).
+
+**Measured** (each group alone and together, against the previous defaults;
+12-seed sweeps at 96×96, 120 days; `compare --adaptive` from seed 101 at
+±0.3 tolerance; "lost" is a lineage dying out on one seed):
+
+| | Sweep, seed 31 | Held-out sweep, seed 55 | `compare --adaptive` A − B (sequential 95% CI, seeds) |
+| --- | --- | --- | --- |
+| Previous defaults (all off) | 11.74 ± 0.33 | 11.81 ± 0.25 | |
+| Body plan effects | 11.40 ± 0.56 (newts, foxes, pack hunters each lost once) | 11.75 ± 0.31 | −0.09 (−0.26 … +0.08, 36) |
+| Directional vision | 11.50 ± 0.48 (newts, pack hunters lost once) | 11.83 ± 0.25 | −0.10 (−0.23 … +0.03, 24) |
+| Step mutation 0.0005 | 11.74 ± 0.33 | 11.82 ± 0.25 | +0.00 (identical worlds, 12) |
+| Legacy inclusion | unchanged (scoring only; no rule reads legacy) | unchanged | |
+| **All (the new defaults)** | **11.60 ± 0.40** (pack hunters lost once) | **11.52 ± 0.38** (newts, pack hunters lost once) | −0.11 (−0.28 … +0.05, 24) |
+
+No group, and not the combination, has a difference that matters in the
+paired compare (every sequential interval lies inside ±0.3). The combination
+keeps both sweeps within ±0.3 of their baselines (−0.14 and −0.29). The body
+plan effects alone are 0.34 under at seed 31, from three single-seed losses
+in three different lineages; neither half reproduces it (snout and shape
+effects alone, `morph_effects` 1: 11.64; tail drag, tail chill and long legs
+alone: 11.76), the held-out sweep is −0.06 and the paired compare −0.09, so
+it is sweep noise and no coefficient was tuned. In the paired compares no
+lineage's survival moved significantly; significant mean-alive and legacy
+moves were small: body effects, meadow voles +70 ± 56 mean alive and herd
+grazers −1.4 ± 1.4 pp legacy; vision, toxic frogs +39 ± 34 mean alive
+(+2.2 ± 2.0 pp) and burrowing omnivores −1.6 ± 1.3 pp; all together, none.
+Step mutation left the 12 compare worlds identical: a mutant count is a
+hidden recessive (the wild type is dominant), so in 120 days it changes
+nobody's expressed body.
+
+Tournaments on the four fresh sets 70001–, 80001–, 90001–, 100001– (384
+worlds, 1536 entries, 90 days; `calibrate tournament` with all seven on),
+paired with the baselines of *Trait downsides* (same designs, which
+reproduce bit for bit at the old defaults; win share, mean final share and
+its paired change ± one standard error). The random designs keep the
+default body plan, so this tests whether default bodies are disturbed
+(snout and eye-azimuth variation, tail drag and chill, long legs, blind
+spots):
+
+| Pooled 384 worlds | Before | After (paired change) |
+| --- | --- | --- |
+| Cold abandoned eggs | 22.0% (0.078) | 22.4% (0.079; +0.001 ± 0.002) |
+| Cold incubated eggs | 32.1% (0.097) | 32.9% (0.099; +0.002 ± 0.002) |
+| Cold live birth | 29.2% (0.082) | 24.8% (0.079; −0.003 ± 0.002) |
+| Warm abandoned eggs | 6.7% (0.033) | 7.7% (0.033; +0.000 ± 0.001) |
+| Warm incubated eggs | 31.6% (0.097) | 33.6% (0.103; +0.006 ± 0.002) |
+| Warm live birth | 31.0% (0.108) | 31.0% (0.109; +0.001 ± 0.003) |
+
+The pooled top class moves from 32.1% (cold incubators) to 33.6% (warm
+incubators, the one change beyond two standard errors, mostly from set
+90001–); per set the top class is 37.3% (70001–, warm incubators; 38.8%
+before), 33.9% (80001–, warm live; 38.7%), 41.5% (90001–, warm incubators;
+38.9% cold incubators before) and 32.9% (100001–; 32.8%), within the
+one-set noise seen before. By trait (paired change of mean final share):
+designs with a tail +0.001 ± 0.002 (263 entries), long legs +0.001 ±
+0.003 (249), burrowing −0.000 ± 0.002 (272), large eyes +0.002 ± 0.002
+(279), hunters (carnivory ≥ 0.45) +0.001 ± 0.001, all +0.001 ± 0.001.
+
+**Cost.** Callgrind, `evo-sim bench --days 10 --threads 1` (96×96, about
+2,200 organisms): `World::step` takes 18.64 G instructions with the
+defaults against 19.20 G with `morphology_off` (2,220 against 2,216
+organisms on average), −3% per organism-tick (the worlds differ, so this is
+within noise; the per-neighbor vision lookup was measured at no cost in
+*Directional vision*), well inside the 5% budget. Body plan effects are
+applied once at birth and the legacy tally once a day.
+
+The standard sweep's new baseline is **11.60** from seed 31 (11.52 from 55);
+`scripts/balance-smoke.sh` thresholds are unchanged. `evo-sim sweep` now
+prints parameters in full where three decimals would be more than 1% off,
+so its "Try it" line keeps `morph_step_rate=0.0005`. The client wire
+fixture was regenerated (its short session plays out differently).
 
 ## Point costs
 

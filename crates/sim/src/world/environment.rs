@@ -136,7 +136,9 @@ impl World {
         let adults = || self.organisms.iter().filter(|o| o.is_breeding_adult());
         self.group.update(adults().map(|o| (o.pos, &o.pheno, &o.morph)));
         let breeding = self.organisms.par_iter().filter(|o| o.is_breeding_adult());
-        let mut snapshot = LegacySnapshot::compute_par(self.day(), breeding.map(|o| (&*o.genome, o.offspring_raised)));
+        let morph = self.config.balance.morph_in_legacy();
+        let mut snapshot =
+            LegacySnapshot::compute_par(self.day(), breeding.map(|o| (&*o.genome, o.offspring_raised)), morph);
         if self.config.lod.enabled {
             self.lod_legacy(&mut snapshot);
         }

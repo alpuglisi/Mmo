@@ -873,6 +873,7 @@ impl World {
     /// stands for `adults / pool size` breeding adults.
     pub(super) fn lod_legacy(&self, s: &mut LegacySnapshot) {
         let today = self.today();
+        let morph = self.config.balance.morph_in_legacy();
         for (_, c) in self.cohorts() {
             if c.pool.is_empty() {
                 continue;
@@ -886,9 +887,9 @@ impl World {
             let w = adults / c.pool.len() as f64;
             let rw = c.raised / c.pool.len() as f64;
             for e in &c.pool {
-                e.genome.tally_origins(w, &mut s.alleles);
+                e.genome.tally_origins_with(w, &mut s.alleles, morph);
                 if rw > 0.0 {
-                    e.genome.tally_origins(rw, &mut s.weighted);
+                    e.genome.tally_origins_with(rw, &mut s.weighted, morph);
                 }
             }
         }

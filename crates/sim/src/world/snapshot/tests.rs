@@ -14,9 +14,10 @@ fn possessed(w: &World) -> Option<&crate::organism::Organism> {
 /// dormancy comes quickly, a possessed organism with a move order, daily
 /// species detection. The seed is one whose world has every kind of state
 /// the test asserts (seed 22 lost its LOD cohorts when the pack-hunter
-/// design shrank).
+/// design shrank; seed 23 its second pregnancy when the morphology rules
+/// came on by default).
 fn busy_world() -> World {
-    let mut config = WorldConfig { seed: 23, width: 96, height: 96, days_per_year: 16, ..Default::default() };
+    let mut config = WorldConfig { seed: 29, width: 96, height: 96, days_per_year: 16, ..Default::default() };
     config.lod.enabled = true;
     config.scoring.catastrophes = true;
     config.scoring.catastrophe_first_year = 0;
@@ -53,8 +54,11 @@ fn tag_mutations(w: &mut World) {
         if i % 2 == 0 {
             g.set_morph(odd_morph(&g, 9));
         }
-        w.organisms[i].genome = Arc::new(g);
-        w.organisms[i].refresh_derived();
+        let o = &mut w.organisms[i];
+        o.genome = Arc::new(g);
+        o.refresh_derived();
+        // As `World::insert` and a restore do: the body plan's effects.
+        crate::morph_effects::apply(&mut o.traits, &o.pheno, &o.morph, &w.config.balance);
     }
 }
 
@@ -290,9 +294,20 @@ fn header_and_errors() {
     assert!(!w.config.snapshot_compatible(&resized));
 }
 
-/// A small world, 1 day and 7 ticks in.
+/// The morphology rules as they were before they were on by default
+/// (version 24): body plan effects, directional vision, step mutation and
+/// morphology alleles in the legacy tally all off, which is what snapshots
+/// older than each of them read. Worlds that stand for older saves use them,
+/// so a restore from an older version compares equal.
+fn old_morph_rules(mut config: WorldConfig) -> WorldConfig {
+    config.balance = config.balance.morphology_off();
+    config
+}
+
+/// A small world, 1 day and 7 ticks in, under the old morphology rules
+/// ([`old_morph_rules`]).
 fn fixture_world() -> World {
-    let mut w = World::new(WorldConfig { seed: 3, width: 32, height: 32, ..Default::default() });
+    let mut w = World::new(old_morph_rules(WorldConfig { seed: 3, width: 32, height: 32, ..Default::default() }));
     for (owner, design) in presets::wild_designs().into_iter().take(2) {
         w.found_lineage_unchecked(owner, &design.founders(6));
     }
@@ -546,9 +561,10 @@ fn version_16_snapshots_restore_without_the_home_range() {
 }
 
 /// A world laying eggs and raising young, for the genomes written against
-/// their parents': day 9 of a small world.
+/// their parents': day 9 of a small world, under the old morphology rules.
 fn laying_world() -> World {
-    let mut w = presets::standard_world(WorldConfig { seed: 5, width: 64, height: 64, ..Default::default() }, 1);
+    let config = old_morph_rules(WorldConfig { seed: 5, width: 64, height: 64, ..Default::default() });
+    let mut w = presets::standard_world(config, 1);
     w.run_days(9);
     w
 }
@@ -699,6 +715,28 @@ fn version_21_snapshots_restore_without_headings() {
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v21() == old);
+}
+
+/// Version 23 snapshots (before `Balance::morph_legacy`) restore with
+/// morphology alleles left out of the legacy tally, and are otherwise the
+/// same world.
+#[test]
+fn version_23_snapshots_restore_without_morph_legacy() {
+    let mut w = fixture_world();
+    w.config.balance.morph_legacy = 1.0;
+    let old = w.snapshot_v23();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 23);
+    assert!(h.restorable());
+    // Without the parameter (an f32), against a version 24 snapshot.
+    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.morph_legacy, crate::serde_util::before_v24::OLD_VALUE);
+    assert!(!r.config.balance.morph_in_legacy());
+    w.config.balance.morph_legacy = crate::serde_util::before_v24::OLD_VALUE;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v23() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

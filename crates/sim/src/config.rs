@@ -624,23 +624,24 @@ pub struct Balance {
     pub scale_cover: f32,
     /// Strength of the body plan's count, shape and snout effects
     /// (`morph_effects`: ear count and shape, leg count, tail shape, snout
-    /// length). Neutral at the default body whatever its value; 0 (the
-    /// default) leaves every body as `stats::derive` made it; 1 is the
-    /// spec's formulas (README, *Body plan effects*).
+    /// length). Neutral at the default body whatever its value; 0 leaves
+    /// every body as `stats::derive` made it; 1 is the spec's formulas and
+    /// the default (README, *Body plan effects* and *Morphology on by
+    /// default*). Saves from before version 21 read 0.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v21"))]
     pub morph_effects: f32,
     /// Tail drag: burrowing ×(1 − 0.2·T·k) and `0.2·T·k` of speed lost per
-    /// unit of vegetation density, for tail length `T`. 0 is off (the
-    /// default); 1 is the spec's value.
+    /// unit of vegetation density, for tail length `T`. 0 is off; 1 is the
+    /// spec's value and the default.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v21"))]
     pub morph_tail_drag: f32,
-    /// Heat loss of a thin or fin tail: insulation −0.05·T·k. 0 is off (the
-    /// default); 1 is the spec's value.
+    /// Heat loss of a thin or fin tail: insulation −0.05·T·k. 0 is off; 1 is
+    /// the spec's value and the default.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v21"))]
     pub morph_tail_chill: f32,
     /// Long legs are tippy (stability ×(1 − 0.3·LegLength·k)) and dig worse
-    /// (burrowing −0.2·LegLength·k). 0 is off (the default); 1 is the spec's
-    /// value.
+    /// (burrowing −0.2·LegLength·k). 0 is off; 1 is the spec's value and
+    /// the default.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v21"))]
     pub morph_long_legs: f32,
     /// Directional vision (`crate::vision`; README, *Directional vision*):
@@ -651,8 +652,9 @@ pub struct Balance {
     /// (hearing and smell still work; see `vision_scan` for an animal
     /// standing still), and a hunter's kill chance is multiplied by
     /// `1 + 0.35 k (min(binocular, 90) - 20) / 90` (depth judgment; 1 at
-    /// the default eyes). 0 (the default) is off and leaves every result
-    /// unchanged.
+    /// the default eyes). 0 is off and leaves every result as before the
+    /// mechanic; 1 is the default (README, *Morphology on by default*).
+    /// Saves from before version 22 read 0.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v22"))]
     pub directional_vision: f32,
     /// Scanning under directional vision: an organism standing still (no
@@ -663,12 +665,43 @@ pub struct Balance {
     pub vision_scan: f32,
     /// Probability per allele per generation that a discrete morphology
     /// allele (eye, ear or leg count, ear or tail shape; `crate::morph`)
-    /// mutates one step. The spec recommends 0.0005; it is 0 (off) by
-    /// default so worlds run bit for bit as before the morphology loci
-    /// (an expressed mutant count changes kinship and fertility) until a
-    /// balance package turns it on. Snapshots before version 23 read 0.
+    /// mutates one step. The default is the spec's 0.0005
+    /// (`morph::RECOMMENDED_STEP_RATE`); 0 runs bit for bit as before the
+    /// morphology loci (an expressed mutant count changes kinship and
+    /// fertility). Snapshots before version 23 read 0.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v23"))]
     pub morph_step_rate: f32,
+    /// Whether the morphology segment's alleles count in the legacy tally
+    /// (`LegacySnapshot`, cohorts included; above 0.5 is on): the spec counts
+    /// them like any allele (`docs/morphology.md`, decisions 5, 13 and 16;
+    /// 1, the default). Niche leaders count them the same way. Snapshots
+    /// before version 24 read 0 (not counted).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v24"))]
+    pub morph_legacy: f32,
+}
+
+impl Balance {
+    /// Whether the legacy tally counts morphology alleles
+    /// (`morph_legacy` above 0.5).
+    pub fn morph_in_legacy(&self) -> bool {
+        self.morph_legacy > 0.5
+    }
+
+    /// These rules with every morphology mechanic off, as before they were
+    /// on by default (snapshot version 24): the four body plan tunables,
+    /// directional vision, step mutation and morphology alleles in the
+    /// legacy tally. Default-designed worlds then run bit for bit as before
+    /// the morphology work (`vision_scan` is inert with vision off).
+    pub fn morphology_off(mut self) -> Self {
+        self.morph_effects = 0.0;
+        self.morph_tail_drag = 0.0;
+        self.morph_tail_chill = 0.0;
+        self.morph_long_legs = 0.0;
+        self.directional_vision = 0.0;
+        self.morph_step_rate = 0.0;
+        self.morph_legacy = 0.0;
+        self
+    }
 }
 
 /// How a shielded home range softens predation (`World::set_home_ranges`).
@@ -792,19 +825,20 @@ impl Default for Balance {
             warm_upkeep: 0.0,
             fang_grazing: 0.5,
             scale_cover: 0.5,
-            morph_effects: 0.0,
-            morph_tail_drag: 0.0,
-            morph_tail_chill: 0.0,
-            morph_long_legs: 0.0,
-            directional_vision: 0.0,
+            morph_effects: 1.0,
+            morph_tail_drag: 1.0,
+            morph_tail_chill: 1.0,
+            morph_long_legs: 1.0,
+            directional_vision: 1.0,
             vision_scan: 1.0,
-            morph_step_rate: 0.0,
+            morph_step_rate: crate::morph::RECOMMENDED_STEP_RATE,
+            morph_legacy: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 100;
+    pub const FIELD_COUNT: usize = 101;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -914,6 +948,7 @@ impl Balance {
             ("directional_vision", &mut self.directional_vision),
             ("vision_scan", &mut self.vision_scan),
             ("morph_step_rate", &mut self.morph_step_rate),
+            ("morph_legacy", &mut self.morph_legacy),
         ]
     }
 

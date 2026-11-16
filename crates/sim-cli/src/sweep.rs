@@ -583,10 +583,10 @@ pub fn sweep(args: &SweepArgs) {
     print_lineage_table(&best.scored, &lineage_names);
     println!("Balance {{");
     for ((name, v), (_, d)) in best.balance.fields().iter().zip(Balance::default().fields()) {
-        println!("    {name}: {v:.3},  // default {d}");
+        println!("    {name}: {},  // default {d}", param(*v));
     }
     println!("}}");
-    let sets: Vec<String> = best.balance.fields().iter().map(|(n, v)| format!("--set {n}={v:.3}")).collect();
+    let sets: Vec<String> = best.balance.fields().iter().map(|(n, v)| format!("--set {n}={}", param(*v))).collect();
     println!("\nTry it: evo-sim run {}", sets.join(" "));
     let changed = changed_sets(&best.balance, &Balance::default());
     if changed.len() > 4 {
@@ -614,6 +614,16 @@ fn fmt_ci(ci: f64) -> String {
 }
 
 /// `--set` flags for the parameters of `b` that differ from `base`.
+/// A parameter value to three decimals, or in full where three decimals
+/// would be more than 1% off (`morph_step_rate` 0.0005 printed as 0.001).
+fn param(v: f32) -> String {
+    let short = format!("{v:.3}");
+    match short.parse::<f32>() {
+        Ok(r) if (r - v).abs() <= 0.01 * v.abs() => short,
+        _ => format!("{v}"),
+    }
+}
+
 fn changed_sets(b: &Balance, base: &Balance) -> Vec<String> {
     b.fields()
         .iter()

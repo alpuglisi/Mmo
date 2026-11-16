@@ -692,18 +692,21 @@ settled on 2026-11-16 as recommended:
 10. Wings with 4+ legs: allowed as extra limbs costing mass and upkeep; with
     2 legs the wings are the forelimbs.
 11. Directional vision on by default only after calibration keeps the
-    standard sweep within ±0.3 of its baseline (11.76).
+    standard sweep within ±0.3 of its baseline (11.76; 11.74 after the
+    trait downsides). Done in decision 16.
 12. Allele cap: morphology loci go in a separate genome segment with their own
     choice bits and random stream, so default-morphology worlds stay
     bit-identical.
 13. Genome package deviations (accepted 2026-11-16, keeps existing worlds
     bit-identical): discrete count/shape mutation is a tunable
     `morph_step_rate`, default 0, to be enabled by the morphology balance
-    package; `eye_azimuth` and `snout_length` stay out of the genetic distance
-    for now; morphology alleles carry origin tags but stay out of the legacy
-    tally until the deployment at a season boundary (decision 5).
+    package (done: decision 16); `eye_azimuth` and `snout_length` stay out
+    of the genetic distance for now; morphology alleles carry origin tags
+    but stay out of the legacy tally until the deployment at a season
+    boundary (decision 5; now `morph_legacy`, on for new worlds: decision
+    16).
 14. Snapshot versions: v20 trait downsides, v21 body plan effects (package D),
-    v22 directional vision, v23 morphology genome loci.
+    v22 directional vision, v23 morphology genome loci, v24 `morph_legacy`.
 15. Wiring (2026-11-16): the genome's expressed `morph::Morphology`
     (`Organism::morph`) is the one body plan; `morph_effects::BodyPlan` is
     that type. It feeds the eye geometry and ear localization at birth
@@ -712,3 +715,31 @@ settled on 2026-11-16 as recommended:
     bodies carry no alarm calls (structural). Defaults stay bit-identical;
     with the tunables on, founders' snout and eye-azimuth variation gives
     default-designed lineages small effects around zero.
+16. On by default (calibration pass, 2026-11-16): the body plan effects
+    (`morph_effects`, `morph_tail_drag`, `morph_tail_chill`,
+    `morph_long_legs` at 1), directional vision (`directional_vision` 1,
+    `vision_scan` 1), step mutation (`morph_step_rate` 0.0005) and
+    morphology alleles in the legacy tally (new `Balance::morph_legacy` 1,
+    snapshot version 24) are the defaults, all at the spec's values: no
+    coefficient needed tuning. Each group alone and all together showed no
+    difference that matters against the previous defaults in
+    `compare --adaptive` from seed 101 (body −0.09, sequential CI
+    −0.26 … +0.08 on 36 seeds; vision −0.10, −0.23 … +0.03 on 24; step
+    +0.00, identical worlds on 12; all −0.11, −0.28 … +0.05 on 24). The
+    standard sweep with everything on scores 11.60 from seed 31 (baseline
+    11.74) and 11.52 from the held-out seed 55 (baseline 11.81), both within
+    ±0.3, so the standard sweep's baseline is now 11.60. Alone, vision
+    scored 11.50 / 11.83 and step mutation 11.74 / 11.82; the body effects
+    alone scored 11.40 at seed 31 (three single-seed losses in three
+    lineages, reproduced by neither half: 11.64 and 11.76) and 11.75 at 55,
+    read as sweep noise given the paired compare. Legacy inclusion changes
+    no rule (scoring only). Pooled tournaments (384 worlds, default body
+    plans, paired with the trait-downsides baselines): no class moved by
+    more than 0.006 of mean final share (warm incubators +0.006 ± 0.002,
+    cold live bearers −0.003 ± 0.002); the pooled top class went from 32.1%
+    to 33.6%. Tick cost within noise (callgrind: −3% per organism-tick).
+    Saves keep the rules they were made under (the tunables are stored since
+    versions 21–23 and read as 0 before; `morph_legacy` reads 0 before
+    version 24), so the legacy change reaches a running world only when a
+    server sets it, at a season boundary as decision 5 says. Numbers in the
+    README, *Morphology on by default*.

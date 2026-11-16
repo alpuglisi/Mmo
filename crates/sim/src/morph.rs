@@ -34,13 +34,11 @@
 //! the world after inheritance): a count moves one step (legs and ears two)
 //! up or down, a shape to an adjacent one in its dominance order; at the end
 //! of the range it moves inward, so a mutation always changes the allele. The
-//! spec recommends a rate of 0.0005; the default is **0 (off)**: an expressed
-//! mutant count changes kinship and fertility, so with it on no existing
-//! world would be guaranteed to run bit for bit as before (the calibrated
-//! sweep, `evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed
-//! 31`, prints 11.76 at 0 and at 0.0005 too, but an earlier variant drawing
-//! the same rate from another stream printed 11.77). A balance package turns
-//! it on. Mutations are
+//! spec's rate, 0.0005 ([`RECOMMENDED_STEP_RATE`]), is the default since the
+//! calibration pass (README, *Morphology on by default*); saves from before
+//! keep 0, which leaves a world bit for bit as before these loci (an
+//! expressed mutant count changes kinship and fertility). In the 12-seed
+//! sweeps it moved the score by at most 0.01. Mutations are
 //! tagged with the offspring's owner. All of it draws from a stream of the
 //! genome's own (`Genome::morph_rng`), never from the shared streams, so a
 //! world founds, breeds and mutates its genes bit for bit as before these
@@ -71,10 +69,12 @@
 //! the loci mutate at the gene rate), so they stay out of the distance here,
 //! like the seasonal genes; a balance package can add them.
 //!
-//! **Legacy.** Morphology alleles carry origin tags but are not counted in
-//! `Genome::tally_origins` / `count_origins` yet (the spec counts them):
-//! counting them shifts every existing legacy share. A balance package
-//! decides, with the season-boundary deploy the spec asks for.
+//! **Legacy.** Morphology alleles carry origin tags and count in the legacy
+//! tally (and niche leaders) under `Balance::morph_legacy`, on by default
+//! (`Genome::tally_origins_with` / `count_origins_with`); saves from before
+//! snapshot version 24 read it as 0, so a running world's shares don't jump
+//! mid-season. `tally_origins` / `count_origins` (allele origins shown to
+//! players, species samples) leave them out.
 //!
 //! **Effects.** [`Morphology`] is the one body plan every package reads: it
 //! is computed at birth (`Organism::morph`), `stats::derive_with` builds the
@@ -377,7 +377,7 @@ pub struct MorphLocusPair {
     pub b: MorphAllele,
 }
 
-/// The spec's recommended `Balance::morph_step_rate` (the default is 0).
+/// The spec's recommended `Balance::morph_step_rate`, its default.
 pub const RECOMMENDED_STEP_RATE: f32 = 0.0005;
 
 /// Alleles in [`MorphGenes`]: two per discrete and per continuous locus.
