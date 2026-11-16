@@ -1590,6 +1590,9 @@ representatives with the default morphology key, and
 `Balance::morph_step_rate` as 0 (`serde_util::before_v23`). Versions 10
 to 23 lack `Balance::morph_legacy` (version 24), which reads as 0:
 morphology alleles stay out of the legacy tally (`serde_util::before_v24`).
+Versions 10 to 24 lack `Balance::roaming_forage` (version 25), which reads
+as 100, off, the rule they ran under and still the default
+(`serde_util::before_v25`).
 Saves keep the rules they were made under: a world saved with the
 morphology tunables at 0 (every save from before *Morphology on by
 default*, which hold them as 0 or read them as 0) restores with them at 0;
@@ -1655,7 +1658,7 @@ version 23 the genomes' morphology segment (written whole after the
 stored values, and against the parents as a second section with its own
 exceptions and choice bits), species representatives' morphology keys and
 the balance parameter `morph_step_rate`; version 24 the balance parameter
-`morph_legacy`.
+`morph_legacy`; version 25 the balance parameter `roaming_forage`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -5756,6 +5759,100 @@ The standard sweep's new baseline is **11.60** from seed 31 (11.52 from 55);
 prints parameters in full where three decimals would be more than 1% off,
 so its "Try it" line keeps `morph_step_rate=0.0005`. The client wire
 fixture was regenerated (its short session plays out differently).
+
+### Predators over the years
+
+The genetics harness's ecology level (`evo-sim genetics --long --level
+ecology`, 15 years) lost the red fox and the pack hunters on all four
+worlds, between day 200 and day 520 (a year is 120 days). Every tuning
+measure here runs 120 days, one year, and at 120 days both predators are
+fine (sweep from seed 31: foxes 12 of 12, pack hunters 11 of 12). Over
+longer runs (`examples/predlong`, read only, below; standard world 96×96):
+
+| Run | Red fox | Pack hunters |
+| --- | --- | --- |
+| Sweep from seed 31, 8 seeds, 730 days (6 years): survived | 0 of 8 | 0 of 8 (score 6.67) |
+| `predlong 3`, seeds 31–34: died out on day | 309, 320, 303; one alive (3) | 330, 254; two alive (2, 5) |
+| Same, 2 years, `Balance::morphology_off()` | 240; three alive | 185; three alive |
+
+**Not the morphology.** With every morphology mechanic off (the rules
+before *Morphology on by default*, bit for bit) the predators fall the
+same way, so the extinction predates it; directional vision, depth for
+strikes and the body plan effects are not the cause.
+
+**The mechanism** (seeds 31–34, `predlong`):
+
+1. *Predators live on plants.* Temporary feeding counters (not kept): about
+   95% of a fox's or pack hunter's food is plants nibbled at 0.3 of a graze
+   while courting, resting or drinking, 5% meat (as *Why founding hunters
+   catch so little* found for founding packs). A predator catches 0.02–0.2
+   prey a day; 92% of its hunting ticks are roaming with no prey in sight
+   (half the voles are in their burrows; newts brumate in winter).
+2. *Roaming eats nothing.* A carnivore above 0.7 that is hungry with no prey
+   in sight roams under `Action::Hunt`, which, unlike every other errand,
+   neither nibbles nor drinks on the way.
+3. *Mothers roam, males court.* A pregnant female can't court, and one with
+   young barely does, so when hungry she roams: pregnant and nursing
+   females hunt 65–75% of the time at mean hunger 70–80 (thirst 40–47),
+   while males court 40–70% of the time, nibbling, at hunger 37–49. Adult
+   females die of starvation and thirst out of proportion (pregnant ones
+   at 40% of them), and the adult sex ratio runs from 1:1 at founding to
+   1:2–1:5 within the first year; the collapses followed end with males
+   only (fox on seed 34: 11 F / 13 M on day 30, 5 / 22 on day 60, 0 / 15 on
+   day 210, no birth after day 180 while 15–20 males still lived). Without
+   any breeding (a probe) both sexes die at the same rate.
+4. *Winter cuts the plants.* Starvation peaks in every winter (a third to
+   half of the predators die in the first one); summers rebuild less each year once the
+   herbivores fill to their caps, and with too few females the second or
+   third winter ends the lineage.
+
+**Levers tried**, 3–4 years on seeds 31–34 (survived: fox, pack hunters,
+of 4; the prey count is the meadow voles at the end):
+
+| Change | Survived | Note |
+| --- | --- | --- |
+| Defaults | 1, 2 (3 years) | |
+| `carnivore_hunger_discount` 0.55 / 0.65 | 4, 3 (3 yr) / 2, 1 (4 yr) | 0.65: packs boom to 470, then crash to females 0 |
+| `meat_per_kg` 8, `escape` 0.5, `search_image` 0, `stealth_effect` 0.2, `perception_range` 6 | 0–2, 0–3 | |
+| `lactation` 1 / 0.5, `pregnancy_cost` 0.4 / 0 | 2, 4 / 1, 3 / 3, 3 / 4, 4 (2 yr) | still falling, still male-biased |
+| No milk cost (probe) / a mother nurses only below hunger 60 or 40 (probe) | 4, 4 (2 yr) / 2, 2; 2, 3 | still falling |
+| A female conceives only below hunger 40–60 (probe) | 0–2, 1–2 | |
+| Pregnant live bearers at full speed (probe; 0.7 now) | 3, 0 | |
+| **`roaming_forage` 70** (below) | **4, 4** | voles down to 0 and 2 on two seeds by year 3, newts 0 on one |
+| `roaming_forage` 85; 75 and 80 with roaming drinking too | 3, 3 (3 yr); 1, 2 and 1, 2 (4 yr) | 85 still falling |
+| Roaming forage for females only, at 60 / 85 (probe) | 4, 4 / 2, 2 (4 yr) | 60: sex ratio flips to 172 F / 4 M; voles, antelope and herd grazers die out on seed 31 |
+
+Feeding the predators more (any forage or hunger lever) lets them
+persist only by making them plant-fed generalists whose numbers no
+longer follow their prey's, and then they wipe out the voles and newts
+(apparent competition); fed less, they run out of females. No single
+tunable keeps both predators and their prey over the years: the
+predators' food budget (plants while courting, almost no meat, nothing in
+winter) is a design problem, the one *Why founding hunters catch so
+little* already named, now seen over the years rather than in the founding
+phase. Candidates for that work: predators that live on meat (more prey
+found, so their numbers follow prey), a winter food source for carnivores
+(autumn fat, caching, carcasses), and something that ends a boom before
+the prey do (territories or predator density in breeding).
+
+**Decision 1: no default changes.** The standard sweep (11.60), compare and
+tournaments are unchanged. `roaming_forage` (`Balance`, new, off at 100)
+is the starving-roaming-forage rule of *Why founding hunters catch so
+little*: a hunter roaming with no prey in sight nibbles plants at 0.3 of a
+graze once its hunger is above it. It is kept as a tunable for that design
+work: at 70 the sweep from seed 31 scores 11.46 (80: 11.51, 85: 11.68;
+voles 114 / 123 / 214 mean alive against 380), every predator survives
+120 days, and both predators survive 3 years on every seed, at the
+voles' cost. Snapshots move to format version 25 (the new field; versions
+10–24 read it as 100, `serde_util::before_v25`).
+
+`cargo run --release --example predlong -- 3 31 32 33 34` prints the
+diagnosis: per predator every 60 days (`--every`) head counts, births,
+hunger, deaths by cause, adult females and males, kills by prey and the
+action shares; per seed the adults' time budget by sex and state
+(pregnant, mother of unweaned young) and deaths by sex, stage and cause;
+the seeds each predator survived. `--set NAME=V` and `--off`
+(`morphology_off`) change the rules.
 
 ## Genetics validation
 

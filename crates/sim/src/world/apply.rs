@@ -185,6 +185,11 @@ impl World {
             Action::Hunt => {
                 if let Some(j) = intent.target_org {
                     self.attack(i, j, rng);
+                } else if self.organisms[i].needs.hunger > self.config.balance.roaming_forage {
+                    // Starving roaming forage (`Balance::roaming_forage`, off
+                    // by default): no prey in sight, so nibble plants as on
+                    // any other errand.
+                    self.eat_plants(i, 0.3);
                 }
                 self.eat_meat(i, 1.0);
             }

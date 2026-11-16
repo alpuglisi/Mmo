@@ -111,7 +111,9 @@
 //! from each locus's anchor gene, and the step rate 0
 //! (`serde_util::before_v23`). Version 24 adds `Balance::morph_legacy`;
 //! versions 10 to 23 read it as 0, morphology alleles left out of the
-//! legacy tally (`serde_util::before_v24`).
+//! legacy tally (`serde_util::before_v24`). Version 25 adds
+//! `Balance::roaming_forage`; versions 10 to 24 read it as 100, roaming
+//! hunters eating nothing (`serde_util::before_v25`).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -132,7 +134,7 @@ use crate::terrain::{Terrain, Tile};
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 24;
+pub const SNAPSHOT_VERSION: u32 = 25;
 /// The oldest format version that still restores: version 11's state with
 /// the tiles inside the payload, and both without `Balance::cold_gestation`
 /// (nor, with version 12, `Balance::nest_predation`).
@@ -167,6 +169,8 @@ const DIRECTIONAL_VISION_VERSION: u32 = 22;
 const MORPH_VERSION: u32 = 23;
 /// The first version with `Balance::morph_legacy`.
 const MORPH_LEGACY_VERSION: u32 = 24;
+/// The first version with `Balance::roaming_forage`.
+const ROAMING_FORAGE_VERSION: u32 = 25;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
@@ -556,6 +560,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let raw = payload_options().serialize(self).expect("world serializes");
         self.snapshot_with(OLDEST_RESTORABLE, FLAG_LZ4, raw.len(), &lz4_flex::block::compress(&raw))
     }
@@ -576,6 +581,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         // The header's layout is unchanged since version 6: only the version
         // field differs.
         let mut out = self.snapshot();
@@ -599,6 +605,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&NEST_PREDATION_VERSION.to_le_bytes());
         out
@@ -618,6 +625,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&OBEDIENCE_VERSION.to_le_bytes());
         out
@@ -636,6 +644,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&RALLY_VERSION.to_le_bytes());
         out
@@ -653,6 +662,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MIGRATION_ONSET_VERSION.to_le_bytes());
         out
@@ -669,6 +679,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&HOME_RANGE_VERSION.to_le_bytes());
         out
@@ -685,6 +696,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&BY_PARENTS_VERSION.to_le_bytes());
         out
@@ -700,6 +712,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&WARM_COSTS_VERSION.to_le_bytes());
         out
@@ -713,6 +726,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&TRAIT_COSTS_VERSION.to_le_bytes());
         out
@@ -726,6 +740,7 @@ impl World {
         let _old22 = crate::serde_util::before_v22::Guard::new();
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MORPH_EFFECTS_VERSION.to_le_bytes());
         out
@@ -737,6 +752,7 @@ impl World {
     fn snapshot_v22(&self) -> Vec<u8> {
         let _old23 = crate::serde_util::before_v23::Guard::new();
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&DIRECTIONAL_VISION_VERSION.to_le_bytes());
         out
@@ -747,12 +763,23 @@ impl World {
     #[cfg(test)]
     fn snapshot_v23(&self) -> Vec<u8> {
         let _old24 = crate::serde_util::before_v24::Guard::new();
+        let _old25 = crate::serde_util::before_v25::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MORPH_VERSION.to_le_bytes());
         out
     }
 
-    /// A world from [`World::snapshot`] bytes (or a version 10 to 23 snapshot's)
+    /// A version 24 snapshot (no `Balance::roaming_forage`), as the
+    /// builds before version 25 wrote, to test that they still restore.
+    #[cfg(test)]
+    fn snapshot_v24(&self) -> Vec<u8> {
+        let _old25 = crate::serde_util::before_v25::Guard::new();
+        let mut out = self.snapshot();
+        out[8..12].copy_from_slice(&MORPH_LEGACY_VERSION.to_le_bytes());
+        out
+    }
+
+    /// A world from [`World::snapshot`] bytes (or a version 10 to 24 snapshot's)
     /// and the terrain it names (`SnapshotHeader::terrain`), with its
     /// derived lookups rebuilt. Fails on another format version, a corrupt
     /// payload, or a missing or wrong terrain.
@@ -776,6 +803,7 @@ impl World {
         let _old22 = (h.version < DIRECTIONAL_VISION_VERSION).then(crate::serde_util::before_v22::Guard::new);
         let _old23 = (h.version < MORPH_VERSION).then(crate::serde_util::before_v23::Guard::new);
         let _old24 = (h.version < MORPH_LEGACY_VERSION).then(crate::serde_util::before_v24::Guard::new);
+        let _old25 = (h.version < ROAMING_FORAGE_VERSION).then(crate::serde_util::before_v25::Guard::new);
         let body = &bytes[h.len()..];
         if fnv1a(body) != h.checksum {
             return Err(SnapshotError::Checksum);
