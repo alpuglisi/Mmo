@@ -696,3 +696,11 @@ settled on 2026-11-16 as recommended:
 12. Allele cap: morphology loci go in a separate genome segment with their own
     choice bits and random stream, so default-morphology worlds stay
     bit-identical.
+13. Genome package deviations (accepted 2026-11-16, keeps existing worlds
+    bit-identical): discrete count/shape mutation is a tunable
+    `morph_step_rate`, default 0, to be enabled by the morphology balance
+    package; `eye_azimuth` and `snout_length` stay out of the genetic distance
+    for now; morphology alleles carry origin tags but stay out of the legacy
+    tally until the deployment at a season boundary (decision 5).
+14. Snapshot versions: v20 trait downsides, v21 body plan effects (package D),
+    v22 directional vision, v23 morphology genome loci.
