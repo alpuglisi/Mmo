@@ -202,6 +202,14 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
       return { top: card.top - body.top, left: card.left, right: card.right, height: card.height, figH: fig.getBoundingClientRect().height, svg: fig.innerHTML, role: fig.getAttribute('role'), label: fig.getAttribute('aria-label'), docW: document.documentElement.scrollWidth };
     });
     const h0 = await header();
+    // No browser tap highlight: Android Chrome paints it above every layer,
+    // so the tapped info button showed as a teal box over the sticky preview.
+    const tapHi = await page.$eval('[data-trait="fur"] .trait-more', (el) => getComputedStyle(el).webkitTapHighlightColor);
+    if (!/^(transparent|rgba\(0, 0, 0, 0\))$/.test(tapHi)) throw new Error(`${tag}: tap highlight not transparent (${tapHi})`);
+    // The caption names fur, and the avatar draws a pelt for it (not scales).
+    const cap = await page.textContent('#design-avatar-caption');
+    if (!cap.includes('cold-blooded') || !cap.includes(' fur ')) throw new Error(`${tag}: preview caption ${cap}`);
+    if (!h0.label.includes('fur')) throw new Error(`${tag}: preview label does not mention fur: ${h0.label}`);
     if (h0.role !== 'img' || !h0.label.startsWith('Founder preview:')) throw new Error(`${tag}: avatar not a described image ${h0.role} ${h0.label}`);
     if (Math.abs(h0.top) > 2) throw new Error(`${tag}: avatar header not stuck to the top after scrolling (${h0.top})`);
     if (h0.left < 0 || h0.right > vw.width + 1 || h0.docW > vw.width + 1) throw new Error(`${tag}: avatar header overflows ${JSON.stringify(h0)}`);

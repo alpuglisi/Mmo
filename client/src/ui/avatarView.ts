@@ -5,8 +5,7 @@
 
 import type { Morphology } from '../morphology';
 import type { DesignSpec } from '../protocol';
-import { avatarSvg, describeAvatar, morphologyOf } from '../world/avatar';
-import { describeLook } from '../world/creature';
+import { avatarSvg, captionOf, describeAvatar, morphologyOf } from '../world/avatar';
 import { h } from './dom';
 
 const COLLAPSED_KEY = 'evo.avatarCollapsed';
@@ -62,12 +61,13 @@ export function avatarView(extra?: HTMLElement): AvatarView {
   const render = () => {
     if (!design) return;
     const m = morphologyOf(design, body);
-    const svg = avatarSvg(m, { animate: !motion?.matches });
+    const svg = avatarSvg(m, { animate: !motion?.matches, id: 'pv' });
     if (svg === last) return;
     last = svg;
     figure.innerHTML = svg;
     figure.setAttribute('aria-label', `Founder preview: ${describeAvatar(m)}`);
-    caption.textContent = describeLook(m.look);
+    // The covering the caption names is the one the avatar draws (`captionOf`).
+    caption.textContent = captionOf(m);
   };
   motion?.addEventListener?.('change', () => {
     last = '';

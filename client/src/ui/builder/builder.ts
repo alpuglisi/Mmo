@@ -28,7 +28,6 @@ import {
   EYE_COUNT_MAX,
   EYE_COUNT_MIN,
   EYE_PLACEMENT_MAX,
-  hasFangs,
   LEG_COUNTS,
   PAIR_STEP,
   sameMorphology,
@@ -43,7 +42,8 @@ import { DEFAULT_VISION, signedAngle, visionOf, visionSummary, type Arc, type Vi
 export { DEFAULT_VISION, visionSummary };
 import { History } from './history';
 import { DEFAULT_PRESETS, type BuilderPreset } from './presets';
-import { azimuthOf, earIcon, earPath, earReach, polar, s, tailIcon, tailShapes, wedgePath } from './svg';
+import { azimuthOf, earIcon, polar, s, tailIcon, wedgePath } from './svg';
+import { sideTracks, sideView, type HandleTrack } from './sideView';
 
 export type BuilderFeature = 'eyes' | 'ears' | 'legs' | 'tail' | 'snout' | 'fangs';
 
@@ -122,18 +122,6 @@ const HIT_TOP = 17;
 const HIT_SIDE = 21;
 /** Picking a tail shape makes a stub tail at least this long, so the choice shows. */
 const TAIL_SHOWN = 0.3;
-
-/** Side view: head centre and radius; body ellipse. */
-const HX = 212;
-const HY = 70;
-const HR = 21;
-const BODY = { cx: 140, cy: 95, rx: 58, ry: 26 };
-const HIP_Y = 112;
-const FOOT_MIN = 129;
-const FOOT_RANGE = 46;
-
-/** Side view: crest angles of the visible ears by count (degrees from vertical; negative = towards the back). */
-const EAR_ANGLES: Record<number, number[]> = { 0: [], 2: [-22], 4: [-4, -46] };
 
 const EAR_LABEL: Record<EarShape, string> = { round: 'Round', pointed: 'Pointed', long: 'Long', fan: 'Fan' };
 const TAIL_LABEL: Record<TailShape, string> = { thin: 'Thin', bushy: 'Bushy', fin: 'Fin', club: 'Club', prehensile: 'Grasping' };
@@ -523,75 +511,23 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
     const add = (el: SVGElement) => sideDraw.appendChild(el);
     const at = (spec: HandleSpec) => ({ ...spec, svg: sideSvg, layer: sideHandles });
 
-    // Legs first (the far ones behind the body), then the ground.
-    const near = cur.leg_count / 2;
-    const xs = near === 0 ? [] : near === 1 ? [150] : Array.from({ length: near }, (_, i) => 104 + (72 * i) / (near - 1));
-    const footY = FOOT_MIN + FOOT_RANGE * cur.leg_length;
-    const leg = (x: number, cls: string) => {
-      const mid = (HIP_Y + footY) / 2;
-      add(s('path', { d: `M${x},${HIP_Y} L${x - 4},${mid} L${x + 1},${footY}`, class: `bb-leg ${cls}` }));
-      add(s('ellipse', { cx: x + 3, cy: footY, rx: 5, ry: 2.5, class: `bb-foot ${cls}` }));
-    };
-    for (const x of xs) leg(x + 7, 'bb-far');
-    const groundY = near === 0 ? BODY.cy + BODY.ry + 1 : footY + 3;
-    add(s('line', { x1: -10, y1: groundY, x2: 300, y2: groundY, class: 'bb-ground' }));
+    // The creature from the art library (`sideView.ts`), its torso pinned in
+    // place so the handles stay put while other features change.
+    const view = sideView(cur);
+    add(s('line', { x1: -10, y1: view.groundY, x2: 300, y2: view.groundY, class: 'bb-ground' }));
+    const creature = s('g', { class: 'bb-creature', transform: view.transform, 'aria-hidden': 'true' });
+    creature.innerHTML = view.markup(`${uid}-av`);
+    add(creature);
 
-    // Tail.
-    const tailBase = { x: BODY.cx - BODY.rx + 6, y: BODY.cy - 6 };
-    const tail = { x0: 72, y0: 100, x1: 4, y1: 100 };
-    if (cur.tail_present) {
-      const tx = tail.x0 + (tail.x1 - tail.x0) * cur.tail_length;
-      const g = s('g', { class: 'bb-tail' });
-      for (const e of tailShapes(cur.tail_shape, tailBase.x, tailBase.y, tx, tail.y0)) g.appendChild(e);
-      add(g);
-    }
-
-    // Ears behind the head: far ears of pairs first.
-    const ears = EAR_ANGLES[cur.ear_count] ?? [];
-    const earH = 10 + 26 * cur.ear_size;
-    const ear = (angle: number, cls: string, dx: number) => {
-      const [bx, by] = polar(angle, HR - 3);
-      add(s('path', { d: earPath(cur.ear_shape, earH), class: `bb-ear ${cls}`, transform: `translate(${HX + bx + dx} ${HY + by}) rotate(${angle})` }));
-    };
-    for (const a of ears) ear(a, 'bb-far', -5);
-    for (const a of ears) ear(a, '', 0);
-
-    // Body, neck, head, snout.
-    add(s('ellipse', { ...BODY, class: 'bb-bodyshape' }));
-    add(s('path', { d: `M${BODY.cx + 30},${BODY.cy - 20} Q${HX - 20},${HY - 8} ${HX - 6},${HY - 14} L${HX},${HY + 16} Q${HX - 24},${HY + 26} ${BODY.cx + 40},${BODY.cy + 12} Z`, class: 'bb-bodyshape' }));
-    for (const x of xs) leg(x, '');
-    const tipX = HX + 18 + 40 * cur.snout_length;
-    add(s('path', { d: `M${HX + 8},${HY - 7} L${tipX},${HY + 3} Q${tipX + 5},${HY + 8} ${tipX},${HY + 13} L${HX + 8},${HY + 17} Z`, class: 'bb-snout' }));
-    add(s('circle', { cx: HX, cy: HY, r: HR, class: 'bb-head' }));
-    add(s('circle', { cx: tipX, cy: HY + 6, r: 2.2, class: 'bb-nose' }));
-    // Eyes as seen from the side: the visible one of each pair, along the head by azimuth.
-    for (const e of eyePlacements(cur)) {
-      if (e.side === 'left') continue;
-      const t = (Math.abs(e.azimuth) * Math.PI) / 180;
-      add(s('circle', { cx: HX + 14 * Math.cos(t), cy: HY - 5 - (e.side === 'mid' ? 6 : 0), r: 2 + 2.5 * cur.eye_size, class: 'bb-side-eye' }));
-    }
-    // Fangs below the snout tip.
-    const fangX = tipX - 7;
-    if (hasFangs(cur)) {
-      const len = 3 + 14 * cur.fang_size;
-      add(s('path', { d: `M${fangX - 3},${HY + 13} L${fangX},${HY + 13 + len} L${fangX + 3},${HY + 13} Z`, class: 'bb-fang' }));
-      add(s('path', { d: `M${fangX - 12},${HY + 14} L${fangX - 9},${HY + 13 + len * 0.7} L${fangX - 6},${HY + 14} Z`, class: 'bb-fang' }));
-    }
-
-    // Handles.
-    out.set('snout', at(linear('snout', 'snout_length', 'Snout length', HX + 18, HY + 6, HX + 58, HY + 6)));
-    out.set('fangs', at(linear('fangs', 'fang_size', 'Fang size (none below 10%)', fangX, HY + 50, fangX, HY + 74)));
-    if (ears.length > 0) {
-      const a = ears[0];
-      const [x0, y0] = polar(a, HR - 3 + earReach(cur.ear_shape, 10));
-      const [x1, y1] = polar(a, HR - 3 + earReach(cur.ear_shape, 36));
-      out.set('ears', at(linear('ears', 'ear_size', 'Ear size', HX + x0, HY + y0, HX + x1, HY + y1)));
-    }
-    if (xs.length > 0) {
-      const x = xs[xs.length - 1] + 1;
-      out.set('legs', at(linear('legs', 'leg_length', 'Leg length', x, FOOT_MIN, x, FOOT_MIN + FOOT_RANGE)));
-    }
-    if (cur.tail_present) out.set('tail', at(linear('tail', 'tail_length', 'Tail length', tail.x0, tail.y0, tail.x1, tail.y1)));
+    // Handles ride the features' tips: each track runs from the tip at 0 to the tip at 1.
+    const track = (feature: BuilderFeature, field: keyof Morphology, label: string, t: HandleTrack) =>
+      at(linear(feature, field, label, t.from[0], t.from[1], t.to[0], t.to[1]));
+    const tracks = sideTracks(cur);
+    out.set('snout', track('snout', 'snout_length', 'Snout length', tracks.snout));
+    out.set('fangs', track('fangs', 'fang_size', 'Fang size (none below 10%)', tracks.fangs));
+    if (tracks.ears) out.set('ears', track('ears', 'ear_size', 'Ear size', tracks.ears));
+    if (tracks.legs) out.set('legs', track('legs', 'leg_length', 'Leg length', tracks.legs));
+    if (tracks.tail) out.set('tail', track('tail', 'tail_length', 'Tail length', tracks.tail));
   }
 
   function render(): void {
