@@ -959,12 +959,16 @@ impl Map {
             chunks_x: cx,
             chunks_y: self.chunks_y,
         };
+        // A small map's share runs on the calling thread: waking the pool
+        // would cost more than it saves.
+        let min_len = if self.tiles.len() / every < 16384 { usize::MAX } else { 1 };
         let (dirty, changed) = self
             .tiles
             .par_chunks_mut(rows)
             .zip(self.pass_sig.par_chunks_mut(rows))
             .zip(self.melt_acc.par_chunks_mut(cx))
             .zip(self.chunk_version.par_chunks_mut(cx))
+            .with_min_len(min_len)
             .enumerate()
             .map(|(cy, (((tiles, sig), melt), version))| {
                 let (mut dirty, mut changed) = (false, 0u64);

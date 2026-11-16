@@ -73,6 +73,9 @@ struct Viewer<'a> {
     salt: u64,
     /// The viewer's group territory (center, radius), if it holds one.
     territory: Option<(Vec2, f32)>,
+    /// Bounds on the viewer's distance to its lineage's reference point
+    /// (`SpatialGrid::ref_bounds`).
+    reference: DistanceBounds,
 }
 
 /// What an organism has learned from the neighbors it looked at closely.
@@ -185,16 +188,16 @@ fn body_plan_gap(a: &Genes, b: &Genes) -> f32 {
 /// less than `Gene::COUNT * f32::EPSILON` of itself, a few millionths;
 /// `SLACK` is far wider. Every test made of the distance is monotone in it,
 /// so if it comes out the same at both bounds it is the test's exact result.
-#[derive(Clone, Copy)]
-struct DistanceBounds {
-    lo: f32,
-    hi: f32,
+#[derive(Clone, Copy, Default)]
+pub(super) struct DistanceBounds {
+    pub lo: f32,
+    pub hi: f32,
 }
 
 impl DistanceBounds {
     const SLACK: f32 = 1e-4;
 
-    fn new(a: &Genes, b: &Genes) -> Self {
+    pub(super) fn new(a: &Genes, b: &Genes) -> Self {
         use crate::genome::DISTANCE_GENES;
         // Two groups of four running sums, so consecutive additions don't
         // wait on each other. Dividing by multiplying with the reciprocal
@@ -214,6 +217,39 @@ impl DistanceBounds {
             + crate::morph::morph_terms(morph_key(a), morph_key(b)).0;
         let scale = 1.0 / DISTANCE_GENES;
         DistanceBounds { lo: sum * (1.0 - Self::SLACK) * scale, hi: sum * (1.0 + Self::SLACK) * scale }
+    }
+
+    /// Bounds on the distance between `a` and `b` from their bounds to a
+    /// common reference point `c` (`SpatialGrid::ref_bounds`), with no
+    /// look at their genes: the distance is a metric (a sum of absolute
+    /// differences, and of `min(|x - y| / 2, 1)` for the morphology, each a
+    /// metric), so `|d(a,c) - d(b,c)| <= d(a,b) <= d(a,c) + d(b,c)`. The
+    /// margins (`SLACK` of the terms, wider than any rounding in the two
+    /// sums and the subtraction) keep them bounds on the computed distance.
+    fn via_reference(a: DistanceBounds, b: DistanceBounds) -> Self {
+        let lo = (a.lo - b.hi).max(b.lo - a.hi) - Self::SLACK * (a.hi + b.hi);
+        DistanceBounds { lo: lo.max(0.0), hi: (a.hi + b.hi) * (1.0 + Self::SLACK) }
+    }
+
+    /// `pass(genetic_distance(a, b))` like [`Self::test`], tried first on
+    /// `rough` bounds (`via_reference`), then on the bounds from the genes
+    /// (`ga`, `gb`; computed once into `fine` when first needed).
+    fn test_with(
+        rough: Option<DistanceBounds>,
+        fine: &mut Option<DistanceBounds>,
+        (ga, gb): (&Genes, &Genes),
+        (a, b): (&Organism, &Organism),
+        pass: impl Fn(f32) -> bool,
+    ) -> bool {
+        if let Some(r) = rough {
+            if pass(r.hi) {
+                return true;
+            }
+            if !pass(r.lo) {
+                return false;
+            }
+        }
+        fine.get_or_insert_with(|| DistanceBounds::new(ga, gb)).test(a, b, pass)
     }
 
     /// `pass(genetic_distance(a, b))`, for a `pass` that can only go from
@@ -495,6 +531,7 @@ impl World {
                 && n.hunger < 50.0,
             salt: rng.gen(),
             territory: self.territory_of(o).map(|t| (t.center, t.radius)),
+            reference: self.grid.ref_bounds(self.grid.slot_of(i)),
         };
         let mut seen = Perception {
             threat: 0.0,
@@ -876,12 +913,17 @@ impl World {
         // The distance is summed only when a test needs it: a body-plan gap
         // at the limit rules kinship out at any distance (`is_kin_by_gap`
         // allows less gap the farther apart they are, never more).
+        // Kin of one lineage are first tried on bounds through the
+        // lineage's reference point (`DistanceBounds::via_reference`).
         let gap = body_plan_gap(&v.genes, genes);
+        let rough =
+            (e.lineage == o.lineage).then(|| DistanceBounds::via_reference(v.reference, self.grid.ref_bounds(slot)));
         let mut bounds = None;
-        let mut gd = || *bounds.get_or_insert_with(|| DistanceBounds::new(&v.genes, genes));
+        let mut gd =
+            |pass: &dyn Fn(f32) -> bool| DistanceBounds::test_with(rough, &mut bounds, (&v.genes, genes), (o, q), pass);
         let (sd, limit) = (cfg.species_distance, cfg.kin_body_plan_gap);
         let kin = if sd > 0.0 {
-            gap < limit && gd().test(o, q, |gd| mating::is_kin_by_gap(gap, gd, sd, limit))
+            gap < limit && gd(&|gd| mating::is_kin_by_gap(gap, gd, sd, limit))
         } else {
             mating::is_kin_by_gap(gap, genetic_distance(o, q), sd, limit)
         };
@@ -1040,7 +1082,7 @@ impl World {
             && e.flags & COURTING != 0
             && (e.flags & FEMALE != 0) != v.female
             && q.can_breed(self.tick)
-            && gd().test(o, q, |gd| gd < cfg.mate_distance)
+            && gd(&|gd| gd < cfg.mate_distance)
             && q.needs.breeding > 20.0
             && mating::fertility_from_gap(gap) > 0.0
             // A female in a taken breeding territory isn't courted either

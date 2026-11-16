@@ -89,6 +89,23 @@ const PREY_SHARE: f32 = 0.15;
 /// Spatial index cell side in tiles.
 const GRID_CELL: f32 = 4.0;
 
+/// Items below which a parallel pass of light per-item work runs on the
+/// calling thread (`light_min_len`).
+const LIGHT_PAR: usize = 8192;
+
+/// `with_min_len` for a parallel pass over `n` items of light work (a few
+/// dozen nanoseconds each): below [`LIGHT_PAR`] items the whole pass runs
+/// on the calling thread, as waking the pool's sleeping workers would cost
+/// more than it saves; above it, pieces of at least a thousand. Where the
+/// items are processed changes nothing they compute.
+pub(crate) fn light_min_len(n: usize) -> usize {
+    if n < LIGHT_PAR {
+        usize::MAX
+    } else {
+        1024
+    }
+}
+
 /// Hasher of the world's lookup maps (organism index by id, things by
 /// tile): small integer keys, looked up many times a tick, never chosen by
 /// an adversary, so the multiply-rotate hash of rustc's `FxHasher` instead
@@ -889,6 +906,19 @@ impl World {
 
     /// Advance one tick.
     pub fn step(&mut self) {
+        // The tick's parallel parts run on the rayon pool. Called from
+        // outside it (a main thread, a server's runner), each of them would
+        // hand its work over to the pool and wait for it, a dozen round
+        // trips a tick; entering the pool once for the whole tick is far
+        // cheaper. Where a closure runs changes nothing it computes.
+        if rayon::current_thread_index().is_none() {
+            rayon::scope(|_| self.step_in_pool());
+        } else {
+            self.step_in_pool();
+        }
+    }
+
+    fn step_in_pool(&mut self) {
         let tpd = self.config.ticks_per_day as u64;
         let mut clock = std::time::Instant::now();
         let mut lap = || {

@@ -218,6 +218,7 @@ impl World {
         let this = &*self;
         let (mothers, mut local): (Vec<Option<usize>>, Vec<Local>) = (0..n)
             .into_par_iter()
+            .with_min_len(super::light_min_len(n))
             .map(|i| {
                 let o = &this.organisms[i];
                 if !o.alive {
@@ -269,6 +270,7 @@ impl World {
         let this = &*self;
         let burrow: Vec<(f32, f32)> = (0..n)
             .into_par_iter()
+            .with_min_len(super::light_min_len(n))
             .map(|i| if acted[i] { this.burrow_inputs(&this.organisms[i]) } else { (0.0, 0.0) })
             .collect();
         let (seed, tick, dt) = (self.config.seed, self.tick, self.config.dt_days());
