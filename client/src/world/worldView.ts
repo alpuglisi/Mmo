@@ -191,6 +191,8 @@ export class WorldView {
   /** A territory being drawn (center tapped, edge not yet). */
   territoryDraft: TerritoryDraft | null = null;
   cam: Camera = { x: 32, y: 32, zoom: 8 };
+  /** The first frame with a size picks the starting zoom (about 40 tiles across the shorter side). */
+  private zoomFitted = false;
   follow = true;
   onClick: (c: WorldClick) => void = () => {};
   /** A press held still (touch or mouse); defaults to nothing. */
@@ -505,6 +507,12 @@ export class WorldView {
     this.cam.x = Math.min(this.worldW, Math.max(0, this.cam.x));
     this.cam.y = Math.min(this.worldH, Math.max(0, this.cam.y));
     const { width, height } = this.app.screen;
+    if (!this.zoomFitted && width > 0 && height > 0) {
+      // A big window starts closer in, so the creatures read and the map fills
+      // it; a phone keeps the old default (8 px a tile).
+      this.zoomFitted = true;
+      this.cam.zoom = Math.min(18, Math.max(8, Math.min(width, height) / 40));
+    }
     this.mapLayer.scale.set(this.cam.zoom);
     this.mapLayer.position.set(width / 2 - this.cam.x * this.cam.zoom, height / 2 - this.cam.y * this.cam.zoom);
     const tl = this.screenToWorld(0, 0), br = this.screenToWorld(width, height);

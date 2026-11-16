@@ -137,7 +137,7 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
           h('table', { class: 'board' },
             h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Player'), h('th', {}, 'Final share'), h('th', { title: 'Weighted by offspring raised to adulthood' }, 'Weighted'))),
             h('tbody', {}, ...e.rows.slice(0, 8).map((r, k) => h('tr', { class: r.player === me ? 'me' : '' },
-              h('td', {}, String(k + 1)), h('td', {}, swatch(r.player, me), r.name), h('td', {}, pct(r.share)), h('td', {}, pct(r.weighted_share)))))),
+              h('td', {}, String(k + 1)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name)), h('td', {}, pct(r.share)), h('td', {}, pct(r.weighted_share)))))),
           e.niches.length > 0 && h('p', { class: 'muted small' }, 'Niche leaders: ',
             e.niches.map((n) => `${nicheLabel(n.niche)} ${n.name} ${pct(n.share, 0)}`).join(' · ')));
       })),

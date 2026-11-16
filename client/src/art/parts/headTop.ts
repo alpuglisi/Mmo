@@ -169,7 +169,23 @@ export function headTop(p: HeadTopParams, pal: CreaturePalette): HeadTopPart {
     [r * 0.5 * bw, r * 2.84],
   ];
   const back: Point[] = [...side, [0, r * 2.97], ...mirror(side).reverse()];
-  body.pieces.push(piece('body', p.furry && p.lod === 'portrait' ? scallopRing(back, 24, () => 2.6, 0, rng(11), true) : back));
+  const furred = p.furry && p.lod === 'portrait';
+  // Fur: chunky locks along the edge, longest over the shoulders and rump, so the coat reads at panel size.
+  body.pieces.push(piece('body', furred ? scallopRing(back, 20, (i) => 2.8 + 1.4 * Math.abs(Math.sin(((i + 0.5) / 20) * Math.PI * 2)), 0, rng(11), true) : back));
+  if (furred) {
+    // Hair strokes swept back from each flank, toward the edge.
+    const R = rng(19);
+    for (let i = 0; i < 14; i++) {
+      const t = (i + 0.5) / 14;
+      const y = r * (0.55 + 2.1 * t);
+      const edgeX = r * bw * (t < 0.4 ? lerp(0.9, 0.82, t / 0.4) : lerp(0.82, 0.55, (t - 0.4) / 0.6));
+      for (const sgn of [-1, 1]) {
+        const x = sgn * edgeX * (0.62 + 0.18 * R());
+        const len = 3 + 2 * R();
+        body.detail.push({ part: 'body', tag: 'hair', kind: 'curve', closed: false, points: [[x, y], [x + sgn * len * 0.45, y + len * 0.6], [x + sgn * len * 0.7, y + len]], stroke: i % 4 === 3 ? pal.body.light : pal.body.shade, width: 1, alpha: 0.65 });
+      }
+    }
+  }
   // The spine and the shoulder blades: thin lines in the shade tone.
   body.detail.push(
     { part: 'body', tag: 'spine', kind: 'curve', closed: false, points: [[0, r * 1.05], [0, r * 1.8], [0, r * 2.55]], stroke: pal.body.shade, width: 1, alpha: 0.7 },
