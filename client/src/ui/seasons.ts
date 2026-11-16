@@ -168,7 +168,7 @@ function standingTables(standings: StandingPage[], me: PlayerId, idPrefix: strin
       ? h('p', { class: 'muted small' }, 'Nobody yet.')
       : h('table', { class: 'board', id: `${idPrefix}-${s.category}` },
         h('tbody', {}, ...s.rows.map((r) => h('tr', { class: r.player === me ? 'me' : '' },
-          h('td', { class: 'rank' }, String(r.rank)), h('td', {}, swatch(r.player, me), r.name), h('td', { class: 'num' }, formatValue(s.category, r.value)))))))));
+          h('td', { class: 'rank' }, String(r.rank)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name)), h('td', { class: 'num' }, formatValue(s.category, r.value)))))))));
 }
 
 function currentParts(cur: CurrentSeason, me: PlayerId): Node[] {

@@ -20,7 +20,12 @@ export interface OfferEntry {
 export interface Toast {
   kind: 'error' | 'info';
   text: string;
+  /** How many alike messages (same words, other #ids or numbers) this one stands for. */
+  count?: number;
 }
+
+/** Two toasts are alike when only their ids and numbers differ ("Founder #3 was eaten."). */
+const toastShape = (t: string): string => t.replace(/\d+(\.\d+)?/g, '0');
 
 /** One line of the alerts feed: a server alert or an offer event. */
 export interface FeedEntry {
@@ -101,6 +106,15 @@ export class GameModel {
   }
 
   toast(kind: Toast['kind'], text: string): void {
+    // A burst of alike messages (a predator working through the founders)
+    // shows as the newest one with a count, not a column of copies.
+    const last = this.toasts[this.toasts.length - 1];
+    if (last && last.kind === kind && toastShape(last.text) === toastShape(text)) {
+      last.text = text;
+      last.count = (last.count ?? 1) + 1;
+      this.emit('toast');
+      return;
+    }
     this.toasts.push({ kind, text });
     if (this.toasts.length > 6) this.toasts.shift();
     this.emit('toast');
