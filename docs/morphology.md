@@ -383,17 +383,39 @@ builds pay everywhere without new rules.
 
 - **Rule.** Points pay for structures, not geometry.
 
-  | Item | Price (points) |
-  | --- | --- |
-  | Each eye beyond 2 | 3 |
-  | Each leg pair beyond 2 | 5 |
-  | Second ear pair | 3 |
-  | Tail shapes, `eye_azimuth`, `snout_length`, fewer structures | 0 (trade-offs) |
+  | Item | Starting guess | Calibrated price (points) |
+  | --- | --- | --- |
+  | Each eye beyond 2 | 3 | **1** |
+  | Each leg pair beyond 2 | 5 | **2** |
+  | Second ear pair | 3 | **2** |
+  | Tail and ear shapes, `eye_azimuth`, `snout_length`, fewer structures | 0 | 0 (trade-offs) |
 
   Fewer structures cost nothing and refund nothing, like lowering any trait
   below its default today. The existing size genes keep their prices (eyes 4,
-  ears 4, leg length 25, tail 4). These starting prices are guesses to be
-  replaced by calibration.
+  ears 4, leg length 25, tail 4).
+- **Calibration result (2026-11-16, morphology tunables on at their spec
+  values).** Method and full tables: README, *Point costs* → *Body plan
+  structures*. In short:
+  - Marginal (176 worlds, paired with a control): no extra structure buys
+    legacy (Δ log mean share: +1 eye −0.015, +2 eyes −0.027, +1 leg pair
+    −0.025, +1 ear pair −0.018, all ± 0.03–0.05), so by the 30-points-per-
+    log-share rule they are worth 0–2 points. Their upkeep and mass offset
+    what coverage, stability and localization bring. They keep **floor
+    prices** (1 / 2 / 2), like armor and fat stores, so they are never free
+    and "everything at maximum" still only adds (6 eyes, 8 legs and 4 ears:
+    10 points). Fewer structures lose (biped −0.10, legless −0.63, one eye
+    −0.03; earless 0.00), so no refund.
+  - Tournament (384 worlds): per-structure regression coefficients are all
+    within noise of zero (eye +0.03 ± 0.05, leg pair +0.04 ± 0.10, ear pair
+    −0.09 ± 0.17), matching the marginal pass.
+  - Free-axis check (384 worlds, limit 30% wins): every ear shape, azimuth
+    band and snout band is within 22.8–26.5%. Bushy tails won 33.3% of
+    tailed entries, but a paired re-run with every bushy tail turned thin
+    (`calibrate tournament --swap-tail bushy=thin`, 192 worlds, 94 entries)
+    showed the same designs win 34.0% bushy and 35.1% thin (mean final share
+    +0.003 ± 0.004): the designs were strong, not the shape. **All shapes
+    and placements stay free**; no contextual fix was needed.
+  - Not done: the derived-property audit (item 4 below).
 - **Pricing by derived property was considered and rejected for now.** That
   would mean paying for coverage gained, so a midline eye would cost more on a
   side-eyed head. It is the most "geometric" option, but the price of one
@@ -712,3 +734,9 @@ settled on 2026-11-16 as recommended:
     bodies carry no alarm calls (structural). Defaults stay bit-identical;
     with the tunables on, founders' snout and eye-azimuth variation gives
     default-designed lineages small effects around zero.
+16. Pricing (2026-11-16, package P): per structure, at floor prices from
+    calibration with the tunables on: 1 point per eye beyond two, 2 per leg
+    pair beyond two, 2 for a second ear pair; fewer structures, shapes and
+    placement free, no refunds; no free axis wins more than fair share + 5
+    points on a paired test (§4). `/api/genes` reports the prices in its
+    `morph` rows; the client charges the same rows.

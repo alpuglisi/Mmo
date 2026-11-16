@@ -694,7 +694,10 @@ export interface MorphInfo {
   min?: number;
   max?: number;
   default: number | string;
-  /** Points (per structure); 0 while morphology is free. */
+  /**
+   * For a count: points per step above the default (one eye; a pair of legs
+   * or ears), nothing below it. Shapes and axes are free (0).
+   */
   cost: number;
 }
 
@@ -717,6 +720,10 @@ export interface GeneCatalog {
   base_founders: number;
   cost_per_extra_founder: number;
   cost_per_extra_offspring: number;
+  /** Points for a cold-blooded design (absent on older servers: 0). */
+  cost_cold_blooded?: number;
+  /** Points per unit of `body_size` below its default (absent on older servers: 0). */
+  cost_per_smaller_body?: number;
   max_litter: number;
   genes: GeneInfo[];
   /** The body plan's parameters, on servers that accept `DesignSpec.morph`. */

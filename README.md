@@ -750,8 +750,14 @@ every field optional with the contract defaults: `{"eye_count": 3,
 0/2/4/6/8, ear shapes `round`/`pointed`/`long`/`fan`, tail shapes
 `thin`/`bushy`/`fin`/`club`/`prehensile`, azimuth 0–180°, snout 0–1). A value
 out of range or an unknown shape is refused as `bad_morph` (`detail.field`).
-Morphology costs no points yet; `GET /api/genes` lists it under `morph`
-(kind `count`/`enum`/`axis`, allowed values or range, default, cost 0).
+Extra structures cost points: 1 per eye beyond two, 2 per leg pair beyond
+two, 2 for a second ear pair; fewer structures, shapes, `eye_azimuth` and
+`snout_length` are free (*Point costs*, *Body plan structures*). `GET
+/api/genes` lists the body plan under `morph` (kind `count`/`enum`/`axis`,
+allowed values or range, default, and `cost`: for a count, points per step
+above the default, one eye or one pair; 0 for shapes and axes), and also
+gives `cost_cold_blooded` and `cost_per_smaller_body`, so a client can show
+the whole budget the server charges.
 
 ### WebSocket protocol
 
@@ -5619,6 +5625,9 @@ The costs in `design.rs` are calibrated with `examples/calibrate.rs`
   world fixed effects, shows which traits are still under- or overpriced. It
   was run under the old costs, a first draft and the final draft (seeds 101+,
   201+, 301+; new seeds each time).
+- **Body plan** (`--morph` on either mode): one option per morphology
+  change in `marginal`, a random body plan per design in `tournament`, and
+  the free-axis check; see *Body plan structures* below.
 
 | Points per unit above default | |
 | --- | --- |
@@ -5635,6 +5644,102 @@ Under the new costs the clearest mispricings in the old table are mostly gone
 from 22 to 25 after the last run). Armor and fat
 stores lose fitness at any price (their speed and agility penalties outweigh
 defense and insulation over one year), so they keep only a floor price.
+
+**Body plan structures (`calibrate --morph`).** Extra structures cost
+points per structure; shapes, placement and snout length are free
+(`docs/morphology.md` §4, decisions 1 and 11). Prices only matter when the
+body plan has effects, so every run had the morphology tunables on at their
+spec values (`--set morph_effects=1 --set morph_tail_drag=1 --set
+morph_tail_chill=1 --set morph_long_legs=1 --set directional_vision=1`);
+the defaults are untouched (another package decides when to turn them on).
+Three measurements, 90 days on 96×96:
+
+- **Marginal** (`marginal --morph`, seeds 1001–1008, 176 worlds, 32
+  entries per option): each sample design gets one body-plan change at a
+  time, paired with its own `control` on the same seed. Change in log mean
+  legacy share (± 95% half-width, about 2 × the per-seed SE):
+
+  | Option | Δ log share | Option | Δ log share |
+  | --- | --- | --- | --- |
+  | +1 eye (midline) | −0.015 ± 0.04 | tail thin (0.4) vs none | −0.034 ± 0.07 |
+  | +2 eyes (extra pair) | −0.027 ± 0.03 | tail bushy | −0.023 ± 0.03 |
+  | −1 eye (single eye) | −0.029 ± 0.05 | tail fin | −0.071 ± 0.05 |
+  | +1 leg pair (6 legs) | −0.025 ± 0.04 | tail club | −0.033 ± 0.04 |
+  | −1 leg pair (biped) | −0.097 ± 0.05 | tail prehensile | −0.002 ± 0.04 |
+  | −2 leg pairs (legless) | −0.626 ± 0.13 | eyes 40° forward | −0.052 ± 0.05 |
+  | +1 ear pair (4 ears) | −0.018 ± 0.05 | eyes 40° to the side | +0.006 ± 0.08 |
+  | −1 ear pair (earless) | +0.001 ± 0.05 | snout −0.4 | −0.048 ± 0.05 |
+  | ears pointed / long / fan | −0.011 / −0.008 / −0.008 | snout +0.4 | +0.018 ± 0.04 |
+  | +16 founders (11.2 points) | +0.300 ± 0.06 | | |
+
+  (The sample designs have no tail, so each tail row gives the design a
+  0.4 tail of that shape against the tailless control; a shape's own effect
+  is its row minus `tail thin`.) No extra structure buys legacy: by the
+  README rule (30 points per unit of log share, half the mean over the four
+  designs and half the best) an extra eye is worth about 0 points, a leg
+  pair 0.1, an ear pair 0.7 (1.9 on final share). Their running costs (upkeep per eye and leg
+  pair, leg mass, the 6-leg gait) eat what coverage, stability and
+  localization bring in these worlds. Fewer structures lose: a biped −0.10,
+  a legless body −0.63 (all four designs), one eye −0.03; earless is even.
+- **Tournament** (`tournament --morph`, 384 worlds, 1536 entries; seeds
+  20001–20096 and 30001–30192 under the spec's guesses 3/5/3, 40001–40096
+  under the final prices): every random design also draws a random body
+  plan (each count the default half the time, else uniform; shapes uniform;
+  azimuth and snout uniform; half of them a tail of 0.1–0.8), paid for
+  before the traits. The regression of *Point costs* (log final share,
+  world fixed effects, controls, SEs clustered by world) gives per
+  structure: extra eye +0.026 ± 0.048, extra leg pair +0.042 ± 0.095,
+  second ear pair −0.087 ± 0.168; fewer: one eye −0.15 ± 0.25, biped
+  −0.19 ± 0.21, legless −0.77 ± 0.21, earless +0.00 ± 0.22. All structure
+  coefficients are within noise of zero, as in the marginal pass, and of
+  the priced traits' median (+0.002 per point).
+- **Free-axis fairness** (the 384 worlds; fair share 25%, limit 30%): win
+  share by value of each free axis.
+
+  | Axis | Win share by value |
+  | --- | --- |
+  | Tail shape (tailed, n ≈ 150 each) | thin 25.2%, bushy 33.3%, fin 28.4%, club 21.4%, prehensile 22.2% |
+  | Ear shape (with ears, n ≈ 290) | round 24.3%, pointed 24.7%, long 26.1%, fan 23.6% |
+  | Eye azimuth | 0–40° 23.6%, 40–80° 25.9%, 80–120° 22.8%, 120–180° 26.5% |
+  | Snout length | 0–0.25 25.5%, 0.25–0.5 23.4%, 0.5–0.75 25.6%, 0.75–1 25.3% |
+  | Fewer structures (free) | 1 eye 18.0%, biped 21.4%, legless 14.1%, earless 26.1% |
+
+  Bushy tails crossed the line (33.3% ± 6.5). A paired re-run settled it
+  (`tournament --swap-tail bushy=thin`, the same 192 worlds of 30001– and
+  40001– with every bushy tail turned thin; worlds without a bushy entry
+  replay bit-identically): the 94 tailed bushy entries win 34.0% with
+  their bushy tails and 35.1% with thin ones, and their mean final share
+  moves +0.003 ± 0.004 (warm +0.003 ± 0.005, cold +0.003 ± 0.006). The
+  designs that drew bushy tails happened to be strong; the shape itself
+  buys nothing, so it stays free. Tail fin is the free option that loses
+  on land (−0.07 marginal, −0.20 for pack hunters), as a swimmer's shape
+  should. The marginal pass agrees: no free change moves log share by more
+  than ±0.07, against +0.30 for 11.2 points of founders.
+
+**Prices.** Structures that cost more fitness than they bring keep a floor
+price, like armor and fat stores, so that they are never free and "all
+counts at maximum" still only adds to a design's cost:
+
+| Structure | Spec guess | Price (points) |
+| --- | --- | --- |
+| Each eye beyond 2 (midline eye, extra pair) | 3 | **1** (`COST_PER_EXTRA_EYE`) |
+| Each leg pair beyond 2 | 5 | **2** (`COST_PER_EXTRA_LEG_PAIR`) |
+| Second ear pair | 3 | **2** (`COST_PER_EXTRA_EAR_PAIR`) |
+| Fewer structures, tail and ear shapes, `eye_azimuth`, `snout_length` | 0 | 0 (no refund) |
+
+The ear pair keeps 2 because its best case (burrowing omnivores, +0.15 on
+final share) is the largest of the three. Fewer structures get no refund:
+every one of them loses legacy or breaks even, so a refund would only
+subsidize earless bodies. 6 eyes, 8 legs and 4 ears together cost 10
+points. `design::morph_cost` charges them, `/api/genes` reports them in the
+`morph` rows (`cost` per count step above the default: one eye, or one pair
+of legs or ears) next to the new `cost_cold_blooded` and
+`cost_per_smaller_body`, and the client's `designCost` charges the same
+rows (`client/src/cost.fixture.json`, written by a server test, pins the
+two together). The sample designs keep the default body plan, so their
+costs and the standard sweeps are unchanged (prices never enter the
+simulation). Not done yet: the derived-property audit of §4 (regressing
+legacy on coverage, overlap, stability and localization).
 
 **Dominant designs.** No trait combination dominates; what wins out of
 proportion are free or cheap structural choices. Across the three 60-world

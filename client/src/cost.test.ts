@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { changedTraits, designCost, validateDesign } from './cost';
+import { changedTraits, designCost, morphCost, validateDesign } from './cost';
+import fixture from './cost.fixture.json';
 import type { DesignSpec, GeneCatalog } from './protocol';
 
 // A slice of `GET /api/genes` (values as in crates/sim/src/design.rs).
@@ -84,5 +85,30 @@ describe('validateDesign', () => {
 describe('changedTraits', () => {
   it('keeps only values that differ from the defaults', () => {
     expect(changedTraits({ body_size: 0.3, fur: 0.2, aggression: 0.5, muscle: 0 }, cat)).toEqual({ fur: 0.2 });
+  });
+});
+
+// cost.fixture.json is written by the Rust test
+// `design::tests::the_client_cost_fixture_is_current` (crates/server/src/design.rs):
+// the server's `/api/genes` and its own point cost of a few designs (extra eyes,
+// legs and ears, fewer structures, cold blood, a small body).
+describe('designCost against the server', () => {
+  const serverCat = fixture.catalog as GeneCatalog;
+  for (const { spec: d, cost } of fixture.designs as { spec: DesignSpec; cost: number }[]) {
+    it(`${d.name}: ${cost} points, as the server charges`, () => {
+      expect(designCost(d, serverCat).total).toBeCloseTo(cost, 3);
+      expect(validateDesign(d, serverCat)).toBeNull();
+    });
+  }
+
+  it('charges a structure per step above the default and nothing below it', () => {
+    const row = (n: string) => serverCat.morph!.find((r) => r.name === n)!;
+    expect(morphCost({ leg_count: 6 }, serverCat)).toEqual({ leg_count: row('leg_count').cost });
+    expect(morphCost({ leg_count: 8, eye_count: 4, ear_count: 4 }, serverCat)).toEqual({
+      leg_count: 2 * row('leg_count').cost, eye_count: 2 * row('eye_count').cost, ear_count: row('ear_count').cost,
+    });
+    expect(morphCost({ leg_count: 0, eye_count: 1, ear_count: 0, tail_shape: 'club', eye_azimuth: 170, snout_length: 1 }, serverCat)).toEqual({});
+    // A server without a morph section charges nothing for a body plan.
+    expect(morphCost({ leg_count: 8 }, cat)).toEqual({});
   });
 });

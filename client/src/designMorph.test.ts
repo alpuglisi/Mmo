@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { designCost } from './cost';
 import {
-  applyMorphology, applyTrait, blindSpots, designPayload, morphPayload, morphSupport, newEditorDesign, SHARED_GENES, visionReadout,
+  applyMorphology, applyTrait, blindSpots, designPayload, morphPayload, morphPrices, morphSupport, newEditorDesign, SHARED_GENES, visionReadout,
 } from './designMorph';
 import { DEFAULT_MORPHOLOGY, defaultMorphology, traitsFromMorphology, type Morphology } from './morphology';
 import type { GeneCatalog, MorphInfo } from './protocol';
@@ -57,6 +57,12 @@ describe('feature detection', () => {
     expect(p.morph).toEqual({ eye_count: 3, ear_shape: 'fan' });
     // The shared size goes in traits, never in morph.
     expect(p.traits).toEqual({ large_eyes: 0.4 });
+  });
+
+  it('reads the structure prices for the builder', () => {
+    expect(morphPrices(oldCat)).toEqual({ eye: undefined, legPair: undefined, earPair: undefined });
+    const priced = { morph: morphRows.map((r) => ({ ...r, cost: ({ eye_count: 3, leg_count: 5, ear_count: 2 } as Record<string, number>)[r.name] ?? 0 })) };
+    expect(morphPrices(priced)).toEqual({ eye: 3, legPair: 5, earPair: 2 });
   });
 
   it('sends only what the server lists, compared with its defaults', () => {

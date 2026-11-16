@@ -11,9 +11,10 @@
 //!
 //! A design also sets the body plan's morphology ([`MorphDesign`]: eye, ear
 //! and leg counts, ear and tail shapes, eye placement, snout length; defaults
-//! from `docs/morphology-contract.md`, today's creatures). Those parameters
-//! cost **no points** for now: they have no gameplay effects yet, and a later
-//! balance package prices them with their effects.
+//! from `docs/morphology-contract.md`, today's creatures). Extra structures
+//! cost points per structure ([`morph_cost`]); shapes, placement and snout
+//! length are free trade-offs (`docs/morphology.md` §4, priced with
+//! `calibrate --morph`).
 
 use std::fmt;
 
@@ -35,6 +36,24 @@ pub const COST_PER_SMALLER_BODY: f32 = 40.0;
 /// Points for cold-blooded thermoregulation: a third of the warm-blooded food
 /// need is worth more than its cold-weather sluggishness.
 pub const COST_COLD_BLOODED: f32 = 20.0;
+/// Points per eye beyond two (a midline eye, or each eye of an extra pair).
+pub const COST_PER_EXTRA_EYE: f32 = 1.0;
+/// Points per pair of legs beyond two pairs.
+pub const COST_PER_EXTRA_LEG_PAIR: f32 = 2.0;
+/// Points for a second pair of ears.
+pub const COST_PER_EXTRA_EAR_PAIR: f32 = 2.0;
+
+/// Points a body plan costs: extra structures only (`docs/morphology.md`
+/// §4). Shapes, placement and snout length are free trade-offs, and fewer
+/// structures than the default neither cost nor refund anything.
+pub fn morph_cost(m: &MorphDesign) -> f32 {
+    let d = MorphDesign::default();
+    let extra = |v: u8, base: u8| v.saturating_sub(base) as f32;
+    extra(m.eye_count, d.eye_count) * COST_PER_EXTRA_EYE
+        + extra(m.leg_count, d.leg_count) / 2.0 * COST_PER_EXTRA_LEG_PAIR
+        + extra(m.ear_count, d.ear_count) / 2.0 * COST_PER_EXTRA_EAR_PAIR
+}
+
 /// Standard deviation of founder alleles around the design value.
 pub const FOUNDER_VARIATION: f32 = 0.05;
 
@@ -183,8 +202,8 @@ pub struct FounderDesign {
     /// Trait values that differ from [`default_value`].
     pub traits: Vec<(Gene, f32)>,
     pub founders: u32,
-    /// The body plan's morphology (free of points for now; see the module
-    /// docs).
+    /// The body plan's morphology (extra structures cost points,
+    /// [`morph_cost`]).
     pub morph: MorphDesign,
 }
 
@@ -273,8 +292,7 @@ impl FounderDesign {
         v
     }
 
-    /// Points the design costs. The morphology is free for now (see the
-    /// module docs).
+    /// Points the design costs, the body plan's extra structures included.
     pub fn point_cost(&self) -> f32 {
         let v = self.values();
         let traits: f32 = Gene::ALL.iter().map(|&g| (v[g.index()] - default_value(g)).max(0.0) * trait_cost(g)).sum();
@@ -282,7 +300,7 @@ impl FounderDesign {
         let founders = self.founders.saturating_sub(BASE_FOUNDERS) as f32 * COST_PER_EXTRA_FOUNDER;
         let small = (default_value(Gene::BodySize) - v[Gene::BodySize.index()]).max(0.0) * COST_PER_SMALLER_BODY;
         let thermo = if self.thermo == Thermo::Cold { COST_COLD_BLOODED } else { 0.0 };
-        traits + litter + founders + small + thermo
+        traits + litter + founders + small + thermo + morph_cost(&self.morph)
     }
 
     pub fn validate(&self) -> Result<(), DesignError> {
@@ -333,6 +351,11 @@ mod tests {
             }
         }
         assert!(matches!(d.validate(), Err(DesignError::OverBudget { .. })));
+        // Every count at its maximum only adds to it.
+        let all = MorphDesign { eye_count: 6, leg_count: 8, ear_count: 4, ..Default::default() };
+        let more = d.clone().with_morph(all);
+        assert!(more.point_cost() > d.point_cost());
+        assert!(matches!(more.validate(), Err(DesignError::OverBudget { .. })));
     }
 
     #[test]
@@ -352,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn morphology_is_validated_and_free() {
+    fn morphology_is_validated_and_priced_per_structure() {
         let base = FounderDesign::new("m", Thermo::Warm, BirthType::Live, 1);
         let six = base.clone().with_morph(MorphDesign {
             eye_count: 6,
@@ -364,7 +387,27 @@ mod tests {
             snout_length: 1.0,
         });
         assert!(six.validate().is_ok());
-        assert_eq!(six.point_cost(), base.point_cost());
+        // 4 extra eyes, 2 extra leg pairs, a second ear pair; shapes and
+        // placement are free.
+        let extra = 4.0 * COST_PER_EXTRA_EYE + 2.0 * COST_PER_EXTRA_LEG_PAIR + COST_PER_EXTRA_EAR_PAIR;
+        assert!((six.point_cost() - base.point_cost() - extra).abs() < 1e-4);
+        // Fewer structures than the default cost nothing and refund nothing.
+        let fewer = MorphDesign {
+            eye_count: 1,
+            leg_count: 0,
+            ear_count: 0,
+            tail_shape: TailShape::Fin,
+            eye_azimuth: 0.0,
+            snout_length: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(morph_cost(&fewer), 0.0);
+        assert_eq!(base.clone().with_morph(fewer).point_cost(), base.point_cost());
+        // The sample designs keep the default body plan and fit the budget.
+        for d in crate::presets::player_designs() {
+            assert_eq!(morph_cost(&d.morph), 0.0, "{}", d.name);
+            assert!(d.validate().is_ok(), "{}", d.name);
+        }
         let bad = base.with_morph(MorphDesign { leg_count: 3, ..Default::default() });
         assert_eq!(bad.validate(), Err(DesignError::Morphology(MorphError::LegCount(3))));
         // Founders carry the design's counts exactly.
