@@ -1513,7 +1513,9 @@ autumn; `serde_util::before_v16`). Versions 10 to 16 lack `Balance::home_range`
 Versions 10 to 17 have every genome written whole (`serde_util::before_v18`;
 see *Genomes by parents* below). Versions 10 to 18 lack `Balance::lactation`
 and `Balance::warm_upkeep` (version 19), which read as 0, the rules they
-ran under (`serde_util::before_v19`).
+ran under (`serde_util::before_v19`). Versions 10 to 19 lack
+`Balance::fang_grazing` and `Balance::scale_cover` (version 20), which read
+as 0, the rules they ran under (`serde_util::before_v20`).
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1566,7 +1568,8 @@ parameter `tameness`; version 15 the world's rally orders; version 16 the
 balance parameter `migration_onset`; version 17 the `home_range` balance
 parameters; version 18 writes the genomes of
 young and eggs against their parents' (*Genomes by parents*, below);
-version 19 adds the balance parameters `lactation` and `warm_upkeep`.
+version 19 adds the balance parameters `lactation` and `warm_upkeep`;
+version 20 `fang_grazing` and `scale_cover`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -5114,6 +5117,123 @@ more than 0.3 of the prey's mass). The snapshot round-trip test's busy
 world moved from seed 22 to 23, since seed 22 no longer formed LOD
 cohorts.
 
+**Trait downsides: an audit, and contextual costs for fangs and scales**
+(`fang_grazing`, `scale_cover`). Sliders should mean something at low,
+middle and high values, and a trait pushed high should cost something
+besides points (the doc: "most traits carry a built-in cost"). The audit
+of every paid trait gene (`trait_cost`), from `stats::derive`, `terrain`,
+`decide`, `apply`, `group` and `seasonal`; "upkeep" is the share it adds
+to the hunger rate (`stats::derive`):
+
+| Gene (points) | What it does | What it costs besides points |
+| --- | --- | --- |
+| Body size (0) | Strength, defense, mass, height (wading, snow, reach) | Speed, endurance, agility, stealth; more food; slower maturity; fewer young per kg |
+| Muscle (7) | Speed, strength | Mass (food), metabolism +30%, upkeep 0.15; sinks (buoyancy) |
+| Fat stores (2) | Endurance, insulation, buoyancy, fat capacity for dormancy | Mass, speed; stored fat slows escape |
+| Leg length (25) | Speed, endurance, height | **Points only** (priced high: valuable everywhere) |
+| Claws (6) | Strength, agility, grip (ice, slopes), digging above 0.5 | Upkeep 0.1 only |
+| Hooves (16) | Speed, endurance | Agility; slip on ice unless claws grip; smaller feet sink in mud, snow, sand |
+| Foot width (6) | Low ground pressure (mud, snow, sand), some swimming | **Points only** |
+| Tail (4) | Agility | **Points only** |
+| Swimming (6) | Crosses deep water and currents | **Points only** (worthless away from water) |
+| Wings (24) | Glide above 0.25, fly above 0.5 if light enough | Upkeep 0.2; grounded by storms; slowed in forest; heavy bodies can't lift |
+| Climbing (5) | Canopy refuge and browse (≥ 0.4), cliffs, slips through vegetation, grip | **Points only** (worthless without trees or cliffs) |
+| Burrowing (6) | Shelter above 0.5 (hidden, out of reach, buffered temperature), shared burrows | **Points only** (sheltering means resting) |
+| Fur (3) | Insulation (warm-blooded) | Upkeep 0.05; lowers the heat ceiling (overheats); on a cold-blooded body blocks basking |
+| Scales (4) | Defense +0.3 | Was **points only**; now displaces fur's warmth on a furred warm body (below) |
+| Armor (2) | Defense, width | Mass, speed, agility, sinks, upkeep 0.1, wider (forest, burrows) |
+| Fangs (7) | Strength +0.3 | Was upkeep 0.1 only; now worse plant feeding, scaled by the plant diet (below) |
+| Large eyes, keen nose (4) | Perception | Upkeep 0.1 only |
+| Large ears (4) | Perception; alarm calls with vocal | Upkeep 0.1; shed heat (−0.15 insulation: cold costs more, heat less) |
+| Camouflage (5) | Stealth (seen later, ambushes) | **Points only** |
+| Toxins (18) | Defense; above 0.3 hurts and deters biters | Upkeep 0.1 |
+| Coloration (5) | Mate signal; warning signal with toxins (above 0.6) | Stealth −0.35 |
+| Vocal ability (5) | Alarm calls above 0.5 (with ears above 0.5, in a group) | **Points only** (a group threshold trait) |
+| Seasonal strategies, add-ons, vigilance | See *Seasonal strategies* | Each has its own (fattening, lost season, journeys, raids, molt cost, breeding window, food for watch) |
+
+Points-only traits split in two. Situational abilities (swimming,
+climbing, burrowing, foot width, vocal) are worth nothing where the
+terrain or group doesn't call for them, so the points are their cost.
+Fangs and scales were plain upgrades with no natural price, and the
+owner's fangs example ("fangs that are too long would have some
+downside") named one. Both now cost in context, through ratios and
+products of genes like the existing pairs (fur × cold blood, hooves ×
+claws on ice), with no bans on combinations:
+
+- **Fangs: a size, with a threshold and a grazing cost.** Below 0.1
+  (`stats::FANG_THRESHOLD`) a body has no fangs at all: no bite bonus,
+  no upkeep, no grazing cost, and nothing should be drawn; above it the
+  value is fang size. Long fangs get in the way of cropping and chewing
+  plants: plant food is worth `1 - fang_grazing × fangs × (1 −
+  carnivory)` of its value (`Traits::plant_efficiency`), on top of the
+  diet's own share. At the default `fang_grazing` 0.5, sabres halve a
+  grazer's plant food, cost an even omnivore a quarter at full size, and
+  a hunter at carnivory 0.85 7.5% (the red fox's 0.5 fangs: 3.75%). A
+  first form without the `(1 − carnivory)` factor (a flat 40% of plant
+  value at full size) hit hunters hardest in tournaments (−0.014 ± 0.006
+  mean final share at carnivory 0.85, 192 worlds): hunters live off
+  plants between kills and on thin margins, so it was replaced.
+  Applies to agents; level-of-detail cohorts graze on `1 − carnivory`
+  alone, ignoring the generalist tax as well.
+- **Scales displace fur.** Scales take skin a furred body would cover
+  with fur: a warm-blooded body loses `scale_cover × scales × fur
+  warmth` of insulation (`Traits::insulation`; fur warmth is 0.6 per
+  unit). At the default 0.5, full scales on full fur cost 0.3 of
+  insulation (about 9 °C off the cold comfort limit). Scales on a
+  cold-blooded or naked body cost nothing. Applies to agents and, through
+  the cohort probe's genes, to cohorts.
+
+Old saves keep the old rules: snapshots move to format version 20, and
+versions 10–19 read both parameters as 0 (`serde_util::before_v20`). The
+fang threshold is a phenotype rule, recomputed on restore like every
+trait: an old world's few organisms with drifted fangs below 0.1 lose
+their bite bonus of at most 0.03 strength.
+
+Judged against the unchanged rules:
+
+- `compare --adaptive` from seed 101 (`vs --set fang_grazing=0 --set
+  scale_cover=0`): +0.02 (sequential CI −0.16 … +0.20, 12 seeds, within
+  ±0.3); no lineage lost; burrowing omnivores +27 ± 20 mean alive, the
+  rest within noise.
+- The 12-seed sweep from seed 31 scores 11.74 (11.76 before;
+  `scripts/balance-smoke.sh` thresholds untouched).
+- Tournaments on the four fresh sets 70001–, 80001–, 90001–, 100001–
+  (384 worlds, 1536 entries, 90 days), paired with the baselines of
+  *Warm-blooded classes* (same designs, unchanged rules; win share,
+  mean final share and its paired change ± one standard error):
+
+| Pooled 384 worlds | Before | After (paired change) |
+| --- | --- | --- |
+| Cold abandoned eggs | 23.5% (0.078) | 22.0% (0.078; −0.000 ± 0.001) |
+| Cold incubated eggs | 30.9% (0.097) | 32.1% (0.097; +0.000 ± 0.002) |
+| Cold live birth | 28.8% (0.082) | 29.2% (0.082; −0.000 ± 0.002) |
+| Warm abandoned eggs | 7.4% (0.033) | 6.7% (0.033; −0.001 ± 0.001) |
+| Warm incubated eggs | 32.0% (0.098) | 31.6% (0.097; −0.001 ± 0.002) |
+| Warm live birth | 29.8% (0.106) | 31.0% (0.108; +0.002 ± 0.002) |
+
+  No class's mean share moves by more than one standard error, and the
+  pooled top class stays at 32% (cold incubators, 32.1%, against warm
+  incubators' 32.0% before). Per set the top class is 38.9% (90001–, cold
+  incubators; 40.7% before), 32.8% (100001–), 38.8% (70001–, warm
+  incubators; 35.8% before) and 38.7% (80001–, warm live; 35.5%
+  before), the one-set noise described there.
+- Where the costs fall (paired change of mean final share): designs with
+  fangs and carnivory 0 −0.009 ± 0.005 (61 entries), 0.1 −0.004 ± 0.004,
+  0.5 −0.008 ± 0.004, 0.85 −0.001 ± 0.002 (78); designs without fangs
+  +0.001 ± 0.001. Warm designs with both scales and fur are rare among
+  random designs (16 entries, +0.006 ± 0.006: too few to see the cost);
+  other scaled designs −0.002 ± 0.002.
+
+Kept: `fang_grazing` 0.5, `scale_cover` 0.5. Not changed: the other
+points-only traits (above), and tail, whose cost would be contextual on
+locomotion (a balance aid for climbers, swimmers and runners) and needs
+its agility moved out of the birth-time stats; a candidate for a later
+pass. No stats are on the wire; the client wire fixture was regenerated
+only because its short session's world now plays out differently.
+The snapshot round-trip test's busy world is now snapshotted 12 hours
+later the same day (tick 13 × 48 + 29), since it held no clutch at the old
+tick. New tunables: `fang_grazing`, `scale_cover`.
+
 ## Point costs
 
 The costs in `design.rs` are calibrated with `examples/calibrate.rs`
@@ -5578,6 +5698,25 @@ Snapshots move to format version 19 (versions 10–18 restore with
 `lactation` and `warm_upkeep` both 0). New tunables: `lactation`,
 `warm_upkeep`.
 
+
+**Fangs and scales after their contextual costs: prices kept.** The
+tournament regression of *Point costs* (log final share on points spent
+per trait, world fixed effects, controls for class, body size, diet,
+litter and founders; standard errors clustered by world) on the four
+fresh sets 70001–, 80001–, 90001–, 100001– (384 worlds, the same designs
+before and after *Trait downsides*):
+
+| Per-point coefficient | Before | After |
+| --- | --- | --- |
+| Fangs (7) | −0.009 ± 0.014 | −0.024 ± 0.014 |
+| Scales (4) | −0.003 ± 0.023 | +0.002 ± 0.023 |
+| Mean over the 31 priced traits | −0.034 | −0.038 |
+
+Fangs lose about 0.1 log share per unit of fangs (0.015 per point × 7),
+all of it on designs that eat plants; fanged hunters lose nothing
+(carnivory 0.85: −0.001 ± 0.002 share). A lower price would subsidize
+fangs for the hunters that don't pay the cost, and fangs still sit above
+the mean of the priced traits, so **fangs stay at 7 and scales at 4**.
 
 ## Suggested next steps
 

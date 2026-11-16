@@ -163,7 +163,7 @@ Optional: mismatch penalties are partly genetic, so selection can slowly reduce 
 | Other | Diet (carnivore, herbivore, omnivore, scavenger), camouflage, toxins |
 | Instinct genes | Boldness, aggression, wanderlust, group tolerance, obedience, mate preference and pickiness |
 
-**Stats layer.** Physical traits set stats; stats feed needs and decide how well behaviors succeed. Most traits carry a built-in cost.
+**Stats layer.** Physical traits set stats; stats feed needs and decide how well behaviors succeed. Most traits carry a built-in cost. Costs are contextual where the body makes them so: fur on a cold-blooded body blocks basking, hooves slip on ice unless claws grip, scales take skin a furred body would cover with fur, and long fangs crop plants badly, costing a grazer much and a hunter little. A trace of fangs (below 0.1) is no fangs at all.
 
 | Stat | Raised by | Lowered by | Affects |
 | --- | --- | --- | --- |
@@ -175,7 +175,7 @@ Optional: mismatch penalties are partly genetic, so selection can slowly reduce 
 | Stealth | Camouflage | Body size | Avoiding predators, ambushing prey |
 | Defense | Body size, scales, armor, toxins | — | Surviving attacks |
 | Metabolism | Body size, muscle, warm-blooded | Cold-blooded | Hunger and thirst rates |
-| Insulation | Fur, fat | Large ears (shed heat) | Temperature |
+| Insulation | Fur, fat | Large ears (shed heat), scales over fur | Temperature |
 
 **Founders.** Starting organisms vary around the design rather than being clones, so selection has material from day one. A larger founding population costs points, so group-trait builds pay to start above threshold.
 

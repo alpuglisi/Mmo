@@ -610,6 +610,18 @@ pub struct Balance {
     /// default: see *Endothermy upkeep* in the README's Balance section).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v19"))]
     pub warm_upkeep: f32,
+    /// Long fangs crop and chew plants badly: plant food is worth
+    /// `1 - fang_grazing × fang size × (1 - carnivory)` of its value
+    /// (`Traits::plant_efficiency`), so sabres cost a grazer the most and a
+    /// hunter little (nothing for a pure carnivore). 0 is the old rule.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v20"))]
+    pub fang_grazing: f32,
+    /// Scales leave less skin for fur: a warm-blooded body loses
+    /// `scale_cover × scales × fur warmth` of insulation (`Traits::insulation`),
+    /// so scales cost a furred mammal warmth and a naked or cold-blooded body
+    /// nothing. 0 is the old rule.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v20"))]
+    pub scale_cover: f32,
 }
 
 /// How a shielded home range softens predation (`World::set_home_ranges`).
@@ -731,12 +743,14 @@ impl Default for Balance {
             home_range: HomeRangeBalance::default(),
             lactation: 0.0,
             warm_upkeep: 0.0,
+            fang_grazing: 0.5,
+            scale_cover: 0.5,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 91;
+    pub const FIELD_COUNT: usize = 93;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -837,6 +851,8 @@ impl Balance {
             ("offline_stack_floor", &mut self.home_range.stack_floor),
             ("lactation", &mut self.lactation),
             ("warm_upkeep", &mut self.warm_upkeep),
+            ("fang_grazing", &mut self.fang_grazing),
+            ("scale_cover", &mut self.scale_cover),
         ]
     }
 

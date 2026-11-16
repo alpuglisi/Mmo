@@ -137,8 +137,8 @@ fn restored_world_continues_exactly() {
     let tpd = 48u64;
     let mut a = busy_world();
     assert_eq!(a.config.ticks_per_day as u64, tpd);
-    // Into winter (day 12 of 16), mid-hour.
-    let k = 13 * tpd + 5;
+    // Into winter (day 12 of 16), mid-hour, with a clutch laid.
+    let k = 13 * tpd + 29;
     while a.tick() < k {
         if a.tick().is_multiple_of(100) {
             order_possessed(&mut a);
@@ -443,6 +443,16 @@ fn version_13_snapshots_restore_with_default_obedience() {
     assert!(r.snapshot_v13() == old);
 }
 
+/// Give a world restored from a snapshot older than version 20 the
+/// version 20 parameters (`Balance::fang_grazing`, `scale_cover`) of `w`,
+/// which it read as 0.
+fn with_v20_params(r: &mut World, w: &World) {
+    let off = crate::serde_util::before_v20::OLD_VALUE;
+    assert_eq!((r.config.balance.fang_grazing, r.config.balance.scale_cover), (off, off));
+    r.config.balance.fang_grazing = w.config.balance.fang_grazing;
+    r.config.balance.scale_cover = w.config.balance.scale_cover;
+}
+
 /// Version 14 snapshots (before the rally command) restore with no rally
 /// standing, and the rest of the world as it was.
 #[test]
@@ -460,6 +470,7 @@ fn version_14_snapshots_restore_without_rallies() {
     assert_eq!(r.rally(owner, group), None);
     // Version 14 also predates `migration_onset` (version 16).
     r.config.balance.migration_onset = w.config.balance.migration_onset;
+    with_v20_params(&mut r, &w);
     assert!(r.snapshot() == plain);
     assert!(r.snapshot_v14() == old);
 }
@@ -477,7 +488,8 @@ fn version_15_snapshots_restore_without_migration_onset() {
     // Without the parameter the payload is 4 bytes (one f32) shorter, and
     // 12 more without the home range's (version 17).
     assert_eq!(h.raw_len + 4 + 12, SnapshotHeader::read(&w.snapshot_v17()).unwrap().raw_len);
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let mut r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    with_v20_params(&mut r, &w);
     assert_eq!(r.config.balance.migration_onset, crate::serde_util::before_v16::OLD_MIGRATION_ONSET);
     w.config.balance.migration_onset = r.config.balance.migration_onset;
     assert_eq!(r.config.balance, w.config.balance);
@@ -496,7 +508,8 @@ fn version_16_snapshots_restore_without_the_home_range() {
     assert!(h.restorable());
     // Without the parameters the payload is 12 bytes (three f32) shorter.
     assert_eq!(h.raw_len + 12, SnapshotHeader::read(&w.snapshot_v17()).unwrap().raw_len);
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let mut r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    with_v20_params(&mut r, &w);
     assert_eq!(r.config.balance.home_range, crate::config::HomeRangeBalance::default());
     w.config.balance.home_range = r.config.balance.home_range;
     assert_eq!(r.config.balance, w.config.balance);
@@ -524,7 +537,8 @@ fn version_17_snapshots_restore_with_whole_genomes() {
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!((h.version, h.flags), (17, FLAG_LZ4 | FLAG_TILES_APART));
     assert!(h.restorable());
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let mut r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    with_v20_params(&mut r, &w);
     assert_same_caches(&w, &r);
     assert!(r.clutches.iter().zip(&w.clutches).all(|(a, b)| a.eggs == b.eggs));
     let new = w.snapshot();
@@ -549,15 +563,42 @@ fn version_18_snapshots_restore_without_warm_costs() {
     assert_eq!(h.version, 18);
     assert!(h.restorable());
     // Without the two parameters the payload is 8 bytes (two f32s) shorter.
-    assert_eq!(h.raw_len + 8, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    assert_eq!(h.raw_len + 8, SnapshotHeader::read(&w.snapshot_v19()).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     let off = crate::serde_util::before_v19::OLD_VALUE;
     assert_eq!((r.config.balance.lactation, r.config.balance.warm_upkeep), (off, off));
     w.config.balance.lactation = off;
     w.config.balance.warm_upkeep = off;
+    // Version 18 predates version 20's parameters too.
+    w.config.balance.fang_grazing = crate::serde_util::before_v20::OLD_VALUE;
+    w.config.balance.scale_cover = crate::serde_util::before_v20::OLD_VALUE;
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v18() == old);
+}
+
+/// Version 19 snapshots (before `Balance::fang_grazing` and
+/// `Balance::scale_cover`) restore with both at 0, the rules they ran under,
+/// and are otherwise the same world.
+#[test]
+fn version_19_snapshots_restore_without_trait_costs() {
+    let w = fixture_world();
+    assert!(w.config.balance.fang_grazing > 0.0 && w.config.balance.scale_cover > 0.0);
+    let old = w.snapshot_v19();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 19);
+    assert!(h.restorable());
+    // Without the two parameters the payload is 8 bytes (two f32s) shorter.
+    assert_eq!(h.raw_len + 8, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let off = crate::serde_util::before_v20::OLD_VALUE;
+    assert_eq!((r.config.balance.fang_grazing, r.config.balance.scale_cover), (off, off));
+    let mut w = w;
+    w.config.balance.fang_grazing = off;
+    w.config.balance.scale_cover = off;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v19() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

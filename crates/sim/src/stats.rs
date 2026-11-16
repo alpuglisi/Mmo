@@ -5,8 +5,17 @@
 //! Situational modifiers (cold, hunger, growth, pregnancy) are applied at
 //! runtime in the world tick.
 
+use crate::config::Balance;
 use crate::design::{litter_from_gene, BirthType, MAX_LITTER};
 use crate::genome::{Gene, Phenotype};
+
+/// Fang expression below which a body has no fangs at all: no bite bonus,
+/// no upkeep, no grazing cost (and none drawn). Above it the expression is
+/// the fangs' size.
+pub const FANG_THRESHOLD: f32 = 0.1;
+
+/// Insulation per unit of fur on a warm-blooded body.
+const FUR_WARMTH: f32 = 0.6;
 
 /// Normalized stats, roughly 0–1.5.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -71,6 +80,13 @@ pub struct Traits {
     pub litter_burden: f32,
     /// Thermoregulation mismatch: fur on a cold-blooded body blocks basking.
     pub fur_mismatch: f32,
+    /// Fang size: the fang expression, 0 below [`FANG_THRESHOLD`]. Long
+    /// fangs get in the way of cropping plants (`Traits::plant_efficiency`).
+    pub fangs: f32,
+    /// Fur warmth that scales displace at full `Balance::scale_cover`:
+    /// scale expression times fur's share of insulation (warm-blooded only;
+    /// `Traits::insulation`).
+    pub scaled_fur: f32,
     /// Seasonal strategy ("Seasons and biomes" in the design doc).
     pub seasonal: Seasonal,
 }
@@ -187,9 +203,25 @@ pub fn generalist_factor(carnivory: f32, tax: f32) -> f32 {
 
 impl Traits {
     /// Share of plant food's value the gut extracts: `(1 - carnivory)`
-    /// times the generalist factor (see [`generalist_factor`]).
-    pub fn plant_efficiency(&self, tax: f32) -> f32 {
-        (1.0 - self.carnivory).clamp(0.0, 1.0) * generalist_factor(self.carnivory, tax)
+    /// times the generalist factor (see [`generalist_factor`]), times
+    /// `1 - fang_grazing × fang size × (1 - carnivory)`: long fangs get in
+    /// the way of cropping and chewing plants, and the more a body's teeth
+    /// and gut are built for plants the more they cost it. Sabres halve a
+    /// grazer's plant food at the default 0.5 and barely touch a hunter's
+    /// (carnivory 0.85: 7.5% at full size).
+    pub fn plant_efficiency(&self, bal: &Balance) -> f32 {
+        let plants = (1.0 - self.carnivory).clamp(0.0, 1.0);
+        plants
+            * generalist_factor(self.carnivory, bal.generalist_tax)
+            * (1.0 - bal.fang_grazing * self.fangs * plants).max(0.0)
+    }
+
+    /// Insulation once scales take their share: a covering of scales
+    /// leaves less skin for fur, so a furred warm-blooded body loses
+    /// `scale_cover × scales × fur warmth`. Scales cost a scaly reptile or a
+    /// naked warm body nothing.
+    pub fn insulation(&self, scale_cover: f32) -> f32 {
+        (self.stats.insulation - scale_cover * self.scaled_fur).max(0.0)
     }
 
     /// Share of meat's value the gut extracts: `carnivory` times the
@@ -244,12 +276,13 @@ pub fn derive(p: &Phenotype) -> Traits {
     // Thermoregulation mismatch (doc: "Thick fur — cold-blooded can't bask").
     let fur_mismatch = if warm { 0.0 } else { p[Fur] };
     let fur_insulation = if warm { p[Fur] } else { 0.0 };
+    let fangs = if p[Fangs] < FANG_THRESHOLD { 0.0 } else { p[Fangs] };
 
     // Running costs of expensive organs keep "max everything" genomes in check
     // even after mutation drifts them beyond the founding budget.
     let upkeep = 0.1 * (p[Eyes] + p[Ears] + p[Nose])
         + 0.15 * p[Muscle]
-        + 0.1 * (p[Toxins] + p[Armor] + p[Claws] + p[Fangs])
+        + 0.1 * (p[Toxins] + p[Armor] + p[Claws] + fangs)
         + 0.2 * p[Wings]
         + 0.05 * p[Fur];
 
@@ -259,7 +292,7 @@ pub fn derive(p: &Phenotype) -> Traits {
             - 0.25 * p[FatStores]
             - 0.35 * p[Armor])
             .max(0.08),
-        strength: 0.15 + 0.6 * size + 0.4 * p[Muscle] + 0.25 * p[Claws] + 0.3 * p[Fangs],
+        strength: 0.15 + 0.6 * size + 0.4 * p[Muscle] + 0.25 * p[Claws] + 0.3 * fangs,
         endurance: (0.4 + 0.3 * p[LegLength] + 0.2 * p[Hooves] + 0.25 * p[FatStores] - 0.2 * size
             + if warm { 0.1 } else { 0.0 })
         .max(0.1),
@@ -268,7 +301,7 @@ pub fn derive(p: &Phenotype) -> Traits {
         stealth: (0.25 + 0.6 * p[Camouflage] - 0.35 * size - 0.35 * p[Coloration]).clamp(0.0, 1.0),
         defense: 0.1 + 0.45 * size + 0.3 * p[Scales] + 0.5 * p[Armor] + 0.2 * p[Toxins],
         metabolism: (0.6 + 0.3 * p[Muscle]) * if warm { 1.0 } else { 0.35 } * (1.0 + upkeep),
-        insulation: (0.6 * fur_insulation + 0.35 * p[FatStores] - 0.15 * p[Ears]).clamp(0.0, 1.0),
+        insulation: (FUR_WARMTH * fur_insulation + 0.35 * p[FatStores] - 0.15 * p[Ears]).clamp(0.0, 1.0),
     };
 
     let foot_area = (0.4 + 0.9 * p[FootWidth] - 0.2 * p[Hooves]).max(0.15);
@@ -313,6 +346,8 @@ pub fn derive(p: &Phenotype) -> Traits {
         newborn_growth,
         litter_burden: litter as f32 * newborn_growth,
         fur_mismatch,
+        fangs,
+        scaled_fur: p[Scales] * FUR_WARMTH * fur_insulation,
         seasonal: Seasonal::from_phenotype(p, warm),
     }
 }
@@ -353,7 +388,8 @@ mod tests {
     fn diet_efficiency_taxes_generalists() {
         let eff = |c: f32, tax: f32| {
             let t = traits_of(&FounderDesign::new("d", Thermo::Warm, BirthType::Live, 2).with(Gene::Carnivory, c));
-            (t.plant_efficiency(tax), t.meat_efficiency(tax))
+            let bal = crate::Balance { generalist_tax: tax, ..Default::default() };
+            (t.plant_efficiency(&bal), t.meat_efficiency(tax))
         };
         // Untaxed: the old linear rule.
         let (pl, me) = eff(0.5, 0.0);
@@ -370,6 +406,56 @@ mod tests {
         // Specializing pays: total extraction is lowest in the middle.
         let total = |c| eff(c, tax).0 + eff(c, tax).1;
         assert!(total(0.5) < total(0.3) && total(0.3) < total(0.1) && total(0.5) < total(0.85));
+    }
+
+    /// Below the threshold there are no fangs; above it long fangs bite
+    /// harder and cost plant feeding in proportion to the plant diet.
+    #[test]
+    fn long_fangs_bite_harder_and_graze_worse() {
+        let bal = crate::Balance::default();
+        assert!(bal.fang_grazing > 0.0);
+        let t = |fangs: f32, c: f32| {
+            traits_of(
+                &FounderDesign::new("f", Thermo::Warm, BirthType::Live, 2)
+                    .with(Gene::Fangs, fangs)
+                    .with(Gene::Carnivory, c),
+            )
+        };
+        let (none, stub) = (t(0.0, 0.0), t(FANG_THRESHOLD - 0.01, 0.0));
+        assert_eq!((stub.fangs, stub.stats), (0.0, none.stats));
+        assert_eq!(stub.plant_efficiency(&bal), 1.0);
+        let long = t(0.8, 0.0);
+        assert!(long.stats.strength > none.stats.strength);
+        assert!((long.plant_efficiency(&bal) - (1.0 - 0.8 * bal.fang_grazing)).abs() < 1e-6);
+        // The share of plant value lost follows the plant share of the diet.
+        let loss = |c| 1.0 - t(0.8, c).plant_efficiency(&bal) / t(0.0, c).plant_efficiency(&bal);
+        assert!((loss(0.5) - 0.5 * 0.8 * bal.fang_grazing).abs() < 1e-5);
+        assert!(loss(0.0) > loss(0.5) && loss(0.5) > loss(0.9) && loss(0.9) < 0.05);
+        assert_eq!(t(0.8, 1.0).plant_efficiency(&bal), 0.0);
+        // 0 is the old rule.
+        let old = crate::Balance { fang_grazing: 0.0, ..bal };
+        assert_eq!(long.plant_efficiency(&old), 1.0);
+    }
+
+    /// Scales displace a warm body's fur warmth, not a reptile's or a naked
+    /// body's.
+    #[test]
+    fn scales_displace_fur_warmth() {
+        let k = crate::Balance::default().scale_cover;
+        assert!(k > 0.0);
+        let t = |thermo, fur: f32, scales: f32| {
+            traits_of(
+                &FounderDesign::new("s", thermo, BirthType::Live, 2).with(Gene::Fur, fur).with(Gene::Scales, scales),
+            )
+        };
+        let (furred, both) = (t(Thermo::Warm, 0.8, 0.0), t(Thermo::Warm, 0.8, 0.6));
+        assert_eq!(furred.insulation(k), furred.stats.insulation);
+        assert!(both.insulation(k) < both.stats.insulation);
+        assert!((both.stats.insulation - both.insulation(k) - k * 0.6 * FUR_WARMTH * 0.8).abs() < 1e-6);
+        assert_eq!(both.insulation(0.0), both.stats.insulation);
+        for t in [t(Thermo::Warm, 0.0, 0.8), t(Thermo::Cold, 0.0, 0.8), t(Thermo::Cold, 0.8, 0.8)] {
+            assert_eq!(t.insulation(k), t.stats.insulation);
+        }
     }
 
     #[test]
