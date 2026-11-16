@@ -89,6 +89,11 @@ pub struct Traits {
     pub scaled_fur: f32,
     /// Seasonal strategy ("Seasons and biomes" in the design doc).
     pub seasonal: Seasonal,
+    /// Body-plan context terms (`morph_effects`; neutral until
+    /// `morph_effects::apply`).
+    pub morph: crate::morph_effects::MorphContext,
+    /// Fields of view of the eyes (`Balance::directional_vision`).
+    pub vision: crate::vision::Vision,
 }
 
 /// Expression above which a seasonal-strategy gene switches its strategy on.
@@ -349,6 +354,8 @@ pub fn derive(p: &Phenotype) -> Traits {
         fangs,
         scaled_fur: p[Scales] * FUR_WARMTH * fur_insulation,
         seasonal: Seasonal::from_phenotype(p, warm),
+        morph: crate::morph_effects::MorphContext::at_birth(p),
+        vision: crate::vision::Vision::of(p, stats.perception),
     }
 }
 

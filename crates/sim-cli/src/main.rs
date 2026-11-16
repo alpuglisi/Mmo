@@ -126,6 +126,9 @@ coat_insulation breeding_window timed_conception breeding_recklessness courtship
 brood_recovery egg_overheat brood_warmth brood_cost threat_caution alert_guard pasture_search
 search_image cold_gestation nest_predation tameness migration_onset possess_urgency possess_danger
 home_range_predation home_range_residents offline_stack_floor lactation warm_upkeep
+fang_grazing scale_cover morph_effects morph_tail_drag morph_tail_chill morph_long_legs
+directional_vision vision_scan
+morph_step_rate
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
 juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump

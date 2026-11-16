@@ -100,23 +100,30 @@ fn beats(score: f32, j: usize, best: Option<(f32, usize)>) -> bool {
     best.is_none_or(|(s, k)| score > s || (score == s && j < k))
 }
 
-/// Mean expression difference over the distance genes: `Genome::distance`, from the
-/// phenotype (which holds exactly the expressed values) so it reads `Gene::COUNT`
+/// Mean expression difference over the distance genes plus the morphology
+/// term: `Genome::distance`, from the phenotype (which holds exactly the
+/// expressed values) and the cached morphology, so it reads `Gene::COUNT`
 /// contiguous floats instead of 76 scattered alleles.
 fn genetic_distance(a: &Organism, b: &Organism) -> f32 {
     use crate::genome::{DISTANCE_GENES, IN_DISTANCE};
     let diffs = a.pheno.0.iter().zip(&b.pheno.0).zip(IN_DISTANCE);
-    diffs.map(|((x, y), counts)| if counts { (x - y).abs() } else { 0.0 }).sum::<f32>() / DISTANCE_GENES
+    let sum = diffs.map(|((x, y), counts)| if counts { (x - y).abs() } else { 0.0 }).sum::<f32>();
+    (sum + crate::morph::morph_terms(&a.morph.key(), &b.morph.key()).0) / DISTANCE_GENES
 }
 
-/// Slots in [`Genes`]: the distance genes, padded to whole groups of four.
+/// Slots in [`Genes`] for the distance genes, padded to whole groups of four.
 pub(super) const GENE_SLOTS: usize = (crate::genome::DISTANCE_GENES as usize).div_ceil(4) * 4;
 
 /// The expressed values of the genes that count toward [`genetic_distance`]:
 /// the body-plan genes (`mating::BODY_PLAN_GENES`, in that order) first,
-/// then the others in gene order, then zeros. What kinship tests read of an
+/// then the others in gene order, then zeros up to [`GENE_SLOTS`]; then the
+/// morphology key (`morph::MorphKey`). What kinship tests read of an
 /// organism, packed next to its neighbors' in the spatial grid.
-pub(super) type Genes = [f32; GENE_SLOTS];
+pub(super) type Genes = [f32; GENE_SLOTS + crate::morph::MORPH_KEY];
+
+fn morph_key(g: &Genes) -> &crate::morph::MorphKey {
+    g[GENE_SLOTS..].try_into().unwrap()
+}
 
 /// Body-plan genes, the first slots of [`Genes`].
 const PLAN: usize = mating::BODY_PLAN_GENES.len();
@@ -149,19 +156,21 @@ const GENE_OF_SLOT: [usize; crate::genome::DISTANCE_GENES as usize] = {
     out
 };
 
-/// [`Genes`] of a phenotype.
-pub(super) fn genes_of(p: &crate::genome::Phenotype) -> Genes {
-    let mut out = [0.0; GENE_SLOTS];
+/// [`Genes`] of an organism (its phenotype and morphology).
+pub(super) fn genes_of(o: &Organism) -> Genes {
+    let mut out = [0.0; GENE_SLOTS + crate::morph::MORPH_KEY];
     for (slot, &k) in out.iter_mut().zip(&GENE_OF_SLOT) {
-        *slot = p.0[k];
+        *slot = o.pheno.0[k];
     }
+    out[GENE_SLOTS..].copy_from_slice(&o.morph.key());
     out
 }
 
 /// `mating::body_plan_gap` from [`Genes`] (the same value, bit for bit: the
-/// same differences, folded in the same order).
+/// same differences, folded in the same order, then the morphology's gap).
 fn body_plan_gap(a: &Genes, b: &Genes) -> f32 {
-    a[..PLAN].iter().zip(&b[..PLAN]).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+    let morph = crate::morph::morph_terms(morph_key(a), morph_key(b)).1;
+    a[..PLAN].iter().zip(&b[..PLAN]).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max).max(morph)
 }
 
 /// Bounds on [`genetic_distance`] from a quick sum that adds the same terms
@@ -185,7 +194,7 @@ impl DistanceBounds {
         // wait on each other. Dividing by multiplying with the reciprocal
         // rounds differently by a few parts in 10^8, inside `SLACK` too.
         let mut lanes = [0.0f32; 8];
-        let (mut ca, mut cb) = (a.chunks_exact(8), b.chunks_exact(8));
+        let (mut ca, mut cb) = (a[..GENE_SLOTS].chunks_exact(8), b[..GENE_SLOTS].chunks_exact(8));
         for (a, b) in (&mut ca).zip(&mut cb) {
             for (l, lane) in lanes.iter_mut().enumerate() {
                 *lane += (a[l] - b[l]).abs();
@@ -194,7 +203,9 @@ impl DistanceBounds {
         for (l, (a, b)) in ca.remainder().iter().zip(cb.remainder()).enumerate() {
             lanes[l] += (a - b).abs();
         }
-        let sum = ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5])) + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]));
+        let sum = ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5]))
+            + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]))
+            + crate::morph::morph_terms(morph_key(a), morph_key(b)).0;
         let scale = 1.0 / DISTANCE_GENES;
         DistanceBounds { lo: sum * (1.0 - Self::SLACK) * scale, hi: sum * (1.0 + Self::SLACK) * scale }
     }
@@ -234,7 +245,8 @@ pub(crate) fn can_threaten(predator: &Organism, prey: &Organism) -> bool {
 /// Follows the taxed diet (`Traits::meat_efficiency` with
 /// `Balance::generalist_tax`): a generalist is a half-hearted fighter.
 pub(crate) fn fight_back(o: &Organism, tax: f32) -> f32 {
-    o.power() * o.traits.meat_efficiency(tax)
+    // Plus a club tail's swing (`morph_effects`; 0 by default).
+    o.power() * o.traits.meat_efficiency(tax) + o.traits.morph.fight_back
 }
 
 /// Factor on a hunter's prey score for the risk of being hurt by prey that
@@ -427,7 +439,7 @@ impl World {
         let (threat_floor, prey_cap, female) = (0.3 * o.mass(), max_prey_mass(o, coop), o.sex == Sex::Female);
         let v = Viewer {
             o,
-            genes: genes_of(p),
+            genes: genes_of(o),
             radius,
             alarm,
             sentry,
@@ -855,8 +867,18 @@ impl World {
             let burrow = if q.sheltered { 0.5 + 0.3 * (self.burrow_depth(q) - q.traits.body.burrow) } else { 0.0 };
             let den = if q.dormancy.is_deep() { cfg.balance.den_concealment } else { 0.0 };
             let hidden = burrow.max(den);
-            let detect =
+            let mut detect =
                 radius * (1.0 - cfg.balance.stealth_effect * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
+            // Directional vision: a neighbor in a blind sector is noticed
+            // by ear and nose, and by sight only as far as a viewer standing
+            // still (no target last tick) scans around (`vision::detect_factor`).
+            // Only ever shortens `detect`, so the far-neighbor bounds hold.
+            let k = cfg.balance.directional_vision;
+            if k > 0.0 && d < detect {
+                let vis = &o.traits.vision;
+                let eyes = vis.eyes_on(o.heading, q.pos - o.pos);
+                detect *= crate::vision::detect_factor(eyes, vis, k, o.target.is_none(), cfg.balance.vision_scan);
+            }
             if d < detect {
                 if defender && self.territory_of(q).is_some_and(|t| t.contains(o.pos)) {
                     let odds = q.power() / (q.power() + o.resistance() + 1e-3);
@@ -1207,6 +1229,39 @@ mod tests {
         assert_eq!(intent.kin_nearby, 150);
     }
 
+    /// Directional vision: a fox at the edge of a vole's notice is missed
+    /// when it stands in the vole's blind spot (behind it), seen when in
+    /// front; with `directional_vision` 0 the heading changes nothing.
+    #[test]
+    fn blind_spot_hides_a_stalker_only_with_directional_vision() {
+        let mut w = presets::standard_world(WorldConfig { seed: 4, width: 48, height: 48, ..Default::default() }, 1);
+        let vole = w.organisms.iter().position(|o| o.lineage == 0 && o.matured).unwrap();
+        let fox = w.organisms.iter().position(|o| o.lineage == 3 && o.growth > 0.5).unwrap();
+        for o in w.organisms.iter_mut() {
+            o.pos = Vec2::new(1.0, 1.0);
+        }
+        let center = Vec2::new(24.0, 24.0);
+        w.organisms[vole].pos = center;
+        w.organisms[vole].needs = crate::organism::Needs::default();
+        // Walking somewhere, so not scanning (`Balance::vision_scan`).
+        w.organisms[vole].target = Some(center + Vec2::new(0.0, 5.0));
+        // Where the vole notices the fox without directional vision.
+        let fox_at = |w: &mut World, d: f32| {
+            w.organisms[fox].pos = center + Vec2::new(d, 0.0);
+            w.grid.rebuild(&w.organisms);
+            w.decide(vole).threat > 0.0
+        };
+        let reach = (1..200).map(|k| k as f32 * 0.05).take_while(|&d| fox_at(&mut w, d)).last().unwrap();
+        let near_edge = 0.95 * reach;
+        let vis = w.organisms[vole].traits.vision;
+        assert!(vis.blind > 0.0 && vis.visual_share > 0.1);
+        for (k, heading, seen) in [(0.0, -1.0, true), (1.0, 1.0, true), (1.0, -1.0, false)] {
+            w.config.balance.directional_vision = k;
+            w.organisms[vole].heading = Vec2::new(heading, 0.0);
+            assert_eq!(fox_at(&mut w, near_edge), seen, "k {k}, heading {heading}");
+        }
+    }
+
     /// A burrowing omnivore (carnivory 0.5) hunts voles, so a vole must see
     /// it as a threat even beyond its nearest `FOCUS` neighbors, where only
     /// the grid's `ARMED` flag decides whether it gets a close look.
@@ -1339,9 +1394,9 @@ mod tests {
         let alive: Vec<&Organism> = w.organisms.iter().filter(|o| o.alive).collect();
         let (mut kin, mut strangers) = (0, 0);
         for a in &alive {
-            let ga = genes_of(&a.pheno);
+            let ga = genes_of(a);
             for b in &alive {
-                let gb = genes_of(&b.pheno);
+                let gb = genes_of(b);
                 let gap = body_plan_gap(&ga, &gb);
                 assert_eq!(gap.to_bits(), mating::body_plan_gap(&a.genome, &b.genome).to_bits());
                 let exact = genetic_distance(a, b);

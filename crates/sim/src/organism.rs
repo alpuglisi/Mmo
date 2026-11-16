@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::genome::{Gene, Genome, Phenotype, PlayerId};
 use crate::math::Vec2;
 use crate::mating::Display;
+use crate::morph::Morphology;
 use crate::pathfinding::Path;
 use crate::stats::{derive, Traits};
 
@@ -202,6 +203,11 @@ pub struct Organism {
     /// Cache: `derive(&pheno)`. Not in snapshots, like `pheno`.
     #[cfg_attr(feature = "serde", serde(skip, default = "unset_traits"))]
     pub traits: Traits,
+    /// Cache: the expressed morphology (`morph::Morphology::new` of the
+    /// genome's morphology loci and `pheno`), for the perception, locomotion
+    /// and rendering packages. Not in snapshots, like `pheno`.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub morph: Morphology,
     pub pos: Vec2,
     pub age_ticks: u32,
     /// Fraction of adult size, 0–1.
@@ -277,6 +283,11 @@ pub struct Organism {
     /// Group commands (migration, territory) are given per group. Young are
     /// born into their mother's group.
     pub group: u8,
+    /// Facing: unit vector of its last movement, kept while it stands
+    /// still (from [`crate::vision::birth_heading`] until it first moves).
+    /// What its eyes see is measured from it (`Balance::directional_vision`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v22"))]
+    pub heading: Vec2,
 }
 
 #[cfg(feature = "serde")]
@@ -294,6 +305,7 @@ impl Organism {
         let genome = genome.into();
         let pheno = genome.phenotype();
         let traits = derive(&pheno);
+        let morph = Morphology::new(genome.morph(), &pheno);
         let recessive_load = genome.homozygous_load();
         Self {
             id,
@@ -304,6 +316,7 @@ impl Organism {
             genome,
             pheno,
             traits,
+            morph,
             pos,
             age_ticks: 0,
             growth: traits.newborn_growth,
@@ -343,15 +356,17 @@ impl Organism {
             cache_pos: None,
             coat: None,
             group: 0,
+            heading: crate::vision::birth_heading(id),
         }
     }
 
     /// Recompute the caches derived from the genome (`pheno`, `traits`,
-    /// `recessive_load`) exactly as [`Organism::new`] computes them: a
+    /// `morph`, `recessive_load`) exactly as [`Organism::new`] computes them: a
     /// snapshot leaves them out and a restore calls this.
     pub fn refresh_derived(&mut self) {
         self.pheno = self.genome.phenotype();
         self.traits = derive(&self.pheno);
+        self.morph = Morphology::new(self.genome.morph(), &self.pheno);
         self.recessive_load = self.genome.homozygous_load();
     }
 

@@ -46,9 +46,33 @@ use std::collections::BTreeMap;
 
 use crate::genome::{Gene, PlayerId, DISTANCE_GENES, IN_DISTANCE, WILD};
 use crate::mating::{distance_fertility, BODY_PLAN_FULL, BODY_PLAN_GENES, BODY_PLAN_STERILE};
+use crate::morph::{morph_terms, MorphKey, MORPH_KEY};
 
-/// Expressed gene values of one sampled organism.
-pub type Expr = [f32; Gene::COUNT];
+/// Values in an [`Expr`]: the genes, then the morphology key.
+pub const EXPR_LEN: usize = Gene::COUNT + MORPH_KEY;
+
+/// Expressed gene values of one sampled organism, then its morphology key
+/// (`Genome::morph().key()`, see [`crate::morph::morph_terms`]).
+pub type Expr = [f32; EXPR_LEN];
+
+/// The morphology key of the default morphology.
+pub fn default_morph_key() -> MorphKey {
+    crate::morph::MorphGenes::uniform(&crate::morph::MorphDesign::default(), WILD).key()
+}
+
+/// The expressed genes and morphology key of a genome.
+pub fn expr_of(g: &crate::genome::Genome) -> Expr {
+    let mut expr = [0.0; EXPR_LEN];
+    for &gene in Gene::ALL {
+        expr[gene.index()] = g.expr(gene);
+    }
+    expr[Gene::COUNT..].copy_from_slice(&g.morph().key());
+    expr
+}
+
+fn morph_key(e: &Expr) -> &MorphKey {
+    e[Gene::COUNT..].try_into().unwrap()
+}
 
 /// One sampled breeding adult (or cohort pool genome).
 #[derive(Clone, Debug, PartialEq)]
@@ -80,9 +104,12 @@ impl LinkRule {
     }
 
     /// Would the two recognize each other as kin and be fertile together?
-    /// Mirrors `mating::is_kin` and `mating::fertility` on expressed values.
+    /// Mirrors `mating::is_kin` and `mating::fertility` on expressed values
+    /// (the morphology's body-plan gap and distance term included).
     pub fn linked(&self, a: &Expr, b: &Expr) -> bool {
-        let gap = BODY_PLAN_GENES.iter().map(|g| (a[g.index()] - b[g.index()]).abs()).fold(0.0, f32::max);
+        let (morph, morph_gap) = morph_terms(morph_key(a), morph_key(b));
+        let gap =
+            BODY_PLAN_GENES.iter().map(|g| (a[g.index()] - b[g.index()]).abs()).fold(0.0, f32::max).max(morph_gap);
         if gap >= self.kin_body_plan_gap || ramp(gap, BODY_PLAN_FULL, BODY_PLAN_STERILE) < self.min_fertility {
             return false;
         }
@@ -96,6 +123,10 @@ impl LinkRule {
                     return false;
                 }
             }
+        }
+        sum += morph;
+        if sum >= limit {
+            return false;
         }
         let distance = sum / DISTANCE_GENES;
         let rest = 1.0 - distance / self.species_distance;
@@ -121,7 +152,7 @@ type Packed = [f32; PACKED];
 fn pack(e: &Expr) -> Packed {
     let mut out = [0.0; PACKED];
     let mut n = 0;
-    for (k, &v) in e.iter().enumerate() {
+    for (k, &v) in e[..Gene::COUNT].iter().enumerate() {
         if IN_DISTANCE[k] {
             out[n] = v;
             n += 1;
@@ -141,7 +172,9 @@ impl LinkRule {
     /// answer it is `linked`'s; otherwise (rarely) `linked` decides.
     fn linked_packed(&self, a: &Expr, b: &Expr, pa: &Packed, pb: &Packed) -> bool {
         const SLACK: f32 = 1e-4;
-        let gap = BODY_PLAN_GENES.iter().map(|g| (a[g.index()] - b[g.index()]).abs()).fold(0.0, f32::max);
+        let (morph, morph_gap) = morph_terms(morph_key(a), morph_key(b));
+        let gap =
+            BODY_PLAN_GENES.iter().map(|g| (a[g.index()] - b[g.index()]).abs()).fold(0.0, f32::max).max(morph_gap);
         if gap >= self.kin_body_plan_gap || ramp(gap, BODY_PLAN_FULL, BODY_PLAN_STERILE) < self.min_fertility {
             return false;
         }
@@ -151,7 +184,7 @@ impl LinkRule {
                 *lane += (a[l] - b[l]).abs();
             }
         }
-        let sum = (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]);
+        let sum = (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]) + morph;
         let limit = self.species_distance * DISTANCE_GENES;
         let pass = |sum: f32| {
             if sum >= limit {
@@ -589,10 +622,7 @@ mod tests {
     use crate::mating::{fertility, is_kin};
 
     fn sample(g: &Genome, lineage: u32, owner: PlayerId) -> Sample {
-        let mut expr = [0.0; Gene::COUNT];
-        for &gene in Gene::ALL {
-            expr[gene.index()] = g.expr(gene);
-        }
+        let expr = expr_of(g);
         let mut origins = BTreeMap::new();
         g.tally_origins(1.0, &mut origins);
         Sample { expr, weight: 1.0, lineage, owner, origins }

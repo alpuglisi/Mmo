@@ -622,6 +622,53 @@ pub struct Balance {
     /// nothing. 0 is the old rule.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v20"))]
     pub scale_cover: f32,
+    /// Strength of the body plan's count, shape and snout effects
+    /// (`morph_effects`: ear count and shape, leg count, tail shape, snout
+    /// length). Neutral at the default body whatever its value; 0 (the
+    /// default) leaves every body as `stats::derive` made it; 1 is the
+    /// spec's formulas (README, *Body plan effects*).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v21"))]
+    pub morph_effects: f32,
+    /// Tail drag: burrowing ×(1 − 0.2·T·k) and `0.2·T·k` of speed lost per
+    /// unit of vegetation density, for tail length `T`. 0 is off (the
+    /// default); 1 is the spec's value.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v21"))]
+    pub morph_tail_drag: f32,
+    /// Heat loss of a thin or fin tail: insulation −0.05·T·k. 0 is off (the
+    /// default); 1 is the spec's value.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v21"))]
+    pub morph_tail_chill: f32,
+    /// Long legs are tippy (stability ×(1 − 0.3·LegLength·k)) and dig worse
+    /// (burrowing −0.2·LegLength·k). 0 is off (the default); 1 is the spec's
+    /// value.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v21"))]
+    pub morph_long_legs: f32,
+    /// Directional vision (`crate::vision`; README, *Directional vision*):
+    /// eyes see fields around the organism's heading (its last movement).
+    /// At `k` (0–1) a neighbor in a blind sector is noticed at
+    /// `1 - k * visual_share` of the distance, where `visual_share` is the
+    /// sight channel's part of perception, `(0.10 + 0.3 Eyes) / perception`
+    /// (hearing and smell still work; see `vision_scan` for an animal
+    /// standing still), and a hunter's kill chance is multiplied by
+    /// `1 + 0.35 k (min(binocular, 90) - 20) / 90` (depth judgment; 1 at
+    /// the default eyes). 0 (the default) is off and leaves every result
+    /// unchanged.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v22"))]
+    pub directional_vision: f32,
+    /// Scanning under directional vision: an organism standing still (no
+    /// movement target) looks around, so its sight in a blind sector is
+    /// `0.5 × vision_scan × coverage` instead of 0 (`vision::detect_factor`).
+    /// Inert while `directional_vision` is 0.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v22::scan"))]
+    pub vision_scan: f32,
+    /// Probability per allele per generation that a discrete morphology
+    /// allele (eye, ear or leg count, ear or tail shape; `crate::morph`)
+    /// mutates one step. The spec recommends 0.0005; it is 0 (off) by
+    /// default so worlds run bit for bit as before the morphology loci
+    /// (an expressed mutant count changes kinship and fertility) until a
+    /// balance package turns it on. Snapshots before version 23 read 0.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v23"))]
+    pub morph_step_rate: f32,
 }
 
 /// How a shielded home range softens predation (`World::set_home_ranges`).
@@ -745,12 +792,19 @@ impl Default for Balance {
             warm_upkeep: 0.0,
             fang_grazing: 0.5,
             scale_cover: 0.5,
+            morph_effects: 0.0,
+            morph_tail_drag: 0.0,
+            morph_tail_chill: 0.0,
+            morph_long_legs: 0.0,
+            directional_vision: 0.0,
+            vision_scan: 1.0,
+            morph_step_rate: 0.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 93;
+    pub const FIELD_COUNT: usize = 100;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -853,6 +907,13 @@ impl Balance {
             ("warm_upkeep", &mut self.warm_upkeep),
             ("fang_grazing", &mut self.fang_grazing),
             ("scale_cover", &mut self.scale_cover),
+            ("morph_effects", &mut self.morph_effects),
+            ("morph_tail_drag", &mut self.morph_tail_drag),
+            ("morph_tail_chill", &mut self.morph_tail_chill),
+            ("morph_long_legs", &mut self.morph_long_legs),
+            ("directional_vision", &mut self.directional_vision),
+            ("vision_scan", &mut self.vision_scan),
+            ("morph_step_rate", &mut self.morph_step_rate),
         ]
     }
 

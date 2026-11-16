@@ -8,12 +8,19 @@
 //! and evidence in the README): each trait is priced in proportion to the
 //! legacy share it buys, so a point buys about as much fitness wherever it is
 //! spent. They are all in [`trait_cost`] and the constants below.
+//!
+//! A design also sets the body plan's morphology ([`MorphDesign`]: eye, ear
+//! and leg counts, ear and tail shapes, eye placement, snout length; defaults
+//! from `docs/morphology-contract.md`, today's creatures). Those parameters
+//! cost **no points** for now: they have no gameplay effects yet, and a later
+//! balance package prices them with their effects.
 
 use std::fmt;
 
 use rand::Rng;
 
 use crate::genome::{Gene, Genome, PlayerId};
+pub use crate::morph::{EarShape, MorphDesign, MorphError, TailShape};
 
 pub const DESIGN_BUDGET: f32 = 100.0;
 /// Founding population included in the base price.
@@ -176,6 +183,9 @@ pub struct FounderDesign {
     /// Trait values that differ from [`default_value`].
     pub traits: Vec<(Gene, f32)>,
     pub founders: u32,
+    /// The body plan's morphology (free of points for now; see the module
+    /// docs).
+    pub morph: MorphDesign,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -189,6 +199,8 @@ pub enum DesignError {
     ReservedGene(Gene),
     LitterSize(u32),
     NoFounders,
+    /// A morphology parameter out of its range ([`MorphDesign::validate`]).
+    Morphology(MorphError),
 }
 
 impl fmt::Display for DesignError {
@@ -203,6 +215,7 @@ impl fmt::Display for DesignError {
             }
             DesignError::LitterSize(n) => write!(f, "litter size {n} not in 1..={MAX_LITTER}"),
             DesignError::NoFounders => write!(f, "a design needs at least two founders"),
+            DesignError::Morphology(e) => e.fmt(f),
         }
     }
 }
@@ -211,7 +224,15 @@ impl std::error::Error for DesignError {}
 
 impl FounderDesign {
     pub fn new(name: impl Into<String>, thermo: Thermo, birth: BirthType, litter_size: u32) -> Self {
-        Self { name: name.into(), thermo, birth, litter_size, traits: Vec::new(), founders: BASE_FOUNDERS }
+        Self {
+            name: name.into(),
+            thermo,
+            birth,
+            litter_size,
+            traits: Vec::new(),
+            founders: BASE_FOUNDERS,
+            morph: MorphDesign::default(),
+        }
     }
 
     pub fn with(mut self, gene: Gene, value: f32) -> Self {
@@ -222,6 +243,11 @@ impl FounderDesign {
 
     pub fn founders(mut self, n: u32) -> Self {
         self.founders = n;
+        self
+    }
+
+    pub fn with_morph(mut self, morph: MorphDesign) -> Self {
+        self.morph = morph;
         self
     }
 
@@ -247,6 +273,8 @@ impl FounderDesign {
         v
     }
 
+    /// Points the design costs. The morphology is free for now (see the
+    /// module docs).
     pub fn point_cost(&self) -> f32 {
         let v = self.values();
         let traits: f32 = Gene::ALL.iter().map(|&g| (v[g.index()] - default_value(g)).max(0.0) * trait_cost(g)).sum();
@@ -272,6 +300,7 @@ impl FounderDesign {
         if self.founders < 2 {
             return Err(DesignError::NoFounders);
         }
+        self.morph.validate().map_err(DesignError::Morphology)?;
         let cost = self.point_cost();
         if cost > DESIGN_BUDGET + 1e-3 {
             return Err(DesignError::OverBudget { cost, budget: DESIGN_BUDGET });
@@ -280,7 +309,7 @@ impl FounderDesign {
     }
 
     pub fn founder_genome(&self, owner: PlayerId, rng: &mut impl Rng) -> Genome {
-        Genome::founder(&self.values(), owner, FOUNDER_VARIATION, rng)
+        Genome::founder_with_morph(&self.values(), &self.morph, owner, FOUNDER_VARIATION, rng)
     }
 }
 
@@ -320,6 +349,30 @@ mod tests {
         let small = base.clone().with(Gene::BodySize, 0.1);
         assert!((small.point_cost() - 0.2 * COST_PER_SMALLER_BODY).abs() < 1e-4);
         assert_eq!(base.with(Gene::BodySize, 0.9).point_cost(), 0.0);
+    }
+
+    #[test]
+    fn morphology_is_validated_and_free() {
+        let base = FounderDesign::new("m", Thermo::Warm, BirthType::Live, 1);
+        let six = base.clone().with_morph(MorphDesign {
+            eye_count: 6,
+            leg_count: 8,
+            ear_count: 4,
+            ear_shape: EarShape::Fan,
+            tail_shape: TailShape::Club,
+            eye_azimuth: 170.0,
+            snout_length: 1.0,
+        });
+        assert!(six.validate().is_ok());
+        assert_eq!(six.point_cost(), base.point_cost());
+        let bad = base.with_morph(MorphDesign { leg_count: 3, ..Default::default() });
+        assert_eq!(bad.validate(), Err(DesignError::Morphology(MorphError::LegCount(3))));
+        // Founders carry the design's counts exactly.
+        let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+        let g = six.founder_genome(1, &mut rng);
+        let m = g.morphology();
+        assert_eq!((m.eye_count, m.leg_count, m.ear_count), (6, 8, 4));
+        assert!((m.eye_azimuth - 170.0).abs() < 30.0);
     }
 
     #[test]

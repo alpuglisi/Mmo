@@ -4,10 +4,16 @@
 //! wire/storage form. Gene names are the sim's labels in `snake_case`
 //! (`"body_size"`, `"armor_plates"`, `"large_eyes"`); the Rust variant name
 //! (`"BodySize"`) is accepted too.
+//!
+//! The body plan's morphology (`docs/morphology-contract.md`) is an optional
+//! `morph` object beside `traits` ([`MorphSpec`]): every field optional,
+//! missing ones (or the whole object) take the contract defaults, so old
+//! clients and stored designs are unchanged. It costs no points yet.
 
 use std::collections::BTreeMap;
 
 use evo_sim::design::{self, DesignError, DESIGN_BUDGET};
+use evo_sim::morph::{EarShape, MorphDesign, MorphGene, MorphLocus, TailShape};
 use evo_sim::{BirthType, FounderDesign, Gene, Thermo};
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +49,61 @@ pub struct DesignSpec {
     pub traits: BTreeMap<String, f32>,
     #[serde(default = "default_founders")]
     pub founders: u32,
+    /// The body plan's morphology; `None` (or missing fields) for the
+    /// defaults. Left out of the JSON when absent, so stored designs read
+    /// and write as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub morph: Option<MorphSpec>,
+}
+
+/// The morphology part of a design (`DesignSpec::morph`): the contract's
+/// parameters, each optional. Shapes are wire names (`"round"`, `"fin"`, …);
+/// an unknown one is refused as `bad_morph`, like a value out of range.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct MorphSpec {
+    /// 1–6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eye_count: Option<u8>,
+    /// Degrees, 0–180.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eye_azimuth: Option<f32>,
+    /// 0, 2 or 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ear_count: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ear_shape: Option<String>,
+    /// 0, 2, 4, 6 or 8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leg_count: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_shape: Option<String>,
+    /// 0–1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snout_length: Option<f32>,
+}
+
+impl MorphSpec {
+    /// The sim's morphology, defaults filled in (validated with the design).
+    pub fn to_morph(&self) -> Result<MorphDesign, SpecError> {
+        let d = MorphDesign::default();
+        let ear_shape = match &self.ear_shape {
+            None => d.ear_shape,
+            Some(s) => EarShape::from_key(s.trim()).ok_or(SpecError::BadMorph("ear_shape"))?,
+        };
+        let tail_shape = match &self.tail_shape {
+            None => d.tail_shape,
+            Some(s) => TailShape::from_key(s.trim()).ok_or(SpecError::BadMorph("tail_shape"))?,
+        };
+        Ok(MorphDesign {
+            eye_count: self.eye_count.unwrap_or(d.eye_count),
+            eye_azimuth: self.eye_azimuth.unwrap_or(d.eye_azimuth),
+            ear_count: self.ear_count.unwrap_or(d.ear_count),
+            ear_shape,
+            leg_count: self.leg_count.unwrap_or(d.leg_count),
+            tail_shape,
+            snout_length: self.snout_length.unwrap_or(d.snout_length),
+        })
+    }
 }
 
 /// Why a design was refused. `code` is stable for clients.
@@ -50,6 +111,8 @@ pub struct DesignSpec {
 pub enum SpecError {
     UnknownGene(String),
     BadName,
+    /// An unknown shape name in `morph` (the field).
+    BadMorph(&'static str),
     Design(DesignError),
 }
 
@@ -58,6 +121,7 @@ impl SpecError {
         match self {
             SpecError::UnknownGene(_) => "unknown_gene",
             SpecError::BadName => "bad_name",
+            SpecError::BadMorph(_) | SpecError::Design(DesignError::Morphology(_)) => "bad_morph",
             SpecError::Design(DesignError::OverBudget { .. }) => "over_budget",
             SpecError::Design(DesignError::ValueOutOfRange(_)) => "value_out_of_range",
             SpecError::Design(DesignError::ReservedGene(_)) => "reserved_gene",
@@ -70,6 +134,7 @@ impl SpecError {
         match self {
             SpecError::UnknownGene(g) => format!("unknown gene {g:?}"),
             SpecError::BadName => format!("a lineage name needs 1 to {MAX_NAME_LEN} characters"),
+            SpecError::BadMorph(field) => format!("unknown {}", field.replace('_', " ")),
             SpecError::Design(e) => e.to_string(),
         }
     }
@@ -84,6 +149,8 @@ impl SpecError {
                 Some(serde_json::json!({ "gene": gene_key(*g) }))
             }
             SpecError::UnknownGene(g) => Some(serde_json::json!({ "gene": g })),
+            SpecError::BadMorph(field) => Some(serde_json::json!({ "field": field })),
+            SpecError::Design(DesignError::Morphology(e)) => Some(serde_json::json!({ "field": e.field() })),
             _ => None,
         }
     }
@@ -119,6 +186,9 @@ impl DesignSpec {
             BirthSpec::AbandonedEggs => BirthType::AbandonedEggs,
         };
         let mut d = FounderDesign::new(name, thermo, birth, self.litter_size).founders(self.founders);
+        if let Some(m) = &self.morph {
+            d = d.with_morph(m.to_morph()?);
+        }
         for (k, &v) in &self.traits {
             let g = parse_gene(k).ok_or_else(|| SpecError::UnknownGene(k.clone()))?;
             d = d.with(g, v);
@@ -145,6 +215,63 @@ pub struct GeneCatalog {
     pub cost_per_extra_offspring: f32,
     pub max_litter: u32,
     pub genes: Vec<GeneInfo>,
+    /// The morphology parameters a design's `morph` object sets.
+    pub morph: Vec<MorphInfo>,
+}
+
+/// One row of `GET /api/genes`' `morph` section.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MorphInfo {
+    /// Wire name (`"eye_count"`, `"ear_shape"`, …).
+    pub name: String,
+    /// `count`, `enum` or `axis`.
+    pub kind: String,
+    /// Allowed values: counts as numbers, shapes as names (absent for an
+    /// axis).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<serde_json::Value>,
+    /// An axis's range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f32>,
+    pub default: serde_json::Value,
+    /// Points (0 for now: morphology isn't priced yet).
+    pub cost: f32,
+}
+
+fn morph_catalog() -> Vec<MorphInfo> {
+    use serde_json::json;
+    let d = MorphDesign::default();
+    let mut out: Vec<MorphInfo> = MorphLocus::ALL
+        .iter()
+        .map(|&l| {
+            let (lo, hi) = l.range();
+            let (values, default) = match l {
+                MorphLocus::EarShape => {
+                    (EarShape::ALL.iter().map(|s| json!(s.key())).collect(), json!(d.ear_shape.key()))
+                }
+                MorphLocus::TailShape => {
+                    (TailShape::ALL.iter().map(|s| json!(s.key())).collect(), json!(d.tail_shape.key()))
+                }
+                _ => ((lo..=hi).filter(|&v| l.is_valid(v)).map(|v| json!(v)).collect(), json!(l.default_value())),
+            };
+            let kind = if l.is_shape() { "enum" } else { "count" };
+            MorphInfo { name: l.key().into(), kind: kind.into(), values, min: None, max: None, default, cost: 0.0 }
+        })
+        .collect();
+    for g in MorphGene::ALL {
+        out.push(MorphInfo {
+            name: g.key().into(),
+            kind: "axis".into(),
+            values: Vec::new(),
+            min: Some(0.0),
+            max: Some(g.scale()),
+            default: json!(g.default_param()),
+            cost: 0.0,
+        });
+    }
+    out
 }
 
 pub fn catalog() -> GeneCatalog {
@@ -159,6 +286,7 @@ pub fn catalog() -> GeneCatalog {
             .filter(|g| !matches!(g, Gene::Endothermy | Gene::BirthMode | Gene::LitterSize))
             .map(|&g| GeneInfo { name: gene_key(g), default: design::default_value(g), cost: design::trait_cost(g) })
             .collect(),
+        morph: morph_catalog(),
     }
 }
 
@@ -174,7 +302,82 @@ mod tests {
             litter_size: 2,
             traits: traits.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             founders: 20,
+            morph: None,
         }
+    }
+
+    #[test]
+    fn morphology_is_optional_and_validated() {
+        // Old clients and stored designs: no `morph`, defaults, same JSON.
+        let old = r#"{"name":"Old","thermo":"warm","birth":"live","litter_size":2,"traits":{"fur":0.4},"founders":20}"#;
+        let s: DesignSpec = serde_json::from_str(old).unwrap();
+        assert_eq!(s.morph, None);
+        assert_eq!(s.to_design().unwrap().morph, MorphDesign::default());
+        assert_eq!(serde_json::to_string(&s).unwrap(), old);
+        // A partial object fills in the rest.
+        let mut s = spec(&[]);
+        s.morph = Some(MorphSpec {
+            leg_count: Some(6),
+            ear_shape: Some("pointed".into()),
+            tail_shape: Some("prehensile".into()),
+            eye_azimuth: Some(120.0),
+            ..Default::default()
+        });
+        let d = s.to_design().unwrap();
+        assert_eq!((d.morph.leg_count, d.morph.eye_count), (6, 2));
+        assert_eq!(d.morph.ear_shape, EarShape::Pointed);
+        assert_eq!(d.morph.tail_shape, TailShape::Prehensile);
+        assert_eq!(d.point_cost(), spec(&[]).to_design().unwrap().point_cost(), "morphology is free");
+        let back: DesignSpec = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        // Out of range or unknown: bad_morph, naming the field.
+        let bad = |m: MorphSpec| {
+            let mut s = spec(&[]);
+            s.morph = Some(m);
+            let e = s.to_design().unwrap_err();
+            (e.code(), e.detail().unwrap()["field"].as_str().unwrap().to_string())
+        };
+        let m = MorphSpec::default;
+        assert_eq!(bad(MorphSpec { leg_count: Some(5), ..m() }), ("bad_morph", "leg_count".into()));
+        assert_eq!(bad(MorphSpec { ear_count: Some(3), ..m() }), ("bad_morph", "ear_count".into()));
+        assert_eq!(bad(MorphSpec { eye_count: Some(7), ..m() }), ("bad_morph", "eye_count".into()));
+        assert_eq!(bad(MorphSpec { eye_azimuth: Some(-1.0), ..m() }), ("bad_morph", "eye_azimuth".into()));
+        assert_eq!(bad(MorphSpec { snout_length: Some(2.0), ..m() }), ("bad_morph", "snout_length".into()));
+        assert_eq!(bad(MorphSpec { ear_shape: Some("square".into()), ..m() }), ("bad_morph", "ear_shape".into()));
+        assert_eq!(bad(MorphSpec { tail_shape: Some("".into()), ..m() }), ("bad_morph", "tail_shape".into()));
+    }
+
+    #[test]
+    fn catalog_lists_the_morphology() {
+        let c = catalog();
+        let names: Vec<&str> = c.morph.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["eye_count", "ear_count", "ear_shape", "leg_count", "tail_shape", "eye_azimuth", "snout_length"]
+        );
+        let legs = &c.morph[3];
+        assert_eq!(legs.values, [0, 2, 4, 6, 8].map(|v| serde_json::json!(v)));
+        assert_eq!(legs.default, serde_json::json!(4));
+        assert_eq!(c.morph[1].values, [0, 2, 4].map(|v| serde_json::json!(v)));
+        assert_eq!(c.morph[4].default, serde_json::json!("thin"));
+        assert_eq!(c.morph[5].max, Some(180.0));
+        assert!(c.morph.iter().all(|m| m.cost == 0.0));
+        // The exact wire form the client's feature detection reads (the rows
+        // of the client's designMorph tests).
+        let wire = serde_json::to_value(&c.morph).unwrap();
+        let client: serde_json::Value = serde_json::from_str(
+            r#"[
+            {"name":"eye_count","kind":"count","values":[1,2,3,4,5,6],"default":2,"cost":0.0},
+            {"name":"ear_count","kind":"count","values":[0,2,4],"default":2,"cost":0.0},
+            {"name":"ear_shape","kind":"enum","values":["round","pointed","long","fan"],"default":"round","cost":0.0},
+            {"name":"leg_count","kind":"count","values":[0,2,4,6,8],"default":4,"cost":0.0},
+            {"name":"tail_shape","kind":"enum","values":["thin","bushy","fin","club","prehensile"],"default":"thin","cost":0.0},
+            {"name":"eye_azimuth","kind":"axis","min":0.0,"max":180.0,"default":60.0,"cost":0.0},
+            {"name":"snout_length","kind":"axis","min":0.0,"max":1.0,"default":0.5,"cost":0.0}
+        ]"#,
+        )
+        .unwrap();
+        assert_eq!(wire, client);
     }
 
     #[test]

@@ -143,7 +143,7 @@ impl SpatialGrid {
         self.placed = placed;
         self.pos.clear();
         self.pos.extend(self.items.iter().map(|e| e.pos));
-        self.items.par_iter().map(|e| genes_of(&orgs[e.idx as usize].pheno)).collect_into_vec(&mut self.genes);
+        self.items.par_iter().map(|e| genes_of(&orgs[e.idx as usize])).collect_into_vec(&mut self.genes);
     }
 
     /// Kinship genes of the organism in `slot` (`decide::Genes`).

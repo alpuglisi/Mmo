@@ -339,6 +339,28 @@ impl World {
         scratch: &mut PathScratch,
         paths: &mut PathCount,
     ) -> f32 {
+        let from = o.pos;
+        let moved = self.step_toward_inner(o, target, sprint, frac, scratch, paths);
+        // Facing follows the last movement (`Organism::heading`).
+        if moved > 0.0 {
+            let dir = (o.pos - from).norm();
+            if dir != Vec2::ZERO {
+                o.heading = dir;
+            }
+        }
+        moved
+    }
+
+    /// [`Self::step_toward`] without the heading update.
+    fn step_toward_inner(
+        &self,
+        o: &mut Organism,
+        target: Vec2,
+        sprint: bool,
+        frac: f32,
+        scratch: &mut PathScratch,
+        paths: &mut PathCount,
+    ) -> f32 {
         let to = target - o.pos;
         let d = to.len();
         if d < 0.05 {
@@ -591,6 +613,12 @@ impl World {
             p *= 1.0 - 0.6 * tox;
         }
         p *= self.offline_predation_factor(b);
+        // Depth judgment (`Balance::directional_vision`): binocular overlap
+        // sharpens the strike (`Vision::depth_factor`, 1 at default eyes).
+        let k = self.config.balance.directional_vision;
+        if k > 0.0 {
+            p = (p * a.traits.vision.depth_factor(k)).min(1.0);
+        }
         let prey_power = b.power().max(guard_power);
         let prey_fights = super::decide::fight_back(b, self.config.balance.generalist_tax);
         let prey_bright = b.pheno[Gene::Coloration] > 0.6;
@@ -668,7 +696,11 @@ impl World {
     /// Prey caught off guard (not fleeing) reacts late, like its resistance.
     pub(crate) fn escape_chance(&self, a: &Organism, b: &Organism) -> f32 {
         let (pursue, evade) = (a.evasion(), b.evasion());
-        let q = self.config.balance.escape * 2.0 * evade / (evade + pursue + 1e-6);
+        let mut q = self.config.balance.escape * 2.0 * evade / (evade + pursue + 1e-6);
+        // Snapping small prey: the hunter's snout (`morph_effects`; 1 by default).
+        if b.mass() < 0.2 * a.mass() {
+            q *= a.traits.morph.small_prey_escape;
+        }
         (q * (1.0 - self.ambush_on(b))).min(0.95)
     }
 
@@ -845,10 +877,14 @@ impl World {
         let mut body_t = temp;
         let (cold, heat) = if o.traits.warm {
             o.activity = 1.0;
-            // Scales displace fur's warmth (`Traits::insulation`).
-            let insulation = o.traits.insulation(bal.scale_cover) + coat_insulation;
+            // Scales displace fur's warmth (`Traits::insulation`, on top of the
+            // body plan's ear and tail terms already in `stats.insulation`);
+            // a bushy tail warms a resting body (`morph_effects`, 0 by default).
+            let insulation = o.traits.insulation(bal.scale_cover)
+                + coat_insulation
+                + if resting { o.traits.morph.rest_insulation } else { 0.0 };
             let low = 12.0 - 30.0 * insulation;
-            let high = 30.0 - 8.0 * insulation;
+            let high = 30.0 - 8.0 * insulation + o.traits.morph.heat_tolerance;
             ((low - temp).max(0.0), (temp - high).max(0.0))
         } else {
             let basking = daytime && open && matches!(intent.action, Action::Bask | Action::Rest | Action::Idle);
@@ -1078,6 +1114,7 @@ impl World {
         let tpd = self.config.ticks_per_day as f32;
         let mutation = self.config.mutation;
         let load_rate = self.config.balance.recessive_mutation;
+        let morph_rate = self.config.balance.morph_step_rate;
         let Some(preg) = self.organisms[i].pregnancy.take() else {
             return;
         };
@@ -1110,6 +1147,7 @@ impl World {
             .map(|_| {
                 let mut g = Genome::inherit_genes(&mother.genome, &preg.father, owner, mutation, rng);
                 g.inherit_load(&mother.genome, &preg.father, owner, load_rate, &mut load_rng);
+                g.mutate_morph(owner, morph_rate);
                 g
             })
             .collect();

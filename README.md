@@ -46,9 +46,10 @@ docs/
 
 | Module | Design-doc section | What it does |
 | --- | --- | --- |
-| `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. |
+| `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. A separate **morphology segment** (`morph`, `docs/morphology-contract.md`) holds discrete loci for eye count (1–6), ear count (0/2/4), ear shape, leg count (0/2/4/6/8) and tail shape (small-integer alleles with origin tags; one allele expressed, never an average: the wild type over any other, then the one nearer the default, the lower count on a tie, shapes in a fixed order) and additive loci for eye azimuth and snout length; `tail_present` is derived from `Tail` ≥ 0.05. Founders carry the design's counts exactly. The segment has its own random stream (no draws from the shared ones), its own choice bits in the by-parents snapshot form, and stays out of the phenotype and the legacy tally. Expressed counts and shapes add `min(1, steps/2)` per locus to the genetic distance's numerator (divisor unchanged), and eye and leg counts 0.1 per step to the body-plan gap; equal morphologies add exactly 0, so default-morphology worlds run bit for bit as before. Discrete step mutation (`Balance::morph_step_rate`, spec value 0.0005) is off by default for the same reason. `Organism::morph` (`morph::Morphology`) caches the expressed parameters and derived eye field width for other packages; nothing else reads it yet. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
+| `morph_effects` | `docs/morphology.md` §3 (package D) | Body plan → derived effects of ear count and shape, leg count, tail shape and snout length, computed once at birth and folded into stats and body behind the `morph_*` tunables (off by default, exactly neutral at the default body). See [Body plan effects](#body-plan-effects). |
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge; depressions fed by more rain than evaporates off their surface fill into lakes (priority flood). Rivers in flood overflow onto their floodplain (low land up to two tiles from the channel): standing water that swimmers cross and that strands and drowns small non-swimmers, drowned plants, then silt that speeds regrowth for weeks. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, costly and risky flight) and rain or snow; the wind has a direction (prevailing westerly, swinging over days and veering regionally) that speeds or slows flyers and gliders by wing loading; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`; `Map::climate_temp`/`climate_wet` are climate anomalies (0 normally) that catastrophes set. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
 | `pathfinding` | Movement and terrain | Bounded A* over tiles for one body: blocked tiles are avoided, slow ones cost time. Used only when the direct step is blocked (see Movement below). |
 | `mating` | Override cost | Root-sum-of-squares preference mismatch, `cost = k·max(0, mismatch−1)²`, outbreeding depression by genetic distance, and sterility between different body plans (thermoregulation, birth mode, body size or diet more than 0.3 apart; `cargo run --release --example distances` prints the founders' matrix). Display coloration is condition-dependent (an honest signal). |
@@ -64,6 +65,7 @@ docs/
 | `world::groups` | Player controls (group commands) | The rest of the doc's group commands: split a herd or pack into groups (up to 4) with their own orders, merge them back, claim or abandon a territory that a group roams, forages in, walks back to and defends, rally a group at a point for a few days; and group commands as genes: an `obedience` gene sets how strongly each animal heeds them, paid for in tameness. See [Groups and territory](#groups-and-territory). |
 | `world::chronicle` | Scoring | The daily hook: samples adults (cohorts included) for species detection, plans, applies and ends catastrophes through existing systems (`Map::climate_temp`, `Map::climate_wet`, infections), closes eras and awards achievements. |
 | `world::lod` | Scale and performance (level of detail) | Opt-in (`WorldConfig::lod`, `--lod`): full agents only near focus points (`World::set_focus`) and possessed organisms; elsewhere each 16-tile region holds per-lineage statistical cohorts (counts by age and sex, a genome pool, condition) that eat the region's plants, hunt, breed, die and migrate once a day, and expand back into agents when a focus arrives. Legacy and caps count them. See [Level of detail](#level-of-detail). |
+| `vision` | Morphology: eyes (`docs/morphology.md`) | Directional vision behind `Balance::directional_vision` (off by default, bit-identical off): eye layouts (count, pair azimuth, size; snout occlusion) → coverage, binocular depth field, front and rear blind spots and a 2-bit-per-bin bearing table, computed once at birth (`Traits::vision`); each organism faces its last movement (`Organism::heading`). See [Directional vision](#directional-vision). |
 | `world::offline` | Open questions (offline protection) | Softer rules for the last members of a lineage whose owner is logged out: the caller names the protected lineages and exempt organisms (`World::set_offline_protection`); at or below the floor (12 living members) kill chance against them is ×0.25 and starvation and thirst ×0.5, for agents and cohorts. And the home-range form (`World::set_home_ranges`): a claimed territory shields the members of its group inside it, kill chance ×0.5 shared out above 20 residents, predation only, stacking with the core down to ×0.2 at most. Off (and bit-identical) by default. See [Offline protection](#offline-protection). |
 
 ### Tick structure
@@ -694,7 +696,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `POST /api/logout` | Bearer | End the session |
 | `GET /api/worlds` | | The hosted worlds, the default first: `{default, worlds: [{id, name, width, height, day, year, season, population, lineages, players_online}]}` |
 | `POST /api/lineage` (design) | Bearer | Found your lineage (one per player per world). `201 {lineage, founders: [ids], cost}`; `400` with `over_budget {cost, budget}`, `value_out_of_range {gene}`, `reserved_gene`, `litter_size`, `no_founders`, `unknown_gene`, `bad_name`; `409 already_founded` |
-| `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices |
+| `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices, and the morphology parameters (`morph`: name, kind, values or range, default, cost) |
 | `GET /api/world` | | Clock, season, weather, map size, organism and lineage counts |
 | `GET /api/leaderboard` | | Legacy shares from the latest daily snapshot: `{day, breeding_adults, rows: [{player, name, share, weighted_share, alive}]}` |
 | `GET /api/leaderboard/history?limit=30&from=&to=&genes=true` | | The stored daily records, oldest first (legacy shares, lineage sizes, daily births and deaths by cause, player lineages' mean genes; thinned with age: see *Daily history retention*): the newest `limit` (at most 365) with a day in `from..=to` (the newest world's days; both optional); `genes=false` leaves out the gene means |
@@ -741,6 +743,15 @@ Errors are `{"code": "...", "message": "...", ...detail}`. A design:
 
 `thermo` is `warm`/`cold`, `birth` is `live`/`incubated_eggs`/`abandoned_eggs`;
 gene names are the sim's labels in `snake_case` (`GET /api/genes` lists them).
+An optional `morph` object sets the body plan (`docs/morphology-contract.md`),
+every field optional with the contract defaults: `{"eye_count": 3,
+"eye_azimuth": 90, "ear_count": 2, "ear_shape": "pointed", "leg_count": 6,
+"tail_shape": "fin", "snout_length": 0.3}` (eyes 1–6, ears 0/2/4, legs
+0/2/4/6/8, ear shapes `round`/`pointed`/`long`/`fan`, tail shapes
+`thin`/`bushy`/`fin`/`club`/`prehensile`, azimuth 0–180°, snout 0–1). A value
+out of range or an unknown shape is refused as `bad_morph` (`detail.field`).
+Morphology costs no points yet; `GET /api/genes` lists it under `morph`
+(kind `count`/`enum`/`axis`, allowed values or range, default, cost 0).
 
 ### WebSocket protocol
 
@@ -1527,7 +1538,19 @@ see *Genomes by parents* below). Versions 10 to 18 lack `Balance::lactation`
 and `Balance::warm_upkeep` (version 19), which read as 0, the rules they
 ran under (`serde_util::before_v19`). Versions 10 to 19 lack
 `Balance::fang_grazing` and `Balance::scale_cover` (version 20), which read
-as 0, the rules they ran under (`serde_util::before_v20`).
+as 0, the rules they ran under (`serde_util::before_v20`). Versions 10 to
+20 lack the `Balance::morph_*` tunables (version 21, *Body plan effects*),
+which read as 0, no body plan effects (`serde_util::before_v21`). Versions
+10 to 21 lack `Balance::directional_vision` and `Balance::vision_scan`
+(version 22, *Directional vision*), which read as their defaults (0 and
+1: off), and organisms' headings, which restore as each one's birth heading
+(`serde_util::before_v22`). Versions 10 to 22 lack the genomes'
+morphology segment (version 23): every organism, egg and father genome
+restores with the default morphology, each locus's origin tags copied from
+its anchor gene (eye loci from `Eyes`, ear loci from `Ears`, legs from
+`LegLength`, tail shape from `Tail`, snout from `Nose`), species
+representatives with the default morphology key, and
+`Balance::morph_step_rate` as 0 (`serde_util::before_v23`).
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1581,7 +1604,14 @@ balance parameter `migration_onset`; version 17 the `home_range` balance
 parameters; version 18 writes the genomes of
 young and eggs against their parents' (*Genomes by parents*, below);
 version 19 adds the balance parameters `lactation` and `warm_upkeep`;
-version 20 `fang_grazing` and `scale_cover`.
+version 20 `fang_grazing` and `scale_cover` (trait downsides); version 21
+the body plan effects tunables `morph_effects`, `morph_tail_drag`,
+`morph_tail_chill` and `morph_long_legs`; version 22 each organism's
+heading and the balance parameters `directional_vision` and `vision_scan`;
+version 23 the genomes' morphology segment (written whole after the
+stored values, and against the parents as a second section with its own
+exceptions and choice bits), species representatives' morphology keys and
+the balance parameter `morph_step_rate`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots
@@ -5283,6 +5313,194 @@ only because its short session's world now plays out differently.
 The snapshot round-trip test's busy world is now snapshotted 12 hours
 later the same day (tick 13 × 48 + 29), since it held no clutch at the old
 tick. New tunables: `fang_grazing`, `scale_cover`.
+
+### Body plan effects
+
+`morph_effects` (package D of [`docs/morphology.md`](docs/morphology.md),
+§3, minus vision). The body plan is read through one accessor,
+`morph_effects::body_plan(&Phenotype)`, which until the genome package's
+morphology loci land returns the contract defaults for every organism (2
+eyes at 60°, 2 round ears, 4 legs, a thin tail when `Tail` ≥ 0.05, snout
+0.5); sizes stay the existing `Ears`, `LegLength` and `Tail` genes.
+`morph_effects::derive` turns a body plan into a `MorphEffects` (every
+derived number and stat change), and `morph_effects::apply` folds it into
+the organism's `Traits` once, when `World::insert` adds a newborn, founder
+or expanded cohort member, and again after a restore (from the restored
+config). Every term is written relative to the default body, so at the
+default plan every factor is exactly 1 and every change exactly 0
+whatever the genes (`default_body_is_exactly_neutral` checks every preset
+bit for bit; `default_world_is_unchanged_by_the_effects` runs a standard
+world 150 ticks with `morph_effects` 1 and 0 and gets the same organisms).
+
+Tunables (all 0 by default; with all four at 0 `apply` returns at once, so
+results are bit-identical; the spec's values are 1):
+
+| Tunable | Scales | Spec value |
+| --- | --- | --- |
+| `morph_effects` | every count, shape and snout effect below (neutral at the default body) | 1 |
+| `morph_tail_drag` | tail drag in burrows and dense vegetation (affects today's tailed bodies) | 1 |
+| `morph_tail_chill` | heat loss of thin and fin tails (affects today's tailed bodies) | 1 |
+| `morph_long_legs` | long legs tippy and digging worse (affects today's long-legged bodies) | 1 |
+
+Notation: `n` leg pairs, `T` = `Tail` when a tail is present (else 0),
+`s` snout length, `c` ear count, `k` = `morph_effects`. Each additive
+change is multiplied by `k`, each factor `f` becomes `1 + k·(f − 1)`.
+
+- **Ears** (shape: gain / localization `L0` / area `A_s`: round 1.0 / 0.4 /
+  1.0, pointed 1.1 / 0.7 / 1.1, long 1.2 / 0.6 / 1.5, fan 1.3 / 0.5 / 2.0).
+  Hearing channel `0.03 + 0.3·Ears·gain·f_c` (`f_c` 1 for 2 ears, 1.15 for
+  4; 0.01 with no ears) replaces today's `0.03 + 0.3·Ears` share of
+  perception. Localization `L = L0 + 0.2·[4 ears]` (0 without ears).
+  Radiating area `A = Ears·(c/2)·A_s`: insulation `−0.15·(A − Ears)·(1 −
+  0.4·Fur)` (only the change from today's `0.15·Ears` is fur-blunted, so
+  the default stays exact), a warm body's heat tolerance `+6·(A − Ears)`
+  °C, stealth `−0.04·Ears·(A_s − 1)`, upkeep `+0.1·Ears·(c/2 − 1)`. Alarm
+  calls also need `c > 0` (structural, no tunable).
+- **Legs** (`n` 0–4: gait 0.6 / 0.95 / 1.0 / 0.92 / 0.85, `S0` 1.0 / 0.45
+  / 0.7 / 0.85 / 0.95). Speed: the leg terms `0.45·LegLength + 0.25·Hooves`
+  × gait; legless: base 0.45 × 0.6 and no leg terms. Stability `S =
+  S0·(1 − 0.3·LegLength·morph_long_legs) + 0.15·T·[biped]` against
+  `S_ref` 0.7; `S_ref/S` multiplies ice slip and the slope speed penalty
+  (folded into the body's effective grip, `1 − (1 − grip)·S_ref/S`, the
+  only two uses of grip), armor's speed penalty × `sqrt(S_ref/S)`, defense
+  `+0.1·(S − S_ref)`. Biped with `T < 0.2`: agility `−0.15·(1 − T/0.2)`.
+  Foot area × `n/2` (legless: belly 1.5), so ground pressure ×
+  `cbrt(mass factor)·foot/foot'`. Height: legless `0.15 + 0.3·size`, biped
+  `+0.1·LegLength`. Climbing × 0.6 / 0.5 / 1 / 1.2 / 1.2. Legless: burrowing
+  +0.2, swimming +0.15, stealth +0.1. Mass × `1 + 0.04·(n − 2)·(0.5 +
+  LegLength)`; upkeep `+max(−0.05, 0.05·(n − 2))`; endurance `−0.04` per
+  pair beyond 2. Wings: the default four-legged winged body is the
+  reference, so wings that replace forelimbs (biped) or a legless winged
+  body shed the extra-limb cost: mass ÷ `(1 + 0.15·Wings)`, upkeep
+  `−0.1·Wings`. `morph_long_legs` also takes `0.2·LegLength` off a legged
+  body's burrowing.
+- **Tail shape** (agility per `T`: thin 0.3 as today, bushy 0.2, fin 0.1,
+  club 0.05, prehensile 0.2). Bushy: a warm body resting gets insulation
+  `+0.15·T`, stealth `−0.05·T`. Fin: swimming `+0.4·T`, speed `−0.05·T`.
+  Club: defense `+0.3·T`, fight-back `+0.3·T` (`decide::fight_back`, so
+  hunters weigh it too), mass × `(1 + 0.15·T)`, speed `−0.05·T`.
+  Prehensile: climbing `+0.3·T`, grip `+0.15·T`, upkeep `+0.05·T`. Drag
+  (`morph_tail_drag`): burrowing × `(1 − 0.2·T)`, and an effective width
+  `+T/3` in vegetation, which takes `0.2·T·veg_density` off the speed
+  factor there. Chill (`morph_tail_chill`, thin and fin): insulation
+  `−0.05·T`.
+- **Snout** (all relative to 0.5). Smell channel `0.3·Nose × (0.7 + 0.6·s)`;
+  bite: the fang term of strength × `(1.3 − 0.6·s)`; prey lighter than 0.2×
+  the hunter's mass escapes × `(1 − 0.4·(s − 0.5))`; a warm body's heat
+  tolerance `+3·(s − 0.5)` °C; burrowing `+0.1·(s − 0.5)`; binocular
+  overlap hidden `40°·max(0, s − 0.5)` (a readout for the vision package).
+- **Upkeep** changes add to `upkeep`, so metabolism changes by `(0.6 +
+  0.3·Muscle)·(warm ? 1 : 0.35)·Δupkeep`. Level-of-detail cohorts
+  (`world::lod` representatives) use the plain derived traits.
+
+**Interfaces.** The genome package swaps its expressed `Morphology` into
+`body_plan` (one function). The vision package reads `Traits::morph`
+(`MorphContext`): `hearing` and `smell` are the effective perception
+channels (with eyes at `0.10 + 0.3·Eyes`, the three add up to
+`Stats::perception`), `localization` is `L`, and
+`morph_effects::heard_bearing(true_bearing, L, u)` places a threat heard
+in a visual blind spot at `true_bearing + u·70°·(1 − L)` for a caller's
+deterministic draw `u` in [−1, 1] (`bearing_error_deg` gives the bound);
+`MorphEffects::snout_occlusion_deg` is the overlap the snout hides.
+
+**Client fixture.** `crates/sim/tests/fixtures/morph_effects.json` holds
+28 sample body plans (inputs: plan, every gene; outputs: every derived
+number, and the base and effective stats and body) at full strength (all
+four tunables 1). `morph_effects::tests::fixture_is_current` fails when the
+code changes without it; regenerate with `EVO_UPDATE_FIXTURES=1 cargo test
+-p evo-sim --lib morph_effects::tests::fixture`.
+
+**Measured.** With the defaults the 12-seed sweep from seed 31 still
+prints 11.76 (11.74 once merged after the trait downsides, which moved it). `compare --seed 101 --seeds 3 --set morph_effects=1 vs
+defaults` gives +0.00 on every seed (identical worlds: every body is
+default until the genome package lands). `compare --adaptive` from seed
+101 with all four tunables at 1 (`--set morph_effects=1 --set
+morph_tail_drag=1 --set morph_tail_chill=1 --set morph_long_legs=1 vs
+defaults`; tail drag and chill and long-leg tippiness do touch today's
+bodies) stopped after 24 seeds at −0.01 (sequential CI −0.23 … +0.22,
+within ±0.3); no lineage's survival or mean alive moved significantly,
+burrowing omnivores gained +0.71 ± 0.57 pp of legacy. Contextual unit
+tests (`morph_effects::tests`): six legs are faster on slopes and ice and
+carry armor better but pay speed, endurance, food and mass; legless
+bodies are slower, stealthier, lower, burrow and swim better and keep
+more speed on sand; a tailless biped loses agility; fin tails swim faster
+in deep water; club tails add defense and fight-back; long tails drag in
+dense vegetation and burrows (not in the open); long legs are tippy on
+slopes; fan ears raise heat tolerance and cost insulation (less with
+fur); four ears hear and locate better, no ears only feel vibration; a
+long snout smells better and snaps small prey, a flat face bites
+hardest. These tunables stay at 0 until the calibration pass of
+`docs/morphology.md` §4.
+
+Old saves keep the old rules: snapshots move to format version 21, and
+versions 10–20 read all four tunables as 0 (`serde_util::before_v21`).
+New tunables: `morph_effects`, `morph_tail_drag`, `morph_tail_chill`,
+`morph_long_legs`.
+
+### Directional vision
+
+`vision`, `Balance::directional_vision`, off by default. Eyes see fields
+around the way the animal faces, as in the morphology spec (`docs/morphology.md`, contract v1):
+
+- **Heading.** `Organism::heading` is the unit vector of its last movement
+  (set in `step_toward` whenever it moves; kept while it stands still), and a
+  fixed direction from its id until it first moves (`vision::birth_heading`).
+  It is in snapshots from version 22 (`serde_util::before_v22`); older saves
+  restore with each organism facing its birth heading and with
+  `directional_vision` 0 and `vision_scan` 1.
+- **Geometry, once at birth** (`Traits::vision`, `Vision::new`). Eyes: an odd
+  count puts one on the midline, pair *k* sits at ±min(170°, azimuth + 50°·k),
+  each sees `140° + 60°·eye_size`. Derived exactly (the eye count only changes
+  at field edges): coverage, binocular depth field (degrees within ±60° seen
+  by two or more eyes, less the snout's `40°·max(0, snout − 0.5)`), front gap
+  and rear blind spot, plus a 32-bin table of 0 / 1 / ≥2 eyes over the folded
+  bearing (2 bits per bin, one `u64`). Per neighbor the cost is one dot and
+  one cross product, a division (a trig-free pseudo-angle) and a table lookup
+  (`Vision::eyes_on`). Until the genome carries eye loci, `vision::eye_layout`
+  reads the contract defaults (2 eyes at ±60°, snout 0.5) with the `Eyes` gene
+  as size: the one function to swap for the genome's `Morphology`.
+  The defaults give `20 + 60·Eyes` degrees of depth field and a
+  `100 − 60·Eyes` degree rear blind spot.
+- **Detection** (`decide::look`). Perception splits into channels: sight
+  `0.10 + 0.3·Eyes`, hearing `0.03 + 0.3·Ears`, smell `0.02 + 0.3·Nose`. With
+  `k = directional_vision`, a neighbor in a blind sector (no eye on it) is
+  noticed at `1 − k·visual_share·(1 − g)` of the usual distance, where
+  `visual_share = sight / perception` (0.42 for eyes, ears and nose at 0.5)
+  and `g` is 0, or `0.5·vision_scan·coverage` for an animal standing still (no
+  movement target: it scans; `vision_scan` 1). Hearing and smell keep working,
+  so blind spots shorten detection rather than erase it. This only ever
+  shortens the detection distance, so the far-neighbor pruning bounds hold.
+  It applies to threats, prey and territory defenders alike, and to possessed
+  animals too.
+- **Depth judgment** (`World::attack`). A hunter's kill chance is multiplied
+  by `1 + 0.35·k·(min(binocular, 90) − 20) / 90` (`Vision::depth_factor`):
+  1 for the contract's default eyes (size 0), up to +0.27 for a forward-eyed
+  stalker, below 1 for side eyes. Ambush needs no rule of its own: a hunter
+  coming from a blind sector simply isn't noticed, so `ambush_on` applies.
+
+Measurements (12 seeds, 96×96, 120 days; with today's fixed layout only the
+`Eyes` gene varies, so this measures the mechanic on default-eyed animals):
+
+| | Off (default) | `directional_vision=1` |
+| --- | --- | --- |
+| Sweep, seed 31 (`sweep --size 96 --trials 1 --seeds 12 --rounds 1`) | 11.76 ± 0.28 (unchanged; 11.74 once merged after the trait downsides) | 11.53 ± 0.50 (marsh newts and pack hunters each lost on one seed) |
+| `compare --adaptive` from seed 101, A − B | | −0.05 (sequential CI −0.25 … +0.15; stopped at 12 seeds: no difference that matters) |
+
+In the paired compare every lineage survived on every seed under both; mean
+alive moved within noise: marsh newts −62 ± 69, toxic frogs −41 ± 74, herd
+grazers −15 ± 56, meadow voles −2 ± 101, antelope +6 ± 26, red foxes −3 ± 16,
+pack hunters +1 ± 21, burrowing omnivores +8 ± 13 (the only significant
+change is the burrowers' legacy, +1.0 ± 0.9 pp). The rear blind spot costs
+the newts and frogs (small eyes, so big blind spots) a little; hunters gain
+little because they also have blind spots and the default depth multiplier is
+about 1. The real trade-offs appear once designs choose eye layouts.
+
+Cost (callgrind, `evo-sim bench --days 5 --threads 1`, same world): off,
+`World::step` +0.36% instructions over the build without the mechanic
+(heading updates and the birth-time geometry; decide +0.26%), the world's
+results bit-identical. On, the decide phase costs 6,236 instructions per
+call against 6,265 off (the world differs, so only per-call figures
+compare): the per-neighbor lookup is lost in the noise.
 
 ## Point costs
 
