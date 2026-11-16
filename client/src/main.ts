@@ -196,6 +196,9 @@ if (detectEnv().native) void listenForNativeTaps().catch(() => undefined);
 const opened = openParams(window.location.href);
 if (opened.world !== null || opened.tab !== null) window.history.replaceState(null, '', opened.clean);
 pendingTab = opened.tab;
-const saved = loadSession();
-if (saved) start(opened.world ? { ...saved, world: opened.world } : saved);
+// `?builder`: the body builder alone (a dev / e2e harness), no login.
+const builderParam = new URLSearchParams(window.location.search).get('builder');
+const saved = builderParam === null ? loadSession() : null;
+if (builderParam !== null) void import('./ui/builder/harness').then((mod) => mod.mountBuilderHarness(root, builderParam));
+else if (saved) start(opened.world ? { ...saved, world: opened.world } : saved);
 else showLogin();
