@@ -297,10 +297,13 @@ fn header_and_errors() {
 /// The morphology rules as they were before they were on by default
 /// (version 24): body plan effects, directional vision, step mutation and
 /// morphology alleles in the legacy tally all off, which is what snapshots
-/// older than each of them read. Worlds that stand for older saves use them,
-/// so a restore from an older version compares equal.
+/// older than each of them read; and roaming hunters eating nothing, as
+/// before version 25 (`Balance::roaming_forage`). Worlds that
+/// stand for older saves use them, so a restore from an older version
+/// compares equal.
 fn old_morph_rules(mut config: WorldConfig) -> WorldConfig {
     config.balance = config.balance.morphology_off();
+    config.balance.roaming_forage = crate::serde_util::before_v25::OLD_VALUE;
     config
 }
 
@@ -729,7 +732,7 @@ fn version_23_snapshots_restore_without_morph_legacy() {
     assert_eq!(h.version, 23);
     assert!(h.restorable());
     // Without the parameter (an f32), against a version 24 snapshot.
-    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot_v24()).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.morph_legacy, crate::serde_util::before_v24::OLD_VALUE);
     assert!(!r.config.balance.morph_in_legacy());
@@ -737,6 +740,26 @@ fn version_23_snapshots_restore_without_morph_legacy() {
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v23() == old);
+}
+
+/// Version 24 snapshots (before `Balance::roaming_forage`) restore with
+/// roaming hunters eating nothing, and are otherwise the same world.
+#[test]
+fn version_24_snapshots_restore_without_roaming_forage() {
+    let mut w = fixture_world();
+    w.config.balance.roaming_forage = 70.0;
+    let old = w.snapshot_v24();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 24);
+    assert!(h.restorable());
+    // Without the parameter (an f32), against a version 25 snapshot.
+    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.roaming_forage, crate::serde_util::before_v25::OLD_VALUE);
+    w.config.balance.roaming_forage = crate::serde_util::before_v25::OLD_VALUE;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v24() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

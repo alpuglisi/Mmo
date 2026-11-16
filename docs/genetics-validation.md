@@ -178,8 +178,9 @@ reasons, and the soft checks now test what theory predicts instead:
   toxic frogs (no hybrids) drift apart in every world (distance 0.135 →
   0.141, fertility 0.75 → 0.69), while antelope and herd grazers, which
   hybridize constantly, converge (0.063 → 0.042): introgression. Red foxes
-  and pack hunters (both extinct within the first two years in these
-  worlds, an ecological outcome) converge where they hybridized more
+  and pack hunters (both extinct by day 200–520, years 2 to 5, in
+  these worlds, an ecological outcome diagnosed in the README's *Predators
+  over the years*) converge where they hybridized more
   (25–142 hybrids: distance down to 0.04) and drift apart where they barely
   did (9 hybrids, below the 10 the check takes as gene flow).
 

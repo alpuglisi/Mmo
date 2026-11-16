@@ -42,6 +42,8 @@
 //!   out while a world snapshot of version 22 or before is read.
 //! - `before_v24`: `Balance::morph_legacy`, left out while a world snapshot
 //!   of version 23 or before is read.
+//! - `before_v25`: `Balance::roaming_forage`, left out while a world
+//!   snapshot of version 24 or before is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1334,6 +1336,55 @@ pub mod before_v24 {
 
     /// `morph_legacy` before version 24: off.
     pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// `Balance::roaming_forage`, added in world snapshot version 25:
+/// `#[serde(with = "crate::serde_util::before_v25")]`. On a thread holding a
+/// [`before_v25::Guard`] (reading or hashing a snapshot of version 24 or
+/// before) it is neither written nor read and reads as 100, the rule those
+/// saves ran under (a hunter roaming with no prey in sight eats nothing).
+pub mod before_v25 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// `roaming_forage` before version 25: off (hunger never exceeds 100).
+    pub const OLD_VALUE: f32 = 100.0;
 
     /// The old layout on this thread while this guard lives.
     pub struct Guard(bool);

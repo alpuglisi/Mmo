@@ -678,6 +678,19 @@ pub struct Balance {
     /// before version 24 read 0 (not counted).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v24"))]
     pub morph_legacy: f32,
+    /// Starving roaming forage: a hunter roaming under `Action::Hunt` with no
+    /// prey in sight nibbles plants at 0.3 of a full graze, as it does while
+    /// courting, resting or drinking, once its hunger is above this. Meat
+    /// covers a few percent of a hunter's day and plants the rest, and a
+    /// roaming hunter otherwise eats nothing; pregnant and nursing mothers,
+    /// who can't court, roam the most and starve first. 100 is off (hunger
+    /// never exceeds it): the default, and what snapshots before version 25
+    /// read. Tried as the fix for predators dying out over the years: at 70
+    /// both predators survive 3 years on 4 of 4 seeds but drive the voles
+    /// out on 2; at 75–85 they still die out within 4 years. See
+    /// *Predators over the years* in the README's Balance section.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v25"))]
+    pub roaming_forage: f32,
 }
 
 impl Balance {
@@ -833,12 +846,13 @@ impl Default for Balance {
             vision_scan: 1.0,
             morph_step_rate: crate::morph::RECOMMENDED_STEP_RATE,
             morph_legacy: 1.0,
+            roaming_forage: 100.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 101;
+    pub const FIELD_COUNT: usize = 102;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -949,6 +963,7 @@ impl Balance {
             ("vision_scan", &mut self.vision_scan),
             ("morph_step_rate", &mut self.morph_step_rate),
             ("morph_legacy", &mut self.morph_legacy),
+            ("roaming_forage", &mut self.roaming_forage),
         ]
     }
 
