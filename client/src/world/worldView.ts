@@ -21,7 +21,7 @@
 // context does not come back within a few seconds.
 
 import { Application, BufferImageSource, Container, Graphics, Sprite, Texture, UPDATE_PRIORITY, type Renderer } from 'pixi.js';
-import { actionHint, bodyRadius, creatureKey, markerScaleFor, specOf, type CreatureSpec, type Hint } from './creature';
+import { actionHint, bodyRadius, creatureKey, markerScaleFor, NEAR_SCALE, specOf, type CreatureSpec, type Hint } from './creature';
 import { CreatureSprites, type MarkerParts } from './sprites';
 import { ContextGuard, ErrorLog, type GuardState } from './renderGuard';
 import type { NearbyOrganism, OrgId, OwnOrganism, StateView } from '../protocol';
@@ -96,6 +96,13 @@ const LONG_PRESS_MS = 450;
 const DRAG_PX = 6;
 /** Zoom (pixels per tile) from which tile edges are outlined. */
 const GRID_ZOOM = 18;
+/**
+ * Time a frame may spend making marker textures (ms). Markers whose textures
+ * are all cached are always shown; the rest wait for a later frame once this
+ * is spent (at least one is made per frame), so a frame that brings many new
+ * looks (a zoom in, a crowd arriving) spreads the drawing instead of hitching.
+ */
+export const TEXTURE_BUDGET_MS = 4;
 
 export class WorldView {
   /** The PixiJS app; replaced by a new one if a lost WebGL context never comes back. */
@@ -120,6 +127,10 @@ export class WorldView {
   private sprites: CreatureSprites | null = null;
   /** Current marker scale (grows with zoom). */
   private markerScale = 1;
+  /** Markers use the far (class) sprites: drawn smaller than `NEAR_SCALE`. */
+  private far = false;
+  /** Markers left for a later frame by the texture budget, in all. */
+  private deferred = 0;
   private texture: Texture | null = null;
   private terrainBuf: Uint8Array | null = null;
   private terrainSource: BufferImageSource | null = null;
@@ -168,7 +179,7 @@ export class WorldView {
     this.app = app;
     this.parent!.appendChild(app.canvas);
     app.canvas.id = 'world-canvas';
-    this.sprites = new CreatureSprites(app.renderer);
+    this.sprites = new CreatureSprites(app.renderer, () => this.texturesInUse());
     app.stage.addChild(this.mapLayer, this.markerLayer, this.highlight);
     this.bindInput(app.canvas);
     // PixiJS draws from a ticker callback, and a throw there stops the ticker
@@ -204,18 +215,38 @@ export class WorldView {
     this.errors.run('drop textures', () => this.sprites?.cache.clear());
   }
 
-  /** Make the textures of markers whose look changed (or were dropped). Stops at the first failure. */
+  /** The textures markers show now (the cache must not drop them). */
+  private texturesInUse(): Set<Texture> {
+    const out = new Set<Texture>();
+    for (const m of this.markers.values()) for (const s of [m.parts.ring, m.parts.body, m.parts.status, m.parts.icon]) out.add(s.texture);
+    return out;
+  }
+
+  /**
+   * Make the textures of markers whose look changed (or were dropped), yours
+   * first, within the frame's texture budget. Stops at the first failure.
+   */
   private flushMarkers(): void {
     const sprites = this.sprites;
     if (!sprites || this.guard.paused) return;
-    for (const m of this.markers.values()) {
-      if (!m.dirty || !m.look) continue;
-      const l = m.look;
-      if (!this.errors.run('build marker textures', () => applyMarker(sprites, m.parts, l.spec, l.own, l.tint, l.status, l.hint))) {
-        this.checkContext();
-        return; // try again next frame
+    const start = performance.now();
+    let made = false;
+    for (const own of [true, false]) {
+      for (const m of this.markers.values()) {
+        if (!m.dirty || !m.look || m.own !== own) continue;
+        const l = m.look;
+        if (made && performance.now() - start > TEXTURE_BUDGET_MS && !sprites.ready(l.spec, l.own, l.status !== null, l.hint)) {
+          this.deferred++;
+          continue; // next frame
+        }
+        const before = sprites.cache.made;
+        if (!this.errors.run('build marker textures', () => applyMarker(sprites, m.parts, l.spec, l.own, l.tint, l.status, l.hint))) {
+          this.checkContext();
+          return; // try again next frame
+        }
+        if (sprites.cache.made !== before) made = true;
+        m.dirty = false;
       }
-      m.dirty = false;
     }
   }
 
@@ -338,9 +369,18 @@ export class WorldView {
     return m ? { key: m.style, hint: m.hint, facing: m.facing, own: m.own, scale: this.markerScale } : null;
   }
 
-  /** Markers on screen and distinct textures made for them (the cache size). */
-  spriteStats(): { markers: number; textures: number; made: number } {
-    return { markers: this.markers.size, textures: this.sprites?.cache.size ?? 0, made: this.sprites?.cache.made ?? 0 };
+  /**
+   * Markers on screen and the texture cache: distinct textures held, made
+   * (misses), evicted, their estimated bytes, time making them (total and
+   * slowest, ms), markers deferred by the frame budget, and whether markers
+   * use the far (class) sprites.
+   */
+  spriteStats(): { markers: number; textures: number; made: number; evicted: number; bytes: number; makeMs: number; maxMakeMs: number; deferred: number; far: boolean } {
+    const c = this.sprites?.cache;
+    return {
+      markers: this.markers.size, textures: c?.size ?? 0, made: c?.made ?? 0, evicted: c?.evicted ?? 0, bytes: c?.cost ?? 0,
+      makeMs: c?.makeMs ?? 0, maxMakeMs: c?.maxMakeMs ?? 0, deferred: this.deferred, far: this.far,
+    };
   }
 
   /** Drawn world position of an organism marker (glided or predicted; for tests). */
@@ -395,7 +435,7 @@ export class WorldView {
     retarget(m.track, m, o.x, o.y, now);
     m.seen = true;
     m.own = own;
-    const spec = specOf(o);
+    const spec = specOf(o, this.far);
     const status = own ? statusColor(o as OwnOrganism) : null;
     const hint = actionHint(o.action);
     const tint = own ? OWN_COLOR : ownerColor((o as NearbyOrganism).owner);
@@ -435,6 +475,19 @@ export class WorldView {
     this.markerLayer.sortableChildren = true;
     const sc = markerScaleFor(this.cam.zoom);
     this.markerScale = sc;
+    const far = sc < NEAR_SCALE;
+    if (far !== this.far) {
+      // Detail level changed: every marker's body texture changes.
+      this.far = far;
+      for (const m of this.markers.values()) {
+        if (!m.look) continue;
+        const spec: CreatureSpec = { look: m.look.spec.look, juvenile: m.look.spec.juvenile };
+        if (far) spec.far = true;
+        m.look = { ...m.look, spec };
+        m.style = [creatureKey(spec), ...m.style.split('|').slice(1)].join('|');
+        m.dirty = true;
+      }
+    }
     for (const m of this.markers.values()) {
       const p = this.worldToScreen(m.x, m.y);
       const root = m.parts.root;

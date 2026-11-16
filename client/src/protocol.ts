@@ -272,7 +272,31 @@ export interface Appearance {
   cover: 'skin' | 'fur' | 'scales' | 'armor';
   /** Drab browns, camouflage mottling, bright display colors, or warning colors (bright and toxic). */
   coloring: 'drab' | 'camo' | 'bright' | 'warning';
+  // Morphology (docs/morphology-contract.md), quantized; absent from older
+  // servers (the sprite then draws today's defaults, `creature.ts` `morphOf`).
+  /** Eye count, 1–6. */
+  eyes?: number;
+  /** Eye size bucket: 0 small, 1 medium, 2 large. */
+  eye_size?: SizeBucket;
+  /** Ear count: 0, 2 or 4. */
+  ears?: number;
+  ear_shape?: EarShape;
+  /** Ear size bucket. */
+  ear_size?: SizeBucket;
+  /** Leg count: 0, 2, 4, 6 or 8. */
+  legs?: number;
+  tail?: TailLook;
+  /** Tail length bucket: 0 short, 1 medium, 2 long. */
+  tail_size?: SizeBucket;
+  /** Snout length bucket. */
+  snout?: SizeBucket;
+  /** Fangs: 0 none, 1 small, 2 large. */
+  fangs?: SizeBucket;
 }
+
+export type SizeBucket = 0 | 1 | 2;
+export type EarShape = 'round' | 'pointed' | 'long' | 'fan';
+export type TailLook = 'none' | 'thin' | 'bushy' | 'fin' | 'club' | 'prehensile';
 
 export interface LeaderRow {
   player: PlayerId;
