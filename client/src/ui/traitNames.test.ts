@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TRAIT_TEXT } from './traitText';
 import { TRAIT_NAMES, traitEnds, traitName, traitNameLower } from './traitNames';
+import fixture from './traitNames.fixture.json';
 
 describe('trait names', () => {
   it('names every slider the editor shows, plus the three design-choice genes', () => {
@@ -36,5 +37,14 @@ describe('trait names', () => {
     expect(traitName('some_new_gene')).toBe('Some new gene');
     expect(traitNameLower('large_ears')).toBe('ear size');
     expect(traitNameLower('group_tolerance')).toBe('sociability');
+  });
+
+  // traitNames.fixture.json is written by the Rust test
+  // `genome::tests::the_client_trait_name_fixture_is_current` (crates/sim/src/genome.rs)
+  // from `trait_display_name`, the names the server uses in its messages.
+  it('uses the same names as the server, for the same genes', () => {
+    const server = fixture as Record<string, string>;
+    expect(Object.keys(TRAIT_NAMES).sort()).toEqual(Object.keys(server).sort());
+    for (const [g, name] of Object.entries(server)) expect(traitName(g), g).toBe(name);
   });
 });

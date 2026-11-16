@@ -228,11 +228,13 @@ impl fmt::Display for DesignError {
             DesignError::OverBudget { cost, budget } => {
                 write!(f, "design costs {cost:.1} points, budget is {budget:.1}")
             }
-            DesignError::ValueOutOfRange(g) => write!(f, "{} must be in [0, 1]", g.label()),
+            DesignError::ValueOutOfRange(g) => write!(f, "{} must be in [0, 1]", g.display_name()),
             DesignError::ReservedGene(g) => {
-                write!(f, "{} is set by the design's own field", g.label())
+                write!(f, "{} is set by the design's own field", g.display_name())
             }
-            DesignError::LitterSize(n) => write!(f, "litter size {n} not in 1..={MAX_LITTER}"),
+            DesignError::LitterSize(n) => {
+                write!(f, "{} {n} not in 1..={MAX_LITTER}", Gene::LitterSize.display_name())
+            }
             DesignError::NoFounders => write!(f, "a design needs at least two founders"),
             DesignError::Morphology(e) => e.fmt(f),
         }

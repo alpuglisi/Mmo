@@ -159,9 +159,9 @@ impl SpecError {
     }
 }
 
-/// The wire name of a gene: its label in `snake_case`.
+/// The wire name of a gene: its label in `snake_case` ([`Gene::key`]).
 pub fn gene_key(g: Gene) -> String {
-    g.label().replace(' ', "_")
+    g.key()
 }
 
 pub fn parse_gene(name: &str) -> Option<Gene> {
