@@ -10,6 +10,11 @@
 // is predicted toward its order (`motion.ts`), so movement is continuous
 // rather than hopping at each `state`.
 //
+// Vision cones (`visionCones.ts`): around the player's own selected
+// organism (else the possessed one), when the server sends its eyes and
+// heading (own organisms only), drawn in screen space under the markers and
+// turned smoothly toward each new heading.
+//
 // Input: mouse drag or one-finger drag pans, wheel or two-finger pinch
 // zooms, a tap/click selects, and a long press (touch or mouse held still)
 // is reported separately (the game screen uses it to possess).
@@ -29,6 +34,7 @@ import { OWN_COLOR, ownerColor } from './colors';
 import { groupColor, groupsOf, homeRangeGroup, type TerritoryDraft } from '../groups';
 import { paintTerrain, type TerrainGrid } from './terrain';
 import { isOpenGround, newTrack, Predictor, RECONCILE_SNAP, RECONCILE_TAU_MS, retarget, smoothToward, TickClock, trackAt, type Point, type Track } from './motion';
+import { arcPoints, coneLayout, dotGrid, easeAngle, facingOf, hatchSegments, headingDeg, wedgePolygon, type ConeLayout } from './visionCones';
 
 export interface Camera {
   /** World point (tiles) at the center of the screen. */
@@ -56,7 +62,7 @@ interface Marker {
   own: boolean;
   /** Body radius in screen pixels at marker scale 1. */
   r: number;
-  /** 1 facing right, -1 facing left (the last horizontal heading). */
+  /** 1 facing right, -1 facing left (the server heading's side for own organisms, else the last horizontal move). */
   facing: 1 | -1;
   hint: Hint | null;
   /** What the marker should show (its textures are made from this). */
@@ -72,6 +78,33 @@ interface MarkerLook {
   status: number | null;
   hint: Hint | null;
 }
+
+/** The vision cones on screen, for tests and debugging. */
+export interface VisionInfo {
+  organism: OrgId;
+  /** The server heading (screen degrees) and the drawn one (eased toward it). */
+  heading: number;
+  drawn: number;
+  /** Cone radius, screen pixels. */
+  radius: number;
+  covered: number;
+  blind: number;
+  overlap: number;
+  eyes: number;
+  /** Hatch strokes in the blind spots and dots in the depth zone. */
+  hatch: number;
+  dots: number;
+  /** Screen position of the cones' center. */
+  x: number;
+  y: number;
+}
+
+/** Cone colours, after the founder builder's (`builder.css`). */
+const CONE_COVER = 0x8b949e;
+const CONE_DEPTH = 0x3fb950;
+const CONE_BLIND = 0xf85149;
+/** Easing time constant of the drawn heading toward the server's (ms). */
+const TURN_TAU_MS = 140;
 
 /** What a marker shows, for tests and debugging. */
 export interface MarkerInfo {
@@ -124,6 +157,13 @@ export class WorldView {
   private markerLayer = new Container();
   private markers = new Map<OrgId, Marker>();
   private highlight = new Graphics();
+  /** The vision cones (screen space, under the markers). */
+  private visionLayer = new Graphics();
+  /** Draw vision cones for the selected (or possessed) own organism. */
+  showVision = true;
+  /** Last drawn cones (null: none), and the heading as drawn. */
+  private vision: VisionInfo | null = null;
+  private drawnHeading: { id: OrgId; deg: number } | null = null;
   private sprites: CreatureSprites | null = null;
   /** Current marker scale (grows with zoom). */
   private markerScale = 1;
@@ -180,7 +220,7 @@ export class WorldView {
     this.parent!.appendChild(app.canvas);
     app.canvas.id = 'world-canvas';
     this.sprites = new CreatureSprites(app.renderer, () => this.texturesInUse());
-    app.stage.addChild(this.mapLayer, this.markerLayer, this.highlight);
+    app.stage.addChild(this.mapLayer, this.visionLayer, this.markerLayer, this.highlight);
     this.bindInput(app.canvas);
     // PixiJS draws from a ticker callback, and a throw there stops the ticker
     // for good: draw through a guard instead (paused while the context is lost).
@@ -429,8 +469,12 @@ export class WorldView {
       m = { parts, x: o.x, y: o.y, track: newTrack(o.x, o.y, now), style: '', seen: true, own, r: 0, facing: 1, hint: null, look: null, dirty: false };
       this.markers.set(o.id, m);
     }
-    const dx = o.x - m.track.tx;
-    if (Math.abs(dx) > 0.02) m.facing = dx > 0 ? 1 : -1;
+    const heading = own ? (o as OwnOrganism).heading : undefined;
+    if (heading !== undefined) m.facing = facingOf(headingDeg(heading), m.facing);
+    else {
+      const dx = o.x - m.track.tx;
+      if (Math.abs(dx) > 0.02) m.facing = dx > 0 ? 1 : -1;
+    }
     // Glide from where it is drawn; a long jump (e.g. a reconnect) snaps.
     retarget(m.track, m, o.x, o.y, now);
     m.seen = true;
@@ -504,6 +548,48 @@ export class WorldView {
       this.highlight.circle(p.x, p.y, r).stroke({ width: 3.5, color: 0x0d1117, alpha: 0.6 });
       this.highlight.circle(p.x, p.y, r).stroke({ width: 2, color: 0xffffff });
     }
+    this.drawVision(dtMs);
+  }
+
+  /** The own organism whose cones show: the selected one if it is yours, else the possessed one. */
+  private visionTarget(): OwnOrganism | null {
+    const s = this.state;
+    if (!s || !this.showVision) return null;
+    const has = (o: OwnOrganism | undefined): o is OwnOrganism => !!o && !!o.vision && o.heading !== undefined && this.markers.has(o.id);
+    const sel = this.selected !== null ? s.organisms.find((o) => o.id === this.selected) : undefined;
+    if (has(sel)) return sel;
+    const pos = s.organisms.find((o) => o.possessed);
+    return has(pos) ? pos : null;
+  }
+
+  /** Vision cones on screen (null when none are drawn). */
+  visionInfo(): VisionInfo | null {
+    return this.vision;
+  }
+
+  private drawVision(dtMs: number): void {
+    const g = this.visionLayer;
+    g.clear();
+    this.vision = null;
+    const o = this.visionTarget();
+    const m = o ? this.markers.get(o.id) : undefined;
+    if (!o || !m || !o.vision || o.heading === undefined) {
+      this.drawnHeading = null;
+      return;
+    }
+    const target = headingDeg(o.heading);
+    const prev = this.drawnHeading?.id === o.id ? this.drawnHeading.deg : target;
+    const deg = easeAngle(prev, target, 1 - Math.exp(-dtMs / TURN_TAU_MS));
+    this.drawnHeading = { id: o.id, deg };
+    const p = this.worldToScreen(m.x, m.y);
+    // A few body lengths, growing a little with zoom; readable on a phone.
+    const r = Math.round(Math.min(150, Math.max(64, this.cam.zoom * 5, m.r * this.markerScale * 5)));
+    const layout = coneLayout(o.vision, deg);
+    const counts = drawCones(g, p.x, p.y, r, layout);
+    this.vision = {
+      organism: o.id, heading: target, drawn: deg, radius: r, x: p.x, y: p.y,
+      covered: layout.covered.length, blind: layout.blind.length, overlap: layout.overlap.length, eyes: layout.eyes.length, ...counts,
+    };
   }
 
   /**
@@ -733,6 +819,53 @@ export class WorldView {
       if (press && press.touch && !press.dragging) longPress(press);
     });
   }
+}
+
+/** Draw the cones of `l` around a screen point; returns the hatch strokes and dots drawn. */
+function drawCones(g: Graphics, cx: number, cy: number, r: number, l: ConeLayout): { hatch: number; dots: number } {
+  // Any eye: a light fill and a faint rim.
+  for (const w of l.covered) g.poly(wedgePolygon(cx, cy, r, w)).fill({ color: CONE_COVER, alpha: 0.16 });
+  // Blind spots: red, hatched at 45° like the builder's pattern.
+  let hatch = 0;
+  for (const w of l.blind) {
+    g.poly(wedgePolygon(cx, cy, r, w)).fill({ color: CONE_BLIND, alpha: w.kind === 'rear' ? 0.14 : 0.1 });
+    for (const [x1, y1, x2, y2] of hatchSegments(cx, cy, r, w, 6)) {
+      g.moveTo(x1, y1).lineTo(x2, y2);
+      hatch++;
+    }
+    g.stroke({ width: 1.4, color: CONE_BLIND, alpha: 0.65 });
+    g.poly(wedgePolygon(cx, cy, r, w)).stroke({ width: 1, color: CONE_BLIND, alpha: 0.8 });
+  }
+  // The depth zone in front: green and dotted.
+  let dots = 0;
+  for (const w of l.overlap) {
+    g.poly(wedgePolygon(cx, cy, r, w)).fill({ color: CONE_DEPTH, alpha: 0.22 });
+    for (const [x, y] of dotGrid(cx, cy, r - 2, w, 6, 6)) {
+      g.circle(x, y, 1.3);
+      dots++;
+    }
+    g.fill({ color: CONE_DEPTH, alpha: 0.9 });
+    g.poly(wedgePolygon(cx, cy, r, w)).stroke({ width: 1, color: CONE_DEPTH, alpha: 0.9 });
+  }
+  if (l.occluded) g.poly(wedgePolygon(cx, cy, r * 0.8, l.occluded)).fill({ color: 0x0d1117, alpha: 0.35 });
+  // Each eye's field: a dashed outline just inside the rim.
+  l.eyes.forEach((w, i) => {
+    const rr = r - 3 - 3 * i;
+    const pts = arcPoints(cx, cy, rr, w, 3);
+    for (let k = 0; k + 1 < pts.length; k += 2) g.moveTo(pts[k][0], pts[k][1]).lineTo(pts[k + 1][0], pts[k + 1][1]);
+    for (const end of [pts[0], pts[pts.length - 1]]) {
+      const dx = end[0] - cx, dy = end[1] - cy;
+      for (let t = 0.25; t < 0.95; t += 0.2) g.moveTo(cx + dx * t, cy + dy * t).lineTo(cx + dx * (t + 0.1), cy + dy * (t + 0.1));
+    }
+  });
+  g.stroke({ width: 1, color: 0xc9d1d9, alpha: 0.55 });
+  // Facing: a small arrowhead on the rim.
+  const a = (l.heading * Math.PI) / 180;
+  const tip = { x: cx + Math.cos(a) * (r + 7), y: cy + Math.sin(a) * (r + 7) };
+  const side = (s: number) => ({ x: cx + Math.cos(a + s * 0.09) * (r - 2), y: cy + Math.sin(a + s * 0.09) * (r - 2) });
+  const [l1, r1] = [side(-1), side(1)];
+  g.poly([tip.x, tip.y, l1.x, l1.y, r1.x, r1.y]).fill({ color: 0xffffff, alpha: 0.9 }).stroke({ width: 1, color: 0x0d1117, alpha: 0.6 });
+  return { hatch, dots };
 }
 
 function statusColor(o: OwnOrganism): number | null {

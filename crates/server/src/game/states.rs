@@ -467,12 +467,16 @@ impl Game {
 
     /// One of the player's own organisms as sent in a state; a possessed one
     /// also carries its walking speed for the client's prediction (its
-    /// `order` comes from [`OwnOrganism::from_org`]).
+    /// `order` comes from [`OwnOrganism::from_org`]), and its eyes say
+    /// whether directional vision is on in this world.
     pub(super) fn own_view(&self, o: &Organism, tpd: u32) -> OwnOrganism {
         let mut v = OwnOrganism::from_org(o, tpd);
         if o.possessed_by.is_some() {
             // An order sprints with energy to spare (`World::decide`).
             v.speed = Some(self.world.move_speed(o, o.needs.energy > 40.0));
+        }
+        if let Some(vision) = &mut v.vision {
+            vision.directional = self.world.config.balance.directional_vision > 0.0;
         }
         v
     }

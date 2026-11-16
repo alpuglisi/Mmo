@@ -208,6 +208,39 @@ export interface OwnOrganism {
   speed?: number;
   /** The group it belongs to (absent: 0, the main group). */
   group?: number;
+  /**
+   * Facing, one of 32 directions: `k · 11.25°` from +x (east) toward +y
+   * (south). Own organisms only (protocol 3 or JSON states; absent from older servers).
+   */
+  heading?: number;
+  /** The eyes' fixed geometry, for the vision cones. Own organisms only (absent from older servers). */
+  vision?: VisionView;
+}
+
+/**
+ * `vision::VisionView`: one organism's eyes, fixed at birth. Angles are whole
+ * degrees on the head, 0 = straight ahead, +90 = right. Only ever sent for
+ * the player's own organisms.
+ */
+export interface VisionView {
+  /** 1–6; an odd count puts one eye on the midline, pair k sits at ±min(170°, azimuth + 50°·k). */
+  eyes: number;
+  /** The first pair's azimuth, 0–180. */
+  azimuth: number;
+  /** Each eye's field width (140 + 60 × eye size). */
+  field: number;
+  /** Degrees of the binocular field a long snout hides (absent: 0). */
+  occlusion?: number;
+  /** Seen by at least one eye, whole percent. */
+  coverage: number;
+  /** Depth field: degrees within ±60° of ahead seen by two or more eyes, less the snout's occlusion. */
+  binocular: number;
+  /** The unseen arc straight behind. */
+  blind: number;
+  /** The unseen arc straight ahead (absent: 0). */
+  front_gap?: number;
+  /** Directional vision is on in this world: blind spots shorten detection (absent: off, the cones only describe the eyes). */
+  directional?: boolean;
 }
 
 /** A territory a group holds. */

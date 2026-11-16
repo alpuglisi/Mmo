@@ -502,9 +502,10 @@ async fn delta_states_match_json_states_and_resync() {
     let (s, v) = json_req(addr, Method::POST, "/api/login", None, Some(creds)).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let token = v["token"].as_str().unwrap();
-    let (mut new, _) = connect_async(format!("ws://{addr}/ws?token={token}&proto=2")).await.expect("websocket");
+    // (A client asking for more than the server speaks gets the highest it does.)
+    let (mut new, _) = connect_async(format!("ws://{addr}/ws?token={token}&proto=9")).await.expect("websocket");
     let welcome = wait_for(&mut new, "welcome", |v| v["type"] == "welcome").await;
-    assert_eq!(welcome["proto"], 2);
+    assert_eq!(welcome["proto"], 3);
     let mut plain = ws(addr, token).await;
     let welcome = wait_for(&mut plain, "welcome", |v| v["type"] == "welcome").await;
     assert!(welcome.get("proto").is_none(), "{welcome}");
@@ -543,6 +544,8 @@ async fn delta_states_match_json_states_and_resync() {
         if srv.substep().await > 0 {
             let (s, k) = same_state(next_frame(&mut old).await, next_frame(&mut new).await, &mut dec);
             moved |= s.organisms.iter().any(|o| o.id == id && o.possessed);
+            // Facing and eyes for every own organism, nobody else's.
+            assert!(s.organisms.iter().all(|o| o.heading.is_some() && o.vision.is_some()));
             kinds.push(k);
         }
         srv.step(1).await;
@@ -634,5 +637,57 @@ async fn designed_morphology_shows_in_state_frames() {
     for o in &s.organisms {
         assert_eq!((o.look.legs, o.look.eyes, o.look.eye_azimuth, o.look.tail), (6, 3, 2, TailLook::Fin));
     }
+    srv.shutdown().await;
+}
+
+/// Protocol 3 adds the player's own organisms' heading and eyes; a client
+/// asking for protocol 2 gets protocol 2 frames without them, and no state
+/// on any protocol carries another player's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vision_goes_only_to_the_owner_and_only_on_protocol_3() {
+    use evo_server::wire::DeltaDecoder;
+    let srv = manual_server().await;
+    let addr = srv.addr;
+    let (mut json_ws, _, _, _) = possess_and_order(addr).await;
+    let creds = json!({"name": "ann", "password": "a long password"});
+    let (_, v) = json_req(addr, Method::POST, "/api/login", None, Some(creds)).await;
+    let token = v["token"].as_str().unwrap().to_string();
+    let open = |proto: u32| {
+        let token = token.clone();
+        async move {
+            let (mut ws, _) =
+                connect_async(format!("ws://{addr}/ws?token={token}&proto={proto}")).await.expect("websocket");
+            let welcome = wait_for(&mut ws, "welcome", |v| v["type"] == "welcome").await;
+            assert_eq!(welcome["proto"], proto);
+            ws
+        }
+    };
+    let (mut v2, mut v3) = (open(2).await, open(3).await);
+    // A second player, whose organisms share the small world with ann's.
+    let bob = register(addr, "bob").await;
+    let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(&bob), Some(design("Bob's"))).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (mut d2, mut d3) = (DeltaDecoder::new(), DeltaDecoder::new());
+    let mut saw_foreign = false;
+    for _ in 0..4 {
+        srv.step(1).await;
+        let Message::Text(t) = next_frame(&mut json_ws).await else { panic!("text") };
+        let v: Value = serde_json::from_str(&t).unwrap();
+        // Protocol 1: own organisms carry both, nearby ones neither.
+        for o in v["organisms"].as_array().unwrap() {
+            assert!(o["heading"].as_u64().unwrap() < 32 && o["vision"]["eyes"].as_u64().is_some(), "{o}");
+        }
+        for o in v["nearby"].as_array().unwrap() {
+            assert!(o.get("heading").is_none() && o.get("vision").is_none(), "{o}");
+            saw_foreign |= o["owner"] != v["player"];
+        }
+        let Message::Binary(b2) = next_frame(&mut v2).await else { panic!("binary") };
+        let Message::Binary(b3) = next_frame(&mut v3).await else { panic!("binary") };
+        let (s2, s3) = (d2.apply(&b2).unwrap(), d3.apply(&b3).unwrap());
+        assert!(!s2.organisms.is_empty() && !s3.organisms.is_empty());
+        assert!(s2.organisms.iter().all(|o| o.heading.is_none() && o.vision.is_none()));
+        assert!(s3.organisms.iter().all(|o| o.heading.is_some() && o.vision.is_some()));
+    }
+    assert!(saw_foreign, "no other player's organism was in view");
     srv.shutdown().await;
 }

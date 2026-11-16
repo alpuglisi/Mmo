@@ -12,6 +12,8 @@ import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, terrainSummary, type TerrainGrid } from '../world/terrain';
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
 import { describeLook } from '../world/creature';
+import { visionLines, visionStats } from '../world/visionCones';
+import { visionSummary } from '../vision';
 import { append, clear, h, label, pct } from './dom';
 import { renderAlertPrefs, renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
@@ -645,8 +647,39 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   // --- Organism inspector
   const inspDetails = h('div');
+  // Your organism's eyes: the numbers and the cones toggle (rebuilt only when they change).
+  const inspVision = h('div', { id: 'inspector-vision' });
   const inspActions = h('div', { class: 'row wrap', id: 'inspector-actions' });
-  append(tabs.organism, [inspDetails, inspActions]);
+  append(tabs.organism, [inspDetails, inspVision, inspActions]);
+  view.showVision = loadShowVision();
+
+  function renderVision(own: OwnOrganism | undefined): void {
+    const v = own?.vision;
+    keyed(inspVision, own && v ? `${own.id}:${JSON.stringify(v)}:${view.showVision}` : 'none', () => {
+      if (!own || !v) return [];
+      const lines = visionLines(v);
+      const toggle = h('input', { type: 'checkbox', id: 'vision-toggle' }) as HTMLInputElement;
+      toggle.checked = view.showVision;
+      toggle.addEventListener('change', () => {
+        view.showVision = toggle.checked;
+        saveShowVision(toggle.checked);
+        renderVision(own);
+      });
+      const key = (cls: string, text: string) => h('span', { class: 'vision-key' }, h('i', { class: `vision-swatch ${cls}` }), text);
+      return [
+        h('h4', {}, 'Vision'),
+        dl([
+          ['View', lines.view], ['Depth', lines.depth], ['Blind behind', lines.blind],
+          ...(lines.ahead ? [['Blind ahead', lines.ahead] as [string, string]] : []),
+        ]),
+        h('p', { class: 'muted small', id: 'vision-panel-summary' }, visionSummary(visionStats(v))),
+        h('p', { class: 'muted small', id: 'vision-mechanic', 'data-directional': String(!!v.directional) }, lines.mechanic),
+        h('label', { class: 'vision-toggle' }, toggle, h('span', {}, 'Show vision on the map')),
+        view.showVision && h('p', { class: 'vision-legend small' },
+          key('seen', 'seen'), key('depth', 'depth (two eyes)'), key('blind', 'blind spot')),
+      ];
+    });
+  }
 
   function findOrg(id: OrgId | null): { own?: OwnOrganism; other?: NearbyOrganism } {
     const s = model.state;
@@ -660,6 +693,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   function renderInspector(): void {
     const { own, other } = findOrg(model.selected);
     view.selected = model.selected;
+    renderVision(own);
     if (!own && !other) {
       keyed(inspActions, 'none', () => []);
       inspDetails.replaceChildren(h('p', { class: 'muted' }, model.selected === null
@@ -1126,6 +1160,25 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       view.destroy();
     },
   };
+}
+
+const SHOW_VISION_KEY = 'evo.showVision';
+
+/** Whether vision cones are shown (remembered per browser; on by default). */
+function loadShowVision(): boolean {
+  try {
+    return localStorage.getItem(SHOW_VISION_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function saveShowVision(on: boolean): void {
+  try {
+    localStorage.setItem(SHOW_VISION_KEY, on ? '1' : '0');
+  } catch {
+    /* private mode: not remembered */
+  }
 }
 
 function dl(rows: [string, Node | string][]): HTMLElement {

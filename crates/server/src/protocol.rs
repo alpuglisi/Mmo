@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::appearance::Appearance;
+use crate::vision::VisionView;
 use evo_sim::organism::{Action, Organism, Sex};
 use evo_sim::terrain::Season;
 use evo_sim::PlayerId;
@@ -334,7 +335,8 @@ pub enum ServerMsg {
         name: String,
         lineage: Option<u32>,
         /// The protocol this connection speaks (`wire::PROTO_DELTA` when the
-        /// client asked for it with `/ws?proto=2`; absent for protocol 1).
+        /// client asked for it with `/ws?proto=2`, `wire::PROTO_VISION` for
+        /// `proto=3` or higher; absent for protocol 1).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         proto: Option<u32>,
     },
@@ -860,6 +862,14 @@ pub struct OwnOrganism {
     /// The group it belongs to (absent: 0, the main group).
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub group: u8,
+    /// Facing, one of 32 directions (`vision::heading`; absent from older
+    /// servers). Own organisms only: nobody else's facing is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heading: Option<u8>,
+    /// The eyes' fixed geometry for the vision cones (`vision::VisionView`;
+    /// absent from older servers). Own organisms only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<VisionView>,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -1477,6 +1487,9 @@ impl OwnOrganism {
             order: o.possessed_by.and(o.order).map(|t| [t.x, t.y]),
             speed: None,
             group: o.group,
+            heading: crate::vision::heading(o),
+            // `directional` is set by the game, which knows the balance.
+            vision: Some(VisionView::of(o, 0.0)),
         }
     }
 }

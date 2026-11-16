@@ -62,7 +62,7 @@ export class GameModel {
   player = 0;
   name = '';
   welcomeLineage: number | null = null;
-  /** The protocol of the connection (2: binary delta states; 1: whole JSON states). */
+  /** The protocol of the connection (3: binary delta states with own headings and eyes; 2: without; 1: whole JSON states). */
   proto = 1;
   state: StateView | null = null;
   /** The ranked season under way, as last pushed (`watch_season`). */

@@ -39,7 +39,9 @@
 //! 5 growth, 6 health, 7–14 needs (hunger, thirst, energy, cold, heat,
 //! safety, breeding, social), 15 generation, 16 look, 17 order (`u8` 0 or
 //! 1, then `z x, z y` absolute), 18 speed (`u8` 0 or 1, then `f32` LE),
-//! 19 group (`v`).
+//! 19 group (`v`); protocol 3 only: 20 heading (`v`: 0 none, else 1 + the
+//! direction, 0–31 in steps of 11.25° from +x toward +y), 21 vision (`v`: 0
+//! none, else 1 + an index into the `visions` palette).
 //! Nearby fields: 0 owner, 1 lineage, 2 position, 3 action, 4 flags (1 male,
 //! 2 matured), 5 look.
 //!
@@ -50,7 +52,19 @@
 //! as `{day, breeding_adults}` with its rows keyed by player (`lb_set`:
 //! new or changed rows, `lb_del`: players gone), offers keyed by id
 //! (`offers_set`, `offers_del`) and the palette additions (`looks`,
-//! `actions`, appended in order). A keyframe has every field.
+//! `actions`, and in protocol 3 `visions`, appended in order). A keyframe
+//! has every field.
+//!
+//! # Protocol 3
+//!
+//! The same frames plus each own organism's facing and eyes (bits 20 and
+//! 21, [`crate::vision`]), for the client's vision cones: a client that asks
+//! for `proto=3` gets them, one asking for 2 gets exactly the protocol 2
+//! frames (its decoder refuses unknown bits). Nearby records never carry
+//! them: another player's facing and eyes are not sent. A vision is fixed
+//! at birth, so it costs its palette entry once per connection and a byte
+//! when an organism is first sent; the heading costs a byte or two when the
+//! organism turns past a 11.25° step.
 //!
 //! Decoded lists are in id order (`organisms`, `nearby`, `offers`); the
 //! leaderboard in rank order (share, then player), as the server sends it.
@@ -73,12 +87,17 @@ use crate::protocol::{
     ClockView, GroupView, LeaderRow, Leaderboard, NearbyOrganism, NeedsView, OfferView, OrgId, OwnOrganism, StateView,
     ViewWindow, WeatherView,
 };
+use crate::vision::VisionView;
 use evo_sim::PlayerId;
 
 /// Whole JSON states (older clients).
 pub const PROTO_JSON: u32 = 1;
 /// Binary delta states.
 pub const PROTO_DELTA: u32 = 2;
+/// Protocol 2 plus own organisms' heading and eyes (vision cones).
+pub const PROTO_VISION: u32 = 3;
+/// The highest protocol this server speaks.
+pub const PROTO_MAX: u32 = PROTO_VISION;
 
 pub const KEYFRAME: u8 = 1;
 pub const DELTA: u8 = 2;
@@ -119,6 +138,8 @@ const OWN_LOOK: u32 = 1 << 16;
 const OWN_ORDER: u32 = 1 << 17;
 const OWN_SPEED: u32 = 1 << 18;
 const OWN_GROUP: u32 = 1 << 19;
+const OWN_HEADING: u32 = 1 << 20;
+const OWN_VISION: u32 = 1 << 21;
 
 const NEAR_OWNER: u32 = 1 << 0;
 const NEAR_LINEAGE: u32 = 1 << 1;
@@ -148,6 +169,8 @@ struct OwnQ {
     order: Option<[i64; 2]>,
     speed: Option<u32>,
     group: u8,
+    heading: Option<u8>,
+    vision: Option<u32>,
 }
 
 /// A foreign organism as the client holds it.
@@ -354,6 +377,8 @@ struct Sent {
 /// compared as they are and serialized only when they changed, so a
 /// sub-step state (where almost nothing did) costs little.
 pub struct DeltaEncoder {
+    /// [`PROTO_DELTA`] or [`PROTO_VISION`].
+    proto: u32,
     seq: u64,
     own: FxMap<OrgId, (OwnQ, u64)>,
     near: FxMap<OrgId, (NearQ, u64)>,
@@ -362,6 +387,7 @@ pub struct DeltaEncoder {
     offers: FxMap<u64, (OfferView, u64)>,
     looks: Palette<Appearance>,
     actions: Palette<Cow<'static, str>>,
+    visions: Palette<VisionView>,
 }
 
 impl Default for DeltaEncoder {
@@ -437,6 +463,8 @@ impl Record for OwnQ {
         set(OWN_ORDER, self.order != p.order);
         set(OWN_SPEED, self.speed != p.speed);
         set(OWN_GROUP, self.group != p.group);
+        set(OWN_HEADING, self.heading != p.heading);
+        set(OWN_VISION, self.vision != p.vision);
         m
     }
 
@@ -495,6 +523,12 @@ impl Record for OwnQ {
         }
         if m & OWN_GROUP != 0 {
             out.v(self.group as u64);
+        }
+        if m & OWN_HEADING != 0 {
+            out.v(self.heading.map_or(0, |h| h as u64 + 1));
+        }
+        if m & OWN_VISION != 0 {
+            out.v(self.vision.map_or(0, |i| i as u64 + 1));
         }
     }
 }
@@ -602,8 +636,16 @@ fn section<R: Record>(last: &mut FxMap<OrgId, (R, u64)>, cur: Vec<(OrgId, R)>, s
 }
 
 impl DeltaEncoder {
+    /// An encoder for the highest protocol ([`PROTO_MAX`]).
     pub fn new() -> Self {
+        Self::for_proto(PROTO_MAX)
+    }
+
+    /// An encoder for `proto` ([`PROTO_DELTA`] or above; capped at
+    /// [`PROTO_MAX`]).
+    pub fn for_proto(proto: u32) -> Self {
         DeltaEncoder {
+            proto: proto.clamp(PROTO_DELTA, PROTO_MAX),
             seq: 0,
             own: FxMap::default(),
             near: FxMap::default(),
@@ -612,7 +654,13 @@ impl DeltaEncoder {
             offers: FxMap::default(),
             looks: Palette::new(),
             actions: Palette::new(),
+            visions: Palette::new(),
         }
+    }
+
+    /// The protocol it encodes.
+    pub fn proto(&self) -> u32 {
+        self.proto
     }
 
     /// The seq of the last state encoded (0: none yet).
@@ -626,7 +674,7 @@ impl DeltaEncoder {
         let keyframe = keyframe || self.seq == 0;
         if keyframe {
             let seq = self.seq;
-            *self = DeltaEncoder::new();
+            *self = DeltaEncoder::for_proto(self.proto);
             self.seq = seq;
         }
         let base = self.seq;
@@ -677,6 +725,8 @@ impl DeltaEncoder {
         meta.list("looks", looks.iter().map(String::as_str));
         let actions: Vec<String> = self.actions.added.drain(..).map(|a| json(&a)).collect();
         meta.list("actions", actions.iter().map(String::as_str));
+        let visions: Vec<String> = self.visions.added.drain(..).map(|v| json(&v)).collect();
+        meta.list("visions", visions.iter().map(String::as_str));
         let meta = meta.finish();
 
         let mut out = Out(Vec::with_capacity(64 + meta.len() + 8 * (own.len() + near.len())));
@@ -702,6 +752,7 @@ impl DeltaEncoder {
             flags |= PREGNANT;
         }
         let n = needs_arr(&o.needs);
+        let ext = self.proto >= PROTO_VISION;
         OwnQ {
             lineage: o.lineage,
             pos: [q(o.x, POS), q(o.y, POS)],
@@ -716,6 +767,8 @@ impl DeltaEncoder {
             order: o.order.map(|[x, y]| [q(x, POS), q(y, POS)]),
             speed: o.speed.map(f32::to_bits),
             group: o.group,
+            heading: o.heading.filter(|_| ext),
+            vision: o.vision.filter(|_| ext).map(|v| self.visions.get(&v)),
         }
     }
 
@@ -834,6 +887,7 @@ struct MetaIn {
     offers_del: Vec<u64>,
     looks: Vec<crate::appearance::Appearance>,
     actions: Vec<String>,
+    visions: Vec<VisionView>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -871,6 +925,7 @@ pub struct DeltaDecoder {
     offers: BTreeMap<u64, OfferView>,
     looks: Vec<Appearance>,
     actions: Vec<String>,
+    visions: Vec<VisionView>,
 }
 
 impl DeltaDecoder {
@@ -916,6 +971,7 @@ impl DeltaDecoder {
         };
         self.looks.extend(m.looks);
         self.actions.extend(m.actions);
+        self.visions.extend(m.visions);
         let head = match self.head.take() {
             Some(mut h) => {
                 if let Some(v) = m.clock {
@@ -1001,6 +1057,11 @@ impl DeltaDecoder {
         self.looks.get(i as usize).copied().ok_or(DecodeError::Malformed("look not in the palette"))
     }
 
+    fn vision(&self, i: Option<u32>) -> Result<Option<VisionView>, DecodeError> {
+        i.map(|i| self.visions.get(i as usize).copied().ok_or(DecodeError::Malformed("vision not in the palette")))
+            .transpose()
+    }
+
     fn action(&self, i: u32) -> Result<Cow<'static, str>, DecodeError> {
         let a = self.actions.get(i as usize).ok_or(DecodeError::Malformed("action not in the palette"))?;
         Ok(Cow::Owned(a.clone()))
@@ -1030,6 +1091,8 @@ impl DeltaDecoder {
                     order: o.order.map(|[x, y]| [dq(x, POS), dq(y, POS)]),
                     speed: o.speed.map(f32::from_bits),
                     group: o.group,
+                    heading: o.heading,
+                    vision: self.vision(o.vision)?,
                 })
             })
             .collect::<Result<_, DecodeError>>()?;
@@ -1101,7 +1164,7 @@ fn read_section<R: Default>(
 }
 
 fn read_own(r: &mut In, o: &mut OwnQ, m: u32) -> Result<(), DecodeError> {
-    if m >> 20 != 0 {
+    if m >> 22 != 0 {
         return Err(DecodeError::Malformed("unknown own field"));
     }
     if m & OWN_LINEAGE != 0 {
@@ -1152,6 +1215,19 @@ fn read_own(r: &mut In, o: &mut OwnQ, m: u32) -> Result<(), DecodeError> {
     if m & OWN_GROUP != 0 {
         o.group = u8::try_from(r.v()?).map_err(|_| DecodeError::Malformed("group out of range"))?;
     }
+    if m & OWN_HEADING != 0 {
+        o.heading = match r.v()? {
+            0 => None,
+            h @ 1..=32 => Some(h as u8 - 1),
+            _ => return Err(DecodeError::Malformed("heading out of range")),
+        };
+    }
+    if m & OWN_VISION != 0 {
+        o.vision = match r.v32()? {
+            0 => None,
+            i => Some(i - 1),
+        };
+    }
     Ok(())
 }
 
@@ -1181,11 +1257,21 @@ fn read_near(r: &mut In, o: &mut NearQ, m: u32) -> Result<(), DecodeError> {
     Ok(())
 }
 
-/// What `s` decodes to after protocol 2: quantized, lists in id order,
-/// leaderboard in rank order.
+/// What `s` decodes to after protocol 3 ([`PROTO_MAX`]): quantized, lists
+/// in id order, leaderboard in rank order.
 pub fn canonical(s: &StateView) -> StateView {
+    canonical_for(s, PROTO_MAX)
+}
+
+/// What `s` decodes to after protocol `proto`: [`canonical`], without the
+/// heading and eyes below protocol 3.
+pub fn canonical_for(s: &StateView, proto: u32) -> StateView {
     let mut s = s.clone();
     for o in &mut s.organisms {
+        if proto < PROTO_VISION {
+            o.heading = None;
+            o.vision = None;
+        }
         o.x = rt(o.x, POS);
         o.y = rt(o.y, POS);
         o.age_days = rt(o.age_days, AGE);
@@ -1397,6 +1483,51 @@ mod tests {
             d2.apply(&f4).unwrap();
             let _ = d2.apply(&bad);
         }
+    }
+
+    /// Protocol 3 adds each own organism's heading and eyes, every distinct
+    /// vision once in the `visions` palette; a protocol 2 encoder sends the
+    /// same frames as before, without them.
+    #[test]
+    fn protocol_3_adds_heading_and_vision_to_own_records() {
+        let mut g = game();
+        let (mut e2, mut e3) = (DeltaEncoder::for_proto(PROTO_DELTA), DeltaEncoder::new());
+        assert_eq!((e2.proto(), e3.proto()), (PROTO_DELTA, PROTO_VISION));
+        let (mut d2, mut d3) = (DeltaDecoder::new(), DeltaDecoder::new());
+        let mut turned = 0;
+        let mut last: HashMap<OrgId, Option<u8>> = HashMap::new();
+        for round in 0..8 {
+            let s = g.state_for(1).unwrap();
+            assert!(s.organisms.iter().all(|o| o.heading.is_some() && o.vision.is_some()));
+            let (f2, f3) = (e2.encode(&s, false), e3.encode(&s, false));
+            let got2 = d2.apply(&f2).unwrap();
+            assert_eq!(got2, canonical_for(&s, PROTO_DELTA));
+            assert!(got2.organisms.iter().all(|o| o.heading.is_none() && o.vision.is_none()));
+            assert_eq!(d3.apply(&f3).unwrap(), canonical(&s));
+            let (m2, _, _) = peek(&f2);
+            let (m3, _, _) = peek(&f3);
+            assert!(m2.get("visions").is_none(), "{m2}");
+            if round == 0 {
+                let distinct: std::collections::HashSet<VisionView> =
+                    s.organisms.iter().filter_map(|o| o.vision).collect();
+                let palette = m3["visions"].as_array().unwrap();
+                assert_eq!(palette.len(), distinct.len());
+                // Two bytes per own organism (heading and palette index) and the palette.
+                let extra = f3.len() - f2.len();
+                assert!(
+                    extra <= 2 * s.organisms.len() + m3["visions"].to_string().len() + 24,
+                    "{extra} B, {} own, {}",
+                    s.organisms.len(),
+                    m3["visions"]
+                );
+            }
+            for o in &s.organisms {
+                turned += usize::from(last.insert(o.id, o.heading).is_some_and(|h| h != o.heading));
+            }
+            g.world.step();
+            let _ = g.after_tick();
+        }
+        assert!(turned > 0, "no organism turned");
     }
 
     /// Quantization keeps what the client draws and shows.

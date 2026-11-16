@@ -7,10 +7,12 @@
 // FILE IN SYNC), and wire.fixture.json, written by a Rust test, pins the two
 // together (wire.test.ts).
 
-import type { Appearance, ClockView, GroupView, LeaderRow, NearbyOrganism, OfferView, OwnOrganism, StateView, ViewWindow, WeatherView } from './protocol';
+import type { Appearance, ClockView, GroupView, LeaderRow, NearbyOrganism, OfferView, OwnOrganism, StateView, ViewWindow, VisionView, WeatherView } from './protocol';
 
-/** The protocol this client asks for. */
+/** Binary delta states. */
 export const PROTO_DELTA = 2;
+/** Protocol 2 plus own organisms' heading and eyes (bits 20 and 21, the `visions` palette): what this client asks for. */
+export const PROTO_VISION = 3;
 
 export const KEYFRAME = 1;
 export const DELTA = 2;
@@ -49,6 +51,8 @@ interface OwnQ {
   order: [number, number] | null;
   speed: number | null;
   group: number;
+  heading: number | null;
+  vision: number | null;
 }
 
 interface NearQ {
@@ -63,7 +67,7 @@ interface NearQ {
 
 const newOwn = (): OwnQ => ({
   lineage: 0, x: 0, y: 0, action: 0, flags: 0, age: 0, growth: 0, health: 0, needs: [0, 0, 0, 0, 0, 0, 0, 0],
-  generation: 0, look: 0, order: null, speed: null, group: 0,
+  generation: 0, look: 0, order: null, speed: null, group: 0, heading: null, vision: null,
 });
 
 const newNear = (): NearQ => ({ owner: 0, lineage: 0, x: 0, y: 0, action: 0, flags: 0, look: 0 });
@@ -143,7 +147,7 @@ class Reader {
 }
 
 function readOwn(r: Reader, o: OwnQ, m: number): void {
-  if (m >= 1 << 20) throw malformed('unknown own field');
+  if (m >= 1 << 22) throw malformed('unknown own field');
   if (m & (1 << 0)) o.lineage = r.v();
   if (m & (1 << 1)) {
     o.x += r.z();
@@ -162,6 +166,15 @@ function readOwn(r: Reader, o: OwnQ, m: number): void {
   if (m & (1 << 19)) {
     o.group = r.v();
     if (o.group > 255) throw malformed('group out of range');
+  }
+  if (m & (1 << 20)) {
+    const h = r.v();
+    if (h > 32) throw malformed('heading out of range');
+    o.heading = h === 0 ? null : h - 1;
+  }
+  if (m & (1 << 21)) {
+    const i = r.v();
+    o.vision = i === 0 ? null : i - 1;
   }
 }
 
@@ -221,6 +234,7 @@ export class DeltaDecoder {
   private offers = new Map<number, OfferView>();
   private looks: Appearance[] = [];
   private actions: string[] = [];
+  private visions: VisionView[] = [];
   private static text = new TextDecoder();
 
   reset(): void {
@@ -232,6 +246,7 @@ export class DeltaDecoder {
     this.offers.clear();
     this.looks = [];
     this.actions = [];
+    this.visions = [];
   }
 
   apply(frame: ArrayBuffer | Uint8Array): StateView {
@@ -271,6 +286,7 @@ export class DeltaDecoder {
     for (const o of list('offers_set') as OfferView[]) this.offers.set(o.id, o);
     this.looks.push(...(list('looks') as Appearance[]));
     this.actions.push(...(list('actions') as string[]));
+    this.visions.push(...(list('visions') as VisionView[]));
     readSection(r, this.own, newOwn, readOwn);
     readSection(r, this.near, newNear, readNear);
     if (!r.done) throw malformed('trailing bytes');
@@ -284,6 +300,12 @@ export class DeltaDecoder {
     const l = this.looks[i];
     if (l === undefined) throw malformed('look not in the palette');
     return l;
+  }
+
+  private vision(i: number): VisionView {
+    const v = this.visions[i];
+    if (v === undefined) throw malformed('vision not in the palette');
+    return v;
   }
 
   private action(i: number): string {
@@ -317,6 +339,8 @@ export class DeltaDecoder {
       if (o.order) own.order = [o.order[0] / POS, o.order[1] / POS];
       if (o.speed !== null) own.speed = o.speed;
       if (o.group !== 0) own.group = o.group;
+      if (o.heading !== null) own.heading = o.heading;
+      if (o.vision !== null) own.vision = this.vision(o.vision);
       return own;
     });
     const nearby: NearbyOrganism[] = [...this.near].sort(byId).map(([id, o]) => ({
