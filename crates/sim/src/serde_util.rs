@@ -30,6 +30,8 @@
 //!   while a world snapshot of version 17 or before is read.
 //! - `before_v19`: `Balance::lactation` and `Balance::warm_upkeep`, left out
 //!   while a world snapshot of version 18 or before is read.
+//! - `before_v23`: `Balance::directional_vision`, `Balance::vision_scan` and `Organism::heading`,
+//!   left out while a world snapshot of version 22 or before is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1064,6 +1066,73 @@ pub mod before_v19 {
             Ok(OLD_VALUE)
         } else {
             f32::deserialize(d)
+        }
+    }
+}
+
+/// `Balance::directional_vision` and `Organism::heading`, added in world
+/// snapshot version 23: `#[serde(with = "crate::serde_util::before_v23")]`.
+/// On a thread holding a [`before_v23::Guard`] (reading or hashing a
+/// snapshot of version 22 or before) they are neither written nor read and
+/// read as their defaults: directional vision off (`vision_scan` 1), and
+/// no heading (zero; `World::restore` then gives each organism its birth
+/// heading).
+pub mod before_v23 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(T::default())
+        } else {
+            T::deserialize(d)
+        }
+    }
+
+    /// `Balance::vision_scan`, read as its default (1) from older snapshots.
+    pub mod scan {
+        use super::*;
+
+        pub const OLD_VALUE: f32 = 1.0;
+
+        pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+            super::serialize(v, s)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(OLD_VALUE)
+            } else {
+                f32::deserialize(d)
+            }
         }
     }
 }

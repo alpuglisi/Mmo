@@ -610,6 +610,24 @@ pub struct Balance {
     /// default: see *Endothermy upkeep* in the README's Balance section).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v19"))]
     pub warm_upkeep: f32,
+    /// Directional vision (`crate::vision`; README, *Directional vision*):
+    /// eyes see fields around the organism's heading (its last movement).
+    /// At `k` (0–1) a neighbor in a blind sector is noticed at
+    /// `1 - k * visual_share` of the distance, where `visual_share` is the
+    /// sight channel's part of perception, `(0.10 + 0.3 Eyes) / perception`
+    /// (hearing and smell still work; see `vision_scan` for an animal
+    /// standing still), and a hunter's kill chance is multiplied by
+    /// `1 + 0.35 k (min(binocular, 90) - 20) / 90` (depth judgment; 1 at
+    /// the default eyes). 0 (the default) is off and leaves every result
+    /// unchanged.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v23"))]
+    pub directional_vision: f32,
+    /// Scanning under directional vision: an organism standing still (no
+    /// movement target) looks around, so its sight in a blind sector is
+    /// `0.5 × vision_scan × coverage` instead of 0 (`vision::detect_factor`).
+    /// Inert while `directional_vision` is 0.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v23::scan"))]
+    pub vision_scan: f32,
 }
 
 /// How a shielded home range softens predation (`World::set_home_ranges`).
@@ -731,12 +749,14 @@ impl Default for Balance {
             home_range: HomeRangeBalance::default(),
             lactation: 0.0,
             warm_upkeep: 0.0,
+            directional_vision: 0.0,
+            vision_scan: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 91;
+    pub const FIELD_COUNT: usize = 93;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -837,6 +857,8 @@ impl Balance {
             ("offline_stack_floor", &mut self.home_range.stack_floor),
             ("lactation", &mut self.lactation),
             ("warm_upkeep", &mut self.warm_upkeep),
+            ("directional_vision", &mut self.directional_vision),
+            ("vision_scan", &mut self.vision_scan),
         ]
     }
 

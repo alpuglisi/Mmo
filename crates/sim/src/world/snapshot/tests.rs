@@ -378,7 +378,7 @@ fn version_10_snapshots_still_restore() {
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!((h.version, h.flags), (10, FLAG_LZ4));
     assert!(h.restorable());
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
     assert!(r.map.tiles == w.map.tiles);
     assert!(r.snapshot() == w.snapshot());
     // A newer snapshot is smaller: the tiles compress better apart.
@@ -400,7 +400,7 @@ fn version_12_snapshots_still_restore() {
     // Without the parameter the payload is 4 bytes (one f32) shorter than
     // a version 13 one.
     assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot_v13()).unwrap().raw_len);
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
     assert_eq!(r.config.balance.nest_predation, 0.0);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
@@ -426,7 +426,7 @@ fn version_13_snapshots_restore_with_default_obedience() {
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!((h.version, h.flags), (13, FLAG_LZ4 | FLAG_TILES_APART));
     assert!(h.restorable());
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
     assert_eq!(r.config.balance.tameness, crate::config::Balance::default().tameness);
     assert_eq!(r.organisms.len(), w.organisms.len());
     for (a, b) in r.organisms.iter().zip(&w.organisms) {
@@ -456,7 +456,7 @@ fn version_14_snapshots_restore_without_rallies() {
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!((h.version, h.flags), (14, FLAG_LZ4 | FLAG_TILES_APART));
     assert!(h.restorable());
-    let mut r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let mut r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
     assert_eq!(r.rally(owner, group), None);
     // Version 14 also predates `migration_onset` (version 16).
     r.config.balance.migration_onset = w.config.balance.migration_onset;
@@ -477,7 +477,7 @@ fn version_15_snapshots_restore_without_migration_onset() {
     // Without the parameter the payload is 4 bytes (one f32) shorter, and
     // 12 more without the home range's (version 17).
     assert_eq!(h.raw_len + 4 + 12, SnapshotHeader::read(&w.snapshot_v17()).unwrap().raw_len);
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
     assert_eq!(r.config.balance.migration_onset, crate::serde_util::before_v16::OLD_MIGRATION_ONSET);
     w.config.balance.migration_onset = r.config.balance.migration_onset;
     assert_eq!(r.config.balance, w.config.balance);
@@ -496,7 +496,7 @@ fn version_16_snapshots_restore_without_the_home_range() {
     assert!(h.restorable());
     // Without the parameters the payload is 12 bytes (three f32) shorter.
     assert_eq!(h.raw_len + 12, SnapshotHeader::read(&w.snapshot_v17()).unwrap().raw_len);
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
     assert_eq!(r.config.balance.home_range, crate::config::HomeRangeBalance::default());
     w.config.balance.home_range = r.config.balance.home_range;
     assert_eq!(r.config.balance, w.config.balance);
@@ -524,7 +524,7 @@ fn version_17_snapshots_restore_with_whole_genomes() {
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!((h.version, h.flags), (17, FLAG_LZ4 | FLAG_TILES_APART));
     assert!(h.restorable());
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
     assert_same_caches(&w, &r);
     assert!(r.clutches.iter().zip(&w.clutches).all(|(a, b)| a.eggs == b.eggs));
     let new = w.snapshot();
@@ -549,8 +549,8 @@ fn version_18_snapshots_restore_without_warm_costs() {
     assert_eq!(h.version, 18);
     assert!(h.restorable());
     // Without the two parameters the payload is 8 bytes (two f32s) shorter.
-    assert_eq!(h.raw_len + 8, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
-    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(h.raw_len + 8, SnapshotHeader::read(&w.snapshot_v19()).unwrap().raw_len);
+    let r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
     let off = crate::serde_util::before_v19::OLD_VALUE;
     assert_eq!((r.config.balance.lactation, r.config.balance.warm_upkeep), (off, off));
     w.config.balance.lactation = off;
@@ -558,6 +558,46 @@ fn version_18_snapshots_restore_without_warm_costs() {
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v18() == old);
+}
+
+/// `r` (restored from a snapshot older than version 23, which keeps no
+/// headings) facing the way `w`'s organisms face, so the two compare equal.
+fn headings_from(w: &World, mut r: World) -> World {
+    assert!(r.organisms.iter().all(|o| o.heading == crate::vision::birth_heading(o.id)));
+    for (a, b) in r.organisms.iter_mut().zip(&w.organisms) {
+        a.heading = b.heading;
+    }
+    r
+}
+
+/// Version 19 snapshots (before `Balance::directional_vision`,
+/// `Balance::vision_scan` and organisms' headings) restore with directional
+/// vision off and every organism facing its birth heading, and are
+/// otherwise the same world. Headings round-trip in version 23.
+#[test]
+fn version_19_snapshots_restore_without_headings() {
+    let mut w = fixture_world();
+    assert!(w.organisms.iter().any(|o| o.heading != crate::vision::birth_heading(o.id)), "nobody moved");
+    w.config.balance.directional_vision = 0.6;
+    w.config.balance.vision_scan = 0.3;
+    let new = w.snapshot();
+    let r = World::restore(&new, Some(w.map.terrain().clone())).unwrap();
+    assert!(r.organisms.iter().zip(&w.organisms).all(|(a, b)| a.heading == b.heading));
+    let old = w.snapshot_v19();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 19);
+    assert!(h.restorable());
+    // Without the two parameters (f32s) and the headings (two f32s each).
+    let alive = w.organisms.len() as u64;
+    assert_eq!(h.raw_len + 8 + 8 * alive, SnapshotHeader::read(&new).unwrap().raw_len);
+    let r = headings_from(&w, World::restore(&old, Some(w.map.terrain().clone())).unwrap());
+    assert_eq!(r.config.balance.directional_vision, 0.0);
+    assert_eq!(r.config.balance.vision_scan, crate::serde_util::before_v23::scan::OLD_VALUE);
+    w.config.balance.directional_vision = 0.0;
+    w.config.balance.vision_scan = 1.0;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v19() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,
