@@ -9,7 +9,14 @@
 // birth type, diet): `context` sees the design and the slider's level and
 // returns the caption. They only describe: any combination is allowed.
 
+import {
+  adultMass, buoyancy, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
+} from '../bodyMath';
+import type { Morphology } from '../morphology';
 import type { DesignSpec } from '../protocol';
+
+/** A design, with its body plan when the editor has one (eye count, leg count, shapes). */
+export type CaptionDesign = DesignSpec & { morphology?: Morphology };
 
 export type Level = 'low' | 'mid' | 'high';
 
@@ -27,59 +34,39 @@ export interface TraitText {
    * The caption for this design, when the rest of the design changes what
    * the trait does. `base` is the level's own text.
    */
-  context?: (d: DesignSpec, level: Level, base: string) => string;
+  context?: (d: CaptionDesign, level: Level, base: string) => string;
 }
 
-/** The design's value for `gene`, or its default if the design leaves it out. */
-export function geneValue(d: DesignSpec, gene: string): number {
-  return d.traits[gene] ?? DEFAULTS[gene] ?? 0;
+const COUNT = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
+
+/**
+ * A short note on the body plan behind a size slider, when it differs from
+ * the default one ("three eyes", "six legs", "fin tail"); '' otherwise.
+ */
+function bodyPlan(d: CaptionDesign, part: 'eyes' | 'ears' | 'legs' | 'tail'): string {
+  const m = d.morphology;
+  if (!m) return '';
+  switch (part) {
+    case 'eyes':
+      return m.eye_count === 2 ? '' : m.eye_count === 1 ? 'one eye' : `${COUNT[m.eye_count]} eyes`;
+    case 'ears': {
+      const shape = m.ear_shape === 'round' ? '' : `${m.ear_shape} `;
+      if (m.ear_count === 0) return 'no ears: size does nothing';
+      return m.ear_count === 2 && !shape ? '' : `${COUNT[m.ear_count]} ${shape}ears`;
+    }
+    case 'legs':
+      if (m.leg_count === 0) return 'no legs: length does nothing';
+      return m.leg_count === 4 ? '' : `${COUNT[m.leg_count]} legs`;
+    case 'tail':
+      return m.tail_present && m.tail_shape !== 'thin' ? `${m.tail_shape} tail` : '';
+  }
 }
 
-// Defaults as in crates/sim/src/design.rs `default_value` (the editor always
-// fills every gene; this is for partial designs).
-const DEFAULTS: Record<string, number> = {
-  body_size: 0.3,
-  boldness: 0.5,
-  aggression: 0.5,
-  wanderlust: 0.5,
-  group_tolerance: 0.5,
-  foraging_range: 0.5,
-  pack_instinct: 0.5,
-  pickiness: 0.5,
-  obedience: 0.5,
-  coloration_tolerance: 0.5,
-  body_size_tolerance: 0.5,
+/** `base`, with the body-plan note appended. */
+const withPlan = (part: Parameters<typeof bodyPlan>[1]) => (d: CaptionDesign, _l: Level, base: string): string => {
+  const note = bodyPlan(d, part);
+  return note ? `${base} · ${note}` : base;
 };
-
-// --- physical properties mirrored from crates/sim/src/stats.rs `derive`
-
-/** Adult mass in kg. */
-export function adultMass(d: DesignSpec): number {
-  const v = (g: string) => geneValue(d, g);
-  return 0.2 * 10 ** (2.5 * v('body_size')) * (1 + 0.3 * v('muscle') + 0.3 * v('fat_stores') + 0.4 * v('armor_plates'));
-}
-
-/** Can it fly / glide (stats.rs: wings and wing loading)? */
-export function flight(d: DesignSpec): { fly: boolean; glide: boolean } {
-  const w = geneValue(d, 'wings');
-  const loading = adultMass(d) / (w * 6 + 0.01);
-  return { fly: w > 0.5 && loading < 2, glide: w > 0.25 && loading < 6 };
-}
-
-/** Grip on ice and slopes (stats.rs `grip`). */
-function grip(d: DesignSpec): number {
-  return Math.min(1, 0.3 + 0.6 * geneValue(d, 'claws') + 0.2 * geneValue(d, 'climbing'));
-}
-
-/** Speed lost on ice (terrain.rs: `0.6 * hoof_slip * (1 - grip)`). */
-export function iceSlip(d: DesignSpec): number {
-  return 0.6 * geneValue(d, 'hooves') * (1 - grip(d));
-}
-
-function buoyancy(d: DesignSpec): number {
-  const v = (g: string) => geneValue(d, g);
-  return Math.max(0, Math.min(1, 0.4 + 0.5 * v('fat_stores') - 0.5 * v('armor_plates') - 0.2 * v('muscle')));
-}
 
 function kg(m: number): string {
   return m < 10 ? `${m.toFixed(1)} kg` : `${Math.round(m)} kg`;
@@ -123,6 +110,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     low: 'short legs: slow; deep snow and water swamp it',
     mid: 'medium legs: faster, wades shallow water',
     high: 'long legs: fastest and tireless; strides over snow and shallows',
+    context: withPlan('legs'),
   },
   claws: {
     what: 'Claws: grip, digging and fighting.',
@@ -160,10 +148,8 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     what: 'Tail: balance for quick turns.',
     low: 'no tail: no help with balance',
     mid: 'tail: better balance, more agile',
-    // TODO(trait-downsides): the sim agent is giving tails a modest,
-    // contextual downside (relative to locomotion); fill in the high text
-    // and a `context` rule from its report.
-    high: 'long tail: most agile, but [downside TBD]',
+    high: 'long tail: most agile (dodging, escaping, fighting)',
+    context: withPlan('tail'),
   },
 
   // ---------------------------------------------------------------- locomotion
@@ -234,10 +220,15 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     what: 'Scales: a tough hide against bites and claws.',
     low: 'soft skin: easy to wound',
     mid: 'scales: harder to wound',
-    // TODO(trait-downsides): the sim agent is giving scales a modest,
-    // contextual downside (relative to thermoregulation and other
-    // coverings); fill in the high text and a `context` rule from its report.
-    high: 'heavy scales: hard to wound, but [downside TBD]',
+    high: 'heavy scales: hard to wound',
+    context: (d, level, base) => {
+      if (level === 'low') return base;
+      // stats.rs `Traits::insulation`: scales take the place of a warm
+      // body's fur, `scale_cover × scales × fur warmth` of insulation.
+      const loss = scaleWarmthLoss(d);
+      if (loss < 0.005) return `${base} · no cost on a cold-blooded or furless body`;
+      return `${base} · costs warmth: scales over fur (−${loss.toFixed(2)} insulation, ≈${Math.round(loss * DEGREES_PER_INSULATION)} °C less cold tolerance)`;
+    },
   },
   armor_plates: {
     what: 'Armor plates: heavy bony plating.',
@@ -250,28 +241,33 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
   fangs: {
     what: 'Fangs: bite strength in fights and hunts.',
     low: 'no fangs',
-    mid: 'fangs: stronger bite',
-    // TODO(trait-downsides): the sim agent is adding a "no fangs" threshold
-    // and a contextual downside for long fangs (worse plant feeding, in
-    // proportion to how much the creature eats plants). Set `lo` to the
-    // sim's threshold, fill in the high text and add a `context` rule
-    // (carnivory) from its report.
-    high: 'long fangs: strongest bite, but [downside TBD]',
-    lo: 0.1,
+    mid: 'fangs: real bite',
+    high: 'long fangs: strongest bite',
+    // stats.rs `FANG_THRESHOLD`: below it, no fangs at all.
+    lo: FANG_THRESHOLD,
+    context: (d, level, base) => {
+      if (level === 'low') return base;
+      // stats.rs `Traits::plant_efficiency`: plant food is worth
+      // 1 − fang_grazing × fangs × (1 − carnivory) of its value.
+      if (geneValue(d, 'carnivory') >= 1) return `${base} · no cost to a pure meat eater`;
+      const loss = Math.round(fangPlantLoss(d) * 100);
+      return loss < 1 ? `${base} · plant feeding barely affected` : `${base} · plant feeding −${loss}%`;
+    },
   },
   large_eyes: {
     what: 'Large eyes: spotting threats, food and mates from afar.',
     low: 'small eyes: spots danger late',
     mid: 'sharp eyes: sees threats and food sooner; some upkeep',
     high: 'huge eyes: sees far; costly to run (more food)',
+    context: withPlan('eyes'),
   },
   large_ears: {
     what: 'Large ears: hearing, and shedding body heat.',
     low: 'small ears: hears danger late, keeps heat in',
     mid: 'large ears: hears sooner, sheds some heat',
     high: 'huge ears: hears far, copes with heat, loses heat in cold',
-    context: (d, _l, base) =>
-      geneValue(d, 'large_ears') > 0.5 && geneValue(d, 'vocal_ability') > 0.5 ? `${base} · alarm calls with vocal ability` : base,
+    context: (d, l, base) =>
+      withPlan('ears')(d, l, geneValue(d, 'large_ears') > 0.5 && geneValue(d, 'vocal_ability') > 0.5 ? `${base} · alarm calls with vocal ability` : base),
   },
   keen_nose: {
     what: 'Keen nose: smelling food and threats.',
@@ -502,7 +498,7 @@ export function levelOf(t: TraitText, v: number): Level {
 }
 
 /** The live caption for `gene` in this design (null for an unknown gene). */
-export function caption(gene: string, d: DesignSpec): { level: Level; text: string } | null {
+export function caption(gene: string, d: CaptionDesign): { level: Level; text: string } | null {
   const t = TRAIT_TEXT[gene];
   if (!t) return null;
   const level = levelOf(t, geneValue(d, gene));

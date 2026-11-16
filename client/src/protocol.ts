@@ -625,6 +625,38 @@ export interface DesignSpec {
   /** Trait values in [0, 1] that differ from the defaults. */
   traits: Record<string, number>;
   founders: number;
+  /**
+   * The body plan's new parameters (docs/morphology.md, section 7). Optional:
+   * missing fields take their defaults. Only sent to a server whose
+   * `/api/genes` lists a `morph` section (`designMorph.ts`).
+   */
+  morph?: MorphSpec;
+}
+
+/** `DesignSpec.morph`: counts, shapes and axes not carried by `traits`. */
+export interface MorphSpec {
+  eye_count?: number;
+  eye_azimuth?: number;
+  ear_count?: number;
+  ear_shape?: string;
+  leg_count?: number;
+  tail_shape?: string;
+  snout_length?: number;
+}
+
+/** One row of `GET /api/genes`' `morph` section. */
+export interface MorphInfo {
+  /** Wire name (`"eye_count"`, `"ear_shape"`, …). */
+  name: string;
+  /** `count`, `enum` or `axis`. */
+  kind: string;
+  /** Allowed values (counts or shape names); absent for an axis. */
+  values?: (number | string)[];
+  min?: number;
+  max?: number;
+  default: number | string;
+  /** Points (per structure); 0 while morphology is free. */
+  cost: number;
 }
 
 export interface FoundResponse {
@@ -648,6 +680,8 @@ export interface GeneCatalog {
   cost_per_extra_offspring: number;
   max_litter: number;
   genes: GeneInfo[];
+  /** The body plan's parameters, on servers that accept `DesignSpec.morph`. */
+  morph?: MorphInfo[];
 }
 
 export interface WorldSummary {

@@ -20,7 +20,6 @@ import './builder.css';
 import { h } from '../dom';
 import {
   clampMorphology,
-  DEFAULT_MORPHOLOGY,
   defaultMorphology,
   eyeFieldWidth,
   eyePlacements,
@@ -38,7 +37,10 @@ import {
   type Morphology,
   type TailShape,
 } from '../../morphology';
-import { signedAngle, visionOf, type Arc, type VisionStats } from '../../vision';
+import { DEFAULT_VISION, signedAngle, visionOf, visionSummary, type Arc, type VisionStats } from '../../vision';
+
+// The readout helpers live in `vision.ts` (the design editor shows them too).
+export { DEFAULT_VISION, visionSummary };
 import { History } from './history';
 import { DEFAULT_PRESETS, type BuilderPreset } from './presets';
 import { azimuthOf, earIcon, earPath, earReach, polar, s, tailIcon, tailShapes, wedgePath } from './svg';
@@ -149,24 +151,6 @@ interface HandleSpec {
 }
 
 let instances = 0;
-
-/** The default body's vision: the readouts compare against it. */
-export const DEFAULT_VISION: VisionStats = visionOf(DEFAULT_MORPHOLOGY);
-
-/** A plain-English line on what the eyes see. */
-export function visionSummary(v: VisionStats): string {
-  if (v.blindDeg <= 0) return v.overlapDeg > 0
-    ? `Sees all the way round, with ${round(v.overlapDeg)}° of depth vision in front.`
-    : 'Sees all the way round, but nothing in front with two eyes at once.';
-  const parts: string[] = [];
-  if (v.rearBlindDeg > 0) parts.push(`blind ${round(v.rearBlindDeg)}° behind`);
-  if (v.frontBlindDeg > 0) parts.push(`blind ${round(v.frontBlindDeg)}° straight ahead`);
-  const side = v.blindDeg - v.rearBlindDeg - v.frontBlindDeg;
-  if (side > 0.5) parts.push(`blind ${round(side)}° at the sides`);
-  parts.push(v.overlapDeg > 0 ? `${round(v.overlapDeg)}° of depth vision in front` : 'no depth vision in front');
-  const text = parts.join(', ');
-  return `${text[0].toUpperCase()}${text.slice(1)}.`;
-}
 
 export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
   const p = opts.idPrefix ?? 'bb';

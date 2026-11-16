@@ -197,18 +197,68 @@ async function main() {
       await page.locator('.avatar-card').screenshot({ path: path.join(shots, `avatar-${tag}.png`) });
     }
     if (labels.size !== 3) throw new Error(`contrasting designs gave the same avatar description: ${[...labels].join(' | ')}`);
-    // Later morphology phases: features no slider sets yet (preview hook).
-    await page.evaluate(() => window.evoAvatar.setFeatures({ leg_count: 6, eye_count: 3, tail_shape: 'fin' }));
-    const six = await avatar();
-    if (!six.label.includes('six legs') || !six.label.includes('three eyes') || !six.label.includes('fin tail')) throw new Error(`feature overrides not drawn: ${six.label}`);
-    await page.locator('.avatar-card').screenshot({ path: path.join(shots, 'avatar-six-legs-three-eyes-fin.png') });
-    await page.evaluate(() => window.evoAvatar.setFeatures({}));
     // Back to the design whose cost was checked.
     await page.check('input[name="thermo"][value="warm"]');
     await page.check('input[name="birth"][value="live"]');
     for (const [g, v] of saved) await setTrait(g, Number(v));
     if ((await page.textContent('#budget-total')) !== after) throw new Error(`design not restored: ${await page.textContent('#budget-total')} vs ${after}`);
-    step(`avatar preview: described image above the budget, sticky, redraws (wings 0 → 0.6); ${labels.size + 1} avatar screenshots`);
+    step(`avatar preview: described image above the budget, sticky, redraws (wings 0 → 0.6); ${labels.size} avatar screenshots`);
+
+    // Simple / Builder: Simple by default; the builder edits the same design
+    // as the sliders, the avatar and the vision readout follow, a third eye is
+    // free, a preset's cost change is asked first, and Simple mode's sliders
+    // show what the builder set.
+    const readout = () => page.$eval('#vision-readout', (el) => Object.fromEntries([...el.querySelectorAll('[data-stat]')].map((s) => [s.dataset.stat, `${s.querySelector('dd').textContent} ${s.querySelector('.vision-delta').textContent}`])));
+    const sliderVal = (g) => page.$eval(`input[data-gene="${g}"]`, (el) => Number(el.value));
+    if ((await page.getAttribute('#design-mode-simple', 'aria-pressed')) !== 'true' || !(await page.isHidden('#design-builder'))) throw new Error('editor did not start in Simple mode');
+    const r0 = await readout();
+    if (!Object.values(r0).every((t) => t.endsWith('='))) throw new Error(`default body's readout not at the default: ${JSON.stringify(r0)}`);
+    await page.click('#design-mode-builder');
+    await page.waitForSelector('#design-bb', { state: 'visible' });
+    if ((await page.getAttribute('#design-mode-builder', 'aria-pressed')) !== 'true') throw new Error('builder mode not shown as pressed');
+    if ((await page.evaluate(() => localStorage.getItem('evo.designMode'))) !== 'builder') throw new Error('builder mode not remembered');
+    // A preset that changes sizes: the cost change shows first, then applies.
+    const costBefore = await page.textContent('#budget-total');
+    await page.click('#design-builder [data-preset="strider"]');
+    await page.waitForSelector('#design-preset-confirm', { state: 'visible' });
+    const ask = await page.textContent('#design-preset-confirm');
+    if (!ask.includes('Strider') || !ask.includes('→')) throw new Error(`preset cost prompt: ${ask}`);
+    if ((await page.textContent('#budget-total')) !== costBefore) throw new Error('preset applied before it was confirmed');
+    await page.click('#design-preset-apply');
+    await waitFor('strider legs on the slider', async () => (await sliderVal('leg_length')) === 0.9);
+    const costStrider = await page.textContent('#budget-total');
+    if (costStrider === costBefore) throw new Error(`preset with longer legs did not change the cost (${costStrider})`);
+    if ((await sliderVal('tail')) !== 0.4) throw new Error(`preset tail not on the slider: ${await sliderVal('tail')}`);
+    // A third eye: a new avatar and readout, the same cost.
+    const two = await avatar();
+    const r1 = await readout();
+    await page.click('#design-bb-eye-plus');
+    await waitFor('three eyes on the avatar', async () => (await avatar()).label.includes('three eyes'));
+    const three = await avatar();
+    const r2 = await readout();
+    if (three.svg === two.svg) throw new Error('avatar not redrawn for a third eye');
+    if (JSON.stringify(r2) === JSON.stringify(r1)) throw new Error(`readout did not change for a third eye: ${JSON.stringify(r2)}`);
+    if (!r2.depth.includes('↑')) throw new Error(`a midline eye should add depth vision: ${JSON.stringify(r2)}`);
+    if ((await page.textContent('#design-bb-eye-count')) !== '3') throw new Error('builder eye count not 3');
+    if ((await page.textContent('#budget-total')) !== costStrider) throw new Error(`a third eye changed the cost: ${await page.textContent('#budget-total')} vs ${costStrider}`);
+    if (!(await page.textContent('#trait-large_eyes-caption')).includes('three eyes')) throw new Error(`eye caption ignores the eye count: ${await page.textContent('#trait-large_eyes-caption')}`);
+    await page.locator('.avatar-card').screenshot({ path: path.join(shots, 'avatar-builder-three-eyes.png') });
+    await page.$eval('#design-builder', (el) => el.scrollIntoView({ block: 'start' }));
+    await page.screenshot({ path: path.join(shots, 'editor-builder-desktop.png') });
+    // A slider moved in Builder mode: the builder's leg handle follows.
+    await page.$eval('input[data-gene="leg_length"]', (el) => { el.value = '0.5'; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); });
+    const legHandle = await page.getAttribute('#design-bb-h-legs', 'aria-valuenow');
+    if (Number(legHandle) !== 0.5) throw new Error(`builder leg handle did not follow the slider: ${legHandle}`);
+    // Back to Simple: the sliders and the avatar keep what the builder set.
+    await page.click('#design-mode-simple');
+    if (!(await page.isHidden('#design-builder'))) throw new Error('builder still shown in Simple mode');
+    if ((await sliderVal('tail')) !== 0.4 || (await sliderVal('leg_length')) !== 0.5) throw new Error('Simple sliders lost the builder values');
+    if (!(await avatar()).label.includes('three eyes')) throw new Error('Simple mode avatar lost the third eye');
+    await page.screenshot({ path: path.join(shots, 'editor-builder-back-to-simple.png') });
+    // Restore the checked design (the third eye stays: it is free).
+    for (const [g, v] of saved) await setTrait(g, Number(v));
+    if ((await page.textContent('#budget-total')) !== after) throw new Error(`design not restored after the builder: ${await page.textContent('#budget-total')} vs ${after}`);
+    step(`builder mode: preset cost ${costBefore.trim()} → ${costStrider.trim()} asked first; third eye free, avatar and readout (${r2.depth}) follow; sliders in step both ways`);
     await page.screenshot({ path: path.join(shots, 'design-editor.png') });
     await page.$eval('[data-trait="leg_length"]', (el) => el.scrollIntoView({ block: 'start' }));
     await page.screenshot({ path: path.join(shots, 'design-editor-traits.png') });
@@ -219,6 +269,12 @@ async function main() {
     ]);
     const body = await founded.json();
     if (founded.status() !== 201 || Math.abs(body.cost - expected) > 0.06) throw new Error(`founding: ${founded.status()} ${JSON.stringify(body)}`);
+    // The body plan goes as `morph` only to a server whose /api/genes lists it.
+    const sent = founded.request().postDataJSON();
+    if ('morphology' in sent) throw new Error('the editor-only morphology was sent');
+    if (Array.isArray(catalog.morph) && catalog.morph.length) {
+      if (sent.morph?.eye_count !== 3) throw new Error(`server takes morph, but the design sent ${JSON.stringify(sent.morph)}`);
+    } else if ('morph' in sent) throw new Error(`morph sent to a server without a morph section: ${JSON.stringify(sent.morph)}`);
     step(`founded lineage ${body.lineage} with ${body.founders.length} founders; server cost ${body.cost.toFixed(2)} matches the client`);
 
     // World view with organisms.

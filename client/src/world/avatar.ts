@@ -1,18 +1,17 @@
 // The founder avatar: a detailed side-view portrait of a design, for the
 // creation screen. Two pure steps, so both are unit-tested:
 //
-//   DesignSpec ──morphologyOf──▶ Morphology ──avatarDrawing──▶ AvatarDrawing (shapes)
+//   DesignSpec ──morphologyOf──▶ AvatarModel ──avatarDrawing──▶ AvatarDrawing (shapes)
 //
 // and a renderer (`avatarSvg`) that turns the shapes into an SVG string.
 //
-// `Morphology` is the one place slider values become body geometry and
-// visible features. It is grouped by body region (body, legs, tail, wings,
-// cover, head, coloring, extras) and already carries the counts, placements
-// and shapes later morphology phases will make heritable (docs/morphology.md):
-// leg count, eye count/placement, ear count/shape, tail shape. Today
-// `morphologyOf` fills those with the fixed body plan (4 legs, 2 side eyes,
-// 2 ears); the drawing already honours other values, so a new trait only has
-// to set the field.
+// `AvatarModel` is the one place slider values become body geometry and
+// visible features. It extends the body plan (`Morphology` from
+// `../morphology`, docs/morphology-contract.md: eye count/placement, ear
+// count/shape, leg count, tail shape, snout, sizes) with the rest of the
+// visible body, grouped by region (body, legs, tail, wings, cover, head,
+// coloring, extras). The design editor passes the design's morphology (set
+// by the body builder); without one, the traits give the default body plan.
 //
 // The look follows the in-world sprites (`creature.ts`): the same palette per
 // coloring class, the same coarse classes (`lookOf` mirrors the server's
@@ -22,7 +21,10 @@
 // coverings and sub-threshold patterns show faintly, so mixed designs read.
 
 import type { Appearance, BirthSpec, DesignSpec } from '../protocol';
-import { adultMass, flight, geneValue } from '../ui/traitText';
+import { adultMass, flight, geneValue } from '../bodyMath';
+import {
+  clampMorphology, FANG_MIN, hasFangs, morphologyFromTraits, pairAzimuth, TAIL_PRESENT_MIN, type Morphology,
+} from '../morphology';
 import { describeLook, palette, type Palette, type Point } from './creature';
 import { cssColor } from './colors';
 
@@ -33,51 +35,6 @@ export type Coloring = Appearance['coloring'];
 export type FootKind = 'paw' | 'hoof' | 'claw';
 export type WingStage = 'none' | 'flaps' | 'wings';
 
-// --- the shared morphology contract (docs/morphology-contract.md)
-// Field names, ranges and defaults follow the contract so this merges with the
-// builder's `client/src/morphology.ts`; until then a local copy.
-export type EarShape = 'round' | 'pointed' | 'long' | 'fan';
-export type TailShape = 'thin' | 'bushy' | 'fin' | 'club' | 'prehensile';
-export type LegCount = 0 | 2 | 4 | 6 | 8;
-export type EarCount = 0 | 2 | 4;
-
-/** Geometry features of the contract: counts, placements and shapes. */
-export interface MorphologyFeatures {
-  /** 1..6; mirrored pairs, an odd one on the midline. */
-  eye_count: number;
-  /** Degrees from straight ahead of the first pair (0 forward, 90 side, 180 back); pair k sits at min(170, eye_azimuth + 50·k). */
-  eye_azimuth: number;
-  /** 0..1 (the Large eyes gene). */
-  eye_size: number;
-  /** 0, 2 or 4 (mirrored pairs). */
-  ear_count: EarCount;
-  ear_shape: EarShape;
-  /** 0..1 (the Large ears gene). */
-  ear_size: number;
-  leg_count: LegCount;
-  /** 0..1 (the Leg length gene). */
-  leg_length: number;
-  tail_present: boolean;
-  tail_shape: TailShape;
-  /** 0..1 (the Tail gene). */
-  tail_length: number;
-  /** 0..1. */
-  snout_length: number;
-  /** 0..1; none below 0.1 (the Fangs gene). */
-  fang_size: number;
-}
-
-/** Contract defaults for the features no slider sets yet. */
-export const FEATURE_DEFAULTS = {
-  eye_count: 2,
-  eye_azimuth: 60,
-  ear_count: 2,
-  ear_shape: 'round',
-  leg_count: 4,
-  tail_shape: 'thin',
-  snout_length: 0.5,
-} as const satisfies Partial<MorphologyFeatures>;
-
 /** Gene value thresholds the drawing uses (and the tests pin). */
 export const THRESHOLDS = {
   /** Wings above this are gliding flaps (stats.rs `can_glide`). */
@@ -85,9 +42,9 @@ export const THRESHOLDS = {
   /** Wings above this are full wings (stats.rs `can_fly`). */
   wings: 0.5,
   /** Fangs below this are none (contract `fang_size`, traitText `fangs.lo`). */
-  fangs: 0.1,
+  fangs: FANG_MIN,
   /** A tail from here (contract `tail_present`). */
-  tail: 0.05,
+  tail: TAIL_PRESENT_MIN,
   /** A covering or color gene shows on the body from here (appearance.rs `SHOWS`). */
   shows: 0.5,
   /** A non-dominant covering shows faintly from here. */
@@ -109,11 +66,11 @@ export interface CoverLayer {
 }
 
 /**
- * Everything the avatar draws, derived from a design: the contract's
- * geometry features (flat, snake_case) plus the rest of the visible body.
- * All amounts are 0..1.
+ * Everything the avatar draws, derived from a design: the body plan
+ * (`Morphology`, docs/morphology-contract.md; flat, snake_case) plus the rest
+ * of the visible body. All amounts are 0..1.
  */
-export interface Morphology extends MorphologyFeatures {
+export interface AvatarModel extends Morphology {
   /** The coarse class the world sprite draws (as the server would classify it). */
   look: Appearance;
   warm: boolean;
@@ -182,22 +139,15 @@ export function wingStage(w: number): WingStage {
   return w > THRESHOLDS.wings ? 'wings' : w > THRESHOLDS.flaps ? 'flaps' : 'none';
 }
 
-/** Azimuth of eye pair k (contract v1): ±min(170°, eye_azimuth + 50°·k). */
-export function eyePairAzimuth(azimuth: number, k: number): number {
-  return Math.min(170, azimuth + 50 * k);
-}
-
-/** Whether fangs are drawn (none below the threshold). */
-export function hasFangs(m: Pick<MorphologyFeatures, 'fang_size'>): boolean {
-  return m.fang_size >= THRESHOLDS.fangs;
-}
+export { hasFangs };
 
 /**
- * The morphology parameters of a design: the single slider → body mapping.
- * Features no slider sets yet take the contract defaults; `features`
- * overrides them (for the builder, tests and previews of later phases).
+ * What the avatar draws for a design. The body plan comes from the design's
+ * traits (`morphologyFromTraits`: the shared genes set eye, ear, leg, tail
+ * and fang sizes; the rest take the contract defaults); `features` overrides
+ * any of it (the editor passes the design's whole morphology).
  */
-export function morphologyOf(d: DesignSpec, features: Partial<MorphologyFeatures> = {}): Morphology {
+export function morphologyOf(d: DesignSpec, features: Partial<Morphology> = {}): AvatarModel {
   const v = (g: string) => clamp01(geneValue(d, g));
   const look = lookOf(d);
   const [fur, scales, armor] = [v('fur'), v('scales'), v('armor_plates')];
@@ -209,16 +159,8 @@ export function morphologyOf(d: DesignSpec, features: Partial<MorphologyFeatures
   const kind: FootKind = hooves >= THRESHOLDS.foot && hooves >= claws ? 'hoof' : clawLen >= THRESHOLDS.foot ? 'claw' : 'paw';
   const swim = clamp01(v('swimming') + 0.3 * v('foot_width'));
   const carn = v('carnivory');
-  const contract: MorphologyFeatures = {
-    ...FEATURE_DEFAULTS,
-    eye_size: v('large_eyes'),
-    ear_size: v('large_ears'),
-    leg_length: v('leg_length'),
-    tail_present: v('tail') >= THRESHOLDS.tail,
-    tail_length: v('tail'),
-    fang_size: v('fangs'),
-    ...features,
-  };
+  const fromTraits = morphologyFromTraits(d.traits);
+  const contract = clampMorphology({ ...fromTraits, ...features }, fromTraits);
   return {
     ...contract,
     look,
@@ -248,7 +190,7 @@ const level3 = (v: number, low: string, mid: string, high: string) => (v < 0.33 
 const NUMBER = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
 
 /** The avatar in words, for its aria-label: the world's `describeLook` plus the details drawn. */
-export function describeAvatar(m: Morphology): string {
+export function describeAvatar(m: AvatarModel): string {
   const bits: string[] = [];
   const f = m.feet;
   const feet = f.kind === 'hoof' ? 'hooves' : f.kind === 'claw' ? (f.digging ? 'digging claws' : f.climbing ? 'climbing claws' : 'claws') : 'soft feet';
@@ -367,7 +309,7 @@ function rng(seed: number): () => number {
 }
 
 /** The avatar's shapes for a morphology. */
-export function avatarDrawing(m: Morphology): AvatarDrawing {
+export function avatarDrawing(m: AvatarModel): AvatarDrawing {
   const out: AvatarShape[] = [];
   const add = (part: Part, s: Omit<AvatarShape, 'part'> & Record<string, unknown>) => out.push({ part, ...s } as AvatarShape);
   const p = m.coloring.palette;
@@ -895,7 +837,7 @@ export function avatarDrawing(m: Morphology): AvatarDrawing {
     add('head', { kind: 'ellipse', x: ex + erx * 0.35, y: ey - er * 0.35, rx: er * 0.25 * fore, ry: er * 0.25, fill: 0xffffff, alpha: 0.9 });
   };
   const eyePairs = Math.floor(m.eye_count / 2);
-  for (let k = eyePairs - 1; k >= 0; k--) eyeAt(Math.max(1, eyePairAzimuth(m.eye_azimuth, k)), k);
+  for (let k = eyePairs - 1; k >= 0; k--) eyeAt(Math.max(1, pairAzimuth(m.eye_azimuth, k)), k);
   if (m.eye_count % 2 === 1) eyeAt(0, 0);
   if (sn >= 0.67) add('head', { kind: 'line', points: [[hx - hr * 0.1, hy - hr * 0.62], [hx + hr * 0.55, hy - hr * 0.42]], stroke: OUTLINE, width: 1.8 });
   // Horns.
@@ -920,7 +862,7 @@ export function avatarDrawing(m: Morphology): AvatarDrawing {
 // ------------------------------------------------------------------ badges
 
 /** Small icons beside the creature: eggs for egg-layers, a snowflake for a winter coat. Centered on (0, 0). */
-export function badgeShapes(m: Morphology): { egg: AvatarShape[]; coat: AvatarShape[] } {
+export function badgeShapes(m: AvatarModel): { egg: AvatarShape[]; coat: AvatarShape[] } {
   const egg: AvatarShape[] = [];
   const coat: AvatarShape[] = [];
   const eggAt = (x: number, y: number) => {
@@ -1018,7 +960,7 @@ export interface SvgOptions {
  * The avatar as an SVG document string. The creature is scaled by body size
  * (and shrunk further only if it would not fit), standing on a ground line.
  */
-export function avatarSvg(m: Morphology, opts: SvgOptions): string {
+export function avatarSvg(m: AvatarModel, opts: SvgOptions): string {
   const d = avatarDrawing(m);
   const pad = 8;
   const b = shapeBounds(d.shapes);

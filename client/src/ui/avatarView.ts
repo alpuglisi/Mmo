@@ -3,20 +3,11 @@
 // the Budget card in the sticky side column. Phones: a compact sticky header
 // at the top of the editor that can be collapsed to a single line.
 
+import type { Morphology } from '../morphology';
 import type { DesignSpec } from '../protocol';
-import { avatarSvg, describeAvatar, morphologyOf, type MorphologyFeatures } from '../world/avatar';
+import { avatarSvg, describeAvatar, morphologyOf } from '../world/avatar';
 import { describeLook } from '../world/creature';
 import { h } from './dom';
-
-declare global {
-  interface Window {
-    /**
-     * Preview hook for the end-to-end screenshots and the morphology builder:
-     * features the sliders don't set yet (leg count, eye count, tail shape...).
-     */
-    evoAvatar?: { setFeatures: (f: Partial<MorphologyFeatures>) => void };
-  }
-}
 
 const COLLAPSED_KEY = 'evo.avatarCollapsed';
 
@@ -38,16 +29,18 @@ function writeCollapsed(v: boolean): void {
 
 export interface AvatarView {
   el: HTMLElement;
-  update: (d: DesignSpec) => void;
+  /** Redraw for a design and its body plan (without one, the traits' default body plan). */
+  update: (d: DesignSpec, body?: Morphology) => void;
 }
 
-export function avatarView(): AvatarView {
+/** `extra`: shown under the caption (the editor's vision readout). */
+export function avatarView(extra?: HTMLElement): AvatarView {
   const figure = h('div', { id: 'design-avatar', class: 'avatar-figure', role: 'img', 'aria-label': '' });
   const caption = h('p', { class: 'avatar-caption muted small', id: 'design-avatar-caption', 'aria-hidden': 'true' });
   const toggle = h('button', { type: 'button', class: 'avatar-toggle secondary', 'aria-expanded': 'true', 'aria-controls': 'design-avatar' }, 'Hide');
   const el = h('section', { class: 'card avatar-card', 'aria-label': 'Founder preview' },
     h('div', { class: 'avatar-head' }, h('h2', {}, 'Preview'), toggle),
-    figure, caption);
+    figure, caption, ...(extra ? [extra] : []));
 
   let collapsed = false;
   const setCollapsed = (v: boolean) => {
@@ -64,11 +57,11 @@ export function avatarView(): AvatarView {
 
   const motion = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
   let design: DesignSpec | null = null;
-  let features: Partial<MorphologyFeatures> = {};
+  let body: Morphology | undefined;
   let last = '';
   const render = () => {
     if (!design) return;
-    const m = morphologyOf(design, features);
+    const m = morphologyOf(design, body);
     const svg = avatarSvg(m, { animate: !motion?.matches });
     if (svg === last) return;
     last = svg;
@@ -80,16 +73,11 @@ export function avatarView(): AvatarView {
     last = '';
     render();
   });
-  window.evoAvatar = {
-    setFeatures: (f) => {
-      features = { ...f };
-      render();
-    },
-  };
   return {
     el,
-    update: (d) => {
+    update: (d, b) => {
       design = d;
+      body = b;
       render();
     },
   };

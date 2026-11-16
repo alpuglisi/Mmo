@@ -99,6 +99,28 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .avatar-figure { display: block; width: 100%; aspect-ratio: 3 / 2; margin-top: 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .avatar-figure svg { display: block; width: 100%; height: 100%; }
 .avatar-caption { margin: 6px 0 0; line-height: 1.3; }
+/* Vision readout under the preview (ui/visionReadout.ts): value and arrow vs the default body. */
+.vision-readout { margin-top: 8px; }
+.vision-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 0; }
+.vision-stat { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; min-width: 0; }
+.vision-stat dt { font-size: 0.75em; color: var(--muted); }
+.vision-stat dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; display: inline; }
+.vision-delta { margin-left: 4px; font-size: 0.75em; color: var(--muted); white-space: nowrap; }
+.vision-stat[data-trend='better'] .vision-delta { color: var(--good); }
+.vision-stat[data-trend='worse'] .vision-delta { color: var(--bad); }
+.vision-summary { margin: 6px 0 0; line-height: 1.3; }
+/* Simple / Builder switch in the Traits card head. */
+.design-traits-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.design-traits-head h2 { margin: 0; }
+.design-mode { display: inline-flex; }
+.design-mode button { min-height: 36px; padding: 4px 14px; }
+.design-mode button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.design-mode button:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+.design-mode button[aria-pressed='true'] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.design-mode-hint { margin: 6px 0; }
+.design-builder { margin: 8px 0 12px; min-width: 0; }
+.design-builder[hidden], .design-preset-confirm[hidden] { display: none; }
+.design-preset-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; padding: 6px 10px; background: var(--panel-2); border: 1px solid var(--accent); border-radius: 6px; }
 .budget-total { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.4em; font-variant-numeric: tabular-nums; }
 .bar { height: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; margin-bottom: 0.4em; }
 .bar-fill { height: 100%; background: var(--good); transition: width 0.1s; }
@@ -218,7 +240,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .budget { order: 1; width: 100%; }
   .avatar-card {
     order: -1; position: sticky; top: -16px; z-index: 2; width: 100%; margin-top: -4px;
-    display: grid; grid-template-columns: 132px minmax(0, 1fr); grid-template-areas: 'fig head' 'fig cap';
+    display: grid; grid-template-columns: 132px minmax(0, 1fr); grid-template-areas: 'fig head' 'fig cap' 'read read';
     column-gap: 10px; align-items: start; padding: 8px 10px; box-shadow: 0 6px 12px -6px rgba(0, 0, 0, 0.6);
   }
   .avatar-head { grid-area: head; }
@@ -226,7 +248,15 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .avatar-toggle { display: inline-block; }
   .avatar-figure { grid-area: fig; margin-top: 0; }
   .avatar-caption { grid-area: cap; margin-top: 4px; }
+  /* One short line under the thumbnail; hidden when the header is collapsed. */
+  .vision-readout { grid-area: read; margin-top: 4px; }
+  .vision-summary { display: none; }
+  .vision-stats { gap: 4px; }
+  .vision-stat { padding: 1px 4px; font-size: 0.8em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vision-stat dt { display: inline; margin-right: 3px; font-size: 0.9em; }
+  .vision-delta { margin-left: 2px; font-size: 0.9em; }
   .avatar-card.collapsed { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'head' 'cap'; }
+  .avatar-card.collapsed .vision-readout { display: none; }
   .avatar-card.collapsed .avatar-figure { display: none; }
   .avatar-card.collapsed .avatar-caption { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .traits > .trait { grid-template-columns: 7.5em 1fr 2.6em 2.6em; }

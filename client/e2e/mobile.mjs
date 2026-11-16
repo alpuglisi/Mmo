@@ -218,6 +218,39 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
     await page.tap('.avatar-toggle');
     if ((await header()).figH < 60) throw new Error(`${tag}: avatar did not expand again`);
     step(`${tag}: avatar header sticky (${Math.round(h0.height)}px), redraws, collapses, fits`);
+    // Builder mode on the phone: it fits the width, a third eye shows in the
+    // header's avatar and readout, the cost stays, and Simple mode's eye
+    // caption knows the count.
+    const readout = () => page.$eval('#vision-readout', (el) => ({ text: el.textContent, h: el.getBoundingClientRect().height, right: el.getBoundingClientRect().right }));
+    const cost0 = await page.textContent('#budget-total');
+    const rd0 = await readout();
+    if (rd0.right > vw.width + 1 || rd0.h > 40) throw new Error(`${tag}: vision readout does not fit the header ${JSON.stringify(rd0)}`);
+    await page.tap('#design-mode-builder');
+    await page.waitForSelector('#design-bb', { state: 'visible' });
+    await page.$eval('#design-bb-eye-plus', (el) => el.scrollIntoView({ block: 'center' }));
+    await page.tap('#design-bb-eye-plus');
+    await waitFor(`${tag}: three eyes in the header`, async () => (await header()).label.includes('three eyes'));
+    const rd1 = await readout();
+    if (rd1.text === rd0.text) throw new Error(`${tag}: readout did not change for a third eye (${rd1.text})`);
+    if ((await page.textContent('#budget-total')) !== cost0) throw new Error(`${tag}: a third eye changed the cost`);
+    const bfit = await page.evaluate(() => {
+      const els = [...document.querySelectorAll('#design-builder *')].filter((e) => e.getClientRects().length);
+      const rs = els.map((e) => e.getBoundingClientRect());
+      return { docW: document.documentElement.scrollWidth, right: Math.max(...rs.map((r) => r.right)), left: Math.min(...rs.map((r) => r.left)) };
+    });
+    if (bfit.docW > vw.width + 1 || bfit.right > vw.width + 1 || bfit.left < 0) throw new Error(`${tag}: builder overflows the phone ${JSON.stringify(bfit)} (viewport ${vw.width})`);
+    const hb = await header();
+    if (hb.height > vw.height * 0.25) throw new Error(`${tag}: header grew in builder mode (${hb.height}px)`);
+    await shot(page, `editor-builder-${tag}.png`);
+    await page.$eval('#design-bb-top', (el) => el.scrollIntoView({ block: 'center' }));
+    await shot(page, `editor-builder-${tag}-eyes.png`);
+    await page.$eval('.design-traits-head', (el) => el.scrollIntoView({ block: 'center' }));
+    await page.tap('#design-mode-simple');
+    if (!(await page.isHidden('#design-builder'))) throw new Error(`${tag}: builder still shown in Simple mode`);
+    const eyeCaption = await page.textContent('#trait-large_eyes-caption');
+    if (!eyeCaption.includes('three eyes')) throw new Error(`${tag}: Simple eye caption ${eyeCaption}`);
+    if ((await page.evaluate(() => document.documentElement.scrollWidth)) > vw.width + 1) throw new Error(`${tag}: Simple mode overflows after the builder`);
+    step(`${tag}: builder fits the phone; third eye in header and readout (${rd1.text.trim()}), cost unchanged; Simple caption "${eyeCaption}"`);
     // Back to the defaults this section was tuned with.
     await page.$eval('input[data-gene="fur"]', (el) => { el.value = '0'; el.dispatchEvent(new Event('input')); });
     await page.check('input[name="thermo"][value="warm"]');
