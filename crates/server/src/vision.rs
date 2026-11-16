@@ -137,12 +137,19 @@ mod tests {
     fn default_eyes_match_the_contract() {
         let o = org();
         let v = VisionView::of(&o, 0.0);
-        let e = o.pheno[evo_sim::Gene::Eyes];
-        // Two eyes at ±60°, field 140 + 60e: 20 + 60e of depth, 100 - 60e blind.
-        assert_eq!((v.eyes, v.azimuth, v.occlusion, v.front_gap), (2, 60, 0, 0));
+        let e = o.morph.eye_size;
+        // Two eyes at ±a (founders vary a little around the default 60°),
+        // field 140 + 60e; the snout hides 40·max(0, s − 0.5) of the overlap.
+        let a = o.morph.eye_azimuth;
+        let occ = 40.0 * (o.morph.snout_length - 0.5).max(0.0);
+        assert_eq!((v.eyes, v.azimuth, v.front_gap), (2, a.round() as u8, 0));
+        assert_eq!(v.occlusion, occ.round() as u8);
         assert_eq!(v.field, (140.0 + 60.0 * e).round() as u8);
-        assert!((v.binocular as f32 - (20.0 + 60.0 * e)).abs() <= 1.0, "{v:?}");
-        assert!((v.blind as f32 - (100.0 - 60.0 * e)).abs() <= 1.0, "{v:?}");
+        // Depth: the two fields overlap by field − 2a in front, less the snout.
+        let depth = (140.0 + 60.0 * e - 2.0 * a - occ).max(0.0);
+        let blind = (360.0 - 2.0 * a - (140.0 + 60.0 * e)).max(0.0);
+        assert!((v.binocular as f32 - depth).abs() <= 1.0, "{v:?} vs {depth}");
+        assert!((v.blind as f32 - blind).abs() <= 1.0, "{v:?} vs {blind}");
         assert!(!v.directional && VisionView::of(&o, 0.5).directional);
         let json = serde_json::to_value(v).unwrap();
         assert!(json.get("directional").is_none() && json.get("front_gap").is_none(), "{json}");
