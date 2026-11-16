@@ -817,26 +817,39 @@ export function avatarDrawing(m: AvatarModel): AvatarDrawing {
   // Eyes (contract v1): pair k at ±min(170°, eye_azimuth + 50°·k), one of
   // each pair visible from the side; an odd one at 0° on the midline at the
   // brow, seen edge-on. Azimuth slides an eye from the face (0) to the back
-  // of the head (180) and foreshortens it near either end.
+  // of the head (180) and foreshortens it near either end. Placement reads
+  // at a glance: forward-set eyes (under 35°, a predator's) show the far eye
+  // too, peeking past the near one toward the snout; side-set eyes (a
+  // prey's) also sit higher on the head as eye_azimuth passes 60°.
   const er = hr * (0.17 + 0.22 * m.eye_size);
-  const eyeAt = (az: number, row: number) => {
+  const lift = hr * 0.22 * Math.max(0, Math.min(1, (m.eye_azimuth - 60) / 40));
+  const eyeAt = (az: number, row: number, far = false) => {
     const a = (Math.max(0, Math.min(180, az)) * Math.PI) / 180;
     const fore = 0.4 + 0.6 * Math.sin(a);
-    const ex = az === 0 ? hx + hr * 0.62 : hx - hr * 0.05 + hr * 0.62 * Math.cos(a);
+    let ex = az === 0 ? hx + hr * 0.62 : hx - hr * 0.05 + hr * 0.62 * Math.cos(a);
     // Later pairs sit a little higher, so eyes at close azimuths don't merge.
-    const ey = (az === 0 ? hy - hr * 0.62 : hy - hr * 0.28) - row * er * 0.9;
-    const erx = er * fore;
-    add('head', { kind: 'ellipse', x: ex, y: ey, rx: erx * 1.12 + 0.6, ry: er * 1.12, fill: OUTLINE });
-    if (warm) {
-      add('head', { kind: 'ellipse', x: ex, y: ey, rx: erx, ry: er, fill: 0x2b1d14 });
-      add('head', { kind: 'ellipse', x: ex + erx * 0.15, y: ey, rx: erx * 0.55, ry: er * 0.55, fill: 0x0b0b0b });
-    } else {
-      add('head', { kind: 'ellipse', x: ex, y: ey, rx: erx, ry: er, fill: 0xd9a52b });
-      add('head', { kind: 'ellipse', x: ex + erx * 0.1, y: ey, rx: erx * 0.22, ry: er * 0.85, fill: 0x0b0b0b });
+    let ey = (az === 0 ? hy - hr * 0.62 : hy - hr * 0.28 - lift) - row * er * 0.9;
+    let r = er;
+    if (far) {
+      // Behind the snout's bridge: ahead of and a little above the near eye, smaller.
+      ex += er * fore * 1.15 + hr * 0.05;
+      ey -= er * 0.3;
+      r = er * 0.8;
     }
-    add('head', { kind: 'ellipse', x: ex + erx * 0.35, y: ey - er * 0.35, rx: er * 0.25 * fore, ry: er * 0.25, fill: 0xffffff, alpha: 0.9 });
+    const erx = r * fore;
+    add('head', { kind: 'ellipse', x: ex, y: ey, rx: erx * 1.12 + 0.6, ry: r * 1.12, fill: OUTLINE });
+    if (warm) {
+      add('head', { kind: 'ellipse', x: ex, y: ey, rx: erx, ry: r, fill: 0x2b1d14 });
+      add('head', { kind: 'ellipse', x: ex + erx * 0.15, y: ey, rx: erx * 0.55, ry: r * 0.55, fill: 0x0b0b0b });
+    } else {
+      add('head', { kind: 'ellipse', x: ex, y: ey, rx: erx, ry: r, fill: 0xd9a52b });
+      add('head', { kind: 'ellipse', x: ex + erx * 0.1, y: ey, rx: erx * 0.22, ry: r * 0.85, fill: 0x0b0b0b });
+    }
+    add('head', { kind: 'ellipse', x: ex + erx * 0.35, y: ey - r * 0.35, rx: r * 0.25 * fore, ry: r * 0.25, fill: 0xffffff, alpha: 0.9 });
   };
   const eyePairs = Math.floor(m.eye_count / 2);
+  const az0 = Math.max(1, pairAzimuth(m.eye_azimuth, 0));
+  if (eyePairs > 0 && az0 < 35) eyeAt(az0, 0, true);
   for (let k = eyePairs - 1; k >= 0; k--) eyeAt(Math.max(1, pairAzimuth(m.eye_azimuth, k)), k);
   if (m.eye_count % 2 === 1) eyeAt(0, 0);
   if (sn >= 0.67) add('head', { kind: 'line', points: [[hx - hr * 0.1, hy - hr * 0.62], [hx + hr * 0.55, hy - hr * 0.42]], stroke: OUTLINE, width: 1.8 });

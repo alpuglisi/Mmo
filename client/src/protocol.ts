@@ -278,7 +278,8 @@ export interface Appearance {
   eyes?: number;
   /**
    * Eye placement bucket: 0 forward (under 35°), 1 the default (absent), 2 on
-   * the sides (85° and more). Sent only when not the default; not drawn yet.
+   * the sides (85° and more). Sent only when not the default; drawn
+   * by `world/creature.ts` (forward near the snout, side high and back).
    */
   eye_azimuth?: SizeBucket;
   /** Eye size bucket: 0 small, 1 medium, 2 large. */
