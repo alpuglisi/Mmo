@@ -131,7 +131,9 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 /* `.traits >`: market.css styles its own `.trait` chips, loaded after this file. */
 .traits > .trait { display: grid; grid-template-columns: 9.5em 1fr 3em 3em; align-items: center; gap: 8px; padding: 3px 0; }
 .trait-label { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.trait-name { text-transform: capitalize; overflow-wrap: break-word; hyphens: auto; min-width: 0; }
+.trait-name { min-width: 0; overflow-wrap: normal; word-break: normal; hyphens: manual; }
+/* The words for 0 and 1 on a two-ended slider, under its track. */
+.trait-ends { grid-column: 2; display: flex; justify-content: space-between; gap: 8px; margin-top: -6px; font-size: 0.72em; color: var(--muted); line-height: 1.2; }
 /* Info toggle: a small round "i"; the touch target grows on phones. */
 .trait-more {
   flex-shrink: 0; width: 1.35em; height: 1.35em; padding: 0; border-radius: 50%;
@@ -259,7 +261,19 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .avatar-card.collapsed .vision-readout { display: none; }
   .avatar-card.collapsed .avatar-figure { display: none; }
   .avatar-card.collapsed .avatar-caption { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .traits > .trait { grid-template-columns: 7.5em 1fr 2.6em 2.6em; }
+  /* Phones: the name gets the whole first row (with value and cost), the slider the next, so names never break mid-word. */
+  .traits > .trait {
+    grid-template-columns: minmax(0, 1fr) 2.8em 2.8em;
+    grid-template-areas: 'label val cost' 'slider slider slider' 'ends ends ends' 'cap cap cap' 'info info info';
+    row-gap: 2px;
+  }
+  .traits > .trait > .trait-label { grid-area: label; }
+  .traits > .trait > .trait-slider { grid-area: slider; width: 100%; margin: 0; }
+  .traits > .trait > .trait-val { grid-area: val; }
+  .traits > .trait > .trait-cost { grid-area: cost; }
+  .traits > .trait > .trait-ends { grid-area: ends; margin-top: -2px; }
+  .traits > .trait > .trait-caption { grid-area: cap; margin-top: 0; }
+  .traits > .trait > .trait-info { grid-area: info; }
 
   .screen.game { height: 100dvh; }
   .topbar { gap: 0.5em; padding: 6px 10px; padding-top: max(6px, env(safe-area-inset-top)); font-size: 12px; flex-wrap: nowrap; overflow: hidden; }

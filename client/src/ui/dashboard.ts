@@ -8,6 +8,7 @@ import {
   CAUSE_COLORS, SERIES, driftRows, geneHistogram, geneSparkline, legacyChart, originBar, originRows, pyramidChart, spreadBar, stackVitals, vitalsChart,
 } from './charts';
 import { h, pct } from './dom';
+import { traitName } from './traitNames';
 
 /** Genes shown as drift sparklines; the full table lists every gene. */
 const TOP_DRIFT = 6;
@@ -41,7 +42,7 @@ export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
   const latest = s.legacy[s.legacy.length - 1];
   const drift = driftRows(s.genes, TOP_DRIFT);
   const recorded = s.history_days.length;
-  const all = [...s.genes].sort((a, b) => a.gene.localeCompare(b.gene));
+  const all = [...s.genes].sort((a, b) => traitName(a.gene).localeCompare(traitName(b.gene)));
   const origins = originRows(s.origins ?? [], s.player);
   const own = origins.find((o) => o.mine)?.share ?? 0;
   // Keep the gene table open across refreshes.
@@ -76,8 +77,8 @@ export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
       h('table', { class: 'gene-table', id: 'gene-table' },
         h('thead', {}, h('tr', {}, h('th', {}, 'Gene'), h('th', {}, 'Mean'), h('th', { title: 'Standard deviation over living members' }, 'SD'), h('th', {}, '0 … 1'))),
         h('tbody', {}, ...all.map((g) => h('tr', {},
-          h('td', {}, g.gene.replace(/_/g, ' ')), h('td', {}, g.mean.toFixed(2)), h('td', {}, g.sd.toFixed(3)),
-          h('td', {}, g.bins && g.bins.length > 0 ? geneHistogram(g.gene.replace(/_/g, ' '), g.bins, g.founding_mean) : spreadBar(g.mean, g.sd, g.founding_mean))))))),
+          h('td', {}, traitName(g.gene)), h('td', {}, g.mean.toFixed(2)), h('td', {}, g.sd.toFixed(3)),
+          h('td', {}, g.bins && g.bins.length > 0 ? geneHistogram(traitName(g.gene), g.bins, g.founding_mean) : spreadBar(g.mean, g.sd, g.founding_mean))))))),
   );
 }
 

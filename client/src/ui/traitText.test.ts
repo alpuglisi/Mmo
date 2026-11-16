@@ -133,6 +133,6 @@ describe('trait text', () => {
     expect(caption('coloration', design({ coloration: 0.8 }))!.text).toMatch(/not toxic enough/);
     expect(caption('pack_instinct', design({ pack_instinct: 0.9, carnivory: 0.2 }))!.text).toMatch(/only meat eaters/);
     expect(caption('pack_instinct', design({ pack_instinct: 0.9, carnivory: 0.9 }))!.text).toBe(TRAIT_TEXT.pack_instinct.high);
-    expect(caption('vocal_ability', design({ vocal_ability: 0.9 }))!.text).toMatch(/need large ears/);
+    expect(caption('vocal_ability', design({ vocal_ability: 0.9 }))!.text).toMatch(/need ear size above 0.5/);
   });
 });

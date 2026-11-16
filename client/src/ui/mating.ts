@@ -1,7 +1,8 @@
 // Compatibility of a chosen pair, from the server's `preview_mating` reply.
 
 import type { MatingPreviewView } from '../protocol';
-import { label, pct } from './dom';
+import { pct } from './dom';
+import { traitNameLower } from './traitNames';
 
 export interface CompatSummary {
   /** 'ok' fully fertile and inside both preferences, 'warn' reduced fertility or an override cost, 'bad' cannot conceive. */
@@ -11,14 +12,14 @@ export interface CompatSummary {
 
 export function compatSummary(p: MatingPreviewView): CompatSummary {
   if (!p.compatible) {
-    const genes = p.body_plan_gaps.map((g) => `${label(g.gene)} ${g.gap.toFixed(2)} apart`).join(', ');
+    const genes = p.body_plan_gaps.map((g) => `${traitNameLower(g.gene)} ${g.gap.toFixed(2)} apart`).join(', ');
     const why = p.body_plan_fertility <= 0
       ? `different body plans${genes ? ` (${genes})` : ''}`
       : 'genomes too different (outbreeding depression)';
     return { level: 'bad', text: `Incompatible: ${why}. They cannot conceive.` };
   }
   const parts = [`fertility ${pct(p.fertility, 0)}`];
-  if (p.body_plan_gaps.length) parts.push(`reduced by ${p.body_plan_gaps.map((g) => label(g.gene)).join(', ')}`);
+  if (p.body_plan_gaps.length) parts.push(`reduced by ${p.body_plan_gaps.map((g) => traitNameLower(g.gene)).join(', ')}`);
   parts.push(p.cost > 0
     ? `outside their preferences (mismatch ${p.mismatch.toFixed(2)}): cost ${p.cost.toFixed(2)}, failure chance ${pct(p.failure_chance, 0)}`
     : 'within both preferences');

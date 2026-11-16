@@ -16,9 +16,10 @@ import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, ThermoSpec } from
 import { avatarView } from './avatarView';
 import { createBodyBuilder, type BodyBuilder, type BuilderChange } from './builder/builder';
 import type { BuilderPreset } from './builder/presets';
-import { h, label } from './dom';
+import { h } from './dom';
 import { readMode, writeMode, type EditorMode } from './editorMode';
 import { caption, TRAIT_TEXT, type Level } from './traitText';
+import { traitEnds, traitName } from './traitNames';
 import { visionReadoutView } from './visionReadout';
 
 export interface DesignCallbacks {
@@ -88,14 +89,17 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   const levelRows = new Map<string, Map<Level, HTMLElement>>();
   const traitRow = (g: GeneInfo): HTMLElement => {
     const text = TRAIT_TEXT[g.name];
+    const title = traitName(g.name);
+    const ends = traitEnds(g.name);
     const id = `trait-${g.name}`;
     const s = h('input', {
-      type: 'range', min: 0, max: 1, step: 0.01, value: g.default, 'data-gene': g.name, 'aria-label': label(g.name),
+      type: 'range', class: 'trait-slider', min: 0, max: 1, step: 0.01, value: g.default, 'data-gene': g.name,
+      'aria-label': ends ? `${title} (0 ${ends[0]}, 1 ${ends[1]})` : title,
       'aria-describedby': text ? `${id}-caption` : undefined,
     });
-    const val = h('span', { class: 'num' }, g.default.toFixed(2));
+    const val = h('span', { class: 'num trait-val' }, g.default.toFixed(2));
     const tip = g.cost > 0 ? `${g.cost} points per unit above ${g.default}` : 'free: a trade-off, not an upgrade';
-    const cost = h('span', { class: 'num cost', title: tip }, '');
+    const cost = h('span', { class: 'num cost trait-cost', title: tip }, '');
     s.addEventListener('input', () => {
       applyTrait(spec, g.name, Number(s.value));
       val.textContent = Number(s.value).toFixed(2);
@@ -106,8 +110,10 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     sliders.set(g.name, s);
     values.set(g.name, val);
     costCells.set(g.name, cost);
-    const name = h('span', { class: 'trait-name', title: text ? `${text.what} (${tip})` : tip }, label(g.name));
-    if (!text) return h('div', { class: 'trait' }, h('span', { class: 'trait-label' }, name), s, val, cost);
+    const name = h('span', { class: 'trait-name', title: text ? `${text.what} (${tip})` : tip }, title);
+    // A two-ended slider shows what each end means under it ("small … huge").
+    const endsRow = ends && h('div', { class: 'trait-ends', 'aria-hidden': 'true' }, h('span', {}, ends[0]), h('span', {}, ends[1]));
+    if (!text) return h('div', { class: 'trait', 'data-trait': g.name }, h('span', { class: 'trait-label' }, name), s, val, cost, endsRow);
     // The full low / middle / high text behind an info toggle: a hover
     // tooltip can't be opened on a phone.
     const levels = new Map<Level, HTMLElement>();
@@ -122,7 +128,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
       h('ul', {}, levelRow('low', 'Low:'), levelRow('mid', 'Middle:'), levelRow('high', 'High:')));
     const more = h('button', {
       type: 'button', class: 'trait-more', 'aria-expanded': 'false', 'aria-controls': info.id,
-      'aria-label': `About ${label(g.name)}`, title: text.what,
+      'aria-label': `About ${title}`, title: text.what,
     }, 'i');
     more.addEventListener('click', () => {
       const open = info.hidden;
@@ -131,7 +137,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     });
     const cap = h('div', { class: 'trait-caption', id: `${id}-caption` });
     captions.set(g.name, cap);
-    return h('div', { class: 'trait', 'data-trait': g.name }, h('span', { class: 'trait-label' }, name, more), s, val, cost, cap, info);
+    return h('div', { class: 'trait', 'data-trait': g.name }, h('span', { class: 'trait-label' }, name, more), s, val, cost, endsRow, cap, info);
   };
   const paid = cat.genes.filter((g) => g.cost > 0);
   const free = cat.genes.filter((g) => g.cost === 0);

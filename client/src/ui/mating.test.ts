@@ -31,7 +31,7 @@ describe('compatSummary', () => {
       problem: { code: 'incompatible_body_plans', message: 'different body plans' },
     });
     expect(s.level).toBe('bad');
-    expect(s.text).toBe('Incompatible: different body plans (endothermy 0.80 apart, birth mode 0.70 apart). They cannot conceive.');
+    expect(s.text).toBe('Incompatible: different body plans (warm-bloodedness 0.80 apart, birth mode 0.70 apart). They cannot conceive.');
     expect(compatSummary({ ...base, compatible: false, fertility: 0, distance_fertility: 0 }).text).toContain('outbreeding');
   });
 });

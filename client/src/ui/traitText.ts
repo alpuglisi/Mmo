@@ -14,6 +14,7 @@ import {
 } from '../bodyMath';
 import type { Morphology } from '../morphology';
 import type { DesignSpec } from '../protocol';
+import { traitNameLower } from './traitNames';
 
 /** A design, with its body plan when the editor has one (eye count, leg count, shapes). */
 export type CaptionDesign = DesignSpec & { morphology?: Morphology };
@@ -92,13 +93,13 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     context: (d, _l, base) => `${base} (adult ≈ ${kg(adultMass(d))})`,
   },
   muscle: {
-    what: 'Muscle mass: strength and speed, paid for in food.',
+    what: 'Strength and speed, paid for in food.',
     low: 'lean: eats little, but weaker and slower',
     mid: 'muscled: stronger and faster, eats more',
     high: 'powerful: strongest and fastest; hungry, heavy, floats poorly',
   },
   fat_stores: {
-    what: 'Body fat: energy reserves, warmth and buoyancy.',
+    what: 'Energy reserves, warmth and buoyancy.',
     low: 'lean: quick, but small reserves and little warmth',
     mid: 'padded: warmer, more stamina and reserves; a bit slower',
     high: 'fat: big reserves, warm, floats; slow and heavy',
@@ -106,14 +107,14 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
 
   // ---------------------------------------------------------------- limbs
   leg_length: {
-    what: 'Leg length: running speed, stamina and height.',
+    what: 'Running speed, stamina and height.',
     low: 'short legs: slow; deep snow and water swamp it',
     mid: 'medium legs: faster, wades shallow water',
     high: 'long legs: fastest and tireless; strides over snow and shallows',
     context: withPlan('legs'),
   },
   claws: {
-    what: 'Claws: grip, digging and fighting.',
+    what: 'Grip, digging and fighting.',
     low: 'no claws: poor grip on ice and slopes',
     mid: 'claws: better grip, stronger and more agile; some upkeep',
     high: 'big claws: sure grip, strong fighter, can dig; food upkeep',
@@ -123,7 +124,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
         : base,
   },
   hooves: {
-    what: 'Hooves: hard feet built for running on firm ground.',
+    what: 'Hard feet built for running on firm ground.',
     low: 'soft feet: nimble, good grip',
     mid: 'hard hooves: faster, more stamina; less agile, slips on ice',
     high: 'solid hooves: fast, tireless; clumsy, slips on ice, sinks in snow',
@@ -139,13 +140,13 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     },
   },
   foot_width: {
-    what: 'Foot width: wide paws or webbed feet spread the weight.',
+    what: 'Wide paws or webbed feet spread the weight.',
     low: 'narrow feet: heavy bodies sink in snow, mud and sand',
     mid: 'broad feet: firmer on snow and mud, helps swimming',
     high: 'wide webbed feet: walks over snow and marsh, swims better',
   },
   tail: {
-    what: 'Tail: balance for quick turns.',
+    what: 'Balance for quick turns.',
     low: 'no tail: no help with balance',
     mid: 'tail: better balance, more agile',
     high: 'long tail: most agile (dodging, escaping, fighting)',
@@ -154,7 +155,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
 
   // ---------------------------------------------------------------- locomotion
   swimming: {
-    what: 'Swimming: crossing deep and fast water.',
+    what: 'Crossing deep and fast water.',
     low: 'non-swimmer: deep water blocks it',
     mid: 'swimmer: crosses calm rivers and lakes',
     high: 'strong swimmer: crosses swollen rivers, quick in water',
@@ -170,7 +171,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     },
   },
   wings: {
-    what: 'Wings: gliding or flight, limited by body weight.',
+    what: 'Gliding or flight, limited by body weight.',
     low: 'no wings: ground-bound',
     mid: 'gliding flaps: glides from trees and heights; storms ground it',
     high: 'wings: flies over water, cliffs and predators; costly upkeep',
@@ -187,7 +188,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     },
   },
   climbing: {
-    what: 'Climbing: cliffs, trees and slopes.',
+    what: 'Scaling cliffs, trees and slopes.',
     low: 'non-climber: cliffs block it, canopy out of reach',
     mid: 'climber: scales cliffs, escapes into the canopy',
     high: 'expert climber: sure-footed, slips through dense forest',
@@ -195,7 +196,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     hi: 0.7,
   },
   burrowing: {
-    what: 'Burrowing: digging a den to hide in.',
+    what: 'Digging a den to hide in.',
     low: 'no burrow: must outrun threats and weather',
     mid: 'shallow digger: shelters only in a shared colony burrow',
     high: 'burrower: hides underground from predators and weather',
@@ -205,7 +206,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
 
   // ---------------------------------------------------------------- covering
   fur: {
-    what: 'Fur: insulation for warm-blooded bodies.',
+    what: 'Insulation for warm-blooded bodies.',
     low: 'bare skin: feels the cold, copes with heat',
     mid: 'fur: comfortable in cool weather, slight upkeep',
     high: 'thick fur: warm in deep cold, but overheats in hot weather',
@@ -217,7 +218,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     },
   },
   scales: {
-    what: 'Scales: a tough hide against bites and claws.',
+    what: 'A tough hide against bites and claws.',
     low: 'soft skin: easy to wound',
     mid: 'scales: harder to wound',
     high: 'heavy scales: hard to wound',
@@ -231,7 +232,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     },
   },
   armor_plates: {
-    what: 'Armor plates: heavy bony plating.',
+    what: 'Heavy bony plates over the body.',
     low: 'unarmored: light and quick',
     mid: 'plated: hard to wound; slower, less agile',
     high: 'heavy armor: very tough; slow, clumsy, wide, sinks in water',
@@ -239,7 +240,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
 
   // ---------------------------------------------------------------- head
   fangs: {
-    what: 'Fangs: bite strength in fights and hunts.',
+    what: 'Bite strength in fights and hunts.',
     low: 'no fangs',
     mid: 'fangs: real bite',
     high: 'long fangs: strongest bite',
@@ -255,22 +256,22 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     },
   },
   large_eyes: {
-    what: 'Large eyes: spotting threats, food and mates from afar.',
+    what: 'Spotting threats, food and mates from afar.',
     low: 'small eyes: spots danger late',
     mid: 'sharp eyes: sees threats and food sooner; some upkeep',
     high: 'huge eyes: sees far; costly to run (more food)',
     context: withPlan('eyes'),
   },
   large_ears: {
-    what: 'Large ears: hearing, and shedding body heat.',
+    what: 'Hearing, and shedding body heat.',
     low: 'small ears: hears danger late, keeps heat in',
     mid: 'large ears: hears sooner, sheds some heat',
     high: 'huge ears: hears far, copes with heat, loses heat in cold',
     context: (d, l, base) =>
-      withPlan('ears')(d, l, geneValue(d, 'large_ears') > 0.5 && geneValue(d, 'vocal_ability') > 0.5 ? `${base} · alarm calls with vocal ability` : base),
+      withPlan('ears')(d, l, geneValue(d, 'large_ears') > 0.5 && geneValue(d, 'vocal_ability') > 0.5 ? `${base} · alarm calls with a strong ${traitNameLower('vocal_ability')}` : base),
   },
   keen_nose: {
-    what: 'Keen nose: smelling food and threats.',
+    what: 'Smelling food and threats.',
     low: 'weak nose: misses what it cannot see',
     mid: 'keen nose: smells food and threats sooner; some upkeep',
     high: 'superb nose: smells far; costly to run (more food)',
@@ -278,7 +279,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
 
   // ---------------------------------------------------------------- other
   carnivory: {
-    what: 'Diet: plant eater (0) to meat eater (1).',
+    what: 'Plant eater (0) to meat eater (1).',
     low: 'herbivore: lives on plants, gets little from meat',
     mid: 'omnivore: eats both, but digests each poorly',
     high: 'carnivore: hunts and scavenges, gets little from plants',
@@ -286,7 +287,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     hi: 0.7,
   },
   camouflage: {
-    what: 'Camouflage: hiding from predators and prey.',
+    what: 'Hiding from predators and prey.',
     low: 'conspicuous: easy to spot',
     mid: 'camouflaged: harder to spot, better ambushes',
     high: 'hidden: rarely spotted, ambushes well',
@@ -298,7 +299,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     },
   },
   toxins: {
-    what: 'Toxins: poison that punishes whoever bites.',
+    what: 'Poison that punishes whoever bites.',
     low: 'harmless: no chemical defense',
     mid: 'toxic: attacks fail more often and hurt the biter; upkeep',
     high: 'very toxic: most attacks fail; upkeep',
@@ -308,7 +309,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
       level === 'high' && geneValue(d, 'coloration') > 0.6 ? `${base} · bright colours warn predators off` : base,
   },
   coloration: {
-    what: 'Display colour: what mates judge, at a cost in stealth.',
+    what: 'The display colour mates judge, at a cost in stealth.',
     low: 'drab: stealthy',
     mid: 'colourful: easier to spot',
     high: 'bright: easy to spot; warns predators only if toxic',
@@ -321,7 +322,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     },
   },
   vocal_ability: {
-    what: 'Voice: calls that warn others of danger.',
+    what: 'Calls that warn others of danger.',
     low: 'quiet: no alarm calls',
     mid: 'some calls: not yet enough for alarm calls',
     high: 'vocal: alarm calls, if ears are large too',
@@ -331,59 +332,59 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
       if (level !== 'high') return base;
       return geneValue(d, 'large_ears') > 0.5
         ? 'vocal: alarm calls warn the group (with enough carriers)'
-        : 'vocal, but alarm calls need large ears above 0.5';
+        : `vocal, but alarm calls need ${traitNameLower('large_ears')} above 0.5`;
     },
   },
 
   // ---------------------------------------------------------------- instinct
   boldness: {
-    what: 'Boldness: how readily it flees a threat.',
+    what: 'How readily it flees a threat.',
     low: 'timid: flees early; safe but often hungry',
     mid: 'steady: flees real threats',
     high: 'bold: keeps foraging near danger; eats more, dies more',
   },
   aggression: {
-    what: 'Aggression: defending territory and hunting eagerly.',
+    what: 'Defending territory and hunting eagerly.',
     low: 'peaceable: seldom drives off intruders',
     mid: 'assertive: defends its territory when fed',
     high: 'aggressive: drives off intruders, hunts before hungry',
   },
   wanderlust: {
-    what: 'Wanderlust: how much and how far it roams.',
+    what: 'How much and how far it roams.',
     low: 'homebody: stays close, roams ~2 tiles',
     mid: 'roamer: wanders ~6 tiles',
     high: 'wanderer: roams ~10 tiles; spreads genes, finds new ground',
   },
   group_tolerance: {
-    what: 'Group tolerance: living close to kin.',
+    what: 'Living close to kin.',
     low: 'solitary: keeps apart from others',
     mid: 'sociable: stays near kin; above 0.5 joins group traits',
     high: 'herd animal: sticks close to kin, can keep sentries',
     hi: 0.6,
   },
   foraging_range: {
-    what: 'Foraging range: how far it looks for food first.',
+    what: 'How far it looks for food first.',
     low: 'close forager: searches ~2 tiles, may strip its patch',
     mid: 'forager: searches ~5 tiles',
     high: 'wide forager: searches ~8 tiles, walks more',
   },
   pack_instinct: {
-    what: 'Pack instinct: hunting together.',
+    what: 'Hunting together as a pack.',
     low: 'lone hunter',
     mid: 'some pack sense: not yet enough to hunt together',
     high: 'pack hunter: meat eaters hunt large prey together',
     hi: 0.5,
     context: (d, level, base) =>
-      level === 'high' && geneValue(d, 'carnivory') <= 0.6 ? 'pack instinct, but only meat eaters (diet > 0.6) hunt in packs' : base,
+      level === 'high' && geneValue(d, 'carnivory') <= 0.6 ? `pack sense, but only meat eaters (${traitNameLower('carnivory')} > 0.6) hunt in packs` : base,
   },
   pickiness: {
-    what: 'Pickiness: how closely mates must match its taste.',
+    what: 'How closely mates must match its taste.',
     low: 'easygoing: mates with almost anyone',
     mid: 'choosy: prefers mates near its taste',
     high: 'picky: only close matches; keeps traits, fewer matings',
   },
   preferred_coloration: {
-    what: 'Mate preference: the colour it looks for in a mate.',
+    what: 'The colour it looks for in a mate.',
     low: 'likes drab mates',
     mid: 'likes moderately coloured mates',
     high: 'likes bright mates: drives showy colours',
@@ -395,7 +396,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     high: 'accepts almost any colour',
   },
   preferred_body_size: {
-    what: 'Mate preference: the body size it looks for in a mate.',
+    what: 'The body size it looks for in a mate.',
     low: 'likes small mates',
     mid: 'likes medium-sized mates',
     high: 'likes large mates',
@@ -407,16 +408,16 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     high: 'accepts almost any size',
   },
   vigilance: {
-    what: 'Sentry instinct: standing watch for the group.',
+    what: 'Standing watch for the group.',
     low: 'no sentry instinct',
     mid: 'watchful: not yet enough to stand guard',
     high: 'sentry: takes turns on watch in a group; costs food',
     hi: 0.5,
     context: (d, level, base) =>
-      level === 'high' && geneValue(d, 'group_tolerance') <= 0.6 ? 'sentry instinct, but needs group tolerance above 0.6' : base,
+      level === 'high' && geneValue(d, 'group_tolerance') <= 0.6 ? `sentry instinct, but needs ${traitNameLower('group_tolerance')} above 0.6` : base,
   },
   obedience: {
-    what: 'Obedience: heeding your group commands over instinct.',
+    what: 'Heeding your group commands over instinct.',
     low: 'headstrong: ignores orders, quick to flee',
     mid: 'obeys orders as tuned',
     high: 'obedient: follows orders even hungry; flees late (tame)',
@@ -426,7 +427,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
 
   // ---------------------------------------------------------------- seasonal
   hibernation: strategy(
-    'Hibernation: sleeps through winter on stored fat.',
+    'Sleeps through winter on stored fat.',
     'off: stays active all winter',
     'hibernates: fattens in autumn, sleeps winter; den can be found',
     'deep hibernator: very cheap winter sleep, no winter breeding',
@@ -441,7 +442,7 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     },
   ),
   brumation: strategy(
-    'Brumation: winter dormancy that wakes with the weather.',
+    'Winter dormancy that wakes with the weather.',
     'off: stays active all winter',
     'brumates: dormant while cold, wakes on warm days',
     'deep brumation: cheap dormancy, no winter breeding',
@@ -451,39 +452,39 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     },
   ),
   migration: strategy(
-    'Migration: winters further south, returns in spring.',
+    'Winters further south, returns in spring.',
     'off: stays in its home range all year',
     'migrates: good pasture year-round; risky journeys',
     'migrates (no stronger above 0.5); stamina makes trips safer',
   ),
   estivation: strategy(
-    'Estivation: sleeps through summer heat and drought.',
+    'Sleeps through summer heat and drought.',
     'off: stays active all summer',
     'estivates: fattens in spring, sleeps through heat; loses summer',
     'deep estivation: cheaper summer sleep',
   ),
   food_caching: strategy(
-    'Food caching: hoards plant food for winter.',
+    'Hoards plant food for winter.',
     'off: no food stores',
     'caches plants in summer and autumn; others can raid it',
     'big caches: more stored for winter; still raidable',
     (d, level, base) => (level !== 'low' && geneValue(d, 'carnivory') >= 0.7 ? `${base} · plants only: little use to a meat eater` : base),
   ),
   torpor: strategy(
-    'Torpor: shallow, cheap rest on cold nights.',
+    'Shallow, cheap rest on cold nights.',
     'off: full metabolism on cold nights',
     'torpor: saves food on cold nights; slow to react',
     'deep torpor: saves more food; slow to react till morning',
   ),
   seasonal_coat: strategy(
-    'Seasonal coat: molts into a thick winter coat and back.',
+    'Molts into a thick winter coat and back.',
     'off: same coat all year',
     'winter coat: warmer in cold; food per molt, hot in warm spells',
     'thick winter coat: much warmer; food per molt',
     (d, level, base) => (level !== 'low' && cold(d) ? 'useless on a cold-blooded body: the coat blocks basking' : base),
   ),
   timed_breeding: strategy(
-    'Timed breeding: breeds only in an early-spring window.',
+    'Breeds only in an early-spring window.',
     'off: breeds any time of year',
     'spring breeder: young get the spring flush; none otherwise',
     'strict spring breeder: better conception in the window',

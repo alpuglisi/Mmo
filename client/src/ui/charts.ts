@@ -6,6 +6,7 @@
 // text stays in text colors; every mark has a <title> for hover.
 
 import type { AgeBand, AlleleOrigin, DayVitals, GeneStat, LegacyPoint, PlayerId } from '../protocol';
+import { traitName } from './traitNames';
 
 /** Categorical slots (dark surface), in fixed order. */
 export const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9', '#8b949e'];
@@ -121,7 +122,7 @@ export function driftRows(genes: GeneStat[], n: number): DriftRow[] {
   return [...genes]
     .map((g) => ({
       gene: g.gene,
-      label: g.gene.replace(/_/g, ' '),
+      label: traitName(g.gene),
       mean: g.mean,
       sd: g.sd,
       founding: g.founding_mean,
