@@ -938,16 +938,37 @@ impl World {
             self.hourly();
             self.refresh_home_ranges();
         }
-        self.environment_slice();
-        self.phase_times.environment += lap();
         if self.tick.is_multiple_of(tpd) {
+            self.environment_slice();
+            self.phase_times.environment += lap();
             self.daily();
+            self.phase_times.daily += lap();
+            self.settle_orders();
+            self.grid.rebuild(&self.organisms);
+            self.phase_times.grid += lap();
+        } else {
+            // Off the day, the environment chunks (the map's tiles) and the
+            // grid rebuild (the organisms) share nothing, and settling
+            // orders touches neither the map nor positions: the two run at
+            // once, with the same results as one after the other.
+            self.settle_orders();
+            let tph = self.config.ticks_per_hour();
+            let (phase, doy, hour) = (self.tick % tph, self.day_of_year(), self.hour());
+            let (dpy, bal) = (self.config.days_per_year, self.config.balance);
+            let (map, grid, orgs) = (&mut self.map, &mut self.grid, &self.organisms);
+            let timed = |f: &mut dyn FnMut()| {
+                let start = std::time::Instant::now();
+                f();
+                start.elapsed().as_secs_f64()
+            };
+            let (env, rebuild) = rayon::join(
+                || timed(&mut || map.update_chunks(phase, tph, doy, hour, dpy, &bal)),
+                || timed(&mut || grid.rebuild(orgs)),
+            );
+            lap();
+            self.phase_times.environment += env;
+            self.phase_times.grid += rebuild;
         }
-        self.phase_times.daily += lap();
-
-        self.settle_orders();
-        self.grid.rebuild(&self.organisms);
-        self.phase_times.grid += lap();
         let n = self.organisms.len();
         let intents = self.decide_all();
         self.phase_times.decide += lap();
