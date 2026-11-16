@@ -523,7 +523,7 @@ async function desktopChecks(browser, base, errors) {
     const hints = ['sleep', 'flee', 'hunt', 'mate', null];
     const tints = [0xffd33d, 0x9aa4ae, 0x5ab0ff, 0xff7eb6, 0x7ee787];
     const cell = 120;
-    bg.rect(20, 20, cell * 5 + 20, cell * rows.length + 20).fill({ color: 0x0d1117, alpha: 0.88 });
+    bg.rect(20, 96, cell * 5 + 20, cell * rows.length + 20).fill({ color: 0x0d1117, alpha: 0.88 });
     rows.forEach((row, ry) => row.forEach((over, cx) => {
       const { juvenile = false, ...look } = over;
       const spec = { look: { ...base, ...look }, juvenile };
@@ -537,8 +537,8 @@ async function desktopChecks(browser, base, errors) {
         parts.icon.texture = sprites.hint(h);
         parts.icon.position.set(10, -22);
       }
-      parts.root.position.set(30 + cell / 2 + cx * cell, 30 + cell / 2 + ry * cell);
-      parts.root.scale.set(3);
+      parts.root.position.set(30 + cell / 2 + cx * cell, 106 + cell / 2 + ry * cell);
+      parts.root.scale.set(2.4);
       layer.addChild(parts.root);
     }));
     v.app.stage.addChild(layer);
@@ -549,6 +549,46 @@ async function desktopChecks(browser, base, errors) {
   await shot(page, 'desktop-sprite-gallery.png');
   await page.evaluate(() => window.__gallery.destroy({ children: true }));
   step(`sprite gallery: ${gallery.textures} textures cached`);
+
+  // The same body plans at the sizes the map draws them (marker scale 0.75
+  // with the far class sprite when zoomed out, 1 at the default zoom, 1.4 and
+  // 1.9 zoomed in), straight over the terrain, facing both ways.
+  await page.evaluate(() => {
+    const v = window.evo.screen().view;
+    const sprites = v.sprites;
+    const Container = v.markerLayer.constructor;
+    const layer = new Container();
+    const base = { size: 2, diet: 'herbivore', warm: true, locomotion: 'walk', cover: 'fur', coloring: 'drab' };
+    const plans = [
+      {}, { size: 0 }, { size: 3 }, { juvenile: true }, { diet: 'carnivore', ears: 2, ear_shape: 'pointed', tail: 'bushy' },
+      { warm: false, cover: 'scales' }, { warm: false, cover: 'armor', size: 3, tail: 'club' }, { locomotion: 'swim', warm: false, cover: 'scales' },
+      { locomotion: 'glide', size: 1 }, { locomotion: 'fly', size: 0 }, { locomotion: 'fly', size: 1, diet: 'carnivore', cover: 'skin' },
+      { coloring: 'camo' }, { coloring: 'bright' }, { coloring: 'warning', warm: false, cover: 'skin', size: 0 }, { warm: false, cover: 'skin', legs: 8, eyes: 6, tail: 'none', size: 0, coloring: 'warning' },
+    ];
+    const scales = [0.75, 1, 1.4, 1.9];
+    const col = [0, 64, 150, 270];
+    plans.forEach((over, i) => {
+      const { juvenile = false, ...look } = over;
+      scales.forEach((sc, j) => {
+        const spec = { look: { ...base, ...look }, juvenile, far: sc < 1 };
+        const parts = sprites.marker();
+        parts.ring.texture = sprites.ownerRing(spec, i % 3 === 0);
+        parts.ring.tint = [0xffd33d, 0x9aa4ae, 0x5ab0ff][i % 3];
+        parts.body.texture = sprites.body(spec);
+        parts.body.scale.x = (i + j) % 2 ? -1 : 1;
+        const x = 30 + (i % 2) * 450 + col[j];
+        const y = 140 + Math.floor(i / 2) * 80;
+        parts.root.position.set(x + 20, y);
+        parts.root.scale.set(sc);
+        layer.addChild(parts.root);
+      });
+    });
+    v.app.stage.addChild(layer);
+    window.__scales = layer;
+  });
+  await page.waitForTimeout(200);
+  await shot(page, 'desktop-sprite-scales.png');
+  await page.evaluate(() => window.__scales.destroy({ children: true }));
 
   // A taller window, so every gallery row clears the map legend.
   await page.setViewportSize({ width: 1280, height: 1040 });
@@ -636,7 +676,7 @@ async function desktopChecks(browser, base, errors) {
         const x = x0 + left + cell / 2 + cx * cell;
         const y = top + 8 + cell / 2 + ry * cell;
         parts.root.position.set(x, y - 8);
-        parts.root.scale.set([3.2, 2.8, 2.2, 1.8][spec.look.size]);
+        parts.root.scale.set([2.8, 2.4, 2, 1.7][spec.look.size]);
         layer.addChild(parts.root);
         label(text, x, y + cell / 2 - 22, false);
       });
@@ -679,6 +719,81 @@ async function desktopChecks(browser, base, errors) {
   step(`texture burst: ${morph.burstMade} new bodies in ${morph.burstMs.toFixed(1)} ms (${per(morph.burstMs, morph.burstMade)} ms each, slowest ${morph.maxMakeMs.toFixed(2)} ms); `
     + `cache ${morph.textures} textures, ${(morph.bytes / 1048576).toFixed(1)} MB, ${morph.evicted} evicted`);
   if (morph.made < morph.shown / 2 || morph.textures > 256 + 8) throw new Error(`morphology gallery: ${JSON.stringify(morph)}`);
+
+  // Frame cost with ~500 creatures on screen: 500 markers over the map from
+  // 60 distinct looks (as a crowded view would hold), each drawn facing
+  // either way; the CPU time of a frame (render plus a GPU finish, so the
+  // software GL of a headless browser is counted) and the frame interval.
+  const perf = await page.evaluate(async () => {
+    const v = window.evo.screen().view;
+    const sprites = v.sprites;
+    const Container = v.markerLayer.constructor;
+    const layer = new Container();
+    const base = { size: 1, diet: 'herbivore', warm: true, locomotion: 'walk', cover: 'fur', coloring: 'drab' };
+    const diets = ['herbivore', 'omnivore', 'carnivore'];
+    const covers = ['skin', 'fur', 'scales', 'armor'];
+    const colorings = ['drab', 'camo', 'bright', 'warning'];
+    const locos = ['walk', 'walk', 'walk', 'swim', 'glide', 'fly'];
+    const looks = Array.from({ length: 60 }, (_, i) => ({
+      ...base, size: i % 4, diet: diets[i % 3], warm: i % 5 !== 0, cover: covers[(i >> 1) % 4], coloring: colorings[(i >> 2) % 4], locomotion: locos[i % 6],
+      legs: [4, 4, 2, 6, 8][i % 5], ears: [2, 2, 4, 0][i % 4], ear_shape: ['round', 'pointed', 'long', 'fan'][(i >> 2) % 4], tail: ['thin', 'bushy', 'fin', 'club', 'prehensile', 'none'][i % 6],
+    }));
+    const gl = v.app.renderer.gl;
+    const px = new Uint8Array(4);
+    // A one-pixel read waits for the GPU (or the software rasterizer) to finish the frame.
+    const sync = () => gl?.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const timeFrames = (n) => {
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const a = performance.now();
+        v.app.render();
+        sync();
+        out.push(performance.now() - a);
+      }
+      return out.sort((a, b) => a - b);
+    };
+    timeFrames(5);
+    const empty = timeFrames(30);
+    const t0 = performance.now();
+    const s0 = v.spriteStats();
+    const { width, height } = v.app.screen;
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let i = 0; i < 500; i++) {
+      const spec = { look: looks[i % looks.length], juvenile: i % 7 === 0 };
+      const parts = sprites.marker();
+      parts.ring.texture = sprites.ownerRing(spec, false);
+      parts.ring.tint = 0x9aa4ae;
+      parts.body.texture = sprites.body(spec);
+      parts.body.scale.x = i % 2 ? 1 : -1;
+      parts.root.position.set(20 + rnd() * (width - 40), 20 + rnd() * (height - 40));
+      layer.addChild(parts.root);
+    }
+    const build = { ms: performance.now() - t0, made: v.spriteStats().made - s0.made, makeMs: v.spriteStats().makeMs - s0.makeMs };
+    v.app.stage.addChild(layer);
+    // The first frame uploads the new textures.
+    const [first] = timeFrames(1);
+    timeFrames(5);
+    const times = timeFrames(60);
+    const intervals = [];
+    await new Promise((resolve) => {
+      let last = performance.now();
+      const tick = (t) => {
+        intervals.push(t - last);
+        last = t;
+        if (intervals.length < 90) requestAnimationFrame(tick); else resolve();
+      };
+      requestAnimationFrame(tick);
+    });
+    window.__perfLayer = layer;
+    intervals.sort((a, b) => a - b);
+    const med = (a) => a[Math.floor(a.length / 2)];
+    return { renderer: v.app.renderer.name, emptyMed: med(empty), first, build, renderMed: med(times), renderP90: times[Math.floor(times.length * 0.9)], frameMed: med(intervals), frameP90: intervals[Math.floor(intervals.length * 0.9)], textures: v.spriteStats().textures };
+  });
+  await shot(page, 'desktop-perf-500.png');
+  await page.evaluate(() => window.__perfLayer.destroy({ children: true }));
+  step(`500 creatures: ${perf.build.made} new textures in ${perf.build.makeMs.toFixed(1)} ms (${per(perf.build.makeMs, perf.build.made)} ms each), first frame (uploads) ${perf.first.toFixed(1)} ms; `
+    + `frame (${perf.renderer}) median ${perf.renderMed.toFixed(2)} ms (p90 ${perf.renderP90.toFixed(2)}; ${perf.emptyMed.toFixed(2)} without them), frame interval median ${perf.frameMed.toFixed(1)} ms (p90 ${perf.frameP90.toFixed(1)}); ${perf.textures} textures`);
   await page.close();
 }
 
@@ -778,10 +893,13 @@ async function main() {
     // The phone sections tap and hold their own organisms for minutes: no
     // wild predators, so the lineage outlives the test on a slow machine.
     // Two-day ranked seasons, so the hall of fame fills within seconds.
-    await withServer(9, (base) => phoneChecks(browser, base, 'iPhone 13', 'iphone13', errors), ['--no-wild', '--season-days', '2']);
-    await withServer(10, (base) => phoneChecks(browser, base, 'Pixel 7', 'pixel7', errors), ['--no-wild', '--season-days', '2']);
-    await withServer(11, (base) => desktopChecks(browser, base, errors));
-    await withServer(12, (base) => worldChecks(browser, base, errors), ['--no-wild', '--world', 'main,name=Mainland', '--world', 'isle,seed=5,size=48,name=Isle']);
+    // EVO_E2E_ONLY=desktop (or iphone13, pixel7, worlds) runs one section, for quick looks at its screenshots.
+    const only = process.env.EVO_E2E_ONLY;
+    const run = (name) => !only || only.split(',').includes(name);
+    if (run('iphone13')) await withServer(9, (base) => phoneChecks(browser, base, 'iPhone 13', 'iphone13', errors), ['--no-wild', '--season-days', '2']);
+    if (run('pixel7')) await withServer(10, (base) => phoneChecks(browser, base, 'Pixel 7', 'pixel7', errors), ['--no-wild', '--season-days', '2']);
+    if (run('desktop')) await withServer(11, (base) => desktopChecks(browser, base, errors));
+    if (run('worlds')) await withServer(12, (base) => worldChecks(browser, base, errors), ['--no-wild', '--world', 'main,name=Mainland', '--world', 'isle,seed=5,size=48,name=Isle']);
     if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);
     console.log(`mobile test passed; screenshots in ${shots}`);
   } catch (e) {

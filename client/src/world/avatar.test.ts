@@ -5,7 +5,8 @@ import {
   avatarDrawing, avatarSpriteSvg, avatarSvg, captionOf, coveringOf, describeAvatar, dominantCover, drawingShapes, hasFangs, lookOf, morphologyOf,
   shapeBounds, wingStage, type AvatarDrawing, type AvatarModel as Morphology,
 } from './avatar';
-import { creatureShapes, describeLook, FUR_FRINGE, palette } from './creature';
+import { describeLook, palette } from './creature';
+import { spriteDrawing } from './spriteArt';
 import { limbOutline } from '../art/geom';
 import { drawingBounds } from '../art/render';
 import { GALLERY } from '../art/gallery';
@@ -343,13 +344,11 @@ describe('covering: caption and drawing agree', () => {
     expect(extent(morph({ fur: 1 }))).toBeGreaterThan(extent(morph({ fur: 0.5 })));
   });
 
-  it('the world sprite draws the same fur fringe (FUR_FRINGE) for a furred cold-blooded body', () => {
+  it('the world sprite of a furred cold-blooded body draws the same pelt (the art library at sprite detail)', () => {
     const l = { ...lookOf(design({ fur: 0.5 }, { thermo: 'cold' })) };
     expect(l.cover).toBe('fur');
-    const shapes = creatureShapes({ look: l, juvenile: false });
-    const body = shapes.find((s) => s.kind === 'ellipse' && s.x === 0 && s.y === 0)! as Extract<typeof shapes[number], { kind: 'ellipse' }>;
-    const fringe = shapes.find((s) => s.kind === 'poly' && s.fill === palette(l).dark && s.points.length === 28) as Extract<typeof shapes[number], { kind: 'poly' }>;
-    expect(fringe).toBeDefined();
-    expect(Math.max(...fringe.points.map(([x]) => x))).toBeCloseTo(body.rx * (1 + FUR_FRINGE));
+    const d = spriteDrawing({ look: l, juvenile: false }).drawing;
+    // The soft clumped rim of fur on the body's silhouette, as on the avatar.
+    expect(pieces(d, 'body')[0].points.length).toBeGreaterThan(32);
   });
 });

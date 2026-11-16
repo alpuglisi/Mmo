@@ -2159,33 +2159,38 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   snow blends to white; hill shading from the north-west. A legend over the
   map gives the drought, flood, snow and ice shares. Organisms from `state`
   are drawn as **creature sprites by body plan** (`world/creature.ts`,
-  `world/sprites.ts`) from the server's `look`: body radius by size class
-  (juveniles at 65 % with a bigger head); herbivores a round muzzle (horns
-  when large), omnivores a short snout, carnivores a long snout with fangs
-  and a brow; warm-blooded bodies round with ears and a stubby tail,
-  cold-blooded ones long and low with a tapering tail; a fur fringe, scale
-  dots, armor plates and a heavy outline, or a pale belly on bare skin; drab
-  browns, camouflage blotches, a bright display crest or yellow-and-black
-  warning bands; legs, or fins and a tail fin for swimmers, a membrane for
-  gliders, a raised wing for fliers. The owner is an ellipse at the feet
+  `world/spriteArt.ts`, `world/sprites.ts`) from the server's `look`, in the
+  style of the founder avatar: each look becomes an avatar model and is
+  drawn by the creature art library (`client/src/art/`, "soft field guide":
+  merged silhouette with one ink outline, one highlight and one shade rim,
+  light from the top left) at its sprite level of detail (no fine
+  textures), with a bolder outline (1.15 px at any size) and big heads so
+  it reads at 15-40 px. Body radius by size class (juveniles at 65 % with a
+  bigger head); diet in the muzzle (deep and round on herbivores, horns
+  when large; square with a brow and fangs on carnivores), warm-blooded
+  bodies round and upright, cold-blooded ones long and low with sprawled
+  legs; fur (a soft clumped rim; feathers with wings), scales, armor plates
+  or bare skin; drab, camouflage blotches, a bright crest and spots or
+  yellow and ink-black warning bands; legs, or a dorsal fin and a tail fin
+  for swimmers, gliding flaps or wings. The owner is an ellipse at the feet
   (yours yellow and stronger, wild grey, other players a stable hue each); a
   ring round the body when possessed (red) or pregnant (green); and an icon
   for what it is doing (z resting or dormant, ! fleeing, crosshair hunting,
   heart seeking a mate). Sprites face the way they last moved (your own by
-  the server's heading). The
-  morphology in `look` shows too: 0–8 legs, the near ear of each pair
-  (round, as today, pointed, long or fan; round ears stay flush on
-  cold-blooded and swimming bodies, as before), the near-side eyes plus a
-  midline one for odd counts (a lone eye big and frontal), placed forward
-  (near the snout, the far eye peeking past the near one: a predator's look)
-  or on the side (high and back on the head: a prey's look), a thin (today's),
-  bushy, fin, club or curled prehensile tail or none, three snout lengths and
-  small or large fangs; a look without those fields draws exactly the
-  sprites from before morphology (a test hashes all 1,536 classes × stage
-  against them). Each distinct drawing is drawn once into a texture
-  (`TextureCache`, supersampled so it stays crisp as markers grow with zoom);
-  a marker is four sprites sharing those textures, so hundreds of organisms
-  cost no per-frame drawing.
+  the server's heading; the texture faces right and is mirrored). The
+  morphology in `look` shows too: 0–8 legs, ears (0, 2 or 4; round, pointed,
+  long or fan, three sizes; round ears stay flush on cold-blooded and
+  swimming bodies), eyes (count, size, and placement: forward-set near the
+  snout with the far eye showing, side-set high and back), a thin, bushy,
+  fin, club or prehensile tail or none in three lengths, three snout lengths
+  and small or large fangs (tusks on herbivores); a look without those
+  fields draws the contract defaults (a test checks it draws exactly as the
+  defaults sent, and a golden hash pins the model of every class). Each
+  distinct drawing is rasterised once onto a canvas texture
+  (`art/canvas.ts`, the house-style renderer for canvas: same curves and
+  layers as the SVG one, supersampled so it stays crisp as markers grow with
+  zoom); a marker is four sprites sharing those textures, so hundreds of
+  organisms cost no per-frame drawing.
 
   **Creature textures at scale.** Every morphology field is quantized (and
   what is not drawn, such as a swimmer's legs or an absent tail's length,
@@ -2633,7 +2638,8 @@ ui/          DOM screens and panels; panels re-render at most 4×/s and rebuild 
              when their content changes, so they stay clickable under 10 Hz state pushes
 world/       PixiJS view: camera, tile-map texture (terrain.ts decodes and colors the grid), overlays,
              markers, hit testing, mouse/touch gestures (tap, long press, drag, pinch);
-             creature.ts: body plan → shapes (pure, tested); sprites.ts: shapes → cached textures;
+             creature.ts: body plan → texture key (pure, tested); spriteArt.ts: look → art-library drawing;
+             sprites.ts: drawings → cached canvas textures (art/canvas.ts);
              visionCones.ts: your selected organism's vision cones from its eyes and heading (pure, tested)
 serverOrigin.ts  which game server to talk to (URL, saved, build default, same origin)
 capacitor.config.ts  the iOS / Android wrapper
@@ -2765,11 +2771,15 @@ and a pinch in zooms back out; the inspector shows in the sheet; the legend
 toggles; **Split** in the scrolling toolbar makes a second group and two
 taps claim a territory for it, with no sideways scroll. Then a 1280×800 desktop: sidebar on the right with tabs on top,
 phone controls hidden, sprite cache stats (textures shared per class), and
-a gallery of 20 body plans drawn with the game's sprite code, then a
-labelled gallery of 42 morphology variants and a burst of 150 new body
-textures, logging the time per texture and the cache size. Screenshots:
+a gallery of 20 body plans drawn with the game's sprite code, the same
+body plans at the marker scales the map uses (0.75 far, 1, 1.4, 1.9), then a
+labelled gallery of morphology variants and a burst of 150 new body
+textures, logging the time per texture and the cache size, and 500
+creatures on screen, logging the frame time. Screenshots:
 `iphone13-*.png`, `pixel7-*.png`, `desktop-world.png`,
-`desktop-sprite-gallery.png`, `desktop-morphology-gallery.png`.
+`desktop-sprite-gallery.png`, `desktop-sprite-scales.png`,
+`desktop-morphology-gallery.png`, `desktop-perf-500.png`
+(`EVO_E2E_ONLY=desktop` runs just that section).
 `e2e/onboarding.mjs` (after the mobile test in `npm run e2e`; alone with
 `npm run e2e:onboarding`) opens the client without `?tour=off`: on a
 1280×800 desktop a new player gets the tour after founding with focus on

@@ -92,12 +92,24 @@ puts the same word in the preview caption: the server's class
 `avatarDrawing(model, { lod: 'sprite' })` keeps the silhouette, the rim
 shading, the eyes (no lids) and the bold markings, and drops fine textures
 (hair, scales, feather rows, creases, whiskers, toe lines). `avatarSpriteSvg`
-renders it into a square of any size with a proportionally heavier outline:
-the shape a map sprite needs. To port the world sprites (`world/creature.ts`),
-render `avatarSpriteSvg` for each distinct appearance key into the texture
-cache (an `Image` from an SVG data URL, or a canvas), facing right, and flip it
-for headings to the left; the key is the same quantised look the cache uses
-today.
+renders it into a square of any size with a proportionally heavier outline.
+
+The world map's sprites are drawn this way (`world/spriteArt.ts`): each
+distinct appearance key (the quantised `look`, `world/creature.ts`
+`creatureKey`) becomes an `AvatarModel` (`spriteModel`: size buckets to gene
+values, diet to carnivory, locomotion to wings or flaps, coverings,
+colourings), drawn with `lod: 'sprite'` at about 1/40 px per unit per body
+radius, the ground line on the owner ring, with a 1.15 px outline whatever
+the size (bolder than the portrait relative to the creature) and rims of
+about 0.13 and 0.3 body radii. Swimmers add a dorsal fin. `world/sprites.ts`
+rasterises it once per key with `canvas.ts`, the canvas twin of `render.ts`
+(the same Catmull-Rom curves and the same four layers; far-side groups are
+left flat), facing right, and a marker flips it for headings to the left.
+Zoomed out, markers use the class drawing (morphology at its defaults), so
+few textures serve a wide view. `e2e/mobile.mjs` saves the map galleries
+(`desktop-sprite-gallery.png`, `desktop-sprite-scales.png` at the real
+marker scales, `desktop-morphology-gallery.png`): check them with the
+library gallery when a part changes.
 
 ## Checking your work
 
