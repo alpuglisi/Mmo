@@ -242,6 +242,8 @@ async function main() {
       const target = await page.evaluate((id) => {
         const v = window.evo.screen().view;
         const o = window.evo.model.state.organisms.find((x) => x.id === id);
+        // It can die between the alive check and here: the next attempt picks another.
+        if (!o) return null;
         v.centerOn(o.x, o.y);
         const t = v.terrain;
         const land = (x, y) => {
@@ -299,7 +301,7 @@ async function main() {
       const v = window.evo.screen().view;
       v.cam.zoom = 18;
       const m = v.markers.get(id);
-      v.centerOn(m.x, m.y);
+      if (m) v.centerOn(m.x, m.y);
     }, id);
     await page.waitForTimeout(400);
     await page.screenshot({ path: path.join(shots, 'vision-cones.png') });
