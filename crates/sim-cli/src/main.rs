@@ -14,6 +14,7 @@ use evo_sim::organism::{Action, DeathCause, Dormancy, Infection};
 use evo_sim::{presets, render, Balance, Gene, LodConfig, PlayerId, ScoringConfig, World, WorldConfig, WILD};
 
 mod adaptive;
+mod genetics;
 mod rankcheck;
 mod stats;
 mod sweep;
@@ -32,6 +33,7 @@ USAGE:
                     [--adaptive] [--max-seeds N] [--batch N] [--tolerance F] [--offline-owner P ..]
     evo-sim rankcheck [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--spread F] [--screen-days D,..] [--eta F] [--out PATH]
                       [--from PATH]
+    evo-sim genetics [--long] [--level genome|ecology|all] [--out DIR] [--seed N] [--years N] [--size N] [--seeds N]
     evo-sim designs
 
 COMMANDS:
@@ -44,6 +46,9 @@ COMMANDS:
              ranks predict full-run ranks (Spearman correlation, top-1/eta kept); with
              4+ seeds also seed-split reliabilities (noise vs screen error) and
              simulated screened sweeps (chance the true best survives a cut)
+    genetics Statistical population-genetics validation over many generations and
+             replicates (Wright–Fisher on the real genome code, plus full worlds);
+             writes report.md and checks.csv (`evo-sim genetics --help`)
     designs  List the sample player designs (and the migrating one) and their point costs
 
 OPTIONS:
@@ -341,6 +346,10 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("genetics") {
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        return genetics::main(&rest);
+    }
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
