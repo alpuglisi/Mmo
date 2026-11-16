@@ -44,7 +44,9 @@ pub struct EcoOpts {
     pub seeds: u64,
     pub sample_days: u32,
     pub seed: u64,
-    /// The carnivore-diet rules on (`Balance::carnivore_diet`).
+    /// The carnivore-diet rules and predator brakes on
+    /// (`Balance::carnivore_diet`) and the predators in their niches
+    /// (`presets::niche_world`).
     pub meat: bool,
 }
 
@@ -236,7 +238,7 @@ fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
     let seed = opts.seed + world;
     let balance = if opts.meat { Balance::default().carnivore_diet() } else { Balance::default() };
     let config = WorldConfig { seed, width: opts.size, height: opts.size, balance, ..Default::default() };
-    let mut w = presets::standard_world(config, 1);
+    let mut w = if opts.meat { presets::niche_world(config, 1) } else { presets::standard_world(config, 1) };
     let tpd = w.config.ticks_per_day;
     let days = opts.days;
     let names: Vec<String> = w.lineages.iter().map(|l| l.name.clone()).collect();

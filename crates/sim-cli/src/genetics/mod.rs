@@ -289,8 +289,9 @@ USAGE:
     --size N        Ecology: map size (default 64 quick, 96 long)
     --seeds N       Ecology: worlds, run in parallel (default 1 quick, 4 long)
     --sample-days N Ecology: days between samples (default 10)
-    --meat          Ecology: run with the carnivore-diet rules on (`Balance::carnivore_diet`;
-                    off by default)
+    --meat          Ecology: run with the carnivore-diet rules and predator brakes on
+                    (`Balance::carnivore_diet`; off by default) and the predators in their
+                    niches (`presets::niche_world`)
     --only NAME     Genome level: only the check groups whose name contains NAME
                     (neutral drift, mutation-drift equilibrium, morphology step mutation,
                     mutation rates, dominance, additive inheritance, recessive load,

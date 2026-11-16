@@ -5943,6 +5943,123 @@ plants and insects than an obligate carnivore, would let them coexist)
 and the founding-year cost of the territory rule. LOD cohorts
 (`world::lod`) don't model these rules.
 
+### Predators in their niches
+
+The next round *Predators that live on meat* left: separate the two
+predators' niches, and add brakes so a predator can't hunt its prey to the
+last animal. Decided up front, from real ecology: the pack hunters become
+larger cooperative hunters living mainly on the herds, the red fox a small,
+flexible mesopredator that eats fruit and plants in season as well as voles
+and newts; predators switch away from prey that has grown rare (a type-III
+functional response), and litters follow the mother's condition. The
+behaviours are heritable: the `Balance` tunables are only global scales and
+switches, and how strongly each animal does a behaviour comes from its
+existing genes (no new genes, no species named in the simulation code), so
+selection can tune them.
+
+**The rules, gene by gene** (`world::apply`, `world::decide`):
+
+| Rule (tunable) | What the genes set |
+| --- | --- |
+| All of the carnivore-diet rules | `meat_reliance`: from carnivory, 0 up to 0.45 (`HUNTER_CARNIVORY`), rising evenly to 1 at 0.7 (`OBLIGATE`) and above. Before, the rules applied in full above 0.7 and not at all below; a flexible hunter (the niche fox at 0.65: 0.8) now gets most of them, a burrowing omnivore (0.5) a fifth |
+| Gorging (`carnivore_fat`) | capacity `carnivore_fat × reliance × (0.5 + fat stores)` (60 at fat stores 0.5; before `× (1 + fat stores)`) |
+| Carcass scent (`carcass_scent`) | range `× reliance × (0.5 + nose)`; a flexible hunter off a good patch of plants follows its nose to a carcass too |
+| Provisioning (`provisioning`) | care = the higher of pack instinct and group tolerance: urge and amount `× 2 × care`; any fed, non-pregnant adult provides, for its own pregnant mate or dependent young in full and, by its pack instinct, for the other pregnant females and dependent young of its kind (helpers at the den) |
+| Breeding territory (`breeding_territory`) | radius `× reliance × (1 + aggression − group tolerance)`, clamped to 0.25–2: a lone, aggressive hunter holds a wide territory, a tolerant pack shares its range. **And a leak fixed**: a female in a taken territory only stopped courting, while males still courted and bred her; now she isn't courted either (`look`), and the territory really is one litter at a time |
+| Prey switching (`prey_switching`, new) | a hunter gives up a prey species for the day with chance `min(1, 2 × pickiness) × (1 − r²)`, `r` = its head count over `prey_switching ×` its founding count (capped at 1); drawn once per hunter, prey lineage and day (a hash of the hunter's id, the prey lineage and the day), so it passes over all of that species, its clutches included (`raid_clutch`) |
+| Litters follow condition (`condition_litter`, new) | a mother carries `1 − condition_litter × flex × (1 − nourished)` of her litter, `nourished = (90 − hunger + fat) / 60` (fat stores carry a hungry mother), `flex = min(1, 2 × litter fraction)` (the litter size gene: a big litter shrinks, a single young can't); the pregnancy's food cost follows the same share, so a starving mother resorbs young rather than starve |
+
+**The designs** (`presets::niche_world`, `niche_fox`, `niche_pack_hunters`;
+the standard designs are unchanged): the fox at carnivory 0.65 (0.85),
+fangs 0.3 (0.5: long fangs crop plants badly), fat stores 0.5, group
+tolerance 0.2, aggression 0.7; the pack hunters at body size 0.30 (1.1 kg;
+0.22, 0.8 kg), carnivory 0.95 (0.9), fat stores 0.5 (39.5 points, 41.7
+before). Carnivory 0.65 against 0.95 is a full body-plan gap (0.3): the
+two neither interbreed nor count as one kind (with the old fox the brakes
+let the fox absorb the pack hunters' genes: its group tolerance rose by
+0.57 and its pack instinct by 0.68 over 6 years).
+
+**Over the years** (`predlong --meat`, seeds 31–38, 96×96, 6 years;
+survived = any alive, viable = both sexes at the end; every row has the
+brakes on unless noted):
+
+| Run | Fox survived (viable) | Pack survived (viable) | Prey lost |
+| --- | --- | --- | --- |
+| *Predators that live on meat* (v26 rules, old designs) | 3 (2) | 6 (6) | none |
+| Fox 0.65; pack 0.45 (3 kg), no brakes | 7 (7) | 1 (1) | antelope, herds (2 seeds), newts |
+| Fox 0.65; pack 0.45 | 7 (7) | 1 (0) | none |
+| Fox 0.65; pack 0.36 / 0.40 | 8 (8) / 7 (7) | 2 (2) / 1 (1) | none |
+| Same with helpers at the den, pack 0.36 / 0.45 | 8 (7) / 7 (7) | 2 (2) / 1 (1) | newts / antelope (1 seed) |
+| Fox 0.26; pack 0.30 / 0.34 at carnivory 0.95 | 8 (8) | 2 (2) / 2 (1) | none / newts (1) |
+| Fox 0.65; old pack (0.22, 0.9) / 0.22 at 0.95 | 8 (8) | 3 (3) / 2 (2) | newts (1) / none |
+| Old fox and pack, brakes on | 3 (3) | 7 (7) | newts and burrowing omnivores (1) |
+| Territorial fox (group tolerance 0.2, aggression 0.7); old pack / pack 0.28 at 0.95 | 8 (8) / 6 (6) | 2 (2) / 3 (3) | none / newts (1) |
+| **Territory leak fixed**, old pack | 7 (7) | 7 (7) | newts (1) |
+| **Territory leak fixed, pack 0.30 at 0.95 (the niche designs)** | **6 (6)** | **7 (7)** | **none** (lowest: voles 53, antelope 13, newts 10, omnivores 20) |
+| Same, pack 0.34 / fox 0.28 | 6 (6) / 6 (5) | 6 (5) / 5 (5) | none |
+
+The big pack hunter failed as the small one had in *Predators over the
+years*: at 1.8–3 kg a vole or newt covers too little of its day, it rarely
+brings down a grown antelope or grazer before its pack holds, and pregnant
+and nursing females hunt 60–80% of the time at hunger 65–90 and starve
+while the males court (sex ratio 1:3 within the first year). What made
+both predators persist was the territory fix: with every predator limited
+by its own numbers neither booms to exclude the other. In the niche run
+the fox lives on voles (60% of its kills) and newts (36%) and plants; the
+pack hunters kill newts (41%) and voles (30%) by count but herd calves
+(17%) and antelope (7%) by weight. Pack hunters end at 43–291, foxes at
+7–92 (two seeds near the edge: 7 and 8).
+
+**Selection on the genes** (mean expressed value, start → end of 6 years,
+mean over the surviving seeds): the pack hunters' carnivory falls on all 7
+seeds (0.94 → 0.90, −0.038: above 0.95 a body eats no plants at all, and
+the nibbling pays); the fox's carnivory falls slightly (−0.017, on one
+seed 0.64 → 0.56) and its group tolerance and pack instinct rise (+0.04
+each; on one seed by 0.15). Fat stores, litter size, pickiness,
+aggression, nose and body size move by 0.01 or less on average, in no
+consistent direction: no selection visible on the brakes' genes in 6
+years (pickiness, which a hunter pays for in lost meals, is the one to
+watch over eras).
+
+**Why still off by default.** The long-run acceptance (both predators
+viable on 6 of 8 seeds, no prey lost) is met by the niche designs with
+the rules on; the 120-day sweep is not. `evo-sim sweep --size 96 --trials
+1 --seeds 12 --rounds 1 --seed 31 --niches --meat` scores **10.88** (±0.62;
+defaults 11.60; pack hunters survive on 10 of 12 seeds against 11): with
+predators limited by territories and the fox partly on plants, the prey
+boom in the first year (voles 705, newts 627 against 380 and 244) and the
+newts and toxic frogs sit at their population caps on 37 of 120 days
+(about 0.9 points of the sweep's cap penalty).
+Tried at 120 days (12 seeds; capped days per seed): without the litter
+rule 10.99, without prey switching 10.80, without territories 10.68 (44 capped
+days, the foxes near their own cap), with the fox at carnivory 0.85 11.02, the old pack
+11.10, founders exempt from territories 28 days (foxes 120, pack hunters 32), the new
+designs under the old rules 43 days (pack hunters 11 alive). With the
+standard designs the rules score 11.19 (`--meat`). The genetics harness's
+ecology level on fresh seeds (`evo-sim genetics --long --level ecology
+--meat`, 12 years, 4 worlds 96×96, seeds 1–4) passes every strict check
+(7 of 7, 9 of 9 soft) but keeps both predators in only one world (fox 94,
+pack hunters 225), the fox in one more (111) and the pack hunters in one
+more (203); no prey lineage is lost (lowest at the end: newts 134). `compare
+--adaptive` and the tournaments were not rerun: the defaults are unchanged
+(the sweep still scores 11.60 bit for bit, so they are too).
+
+Snapshots move to format version 27 (the two new tunables; versions 10–26
+read them as 0, `serde_util::before_v27`, test
+`version_26_snapshots_restore_without_predator_brakes`). The gene-scaled
+rules, the territory fix and the helpers change only worlds that turn the
+rules on. `Balance::carnivore_diet()` now turns on all eight;
+`carnivore_diet_off()` turns them off. `evo-sim run|sweep|compare
+--niches` founds the niche designs and `--meat` turns the rules on (both
+for `predlong --meat` and `genetics --meat`; `predlong --meat-only` keeps
+the standard designs). `predlong` also prints each predator's sexes at the
+end, each prey's lowest count and the gene means above.
+
+Left for the next round: the first-year prey boom (a founding-year grace
+for territories spared the pack hunters but let the foxes boom), the
+fragile fox on fresh seeds, and LOD cohorts, which don't model any of
+these rules.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

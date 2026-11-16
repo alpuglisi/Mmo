@@ -299,7 +299,8 @@ fn header_and_errors() {
 /// morphology alleles in the legacy tally all off, which is what snapshots
 /// older than each of them read; and roaming hunters eating nothing, as
 /// before version 25 (`Balance::roaming_forage`); and the carnivore-diet
-/// rules off, as before version 26 ([`carnivore_diet_off`]). Worlds that
+/// rules and the predator brakes off, as before versions 26 and 27
+/// ([`carnivore_diet_off`]). Worlds that
 /// stand for older saves use them, so a restore from an older version
 /// compares equal.
 fn old_morph_rules(mut config: WorldConfig) -> WorldConfig {
@@ -309,7 +310,8 @@ fn old_morph_rules(mut config: WorldConfig) -> WorldConfig {
     config
 }
 
-/// The carnivore-diet tunables as snapshots before version 26 read them.
+/// The carnivore-diet tunables as snapshots before version 26 read them,
+/// and the predator brakes as snapshots before version 27 read them.
 fn carnivore_diet_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v26::OLD_VALUE;
     b.carcass_keep = old;
@@ -318,6 +320,14 @@ fn carnivore_diet_off(b: &mut crate::Balance) {
     b.carrion = old;
     b.provisioning = old;
     b.breeding_territory = old;
+    predator_brakes_off(b);
+}
+
+/// The predator brakes as snapshots before version 27 read them.
+fn predator_brakes_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v27::OLD_VALUE;
+    b.prey_switching = old;
+    b.condition_litter = old;
 }
 
 /// A small world, 1 day and 7 ticks in, under the old morphology rules
@@ -792,7 +802,7 @@ fn version_25_snapshots_restore_without_carnivore_diet() {
     assert_eq!(h.version, 25);
     assert!(h.restorable());
     // Without the six parameters (f32 each), against a version 26 snapshot.
-    assert_eq!(h.raw_len + 6 * 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    assert_eq!(h.raw_len + 6 * 4, SnapshotHeader::read(&w.snapshot_v26()).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.carrion, crate::serde_util::before_v26::OLD_VALUE);
     assert_eq!(r.config.balance.breeding_territory, crate::serde_util::before_v26::OLD_VALUE);
@@ -800,6 +810,31 @@ fn version_25_snapshots_restore_without_carnivore_diet() {
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v25() == old);
+}
+
+/// Version 26 snapshots (before the predator brakes) restore with the
+/// brakes off and the carnivore-diet values they stored, and are otherwise
+/// the same world.
+#[test]
+fn version_26_snapshots_restore_without_predator_brakes() {
+    let mut w = fixture_world();
+    let on = crate::Balance::default().carnivore_diet();
+    assert!(on.prey_switching > 0.0 && on.condition_litter > 0.0);
+    w.config.balance.prey_switching = on.prey_switching;
+    w.config.balance.condition_litter = on.condition_litter;
+    let old = w.snapshot_v26();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 26);
+    assert!(h.restorable());
+    // Without the two parameters (f32 each), against a version 27 snapshot.
+    assert_eq!(h.raw_len + 2 * 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.prey_switching, crate::serde_util::before_v27::OLD_VALUE);
+    assert_eq!(r.config.balance.condition_litter, crate::serde_util::before_v27::OLD_VALUE);
+    predator_brakes_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v26() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

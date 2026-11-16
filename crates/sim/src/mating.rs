@@ -255,5 +255,11 @@ mod tests {
         // Similar designs of different owners can still interbreed.
         assert!(fertility(&preset("Steppe antelope"), &preset("Herd grazers")) > 0.9);
         assert!(fertility(&preset("Red fox"), &preset("Pack hunters")) > 0.5);
+        // In their niches (`presets::niche_world`) the fox (carnivory 0.65)
+        // and the pack hunters (0.95) are a full body-plan gap apart: no
+        // hybrids, and neither counts the other as its own kind.
+        let (fox, pack) = (genome(&crate::presets::niche_fox()), genome(&crate::presets::niche_pack_hunters()));
+        assert_eq!(fertility(&fox, &pack), 0.0);
+        assert!(!kin(&fox, &pack));
     }
 }
