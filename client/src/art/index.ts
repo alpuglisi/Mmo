@@ -7,6 +7,7 @@ export * from './palette';
 export * from './render';
 export { body, type BodyParams, type BodyPart } from './parts/body';
 export { head, neck, eyeSpot, eyeShapes, fang, tusk, horn, type HeadParams, type HeadPart, type EyeParams } from './parts/head';
+export { headTop, type HeadTopEye, type HeadTopParams, type HeadTopPart } from './parts/headTop';
 export { ear, earAxis, earLength, type EarPart } from './parts/ears';
 export { leg, foot, type FootStyle, type LegParams, type LegPart, type FootPart } from './parts/legs';
 export { tail, tailTip, type TailParams, type TailPart } from './parts/tail';

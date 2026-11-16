@@ -23,8 +23,13 @@
 import './eyeView.css';
 import { eyeFieldWidth, eyePlacements, EYE_PLACEMENT_MAX, PAIR_STEP, type EyePlacement, type Morphology } from '../../morphology';
 import { arcContains, signedAngle, type Arc, type VisionStats } from '../../vision';
+import { INK } from '../../art/palette';
+import { groupSvg, shapeSvg } from '../../art/render';
+import { headTop, type HeadTopPart } from '../../art/parts/headTop';
+import { coveringOf, morphologyOf, paintOf } from '../../world/avatar';
 import { h } from '../dom';
 import type { HandleSpec } from './builder';
+import { SIDE_DESIGN } from './sideView';
 import { azimuthOf, polar, s, wedgePath } from './svg';
 
 /** Radius of the field-of-view rim, of the head (eyes sit on its outline), of the midline eye's spot on the forehead. */
@@ -36,6 +41,12 @@ const PAD_X = 20;
 const PAD_TOP = 40;
 const PAD_BOTTOM = 30;
 const HINT_KEY = 'evo.eyeViewHint';
+/**
+ * The head's ink outline and rims in view units: the side view's (art
+ * library `OUTLINE_PX`, `RIM`) at this panel's slightly larger scale, so the
+ * two drawings read as one creature side by side.
+ */
+const ART = { outline: 1.7, rim: { light: 2.2, shade: 5 } } as const;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 const round = (v: number): number => Math.round(v);
@@ -120,16 +131,22 @@ function blindIcon(x: number, y: number, size: number): SVGElement {
     s('line', { x1: -8, y1: 7, x2: 8, y2: -7, class: 'ev-blind-icon-slash' }));
 }
 
-/** A drawn eye on the head: an almond with the iris looking outwards along `az`. */
-function eyeShape(x: number, y: number, az: number, size: number, i: number): SVGElement {
-  const r = 4 + 4 * size;
-  const rx = r * 1.3;
-  const ry = r * 0.95;
-  return s('g', { class: 'ev-eye', 'data-eye': i, transform: `translate(${f(x)} ${f(y)}) rotate(${f(az)})`, 'aria-hidden': 'true' },
-    s('path', { d: `M${f(-rx)},0 Q0,${f(-ry * 1.9)} ${f(rx)},0 Q0,${f(ry * 1.9)} ${f(-rx)},0 Z`, class: 'ev-eye-white' }),
-    s('circle', { cx: 0, cy: f(-ry * 0.3), r: f(ry * 0.68), class: 'ev-eye-iris' }),
-    s('circle', { cx: 0, cy: f(-ry * 0.42), r: f(ry * 0.34), class: 'ev-eye-pupil' }),
-    s('circle', { cx: f(rx * 0.22), cy: f(-ry * 0.62), r: f(Math.max(0.8, ry * 0.15)), class: 'ev-eye-glint' }));
+/** The head, snout, ears and body from above, in the art library's style (`art/parts/headTop.ts`), painted like the side view's creature. */
+function headArt(cur: Morphology, eyes: EyePlacement[], spots: [number, number][], snoutTip: number): HeadTopPart {
+  const model = morphologyOf(SIDE_DESIGN, cur);
+  return headTop({
+    r: HEAD_R, snoutTip, carn: model.carnivory, cold: !model.warm,
+    ears: { count: cur.ear_count, shape: cur.ear_shape, size: cur.ear_size },
+    eyes: eyes.map((e, i) => ({ x: spots[i][0], y: spots[i][1], az: e.side === 'mid' ? 0 : e.azimuth, r: 5 + 3.8 * cur.eye_size })),
+    furry: coveringOf(model) === 'fur', lod: 'portrait',
+  }, paintOf(model));
+}
+
+/** Library markup (a group or shapes) as SVG nodes. */
+function artNode(markup: string, attrs: Record<string, string | number>): SVGGElement {
+  const g = s('g', { ...attrs, 'aria-hidden': 'true' });
+  g.innerHTML = markup;
+  return g;
 }
 
 /** Arrow keys for a 0–1 value: up / right raise it. */
@@ -235,9 +252,10 @@ export function createEyeView(opts: { idPrefix: string; uid: string }): EyeView 
       s('rect', { x: -RIM - 2, y: -RIM - 2, width: 2 * RIM + 4, height: 2 * RIM + 4, fill: '#fff' }),
       ...fields.map((d) => s('path', { d, fill: '#000' }))));
 
-    // The ground round the head, and the body trailing behind (which way is front).
+    // The ground round the head, and the body trailing behind (which way is front), under the overlays.
+    const art = headArt(cur, eyes, spots, snoutTip);
     add(s('circle', { r: RIM, class: 'ev-ground' }));
-    add(s('path', { d: `M-17,14 C-26,40 -24,68 -12,86 Q0,94 12,86 C24,68 26,40 17,14 Z`, class: 'ev-body' }));
+    add(artNode(groupSvg(art.body, 'body', { id: uid, outline: ART.outline, rim: ART.rim, animate: false }, INK), { class: 'ev-body' }));
 
     // Blind spots: greyed and hatched, outside every eye's view.
     const blindG = add(s('g', { class: 'ev-blind', mask: `url(#${uid}-unseen)` }));
@@ -265,14 +283,8 @@ export function createEyeView(opts: { idPrefix: string; uid: string }): EyeView 
     fields.forEach((d, i) => add(s('path', { d, class: 'ev-field-edge', 'data-eye': i })));
     add(s('circle', { r: RIM, class: 'ev-rim' }));
 
-    // The head from above: skull, snout forward with the nose at the tip.
-    const sw = 12;
-    add(s('path', {
-      d: `M${-sw - 5},${-HEAD_R + 9} C${-sw},${-snoutTip + 10} ${-sw * 0.7},${-snoutTip} 0,${-snoutTip} C${sw * 0.7},${-snoutTip} ${sw},${-snoutTip + 10} ${sw + 5},${-HEAD_R + 9} Z`,
-      class: 'ev-head ev-snout',
-    }));
-    add(s('ellipse', { cx: 0, cy: 2, rx: HEAD_R, ry: HEAD_R + 2, class: 'ev-head' }));
-    add(s('ellipse', { cx: 0, cy: -snoutTip + 3.5, rx: 5, ry: 3.4, class: 'ev-nose' }));
+    // The head from above, on top: skull, ears, snout forward with the nose at the tip.
+    add(artNode(groupSvg(art.head, 'head', { id: uid, outline: ART.outline, rim: ART.rim, animate: false }, INK), { class: 'ev-head' }));
 
     // Labels: plain words where the zones meet the rim.
     const label = (x: number, y: number, lines: string[], cls: string, anchor = 'middle') => {
@@ -333,7 +345,7 @@ export function createEyeView(opts: { idPrefix: string; uid: string }): EyeView 
         if (Math.abs(a) < EYE_PLACEMENT_MAX - 10) add(curvedArrow(a + sign * gap, a + sign * (gap + 18), r, 'ev-arrow ev-arrow-eye'));
       }
     });
-    eyes.forEach((e, i) => add(eyeShape(spots[i][0], spots[i][1], e.azimuth, cur.eye_size, i)));
+    art.eyes.forEach((shapes, i) => add(artNode(shapes.map(shapeSvg).join(''), { class: 'ev-eye', 'data-eye': i })));
 
     // Handles.
     const eyeR = 7 + 4 * cur.eye_size;

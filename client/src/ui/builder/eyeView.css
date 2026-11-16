@@ -7,12 +7,6 @@
   --ev-depth: var(--vision-depth, #3fb950);
   --ev-depth-text: var(--vision-depth-text, #56d364);
   --ev-blind: var(--vision-blind, #8b949e);
-  --ev-skin: var(--bb-skin, #b08968);
-  --ev-skin-edge: #5c4632;
-  --ev-nose: #2b1d12;
-  --ev-eye-white: #f6f8fa;
-  --ev-iris: #3a7bd5;
-  --ev-pupil: #0d1117;
   --ev-handle: var(--bb-handle, #ffd33d);
   --ev-ink: var(--text, #e6edf3);
   --ev-paper: var(--panel, #161b22);
@@ -20,7 +14,6 @@
 }
 .ev-ground { fill: color-mix(in srgb, var(--ev-ink) 4%, transparent); }
 .ev-rim { fill: none; stroke: var(--border); stroke-width: 1; }
-.ev-body { fill: var(--ev-skin); fill-opacity: 0.45; stroke: var(--ev-skin-edge); stroke-opacity: 0.5; stroke-width: 1; }
 
 /* Each eye's view: its own translucent wedge; crossings read darker. */
 .ev-field { fill: var(--ev-seen); fill-opacity: 0.2; }
@@ -41,13 +34,7 @@
 /* What a long snout hides of the depth zone. */
 .ev-occluded { fill: color-mix(in srgb, var(--ev-paper) 70%, transparent); stroke: var(--ev-blind); stroke-width: 0.8; stroke-dasharray: 2 2; }
 
-/* The head from above. */
-.ev-head { fill: var(--ev-skin); stroke: var(--ev-skin-edge); stroke-width: 1.2; }
-.ev-nose { fill: var(--ev-nose); }
-.ev-eye-white { fill: var(--ev-eye-white); stroke: #1b1f24; stroke-width: 0.9; }
-.ev-eye-iris { fill: var(--ev-iris); }
-.ev-eye-pupil { fill: var(--ev-pupil); }
-.ev-eye-glint { fill: #fff; }
+/* The head from above is the art library's (art/parts/headTop.ts): its own palette, outline and rims. */
 
 /* Labels: the zone's name, then its numbers, in the zone's colour. */
 .ev-label { font-size: 10.5px; font-weight: 700; paint-order: stroke; stroke: var(--ev-paper); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
