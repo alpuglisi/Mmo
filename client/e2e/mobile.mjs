@@ -8,7 +8,8 @@
 // organism selects it and shows the floating Possess button; the button and
 // a long press possess; one-finger drag pans and a two-finger pinch zooms.
 // Desktop: sidebar on the right, tabs on top, sprite cache stats, and a
-// gallery of body-plan sprites for the screenshots. Pages open with
+// gallery of body-plan sprites and one of morphology variants (with texture
+// generation timings) for the screenshots. Pages open with
 // `?tour=off` (e2e/onboarding.mjs tests the first-session tour).
 // Worlds: on a server with two worlds the phone's login screen shows the
 // world picker; the chosen world is the one played in, and the choice is
@@ -454,7 +455,7 @@ async function desktopChecks(browser, base, errors) {
     const keys = new Set([...v.markers.keys()].map((id) => v.markerInfo(id).key.split('|')[0]));
     return { ...s, classes: keys.size };
   });
-  if (stats.textures !== stats.made || stats.classes < 1 || stats.textures > stats.markers * 3 + 12) throw new Error(`sprite stats: ${JSON.stringify(stats)}`);
+  if (stats.textures + stats.evicted !== stats.made || stats.classes < 1 || stats.textures > stats.markers * 3 + 12) throw new Error(`sprite stats: ${JSON.stringify(stats)}`);
   step(`sprites: ${stats.markers} markers, ${stats.classes} body-plan classes, ${stats.textures} cached textures`);
   await page.evaluate(() => { const v = window.evo.screen().view; v.setFollow(true); v.cam.zoom = 14; });
   await page.waitForTimeout(1500);
@@ -505,6 +506,108 @@ async function desktopChecks(browser, base, errors) {
   await shot(page, 'desktop-sprite-gallery.png');
   await page.evaluate(() => window.__gallery.destroy({ children: true }));
   step(`sprite gallery: ${gallery.textures} textures cached`);
+
+  // Morphology variants (legs, ears, eyes, tails, snouts and fangs, and a few
+  // combinations), labelled, with the time to generate each texture.
+  const morph = await page.evaluate(() => {
+    const v = window.evo.screen().view;
+    const sprites = v.sprites;
+    const Graphics = v.highlight.constructor;
+    const Container = v.markerLayer.constructor;
+    const layer = new Container();
+    const bg = new Graphics();
+    layer.addChild(bg);
+    const base = { size: 1, diet: 'herbivore', warm: true, locomotion: 'walk', cover: 'skin', coloring: 'drab' };
+    const cold = { warm: false, cover: 'scales' };
+    const rows = [
+      ['legs', [
+        ['0 legs', { legs: 0 }], ['2 legs', { legs: 2 }], ['4 legs', { legs: 4 }], ['6 legs', { legs: 6 }], ['8 legs', { legs: 8 }], ['cold, 6', { ...cold, legs: 6 }], ['cold, 8', { ...cold, legs: 8, coloring: 'warning' }],
+      ]],
+      ['ears', [
+        ['no ears', { ears: 0 }], ['round S', { ear_size: 0 }], ['pointed', { ear_shape: 'pointed' }], ['long', { ear_shape: 'long' }], ['fan', { ear_shape: 'fan' }],
+        ['4 pointed', { ears: 4, ear_shape: 'pointed' }], ['long L', { ear_shape: 'long', ear_size: 2, size: 1 }],
+      ]],
+      ['eyes', [
+        ['1 eye', { eyes: 1 }], ['2 eyes', { eyes: 2 }], ['3 eyes', { eyes: 3 }], ['4 eyes', { eyes: 4 }], ['5 eyes', { eyes: 5 }], ['6 eyes', { eyes: 6 }], ['2 large', { eye_size: 2 }],
+      ]],
+      ['tails', [
+        ['none', { tail: 'none' }], ['thin L', { tail_size: 2 }], ['bushy', { tail: 'bushy' }], ['fin', { tail: 'fin' }], ['club', { tail: 'club' }], ['prehensile', { tail: 'prehensile', tail_size: 2 }],
+        ['cold club L', { ...cold, tail: 'club', tail_size: 2 }],
+      ]],
+      ['snout', [
+        ['short', { snout: 0 }], ['long', { snout: 2 }], ['omni long', { diet: 'omnivore', snout: 2 }], ['carn, no fangs', { diet: 'carnivore', fangs: 0, snout: 0 }],
+        ['carn fangs L', { diet: 'carnivore', fangs: 2, snout: 2 }], ['herb tusks', { fangs: 2 }], ['far detail', { diet: 'carnivore', fangs: 2, snout: 2, legs: 8, far: true }],
+      ]],
+      ['mixes', [
+        ['spider', { ...cold, cover: 'skin', diet: 'carnivore', legs: 8, eyes: 6, tail: 'none', size: 0, coloring: 'warning' }],
+        ['hare', { size: 0, ear_shape: 'long', ear_size: 2, tail: 'bushy', tail_size: 0, eye_size: 2 }],
+        ['fox', { size: 1, diet: 'carnivore', ear_shape: 'pointed', ear_size: 2, tail: 'bushy', tail_size: 2, snout: 2, fangs: 1, coloring: 'bright' }],
+        ['monkey', { diet: 'omnivore', legs: 2, tail: 'prehensile', tail_size: 2, ear_shape: 'fan', ear_size: 0, snout: 0 }],
+        ['ankylosaur', { warm: false, cover: 'armor', size: 3, tail: 'club', tail_size: 2, snout: 0 }],
+        ['biped flier', { locomotion: 'fly', size: 0, legs: 2, ear_shape: 'pointed', diet: 'carnivore', cover: 'skin', fangs: 2 }],
+        ['fish', { locomotion: 'swim', warm: false, cover: 'scales', tail: 'fin', tail_size: 2, eyes: 1, eye_size: 2, coloring: 'camo' }],
+      ]],
+    ];
+    const cell = 92;
+    const left = 120;
+    const top = 58;
+    const x0 = 16;
+    const cols = Math.max(...rows.map((r) => r[1].length));
+    bg.rect(x0, top, left + cell * cols, cell * rows.length + 16).fill({ color: 0x0d1117, alpha: 0.92 });
+    const canvas = v.app.canvas.getBoundingClientRect();
+    const labels = document.createElement('div');
+    labels.id = 'morph-labels';
+    labels.style.cssText = 'position:fixed;inset:0;pointer-events:none;font:11px system-ui,sans-serif;color:#c9d1d9;z-index:1000';
+    const label = (text, x, y, bold) => {
+      const d = document.createElement('div');
+      d.textContent = text;
+      d.style.cssText = `position:absolute;left:${canvas.left + x}px;top:${canvas.top + y}px;transform:translateX(-50%);white-space:nowrap;${bold ? 'font-weight:600;font-size:13px;color:#fff;' : ''}`;
+      labels.appendChild(d);
+    };
+    const before = v.spriteStats();
+    const t0 = performance.now();
+    rows.forEach(([name, row], ry) => {
+      label(name, x0 + 50, top + 8 + ry * cell + cell / 2 - 8, true);
+      row.forEach(([text, over], cx) => {
+        const { far = false, juvenile = false, ...look } = over;
+        const spec = { look: { ...base, ...look }, juvenile, far };
+        const parts = sprites.marker();
+        parts.ring.texture = sprites.ownerRing(spec, false);
+        parts.ring.tint = 0x9aa4ae;
+        parts.body.texture = sprites.body(spec);
+        const x = x0 + left + cell / 2 + cx * cell;
+        const y = top + 8 + cell / 2 + ry * cell;
+        parts.root.position.set(x, y - 8);
+        parts.root.scale.set([3.2, 2.8, 2.2, 1.8][spec.look.size]);
+        layer.addChild(parts.root);
+        label(text, x, y + cell / 2 - 22, false);
+      });
+    });
+    const ms = performance.now() - t0;
+    document.body.appendChild(labels);
+    v.app.stage.addChild(layer);
+    window.__morph = layer;
+    const after = v.spriteStats();
+    // Many new keys in one go: 150 distinct looks, timed per texture.
+    const t1 = performance.now();
+    const made0 = after.made;
+    for (let i = 0; i < 150; i++) {
+      sprites.body({ look: { ...base, size: i % 4, eyes: 1 + (i % 6), legs: [0, 2, 4, 6, 8][i % 5], tail: ['thin', 'bushy', 'fin', 'club', 'prehensile'][Math.floor(i / 6) % 5], snout: Math.floor(i / 30) % 3 }, juvenile: false });
+    }
+    const burst = v.spriteStats();
+    return {
+      shown: rows.reduce((n, r) => n + r[1].length, 0), made: after.made - before.made, ms,
+      burstMade: burst.made - made0, burstMs: performance.now() - t1, maxMakeMs: burst.maxMakeMs, textures: burst.textures, evicted: burst.evicted, bytes: burst.bytes,
+    };
+  });
+  await page.waitForTimeout(200);
+  await shot(page, 'desktop-morphology-gallery.png');
+  await page.evaluate(() => { window.__morph.destroy({ children: true }); document.getElementById('morph-labels')?.remove(); });
+  const per = (ms, n) => (n ? (ms / n).toFixed(2) : '-');
+  step(`morphology gallery: ${morph.shown} variants, ${morph.made} new textures, ${per(morph.ms, morph.made)} ms each`);
+  step(`texture burst: ${morph.burstMade} new bodies in ${morph.burstMs.toFixed(1)} ms (${per(morph.burstMs, morph.burstMade)} ms each, slowest ${morph.maxMakeMs.toFixed(2)} ms); `
+    + `cache ${morph.textures} textures, ${(morph.bytes / 1048576).toFixed(1)} MB, ${morph.evicted} evicted`);
+  if (morph.made < morph.shown / 2 || morph.textures > 256 + 8) throw new Error(`morphology gallery: ${JSON.stringify(morph)}`);
   await page.close();
 }
 

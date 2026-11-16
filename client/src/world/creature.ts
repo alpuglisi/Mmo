@@ -15,20 +15,68 @@
 //   yellow-and-black warning bands;
 // - locomotion → legs, fins and a tail fin (swimmers), a membrane (gliders)
 //   or a raised wing (fliers).
+//
+// Morphology (docs/morphology-contract.md, quantized by the server), drawn in
+// the same side view; the defaults (`morphOf` of a look without the fields)
+// draw exactly the sprites above:
+// - legs → 0, 2, 4, 6 or 8 visible legs (swimmers show fins instead);
+// - ears → 0, 2 or 4: the near ear of each pair (contract v1),
+//   shaped round (today's ear), pointed, long or fan, in three
+//   sizes; round ears are flush on cold-blooded and swimming bodies, as today;
+// - eyes → the near-side eyes (one, a single midline eye, is bigger and more
+//   frontal), in three sizes;
+// - tail → none, thin (today's tail for the body type), bushy, fin, club or a
+//   prehensile curl, in three lengths;
+// - snout → three lengths of the diet's muzzle or snout; fangs → none, small
+//   (today's carnivore fangs) or large;
+// - detail → markers drawn smaller than `NEAR_SCALE` (zoomed out) use the
+//   class sprite (`far`: morphology at its defaults), so few textures serve
+//   a crowded wide view.
 
-import type { Appearance, NearbyOrganism, OwnOrganism } from '../protocol';
+import type { Appearance, EarShape, NearbyOrganism, OwnOrganism, SizeBucket, TailLook } from '../protocol';
 
 export type Point = [number, number];
 
+/** Which feature a shape draws (for tests; drawing ignores it). */
+export type Part = 'leg' | 'ear' | 'eye' | 'tail' | 'fang' | 'snout';
+
 export type Shape =
-  | { kind: 'ellipse'; x: number; y: number; rx: number; ry: number; fill?: number; alpha?: number; stroke?: number; width?: number }
-  | { kind: 'poly'; points: Point[]; fill?: number; alpha?: number; stroke?: number; width?: number }
-  | { kind: 'line'; points: Point[]; stroke: number; width: number; alpha?: number };
+  | { kind: 'ellipse'; x: number; y: number; rx: number; ry: number; fill?: number; alpha?: number; stroke?: number; width?: number; part?: Part }
+  | { kind: 'poly'; points: Point[]; fill?: number; alpha?: number; stroke?: number; width?: number; part?: Part }
+  | { kind: 'line'; points: Point[]; stroke: number; width: number; alpha?: number; part?: Part };
+
+/** The morphology a sprite draws: every field present, clamped to its values. */
+export interface Morph {
+  eyes: number;
+  eyeSize: SizeBucket;
+  ears: number;
+  earShape: EarShape;
+  earSize: SizeBucket;
+  legs: number;
+  tail: TailLook;
+  tailSize: SizeBucket;
+  snout: SizeBucket;
+  fangs: SizeBucket;
+}
+
+export const EAR_SHAPES: readonly EarShape[] = ['round', 'pointed', 'long', 'fan'];
+export const TAIL_LOOKS: readonly TailLook[] = ['none', 'thin', 'bushy', 'fin', 'club', 'prehensile'];
+const LEG_COUNTS = [0, 2, 4, 6, 8] as const;
+/** Length/size factor of each size bucket (medium is today's sprite). */
+const EYE_SCALE = [0.75, 1, 1.3] as const;
+const EAR_SCALE = [0.7, 1, 1.35] as const;
+const TAIL_SCALE = [0.7, 1, 1.35] as const;
+const SNOUT_SCALE = [0.7, 1, 1.4] as const;
 
 /** What is drawn for a creature: its appearance class and life stage. */
 export interface CreatureSpec {
   look: Appearance;
   juvenile: boolean;
+  /**
+   * Far detail (markers drawn small): the class sprite, morphology at its
+   * defaults, so zoomed out every body plan shares one texture per class.
+   */
+  far?: boolean;
 }
 
 /** Small icon over a marker for what the organism is doing. */
@@ -42,16 +90,84 @@ const SIZE_RADIUS = [4, 5.5, 7, 9] as const;
 /** Juveniles are drawn at this fraction of the adult size. */
 export const JUVENILE_SCALE = 0.65;
 
-export function specOf(o: OwnOrganism | NearbyOrganism): CreatureSpec {
-  return { look: o.look ?? DEFAULT_LOOK, juvenile: !o.matured };
+/** Markers drawn smaller than this scale use the far (class) sprite. */
+export const NEAR_SCALE = 1;
+
+export function specOf(o: OwnOrganism | NearbyOrganism, far = false): CreatureSpec {
+  const s: CreatureSpec = { look: o.look ?? DEFAULT_LOOK, juvenile: !o.matured };
+  if (far) s.far = true;
+  return s;
 }
 
-/** Cache key of a creature texture: one per distinct appearance class and stage. */
+function bucket(v: unknown, dflt: SizeBucket): SizeBucket {
+  return typeof v === 'number' && Number.isFinite(v) ? (Math.min(2, Math.max(0, Math.round(v))) as SizeBucket) : dflt;
+}
+
+function count(v: unknown, lo: number, hi: number, dflt: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : dflt;
+}
+
+/**
+ * The look's morphology with defaults for absent fields (older servers):
+ * two eyes, two round ears, four legs, a thin tail, medium sizes, and fangs
+ * on carnivores only, which draws today's sprites. Values out of range are
+ * clamped, so a key has a bounded number of values per field.
+ */
+export function morphOf(l: Appearance): Morph {
+  const legs = count(l.legs, 0, 8, 4);
+  // Contract v1: ears come in pairs (0, 2 or 4).
+  const ears = count(l.ears, 0, 4, 2);
+  return {
+    eyes: count(l.eyes, 1, 6, 2),
+    eyeSize: bucket(l.eye_size, 1),
+    ears: ears >= 3 ? 4 : ears >= 1 ? 2 : 0,
+    earShape: EAR_SHAPES.includes(l.ear_shape as EarShape) ? (l.ear_shape as EarShape) : 'round',
+    earSize: bucket(l.ear_size, 1),
+    legs: LEG_COUNTS.reduce((best, n) => (Math.abs(n - legs) < Math.abs(best - legs) ? n : best), 4),
+    tail: TAIL_LOOKS.includes(l.tail as TailLook) ? (l.tail as TailLook) : 'thin',
+    tailSize: bucket(l.tail_size, 1),
+    snout: bucket(l.snout, 1),
+    fangs: bucket(l.fangs, l.diet === 'carnivore' ? 1 : 0),
+  };
+}
+
+/**
+ * What of the morphology the sprite shows: `morphOf` with what is not drawn
+ * collapsed to one value (swimmers' legs, flush round ears, an absent tail's
+ * length), so looks that draw the same share a texture.
+ */
+export function visibleMorph(l: Appearance, far = false): Morph {
+  const m = morphOf(far ? classOf(l) : l);
+  const swim = l.locomotion === 'swim';
+  if (swim) m.legs = 0;
+  if (m.ears === 0 || (m.earShape === 'round' && (!l.warm || swim))) {
+    m.ears = 0;
+    m.earShape = 'round';
+    m.earSize = 1;
+  }
+  if (m.tail === 'none') m.tailSize = 1;
+  return m;
+}
+
+/** The look's class fields only (what a far sprite draws). */
+function classOf(l: Appearance): Appearance {
+  return { size: l.size, diet: l.diet, warm: l.warm, locomotion: l.locomotion, cover: l.cover, coloring: l.coloring };
+}
+
+const TAIL_CODE: Record<TailLook, string> = { none: 'n', thin: 't', bushy: 'b', fin: 'f', club: 'c', prehensile: 'p' };
+
+/**
+ * Cache key of a creature texture: one per distinct drawing (appearance
+ * class, visible morphology and stage). Every field is quantized, so the
+ * number of keys is bounded (see README, "Creature sprites").
+ */
 export function creatureKey(s: CreatureSpec): string {
   const l = s.look;
   // One letter per field value (skin and scales differ in their second letter).
   const cover = l.cover === 'scales' ? 'c' : l.cover[0];
-  return `${l.size}${l.diet[0]}${l.warm ? 'w' : 'c'}${l.locomotion[0]}${cover}${l.coloring[0]}${s.juvenile ? 'j' : 'a'}`;
+  const m = visibleMorph(l, s.far);
+  return `${l.size}${l.diet[0]}${l.warm ? 'w' : 'c'}${l.locomotion[0]}${cover}${l.coloring[0]}${s.juvenile ? 'j' : 'a'}`
+    + `-${m.eyes}${m.eyeSize}${m.ears}${m.earShape[0]}${m.earSize}${m.legs}${TAIL_CODE[m.tail]}${m.tailSize}${m.snout}${m.fangs}`;
 }
 
 /** Marker scale for a zoom (pixels per tile): 1 at the default zoom, bigger zoomed in, smaller zoomed out. */
@@ -68,6 +184,17 @@ export function bodyRadius(s: CreatureSpec): number {
 /** Half the side of the square a creature (with wings, tail and icon room) fits in. */
 export function spriteExtent(s: CreatureSpec): number {
   return Math.ceil(bodyRadius(s) * 3.2) + 2;
+}
+
+/** Half the side of the body texture: `spriteExtent`, or more when long features reach past it. */
+export function bodyExtent(s: CreatureSpec, shapes: Shape[] = creatureShapes(s)): number {
+  let m = 0;
+  for (const sh of shapes) {
+    const pad = sh.kind === 'line' ? sh.width / 2 : (sh.width ?? 0) / 2;
+    if (sh.kind === 'ellipse') m = Math.max(m, Math.abs(sh.x) + sh.rx + pad, Math.abs(sh.y) + sh.ry + pad);
+    else for (const [x, y] of sh.points) m = Math.max(m, Math.abs(x) + pad, Math.abs(y) + pad);
+  }
+  return Math.max(spriteExtent(s), Math.ceil(m + 1));
 }
 
 const SIZE_WORDS = ['tiny', 'small', 'medium', 'large'] as const;
@@ -121,9 +248,48 @@ export function palette(l: Appearance): Palette {
   }
 }
 
+/** Positions of `n` visible legs along the body, as fractions of its half-length (4 is today's). */
+function legPositions(n: number): number[] {
+  switch (n) {
+    case 0: return [];
+    case 2: return [-0.18, 0.22];
+    case 6: return [-0.65, -0.4, -0.15, 0.1, 0.35, 0.6];
+    case 8: return [-0.7, -0.5, -0.3, -0.1, 0.1, 0.3, 0.5, 0.7];
+    default: return [-0.6, -0.25, 0.3, 0.6];
+  }
+}
+
+/** Where the visible ears sit (head-radius offsets from today's ear, back to front): each pair shows its near ear. */
+function earSlots(n: number): { dx: number; dy: number }[] {
+  if (n === 0) return [];
+  return n >= 4 ? [{ dx: -0.42, dy: 0.18 }, { dx: 0, dy: 0 }] : [{ dx: 0, dy: 0 }];
+}
+
+/**
+ * Where the visible eyes sit on the head and their size relative to today's
+ * eye (main eye first). Contract v1: an odd count has one eye on the midline
+ * (on the forehead; alone, a big frontal eye), pairs further back show their
+ * near eye higher and further back on the head.
+ */
+function eyeSlots(n: number): { x: number; y: number; k: number }[] {
+  const main = { x: 0.25, y: -0.2, k: 1 };
+  const upper = { x: -0.12, y: -0.52, k: 0.75 };
+  const lower = { x: -0.3, y: -0.02, k: 0.7 };
+  const mid = { x: 0.52, y: -0.56, k: 0.75 };
+  switch (n) {
+    case 1: return [{ x: 0.42, y: -0.3, k: 1.3 }];
+    case 3: return [main, mid];
+    case 4: return [main, upper];
+    case 5: return [main, upper, mid];
+    case 6: return [main, upper, lower];
+    default: return [main];
+  }
+}
+
 /** The shapes of a creature, back to front, facing +x. */
 export function creatureShapes(s: CreatureSpec): Shape[] {
   const l = s.look;
+  const m = visibleMorph(l, s.far);
   const r = bodyRadius(s);
   const p = palette(l);
   const out: Shape[] = [];
@@ -150,9 +316,11 @@ export function creatureShapes(s: CreatureSpec): Shape[] {
   // Legs (walkers, gliders, fliers), or fins.
   if (!swim) {
     const legLen = ry * (l.warm ? 1.0 : 0.7) + r * 0.25;
-    for (const fx of [-0.6, -0.25, 0.3, 0.6]) {
+    // Many legs are thinner (arthropod-like).
+    const legW = Math.max(1.2, r * 0.22) * (m.legs > 4 ? 0.75 : 1);
+    for (const fx of legPositions(m.legs)) {
       const x = rx * fx;
-      out.push({ kind: 'line', points: [[x, ry * 0.4], [x + (l.warm ? 0 : rx * 0.12), ry * 0.4 + legLen]], stroke: OUTLINE, width: Math.max(1.2, r * 0.22) });
+      out.push({ kind: 'line', points: [[x, ry * 0.4], [x + (l.warm ? 0 : rx * 0.12), ry * 0.4 + legLen]], stroke: OUTLINE, width: legW, part: 'leg' });
     }
   } else {
     out.push({ kind: 'poly', points: [[-rx * 0.1, ry * 0.5], [-rx * 0.5, ry * 1.35], [rx * 0.25, ry * 0.7]], fill: p.dark, stroke: OUTLINE, width: 0.8 });
@@ -160,15 +328,7 @@ export function creatureShapes(s: CreatureSpec): Shape[] {
     out.push({ kind: 'poly', points: [[-rx * 0.35, -ry * 0.85], [-rx * 0.05, -ry * 1.75], [rx * 0.3, -ry * 0.85]], fill: p.dark, stroke: OUTLINE, width: 0.8 });
   }
 
-  // Tail.
-  if (swim) {
-    out.push({ kind: 'poly', points: [[-rx * 0.9, 0], [-rx * 1.55, -ry * 0.95], [-rx * 1.35, 0], [-rx * 1.55, ry * 0.95]],
-      fill: p.dark, stroke: OUTLINE, width: 0.8 });
-  } else if (l.warm) {
-    out.push({ kind: 'poly', points: [[-rx * 0.85, -ry * 0.35], [-rx * 1.35, -ry * 0.75], [-rx * 0.9, ry * 0.15]], fill: p.dark, stroke: OUTLINE, width: 0.8 });
-  } else {
-    out.push({ kind: 'poly', points: [[-rx * 0.8, -ry * 0.4], [-rx * 2.0, ry * 0.15], [-rx * 0.8, ry * 0.45]], fill: p.base, stroke: OUTLINE, width: outlineW });
-  }
+  out.push(...tailShapes(m, l.warm, swim, r, rx, ry, p, outlineW));
 
   // Fur: a ragged fringe just outside the body.
   if (l.cover === 'fur') {
@@ -209,38 +369,154 @@ export function creatureShapes(s: CreatureSpec): Shape[] {
     }
   }
 
-  // Ears (warm-blooded land animals).
-  if (l.warm && !swim) {
-    out.push({ kind: 'poly', points: [[hx - headR * 0.6, hy - headR * 0.6], [hx - headR * 0.35, hy - headR * 1.55], [hx + headR * 0.05, hy - headR * 0.75]],
-      fill: p.dark, stroke: OUTLINE, width: 0.7 });
-  }
+  // Ears, behind the head.
+  for (const slot of earSlots(m.ears)) out.push(earShape(m, hx + slot.dx * headR, hy + slot.dy * headR, headR, p));
   // Horns on large herbivores.
   if (l.diet === 'herbivore' && l.size >= 2 && !s.juvenile) {
     out.push({ kind: 'line', points: [[hx + headR * 0.1, hy - headR * 0.8], [hx + headR * 0.2, hy - headR * 1.7], [hx + headR * 0.7, hy - headR * 1.9]], stroke: 0xe8e0c8, width: 1.4 });
   }
 
-  // Head and snout.
+  // Head and snout (its length scaled by the snout bucket; medium is today's).
   out.push({ kind: 'ellipse', x: hx, y: hy, rx: headR, ry: headR, fill: p.base, stroke: OUTLINE, width: outlineW });
+  const sk = SNOUT_SCALE[m.snout];
+  /** Where fangs hang from: x (head radii from the head center) and the jaw's y there. */
+  let fangAt: Point[];
   if (l.diet === 'herbivore') {
-    out.push({ kind: 'ellipse', x: hx + headR * 0.85, y: hy + headR * 0.3, rx: headR * 0.5, ry: headR * 0.42, fill: p.light, stroke: OUTLINE, width: 0.7 });
+    const mx = 0.85 + (sk - 1) * 0.9;
+    const mrx = 0.5 * (sk > 1 ? 1 + (sk - 1) * 0.8 : 1);
+    if (sk > 1) {
+      // A long face: a bridge from the head to the muzzle.
+      out.push({ kind: 'poly', points: [[hx + headR * 0.4, hy - headR * 0.35], [hx + headR * mx, hy - headR * 0.05], [hx + headR * mx, hy + headR * 0.65], [hx + headR * 0.4, hy + headR * 0.75]],
+        fill: p.base, stroke: OUTLINE, width: 0.8, part: 'snout' });
+    }
+    out.push({ kind: 'ellipse', x: hx + headR * mx, y: hy + headR * 0.3, rx: headR * mrx, ry: headR * 0.42, fill: p.light, stroke: OUTLINE, width: 0.7, part: 'snout' });
+    fangAt = [[mx - 0.05, 0.62], [mx + mrx * 0.55, 0.55]];
   } else if (l.diet === 'omnivore') {
-    out.push({ kind: 'poly', points: [[hx + headR * 0.6, hy - headR * 0.45], [hx + headR * 1.6, hy + headR * 0.2], [hx + headR * 0.6, hy + headR * 0.6]],
-      fill: p.base, stroke: OUTLINE, width: 0.8 });
+    const tip = 0.6 + 1.0 * sk;
+    out.push({ kind: 'poly', points: [[hx + headR * 0.6, hy - headR * 0.45], [hx + headR * tip, hy + headR * 0.2], [hx + headR * 0.6, hy + headR * 0.6]],
+      fill: p.base, stroke: OUTLINE, width: 0.8, part: 'snout' });
+    // The jaw runs from (0.6, 0.6) to the tip at (tip, 0.2).
+    const jaw = (f: number): Point => [0.6 + (tip - 0.6) * f, 0.6 - 0.4 * f - 0.05];
+    fangAt = [jaw(0.25), jaw(0.55)];
   } else {
-    out.push({ kind: 'poly', points: [[hx + headR * 0.5, hy - headR * 0.55], [hx + headR * 2.1, hy + headR * 0.15], [hx + headR * 0.5, hy + headR * 0.65]],
-      fill: p.dark, stroke: OUTLINE, width: 0.9 });
-    // Fangs.
-    for (const fx of [1.0, 1.45]) {
-      out.push({ kind: 'poly', points: [[hx + headR * fx, hy + headR * 0.35], [hx + headR * (fx + 0.18), hy + headR * 0.95], [hx + headR * (fx + 0.32), hy + headR * 0.3]], fill: 0xffffff });
+    const tip = 0.5 + 1.6 * sk;
+    out.push({ kind: 'poly', points: [[hx + headR * 0.5, hy - headR * 0.55], [hx + headR * tip, hy + headR * 0.15], [hx + headR * 0.5, hy + headR * 0.65]],
+      fill: p.dark, stroke: OUTLINE, width: 0.9, part: 'snout' });
+    // Today's fangs at 1.0 and 1.45 head radii, moved with the snout's length.
+    fangAt = [[0.5 + 0.5 * sk, 0.35], [0.5 + 0.95 * sk, 0.35]];
+  }
+  if (m.fangs > 0) {
+    const big = m.fangs === 2;
+    for (const [fx, fy] of fangAt) {
+      out.push({ kind: 'poly', points: big
+        ? [[hx + headR * (fx - 0.04), hy + headR * fy], [hx + headR * (fx + 0.16), hy + headR * (fy + 1.0)], [hx + headR * (fx + 0.38), hy + headR * (fy - 0.05)]]
+        : [[hx + headR * fx, hy + headR * fy], [hx + headR * (fx + 0.18), hy + headR * (fy + 0.6)], [hx + headR * (fx + 0.32), hy + headR * (fy - 0.05)]],
+      fill: 0xffffff, ...(big ? { stroke: OUTLINE, width: 0.5 } : {}), part: 'fang' });
     }
   }
-  // Eye (with a brow on carnivores).
-  const ex = hx + headR * 0.25;
-  const ey = hy - headR * 0.2;
-  out.push({ kind: 'ellipse', x: ex, y: ey, rx: headR * 0.32, ry: headR * 0.32, fill: 0xffffff });
-  out.push({ kind: 'ellipse', x: ex + headR * 0.08, y: ey, rx: headR * 0.17, ry: headR * 0.17, fill: OUTLINE });
-  if (l.diet === 'carnivore') out.push({ kind: 'line', points: [[ex - headR * 0.35, ey - headR * 0.5], [ex + headR * 0.4, ey - headR * 0.25]], stroke: OUTLINE, width: 1.1 });
+  // Eyes (a brow over the main one on carnivores).
+  const ek = EYE_SCALE[m.eyeSize];
+  eyeSlots(m.eyes).forEach((e, i) => {
+    const ex = hx + headR * e.x;
+    const ey = hy + headR * e.y;
+    const er = headR * 0.32 * e.k * ek;
+    out.push({ kind: 'ellipse', x: ex, y: ey, rx: er, ry: er, fill: 0xffffff, part: 'eye' });
+    out.push({ kind: 'ellipse', x: ex + er * 0.25, y: ey, rx: er * 0.53125, ry: er * 0.53125, fill: OUTLINE });
+    if (i === 0 && l.diet === 'carnivore') {
+      const b = er / 0.32; // today's brow, in head radii at the medium eye
+      out.push({ kind: 'line', points: [[ex - b * 0.35, ey - b * 0.5], [ex + b * 0.4, ey - b * 0.25]], stroke: OUTLINE, width: 1.1 });
+    }
+  });
   return out;
+}
+
+/** One ear with its base on the head at (ax, ay): today's ear (round, medium) is the reference. */
+function earShape(m: Morph, ax: number, ay: number, h: number, p: Palette): Shape {
+  const k = EAR_SCALE[m.earSize];
+  // Today's ear in head radii: base from (-0.6, -0.6) to (0.05, -0.75), tip at (-0.35, -1.55).
+  const b1: Point = [ax - h * 0.6, ay - h * 0.6];
+  const b2: Point = [ax + h * 0.05, ay - h * 0.75];
+  const cx = (b1[0] + b2[0]) / 2;
+  const cy = (b1[1] + b2[1]) / 2;
+  const at = (dx: number, dy: number): Point => [cx + h * dx, cy + h * dy];
+  switch (m.earShape) {
+    case 'pointed':
+      // Taller and sharper than the round ear, on the same base.
+      return { kind: 'poly', points: [at(-0.34, 0.04), at(0.1 * k, -1.65 * k), at(0.34, -0.04)], fill: p.dark, stroke: OUTLINE, width: 0.7, part: 'ear' };
+    case 'long':
+      // A long rabbit ear swept back, with a rounded tip.
+      return { kind: 'poly', points: [at(-0.3, 0.05), at(-0.6 * k, -1.4 * k), at(-0.95 * k, -2.2 * k), at(-0.62 * k, -2.45 * k), at(-0.15 * k, -1.5 * k), at(0.3, -0.05)],
+        fill: p.dark, stroke: OUTLINE, width: 0.7, part: 'ear' };
+    case 'fan':
+      // A broad round flap standing out behind the head.
+      return { kind: 'ellipse', x: cx - h * 0.45 * k, y: cy - h * 0.05 * k, rx: h * 0.72 * k, ry: h * 0.85 * k, fill: p.dark, stroke: OUTLINE, width: 0.7, part: 'ear' };
+    case 'round':
+    default:
+      return { kind: 'poly', points: [b1, at(-0.075 * k, -0.875 * k), b2], fill: p.dark, stroke: OUTLINE, width: 0.7, part: 'ear' };
+  }
+}
+
+/** The tail, by shape and length; `thin` is today's tail for the body type. */
+function tailShapes(m: Morph, warm: boolean, swim: boolean, r: number, rx: number, ry: number, p: Palette, outlineW: number): Shape[] {
+  const k = TAIL_SCALE[m.tailSize];
+  // Scale a tail's points away from its root (bx, by) by the length factor.
+  const grow = (pts: Point[], bx: number, by: number): Point[] => pts.map(([x, y]) => [bx + (x - bx) * k, by + (y - by) * k]);
+  const finPts = (bx: number): Point[] => [[bx, 0], [bx - rx * 0.65, -ry * 0.95], [bx - rx * 0.45, 0], [bx - rx * 0.65, ry * 0.95]];
+  switch (m.tail) {
+    case 'none':
+      return [];
+    case 'thin':
+      if (swim) return [{ kind: 'poly', points: grow(finPts(-rx * 0.9), -rx * 0.9, 0), fill: p.dark, stroke: OUTLINE, width: 0.8, part: 'tail' }];
+      if (warm) {
+        return [{ kind: 'poly', points: grow([[-rx * 0.85, -ry * 0.35], [-rx * 1.35, -ry * 0.75], [-rx * 0.9, ry * 0.15]], -rx * 0.85, -ry * 0.1),
+          fill: p.dark, stroke: OUTLINE, width: 0.8, part: 'tail' }];
+      }
+      return [{ kind: 'poly', points: grow([[-rx * 0.8, -ry * 0.4], [-rx * 2.0, ry * 0.15], [-rx * 0.8, ry * 0.45]], -rx * 0.8, 0),
+        fill: p.base, stroke: OUTLINE, width: outlineW, part: 'tail' }];
+    case 'bushy': {
+      // A ragged plume raised up and back.
+      // Its long axis runs from the rump up and back (40° above horizontal).
+      const cx = -rx * 0.9 - r * 0.45 * k;
+      const cy = -ry * 0.3 - r * 0.4 * k;
+      const a0 = (40 * Math.PI) / 180;
+      const pts: Point[] = [];
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        const rr = i % 2 === 0 ? 1 : 0.78;
+        const ux = Math.cos(a) * r * 0.8 * k * rr;
+        const uy = Math.sin(a) * r * 0.45 * k * rr;
+        pts.push([cx + ux * Math.cos(a0) - uy * Math.sin(a0), cy + ux * Math.sin(a0) + uy * Math.cos(a0)]);
+      }
+      return [{ kind: 'poly', points: pts, fill: p.dark, stroke: OUTLINE, width: 0.6, part: 'tail' }];
+    }
+    case 'fin': {
+      // A tall crescent fin on a short stalk.
+      const bx = -rx * 0.85;
+      return [{ kind: 'poly', points: grow([[bx, -ry * 0.25], [bx - rx * 0.75, -ry * 1.3], [bx - rx * 0.42, 0], [bx - rx * 0.75, ry * 1.1], [bx, ry * 0.25]], bx, 0),
+        fill: p.dark, stroke: OUTLINE, width: 0.8, part: 'tail' }];
+    }
+    case 'club': {
+      // A tapering tail ending in a heavy knob.
+      const bx = -rx * 0.8;
+      const tip: Point = [bx - r * 1.5 * k, ry * 0.1];
+      return [
+        { kind: 'poly', points: [[bx, -ry * 0.35], tip, [bx, ry * 0.4]], fill: p.base, stroke: OUTLINE, width: outlineW, part: 'tail' },
+        { kind: 'ellipse', x: tip[0], y: tip[1], rx: r * 0.38 * k, ry: r * 0.32 * k, fill: p.dark, stroke: OUTLINE, width: 1, part: 'tail' },
+      ];
+    }
+    case 'prehensile': {
+      // A long tail curling up at the end: an outlined stroke.
+      const bx = -rx * 0.85;
+      const L = r * k;
+      const pts: Point[] = [[bx, -ry * 0.05], [bx - L * 0.6, -ry * 0.05 - L * 0.08], [bx - L * 1.1, -L * 0.3], [bx - L * 1.2, -L * 0.8], [bx - L * 0.9, -L * 1.08],
+        [bx - L * 0.58, -L * 0.9], [bx - L * 0.66, -L * 0.6]];
+      const w = Math.max(1.2, r * 0.24);
+      return [
+        { kind: 'line', points: pts, stroke: OUTLINE, width: w + 1.2, part: 'tail' },
+        { kind: 'line', points: pts, stroke: p.dark, width: w, part: 'tail' },
+      ];
+    }
+  }
 }
 
 /** The shapes of an action icon, centered on (0, 0), about 8 px across. */

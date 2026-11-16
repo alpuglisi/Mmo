@@ -853,7 +853,19 @@ omnivore / carnivore by carnivory), `warm` (endothermy), `locomotion` (walk,
 swim at swimming ≥ 0.6, glide, fly), `cover` (skin, fur, scales, armor: the
 strongest expressed ≥ 0.5) and `coloring` (drab, camo, bright display
 colors, or warning = bright and toxic). Only what anyone could see, and
-coarse so the client's sprite cache stays small. The API answers
+coarse so the client's sprite cache stays small. It also carries the
+quantized morphology of `docs/morphology-contract.md`: `eyes` (1–6),
+`ears` (0, 2 or 4) and `ear_shape` (round, pointed, long, fan), `legs` (0,
+2, 4, 6, 8), `tail` (none, thin, bushy, fin, club, prehensile), and size
+buckets 0–2 (small, medium, large) `eye_size`, `ear_size`, `tail_size`,
+`snout`, `fangs` (0 none, 1 small, 2 large; none below 0.1). They come from
+`Morphology::of`, the one function that reads them off the organism: until
+the genome has the discrete loci, the contract defaults (two eyes, two
+round ears, four legs, a thin tail when `Tail` ≥ 0.05, a medium snout) with
+sizes from the `Eyes`, `Ears`, `Tail` and `Fangs` genes. The fields were
+added without a protocol bump: they are new keys in the same JSON object
+(and in protocol 2's `looks` palette), which older clients ignore, and a
+client reading a server without them draws today's defaults. The API answers
 cross-origin requests (any origin, `GET`/`POST`, `Authorization` and
 `Content-Type`; auth is a bearer token, never a cookie), so a Capacitor app
 or a bundle on another origin can use a remote server.
@@ -2087,10 +2099,40 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   (yours yellow and stronger, wild grey, other players a stable hue each); a
   ring round the body when possessed (red) or pregnant (green); and an icon
   for what it is doing (z resting or dormant, ! fleeing, crosshair hunting,
-  heart seeking a mate). Sprites face the way they last moved. Each distinct
-  class is drawn once into a texture (`TextureCache`, supersampled so it
-  stays crisp as markers grow with zoom); a marker is four sprites sharing
-  those textures, so hundreds of organisms cost no per-frame drawing.
+  heart seeking a mate). Sprites face the way they last moved. The
+  morphology in `look` shows too: 0–8 legs, the near ear of each pair
+  (round, as today, pointed, long or fan; round ears stay flush on
+  cold-blooded and swimming bodies, as before), the near-side eyes plus a
+  midline one for odd counts (a lone eye big and frontal), a thin (today's),
+  bushy, fin, club or curled prehensile tail or none, three snout lengths and
+  small or large fangs; a look without those fields draws exactly the
+  sprites from before morphology (a test hashes all 1,536 classes × stage
+  against them). Each distinct drawing is drawn once into a texture
+  (`TextureCache`, supersampled so it stays crisp as markers grow with zoom);
+  a marker is four sprites sharing those textures, so hundreds of organisms
+  cost no per-frame drawing.
+
+  **Creature textures at scale.** Every morphology field is quantized (and
+  what is not drawn, such as a swimmer's legs or an absent tail's length,
+  collapses to one value), so the key space is bounded: 324,000 morphology
+  variants per class and stage in theory, but a view holds what its
+  organisms are, and organisms of a lineage mostly share a look. A
+  simulated crowded view (300 organisms from 40 random lineages, each
+  feature mutated in 10 % of them) needs 186 body textures near and 77 far.
+  Three measures keep that cheap: **detail levels** (markers drawn below
+  scale 1, i.e. zoomed out, use the class sprite with morphology at its
+  defaults, `far`, so a wide view shares one texture per class); a
+  **bounded cache**, least recently used first, of at most 256 textures and
+  48 MB (estimated width × height × 4), which never drops a texture a
+  marker shows (so the bound is soft) and on overflow frees down to 75 % so
+  eviction is rare; and a **frame budget** (`TEXTURE_BUDGET_MS`, 4 ms):
+  markers whose textures are cached always update, the others (yours
+  first) wait for a later frame once a frame has spent the budget making
+  textures, so a zoom in or a crowd arriving spreads the drawing over a few
+  frames instead of hitching. `spriteStats()` reports textures, made,
+  evicted, bytes, time making them (total and slowest) and deferred
+  markers. A lost WebGL context still clears the whole cache, and markers
+  rebuild from their current look on restore.
   Markers live in screen space so they stay readable at any zoom (scaled
   0.75–1.9× with it), and move smoothly between state pushes (see "Smooth
   movement" below). Drag to pan, wheel,
@@ -2535,8 +2577,14 @@ paging), the state's economy fields and `market` alerts); creature sprites (a di
 1,536 appearance classes × life stage, every shape inside its texture frame,
 size order and juvenile scale, each field changing the drawing, swimmers
 without legs, the default look for older servers, action icons, the body
-plan in words), the texture cache (one make per key, disposal, 600 markers
-from five plans → five textures) and the marker scale; the server origin
+plan in words; morphology: all classes drawn exactly as before without the
+fields, with the contract defaults and at far detail, defaults and clamping
+of wire values, leg/ear/eye counts drawn, every ear and tail shape and size
+bucket changing the drawing, one key per distinct drawing and shared keys
+for what is not drawn, every variant inside its texture), the texture cache
+(one make per key, disposal, 600 markers from five plans → five textures,
+least-recently-used eviction by count and by cost, never a texture in use,
+make timing, keys of a simulated crowded view) and the marker scale; the server origin
 (normalizing input, URL over saved over build default); the World tab's data prep (species tree
 order and depth, statuses, bad parent links, the catastrophe banner and
 labels, niche labels, the player's era ranks); protocol parsing against messages shaped like
@@ -2629,9 +2677,11 @@ and a pinch in zooms back out; the inspector shows in the sheet; the legend
 toggles; **Split** in the scrolling toolbar makes a second group and two
 taps claim a territory for it, with no sideways scroll. Then a 1280×800 desktop: sidebar on the right with tabs on top,
 phone controls hidden, sprite cache stats (textures shared per class), and
-a gallery of 20 body plans drawn with the game's sprite code. Screenshots:
+a gallery of 20 body plans drawn with the game's sprite code, then a
+labelled gallery of 42 morphology variants and a burst of 150 new body
+textures, logging the time per texture and the cache size. Screenshots:
 `iphone13-*.png`, `pixel7-*.png`, `desktop-world.png`,
-`desktop-sprite-gallery.png`.
+`desktop-sprite-gallery.png`, `desktop-morphology-gallery.png`.
 `e2e/onboarding.mjs` (after the mobile test in `npm run e2e`; alone with
 `npm run e2e:onboarding`) opens the client without `?tour=off`: on a
 1280×800 desktop a new player gets the tour after founding with focus on
