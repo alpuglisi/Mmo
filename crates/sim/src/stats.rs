@@ -267,7 +267,18 @@ impl Traits {
     }
 }
 
+/// Traits of a phenotype with the wild-type body plan
+/// (`Morphology::wild_type`): [`derive_with`] for code that has no genome
+/// morphology at hand.
 pub fn derive(p: &Phenotype) -> Traits {
+    derive_with(p, &crate::morph::Morphology::wild_type(p))
+}
+
+/// Traits of a phenotype whose body plan is `plan` (an organism's
+/// `Organism::morph`): the eye geometry ([`Traits::vision`]) and the ears'
+/// localization come from the plan. The body plan's stat effects are applied
+/// separately, by `morph_effects::apply` (behind its tunables).
+pub fn derive_with(p: &Phenotype, plan: &crate::morph::Morphology) -> Traits {
     use Gene::*;
     let warm = p[Endothermy] >= 0.5;
     let birth = BirthType::from_gene(p[BirthMode]);
@@ -354,8 +365,8 @@ pub fn derive(p: &Phenotype) -> Traits {
         fangs,
         scaled_fur: p[Scales] * FUR_WARMTH * fur_insulation,
         seasonal: Seasonal::from_phenotype(p, warm),
-        morph: crate::morph_effects::MorphContext::at_birth(p),
-        vision: crate::vision::Vision::of(p, stats.perception),
+        morph: crate::morph_effects::MorphContext::at_birth(p, plan),
+        vision: crate::vision::Vision::of(plan, stats.perception),
     }
 }
 

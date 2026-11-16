@@ -63,16 +63,20 @@ impl GroupTrait {
             GroupTrait::CooperativeHunting => p[Carnivory] > 0.6 && p[PackInstinct] > 0.5,
             GroupTrait::WarningColoration => p[Toxins] > 0.5 && p[Coloration] > 0.6,
             GroupTrait::HerdDefense => p[Carnivory] < 0.4 && p[BodySize] > 0.45 && p[GroupTolerance] > 0.5,
-            // An earless body (`morph_effects::body_plan`) hears no calls.
-            GroupTrait::AlarmCalls => {
-                p[Ears] > 0.5 && p[Vocal] > 0.5 && crate::morph_effects::body_plan(p).ear_count > 0
-            }
+            GroupTrait::AlarmCalls => p[Ears] > 0.5 && p[Vocal] > 0.5,
             GroupTrait::SharedBurrows => is_digger(p) && p[GroupTolerance] > 0.5,
             GroupTrait::Sentries => p[GroupTolerance] > 0.6 && p[Vigilance] > 0.5,
             GroupTrait::CommunalDens => is_winter_sleeper(p) && p[GroupTolerance] > 0.5,
             GroupTrait::GroupNavigation => p[Migration] >= STRATEGY_THRESHOLD && p[GroupTolerance] > 0.5,
             GroupTrait::SharedCaches => is_group_forager(p) && p[Caching] >= STRATEGY_THRESHOLD,
         }
+    }
+
+    /// [`GroupTrait::is_carrier`] for an organism with body plan `plan`
+    /// (`Organism::morph`): an earless body hears no calls, so it carries no
+    /// alarm calls whatever its genes.
+    pub fn is_carrier_with(self, p: &Phenotype, plan: &crate::morph::Morphology) -> bool {
+        self.is_carrier(p) && (self != GroupTrait::AlarmCalls || plan.ear_count > 0)
     }
 
     /// Who counts in the frequency denominator. Flooding an area with eligible
@@ -184,17 +188,18 @@ impl GroupField {
         r * self.cols + c
     }
 
-    /// Recompute from `(position, phenotype)` of every breeding adult.
-    pub fn update<'a>(&mut self, adults: impl Iterator<Item = (Vec2, &'a Phenotype)>) {
+    /// Recompute from `(position, phenotype, body plan)` of every breeding
+    /// adult.
+    pub fn update<'a>(&mut self, adults: impl Iterator<Item = (Vec2, &'a Phenotype, &'a crate::morph::Morphology)>) {
         let n = self.cols * self.rows;
         let mut carriers = vec![[0u32; GROUP_TRAIT_COUNT]; n];
         let mut eligible = vec![[0u32; GROUP_TRAIT_COUNT]; n];
-        for (pos, p) in adults {
+        for (pos, p, plan) in adults {
             let r = self.region(pos);
             for (k, t) in GroupTrait::ALL.iter().enumerate() {
                 if t.is_eligible(p) {
                     eligible[r][k] += 1;
-                    if t.is_carrier(p) {
+                    if t.is_carrier_with(p, plan) {
                         carriers[r][k] += 1;
                     }
                 }
@@ -255,10 +260,11 @@ mod tests {
         );
         let at = Vec2::new(1.0, 1.0);
         let mut field = GroupField::new(32, 32, 16);
-        let pack: Vec<_> = (0..6).map(|_| (at, &wolf)).collect();
+        let plain = crate::morph::Morphology::default();
+        let pack: Vec<_> = (0..6).map(|_| (at, &wolf, &plain)).collect();
         field.update(pack.iter().cloned());
         let strong = field.benefit(GroupTrait::CooperativeHunting, at);
-        let flooded: Vec<_> = pack.iter().cloned().chain((0..12).map(|_| (at, &loner))).collect();
+        let flooded: Vec<_> = pack.iter().cloned().chain((0..12).map(|_| (at, &loner, &plain))).collect();
         field.update(flooded.into_iter());
         let weak = field.benefit(GroupTrait::CooperativeHunting, at);
         assert!(strong > 0.9, "strong {strong}");
@@ -269,7 +275,9 @@ mod tests {
     fn benefit_of(t: GroupTrait, carrier: &Phenotype, n_carriers: usize, other: &Phenotype, n_others: usize) -> f32 {
         let at = Vec2::new(1.0, 1.0);
         let mut field = GroupField::new(32, 32, 16);
-        let adults: Vec<_> = (0..n_carriers).map(|_| (at, carrier)).chain((0..n_others).map(|_| (at, other))).collect();
+        let plain = crate::morph::Morphology::default();
+        let adults: Vec<_> =
+            (0..n_carriers).map(|_| (at, carrier, &plain)).chain((0..n_others).map(|_| (at, other, &plain))).collect();
         field.update(adults.into_iter());
         field.benefit(t, at)
     }

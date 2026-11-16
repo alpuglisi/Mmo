@@ -42,6 +42,8 @@ pub mod groups;
 #[cfg(test)]
 mod groups_tests;
 pub mod lod;
+#[cfg(test)]
+mod morph_tests;
 pub mod offline;
 mod par_apply;
 #[cfg(test)]
@@ -837,7 +839,7 @@ impl World {
         self.next_id += 1;
         o.id = id;
         // Body plan effects, once, at birth (`Balance::morph_*`; no-op at 0).
-        crate::morph_effects::apply(&mut o.traits, &o.pheno, &self.config.balance);
+        crate::morph_effects::apply(&mut o.traits, &o.pheno, &o.morph, &self.config.balance);
         *self.owner_counts.entry(o.owner).or_default() += 1;
         self.count_lineage(o.lineage, 1);
         self.index.insert(id, self.organisms.len());

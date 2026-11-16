@@ -13,9 +13,8 @@
 //! bearing (two products, no trigonometry) and a table lookup
 //! ([`Vision::eyes_on`]).
 
-use crate::genome::{Gene, Phenotype};
 use crate::math::Vec2;
-use crate::morph_effects::{body_plan, BodyPlan};
+use crate::morph_effects::BodyPlan;
 
 /// Eye layout (and snout, which occludes binocular overlap), as in the
 /// morphology contract.
@@ -77,12 +76,11 @@ pub fn snout_occlusion(snout: f32) -> f32 {
     40.0 * (snout - 0.5).max(0.0)
 }
 
-/// The eye layout read from a phenotype: the body plan's eyes and snout
-/// (`morph_effects::body_plan`, the contract's defaults of two eyes at ±60°
-/// and snout 0.5 until the genome carries the loci) with the `Eyes` gene as
-/// size.
-pub fn eye_layout(p: &Phenotype) -> EyeLayout {
-    EyeLayout::of_plan(&body_plan(p), p[Gene::Eyes])
+/// The eye layout of a body plan (an organism's `Organism::morph`, or
+/// `Morphology::wild_type` for a bare phenotype): its eye count, azimuth and
+/// snout, with its eye size (the `Eyes` gene).
+pub fn eye_layout(plan: &BodyPlan) -> EyeLayout {
+    EyeLayout::of_plan(plan, plan.eye_size)
 }
 
 /// The sight channel of the perception stat: the vision share of the 0.15
@@ -201,9 +199,9 @@ impl Vision {
         }
     }
 
-    /// From a phenotype and its perception stat (see [`eye_layout`]).
-    pub fn of(p: &Phenotype, perception: f32) -> Vision {
-        Vision::new(&eye_layout(p), sight(p[Gene::Eyes]), perception)
+    /// From a body plan and the perception stat (see [`eye_layout`]).
+    pub fn of(plan: &BodyPlan, perception: f32) -> Vision {
+        Vision::new(&eye_layout(plan), sight(plan.eye_size), perception)
     }
 
     /// Eyes (0, 1, or 2 for two or more) on a target `to` away (target minus

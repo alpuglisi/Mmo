@@ -46,10 +46,10 @@ docs/
 
 | Module | Design-doc section | What it does |
 | --- | --- | --- |
-| `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. A separate **morphology segment** (`morph`, `docs/morphology-contract.md`) holds discrete loci for eye count (1–6), ear count (0/2/4), ear shape, leg count (0/2/4/6/8) and tail shape (small-integer alleles with origin tags; one allele expressed, never an average: the wild type over any other, then the one nearer the default, the lower count on a tie, shapes in a fixed order) and additive loci for eye azimuth and snout length; `tail_present` is derived from `Tail` ≥ 0.05. Founders carry the design's counts exactly. The segment has its own random stream (no draws from the shared ones), its own choice bits in the by-parents snapshot form, and stays out of the phenotype and the legacy tally. Expressed counts and shapes add `min(1, steps/2)` per locus to the genetic distance's numerator (divisor unchanged), and eye and leg counts 0.1 per step to the body-plan gap; equal morphologies add exactly 0, so default-morphology worlds run bit for bit as before. Discrete step mutation (`Balance::morph_step_rate`, spec value 0.0005) is off by default for the same reason. `Organism::morph` (`morph::Morphology`) caches the expressed parameters and derived eye field width for other packages; nothing else reads it yet. |
+| `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. A separate **morphology segment** (`morph`, `docs/morphology-contract.md`) holds discrete loci for eye count (1–6), ear count (0/2/4), ear shape, leg count (0/2/4/6/8) and tail shape (small-integer alleles with origin tags; one allele expressed, never an average: the wild type over any other, then the one nearer the default, the lower count on a tie, shapes in a fixed order) and additive loci for eye azimuth and snout length; `tail_present` is derived from `Tail` ≥ 0.05. Founders carry the design's counts exactly. The segment has its own random stream (no draws from the shared ones), its own choice bits in the by-parents snapshot form, and stays out of the phenotype and the legacy tally. Expressed counts and shapes add `min(1, steps/2)` per locus to the genetic distance's numerator (divisor unchanged), and eye and leg counts 0.1 per step to the body-plan gap; equal morphologies add exactly 0, so default-morphology worlds run bit for bit as before. Discrete step mutation (`Balance::morph_step_rate`, spec value 0.0005) is off by default for the same reason. `Organism::morph` (`morph::Morphology`) caches the expressed parameters and derived eye field width at birth; it is the one body plan everything reads (see [Body plan wiring](#body-plan-wiring)): the eye geometry and ear localization (`stats::derive_with`), the body plan effects (`morph_effects`, behind their tunables), LOD cohort representatives and the server's `look`. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
-| `morph_effects` | `docs/morphology.md` §3 (package D) | Body plan → derived effects of ear count and shape, leg count, tail shape and snout length, computed once at birth and folded into stats and body behind the `morph_*` tunables (off by default, exactly neutral at the default body). See [Body plan effects](#body-plan-effects). |
+| `morph_effects` | `docs/morphology.md` §3 (package D) | Body plan → derived effects of ear count and shape, leg count, tail shape and snout length, computed once at birth and folded into stats and body behind the `morph_*` tunables (off by default, exactly neutral at the default body). The body plan is the organism's genome `Organism::morph`. See [Body plan effects](#body-plan-effects). |
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge; depressions fed by more rain than evaporates off their surface fill into lakes (priority flood). Rivers in flood overflow onto their floodplain (low land up to two tiles from the channel): standing water that swimmers cross and that strands and drowns small non-swimmers, drowned plants, then silt that speeds regrowth for weeks. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, costly and risky flight) and rain or snow; the wind has a direction (prevailing westerly, swinging over days and veering regionally) that speeds or slows flyers and gliders by wing loading; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`; `Map::climate_temp`/`climate_wet` are climate anomalies (0 normally) that catastrophes set. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
 | `pathfinding` | Movement and terrain | Bounded A* over tiles for one body: blocked tiles are avoided, slow ones cost time. Used only when the direct step is blocked (see Movement below). |
 | `mating` | Override cost | Root-sum-of-squares preference mismatch, `cost = k·max(0, mismatch−1)²`, outbreeding depression by genetic distance, and sterility between different body plans (thermoregulation, birth mode, body size or diet more than 0.3 apart; `cargo run --release --example distances` prints the founders' matrix). Display coloration is condition-dependent (an honest signal). |
@@ -869,11 +869,15 @@ quantized morphology of `docs/morphology-contract.md`: `eyes` (1–6),
 `ears` (0, 2 or 4) and `ear_shape` (round, pointed, long, fan), `legs` (0,
 2, 4, 6, 8), `tail` (none, thin, bushy, fin, club, prehensile), and size
 buckets 0–2 (small, medium, large) `eye_size`, `ear_size`, `tail_size`,
-`snout`, `fangs` (0 none, 1 small, 2 large; none below 0.1). They come from
-`Morphology::of`, the one function that reads them off the organism: until
-the genome has the discrete loci, the contract defaults (two eyes, two
-round ears, four legs, a thin tail when `Tail` ≥ 0.05, a medium snout) with
-sizes from the `Eyes`, `Ears`, `Tail` and `Fangs` genes. The fields were
+`snout`, `fangs` (0 none, 1 small, 2 large; none below 0.1), plus
+`eye_azimuth` (0 forward under 35°, 2 side-set from 85°), sent only when it
+is not the default bucket 1, so default bodies' looks are unchanged (the
+client reads it but does not draw it yet). They come from
+`Morphology::of`, the one function that reads them off the organism: its
+genome's expressed morphology (`Organism::morph`: counts, shapes, eye
+azimuth and snout from the morphology loci, sizes from the `Eyes`, `Ears`,
+`Tail` and `Fangs` genes), so a designed body plan shows in `look` from the
+founders on. The fields were
 added without a protocol bump: they are new keys in the same JSON object
 (and in protocol 2's `looks` palette), which older clients ignore, and a
 client reading a server without them draws today's defaults. The API answers
@@ -5317,20 +5321,24 @@ tick. New tunables: `fang_grazing`, `scale_cover`.
 ### Body plan effects
 
 `morph_effects` (package D of [`docs/morphology.md`](docs/morphology.md),
-§3, minus vision). The body plan is read through one accessor,
-`morph_effects::body_plan(&Phenotype)`, which until the genome package's
-morphology loci land returns the contract defaults for every organism (2
-eyes at 60°, 2 round ears, 4 legs, a thin tail when `Tail` ≥ 0.05, snout
-0.5); sizes stay the existing `Ears`, `LegLength` and `Tail` genes.
+§3, minus vision). The body plan (`morph_effects::BodyPlan`) is the
+organism's expressed genome morphology, `morph::Morphology`
+(`Organism::morph`, see [Body plan wiring](#body-plan-wiring)); sizes stay
+the existing `Ears`, `LegLength` and `Tail` genes.
 `morph_effects::derive` turns a body plan into a `MorphEffects` (every
-derived number and stat change), and `morph_effects::apply` folds it into
-the organism's `Traits` once, when `World::insert` adds a newborn, founder
-or expanded cohort member, and again after a restore (from the restored
-config). Every term is written relative to the default body, so at the
-default plan every factor is exactly 1 and every change exactly 0
-whatever the genes (`default_body_is_exactly_neutral` checks every preset
-bit for bit; `default_world_is_unchanged_by_the_effects` runs a standard
-world 150 ticks with `morph_effects` 1 and 0 and gets the same organisms).
+derived number and stat change), and `morph_effects::apply(traits, pheno,
+plan, balance)` folds it into the organism's `Traits` once, when
+`World::insert` adds a newborn, founder or expanded cohort member, and
+again after a restore (from the restored config). Every term is written
+relative to the default body, so at the default plan (snout exactly 0.5)
+every factor is exactly 1 and every change exactly 0 whatever the genes
+(`default_body_is_exactly_neutral` checks every preset bit for bit).
+Snout length is a continuous locus that founders vary around the design's
+0.5 (founder variation 0.05 per allele), so with `morph_effects` on a
+default-designed lineage does feel small snout effects either way
+(`default_world_feels_only_its_snouts` checks that a standard world's
+bodies differ from their bare traits only through the snout, and not at
+all with the tunables at 0).
 
 Tunables (all 0 by default; with all four at 0 `apply` returns at once, so
 results are bit-identical; the spec's values are 1):
@@ -5390,11 +5398,20 @@ change is multiplied by `k`, each factor `f` becomes `1 + k·(f − 1)`.
   tolerance `+3·(s − 0.5)` °C; burrowing `+0.1·(s − 0.5)`; binocular
   overlap hidden `40°·max(0, s − 0.5)` (a readout for the vision package).
 - **Upkeep** changes add to `upkeep`, so metabolism changes by `(0.6 +
-  0.3·Muscle)·(warm ? 1 : 0.35)·Δupkeep`. Level-of-detail cohorts
-  (`world::lod` representatives) use the plain derived traits.
+  0.3·Muscle)·(warm ? 1 : 0.35)·Δupkeep`.
+- **Level-of-detail cohorts** (`world::lod` representatives) get the same
+  effects: the probe organism's traits (passability, browse) and every
+  sampled genome's stats (mass, metabolism, insulation, stealth, burrowing)
+  are computed from each genome's own morphology with `apply`, as at an
+  agent's birth, and re-applied to the probe after a restore. A bushy
+  tail's resting warmth counts at 0.75 of the cohort's day (the resting
+  share agents' mean activity of 0.9 implies) in the cohort's insulation. A
+  warm body's heat tolerance (fan ears, long snout) has no counterpart:
+  cohorts model only cold stress, no heat stress at all. With the tunables
+  at 0 the representatives are bit-identical
+  (`cohort_representatives_feel_the_body_plan`).
 
-**Interfaces.** The genome package swaps its expressed `Morphology` into
-`body_plan` (one function). The vision package reads `Traits::morph`
+**Interfaces.** The vision package reads `Traits::morph`
 (`MorphContext`): `hearing` and `smell` are the effective perception
 channels (with eyes at `0.10 + 0.3·Eyes`, the three add up to
 `Stats::perception`), `localization` is `L`, and
@@ -5412,8 +5429,9 @@ code changes without it; regenerate with `EVO_UPDATE_FIXTURES=1 cargo test
 
 **Measured.** With the defaults the 12-seed sweep from seed 31 still
 prints 11.76 (11.74 once merged after the trait downsides, which moved it). `compare --seed 101 --seeds 3 --set morph_effects=1 vs
-defaults` gives +0.00 on every seed (identical worlds: every body is
-default until the genome package lands). `compare --adaptive` from seed
+defaults` gave +0.00 on every seed (identical worlds: every body was
+default before the genome's morphology loci were wired in; preset and wild
+designs still are, apart from their founders' snout variation). `compare --adaptive` from seed
 101 with all four tunables at 1 (`--set morph_effects=1 --set
 morph_tail_drag=1 --set morph_tail_chill=1 --set morph_long_legs=1 vs
 defaults`; tail drag and chill and long-leg tippiness do touch today's
@@ -5437,6 +5455,37 @@ versions 10–20 read all four tunables as 0 (`serde_util::before_v21`).
 New tunables: `morph_effects`, `morph_tail_drag`, `morph_tail_chill`,
 `morph_long_legs`.
 
+### Body plan wiring
+
+The genome's morphology segment drives everything that has a body plan;
+there is one source of truth, `morph::Morphology`, computed at birth (and on
+restore) from the genome's expressed loci and the phenotype
+(`Organism::morph`). What reads it:
+
+| Reader | What | Behind |
+| --- | --- | --- |
+| `stats::derive_with(pheno, morph)` | the eye geometry (`Traits::vision`: count, azimuth, size, snout occlusion) and the ears' localization in `Traits::morph` | the geometry is read only by directional vision, `directional_vision` (0); no rule reads localization yet |
+| `morph_effects::apply` (`World::insert`, restore) | ear count and shape, leg count, tail shape and snout effects on stats and body | `morph_effects`, `morph_tail_drag`, `morph_tail_chill`, `morph_long_legs` (all 0) |
+| `GroupTrait::is_carrier_with` | an earless body carries no alarm calls | structural (always on; only designed earless bodies are affected) |
+| LOD cohorts (`Rep::compute`) | the same effects for cohort representatives | the `morph_*` tunables |
+| kinship, species, fertility | the morphology key (`morph_terms`) | always on; exactly 0 between equal body plans |
+| server `look` (`appearance::Morphology::of`) | eyes, eye placement, ears and ear shape, legs, tail shape, sizes, snout, fangs | always on (cosmetic) |
+
+`stats::derive(pheno)` remains for code with only a phenotype: it uses
+`Morphology::wild_type(pheno)` (the contract defaults with that phenotype's
+sizes). Every preset and wild species has the default discrete body plan,
+so with every tunable at its default the worlds run bit for bit as before:
+the sweep from seed 31 still prints 11.74 and the client wire fixture is
+unchanged. A designed body plan (the editor's Builder mode sends `morph`)
+founds organisms that carry it, look it (`designed_morphology_shows_in_state_frames`,
+and the browser smoke test checks a third eye in `look` and in the sprite
+key) and pass it on by the dominance rule (`world::morph_tests`: young of a
+six-legged, three-eyed, fin-tailed design are the same; a cross with a
+default lineage shows the wild type and carries the design, which returns
+in a quarter of the second generation). Its stat effects and eye geometry
+play out once the tunables are turned on by the calibration pass of
+`docs/morphology.md` §4.
+
 ### Directional vision
 
 `vision`, `Balance::directional_vision`, off by default. Eyes see fields
@@ -5456,11 +5505,13 @@ around the way the animal faces, as in the morphology spec (`docs/morphology.md`
   and rear blind spot, plus a 32-bin table of 0 / 1 / ≥2 eyes over the folded
   bearing (2 bits per bin, one `u64`). Per neighbor the cost is one dot and
   one cross product, a division (a trig-free pseudo-angle) and a table lookup
-  (`Vision::eyes_on`). Until the genome carries eye loci, `vision::eye_layout`
-  reads the contract defaults (2 eyes at ±60°, snout 0.5) with the `Eyes` gene
-  as size: the one function to swap for the genome's `Morphology`.
-  The defaults give `20 + 60·Eyes` degrees of depth field and a
-  `100 − 60·Eyes` degree rear blind spot.
+  (`Vision::eyes_on`). `vision::eye_layout` reads the organism's body plan
+  (`Organism::morph`: eye count, the first pair's azimuth and the snout from
+  the genome's morphology loci, the `Eyes` gene as size). The defaults (2
+  eyes at ±60°, snout 0.5) give `20 + 60·Eyes` degrees of depth field and a
+  `100 − 60·Eyes` degree rear blind spot; founders vary the azimuth and snout
+  loci around the design's values like any additive locus, so with
+  `directional_vision` on, default-designed lineages differ a little too.
 - **Detection** (`decide::look`). Perception splits into channels: sight
   `0.10 + 0.3·Eyes`, hearing `0.03 + 0.3·Ears`, smell `0.02 + 0.3·Nose`. With
   `k = directional_vision`, a neighbor in a blind sector (no eye on it) is

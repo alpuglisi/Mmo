@@ -60,6 +60,10 @@ const WATER_REACH: u16 = 6;
 const PLANT_EATER: f32 = 0.05;
 /// Mean activity multiplier on hunger (agents rest at 0.8, walk at 1.2).
 const ACTIVITY: f32 = 0.9;
+/// Share of the day agents spend resting, the one implied by [`ACTIVITY`]
+/// (`0.8·r + 1.2·(1 − r) = 0.9`): what a resting-only insulation term (a
+/// bushy tail, `morph_effects`) is worth to a cohort.
+const REST_SHARE: f32 = 0.75;
 /// Tiles within which an organism counts kin (larval competition).
 const KIN_AREA: f32 = 25.0;
 /// Carnivory above which a cohort hunts (as agents do).
@@ -106,8 +110,18 @@ struct Rep {
 }
 
 impl Rep {
-    fn compute(pool: &[PoolEntry]) -> Rep {
+    /// Body plan effects (`morph_effects`, at `bal`'s tunables) apply to the
+    /// representative as at an agent's birth: the probe's traits (body for
+    /// passability and browse) and every sampled genome's stats, from its own
+    /// genome morphology. A bushy tail's resting warmth counts at
+    /// [`REST_SHARE`] of the cohort's day in the mean insulation (agents
+    /// get it only while resting). A warm body's heat tolerance (fan ears,
+    /// long snout) has no counterpart: cohorts pay no heat stress at all, only
+    /// the cold term of `cohort_needs`. With every tunable at 0 (the default)
+    /// the effects are no-ops and the representative is what it was.
+    fn compute(pool: &[PoolEntry], bal: &crate::Balance) -> Rep {
         let mut probe = Organism::new(0, 0, pool[0].genome.clone(), Sex::Female, Vec2::ZERO);
+        crate::morph_effects::apply(&mut probe.traits, &probe.pheno, &probe.morph, bal);
         probe.growth = 1.0;
         probe.matured = true;
         let sample = &pool[..pool.len().min(16)];
@@ -137,10 +151,12 @@ impl Rep {
         };
         for e in sample {
             let p = e.genome.phenotype();
-            let t = crate::stats::derive(&p);
+            let plan = crate::morph::Morphology::new(e.genome.morph(), &p);
+            let mut t = crate::stats::derive_with(&p, &plan);
+            crate::morph_effects::apply(&mut t, &p, &plan, bal);
             r.mass += t.body.mass / n;
             r.metabolism += t.stats.metabolism / n;
-            r.insulation += t.stats.insulation / n;
+            r.insulation += (t.stats.insulation + REST_SHARE * t.morph.rest_insulation) / n;
             r.carnivory += t.carnivory / n;
             r.litter += t.litter as f32 / n;
             // At a warm body's temperature (`Balance::cold_gestation` applies at use).
@@ -271,12 +287,12 @@ impl Cohort {
         out
     }
 
-    fn ensure_rep(&mut self, day: u64, refresh: bool) {
+    fn ensure_rep(&mut self, day: u64, refresh: bool, bal: &crate::Balance) {
         if self.pool.is_empty() {
             return;
         }
         if self.rep.is_none() || (refresh && day >= self.rep_day + REP_REFRESH_DAYS) {
-            self.rep = Some(Box::new(Rep::compute(&self.pool)));
+            self.rep = Some(Box::new(Rep::compute(&self.pool, bal)));
             self.rep_day = day;
         }
     }
@@ -413,6 +429,19 @@ impl Lod {
 
     pub fn lineage_count(&self, lineage: u32) -> LineageCount {
         self.lineages.get(lineage as usize).copied().unwrap_or_default()
+    }
+
+    /// After a restore: the representatives' probes come back with bare
+    /// traits (`Organism::refresh_derived`), so give them the body plan
+    /// effects `Rep::compute` gave them (the saved means already carry them).
+    #[cfg(feature = "serde")]
+    pub(super) fn reapply_morph_effects(&mut self, bal: &crate::Balance) {
+        for c in self.regions.iter_mut().flatten() {
+            if let Some(rep) = c.rep.as_deref_mut() {
+                let o = &mut rep.probe;
+                crate::morph_effects::apply(&mut o.traits, &o.pheno, &o.morph, bal);
+            }
+        }
     }
 }
 
@@ -640,6 +669,7 @@ impl World {
         let tpd = self.config.ticks_per_day as f64;
         let k = self.config.lod.pool_size.max(1.0) as usize;
         let day = self.day();
+        let bal = self.config.balance;
         for i in 0..self.organisms.len() {
             let o = &self.organisms[i];
             if !o.alive || o.possessed_by.is_some() {
@@ -658,7 +688,7 @@ impl World {
             c.add(sex, birth_day, entry, k, rng);
             c.blend_state(hunger, health, fat);
             c.raised += raised as f64;
-            c.ensure_rep(day, false);
+            c.ensure_rep(day, false, &bal);
             self.remove_agent(i);
             self.lod.stats.absorbed += 1;
         }
@@ -682,7 +712,7 @@ impl World {
                 cohort.blend_state(30.0, 100.0, 0.0);
                 self.lod.stats.absorbed += 1;
             }
-            cohort.ensure_rep(day, false);
+            cohort.ensure_rep(day, false, &bal);
         }
         self.clutches = keep;
         self.clutch_at.clear();
@@ -759,7 +789,7 @@ impl World {
             if c.pool.is_empty() {
                 continue;
             }
-            c.ensure_rep(self.day(), false);
+            c.ensure_rep(self.day(), false, &self.config.balance);
             let rep = c.rep.clone().expect("rep");
             let tiles = self.passable_tiles(r, c.lineage, &rep.probe).to_vec();
             let adults = c.adults(today);
@@ -979,7 +1009,7 @@ impl World {
                 let c = cohort_mut(&mut self.lod.regions[a.to], a.lineage, a.owner);
                 c.add(a.member.sex, a.member.birth_day, entry, k, &mut rng);
                 c.blend_state(a.hunger, a.health, a.fat);
-                c.ensure_rep(day, false);
+                c.ensure_rep(day, false, &self.config.balance);
             }
         }
     }
@@ -1044,7 +1074,7 @@ impl World {
         let temp = self.region_temp(r);
         let mut cs = std::mem::take(&mut self.lod.regions[r]);
         for c in cs.iter_mut() {
-            c.ensure_rep(day, true);
+            c.ensure_rep(day, true, &bal);
         }
         let mut d = vec![Day::default(); cs.len()];
         for (i, c) in cs.iter().enumerate() {
@@ -1668,6 +1698,7 @@ mod tests {
             w.organisms.iter().filter(|o| o.lineage == lineage).map(|o| Genome::clone(&o.genome)).collect();
         let owner = w.lineages[lineage as usize].owner;
         let today = w.today();
+        let bal = w.config.balance;
         let c = cohort_mut(&mut w.lod.regions[r], lineage, owner);
         for k in 0..n {
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
@@ -1680,7 +1711,7 @@ mod tests {
             );
         }
         c.blend_state(20.0, 100.0, 0.0);
-        c.ensure_rep(0, false);
+        c.ensure_rep(0, false, &bal);
     }
 
     fn only_cohorts(w: &mut World) {
@@ -1703,6 +1734,50 @@ mod tests {
             w.tick += w.config.ticks_per_day as u64;
         }
         w.recount_lod();
+    }
+
+    /// Cohort representatives get the body plan effects agents get at birth
+    /// (`Rep::compute`), from each pooled genome's own morphology; with the
+    /// tunables at 0 a designed body plan changes nothing.
+    #[test]
+    fn cohort_representatives_feel_the_body_plan() {
+        use crate::morph::{EarShape, MorphDesign, MorphGenes, TailShape};
+        let design =
+            MorphDesign { leg_count: 6, ear_shape: EarShape::Fan, tail_shape: TailShape::Bushy, ..Default::default() };
+        let rep = |k: f32, odd: bool| {
+            let (mut w, r) = cohort_world();
+            w.config.balance.morph_effects = k;
+            only_cohorts(&mut w);
+            if odd {
+                for o in w.organisms.iter_mut().filter(|o| o.lineage == 1) {
+                    let mut g = Genome::clone(&o.genome);
+                    g.set_morph(MorphGenes::uniform(&design, o.owner));
+                    o.genome = std::sync::Arc::new(g);
+                    o.refresh_derived();
+                }
+            }
+            fill(&mut w, r, 1, 20);
+            let bal = w.config.balance;
+            let c = w.lod.regions[r].iter().find(|c| c.lineage == 1).unwrap();
+            (c.rep.clone().unwrap(), bal)
+        };
+        let (plain, _) = rep(1.0, false);
+        let (odd, bal) = rep(1.0, true);
+        let probe = &odd.probe;
+        assert_eq!(probe.morph.leg_count, 6);
+        let mut want = crate::stats::derive_with(&probe.pheno, &probe.morph);
+        crate::morph_effects::apply(&mut want, &probe.pheno, &probe.morph, &bal);
+        assert_eq!(probe.traits, want);
+        assert!(odd.mass > plain.mass && odd.metabolism > plain.metabolism);
+        assert!(odd.probe.traits.body.mass > plain.probe.traits.body.mass);
+        // Off: the designed cohort's representative is the plain one's.
+        let ((a, _), (b, _)) = (rep(0.0, true), rep(0.0, false));
+        assert_eq!(
+            (a.mass, a.metabolism, a.insulation, a.stealth, a.burrow),
+            (b.mass, b.metabolism, b.insulation, b.stealth, b.burrow)
+        );
+        assert_eq!(a.probe.traits.stats, b.probe.traits.stats);
+        assert_eq!(a.probe.traits.body, b.probe.traits.body);
     }
 
     #[test]

@@ -2,19 +2,23 @@
 //! (`docs/morphology.md` §3, work package D; vision is package V's).
 //!
 //! Everything here is computed once per organism, at birth, from its
-//! phenotype and its [`BodyPlan`] (the contract's expressed count, shape and
-//! placement parameters; sizes stay the existing `Ears`, `LegLength`, `Tail`
-//! genes). [`derive`] gives every derived number and stat change as a
-//! [`MorphEffects`]; [`apply`] folds them into the organism's [`Traits`]
-//! (stats and body) and fills the few context terms the tick reads
-//! ([`MorphContext`]).
+//! phenotype and its [`BodyPlan`]: the organism's expressed genome
+//! morphology (`Organism::morph`, [`crate::morph::Morphology`]; sizes stay
+//! the existing `Ears`, `LegLength`, `Tail` genes). [`derive`] gives every
+//! derived number and stat change as a [`MorphEffects`]; [`apply`] folds
+//! them into the organism's [`Traits`] (stats and body) and fills the few
+//! context terms the tick reads ([`MorphContext`]). `World::insert` and a
+//! restore call it; LOD cohorts' representatives too.
 //!
 //! Two rules make this safe to merge before calibration:
 //!
 //! - **Neutral at the default body.** At the default morphology (2 round
-//!   ears, 4 legs, a thin tail, snout 0.5) every multiplier is exactly 1 and
-//!   every additive term exactly 0, whatever the size genes, so applying the
-//!   effects to a default body changes no bit.
+//!   ears, 4 legs, a thin tail, snout exactly 0.5) every multiplier is
+//!   exactly 1 and every additive term exactly 0, whatever the size genes, so
+//!   applying the effects to a default body changes no bit. Snout length is a
+//!   continuous locus that founders vary around the design value, so with the
+//!   tunables on a default-designed lineage does feel small snout effects
+//!   (smell, bite, small-prey snapping, cooling, digging) around zero.
 //! - **Behind tunables that start at 0.** [`Balance::morph_effects`] scales
 //!   every count/shape/snout effect; the three new downsides of today's genes
 //!   (tail drag, tail chill, long-leg tippiness and digging) have their own
@@ -29,29 +33,18 @@ use crate::config::Balance;
 use crate::genome::{Gene, Phenotype};
 use crate::stats::Traits;
 
-/// Ear shape (contract `ear_shape`). Dominance order: round > pointed > long
-/// > fan.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum EarShape {
-    Round,
-    Pointed,
-    Long,
-    Fan,
-}
+/// Ear and tail shapes are the genome's (`morph`): one enum each, whose
+/// effect coefficients this module adds.
+pub use crate::morph::{EarShape, TailShape};
+
+/// The body plan the effects read: the organism's expressed
+/// [`Morphology`](crate::morph::Morphology) (`Organism::morph`, computed at
+/// birth from its genome). Sizes are the existing genes (`Eyes`, `Ears`,
+/// `LegLength`, `Tail`), read from the phenotype by [`derive`]; they are in
+/// the morphology too, with the same values.
+pub type BodyPlan = crate::morph::Morphology;
 
 impl EarShape {
-    pub const ALL: [EarShape; 4] = [EarShape::Round, EarShape::Pointed, EarShape::Long, EarShape::Fan];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            EarShape::Round => "round",
-            EarShape::Pointed => "pointed",
-            EarShape::Long => "long",
-            EarShape::Fan => "fan",
-        }
-    }
-
     /// Hearing gain.
     pub fn gain(self) -> f32 {
         match self {
@@ -83,32 +76,7 @@ impl EarShape {
     }
 }
 
-/// Tail shape (contract `tail_shape`). Dominance order: thin > bushy >
-/// prehensile > fin > club.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum TailShape {
-    Thin,
-    Bushy,
-    Fin,
-    Club,
-    Prehensile,
-}
-
 impl TailShape {
-    pub const ALL: [TailShape; 5] =
-        [TailShape::Thin, TailShape::Bushy, TailShape::Fin, TailShape::Club, TailShape::Prehensile];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            TailShape::Thin => "thin",
-            TailShape::Bushy => "bushy",
-            TailShape::Fin => "fin",
-            TailShape::Club => "club",
-            TailShape::Prehensile => "prehensile",
-        }
-    }
-
     /// Agility per unit of tail length (today's thin tail: 0.3).
     pub fn agility(self) -> f32 {
         match self {
@@ -156,59 +124,16 @@ impl Foot {
     }
 }
 
-/// The contract's expressed body-plan parameters (`docs/morphology-contract.md`)
-/// that this package reads. Sizes are the existing genes (`Eyes`, `Ears`,
-/// `LegLength`, `Tail`), read from the phenotype.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BodyPlan {
-    /// 1–6 (read by the vision package, carried here for the readout).
-    pub eye_count: u8,
-    /// Degrees, 0–180 (vision package).
-    pub eye_azimuth: f32,
-    /// 0, 2 or 4.
-    pub ear_count: u8,
-    pub ear_shape: EarShape,
-    /// 0, 2, 4, 6 or 8.
-    pub leg_count: u8,
-    pub tail_present: bool,
-    pub tail_shape: TailShape,
-    /// 0 (flat face) – 1 (long muzzle).
-    pub snout_length: f32,
-}
-
-impl BodyPlan {
-    /// The default (wild-type) body plan, with a tail.
-    pub const DEFAULT: BodyPlan = BodyPlan {
-        eye_count: 2,
-        eye_azimuth: 60.0,
-        ear_count: 2,
-        ear_shape: EarShape::Round,
-        leg_count: 4,
-        tail_present: true,
-        tail_shape: TailShape::Thin,
-        snout_length: 0.5,
-    };
-
-    /// Leg pairs, `n = leg_count / 2` (capped at 4).
-    pub fn leg_pairs(&self) -> u8 {
-        (self.leg_count / 2).min(4)
-    }
-}
-
 /// Whether a `Tail` gene value grows a tail (contract: `Tail` ≥ 0.05).
 pub fn tail_present(tail: f32) -> bool {
-    tail >= 0.05
+    tail >= crate::morph::TAIL_PRESENT
 }
 
-/// THE accessor for an organism's body plan. Every rule in this module
-/// reads morphology through it.
-///
-/// Until the genome package's morphology loci land, every organism has the
-/// contract defaults (2 eyes at 60°, 2 round ears, 4 legs, a thin tail when
-/// `Tail` ≥ 0.05, snout 0.5). Swapping in the expressed `Morphology` is a
-/// change to this function only.
-pub fn body_plan(p: &Phenotype) -> BodyPlan {
-    BodyPlan { tail_present: tail_present(p[Gene::Tail]), ..BodyPlan::DEFAULT }
+/// The wild-type body plan with `p`'s sizes (2 eyes at 60°, 2 round ears, 4
+/// legs, a thin tail when `Tail` ≥ 0.05, snout 0.5): what a bare phenotype
+/// implies. An organism's own plan is its `Organism::morph`.
+pub fn wild_plan(p: &Phenotype) -> BodyPlan {
+    BodyPlan::wild_type(p)
 }
 
 /// The tunables, as one value (`Balance::morph_*`).
@@ -270,13 +195,13 @@ pub struct MorphContext {
 }
 
 impl MorphContext {
-    /// At birth, before [`apply`]: today's channels and no effects.
-    pub fn at_birth(p: &Phenotype) -> MorphContext {
-        let plan = body_plan(p);
+    /// At birth, before [`apply`]: today's channels and no effects; the
+    /// ears' localization follows the body plan.
+    pub fn at_birth(p: &Phenotype, plan: &BodyPlan) -> MorphContext {
         MorphContext {
             hearing: 0.03 + 0.3 * p[Gene::Ears],
             smell: 0.02 + 0.3 * p[Gene::Nose],
-            localization: localization(&plan),
+            localization: localization(plan),
             heat_tolerance: 0.0,
             rest_insulation: 0.0,
             fight_back: 0.0,
@@ -596,20 +521,15 @@ impl MorphEffects {
     }
 }
 
-/// Apply the body plan's effects to a newborn's (or restored organism's)
-/// traits, at the strengths `bal` sets. Call once, on traits fresh from
-/// `stats::derive`. With every `morph_*` tunable at 0 (the default) it
-/// changes nothing.
-pub fn apply(t: &mut Traits, p: &Phenotype, bal: &Balance) {
-    let k = Knobs::of(bal);
-    if k.is_off() {
-        return;
-    }
-    apply_plan(t, p, &body_plan(p), k);
+/// Apply the body plan `plan` (the organism's `Organism::morph`) to a
+/// newborn's (or restored organism's) traits, at the strengths `bal` sets.
+/// Call once, on traits fresh from `stats::derive_with(p, plan)`. With every
+/// `morph_*` tunable at 0 (the default) it changes nothing.
+pub fn apply(t: &mut Traits, p: &Phenotype, plan: &BodyPlan, bal: &Balance) {
+    apply_plan(t, p, plan, Knobs::of(bal));
 }
 
-/// [`apply`] with an explicit body plan (tests, readouts, and the genome
-/// package's hook until [`body_plan`] reads its loci).
+/// [`apply`] at explicit knob strengths (tests and readouts).
 pub fn apply_plan(t: &mut Traits, p: &Phenotype, plan: &BodyPlan, k: Knobs) {
     if k.is_off() {
         return;

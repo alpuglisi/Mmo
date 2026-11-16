@@ -76,9 +76,11 @@
 //! counting them shifts every existing legacy share. A balance package
 //! decides, with the season-boundary deploy the spec asks for.
 //!
-//! **No gameplay effects yet.** Nothing in the simulation reads
-//! [`Morphology`] besides kinship and fertility; perception, locomotion and
-//! the renderer packages consume it.
+//! **Effects.** [`Morphology`] is the one body plan every package reads: it
+//! is computed at birth (`Organism::morph`), `stats::derive_with` builds the
+//! eye geometry and hearing context from it, `morph_effects` takes it as its
+//! `BodyPlan` (ears, legs, tail shape, snout; behind the `morph_*` tunables)
+//! and the server's appearance shows it. Kinship and fertility read its key.
 
 use rand::Rng;
 
@@ -738,6 +740,24 @@ impl Morphology {
             snout_length: m.expressed_gene(MorphGene::SnoutLength) * MorphGene::SnoutLength.scale(),
             fang_size: p[Gene::Fangs],
         }
+    }
+
+    /// The wild-type (default design) body plan with `p`'s sizes: 2 eyes at
+    /// exactly 60°, 2 round ears, 4 legs, a thin tail when `Tail` ≥
+    /// [`TAIL_PRESENT`], snout exactly 0.5. What a phenotype alone implies
+    /// (`stats::derive`, readouts and tests); an organism's own body plan is
+    /// [`Morphology::new`] of its genome (`Organism::morph`).
+    pub fn wild_type(p: &Phenotype) -> Morphology {
+        Morphology {
+            eye_azimuth: MorphGene::EyeAzimuth.default_param(),
+            snout_length: MorphGene::SnoutLength.default_param(),
+            ..Morphology::new(&MorphGenes::uniform(&MorphDesign::default(), crate::genome::WILD), p)
+        }
+    }
+
+    /// Leg pairs, `leg_count / 2` (at most 4).
+    pub fn leg_pairs(&self) -> u8 {
+        (self.leg_count / 2).min(4)
     }
 
     pub fn has_fangs(&self) -> bool {

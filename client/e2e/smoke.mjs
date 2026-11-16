@@ -272,9 +272,9 @@ async function main() {
     // The body plan goes as `morph` only to a server whose /api/genes lists it.
     const sent = founded.request().postDataJSON();
     if ('morphology' in sent) throw new Error('the editor-only morphology was sent');
-    if (Array.isArray(catalog.morph) && catalog.morph.length) {
-      if (sent.morph?.eye_count !== 3) throw new Error(`server takes morph, but the design sent ${JSON.stringify(sent.morph)}`);
-    } else if ('morph' in sent) throw new Error(`morph sent to a server without a morph section: ${JSON.stringify(sent.morph)}`);
+    // This server takes it (the morphology section is part of /api/genes).
+    if (!Array.isArray(catalog.morph) || !catalog.morph.length) throw new Error('the server does not advertise morph');
+    if (sent.morph?.eye_count !== 3) throw new Error(`server takes morph, but the design sent ${JSON.stringify(sent.morph)}`);
     step(`founded lineage ${body.lineage} with ${body.founders.length} founders; server cost ${body.cost.toFixed(2)} matches the client`);
 
     // World view with organisms.
@@ -289,6 +289,18 @@ async function main() {
     // States arrive as protocol 2 binary deltas, rebuilt by the socket.
     const proto = await page.evaluate(() => window.evo.model.proto);
     if (proto !== 2) throw new Error(`the connection speaks protocol ${proto}, not 2`);
+    // The third eye founded into the genome: every own organism looks
+    // three-eyed (the server reads the expressed morphology), and so does a
+    // near sprite's texture key (`creatureKey`: `-<eyes>…` after the class).
+    const looks = await page.evaluate(() => window.evo.model.state.organisms.map((o) => o.look?.eyes));
+    if (!looks.length || !looks.every((e) => e === 3)) throw new Error(`own organisms do not look three-eyed: ${JSON.stringify(looks)}`);
+    const keys = await page.evaluate(() => {
+      const v = window.evo.screen().view;
+      const ids = window.evo.model.state.organisms.map((o) => o.id);
+      return { far: v.spriteStats().far, keys: ids.map((id) => v.markerInfo(id)?.key).filter(Boolean) };
+    });
+    if (!keys.far && !keys.keys.some((k) => /^[^-]*-3/.test(k))) throw new Error(`no three-eyed sprite among own markers: ${JSON.stringify(keys)}`);
+    step(`the third eye shows: ${looks.length} own organisms look three-eyed${keys.far ? '' : `; sprite ${keys.keys[0]}`}`);
 
     // Tile map: the terrain grid from /api/terrain, one texture pixel per tile.
     const tiles = await page.evaluate(() => {
