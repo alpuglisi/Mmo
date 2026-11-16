@@ -154,6 +154,61 @@ async function main() {
     if (!(await page.isVisible('#trait-hooves-info'))) throw new Error('hooves info did not open');
     if (!(await page.textContent('#trait-hooves-info')).includes('Middle:')) throw new Error('hooves info has no levels');
     step(`${captions.length} sliders captioned; captions follow thermoregulation; info opens`);
+
+    // Founder preview: a described image that redraws as the design changes.
+    const avatar = () => page.$eval('#design-avatar', (el) => ({
+      role: el.getAttribute('role'), label: el.getAttribute('aria-label') ?? '', svg: el.innerHTML,
+      w: el.getBoundingClientRect().width, h: el.getBoundingClientRect().height,
+    }));
+    const a0 = await avatar();
+    if (a0.role !== 'img' || !a0.label.startsWith('Founder preview:') || !a0.svg.startsWith('<svg')) throw new Error(`avatar missing: ${JSON.stringify({ ...a0, svg: a0.svg.slice(0, 80) })}`);
+    if (a0.w < 200 || a0.h < 120) throw new Error(`avatar too small on desktop: ${a0.w}×${a0.h}`);
+    const sideBox = await page.locator('.design-side').boundingBox();
+    const budgetBox = await page.locator('.budget').boundingBox();
+    const avatarBox = await page.locator('.avatar-card').boundingBox();
+    if (!(avatarBox.y < budgetBox.y && avatarBox.x >= sideBox.x - 1)) throw new Error(`avatar not above the budget: ${JSON.stringify({ avatarBox, budgetBox })}`);
+    const saved = await page.$$eval('input[data-gene]', (els) => els.map((el) => [el.dataset.gene, el.value]));
+    await setTrait('wings', 0);
+    const noWings = await avatar();
+    await setTrait('wings', 0.6);
+    const winged = await avatar();
+    if (winged.svg === noWings.svg) throw new Error('avatar did not change with wings 0 → 0.6');
+    if (!winged.svg.includes('data-part="wing-near"') || noWings.svg.includes('data-part="wing-near"')) throw new Error('wings not drawn at 0.6');
+    if (!winged.label.includes('wings')) throw new Error(`avatar label misses wings: ${winged.label}`);
+    // The preview stays in view while the sliders scroll.
+    await page.$eval('[data-trait="vigilance"]', (el) => el.scrollIntoView({ block: 'center' }));
+    const stuck = await page.locator('#design-avatar').boundingBox();
+    if (!stuck || stuck.y < 0 || stuck.y > 400) throw new Error(`avatar scrolled away: ${JSON.stringify(stuck)}`);
+    await page.$eval('.design-body', (el) => { el.scrollTop = 0; });
+    // Contrasting designs, for the screenshots.
+    const designs = {
+      'furry-herbivore': { thermo: 'warm', birth: 'live', traits: { body_size: 0.12, fur: 0.9, large_ears: 0.7, large_eyes: 0.6, tail: 0.35, leg_length: 0.3, carnivory: 0, seasonal_coat: 0.7 } },
+      'armored-carnivore': { thermo: 'cold', birth: 'abandoned_eggs', traits: { body_size: 0.8, armor_plates: 0.85, scales: 0.4, fangs: 0.95, carnivory: 1, muscle: 0.6, tail: 0.7, claws: 0.7 } },
+      'winged-toxic': { thermo: 'warm', birth: 'incubated_eggs', traits: { body_size: 0.08, wings: 0.8, coloration: 0.9, toxins: 0.8, tail: 0.5, leg_length: 0.5 } },
+    };
+    const geneNames = saved.map(([g]) => g);
+    const labels = new Set();
+    for (const [tag, d] of Object.entries(designs)) {
+      await page.check(`input[name="thermo"][value="${d.thermo}"]`);
+      await page.check(`input[name="birth"][value="${d.birth}"]`);
+      for (const g of geneNames) await setTrait(g, d.traits[g] ?? (g === 'body_size' ? 0.3 : catalog.genes.find((x) => x.name === g).default));
+      const a = await avatar();
+      labels.add(a.label);
+      await page.locator('.avatar-card').screenshot({ path: path.join(shots, `avatar-${tag}.png`) });
+    }
+    if (labels.size !== 3) throw new Error(`contrasting designs gave the same avatar description: ${[...labels].join(' | ')}`);
+    // Later morphology phases: features no slider sets yet (preview hook).
+    await page.evaluate(() => window.evoAvatar.setFeatures({ leg_count: 6, eye_count: 3, tail_shape: 'fin' }));
+    const six = await avatar();
+    if (!six.label.includes('six legs') || !six.label.includes('three eyes') || !six.label.includes('fin tail')) throw new Error(`feature overrides not drawn: ${six.label}`);
+    await page.locator('.avatar-card').screenshot({ path: path.join(shots, 'avatar-six-legs-three-eyes-fin.png') });
+    await page.evaluate(() => window.evoAvatar.setFeatures({}));
+    // Back to the design whose cost was checked.
+    await page.check('input[name="thermo"][value="warm"]');
+    await page.check('input[name="birth"][value="live"]');
+    for (const [g, v] of saved) await setTrait(g, Number(v));
+    if ((await page.textContent('#budget-total')) !== after) throw new Error(`design not restored: ${await page.textContent('#budget-total')} vs ${after}`);
+    step(`avatar preview: described image above the budget, sticky, redraws (wings 0 → 0.6); ${labels.size + 1} avatar screenshots`);
     await page.screenshot({ path: path.join(shots, 'design-editor.png') });
     await page.$eval('[data-trait="leg_length"]', (el) => el.scrollIntoView({ block: 'start' }));
     await page.screenshot({ path: path.join(shots, 'design-editor-traits.png') });
