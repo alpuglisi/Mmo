@@ -8,7 +8,8 @@
 import type { GameModel } from '../model';
 import type { ClientMsg, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg } from '../protocol';
 import { parseLedgerView, parseMarketView } from '../protocol';
-import { h, label, pct } from './dom';
+import { h, pct } from './dom';
+import { traitName } from './traitNames';
 import './market.css';
 import {
   auctionText, balanceText, bidProblem, buyProblem, DEFAULT_FILTER, expiresIn, ledgerRows, ledgerTotals, listingCompat,
@@ -243,7 +244,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
         days !== null ? ` · ${days < 1 ? 'expires today' : `${days.toFixed(0)} days left`}` : '',
         l.busy ? ' · promised' : '', l.pregnant ? ' · pregnant' : ''),
       h('div', { class: 'trait-bars' }, ...l.traits.filter((t) => t.value >= 0.5 || t.gene === 'body_size').slice(0, 6).map((t) =>
-        h('span', { class: 'trait', title: `${label(t.gene)} ${t.value.toFixed(2)}` }, label(t.gene),
+        h('span', { class: 'trait', title: `${traitName(t.gene)} ${t.value.toFixed(2)}` }, traitName(t.gene),
           h('span', { class: 'trait-bar' }, h('span', { style: `width:${pct(Math.max(0, Math.min(1, t.value)), 0)}` }))))),
       compat && h('div', { class: `small compat`, 'data-level': compat.level }, compat.text),
       h('div', { class: 'row' },

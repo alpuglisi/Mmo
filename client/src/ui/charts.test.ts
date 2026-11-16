@@ -53,7 +53,7 @@ describe('chart data prep', () => {
     const rows = driftRows([g('fur', 0.5, 0.4), g('body_size', 0.3, 0.32), g('keen_nose', 0.1, 0.3), g('tail', 0.5, 0.5)], 2);
     expect(rows.map((r) => r.gene)).toEqual(['keen_nose', 'fur']);
     expect(rows[0].drift).toBeCloseTo(-0.2);
-    expect(rows[0].label).toBe('keen nose');
+    expect(rows[0].label).toBe('Sense of smell');
   });
 
   it('converts legacy shares to percent', () => {
