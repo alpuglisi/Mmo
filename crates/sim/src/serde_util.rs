@@ -30,6 +30,8 @@
 //!   while a world snapshot of version 17 or before is read.
 //! - `before_v19`: `Balance::lactation` and `Balance::warm_upkeep`, left out
 //!   while a world snapshot of version 18 or before is read.
+//! - `before_v23`: the `Balance::morph_*` tunables (body plan effects), left
+//!   out while a world snapshot of version 22 or before is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1034,6 +1036,55 @@ pub mod before_v19 {
     }
 
     /// `lactation` and `warm_upkeep` before version 19: both off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// The `Balance::morph_*` tunables (body plan effects), added in world
+/// snapshot version 23: `#[serde(with = "crate::serde_util::before_v23")]`.
+/// On a thread holding a [`before_v23::Guard`] (reading or hashing a
+/// snapshot of version 22 or before) they are neither written nor read and
+/// read as 0, the rules those saves ran under (no body plan effects).
+pub mod before_v23 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The `morph_*` tunables before version 23: all off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

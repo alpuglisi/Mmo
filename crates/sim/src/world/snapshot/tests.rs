@@ -548,8 +548,9 @@ fn version_18_snapshots_restore_without_warm_costs() {
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 18);
     assert!(h.restorable());
-    // Without the two parameters the payload is 8 bytes (two f32s) shorter.
-    assert_eq!(h.raw_len + 8, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    // Without the two parameters the payload is 8 bytes (two f32s) shorter
+    // than version 19's.
+    assert_eq!(h.raw_len + 8, SnapshotHeader::read(&w.snapshot_v19()).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     let off = crate::serde_util::before_v19::OLD_VALUE;
     assert_eq!((r.config.balance.lactation, r.config.balance.warm_upkeep), (off, off));
@@ -558,6 +559,34 @@ fn version_18_snapshots_restore_without_warm_costs() {
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v18() == old);
+}
+
+/// Version 19 snapshots (before the `Balance::morph_*` tunables) restore
+/// with all four at 0, the rules they ran under, and are otherwise the same
+/// world.
+#[test]
+fn version_19_snapshots_restore_without_morph_effects() {
+    let mut w = fixture_world();
+    w.config.balance.morph_effects = 1.0;
+    w.config.balance.morph_tail_drag = 0.5;
+    w.config.balance.morph_tail_chill = 0.5;
+    w.config.balance.morph_long_legs = 0.5;
+    let old = w.snapshot_v19();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 19);
+    assert!(h.restorable());
+    // Without the four parameters the payload is 16 bytes shorter.
+    assert_eq!(h.raw_len + 16, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let off = crate::serde_util::before_v23::OLD_VALUE;
+    let b = &r.config.balance;
+    assert_eq!((b.morph_effects, b.morph_tail_drag, b.morph_tail_chill, b.morph_long_legs), (off, off, off, off));
+    w.config.balance.morph_effects = off;
+    w.config.balance.morph_tail_drag = off;
+    w.config.balance.morph_tail_chill = off;
+    w.config.balance.morph_long_legs = off;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot_v19() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

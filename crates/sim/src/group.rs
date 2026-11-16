@@ -63,7 +63,10 @@ impl GroupTrait {
             GroupTrait::CooperativeHunting => p[Carnivory] > 0.6 && p[PackInstinct] > 0.5,
             GroupTrait::WarningColoration => p[Toxins] > 0.5 && p[Coloration] > 0.6,
             GroupTrait::HerdDefense => p[Carnivory] < 0.4 && p[BodySize] > 0.45 && p[GroupTolerance] > 0.5,
-            GroupTrait::AlarmCalls => p[Ears] > 0.5 && p[Vocal] > 0.5,
+            // An earless body (`morph_effects::body_plan`) hears no calls.
+            GroupTrait::AlarmCalls => {
+                p[Ears] > 0.5 && p[Vocal] > 0.5 && crate::morph_effects::body_plan(p).ear_count > 0
+            }
             GroupTrait::SharedBurrows => is_digger(p) && p[GroupTolerance] > 0.5,
             GroupTrait::Sentries => p[GroupTolerance] > 0.6 && p[Vigilance] > 0.5,
             GroupTrait::CommunalDens => is_winter_sleeper(p) && p[GroupTolerance] > 0.5,

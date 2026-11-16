@@ -835,6 +835,8 @@ impl World {
         let id = self.next_id;
         self.next_id += 1;
         o.id = id;
+        // Body plan effects, once, at birth (`Balance::morph_*`; no-op at 0).
+        crate::morph_effects::apply(&mut o.traits, &o.pheno, &self.config.balance);
         *self.owner_counts.entry(o.owner).or_default() += 1;
         self.count_lineage(o.lineage, 1);
         self.index.insert(id, self.organisms.len());

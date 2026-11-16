@@ -234,7 +234,8 @@ pub(crate) fn can_threaten(predator: &Organism, prey: &Organism) -> bool {
 /// Follows the taxed diet (`Traits::meat_efficiency` with
 /// `Balance::generalist_tax`): a generalist is a half-hearted fighter.
 pub(crate) fn fight_back(o: &Organism, tax: f32) -> f32 {
-    o.power() * o.traits.meat_efficiency(tax)
+    // Plus a club tail's swing (`morph_effects`; 0 by default).
+    o.power() * o.traits.meat_efficiency(tax) + o.traits.morph.fight_back
 }
 
 /// Factor on a hunter's prey score for the risk of being hurt by prey that

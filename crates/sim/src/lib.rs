@@ -13,6 +13,7 @@
 //!   levels and movement rules.
 //! - [`pathfinding`]: bounded A* around terrain a body can't cross.
 //! - [`mating`]: mate preference, override cost, outbreeding depression.
+//! - [`morph_effects`]: derived effects of ears, legs, tail shape and snout.
 //! - [`group`]: critical-mass group traits.
 //! - [`legacy`]: the genetic-legacy score.
 //! - [`species`]: species detection (clusters of mutually kin, fertile
@@ -29,6 +30,7 @@ pub mod group;
 pub mod legacy;
 pub mod math;
 pub mod mating;
+pub mod morph_effects;
 pub mod organism;
 pub mod pathfinding;
 pub mod presets;

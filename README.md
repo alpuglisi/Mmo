@@ -49,6 +49,7 @@ docs/
 | `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
+| `morph_effects` | `docs/morphology.md` §3 (package D) | Body plan → derived effects of ear count and shape, leg count, tail shape and snout length, computed once at birth and folded into stats and body behind the `morph_*` tunables (off by default, exactly neutral at the default body). See [Body plan effects](#body-plan-effects). |
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge; depressions fed by more rain than evaporates off their surface fill into lakes (priority flood). Rivers in flood overflow onto their floodplain (low land up to two tiles from the channel): standing water that swimmers cross and that strands and drowns small non-swimmers, drowned plants, then silt that speeds regrowth for weeks. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, costly and risky flight) and rain or snow; the wind has a direction (prevailing westerly, swinging over days and veering regionally) that speeds or slows flyers and gliders by wing loading; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`; `Map::climate_temp`/`climate_wet` are climate anomalies (0 normally) that catastrophes set. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
 | `pathfinding` | Movement and terrain | Bounded A* over tiles for one body: blocked tiles are avoided, slow ones cost time. Used only when the direct step is blocked (see Movement below). |
 | `mating` | Override cost | Root-sum-of-squares preference mismatch, `cost = k·max(0, mismatch−1)²`, outbreeding depression by genetic distance, and sterility between different body plans (thermoregulation, birth mode, body size or diet more than 0.3 apart; `cargo run --release --example distances` prints the founders' matrix). Display coloration is condition-dependent (an honest signal). |
@@ -5113,6 +5114,124 @@ hunter as the threat to an antelope or herd grazer now give it the old
 more than 0.3 of the prey's mass). The snapshot round-trip test's busy
 world moved from seed 22 to 23, since seed 22 no longer formed LOD
 cohorts.
+
+### Body plan effects
+
+`morph_effects` (package D of [`docs/morphology.md`](docs/morphology.md),
+§3, minus vision). The body plan is read through one accessor,
+`morph_effects::body_plan(&Phenotype)`, which until the genome package's
+morphology loci land returns the contract defaults for every organism (2
+eyes at 60°, 2 round ears, 4 legs, a thin tail when `Tail` ≥ 0.05, snout
+0.5); sizes stay the existing `Ears`, `LegLength` and `Tail` genes.
+`morph_effects::derive` turns a body plan into a `MorphEffects` (every
+derived number and stat change), and `morph_effects::apply` folds it into
+the organism's `Traits` once, when `World::insert` adds a newborn, founder
+or expanded cohort member, and again after a restore (from the restored
+config). Every term is written relative to the default body, so at the
+default plan every factor is exactly 1 and every change exactly 0
+whatever the genes (`default_body_is_exactly_neutral` checks every preset
+bit for bit; `default_world_is_unchanged_by_the_effects` runs a standard
+world 150 ticks with `morph_effects` 1 and 0 and gets the same organisms).
+
+Tunables (all 0 by default; with all four at 0 `apply` returns at once, so
+results are bit-identical; the spec's values are 1):
+
+| Tunable | Scales | Spec value |
+| --- | --- | --- |
+| `morph_effects` | every count, shape and snout effect below (neutral at the default body) | 1 |
+| `morph_tail_drag` | tail drag in burrows and dense vegetation (affects today's tailed bodies) | 1 |
+| `morph_tail_chill` | heat loss of thin and fin tails (affects today's tailed bodies) | 1 |
+| `morph_long_legs` | long legs tippy and digging worse (affects today's long-legged bodies) | 1 |
+
+Notation: `n` leg pairs, `T` = `Tail` when a tail is present (else 0),
+`s` snout length, `c` ear count, `k` = `morph_effects`. Each additive
+change is multiplied by `k`, each factor `f` becomes `1 + k·(f − 1)`.
+
+- **Ears** (shape: gain / localization `L0` / area `A_s`: round 1.0 / 0.4 /
+  1.0, pointed 1.1 / 0.7 / 1.1, long 1.2 / 0.6 / 1.5, fan 1.3 / 0.5 / 2.0).
+  Hearing channel `0.03 + 0.3·Ears·gain·f_c` (`f_c` 1 for 2 ears, 1.15 for
+  4; 0.01 with no ears) replaces today's `0.03 + 0.3·Ears` share of
+  perception. Localization `L = L0 + 0.2·[4 ears]` (0 without ears).
+  Radiating area `A = Ears·(c/2)·A_s`: insulation `−0.15·(A − Ears)·(1 −
+  0.4·Fur)` (only the change from today's `0.15·Ears` is fur-blunted, so
+  the default stays exact), a warm body's heat tolerance `+6·(A − Ears)`
+  °C, stealth `−0.04·Ears·(A_s − 1)`, upkeep `+0.1·Ears·(c/2 − 1)`. Alarm
+  calls also need `c > 0` (structural, no tunable).
+- **Legs** (`n` 0–4: gait 0.6 / 0.95 / 1.0 / 0.92 / 0.85, `S0` 1.0 / 0.45
+  / 0.7 / 0.85 / 0.95). Speed: the leg terms `0.45·LegLength + 0.25·Hooves`
+  × gait; legless: base 0.45 × 0.6 and no leg terms. Stability `S =
+  S0·(1 − 0.3·LegLength·morph_long_legs) + 0.15·T·[biped]` against
+  `S_ref` 0.7; `S_ref/S` multiplies ice slip and the slope speed penalty
+  (folded into the body's effective grip, `1 − (1 − grip)·S_ref/S`, the
+  only two uses of grip), armor's speed penalty × `sqrt(S_ref/S)`, defense
+  `+0.1·(S − S_ref)`. Biped with `T < 0.2`: agility `−0.15·(1 − T/0.2)`.
+  Foot area × `n/2` (legless: belly 1.5), so ground pressure ×
+  `cbrt(mass factor)·foot/foot'`. Height: legless `0.15 + 0.3·size`, biped
+  `+0.1·LegLength`. Climbing × 0.6 / 0.5 / 1 / 1.2 / 1.2. Legless: burrowing
+  +0.2, swimming +0.15, stealth +0.1. Mass × `1 + 0.04·(n − 2)·(0.5 +
+  LegLength)`; upkeep `+max(−0.05, 0.05·(n − 2))`; endurance `−0.04` per
+  pair beyond 2. Wings: the default four-legged winged body is the
+  reference, so wings that replace forelimbs (biped) or a legless winged
+  body shed the extra-limb cost: mass ÷ `(1 + 0.15·Wings)`, upkeep
+  `−0.1·Wings`. `morph_long_legs` also takes `0.2·LegLength` off a legged
+  body's burrowing.
+- **Tail shape** (agility per `T`: thin 0.3 as today, bushy 0.2, fin 0.1,
+  club 0.05, prehensile 0.2). Bushy: a warm body resting gets insulation
+  `+0.15·T`, stealth `−0.05·T`. Fin: swimming `+0.4·T`, speed `−0.05·T`.
+  Club: defense `+0.3·T`, fight-back `+0.3·T` (`decide::fight_back`, so
+  hunters weigh it too), mass × `(1 + 0.15·T)`, speed `−0.05·T`.
+  Prehensile: climbing `+0.3·T`, grip `+0.15·T`, upkeep `+0.05·T`. Drag
+  (`morph_tail_drag`): burrowing × `(1 − 0.2·T)`, and an effective width
+  `+T/3` in vegetation, which takes `0.2·T·veg_density` off the speed
+  factor there. Chill (`morph_tail_chill`, thin and fin): insulation
+  `−0.05·T`.
+- **Snout** (all relative to 0.5). Smell channel `0.3·Nose × (0.7 + 0.6·s)`;
+  bite: the fang term of strength × `(1.3 − 0.6·s)`; prey lighter than 0.2×
+  the hunter's mass escapes × `(1 − 0.4·(s − 0.5))`; a warm body's heat
+  tolerance `+3·(s − 0.5)` °C; burrowing `+0.1·(s − 0.5)`; binocular
+  overlap hidden `40°·max(0, s − 0.5)` (a readout for the vision package).
+- **Upkeep** changes add to `upkeep`, so metabolism changes by `(0.6 +
+  0.3·Muscle)·(warm ? 1 : 0.35)·Δupkeep`. Level-of-detail cohorts
+  (`world::lod` representatives) use the plain derived traits.
+
+**Interfaces.** The genome package swaps its expressed `Morphology` into
+`body_plan` (one function). The vision package reads `Traits::morph`
+(`MorphContext`): `hearing` and `smell` are the effective perception
+channels (with eyes at `0.10 + 0.3·Eyes`, the three add up to
+`Stats::perception`), `localization` is `L`, and
+`morph_effects::heard_bearing(true_bearing, L, u)` places a threat heard
+in a visual blind spot at `true_bearing + u·70°·(1 − L)` for a caller's
+deterministic draw `u` in [−1, 1] (`bearing_error_deg` gives the bound);
+`MorphEffects::snout_occlusion_deg` is the overlap the snout hides.
+
+**Client fixture.** `crates/sim/tests/fixtures/morph_effects.json` holds
+28 sample body plans (inputs: plan, every gene; outputs: every derived
+number, and the base and effective stats and body) at full strength (all
+four tunables 1). `morph_effects::tests::fixture_is_current` fails when the
+code changes without it; regenerate with `EVO_UPDATE_FIXTURES=1 cargo test
+-p evo-sim --lib morph_effects::tests::fixture`.
+
+**Measured.** With the defaults the 12-seed sweep from seed 31 still
+prints 11.76. `compare --seed 101 --seeds 3 --set morph_effects=1 vs
+defaults` gives +0.00 on every seed (identical worlds: every body is
+default until the genome package lands). `compare --adaptive` from seed
+101 with all four tunables at 1 (`--set morph_effects=1 --set
+morph_tail_drag=1 --set morph_tail_chill=1 --set morph_long_legs=1 vs
+defaults`; tail drag and chill and long-leg tippiness do touch today's
+bodies) stopped after 24 seeds at −0.01 (sequential CI −0.23 … +0.22,
+within ±0.3); no lineage's survival or mean alive moved significantly,
+burrowing omnivores gained +0.71 ± 0.57 pp of legacy. Contextual unit
+tests (`morph_effects::tests`): six legs are faster on slopes and ice and
+carry armor better but pay speed, endurance, food and mass; legless
+bodies are slower, stealthier, lower, burrow and swim better and keep
+more speed on sand; a tailless biped loses agility; fin tails swim faster
+in deep water; club tails add defense and fight-back; long tails drag in
+dense vegetation and burrows (not in the open); long legs are tippy on
+slopes; fan ears raise heat tolerance and cost insulation (less with
+fur); four ears hear and locate better, no ears only feel vibration; a
+long snout smells better and snaps small prey, a flat face bites
+hardest. These tunables stay at 0 until the calibration pass of
+`docs/morphology.md` §4.
 
 ## Point costs
 

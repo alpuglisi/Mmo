@@ -610,6 +610,27 @@ pub struct Balance {
     /// default: see *Endothermy upkeep* in the README's Balance section).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v19"))]
     pub warm_upkeep: f32,
+    /// Strength of the body plan's count, shape and snout effects
+    /// (`morph_effects`: ear count and shape, leg count, tail shape, snout
+    /// length). Neutral at the default body whatever its value; 0 (the
+    /// default) leaves every body as `stats::derive` made it; 1 is the
+    /// spec's formulas (README, *Body plan effects*).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v23"))]
+    pub morph_effects: f32,
+    /// Tail drag: burrowing ×(1 − 0.2·T·k) and `0.2·T·k` of speed lost per
+    /// unit of vegetation density, for tail length `T`. 0 is off (the
+    /// default); 1 is the spec's value.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v23"))]
+    pub morph_tail_drag: f32,
+    /// Heat loss of a thin or fin tail: insulation −0.05·T·k. 0 is off (the
+    /// default); 1 is the spec's value.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v23"))]
+    pub morph_tail_chill: f32,
+    /// Long legs are tippy (stability ×(1 − 0.3·LegLength·k)) and dig worse
+    /// (burrowing −0.2·LegLength·k). 0 is off (the default); 1 is the spec's
+    /// value.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v23"))]
+    pub morph_long_legs: f32,
 }
 
 /// How a shielded home range softens predation (`World::set_home_ranges`).
@@ -731,12 +752,16 @@ impl Default for Balance {
             home_range: HomeRangeBalance::default(),
             lactation: 0.0,
             warm_upkeep: 0.0,
+            morph_effects: 0.0,
+            morph_tail_drag: 0.0,
+            morph_tail_chill: 0.0,
+            morph_long_legs: 0.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 91;
+    pub const FIELD_COUNT: usize = 95;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -837,6 +862,10 @@ impl Balance {
             ("offline_stack_floor", &mut self.home_range.stack_floor),
             ("lactation", &mut self.lactation),
             ("warm_upkeep", &mut self.warm_upkeep),
+            ("morph_effects", &mut self.morph_effects),
+            ("morph_tail_drag", &mut self.morph_tail_drag),
+            ("morph_tail_chill", &mut self.morph_tail_chill),
+            ("morph_long_legs", &mut self.morph_long_legs),
         ]
     }
 

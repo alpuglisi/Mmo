@@ -668,7 +668,11 @@ impl World {
     /// Prey caught off guard (not fleeing) reacts late, like its resistance.
     pub(crate) fn escape_chance(&self, a: &Organism, b: &Organism) -> f32 {
         let (pursue, evade) = (a.evasion(), b.evasion());
-        let q = self.config.balance.escape * 2.0 * evade / (evade + pursue + 1e-6);
+        let mut q = self.config.balance.escape * 2.0 * evade / (evade + pursue + 1e-6);
+        // Snapping small prey: the hunter's snout (`morph_effects`; 1 by default).
+        if b.mass() < 0.2 * a.mass() {
+            q *= a.traits.morph.small_prey_escape;
+        }
         (q * (1.0 - self.ambush_on(b))).min(0.95)
     }
 
@@ -845,9 +849,12 @@ impl World {
         let mut body_t = temp;
         let (cold, heat) = if o.traits.warm {
             o.activity = 1.0;
-            let insulation = st.insulation + coat_insulation;
+            // Body plan (`morph_effects`): a bushy tail warms a resting body;
+            // big ears and a long snout shed heat. Both 0 by default.
+            let insulation =
+                st.insulation + coat_insulation + if resting { o.traits.morph.rest_insulation } else { 0.0 };
             let low = 12.0 - 30.0 * insulation;
-            let high = 30.0 - 8.0 * insulation;
+            let high = 30.0 - 8.0 * insulation + o.traits.morph.heat_tolerance;
             ((low - temp).max(0.0), (temp - high).max(0.0))
         } else {
             let basking = daytime && open && matches!(intent.action, Action::Bask | Action::Rest | Action::Idle);
