@@ -37,6 +37,9 @@
 //! - `before_v22`: `Balance::directional_vision`, `Balance::vision_scan` and
 //!   `Organism::heading`, left out while a world snapshot of version 21 or
 //!   before is read.
+//! - `before_v23`: genomes' morphology segment (and species
+//!   representatives' morphology keys) and `Balance::morph_step_rate`, left
+//!   out while a world snapshot of version 22 or before is read.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -808,39 +811,55 @@ pub mod before_v14 {
         }
     }
 
-    /// Species representatives (`Species::reps`, expressed values by gene):
-    /// `array_vec`, but in the old layout without the last value (obedience),
-    /// which reads as the design default.
+    /// Species representatives (`Species::reps`, expressed values by gene
+    /// then the morphology key, `species::Expr`): `array_vec`, but in the
+    /// old layouts shorter: before version 23 (a [`super::before_v23::Guard`])
+    /// without the morphology key, which reads as the default morphology's;
+    /// before version 14 also without the last gene (obedience), which reads
+    /// as the design default.
     pub mod reps {
         use super::*;
         use crate::genome::Gene;
-        use crate::species::Expr;
+        use crate::species::{Expr, EXPR_LEN};
 
-        const OLD: usize = Gene::COUNT - 1;
+        const V13: usize = Gene::COUNT - 1;
+        const V20: usize = Gene::COUNT;
+
+        fn old<const N: usize>(v: &[Expr]) -> Vec<[f32; N]> {
+            v.iter().map(|e| e[..N].try_into().unwrap()).collect()
+        }
+
+        fn fill<const N: usize>(old: Vec<[f32; N]>) -> Vec<Expr> {
+            let mut base = [0.0; EXPR_LEN];
+            base[Gene::Obedience.index()] = crate::design::default_value(Gene::Obedience);
+            base[Gene::COUNT..].copy_from_slice(&crate::species::default_morph_key());
+            old.into_iter()
+                .map(|o| {
+                    let mut e = base;
+                    e[..N].copy_from_slice(&o);
+                    e
+                })
+                .collect()
+        }
 
         pub fn serialize<S: Serializer>(v: &[Expr], s: S) -> Result<S::Ok, S::Error> {
             if active() {
-                let old: Vec<[f32; OLD]> = v.iter().map(|e| e[..OLD].try_into().unwrap()).collect();
-                array_vec::serialize(&old, s)
+                array_vec::serialize(&old::<V13>(v), s)
+            } else if super::super::before_v23::active() {
+                array_vec::serialize(&old::<V20>(v), s)
             } else {
                 array_vec::serialize(v, s)
             }
         }
 
         pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Expr>, D::Error> {
-            if !active() {
-                return array_vec::deserialize(d);
+            if active() {
+                Ok(fill::<V13>(array_vec::deserialize(d)?))
+            } else if super::super::before_v23::active() {
+                Ok(fill::<V20>(array_vec::deserialize(d)?))
+            } else {
+                array_vec::deserialize(d)
             }
-            let old: Vec<[f32; OLD]> = array_vec::deserialize(d)?;
-            let fill = crate::design::default_value(Gene::Obedience);
-            Ok(old
-                .into_iter()
-                .map(|o| {
-                    let mut e = [fill; Gene::COUNT];
-                    e[..OLD].copy_from_slice(&o);
-                    e
-                })
-                .collect())
         }
     }
 }
@@ -1238,6 +1257,61 @@ pub mod before_v22 {
             } else {
                 f32::deserialize(d)
             }
+        }
+    }
+}
+
+/// What world snapshot version 23 added: every genome's morphology segment
+/// (`crate::morph`) and the morphology key of species representatives. On a
+/// thread holding a [`before_v23::Guard`] (reading or hashing a snapshot of
+/// version 22 or before) genomes are written and read without the segment,
+/// which reads as the contract defaults with origin tags copied from each
+/// locus's anchor gene (`MorphGenes::from_genes`), and representatives
+/// without the key (`before_v14::reps`).
+pub mod before_v23 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Whether the old layout is in force on this thread.
+    pub fn active() -> bool {
+        OLD.with(Cell::get)
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    /// `Balance::morph_step_rate`: neither written nor read (read as 0, off)
+    /// while the old layout is in force.
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if active() {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if active() {
+            Ok(0.0)
+        } else {
+            f32::deserialize(d)
         }
     }
 }

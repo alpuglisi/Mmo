@@ -661,6 +661,14 @@ pub struct Balance {
     /// Inert while `directional_vision` is 0.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v22::scan"))]
     pub vision_scan: f32,
+    /// Probability per allele per generation that a discrete morphology
+    /// allele (eye, ear or leg count, ear or tail shape; `crate::morph`)
+    /// mutates one step. The spec recommends 0.0005; it is 0 (off) by
+    /// default so worlds run bit for bit as before the morphology loci
+    /// (an expressed mutant count changes kinship and fertility) until a
+    /// balance package turns it on. Snapshots before version 23 read 0.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v23"))]
+    pub morph_step_rate: f32,
 }
 
 /// How a shielded home range softens predation (`World::set_home_ranges`).
@@ -790,12 +798,13 @@ impl Default for Balance {
             morph_long_legs: 0.0,
             directional_vision: 0.0,
             vision_scan: 1.0,
+            morph_step_rate: 0.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 99;
+    pub const FIELD_COUNT: usize = 100;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -904,6 +913,7 @@ impl Balance {
             ("morph_long_legs", &mut self.morph_long_legs),
             ("directional_vision", &mut self.directional_vision),
             ("vision_scan", &mut self.vision_scan),
+            ("morph_step_rate", &mut self.morph_step_rate),
         ]
     }
 

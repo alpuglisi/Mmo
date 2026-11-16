@@ -55,10 +55,7 @@ pub fn biome_niche(b: Biome) -> &'static str {
 }
 
 fn sample_of(genome: &Genome, weight: f64, lineage: u32, owner: PlayerId) -> Sample {
-    let mut expr = [0.0; Gene::COUNT];
-    for &g in Gene::ALL {
-        expr[g.index()] = genome.expr(g);
-    }
+    let expr = crate::species::expr_of(genome);
     // Whole-number counts: the same values as `tally_origins` with weight 1.
     let mut counts = Vec::new();
     genome.count_origins(&mut counts);

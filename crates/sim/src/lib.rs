@@ -14,6 +14,8 @@
 //! - [`pathfinding`]: bounded A* around terrain a body can't cross.
 //! - [`mating`]: mate preference, override cost, outbreeding depression.
 //! - [`morph_effects`]: derived effects of ears, legs, tail shape and snout.
+//! - [`morph`]: morphology loci (eye, ear, leg counts; ear and tail shapes;
+//!   eye placement, snout) and the expressed [`morph::Morphology`].
 //! - [`group`]: critical-mass group traits.
 //! - [`legacy`]: the genetic-legacy score.
 //! - [`species`]: species detection (clusters of mutually kin, fertile
@@ -31,6 +33,7 @@ pub mod group;
 pub mod legacy;
 pub mod math;
 pub mod mating;
+pub mod morph;
 pub mod morph_effects;
 pub mod organism;
 pub mod pathfinding;
@@ -48,4 +51,5 @@ pub mod world;
 pub use config::{Balance, LodConfig, ScoringConfig, WorldConfig};
 pub use design::{BirthType, FounderDesign, Thermo};
 pub use genome::{Gene, Genome, PlayerId, WILD};
+pub use morph::{morphology_of, MorphDesign, Morphology};
 pub use world::{PhaseTimes, World};

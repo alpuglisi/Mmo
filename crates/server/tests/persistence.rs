@@ -187,6 +187,7 @@ fn spec() -> DesignSpec {
         litter_size: 2,
         traits: [("fur".to_string(), 0.4)].into_iter().collect(),
         founders: 10,
+        morph: None,
     }
 }
 
