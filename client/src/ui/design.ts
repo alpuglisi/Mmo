@@ -6,6 +6,7 @@ import { api, ApiError } from '../api';
 import { changedTraits, designCost, validateDesign } from '../cost';
 import type { BirthSpec, DesignSpec, FoundResponse, GeneCatalog, GeneInfo, ThermoSpec } from '../protocol';
 import { h, label } from './dom';
+import { caption, TRAIT_TEXT, type Level } from './traitText';
 
 export interface DesignCallbacks {
   token: string;
@@ -65,10 +66,20 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   // --- traits
   const costCells = new Map<string, HTMLElement>();
   const sliders = new Map<string, HTMLInputElement>();
+  // Live captions: what the current value means in play, given the whole
+  // design (`traitText.ts`); `update` refreshes them on every change.
+  const captions = new Map<string, HTMLElement>();
+  const levelRows = new Map<string, Map<Level, HTMLElement>>();
   const traitRow = (g: GeneInfo): HTMLElement => {
-    const s = h('input', { type: 'range', min: 0, max: 1, step: 0.01, value: g.default, 'data-gene': g.name, 'aria-label': label(g.name) });
+    const text = TRAIT_TEXT[g.name];
+    const id = `trait-${g.name}`;
+    const s = h('input', {
+      type: 'range', min: 0, max: 1, step: 0.01, value: g.default, 'data-gene': g.name, 'aria-label': label(g.name),
+      'aria-describedby': text ? `${id}-caption` : undefined,
+    });
     const val = h('span', { class: 'num' }, g.default.toFixed(2));
-    const cost = h('span', { class: 'num cost' }, '');
+    const tip = g.cost > 0 ? `${g.cost} points per unit above ${g.default}` : 'free: a trade-off, not an upgrade';
+    const cost = h('span', { class: 'num cost', title: tip }, '');
     s.addEventListener('input', () => {
       spec.traits[g.name] = Number(s.value);
       val.textContent = Number(s.value).toFixed(2);
@@ -76,8 +87,32 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     });
     sliders.set(g.name, s);
     costCells.set(g.name, cost);
-    const tip = g.cost > 0 ? `${g.cost} points per unit above ${g.default}` : 'free: a trade-off, not an upgrade';
-    return h('div', { class: 'trait', title: tip }, h('span', { class: 'trait-name' }, label(g.name)), s, val, cost);
+    const name = h('span', { class: 'trait-name', title: text ? `${text.what} (${tip})` : tip }, label(g.name));
+    if (!text) return h('div', { class: 'trait' }, h('span', { class: 'trait-label' }, name), s, val, cost);
+    // The full low / middle / high text behind an info toggle: a hover
+    // tooltip can't be opened on a phone.
+    const levels = new Map<Level, HTMLElement>();
+    const levelRow = (l: Level, title: string) => {
+      const row = h('li', { 'data-level': l }, h('strong', {}, title), ' ', text[l]);
+      levels.set(l, row);
+      return row;
+    };
+    levelRows.set(g.name, levels);
+    const info = h('div', { class: 'trait-info', id: `${id}-info`, hidden: true },
+      h('p', {}, text.what),
+      h('ul', {}, levelRow('low', 'Low:'), levelRow('mid', 'Middle:'), levelRow('high', 'High:')));
+    const more = h('button', {
+      type: 'button', class: 'trait-more', 'aria-expanded': 'false', 'aria-controls': info.id,
+      'aria-label': `About ${label(g.name)}`, title: text.what,
+    }, 'i');
+    more.addEventListener('click', () => {
+      const open = info.hidden;
+      info.hidden = !open;
+      more.setAttribute('aria-expanded', String(open));
+    });
+    const cap = h('div', { class: 'trait-caption', id: `${id}-caption` });
+    captions.set(g.name, cap);
+    return h('div', { class: 'trait', 'data-trait': g.name }, h('span', { class: 'trait-label' }, name, more), s, val, cost, cap, info);
   };
   const paid = cat.genes.filter((g) => g.cost > 0);
   const free = cat.genes.filter((g) => g.cost === 0);
@@ -114,6 +149,12 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     for (const [g, cell] of costCells) {
       const p = c.perGene[g];
       cell.textContent = p ? p.toFixed(1) : '';
+    }
+    for (const [g, cap] of captions) {
+      const c = caption(g, spec)!;
+      cap.textContent = c.text;
+      cap.dataset.level = c.level;
+      for (const [l, row] of levelRows.get(g)!) row.classList.toggle('current', l === c.level);
     }
     const p = validateDesign(payload(), cat);
     problem.textContent = p && !(p.code === 'bad_name' && spec.name === '') ? p.message : '';
@@ -153,7 +194,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
           h('div', { class: 'row' },
             h('label', {}, `Offspring per birth (1–${cat.max_litter}, ${cat.cost_per_extra_offspring} pts each above 1)`, litter),
             h('label', {}, `Founders (${cat.base_founders} included, ${cat.cost_per_extra_founder} pts each extra)`, founders))),
-        h('section', { class: 'card' }, h('h2', {}, 'Traits'), h('p', { class: 'muted small' }, 'Points are spent on raising a trait above its default.'),
+        h('section', { class: 'card' }, h('h2', {}, 'Traits'), h('p', { class: 'muted small' }, 'Points are spent on raising a trait above its default. The line under each slider says what its setting does; the i button explains low, middle and high.'),
           h('div', { class: 'traits' }, ...paid.map(traitRow))),
         h('section', { class: 'card' }, h('h2', {}, 'Behavior, diet and mate preferences'), h('p', { class: 'muted small' }, 'Free: these are trade-offs.'),
           h('div', { class: 'traits' }, ...free.map(traitRow)))),

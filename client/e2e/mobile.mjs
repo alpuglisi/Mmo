@@ -68,7 +68,7 @@ function device(name) {
   return d;
 }
 
-async function register(page, base, name, lineage) {
+async function register(page, base, name, lineage, onDesign = async () => {}) {
   await page.goto(`${base}/?tour=off`);
   // One world: no picker.
   await page.waitForTimeout(300);
@@ -78,6 +78,7 @@ async function register(page, base, name, lineage) {
   await page.click('#register-submit');
   await page.waitForSelector('#design-name', { timeout: 45000 });
   await page.fill('#design-name', lineage);
+  await onDesign();
   await page.click('#design-submit');
   await page.waitForSelector('#world-canvas', { timeout: 45000 });
   await waitFor('own organisms', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
@@ -175,7 +176,27 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   if (form.x < 0 || form.x + form.width > vw.width + 1) throw new Error(`${tag}: login form overflows ${JSON.stringify(form)}`);
   await shot(page, `${tag}-login.png`);
 
-  await register(page, base, `m_${tag}_${Date.now().toString(36)}`, `${tag} hoppers`);
+  // Design editor: trait rows, their captions and an opened info panel fit
+  // the phone's width (no sideways scrolling).
+  await register(page, base, `m_${tag}_${Date.now().toString(36)}`, `${tag} hoppers`, async () => {
+    await page.check('input[name="thermo"][value="cold"]');
+    await page.$eval('input[data-gene="fur"]', (el) => { el.value = '0.5'; el.dispatchEvent(new Event('input')); });
+    await page.tap('[data-trait="fur"] .trait-more');
+    await page.$eval('[data-trait="fur"]', (el) => el.scrollIntoView({ block: 'start' }));
+    const fit = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.trait, .trait-caption, .trait-info:not([hidden]), .trait-more')].map((e) => e.getBoundingClientRect());
+      return { docW: document.documentElement.scrollWidth, right: Math.max(...rows.map((r) => r.right)), left: Math.min(...rows.map((r) => r.left)), caption: document.querySelector('#trait-fur-caption')?.textContent ?? '' };
+    });
+    if (fit.docW > vw.width + 1 || fit.right > vw.width + 1 || fit.left < 0) throw new Error(`${tag}: design editor overflows ${JSON.stringify(fit)} (viewport ${vw.width})`);
+    if (!fit.caption.includes('blocks basking')) throw new Error(`${tag}: cold-blooded fur caption ${fit.caption}`);
+    const btn = await box(page, '[data-trait="fur"] .trait-more');
+    if (!btn || btn.width < 24 || btn.height < 24) throw new Error(`${tag}: info button too small to tap ${JSON.stringify(btn)}`);
+    await shot(page, `${tag}-design-editor.png`);
+    // Back to the defaults this section was tuned with.
+    await page.$eval('input[data-gene="fur"]', (el) => { el.value = '0'; el.dispatchEvent(new Event('input')); });
+    await page.check('input[name="thermo"][value="warm"]');
+    step(`${tag}: design editor captions fit the phone`);
+  });
   await page.waitForFunction(() => document.querySelector('#conn-state')?.textContent === 'connected');
 
   // Layout: the map spans the width, the tab bar sits at the bottom, the sheet starts closed.
