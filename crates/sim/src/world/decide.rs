@@ -66,8 +66,8 @@ struct Viewer<'a> {
     /// Mass below which the viewer would take prey (`max_prey_mass`).
     prey_cap: f32,
     female: bool,
-    /// A fed father with fat to spare looks for his hungry family
-    /// (`Balance::provisioning`).
+    /// A fed carnivore with fat to spare looks for its hungry family, or
+    /// its kind's (`Balance::provisioning`, `provision_weight`).
     provider: bool,
     /// Seeds per-neighbor draws, so they don't depend on visit order.
     salt: u64,
@@ -238,6 +238,25 @@ const PROVISION_FAT: f32 = 5.0;
 const PROVISION_HUNGER: f32 = 40.0;
 /// Utility of provisioning per unit of the family member's hunger.
 const PROVISION_UTILITY: f32 = 0.6;
+
+/// How much provider `o` cares to feed `q` of its lineage
+/// (`Balance::provisioning`): 1 for its own pregnant mate or dependent
+/// young; for another pregnant female or dependent young of its kind, its
+/// pack instinct (helpers at the den, as in a wolf pack: a cooperative
+/// breeder feeds the pack's litter, a loner only its own); 0 otherwise, and
+/// for a mother's own young, which she nurses.
+fn provision_weight(o: &Organism, q: &Organism) -> f32 {
+    let dependent = !q.matured && q.growth < 0.7;
+    if q.mother == Some(o.id) || !(dependent || q.pregnancy.is_some()) {
+        return 0.0;
+    }
+    let mate = q.pregnancy.as_ref().is_some_and(|p| p.father_id == o.id);
+    if mate || (dependent && q.father == Some(o.id)) {
+        1.0
+    } else {
+        o.pheno[Gene::PackInstinct]
+    }
+}
 
 /// Grown and carnivorous enough to hunt: able to threaten something. The
 /// grid's `ARMED` flag prunes far threats with this, so it must stay in step
@@ -468,9 +487,10 @@ impl World {
             prey_cap,
             female,
             provider: cfg.balance.provisioning > 0.0
-                && !female
+                && o.pregnancy.is_none()
                 && o.matured
-                && o.traits.carnivory > super::apply::OBLIGATE
+                && super::apply::meat_reliance(o) > 0.0
+                && super::apply::provision_care(o) > 0.0
                 && o.fat >= PROVISION_FAT
                 && n.hunger < 50.0,
             salt: rng.gen(),
@@ -598,10 +618,11 @@ impl World {
         // Seasonal strategies: fattening before a dormancy, migrating
         // between seasonal ranges.
         let mut fatten = self.fat_room(o) / self.fat_capacity(o).max(1e-6);
-        // Gorging (`Balance::carnivore_fat`): an obligate carnivore that
-        // knows of a carcass eats on past full while it has fat room.
-        let gorge = cfg.balance.carnivore_fat * (1.0 + p[Gene::FatStores]);
-        if gorge > 0.0 && cfg.balance.carcass_scent > 0.0 && o.traits.carnivory > super::apply::OBLIGATE {
+        // Gorging (`Balance::carnivore_fat`): a carnivore that knows of a
+        // carcass eats on past full while it has fat room (its gorging
+        // capacity, from its carnivory and fat stores genes).
+        let gorge = super::apply::gorge_capacity(&cfg.balance, o);
+        if gorge > 0.0 && cfg.balance.carcass_scent > 0.0 {
             let room = (gorge - o.fat) / gorge;
             if room > 0.2 && self.scent_carcass(o, o.traits.meat_efficiency(cfg.balance.generalist_tax)).is_some() {
                 fatten = fatten.max(room);
@@ -708,7 +729,10 @@ impl World {
         let best_utility = options.iter().map(|o| o.1).fold(f32::MIN, f32::max);
         if let (Some((_, j)), None) = (family, urgent) {
             let q = &self.organisms[j];
-            if PROVISION_UTILITY * q.needs.hunger / 100.0 > best_utility {
+            // A father's care genes (`apply::provision_care`) set how keen
+            // he is, a helper's pack instinct how much less (`provision_weight`).
+            let care = 2.0 * super::apply::provision_care(o) * provision_weight(o, q);
+            if PROVISION_UTILITY * care * q.needs.hunger / 100.0 > best_utility {
                 intent.action = Action::Scavenge;
                 intent.target = Some(q.pos);
                 intent.target_org = Some(j);
@@ -861,13 +885,14 @@ impl World {
         } else {
             mating::is_kin_by_gap(gap, genetic_distance(o, q), sd, limit)
         };
-        // A provisioning father notes his hungry pregnant mate or dependent
-        // young.
+        // A provider notes the hungriest of his pregnant mate and dependent
+        // young, and (by its pack instinct) of its kind's other pregnant
+        // females and dependent young (`provision_weight`).
         if v.provider && e.lineage == o.lineage && q.alive && q.needs.hunger > PROVISION_HUNGER {
-            let mate = q.pregnancy.as_ref().is_some_and(|p| p.father_id == o.id);
-            let young = q.father == Some(o.id) && !q.matured && q.growth < 0.7;
-            if (mate || young) && beats(q.needs.hunger / (1.0 + d), j, seen.family) {
-                seen.family = Some((q.needs.hunger / (1.0 + d), j));
+            let w = provision_weight(o, q);
+            let score = w * q.needs.hunger / (1.0 + d);
+            if w > 0.0 && beats(score, j, seen.family) {
+                seen.family = Some((score, j));
             }
         }
         // A kin sentry's warning reaches group members where sentries hold.
@@ -975,6 +1000,10 @@ impl World {
                         && o.search_image.is_some_and(|l| l != q.lineage)
                         && ((splitmix64(o.id ^ splitmix64(q.id ^ (day << 20))) >> 40) as f32 / (1u64 << 24) as f32)
                             < cfg.balance.search_image;
+                    // Prey switching (`Balance::prey_switching`): a prey
+                    // species grown rare is given up for the day, as readily
+                    // as the hunter is picky.
+                    let given_up = self.gives_up_on(o, q.lineage);
                     // Prey that fights back is only worth the risk to a hungry
                     // hunter, and less so to one that could graze instead.
                     let injury = injury_discount(
@@ -985,6 +1014,7 @@ impl World {
                     );
                     if roll >= avoid
                         && !overlooked
+                        && !given_up
                         && (guard == 0.0 || my_power > q.resistance() + guard)
                         && injury >= v.risk_floor
                     {
@@ -1013,6 +1043,9 @@ impl World {
             && gd().test(o, q, |gd| gd < cfg.mate_distance)
             && q.needs.breeding > 20.0
             && mating::fertility_from_gap(gap) > 0.0
+            // A female in a taken breeding territory isn't courted either
+            // (`Balance::breeding_territory`): she can't be bred there.
+            && !self.territory_taken(q)
         {
             let m = mating::mismatch(&o.pheno, q.display());
             if m <= 1.0 {
@@ -1022,6 +1055,38 @@ impl World {
                 }
             }
         }
+    }
+
+    /// How rare prey lineage `l` has grown, for prey switching
+    /// (`Balance::prey_switching`): `1 − r²`, with `r` its head count
+    /// (agents at the last daily count, plus cohorts) over `prey_switching`
+    /// times its founding count, capped at 1. 0 while it is common.
+    pub(crate) fn prey_scarcity(&self, l: u32) -> f32 {
+        let k = self.config.balance.prey_switching;
+        let Some(lineage) = self.lineages.get(l as usize) else {
+            return 0.0;
+        };
+        if k <= 0.0 {
+            return 0.0;
+        }
+        let alive = self.lineage_alive.get(l as usize).copied().unwrap_or(0) + self.lod.lineage_count(l).alive;
+        let r = (alive as f32 / (k * lineage.founders.max(1) as f32)).min(1.0);
+        1.0 - r * r
+    }
+
+    /// Prey switching (`Balance::prey_switching`): has hunter `o` given up
+    /// on prey lineage `l` today? With chance `min(1, 2 × pickiness) ×
+    /// prey_scarcity(l)`, drawn once per hunter, prey lineage and day, so a
+    /// hunter that gives a rare species up passes over all of it (and its
+    /// clutches) that day.
+    pub(crate) fn gives_up_on(&self, o: &Organism, l: u32) -> bool {
+        if self.config.balance.prey_switching <= 0.0 {
+            return false;
+        }
+        let skip = (2.0 * o.pheno[Gene::Pickiness]).min(1.0) * self.prey_scarcity(l);
+        let day = self.tick / self.config.ticks_per_day.max(1) as u64;
+        let salt = splitmix64((l as u64) ^ (day << 20) ^ 0x7e1d_5a1c);
+        skip > 0.0 && ((splitmix64(o.id ^ salt) >> 40) as f32 / (1u64 << 24) as f32) < skip
     }
 
     fn parent_pos(&self, o: &Organism) -> Option<Vec2> {
@@ -1083,6 +1148,16 @@ impl World {
         }
         // A tile is worth eating from if it holds at least half a bite.
         let bite = 25.0 * o.food_per_hunger();
+        // A flexible hunter (carnivory between 0.45 and 0.7) off a good
+        // patch follows its nose to a carcass, as an obligate one does
+        // before roaming (`Balance::carcass_scent`, by its meat reliance).
+        if graze_here < bite && self.config.balance.carcass_scent > 0.0 && super::apply::meat_reliance(o) > 0.0 {
+            if let Some(t) = self.scent_carcass(o, c) {
+                intent.action = Action::Scavenge;
+                intent.target = Some(t);
+                return;
+            }
+        }
         if graze_here > 0.5 * bite {
             intent.target = None;
             return;
@@ -1121,14 +1196,19 @@ impl World {
         }
     }
 
-    /// Breeding territories (`Balance::breeding_territory`): an obligate
-    /// carnivore female doesn't breed while a pregnant female or an unweaned
-    /// young of her lineage is within that many tiles. One litter at a time
+    /// Breeding territories (`Balance::breeding_territory`): a carnivore
+    /// female doesn't breed (nor is courted) while a pregnant female or an
+    /// unweaned young of her lineage is within her territory radius
+    /// (`apply::territory_radius`, from her carnivory, aggression and group
+    /// tolerance). One litter at a time
     /// per territory limits each predator by its own numbers, so a boom ends
     /// before the prey do and two predators on the same prey can coexist.
     pub(crate) fn territory_taken(&self, o: &Organism) -> bool {
-        let r = self.config.balance.breeding_territory;
-        if r <= 0.0 || o.sex != Sex::Female || o.traits.carnivory <= super::apply::OBLIGATE {
+        if o.sex != Sex::Female {
+            return false;
+        }
+        let r = super::apply::territory_radius(&self.config.balance, o);
+        if r <= 0.0 {
             return false;
         }
         let mut taken = false;
@@ -1170,7 +1250,7 @@ impl World {
                 return Some(t);
             }
         }
-        let r = (bal.carcass_scent * (0.5 + o.pheno[Gene::Nose])).round() as i64;
+        let r = (bal.carcass_scent * super::apply::meat_reliance(o) * (0.5 + o.pheno[Gene::Nose])).round() as i64;
         let (x0, y0) = self.map.tile_coords(o.pos);
         let bound = self.roam_bound(o);
         let mut best: Option<(f32, Vec2)> = None;

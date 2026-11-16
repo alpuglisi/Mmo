@@ -24,12 +24,12 @@ evo-sim — Evolution MMO simulation prototype
 
 USAGE:
     evo-sim run    [--seed N] [--size N] [--days N] [--report N] [--snapshot PATH] [--threads N] [--lod] [--focus X,Y] [--sequential-apply]
-                   [--catastrophes] [--catastrophe KIND@DAY] [--era-years N] [--migrants]
+                   [--catastrophes] [--catastrophe KIND@DAY] [--era-years N] [--migrants] [--niches] [--meat]
     evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N,..] [--lod] [--focus X,Y] [--sequential-apply] [--compare-apply]
     evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH] [--sequential-apply]
-                   [--screen-days D,..] [--screen-seeds N] [--eta F] [--migrants]
-    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--set NAME=V ..] [--migrant-gene GENE=V ..]
-                    [vs [defaults | --set NAME=V .. | --migrant-gene GENE=V ..]]
+                   [--screen-days D,..] [--screen-seeds N] [--eta F] [--migrants] [--niches] [--meat]
+    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--niches] [--meat] [--set NAME=V ..]
+                    [--migrant-gene GENE=V ..] [vs [defaults | --meat | --set NAME=V .. | --migrant-gene GENE=V ..]]
                     [--adaptive] [--max-seeds N] [--batch N] [--tolerance F] [--offline-owner P ..]
     evo-sim rankcheck [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--spread F] [--screen-days D,..] [--eta F] [--out PATH]
                       [--from PATH]
@@ -103,6 +103,12 @@ OPTIONS:
                     player lineage) (run, sweep, compare). Sweep and compare report it
                     but score only the standard eight lineages, so scores keep their
                     12-point scale
+    --niches        Found the predators in their niches (`presets::niche_world`: the red fox
+                    a flexible mesopredator, the pack hunters a cooperative carnivore of the
+                    herds) instead of the standard designs (run, sweep, compare, rankcheck;
+                    both sides of a compare)
+    --meat          The carnivore-diet rules and predator brakes on (`Balance::carnivore_diet`,
+                    off by default; tuned with --niches); like --set, before `vs` for A
     --migrant-gene GENE=V  Compare: found the migrating caribou with GENE set to V (implies
                     --migrants; spaces in gene names as underscores; repeatable; before `vs`
                     for A, after it for B), e.g. `--migrant-gene migration=0 vs defaults`
@@ -134,7 +140,7 @@ home_range_predation home_range_residents offline_stack_floor lactation warm_upk
 fang_grazing scale_cover morph_effects morph_tail_drag morph_tail_chill morph_long_legs
 directional_vision vision_scan
 morph_step_rate morph_legacy roaming_forage carcass_keep carnivore_fat carcass_scent carrion
-provisioning breeding_territory
+provisioning breeding_territory prey_switching condition_litter
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
 juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump
@@ -314,6 +320,11 @@ fn parse_args() -> Result<Args, String> {
             "--lod" => a.lod.enabled = true,
             "--sequential-apply" => a.sequential_apply = true,
             "--migrants" => a.migrants = true,
+            "--niches" => sweep::NICHES.store(true, std::sync::atomic::Ordering::Relaxed),
+            "--meat" => {
+                let target = a.balance_b.as_mut().unwrap_or(&mut a.balance);
+                *target = target.carnivore_diet();
+            }
             "--compare-apply" => a.compare_apply = true,
             "--focus" => {
                 let v = value()?;
@@ -456,8 +467,8 @@ fn build_world(args: &Args, scale: u32) -> World {
         scoring: args.scoring,
         ..Default::default()
     };
-    let mut world =
-        if args.migrants { presets::extended_world(config, scale) } else { presets::standard_world(config, scale) };
+    let migrant = args.migrants.then(presets::migrant_design);
+    let mut world = sweep::found_world(config, scale, migrant.as_ref());
     for &(kind, day) in &args.forced {
         world.schedule_catastrophe(kind, day, None);
     }

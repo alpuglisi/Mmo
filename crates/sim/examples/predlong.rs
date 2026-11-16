@@ -1,4 +1,4 @@
-//! Predators over the years: `cargo run --release --example predlong -- [years] [seeds..] [--every DAYS] [--set NAME=V] [--off]`.
+//! Predators over the years: `cargo run --release --example predlong -- [years] [seeds..] [--every DAYS] [--set NAME=V] [--off] [--meat] [--meat-only]`.
 //!
 //! Runs the standard world (96×96) on each seed (seeds in parallel; default
 //! 3 years on seeds 31–34) and follows the red fox (lineage 3) and the pack
@@ -11,26 +11,80 @@
 //! ticks with mean hunger and thirst, its deaths by sex, stage, cause and
 //! pregnancy, and the day each predator died out. The last lines pool
 //! deaths by cause and count the seeds each predator survived. `--off`
-//! runs `Balance::morphology_off()`, `--meat` the carnivore-diet rules
-//! (`Balance::carnivore_diet()`, off by default). Read only: the diagnosis of
+//! runs `Balance::morphology_off()`, `--meat` the carnivore-diet rules and
+//! predator brakes (`Balance::carnivore_diet()`, off by default) with the
+//! predators in their niches (`presets::niche_world`; `--meat-only` keeps
+//! the standard designs). Each seed also reports adult females and males of
+//! each predator at the end, every prey lineage's lowest head count, and the
+//! predators' mean expressed values of the genes the rules read at the start
+//! and the end (with their mean drift over the surviving seeds), to see
+//! whether selection acts on them. Read only: the diagnosis of
 //! *Predators over the years* (README, Balance).
 
 use std::collections::BTreeMap;
 
 use evo_sim::organism::DeathCause;
-use evo_sim::{presets, Balance, WorldConfig};
+use evo_sim::{presets, Balance, Gene, WorldConfig};
 use rayon::prelude::*;
 
 const PRED: [u32; 2] = [3, 4];
 
-/// One seed's result: seed, log, the day each predator died out, deaths by
-/// (lineage, cause), births and final head count per predator.
-type SeedResult = (u64, String, [Option<u32>; 2], BTreeMap<(u32, DeathCause), u64>, [u64; 2], [usize; 2]);
+/// Genes whose predator means are reported at the start and the end (the
+/// genes the carnivore-diet rules and the predator brakes read).
+const GENES: [Gene; 9] = [
+    Gene::Carnivory,
+    Gene::BodySize,
+    Gene::FatStores,
+    Gene::LitterSize,
+    Gene::Pickiness,
+    Gene::Aggression,
+    Gene::GroupTolerance,
+    Gene::PackInstinct,
+    Gene::Nose,
+];
+
+/// Mean expressed values of [`GENES`] over a lineage (None if none live).
+type GeneMeans = Option<[f32; 9]>;
+
+/// Mean expressed value of each of [`GENES`] over lineage `l`'s living
+/// members (None if none live).
+fn gene_means(w: &evo_sim::World, l: u32) -> GeneMeans {
+    let alive: Vec<_> = w.organisms.iter().filter(|o| o.alive && o.lineage == l).collect();
+    if alive.is_empty() {
+        return None;
+    }
+    let mut m = [0.0; 9];
+    for (k, &g) in GENES.iter().enumerate() {
+        m[k] = alive.iter().map(|o| o.pheno[g]).sum::<f32>() / alive.len() as f32;
+    }
+    Some(m)
+}
+
+/// One seed's result.
+struct SeedResult {
+    seed: u64,
+    log: String,
+    /// The day each predator died out.
+    extinct: [Option<u32>; 2],
+    deaths: BTreeMap<(u32, DeathCause), u64>,
+    born: [u64; 2],
+    alive: [usize; 2],
+    /// Adult females and males at the end, per predator.
+    sexes: [(usize, usize); 2],
+    /// Lowest head count of each prey lineage (0, 1, 2, 5, 6, 7) over the run.
+    prey_min: [usize; 6],
+    /// Gene means per predator at the start and the end.
+    genes: [(GeneMeans, GeneMeans); 2],
+}
+
+const PREY: [usize; 6] = [0, 1, 2, 5, 6, 7];
+const PREY_NAMES: [&str; 6] = ["vole", "antelope", "newt", "herd", "frog", "omni"];
 
 fn main() {
     let mut balance = Balance::default();
     let mut pos: Vec<String> = Vec::new();
     let mut every = 60u32;
+    let mut niches = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         if a == "--set" {
@@ -40,6 +94,9 @@ fn main() {
         } else if a == "--off" {
             balance = balance.morphology_off();
         } else if a == "--meat" {
+            balance = balance.carnivore_diet();
+            niches = true;
+        } else if a == "--meat-only" {
             balance = balance.carnivore_diet();
         } else if a == "--every" {
             every = args.next().expect("--every DAYS").parse().unwrap();
@@ -55,7 +112,9 @@ fn main() {
         .par_iter()
         .map(|&seed| {
             let config = WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() };
-            let mut w = presets::standard_world(config, 1);
+            let mut w = if niches { presets::niche_world(config, 1) } else { presets::standard_world(config, 1) };
+            let genes0 = [gene_means(&w, 3), gene_means(&w, 4)];
+            let mut prey_min = [usize::MAX; 6];
             let tpd = w.config.ticks_per_day;
             let days = years * w.config.days_per_year;
             let mut log = String::new();
@@ -106,6 +165,9 @@ fn main() {
                     *sexdeaths.entry(key).or_default() += 1;
                 }
                 let counts = w.lineage_counts();
+                for (k, &l) in PREY.iter().enumerate() {
+                    prey_min[k] = prey_min[k].min(counts[l].alive);
+                }
                 for (k, &l) in PRED.iter().enumerate() {
                     if extinct[k].is_none() && counts[l as usize].alive == 0 {
                         extinct[k] = Some(day);
@@ -195,27 +257,70 @@ fn main() {
             }
             let counts = w.lineage_counts();
             let born = [3u32, 4].map(|l| w.counters.born.get(&l).copied().unwrap_or(0));
-            (seed, log, extinct, w.counters.deaths_by_lineage.clone(), born, [counts[3].alive, counts[4].alive])
+            let sexes = [3u32, 4].map(|l| {
+                let ad = w.organisms.iter().filter(|o| o.alive && o.lineage == l && o.matured);
+                let f = ad.clone().filter(|o| o.sex == evo_sim::organism::Sex::Female).count();
+                (f, ad.count() - f)
+            });
+            SeedResult {
+                seed,
+                log,
+                extinct,
+                deaths: w.counters.deaths_by_lineage.clone(),
+                born,
+                alive: [counts[3].alive, counts[4].alive],
+                sexes,
+                prey_min,
+                genes: [(genes0[0], gene_means(&w, 3)), (genes0[1], gene_means(&w, 4))],
+            }
         })
         .collect();
 
     let mut pooled: BTreeMap<(u32, DeathCause), u64> = BTreeMap::new();
     let mut survived = [0; 2];
-    for (seed, log, extinct, deaths, born, alive) in &results {
-        print!("{log}");
+    let mut viable = [0; 2];
+    let mut prey_lost = 0;
+    // Gene drift: summed (end − start) per predator over seeds where it lives.
+    let mut drift = [([0.0f32; 9], 0usize); 2];
+    for r in &results {
+        let (seed, extinct, alive, born) = (r.seed, r.extinct, r.alive, r.born);
+        print!("{}", r.log);
         println!(
-            "seed {seed}: fox {} (born {}), pack {} (born {})\n",
+            "seed {seed}: fox {} (born {}, F{} M{}), pack {} (born {}, F{} M{})",
             extinct[0].map_or(format!("alive {}", alive[0]), |d| format!("extinct day {d}")),
             born[0],
+            r.sexes[0].0,
+            r.sexes[0].1,
             extinct[1].map_or(format!("alive {}", alive[1]), |d| format!("extinct day {d}")),
-            born[1]
+            born[1],
+            r.sexes[1].0,
+            r.sexes[1].1,
         );
+        let lows: Vec<String> = PREY_NAMES.iter().zip(r.prey_min).map(|(n, m)| format!("{n} {m}")).collect();
+        println!("seed {seed}: prey lowest {}", lows.join(", "));
+        prey_lost += usize::from(r.prey_min.contains(&0));
         for k in 0..2 {
             if extinct[k].is_none() {
                 survived[k] += 1;
             }
+            if r.sexes[k].0 > 0 && r.sexes[k].1 > 0 {
+                viable[k] += 1;
+            }
+            if let (Some(a), Some(b)) = r.genes[k] {
+                let line: Vec<String> = GENES
+                    .iter()
+                    .zip(a.iter().zip(b))
+                    .map(|(g, (x, y))| format!("{} {x:.3}→{y:.3}", g.label()))
+                    .collect();
+                println!("seed {seed}: {} genes {}", if k == 0 { "fox" } else { "pack" }, line.join(", "));
+                for (d, (x, y)) in drift[k].0.iter_mut().zip(a.iter().zip(b)) {
+                    *d += y - x;
+                }
+                drift[k].1 += 1;
+            }
         }
-        for (&key, &n) in deaths {
+        println!();
+        for (&key, &n) in &r.deaths {
             if PRED.contains(&key.0) {
                 *pooled.entry(key).or_default() += n;
             }
@@ -224,11 +329,21 @@ fn main() {
     for (&(l, c), n) in &pooled {
         println!("pooled deaths {} {c:?}: {n}", if l == 3 { "fox" } else { "pack" });
     }
+    for (k, (d, n)) in drift.iter().enumerate() {
+        if *n > 0 {
+            let line: Vec<String> =
+                GENES.iter().zip(d).map(|(g, x)| format!("{} {:+.3}", g.label(), x / *n as f32)).collect();
+            println!("mean gene drift {} ({n} seeds): {}", if k == 0 { "fox" } else { "pack" }, line.join(", "));
+        }
+    }
     println!(
-        "survived {years} years: fox {}/{}, pack hunters {}/{}",
+        "survived {years} years: fox {}/{} (viable {}), pack hunters {}/{} (viable {}); seeds with a prey lost: {}",
         survived[0],
         results.len(),
+        viable[0],
         survived[1],
-        results.len()
+        results.len(),
+        viable[1],
+        prey_lost
     );
 }

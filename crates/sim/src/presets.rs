@@ -16,8 +16,27 @@ pub const REFERENCE_SIZE: usize = 128;
 /// `scale` is above 1, which multiplies every founding population and skips
 /// the budget check (used for benchmarks).
 pub fn standard_world(config: WorldConfig, scale: u32) -> World {
-    let mut world = wild_world(config, scale);
-    for (k, design) in player_designs().into_iter().enumerate() {
+    standard_world_from(config, scale, wild_designs(), player_designs())
+}
+
+/// [`standard_world`] with the predators in their niches
+/// ([`niche_wild_designs`], [`niche_player_designs`]): the red fox a small,
+/// flexible mesopredator, the pack hunters a cooperative obligate carnivore
+/// of the herds. The designs the carnivore-diet rules and predator brakes
+/// (`Balance::carnivore_diet`) were tuned with (*Predators in their niches*
+/// in the README); the lineages keep their indices.
+pub fn niche_world(config: WorldConfig, scale: u32) -> World {
+    standard_world_from(config, scale, niche_wild_designs(), niche_player_designs())
+}
+
+fn standard_world_from(
+    config: WorldConfig,
+    scale: u32,
+    wild: Vec<(PlayerId, FounderDesign)>,
+    players: Vec<FounderDesign>,
+) -> World {
+    let mut world = wild_world_from(config, scale, wild);
+    for (k, design) in players.into_iter().enumerate() {
         let owner = k as PlayerId + 1;
         if scale <= 1 {
             world.found_lineage(owner, &design).expect("preset designs fit the budget");
@@ -57,13 +76,17 @@ pub fn extended_world_with(config: WorldConfig, scale: u32, design: &FounderDesi
 /// A world with only the wild ecosystem, its founders and the population caps
 /// scaled to map area as in [`standard_world`]. Player lineages are added by
 /// the caller (the cost calibration example founds its own designs here).
-pub fn wild_world(mut config: WorldConfig, scale: u32) -> World {
+pub fn wild_world(config: WorldConfig, scale: u32) -> World {
+    wild_world_from(config, scale, wild_designs())
+}
+
+fn wild_world_from(mut config: WorldConfig, scale: u32, wild: Vec<(PlayerId, FounderDesign)>) -> World {
     let area = (config.width * config.height) as f32 / (REFERENCE_SIZE * REFERENCE_SIZE) as f32;
     config.wild_cap = ((config.wild_cap as f32 * area * scale as f32) as usize).max(50);
     config.lineage_cap = ((config.lineage_cap as f32 * area.max(0.5) * scale as f32) as usize).max(50);
     let mut world = World::new(config);
     let grow = |n: u32| ((n as f32 * area * scale as f32).round() as u32).max(4);
-    for (owner, design) in wild_designs() {
+    for (owner, design) in wild {
         let n = grow(design.founders);
         world.found_lineage_unchecked(owner, &design.founders(n));
     }
@@ -139,6 +162,76 @@ pub fn wild_designs() -> Vec<(PlayerId, FounderDesign)> {
                 .founders(24),
         ),
     ]
+}
+
+/// The red fox as a small, flexible mesopredator (version 27, *Predators in
+/// their niches* in the README), for [`niche_world`]: carnivory 0.65 makes
+/// it a hunter that also eats plants (a red fox lives on berries and fruit
+/// in season as much as on voles), not an obligate carnivore on the pack
+/// hunters' prey; shorter fangs crop plants better (`fang_grazing`). At 0.85
+/// the pack hunters excluded it from the shared voles and newts by year 6.
+/// Fat stores bank a kill (`Balance::carnivore_fat`), and a solitary,
+/// aggressive temper holds a wide breeding territory, which keeps its
+/// numbers in check (`world::apply::territory_radius`). A starting point:
+/// evolution moves every one of these genes.
+pub fn niche_fox() -> FounderDesign {
+    use Gene::*;
+    FounderDesign::new("Red fox", Thermo::Warm, BirthType::Live, 4)
+        .with(BodySize, 0.32)
+        .with(Carnivory, 0.65)
+        .with(LegLength, 0.5)
+        .with(Nose, 0.6)
+        .with(Ears, 0.5)
+        .with(Fangs, 0.3)
+        .with(Claws, 0.3)
+        .with(Fur, 0.5)
+        .with(Camouflage, 0.3)
+        .with(FatStores, 0.5)
+        .with(GroupTolerance, 0.2)
+        .with(Aggression, 0.7)
+        .with(PackInstinct, 0.1)
+        .with(SeasonalCoat, 0.8)
+        .founders(24)
+}
+
+/// The pack hunters as a cooperative obligate carnivore of the herds
+/// (version 27, *Predators in their niches* in the README), for
+/// [`niche_world`]: 1.1 kg (body size 0.30; 0.8 kg at 0.22), so with its
+/// pack it takes herd calves and antelope, which by weight are most of its
+/// food (prey are scored by mass^0.75), and carnivory 0.95, a full body-plan
+/// gap (0.3) from the niche fox's 0.65, so the two neither interbreed nor
+/// count as one kind. Fat stores bank a kill. Bigger did not work: at
+/// 0.36–0.45 (1.8–3 kg) small prey cover too little of a big hunter's day
+/// and founding mothers starved (survived 6 years on 1–2 of 8 seeds).
+/// Within the point budget.
+pub fn niche_pack_hunters() -> FounderDesign {
+    use Gene::*;
+    FounderDesign::new("Pack hunters", Thermo::Warm, BirthType::Live, 4)
+        .with(BodySize, 0.30)
+        .with(Carnivory, 0.95)
+        .with(PackInstinct, 0.9)
+        .with(GroupTolerance, 0.8)
+        .with(FatStores, 0.5)
+        .with(LegLength, 0.55)
+        .with(Muscle, 0.4)
+        .with(Fangs, 0.5)
+        .with(Nose, 0.5)
+        .with(Ears, 0.4)
+        .with(Fur, 0.5)
+        .with(Vocal, 0.6)
+        .founders(24)
+}
+
+/// [`wild_designs`] with the red fox as [`niche_fox`].
+pub fn niche_wild_designs() -> Vec<(PlayerId, FounderDesign)> {
+    let fox = niche_fox();
+    wild_designs().into_iter().map(|(o, d)| if d.name == fox.name { (o, fox.clone()) } else { (o, d) }).collect()
+}
+
+/// [`player_designs`] with the pack hunters as [`niche_pack_hunters`].
+pub fn niche_player_designs() -> Vec<FounderDesign> {
+    let pack = niche_pack_hunters();
+    player_designs().into_iter().map(|d| if d.name == pack.name { pack.clone() } else { d }).collect()
 }
 
 /// Four example player designs, all within the point budget.
@@ -235,7 +328,7 @@ mod tests {
 
     #[test]
     fn player_designs_fit_the_budget() {
-        for d in player_designs().into_iter().chain([migrant_design()]) {
+        for d in player_designs().into_iter().chain([migrant_design(), niche_pack_hunters()]) {
             assert!(d.validate().is_ok(), "{}: {:?} (cost {:.1})", d.name, d.validate(), d.point_cost());
         }
     }

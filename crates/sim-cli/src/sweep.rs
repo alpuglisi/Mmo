@@ -29,6 +29,21 @@ use rayon::prelude::*;
 use crate::adaptive::{self, AdaptiveArgs, Stop};
 use crate::stats::{wilson, Summary};
 
+/// Found the predators in their niches (`presets::niche_world`) instead of
+/// the standard designs (`--niches`; run, sweep, compare, rankcheck). Set
+/// once while parsing, before any world is founded.
+pub static NICHES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The world every command founds: the standard world, or with
+/// [`NICHES`] the niche designs, plus the migrating lineage if given.
+pub(crate) fn found_world(config: WorldConfig, scale: u32, migrants: Option<&FounderDesign>) -> World {
+    match migrants {
+        Some(d) => presets::extended_world_with(config, scale, d),
+        None if NICHES.load(std::sync::atomic::Ordering::Relaxed) => presets::niche_world(config, scale),
+        None => presets::standard_world(config, scale),
+    }
+}
+
 pub struct SweepArgs {
     pub base_seed: u64,
     pub size: usize,
@@ -123,10 +138,7 @@ impl ScoredRun {
         migrants: Option<&FounderDesign>,
     ) -> ScoredRun {
         let config = WorldConfig { seed, width: size, height: size, balance, parallel_apply, ..Default::default() };
-        let world = match migrants {
-            Some(d) => presets::extended_world_with(config, 1, d),
-            None => presets::standard_world(config, 1),
-        };
+        let world = found_world(config, 1, migrants);
         let n = world.lineages.len();
         ScoredRun { world, extinct_day: vec![None; n], capped_days: 0, pop_sum: 0.0, days_run: 0, collapsed: false }
     }

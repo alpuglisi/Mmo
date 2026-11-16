@@ -21,6 +21,61 @@ const NEST_SEARCH: usize = 3;
 /// carcass scent, provisioning, breeding territories).
 pub(crate) const OBLIGATE: f32 = 0.7;
 
+/// How far the carnivore-diet rules (gorging, carcass scent, provisioning,
+/// breeding territories) apply to `o`, from its carnivory gene: 0 for a
+/// plant eater up to `decide::HUNTER_CARNIVORY` (0.45), rising evenly to 1
+/// for an obligate carnivore (`OBLIGATE`, 0.7, and above). Before version
+/// 27 the rules applied in full above 0.7 and not at all below; a
+/// flexible mesopredator (the red fox at 0.65) now gets most of them, a
+/// burrowing omnivore (0.5) a fifth.
+pub(crate) fn meat_reliance(o: &Organism) -> f32 {
+    let lo = super::decide::HUNTER_CARNIVORY;
+    ((o.traits.carnivory - lo) / (OBLIGATE - lo)).clamp(0.0, 1.0)
+}
+
+/// Most fat (hunger points) `o` banks from meat in any season
+/// (`Balance::carnivore_fat`): the global scale times its meat reliance
+/// times `0.5 + fat stores`, so the fat stores gene sets how much of a kill
+/// a carnivore can bank (60 at fat stores 0.5) and selection can tune it.
+pub(crate) fn gorge_capacity(bal: &crate::Balance, o: &Organism) -> f32 {
+    bal.carnivore_fat * meat_reliance(o) * (0.5 + o.pheno[Gene::FatStores])
+}
+
+/// Share of a litter a mother carries to term for her condition
+/// (`Balance::condition_litter`): `1 − condition_litter × flex × (1 −
+/// nourished)`, `nourished = (90 − hunger + fat) / 60` clamped to 0–1 (fat
+/// carries a hungry mother: the fat stores gene), `flex = min(1, 2 × litter
+/// fraction)` (the litter size gene: big litters shrink, a single young
+/// can't). 1 with the rule off.
+pub(crate) fn litter_condition(bal: &crate::Balance, mother: &Organism) -> f32 {
+    let k = bal.condition_litter;
+    if k <= 0.0 {
+        return 1.0;
+    }
+    let nourished = ((90.0 - mother.needs.hunger + mother.fat) / 60.0).clamp(0.0, 1.0);
+    let flex = (2.0 * mother.traits.litter_fraction()).min(1.0);
+    (1.0 - k * flex * (1.0 - nourished)).clamp(0.0, 1.0)
+}
+
+/// How much of a provider father `o` is (`Balance::provisioning`): the
+/// higher of its pack instinct and group tolerance, so social carnivores
+/// (pack hunters, family-living foxes) bring food to the den and loners
+/// rarely do. Scales both his urge to provision and how much he brings.
+pub(crate) fn provision_care(o: &Organism) -> f32 {
+    o.pheno[Gene::PackInstinct].max(o.pheno[Gene::GroupTolerance])
+}
+
+/// A carnivore female's breeding-territory radius in tiles
+/// (`Balance::breeding_territory` times its meat reliance): larger the
+/// more aggressive, smaller the more tolerant of its own kind, `1 +
+/// aggression − group tolerance` (from a quarter to twice the global
+/// radius). A lone, aggressive hunter keeps a big territory; a tolerant
+/// pack shares its range.
+pub(crate) fn territory_radius(bal: &crate::Balance, o: &Organism) -> f32 {
+    let temper = (1.0 + o.pheno[Gene::Aggression] - o.pheno[Gene::GroupTolerance]).clamp(0.25, 2.0);
+    bal.breeding_territory * meat_reliance(o) * temper
+}
+
 /// Most hunger points an organism can eat per day (so a meal takes a few ticks).
 pub(crate) const MAX_INTAKE_PER_DAY: f32 = 1200.0;
 const MAX_DRINK_PER_DAY: f32 = 1500.0;
@@ -850,7 +905,8 @@ impl World {
         if !q.alive || f.pos.dist(q.pos) > 1.5 || f.fat <= 0.0 {
             return;
         }
-        let rate = 300.0 * self.config.balance.provisioning * self.config.dt_days();
+        let care = 2.0 * provision_care(f);
+        let rate = 300.0 * self.config.balance.provisioning * care * self.config.dt_days();
         let ratio = q.food_per_hunger() / f.food_per_hunger();
         let amount = rate.min(q.needs.hunger).min(f.fat / ratio);
         let cost = amount * ratio;
@@ -868,7 +924,9 @@ impl World {
             return;
         };
         let c = &self.clutches[k];
-        if c.eggs.is_empty() || c.owner == o.owner {
+        // A raider that has given up on a rare species passes its clutches
+        // over too (`Balance::prey_switching`).
+        if c.eggs.is_empty() || c.owner == o.owner || self.gives_up_on(o, c.lineage) {
             return;
         }
         // A present guardian may drive the raider off.
@@ -978,8 +1036,15 @@ impl World {
         } else {
             cold_blooded_thermo(o.activity, body_t, bal.cold_heat_burn)
         };
-        // Pregnancy costs scale with the litter's total mass.
-        let pregnant = if o.pregnancy.is_some() { 1.0 + bal.pregnancy_cost * o.traits.litter_burden } else { 1.0 };
+        // Pregnancy costs scale with the litter's total mass: the share of
+        // it she would carry to term at her condition now
+        // (`Balance::condition_litter`; all of it with the rule off), so a
+        // starving mother resorbs part of her litter rather than starve.
+        let pregnant = if o.pregnancy.is_some() {
+            1.0 + bal.pregnancy_cost * o.traits.litter_burden * litter_condition(&bal, o)
+        } else {
+            1.0
+        };
         let size = o.pheno[Gene::BodySize];
         let watch = if intent.action == Action::Sentry { 1.0 + bal.sentry_cost } else { 1.0 };
         let travel = (1.0 - bal.group_navigation / 3.0 * nav).max(0.0);
@@ -1177,8 +1242,11 @@ impl World {
         let mother = &self.organisms[i];
         let traits = mother.traits;
         let owner = mother.owner;
-        let expected =
-            traits.litter as f32 * preg.fertility * mother.condition().clamp(0.3, 1.0) * self.breeding_suppression(i);
+        let expected = traits.litter as f32
+            * preg.fertility
+            * mother.condition().clamp(0.3, 1.0)
+            * self.breeding_suppression(i)
+            * litter_condition(&self.config.balance, mother);
         let mut count = expected.floor() as usize + usize::from(rng.gen::<f32>() < expected.fract());
         if !traits.birth.lays_eggs() {
             count = count.min(self.cap_room(mother.lineage));

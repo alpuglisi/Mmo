@@ -692,32 +692,39 @@ pub struct Balance {
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v25"))]
     pub roaming_forage: f32,
     // The carnivore-diet rules (version 26; *Predators that live on meat*
-    // in the README's Balance section). Each is off at 0: the default (they
-    // did not meet the long-run acceptance for the red fox, see the README)
+    // and *Predators in their niches* in the README's Balance section).
+    // Each is off at 0: the default (with the predator brakes below they
+    // met the long-run acceptance but not the 120-day sweep, see the README)
     // and what snapshots before version 26 read (`serde_util::before_v26`).
-    // `Balance::carnivore_diet` turns them all on at their tested values.
-    // They apply to obligate carnivores (carnivory above 0.7), except
-    // carrion and the slower rot, which feed every meat eater.
+    // `Balance::carnivore_diet` turns them all on at their tested values,
+    // for the founder designs of `presets::niche_world`. The tunables are
+    // global scales: how far each rule applies
+    // to an animal comes from its genes (`world::apply::meat_reliance` from
+    // carnivory: none up to 0.45, in full from 0.7; and the genes named
+    // below), so selection can tune the behaviours. Carrion and the slower
+    // rot feed every meat eater.
     /// Share of a carcass's rot prevented: tile meat loses `0.05 × (1 −
     /// carcass_keep)` an hour above 15 °C and `0.02 × (1 − carcass_keep)`
     /// below (0: 70% and 38% a day, as before; 0.75: 30% and 11%), so one
     /// kill feeds the killer, its family and other scavengers for days.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v26"))]
     pub carcass_keep: f32,
-    /// Gorging: an obligate carnivore banks meat beyond its hunger as fat
-    /// (hunger points, times one plus its fat stores) in any season, not
-    /// only before a dormancy, and keeps eating at a carcass it knows of
-    /// while it has room. Fat pays for hunger above 50 as for any animal,
-    /// so a kill tides it over the days without one (and the winter), and
-    /// a father feeds his family from it (`provisioning`).
+    /// Gorging: a carnivore banks meat beyond its hunger as fat (up to this
+    /// many hunger points times its meat reliance times `0.5 + fat stores`)
+    /// in any season, not only before a dormancy, and keeps eating at a
+    /// carcass it knows of while it has room. Fat pays for hunger above 50
+    /// as for any animal, so a kill tides it over the days without one (and
+    /// the winter), and a provider feeds its family from it (`provisioning`).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v26"))]
     pub carnivore_fat: f32,
-    /// Carcass scent (tiles, times 0.5 + nose): a hungry obligate carnivore
-    /// with no prey in sight goes to the best carcass within this range
-    /// before roaming, remembers its own last kill and returns to it, and a
-    /// pregnant one goes to her mate's last kill. With it a roaming hunter
-    /// also drinks where it passes water. Before, it found carcasses only by
-    /// sampling eight random tiles and neither drank nor ate while roaming.
+    /// Carcass scent (tiles, times meat reliance, times 0.5 + nose): a hungry
+    /// obligate carnivore with no prey in sight goes to the best carcass
+    /// within this range before roaming (a flexible hunter, carnivory 0.45
+    /// to 0.7, when off a good patch of plants), remembers its own last kill
+    /// and returns to it, and a pregnant one goes to her mate's last kill.
+    /// With it a roaming hunter also drinks where it passes water. Before,
+    /// it found carcasses only by sampling eight random tiles and neither
+    /// drank nor ate while roaming.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v26"))]
     pub carcass_scent: f32,
     /// Carrion: share of a body's meat (`meat_per_kg` per kg) left as a
@@ -726,20 +733,50 @@ pub struct Balance {
     /// the scavengers' winter food.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v26"))]
     pub carrion: f32,
-    /// Provisioning: a fed obligate carnivore father (hunger below 50, fat
-    /// 5 or more) takes food to his pregnant mate or dependent young in
-    /// sight when they are hungry (above 40), feeding them from his fat at
-    /// this times the nursing rate (300 hunger points a day). Mothers, who
-    /// can't court and so never nibbled on the way, starved first.
+    /// Provisioning: a fed carnivore (hunger below 50, fat 5 or more, not
+    /// pregnant) takes food to its pregnant mate or dependent young in sight
+    /// when they are hungry (above 40), feeding them from its fat at this
+    /// times twice its care (`world::apply::provision_care`: the higher of
+    /// pack instinct and group tolerance) times the nursing rate (300 hunger
+    /// points a day); by its pack instinct it also feeds the other pregnant
+    /// females and dependent young of its kind (helpers at the den).
+    /// Mothers, who can't court and so never nibbled on the way, starved
+    /// first.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v26"))]
     pub provisioning: f32,
-    /// Breeding territory (tiles): an obligate carnivore female doesn't
-    /// breed while a pregnant female or an unweaned young of her own lineage
-    /// is within this range, so each predator is limited by its own
-    /// numbers (one litter at a time per territory) and ends a boom before
-    /// the prey run out.
+    /// Breeding territory (tiles, times meat reliance, times `1 + aggression
+    /// − group tolerance` clamped to 0.25–2): a carnivore female doesn't
+    /// breed, and isn't courted, while a pregnant female or an unweaned young
+    /// of her own lineage is within this range, so each predator is limited
+    /// by its own numbers (one litter at a time per territory) and ends a
+    /// boom before the prey run out. (Before version 27 she only stopped
+    /// courting, and males still bred her: the territory leaked.)
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v26"))]
     pub breeding_territory: f32,
+    // The predator brakes (version 27; *Predators in their niches* in the
+    // README's Balance section), off by default. Global scales and switches:
+    // how strongly each animal applies them comes from its genes. Off at 0,
+    // what snapshots before version 27 read (`serde_util::before_v27`).
+    /// Prey switching (a type-III functional response): a hunter gives up on
+    /// a prey species that has grown rare, overlooking it for the day with
+    /// chance `min(1, 2 × pickiness) × (1 − r²)`, where `r` is the species'
+    /// head count over `prey_switching` times its founding count (capped at
+    /// 1). Hunting effort follows the common prey, so a predator can't hunt
+    /// a rare one to the last animal, and the pickiness gene sets how
+    /// readily each hunter switches.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v27"))]
+    pub prey_switching: f32,
+    /// Litters follow the mother's condition: a mother carries
+    /// `1 − condition_litter × flex × (1 − nourished)` of her litter to term
+    /// (on top of the condition factor every birth has), where `nourished`
+    /// is `(90 − hunger + fat) / 60` (0–1: fat stores, laid down by the fat
+    /// stores gene, carry a hungry mother through) and `flex` is `min(1, 2 ×
+    /// litter fraction)` (the litter size gene: a big litter can shrink, a
+    /// single young can't). The pregnancy's food cost follows the same share,
+    /// so a starving mother resorbs part of her litter rather than starve.
+    /// Predator numbers follow their food.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v27"))]
+    pub condition_litter: f32,
 }
 
 impl Balance {
@@ -765,12 +802,15 @@ impl Balance {
         self
     }
 
-    /// These rules with the carnivore-diet rules on at their tested values
-    /// (off by default: *Predators that live on meat* in the README's
-    /// Balance section): carcasses rot a quarter as fast, obligate
-    /// carnivores gorge into fat, smell and remember carcasses, fathers
-    /// provision, natural deaths leave carrion, and one litter at a time
-    /// holds a 12-tile breeding territory.
+    /// These rules with the carnivore-diet rules and the predator brakes on
+    /// at their tested values (off by default: *Predators that live on meat*
+    /// and *Predators in their niches* in the README's Balance section),
+    /// tuned with the founder designs of `presets::niche_world`: carcasses
+    /// rot a quarter as fast, carnivores gorge into fat, smell and remember
+    /// carcasses, providers feed their family, natural deaths leave carrion,
+    /// one litter at a time holds a breeding territory (12 tiles at the
+    /// neutral temper), hunters give up on rare prey, and litters follow the
+    /// mother's condition.
     pub fn carnivore_diet(mut self) -> Self {
         self.carcass_keep = 0.75;
         self.carnivore_fat = 60.0;
@@ -778,6 +818,22 @@ impl Balance {
         self.carrion = 1.0;
         self.provisioning = 1.0;
         self.breeding_territory = 12.0;
+        self.prey_switching = 1.0;
+        self.condition_litter = 1.0;
+        self
+    }
+
+    /// These rules with the carnivore-diet rules and the predator brakes
+    /// (`prey_switching`, `condition_litter`) off: the defaults' values.
+    pub fn carnivore_diet_off(mut self) -> Self {
+        self.carcass_keep = 0.0;
+        self.carnivore_fat = 0.0;
+        self.carcass_scent = 0.0;
+        self.carrion = 0.0;
+        self.provisioning = 0.0;
+        self.breeding_territory = 0.0;
+        self.prey_switching = 0.0;
+        self.condition_litter = 0.0;
         self
     }
 }
@@ -918,12 +974,14 @@ impl Default for Balance {
             carrion: 0.0,
             provisioning: 0.0,
             breeding_territory: 0.0,
+            prey_switching: 0.0,
+            condition_litter: 0.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 108;
+    pub const FIELD_COUNT: usize = 110;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1041,6 +1099,8 @@ impl Balance {
             ("carrion", &mut self.carrion),
             ("provisioning", &mut self.provisioning),
             ("breeding_territory", &mut self.breeding_territory),
+            ("prey_switching", &mut self.prey_switching),
+            ("condition_litter", &mut self.condition_litter),
         ]
     }
 
