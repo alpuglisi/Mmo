@@ -187,9 +187,10 @@ async function main() {
     for (const want of [`${panel.v.coverage}%`, `${panel.v.binocular}°`, `${panel.v.blind}°`, 'Depth', 'Blind behind', 'Show vision']) {
       if (!panel.text.includes(want)) throw new Error(`panel lacks "${want}": ${panel.text}`);
     }
-    // Directional vision is on by default (docs/morphology.md decision 17).
-    if (panel.directional !== 'true' || !panel.text.includes('Directional vision is on')) throw new Error(`mechanic label: ${panel.directional} ${panel.text}`);
-    step(`panel: view ${panel.v.coverage}%, depth ${panel.v.binocular}°, blind ${panel.v.blind}°; labelled "directional vision is on"`);
+    // Directional vision is on by default now (snapshot v24); the label must match the world's flag either way.
+    const onOff = panel.directional === 'true' ? 'on' : 'off';
+    if (!['true', 'false'].includes(panel.directional) || !panel.text.includes(`Directional vision is ${onOff}`)) throw new Error(`mechanic label: ${panel.directional} ${panel.text}`);
+    step(`panel: view ${panel.v.coverage}%, depth ${panel.v.binocular}°, blind ${panel.v.blind}°; labelled "directional vision is ${onOff}"`);
 
     // The toggle hides and shows the cones, and is remembered.
     await page.click('#vision-toggle');

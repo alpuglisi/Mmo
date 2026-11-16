@@ -1,11 +1,12 @@
 // The body builder: edits a `Morphology` by dragging features on two
 // drawings of the creature.
 //
-//   Top view (the head from above, front up): drag an eye round the head to
-//   set the pair angle (its mirrored partner follows), drag the knob on the
-//   rim to widen or narrow every eye's field, add or remove eyes (an odd one
-//   sits on the midline). The fields of view, the binocular overlap in front
-//   and the blind spots are drawn and counted (`vision.ts`).
+//   Top view (`eyeView.ts`: the head from above, snout up): drag an eye
+//   round the head to set the pair angle (its mirrored partner follows),
+//   drag the knob on the edge of its view to widen or narrow every eye's
+//   field, add or remove eyes (an odd one sits on the midline). Each eye's
+//   view, the depth vision in front and the blind spots are drawn, labelled
+//   and counted (`vision.ts`).
 //   Side view: ears (count, shape, size), legs (count, length), tail (none or
 //   a shape, length), snout length and fangs, each length or size on a
 //   handle.
@@ -21,29 +22,27 @@ import { h } from '../dom';
 import {
   clampMorphology,
   defaultMorphology,
-  eyeFieldWidth,
   eyePlacements,
   EAR_COUNT_MAX,
   EAR_SHAPES,
   EYE_COUNT_MAX,
   EYE_COUNT_MIN,
-  EYE_PLACEMENT_MAX,
   hasFangs,
   LEG_COUNTS,
-  PAIR_STEP,
   sameMorphology,
   TAIL_SHAPES,
   type EarShape,
   type Morphology,
   type TailShape,
 } from '../../morphology';
-import { DEFAULT_VISION, signedAngle, visionOf, visionSummary, type Arc, type VisionStats } from '../../vision';
+import { DEFAULT_VISION, visionOf, visionSummary, type VisionStats } from '../../vision';
 
 // The readout helpers live in `vision.ts` (the design editor shows them too).
 export { DEFAULT_VISION, visionSummary };
 import { History } from './history';
 import { DEFAULT_PRESETS, type BuilderPreset } from './presets';
-import { azimuthOf, earIcon, earPath, earReach, polar, s, tailIcon, tailShapes, wedgePath } from './svg';
+import { createEyeView } from './eyeView';
+import { earIcon, earPath, earReach, polar, s, tailIcon, tailShapes } from './svg';
 
 export type BuilderFeature = 'eyes' | 'ears' | 'legs' | 'tail' | 'snout' | 'fangs';
 
@@ -109,10 +108,6 @@ export interface BodyBuilder {
 
 // --- geometry of the drawings (SVG user units)
 
-/** Top view: radius of the field-of-view rim, of the head, of the eye ring. */
-const RIM = 96;
-const HEAD_R = 38;
-const EYE_RING = 35;
 /**
  * Invisible hit radius round every handle, in each drawing's units: at least
  * 22 px (a 44 px target) at a phone's drawing width (the top view is
@@ -140,10 +135,8 @@ const TAIL_LABEL: Record<TailShape, string> = { thin: 'Thin', bushy: 'Bushy', fi
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 const round = (v: number): number => Math.round(v);
-const midOf = (a: Arc): number => a.start + a.width / 2;
-
 /** One draggable handle's behaviour for the current value. */
-interface HandleSpec {
+export interface HandleSpec {
   feature: BuilderFeature;
   label: string;
   x: number;
@@ -209,22 +202,10 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
     return { row, count, minus, plus };
   };
 
-  // --- top view
-  const topSvg = s('svg', {
-    class: 'bb-svg bb-top', viewBox: `${-RIM - HIT_TOP - 2} ${-RIM - HIT_TOP - 2} ${2 * (RIM + HIT_TOP + 2)} ${2 * (RIM + HIT_TOP + 2)}`,
-    role: 'group', 'aria-label': 'Head seen from above, front at the top: eyes and their fields of view', id: `${p}-top`,
-  });
-  topSvg.appendChild(s('defs', {},
-    s('pattern', { id: `${uid}-hatch`, patternUnits: 'userSpaceOnUse', width: 6, height: 6, patternTransform: 'rotate(45)' },
-      s('rect', { width: 6, height: 6, class: 'bb-hatch-bg' }),
-      s('line', { x1: 0, y1: 0, x2: 0, y2: 6, class: 'bb-hatch-line' })),
-    // Depth zone: dots, so it reads without colour too.
-    s('pattern', { id: `${uid}-dots`, patternUnits: 'userSpaceOnUse', width: 5, height: 5 },
-      s('rect', { width: 5, height: 5, class: 'bb-dots-bg' }),
-      s('circle', { cx: 2.5, cy: 2.5, r: 1.1, class: 'bb-dots-dot' }))));
-  const topDraw = s('g', { class: 'bb-draw' });
-  const topHandles = s('g', { class: 'bb-handles' });
-  topSvg.append(topDraw, topHandles);
+  // --- top view (eyeView.ts draws it; the handles below drive it)
+  const eyeView = createEyeView({ idPrefix: p, uid });
+  const topSvg = eyeView.svg;
+  const topHandles = eyeView.handles;
 
   const eyeStep = stepper('eye', 'eyes', 'eye', () => addEyes(-1), () => addEyes(1));
   const eyeNote = priceNote(opts.prices?.eye, 'two');
@@ -236,7 +217,7 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
     return { el: h('div', { class: `bb-stat bb-stat-${key}`, title: hint }, h('dt', {}, title), v, delta), v, delta, higherIsBetter };
   };
   const stats = {
-    coverage: stat('coverage', 'View', 'Share of the full circle seen by at least one eye', true),
+    coverage: stat('coverage', 'Sees', 'Share of the full circle seen by at least one eye', true),
     overlap: stat('overlap', 'Depth', 'Degrees within 60° of straight ahead seen by two eyes at once (binocular overlap), less what a long snout hides', true),
     rear: stat('rear-blind', 'Blind behind', 'Width of the unseen arc straight behind', false),
     front: stat('front-blind', 'Blind ahead', 'Width of the unseen arc straight ahead', false),
@@ -246,10 +227,11 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
   const eyesPanel = h('section', { class: 'bb-panel bb-eyes', 'aria-labelledby': `${p}-eyes-title` },
     h('div', { class: 'bb-panel-head' }, h('h3', { id: `${p}-eyes-title` }, 'Eyes'), h('span', { class: 'muted small' }, 'top view, front ↑')),
     topSvg,
+    eyeView.legend,
     h('div', { class: 'bb-row' }, h('span', { class: 'bb-row-label' }, 'Eyes'), eyeStep.row),
     h('dl', { class: 'bb-stats' }, stats.coverage.el, stats.overlap.el, stats.rear.el, stats.front.el),
     summary,
-    h('p', { class: 'bb-hint muted small' }, 'Drag an eye round the head; drag the rim knob to widen the fields. Keyboard: Tab to a handle, arrows move it, + / − add or remove.'));
+    h('p', { class: 'bb-hint muted small' }, 'Drag an eye along the head to move it (its partner mirrors it). Drag the yellow knob on the edge of the view to widen every eye’s view. Keyboard: Tab to a handle, arrows move it, + / − add or remove an eye.'));
 
   // --- side view
   const sideSvg = s('svg', {
@@ -426,96 +408,7 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
   // ------------------------------------------------------------ drawing
 
   function renderTop(cur: Morphology, out: Map<string, HandleSpec & { svg: SVGSVGElement; layer: SVGGElement }>): void {
-    topDraw.replaceChildren();
-    const width = eyeFieldWidth(cur.eye_size);
-    const eyes = eyePlacements(cur);
-    const pairs = Math.floor(cur.eye_count / 2);
-    const add = (el: SVGElement) => topDraw.appendChild(el);
-
-    add(s('circle', { r: RIM, class: 'bb-rim' }));
-    for (const a of vision.covered) add(s('path', { d: wedgePath(a.start, a.width, RIM), class: 'bb-cover' }));
-    for (const a of vision.blind) {
-      const kind = a === vision.rearBlind ? 'rear' : a === vision.frontBlind ? 'front' : 'side';
-      add(s('path', { d: wedgePath(a.start, a.width, RIM), class: `bb-blind bb-blind-${kind}`, fill: `url(#${uid}-hatch)` }));
-    }
-    for (const a of vision.overlap) add(s('path', { d: wedgePath(a.start, a.width, RIM), class: 'bb-overlap', fill: `url(#${uid}-dots)` }));
-    for (const e of eyes) add(s('path', { d: wedgePath(e.azimuth - width / 2, width, RIM), class: 'bb-cone' }));
-    // What a long snout hides of the depth zone, straight ahead.
-    if (vision.occludedDeg > 0) add(s('path', { d: wedgePath(-vision.occludedDeg / 2, vision.occludedDeg, RIM), class: 'bb-occluded' }));
-    // Compass ticks.
-    for (const a of [0, 90, 180, -90]) {
-      const [x0, y0] = polar(a, RIM - 5);
-      const [x1, y1] = polar(a, RIM);
-      add(s('line', { x1: x0, y1: y0, x2: x1, y2: y1, class: 'bb-tick' }));
-    }
-    // Labels on the arcs that matter.
-    const label = (a: Arc, text: string, cls: string, r = 64) => {
-      const [x, y] = polar(midOf(a), r);
-      add(s('text', { x, y, class: `bb-arc-label ${cls}`, 'text-anchor': 'middle', 'dominant-baseline': 'middle' }, text));
-    };
-    if (vision.rearBlind) label(vision.rearBlind, `${round(vision.rearBlindDeg)}° blind`, 'bb-label-blind');
-    if (vision.frontBlind) label(vision.frontBlind, `${round(vision.frontBlindDeg)}°`, 'bb-label-blind', 74);
-    const frontOverlap = vision.overlap.find((a) => Math.abs(signedAngle(midOf(a))) < 1) ?? vision.overlap[0];
-    if (frontOverlap && !vision.frontBlind) label(frontOverlap, `${round(vision.overlapDeg)}° depth`, 'bb-label-overlap', 74);
-
-    // The head: snout forward, then the skull.
-    const snout = 8 + 26 * cur.snout_length;
-    add(s('ellipse', { cx: 0, cy: -(HEAD_R - 6 + snout / 2), rx: 13, ry: snout / 2 + 6, class: 'bb-head' }));
-    add(s('circle', { r: HEAD_R, class: 'bb-head' }));
-    add(s('text', { x: -RIM - HIT_TOP, y: -RIM - 4, class: 'bb-compass' }, 'front ↑'));
-
-    const eyeR = 4 + 4 * cur.eye_size;
-    const result = `${round(vision.coveredDeg)}° view, ${round(vision.overlapDeg)}° depth, ${round(vision.frontBlindDeg)}° blind ahead, ${round(vision.rearBlindDeg)}° blind behind`;
-    eyes.forEach((e, i) => {
-      const [x, y] = polar(e.azimuth, EYE_RING);
-      const az = Math.abs(e.azimuth);
-      if (e.pair === null) {
-        out.set(`eye-${i}`, {
-          svg: topSvg, layer: topHandles, feature: 'eyes', x, y, r: eyeR,
-          label: 'Midline eye (fixed straight ahead): arrows resize all eyes',
-          now: cur.eye_size, min: 0, max: 1, text: `midline eye, size ${Math.round(cur.eye_size * 100)}%: ${result}`,
-          drag: null, key: unitKeys('eye_size', cur.eye_size),
-        });
-        return;
-      }
-      const offset = PAIR_STEP * e.pair;
-      out.set(`eye-${i}`, {
-        svg: topSvg, layer: topHandles, feature: 'eyes', x, y, r: eyeR,
-        label: `${e.side === 'right' ? 'Right' : 'Left'} eye${pairs > 1 ? ` (pair ${e.pair + 1})` : ''}: drag round the head; arrows up / down move it forward / back`,
-        now: round(cur.eye_azimuth), min: 0, max: 180,
-        text: `eyes ${round(az)}° to the side: ${result}`,
-        // Pair k sits at the pair angle + 50°·k: dragging any eye sets the pair angle.
-        drag: (px, py) => ({ eye_azimuth: round(clamp(Math.abs(azimuthOf(px, py)) - offset, 0, EYE_PLACEMENT_MAX)) }),
-        key: (key, big) => {
-          const step = big ? 15 : 5;
-          const az0 = Math.min(cur.eye_azimuth, EYE_PLACEMENT_MAX);
-          switch (key) {
-            case 'ArrowUp': case 'ArrowLeft': return { eye_azimuth: clamp(az0 - step, 0, EYE_PLACEMENT_MAX) };
-            case 'ArrowDown': case 'ArrowRight': return { eye_azimuth: clamp(az0 + step, 0, EYE_PLACEMENT_MAX) };
-            case 'Home': return { eye_azimuth: 0 };
-            case 'End': return { eye_azimuth: EYE_PLACEMENT_MAX };
-            default: return null;
-          }
-        },
-      });
-    });
-
-    // Field-width knob: on the rim at the outer edge of the reference eye's field.
-    const ref = eyes.find((e) => e.side === 'right') ?? eyes[0];
-    const edge = ref.azimuth + width / 2;
-    const [kx, ky] = polar(edge, RIM);
-    const [ex, ey] = polar(ref.azimuth, EYE_RING);
-    add(s('line', { x1: ex, y1: ey, x2: kx, y2: ky, class: 'bb-track' }));
-    out.set('eye-size', {
-      svg: topSvg, layer: topHandles, feature: 'eyes', x: kx, y: ky, r: 6,
-      label: 'Eye size: drag along the rim to widen or narrow every field of view',
-      now: cur.eye_size, min: 0, max: 1, text: `size ${Math.round(cur.eye_size * 100)}%, field ${round(width)}° per eye`,
-      drag: (px, py) => {
-        const w = 2 * Math.abs(signedAngle(azimuthOf(px, py) - ref.azimuth));
-        return { eye_size: Math.round(clamp((w - 140) / 60, 0, 1) * 100) / 100 };
-      },
-      key: unitKeys('eye_size', cur.eye_size),
-    });
+    for (const [key, spec] of eyeView.render(cur, vision)) out.set(key, { ...spec, svg: topSvg, layer: topHandles });
   }
 
   function renderSide(cur: Morphology, out: Map<string, HandleSpec & { svg: SVGSVGElement; layer: SVGGElement }>): void {
