@@ -134,7 +134,30 @@ async function main() {
     if (!(await page.textContent('#design-problem')).includes('budget')) throw new Error('no over-budget message');
     for (const g of maxed) await setTrait(g.name, g.default);
     step(`live cost ${after.trim()}; over-budget design refused client-side`);
+    // Trait captions: every slider has a live line saying what its setting
+    // does, linked to it for screen readers, and it follows the rest of the
+    // design (fur blocks basking on a cold-blooded body).
+    const captions = await page.$$eval('input[data-gene]', (els) => els.map((el) => {
+      const id = el.getAttribute('aria-describedby');
+      return [el.dataset.gene, id ? document.getElementById(id)?.textContent ?? '' : ''];
+    }));
+    const bare = captions.filter(([, t]) => !t.trim());
+    if (bare.length) throw new Error(`sliders without a caption: ${bare.map(([g]) => g).join(', ')}`);
+    const furCaption = () => page.textContent('#trait-fur-caption');
+    const warmFur = await furCaption();
+    await page.check('input[name="thermo"][value="cold"]');
+    if (!(await furCaption()).includes('blocks basking')) throw new Error(`cold-blooded fur caption: ${await furCaption()}`);
+    await page.check('input[name="thermo"][value="warm"]');
+    if ((await furCaption()) !== warmFur) throw new Error(`warm-blooded fur caption: ${await furCaption()}`);
+    // The info button opens the full low / middle / high text.
+    await page.click('[data-trait="hooves"] .trait-more');
+    if (!(await page.isVisible('#trait-hooves-info'))) throw new Error('hooves info did not open');
+    if (!(await page.textContent('#trait-hooves-info')).includes('Middle:')) throw new Error('hooves info has no levels');
+    step(`${captions.length} sliders captioned; captions follow thermoregulation; info opens`);
     await page.screenshot({ path: path.join(shots, 'design-editor.png') });
+    await page.$eval('[data-trait="leg_length"]', (el) => el.scrollIntoView({ block: 'start' }));
+    await page.screenshot({ path: path.join(shots, 'design-editor-traits.png') });
+    await page.$eval('.design-body', (el) => { el.scrollTop = 0; });
     const [founded] = await Promise.all([
       page.waitForResponse((r) => new URL(r.url()).pathname === '/api/lineage'),
       page.click('#design-submit'),
