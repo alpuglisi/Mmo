@@ -705,7 +705,7 @@ pub struct Balance {
     // rot feed every meat eater.
     /// Share of a carcass's rot prevented: tile meat loses `0.05 × (1 −
     /// carcass_keep)` an hour above 15 °C and `0.02 × (1 − carcass_keep)`
-    /// below (0: 70% and 38% a day, as before; 0.75: 30% and 11%), so one
+    /// below (0: 70% and 38% a day, as before; 0.75: 26% and 11%), so one
     /// kill feeds the killer, its family and other scavengers for days.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v26"))]
     pub carcass_keep: f32,

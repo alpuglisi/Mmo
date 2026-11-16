@@ -1225,7 +1225,9 @@ impl World {
             }
         });
         // An egg layer's litter is her clutch until it hatches.
-        taken || self.clutches.iter().any(|c| c.lineage == o.lineage && !c.eggs.is_empty() && c.pos.dist(o.pos) <= r)
+        taken
+            || o.traits.birth.lays_eggs()
+                && self.clutches.iter().any(|c| c.lineage == o.lineage && !c.eggs.is_empty() && c.pos.dist(o.pos) <= r)
     }
 
     /// A carcass for obligate carnivore `o` (meat efficiency `c`) worth half

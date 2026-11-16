@@ -85,6 +85,8 @@ fn a_clutch_takes_the_territory_too() {
     let at = Vec2::new(20.5, 20.5);
     w.organisms[f[0]].pos = at;
     w.organisms[f[1]].pos = at + Vec2::new(3.0, 0.0);
+    // An egg-laying carnivore (a player design could be one).
+    w.organisms[f[1]].traits.birth = crate::design::BirthType::IncubatedEggs;
     w.grid.rebuild(&w.organisms);
     assert!(!w.territory_taken(&w.organisms[f[1]]));
     let g = w.organisms[f[0]].genome.clone();
