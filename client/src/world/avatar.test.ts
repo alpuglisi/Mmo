@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { DesignSpec } from '../protocol';
+import { DEFAULT_MORPHOLOGY, pairAzimuth as eyePairAzimuth, type Morphology as MorphologyFeatures } from '../morphology';
 import {
-  avatarDrawing, avatarSvg, describeAvatar, dominantCover, eyePairAzimuth, FEATURE_DEFAULTS, hasFangs, limbOutline, lookOf, morphologyOf,
-  shapeBounds, wingStage, type Morphology, type MorphologyFeatures,
+  avatarDrawing, avatarSvg, describeAvatar, dominantCover, hasFangs, limbOutline, lookOf, morphologyOf,
+  shapeBounds, wingStage, type AvatarModel as Morphology,
 } from './avatar';
 import { describeLook, palette } from './creature';
 
@@ -49,7 +50,7 @@ describe('morphology mapping', () => {
 
   it('contract defaults for features no slider sets yet', () => {
     const m = morph({ tail: 0.04 });
-    expect(m).toMatchObject({ ...FEATURE_DEFAULTS, tail_present: false });
+    expect(m).toMatchObject({ ...DEFAULT_MORPHOLOGY, tail_present: false, tail_length: 0.04 });
     expect(m.eye_count).toBe(2);
     expect(m.eye_azimuth).toBe(60);
     expect(m.ear_shape).toBe('round');

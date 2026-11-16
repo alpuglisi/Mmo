@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DesignSpec } from '../protocol';
-import { adultMass, caption, flight, iceSlip, levelOf, TRAIT_TEXT } from './traitText';
+import { adultMass, fangPlantLoss, flight, iceSlip, insulation, scaleWarmthLoss } from '../bodyMath';
+import { caption, levelOf, TRAIT_TEXT } from './traitText';
 
 // Every slider the design editor shows: `GET /api/genes` (crates/server
 // src/design.rs `catalog`: every gene but endothermy, birth mode and litter
@@ -58,7 +59,9 @@ describe('trait text', () => {
   it('switches at a trait’s own thresholds', () => {
     // Fangs: below a small threshold there are no fangs at all.
     expect(caption('fangs', design({ fangs: 0.05 }))!.text).toBe('no fangs');
-    expect(caption('fangs', design({ fangs: 0.3 }))!.text).toBe('fangs: stronger bite');
+    expect(caption('fangs', design({ fangs: 0.09 }))!.text).toBe('no fangs');
+    expect(caption('fangs', design({ fangs: 0.1 }))!.level).toBe('mid');
+    expect(caption('fangs', design({ fangs: 0.3, carnivory: 1 }))!.text).toBe('fangs: real bite · no cost to a pure meat eater');
     // Seasonal strategies switch on at 0.5 (stats.rs STRATEGY_THRESHOLD).
     expect(caption('torpor', design({ torpor: 0.49 }))!.level).toBe('low');
     expect(caption('torpor', design({ torpor: 0.5 }))!.level).toBe('mid');
@@ -85,6 +88,28 @@ describe('trait text', () => {
     expect(caption('fur', design({ fur: 0.9 }, { thermo: 'cold' }))!.text).toMatch(/blocks basking/);
     expect(caption('fur', design({ fur: 0.5 }, { thermo: 'cold' }))!.text).toMatch(/blocks basking/);
     expect(caption('fur', design({ fur: 0 }, { thermo: 'cold' }))!.text).toBe('bare skin: basks freely');
+  });
+
+  it('long fangs cost plant feeding in proportion to the plant diet (fang_grazing 0.5)', () => {
+    // 1 − 0.5 × fangs × (1 − carnivory).
+    expect(fangPlantLoss(design({ fangs: 0.8, carnivory: 0 }))).toBeCloseTo(0.4, 6);
+    expect(fangPlantLoss(design({ fangs: 0.8, carnivory: 0.5 }))).toBeCloseTo(0.2, 6);
+    expect(fangPlantLoss(design({ fangs: 0.09, carnivory: 0 }))).toBe(0);
+    expect(caption('fangs', design({ fangs: 0.8, carnivory: 0 }))!.text).toBe('long fangs: strongest bite · plant feeding −40%');
+    expect(caption('fangs', design({ fangs: 0.3, carnivory: 0.5 }))!.text).toBe('fangs: real bite · plant feeding −8%');
+    expect(caption('fangs', design({ fangs: 1, carnivory: 1 }))!.text).toBe('long fangs: strongest bite · no cost to a pure meat eater');
+  });
+
+  it('scales over fur cost a warm body warmth (scale_cover 0.5), nothing otherwise', () => {
+    // 0.5 × scales × 0.6 × fur: 0.3 insulation (≈ 9 °C) at full scales on full fur.
+    expect(scaleWarmthLoss(design({ scales: 1, fur: 1 }))).toBeCloseTo(0.3, 6);
+    expect(scaleWarmthLoss(design({ scales: 1, fur: 1 }, { thermo: 'cold' }))).toBe(0);
+    expect(insulation(design({ fur: 1 })) - insulation(design({ fur: 1, scales: 1 }))).toBeCloseTo(0.3, 6);
+    expect(caption('scales', design({ scales: 1, fur: 1 }))!.text).toBe('heavy scales: hard to wound · costs warmth: scales over fur (−0.30 insulation, ≈9 °C less cold tolerance)');
+    expect(caption('scales', design({ scales: 0.5, fur: 0 }))!.text).toBe('scales: harder to wound · no cost on a cold-blooded or furless body');
+    expect(caption('scales', design({ scales: 0.9, fur: 0.8 }, { thermo: 'cold' }))!.text).toBe('heavy scales: hard to wound · no cost on a cold-blooded or furless body');
+    expect(caption('scales', design({ scales: 0, fur: 1 }))!.text).toBe('soft skin: easy to wound');
+    expect(caption('tail', design({ tail: 0.9 }))!.text).toBe('long tail: most agile (dodging, escaping, fighting)');
   });
 
   it('hooves slip on ice unless claws give grip', () => {

@@ -12,7 +12,7 @@
 // plus the unseen arc straight ahead (through 0°), which two eyes pushed to
 // the sides leave and a midline eye closes.
 
-import { eyeFieldWidth, eyePlacements, snoutOcclusion, type Morphology } from './morphology';
+import { DEFAULT_MORPHOLOGY, eyeFieldWidth, eyePlacements, snoutOcclusion, type Morphology } from './morphology';
 
 /** Half-width of the front zone where binocular overlap counts as depth vision. */
 export const DEPTH_WINDOW = 60;
@@ -169,4 +169,22 @@ export function analyseVision(fields: readonly EyeField[], occlusion = 0): Visio
 /** The vision stats of a morphology (with snout occlusion when `snout_length` is given). */
 export function visionOf(m: Pick<Morphology, 'eye_count' | 'eye_azimuth' | 'eye_size'> & { snout_length?: number }): VisionStats {
   return analyseVision(visionFields(m), m.snout_length === undefined ? 0 : snoutOcclusion(m.snout_length));
+}
+
+/** The default body's vision: the readouts compare against it. */
+export const DEFAULT_VISION: VisionStats = visionOf(DEFAULT_MORPHOLOGY);
+
+/** A plain-English line on what the eyes see. */
+export function visionSummary(v: VisionStats): string {
+  if (v.blindDeg <= 0) return v.overlapDeg > 0
+    ? `Sees all the way round, with ${Math.round(v.overlapDeg)}° of depth vision in front.`
+    : 'Sees all the way round, but nothing in front with two eyes at once.';
+  const parts: string[] = [];
+  if (v.rearBlindDeg > 0) parts.push(`blind ${Math.round(v.rearBlindDeg)}° behind`);
+  if (v.frontBlindDeg > 0) parts.push(`blind ${Math.round(v.frontBlindDeg)}° straight ahead`);
+  const side = v.blindDeg - v.rearBlindDeg - v.frontBlindDeg;
+  if (side > 0.5) parts.push(`blind ${Math.round(side)}° at the sides`);
+  parts.push(v.overlapDeg > 0 ? `${Math.round(v.overlapDeg)}° of depth vision in front` : 'no depth vision in front');
+  const text = parts.join(', ');
+  return `${text[0].toUpperCase()}${text.slice(1)}.`;
 }
