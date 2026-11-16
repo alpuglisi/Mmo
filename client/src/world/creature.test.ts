@@ -2,9 +2,13 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { Appearance, NearbyOrganism, OwnOrganism } from '../protocol';
 import {
-  actionHint, bodyExtent, bodyRadius, describeLook, creatureKey, creatureShapes, DEFAULT_LOOK, EAR_SHAPES, hintShapes, JUVENILE_SCALE, morphOf, palette, specOf,
-  spriteExtent, TAIL_LOOKS, visibleMorph, type CreatureSpec, type Part, type Shape,
+  actionHint, bodyRadius, describeLook, creatureKey, DEFAULT_LOOK, EAR_SHAPES, hintShapes, JUVENILE_SCALE, morphOf, palette, specOf,
+  spriteExtent, TAIL_LOOKS, visibleMorph, type CreatureSpec,
 } from './creature';
+import { EYE_AZIMUTH, SPRITE_OUTLINE_PX, spriteDrawing, spriteModel, type SpriteDrawing } from './spriteArt';
+import { avatarDrawing, drawingShapes } from './avatar';
+import { drawingBounds } from '../art/render';
+import type { Shape as ArtShape } from '../art/geom';
 
 const look = (over: Partial<Appearance> = {}): Appearance => ({ ...DEFAULT_LOOK, ...over });
 const adult = (over: Partial<Appearance> = {}): CreatureSpec => ({ look: look(over), juvenile: false });
@@ -21,20 +25,24 @@ function allLooks(): Appearance[] {
   return out;
 }
 
-const parts = (s: Shape[], part: Part) => s.filter((x) => x.part === part).length;
+const draw = (s: CreatureSpec): SpriteDrawing => spriteDrawing(s);
+/** What a texture shows: the drawing and how it sits on the marker (not the model it came from). */
+const drawn = (s: CreatureSpec): string => {
+  const { model: _model, ...rest } = draw(s);
+  return JSON.stringify(rest);
+};
+/** Silhouette pieces with a tag (`leg` matches `leg-0`, `ear` matches `ear-far-1`). */
+const pieces = (s: CreatureSpec, tag: string) => draw(s).drawing.groups.flatMap((g) => g.pieces.filter((p) => p.tag === tag || p.tag.startsWith(`${tag}-`)));
+const tagged = (s: CreatureSpec, tag: string) => drawingShapes(draw(s).drawing).filter((x) => x.tag === tag);
+type Ellipse = Extract<ArtShape, { kind: 'ellipse' }>;
+/** Eyes, found by their glint (back to front: a forward pair's far eye first). */
+const glints = (s: CreatureSpec) => tagged(s, 'glint') as Ellipse[];
+const differs = (a: Partial<Appearance>, b: Partial<Appearance>, body: Partial<Appearance> = {}) => drawn(adult({ ...body, ...a })) !== drawn(adult({ ...body, ...b }));
 
-function bounds(shapes: Shape[]): { minX: number; maxX: number; minY: number; maxY: number } {
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  const add = (x: number, y: number) => {
-    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
-  };
-  for (const s of shapes) {
-    if (s.kind === 'ellipse') {
-      add(s.x - s.rx, s.y - s.ry);
-      add(s.x + s.rx, s.y + s.ry);
-    } else for (const [x, y] of s.points) add(x, y);
-  }
-  return { minX, maxX, minY, maxY };
+/** Texture pixels the drawing covers, relative to the marker centre (px at marker scale 1). */
+function pixelBounds(sd: SpriteDrawing): { minX: number; maxX: number; minY: number; maxY: number } {
+  const b = drawingBounds(sd.drawing);
+  return { minX: b.minX * sd.k, maxX: b.maxX * sd.k, minY: b.minY * sd.k + sd.ground, maxY: b.maxY * sd.k + sd.ground };
 }
 
 describe('appearance classes', () => {
@@ -45,24 +53,121 @@ describe('appearance classes', () => {
     expect(keys.size).toBe(looks.length * 2);
   });
 
-  it('draws every class exactly as before morphology, without the fields and zoomed out', () => {
-    // sha256 of the shapes of all 1,536 classes × stage from the sprite code
-    // before morphology (numbers to 1e-6, `part` tags left out).
-    const BEFORE = 'bc67e1fe8a8b2c03adc56c29f0bb3db63d1b382ce6401846ededcac24a03fc35';
+  it('draws every class with the art library: the avatar of its sprite model, at sprite detail', () => {
+    for (const l of allLooks()) {
+      for (const juvenile of [false, true]) {
+        const s = { look: l, juvenile };
+        const sd = draw(s);
+        const lib = avatarDrawing(spriteModel(s), { lod: 'sprite' });
+        // Swimmers alone grow a dorsal fin into the main silhouette.
+        const fins = sd.drawing.groups.flatMap((g) => g.pieces.filter((p) => p.tag === 'fin'));
+        expect(fins.length, creatureKey(s)).toBe(l.locomotion === 'swim' ? 1 : 0);
+        const strip = (d: typeof lib) => d.groups.map((g) => ({ ...g, pieces: g.pieces.filter((p) => p.tag !== 'fin'), detail: g.detail.filter((x) => x.tag !== 'fin') }));
+        expect(JSON.stringify(strip(sd.drawing)) === JSON.stringify(strip(lib)), creatureKey(s)).toBe(true);
+        // Sprite detail: no fine textures (scales come as a coarse pattern).
+        const tags = new Set(drawingShapes(sd.drawing).map((x) => x.tag));
+        for (const t of ['hair', 'feather', 'crease', 'whisker', 'scute']) expect(tags.has(t), `${creatureKey(s)} ${t}`).toBe(false);
+      }
+    }
+  });
+
+  it('draws the same without the morphology fields, with the defaults as a server sends them, and zoomed out', () => {
     const hash = (far: boolean, fields: (l: Appearance) => Partial<Appearance>) => {
       const h = createHash('sha256');
-      const replacer = (k: string, v: unknown) => (k === 'part' ? undefined : typeof v === 'number' ? Math.round(v * 1e6) / 1e6 : v);
-      for (const l of allLooks()) for (const juvenile of [false, true]) h.update(JSON.stringify(creatureShapes({ look: { ...l, ...fields(l) }, juvenile, far }), replacer));
+      for (const l of allLooks()) for (const juvenile of [false, true]) h.update(drawn({ look: { ...l, ...fields(l) }, juvenile, far }));
       return h.digest('hex');
     };
-    expect(hash(false, () => ({}))).toBe(BEFORE);
-    // The contract defaults as a server sends them draw the same.
+    const absent = hash(false, () => ({}));
     const defaults = (l: Appearance): Partial<Appearance> => ({
       eyes: 2, eye_azimuth: 1, eye_size: 1, ears: 2, ear_shape: 'round', ear_size: 1, legs: 4, tail: 'thin', tail_size: 1, snout: 1, fangs: l.diet === 'carnivore' ? 1 : 0,
     });
-    expect(hash(false, defaults)).toBe(BEFORE);
+    expect(hash(false, defaults)).toBe(absent);
     // Far detail ignores the morphology: the class sprite.
-    expect(hash(true, () => ({ eyes: 6, eye_azimuth: 0, ears: 4, ear_shape: 'long', legs: 8, tail: 'club', tail_size: 2, snout: 2, fangs: 2 }))).toBe(BEFORE);
+    expect(hash(true, () => ({ eyes: 6, eye_azimuth: 0, ears: 4, ear_shape: 'long', legs: 8, tail: 'club', tail_size: 2, snout: 2, fangs: 2 }))).toBe(absent);
+  });
+
+  it('maps every class and stage to the same sprite model (golden)', () => {
+    // sha256 of the sprite models of all 1,536 classes × stage: what each
+    // look means to the art library (sizes, coverings, feet, wings, horns,
+    // colours). Changing it changes every map creature: update it only on
+    // purpose, after looking at the e2e sprite galleries.
+    const h = createHash('sha256');
+    const replacer = (_k: string, v: unknown) => (typeof v === 'number' ? Math.round(v * 1e6) / 1e6 : v);
+    for (const l of allLooks()) for (const juvenile of [false, true]) h.update(JSON.stringify(spriteModel({ look: l, juvenile }), replacer));
+    expect(h.digest('hex')).toBe('438c4d119b19fbb94eea4a3b4e5336b2be0cb20ce20cfeb9f5dad4a8f911ba3a');
+    // The default founder (a server without morphology), in full.
+    const { look: _look, ...m } = spriteModel(adult());
+    expect(m).toMatchInlineSnapshot(`
+      {
+        "body": {
+          "fat": 0.35,
+          "muscle": 0.2,
+        },
+        "carnivory": 0.15,
+        "coloring": {
+          "camo": 0,
+          "display": 0,
+          "kind": "drab",
+          "palette": {
+            "accent": 8215356,
+            "base": 10779218,
+            "dark": 7229235,
+            "light": 13808780,
+          },
+          "toxins": 0,
+        },
+        "cover": {
+          "armor": {
+            "amount": 0,
+            "role": "none",
+          },
+          "dominant": "fur",
+          "fur": {
+            "amount": 0.8,
+            "role": "dominant",
+          },
+          "scales": {
+            "amount": 0,
+            "role": "none",
+          },
+        },
+        "ear_count": 2,
+        "ear_shape": "round",
+        "ear_size": 0.5,
+        "extras": {
+          "birth": "live",
+          "seasonalCoat": false,
+          "swim": 0,
+        },
+        "eye_azimuth": 60,
+        "eye_count": 2,
+        "eye_size": 0.6,
+        "fang_size": 0,
+        "feet": {
+          "claws": 0,
+          "climbing": false,
+          "digging": false,
+          "kind": "paw",
+          "webbed": false,
+          "width": 0.4,
+        },
+        "horns": 0,
+        "leg_count": 4,
+        "leg_length": 0.35,
+        "mass": 4,
+        "nose": 0.3,
+        "size": 0.3,
+        "snout_length": 0.5,
+        "tail_length": 0.5,
+        "tail_present": true,
+        "tail_shape": "thin",
+        "warm": true,
+        "wings": {
+          "amount": 0,
+          "stage": "none",
+        },
+      }
+    `);
   });
 
   it('reads the look from an organism, with a default for older servers and juveniles from `matured`', () => {
@@ -72,43 +177,86 @@ describe('appearance classes', () => {
     expect(specOf(old)).toEqual({ look: DEFAULT_LOOK, juvenile: false });
   });
 
-  it('sizes bodies by size class and draws juveniles smaller', () => {
+  it('sizes bodies by size class and draws juveniles smaller, with bigger heads', () => {
     const r = [0, 1, 2, 3].map((size) => bodyRadius(adult({ size: size as Appearance['size'] })));
     for (let i = 1; i < r.length; i++) expect(r[i]).toBeGreaterThan(r[i - 1]);
     const j = bodyRadius({ look: look({ size: 2 }), juvenile: true });
     expect(j).toBeCloseTo(r[2] * JUVENILE_SCALE);
+    // On screen: wider sprites for bigger classes, juveniles narrower than adults.
+    const width = (s: CreatureSpec) => {
+      const b = pixelBounds(draw(s));
+      return b.maxX - b.minX;
+    };
+    for (let i = 1; i < 4; i++) expect(width(adult({ size: i as Appearance['size'] }))).toBeGreaterThan(width(adult({ size: (i - 1) as Appearance['size'] })));
+    expect(width({ look: look({ size: 2 }), juvenile: true })).toBeLessThan(width(adult({ size: 2 })));
+    // The head, relative to the body: bigger on the juvenile.
+    const headToBody = (s: CreatureSpec) => {
+      const d = draw(s).drawing;
+      const head = d.groups.flatMap((g) => g.pieces).find((p) => p.tag === 'head')!;
+      const xs = head.points.map(([x]) => x);
+      return (Math.max(...xs) - Math.min(...xs)) / d.anchors.body.rx;
+    };
+    expect(headToBody({ look: look({ size: 2 }), juvenile: true })).toBeGreaterThan(headToBody(adult({ size: 2 })));
   });
 
-  it('keeps every shape inside the texture frame', () => {
+  it('keeps every drawing inside its texture, with its feet on the owner ring', () => {
     for (const l of allLooks()) {
       for (const juvenile of [false, true]) {
         const s = { look: l, juvenile };
-        const e = spriteExtent(s);
-        const b = bounds(creatureShapes(s));
-        expect(Math.max(-b.minX, b.maxX, -b.minY, b.maxY), creatureKey(s)).toBeLessThanOrEqual(e);
+        const sd = draw(s);
+        const b = pixelBounds(sd);
+        expect(Math.max(-b.minX, b.maxX), creatureKey(s)).toBeLessThanOrEqual(sd.half.w);
+        expect(Math.max(-b.minY, b.maxY), creatureKey(s)).toBeLessThanOrEqual(sd.half.h);
+        // The ground line (the feet) on the owner ring, under the marker centre.
+        expect(sd.ground).toBeCloseTo(bodyRadius(s) * 0.95);
+        // Wings and long tails grow the frame a little at most.
+        expect(Math.max(sd.half.w, sd.half.h), creatureKey(s)).toBeLessThanOrEqual(spriteExtent(s) * 1.6);
       }
     }
   });
 
   it('draws visibly different body plans', () => {
-    const base = creatureShapes(adult());
-    const differs = (over: Partial<Appearance>) => JSON.stringify(creatureShapes(adult(over))) !== JSON.stringify(base);
-    expect(differs({ diet: 'carnivore' })).toBe(true);
-    expect(differs({ warm: false })).toBe(true);
-    expect(differs({ locomotion: 'swim' })).toBe(true);
-    expect(differs({ locomotion: 'fly' })).toBe(true);
-    expect(differs({ cover: 'scales' })).toBe(true);
-    expect(differs({ coloring: 'warning' })).toBe(true);
-    // Fliers reach well above the body (the raised wing); swimmers have no legs.
-    expect(bounds(creatureShapes(adult({ locomotion: 'fly' }))).minY).toBeLessThan(bounds(base).minY - 3);
-    expect(parts(base, 'leg')).toBe(4);
-    expect(parts(creatureShapes(adult({ locomotion: 'swim' })), 'leg')).toBe(0);
+    expect(differs({ diet: 'carnivore' }, {})).toBe(true);
+    expect(differs({ warm: false }, {})).toBe(true);
+    expect(differs({ locomotion: 'swim' }, {})).toBe(true);
+    expect(differs({ locomotion: 'fly' }, {})).toBe(true);
+    expect(differs({ cover: 'scales' }, {})).toBe(true);
+    expect(differs({ coloring: 'warning' }, {})).toBe(true);
+    // Fliers reach well above the body (the raised wings); swimmers have no legs but a fin.
+    expect(pixelBounds(draw(adult({ locomotion: 'fly', cover: 'skin' }))).minY).toBeLessThan(pixelBounds(draw(adult({ cover: 'skin' }))).minY - 3);
+    expect(pieces(adult(), 'leg')).toHaveLength(4);
+    expect(pieces(adult({ locomotion: 'swim' }), 'leg')).toHaveLength(0);
+    expect(pieces(adult({ locomotion: 'swim' }), 'fin')).toHaveLength(1);
+    // Coverings and colourings as the art library draws them; feathers on furred fliers.
+    expect(tagged(adult({ cover: 'armor' }), 'plate').length).toBeGreaterThan(0);
+    expect(tagged(adult({ coloring: 'warning' }), 'band').length).toBeGreaterThan(0);
+    expect(tagged(adult({ coloring: 'camo' }), 'camo').length).toBeGreaterThan(0);
+    expect(pieces(adult({ coloring: 'bright' }), 'frill')).toHaveLength(1);
+    expect(pieces(adult({ locomotion: 'fly' }), 'crest')).toHaveLength(1);
+    expect(pieces(adult({ locomotion: 'glide' }), 'flaps')).toHaveLength(1);
+    // Horns on large adult herbivores only.
+    expect(tagged(adult({ size: 3 }), 'horn').length).toBeGreaterThan(0);
+    expect(tagged(adult({ size: 1 }), 'horn')).toHaveLength(0);
+    expect(tagged({ look: look({ size: 3 }), juvenile: true }, 'horn')).toHaveLength(0);
   });
 
   it('colors by coloring class', () => {
     expect(palette(look({ coloring: 'warning' })).accent).toBe(0x1b1b1b);
     expect(palette(look({ coloring: 'bright' })).base).not.toBe(palette(look({ coloring: 'drab' })).base);
     expect(palette(look({ warm: false })).base).not.toBe(palette(look({ warm: true })).base);
+    // The sprite's body tone follows the class palette.
+    const body = (s: CreatureSpec) => draw(s).drawing.groups.find((g) => g.part === 'body')!.tones.base;
+    expect(body(adult({ coloring: 'warning' }))).not.toBe(body(adult()));
+  });
+
+  it('draws one outline width on screen at every size, bolder than the portrait relative to the creature', () => {
+    for (const size of [0, 1, 2, 3] as const) {
+      const sd = draw(adult({ size }));
+      expect(sd.outline * sd.k).toBeCloseTo(SPRITE_OUTLINE_PX);
+      // The portrait's 1.9 px outline on a ~250 px creature; here over a 1.15 px on a 15-40 px one.
+      const b = pixelBounds(sd);
+      expect(sd.outline * sd.k / (b.maxX - b.minX)).toBeGreaterThan(1.9 / 250);
+    }
   });
 });
 
@@ -129,9 +277,6 @@ function morphLooks(): Appearance[] {
 }
 
 describe('morphology', () => {
-  const differs = (a: Partial<Appearance>, b: Partial<Appearance>, body: Partial<Appearance> = {}) =>
-    JSON.stringify(creatureShapes(adult({ ...body, ...a }))) !== JSON.stringify(creatureShapes(adult({ ...body, ...b })));
-
   it('fills defaults for older servers and clamps values from the wire', () => {
     expect(morphOf(DEFAULT_LOOK)).toEqual({ eyes: 2, eyeSize: 1, eyeSet: 1, ears: 2, earShape: 'round', earSize: 1, legs: 4, tail: 'thin', tailSize: 1, snout: 1, fangs: 0 });
     expect(morphOf(look({ diet: 'carnivore' })).fangs).toBe(1);
@@ -142,46 +287,46 @@ describe('morphology', () => {
   });
 
   it('draws the number of legs and ears it is given', () => {
-    for (const legs of [0, 2, 4, 6, 8]) expect(parts(creatureShapes(adult({ legs })), 'leg')).toBe(legs);
-    // A pair shows its near ear.
-    for (const [ears, seen] of [[0, 0], [2, 1], [4, 2]]) expect(parts(creatureShapes(adult({ ears })), 'ear')).toBe(seen);
+    // Every leg is drawn (the far one of each pair behind, in the shadow ramp), and so is every ear.
+    for (const legs of [0, 2, 4, 6, 8]) expect(pieces(adult({ legs }), 'leg'), String(legs)).toHaveLength(legs);
+    for (const ears of [0, 2, 4]) expect(pieces(adult({ ears }), 'ear'), String(ears)).toHaveLength(ears);
     // Swimmers show fins, not legs.
-    expect(parts(creatureShapes(adult({ legs: 8, locomotion: 'swim' })), 'leg')).toBe(0);
+    expect(pieces(adult({ legs: 8, locomotion: 'swim' }), 'leg')).toHaveLength(0);
   });
 
   it('shows the near-side eyes: one per pair and the midline one', () => {
-    const seen = [1, 2, 3, 4, 5, 6].map((eyes) => parts(creatureShapes(adult({ eyes })), 'eye'));
-    expect(seen).toEqual([1, 1, 2, 2, 3, 3]);
+    expect([1, 2, 3, 4, 5, 6].map((eyes) => glints(adult({ eyes })).length)).toEqual([1, 1, 2, 2, 3, 3]);
     expect(differs({ eyes: 1 }, { eyes: 2 })).toBe(true);
     expect(differs({ eyes: 3 }, { eyes: 4 })).toBe(true);
     expect(differs({ eyes: 5 }, { eyes: 6 })).toBe(true);
-    const eye = (eye_size: 0 | 1 | 2) => creatureShapes(adult({ eye_size })).find((x) => x.part === 'eye') as { rx: number };
-    expect(eye(0).rx).toBeLessThan(eye(1).rx);
-    expect(eye(2).rx).toBeGreaterThan(eye(1).rx);
+    const eye = (eye_size: 0 | 1 | 2) => glints(adult({ eye_size }))[0].ry;
+    expect(eye(0)).toBeLessThan(eye(1));
+    expect(eye(2)).toBeGreaterThan(eye(1));
   });
 
   it('places eyes forward (near the snout, both visible) or on the side (high and back)', () => {
-    const eyes = (over: Partial<Appearance>) => creatureShapes(adult(over)).filter((x) => x.part === 'eye') as { x: number; y: number; rx: number }[];
+    expect(EYE_AZIMUTH[0]).toBeLessThan(35);
     for (const body of [{}, { diet: 'carnivore' as const }, { warm: false, cover: 'scales' as const }, { locomotion: 'swim' as const }]) {
       for (const n of [2, 3, 4, 5, 6]) {
         const tag = `${JSON.stringify(body)} ${n} eyes`;
-        const def = eyes({ ...body, eyes: n });
-        const fwd = eyes({ ...body, eyes: n, eye_azimuth: 0 });
-        const side = eyes({ ...body, eyes: n, eye_azimuth: 2 });
-        // Forward: the far eye shows too, ahead of the near one.
-        expect(fwd.length, tag).toBe(def.length + 1);
-        // (Drawn back to front: the far eye, then the near one over it.)
-        const [far, near] = fwd;
-        expect(near.x, tag).toBeGreaterThan(def[0].x);
-        expect(far.x, tag).toBeGreaterThan(near.x);
-        expect(far.rx, tag).toBeLessThan(near.rx);
-        // Side: the main eye sits higher and further back.
-        expect(side.length, tag).toBe(def.length);
-        expect(side[0].x, tag).toBeLessThan(def[0].x);
-        expect(side[0].y, tag).toBeLessThan(def[0].y);
+        const def = glints(adult({ ...body, eyes: n }));
+        // Forward: the far eye of the front pair shows too; side-set, the same eyes elsewhere.
+        expect(glints(adult({ ...body, eyes: n, eye_azimuth: 0 })).length, tag).toBe(def.length + 1);
+        expect(glints(adult({ ...body, eyes: n, eye_azimuth: 2 })).length, tag).toBe(def.length);
         expect(differs({ eyes: n, eye_azimuth: 0 }, { eyes: n }, body), tag).toBe(true);
         expect(differs({ eyes: n, eye_azimuth: 2 }, { eyes: n }, body), tag).toBe(true);
       }
+      // Two eyes: the far eye (drawn first) ahead of the near one; forward-set
+      // further forward than the default, side-set higher and further back.
+      const tag = JSON.stringify(body);
+      const [d] = glints(adult(body));
+      const [far, near] = glints(adult({ ...body, eye_azimuth: 0 }));
+      const [side] = glints(adult({ ...body, eye_azimuth: 2 }));
+      expect(far.x, tag).toBeGreaterThan(near.x);
+      expect(far.ry, tag).toBeLessThan(near.ry);
+      expect(near.x, tag).toBeGreaterThan(d.x);
+      expect(side.x, tag).toBeLessThan(d.x);
+      expect(side.y, tag).toBeLessThan(d.y);
     }
     // The default bucket as sent draws (and keys) as when absent; one eye has no placement.
     expect(differs({ eye_azimuth: 1 }, {})).toBe(false);
@@ -197,29 +342,30 @@ describe('morphology', () => {
   it('changes the drawing for every ear shape, tail shape and size bucket', () => {
     for (const a of EAR_SHAPES) for (const b of EAR_SHAPES) if (a !== b) expect(differs({ ear_shape: a }, { ear_shape: b }), `${a} ${b}`).toBe(true);
     for (const a of TAIL_LOOKS) for (const b of TAIL_LOOKS) if (a !== b) expect(differs({ tail: a }, { tail: b }), `${a} ${b}`).toBe(true);
-    expect(parts(creatureShapes(adult({ tail: 'none' })), 'tail')).toBe(0);
+    expect(pieces(adult({ tail: 'none' }), 'tail')).toHaveLength(0);
     for (const f of ['ear_size', 'tail_size', 'snout', 'eye_size', 'fangs'] as const) {
       expect(differs({ [f]: 0 }, { [f]: 1 }, { diet: 'carnivore' }), f).toBe(true);
       expect(differs({ [f]: 1 }, { [f]: 2 }, { diet: 'carnivore' }), f).toBe(true);
     }
     // Snouts grow longer, for every diet.
     for (const diet of ['herbivore', 'omnivore', 'carnivore'] as const) {
-      const reach = (snout: 0 | 1 | 2) => bounds(creatureShapes(adult({ diet, snout }))).maxX;
+      const reach = (snout: 0 | 1 | 2) => draw(adult({ diet, snout })).drawing.anchors.snoutTip[0];
       expect(reach(0), diet).toBeLessThan(reach(1));
       expect(reach(1), diet).toBeLessThan(reach(2));
     }
-    // Fangs: none, small, large (longer).
-    const fangDepth = (fangs: 0 | 1 | 2) =>
-      Math.max(...creatureShapes(adult({ fangs })).filter((x) => x.part === 'fang').flatMap((x) => (x.kind === 'poly' ? x.points.map((p) => p[1]) : [])));
-    expect(parts(creatureShapes(adult({ fangs: 0, diet: 'carnivore' })), 'fang')).toBe(0);
-    expect(parts(creatureShapes(adult({ fangs: 1 })), 'fang')).toBe(2);
-    expect(fangDepth(2)).toBeGreaterThan(fangDepth(1));
+    // Fangs (tusks on herbivores): none, small, large (longer).
+    expect(tagged(adult({ fangs: 0, diet: 'carnivore' }), 'fang')).toHaveLength(0);
+    expect(tagged(adult({ fangs: 1, diet: 'carnivore' }), 'fang')).toHaveLength(1);
+    expect(tagged(adult({ fangs: 1 }), 'tusk')).toHaveLength(1);
+    const fangTip = (fangs: 1 | 2) => draw(adult({ fangs, diet: 'carnivore' })).drawing.anchors.fangTip[1];
+    expect(fangTip(2)).toBeGreaterThan(fangTip(1));
   });
 
-  it('keeps round ears flush on cold-blooded and swimming bodies, as today, but shows other shapes', () => {
-    expect(parts(creatureShapes(adult({ warm: false })), 'ear')).toBe(0);
-    expect(parts(creatureShapes(adult({ locomotion: 'swim' })), 'ear')).toBe(0);
-    expect(parts(creatureShapes(adult({ warm: false, ear_shape: 'pointed' })), 'ear')).toBe(1);
+  it('keeps round ears flush on cold-blooded and swimming bodies, but shows other shapes', () => {
+    expect(pieces(adult({ warm: false }), 'ear')).toHaveLength(0);
+    expect(pieces(adult({ locomotion: 'swim' }), 'ear')).toHaveLength(0);
+    // At every size (no ear opening in their place).
+    for (const ear_size of [0, 1, 2] as const) expect(pieces(adult({ warm: false, ear_shape: 'pointed', ear_size }), 'ear'), String(ear_size)).toHaveLength(2);
   });
 
   it('gives one key per distinct drawing, and shares keys for what is not drawn', () => {
@@ -229,14 +375,16 @@ describe('morphology', () => {
       for (const juvenile of [false, true]) {
         const s = { look: l, juvenile };
         const key = creatureKey(s);
-        const drawn = JSON.stringify(creatureShapes(s));
-        expect(byKey.get(key) ?? drawn, key).toBe(drawn);
-        expect(byDrawing.get(drawn) ?? key, key).toBe(key);
-        byKey.set(key, drawn);
-        byDrawing.set(drawn, key);
+        const d = drawn(s);
+        expect(byKey.get(key) ?? d, key).toBe(d);
+        expect(byDrawing.get(d) ?? key, key).toBe(key);
+        byKey.set(key, d);
+        byDrawing.set(d, key);
       }
     }
     expect(creatureKey(adult({ locomotion: 'swim', legs: 8 }))).toBe(creatureKey(adult({ locomotion: 'swim', legs: 2 })));
+    // A swimmer's thin tail is its tail fin.
+    expect(creatureKey(adult({ locomotion: 'swim', tail: 'thin' }))).toBe(creatureKey(adult({ locomotion: 'swim', tail: 'fin' })));
     expect(creatureKey(adult({ ears: 0, ear_shape: 'fan', ear_size: 2 }))).toBe(creatureKey(adult({ ears: 0 })));
     expect(creatureKey(adult({ warm: false, ear_size: 2 }))).toBe(creatureKey(adult({ warm: false, ear_size: 0 })));
     expect(creatureKey(adult({ tail: 'none', tail_size: 2 }))).toBe(creatureKey(adult({ tail: 'none', tail_size: 0 })));
@@ -265,12 +413,12 @@ describe('morphology', () => {
     for (const l of morphLooks()) {
       for (const juvenile of [false, true]) {
         const s = { look: l, juvenile };
-        const shapes = creatureShapes(s);
-        const b = bounds(shapes);
-        const e = bodyExtent(s, shapes);
-        expect(Math.max(-b.minX, b.maxX, -b.minY, b.maxY), creatureKey(s)).toBeLessThanOrEqual(e);
+        const sd = draw(s);
+        const b = pixelBounds(sd);
+        expect(Math.max(-b.minX, b.maxX), creatureKey(s)).toBeLessThanOrEqual(sd.half.w);
+        expect(Math.max(-b.minY, b.maxY), creatureKey(s)).toBeLessThanOrEqual(sd.half.h);
         // Long features grow the frame a little at most.
-        expect(e, creatureKey(s)).toBeLessThanOrEqual(spriteExtent(s) * 1.5);
+        expect(Math.max(sd.half.w, sd.half.h), creatureKey(s)).toBeLessThanOrEqual(spriteExtent(s) * 1.6);
       }
     }
   });

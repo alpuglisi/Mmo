@@ -1,5 +1,7 @@
-// Renders the creature shapes of `creature.ts` into textures, once per
-// distinct drawing (`creatureKey`), in a bounded least-recently-used cache
+// Renders creature sprites into textures, once per distinct drawing
+// (`creatureKey`): the body from the creature art library (`spriteArt.ts`,
+// rasterised by `art/canvas.ts` onto a canvas texture, facing right), the
+// status overlays from the shapes of `creature.ts`; in a bounded least-recently-used cache
 // that never drops a texture on screen, and builds the per-organism marker from shared textures:
 // a soft contact shadow with a thin owner ring at the feet (tinted by owner),
 // the body (flipped to face its way), an optional status mark (a coral ring
@@ -7,8 +9,10 @@
 // One mark language, all at the feet (STYLE.md): nothing rings the body.
 // Hundreds of markers then cost a few sprites each and no per-frame drawing.
 
-import { Container, Graphics, Rectangle, Sprite, type Renderer, type Texture } from 'pixi.js';
-import { bodyExtent, bodyRadius, creatureKey, creatureShapes, hintShapes, spriteExtent, type CreatureSpec, type Hint, type Shape } from './creature';
+import { CanvasSource, Container, Graphics, Rectangle, Sprite, Texture, type Renderer } from 'pixi.js';
+import { paintDrawing, type Canvas2D } from '../art/canvas';
+import { bodyRadius, creatureKey, hintShapes, spriteExtent, type CreatureSpec, type Hint, type Shape } from './creature';
+import { spriteDrawing } from './spriteArt';
 import { TextureCache } from './textureCache';
 import { MARK } from './palette';
 
@@ -46,6 +50,25 @@ export function drawShapes(g: Graphics, shapes: Shape[]): Graphics {
     if (s.stroke !== undefined && (s.width ?? 1) > 0) g.stroke({ width: s.width ?? 1, color: s.stroke, join: 'round' });
   }
   return g;
+}
+
+const newCanvas = (): Canvas2D => document.createElement('canvas');
+
+/**
+ * Rasterise a creature's sprite drawing onto a canvas texture `resolution`
+ * times finer than a screen pixel at marker scale 1, the marker's centre in
+ * the middle (so the sprite's anchor 0.5 holds it and a flip mirrors in place).
+ */
+export function rasterBody(s: CreatureSpec, resolution: number): Texture {
+  const sd = spriteDrawing(s);
+  const source = new CanvasSource({ resource: newCanvas() as HTMLCanvasElement, width: sd.half.w * 2, height: sd.half.h * 2, resolution });
+  const canvas = source.resource as HTMLCanvasElement;
+  const ctx = canvas.getContext('2d')!;
+  const px = resolution * sd.k;
+  ctx.setTransform(px, 0, 0, px, canvas.width / 2, canvas.height / 2 + sd.ground * resolution);
+  paintDrawing(ctx, sd.drawing, { outline: sd.outline, rim: sd.rim, flatFar: true }, canvas.width, canvas.height, newCanvas);
+  source.update();
+  return new Texture({ source, label: `body:${creatureKey(s)}` });
 }
 
 /** The parts of one organism's marker; the textures are shared. */
@@ -98,11 +121,9 @@ export class CreatureSprites {
     return this.cache.get(key, () => this.generate(extent, draw));
   }
 
+  /** The body texture: the art library's sprite drawing, rasterised (facing right; a marker flips it). */
   body(s: CreatureSpec): Texture {
-    return this.cache.get(bodyKey(s), () => {
-      const shapes = creatureShapes(s);
-      return this.generate(bodyExtent(s, shapes), (g) => drawShapes(g, shapes));
-    });
+    return this.cache.get(bodyKey(s), () => rasterBody(s, this.resolution));
   }
 
   /**
