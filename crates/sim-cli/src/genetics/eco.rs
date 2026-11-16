@@ -44,6 +44,8 @@ pub struct EcoOpts {
     pub seeds: u64,
     pub sample_days: u32,
     pub seed: u64,
+    /// The carnivore-diet rules on (`Balance::carnivore_diet`).
+    pub meat: bool,
 }
 
 /// One lineage at one sample.
@@ -232,8 +234,8 @@ fn count_birth(c: &Genome, owner: PlayerId, m: &Genome, f: &Genome, b: &mut Birt
 fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
     let started = std::time::Instant::now();
     let seed = opts.seed + world;
-    let config =
-        WorldConfig { seed, width: opts.size, height: opts.size, balance: Balance::default(), ..Default::default() };
+    let balance = if opts.meat { Balance::default().carnivore_diet() } else { Balance::default() };
+    let config = WorldConfig { seed, width: opts.size, height: opts.size, balance, ..Default::default() };
     let mut w = presets::standard_world(config, 1);
     let tpd = w.config.ticks_per_day;
     let days = opts.days;
@@ -808,7 +810,7 @@ mod tests {
     /// reads without changing the world.
     #[test]
     fn short_world_invariants() {
-        let r = run(&EcoOpts { days: 30, years: 0, size: 48, seeds: 1, sample_days: 5, seed: 3 }, false);
+        let r = run(&EcoOpts { days: 30, years: 0, size: 48, seeds: 1, sample_days: 5, seed: 3, meat: false }, false);
         let failed: Vec<&Check> = r.checks.iter().filter(|c| c.verdict == Verdict::Fail).collect();
         assert!(failed.is_empty(), "{failed:?}");
         assert!(r.csv.lines().count() > 10);
@@ -819,7 +821,10 @@ mod tests {
     #[test]
     #[ignore]
     fn long_ecology_runs() {
-        let r = run(&EcoOpts { days: 12 * 120, years: 12, size: 96, seeds: 4, sample_days: 10, seed: 1 }, true);
+        let r = run(
+            &EcoOpts { days: 12 * 120, years: 12, size: 96, seeds: 4, sample_days: 10, seed: 1, meat: false },
+            true,
+        );
         let failed: Vec<&Check> = r.checks.iter().filter(|c| c.verdict == Verdict::Fail).collect();
         assert!(failed.is_empty(), "{failed:?}");
     }

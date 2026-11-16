@@ -11,7 +11,8 @@
 //! ticks with mean hunger and thirst, its deaths by sex, stage, cause and
 //! pregnancy, and the day each predator died out. The last lines pool
 //! deaths by cause and count the seeds each predator survived. `--off`
-//! runs `Balance::morphology_off()`. Read only: the diagnosis of
+//! runs `Balance::morphology_off()`, `--meat` the carnivore-diet rules
+//! (`Balance::carnivore_diet()`, off by default). Read only: the diagnosis of
 //! *Predators over the years* (README, Balance).
 
 use std::collections::BTreeMap;
@@ -38,6 +39,8 @@ fn main() {
             assert!(balance.set(n, v.parse().unwrap()), "unknown parameter {n}");
         } else if a == "--off" {
             balance = balance.morphology_off();
+        } else if a == "--meat" {
+            balance = balance.carnivore_diet();
         } else if a == "--every" {
             every = args.next().expect("--every DAYS").parse().unwrap();
         } else {
