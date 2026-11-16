@@ -37,8 +37,8 @@ serialized.
 
 ### Effect with the rules on
 
-`predlong 6 31 32 33 34 35 36 37 38 --meat` (niche designs, all rules on,
-96×96, 6 years):
+`predlong <years> <seeds> --meat` (niche designs, all rules on,
+96×96):
 
 | Run | Fox survived (viable) | Pack survived (viable) | Prey lost | Lowest prey |
 | --- | --- | --- | --- | --- |
@@ -52,9 +52,11 @@ draws switching from new random numbers, so every seed's run comes out
 different after it. The differences are one seed each way (on seeds 31–38
 the fox ends females-only on 34 and 35; on seeds 39–46 the pack hunters are
 lost on one more seed), with no consistent direction across the two sets.
-That is within the seed-to-seed spread. The acceptance is still met on the
-README's seeds (both predators viable on at least 6 of 8 seeds holds for
-the pack hunters; the fox now has 4 viable) and on fresh seeds. No prey
+That looks like the seed-to-seed spread, but on seeds 31–38 the README's
+long-run acceptance (both predators viable on 6 of 8 seeds, no prey lost)
+no longer holds for the fox: 4 viable of 8. It holds for the pack hunters,
+and the fox survives on 8 of 8 fresh seeds over 3 years. More seeds would
+be needed to tell whether the fixes cost the fox anything. No prey
 lineage is lost in any run. Final head counts (31–38, after): foxes 1–108,
 pack hunters 58–263.
 
