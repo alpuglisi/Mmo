@@ -1,14 +1,15 @@
 // The map and organisms, drawn with PixiJS.
 //
-// Two layers: the map (the tile grid from /api/terrain painted one pixel per
-// tile into a nearest-neighbor texture, one world unit per tile, plus
+// Two layers: the map (the tile grid from /api/terrain painted into soft,
+// textured ground by `terrainLayer.ts`, one world unit per tile, plus
 // overlays in world units) moves with the camera; the organism markers live
 // in screen space so they stay readable at any zoom (growing a little as you
 // zoom in). Each marker is a few sprites sharing textures cached per
-// appearance class (`sprites.ts`): owner ring, body, status ring, action
-// icon. Markers glide between server positions and the possessed organism
-// is predicted toward its order (`motion.ts`), so movement is continuous
-// rather than hopping at each `state`.
+// appearance class (`sprites.ts`): contact shadow and owner ring at the
+// feet, body, status mark, action icon (STYLE.md). Markers glide between
+// server positions and the possessed organism is predicted toward its order
+// (`motion.ts`), so movement is continuous rather than hopping at each
+// `state`.
 //
 // Vision cones (`visionCones.ts`): around the player's own selected
 // organism (else the possessed one), when the server sends its eyes and
@@ -25,14 +26,16 @@
 // rebuilt from the current state on restore, or on a new renderer if the
 // context does not come back within a few seconds.
 
-import { Application, BufferImageSource, Container, Graphics, Sprite, Texture, UPDATE_PRIORITY, type Renderer } from 'pixi.js';
+import { Application, Container, Graphics, Texture, UPDATE_PRIORITY, type Renderer } from 'pixi.js';
 import { actionHint, bodyRadius, creatureKey, markerScaleFor, NEAR_SCALE, specOf, type CreatureSpec, type Hint } from './creature';
-import { CreatureSprites, type MarkerParts } from './sprites';
+import { CreatureSprites, type MarkerParts, type StatusKind } from './sprites';
 import { ContextGuard, ErrorLog, type GuardState } from './renderGuard';
 import type { NearbyOrganism, OrgId, OwnOrganism, StateView } from '../protocol';
 import { OWN_COLOR, ownerColor } from './colors';
 import { groupColor, groupsOf, homeRangeGroup, type TerritoryDraft } from '../groups';
-import { paintTerrain, type TerrainGrid } from './terrain';
+import type { TerrainGrid } from './terrain';
+import { TerrainLayer, type TerrainStats } from './terrainLayer';
+import { MARK } from './palette';
 import { isOpenGround, newTrack, Predictor, RECONCILE_SNAP, RECONCILE_TAU_MS, retarget, smoothToward, TickClock, trackAt, type Point, type Track } from './motion';
 import { arcPoints, coneLayout, dotGrid, easeAngle, facingOf, hatchSegments, headingDeg, VISION_COLORS, wedgePolygon, type ConeLayout } from './visionCones';
 
@@ -75,7 +78,7 @@ interface MarkerLook {
   spec: CreatureSpec;
   own: boolean;
   tint: number;
-  status: number | null;
+  status: StatusKind | null;
   hint: Hint | null;
 }
 
@@ -127,8 +130,6 @@ const TOUCH_HIT_PX = 20;
 const LONG_PRESS_MS = 450;
 /** Movement (px) that turns a press into a drag. */
 const DRAG_PX = 6;
-/** Zoom (pixels per tile) from which tile edges are outlined. */
-const GRID_ZOOM = 18;
 /**
  * Time a frame may spend making marker textures (ms). Markers whose textures
  * are all cached are always shown; the rest wait for a later frame once this
@@ -152,7 +153,8 @@ export class WorldView {
     recreate: () => this.recreate(),
   }, { log: this.errors });
   private mapLayer = new Container();
-  private mapSprite = new Sprite();
+  /** The painted terrain (world units, under the overlay). */
+  readonly terrainLayer = new TerrainLayer();
   private overlay = new Graphics();
   private markerLayer = new Container();
   private markers = new Map<OrgId, Marker>();
@@ -171,9 +173,8 @@ export class WorldView {
   private far = false;
   /** Markers left for a later frame by the texture budget, in all. */
   private deferred = 0;
-  private texture: Texture | null = null;
-  private terrainBuf: Uint8Array | null = null;
-  private terrainSource: BufferImageSource | null = null;
+  /** Hour of the day (the map's light), from the state. */
+  private hour: number | null = null;
   /** The tile grid on screen (null until the first terrain arrives). */
   terrain: TerrainGrid | null = null;
   private worldW = 64;
@@ -198,7 +199,7 @@ export class WorldView {
 
   async init(parent: HTMLElement): Promise<void> {
     this.parent = parent;
-    this.mapLayer.addChild(this.mapSprite, this.overlay);
+    this.mapLayer.addChild(this.terrainLayer.root, this.overlay);
     await this.startApp(this.app);
     this.adopt(this.app);
   }
@@ -275,7 +276,7 @@ export class WorldView {
       for (const m of this.markers.values()) {
         if (!m.dirty || !m.look || m.own !== own) continue;
         const l = m.look;
-        if (made && performance.now() - start > TEXTURE_BUDGET_MS && !sprites.ready(l.spec, l.own, l.status !== null, l.hint)) {
+        if (made && performance.now() - start > TEXTURE_BUDGET_MS && !sprites.ready(l.spec, l.own, l.status, l.hint)) {
           this.deferred++;
           continue; // next frame
         }
@@ -313,8 +314,8 @@ export class WorldView {
   destroy(): void {
     this.guard.dispose();
     this.sprites?.destroy();
+    this.terrainLayer.destroy();
     this.app.destroy(true, { children: true, texture: true });
-    this.texture?.destroy(true);
   }
 
   setWorldSize(w: number, h: number): void {
@@ -323,30 +324,18 @@ export class WorldView {
   }
 
   /**
-   * Show a tile grid: one texture pixel per tile. A grid of the same size
-   * repaints the existing texture (the dynamic layers change every few
-   * seconds); a new size makes a new one.
+   * Show a tile grid. A grid of the same size (the dynamic layers change
+   * every few seconds) repaints what changed, progressively.
    */
   setTerrain(g: TerrainGrid): void {
     this.terrain = g;
     this.setWorldSize(g.width, g.height);
-    const n = g.width * g.height * 4;
-    const src = this.terrainSource;
-    if (src && this.terrainBuf && src.width === g.width && src.height === g.height) {
-      paintTerrain(g, this.terrainBuf);
-      src.update();
-      return;
-    }
-    const buf = new Uint8Array(n);
-    paintTerrain(g, buf);
-    const source = new BufferImageSource({ resource: buf, width: g.width, height: g.height, scaleMode: 'nearest' });
-    const tex = new Texture({ source });
-    this.mapSprite.texture = tex;
-    this.mapSprite.scale.set(1);
-    this.texture?.destroy(true);
-    this.texture = tex;
-    this.terrainBuf = buf;
-    this.terrainSource = source;
+    this.terrainLayer.setTerrain(g);
+  }
+
+  /** The painted map: sizes, detail level, chunks and paint timings (tests and debugging). */
+  terrainStats(): TerrainStats {
+    return this.terrainLayer.terrainStats();
   }
 
   setState(s: StateView): void {
@@ -367,7 +356,7 @@ export class WorldView {
     const possessed = s.organisms.find((o) => o.possessed);
     this.predictor.onState(possessed, now);
     if (!possessed) this.moveTarget = null;
-    this.mapSprite.tint = s.clock.daytime ? 0xffffff : 0x8a96b8;
+    this.hour = s.clock.hour;
   }
 
   /** Show a move order for the possessed organism (and predict the walk toward it), or clear it. */
@@ -480,8 +469,11 @@ export class WorldView {
     m.seen = true;
     m.own = own;
     const spec = specOf(o, this.far);
-    const status = own ? statusColor(o as OwnOrganism) : null;
-    const hint = actionHint(o.action);
+    const status = own ? statusOf(o as OwnOrganism) : null;
+    // Action icons only where they tell something: danger (fleeing, hunting)
+    // on anyone, the quieter ones (resting, courting) on your own.
+    const action = actionHint(o.action);
+    const hint = action === 'flee' || action === 'hunt' || own ? action : null;
     const tint = own ? OWN_COLOR : ownerColor((o as NearbyOrganism).owner);
     const key = `${creatureKey(spec)}|${tint}|${status ?? ''}|${hint ?? ''}|${own}`;
     if (key !== m.style) {
@@ -515,6 +507,8 @@ export class WorldView {
     const { width, height } = this.app.screen;
     this.mapLayer.scale.set(this.cam.zoom);
     this.mapLayer.position.set(width / 2 - this.cam.x * this.cam.zoom, height / 2 - this.cam.y * this.cam.zoom);
+    const tl = this.screenToWorld(0, 0), br = this.screenToWorld(width, height);
+    this.terrainLayer.update({ x0: tl.x, y0: tl.y, x1: br.x, y1: br.y }, this.cam.zoom * (this.app.renderer.resolution || 1), this.hour, dtMs);
     this.drawOverlay();
     this.markerLayer.sortableChildren = true;
     const sc = markerScaleFor(this.cam.zoom);
@@ -539,14 +533,21 @@ export class WorldView {
       root.scale.set(sc);
       const pad = 40 * sc;
       root.visible = p.x > -pad && p.y > -pad && p.x < width + pad && p.y < height + pad;
+      // Far away, only danger icons stay (the rest would be noise at that size).
+      m.parts.icon.visible = m.hint !== null && (!far || m.hint === 'flee');
     }
     this.highlight.clear();
     const sel = this.selected !== null ? this.markers.get(this.selected) : undefined;
     if (sel) {
+      // A white ellipse at the feet, a little wider than the owner ring,
+      // breathing slowly so it is found at a glance.
       const p = this.worldToScreen(sel.x, sel.y);
-      const r = Math.max(9, sel.r * 2.3 * sc);
-      this.highlight.circle(p.x, p.y, r).stroke({ width: 3.5, color: 0x0d1117, alpha: 0.6 });
-      this.highlight.circle(p.x, p.y, r).stroke({ width: 2, color: 0xffffff });
+      const pulse = 1 + 0.06 * Math.sin(now / 320);
+      const rx = Math.max(10, sel.r * 2.05 * sc) * pulse;
+      const ry = rx * 0.42;
+      const y = p.y + sel.r * 0.95 * sc;
+      this.highlight.ellipse(p.x, y, rx, ry).stroke({ width: 3.5, color: 0x0d1117, alpha: 0.45 });
+      this.highlight.ellipse(p.x, y, rx, ry).stroke({ width: 1.75, color: MARK.select, alpha: 0.95 });
     }
     this.drawVision(dtMs);
   }
@@ -617,22 +618,23 @@ export class WorldView {
     const g = this.overlay;
     const px = 1 / this.cam.zoom; // one screen pixel in world units
     g.clear();
-    if (this.cam.zoom >= GRID_ZOOM) {
-      // Tile edges over the visible part of the map.
-      const { width, height } = this.app.screen;
-      const a = this.screenToWorld(0, 0);
-      const b = this.screenToWorld(width, height);
-      const x0 = Math.max(0, Math.floor(a.x)), x1 = Math.min(this.worldW, Math.ceil(b.x));
-      const y0 = Math.max(0, Math.floor(a.y)), y1 = Math.min(this.worldH, Math.ceil(b.y));
-      for (let x = x0; x <= x1; x++) g.moveTo(x, y0).lineTo(x, y1);
-      for (let y = y0; y <= y1; y++) g.moveTo(x0, y).lineTo(x1, y);
-      g.stroke({ width: px, color: 0x000000, alpha: 0.12 });
-    }
-    g.rect(0, 0, this.worldW, this.worldH).stroke({ width: 2 * px, color: 0x30363d });
+    // The world's edge: a soft dark falloff outside it.
+    for (let k = 1; k <= 3; k++) g.rect(-k * 3 * px, -k * 3 * px, this.worldW + k * 6 * px, this.worldH + k * 6 * px).stroke({ width: 3 * px, color: 0x000000, alpha: 0.16 / k });
     const s = this.state;
     if (!s) return;
+    // The view window: corner brackets and a faint hairline, not a box.
     const v = s.view;
-    g.rect(v.x - v.radius, v.y - v.radius, v.radius * 2, v.radius * 2).stroke({ width: 1.5 * px, color: 0x58a6ff, alpha: 0.6 });
+    const vx0 = v.x - v.radius, vy0 = v.y - v.radius, vx1 = v.x + v.radius, vy1 = v.y + v.radius;
+    g.rect(vx0, vy0, vx1 - vx0, vy1 - vy0).stroke({ width: px, color: MARK.view, alpha: 0.14 });
+    const arm = Math.min(v.radius * 0.5, 18 * px);
+    for (const [cx, cy, sx, sy] of [[vx0, vy0, 1, 1], [vx1, vy0, -1, 1], [vx0, vy1, 1, -1], [vx1, vy1, -1, -1]]) {
+      g.moveTo(cx + sx * arm, cy).lineTo(cx, cy).lineTo(cx, cy + sy * arm);
+    }
+    g.stroke({ width: 3.5 * px, color: 0x0d1117, alpha: 0.35, cap: 'round', join: 'round' });
+    for (const [cx, cy, sx, sy] of [[vx0, vy0, 1, 1], [vx1, vy0, -1, 1], [vx0, vy1, 1, -1], [vx1, vy1, -1, -1]]) {
+      g.moveTo(cx + sx * arm, cy).lineTo(cx, cy).lineTo(cx, cy + sy * arm);
+    }
+    g.stroke({ width: 1.75 * px, color: MARK.view, alpha: 0.7, cap: 'round', join: 'round' });
     // Each group's territory (a tinted disc, the picked group's outline
     // bolder) and migration target (a cross in a ring; pink for a lone group).
     const groups = groupsOf(s);
@@ -869,23 +871,25 @@ function drawCones(g: Graphics, cx: number, cy: number, r: number, l: ConeLayout
   return { hatch, dots };
 }
 
-function statusColor(o: OwnOrganism): number | null {
-  return o.possessed ? 0xff7b72 : o.pregnant ? 0x7ee787 : null;
+function statusOf(o: OwnOrganism): StatusKind | null {
+  return o.possessed ? 'possessed' : o.pregnant ? 'pregnant' : null;
 }
 
-function applyMarker(sprites: CreatureSprites, parts: MarkerParts, spec: CreatureSpec, own: boolean, tint: number, status: number | null, hint: Hint | null): void {
+function applyMarker(sprites: CreatureSprites, parts: MarkerParts, spec: CreatureSpec, own: boolean, tint: number, status: StatusKind | null, hint: Hint | null): void {
   parts.ring.texture = sprites.ownerRing(spec, own);
   parts.ring.tint = tint;
   parts.body.texture = sprites.body(spec);
   parts.status.visible = status !== null;
   if (status !== null) {
-    parts.status.texture = sprites.statusRing(spec);
-    parts.status.tint = status;
+    parts.status.texture = sprites.statusMark(spec, status);
+    parts.status.tint = status === 'possessed' ? MARK.possessed : MARK.pregnant;
   }
   parts.icon.visible = hint !== null;
   if (hint !== null) {
     parts.icon.texture = sprites.hint(hint);
     const r = bodyRadius(spec);
-    parts.icon.position.set(r * 1.2, -r * 1.9 - 4);
+    // Small, just above the head on the facing side.
+    parts.icon.scale.set(0.8);
+    parts.icon.position.set(r * 1.1, -r * 1.75 - 3);
   }
 }

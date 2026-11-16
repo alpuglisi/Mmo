@@ -2146,18 +2146,39 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   `point_cost` and `validate` (same checks and error codes), so an invalid
   design can't be submitted; server errors (`over_budget` with its numbers,
   `already_founded`, …) are shown as returned.
-- **World** (`ui/game.ts`, `world/worldView.ts`, `world/terrain.ts`): the
-  tile map from `GET /api/terrain`, painted one pixel per tile into an RGBA
-  buffer shown as a nearest-filtered texture (one world unit per tile, tile
-  edges outlined from 18 px per tile, dimmed at night). The dynamic layers
-  are refetched every 4 s from `GET /api/terrain/dynamic` and repaint the
-  same texture. Colors: biome, darkened where grazed out; grass, forest,
+- **World** (`ui/game.ts`, `world/worldView.ts`, `world/terrain.ts`,
+  `world/terrainArt.ts`, `world/terrainLayer.ts`; the look is written down
+  in `client/src/world/STYLE.md`): the tile map from `GET /api/terrain`,
+  painted procedurally (no image assets) into soft, textured ground: the
+  per-tile colours are blended bilinearly at a slightly noise-warped
+  position, so biome edges and shorelines curve instead of following the
+  grid; lakes come from a blurred water mask (rounded shores with a foam line,
+  shallows lighter, depth darker, the bank's shadow on the water), rivers
+  from a sharp channel mask linked across diagonal steps; grass and sand get
+  grain, forests embossed crowns, mountains ridged relief, deserts wind
+  ripples, ice cracks and snow drifts, all lit from the top-left. A base
+  texture of the whole map (4 texels per tile up to a 2048 side) is painted
+  once at load; over it, 16×16-tile chunks at 8 or 16 texels per tile (by
+  device pixels per tile) are painted for the part on screen, a few rows
+  per frame within a 3 ms budget, nearest the center first, kept in a
+  24 MB LRU cache and repainted only when their tiles change (the base shows
+  until a chunk is ready). The light of the hour tints the map (moonlit blue
+  at night, rose at dawn, amber at dusk). The dynamic layers
+  are refetched every 4 s from `GET /api/terrain/dynamic`; the base repaints
+  progressively and the chunks whose tiles changed repaint. Colors: biome, darkened where grazed out; grass, forest,
   marsh and tundra tinted by season (fresh spring green, summer yellow-green,
   autumn brown, dull winter); land in drought yellows toward straw; lakes
   darken with depth, rivers are bright blue (a dry bed is sand, a dried marsh
   or lake shore cracked mud); flooded land is muddy blue; ice is pale blue;
-  snow blends to white; hill shading from the north-west. A legend over the
-  map gives the drought, flood, snow and ice shares. Organisms from `state`
+  snow blends to white; hill shading from the north-west. The legend (a
+  card over the map, toggled by the toolbar's **Legend** button, open by
+  default on wide screens and closed on phones, the choice remembered) gives
+  the drought, flood, snow and ice shares and keys the markers. Markers:
+  a soft contact shadow and a thin owner ring at the feet (yellow for yours),
+  a coral second ring when possessed, a green pip when pregnant, a white
+  breathing ellipse for the selection; action icons show fleeing and hunting
+  on anyone, resting and courting on yours only, and zoomed far out only
+  fleeing. The view window is drawn as corner brackets. Organisms from `state`
   are drawn as **creature sprites by body plan** (`world/creature.ts`,
   `world/sprites.ts`) from the server's `look`: body radius by size class
   (juveniles at 65 % with a bigger head); herbivores a round muzzle (horns
@@ -2218,9 +2239,11 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   only what the protocol reveals, plus the body plan in words. **Possess** /
   **Release** (or hold the mouse / long-press on one of yours); while
   possessing, clicking empty map sends `order_move` (target line drawn).
-  **Migrate…** then a click sends the group command; **Pin view here** sends
+  The toolbar groups its tools (camera: Follow, zoom; group commands;
+  view window; Legend), icons with labels.
+  **Migrate…** then a click sends the group command; **Pin view** sends
   `set_view` at the camera center. Group commands: the toolbar's group
-  menu picks which group **Migrate…**, **Clear migration**, **Territory…**,
+  menu picks which group **Migrate…**, **Clear** (the migration), **Territory…**,
   **Rally…** and **Split** act on ("All" reaches every group; the territory,
   rally and split tools want one group, the only one if there is just one).
   **Rally…** (toolbar or a group's card) is one tap on the map, which sends
@@ -2234,7 +2257,7 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   inspector names an organism's group. Each group's card says how it heeds
   orders, from its mean obedience gene ("headstrong" up to 0.35,
   "obedient" from 0.65, "heeds orders" between). On phones the same tools sit in the
-  scrolling toolbar and both taps work by touch. The logic (names, colors,
+  toolbar's **Tools** menu and both taps work by touch. The logic (names, colors,
   the menu, the two-tap draw, the commands sent) is in `groups.ts`.
 - **Matings** tab: request a directed mating (one of your adults, a partner
   id filled from the inspector's "Request mating…", optional price in renown,
@@ -2418,8 +2441,9 @@ it. Tap an organism to select it; a floating **Possess #id / Release #id**
 button appears for your own, and a long press (450 ms held still, or the browser's own long-press gesture) on one of
 yours possesses it directly. One-finger drag pans, two-finger pinch zooms
 about the fingers' midpoint (and pans with it). The top bar shrinks to the
-clock, connection and log out; the toolbar scrolls sideways; the legends
-hide behind a **Legend** button; only the two newest toasts show.
+clock, connection and log out; the toolbar keeps the camera buttons (icons)
+and folds the group commands and **Pin view** into a **Tools** menu; the
+legend starts hidden behind the **Legend** button; only the two newest toasts show.
 
 **Mobile apps (Capacitor).** `capacitor.config.ts` wraps `dist/` as
 `org.evolutionmmo.client`; the native projects are generated locally and
@@ -2762,7 +2786,7 @@ it; a touch tap selects an own organism and shows the floating button,
 which possesses; a long press (DevTools touch events) possesses; a
 one-finger drag pans and stops following; a pinch out zooms in at least 2×
 and a pinch in zooms back out; the inspector shows in the sheet; the legend
-toggles; **Split** in the scrolling toolbar makes a second group and two
+starts closed and toggles; **Split** in the Tools menu makes a second group and two
 taps claim a territory for it, with no sideways scroll. Then a 1280×800 desktop: sidebar on the right with tabs on top,
 phone controls hidden, sprite cache stats (textures shared per class), and
 a gallery of 20 body plans drawn with the game's sprite code, then a

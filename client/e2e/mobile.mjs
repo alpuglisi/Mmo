@@ -449,17 +449,22 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   await page.waitForTimeout(300);
   await shot(page, `${tag}-sheet-organism.png`);
   await page.tap('#tab-organism');
+  // The legend starts collapsed on phones; the toolbar button opens it.
+  if (await page.evaluate(() => getComputedStyle(document.querySelector('.legends')).display !== 'none')) throw new Error(`${tag}: the legend is open by default`);
   await page.tap('#legend-toggle');
   await waitFor('legend', () => page.evaluate(() => getComputedStyle(document.querySelector('.legends')).display !== 'none'), 15000);
   await shot(page, `${tag}-legend.png`);
   step(`${tag}: inspector in the sheet; legend toggle`);
 
-  // Group tools in the scrolling toolbar: split, then claim a territory for
+  // Group tools in the toolbar's Tools menu: split, then claim a territory for
   // the new group with two taps on the map.
   await page.tap('#legend-toggle');
+  // (On phones the group commands are in the Tools menu.)
+  await page.tap('#tools-more');
   await page.tap('#split-group');
   await waitFor('two groups', () => page.evaluate(() => window.evo.model.state.groups?.length === 2
     && document.querySelector('#group-select').value !== 'all'), 15000);
+  await page.tap('#tools-more');
   await page.tap('#territory');
   const c = await box(page, '#world-canvas');
   const zoom = await page.evaluate(() => window.evo.screen().view.cam.zoom);
