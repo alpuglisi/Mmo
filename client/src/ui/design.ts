@@ -10,7 +10,7 @@
 
 import { api, ApiError } from '../api';
 import { designCost, validateDesign } from '../cost';
-import { applyMorphology, applyTrait, designPayload, newEditorDesign } from '../designMorph';
+import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign } from '../designMorph';
 import { defaultMorphology, sameMorphology, type Morphology } from '../morphology';
 import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, ThermoSpec } from '../protocol';
 import { avatarView } from './avatarView';
@@ -204,7 +204,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     for (const b of modeBtns) b.setAttribute('aria-pressed', String(b.dataset.mode === m));
     if (m === 'builder') {
       if (!builder) {
-        builder = createBodyBuilder({ value: spec.morphology, onChange: onBuilderChange, confirmPreset, idPrefix: 'design-bb' });
+        builder = createBodyBuilder({ value: spec.morphology, onChange: onBuilderChange, confirmPreset, idPrefix: 'design-bb', prices: morphPrices(cat) });
         builderHost.appendChild(builder.el);
       } else syncBuilder();
       builderHost.hidden = false;
@@ -253,7 +253,11 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     const frac = c.total / cat.budget;
     bar.style.width = `${Math.min(100, frac * 100)}%`;
     bar.classList.toggle('over', frac > 1 + 1e-5);
-    breakdown.textContent = `traits ${c.traits.toFixed(1)} · offspring ${c.litter.toFixed(1)} · extra founders ${c.founders.toFixed(1)}`;
+    const extras = [
+      c.morph > 0 ? `body plan ${c.morph.toFixed(1)}` : '',
+      c.body > 0 ? `cold blood / small body ${c.body.toFixed(1)}` : '',
+    ].filter(Boolean);
+    breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, `extra founders ${c.founders.toFixed(1)}`, ...extras].join(' · ');
     for (const [g, cell] of costCells) {
       const p = c.perGene[g];
       cell.textContent = p ? p.toFixed(1) : '';

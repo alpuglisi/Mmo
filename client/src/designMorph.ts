@@ -44,6 +44,18 @@ export function morphSupport(cat: Pick<GeneCatalog, 'morph'>): MorphInfo[] | nul
   return rows.filter((r) => r && typeof r.name === 'string');
 }
 
+/**
+ * The server's structure prices for the builder's add buttons: points per
+ * extra eye, leg pair and ear pair (the `morph` rows' costs; the design's
+ * total comes from `designCost`, which charges the same rows). Empty for a
+ * server without a `morph` section.
+ */
+export function morphPrices(cat: Pick<GeneCatalog, 'morph'>): { eye?: number; legPair?: number; earPair?: number } {
+  const rows = morphSupport(cat) ?? [];
+  const cost = (name: string) => rows.find((r) => r.name === name)?.cost;
+  return { eye: cost('eye_count'), legPair: cost('leg_count'), earPair: cost('ear_count') };
+}
+
 const sameValue = (a: unknown, b: unknown): boolean =>
   typeof a === 'number' && typeof b === 'number' ? Math.abs(a - b) < 1e-6 : a === b;
 

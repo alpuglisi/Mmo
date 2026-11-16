@@ -8,7 +8,10 @@
 //! The body plan's morphology (`docs/morphology-contract.md`) is an optional
 //! `morph` object beside `traits` ([`MorphSpec`]): every field optional,
 //! missing ones (or the whole object) take the contract defaults, so old
-//! clients and stored designs are unchanged. It costs no points yet.
+//! clients and stored designs are unchanged. Extra structures cost points
+//! (`design::morph_cost`: each eye beyond two, each leg pair beyond two, a
+//! second ear pair); shapes, placement and snout length are free. The
+//! catalog's `morph` rows carry those prices, so the client's budget matches.
 
 use std::collections::BTreeMap;
 
@@ -213,6 +216,10 @@ pub struct GeneCatalog {
     pub base_founders: u32,
     pub cost_per_extra_founder: f32,
     pub cost_per_extra_offspring: f32,
+    /// Points for a cold-blooded design.
+    pub cost_cold_blooded: f32,
+    /// Points per unit of `body_size` below its default.
+    pub cost_per_smaller_body: f32,
     pub max_litter: u32,
     pub genes: Vec<GeneInfo>,
     /// The morphology parameters a design's `morph` object sets.
@@ -236,7 +243,9 @@ pub struct MorphInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<f32>,
     pub default: serde_json::Value,
-    /// Points (0 for now: morphology isn't priced yet).
+    /// For a count: points per step above the default (one eye; a pair of
+    /// legs or ears, the count's step), nothing below it. Shapes and axes
+    /// are free trade-offs (0).
     pub cost: f32,
 }
 
@@ -257,7 +266,13 @@ fn morph_catalog() -> Vec<MorphInfo> {
                 _ => ((lo..=hi).filter(|&v| l.is_valid(v)).map(|v| json!(v)).collect(), json!(l.default_value())),
             };
             let kind = if l.is_shape() { "enum" } else { "count" };
-            MorphInfo { name: l.key().into(), kind: kind.into(), values, min: None, max: None, default, cost: 0.0 }
+            let cost = match l {
+                MorphLocus::EyeCount => design::COST_PER_EXTRA_EYE,
+                MorphLocus::LegCount => design::COST_PER_EXTRA_LEG_PAIR,
+                MorphLocus::EarCount => design::COST_PER_EXTRA_EAR_PAIR,
+                MorphLocus::EarShape | MorphLocus::TailShape => 0.0,
+            };
+            MorphInfo { name: l.key().into(), kind: kind.into(), values, min: None, max: None, default, cost }
         })
         .collect();
     for g in MorphGene::ALL {
@@ -280,6 +295,8 @@ pub fn catalog() -> GeneCatalog {
         base_founders: design::BASE_FOUNDERS,
         cost_per_extra_founder: design::COST_PER_EXTRA_FOUNDER,
         cost_per_extra_offspring: design::COST_PER_EXTRA_OFFSPRING,
+        cost_cold_blooded: design::COST_COLD_BLOODED,
+        cost_per_smaller_body: design::COST_PER_SMALLER_BODY,
         max_litter: design::MAX_LITTER,
         genes: Gene::ALL
             .iter()
@@ -327,7 +344,9 @@ mod tests {
         assert_eq!((d.morph.leg_count, d.morph.eye_count), (6, 2));
         assert_eq!(d.morph.ear_shape, EarShape::Pointed);
         assert_eq!(d.morph.tail_shape, TailShape::Prehensile);
-        assert_eq!(d.point_cost(), spec(&[]).to_design().unwrap().point_cost(), "morphology is free");
+        // One extra leg pair is charged; shapes and placement are free.
+        let base = spec(&[]).to_design().unwrap().point_cost();
+        assert!((d.point_cost() - base - design::COST_PER_EXTRA_LEG_PAIR).abs() < 1e-4);
         let back: DesignSpec = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
         // Out of range or unknown: bad_morph, naming the field.
@@ -361,23 +380,75 @@ mod tests {
         assert_eq!(c.morph[1].values, [0, 2, 4].map(|v| serde_json::json!(v)));
         assert_eq!(c.morph[4].default, serde_json::json!("thin"));
         assert_eq!(c.morph[5].max, Some(180.0));
-        assert!(c.morph.iter().all(|m| m.cost == 0.0));
-        // The exact wire form the client's feature detection reads (the rows
-        // of the client's designMorph tests).
-        let wire = serde_json::to_value(&c.morph).unwrap();
-        let client: serde_json::Value = serde_json::from_str(
-            r#"[
-            {"name":"eye_count","kind":"count","values":[1,2,3,4,5,6],"default":2,"cost":0.0},
-            {"name":"ear_count","kind":"count","values":[0,2,4],"default":2,"cost":0.0},
-            {"name":"ear_shape","kind":"enum","values":["round","pointed","long","fan"],"default":"round","cost":0.0},
-            {"name":"leg_count","kind":"count","values":[0,2,4,6,8],"default":4,"cost":0.0},
-            {"name":"tail_shape","kind":"enum","values":["thin","bushy","fin","club","prehensile"],"default":"thin","cost":0.0},
-            {"name":"eye_azimuth","kind":"axis","min":0.0,"max":180.0,"default":60.0,"cost":0.0},
-            {"name":"snout_length","kind":"axis","min":0.0,"max":1.0,"default":0.5,"cost":0.0}
-        ]"#,
-        )
-        .unwrap();
-        assert_eq!(wire, client);
+        // Counts carry the structure prices; shapes and axes are free.
+        let costs: Vec<f32> = c.morph.iter().map(|m| m.cost).collect();
+        assert_eq!(
+            costs,
+            [
+                design::COST_PER_EXTRA_EYE,
+                design::COST_PER_EXTRA_EAR_PAIR,
+                0.0,
+                design::COST_PER_EXTRA_LEG_PAIR,
+                0.0,
+                0.0,
+                0.0
+            ]
+        );
+        assert_eq!(c.cost_cold_blooded, design::COST_COLD_BLOODED);
+        assert_eq!(c.cost_per_smaller_body, design::COST_PER_SMALLER_BODY);
+    }
+
+    /// `client/src/cost.fixture.json`: the catalog and the server's cost of a
+    /// few designs (body plans, cold blood, small bodies), which the client's
+    /// `cost.test.ts` must reproduce with `designCost`. Rerun with
+    /// `UPDATE_COST_FIXTURE=1` after a price change.
+    #[test]
+    fn the_client_cost_fixture_is_current() {
+        let morph = |json: serde_json::Value| -> Option<MorphSpec> { Some(serde_json::from_value(json).unwrap()) };
+        let mut designs = Vec::new();
+        let mut add = |name: &str, thermo: ThermoSpec, traits: &[(&str, f32)], litter: u32, m: Option<MorphSpec>| {
+            let mut s = spec(traits);
+            s.name = name.into();
+            s.thermo = thermo;
+            s.litter_size = litter;
+            s.morph = m;
+            designs.push(s);
+        };
+        use serde_json::json;
+        add("Blank", ThermoSpec::Warm, &[], 1, None);
+        add("Six legs", ThermoSpec::Warm, &[("leg_length", 0.4)], 2, morph(json!({"leg_count": 6})));
+        add("Eight legs", ThermoSpec::Warm, &[], 2, morph(json!({"leg_count": 8})));
+        add("Midline eye", ThermoSpec::Warm, &[("large_eyes", 0.3)], 2, morph(json!({"eye_count": 3})));
+        add("Six eyes", ThermoSpec::Warm, &[], 2, morph(json!({"eye_count": 6, "eye_azimuth": 100.0})));
+        add("Four fan ears", ThermoSpec::Warm, &[], 2, morph(json!({"ear_count": 4, "ear_shape": "fan"})));
+        add(
+            "Fewer of all",
+            ThermoSpec::Warm,
+            &[],
+            2,
+            morph(json!({"eye_count": 1, "ear_count": 0, "leg_count": 0, "tail_shape": "club", "snout_length": 1.0})),
+        );
+        add(
+            "Cold small spider",
+            ThermoSpec::Cold,
+            &[("body_size", 0.1), ("toxins", 0.5)],
+            6,
+            morph(json!({"leg_count": 8, "eye_count": 4, "ear_count": 0})),
+        );
+        let rows: Vec<serde_json::Value> = designs
+            .iter()
+            .map(|s| {
+                let d = s.to_design().unwrap();
+                json!({ "spec": s, "cost": (d.point_cost() as f64 * 1e4).round() / 1e4 })
+            })
+            .collect();
+        let text = serde_json::to_string_pretty(&json!({ "catalog": catalog(), "designs": rows })).unwrap() + "\n";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../client/src/cost.fixture.json");
+        if std::env::var_os("UPDATE_COST_FIXTURE").is_some() {
+            std::fs::write(&path, &text).unwrap();
+        }
+        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(have == text, "{} is stale: rerun with UPDATE_COST_FIXTURE=1", path.display());
     }
 
     #[test]

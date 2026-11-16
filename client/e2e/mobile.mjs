@@ -232,7 +232,9 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
     await waitFor(`${tag}: three eyes in the header`, async () => (await header()).label.includes('three eyes'));
     const rd1 = await readout();
     if (rd1.text === rd0.text) throw new Error(`${tag}: readout did not change for a third eye (${rd1.text})`);
-    if ((await page.textContent('#budget-total')) !== cost0) throw new Error(`${tag}: a third eye changed the cost`);
+    const eyePrice = (await (await fetch(`${base}/api/genes`)).json()).morph.find((r) => r.name === 'eye_count').cost;
+    const cost1 = await page.textContent('#budget-total');
+    if (Math.abs(Number.parseFloat(cost1) - Number.parseFloat(cost0) - eyePrice) > 0.051) throw new Error(`${tag}: a third eye should cost ${eyePrice}: ${cost0} → ${cost1}`);
     const bfit = await page.evaluate(() => {
       const els = [...document.querySelectorAll('#design-builder *')].filter((e) => e.getClientRects().length);
       const rs = els.map((e) => e.getBoundingClientRect());
@@ -250,7 +252,7 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
     const eyeCaption = await page.textContent('#trait-large_eyes-caption');
     if (!eyeCaption.includes('three eyes')) throw new Error(`${tag}: Simple eye caption ${eyeCaption}`);
     if ((await page.evaluate(() => document.documentElement.scrollWidth)) > vw.width + 1) throw new Error(`${tag}: Simple mode overflows after the builder`);
-    step(`${tag}: builder fits the phone; third eye in header and readout (${rd1.text.trim()}), cost unchanged; Simple caption "${eyeCaption}"`);
+    step(`${tag}: builder fits the phone; third eye in header and readout (${rd1.text.trim()}), +${eyePrice} points; Simple caption "${eyeCaption}"`);
     // Back to the defaults this section was tuned with.
     await page.$eval('input[data-gene="fur"]', (el) => { el.value = '0'; el.dispatchEvent(new Event('input')); });
     await page.check('input[name="thermo"][value="warm"]');

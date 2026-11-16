@@ -205,9 +205,12 @@ async function main() {
     step(`avatar preview: described image above the budget, sticky, redraws (wings 0 → 0.6); ${labels.size} avatar screenshots`);
 
     // Simple / Builder: Simple by default; the builder edits the same design
-    // as the sliders, the avatar and the vision readout follow, a third eye is
-    // free, a preset's cost change is asked first, and Simple mode's sliders
-    // show what the builder set.
+    // as the sliders, the avatar and the vision readout follow, a third eye
+    // and a third leg pair cost the catalog's structure prices, a preset's
+    // cost change is asked first, and Simple mode's sliders show what the
+    // builder set.
+    const morphPrice = (n) => catalog.morph.find((r) => r.name === n).cost;
+    const points = (t) => Number.parseFloat(t);
     const readout = () => page.$eval('#vision-readout', (el) => Object.fromEntries([...el.querySelectorAll('[data-stat]')].map((s) => [s.dataset.stat, `${s.querySelector('dd').textContent} ${s.querySelector('.vision-delta').textContent}`])));
     const sliderVal = (g) => page.$eval(`input[data-gene="${g}"]`, (el) => Number(el.value));
     if ((await page.getAttribute('#design-mode-simple', 'aria-pressed')) !== 'true' || !(await page.isHidden('#design-builder'))) throw new Error('editor did not start in Simple mode');
@@ -229,7 +232,7 @@ async function main() {
     const costStrider = await page.textContent('#budget-total');
     if (costStrider === costBefore) throw new Error(`preset with longer legs did not change the cost (${costStrider})`);
     if ((await sliderVal('tail')) !== 0.4) throw new Error(`preset tail not on the slider: ${await sliderVal('tail')}`);
-    // A third eye: a new avatar and readout, the same cost.
+    // A third eye: a new avatar and readout, one eye's price more.
     const two = await avatar();
     const r1 = await readout();
     await page.click('#design-bb-eye-plus');
@@ -240,7 +243,14 @@ async function main() {
     if (JSON.stringify(r2) === JSON.stringify(r1)) throw new Error(`readout did not change for a third eye: ${JSON.stringify(r2)}`);
     if (!r2.depth.includes('↑')) throw new Error(`a midline eye should add depth vision: ${JSON.stringify(r2)}`);
     if ((await page.textContent('#design-bb-eye-count')) !== '3') throw new Error('builder eye count not 3');
-    if ((await page.textContent('#budget-total')) !== costStrider) throw new Error(`a third eye changed the cost: ${await page.textContent('#budget-total')} vs ${costStrider}`);
+    const costThree = await page.textContent('#budget-total');
+    if (Math.abs(points(costThree) - points(costStrider) - morphPrice('eye_count')) > 0.051) throw new Error(`a third eye should cost ${morphPrice('eye_count')}: ${costThree} vs ${costStrider}`);
+    // Six legs: one leg pair's price more.
+    await page.click('#design-builder [data-group="legs"][data-value="6"]');
+    await waitFor('six legs on the avatar', async () => (await avatar()).label.includes('six legs'));
+    const costSix = await page.textContent('#budget-total');
+    if (Math.abs(points(costSix) - points(costThree) - morphPrice('leg_count')) > 0.051) throw new Error(`six legs should cost ${morphPrice('leg_count')} more: ${costSix} vs ${costThree}`);
+    const bodyPlan = morphPrice('eye_count') + morphPrice('leg_count');
     if (!(await page.textContent('#trait-large_eyes-caption')).includes('three eyes')) throw new Error(`eye caption ignores the eye count: ${await page.textContent('#trait-large_eyes-caption')}`);
     await page.locator('.avatar-card').screenshot({ path: path.join(shots, 'avatar-builder-three-eyes.png') });
     await page.$eval('#design-builder', (el) => el.scrollIntoView({ block: 'start' }));
@@ -255,10 +265,11 @@ async function main() {
     if ((await sliderVal('tail')) !== 0.4 || (await sliderVal('leg_length')) !== 0.5) throw new Error('Simple sliders lost the builder values');
     if (!(await avatar()).label.includes('three eyes')) throw new Error('Simple mode avatar lost the third eye');
     await page.screenshot({ path: path.join(shots, 'editor-builder-back-to-simple.png') });
-    // Restore the checked design (the third eye stays: it is free).
+    // Restore the checked traits (the third eye and the six legs stay, at their price).
     for (const [g, v] of saved) await setTrait(g, Number(v));
-    if ((await page.textContent('#budget-total')) !== after) throw new Error(`design not restored after the builder: ${await page.textContent('#budget-total')} vs ${after}`);
-    step(`builder mode: preset cost ${costBefore.trim()} → ${costStrider.trim()} asked first; third eye free, avatar and readout (${r2.depth}) follow; sliders in step both ways`);
+    const restored = await page.textContent('#budget-total');
+    if (Math.abs(points(restored) - points(after) - bodyPlan) > 0.051) throw new Error(`design not restored after the builder: ${restored} vs ${after} + ${bodyPlan}`);
+    step(`builder mode: preset cost ${costBefore.trim()} → ${costStrider.trim()} asked first; third eye +${morphPrice('eye_count')}, six legs +${morphPrice('leg_count')}; avatar and readout (${r2.depth}) follow; sliders in step both ways`);
     await page.screenshot({ path: path.join(shots, 'design-editor.png') });
     await page.$eval('[data-trait="leg_length"]', (el) => el.scrollIntoView({ block: 'start' }));
     await page.screenshot({ path: path.join(shots, 'design-editor-traits.png') });
@@ -268,14 +279,14 @@ async function main() {
       page.click('#design-submit'),
     ]);
     const body = await founded.json();
-    if (founded.status() !== 201 || Math.abs(body.cost - expected) > 0.06) throw new Error(`founding: ${founded.status()} ${JSON.stringify(body)}`);
+    if (founded.status() !== 201 || Math.abs(body.cost - expected - bodyPlan) > 0.06) throw new Error(`founding: ${founded.status()} ${JSON.stringify(body)} (expected ${expected + bodyPlan})`);
     // The body plan goes as `morph` only to a server whose /api/genes lists it.
     const sent = founded.request().postDataJSON();
     if ('morphology' in sent) throw new Error('the editor-only morphology was sent');
     // This server takes it (the morphology section is part of /api/genes).
     if (!Array.isArray(catalog.morph) || !catalog.morph.length) throw new Error('the server does not advertise morph');
-    if (sent.morph?.eye_count !== 3) throw new Error(`server takes morph, but the design sent ${JSON.stringify(sent.morph)}`);
-    step(`founded lineage ${body.lineage} with ${body.founders.length} founders; server cost ${body.cost.toFixed(2)} matches the client`);
+    if (sent.morph?.eye_count !== 3 || sent.morph?.leg_count !== 6) throw new Error(`server takes morph, but the design sent ${JSON.stringify(sent.morph)}`);
+    step(`founded a three-eyed, six-legged lineage ${body.lineage} with ${body.founders.length} founders; server cost ${body.cost.toFixed(2)} matches the client`);
 
     // World view with organisms.
     await page.waitForSelector('#world-canvas', { timeout: 45000 });

@@ -1,0 +1,445 @@
+{
+  "catalog": {
+    "base_founders": 20,
+    "budget": 100.0,
+    "cost_cold_blooded": 20.0,
+    "cost_per_extra_founder": 0.699999988079071,
+    "cost_per_extra_offspring": 2.5,
+    "cost_per_smaller_body": 40.0,
+    "genes": [
+      {
+        "cost": 0.0,
+        "default": 0.30000001192092896,
+        "name": "body_size"
+      },
+      {
+        "cost": 7.0,
+        "default": 0.0,
+        "name": "muscle"
+      },
+      {
+        "cost": 2.0,
+        "default": 0.0,
+        "name": "fat_stores"
+      },
+      {
+        "cost": 25.0,
+        "default": 0.0,
+        "name": "leg_length"
+      },
+      {
+        "cost": 6.0,
+        "default": 0.0,
+        "name": "claws"
+      },
+      {
+        "cost": 16.0,
+        "default": 0.0,
+        "name": "hooves"
+      },
+      {
+        "cost": 6.0,
+        "default": 0.0,
+        "name": "foot_width"
+      },
+      {
+        "cost": 4.0,
+        "default": 0.0,
+        "name": "tail"
+      },
+      {
+        "cost": 6.0,
+        "default": 0.0,
+        "name": "swimming"
+      },
+      {
+        "cost": 24.0,
+        "default": 0.0,
+        "name": "wings"
+      },
+      {
+        "cost": 5.0,
+        "default": 0.0,
+        "name": "climbing"
+      },
+      {
+        "cost": 6.0,
+        "default": 0.0,
+        "name": "burrowing"
+      },
+      {
+        "cost": 3.0,
+        "default": 0.0,
+        "name": "fur"
+      },
+      {
+        "cost": 4.0,
+        "default": 0.0,
+        "name": "scales"
+      },
+      {
+        "cost": 2.0,
+        "default": 0.0,
+        "name": "armor_plates"
+      },
+      {
+        "cost": 7.0,
+        "default": 0.0,
+        "name": "fangs"
+      },
+      {
+        "cost": 4.0,
+        "default": 0.0,
+        "name": "large_eyes"
+      },
+      {
+        "cost": 4.0,
+        "default": 0.0,
+        "name": "large_ears"
+      },
+      {
+        "cost": 4.0,
+        "default": 0.0,
+        "name": "keen_nose"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.0,
+        "name": "carnivory"
+      },
+      {
+        "cost": 5.0,
+        "default": 0.0,
+        "name": "camouflage"
+      },
+      {
+        "cost": 18.0,
+        "default": 0.0,
+        "name": "toxins"
+      },
+      {
+        "cost": 5.0,
+        "default": 0.0,
+        "name": "coloration"
+      },
+      {
+        "cost": 5.0,
+        "default": 0.0,
+        "name": "vocal_ability"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "name": "boldness"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "name": "aggression"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "name": "wanderlust"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "name": "group_tolerance"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "name": "foraging_range"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "name": "pack_instinct"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "name": "pickiness"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.0,
+        "name": "preferred_coloration"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "name": "coloration_tolerance"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.0,
+        "name": "preferred_body_size"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "name": "body_size_tolerance"
+      },
+      {
+        "cost": 8.0,
+        "default": 0.0,
+        "name": "hibernation"
+      },
+      {
+        "cost": 6.0,
+        "default": 0.0,
+        "name": "brumation"
+      },
+      {
+        "cost": 8.0,
+        "default": 0.0,
+        "name": "migration"
+      },
+      {
+        "cost": 6.0,
+        "default": 0.0,
+        "name": "estivation"
+      },
+      {
+        "cost": 5.0,
+        "default": 0.0,
+        "name": "food_caching"
+      },
+      {
+        "cost": 4.0,
+        "default": 0.0,
+        "name": "torpor"
+      },
+      {
+        "cost": 4.0,
+        "default": 0.0,
+        "name": "vigilance"
+      },
+      {
+        "cost": 4.0,
+        "default": 0.0,
+        "name": "seasonal_coat"
+      },
+      {
+        "cost": 4.0,
+        "default": 0.0,
+        "name": "timed_breeding"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "name": "obedience"
+      }
+    ],
+    "max_litter": 12,
+    "morph": [
+      {
+        "cost": 1.0,
+        "default": 2,
+        "kind": "count",
+        "name": "eye_count",
+        "values": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ]
+      },
+      {
+        "cost": 2.0,
+        "default": 2,
+        "kind": "count",
+        "name": "ear_count",
+        "values": [
+          0,
+          2,
+          4
+        ]
+      },
+      {
+        "cost": 0.0,
+        "default": "round",
+        "kind": "enum",
+        "name": "ear_shape",
+        "values": [
+          "round",
+          "pointed",
+          "long",
+          "fan"
+        ]
+      },
+      {
+        "cost": 2.0,
+        "default": 4,
+        "kind": "count",
+        "name": "leg_count",
+        "values": [
+          0,
+          2,
+          4,
+          6,
+          8
+        ]
+      },
+      {
+        "cost": 0.0,
+        "default": "thin",
+        "kind": "enum",
+        "name": "tail_shape",
+        "values": [
+          "thin",
+          "bushy",
+          "fin",
+          "club",
+          "prehensile"
+        ]
+      },
+      {
+        "cost": 0.0,
+        "default": 60.0,
+        "kind": "axis",
+        "max": 180.0,
+        "min": 0.0,
+        "name": "eye_azimuth"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "kind": "axis",
+        "max": 1.0,
+        "min": 0.0,
+        "name": "snout_length"
+      }
+    ]
+  },
+  "designs": [
+    {
+      "cost": 0.0,
+      "spec": {
+        "birth": "live",
+        "founders": 20,
+        "litter_size": 1,
+        "name": "Blank",
+        "thermo": "warm",
+        "traits": {}
+      }
+    },
+    {
+      "cost": 14.5,
+      "spec": {
+        "birth": "live",
+        "founders": 20,
+        "litter_size": 2,
+        "morph": {
+          "leg_count": 6
+        },
+        "name": "Six legs",
+        "thermo": "warm",
+        "traits": {
+          "leg_length": 0.4000000059604645
+        }
+      }
+    },
+    {
+      "cost": 6.5,
+      "spec": {
+        "birth": "live",
+        "founders": 20,
+        "litter_size": 2,
+        "morph": {
+          "leg_count": 8
+        },
+        "name": "Eight legs",
+        "thermo": "warm",
+        "traits": {}
+      }
+    },
+    {
+      "cost": 4.7,
+      "spec": {
+        "birth": "live",
+        "founders": 20,
+        "litter_size": 2,
+        "morph": {
+          "eye_count": 3
+        },
+        "name": "Midline eye",
+        "thermo": "warm",
+        "traits": {
+          "large_eyes": 0.30000001192092896
+        }
+      }
+    },
+    {
+      "cost": 6.5,
+      "spec": {
+        "birth": "live",
+        "founders": 20,
+        "litter_size": 2,
+        "morph": {
+          "eye_azimuth": 100.0,
+          "eye_count": 6
+        },
+        "name": "Six eyes",
+        "thermo": "warm",
+        "traits": {}
+      }
+    },
+    {
+      "cost": 4.5,
+      "spec": {
+        "birth": "live",
+        "founders": 20,
+        "litter_size": 2,
+        "morph": {
+          "ear_count": 4,
+          "ear_shape": "fan"
+        },
+        "name": "Four fan ears",
+        "thermo": "warm",
+        "traits": {}
+      }
+    },
+    {
+      "cost": 2.5,
+      "spec": {
+        "birth": "live",
+        "founders": 20,
+        "litter_size": 2,
+        "morph": {
+          "ear_count": 0,
+          "eye_count": 1,
+          "leg_count": 0,
+          "snout_length": 1.0,
+          "tail_shape": "club"
+        },
+        "name": "Fewer of all",
+        "thermo": "warm",
+        "traits": {}
+      }
+    },
+    {
+      "cost": 55.5,
+      "spec": {
+        "birth": "live",
+        "founders": 20,
+        "litter_size": 6,
+        "morph": {
+          "ear_count": 0,
+          "eye_count": 4,
+          "leg_count": 8
+        },
+        "name": "Cold small spider",
+        "thermo": "cold",
+        "traits": {
+          "body_size": 0.10000000149011612,
+          "toxins": 0.5
+        }
+      }
+    }
+  ]
+}

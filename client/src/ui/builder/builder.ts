@@ -72,6 +72,16 @@ export interface BodyBuilderOptions {
   confirmPreset?: (preset: BuilderPreset, next: Morphology) => boolean | Promise<boolean>;
   /** Prefix for element ids, so two builders can share a page. Default `bb`. */
   idPrefix?: string;
+  /**
+   * Points per extra structure (the server catalog's `morph` costs), named
+   * on the add buttons. Absent or 0: nothing is said about points.
+   */
+  prices?: { eye?: number; legPair?: number; earPair?: number };
+}
+
+/** " (+3 points each beyond two)", or nothing for a free structure. */
+function priceNote(points: number | undefined, beyond: string): string {
+  return points && points > 0 ? ` (+${Number(points.toFixed(1))} points each beyond ${beyond})` : '';
 }
 
 export interface BodyBuilder {
@@ -217,6 +227,8 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
   topSvg.append(topDraw, topHandles);
 
   const eyeStep = stepper('eye', 'eyes', 'eye', () => addEyes(-1), () => addEyes(1));
+  const eyeNote = priceNote(opts.prices?.eye, 'two');
+  if (eyeNote) for (const a of ['title', 'aria-label']) eyeStep.plus.setAttribute(a, `Add eye${eyeNote}`);
   /** A readout: the value, and an arrow against the default body. `higherIsBetter` colours the arrow. */
   const stat = (key: string, title: string, hint: string, higherIsBetter: boolean) => {
     const v = h('dd', { id: `${p}-stat-${key}`, 'data-stat': key }, '');
@@ -249,6 +261,8 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
   sideSvg.append(sideDraw, sideHandles);
 
   const earStep = stepper('ear', 'ears', 'pair of ears', () => addEars(-1), () => addEars(1));
+  const earNote = priceNote(opts.prices?.earPair, 'one pair');
+  if (earNote) for (const a of ['title', 'aria-label']) earStep.plus.setAttribute(a, `Add pair of ears${earNote}`);
   const choice = (group: string, value: string, label: string, icon: SVGSVGElement | null, onPick: () => void) => {
     const b = h('button', { type: 'button', class: 'bb-choice', 'data-group': group, 'data-value': value, 'aria-pressed': 'false', title: label, 'aria-label': label });
     if (icon) b.appendChild(icon);
@@ -258,7 +272,10 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
   };
   const earShapeBtns = EAR_SHAPES.map((sh) => choice('ear-shape', sh, `${EAR_LABEL[sh]} ears`, earIcon(sh), () => commit({ ear_shape: sh }, { source: 'control', feature: 'ears', final: true })));
   const legBtns = LEG_COUNTS.map((n) => {
-    const b = choice('legs', String(n), `${n} legs`, null, () => commit({ leg_count: n }, { source: 'control', feature: 'legs', final: true }));
+    const extra = Math.max(0, n - 4) / 2;
+    const pts = (opts.prices?.legPair ?? 0) * extra;
+    const label = pts > 0 ? `${n} legs (+${Number(pts.toFixed(1))} points)` : `${n} legs`;
+    const b = choice('legs', String(n), label, null, () => commit({ leg_count: n }, { source: 'control', feature: 'legs', final: true }));
     b.textContent = String(n);
     return b;
   });
