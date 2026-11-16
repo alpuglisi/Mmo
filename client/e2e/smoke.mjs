@@ -293,7 +293,9 @@ async function main() {
     await waitFor('own organisms in state', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
     await waitFor('markers drawn', () => page.evaluate(() => {
       const v = window.evo.screen()?.view;
-      return v && v.markers.size > 0 && v.terrain && v.mapSprite.texture.width === v.terrain.width;
+      if (!v || v.markers.size === 0 || !v.terrain) return false;
+      const t = v.terrainStats();
+      return t.width === v.terrain.width && t.baseSize[0] === v.terrain.width * t.baseTpx;
     }));
     const counts = await page.evaluate(() => ({ own: window.evo.model.state.organisms.length, nearby: window.evo.model.state.nearby.length, markers: window.evo.screen().view.markers.size }));
     step(`world view: ${counts.own} own + ${counts.nearby} nearby organisms, ${counts.markers} markers`);
@@ -313,19 +315,23 @@ async function main() {
     if (!keys.far && !keys.keys.some((k) => /^[^-]*-3/.test(k))) throw new Error(`no three-eyed sprite among own markers: ${JSON.stringify(keys)}`);
     step(`the third eye shows: ${looks.length} own organisms look three-eyed${keys.far ? '' : `; sprite ${keys.keys[0]}`}`);
 
-    // Tile map: the terrain grid from /api/terrain, one texture pixel per tile.
+    // Tile map: the terrain grid from /api/terrain, painted (blended and
+    // textured) into a base texture of a few texels per tile, with detail
+    // chunks over the part on screen (STYLE.md).
     const tiles = await page.evaluate(() => {
       const v = window.evo.screen().view;
       const t = v.terrain;
-      const buf = v.terrainBuf;
+      const buf = v.terrainLayer.baseBuffer();
+      const st = v.terrainStats();
       const colors = new Set();
-      for (let i = 0; i < t.width * t.height; i++) colors.add((buf[i * 4] << 16) | (buf[i * 4 + 1] << 8) | buf[i * 4 + 2]);
-      return { w: t.width, h: t.height, tex: [v.mapSprite.texture.width, v.mapSprite.texture.height], biomes: new Set(t.biome).size, colors: colors.size, tick: t.tick };
+      for (let i = 0; i < buf.length; i += 4 * 7) colors.add((buf[i] << 16) | (buf[i + 1] << 8) | buf[i + 2]);
+      return { w: t.width, h: t.height, tpx: st.baseTpx, tex: st.baseSize, biomes: new Set(t.biome).size, colors: colors.size, tick: t.tick, baseMs: st.baseMs };
     });
-    if (tiles.w !== 64 || tiles.h !== 64 || tiles.tex[0] !== 64 || tiles.biomes < 3 || tiles.colors < 20) throw new Error(`tile map: ${JSON.stringify(tiles)}`);
+    if (tiles.w !== 64 || tiles.h !== 64 || tiles.tex[0] !== 64 * tiles.tpx || tiles.tpx < 2 || tiles.biomes < 3 || tiles.colors < 200) throw new Error(`tile map: ${JSON.stringify(tiles)}`);
     await waitFor('a dynamic terrain refresh', () => page.evaluate((t0) => window.evo.screen().view.terrain.tick > t0, tiles.tick), 30000);
     if (!(await page.textContent('#terrain-legend')).includes('drought')) throw new Error('no terrain legend');
-    step(`tile map: ${tiles.w}×${tiles.h} tiles, ${tiles.biomes} biomes, ${tiles.colors} tile colors; dynamic layers refreshed`);
+    const detail = await waitFor('detail chunks on screen', () => page.evaluate(() => { const t = window.evo.screen().view.terrainStats(); return t.detail === 0 || t.shown > 0 ? t : null; }), 20000);
+    step(`tile map: ${tiles.w}×${tiles.h} tiles, ${tiles.biomes} biomes, painted at ${tiles.tpx} texels/tile (${tiles.colors} colors sampled, ${tiles.baseMs.toFixed(1)} ms); detail ${detail.detail} texels/tile, ${detail.shown} chunks shown, slowest frame's painting ${detail.maxFrameMs.toFixed(1)} ms; dynamic layers refreshed`);
     await page.waitForFunction(() => document.querySelector('#conn-state')?.textContent === 'connected');
 
     // Record command results.

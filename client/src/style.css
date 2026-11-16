@@ -157,26 +157,64 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .stage-wrap { position: relative; flex: 1; min-width: 0; }
 .stage { position: absolute; inset: 0; }
 .stage canvas { display: block; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
-.toolbar { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
-.tool { background: rgba(22, 27, 34, 0.88); border-color: var(--border); color: var(--text); padding: 0.3em 0.7em; }
-.tool.active { background: var(--accent); }
-.group-select { padding: 0.3em 0.4em; max-width: 13em; }
+/* Map toolbar: groups of joined buttons on a frosted strip (STYLE.md: overlays). */
+.toolbar { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-start; pointer-events: none; z-index: 3; }
+.toolbar > *, .tools-menu > * { pointer-events: auto; }
+.tools-menu { display: contents; }
+.tool-group { display: inline-flex; border-radius: 8px; background: rgba(13, 17, 23, 0.72); box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 2px 8px rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.tool { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 0; border-radius: 0; color: #c9d1d9; padding: 0.38em 0.7em; white-space: nowrap; font-size: 13px; }
+.tool:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); filter: none; }
+.tool-group > .tool + .tool, .tool-group > .tool + select, .tool-group > select + .tool { border-left: 1px solid rgba(255, 255, 255, 0.07); }
+.tool-group > :first-child { border-radius: 8px 0 0 8px; }
+.tool-group > :last-child { border-radius: 0 8px 8px 0; }
+.tool-group > :only-child { border-radius: 8px; }
+.toolbar > .tool { border-radius: 8px; background: rgba(13, 17, 23, 0.72); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35); }
+.tool .icon { width: 16px; height: 16px; flex-shrink: 0; opacity: 0.9; }
+.tool.icon-only { padding-left: 0.55em; padding-right: 0.55em; }
+.tool.icon-only .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.tool.active, .toolbar > .tool.active { background: rgba(47, 129, 247, 0.85); color: #fff; }
+.group-select { width: auto; background: transparent; border: 0; color: #c9d1d9; padding: 0.38em 0.5em; max-width: 9em; font-size: 13px; }
+.group-select option { background: var(--panel); }
+#legend-toggle { margin-left: auto; }
 .group-card { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; }
 .group-card.chosen { border-color: var(--accent); }
 .home-badge { font-size: 0.75em; padding: 0 6px; border-radius: 8px; border: 1px solid #e3b341; color: #e3b341; margin-left: 4px; white-space: nowrap; }
 .group-card .home-range { margin: 2px 0 4px; }
-.legend .dot.home-ring { border-color: #e3b341; border-style: double; border-width: 3px; }
+.legend .key.home-ring { --c: #e3b341; border-style: double; border-width: 3px; }
 .group-actions { margin-top: 4px; gap: 4px; }
 .group-actions button { padding: 0.2em 0.6em; }
-.hint { position: absolute; bottom: 10px; left: 10px; background: rgba(13, 17, 23, 0.8); padding: 4px 10px; border-radius: 6px; color: var(--muted); pointer-events: none; }
-/* Both legends stack in one bottom-right column, so neither covers the other when they wrap. */
-.legends { position: absolute; bottom: 10px; right: 10px; max-width: 60%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; pointer-events: none; }
-.legend { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;
-  background: rgba(13, 17, 23, 0.8); padding: 4px 10px; border-radius: 6px; color: var(--muted); font-size: 12px; }
+.hint { position: absolute; bottom: 10px; left: 10px; max-width: calc(100% - 300px); background: rgba(13, 17, 23, 0.72); padding: 4px 10px; border-radius: 8px; color: var(--muted); pointer-events: none; font-size: 12.5px;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+/* The legend: one collapsible card (the Legend button), terrain then creatures then map marks. */
+.legends { position: absolute; bottom: 10px; right: 10px; width: 264px; display: none; flex-direction: column; gap: 0; pointer-events: none;
+  background: rgba(13, 17, 23, 0.78); border-radius: 10px; padding: 8px 12px 9px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.stage-wrap.show-legend .legends { display: flex; }
+.legend { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; color: #b1bac4; font-size: 11.5px; }
+.legend h4 { grid-column: 1 / -1; margin: 6px 0 1px; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.legend h4 .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.terrain-legend h4 { margin-top: 0; }
+.key-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.key-item.wide { grid-column: 1 / -1; white-space: normal; }
+.key { display: inline-block; flex-shrink: 0; width: 14px; height: 10px; position: relative; }
+.key.chip { width: 11px; height: 11px; border-radius: 3px; background: var(--c); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18) inset; }
+.key.foot { height: 7px; border-radius: 50%; border: 1.5px solid var(--c); background: rgba(0, 0, 0, 0.35); margin-top: 3px; }
+.key.foot.faint { opacity: 0.7; }
+.key.foot.double { box-shadow: 0 0 0 1.5px rgba(13, 17, 23, 0.9), 0 0 0 3px var(--c); width: 11px; height: 5px; margin: 3px 1.5px 0; }
+.key.pip { width: 7px; height: 7px; border-radius: 50%; background: var(--c); border: 1px solid #15181c; margin: 0 3.5px; }
+.key.ring { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--c); margin: 0 1.5px; }
+.key.disc { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--c); background: color-mix(in srgb, var(--c) 25%, transparent); margin: 0 1.5px; }
+.key.brackets { width: 12px; height: 12px; margin: 0 1px;
+  background: linear-gradient(#e6edf3, #e6edf3) 0 0 / 5px 1.5px, linear-gradient(#e6edf3, #e6edf3) 0 0 / 1.5px 5px,
+    linear-gradient(#e6edf3, #e6edf3) 100% 0 / 5px 1.5px, linear-gradient(#e6edf3, #e6edf3) 100% 0 / 1.5px 5px,
+    linear-gradient(#e6edf3, #e6edf3) 0 100% / 5px 1.5px, linear-gradient(#e6edf3, #e6edf3) 0 100% / 1.5px 5px,
+    linear-gradient(#e6edf3, #e6edf3) 100% 100% / 5px 1.5px, linear-gradient(#e6edf3, #e6edf3) 100% 100% / 1.5px 5px;
+  background-repeat: no-repeat; opacity: 0.8; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .dot.ring { background: none; border: 2px solid; }
 .dot.square { background: none; border: 1.5px solid; border-radius: 1px; }
-.toasts { position: absolute; top: 52px; left: 10px; display: flex; flex-direction: column; gap: 6px; max-width: min(460px, 80%); pointer-events: none; }
+.toasts { position: absolute; top: 56px; left: 10px; display: flex; flex-direction: column; gap: 6px; max-width: min(460px, 80%); pointer-events: none; }
 .toast { padding: 6px 10px; border-radius: 6px; background: rgba(22, 27, 34, 0.94); border-left: 3px solid var(--accent); }
 .toast.error { border-left-color: var(--bad); }
 
@@ -272,18 +310,30 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .game-body { position: relative; flex-direction: column; }
   .stage-wrap { position: absolute; inset: 0 0 var(--tabbar-h, 50px) 0; }
   .narrow-only { display: inline-block; }
-  .toolbar { right: 8px; left: 8px; top: 8px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  .toolbar::-webkit-scrollbar { display: none; }
-  .tool { flex-shrink: 0; min-height: 38px; min-width: 38px; }
-  .group-select { max-width: 9.5em; }
+  /* The toolbar: camera group, Tools (the group commands and the view
+     window fold into its menu) and Legend; icons only but in the menu. */
+  .toolbar { right: 8px; left: 8px; top: 8px; flex-wrap: nowrap; gap: 6px; }
+  .tool { flex-shrink: 0; min-height: 40px; min-width: 40px; justify-content: center; }
+  .toolbar > .tool-group .tool-label, #legend-toggle .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .tool .icon { width: 18px; height: 18px; }
+  .tools-menu { display: none; position: absolute; top: 48px; left: 0; min-width: 220px; max-width: calc(100% - 0px); flex-direction: column; gap: 6px;
+    background: rgba(13, 17, 23, 0.92); border-radius: 12px; padding: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); z-index: 4;
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+  .toolbar.more-open .tools-menu { display: flex; }
+  .tools-menu .tool-group { flex-direction: column; background: none; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .tools-menu .tool-group + .tool-group { border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 6px; }
+  .tools-menu .tool { justify-content: flex-start; border-radius: 8px !important; border-left: 0 !important; font-size: 15px; gap: 10px; }
+  .tools-menu .group-select { max-width: none; width: 100%; min-height: 40px; border-radius: 8px !important; background: rgba(255, 255, 255, 0.06); margin-bottom: 2px; }
+  #tools-more { display: inline-flex; gap: 6px; padding: 0 12px; }
+  #tools-more .tool-label { position: static; width: auto; height: auto; clip: auto; }
   .group-actions button { min-height: 36px; }
   .hint { left: 8px; right: 8px; bottom: 8px; font-size: 12px; }
   .fab { display: block; bottom: 48px; }
   .fab[hidden] { display: none; }
-  .legends { display: none; max-width: none; left: 8px; right: 8px; top: 56px; bottom: auto; align-items: stretch; }
-  .legend { justify-content: flex-start; }
-  .stage-wrap.show-legend .legends { display: flex; }
-  .toasts { top: 56px; left: 8px; right: 8px; max-width: none; }
+  .legends { width: auto; left: 8px; right: 8px; top: 56px; bottom: auto; }
+  .stage-wrap.show-legend .toasts { display: none; } /* the open legend takes their place */
+  .hint { max-width: none; }
+  .toasts { top: 58px; left: 8px; right: 8px; max-width: none; }
   .toast { font-size: 12px; padding: 4px 8px; }
   .toast:nth-last-child(n+3) { display: none; } /* the two newest only: keep the map visible */
 

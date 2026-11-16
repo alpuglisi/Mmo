@@ -2,11 +2,13 @@
 // refreshed from `GET /api/terrain/dynamic`) and its colors.
 //
 // Each layer arrives as base64, one byte per tile in row-major order. The
-// map is painted one pixel per tile into an RGBA buffer that the world view
-// shows as a nearest-neighbor texture, so every tile is a crisp square:
-// biome and vegetation, the season's tint, drought, floods, ice and snow.
+// colours per tile (biome and vegetation, the season's tint, drought,
+// floods, ice and snow) are the input of the painted map (`terrainArt.ts`,
+// which blends and textures them); `paintTerrain` keeps a one-pixel-per-tile
+// summary of them for tests and debugging.
 
 import type { TerrainDynamic, TerrainView } from '../protocol';
+import { GROUND, ICE, mix, SEASON_GREEN, SNOW, WATER, type Rgb } from './palette';
 
 export const BIOMES = ['deep_water', 'shallow_water', 'marsh', 'grassland', 'forest', 'desert', 'tundra', 'mountain'] as const;
 export type Biome = (typeof BIOMES)[number];
@@ -89,33 +91,25 @@ export function applyDynamic(g: TerrainGrid, d: TerrainDynamic): TerrainGrid {
   return g;
 }
 
-export type Rgb = [number, number, number];
+export type { Rgb } from './palette';
 
+/** Ground colour per biome (spring, before vegetation and weather). */
 const BASE: Record<number, Rgb> = {
-  [B.deep]: [20, 50, 120],
-  [B.shallow]: [40, 92, 165],
-  [B.marsh]: [62, 96, 72],
-  [B.grass]: [112, 152, 62],
-  [B.forest]: [34, 92, 44],
-  [B.desert]: [212, 192, 134],
-  [B.tundra]: [150, 160, 140],
-  [B.mountain]: [124, 114, 104],
+  [B.deep]: GROUND.sand,
+  [B.shallow]: GROUND.sand,
+  [B.marsh]: GROUND.marsh,
+  [B.grass]: GROUND.grass,
+  [B.forest]: GROUND.forest,
+  [B.desert]: GROUND.desert,
+  [B.tundra]: GROUND.tundra,
+  [B.mountain]: GROUND.mountain,
 };
 
-/** How plant-covered biomes look in each season (multiplied in by `plantShare`). */
-const SEASON_TINT: Record<string, Rgb> = {
-  spring: [100, 175, 70],
-  summer: [140, 160, 60],
-  autumn: [168, 122, 52],
-  winter: [118, 116, 96],
-};
-
-const mix = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const clamp = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : Math.round(v));
 
 /** Share of the season tint per biome. */
 function plantShare(biome: number): number {
-  return biome === B.grass ? 0.55 : biome === B.forest ? 0.3 : biome === B.marsh || biome === B.tundra ? 0.25 : 0;
+  return biome === B.grass ? 0.6 : biome === B.forest ? 0.35 : biome === B.marsh || biome === B.tundra ? 0.25 : 0;
 }
 
 /** Whether a tile shows open water (liquid or iced). */
@@ -128,44 +122,52 @@ export function isFlooded(g: TerrainGrid, i: number): boolean {
   return g.water[i] > 0 && g.biome[i] > B.shallow && (g.baseWater[i] === 0 || g.water[i] > g.baseWater[i] + 60);
 }
 
-/** The color of tile `i` (no lighting). */
-export function tileColor(g: TerrainGrid, i: number): Rgb {
+/**
+ * The ground of tile `i` as if it were dry (no water, snow or lighting):
+ * biome, season, grazing and drought. Under water it is the bed the shore
+ * shows: sand under lakes, a bank along rivers, mud where a lake dried out.
+ */
+export function groundColor(g: TerrainGrid, i: number): Rgb {
   const biome = g.biome[i];
-  const water = g.water[i];
-  let c: Rgb = BASE[biome] ?? [255, 0, 255];
+  if (g.river[i] > 0) return GROUND.bank;
   const land = biome > B.shallow;
-  if (land) {
-    const share = plantShare(biome);
-    if (share > 0) c = mix(c, SEASON_TINT[g.season] ?? SEASON_TINT.spring, share);
+  if (!land) return g.water[i] === 0 ? GROUND.mud : GROUND.sand;
+  // Dried-out marsh or lake shore: cracked mud.
+  if (g.baseWater[i] > 0 && g.water[i] === 0) return GROUND.mud;
+  let c: Rgb = BASE[biome] ?? [255, 0, 255];
+  const share = plantShare(biome);
+  if (share > 0) {
+    c = mix(c, SEASON_GREEN[g.season] ?? SEASON_GREEN.spring, share);
     // Grazed-out land is browner.
-    const veg = share > 0 ? g.veg[i] / 255 : 1;
-    c = c.map((v) => v * (0.62 + 0.38 * veg)) as Rgb;
-    // Drought: parched land yellows toward straw.
-    const w = g.wetness[i];
-    if (w < DROUGHT_BYTE && biome !== B.mountain) c = mix(c, [196, 170, 104], ((DROUGHT_BYTE - w) / DROUGHT_BYTE) * 0.75);
+    c = mix(GROUND.bare, c, 0.45 + 0.55 * (g.veg[i] / 255));
   }
-  if (g.river[i] > 0) {
-    // A river: bright blue, deeper when swollen; a dry bed shows as sand.
-    if (water > 0) {
-      const deep = Math.min(1, water / 100);
-      c = [70 - 40 * deep, 140 - 60 * deep, 225 - 40 * deep];
-    } else {
-      c = [176, 160, 120];
-    }
-  } else if (land && g.baseWater[i] > 0 && water === 0) {
-    // Dried-out marsh or lake shore: cracked mud.
-    c = [150, 130, 95];
-  } else if (!land && water === 0) {
-    c = [150, 130, 95];
-  } else if (!land) {
-    // Lakes darken with depth.
+  if (biome === B.mountain) c = mix(c, GROUND.peak, Math.max(0, (g.elevation[i] - 150) / 105) * 0.8);
+  // Drought: parched land yellows toward straw.
+  const w = g.wetness[i];
+  if (w < DROUGHT_BYTE && biome !== B.mountain) c = mix(c, GROUND.straw, ((DROUGHT_BYTE - w) / DROUGHT_BYTE) * 0.75);
+  return c;
+}
+
+/** The colour of the water on tile `i` (null when dry): rivers, lakes darkening with depth, flood water, ice. */
+export function waterColor(g: TerrainGrid, i: number): Rgb | null {
+  const water = g.water[i];
+  if (water === 0) return null;
+  let c: Rgb;
+  if (isFlooded(g, i)) c = WATER.flood;
+  else if (g.river[i] > 0) c = mix(WATER.river, WATER.deep, Math.min(1, water / 100) * 0.55);
+  else {
     const deep = Math.min(1, water / 255);
-    c = mix(c, [16, 40, 104], deep * 0.5);
+    c = deep < 0.5 ? mix(WATER.shallow, WATER.deep, deep * 2) : mix(WATER.deep, WATER.abyss, (deep - 0.5) * 2);
   }
-  if (isFlooded(g, i)) c = mix(c, [72, 108, 150], 0.7);
-  if (water > 0 && g.ice[i] > 77) c = mix(c, [196, 220, 238], Math.min(1, g.ice[i] / 200));
+  if (g.ice[i] > 77) c = mix(c, ICE, Math.min(1, g.ice[i] / 200));
+  return c;
+}
+
+/** The colour of tile `i` (no lighting). */
+export function tileColor(g: TerrainGrid, i: number): Rgb {
+  let c = waterColor(g, i) ?? groundColor(g, i);
   const snow = Math.min(1, g.snow[i] / 255) * 0.85;
-  if (snow > 0) c = mix(c, [245, 247, 250], snow);
+  if (snow > 0) c = mix(c, SNOW, snow);
   return c;
 }
 

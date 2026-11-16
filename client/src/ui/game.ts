@@ -11,10 +11,12 @@ import { WILD } from '../protocol';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, terrainSummary, type TerrainGrid } from '../world/terrain';
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
+import { GROUND, ICE, SNOW, toCss, WATER, type Rgb } from '../world/palette';
 import { describeLook } from '../world/creature';
 import { visionLines, visionStats } from '../world/visionCones';
 import { visionSummary } from '../vision';
 import { append, clear, h, label, pct } from './dom';
+import { icon, type IconName } from './icons';
 import { renderAlertPrefs, renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
 import { renderCurrentSeason, renderSeasons as renderRanked, seasonKey, type SeasonsData } from './seasons';
@@ -113,45 +115,86 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     h('button', { class: 'secondary', id: 'logout', onclick: deps.onLogout }, 'Log out'));
 
   const stage = h('div', { class: 'stage', id: 'stage' });
-  const followBtn = h('button', { class: 'tool', id: 'follow', title: 'Keep the camera on the view window (your possessed organism or your lineage)' }, 'Follow');
-  const migrateBtn = h('button', { class: 'tool', id: 'migrate', title: 'Click the map to send your adults there (the group picked in the group menu, or all)' }, 'Migrate…');
-  const clearMigBtn = h('button', { class: 'tool', id: 'clear-migration' }, 'Clear migration');
+  // Map toolbar: icons with labels, in groups (camera; group commands; view
+  // window; legend). On phones the camera group stays and the rest folds
+  // into the Tools menu (`#tools-more`).
+  const tool = (id: string, ic: IconName, text: string, title: string, extra = '') =>
+    h('button', { class: `tool${extra}`, id, title, 'aria-label': title }, icon(ic), h('span', { class: 'tool-label' }, text));
+  const followBtn = tool('follow', 'follow', 'Follow', 'Keep the camera on the view window (your possessed organism or your lineage)');
+  const zoomInBtn = tool('zoom-in', 'plus', 'Zoom in', 'Zoom in', ' icon-only');
+  const zoomOutBtn = tool('zoom-out', 'minus', 'Zoom out', 'Zoom out', ' icon-only');
+  zoomInBtn.addEventListener('click', () => view.zoomBy(1.4));
+  zoomOutBtn.addEventListener('click', () => view.zoomBy(1 / 1.4));
+  const migrateBtn = tool('migrate', 'migrate', 'Migrate…', 'Click the map to send your adults there (the group picked in the group menu, or all)');
+  const clearMigBtn = tool('clear-migration', 'clear', 'Clear', 'Cancel the migration (the group picked in the group menu, or all)');
   // Group commands: pick a group, claim ground for it, split it.
   const groupSelect = h('select', { class: 'tool group-select', id: 'group-select', title: 'Which of your groups the group commands act on', 'aria-label': 'Group' });
-  const territoryBtn = h('button', { class: 'tool', id: 'territory', title: 'Claim a territory for the group: tap its center, then its edge' }, 'Territory…');
-  const rallyBtn = h('button', { class: 'tool', id: 'rally', title: 'Gather the group at a point: tap where; it holds there for a few days' }, 'Rally…');
-  const splitBtn = h('button', { class: 'tool', id: 'split-group', title: 'Split the group in two (the far half across its widest spread)' }, 'Split');
-  const pinBtn = h('button', { class: 'tool', id: 'pin-view', title: 'Pin the server view window (what you can see of others) to the camera center' }, 'Pin view here');
+  const territoryBtn = tool('territory', 'territory', 'Territory…', 'Claim a territory for the group: tap its center, then its edge');
+  const rallyBtn = tool('rally', 'rally', 'Rally…', 'Gather the group at a point: tap where; it holds there for a few days');
+  const splitBtn = tool('split-group', 'split', 'Split', 'Split the group in two (the far half across its widest spread)');
+  const pinBtn = tool('pin-view', 'pin', 'Pin view', 'Pin the server view window (what you can see of others) to the camera center');
+  const pinLabel = pinBtn.querySelector('.tool-label')!;
   const hint = h('div', { class: 'hint', id: 'hint' });
   const toasts = h('div', { class: 'toasts', id: 'toasts', 'aria-live': 'polite' });
-  const toolbar = h('div', { class: 'toolbar' },
-    followBtn,
-    h('button', { class: 'tool', title: 'Zoom in', onclick: () => view.zoomBy(1.4) }, '+'),
-    h('button', { class: 'tool', title: 'Zoom out', onclick: () => view.zoomBy(1 / 1.4) }, '−'),
-    groupSelect, migrateBtn, clearMigBtn, territoryBtn, rallyBtn, splitBtn, pinBtn);
-  const legendBtn = h('button', { class: 'tool narrow-only', id: 'legend-toggle', title: 'Show the map legend' }, 'Legend');
-  toolbar.append(legendBtn);
+  const moreBtn = tool('tools-more', 'more', 'Tools', 'Group commands and the view window', ' narrow-only');
+  moreBtn.setAttribute('aria-haspopup', 'true');
+  moreBtn.setAttribute('aria-expanded', 'false');
+  const legendBtn = tool('legend-toggle', 'legend', 'Legend', 'Show or hide the map legend');
+  legendBtn.setAttribute('aria-expanded', 'false');
+  const toolsMenu = h('div', { class: 'tools-menu', id: 'tools-menu' },
+    h('div', { class: 'tool-group', role: 'group', 'aria-label': 'Group commands' }, groupSelect, migrateBtn, clearMigBtn, territoryBtn, rallyBtn, splitBtn),
+    h('div', { class: 'tool-group', role: 'group', 'aria-label': 'View window' }, pinBtn));
+  const toolbar = h('div', { class: 'toolbar', role: 'toolbar', 'aria-label': 'Map tools' },
+    h('div', { class: 'tool-group', role: 'group', 'aria-label': 'Camera' }, followBtn, zoomInBtn, zoomOutBtn),
+    toolsMenu, moreBtn, legendBtn);
+  function setToolsMenu(open: boolean): void {
+    toolbar.classList.toggle('more-open', open);
+    moreBtn.classList.toggle('active', open);
+    moreBtn.setAttribute('aria-expanded', String(open));
+  }
+  moreBtn.addEventListener('click', () => setToolsMenu(!toolbar.classList.contains('more-open')));
+  // An action picked from the menu closes it (the group menu stays open to pick an action next).
+  toolsMenu.addEventListener('click', (e) => {
+    if ((e.target as Element).closest('button')) setToolsMenu(false);
+  });
+  const swatch = (cls: string, style = '') => h('i', { class: `key ${cls}`, style });
+  const item = (key: HTMLElement, text: string, title?: string) => h('span', { class: 'key-item', ...(title ? { title } : {}) }, key, text);
   const legend = h('div', { class: 'legend', id: 'legend' },
-    h('span', {}, h('i', { class: 'dot ring', style: `border-color:${cssColor(OWN_COLOR)}` }), 'yours (ring at the feet)'),
-    h('span', {}, h('i', { class: 'dot ring', style: 'border-color:#ff7b72' }), 'possessed'),
-    h('span', {}, h('i', { class: 'dot ring', style: 'border-color:#7ee787' }), 'pregnant'),
-    h('span', {}, h('i', { class: 'dot ring', style: `border-color:${cssColor(ownerColor(WILD))}` }), 'wild'),
-    h('span', {}, h('i', { class: 'dot ring', style: `border-color:${cssColor(ownerColor(1))}` }), 'other players'),
-    h('span', {}, h('i', { class: 'dot square', style: 'border-color:#58a6ff' }), 'view window'),
-    h('span', { title: 'Claimed with Territory…; each group has its own color' }, h('i', { class: 'dot ring', style: `border-color:${cssColor(groupColor(0))};background:${cssColor(groupColor(0))}33` }), 'territory'),
-    h('span', { title: 'Set with Rally…: the group gathers in the ring around the point' }, h('i', { class: 'dot ring', style: `border-color:${cssColor(groupColor(0))}` }), 'rally'),
-    h('span', { title: 'Your largest group\'s territory: while you are offline its members inside are hunted less' }, h('i', { class: 'dot ring home-ring' }), '⌂ home range'),
-    h('span', { title: 'Body size, diet (muzzle, snout or fangs), warm or cold-blooded build, fur/scales/armor, colors, wings or fins; juveniles are drawn smaller' }, 'small = juvenile'),
-    h('span', {}, 'z resting · ! fleeing · ⌖ hunting · ♥ courting'));
+    h('h4', {}, 'Creatures'),
+    item(swatch('foot', `--c:${cssColor(OWN_COLOR)}`), 'yours'),
+    item(swatch('foot', `--c:${cssColor(ownerColor(1))}`), 'other players'),
+    item(swatch('foot faint', `--c:${cssColor(ownerColor(WILD))}`), 'wild'),
+    item(swatch('foot double', '--c:#ff7b72'), 'possessed'),
+    item(swatch('pip', '--c:#7ee787'), 'pregnant'),
+    item(swatch('foot', '--c:#ffffff'), 'selected'),
+    h('span', { class: 'key-item wide', title: 'Body size, diet (muzzle, snout or fangs), warm or cold-blooded build, fur/scales/armor, colors, wings or fins; juveniles are drawn smaller' }, 'smaller = juvenile'),
+    h('span', { class: 'key-item wide muted' }, '! fleeing · ⌖ hunting · z resting · ♥ courting (yours)'),
+    h('h4', {}, 'Map'),
+    item(swatch('brackets'), 'view window'),
+    item(swatch('disc', `--c:${cssColor(groupColor(0))}`), 'territory', 'Claimed with Territory…; each group has its own color'),
+    item(swatch('ring', `--c:${cssColor(groupColor(0))}`), 'rally', 'Set with Rally…: the group gathers in the ring around the point'),
+    item(swatch('ring home-ring'), '⌂ home range', 'Your largest group\'s territory: while you are offline its members inside are hunted less'));
   const terrainLegend = h('div', { class: 'legend terrain-legend', id: 'terrain-legend' });
   // Possess / release the selected own organism without opening the panel (phones).
   const fab = h('button', { class: 'fab', id: 'fab-possess', hidden: true });
-  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, hint, h('div', { class: 'legends' }, terrainLegend, legend), fab, toasts);
-  legendBtn.addEventListener('click', () => {
-    const on = !stageWrap.classList.contains('show-legend');
+  const legends = h('div', { class: 'legends', id: 'legends' }, terrainLegend, legend);
+  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, hint, legends, fab, toasts);
+  // The legend is collapsible: shown by default on wide screens, hidden on
+  // phones; the choice is remembered.
+  function setLegend(on: boolean, remember: boolean): void {
     stageWrap.classList.toggle('show-legend', on);
     legendBtn.classList.toggle('active', on);
-  });
+    legendBtn.setAttribute('aria-expanded', String(on));
+    if (remember) {
+      try { localStorage.setItem('evo.legend', on ? 'on' : 'off'); } catch { /* storage may be blocked */ }
+    }
+  }
+  {
+    let stored: string | null = null;
+    try { stored = localStorage.getItem('evo.legend'); } catch { /* storage may be blocked */ }
+    setLegend(stored ? stored === 'on' : !window.matchMedia(NARROW).matches, false);
+  }
+  legendBtn.addEventListener('click', () => setLegend(!stageWrap.classList.contains('show-legend'), true));
 
   const tabs: Record<Tab, HTMLElement> = {
     organism: h('div', { class: 'panel', id: 'panel-organism' }),
@@ -337,7 +380,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const r = pinned ? await send({ type: 'clear_view' }) : await send({ type: 'set_view', x: view.cam.x, y: view.cam.y, radius: 24 });
     if (r.ok) {
       pinned = !pinned;
-      pinBtn.textContent = pinned ? 'Unpin view' : 'Pin view here';
+      pinLabel.textContent = pinned ? 'Unpin view' : 'Pin view';
       pinBtn.classList.toggle('active', pinned);
     }
   });
@@ -422,12 +465,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   function showTerrain(g: TerrainGrid): void {
     view.setTerrain(g);
     const t = terrainSummary(g);
-    const chip = (color: string, text: string) => h('span', {}, h('i', { class: 'dot square-fill', style: `background:${color}` }), text);
+    const chip = (color: Rgb, text: string) => h('span', { class: 'key-item' }, h('i', { class: 'key chip', style: `--c:${toCss(color)}` }), text);
     terrainLegend.replaceChildren(
-      chip('#4682e1', 'water'), chip('#467ccf', 'river'),
-      chip('#c4aa68', `drought ${pct(t.drought, 0)}`), chip('#486c96', `flooded ${pct(t.flood, 1)}`),
-      chip('#f5f7fa', `snow ${pct(t.snow, 0)}`), chip('#c4dcee', `ice ${pct(t.ice, 0)}`),
-      h('span', { class: 'muted' }, `${g.season}, terrain at ${String(g.hour).padStart(2, '0')}:00`));
+      h('h4', {}, 'Terrain', h('span', { class: 'muted' }, ` · ${g.season}, ${String(g.hour).padStart(2, '0')}:00`)),
+      chip(WATER.shallow, 'water'), chip(WATER.river, 'river'),
+      chip(GROUND.straw, `drought ${pct(t.drought, 0)}`), chip(WATER.flood, `flooded ${pct(t.flood, 1)}`),
+      chip(SNOW, `snow ${pct(t.snow, 0)}`), chip(ICE, `ice ${pct(t.ice, 0)}`));
   }
   async function loadTerrain(): Promise<void> {
     try {

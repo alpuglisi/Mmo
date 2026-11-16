@@ -1,13 +1,19 @@
 // Renders the creature shapes of `creature.ts` into textures, once per
 // distinct drawing (`creatureKey`), in a bounded least-recently-used cache
 // that never drops a texture on screen, and builds the per-organism marker from shared textures:
-// an owner ring at the feet (tinted by owner), the body (flipped to face its
-// way), an optional status ring (possessed, pregnant) and an action icon.
+// a soft contact shadow with a thin owner ring at the feet (tinted by owner),
+// the body (flipped to face its way), an optional status mark (a coral ring
+// at the feet when possessed, a small pip when pregnant) and an action icon.
+// One mark language, all at the feet (STYLE.md): nothing rings the body.
 // Hundreds of markers then cost a few sprites each and no per-frame drawing.
 
 import { Container, Graphics, Rectangle, Sprite, type Renderer, type Texture } from 'pixi.js';
 import { bodyExtent, bodyRadius, creatureKey, creatureShapes, hintShapes, spriteExtent, type CreatureSpec, type Hint, type Shape } from './creature';
 import { TextureCache } from './textureCache';
+import { MARK } from './palette';
+
+/** What the status mark shows. */
+export type StatusKind = 'possessed' | 'pregnant';
 
 /** Textures are drawn this much finer than one screen pixel, so they stay crisp when markers grow with zoom. */
 const SUPERSAMPLE = 2.5;
@@ -55,7 +61,7 @@ export interface MarkerParts {
 export const bodyKey = (s: CreatureSpec): string => `body:${creatureKey(s)}`;
 const ringR = (s: CreatureSpec): number => Math.round(bodyRadius(s) * 2) / 2;
 export const ringKey = (s: CreatureSpec, own: boolean): string => `ring:${ringR(s)}:${own}`;
-export const statusKey = (s: CreatureSpec): string => `status:${ringR(s)}`;
+export const statusKey = (s: CreatureSpec, kind: StatusKind): string => `status:${kind}:${ringR(s)}`;
 export const hintKey = (h: Hint): string => `hint:${h}`;
 
 export class CreatureSprites {
@@ -69,9 +75,9 @@ export class CreatureSprites {
   }
 
   /** Whether every texture of a marker is made (so showing it costs no drawing). */
-  ready(s: CreatureSpec, own: boolean, status: boolean, hint: Hint | null): boolean {
+  ready(s: CreatureSpec, own: boolean, status: StatusKind | null, hint: Hint | null): boolean {
     const c = this.cache;
-    return c.has(bodyKey(s)) && c.has(ringKey(s, own)) && (!status || c.has(statusKey(s))) && (hint === null || c.has(hintKey(hint)));
+    return c.has(bodyKey(s)) && c.has(ringKey(s, own)) && (status === null || c.has(statusKey(s, status))) && (hint === null || c.has(hintKey(hint)));
   }
 
   private generate(extent: number, draw: (g: Graphics) => void): Texture {
@@ -99,23 +105,36 @@ export class CreatureSprites {
     });
   }
 
-  /** White ellipse at the feet, tinted with the owner's color. */
+  /**
+   * At the feet: a soft contact shadow, offset down-right (light from the
+   * top-left), and a thin white ring tinted with the owner's colour (bolder
+   * for your own). The shadow is dark, so the tint leaves it as it is.
+   */
   ownerRing(s: CreatureSpec, own: boolean): Texture {
     const r = ringR(s);
     return this.render(ringKey(s, own), spriteExtent(s), (g) => {
-      const rx = r * 1.7;
-      const ry = r * 0.7;
+      const rx = r * 1.55;
+      const ry = r * 0.6;
       const y = r * 0.95;
-      g.ellipse(0, y, rx, ry).fill({ color: 0xffffff, alpha: own ? 0.35 : 0.22 });
-      g.ellipse(0, y, rx, ry).stroke({ width: own ? 2.2 : 1.5, color: 0xffffff });
+      // A blurred shadow from a few stacked ellipses.
+      for (const k of [1.25, 1.1, 0.95]) g.ellipse(r * 0.12, y + r * 0.08, rx * k, ry * k).fill({ color: MARK.shadow, alpha: MARK.shadowAlpha / 3 });
+      if (own) g.ellipse(0, y, rx, ry).fill({ color: 0xffffff, alpha: 0.16 });
+      g.ellipse(0, y, rx, ry).stroke({ width: own ? 1.8 : 1.2, color: 0xffffff, alpha: own ? 1 : 0.8 });
     });
   }
 
-  /** White circle around the whole creature (possessed, pregnant), tinted. */
-  statusRing(s: CreatureSpec): Texture {
+  /** A status mark, tinted: possessed, a second ring just outside the owner ring; pregnant, a pip beside the feet. */
+  statusMark(s: CreatureSpec, kind: StatusKind): Texture {
     const r = ringR(s);
-    return this.render(statusKey(s), spriteExtent(s), (g) => {
-      g.circle(0, 0, r * 2.1).stroke({ width: 2.2, color: 0xffffff });
+    return this.render(statusKey(s, kind), spriteExtent(s), (g) => {
+      const y = r * 0.95;
+      if (kind === 'possessed') {
+        g.ellipse(0, y, r * 1.95, r * 0.8).stroke({ width: 3.2, color: 0x0d1117, alpha: 0.35 });
+        g.ellipse(0, y, r * 1.95, r * 0.8).stroke({ width: 1.8, color: 0xffffff });
+      } else {
+        const pr = Math.max(2.2, r * 0.3);
+        g.circle(r * 1.55, y - r * 0.45, pr).fill({ color: 0xffffff }).stroke({ width: 1, color: 0x15181c, alpha: 0.85 });
+      }
     });
   }
 
