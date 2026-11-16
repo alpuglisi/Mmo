@@ -316,6 +316,8 @@ cargo run --release --bin evo-sim -- run --size 256 --focus 64,64 --focus 192,19
 cargo run --release --example lod -- 256 90 1 64,64 192,192   # LOD vs full simulation
 cargo run --release -p evo-sim --features serde --example highpop -- bench /tmp/hp/day0050.snap   # tick cost at 60–70k (after `highpop -- warm /tmp/hp`)
 cargo run --release --bin evo-sim -- run --days 361 --report 30 --catastrophes --catastrophe severe_winter@210   # eras, species, a catastrophe
+cargo run --release --bin evo-sim -- genetics --out out/genetics   # population-genetics checks, quick (~5 s)
+cargo run --release --bin evo-sim -- genetics --long --years 15 --out out/genetics   # full validation (~35 min)
 ```
 
 `run` founds a wild ecosystem (voles, antelope, newts, foxes) plus four sample
@@ -5754,6 +5756,65 @@ The standard sweep's new baseline is **11.60** from seed 31 (11.52 from 55);
 prints parameters in full where three decimals would be more than 1% off,
 so its "Try it" line keeps `morph_step_rate=0.0005`. The client wire
 fixture was regenerated (its short session plays out differently).
+
+## Genetics validation
+
+`evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
+generations and replicate seeds that the population genetics behave as
+theory predicts. Full results and the analysis are in
+[`docs/genetics-validation.md`](docs/genetics-validation.md).
+
+- **Genome level** (`wf.rs`): Wright–Fisher populations of fixed size on
+  the real genome code (`Genome::inherit`, `mutate_morph`, dominance and
+  expression, load loci, origin tags), isolated from the ecology. Strict
+  checks with 99.9% intervals: heterozygosity decay `H₀(1 − 1/2N)ᵗ`,
+  allele-frequency variance, fixation probability and exact Wright–Fisher
+  absorption times, mutation–drift equilibrium (infinite-alleles
+  heterozygosity, additive allele variance `(2N − 1)μσ²`), the stationary
+  distribution of the step-mutated morphology counts and that no impossible
+  value ever appears, mutation rates and step SD per segment, origin tags,
+  F2 ratios (3:1 for the morphology loci, the contract rule for non-default
+  pairs, 1:2:1 and `0.5 + 0.15h` for the dominance genes), offspring =
+  midparent and Mendelian segregation variance, mutation–selection balance
+  of the hidden recessives and inbreeding exposure, the legacy share as a
+  martingale and its decay under owner-tagged mutation, and independent
+  assortment of all 1711 locus pairs.
+- **Ecology level** (`eco.rs`): standard worlds over many years, read-only
+  between steps: mutation rates and tags of real births, valid morphology,
+  heterozygosity, divergence from the founders and between map halves and
+  hybridizing lineages, neutral-locus drift. Soft checks (direction and
+  magnitude) plus strict invariants.
+
+```sh
+cargo run --release --bin evo-sim -- genetics                 # quick genome level (~5 s)
+cargo run --release --bin evo-sim -- genetics --long --years 15 --out out/genetics   # both levels
+cargo run --release --bin evo-sim -- genetics --long --level genome --only "recessive load"
+cargo test --release -p evo-sim-cli -- --ignored long_    # the long runs as tests
+```
+
+It writes `report.md`, `checks.csv` and (ecology) `ecology.csv`, and exits
+non-zero if a strict check fails. `cargo test` runs the quick genome level
+and a 30-day world (`quick_genome_checks_pass`, `short_world_invariants`).
+
+**Latest long run** (15 min on 4 cores: genome level 2000 drift replicates,
+1M-child mutation counts, 400k-offspring linkage cross; ecology 4 worlds of
+96×96 × 15 years, ~475,000 newborns inspected): **122 of 122 strict checks
+pass, 9 of 9 soft checks pass.** No bug in the genome code was found (two
+first-run failures were errors in the harness's own expectations, now
+fixed). Highlights: heterozygosity decays as `(1 − 1/2N)ᵗ` within 1%;
+fixation probabilities equal initial frequencies; mutation rates per segment
+match the configuration in Wright–Fisher and in real world births (genes
+0.00402 vs 0.004 over 27M alleles); no impossible morphology value ever
+appears; F2 ratios are 3:1 under the contract dominance rule; the recessive
+load sits at mutation–selection balance (q = 0.042 vs 0.043) and full-sib
+mating exposes 5.8× as many homozygotes; legacy shares are martingales; all
+1711 locus pairs assort independently. One latent property is documented,
+not changed: the obedience and morphology loci draw from streams seeded by
+the child's gene alleles, so genomes with identical gene alleles would share
+those draws (0 of 559,676 litter-mate pairs did in the worlds). In worlds,
+interfertile lineages diverge only without gene flow (antelope and herd
+grazers, which hybridize, converge), and a 96-tile map is one gene pool per
+lineage.
 
 ## Point costs
 
