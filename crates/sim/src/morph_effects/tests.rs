@@ -33,7 +33,7 @@ fn design(thermo: Thermo) -> FounderDesign {
 }
 
 fn plan(p: &Phenotype) -> BodyPlan {
-    body_plan(p)
+    wild_plan(p)
 }
 
 fn traits(p: &Phenotype, plan: &BodyPlan, k: Knobs) -> Traits {
@@ -134,7 +134,7 @@ fn default_body_is_exactly_neutral() {
         assert_eq!(t, raw, "{}", d.name);
         // And through the Balance knob.
         let mut t = raw;
-        apply(&mut t, &p, &Balance { morph_effects: 1.0, ..Balance::default() });
+        apply(&mut t, &p, &plan(&p), &Balance { morph_effects: 1.0, ..Balance::default() });
         assert_eq!(t, raw, "{}", d.name);
     }
 }
@@ -154,7 +154,7 @@ fn knobs_off_change_nothing() {
     };
     assert_eq!(traits(&p, &odd, Knobs::OFF), raw);
     let mut t = raw;
-    apply(&mut t, &p, &Balance::default());
+    apply(&mut t, &p, &odd, &Balance::default());
     assert_eq!(t, raw);
 }
 
@@ -357,12 +357,16 @@ fn ear_count_and_localization() {
     }
 }
 
-/// An earless body can't carry alarm calls (once the genome expresses ear
-/// count; until then every body has two ears).
+/// An earless body can't carry alarm calls.
 #[test]
 fn alarm_calls_need_ears() {
     let p = pheno(&base_design().with(Gene::Ears, 0.8).with(Gene::Vocal, 0.8));
-    assert!(crate::group::GroupTrait::AlarmCalls.is_carrier(&p));
+    let alarm = crate::group::GroupTrait::AlarmCalls;
+    assert!(alarm.is_carrier(&p) && alarm.is_carrier_with(&p, &plan(&p)));
+    assert!(!alarm.is_carrier_with(&p, &BodyPlan { ear_count: 0, ..plan(&p) }));
+    // Other traits don't care.
+    let herd = crate::group::GroupTrait::Sentries;
+    assert_eq!(herd.is_carrier_with(&p, &BodyPlan { ear_count: 0, ..plan(&p) }), herd.is_carrier(&p));
 }
 
 /// A long snout smells better and bites weaker; a flat face bites hardest,
@@ -416,20 +420,38 @@ fn effects_scale_with_their_tunable() {
     assert!((half.mass_factor - 1.0 - 0.5 * (full.mass_factor - 1.0)).abs() < 1e-6);
 }
 
-/// A standard world whose bodies are all default runs bit for bit the same
-/// with the count/shape effects at full strength as without them.
+/// A standard world's bodies all have the default counts and shapes: with the
+/// effects at full strength the only change to their traits is the snout's
+/// (a continuous locus founders vary around 0.5); at a snout of exactly 0.5
+/// each is bit-identical to its bare traits. With the tunables at 0 nothing
+/// changes at all.
 #[test]
-fn default_world_is_unchanged_by_the_effects() {
-    let run = |k: f32| {
+fn default_world_feels_only_its_snouts() {
+    let world = |k: f32| {
         let mut config = crate::WorldConfig { seed: 7, width: 48, height: 48, ..Default::default() };
         config.balance.morph_effects = k;
-        let mut w = crate::presets::standard_world(config, 1);
-        for _ in 0..150 {
-            w.step();
-        }
-        w.organisms.iter().map(|o| (o.id, o.pos, o.health, o.needs.hunger, o.traits)).collect::<Vec<_>>()
+        crate::presets::standard_world(config, 1)
     };
-    assert!(run(1.0) == run(0.0));
+    let (on, off) = (world(1.0), world(0.0));
+    assert_eq!(on.organisms.len(), off.organisms.len());
+    let mut snouts = 0;
+    for (a, b) in on.organisms.iter().zip(&off.organisms) {
+        let m = a.morph;
+        assert_eq!((m.eye_count, m.ear_count, m.leg_count), (2, 2, 4), "{}", a.id);
+        assert_eq!((m.ear_shape, m.tail_shape), (EarShape::Round, TailShape::Thin));
+        let raw = crate::stats::derive_with(&a.pheno, &m);
+        assert_eq!(b.traits, raw, "tunables off: bare traits");
+        let mid = BodyPlan { snout_length: 0.5, ..m };
+        let raw_mid = crate::stats::derive_with(&a.pheno, &mid);
+        let mut t = raw_mid;
+        apply_plan(&mut t, &a.pheno, &mid, ON);
+        assert_eq!(t, raw_mid, "a default body at snout 0.5 is neutral");
+        let mut t = raw;
+        apply_plan(&mut t, &a.pheno, &m, ON);
+        assert_eq!(a.traits, t, "insert applies the organism's own body plan");
+        snouts += usize::from(m.snout_length != 0.5);
+    }
+    assert!(snouts > 0, "founders vary their snouts");
 }
 
 /// A restore applies the effects of the restored config, as birth did.
@@ -618,10 +640,10 @@ fn fixture_json() -> String {
             pl.eye_count,
             num(pl.eye_azimuth),
             pl.ear_count,
-            pl.ear_shape.name(),
+            pl.ear_shape.key(),
             pl.leg_count,
             pl.tail_present,
-            pl.tail_shape.name(),
+            pl.tail_shape.key(),
             num(pl.snout_length)
         );
         s.push_str("    {\n");

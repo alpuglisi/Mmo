@@ -276,6 +276,11 @@ export interface Appearance {
   // servers (the sprite then draws today's defaults, `creature.ts` `morphOf`).
   /** Eye count, 1–6. */
   eyes?: number;
+  /**
+   * Eye placement bucket: 0 forward (under 35°), 1 the default (absent), 2 on
+   * the sides (85° and more). Sent only when not the default; not drawn yet.
+   */
+  eye_azimuth?: SizeBucket;
   /** Eye size bucket: 0 small, 1 medium, 2 large. */
   eye_size?: SizeBucket;
   /** Ear count: 0, 2 or 4. */

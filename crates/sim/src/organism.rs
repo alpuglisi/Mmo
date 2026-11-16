@@ -7,7 +7,7 @@ use crate::math::Vec2;
 use crate::mating::Display;
 use crate::morph::Morphology;
 use crate::pathfinding::Path;
-use crate::stats::{derive, Traits};
+use crate::stats::{derive_with, Traits};
 
 pub type OrgId = u64;
 
@@ -200,7 +200,9 @@ pub struct Organism {
     /// ([`Organism::refresh_derived`]).
     #[cfg_attr(feature = "serde", serde(skip, default = "unset_pheno"))]
     pub pheno: Phenotype,
-    /// Cache: `derive(&pheno)`. Not in snapshots, like `pheno`.
+    /// Cache: `derive_with(&pheno, &morph)`, plus the body plan's effects
+    /// (`morph_effects::apply`, by `World::insert` and on restore). Not in
+    /// snapshots, like `pheno`.
     #[cfg_attr(feature = "serde", serde(skip, default = "unset_traits"))]
     pub traits: Traits,
     /// Cache: the expressed morphology (`morph::Morphology::new` of the
@@ -297,15 +299,15 @@ fn unset_pheno() -> Phenotype {
 
 #[cfg(feature = "serde")]
 fn unset_traits() -> Traits {
-    derive(&unset_pheno())
+    crate::stats::derive(&unset_pheno())
 }
 
 impl Organism {
     pub fn new(id: OrgId, owner: PlayerId, genome: impl Into<Arc<Genome>>, sex: Sex, pos: Vec2) -> Self {
         let genome = genome.into();
         let pheno = genome.phenotype();
-        let traits = derive(&pheno);
         let morph = Morphology::new(genome.morph(), &pheno);
+        let traits = derive_with(&pheno, &morph);
         let recessive_load = genome.homozygous_load();
         Self {
             id,
@@ -365,8 +367,8 @@ impl Organism {
     /// snapshot leaves them out and a restore calls this.
     pub fn refresh_derived(&mut self) {
         self.pheno = self.genome.phenotype();
-        self.traits = derive(&self.pheno);
         self.morph = Morphology::new(self.genome.morph(), &self.pheno);
+        self.traits = derive_with(&self.pheno, &self.morph);
         self.recessive_load = self.genome.homozygous_load();
     }
 

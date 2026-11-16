@@ -5,9 +5,10 @@
 //! what anyone could see, and few classes keep the client's texture cache
 //! small.
 //!
-//! The morphology part (eyes, ears, legs, tail, snout, fangs;
-//! `docs/morphology-contract.md`) comes from [`Morphology::of`], the one place
-//! that reads it off the organism, and is quantized by
+//! The morphology part (eyes and their placement, ears, legs, tail, snout,
+//! fangs; `docs/morphology-contract.md`) comes from [`Morphology::of`], the
+//! one place that reads it off the organism (its genome's expressed
+//! `Organism::morph`), and is quantized by
 //! [`Appearance::with_morphology`]: counts and shapes as they are, continuous
 //! sizes into three buckets (small, medium, large), so a sprite key has few
 //! values per feature.
@@ -96,6 +97,8 @@ pub enum TailLook {
 pub struct Morphology {
     /// 1–6.
     pub eye_count: u8,
+    /// Degrees, 0–180: the first eye pair's angle from straight ahead.
+    pub eye_azimuth: f32,
     /// 0–1.
     pub eye_size: f32,
     /// 0, 2 or 4 (contract v1).
@@ -121,26 +124,72 @@ impl Morphology {
     /// Fangs below this size are not there.
     pub const NO_FANGS: f32 = 0.1;
 
-    /// The organism's morphology. Until the genome carries the new discrete
-    /// loci: the contract defaults (two eyes, two round ears, four legs, a
-    /// thin tail when the `Tail` gene shows, a medium snout) with sizes from
-    /// the existing genes. The one function to change when it does.
+    /// The organism's expressed morphology (`Organism::morph`, from its
+    /// genome's morphology loci at birth): counts, shapes, eye placement and
+    /// snout from the loci, sizes from the existing genes.
     pub fn of(o: &Organism) -> Self {
-        let p = &o.pheno;
+        let m = &o.morph;
         Self {
-            eye_count: 2,
-            eye_size: p[Gene::Eyes],
-            ear_count: 2,
-            ear_shape: EarShape::Round,
-            ear_size: p[Gene::Ears],
-            leg_count: 4,
-            tail_present: p[Gene::Tail] >= Self::TAIL_FROM,
-            tail_shape: TailShape::Thin,
-            tail_length: p[Gene::Tail],
-            snout_length: 0.5,
-            fang_size: p[Gene::Fangs],
+            eye_count: m.eye_count,
+            eye_azimuth: m.eye_azimuth,
+            eye_size: m.eye_size,
+            ear_count: m.ear_count,
+            ear_shape: m.ear_shape.into(),
+            ear_size: m.ear_size,
+            leg_count: m.leg_count,
+            tail_present: m.tail_present,
+            tail_shape: m.tail_shape.into(),
+            tail_length: m.tail_length,
+            snout_length: m.snout_length,
+            fang_size: m.fang_size,
         }
     }
+}
+
+impl From<evo_sim::morph::EarShape> for EarShape {
+    fn from(e: evo_sim::morph::EarShape) -> Self {
+        use evo_sim::morph::EarShape as E;
+        match e {
+            E::Round => EarShape::Round,
+            E::Pointed => EarShape::Pointed,
+            E::Long => EarShape::Long,
+            E::Fan => EarShape::Fan,
+        }
+    }
+}
+
+impl From<evo_sim::morph::TailShape> for TailShape {
+    fn from(t: evo_sim::morph::TailShape) -> Self {
+        use evo_sim::morph::TailShape as T;
+        match t {
+            T::Thin => TailShape::Thin,
+            T::Bushy => TailShape::Bushy,
+            T::Fin => TailShape::Fin,
+            T::Club => TailShape::Club,
+            T::Prehensile => TailShape::Prehensile,
+        }
+    }
+}
+
+/// Eye placement as a bucket: 0 forward (first pair under 35° from straight
+/// ahead: a hunter's binocular face), 1 the default (35°–85°, around 60°),
+/// 2 on the sides (85° and more: a grazer's all-round view).
+fn azimuth_bucket(deg: f32) -> u8 {
+    if deg < 35.0 {
+        0
+    } else if deg < 85.0 {
+        1
+    } else {
+        2
+    }
+}
+
+fn medium() -> u8 {
+    1
+}
+
+fn is_medium(x: &u8) -> bool {
+    *x == 1
 }
 
 /// A 0–1 size as a bucket: 0 small (< 1/3), 1 medium, 2 large (≥ 2/3).
@@ -168,6 +217,10 @@ pub struct Appearance {
     pub coloring: Coloring,
     /// Eye count, 1–6 (contract `eye_count`).
     pub eyes: u8,
+    /// Eye placement bucket: 0 forward, 1 default, 2 sides. Sent only when
+    /// not the default, so default bodies' looks are what they were.
+    #[serde(default = "medium", skip_serializing_if = "is_medium")]
+    pub eye_azimuth: u8,
     /// Eye size bucket: 0 small, 1 medium, 2 large.
     pub eye_size: u8,
     /// Ear count: 0, 2 or 4.
@@ -245,6 +298,7 @@ impl Appearance {
             cover,
             coloring,
             eyes: 2,
+            eye_azimuth: 1,
             eye_size: 1,
             ears: 2,
             ear_shape: EarShape::Round,
@@ -284,6 +338,7 @@ impl Appearance {
         let ears = (m.ear_count.min(4) / 2) * 2;
         Self {
             eyes: m.eye_count.clamp(1, 6),
+            eye_azimuth: azimuth_bucket(m.eye_azimuth),
             eye_size: bucket(m.eye_size),
             ears,
             ear_shape: if ears == 0 { EarShape::Round } else { m.ear_shape },
@@ -384,6 +439,7 @@ mod tests {
         let base = Appearance::of(&org(&[]));
         let m = Morphology {
             eye_count: 9,
+            eye_azimuth: 120.0,
             eye_size: 0.5,
             ear_count: 0,
             ear_shape: EarShape::Fan,
@@ -397,6 +453,9 @@ mod tests {
         };
         let a = base.with_morphology(&m);
         assert_eq!(a.eyes, 6);
+        assert_eq!(a.eye_azimuth, 2);
+        assert_eq!(base.with_morphology(&Morphology { eye_azimuth: 20.0, ..m }).eye_azimuth, 0);
+        assert_eq!(base.with_morphology(&Morphology { eye_azimuth: 60.0, ..m }).eye_azimuth, 1);
         assert_eq!(a.eye_size, 1);
         // No ears: their shape and size collapse to one value.
         assert_eq!((a.ears, a.ear_shape, a.ear_size), (0, EarShape::Round, 1));

@@ -807,8 +807,9 @@ impl World {
         // Body plan effects follow the restored config, as at birth.
         let bal = self.config.balance;
         for o in &mut self.organisms {
-            crate::morph_effects::apply(&mut o.traits, &o.pheno, &bal);
+            crate::morph_effects::apply(&mut o.traits, &o.pheno, &o.morph, &bal);
         }
+        self.lod.reapply_morph_effects(&bal);
         self.grid = SpatialGrid::new(self.config.width, self.config.height, super::GRID_CELL);
         self.grid.rebuild(&self.organisms);
     }

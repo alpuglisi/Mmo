@@ -704,3 +704,11 @@ settled on 2026-11-16 as recommended:
     tally until the deployment at a season boundary (decision 5).
 14. Snapshot versions: v20 trait downsides, v21 body plan effects (package D),
     v22 directional vision, v23 morphology genome loci.
+15. Wiring (2026-11-16): the genome's expressed `morph::Morphology`
+    (`Organism::morph`) is the one body plan; `morph_effects::BodyPlan` is
+    that type. It feeds the eye geometry and ear localization at birth
+    (`stats::derive_with`), the body plan effects (behind the `morph_*`
+    tunables), LOD cohort representatives and the server's `look`. Earless
+    bodies carry no alarm calls (structural). Defaults stay bit-identical;
+    with the tunables on, founders' snout and eye-azimuth variation gives
+    default-designed lineages small effects around zero.

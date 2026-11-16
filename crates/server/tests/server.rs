@@ -560,3 +560,79 @@ async fn delta_states_match_json_states_and_resync() {
     drop(plain);
     srv.shutdown().await;
 }
+
+/// A designed body plan end to end: the server advertises the morphology
+/// section, a design that asks for six legs, three side-set eyes and a fin
+/// tail founds organisms whose genome expresses it, and their looks in state
+/// frames (protocol 1 JSON and the protocol 2 palette) show it, while a
+/// default design keeps today's looks (no `eye_azimuth` key at all).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn designed_morphology_shows_in_state_frames() {
+    use evo_server::appearance::TailLook;
+    use evo_server::wire::DeltaDecoder;
+    let srv = manual_server().await;
+    let addr = srv.addr;
+    let (s, genes) = json_req(addr, Method::GET, "/api/genes", None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    let advertised: Vec<&str> =
+        genes["morph"].as_array().expect("morph section").iter().map(|m| m["name"].as_str().unwrap()).collect();
+    assert!(advertised.contains(&"leg_count") && advertised.contains(&"eye_count"), "{advertised:?}");
+
+    let ann = register(addr, "ann").await;
+    let bob = register(addr, "bob").await;
+    let mut bug = design("Bugs");
+    bug["traits"]["tail"] = json!(0.5);
+    bug["morph"] = json!({"leg_count": 6, "eye_count": 3, "eye_azimuth": 100, "tail_shape": "fin"});
+    let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(&ann), Some(bug)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let founders: Vec<u64> = v["founders"].as_array().unwrap().iter().map(|f| f.as_u64().unwrap()).collect();
+    assert_eq!(founders.len(), 12);
+    let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(&bob), Some(design("Plain"))).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    // Protocol 1: every one of ann's organisms looks six-legged, three-eyed,
+    // side-eyed and fin-tailed.
+    let mut wa = ws(addr, &ann).await;
+    wait_for(&mut wa, "welcome", |v| v["type"] == "welcome").await;
+    srv.step(1).await;
+    let state = wait_for(&mut wa, "state", |v| v["type"] == "state").await;
+    let orgs = state["organisms"].as_array().unwrap();
+    assert_eq!(orgs.len(), 12);
+    for o in orgs {
+        assert!(founders.contains(&o["id"].as_u64().unwrap()));
+        let look = &o["look"];
+        assert_eq!((look["legs"].as_u64(), look["eyes"].as_u64()), (Some(6), Some(3)), "{look}");
+        assert_eq!(look["eye_azimuth"], 2, "{look}");
+        assert_eq!(look["tail"], "fin", "{look}");
+        assert_eq!((look["ears"].as_u64(), look["ear_shape"].as_str()), (Some(2), Some("round")), "{look}");
+    }
+
+    // bob's default bodies keep today's looks.
+    let mut wb = ws(addr, &bob).await;
+    wait_for(&mut wb, "welcome", |v| v["type"] == "welcome").await;
+    srv.step(1).await;
+    let state = wait_for(&mut wb, "state", |v| v["type"] == "state").await;
+    let orgs = state["organisms"].as_array().unwrap();
+    assert_eq!(orgs.len(), 12);
+    for o in orgs {
+        let look = &o["look"];
+        assert_eq!((look["legs"].as_u64(), look["eyes"].as_u64()), (Some(4), Some(2)), "{look}");
+        assert!(look.get("eye_azimuth").is_none(), "{look}");
+    }
+
+    // Protocol 2: the looks palette decodes to the same body plan.
+    let creds = json!({"name": "ann", "password": "a long password"});
+    let (s, v) = json_req(addr, Method::POST, "/api/login", None, Some(creds)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let token = v["token"].as_str().unwrap();
+    let (mut binary, _) = connect_async(format!("ws://{addr}/ws?token={token}&proto=2")).await.expect("websocket");
+    wait_for(&mut binary, "welcome", |v| v["type"] == "welcome").await;
+    srv.step(1).await;
+    let Message::Binary(frame) = next_frame(&mut binary).await else { panic!("protocol 2 states are binary") };
+    let s = DeltaDecoder::new().apply(&frame).expect("decodes");
+    assert_eq!(s.organisms.len(), 12);
+    for o in &s.organisms {
+        assert_eq!((o.look.legs, o.look.eyes, o.look.eye_azimuth, o.look.tail), (6, 3, 2, TailLook::Fin));
+    }
+    srv.shutdown().await;
+}

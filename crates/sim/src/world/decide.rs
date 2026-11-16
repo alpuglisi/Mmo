@@ -411,8 +411,11 @@ impl World {
         let cfg = &self.config;
 
         // --- Perception ---------------------------------------------------
-        let alarm =
-            if GroupTrait::AlarmCalls.is_carrier(p) { self.group.benefit(GroupTrait::AlarmCalls, o.pos) } else { 0.0 };
+        let alarm = if GroupTrait::AlarmCalls.is_carrier_with(p, &o.morph) {
+            self.group.benefit(GroupTrait::AlarmCalls, o.pos)
+        } else {
+            0.0
+        };
         let possessed = if o.possessed_by.is_some() { 1.2 } else { 1.0 };
         // Group members where sentries hold breed under watch; a sentry on
         // watch scans harder and isn't distracted by breeding.
