@@ -26,9 +26,10 @@
 //! **Morphology loci.** Every genome also carries [`MorphGenes`]: discrete
 //! loci for eye, ear and leg counts and ear and tail shapes, and continuous
 //! loci for eye placement and snout length (`docs/morphology-contract.md`).
-//! They are not genes: not in the phenotype, the legacy tally or the gene
-//! mutation streams; their expressed counts and shapes count toward
-//! [`Genome::distance`]. See [`crate::morph`].
+//! They are not genes: not in the phenotype or the gene mutation streams;
+//! their expressed counts and shapes count toward [`Genome::distance`], and
+//! their alleles count in the legacy tally under `Balance::morph_legacy`
+//! ([`Genome::count_origins_with`]). See [`crate::morph`].
 
 use std::collections::BTreeMap;
 use std::ops::Index;
@@ -580,12 +581,23 @@ impl Genome {
 
     /// Add `weight` per allele to each allele's origin, load loci included:
     /// a harmful recessive planted in a rival lineage still counts for the
-    /// player it is tagged with. The morphology loci are not counted (yet;
-    /// see [`crate::morph`]).
+    /// player it is tagged with. The morphology loci are not counted (see
+    /// [`Self::tally_origins_with`]).
     pub fn tally_origins(&self, weight: f64, out: &mut BTreeMap<PlayerId, f64>) {
+        self.tally_origins_with(weight, out, false);
+    }
+
+    /// [`Self::tally_origins`], and with `morph` the morphology segment's
+    /// 14 alleles too (the legacy tally under `Balance::morph_legacy`).
+    pub fn tally_origins_with(&self, weight: f64, out: &mut BTreeMap<PlayerId, f64>, morph: bool) {
         for locus in self.loci.iter().chain(&self.load) {
             *out.entry(locus.a.origin).or_default() += weight;
             *out.entry(locus.b.origin).or_default() += weight;
+        }
+        if morph {
+            for (_, origin) in self.morph.wire_alleles() {
+                *out.entry(origin).or_default() += weight;
+            }
         }
     }
 
@@ -596,13 +608,24 @@ impl Genome {
     /// a tally whose values are whole numbers gives the same values, bit
     /// for bit, as `tally_origins` with a whole-number weight.
     pub fn count_origins(&self, out: &mut Vec<(PlayerId, u32)>) {
+        self.count_origins_with(out, false);
+    }
+
+    /// [`Self::count_origins`], and with `morph` the morphology segment's
+    /// alleles too (what [`Self::tally_origins_with`] adds up with weight 1).
+    pub fn count_origins_with(&self, out: &mut Vec<(PlayerId, u32)>, morph: bool) {
         out.clear();
+        let mut add = |origin: PlayerId| match out.iter_mut().find(|(p, _)| *p == origin) {
+            Some((_, n)) => *n += 1,
+            None => out.push((origin, 1)),
+        };
         for locus in self.loci.iter().chain(&self.load) {
-            for origin in [locus.a.origin, locus.b.origin] {
-                match out.iter_mut().find(|(p, _)| *p == origin) {
-                    Some((_, n)) => *n += 1,
-                    None => out.push((origin, 1)),
-                }
+            add(locus.a.origin);
+            add(locus.b.origin);
+        }
+        if morph {
+            for (_, origin) in self.morph.wire_alleles() {
+                add(origin);
             }
         }
     }

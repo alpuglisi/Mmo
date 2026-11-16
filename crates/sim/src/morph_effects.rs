@@ -19,10 +19,12 @@
 //!   continuous locus that founders vary around the design value, so with the
 //!   tunables on a default-designed lineage does feel small snout effects
 //!   (smell, bite, small-prey snapping, cooling, digging) around zero.
-//! - **Behind tunables that start at 0.** [`Balance::morph_effects`] scales
-//!   every count/shape/snout effect; the three new downsides of today's genes
+//! - **Behind tunables.** [`Balance::morph_effects`] scales every
+//!   count/shape/snout effect; the three new downsides of today's genes
 //!   (tail drag, tail chill, long-leg tippiness and digging) have their own
-//!   knobs. With all four at 0 (the default) [`apply`] returns at once.
+//!   knobs. All four default to 1, the spec's values, since the calibration
+//!   pass (README, *Morphology on by default*); saves from before keep 0.
+//!   With all four at 0 [`apply`] returns at once.
 //!
 //! Hearing is omnidirectional, so it is what fills visual blind spots; the
 //! vision package reads [`MorphContext::hearing`] and

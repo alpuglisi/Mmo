@@ -1249,6 +1249,7 @@ mod tests {
         // Walking somewhere, so not scanning (`Balance::vision_scan`).
         w.organisms[vole].target = Some(center + Vec2::new(0.0, 5.0));
         // Where the vole notices the fox without directional vision.
+        w.config.balance.directional_vision = 0.0;
         let fox_at = |w: &mut World, d: f32| {
             w.organisms[fox].pos = center + Vec2::new(d, 0.0);
             w.grid.rebuild(&w.organisms);

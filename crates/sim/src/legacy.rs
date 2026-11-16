@@ -32,8 +32,10 @@ pub struct LegacySnapshot {
 }
 
 impl LegacySnapshot {
-    /// `adults` yields each breeding adult's genome and offspring raised.
-    pub fn compute<'a>(day: u64, adults: impl Iterator<Item = (&'a Genome, u32)>) -> Self {
+    /// `adults` yields each breeding adult's genome and offspring raised;
+    /// with `morph` the morphology segment's alleles count too
+    /// (`Balance::morph_legacy`).
+    pub fn compute<'a>(day: u64, adults: impl Iterator<Item = (&'a Genome, u32)>, morph: bool) -> Self {
         let mut s = LegacySnapshot { day, ..Default::default() };
         // Whole numbers throughout (allele counts times offspring raised,
         // far below 2^53), so adding each genome's counts at once sums to
@@ -41,7 +43,7 @@ impl LegacySnapshot {
         let mut counts = Vec::new();
         for (genome, raised) in adults {
             s.breeding_adults += 1;
-            genome.count_origins(&mut counts);
+            genome.count_origins_with(&mut counts, morph);
             for &(p, n) in &counts {
                 *s.alleles.entry(p).or_default() += n as f64;
                 if raised > 0 {
@@ -58,7 +60,7 @@ impl LegacySnapshot {
     /// every tally is a whole number (allele counts, times offspring raised
     /// for the weighted one), counted exactly in integers and converted
     /// once, so the order the adults are counted in doesn't matter.
-    pub fn compute_par<'a>(day: u64, adults: impl ParallelIterator<Item = (&'a Genome, u32)>) -> Self {
+    pub fn compute_par<'a>(day: u64, adults: impl ParallelIterator<Item = (&'a Genome, u32)>, morph: bool) -> Self {
         // Per origin: alleles, and alleles times offspring raised.
         type Tally = BTreeMap<PlayerId, (u64, u64)>;
         let (breeding_adults, tally) = adults
@@ -66,7 +68,7 @@ impl LegacySnapshot {
                 || (0, Tally::new(), Vec::new()),
                 |(mut n, mut tally, mut counts): (usize, Tally, Vec<(PlayerId, u32)>), (genome, raised)| {
                     n += 1;
-                    genome.count_origins(&mut counts);
+                    genome.count_origins_with(&mut counts, morph);
                     for &(p, k) in &counts {
                         let t = tally.entry(p).or_insert((0, 0));
                         t.0 += k as u64;
@@ -130,7 +132,7 @@ mod tests {
         let none = crate::genome::MutationParams { rate: 0.0, sd: 0.0 };
         let mut rng = crate::rng::rng_for(0, 0, 0, 0);
         let hybrid = Genome::inherit(&pure, &other, 2, none, 0.0, &mut rng);
-        let s = LegacySnapshot::compute(0, [(&pure, 0), (&hybrid, 2)].into_iter());
+        let s = LegacySnapshot::compute(0, [(&pure, 0), (&hybrid, 2)].into_iter(), false);
         assert!((s.share(1) - 0.75).abs() < 1e-9);
         assert!((s.share(2) - 0.25).abs() < 1e-9);
         // Weighted: only the hybrid raised offspring.
@@ -146,17 +148,40 @@ mod tests {
         let adults: Vec<(&Genome, u32)> =
             w.organisms.iter().filter(|o| o.alive).enumerate().map(|(k, o)| (&*o.genome, (k % 4) as u32)).collect();
         assert!(adults.len() > 100);
-        let mut want = LegacySnapshot { day: 7, breeding_adults: adults.len(), ..Default::default() };
-        for &(g, raised) in &adults {
-            g.tally_origins(1.0, &mut want.alleles);
-            if raised > 0 {
-                g.tally_origins(raised as f64, &mut want.weighted);
+        for morph in [false, true] {
+            let mut want = LegacySnapshot { day: 7, breeding_adults: adults.len(), ..Default::default() };
+            for &(g, raised) in &adults {
+                g.tally_origins_with(1.0, &mut want.alleles, morph);
+                if raised > 0 {
+                    g.tally_origins_with(raised as f64, &mut want.weighted, morph);
+                }
             }
+            want.total_alleles = want.alleles.values().sum();
+            want.weighted_total = want.weighted.values().sum();
+            assert!(want.alleles.len() > 3);
+            assert_eq!(LegacySnapshot::compute(7, adults.iter().copied(), morph), want);
+            assert_eq!(LegacySnapshot::compute_par(7, adults.par_iter().copied(), morph), want);
         }
-        want.total_alleles = want.alleles.values().sum();
-        want.weighted_total = want.weighted.values().sum();
-        assert!(want.alleles.len() > 3);
-        assert_eq!(LegacySnapshot::compute(7, adults.iter().copied()), want);
-        assert_eq!(LegacySnapshot::compute_par(7, adults.par_iter().copied()), want);
+    }
+
+    /// With `morph` each genome counts its 14 morphology alleles too, under
+    /// their own tags: a designed founder's all go to its designer, so a pure
+    /// lineage's share is unchanged, and a morphology mutation is counted for
+    /// the owner it is tagged with.
+    #[test]
+    fn morphology_alleles_count_when_asked() {
+        let pure = Genome::uniform(&[0.5; Gene::COUNT], 1);
+        let mut mutant = Genome::uniform(&[0.5; Gene::COUNT], 1);
+        let mut m = *mutant.morph();
+        m.discrete[0].a.origin = 2;
+        mutant.set_morph(m);
+        let off = LegacySnapshot::compute(0, [(&pure, 0), (&mutant, 0)].into_iter(), false);
+        let on = LegacySnapshot::compute(0, [(&pure, 0), (&mutant, 0)].into_iter(), true);
+        assert_eq!(off.share(2), 0.0);
+        let per_genome = off.total_alleles / 2.0;
+        assert_eq!(on.total_alleles, 2.0 * (per_genome + crate::morph::MORPH_ALLELES as f64));
+        assert_eq!(on.alleles[&2], 1.0);
+        let solo = LegacySnapshot::compute(0, [(&pure, 0)].into_iter(), true);
+        assert_eq!(solo.share(1), 1.0);
     }
 }

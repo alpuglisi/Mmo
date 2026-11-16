@@ -300,10 +300,11 @@ impl World {
     /// members): the leader of each niche with enough adults.
     pub fn niche_leaders(&self) -> Vec<NicheLeader> {
         let mut niches: BTreeMap<&'static str, (f64, BTreeMap<PlayerId, f64>)> = BTreeMap::new();
+        let morph = self.config.balance.morph_in_legacy();
         let mut add = |niche: &'static str, genome: &Genome, w: f64| {
             let e = niches.entry(niche).or_default();
             e.0 += w;
-            genome.tally_origins(w, &mut e.1);
+            genome.tally_origins_with(w, &mut e.1, morph);
         };
         for o in self.organisms.iter().filter(|o| o.is_breeding_adult()) {
             add(diet_niche(o.genome.expr(Gene::Carnivory)), &o.genome, 1.0);
