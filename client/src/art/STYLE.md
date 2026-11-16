@@ -104,8 +104,12 @@ radius, the ground line on the owner ring, with a 1.15 px outline whatever
 the size (bolder than the portrait relative to the creature) and rims of
 about 0.13 and 0.3 body radii. Swimmers add a dorsal fin. `world/sprites.ts`
 rasterises it once per key with `canvas.ts`, the canvas twin of `render.ts`
-(the same Catmull-Rom curves and the same four layers; far-side groups are
-left flat), facing right, and a marker flips it for headings to the left.
+(the same Catmull-Rom curves and the same four layers, far-side groups
+glazed in their `far` ramp like every other group, as in the builder's side
+view), facing right, and a marker flips it for headings to the left. The far
+legs, ears and wing sit `FAR_SHIFT_PX` (about one outline width) forward and
+up, so they peek out past the near parts' ink line and read as the darker far
+side instead of hiding under it.
 Zoomed out, markers use the class drawing (morphology at its defaults), so
 few textures serve a wide view. `e2e/mobile.mjs` saves the map galleries
 (`desktop-sprite-gallery.png`, `desktop-sprite-scales.png` at the real

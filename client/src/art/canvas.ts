@@ -15,9 +15,9 @@
 // The union is one path with every piece wound the same way (the nonzero
 // rule then fills their union; pieces of opposite winding would cancel out
 // where they overlap). The glaze masks need a scratch canvas: all the
-// groups' masks are drawn into one atlas first, so it is rasterised once per
-// sprite rather than once per group (each canvas-to-canvas copy flushes the
-// source). Synchronous and DOM-light (one reused scratch canvas, paths built
+// groups' masks (far-side groups included) are drawn into one atlas first,
+// so it is rasterised once per sprite rather than once per group (each
+// canvas-to-canvas copy flushes the source). Synchronous and DOM-light (one reused scratch canvas, paths built
 // point by point without SVG strings), so it works under WebGL and canvas
 // renderers and in the mobile webviews alike.
 
@@ -29,15 +29,7 @@ export interface CanvasRenderOptions {
   outline: number;
   /** Highlight and shade rim widths in drawing units (0, 0: no glazes). */
   rim: { light: number; shade: number };
-  /**
-   * Leave the far-side groups (far legs, ears and wing: already in the
-   * shadow ramp) flat, without glazes: at sprite size their rims are a pixel
-   * or two.
-   */
-  flatFar?: boolean;
 }
-
-const FAR = new Set<string>(['legs-far', 'ears-far', 'wing-far']);
 
 /** A canvas with a 2D context; the caller makes it (`document.createElement('canvas')`, or a test double). */
 export interface Canvas2D {
@@ -205,7 +197,10 @@ export function paintDrawing(ctx: CanvasRenderingContext2D, d: Drawing, o: Canva
     const y0 = Math.max(0, Math.floor(t.d * (minY - pad) + t.f));
     const bw = Math.max(0, Math.min(w, Math.ceil(t.a * (maxX + pad) + t.e)) - x0);
     const bh = Math.max(0, Math.min(h, Math.ceil(t.d * (maxY + pad) + t.f)) - y0);
-    const glazed = glazes && bw > 0 && bh > 0 && !(o.flatFar && FAR.has(g.part));
+    // Every group is glazed, the far-side ones (far legs, ears, wing) too, in
+    // their own `far` ramp, as `render.ts` glazes them: their shade rim is what
+    // sets them back behind the near parts (STYLE.md, "View").
+    const glazed = glazes && bw > 0 && bh > 0;
     const plan: GroupPlan = { pieces, union, x0, y0, bw, bh, my: atlasH, glazed };
     if (glazed) {
       atlasH += bh;

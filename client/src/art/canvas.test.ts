@@ -93,21 +93,21 @@ describe('paintDrawing', () => {
     const made: string[] = [];
     const make = () => { made.push('mask'); return recordingCanvas('mask', ops); };
     target.getContext('2d')!.setTransform(2, 0, 0, 2, 10, 20);
-    paintDrawing(target.getContext('2d')!, drawing, { outline: 1, rim: { light: 1, shade: 2 }, flatFar: true }, 100, 100, make);
+    paintDrawing(target.getContext('2d')!, drawing, { outline: 1, rim: { light: 1, shade: 2 } }, 100, 100, make);
     const seq = ops.map((o) => `${o.target}.${o.op}`);
     // Every mask is drawn before the target is touched (one rasterisation of the scratch canvas).
     const firstTarget = seq.findIndex((s) => s.startsWith('target.'));
     expect(seq.slice(firstTarget).some((s) => s.startsWith('mask.'))).toBe(false);
-    expect(seq.slice(0, firstTarget).filter((s) => s === 'mask.fillRect')).toHaveLength(2); // shade and highlight of the body only
+    // Shade and highlight of every group, the far legs included (as render.ts glazes them).
+    expect(seq.slice(0, firstTarget).filter((s) => s === 'mask.fillRect')).toHaveLength(4);
     const fills = ops.filter((o) => o.target === 'mask' && o.op === 'fillRect').map((o) => o.args[4] as { fill: string; alpha: number; comp: string });
-    expect(fills.map(({ fill, alpha, comp }) => ({ fill, alpha, comp }))).toEqual([
-      { fill: '#404060', alpha: GLAZE.shade, comp: 'source-over' }, { fill: '#c0c090', alpha: GLAZE.light, comp: 'source-over' },
-    ]);
+    const pair = [{ fill: '#404060', alpha: GLAZE.shade, comp: 'source-over' }, { fill: '#c0c090', alpha: GLAZE.light, comp: 'source-over' }];
+    expect(fills.map(({ fill, alpha, comp }) => ({ fill, alpha, comp }))).toEqual([...pair, ...pair]);
     // Each cut out by the shifted silhouette.
     expect(ops.filter((o) => o.target === 'mask' && o.op === 'fill').every((o) => (o.args[1] as { comp: string }).comp === 'destination-out')).toBe(true);
-    // On the target: far legs (outline, base, no glaze), then the body: outline, base, clip, detail, two glazes, restore, then the overlay.
+    // On the target: far legs (outline, base, clip, two glazes), then the body: outline, base, clip, detail, two glazes, restore, then the overlay.
     expect(seq.slice(firstTarget)).toEqual([
-      'target.stroke', 'target.fill', 'target.save', 'target.clip', 'target.restore',
+      'target.stroke', 'target.fill', 'target.save', 'target.clip', 'target.drawImage', 'target.drawImage', 'target.restore',
       'target.stroke', 'target.fill', 'target.fill', 'target.save', 'target.clip', 'target.fill', 'target.drawImage', 'target.drawImage', 'target.restore',
       'target.fill',
     ]);
