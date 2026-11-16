@@ -47,7 +47,7 @@ use crate::runner::{Published, Request, TerrainReply};
 use crate::store::{AlertPrefsRecord, DesignRecord, PushPrefsRecord, Store, WorldStore};
 use crate::webpush::service::SubscribeError;
 use crate::webpush::PushService;
-use crate::wire::{DeltaEncoder, KEYFRAME_EVERY, PROTO_DELTA, PROTO_JSON};
+use crate::wire::{DeltaEncoder, KEYFRAME_EVERY, PROTO_DELTA, PROTO_JSON, PROTO_MAX};
 
 /// Largest WebSocket message (and frame) a client may send.
 pub const MAX_CLIENT_MESSAGE: usize = 16 * 1024;
@@ -871,12 +871,14 @@ fn encode_png(w: usize, h: usize, rgb: &[u8]) -> Result<Vec<u8>, png::EncodingEr
 struct WsQuery {
     token: Option<String>,
     /// The highest protocol the client speaks (1 when absent): 2 gets
-    /// binary delta states (`wire.rs`).
+    /// binary delta states (`wire.rs`), 3 those plus its own organisms'
+    /// heading and eyes (vision cones).
     proto: Option<u32>,
 }
 
 /// `GET /ws?token=…` (browsers can't set headers on a WebSocket) or with an
-/// `Authorization: Bearer …` header; `&proto=2` asks for delta states and
+/// `Authorization: Bearer …` header; `&proto=2` asks for delta states
+/// (`&proto=3` with headings and vision, the highest this server speaks) and
 /// `&world=<id>` picks the world (the default one without it).
 async fn ws_upgrade(
     State(app): State<AppState>,
@@ -902,7 +904,8 @@ async fn ws_upgrade(
     })?;
     let token = token.to_string();
     let ip = client_ip(&app, &info, &headers);
-    let proto = if q.proto.unwrap_or(PROTO_JSON) >= PROTO_DELTA { PROTO_DELTA } else { PROTO_JSON };
+    let asked = q.proto.unwrap_or(PROTO_JSON);
+    let proto = if asked >= PROTO_DELTA { asked.min(PROTO_MAX) } else { PROTO_JSON };
     // A frame is read whole before the message limit applies: bound both.
     Ok(ws.max_message_size(MAX_CLIENT_MESSAGE).max_frame_size(MAX_CLIENT_MESSAGE).on_upgrade(
         move |socket| async move {
@@ -960,14 +963,14 @@ async fn client_session(
     let resync = Arc::new(AtomicBool::new(false));
     let wants_key = resync.clone();
     let writer = tokio::spawn(async move {
-        let _counted = (proto == PROTO_DELTA).then(|| DeltaConn::new(&net));
+        let _counted = (proto >= PROTO_DELTA).then(|| DeltaConn::new(&net));
         // States are encoded here, when sent: a delta is against the state
         // this client actually got, whatever the queue replaced meanwhile.
-        let mut delta = (proto == PROTO_DELTA).then(DeltaEncoder::new);
+        let mut delta = (proto >= PROTO_DELTA).then(|| DeltaEncoder::for_proto(proto));
         let mut last_key = Instant::now();
         while let Some(mut msg) = rx.recv().await {
             if let ServerMsg::Welcome { proto: p, .. } = &mut msg {
-                *p = delta.is_some().then_some(PROTO_DELTA);
+                *p = delta.as_ref().map(DeltaEncoder::proto);
             }
             let started = Instant::now();
             let frame = match (&mut delta, &msg) {
@@ -1042,7 +1045,7 @@ async fn client_session(
                         continue;
                     }
                     if env.msg == ClientMsg::Resync {
-                        if proto == PROTO_DELTA {
+                        if proto >= PROTO_DELTA {
                             resync.store(true, Ordering::Relaxed);
                             world.net.resyncs.fetch_add(1, Ordering::Relaxed);
                         }

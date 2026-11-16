@@ -378,3 +378,13 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 @media (max-width: 760px) {
   .tab { font-size: 11px; padding-left: 1px; padding-right: 1px; min-width: 0; letter-spacing: -0.01em; }
 }
+
+/* Vision cones legend (the organism panel), patterned like the cones on the map. */
+.vision-toggle { display: flex; justify-content: flex-start; gap: 6px; align-items: center; margin: 4px 0; cursor: pointer; }
+.vision-toggle input { margin: 0; width: auto; }
+.vision-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 2px 0 6px; color: var(--muted); }
+.vision-key { display: inline-flex; align-items: center; gap: 4px; }
+.vision-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border); }
+.vision-swatch.seen { background: rgba(139, 148, 158, 0.3); }
+.vision-swatch.depth { background: radial-gradient(circle, rgba(63, 185, 80, 1) 1.3px, transparent 1.6px) 0 0 / 5px 5px, rgba(63, 185, 80, 0.3); border-color: rgba(63, 185, 80, 0.9); }
+.vision-swatch.blind { background: repeating-linear-gradient(45deg, rgba(248, 81, 73, 0.75) 0 1.5px, rgba(248, 81, 73, 0.12) 1.5px 4.5px); border-color: rgba(248, 81, 73, 0.8); }

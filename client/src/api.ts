@@ -11,7 +11,7 @@ import type {
   LineageStats, NativeService, PlayerId, PlayerSeasonHistory, PushDeviceView, PushKeyView, PushPrefs, PushSubscriptionView, RankedSeasonList, RankedSeasonPage, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldList,
   WorldSummary,
 } from './protocol';
-import { PROTO_DELTA } from './wire';
+import { PROTO_VISION } from './wire';
 
 let base = '';
 
@@ -48,12 +48,14 @@ export function withWorld(path: string, id: string = world): string {
 
 /**
  * WebSocket URL for a session token, on the same origin as the API. Asks
- * for protocol 2 (binary delta states); a server without it ignores the
- * parameter and sends JSON states, which the socket handles too.
+ * for protocol 3 (binary delta states with own organisms' heading and eyes);
+ * a server that speaks only 2 answers with 2 (no vision cones), and one
+ * without either ignores the parameter and sends JSON states, which the
+ * socket handles too.
  */
 export function wsUrl(token: string): string {
   const origin = base || window.location.origin;
-  return withWorld(`${origin.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}&proto=${PROTO_DELTA}`);
+  return withWorld(`${origin.replace(/^http/, 'ws')}/ws?token=${encodeURIComponent(token)}&proto=${PROTO_VISION}`);
 }
 
 export class ApiError extends Error {

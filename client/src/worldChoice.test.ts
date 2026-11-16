@@ -46,7 +46,7 @@ describe('world choice', () => {
     expect(withWorld('/api/leaderboard/seasons?limit=8')).toBe('/api/leaderboard/seasons?limit=8&world=isle%202');
     expect(withWorld('/api/world', 'main')).toBe('/api/world?world=main');
     setApiBase('http://h:1');
-    expect(wsUrl('t')).toBe('ws://h:1/ws?token=t&proto=2&world=isle%202');
+    expect(wsUrl('t')).toBe('ws://h:1/ws?token=t&proto=3&world=isle%202');
     setApiBase('');
     setWorld('');
   });

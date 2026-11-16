@@ -82,6 +82,20 @@ describe('DeltaDecoder', () => {
     }
   });
 
+  it('carries own organisms\' heading and eyes (protocol 3), never another player\'s', () => {
+    const d = new DeltaDecoder();
+    const states = frames.map((f) => d.apply(f.frame));
+    for (const s of states) {
+      expect(s.organisms.length).toBeGreaterThan(0);
+      for (const o of s.organisms) {
+        expect(o.heading).toBeGreaterThanOrEqual(0);
+        expect(o.heading).toBeLessThan(32);
+        expect(o.vision).toMatchObject({ eyes: 2, azimuth: 60 });
+      }
+      for (const n of s.nearby) expect('heading' in n || 'vision' in n).toBe(false);
+    }
+  });
+
   it('refuses a delta after a lost frame until the next keyframe', () => {
     const d = new DeltaDecoder();
     d.apply(frames[0].frame);

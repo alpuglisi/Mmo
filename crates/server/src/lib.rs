@@ -33,6 +33,8 @@
 //!   origins (whose alleles a lineage carries).
 //! - [`appearance`]: the coarse visible body plan sent with each organism
 //!   (`look`), for the client's sprites.
+//! - [`vision`]: the eye geometry and quantized heading sent with the
+//!   player's own organisms only, for the client's vision cones.
 //! - [`economy`]: renown balances, the ledger, escrow and the stud
 //!   marketplace's listings.
 //! - [`worlds`]: the worlds (shards) one process hosts, each with its own
@@ -63,6 +65,7 @@ pub mod snapshot;
 pub mod standings;
 pub mod store;
 pub mod terrain;
+pub mod vision;
 pub mod webpush;
 pub mod wire;
 pub mod worlds;

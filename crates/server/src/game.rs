@@ -4792,6 +4792,9 @@ mod tests {
                 if o.possessed_by.is_some() {
                     v.speed = Some(g.world.move_speed(o, o.needs.energy > 40.0));
                 }
+                if let Some(vision) = &mut v.vision {
+                    vision.directional = g.world.config.balance.directional_vision > 0.0;
+                }
                 v
             })
             .collect();

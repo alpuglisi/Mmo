@@ -792,7 +792,7 @@ Server → client:
 | `type` | When |
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
-| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one), `nearby` (others in the window, also with `look`), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
+| `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one; `heading`, its facing as one of 32 directions, and `vision`, its eyes for the vision cones: see *Vision cones* below), `nearby` (others in the window, also with `look`; never a heading or eyes), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
 | `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor` |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
@@ -856,6 +856,30 @@ web client handles both.
   `UPDATE_WIRE_FIXTURE=1` after a format change), and Vitest
   (`wire.test.ts`) decodes it with the client's decoder, drops a frame,
   garbles and truncates frames, and drives the socket's resync.
+
+**Protocol 3: vision cones** (`vision.rs`, `wire.rs`; decision #8 of
+`docs/morphology.md`: cones are shown only to the owner, on their own
+organisms). Each own organism carries `heading` (`Organism::heading`, the
+last movement, quantized to 32 directions: `k · 11.25°` from +x toward +y)
+and `vision`, a compact descriptor fixed at birth: `eyes` (1–6),
+`azimuth` (first pair, °), `field` (each eye's width, °), `occlusion`
+(snout, °, absent at 0), the sim's `coverage` (%), `binocular` (depth
+field, °), `blind` (behind, °), `front_gap` (ahead, °, absent at 0) and
+`directional` (present when `Balance::directional_vision` > 0, i.e. blind
+spots shorten detection; off, the cones only describe the eyes). Nearby
+organisms never carry either, whatever the protocol (tested in
+`tests/server.rs` and `wire.rs`). In JSON states (protocol 1) they are two
+more optional keys per own organism. A client asking for `proto=3` gets
+protocol 2 frames with two more own fields (bit 20 heading, bit 21 an index
+into a `visions` palette in the meta JSON, like `looks`); a client asking
+for 2 gets exactly the protocol 2 frames (its decoder refuses unknown bits),
+and a client asking for 3 from an older server is answered 2 and draws no
+cones. Cost: each distinct descriptor once per connection (about 75 bytes of
+JSON; a lineage has a handful, they vary with the `Eyes` gene), then one byte
+for the palette index when an organism is first sent and one byte when it
+turns past an 11.25° step: in the `wire.rs` session test a keyframe of six
+own organisms grows by 336 bytes, nearly all of it the four palette entries,
+and a delta by a byte per organism that turned. The web client asks for 3.
 
 `look` (`appearance.rs`) is the visible body plan of an adult, computed from
 the phenotype with a few comparisons per organism per push: `size` (0 tiny
@@ -2129,7 +2153,8 @@ cargo run --release --bin evo-server -- --fast --memory --static client/dist   #
   (yours yellow and stronger, wild grey, other players a stable hue each); a
   ring round the body when possessed (red) or pregnant (green); and an icon
   for what it is doing (z resting or dormant, ! fleeing, crosshair hunting,
-  heart seeking a mate). Sprites face the way they last moved. The
+  heart seeking a mate). Sprites face the way they last moved (your own by
+  the server's heading). The
   morphology in `look` shows too: 0–8 legs, the near ear of each pair
   (round, as today, pointed, long or fan; round ears stay flush on
   cold-blooded and swimming bodies, as before), the near-side eyes plus a
@@ -2575,8 +2600,8 @@ api.ts       fetch wrapper for the HTTP API (ApiError carries code and detail)
 socket.ts    GameSocket: ids paired with `result`, 10 s reply timeout, reconnect with
              exponential backoff (0.5 s doubling to 15 s, ±20 % jitter), connection state;
              reopens a socket silent for 20 s; `wake()` on resume skips the backoff;
-             asks for protocol 2 and rebuilds its binary delta states into whole `state`s
-wire.ts      protocol 2 decoder (mirror of crates/server/src/wire.rs; wire.fixture.json pins them)
+             asks for protocol 3 and rebuilds its binary delta states into whole `state`s
+wire.ts      protocol 2/3 decoder (mirror of crates/server/src/wire.rs; wire.fixture.json pins them)
 model.ts     GameModel: latest state, offer table (requests, updates, outcomes), alerts feed, toasts; pub/sub
 alertPrefs.ts  alert preferences: normalize, per-kind show/toast switches, feed filter
 push.ts      push notifications: device status, per-kind switches, subscribe/unsubscribe (browser APIs behind PushDeps)
@@ -2588,7 +2613,8 @@ ui/          DOM screens and panels; panels re-render at most 4×/s and rebuild 
              when their content changes, so they stay clickable under 10 Hz state pushes
 world/       PixiJS view: camera, tile-map texture (terrain.ts decodes and colors the grid), overlays,
              markers, hit testing, mouse/touch gestures (tap, long press, drag, pinch);
-             creature.ts: body plan → shapes (pure, tested); sprites.ts: shapes → cached textures
+             creature.ts: body plan → shapes (pure, tested); sprites.ts: shapes → cached textures;
+             visionCones.ts: your selected organism's vision cones from its eyes and heading (pure, tested)
 serverOrigin.ts  which game server to talk to (URL, saved, build default, same origin)
 capacitor.config.ts  the iOS / Android wrapper
 ```
@@ -2641,8 +2667,20 @@ backoff, reconnect and give-up; the offer table through request, accept
 and outcome; the matings panel's compatibility summary; the Seasons tab's
 helpers; the world picker's memory (`worldChoice.test.ts`); the onboarding
 tour's state machine, steps, progress storage, hint triggers and card
-placement; and the protocol 2 decoder against the Rust fixture
-(`wire.test.ts`, above). `e2e/smoke.mjs` (Playwright, pre-installed Chromium) starts
+placement; the vision cones (`visionCones.test.ts`: headings to screen
+angles, the arcs agreeing with the server's numbers, rotation with the
+heading with the right eye clockwise, the gap ahead of side eyes and snout
+occlusion, wedge polygons, hatch lines clipped inside the wedge and riding
+with the animal, depth dots, sprite facing, easing the short way round, the
+panel's on/off label); and the protocol 2/3 decoder against the Rust fixture
+(`wire.test.ts`, above, own organisms' heading and eyes included).
+`e2e/vision.mjs` founds a lineage and checks protocol 3 (heading and eyes on
+every own organism, none on neighbors), clicks an own organism and finds its
+cones on the marker (hatched blind spot, dotted depth zone), the panel's
+numbers and "directional vision is off" label, the toggle (hidden, shown,
+remembered), then possesses and walks it in different directions and checks
+the cones turn with the server heading and the sprite faces its way;
+screenshot `e2e/out/vision-cones.png`. `e2e/smoke.mjs` (Playwright, pre-installed Chromium) starts
 `evo-server --fast --memory --static client/dist` on a free port, registers,
 checks the live cost against the prices in `/api/genes` (and that the
 server's founding response agrees) and the client-side over-budget refusal, founds a lineage, waits for markers and
@@ -5494,6 +5532,14 @@ change is the burrowers' legacy, +1.0 ± 0.9 pp). The rear blind spot costs
 the newts and frogs (small eyes, so big blind spots) a little; hunters gain
 little because they also have blind spots and the default depth multiplier is
 about 1. The real trade-offs appear once designs choose eye layouts.
+
+**On the map.** The owner sees the cones of their selected organism (else
+the possessed one): the server sends each own organism's quantized heading
+and eye descriptor (protocol 3, *Vision cones* under the WebSocket
+protocol), never anyone else's. The organism panel shows the view, depth
+and blind numbers, a "Show vision" toggle, and whether the mechanic is on in
+this world (off by default: the cones then describe the eyes, detection does
+not depend on facing).
 
 Cost (callgrind, `evo-sim bench --days 5 --threads 1`, same world): off,
 `World::step` +0.36% instructions over the build without the mechanic
