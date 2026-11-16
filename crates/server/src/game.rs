@@ -2839,7 +2839,7 @@ fn incompatibility(p: &MatingPreview) -> Option<ErrorInfo> {
             .body_plan_gaps
             .iter()
             .filter(|&&(_, gap)| gap >= evo_sim::mating::BODY_PLAN_STERILE)
-            .map(|&(g, gap)| format!("{} ({gap:.2} apart)", g.label()))
+            .map(|&(g, gap)| format!("{} ({gap:.2} apart)", g.display_name_lower()))
             .collect();
         let msg = format!("different body plans: {} differ too much to conceive", sterile.join(", "));
         return Some(ErrorInfo::new("incompatible_body_plans", msg).with_detail(serde_json::json!({ "genes": gaps })));
@@ -3615,7 +3615,7 @@ mod tests {
             m => panic!("{m:?}"),
         };
         assert_eq!(err.code, "incompatible_body_plans");
-        assert!(err.message.contains("endothermy"), "{}", err.message);
+        assert!(err.message.contains("warm-bloodedness"), "{}", err.message);
         assert_eq!(err.detail.unwrap()["genes"][0]["gene"], "endothermy");
         assert_eq!(out.len(), 1, "the other player is not asked");
         assert_eq!(g.world.mating_slots_left(1), g.world.config.mating_slots_per_season);

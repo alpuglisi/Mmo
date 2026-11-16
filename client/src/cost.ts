@@ -3,6 +3,7 @@
 // design; this only gives live feedback. The prices come from /api/genes.
 
 import type { DesignSpec, GeneCatalog, MorphSpec } from './protocol';
+import { traitName } from './ui/traitNames';
 
 export interface CostBreakdown {
   traits: number;
@@ -85,10 +86,10 @@ export function validateDesign(d: DesignSpec, cat: GeneCatalog): DesignProblem |
   const known = new Set(cat.genes.map((g) => g.name));
   for (const [k, v] of Object.entries(d.traits)) {
     if (!known.has(k)) return { code: 'unknown_gene', message: `unknown gene "${k}"` };
-    if (!(v >= 0 && v <= 1)) return { code: 'value_out_of_range', message: `${k} must be in [0, 1]` };
+    if (!(v >= 0 && v <= 1)) return { code: 'value_out_of_range', message: `${traitName(k)} must be in [0, 1]` };
   }
   if (!Number.isInteger(d.litter_size) || d.litter_size < 1 || d.litter_size > cat.max_litter) {
-    return { code: 'litter_size', message: `litter size ${d.litter_size} not in 1..=${cat.max_litter}` };
+    return { code: 'litter_size', message: `${traitName('litter_size')} ${d.litter_size} not in 1..=${cat.max_litter}` };
   }
   if (!Number.isInteger(d.founders) || d.founders < 2) {
     return { code: 'no_founders', message: 'a design needs at least two founders' };

@@ -202,6 +202,97 @@ define_genes! {
     Obedience => "obedience",
 }
 
+impl Gene {
+    /// The gene's wire key: its label in `snake_case` (`"large_ears"`). The
+    /// storage and protocol name; never shown to players.
+    pub fn key(self) -> String {
+        self.label().replace(' ', "_")
+    }
+
+    /// The gene's display name ("Ear size"), the one players see; see
+    /// [`trait_display_name`].
+    pub fn display_name(self) -> &'static str {
+        trait_display_name(self)
+    }
+
+    /// [`Gene::display_name`] for use inside a sentence ("ear size").
+    pub fn display_name_lower(self) -> String {
+        let n = self.display_name();
+        let mut c = n.chars();
+        match c.next() {
+            // Keep an all-capitals word (an acronym) as it is, like the client.
+            Some(a) if !(a.is_ascii_uppercase() && c.next().is_some_and(|b| b.is_ascii_uppercase())) => {
+                a.to_lowercase().chain(n[a.len_utf8()..].chars()).collect()
+            }
+            _ => n.to_string(),
+        }
+    }
+}
+
+/// The display name of a gene's slider: the one place server and sim text
+/// names a trait to players. It must match the client's map,
+/// `client/src/ui/traitNames.ts` (`TRAIT_NAMES`), name for name; the test
+/// `the_client_trait_name_fixture_is_current` writes
+/// `client/src/ui/traitNames.fixture.json`, which the client's
+/// `traitNames.test.ts` checks against that map.
+///
+/// The labels ([`Gene::label`]) and wire keys ([`Gene::key`]) stay as they
+/// are: a key such as `large_ears` names one end of its slider (0 gives small
+/// ears), so the display name names the axis instead ("Ear size").
+pub fn trait_display_name(gene: Gene) -> &'static str {
+    use Gene::*;
+    match gene {
+        Endothermy => "Warm-bloodedness",
+        BirthMode => "Birth mode",
+        LitterSize => "Offspring per birth",
+        BodySize => "Body size",
+        Muscle => "Muscle mass",
+        FatStores => "Body fat",
+        LegLength => "Leg length",
+        Claws => "Claws",
+        Hooves => "Hooves",
+        FootWidth => "Foot width",
+        Tail => "Tail length",
+        Swimming => "Swimming",
+        Wings => "Wings",
+        Climbing => "Climbing",
+        Burrowing => "Burrowing",
+        Fur => "Fur",
+        Scales => "Scales",
+        Armor => "Armor",
+        Fangs => "Fang size",
+        Eyes => "Eye size",
+        Ears => "Ear size",
+        Nose => "Sense of smell",
+        Carnivory => "Diet",
+        Camouflage => "Camouflage",
+        Toxins => "Toxicity",
+        Coloration => "Colour",
+        Vocal => "Voice",
+        Boldness => "Boldness",
+        Aggression => "Aggression",
+        Wanderlust => "Roaming",
+        GroupTolerance => "Sociability",
+        ForagingRange => "Foraging range",
+        PackInstinct => "Pack hunting",
+        Pickiness => "Mate choosiness",
+        PrefColoration => "Preferred mate colour",
+        TolColoration => "Mate colour tolerance",
+        PrefBodySize => "Preferred mate size",
+        TolBodySize => "Mate size tolerance",
+        Hibernation => "Hibernation",
+        Brumation => "Brumation",
+        Migration => "Migration",
+        Estivation => "Estivation",
+        Caching => "Food caching",
+        Torpor => "Torpor",
+        SeasonalCoat => "Seasonal coat",
+        TimedBreeding => "Timed breeding",
+        Vigilance => "Sentry instinct",
+        Obedience => "Obedience",
+    }
+}
+
 /// Index of `Gene::Obedience`, the last gene (see [`Genome::founder`]).
 const OBEDIENCE: usize = Gene::Obedience as usize;
 const _: () = assert!(OBEDIENCE == Gene::COUNT - 1, "obedience is the last gene");
@@ -1246,6 +1337,40 @@ mod tests {
 
     fn flat(v: f32) -> [f32; Gene::COUNT] {
         [v; Gene::COUNT]
+    }
+
+    /// `client/src/ui/traitNames.fixture.json`: every gene's wire key and
+    /// [`trait_display_name`], which the client's `traitNames.test.ts`
+    /// checks against `TRAIT_NAMES`, so the two maps cannot drift. Rerun
+    /// with `UPDATE_TRAIT_NAMES_FIXTURE=1` after renaming a trait (and
+    /// rename it in `traitNames.ts` too).
+    #[test]
+    fn the_client_trait_name_fixture_is_current() {
+        let rows: Vec<String> = Gene::ALL
+            .iter()
+            .map(|&g| {
+                let name = trait_display_name(g);
+                assert!(!name.contains(['"', '\\']), "{name}");
+                format!("  \"{}\": \"{name}\"", g.key())
+            })
+            .collect();
+        let text = format!("{{\n{}\n}}\n", rows.join(",\n"));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../client/src/ui/traitNames.fixture.json");
+        if std::env::var_os("UPDATE_TRAIT_NAMES_FIXTURE").is_some() {
+            std::fs::write(&path, &text).unwrap();
+        }
+        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(have == text, "{} is stale: rerun with UPDATE_TRAIT_NAMES_FIXTURE=1", path.display());
+    }
+
+    #[test]
+    fn display_names_name_the_axis_and_lower_for_sentences() {
+        assert_eq!(Gene::Ears.display_name(), "Ear size");
+        assert_eq!(Gene::Nose.display_name(), "Sense of smell");
+        assert_eq!(Gene::Armor.display_name(), "Armor");
+        assert_eq!(Gene::Ears.key(), "large_ears");
+        assert_eq!(Gene::GroupTolerance.display_name_lower(), "sociability");
+        assert_eq!(Gene::Endothermy.display_name_lower(), "warm-bloodedness");
     }
 
     #[test]
