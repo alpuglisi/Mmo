@@ -5,6 +5,7 @@
 import { api, ApiError } from '../api';
 import { changedTraits, designCost, validateDesign } from '../cost';
 import type { BirthSpec, DesignSpec, FoundResponse, GeneCatalog, GeneInfo, ThermoSpec } from '../protocol';
+import { avatarView } from './avatarView';
 import { h, label } from './dom';
 import { caption, TRAIT_TEXT, type Level } from './traitText';
 
@@ -117,6 +118,9 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   const paid = cat.genes.filter((g) => g.cost > 0);
   const free = cat.genes.filter((g) => g.cost === 0);
 
+  // --- live preview of the founders
+  const avatar = avatarView();
+
   // --- budget panel
   const total = h('div', { class: 'budget-total', id: 'budget-total' });
   const bar = h('div', { class: 'bar-fill' });
@@ -160,6 +164,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     problem.textContent = p && !(p.code === 'bad_name' && spec.name === '') ? p.message : '';
     submit.disabled = p !== null;
     serverError.textContent = '';
+    avatar.update(spec);
   }
 
   submit.addEventListener('click', async () => {
@@ -198,8 +203,9 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
           h('div', { class: 'traits' }, ...paid.map(traitRow))),
         h('section', { class: 'card' }, h('h2', {}, 'Behavior, diet and mate preferences'), h('p', { class: 'muted small' }, 'Free: these are trade-offs.'),
           h('div', { class: 'traits' }, ...free.map(traitRow)))),
-      h('aside', { class: 'card budget' }, h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, problem, serverError,
-        h('div', { class: 'row' }, submit, reset))));
+      h('aside', { class: 'design-side' }, avatar.el,
+        h('section', { class: 'card budget' }, h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, problem, serverError,
+          h('div', { class: 'row' }, submit, reset)))));
   update();
   return page;
 }

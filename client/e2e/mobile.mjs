@@ -192,6 +192,31 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
     const btn = await box(page, '[data-trait="fur"] .trait-more');
     if (!btn || btn.width < 24 || btn.height < 24) throw new Error(`${tag}: info button too small to tap ${JSON.stringify(btn)}`);
     await shot(page, `${tag}-design-editor.png`);
+    // Founder preview: a compact header that stays at the top while the
+    // sliders scroll, redraws as they move, and collapses to one line.
+    const header = async () => page.evaluate(() => {
+      const card = document.querySelector('.avatar-card').getBoundingClientRect();
+      const fig = document.querySelector('#design-avatar');
+      const body = document.querySelector('.design-body').getBoundingClientRect();
+      return { top: card.top - body.top, left: card.left, right: card.right, height: card.height, figH: fig.getBoundingClientRect().height, svg: fig.innerHTML, role: fig.getAttribute('role'), label: fig.getAttribute('aria-label'), docW: document.documentElement.scrollWidth };
+    });
+    const h0 = await header();
+    if (h0.role !== 'img' || !h0.label.startsWith('Founder preview:')) throw new Error(`${tag}: avatar not a described image ${h0.role} ${h0.label}`);
+    if (Math.abs(h0.top) > 2) throw new Error(`${tag}: avatar header not stuck to the top after scrolling (${h0.top})`);
+    if (h0.left < 0 || h0.right > vw.width + 1 || h0.docW > vw.width + 1) throw new Error(`${tag}: avatar header overflows ${JSON.stringify(h0)}`);
+    if (h0.height > vw.height * 0.25 || h0.figH < 60) throw new Error(`${tag}: avatar header not compact (${h0.height}px, figure ${h0.figH}px)`);
+    const setGene = (g, v) => page.$eval(`input[data-gene="${g}"]`, (el, v) => { el.value = String(v); el.dispatchEvent(new Event('input')); }, v);
+    await setGene('wings', 0.6);
+    const h1 = await header();
+    if (h1.svg === h0.svg || !h1.svg.includes('data-part="wing-near"')) throw new Error(`${tag}: avatar did not grow wings`);
+    await shot(page, `avatar-${tag}-header.png`);
+    await setGene('wings', 0);
+    await page.tap('.avatar-toggle');
+    const hc = await header();
+    if (hc.figH !== 0 || hc.height > 90) throw new Error(`${tag}: collapsed avatar header ${JSON.stringify({ h: hc.height, fig: hc.figH })}`);
+    await page.tap('.avatar-toggle');
+    if ((await header()).figH < 60) throw new Error(`${tag}: avatar did not expand again`);
+    step(`${tag}: avatar header sticky (${Math.round(h0.height)}px), redraws, collapses, fits`);
     // Back to the defaults this section was tuned with.
     await page.$eval('input[data-gene="fur"]', (el) => { el.value = '0'; el.dispatchEvent(new Event('input')); });
     await page.check('input[name="thermo"][value="warm"]');
