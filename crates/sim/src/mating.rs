@@ -78,9 +78,13 @@ pub fn fertility_from_gap(gap: f32) -> f32 {
     ramp(gap, BODY_PLAN_FULL, BODY_PLAN_STERILE)
 }
 
-/// Largest difference in expressed value of any [`BODY_PLAN_GENES`].
+/// Largest difference in expressed value of any [`BODY_PLAN_GENES`], or the
+/// morphology's body-plan gap if larger ([`crate::morph::morph_terms`]: 0.1
+/// per step of eye or leg count; 0 between equal counts, so then exactly the
+/// genes' gap).
 pub fn body_plan_gap(a: &Genome, b: &Genome) -> f32 {
-    BODY_PLAN_GENES.iter().map(|&g| (a.expr(g) - b.expr(g)).abs()).fold(0.0, f32::max)
+    let morph = crate::morph::morph_terms(&a.morph().key(), &b.morph().key()).1;
+    BODY_PLAN_GENES.iter().map(|&g| (a.expr(g) - b.expr(g)).abs()).fold(0.0, f32::max).max(morph)
 }
 
 /// Whether two organisms recognize each other as their own kind: never hunted

@@ -1404,8 +1404,9 @@ impl World {
                 for _ in 0..births {
                     let ma = &c.pool[rng.gen_range(0..c.pool.len())];
                     let pa = &c.pool[rng.gen_range(0..c.pool.len())];
-                    let genome =
+                    let mut genome =
                         Genome::inherit(&ma.genome, &pa.genome, c.owner, mutation, bal.recessive_mutation, rng);
+                    genome.mutate_morph(c.owner, bal.morph_step_rate);
                     let generation = ma.generation.max(pa.generation) + 1;
                     let sex = if rng.gen::<bool>() { Sex::Female } else { Sex::Male };
                     c.add(sex, today, PoolEntry { genome, generation }, k, rng);

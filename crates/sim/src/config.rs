@@ -610,6 +610,14 @@ pub struct Balance {
     /// default: see *Endothermy upkeep* in the README's Balance section).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v19"))]
     pub warm_upkeep: f32,
+    /// Probability per allele per generation that a discrete morphology
+    /// allele (eye, ear or leg count, ear or tail shape; `crate::morph`)
+    /// mutates one step. The spec recommends 0.0005; it is 0 (off) by
+    /// default so worlds run bit for bit as before the morphology loci
+    /// (an expressed mutant count changes kinship and fertility) until a
+    /// balance package turns it on. Snapshots before version 23 read 0.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v23"))]
+    pub morph_step_rate: f32,
 }
 
 /// How a shielded home range softens predation (`World::set_home_ranges`).
@@ -731,12 +739,13 @@ impl Default for Balance {
             home_range: HomeRangeBalance::default(),
             lactation: 0.0,
             warm_upkeep: 0.0,
+            morph_step_rate: 0.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 91;
+    pub const FIELD_COUNT: usize = 92;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -837,6 +846,7 @@ impl Balance {
             ("offline_stack_floor", &mut self.home_range.stack_floor),
             ("lactation", &mut self.lactation),
             ("warm_upkeep", &mut self.warm_upkeep),
+            ("morph_step_rate", &mut self.morph_step_rate),
         ]
     }
 

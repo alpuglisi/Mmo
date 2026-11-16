@@ -1077,6 +1077,7 @@ impl World {
         let tpd = self.config.ticks_per_day as f32;
         let mutation = self.config.mutation;
         let load_rate = self.config.balance.recessive_mutation;
+        let morph_rate = self.config.balance.morph_step_rate;
         let Some(preg) = self.organisms[i].pregnancy.take() else {
             return;
         };
@@ -1109,6 +1110,7 @@ impl World {
             .map(|_| {
                 let mut g = Genome::inherit_genes(&mother.genome, &preg.father, owner, mutation, rng);
                 g.inherit_load(&mother.genome, &preg.father, owner, load_rate, &mut load_rng);
+                g.mutate_morph(owner, morph_rate);
                 g
             })
             .collect();

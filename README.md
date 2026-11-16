@@ -46,7 +46,7 @@ docs/
 
 | Module | Design-doc section | What it does |
 | --- | --- | --- |
-| `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. |
+| `genome` | Scoring, Genetics | 46 diploid genes (body, behavior, mate preference and seasonal strategy). Every allele carries an origin tag: founders get the designer's ID, mutations get the owner of the organism they appear in, and tags never change. Expression is additive except for a per-gene dominance coefficient `h` (`expressed = mean + h·|a−b|/2`): coloration and fur are partly dominant, camouflage partly recessive. Four hidden load loci carry harmful recessives that arise by mutation, pass with their origin tags (and count for legacy), do nothing in carriers and harm homozygotes, so inbreeding exposes them and outcrossing hides them; `Genome::set_load` plants one in a founder or stud. Seasonal genes and load loci are left out of the genetic distance. A separate **morphology segment** (`morph`, `docs/morphology-contract.md`) holds discrete loci for eye count (1–6), ear count (0/2/4), ear shape, leg count (0/2/4/6/8) and tail shape (small-integer alleles with origin tags; one allele expressed, never an average: the wild type over any other, then the one nearer the default, the lower count on a tie, shapes in a fixed order) and additive loci for eye azimuth and snout length; `tail_present` is derived from `Tail` ≥ 0.05. Founders carry the design's counts exactly. The segment has its own random stream (no draws from the shared ones), its own choice bits in the by-parents snapshot form, and stays out of the phenotype and the legacy tally. Expressed counts and shapes add `min(1, steps/2)` per locus to the genetic distance's numerator (divisor unchanged), and eye and leg counts 0.1 per step to the body-plan gap; equal morphologies add exactly 0, so default-morphology worlds run bit for bit as before. Discrete step mutation (`Balance::morph_step_rate`, spec value 0.0005) is off by default for the same reason. `Organism::morph` (`morph::Morphology`) caches the expressed parameters and derived eye field width for other packages; nothing else reads it yet. |
 | `design` | Organism design | Founder designs: thermoregulation → birth type → offspring count → traits, on a 100-point budget. Founders vary around the design. |
 | `stats` | Stats layer, Derived physical properties | Phenotype → speed, strength, perception, stealth, metabolism… and height, weight, ground pressure, buoyancy, wing loading, grip. Thermoregulation mismatch (fur on a cold-blooded body blocks basking). |
 | `terrain` | Seasons and biomes, Movement and terrain | Noise-generated biomes, latitude/altitude climate, four seasons, day/night. Rivers carved by flow accumulation down a pit-free drainage network to lakes, sea or map edge; depressions fed by more rain than evaporates off their surface fill into lakes (priority flood). Rivers in flood overflow onto their floodplain (low land up to two tiles from the channel): standing water that swimmers cross and that strands and drowns small non-swimmers, drowned plants, then silt that speeds regrowth for weeks. Regional weather on a 16-tile grid: fronts drifting east bring wind, storms (chill, costly open ground, costly and risky flight) and rain or snow; the wind has a direction (prevailing westerly, swinging over days and veering regionally) that speeds or slows flyers and gliders by wing loading; slow dry and wet spells and the seasons drive a per-cell soil wetness that fills and drains shallow lakes, marsh and rivers (droughts dry them out, crowding organisms at the rest) and paces plant regrowth; spring snowmelt swells rivers so fast deep water blocks weak swimmers, and rivers freeze in winter. Canopy browse needs height or climbing, and climbers in canopy are safe from ground hunters. Tiles update chunk by chunk, each chunk once per simulated hour. Hooks: `Map::weather_at`, `Tile::wetness`/`Map::dryness_at`, `Map::drought`/`flood`, `Map::terrain_version`/`chunk_version`; `Map::climate_temp`/`climate_wet` are climate anomalies (0 normally) that catastrophes set. `traverse()` returns Blocked / Passable{speed, energy} from body vs. tile. |
@@ -694,7 +694,7 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `POST /api/logout` | Bearer | End the session |
 | `GET /api/worlds` | | The hosted worlds, the default first: `{default, worlds: [{id, name, width, height, day, year, season, population, lineages, players_online}]}` |
 | `POST /api/lineage` (design) | Bearer | Found your lineage (one per player per world). `201 {lineage, founders: [ids], cost}`; `400` with `over_budget {cost, budget}`, `value_out_of_range {gene}`, `reserved_gene`, `litter_size`, `no_founders`, `unknown_gene`, `bad_name`; `409 already_founded` |
-| `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices |
+| `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices, and the morphology parameters (`morph`: name, kind, values or range, default, cost) |
 | `GET /api/world` | | Clock, season, weather, map size, organism and lineage counts |
 | `GET /api/leaderboard` | | Legacy shares from the latest daily snapshot: `{day, breeding_adults, rows: [{player, name, share, weighted_share, alive}]}` |
 | `GET /api/leaderboard/history?limit=30&from=&to=&genes=true` | | The stored daily records, oldest first (legacy shares, lineage sizes, daily births and deaths by cause, player lineages' mean genes; thinned with age: see *Daily history retention*): the newest `limit` (at most 365) with a day in `from..=to` (the newest world's days; both optional); `genes=false` leaves out the gene means |
@@ -741,6 +741,15 @@ Errors are `{"code": "...", "message": "...", ...detail}`. A design:
 
 `thermo` is `warm`/`cold`, `birth` is `live`/`incubated_eggs`/`abandoned_eggs`;
 gene names are the sim's labels in `snake_case` (`GET /api/genes` lists them).
+An optional `morph` object sets the body plan (`docs/morphology-contract.md`),
+every field optional with the contract defaults: `{"eye_count": 3,
+"eye_azimuth": 90, "ear_count": 2, "ear_shape": "pointed", "leg_count": 6,
+"tail_shape": "fin", "snout_length": 0.3}` (eyes 1–6, ears 0/2/4, legs
+0/2/4/6/8, ear shapes `round`/`pointed`/`long`/`fan`, tail shapes
+`thin`/`bushy`/`fin`/`club`/`prehensile`, azimuth 0–180°, snout 0–1). A value
+out of range or an unknown shape is refused as `bad_morph` (`detail.field`).
+Morphology costs no points yet; `GET /api/genes` lists it under `morph`
+(kind `count`/`enum`/`axis`, allowed values or range, default, cost 0).
 
 ### WebSocket protocol
 
@@ -1513,7 +1522,15 @@ autumn; `serde_util::before_v16`). Versions 10 to 16 lack `Balance::home_range`
 Versions 10 to 17 have every genome written whole (`serde_util::before_v18`;
 see *Genomes by parents* below). Versions 10 to 18 lack `Balance::lactation`
 and `Balance::warm_upkeep` (version 19), which read as 0, the rules they
-ran under (`serde_util::before_v19`).
+ran under (`serde_util::before_v19`). Versions 10 to 22 lack the genomes'
+morphology segment (version 23): every organism, egg and father genome
+restores with the default morphology, each locus's origin tags copied from
+its anchor gene (eye loci from `Eyes`, ear loci from `Ears`, legs from
+`LegLength`, tail shape from `Tail`, snout from `Nose`), species
+representatives with the default morphology key, and
+`Balance::morph_step_rate` as 0 (`serde_util::before_v23`). (Versions 20 to 22 are
+other packages' format changes; this branch reads them with version 19's
+layout.)
 **Static terrain** is stored apart: each tile is split into its fixed
 `Ground` (biome, elevation, moisture, annual mean temperature, normal water
 depth, river channel, sand, slope, undergrowth, canopy, most food it holds,
@@ -1566,7 +1583,11 @@ parameter `tameness`; version 15 the world's rally orders; version 16 the
 balance parameter `migration_onset`; version 17 the `home_range` balance
 parameters; version 18 writes the genomes of
 young and eggs against their parents' (*Genomes by parents*, below);
-version 19 adds the balance parameters `lactation` and `warm_upkeep`.
+version 19 adds the balance parameters `lactation` and `warm_upkeep`;
+version 23 the genomes' morphology segment (written whole after the
+stored values, and against the parents as a second section with its own
+exceptions and choice bits), species representatives' morphology keys and
+the balance parameter `morph_step_rate`.
 `cargo test -p evo-sim --features serde snapshot` runs a busy world (LOD
 with cohorts, an epidemic catastrophe, pregnancies, clutches, a possessed
 organism with an order, disease, winter dormancy, caches, paths), snapshots

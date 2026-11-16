@@ -49,10 +49,31 @@ fn tag_mutations(w: &mut World) {
     let every_fifth = (0..w.organisms.len()).step_by(5).filter(|&i| Some(i) != first_father);
     for i in first_father.into_iter().chain(every_fifth) {
         let a = &w.organisms[i].genome;
-        let g = crate::Genome::inherit(a, a, 9, mutation, 0.0, &mut rng);
+        let mut g = crate::Genome::inherit(a, a, 9, mutation, 0.0, &mut rng);
+        if i % 2 == 0 {
+            g.set_morph(odd_morph(&g, 9));
+        }
         w.organisms[i].genome = Arc::new(g);
         w.organisms[i].refresh_derived();
     }
+}
+
+/// A non-default morphology segment for `g`: one allele of each discrete
+/// locus changed (hidden, wild type dominant) and the eyes, legs and tail
+/// shape changed in both (shown), the changes tagged `owner`.
+fn odd_morph(g: &crate::Genome, owner: crate::PlayerId) -> crate::morph::MorphGenes {
+    use crate::morph::{MorphAllele, MorphLocus};
+    let mut m = *g.morph();
+    for l in MorphLocus::ALL {
+        let p = &mut m.discrete[l.index()];
+        let other = l.value_at(l.position(l.default_value()) + 1);
+        p.b = MorphAllele { value: other, origin: owner };
+        if matches!(l, MorphLocus::EyeCount | MorphLocus::LegCount | MorphLocus::TailShape) {
+            p.a = p.b;
+        }
+    }
+    m.continuous[0].a.value = 0.9;
+    m
 }
 
 fn order_possessed(w: &mut World) {
@@ -105,6 +126,7 @@ fn assert_same_caches(a: &World, b: &World) {
         assert_eq!(bits(&x.pheno), bits(&y.pheno), "phenotype of {}", x.id);
         assert_eq!(format!("{:?}", x.traits), format!("{:?}", y.traits), "traits of {}", x.id);
         assert_eq!(x.recessive_load, y.recessive_load, "recessive load of {}", x.id);
+        assert_eq!(x.morph, y.morph, "morphology of {}", x.id);
         assert_eq!(x.path, y.path, "path of {}", x.id);
         assert_eq!(x.pregnancy, y.pregnancy, "pregnancy of {}", x.id);
     }
@@ -365,6 +387,12 @@ fn without_obedience(w: &World) -> World {
     w
 }
 
+/// `w` as a snapshot from before the morphology segment restores it: every
+/// organism with the default morphology, tagged like its anchor genes.
+fn without_morph(w: World) -> World {
+    World::restore(&w.snapshot_v19(19), Some(w.map.terrain().clone())).unwrap()
+}
+
 /// Version 10 snapshots (the tiles inside the payload, as builds before
 /// version 11 wrote them, no `Balance::cold_gestation` and no obedience)
 /// still restore, to the same world, with the rule they ran under.
@@ -447,7 +475,7 @@ fn version_13_snapshots_restore_with_default_obedience() {
 /// standing, and the rest of the world as it was.
 #[test]
 fn version_14_snapshots_restore_without_rallies() {
-    let mut w = fixture_world();
+    let mut w = without_morph(fixture_world());
     let plain = w.snapshot();
     let p = w.organisms.iter().find(|o| o.alive).unwrap();
     let (owner, group, pos) = (p.owner, p.group, p.pos);
@@ -468,7 +496,7 @@ fn version_14_snapshots_restore_without_rallies() {
 /// at 1, the rule they ran under, and are otherwise the same world.
 #[test]
 fn version_15_snapshots_restore_without_migration_onset() {
-    let mut w = fixture_world();
+    let mut w = without_morph(fixture_world());
     w.config.balance.migration_onset = 0.3;
     let old = w.snapshot_v15();
     let h = SnapshotHeader::read(&old).unwrap();
@@ -488,7 +516,7 @@ fn version_15_snapshots_restore_without_migration_onset() {
 /// defaults, and are otherwise the same world.
 #[test]
 fn version_16_snapshots_restore_without_the_home_range() {
-    let mut w = fixture_world();
+    let mut w = without_morph(fixture_world());
     w.config.balance.home_range.predation = 0.9;
     let old = w.snapshot_v16();
     let h = SnapshotHeader::read(&old).unwrap();
@@ -517,7 +545,7 @@ fn laying_world() -> World {
 /// take a fraction of the space.
 #[test]
 fn version_17_snapshots_restore_with_whole_genomes() {
-    let w = laying_world();
+    let w = without_morph(laying_world());
     let (orgs, eggs, whole) = by_parents(&w);
     assert!(orgs > 0 && eggs > 0 && whole > 0, "want genomes by parents and whole: {orgs}, {eggs}, {whole}");
     let old = w.snapshot_v17();
@@ -541,15 +569,16 @@ fn version_17_snapshots_restore_with_whole_genomes() {
 /// and are otherwise the same world.
 #[test]
 fn version_18_snapshots_restore_without_warm_costs() {
-    let mut w = fixture_world();
+    let mut w = without_morph(fixture_world());
     w.config.balance.lactation = 0.7;
     w.config.balance.warm_upkeep = 0.25;
     let old = w.snapshot_v18();
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 18);
     assert!(h.restorable());
-    // Without the two parameters the payload is 8 bytes (two f32s) shorter.
-    assert_eq!(h.raw_len + 8, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    // Without the two parameters the payload is 8 bytes (two f32s) shorter
+    // than a version 19 one.
+    assert_eq!(h.raw_len + 8, SnapshotHeader::read(&w.snapshot_v19(19)).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     let off = crate::serde_util::before_v19::OLD_VALUE;
     assert_eq!((r.config.balance.lactation, r.config.balance.warm_upkeep), (off, off));
@@ -578,4 +607,104 @@ fn tiles_round_trip_bit_exactly() {
         // Another map size is refused.
         assert!(decode_tiles(&encode_tiles(&tiles, width), width + 1, height).is_err());
     }
+}
+
+/// Version 19 to 22 snapshots (before the morphology segment) restore
+/// with the default morphology for every organism (and egg, and pregnancy's
+/// father), its origin tags copied from the anchor genes, and the rest of
+/// the world as it was; restored again they give the same world.
+#[test]
+fn version_19_to_22_snapshots_restore_with_default_morphology() {
+    use crate::genome::Gene;
+    use crate::morph::{MorphGene, MorphGenes, MorphLocus};
+    let mut w = laying_world();
+    // Some organisms carry other morphology: the old form drops it.
+    for o in w.organisms.iter_mut().step_by(3) {
+        let mut g = (*o.genome).clone();
+        g.set_morph(odd_morph(&g, 7));
+        o.genome = Arc::new(g);
+        o.refresh_derived();
+    }
+    assert!(w.organisms.iter().any(|o| o.morph.leg_count != 4));
+    for version in [19, 20, 21, 22] {
+        let old = w.snapshot_v19(version);
+        let h = SnapshotHeader::read(&old).unwrap();
+        assert_eq!(h.version, version);
+        assert!(h.restorable());
+        // Smaller than a version 23 snapshot: no morphology segments.
+        assert!(h.raw_len < SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+        let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+        assert_eq!(r.organisms.len(), w.organisms.len());
+        let check = |g: &crate::Genome, was: &crate::Genome| {
+            let m = g.morph();
+            assert_eq!(*m, MorphGenes::from_genes(g.loci()));
+            for l in MorphLocus::ALL {
+                let (p, anchor) = (
+                    &m.discrete[l.index()],
+                    g.locus(match l {
+                        MorphLocus::EyeCount => Gene::Eyes,
+                        MorphLocus::EarCount | MorphLocus::EarShape => Gene::Ears,
+                        MorphLocus::LegCount => Gene::LegLength,
+                        MorphLocus::TailShape => Gene::Tail,
+                    }),
+                );
+                assert_eq!((p.a.value, p.b.value), (l.default_value(), l.default_value()));
+                assert_eq!((p.a.origin, p.b.origin), (anchor.a.origin, anchor.b.origin));
+            }
+            let snout = &m.continuous[MorphGene::SnoutLength.index()];
+            assert_eq!(snout.a.origin, g.locus(Gene::Nose).a.origin);
+            assert_eq!(g.loci(), was.loci());
+            assert_eq!(g.load(), was.load());
+        };
+        for (a, b) in r.organisms.iter().zip(&w.organisms) {
+            check(&a.genome, &b.genome);
+            assert_eq!((a.morph.eye_count, a.morph.leg_count, a.morph.ear_count), (2, 4, 2));
+            assert!((a.morph.eye_azimuth - 60.0).abs() < 1e-3);
+            if let (Some(p), Some(q)) = (&a.pregnancy, &b.pregnancy) {
+                check(&p.father, &q.father);
+            }
+        }
+        for (c, d) in r.clutches.iter().zip(&w.clutches) {
+            for (a, b) in c.eggs.iter().zip(&d.eggs) {
+                check(a, b);
+            }
+        }
+        let again = World::restore(&r.snapshot(), Some(w.map.terrain().clone())).unwrap();
+        assert!(again.snapshot() == r.snapshot());
+        assert!(r.snapshot_v19(version) == old);
+    }
+}
+
+/// Organisms with designed morphology round-trip through a version 23
+/// snapshot (whole and against their parents) and continue exactly.
+#[test]
+fn morphology_round_trips_and_continues() {
+    use crate::morph::{EarShape, MorphDesign, TailShape};
+    let mut w = World::new(WorldConfig { seed: 4, width: 48, height: 48, ..Default::default() });
+    let mut designs = presets::wild_designs().into_iter();
+    let (owner, d) = designs.next().unwrap();
+    let six = MorphDesign {
+        eye_count: 3,
+        eye_azimuth: 100.0,
+        ear_count: 4,
+        ear_shape: EarShape::Long,
+        leg_count: 6,
+        tail_shape: TailShape::Prehensile,
+        snout_length: 0.8,
+    };
+    w.found_lineage_unchecked(owner, &d.founders(12).with_morph(six));
+    let (owner, d) = designs.next().unwrap();
+    w.found_lineage_unchecked(owner, &d.founders(12));
+    w.run_days(8);
+    assert!(w.organisms.iter().any(|o| o.alive && o.morph.leg_count == 6 && o.morph.eye_count == 3));
+    assert!(w.organisms.iter().any(|o| o.generation > 0), "want young written against their parents");
+    let bytes = w.snapshot();
+    let mut r = World::restore(&bytes, Some(w.map.terrain().clone())).unwrap();
+    assert_same_caches(&w, &r);
+    assert!(r.snapshot() == bytes);
+    for _ in 0..(2 * w.config.ticks_per_day) {
+        w.step();
+        r.step();
+    }
+    assert_same(&w, &r);
 }

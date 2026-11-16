@@ -100,23 +100,30 @@ fn beats(score: f32, j: usize, best: Option<(f32, usize)>) -> bool {
     best.is_none_or(|(s, k)| score > s || (score == s && j < k))
 }
 
-/// Mean expression difference over the distance genes: `Genome::distance`, from the
-/// phenotype (which holds exactly the expressed values) so it reads `Gene::COUNT`
+/// Mean expression difference over the distance genes plus the morphology
+/// term: `Genome::distance`, from the phenotype (which holds exactly the
+/// expressed values) and the cached morphology, so it reads `Gene::COUNT`
 /// contiguous floats instead of 76 scattered alleles.
 fn genetic_distance(a: &Organism, b: &Organism) -> f32 {
     use crate::genome::{DISTANCE_GENES, IN_DISTANCE};
     let diffs = a.pheno.0.iter().zip(&b.pheno.0).zip(IN_DISTANCE);
-    diffs.map(|((x, y), counts)| if counts { (x - y).abs() } else { 0.0 }).sum::<f32>() / DISTANCE_GENES
+    let sum = diffs.map(|((x, y), counts)| if counts { (x - y).abs() } else { 0.0 }).sum::<f32>();
+    (sum + crate::morph::morph_terms(&a.morph.key(), &b.morph.key()).0) / DISTANCE_GENES
 }
 
-/// Slots in [`Genes`]: the distance genes, padded to whole groups of four.
+/// Slots in [`Genes`] for the distance genes, padded to whole groups of four.
 pub(super) const GENE_SLOTS: usize = (crate::genome::DISTANCE_GENES as usize).div_ceil(4) * 4;
 
 /// The expressed values of the genes that count toward [`genetic_distance`]:
 /// the body-plan genes (`mating::BODY_PLAN_GENES`, in that order) first,
-/// then the others in gene order, then zeros. What kinship tests read of an
+/// then the others in gene order, then zeros up to [`GENE_SLOTS`]; then the
+/// morphology key (`morph::MorphKey`). What kinship tests read of an
 /// organism, packed next to its neighbors' in the spatial grid.
-pub(super) type Genes = [f32; GENE_SLOTS];
+pub(super) type Genes = [f32; GENE_SLOTS + crate::morph::MORPH_KEY];
+
+fn morph_key(g: &Genes) -> &crate::morph::MorphKey {
+    g[GENE_SLOTS..].try_into().unwrap()
+}
 
 /// Body-plan genes, the first slots of [`Genes`].
 const PLAN: usize = mating::BODY_PLAN_GENES.len();
@@ -149,19 +156,21 @@ const GENE_OF_SLOT: [usize; crate::genome::DISTANCE_GENES as usize] = {
     out
 };
 
-/// [`Genes`] of a phenotype.
-pub(super) fn genes_of(p: &crate::genome::Phenotype) -> Genes {
-    let mut out = [0.0; GENE_SLOTS];
+/// [`Genes`] of an organism (its phenotype and morphology).
+pub(super) fn genes_of(o: &Organism) -> Genes {
+    let mut out = [0.0; GENE_SLOTS + crate::morph::MORPH_KEY];
     for (slot, &k) in out.iter_mut().zip(&GENE_OF_SLOT) {
-        *slot = p.0[k];
+        *slot = o.pheno.0[k];
     }
+    out[GENE_SLOTS..].copy_from_slice(&o.morph.key());
     out
 }
 
 /// `mating::body_plan_gap` from [`Genes`] (the same value, bit for bit: the
-/// same differences, folded in the same order).
+/// same differences, folded in the same order, then the morphology's gap).
 fn body_plan_gap(a: &Genes, b: &Genes) -> f32 {
-    a[..PLAN].iter().zip(&b[..PLAN]).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+    let morph = crate::morph::morph_terms(morph_key(a), morph_key(b)).1;
+    a[..PLAN].iter().zip(&b[..PLAN]).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max).max(morph)
 }
 
 /// Bounds on [`genetic_distance`] from a quick sum that adds the same terms
@@ -185,7 +194,7 @@ impl DistanceBounds {
         // wait on each other. Dividing by multiplying with the reciprocal
         // rounds differently by a few parts in 10^8, inside `SLACK` too.
         let mut lanes = [0.0f32; 8];
-        let (mut ca, mut cb) = (a.chunks_exact(8), b.chunks_exact(8));
+        let (mut ca, mut cb) = (a[..GENE_SLOTS].chunks_exact(8), b[..GENE_SLOTS].chunks_exact(8));
         for (a, b) in (&mut ca).zip(&mut cb) {
             for (l, lane) in lanes.iter_mut().enumerate() {
                 *lane += (a[l] - b[l]).abs();
@@ -194,7 +203,9 @@ impl DistanceBounds {
         for (l, (a, b)) in ca.remainder().iter().zip(cb.remainder()).enumerate() {
             lanes[l] += (a - b).abs();
         }
-        let sum = ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5])) + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]));
+        let sum = ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5]))
+            + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]))
+            + crate::morph::morph_terms(morph_key(a), morph_key(b)).0;
         let scale = 1.0 / DISTANCE_GENES;
         DistanceBounds { lo: sum * (1.0 - Self::SLACK) * scale, hi: sum * (1.0 + Self::SLACK) * scale }
     }
@@ -427,7 +438,7 @@ impl World {
         let (threat_floor, prey_cap, female) = (0.3 * o.mass(), max_prey_mass(o, coop), o.sex == Sex::Female);
         let v = Viewer {
             o,
-            genes: genes_of(p),
+            genes: genes_of(o),
             radius,
             alarm,
             sentry,
@@ -1339,9 +1350,9 @@ mod tests {
         let alive: Vec<&Organism> = w.organisms.iter().filter(|o| o.alive).collect();
         let (mut kin, mut strangers) = (0, 0);
         for a in &alive {
-            let ga = genes_of(&a.pheno);
+            let ga = genes_of(a);
             for b in &alive {
-                let gb = genes_of(&b.pheno);
+                let gb = genes_of(b);
                 let gap = body_plan_gap(&ga, &gb);
                 assert_eq!(gap.to_bits(), mating::body_plan_gap(&a.genome, &b.genome).to_bits());
                 let exact = genetic_distance(a, b);
