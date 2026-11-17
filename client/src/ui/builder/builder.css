@@ -70,3 +70,5 @@
 .gallery-card h3 { margin: 0 0 4px; font-size: 1em; }
 .gallery-card .avatar-figure svg { display: block; width: 100%; height: auto; }
 .gallery-sprites { display: flex; gap: 8px; align-items: flex-end; }
+.bb-range-wrap { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.bb-range { flex: 1; min-width: 80px; }

@@ -130,7 +130,7 @@ describe('appearance classes', () => {
     const h = createHash('sha256');
     const replacer = (_k: string, v: unknown) => (typeof v === 'number' ? Math.round(v * 1e6) / 1e6 : v);
     for (const l of allLooks()) for (const juvenile of [false, true]) h.update(JSON.stringify(spriteModel({ look: l, juvenile }), replacer));
-    expect(h.digest('hex')).toBe('438c4d119b19fbb94eea4a3b4e5336b2be0cb20ce20cfeb9f5dad4a8f911ba3a');
+    expect(h.digest('hex')).toBe('e9b6c9e75ba55ed88ca07d0967ec3c91e1a02b84462f39814823d88bbdcfe719');
     // The default founder (a server without morphology), in full.
     const { look: _look, ...m } = spriteModel(adult());
     expect(m).toMatchInlineSnapshot(`
@@ -187,17 +187,21 @@ describe('appearance classes', () => {
           "webbed": false,
           "width": 0.4,
         },
+        "horn_form": "curved",
+        "horn_size": 0,
         "horns": 0,
         "leg_count": 4,
         "leg_length": 0.35,
         "mass": 4,
         "nose": 0.3,
+        "pattern": "plain",
         "size": 0.3,
         "snout_length": 0.5,
         "tail_length": 0.5,
         "tail_present": true,
         "tail_shape": "thin",
         "warm": true,
+        "wing_aspect": 0.5,
         "wings": {
           "amount": 0,
           "stage": "none",
@@ -270,10 +274,16 @@ describe('appearance classes', () => {
     expect(pieces(adult({ coloring: 'bright' }), 'frill')).toHaveLength(1);
     expect(pieces(adult({ locomotion: 'fly' }), 'crest')).toHaveLength(1);
     expect(pieces(adult({ locomotion: 'glide' }), 'flaps')).toHaveLength(1);
-    // Horns on large adult herbivores only.
-    expect(tagged(adult({ size: 3 }), 'horn').length).toBeGreaterThan(0);
-    expect(tagged(adult({ size: 1 }), 'horn')).toHaveLength(0);
-    expect(tagged({ look: look({ size: 3 }), juvenile: true }, 'horn')).toHaveLength(0);
+    // Horns come from the look (a body-plan locus), on adults; no more horns for every large herbivore.
+    expect(tagged(adult({ size: 3 }), 'horn')).toHaveLength(0);
+    expect(tagged(adult({ horns: 2 }), 'horn').length).toBeGreaterThan(0);
+    expect(tagged({ look: look({ horns: 2 }), juvenile: true }, 'horn')).toHaveLength(0);
+    expect(differs({ horns: 2, horn_form: 'branched' }, { horns: 2 })).toBe(true);
+    expect(differs({ horns: 2, horn_form: 'straight' }, { horns: 2 })).toBe(true);
+    // Coat patterns draw markings; wing shape changes a flier's outline.
+    for (const pattern of ['spots', 'stripes', 'mottled'] as const) expect(tagged(adult({ pattern }), 'pattern').length, pattern).toBeGreaterThan(0);
+    expect(tagged(adult(), 'pattern')).toHaveLength(0);
+    expect(differs({ locomotion: 'fly', wing_aspect: 2 }, { locomotion: 'fly' })).toBe(true);
   });
 
   it('colors by coloring class', () => {
@@ -314,7 +324,10 @@ function morphLooks(): Appearance[] {
 
 describe('morphology', () => {
   it('fills defaults for older servers and clamps values from the wire', () => {
-    expect(morphOf(DEFAULT_LOOK)).toEqual({ eyes: 2, eyeSize: 1, eyeSet: 1, ears: 2, earShape: 'round', earSize: 1, legs: 4, tail: 'thin', tailSize: 1, snout: 1, fangs: 0 });
+    expect(morphOf(DEFAULT_LOOK)).toEqual({
+      eyes: 2, eyeSize: 1, eyeSet: 1, ears: 2, earShape: 'round', earSize: 1, legs: 4, tail: 'thin', tailSize: 1, snout: 1, fangs: 0,
+      horns: 0, hornForm: 'curved', wingSet: 1, pattern: 'plain',
+    });
     expect(morphOf(look({ diet: 'carnivore' })).fangs).toBe(1);
     const odd = morphOf(look({ eyes: 40, ears: 3, legs: 5, tail: 'spiky' as never, ear_shape: 'x' as never, snout: 9 as never, fangs: -2 as never, eye_size: 1.4 as never, eye_azimuth: 7 as never }));
     expect(odd).toMatchObject({ eyeSet: 2, eyes: 6, ears: 4, legs: 4, tail: 'thin', earShape: 'round', snout: 2, fangs: 0, eyeSize: 1 });

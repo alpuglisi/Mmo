@@ -46,5 +46,16 @@
   "vigilance": "Sentry instinct",
   "seasonal_coat": "Seasonal coat",
   "timed_breeding": "Timed breeding",
-  "obedience": "Obedience"
+  "obedience": "Obedience",
+  "eye_count": "Eye count",
+  "ear_count": "Ear count",
+  "ear_shape": "Ear shape",
+  "leg_count": "Leg count",
+  "tail_shape": "Tail shape",
+  "horn_form": "Horn shape",
+  "pattern": "Coat pattern",
+  "eye_azimuth": "Eye placement",
+  "snout_length": "Snout length",
+  "horn_size": "Horn size",
+  "wing_aspect": "Wing shape"
 }

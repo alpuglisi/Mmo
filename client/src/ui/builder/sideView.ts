@@ -64,7 +64,7 @@ export function sideView(m: Morphology): SideView {
 }
 
 /** Where each length / size handle runs for the current body plan (null: that feature is absent). */
-export function sideTracks(m: Morphology): { snout: HandleTrack; fangs: HandleTrack; ears: HandleTrack | null; legs: HandleTrack | null; tail: HandleTrack | null } {
+export function sideTracks(m: Morphology): { snout: HandleTrack; fangs: HandleTrack; ears: HandleTrack | null; legs: HandleTrack | null; tail: HandleTrack | null; horns: HandleTrack } {
   const tip = (patch: Partial<Morphology>, pick: (a: AvatarAnchors) => Point | null): Point | null => {
     const a = drawingFor({ ...m, ...patch }).anchors;
     const p = pick(a);
@@ -84,5 +84,6 @@ export function sideTracks(m: Morphology): { snout: HandleTrack; fangs: HandleTr
     ears: m.ear_count > 0 ? trackOf('ear_size', (a) => a.earTip) : null,
     legs: m.leg_count > 0 ? trackOf('leg_length', (a) => a.foot) : null,
     tail: m.tail_present ? trackOf('tail_length', (a) => a.tailTip, { tail_present: true }) : null,
+    horns: trackOf('horn_size', (a) => a.hornTip)!,
   };
 }

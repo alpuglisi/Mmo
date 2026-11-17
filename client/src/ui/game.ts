@@ -1036,7 +1036,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
             h('th', {}, 'Final'), h('th', {}, 'Peak'), h('th', { title: 'Most organisms alive on a recorded day' }, 'Peak alive'))),
           h('tbody', {}, ...b.rows.slice(0, 8).map((r, k) => h('tr', { class: r.player === model.player ? 'me' : '' },
             h('td', {}, String(k + 1)),
-            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), r.name),
+            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), h('span', { class: 'who', title: r.name }, r.name)),
             h('td', {}, pct(r.mean_share)), h('td', {}, pct(r.final_share)), h('td', {}, pct(r.peak_share)), h('td', {}, String(r.peak_alive))))))));
     });
   }
@@ -1070,7 +1070,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         h('table', { class: 'board' },
           h('thead', {}, h('tr', {}, h('th', {}, 'Player'), h('th', {}, 'Share'), h('th', { title: 'Weighted by offspring raised to adulthood' }, 'Weighted'), h('th', {}, 'Alive'))),
           h('tbody', {}, ...lb.rows.map((r) => h('tr', { class: r.player === model.player ? 'me' : '' },
-            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), r.name),
+            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), h('span', { class: 'who', title: r.name }, r.name)),
             h('td', {}, h('span', { class: 'share-bar', style: `--w:${(r.share * 100).toFixed(1)}%` }, pct(r.share))),
             h('td', {}, pct(r.weighted_share)), h('td', {}, String(r.alive))))))]);
     const shown = [...orgs].sort((a, b) => Number(b.possessed) - Number(a.possessed) || Number(b.matured) - Number(a.matured) || a.id - b.id).slice(0, 60);
@@ -1127,7 +1127,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   function renderToasts(): void {
     clear(toasts);
-    for (const t of model.toasts.slice(-4)) append(toasts, [h('div', { class: `toast ${t.kind}` }, t.text)]);
+    for (const t of model.toasts.slice(-4)) append(toasts, [h('div', { class: `toast ${t.kind}` }, t.text, t.count ? h('span', { class: 'toast-more' }, ` (and ${t.count - 1} more like it)`) : null)]);
   }
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
 

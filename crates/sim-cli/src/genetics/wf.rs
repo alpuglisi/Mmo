@@ -113,7 +113,7 @@ pub fn variant(l: MorphLocus) -> u8 {
         MorphLocus::EarCount => 4,
         MorphLocus::EarShape => 1,
         MorphLocus::LegCount => 6,
-        MorphLocus::TailShape => 1,
+        MorphLocus::TailShape | MorphLocus::HornForm | MorphLocus::Pattern => 1,
     }
 }
 
@@ -604,7 +604,16 @@ fn equilibrium_rep(n: usize, varied: bool, burn: usize, gens: usize, every: usiz
     } else {
         (0..n).map(|_| Genome::uniform(&[0.5; Gene::COUNT], 1)).collect()
     };
-    let sites: Vec<Site> = Site::all().into_iter().filter(|s| matches!(s, Site::Gene(_) | Site::MorphC(_))).collect();
+    // The core continuous loci only, as calibrated (horn size starts at the
+    // clamp bound 0, where the unbounded-locus formula doesn't hold).
+    let sites: Vec<Site> = Site::all()
+        .into_iter()
+        .filter(|s| match s {
+            Site::Gene(_) => true,
+            Site::MorphC(k) => *k < MorphGene::CORE,
+            _ => false,
+        })
+        .collect();
     let (mut h, mut v, mut cnt) = ([0.0; 5], [0.0; 5], [0.0; 5]);
     let mut buf = Vec::with_capacity(2 * n);
     let two_n = (2 * n) as f64;
@@ -1128,7 +1137,7 @@ fn contract_dominant(l: MorphLocus, x: u8, y: u8) -> u8 {
             // Dominance order thin > bushy > prehensile > fin > club
             // (codes thin 0, bushy 1, fin 2, club 3, prehensile 4).
             MorphLocus::TailShape => [0, 1, 3, 4, 2][v as usize],
-            MorphLocus::EarShape => v as i32,
+            MorphLocus::EarShape | MorphLocus::HornForm | MorphLocus::Pattern => v as i32,
             MorphLocus::LegCount | MorphLocus::EarCount => v as i32 / 2,
             MorphLocus::EyeCount => v as i32,
         }

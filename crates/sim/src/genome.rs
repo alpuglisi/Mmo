@@ -495,7 +495,10 @@ impl Genome {
         if rate <= 0.0 {
             return;
         }
-        let salt = self.morph.wire_alleles().iter().fold(splitmix64(owner as u64 ^ 0x57e9_0b1d), |h, &(bits, o)| {
+        // Salted with the core alleles only, so the Phase 3 loci leave the
+        // core loci's draws as they were.
+        let core = &self.morph.wire_alleles()[..crate::morph::CORE_MORPH_ALLELES];
+        let salt = core.iter().fold(splitmix64(owner as u64 ^ 0x57e9_0b1d), |h, &(bits, o)| {
             splitmix64(h ^ bits as u64 ^ (o as u64) << 32)
         });
         let mut own = self.morph_rng(salt);
@@ -617,11 +620,10 @@ impl Genome {
         child.loci[OBEDIENCE] = pick(m, f, child_owner, mutation, &mut own);
         // The morphology loci on a stream of their own too, salted with the
         // parents' morphology alleles.
-        let salt = mother
-            .morph
-            .wire_alleles()
+        let core = crate::morph::CORE_MORPH_ALLELES;
+        let salt = mother.morph.wire_alleles()[..core]
             .iter()
-            .chain(&father.morph.wire_alleles())
+            .chain(&father.morph.wire_alleles()[..core])
             .fold(splitmix64(child_owner as u64 ^ 0x3c7a), |h, &(bits, origin)| {
                 splitmix64(h ^ bits as u64 ^ (origin as u64) << 32)
             });
@@ -774,7 +776,7 @@ pub mod wire {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     use super::*;
-    use crate::morph::{MorphLocus, MORPH_ALLELES};
+    use crate::morph::{wire_is_discrete, CORE_MORPH_ALLELES, MORPH_ALLELES};
 
     const ZERO: u32 = 0;
     const ONE: u32 = 0x3f80_0000;
@@ -809,13 +811,14 @@ pub mod wire {
 
         /// The genome in its compact snapshot form (see [`wire`]).
         pub fn to_wire(&self) -> Vec<u8> {
-            self.to_wire_of(Gene::COUNT, true)
+            self.to_wire_of(Gene::COUNT, MORPH_ALLELES)
         }
 
         /// [`Genome::to_wire`] of the first `genes` gene loci only (the
         /// layout before `Gene::Obedience` with [`OLD_GENES`]), and the
         /// morphology segment if `morph` (from version 23).
-        fn to_wire_of(&self, genes: usize, morph: bool) -> Vec<u8> {
+        fn to_wire_of(&self, genes: usize, morph_n: usize) -> Vec<u8> {
+            let morph = morph_n > 0;
             let alleles = 2 * (genes + LOAD_LOCI);
             let mut tags: Vec<PlayerId> = Vec::new();
             let mut index = [0u8; ALLELES];
@@ -845,7 +848,8 @@ pub mod wire {
                 prev = Some(v);
             }
             let (index, classes) = (&index[..alleles], &classes[..alleles.div_ceil(4)]);
-            let morph_alleles = self.morph.wire_alleles();
+            let all_morph = self.morph.wire_alleles();
+            let morph_alleles = &all_morph[..morph_n];
             let mut morph_index = [0u8; MORPH_ALLELES];
             if morph {
                 for (k, &(_, origin)) in morph_alleles.iter().enumerate() {
@@ -874,11 +878,10 @@ pub mod wire {
                 put_value(&mut w, v);
             }
             if morph {
-                let discrete = 2 * MorphLocus::COUNT;
                 let mut prev = None;
                 for (k, (&(v, _), &i)) in morph_alleles.iter().zip(&morph_index).enumerate() {
                     w.put(i as u32, bits);
-                    if k < discrete {
+                    if wire_is_discrete(k) {
                         w.put(v, 4);
                         continue;
                     }
@@ -899,7 +902,7 @@ pub mod wire {
 
         /// A genome from [`Genome::to_wire`] bytes.
         pub fn from_wire(bytes: &[u8]) -> Result<Genome, String> {
-            Self::from_wire_of(bytes, Gene::COUNT, true)
+            Self::from_wire_of(bytes, Gene::COUNT, MORPH_ALLELES)
         }
 
         /// A genome from bytes holding its first `genes` gene loci. With
@@ -909,7 +912,8 @@ pub mod wire {
         /// origin tags of the organism's wanderlust alleles. Without `morph`
         /// (before version 23) the morphology segment takes the contract
         /// defaults ([`MorphGenes::from_genes`]).
-        fn from_wire_of(bytes: &[u8], genes: usize, morph: bool) -> Result<Genome, String> {
+        fn from_wire_of(bytes: &[u8], genes: usize, morph_n: usize) -> Result<Genome, String> {
+            let morph = morph_n > 0;
             let (&n, rest) = bytes.split_first().ok_or("empty genome")?;
             let n = n as usize;
             let (tag_bytes, rest) = rest.split_at_checked(4 * n).ok_or("genome cut short (tags)")?;
@@ -942,12 +946,11 @@ pub mod wire {
             }
             if morph {
                 let mut m = [(0u32, WILD); MORPH_ALLELES];
-                let discrete = 2 * MorphLocus::COUNT;
                 let mut prev = None;
-                for (k, slot) in m.iter_mut().enumerate() {
+                for (k, slot) in m[..morph_n].iter_mut().enumerate() {
                     let i = r.get(bits)? as usize;
                     slot.1 = *tags.get(i).ok_or("genome origin out of range")?;
-                    if k < discrete {
+                    if wire_is_discrete(k) {
                         slot.0 = r.get(4)?;
                         continue;
                     }
@@ -960,7 +963,10 @@ pub mod wire {
                     prev = Some(v);
                     slot.0 = v;
                 }
-                g.morph = MorphGenes::from_wire_alleles(&m)?;
+                g.morph = MorphGenes::from_wire_alleles(&m[..morph_n])?;
+                if morph_n < MORPH_ALLELES {
+                    g.morph.reset_extra_from(&g.loci);
+                }
             }
             if r.at != rest.len() || r.len >= 8 || r.acc != 0 {
                 return Err("genome has trailing bytes".into());
@@ -1034,11 +1040,18 @@ pub mod wire {
         /// A genome from its [`Genome::keys`] and, if `morph` (from version
         /// 23), its [`Genome::morph_keys`]; without them the morphology
         /// segment takes the contract defaults.
-        fn from_keys(k: &[u64; ALLELES], morph: Option<&[u64; MORPH_ALLELES]>) -> Result<Genome, String> {
+        fn from_keys(k: &[u64], morph: Option<&[u64]>) -> Result<Genome, String> {
             let locus = |l: usize| Locus { a: allele(k[2 * l]), b: allele(k[2 * l + 1]) };
-            let loci = std::array::from_fn(locus);
+            let loci: [Locus; Gene::COUNT] = std::array::from_fn(locus);
             let morph = match morph {
-                Some(m) => MorphGenes::from_wire_alleles(&m.map(|x| ((x >> 32) as u32, x as u32)))?,
+                Some(m) => {
+                    let v: Vec<(u32, PlayerId)> = m.iter().map(|&x| ((x >> 32) as u32, x as u32)).collect();
+                    let mut g = MorphGenes::from_wire_alleles(&v)?;
+                    if m.len() < MORPH_ALLELES {
+                        g.reset_extra_from(&loci);
+                    }
+                    g
+                }
                 None => MorphGenes::from_genes(&loci),
             };
             Ok(Genome { loci, load: std::array::from_fn(|l| locus(Gene::COUNT + l)), morph })
@@ -1085,20 +1098,22 @@ pub mod wire {
         /// mother for an `a`, the father for a `b`), as [`key`]s.
         from: [[u64; 2]; ALLELES],
         /// The same for the morphology segment's alleles, if written.
-        morph: Option<[[u64; 2]; MORPH_ALLELES]>,
+        morph: Option<Vec<[u64; 2]>>,
     }
 
     /// Per allele of a child, the two alleles its parent has at that locus.
-    fn choices<const N: usize>(m: &[u64; N], f: &[u64; N]) -> [[u64; 2]; N] {
-        std::array::from_fn(|k| {
-            let p = if k % 2 == 0 { m } else { f };
-            [p[k & !1], p[k | 1]]
-        })
+    fn choices(m: &[u64], f: &[u64]) -> Vec<[u64; 2]> {
+        (0..m.len())
+            .map(|k| {
+                let p = if k % 2 == 0 { m } else { f };
+                [p[k & !1], p[k | 1]]
+            })
+            .collect()
     }
 
     /// `child` against `from` (one section: exceptions, then choice bits),
     /// appended to `out`; `false` if it has too many exceptions.
-    fn encode_section<const N: usize>(child: &[u64; N], from: &[[u64; 2]; N], out: &mut Vec<u8>) -> bool {
+    fn encode_section(child: &[u64], from: &[[u64; 2]], out: &mut Vec<u8>) -> bool {
         let mut exceptions = [0u8; MAX_EXCEPTIONS];
         let (mut e, mut bits, mut n) = (0, 0u128, 0usize);
         for (k, (&c, &[a, b])) in child.iter().zip(from).enumerate() {
@@ -1127,19 +1142,17 @@ pub mod wire {
 
     /// One section from the front of `bytes` ([`encode_section`]): the
     /// child's keys and the rest of the bytes.
-    fn decode_section<'a, const N: usize>(
-        bytes: &'a [u8],
-        from: &[[u64; 2]; N],
-    ) -> Result<([u64; N], &'a [u8]), String> {
+    fn decode_section<'a>(bytes: &'a [u8], from: &[[u64; 2]]) -> Result<(Vec<u64>, &'a [u8]), String> {
+        let n_alleles = from.len();
         let (&e, mut rest) = bytes.split_first().ok_or("empty genome")?;
-        let mut child = [0u64; N];
-        let mut exception = [false; N];
+        let mut child = vec![0u64; n_alleles];
+        let mut exception = vec![false; n_alleles];
         let mut last = None;
         for _ in 0..e {
             let (x, r) = rest.split_at_checked(EXCEPTION_BYTES).ok_or("genome cut short (exceptions)")?;
             rest = r;
             let k = x[0] as usize;
-            if k >= N || last.is_some_and(|l| k <= l) {
+            if k >= n_alleles || last.is_some_and(|l| k <= l) {
                 return Err("genome exception out of order".into());
             }
             last = Some(k);
@@ -1147,7 +1160,7 @@ pub mod wire {
             child[k] = key(&Allele { value, origin: PlayerId::from_le_bytes(x[5..9].try_into().unwrap()) });
             exception[k] = true;
         }
-        let n = (0..N).filter(|&k| !exception[k] && from[k][0] != from[k][1]).count();
+        let n = (0..n_alleles).filter(|&k| !exception[k] && from[k][0] != from[k][1]).count();
         let (choice, rest) =
             rest.split_at_checked(n.div_ceil(8)).ok_or("genome has the wrong number of choice bytes")?;
         let mut buf = [0u8; 16];
@@ -1174,10 +1187,9 @@ pub mod wire {
 
     impl Parents {
         pub fn new(mother: &Genome, father: &Genome) -> Parents {
-            Parents {
-                from: choices(&mother.keys(), &father.keys()),
-                morph: stored_morph().then(|| choices(&mother.morph_keys(), &father.morph_keys())),
-            }
+            let n = stored_morph();
+            let from: [[u64; 2]; ALLELES] = choices(&mother.keys(), &father.keys()).try_into().unwrap();
+            Parents { from, morph: (n > 0).then(|| choices(&mother.morph_keys()[..n], &father.morph_keys()[..n])) }
         }
 
         /// `g` against these parents, or `None` if more than a few of its
@@ -1189,7 +1201,7 @@ pub mod wire {
                 return None;
             }
             if let Some(from) = &self.morph {
-                if !encode_section(&g.morph_keys(), from, &mut out) {
+                if !encode_section(&g.morph_keys()[..from.len()], from, &mut out) {
                     return None;
                 }
             }
@@ -1209,7 +1221,7 @@ pub mod wire {
             if !rest.is_empty() {
                 return Err("genome has the wrong number of choice bytes".into());
             }
-            Genome::from_keys(&child, morph.as_ref())
+            Genome::from_keys(&child, morph.as_deref())
         }
     }
 
@@ -1277,10 +1289,18 @@ pub mod wire {
         }
     }
 
-    /// Whether the morphology segment is written and read on this thread:
-    /// not while a `serde_util::before_v23::Guard` lives.
-    fn stored_morph() -> bool {
-        !crate::serde_util::before_v23::active()
+    /// Morphology alleles written and read on this thread: none while a
+    /// `serde_util::before_v23::Guard` lives, the core loci only
+    /// ([`CORE_MORPH_ALLELES`]) while a `serde_util::before_v29::Guard`
+    /// does, else all of them.
+    fn stored_morph() -> usize {
+        if crate::serde_util::before_v23::active() {
+            0
+        } else if crate::serde_util::before_v29::active() {
+            CORE_MORPH_ALLELES
+        } else {
+            MORPH_ALLELES
+        }
     }
 
     impl Serialize for Genome {
@@ -1346,12 +1366,18 @@ mod tests {
     /// rename it in `traitNames.ts` too).
     #[test]
     fn the_client_trait_name_fixture_is_current() {
+        // Genes, then the morphology parameters (the client's `MORPH_NAMES`).
+        let morph = crate::morph::MorphLocus::ALL
+            .iter()
+            .map(|l| (l.key().to_string(), l.display_name()))
+            .chain(crate::morph::MorphGene::ALL.iter().map(|g| (g.key().to_string(), g.display_name())));
         let rows: Vec<String> = Gene::ALL
             .iter()
-            .map(|&g| {
-                let name = trait_display_name(g);
+            .map(|&g| (g.key(), trait_display_name(g)))
+            .chain(morph)
+            .map(|(key, name)| {
                 assert!(!name.contains(['"', '\\']), "{name}");
-                format!("  \"{}\": \"{name}\"", g.key())
+                format!("  \"{key}\": \"{name}\"")
             })
             .collect();
         let text = format!("{{\n{}\n}}\n", rows.join(",\n"));
@@ -1579,12 +1605,13 @@ mod tests {
         // One tag (no origin bits), load loci 0.0 (not stored), and 0.5
         // stored once (26 bits) then repeated; then the morphology segment:
         // 4 bits per discrete allele, and per continuous locus a stored
-        // value (2 + 26 bits) and a repeat (2 bits).
-        let morph_bits: usize = 4 * 10 + 2 * (2 + 26 + 2);
+        // value (2 + 26 bits) and a repeat (2 bits), except horn size, two
+        // zeros (2 bits each).
+        let morph_bits: usize = 4 * 14 + 3 * (2 + 26 + 2) + 2 * 2;
         assert_eq!(uniform.to_wire().len(), 1 + 4 + ALLELES.div_ceil(4) + (26 + morph_bits).div_ceil(8));
         assert!(
             founder.to_wire().len()
-                <= 1 + 4 + ALLELES.div_ceil(4) + (35 * 2 * Gene::COUNT + 4 * 10 + 4 * 28).div_ceil(8)
+                <= 1 + 4 + ALLELES.div_ceil(4) + (35 * 2 * Gene::COUNT + 4 * 14 + 8 * 28).div_ceil(8)
         );
         // The morphology segment round-trips, mixed tags and all.
         let mut odd = hybrid.clone();

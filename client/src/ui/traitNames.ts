@@ -78,9 +78,28 @@ export const TRAIT_NAMES: Record<string, TraitName> = {
   obedience: { name: 'Obedience', ends: ['headstrong', 'obedient'] },
 };
 
+/**
+ * Body-plan parameters of a design's `morph` object (not genes): counts,
+ * shapes and axes. Names match the sim's `MorphLocus::display_name` /
+ * `MorphGene::display_name` (through `traitNames.fixture.json`).
+ */
+export const MORPH_NAMES: Record<string, TraitName> = {
+  eye_count: { name: 'Eye count' },
+  ear_count: { name: 'Ear count' },
+  ear_shape: { name: 'Ear shape' },
+  leg_count: { name: 'Leg count' },
+  tail_shape: { name: 'Tail shape' },
+  horn_form: { name: 'Horn shape' },
+  pattern: { name: 'Coat pattern' },
+  eye_azimuth: { name: 'Eye placement', ends: ['forward', 'sideways'] },
+  snout_length: { name: 'Snout length', ends: ['flat face', 'long muzzle'] },
+  horn_size: { name: 'Horn size' },
+  wing_aspect: { name: 'Wing shape', ends: ['broad', 'narrow'] },
+};
+
 /** The display name of a gene ("Ear size"); an unknown key reads as its words, capitalised. */
 export function traitName(gene: string): string {
-  const n = TRAIT_NAMES[gene]?.name;
+  const n = TRAIT_NAMES[gene]?.name ?? MORPH_NAMES[gene]?.name;
   if (n) return n;
   const words = gene.replace(/_/g, ' ');
   return words.charAt(0).toUpperCase() + words.slice(1);
@@ -95,5 +114,5 @@ export function traitNameLower(gene: string): string {
 
 /** The words for 0 and 1 on a two-ended slider, or null when 0 means "none". */
 export function traitEnds(gene: string): [string, string] | null {
-  return TRAIT_NAMES[gene]?.ends ?? null;
+  return TRAIT_NAMES[gene]?.ends ?? MORPH_NAMES[gene]?.ends ?? null;
 }

@@ -27,7 +27,7 @@ const GUARD_REACH: f32 = 2.5;
 /// these it looks only at possible threats, prey and mates that could beat
 /// what it has already found, and estimates how many of the rest are kin.
 /// Sets cost, not behavior: up to `FOCUS` neighbors everything is exact.
-const FOCUS: usize = 32;
+pub(super) const FOCUS: usize = 32;
 
 /// Hunger at which a hunter drops its search image (`Balance::search_image`)
 /// and takes any prey it finds: a starving predator broadens its diet.
@@ -587,7 +587,10 @@ impl World {
                     && seen.mate.is_none_or(|(s, _)| 1.0 >= s * (1.0 + d));
                 let warning = sentry > 0.0 && e.flags & ALERT != 0;
                 let defender = e.flags & DEFENDING != 0;
-                if threat || prey || mate || warning || defender {
+                // A provider's hungry family may be anywhere in sight
+                // (`Balance::provisioning`).
+                let family = v.provider && e.lineage == o.lineage;
+                if threat || prey || mate || warning || defender || family {
                     self.look(&v, &mut seen, slot, d, false);
                 }
                 let r = &mut rest[usize::from(e.lineage != o.lineage)];
@@ -986,8 +989,14 @@ impl World {
             let burrow = if q.sheltered { 0.5 + 0.3 * (self.burrow_depth(q) - q.traits.body.burrow) } else { 0.0 };
             let den = if q.dormancy.is_deep() { cfg.balance.den_concealment } else { 0.0 };
             let hidden = burrow.max(den);
-            let mut detect =
-                radius * (1.0 - cfg.balance.stealth_effect * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
+            // A coat pattern blends in on matching ground (`morph_extra`).
+            let camo = if q.traits.morph.camo > 0.0 {
+                crate::morph_extra::camouflage(&q.traits.morph, self.map.ground_at(q.pos).biome)
+            } else {
+                0.0
+            };
+            let mut detect = radius
+                * (1.0 - cfg.balance.stealth_effect * (q.traits.stats.stealth + camo) - hidden).max(0.25 + 0.3 * alarm);
             // Directional vision: a neighbor in a blind sector is noticed
             // by ear and nose, and by sight only as far as a viewer standing
             // still (no target last tick) scans around (`vision::detect_factor`).
@@ -1127,7 +1136,9 @@ impl World {
         }
         let skip = (2.0 * o.pheno[Gene::Pickiness]).min(1.0) * self.prey_scarcity(l);
         let day = self.tick / self.config.ticks_per_day.max(1) as u64;
-        let salt = splitmix64((l as u64) ^ (day << 20) ^ 0x7e1d_5a1c);
+        // Seeded by the world's seed, so worlds of different seeds draw
+        // independently (founders share ids across seeds).
+        let salt = splitmix64(self.config.seed ^ splitmix64((l as u64) ^ (day << 20) ^ 0x7e1d_5a1c));
         skip > 0.0 && ((splitmix64(o.id ^ salt) >> 40) as f32 / (1u64 << 24) as f32) < skip
     }
 
@@ -1261,7 +1272,10 @@ impl World {
                 taken = q.pregnancy.is_some() || (!q.matured && q.growth < 0.7);
             }
         });
+        // An egg layer's litter is her clutch until it hatches.
         taken
+            || o.traits.birth.lays_eggs()
+                && self.clutches.iter().any(|c| c.lineage == o.lineage && !c.eggs.is_empty() && c.pos.dist(o.pos) <= r)
     }
 
     /// A carcass for obligate carnivore `o` (meat efficiency `c`) worth half

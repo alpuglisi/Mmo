@@ -5932,7 +5932,7 @@ design), except carrion and the slower rot, which feed every meat eater:
 
 | Tunable (tested value) | Rule |
 | --- | --- |
-| `carcass_keep` (0.75) | Carcasses rot a quarter as fast: tile meat loses 30% a day above 15 °C and 11% below (70% and 38% before), so one kill feeds the killer, its family and other scavengers for days. |
+| `carcass_keep` (0.75) | Carcasses rot a quarter as fast: tile meat loses 26% a day above 15 °C and 11% below (70% and 38% before), so one kill feeds the killer, its family and other scavengers for days. |
 | `carnivore_fat` (60) | Gorging: meat beyond hunger goes into fat (up to 60 hunger points, times one plus fat stores) in any season, not only before a dormancy, and a carnivore that knows of a carcass keeps eating while it has room. Fat pays for hunger above 50 as for any animal. |
 | `carcass_scent` (8) | A hungry carnivore with no prey in sight goes to the best carcass within 8 × (0.5 + nose) tiles before roaming, remembers its last kill (`forage_target`) and goes back to it, and a pregnant one goes to her mate's last kill; a roaming hunter also drinks where it passes water. Before, carcasses were found by sampling 8 random tiles, and roaming neither ate nor drank. |
 | `carrion` (1) | A death other than predation or drowning leaves the body as a carcass (half for a starved one): winter deaths are the scavengers' winter food. |
