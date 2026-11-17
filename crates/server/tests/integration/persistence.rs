@@ -686,6 +686,48 @@ async fn restart_keeps_accounts_and_refounds_designs(backend: Backend) {
     backend.cleanup().await;
 }
 
+on_every_store!(restart_keeps_login_sessions, file_restart_keeps_sessions, pg_restart_keeps_sessions);
+
+/// A graceful restart keeps the login sessions (players reconnect without
+/// logging in again), but not one that logged out.
+async fn restart_keeps_login_sessions(backend: Backend) {
+    let cfg = backend.config(
+        ServerConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            world: WorldSettings { seed: 5, width: 64, height: 64, wild: false, ..Default::default() },
+            ..Default::default()
+        }
+        .fast(),
+    );
+    let ws_ok = |addr: SocketAddr, token: String| async move {
+        tokio_tungstenite::connect_async(format!("ws://{addr}/ws?token={token}")).await.is_ok()
+    };
+    let (kept, gone) = {
+        let srv = start(cfg.clone()).await.unwrap();
+        let client = reqwest_like::Client::new(srv.addr);
+        let a = client.post_json("/api/register", r#"{"name":"ann","password":"a long password"}"#, None).await;
+        let b = client.post_json("/api/register", r#"{"name":"bob","password":"a long password"}"#, None).await;
+        let (kept, gone) = (a["token"].as_str().unwrap().to_string(), b["token"].as_str().unwrap().to_string());
+        assert!(ws_ok(srv.addr, kept.clone()).await && ws_ok(srv.addr, gone.clone()).await);
+        assert_eq!(client.post_status("/api/logout", Some(&gone)).await, 204);
+        srv.shutdown().await;
+        (kept, gone)
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let srv = start(cfg.clone()).await.unwrap();
+    assert!(ws_ok(srv.addr, kept.clone()).await, "the session survives the restart");
+    assert!(!ws_ok(srv.addr, gone.clone()).await, "a logout survives it too");
+    assert!(!ws_ok(srv.addr, "0".repeat(64)).await);
+    // Logging out after the restart deletes the saved session as well.
+    let client = reqwest_like::Client::new(srv.addr);
+    assert_eq!(client.post_status("/api/logout", Some(&kept)).await, 204);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    srv.shutdown().await;
+    let store = backend.open_all().await;
+    assert!(store.load_sessions().await.unwrap().is_empty(), "saved sessions: logged out");
+    backend.cleanup().await;
+}
+
 async fn world_clock(client: &reqwest_like::Client) -> (u64, u64) {
     let v = client.get_json("/api/world").await;
     (v["clock"]["tick"].as_u64().unwrap(), v["clock"]["day"].as_u64().unwrap())
@@ -1568,6 +1610,16 @@ mod reqwest_like {
             let res = self.inner.request(req.body(Full::new(Bytes::from(body.to_string()))).unwrap()).await.unwrap();
             let bytes = res.into_body().collect().await.unwrap().to_bytes();
             serde_json::from_slice(&bytes).unwrap()
+        }
+
+        /// POST with no body; the status.
+        pub async fn post_status(&self, path: &str, token: Option<&str>) -> u16 {
+            let mut req = hyper::Request::post(format!("http://{}{path}", self.addr));
+            if let Some(t) = token {
+                req = req.header("authorization", format!("Bearer {t}"));
+            }
+            let res = self.inner.request(req.body(Full::new(Bytes::new())).unwrap()).await.unwrap();
+            res.status().as_u16()
         }
 
         pub async fn get_json(&self, path: &str) -> serde_json::Value {

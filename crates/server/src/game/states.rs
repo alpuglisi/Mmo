@@ -114,6 +114,19 @@ impl Board {
         Board { full, ranks, names: g.names_changed }
     }
 
+    /// Bring the names up to date: the rows of the players renamed since
+    /// it was made or last renamed. Nothing else on the board changes
+    /// between ticks (shares and populations change with the world, rows
+    /// with a founding, which drops the index), and names don't decide the
+    /// order, so this is the board [`Board::new`] would make.
+    fn rename(&mut self, g: &Game) {
+        let renamed: BTreeSet<PlayerId> = g.renamed.iter().filter(|&&(n, _)| n > self.names).map(|&(_, p)| p).collect();
+        for row in self.full.rows.iter_mut().filter(|r| renamed.contains(&r.player)) {
+            row.name = g.name(row.player).into();
+        }
+        self.names = g.names_changed;
+    }
+
     fn rank(&self, player: PlayerId) -> Option<usize> {
         self.ranks.binary_search_by_key(&player, |&(p, _)| p).ok().map(|k| self.ranks[k].1)
     }
@@ -334,6 +347,9 @@ pub(super) struct StateCache {
     near: ViewCache<NearbyOrganism>,
     own: OwnViews,
     dirty: Dirty,
+    /// A sub-step moved organisms since the cache was last brought up to
+    /// date: the steering organisms must be followed again.
+    moved: bool,
 }
 
 impl Default for StateCache {
@@ -345,6 +361,7 @@ impl Default for StateCache {
             near: ViewCache::new(),
             own: HashMap::new(),
             dirty: Dirty::default(),
+            moved: false,
         }
     }
 }
@@ -401,6 +418,7 @@ impl StateCache {
         self.near.reset();
         self.own.clear();
         self.dirty = Dirty::default();
+        self.moved = false;
         self.tick = Some(g.world.tick());
     }
 
@@ -422,8 +440,12 @@ impl StateCache {
         let Some(idx) = self.idx.as_mut() else { return false };
         let dirty = std::mem::take(&mut self.dirty);
         let index = |id: u64| w.organism_index(id).map(|i| i as u32);
-        self.steering.extend(dirty.steered.iter().filter_map(|&id| index(id)));
-        let mut changed: Vec<u32> = self.steering.iter().copied().collect();
+        let newly: Vec<u32> = dirty.steered.iter().filter_map(|&id| index(id)).collect();
+        self.steering.extend(newly.iter().copied());
+        // Only sub-steps move the steering organisms (commands report what
+        // they touch): without one since, they are where the index has them.
+        let mut changed: Vec<u32> =
+            if std::mem::take(&mut self.moved) { self.steering.iter().copied().collect() } else { newly };
         changed.extend(dirty.orgs.iter().filter_map(|&id| index(id)));
         for p in dirty.owners {
             changed.extend_from_slice(idx.owned(p));
@@ -445,7 +467,7 @@ impl StateCache {
         }
         idx.refresh(g);
         if idx.board.names != g.names_changed {
-            idx.board = Board::new(g);
+            idx.board.rename(g);
         }
         true
     }
@@ -537,10 +559,19 @@ impl Game {
         }
         let mut cache = std::mem::take(&mut self.state_cache);
         cache.prepare(self);
-        let idx = cache.idx.as_ref().expect("prepared");
         let c = &self.conns[&conn];
-        let (view, picked) = self.plan(c, idx);
-        let s = self.assemble(c, idx, view, &picked, None, None);
+        let (view, picked) = self.plan(c, cache.idx.as_ref().expect("prepared"));
+        // Neighbor views from the shared cache (made and kept when missing):
+        // a crowd of new connections mostly sees the same organisms.
+        let orgs = &self.world.organisms;
+        let made: Vec<(u32, NearbyOrganism)> = picked
+            .iter()
+            .filter(|&&i| cache.near.stale(i))
+            .map(|&i| (i, NearbyOrganism::from_org(&orgs[i as usize])))
+            .collect();
+        cache.near.store(made);
+        let idx = cache.idx.as_ref().expect("prepared");
+        let s = self.assemble(c, idx, view, &picked, Some(&cache.near), None);
         self.state_cache = cache;
         Some(s)
     }
@@ -642,10 +673,14 @@ impl Game {
     /// push follows a tick) and keeps the index for the sub-steps.
     pub fn states(&mut self) -> Outbox {
         if self.conns.is_empty() {
+            self.renamed.clear();
+            self.state_cache.invalidate();
             return Vec::new();
         }
         let mut cache = std::mem::take(&mut self.state_cache);
         cache.rebuild(self);
+        // The new board has every name: the log of renames starts again.
+        self.renamed.clear();
         let StateCache { idx, near, own, steering, .. } = &mut cache;
         let idx = idx.as_ref().expect("just built");
         // Own views are kept for the players who steer: they get the next
@@ -753,6 +788,7 @@ impl Game {
         if moved.is_empty() {
             return Vec::new();
         }
+        self.state_cache.moved = true;
         let players: BTreeSet<PlayerId> =
             moved.iter().filter_map(|&id| self.world.organism(id).and_then(|o| o.possessed_by)).collect();
         if !self.conns.values().any(|c| players.contains(&c.player)) {

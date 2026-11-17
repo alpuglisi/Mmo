@@ -1,8 +1,13 @@
 //! Accounts and login sessions.
 //!
 //! Passwords are hashed with argon2id (random salt, PHC string). A login
-//! returns a random 256-bit bearer token. Sessions live in memory only, so a
-//! restart logs everyone out. A session ends after [`SessionPolicy::idle`]
+//! returns a random 256-bit bearer token. Sessions live in memory, keyed
+//! by the SHA-256 of their token. A graceful stop saves them to the store
+//! (hashes only, [`Accounts::session_records`]) and the next start takes
+//! them back ([`Accounts::restore_sessions`]), so a restart doesn't log
+//! everyone out and send every player to log in again at once (a burst of
+//! password hashes, see `docs/load-test.md`). A logout deletes the saved
+//! session too. A session ends after [`SessionPolicy::idle`]
 //! without use (any authenticated request, or an open WebSocket, which
 //! sends commands) or [`SessionPolicy::max_age`] after login,
 //! whichever comes first. Each account owns one [`PlayerId`], assigned in
@@ -30,7 +35,7 @@ use rand::RngCore;
 use tokio::sync::Semaphore;
 
 use crate::metrics::HashStats;
-use crate::store::{AccountRecord, Store};
+use crate::store::{AccountRecord, SessionRecord, Store};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AuthError {
@@ -254,13 +259,55 @@ struct SessionEntry {
     session: Session,
     created: Instant,
     last_seen: Instant,
+    /// Age and idle time a restored session had before `created` and
+    /// `last_seen` (an `Instant` can't go back past the machine's boot).
+    aged: Duration,
+    idled: Duration,
 }
 
 impl SessionEntry {
-    fn expired(&self, policy: SessionPolicy, now: Instant) -> bool {
-        now.saturating_duration_since(self.last_seen) >= policy.idle
-            || now.saturating_duration_since(self.created) >= policy.max_age
+    fn new(session: Session, now: Instant) -> Self {
+        SessionEntry { session, created: now, last_seen: now, aged: Duration::ZERO, idled: Duration::ZERO }
     }
+
+    fn age(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.created) + self.aged
+    }
+
+    fn idle(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_seen) + self.idled
+    }
+
+    fn expired(&self, policy: SessionPolicy, now: Instant) -> bool {
+        self.idle(now) >= policy.idle || self.age(now) >= policy.max_age
+    }
+}
+
+/// The key of a session: the SHA-256 of its token.
+type TokenHash = [u8; 32];
+
+fn token_hash(token: &str) -> TokenHash {
+    use sha2::Digest;
+    sha2::Sha256::digest(token.as_bytes()).into()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex(s: &str) -> Option<TokenHash> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (k, o) in out.iter_mut().enumerate() {
+        *o = u8::from_str_radix(s.get(2 * k..2 * k + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
+fn unix_ms(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 pub struct Accounts {
@@ -274,7 +321,7 @@ struct Inner {
     by_name: HashMap<String, AccountRecord>,
     /// Names reserved by registrations still hashing or persisting.
     pending: Vec<String>,
-    sessions: HashMap<String, SessionEntry>,
+    sessions: HashMap<TokenHash, SessionEntry>,
     next_player: PlayerId,
 }
 
@@ -284,7 +331,7 @@ impl Inner {
         let now = Instant::now();
         self.sessions.retain(|_, e| !e.expired(policy, now));
         let token = new_token();
-        self.sessions.insert(token.clone(), SessionEntry { session, created: now, last_seen: now });
+        self.sessions.insert(token_hash(&token), SessionEntry::new(session, now));
         token
     }
 }
@@ -419,6 +466,11 @@ impl Accounts {
         Ok((token, session))
     }
 
+    /// The player of an account name.
+    pub fn player_of(&self, name: &str) -> Option<PlayerId> {
+        self.inner.lock().unwrap().by_name.get(name).map(|a| a.player)
+    }
+
     /// The live session of a token, marking it used.
     pub fn session(&self, token: &str) -> Option<Session> {
         self.session_at(token, Instant::now())
@@ -436,14 +488,16 @@ impl Accounts {
     }
 
     fn lookup(&self, token: &str, now: Instant, touch: bool) -> Option<Session> {
+        let key = token_hash(token);
         let mut g = self.inner.lock().unwrap();
-        let e = g.sessions.get_mut(token)?;
+        let e = g.sessions.get_mut(&key)?;
         if e.expired(self.policy, now) {
-            g.sessions.remove(token);
+            g.sessions.remove(&key);
             return None;
         }
-        if touch {
-            e.last_seen = e.last_seen.max(now);
+        if touch && now >= e.last_seen {
+            e.last_seen = now;
+            e.idled = Duration::ZERO;
         }
         Some(e.session.clone())
     }
@@ -453,8 +507,71 @@ impl Accounts {
         self.inner.lock().unwrap().sessions.len()
     }
 
+    /// End a session, here and in the store (so a restart doesn't bring it
+    /// back).
     pub fn logout(&self, token: &str) {
-        self.inner.lock().unwrap().sessions.remove(token);
+        let key = token_hash(token);
+        if self.inner.lock().unwrap().sessions.remove(&key).is_some() {
+            let store = self.store.clone();
+            let hash = hex(&key);
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                rt.spawn(async move {
+                    if let Err(e) = store.delete_session(&hash).await {
+                        tracing::warn!("could not delete a saved session: {e}");
+                    }
+                });
+            }
+        }
+    }
+
+    /// The live sessions, to save over a restart: token hashes (never
+    /// tokens), with their times as wall-clock milliseconds.
+    pub fn session_records(&self) -> Vec<SessionRecord> {
+        let (now, wall) = (Instant::now(), std::time::SystemTime::now());
+        let g = self.inner.lock().unwrap();
+        g.sessions
+            .iter()
+            .filter(|(_, e)| !e.expired(self.policy, now))
+            .map(|(key, e)| {
+                let (age, idle) = (e.age(now), e.idle(now));
+                let left = (self.policy.idle.saturating_sub(idle)).min(self.policy.max_age.saturating_sub(age));
+                SessionRecord {
+                    token_hash: hex(key),
+                    player: e.session.player,
+                    name: e.session.name.clone(),
+                    created_unix_ms: unix_ms(wall - age),
+                    last_seen_unix_ms: unix_ms(wall - idle),
+                    expires_unix_ms: unix_ms(wall + left),
+                }
+            })
+            .collect()
+    }
+
+    /// Take back sessions saved by [`Accounts::session_records`] (expired
+    /// ones, and ones of unknown players, are dropped). Returns how many.
+    pub fn restore_sessions(&self, records: Vec<SessionRecord>) -> usize {
+        let (now, wall) = (Instant::now(), unix_ms(std::time::SystemTime::now()));
+        let mut g = self.inner.lock().unwrap();
+        let known: std::collections::HashSet<PlayerId> = g.by_name.values().map(|a| a.player).collect();
+        let mut n = 0;
+        for r in records {
+            let Some(key) = unhex(&r.token_hash) else { continue };
+            if !known.contains(&r.player) {
+                continue;
+            }
+            let e = SessionEntry {
+                session: Session { player: r.player, name: r.name },
+                created: now,
+                last_seen: now,
+                aged: Duration::from_millis(wall.saturating_sub(r.created_unix_ms)),
+                idled: Duration::from_millis(wall.saturating_sub(r.last_seen_unix_ms)),
+            };
+            if !e.expired(self.policy, now) {
+                g.sessions.insert(key, e);
+                n += 1;
+            }
+        }
+        n
     }
 }
 
@@ -619,6 +736,40 @@ mod tests {
         assert_eq!(a.len(), 64);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, new_token());
+    }
+
+    /// Saved sessions come back with their age and idle time; expired
+    /// ones, garbled ones and ones of unknown players don't.
+    #[tokio::test]
+    async fn sessions_survive_a_restart_with_their_age() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+        let policy = SessionPolicy { idle: Duration::from_secs(60), max_age: Duration::from_secs(300) };
+        let acc = Accounts::with_policy(store.clone(), vec![], policy);
+        let (t, s) = acc.register("erin", "erin's password").await.unwrap();
+        let records = acc.session_records();
+        assert_eq!(records.len(), 1);
+        assert_ne!(records[0].token_hash, t, "never the token itself");
+        let accounts = store.load_accounts().await.unwrap();
+        let back = Accounts::with_policy(store.clone(), accounts.clone(), policy);
+        let mut garbled = records[0].clone();
+        garbled.token_hash = "zz".into();
+        let mut stranger = records[0].clone();
+        stranger.player = 99;
+        stranger.token_hash = "ab".repeat(32);
+        let mut old = records[0].clone();
+        old.token_hash = "cd".repeat(32);
+        old.last_seen_unix_ms -= 61_000;
+        assert_eq!(back.restore_sessions(vec![records[0].clone(), garbled, stranger, old]), 1);
+        assert_eq!(back.session(&t).map(|x| (x.player, x.name)), Some((s.player, s.name)));
+        // The age carries over: a session saved 250 s after login ends 50 s
+        // after the restart even if used.
+        let mut aged = acc.session_records()[0].clone();
+        aged.created_unix_ms -= 250_000;
+        let again = Accounts::with_policy(store, accounts, policy);
+        again.restore_sessions(vec![aged]);
+        let t0 = Instant::now();
+        assert!(again.session_at(&t, t0 + Duration::from_secs(40)).is_some());
+        assert!(again.session_at(&t, t0 + Duration::from_secs(55)).is_none());
     }
 
     #[tokio::test]

@@ -117,6 +117,13 @@ pub struct OfflineTracker {
     sent: Option<(BTreeSet<u32>, BTreeSet<OrgId>)>,
     #[serde(skip)]
     sent_ranges: Option<Vec<HomeRange>>,
+    /// Logins and logouts update the world at the next
+    /// [`Game::flush_offline`] rather than at once ([`Game::defer_offline`]).
+    #[serde(skip)]
+    defer: bool,
+    /// A login or logout since the world was last updated (when deferred).
+    #[serde(skip)]
+    dirty: bool,
 }
 
 impl OfflineTracker {
@@ -199,7 +206,32 @@ impl Game {
             let credit = self.protection_used(player, start);
             self.offline.spells.entry(player).or_insert(Spell { start, home, credit, ..Spell::default() });
         }
-        self.sync_offline_protection();
+        self.offline_changed();
+    }
+
+    /// The spells changed: tell the world now, or at the next flush.
+    fn offline_changed(&mut self) {
+        if self.offline.defer {
+            self.offline.dirty = true;
+        } else {
+            self.sync_offline_protection();
+        }
+    }
+
+    /// Update the world with logins and logouts from now on only at
+    /// [`Game::flush_offline`]: the runner flushes before each world step
+    /// (and save), the only time the world reads the protection. A burst of
+    /// reconnections (a restart) then costs one update instead of one per
+    /// player, each a pass over every spell, listing and open offer.
+    pub fn defer_offline(&mut self) {
+        self.offline.defer = true;
+    }
+
+    /// Give the world the protection logins and logouts changed, if any.
+    pub fn flush_offline(&mut self) {
+        if std::mem::take(&mut self.offline.dirty) {
+            self.sync_offline_protection();
+        }
     }
 
     /// The protection budget: at most this many ticks of protection in any
@@ -244,7 +276,7 @@ impl Game {
         let past = self.offline.past.entry(player).or_default();
         past.push((spell.start, tick));
         past.retain(|&(_, end)| end + window > tick);
-        self.sync_offline_protection();
+        self.offline_changed();
         let tpd = self.world.config.ticks_per_day.max(1) as u64;
         let days = |ticks: u64| {
             let d = ticks.div_ceil(tpd);
@@ -304,6 +336,7 @@ impl Game {
                 s.home_engaged += 1;
             }
         }
+        self.offline.dirty = false;
         self.sync_offline_protection();
     }
 
@@ -392,6 +425,52 @@ mod tests {
 
     fn told(out: &Outbox) -> bool {
         out.iter().any(|(_, m)| matches!(m, ServerMsg::Alert { alert } if alert.text.contains("offline protection")))
+    }
+
+    /// Deferred updates (`Game::defer_offline`, as the runner runs games)
+    /// leave the world as immediate ones: players log in and out at random
+    /// between ticks on a world with hunters, the deferred game flushing
+    /// before each step, and both stay the same organism for organism.
+    #[test]
+    fn deferred_protection_updates_change_nothing() {
+        use rand::{Rng, SeedableRng};
+        let make = || {
+            let world =
+                build_world(&WorldSettings { seed: 3, width: 96, height: 96, wild: true, ..Default::default() });
+            let mut g = Game::new(world, GameConfig { offline_protection_ticks: 400, ..GameConfig::default() });
+            for p in 1..=6u32 {
+                let d = FounderDesign::new(format!("L{p}"), Thermo::Warm, BirthType::Live, 2).founders(4);
+                g.found(p, &d).unwrap();
+            }
+            g
+        };
+        let (mut now, mut later) = (make(), make());
+        later.defer_offline();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(9);
+        let mut online = [false; 7];
+        for t in 0..300 {
+            for _ in 0..rng.gen_range(0..4) {
+                let p = rng.gen_range(1..=6u32);
+                let conn = p as u64 * 10;
+                if online[p as usize] {
+                    now.disconnect(conn);
+                    later.disconnect(conn);
+                } else {
+                    let (a, b) = (now.connect(conn, p, "p"), later.connect(conn, p, "p"));
+                    assert_eq!(format!("{a:?}"), format!("{b:?}"), "tick {t}");
+                }
+                online[p as usize] = !online[p as usize];
+            }
+            later.flush_offline();
+            assert_eq!(protected(&now), protected(&later), "tick {t}");
+            let (a, b) = (tick(&mut now), tick(&mut later));
+            assert_eq!(format!("{a:?}"), format!("{b:?}"), "tick {t}");
+            let state = |g: &Game| {
+                g.world.organisms.iter().map(|o| (o.id, o.alive, o.pos.x, o.pos.y, o.health)).collect::<Vec<_>>()
+            };
+            assert_eq!(state(&now), state(&later), "tick {t}");
+        }
+        assert!(now.offline.spells().values().any(|s| s.engaged > 0), "protection did something");
     }
 
     #[test]

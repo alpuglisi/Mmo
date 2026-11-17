@@ -80,7 +80,7 @@ use tokio_tungstenite::tungstenite::Message;
 const USAGE: &str = "usage: loadgen [--players 50] [--duration 120] [--ramp 20] [--actions-per-min 30] \
 [--url http://HOST:PORT | --server PATH] [--data DIR] [--size 512] [--seed 1] [--tick-ms 1000] [--state-ms 1000] \
 [--fast] [--lod] [--warm-until 0] [--report 10] [--json FILE] [--dump-state FILE] [--founders 12] [--proto 2] [--deflate] \
-[--world ID | --worlds N] [--csv FILE]";
+[--world ID | --worlds N] [--csv FILE] [--restart-at SECS]";
 
 #[derive(Clone, Debug)]
 struct Args {
@@ -114,6 +114,10 @@ struct Args {
     /// Append one row per world per report to this CSV file (for soaks:
     /// the summary's medians hide trends over hours).
     csv: Option<PathBuf>,
+    /// Restart the started server this many seconds after the ramp
+    /// (graceful stop, then start from its save on the same port) and let
+    /// every player reconnect.
+    restart_at: Option<f64>,
 }
 
 impl Args {
@@ -177,6 +181,7 @@ fn parse_args() -> Result<Args, String> {
         world: None,
         worlds: 1,
         csv: None,
+        restart_at: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -208,6 +213,7 @@ fn parse_args() -> Result<Args, String> {
             "--world" => a.world = Some(v("--world")?),
             "--worlds" => a.worlds = num("--worlds", v("--worlds")?)?,
             "--csv" => a.csv = Some(v("--csv")?.into()),
+            "--restart-at" => a.restart_at = Some(num("--restart-at", v("--restart-at")?)?),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -425,9 +431,19 @@ struct Stats {
     bytes_by_kind: Mutex<HashMap<String, u64>>,
     /// Fill `latency_window` (`--csv`).
     track_window: bool,
+    /// `--restart-at`: connections lost and opened again, logins needed
+    /// for it, players who gave up, and each outage (lost → first state).
+    reconnects: AtomicU64,
+    relogins: AtomicU64,
+    reconnect_failed: AtomicU64,
+    outages: Mutex<Vec<f32>>,
 }
 
 impl Stats {
+    fn outage(&self, d: Duration) {
+        self.outages.lock().unwrap().push(d.as_secs_f32() * 1000.0);
+    }
+
     fn latency(&self, world: usize, command: &'static str, ms: f32) {
         self.latency_world.lock().unwrap().entry(world).or_insert_with(|| Reservoir::new(100_000)).push(ms);
         if self.track_window {
@@ -758,6 +774,74 @@ async fn auth_call(ctx: &Ctx, path: &str, creds: &Value, rng: &mut StdRng) -> Re
     ctx.http.call(Method::POST, path, None, Some(creds.clone())).await
 }
 
+type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Open the game WebSocket and wait for `welcome` (its player id). The
+/// first time, a failure is final. Reconnecting, it retries as the web
+/// client does (`client/src/socket.ts`): a doubling backoff from 0.5 s to
+/// 15 s with ±20% jitter, and after two failed attempts while the HTTP API
+/// answers, the session is taken as gone (a restart logs everyone out) and
+/// the player logs in again: the client sends its user to the login screen,
+/// this logs in at once (the worst case for the server).
+#[allow(clippy::too_many_arguments)]
+async fn open_ws(
+    ctx: &Ctx,
+    i: usize,
+    world: &Option<String>,
+    creds: &Value,
+    token: &mut String,
+    reconnect: bool,
+    rng: &mut StdRng,
+    stop: &mut watch::Receiver<bool>,
+) -> Option<(Ws, u32)> {
+    let st = &ctx.stats;
+    let mut attempt = 0u32;
+    for _ in 0..60 {
+        if *stop.borrow() {
+            return None;
+        }
+        if attempt > 0 {
+            let ms = (500.0 * 2f64.powi(attempt as i32 - 1)).min(15_000.0) * rng.gen_range(0.8..1.2);
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs_f64(ms / 1e3)) => {}
+                _ = stop.changed() => return None,
+            }
+        }
+        attempt += 1;
+        let url = in_world(&format!("{}/ws?token={token}&proto={}", ctx.ws_base, ctx.args.proto), world);
+        match tokio_tungstenite::connect_async(url).await {
+            Ok((mut ws, _)) => loop {
+                match ws.next().await {
+                    Some(Ok(Message::Text(t))) => {
+                        let v: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
+                        if v["type"] == "welcome" {
+                            return Some((ws, v["player"].as_u64().unwrap_or(0) as u32));
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    _ => break,
+                }
+            },
+            Err(e) => {
+                if !reconnect {
+                    eprintln!("player {i}: websocket failed: {e}");
+                    return None;
+                }
+                if attempt >= 2 && ctx.http.get::<Value>("/api/world").await.is_some() {
+                    if let Ok((200, v)) = auth_call(ctx, "/api/login", creds, rng).await {
+                        if let Some(t) = v["token"].as_str() {
+                            *token = t.to_string();
+                            st.relogins.fetch_add(1, Ordering::Relaxed);
+                            attempt = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
     let st = &ctx.stats;
     let worlds = ctx.args.world_ids();
@@ -784,7 +868,7 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
             }
         }
     }
-    let Some(token) = token else {
+    let Some(mut token) = token else {
         st.setup_failed.fetch_add(1, Ordering::Relaxed);
         return;
     };
@@ -795,34 +879,8 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
         }
         other => eprintln!("player {i}: founding failed: {other:?}"),
     }
-    let ws_url = in_world(&format!("{}/ws?token={token}&proto={}", ctx.ws_base, ctx.args.proto), world);
-    let mut ws = match tokio_tungstenite::connect_async(ws_url).await {
-        Ok((ws, _)) => ws,
-        Err(e) => {
-            eprintln!("player {i}: websocket failed: {e}");
-            st.setup_failed.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-    };
-    st.connected.fetch_add(1, Ordering::Relaxed);
-    // `welcome` carries the player id.
-    let player_id = loop {
-        match ws.next().await {
-            Some(Ok(Message::Text(t))) => {
-                let v: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
-                if v["type"] == "welcome" {
-                    break v["player"].as_u64().unwrap_or(0) as u32;
-                }
-            }
-            _ => {
-                st.connected.fetch_sub(1, Ordering::Relaxed);
-                st.unexpected_close.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-        }
-    };
     let mut p = Player {
-        player: player_id,
+        player: 0,
         state: StateLite::default(),
         listings: Vec::new(),
         cursor: None,
@@ -832,157 +890,187 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
         rng,
         size: ctx.args.size as f32,
     };
-    let mut decoder = DeltaDecoder::new();
-    let mut deflate = ctx.args.deflate.then(|| Compress::new(Compression::default(), false));
-    let mean = 60.0 / ctx.args.actions_per_min.max(0.01);
-    let mut next_action = tokio::time::Instant::now() + Duration::from_secs_f64(p.rng.gen_range(0.0..mean));
+    // Set while reconnecting: when the connection dropped.
+    let mut down_since: Option<Instant> = None;
     loop {
-        tokio::select! {
-            _ = stop.changed() => break,
-            _ = tokio::time::sleep_until(next_action) => {
-                next_action += Duration::from_secs_f64(mean * p.rng.gen_range(0.5..1.5));
-                let Some((name, mut msg)) = p.action() else { continue };
-                let id = p.next_id;
-                p.next_id += 1;
-                msg["id"] = json!(id);
-                p.pending.insert(id, (Instant::now(), name));
-                st.commands.fetch_add(1, Ordering::Relaxed);
-                if ws.send(Message::Text(msg.to_string())).await.is_err() {
-                    st.unexpected_close.fetch_add(1, Ordering::Relaxed);
-                    break;
-                }
+        let reconnect = down_since.is_some();
+        let Some((mut ws, player_id)) =
+            open_ws(&ctx, i, world, &creds, &mut token, reconnect, &mut p.rng, &mut stop).await
+        else {
+            if !reconnect && !*stop.borrow() {
+                st.setup_failed.fetch_add(1, Ordering::Relaxed);
+            } else if reconnect && !*stop.borrow() {
+                st.reconnect_failed.fetch_add(1, Ordering::Relaxed);
             }
-            frame = ws.next() => {
-                let text = match frame {
-                    Some(Ok(Message::Text(t))) => t,
-                    Some(Ok(Message::Binary(b))) => {
-                        // A protocol 2 state.
-                        st.msgs_in.fetch_add(1, Ordering::Relaxed);
-                        st.bytes_in.fetch_add(b.len() as u64, Ordering::Relaxed);
-                        st.states_in.fetch_add(1, Ordering::Relaxed);
-                        st.state_bytes_in.fetch_add(b.len() as u64, Ordering::Relaxed);
-                        st.state_size(b.len());
-                        st.kind_bytes("state", b.len());
-                        if let Some(z) = deflate.as_mut() {
-                            st.state_deflated.fetch_add(deflated(z, &b) as u64, Ordering::Relaxed);
-                        }
-                        match decoder.apply(&b) {
-                            Ok(s) => {
-                                if ctx.args.dump_state.is_some() {
-                                    let text = serde_json::to_string(&s).unwrap_or_default();
-                                    let mut big = st.largest_state.lock().unwrap();
-                                    if text.len() > big.len() {
-                                        *big = text;
+            return;
+        };
+        st.connected.fetch_add(1, Ordering::Relaxed);
+        p.player = player_id;
+        p.pending.clear();
+        // Until the first state after a reconnection.
+        let mut awaiting = down_since.take();
+        let mut decoder = DeltaDecoder::new();
+        let mut deflate = ctx.args.deflate.then(|| Compress::new(Compression::default(), false));
+        let mean = 60.0 / ctx.args.actions_per_min.max(0.01);
+        let mut next_action = tokio::time::Instant::now() + Duration::from_secs_f64(p.rng.gen_range(0.0..mean));
+        let closed = loop {
+            tokio::select! {
+                _ = stop.changed() => break false,
+                _ = tokio::time::sleep_until(next_action) => {
+                    next_action += Duration::from_secs_f64(mean * p.rng.gen_range(0.5..1.5));
+                    let Some((name, mut msg)) = p.action() else { continue };
+                    let id = p.next_id;
+                    p.next_id += 1;
+                    msg["id"] = json!(id);
+                    p.pending.insert(id, (Instant::now(), name));
+                    st.commands.fetch_add(1, Ordering::Relaxed);
+                    if ws.send(Message::Text(msg.to_string())).await.is_err() {
+                        break true;
+                    }
+                }
+                frame = ws.next() => {
+                    let text = match frame {
+                        Some(Ok(Message::Text(t))) => t,
+                        Some(Ok(Message::Binary(b))) => {
+                            // A protocol 2 state.
+                            st.msgs_in.fetch_add(1, Ordering::Relaxed);
+                            st.bytes_in.fetch_add(b.len() as u64, Ordering::Relaxed);
+                            st.states_in.fetch_add(1, Ordering::Relaxed);
+                            st.state_bytes_in.fetch_add(b.len() as u64, Ordering::Relaxed);
+                            st.state_size(b.len());
+                            st.kind_bytes("state", b.len());
+                            if let Some(z) = deflate.as_mut() {
+                                st.state_deflated.fetch_add(deflated(z, &b) as u64, Ordering::Relaxed);
+                            }
+                            match decoder.apply(&b) {
+                                Ok(s) => {
+                                    if let Some(t) = awaiting.take() {
+                                        st.outage(t.elapsed());
+                                    }
+                                    if ctx.args.dump_state.is_some() {
+                                        let text = serde_json::to_string(&s).unwrap_or_default();
+                                        let mut big = st.largest_state.lock().unwrap();
+                                        if text.len() > big.len() {
+                                            *big = text;
+                                        }
+                                    }
+                                    p.state = StateLite::from(s);
+                                }
+                                Err(_) => {
+                                    st.decode_errors.fetch_add(1, Ordering::Relaxed);
+                                    if ws.send(Message::Text(json!({"type": "resync"}).to_string())).await.is_err() {
+                                        break true;
                                     }
                                 }
-                                p.state = StateLite::from(s);
                             }
-                            Err(_) => {
-                                st.decode_errors.fetch_add(1, Ordering::Relaxed);
-                                if ws.send(Message::Text(json!({"type": "resync"}).to_string())).await.is_err() {
-                                    st.unexpected_close.fetch_add(1, Ordering::Relaxed);
-                                    break;
-                                }
-                            }
-                        }
-                        continue;
-                    }
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
-                        st.unexpected_close.fetch_add(1, Ordering::Relaxed);
-                        break;
-                    }
-                    Some(Ok(_)) => continue,
-                };
-                st.msgs_in.fetch_add(1, Ordering::Relaxed);
-                st.bytes_in.fetch_add(text.len() as u64, Ordering::Relaxed);
-                let Ok(msg) = serde_json::from_str::<Incoming>(&text) else { continue };
-                let kind = match &msg {
-                    Incoming::State(_) => "state".to_string(),
-                    Incoming::Result { id, .. } => {
-                        format!("result:{}", id.and_then(|id| p.pending.get(&id)).map_or("?", |(_, n)| n))
-                    }
-                    Incoming::MatingRequest { .. } => "mating_request".into(),
-                    _ => "other".into(),
-                };
-                st.kind_bytes(&kind, text.len());
-                match msg {
-                    Incoming::State(s) => {
-                        st.states_in.fetch_add(1, Ordering::Relaxed);
-                        st.state_bytes_in.fetch_add(text.len() as u64, Ordering::Relaxed);
-                        st.state_size(text.len());
-                        if let Some(z) = deflate.as_mut() {
-                            st.state_deflated.fetch_add(deflated(z, text.as_bytes()) as u64, Ordering::Relaxed);
-                        }
-                        if ctx.args.dump_state.is_some() {
-                            let mut big = st.largest_state.lock().unwrap();
-                            if text.len() > big.len() {
-                                *big = text.to_string();
-                            }
-                        }
-                        p.state = s;
-                    }
-                    Incoming::Result { id, ok, error, data } => {
-                        let Some((sent, name)) = id.and_then(|id| p.pending.remove(&id)) else { continue };
-                        st.latency(world_ix, name, sent.elapsed().as_secs_f32() * 1000.0);
-                        if ok {
-                            st.results_ok.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            st.results_err.fetch_add(1, Ordering::Relaxed);
-                            let code = error.map_or_else(|| "?".to_string(), |e| e.code);
-                            *st.errors.lock().unwrap().entry(format!("{name}:{code}")).or_default() += 1;
-                        }
-                        if !ok {
                             continue;
                         }
-                        match name {
-                            "browse_market" => {
-                                let ls = data.as_ref().and_then(|d| d["listings"].as_array()).cloned().unwrap_or_default();
-                                p.cursor = data.as_ref().and_then(|d| d["next_cursor"].as_str()).map(str::to_string);
-                                p.listings = ls
-                                    .iter()
-                                    .filter_map(|l| {
-                                        Some(Listing {
-                                            id: l["id"].as_u64()?,
-                                            owner: l["owner"].as_u64()? as u32,
-                                            sex: l["sex"].as_str()?.to_string(),
-                                            busy: l["busy"].as_bool().unwrap_or(false),
-                                            min_bid: l["auction"]["min_bid"].as_u64(),
-                                        })
-                                    })
-                                    .collect();
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+                            break true;
+                        }
+                        Some(Ok(_)) => continue,
+                    };
+                    st.msgs_in.fetch_add(1, Ordering::Relaxed);
+                    st.bytes_in.fetch_add(text.len() as u64, Ordering::Relaxed);
+                    let Ok(msg) = serde_json::from_str::<Incoming>(&text) else { continue };
+                    let kind = match &msg {
+                        Incoming::State(_) => "state".to_string(),
+                        Incoming::Result { id, .. } => {
+                            format!("result:{}", id.and_then(|id| p.pending.get(&id)).map_or("?", |(_, n)| n))
+                        }
+                        Incoming::MatingRequest { .. } => "mating_request".into(),
+                        _ => "other".into(),
+                    };
+                    st.kind_bytes(&kind, text.len());
+                    match msg {
+                        Incoming::State(s) => {
+                            if let Some(t) = awaiting.take() {
+                                st.outage(t.elapsed());
                             }
-                            "create_listing" | "create_auction" => p.my_listings += 1,
-                            _ => {}
+                            st.states_in.fetch_add(1, Ordering::Relaxed);
+                            st.state_bytes_in.fetch_add(text.len() as u64, Ordering::Relaxed);
+                            st.state_size(text.len());
+                            if let Some(z) = deflate.as_mut() {
+                                st.state_deflated.fetch_add(deflated(z, text.as_bytes()) as u64, Ordering::Relaxed);
+                            }
+                            if ctx.args.dump_state.is_some() {
+                                let mut big = st.largest_state.lock().unwrap();
+                                if text.len() > big.len() {
+                                    *big = text.to_string();
+                                }
+                            }
+                            p.state = s;
                         }
-                    }
-                    Incoming::MatingRequest { offer } => {
-                        st.mating_requests.fetch_add(1, Ordering::Relaxed);
-                        let id = p.next_id;
-                        p.next_id += 1;
-                        let accept = p.rng.gen_bool(0.7);
-                        p.pending.insert(id, (Instant::now(), "respond_mating"));
-                        st.commands.fetch_add(1, Ordering::Relaxed);
-                        let msg = json!({"type": "respond_mating", "id": id, "request": offer.id, "accept": accept});
-                        if ws.send(Message::Text(msg.to_string())).await.is_err() {
-                            st.unexpected_close.fetch_add(1, Ordering::Relaxed);
-                            break;
+                        Incoming::Result { id, ok, error, data } => {
+                            let Some((sent, name)) = id.and_then(|id| p.pending.remove(&id)) else { continue };
+                            st.latency(world_ix, name, sent.elapsed().as_secs_f32() * 1000.0);
+                            if ok {
+                                st.results_ok.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                st.results_err.fetch_add(1, Ordering::Relaxed);
+                                let code = error.map_or_else(|| "?".to_string(), |e| e.code);
+                                *st.errors.lock().unwrap().entry(format!("{name}:{code}")).or_default() += 1;
+                            }
+                            if !ok {
+                                continue;
+                            }
+                            match name {
+                                "browse_market" => {
+                                    let ls = data.as_ref().and_then(|d| d["listings"].as_array()).cloned().unwrap_or_default();
+                                    p.cursor = data.as_ref().and_then(|d| d["next_cursor"].as_str()).map(str::to_string);
+                                    p.listings = ls
+                                        .iter()
+                                        .filter_map(|l| {
+                                            Some(Listing {
+                                                id: l["id"].as_u64()?,
+                                                owner: l["owner"].as_u64()? as u32,
+                                                sex: l["sex"].as_str()?.to_string(),
+                                                busy: l["busy"].as_bool().unwrap_or(false),
+                                                min_bid: l["auction"]["min_bid"].as_u64(),
+                                            })
+                                        })
+                                        .collect();
+                                }
+                                "create_listing" | "create_auction" => p.my_listings += 1,
+                                _ => {}
+                            }
                         }
+                        Incoming::MatingRequest { offer } => {
+                            st.mating_requests.fetch_add(1, Ordering::Relaxed);
+                            let id = p.next_id;
+                            p.next_id += 1;
+                            let accept = p.rng.gen_bool(0.7);
+                            p.pending.insert(id, (Instant::now(), "respond_mating"));
+                            st.commands.fetch_add(1, Ordering::Relaxed);
+                            let msg = json!({"type": "respond_mating", "id": id, "request": offer.id, "accept": accept});
+                            if ws.send(Message::Text(msg.to_string())).await.is_err() {
+                                break true;
+                            }
+                        }
+                        Incoming::SessionEnded {} => {
+                            break true;
+                        }
+                        Incoming::Other => {}
                     }
-                    Incoming::SessionEnded {} => {
-                        st.unexpected_close.fetch_add(1, Ordering::Relaxed);
-                        break;
+                    // Forget commands that never got an answer (shouldn't happen).
+                    if p.pending.len() > 256 {
+                        p.pending.clear();
                     }
-                    Incoming::Other => {}
-                }
-                // Forget commands that never got an answer (shouldn't happen).
-                if p.pending.len() > 256 {
-                    p.pending.clear();
                 }
             }
+        };
+        st.connected.fetch_sub(1, Ordering::Relaxed);
+        if !closed {
+            let _ = ws.close(None).await;
+            return;
         }
+        if ctx.args.restart_at.is_none() {
+            st.unexpected_close.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        st.reconnects.fetch_add(1, Ordering::Relaxed);
+        down_since = Some(Instant::now());
     }
-    let _ = ws.close(None).await;
-    st.connected.fetch_sub(1, Ordering::Relaxed);
 }
 
 // --- Reporting -------------------------------------------------------------
@@ -1014,6 +1102,21 @@ struct Sample {
     saves: u64,
     /// Server time spent encoding one state (JSON or protocol 2), µs.
     encode_us: f64,
+}
+
+/// What `--restart-at` measured.
+struct Restart {
+    /// Seconds into the run.
+    at: f64,
+    /// Players connected when the server was stopped.
+    connected: usize,
+    /// Graceful stop (with its save), then start until the API answers.
+    stop_s: f64,
+    start_s: f64,
+    clean: bool,
+    panics: usize,
+    /// Seconds from serving again until every player was back.
+    back: Arc<Mutex<Option<f64>>>,
 }
 
 fn mb(b: u64) -> f64 {
@@ -1104,6 +1207,8 @@ async fn main() {
 
     // Start (or find) the server.
     let mut proc = None;
+    // The started server's data directory and port (for `--restart-at`).
+    let mut started_at: Option<(PathBuf, u16)> = None;
     let base = if let Some(url) = &args.url {
         url.clone()
     } else {
@@ -1138,6 +1243,7 @@ async fn main() {
         let port = free_port();
         proc = Some(spawn_server(&args, &data, port, args.fast, "server.log"));
         println!("server data in {}", data.display());
+        started_at = Some((data.clone(), port));
         format!("http://127.0.0.1:{port}")
     };
     let http = Http::new(&base);
@@ -1184,6 +1290,7 @@ async fn main() {
     let mut prev: Option<(Instant, MetricsView, u64, u64, u64, f64)> = None;
     let end = started + Duration::from_secs_f64(args.ramp + args.duration);
     let mut first_rss = None;
+    let mut restart: Option<Restart> = None;
     // The other worlds' timings, per report, and their previous metrics.
     let mut others: Vec<Vec<WorldRow>> = vec![Vec::new(); worlds.len()];
     let mut others_prev: Vec<Option<(Instant, MetricsView)>> = vec![None; worlds.len()];
@@ -1225,6 +1332,48 @@ async fn main() {
             break;
         }
         tokio::time::sleep(Duration::from_secs_f64(args.report).min(end - now)).await;
+        if let (Some(at), None) = (args.restart_at, &restart) {
+            if started.elapsed().as_secs_f64() >= args.ramp + at {
+                if let (Some(p), Some((data, port))) = (proc.as_mut(), started_at.as_ref()) {
+                    let connected = st.connected.load(Ordering::Relaxed);
+                    println!("restart: stopping the server with {connected} players connected");
+                    let t = Instant::now();
+                    let clean = tokio::task::block_in_place(|| stop_server(p));
+                    let stop_s = t.elapsed().as_secs_f64();
+                    let old_log = std::fs::read_to_string(&p.log).unwrap_or_default();
+                    let t = Instant::now();
+                    *p = spawn_server(&args, data, *port, args.fast, "server2.log");
+                    wait_up(&http).await;
+                    let start_s = t.elapsed().as_secs_f64();
+                    println!("restart: stopped in {stop_s:.1} s (clean: {clean}), serving again after {start_s:.1} s");
+                    // Until every player who was connected is back.
+                    let back: Arc<Mutex<Option<f64>>> = Arc::default();
+                    let (c2, b2, up) = (ctx.clone(), back.clone(), Instant::now());
+                    tokio::spawn(async move {
+                        while up.elapsed() < Duration::from_secs(600) {
+                            if c2.stats.connected.load(Ordering::Relaxed) >= connected {
+                                *b2.lock().unwrap() = Some(up.elapsed().as_secs_f64());
+                                return;
+                            }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    });
+                    restart = Some(Restart {
+                        at: started.elapsed().as_secs_f64(),
+                        connected,
+                        stop_s,
+                        start_s,
+                        clean,
+                        panics: old_log.matches("panicked").count(),
+                        back,
+                    });
+                    // The new process's counters start again.
+                    prev = None;
+                    others_prev = vec![None; worlds.len()];
+                    csv_prev = vec![None; worlds.len()];
+                }
+            }
+        }
         let Some(m) = http.get::<MetricsView>(&in_world("/api/metrics", &main_world)).await else { continue };
         let orgs = organisms_in(&http, &main_world).await;
         let mut views: Vec<Option<(MetricsView, usize)>> = vec![None; worlds.len()];
@@ -1444,7 +1593,28 @@ async fn main() {
         .iter()
         .map(|c| json!({"command": c.command, "n": c.n, "mean_us": c.ms * 1e3 / c.n as f64, "total_ms": c.ms}))
         .collect();
+    let restart_json = restart.as_ref().map(|r| {
+        let mut o = st.outages.lock().unwrap().clone();
+        o.sort_by(f32::total_cmp);
+        let q = |x: f64| o.get(((o.len().max(1) - 1) as f64 * x).round() as usize).copied().unwrap_or(0.0);
+        let after: Vec<&Sample> = samples.iter().filter(|s| s.t >= r.at).collect();
+        json!({
+            "at_s": r.at, "players_connected": r.connected, "stop_s": r.stop_s, "start_s": r.start_s,
+            "stopped_clean": r.clean, "panics_before": r.panics,
+            "all_back_after_s": *r.back.lock().unwrap(),
+            "reconnects": st.reconnects.load(Ordering::Relaxed),
+            "relogins": st.relogins.load(Ordering::Relaxed),
+            "gave_up": st.reconnect_failed.load(Ordering::Relaxed),
+            "outage_ms_p50": q(0.5), "outage_ms_p90": q(0.9), "outage_ms_p99": q(0.99), "outage_ms_max": q(1.0),
+            "outages": o.len(),
+            "ticks_per_s_min_after": after.iter().map(|s| s.ticks_per_s).fold(f64::INFINITY, f64::min),
+            "tick_ms_p99_max_after": after.iter().map(|s| s.tick_p99 as f64).fold(0.0, f64::max),
+            "states_ms_p99_max_after": after.iter().map(|s| s.states_p99 as f64).fold(0.0, f64::max),
+            "cpu_cores_max_after": after.iter().map(|s| s.cpu_cores).fold(0.0, f64::max),
+        })
+    });
     let summary = json!({
+        "restart": restart_json,
         "players": args.players,
         "worlds": per_world,
         "connected": st.connected.load(Ordering::Relaxed),

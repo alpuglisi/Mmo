@@ -195,6 +195,67 @@ async fn worlds_are_listed_and_chosen_per_request() {
     srv.shutdown().await;
 }
 
+/// `GET /api/assign`: players go to their lineage's world, new players to
+/// the busiest world under its fill target, then to the one with room; 503
+/// when all are full.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn assign_keeps_lineages_and_fills_worlds() {
+    let cfg = ServerConfig {
+        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+        store: Some(SharedStore(Arc::new(MemoryStore::default()))),
+        world: WorldSettings { seed: 11, width: 64, height: 64, wild: false, ..Default::default() },
+        worlds: vec![
+            WorldSpec { capacity: Some(2), ..WorldSpec::new("main") },
+            WorldSpec { capacity: Some(3), seed: Some(23), size: Some(48), ..WorldSpec::new("isle") },
+        ],
+        ..Default::default()
+    }
+    .manual();
+    let srv = start(cfg).await.expect("server starts");
+    let assign = |q: &'static str, token: Option<String>| {
+        let addr = srv.addr;
+        async move { json_req(addr, Method::GET, &format!("/api/assign{q}"), token.as_deref(), None).await }
+    };
+    let (s, v) = assign("", None).await;
+    assert_eq!((s, v["world"].as_str(), v["reason"].as_str()), (StatusCode::OK, Some("main"), Some("fill")), "{v}");
+    assert_eq!((v["capacity"].as_u64(), v["has_account"].as_bool()), (Some(2), Some(false)));
+    // Two players online in main (its capacity): new players go to the isle.
+    let mut socks = Vec::new();
+    for name in ["ann", "bob"] {
+        let t = register(srv.addr, name).await;
+        let mut sock = ws(srv.addr, "main", &t).await;
+        wait_for(&mut sock, "welcome", |v| v["type"] == "welcome").await;
+        socks.push(sock);
+    }
+    srv.step(1).await;
+    let (_, v) = assign("?name=cat", None).await;
+    assert_eq!((v["world"].as_str(), v["reason"].as_str()), (Some("isle"), Some("fill")), "{v}");
+    // A lineage in main brings its player back there, full or not, by token
+    // or by name.
+    let dan = register(srv.addr, "dan").await;
+    assert_eq!(found(srv.addr, "main", &dan, "Dan's").await.0, StatusCode::CREATED);
+    srv.step(1).await;
+    for (q, token) in [("", Some(dan.clone())), ("?name=dan", None)] {
+        let (_, v) = assign(q, token).await;
+        assert_eq!((v["world"].as_str(), v["reason"].as_str()), (Some("main"), Some("lineage")), "{v}");
+        assert_eq!(v["has_account"], true);
+    }
+    // The isle fills too (3 online): every world is full.
+    for name in ["eve", "fay", "gus"] {
+        let t = register(srv.addr, name).await;
+        let mut sock = ws(srv.addr, "isle", &t).await;
+        wait_for(&mut sock, "welcome", |v| v["type"] == "welcome").await;
+        socks.push(sock);
+    }
+    srv.step_world("isle", 1).await;
+    let (s, v) = assign("?name=hal", None).await;
+    assert_eq!((s, v["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("full")), "{v}");
+    // A bad token is refused rather than ignored.
+    assert_eq!(assign("", Some("nope".into())).await.0, StatusCode::UNAUTHORIZED);
+    drop(socks);
+    srv.shutdown().await;
+}
+
 /// One account plays in both worlds with a lineage in each; nothing done in
 /// one world shows in the other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

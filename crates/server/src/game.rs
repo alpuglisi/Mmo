@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use evo_sim::chronicle::{AchievementKind, Catastrophe, CatastropheKind};
 use evo_sim::design::DesignError;
 use evo_sim::math::Vec2;
-use evo_sim::organism::{DeathCause, Sex};
+use evo_sim::organism::{DeathCause, Organism, Sex};
 use evo_sim::presets::{self, REFERENCE_SIZE};
 use evo_sim::terrain::Season;
 use evo_sim::world::commands::{CommandError, DirectedMating, MatingPreview, MEETING_DISTANCE};
@@ -24,6 +24,7 @@ use crate::economy::{self, Bid, Economy, Insufficient, Listing};
 use crate::league::{self, CurrentSeason, SeasonRecord, SeasonTracker};
 use crate::protocol::*;
 mod family;
+mod market;
 mod offline;
 mod states;
 pub use offline::{
@@ -369,6 +370,10 @@ pub struct Game {
     offline: OfflineTracker,
     /// Name changes ([`Game::set_name`]), for [`Game::live_season_key`].
     names_changed: u64,
+    /// The players whose name changed, with the `names_changed` count after
+    /// each change, since the state index was last built (the kept
+    /// leaderboard patches their rows instead of being made again).
+    renamed: Vec<(u64, PlayerId)>,
     /// The state index and organism views kept between the state builds
     /// of a tick (`game::states`).
     state_cache: states::StateCache,
@@ -376,6 +381,9 @@ pub struct Game {
     /// the next tick, a command need only hold what it adds
     /// ([`Game::hold_added`]).
     held_tick: Option<u64>,
+    /// The marketplace listings indexed by every page order
+    /// (`game::market`).
+    market: market::MarketIndex,
     /// Tests: take the plain, slower paths these shortcuts replace (full
     /// hold scans, `World::command_migrate`, a fresh index per new
     /// connection) to compare against.
@@ -502,6 +510,8 @@ impl Game {
         // The first season starts with the next daily snapshot.
         let first_day = last_legacy_day.map_or(world.day(), |d| d + 1);
         let season = SeasonTracker::new(1, first_day, cfg.season_days);
+        let economy = Economy::new();
+        let market = market::MarketIndex::build(&economy, &world);
         Self {
             world,
             cfg,
@@ -526,14 +536,16 @@ impl Game {
             seen_achievements: 0,
             seen_eras: 0,
             seen_catastrophes: Vec::new(),
-            economy: Economy::new(),
+            economy,
             economy_restored: false,
             season,
             last_season_record: None,
             offline: OfflineTracker::default(),
             names_changed: 0,
+            renamed: Vec::new(),
             state_cache: states::StateCache::default(),
             held_tick: None,
+            market,
             #[cfg(test)]
             reference: false,
         }
@@ -613,6 +625,7 @@ impl Game {
         match saved.economy {
             Some(e) if saved.version >= 2 => {
                 g.economy = e;
+                g.market.rebuild(&g.economy, &g.world);
                 g.economy_restored = true;
             }
             // An older layout: no escrow was taken on its offers.
@@ -651,6 +664,7 @@ impl Game {
     /// get the founding grant again.
     pub fn seed_economy(&mut self, balances: &[(PlayerId, u64)], ledger: Vec<LedgerEntry>) {
         self.economy = Economy::from_store(balances, ledger);
+        self.market.rebuild(&self.economy, &self.world);
         self.economy_restored = true;
     }
 
@@ -745,8 +759,12 @@ impl Game {
     /// Renown of `player`'s held in escrow on open agreements and as the
     /// highest bid on auctions.
     pub fn escrow(&self, player: PlayerId) -> u64 {
-        self.offers.values().filter(|o| o.from == player && o.status.is_open()).map(|o| o.escrow).sum::<u64>()
-            + self.economy.bids_held(player)
+        let bids = if self.market.in_sync(&self.economy) {
+            self.market.bids_held(player)
+        } else {
+            self.economy.bids_held(player)
+        };
+        self.offers.values().filter(|o| o.from == player && o.status.is_open()).map(|o| o.escrow).sum::<u64>() + bids
     }
 
     /// Recent ledger entries of a player, newest first.
@@ -776,6 +794,7 @@ impl Game {
         if self.names.get(&player).map(String::as_str) != Some(name) {
             self.names.insert(player, name.to_string());
             self.names_changed += 1;
+            self.renamed.push((self.names_changed, player));
         }
     }
 
@@ -982,6 +1001,7 @@ impl Game {
                     return Err(ErrorInfo::new("auction_has_bids", "an auction with a bid can't be withdrawn"));
                 }
                 self.economy.listings.remove(&listing);
+                self.market.remove(&self.economy, listing);
                 if l.auction.is_some() {
                     self.record_auction(&l, "withdrawn", None);
                 }
@@ -1219,10 +1239,14 @@ impl Game {
         if price > economy::MAX_PRICE {
             return Err(ErrorInfo::new("bad_price", format!("prices go up to {} renown", economy::MAX_PRICE)));
         }
-        if let Some(l) = self.economy.listing_of(organism) {
-            return Err(ErrorInfo::new("already_listed", format!("#{organism} is already listing #{}", l.id)));
+        let synced = self.market.in_sync(&self.economy);
+        let listed =
+            if synced { self.market.listing_of(organism) } else { self.economy.listing_of(organism).map(|l| l.id) };
+        if let Some(id) = listed {
+            return Err(ErrorInfo::new("already_listed", format!("#{organism} is already listing #{id}")));
         }
-        if self.economy.listings_of(player) >= economy::MAX_LISTINGS {
+        let count = if synced { self.market.listings_of(player) } else { self.economy.listings_of(player) };
+        if count >= economy::MAX_LISTINGS {
             return Err(ErrorInfo::new(
                 "too_many_listings",
                 format!("at most {} listings at once", economy::MAX_LISTINGS),
@@ -1253,6 +1277,7 @@ impl Game {
         let tick = self.world.tick();
         let expires = expires_days.map(|d| tick + d as u64 * self.world.config.ticks_per_day as u64);
         let l = self.economy.add_listing(player, organism, fee, tick, expires);
+        self.listing_added(&l);
         self.hold_added(None, Some(l.id));
         self.sync_focus();
         Ok(l)
@@ -1299,6 +1324,7 @@ impl Game {
         }
         let tick = self.world.tick();
         let l = self.economy.add_auction(player, organism, reserve, tick, tick + duration);
+        self.listing_added(&l);
         self.hold_added(None, Some(l.id));
         self.sync_focus();
         Ok(l)
@@ -1377,6 +1403,9 @@ impl Game {
         if let Some(a) = self.economy.listings.get_mut(&listing).and_then(|x| x.auction.as_mut()) {
             a.high = Some(Bid { bidder: player, amount, mine, tick });
             a.bids += 1;
+        }
+        if let Some(x) = self.economy.listings.get(&listing) {
+            self.market.update(&self.economy, x);
         }
         self.hold_added(None, Some(listing));
         self.sync_focus();
@@ -1613,6 +1642,94 @@ impl Game {
     /// One page of the open listings matching `q`, in its order, with
     /// compatibility against `q.mine`.
     pub fn market(&self, player: PlayerId, q: &MarketQuery) -> Result<MarketView, ErrorInfo> {
+        let sort = q.sort.unwrap_or_default();
+        let early = q.mine.is_some() && (q.compatible || sort == MarketSort::Fertility);
+        // The index counts by kind and role only; other filters (and
+        // orders that need every preview) take the scan.
+        let indexed = !early
+            && q.max_price.is_none()
+            && q.lineage.is_none()
+            && q.species.is_none()
+            && self.market.usable(&self.economy, self.world.tick());
+        if !indexed {
+            return self.market_scan(player, q);
+        }
+        let page = self.market_indexed(player, q);
+        #[cfg(test)]
+        {
+            market::INDEXED_PAGES.with(|n| n.set(n.get() + 1));
+            if market::CHECK_PAGES.with(|c| c.get()) {
+                assert!(self.market.matches(&self.economy, &self.world), "market index out of date");
+                assert_eq!(page, self.market_scan(player, q), "indexed market page differs from the scan");
+            }
+        }
+        page
+    }
+
+    /// Whether listing `l` (of organism `o`) passes `q`'s filters other than
+    /// `compatible`.
+    fn listing_matches(
+        &self,
+        player: PlayerId,
+        q: &MarketQuery,
+        l: &Listing,
+        o: &Organism,
+        species: Option<&BTreeSet<u32>>,
+    ) -> bool {
+        let role = if o.sex == Sex::Male { ListingRole::Stud } else { ListingRole::Dam };
+        let kind = if l.auction.is_some() { ListingKind::Auction } else { ListingKind::Fixed };
+        !((q.hide_own && l.owner == player)
+            || q.kind.is_some_and(|k| k != kind)
+            || q.role.is_some_and(|r| r != role)
+            || q.max_price.is_some_and(|m| l.price() > m)
+            || q.lineage.is_some_and(|x| o.lineage != x)
+            || species.is_some_and(|s| !s.contains(&o.lineage)))
+    }
+
+    /// [`Game::market`] from the index (`game::market`): a walk of the
+    /// order from the cursor until a page and one more match, the total
+    /// from the counts. Only for queries without `max_price`, `lineage`,
+    /// `species` or every-candidate previews.
+    fn market_indexed(&self, player: PlayerId, q: &MarketQuery) -> Result<MarketView, ErrorInfo> {
+        let limit = q.limit.unwrap_or(MARKET_PAGE).clamp(1, MAX_MARKET_PAGE);
+        let sort = q.sort.unwrap_or_default();
+        let after = q.cursor.as_deref().map(parse_cursor).transpose()?;
+        let mut page: Vec<(market::Key, &Listing)> = Vec::with_capacity(limit + 1);
+        for (key, id) in self.market.walk(sort, after) {
+            let Some(l) = self.economy.listings.get(&id) else { continue };
+            let Some(o) = self.world.organism(l.organism) else { continue };
+            if self.listing_matches(player, q, l, o, None) {
+                page.push((key, l));
+                if page.len() > limit {
+                    break;
+                }
+            }
+        }
+        let next_cursor = (page.len() > limit).then(|| cursor_text(page[limit - 1].0));
+        let listings = page
+            .iter()
+            .take(limit)
+            .filter_map(|&(_, l)| self.listing_view(l, q.mine.and_then(|m| self.listing_preview(player, m, l))))
+            .collect();
+        let own = q.with_own.then(|| {
+            (self.market.owned_by(player).rev())
+                .filter_map(|id| self.economy.listings.get(&id))
+                .filter_map(|l| self.listing_view(l, None))
+                .collect()
+        });
+        Ok(MarketView {
+            balance: self.balance(player),
+            escrow: self.escrow(player),
+            slots_left: self.world.mating_slots_left(player),
+            listings,
+            total: self.market.count(player, q.kind, q.role, q.hide_own),
+            next_cursor,
+            own,
+        })
+    }
+
+    /// [`Game::market`] by a pass over every listing.
+    fn market_scan(&self, player: PlayerId, q: &MarketQuery) -> Result<MarketView, ErrorInfo> {
         let limit = q.limit.unwrap_or(MARKET_PAGE).clamp(1, MAX_MARKET_PAGE);
         let sort = q.sort.unwrap_or_default();
         let after = q.cursor.as_deref().map(parse_cursor).transpose()?;
@@ -1627,15 +1744,7 @@ impl Game {
         let mut rows: Vec<MarketRow<'_>> = Vec::with_capacity(self.economy.listings.len());
         for l in self.economy.listings.values() {
             let Some(o) = self.world.organism(l.organism) else { continue };
-            let role = if o.sex == Sex::Male { ListingRole::Stud } else { ListingRole::Dam };
-            let kind = if l.auction.is_some() { ListingKind::Auction } else { ListingKind::Fixed };
-            if (q.hide_own && l.owner == player)
-                || q.kind.is_some_and(|k| k != kind)
-                || q.role.is_some_and(|r| r != role)
-                || q.max_price.is_some_and(|m| l.price() > m)
-                || q.lineage.is_some_and(|x| o.lineage != x)
-                || species.as_ref().is_some_and(|s| !s.contains(&o.lineage))
-            {
+            if !self.listing_matches(player, q, l, o, species.as_ref()) {
                 continue;
             }
             let preview = q.mine.filter(|_| early).and_then(|m| self.listing_preview(player, m, l));
@@ -1700,6 +1809,7 @@ impl Game {
         for (l, dead) in closed {
             let (id, owner, organism) = (l.id, l.owner, l.organism);
             self.economy.listings.remove(&id);
+            self.market.remove(&self.economy, id);
             if l.auction.is_some() && !dead {
                 self.settle_auction(&l, out);
                 continue;
@@ -1724,6 +1834,15 @@ impl Game {
             };
             self.alert(owner, AlertKind::Market, text, Some(organism), out);
         }
+        // Every listing left has a living organism of its owner's until the
+        // next tick: the index's counts are exact.
+        self.market.validated = Some(tick);
+    }
+
+    /// A listing was just created: index it.
+    fn listing_added(&mut self, l: &Listing) {
+        let sex = self.world.organism(l.organism).map(|o| o.sex);
+        self.market.insert(&self.economy, l, sex);
     }
 
     /// Daily renown from the day's legacy record.
@@ -4279,6 +4398,96 @@ mod tests {
         (g, all)
     }
 
+    /// The indexed market (`game::market`) against the scan: after a tick
+    /// (the index is then usable), random pages in every order, with and
+    /// without filters, cursors and previews, while listings, auctions and
+    /// bids come and go. `Game::market` compares both on every page.
+    #[test]
+    fn indexed_market_pages_match_the_scan() {
+        use rand::{Rng, SeedableRng};
+        let (mut g, all) = market_game();
+        g.world.step();
+        let _ = g.after_tick();
+        assert!(g.market.usable(&g.economy, g.world.tick()));
+        let mut rng = rand::rngs::StdRng::seed_from_u64(3);
+        let sorts = [
+            MarketSort::Newest,
+            MarketSort::PriceAsc,
+            MarketSort::PriceDesc,
+            MarketSort::Ending,
+            MarketSort::Fertility,
+        ];
+        let before = market::INDEXED_PAGES.with(|n| n.get());
+        let mut scanned_too = 0;
+        for round in 0..300 {
+            let p = rng.gen_range(1..=4u32);
+            let conn = p as u64 * 10;
+            let mine: Vec<OrgId> =
+                all[p as usize - 1].iter().copied().filter(|&id| g.world.organism(id).is_some()).collect();
+            match rng.gen_range(0..6) {
+                // Withdraw one of one's listings (not an auction with a bid).
+                0 => {
+                    let ids: Vec<u64> = g.market.owned_by(p).collect();
+                    if let Some(&id) = ids.get(rng.gen_range(0..ids.len().max(1))) {
+                        let _ = g.command(conn, p, None, ClientMsg::WithdrawListing { listing: id });
+                    }
+                }
+                // List or auction an organism.
+                1 => {
+                    if let Some(&id) = mine.get(rng.gen_range(0..mine.len().max(1))) {
+                        let msg = if rng.gen_bool(0.5) {
+                            ClientMsg::CreateListing { organism: id, fee: rng.gen_range(0..30), expires_days: None }
+                        } else {
+                            ClientMsg::CreateAuction {
+                                organism: id,
+                                reserve: rng.gen_range(0..30),
+                                days: None,
+                                ticks: Some(50),
+                            }
+                        };
+                        let _ = g.command(conn, p, None, msg);
+                    }
+                }
+                // Bid on someone's auction.
+                2 => {
+                    let auctions: Vec<(u64, u64)> = g
+                        .economy
+                        .listings
+                        .values()
+                        .filter(|l| l.owner != p)
+                        .filter_map(|l| Some((l.id, l.auction.as_ref()?.min_bid())))
+                        .collect();
+                    if let (Some(&(l, min)), Some(&m)) =
+                        (auctions.get(rng.gen_range(0..auctions.len().max(1))), mine.first())
+                    {
+                        let _ = g.command(conn, p, None, ClientMsg::Bid { listing: l, amount: min, mine: m });
+                    }
+                }
+                _ => {}
+            }
+            let q = MarketQuery {
+                mine: if rng.gen_bool(0.5) { mine.first().copied() } else { None },
+                limit: Some(rng.gen_range(1..9)),
+                sort: Some(sorts[rng.gen_range(0..sorts.len())]),
+                kind: [None, Some(ListingKind::Fixed), Some(ListingKind::Auction)][rng.gen_range(0..3)],
+                role: [None, Some(ListingRole::Stud), Some(ListingRole::Dam)][rng.gen_range(0..3)],
+                hide_own: rng.gen_bool(0.5),
+                with_own: rng.gen_bool(0.3),
+                ..Default::default()
+            };
+            scanned_too += usize::from(q.mine.is_some() && q.sort == Some(MarketSort::Fertility));
+            // Every page, following the cursor (each compared with the scan).
+            let (pages, _) = all_pages(&mut g, conn, p, q);
+            assert!(pages.len() <= g.economy.listings.len());
+            if round % 50 == 49 {
+                g.world.step();
+                let _ = g.after_tick();
+            }
+        }
+        let indexed = market::INDEXED_PAGES.with(|n| n.get()) - before;
+        assert!(indexed > 300 && scanned_too > 20, "{indexed} indexed, {scanned_too} queries scanned");
+    }
+
     #[test]
     fn browse_market_pages_with_a_stable_cursor_filters_and_sorts() {
         let (mut g, all) = market_game();
@@ -5284,6 +5493,13 @@ mod tests {
                 );
             }
         }
+        // A tick validates the market index (`EVO_MARKET_SCAN` measures the
+        // scan instead).
+        if std::env::var("EVO_MARKET_SCAN").is_err() {
+            g.world.step();
+            let _ = g.after_tick();
+        }
+        market::CHECK_PAGES.with(|c| c.set(false));
         let listings = g.economy.listings.len();
         let mut times = Vec::new();
         for round in 0..400u32 {
@@ -5297,6 +5513,34 @@ mod tests {
         }
         times.sort_by(f64::total_cmp);
         eprintln!("{listings} listings: browse_market {:.0} µs (median), p90 {:.0} µs", times[200], times[360]);
+    }
+
+    /// World-thread cost of a connection after a restart (every lineage
+    /// unattended), for docs/load-test.md (`cargo test --release -p
+    /// evo-server --lib game::tests::connect_cost -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn connect_cost() {
+        let players = std::env::var("EVO_CONNECT_PLAYERS").ok().and_then(|p| p.parse().ok()).unwrap_or(1000u32);
+        let world = build_world(&WorldSettings { seed: 5, width: 512, height: 512, wild: true, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        for p in 1..=players {
+            g.set_name(p, &format!("p{p}"));
+            g.found(p, &design(&format!("L{p}"))).unwrap();
+        }
+        g.world.run_days(1);
+        let _ = g.after_tick();
+        let saved = g.saved();
+        let world = g.world.clone();
+        let mut g = Game::resume(world, GameConfig::default(), saved, Vec::new());
+        // As the runner runs it.
+        g.defer_offline();
+        let t = std::time::Instant::now();
+        for p in 1..=players {
+            let _ = g.connect(p as u64, p, &format!("p{p}"));
+        }
+        let per = t.elapsed().as_secs_f64() * 1e6 / players as f64;
+        eprintln!("{} organisms, {players} players reconnecting: {per:.0} µs per connect", g.world.alive_count());
     }
 
     /// World-thread cost of possession sub-steps and state pushes with many

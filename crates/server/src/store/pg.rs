@@ -15,8 +15,8 @@ use sqlx::Row;
 
 use super::{
     AccountRecord, AlertPrefsRecord, AuctionRecord, BalanceRecord, DailyRecord, DesignRecord, LedgerRecord,
-    PushDeviceRecord, PushPrefsRecord, PushSubscriptionRecord, Store, StoreError, StoreResult, TradeRecord,
-    KEEP_SNAPSHOTS,
+    PushDeviceRecord, PushPrefsRecord, PushSubscriptionRecord, SessionRecord, Store, StoreError, StoreResult,
+    TradeRecord, KEEP_SNAPSHOTS,
 };
 use crate::history::{self, AgeWalk, DailyQuery, Keep, QueryWalk, Step};
 use crate::league::{Category, PlayerPlacement, PlayerSeason, SeasonHead, SeasonRecord};
@@ -52,6 +52,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (8, "push", include_str!("../../migrations/0008_push.sql")),
     (9, "push_devices", include_str!("../../migrations/0009_push_devices.sql")),
     (10, "history_retention", include_str!("../../migrations/0010_history_retention.sql")),
+    (11, "sessions", include_str!("../../migrations/0011_sessions.sql")),
 ];
 
 #[derive(Debug)]
@@ -342,6 +343,56 @@ impl Store for PgStore {
         let row =
             sqlx::query("SELECT value FROM server_secrets WHERE name = $1").bind(name).fetch_one(&self.pool).await?;
         Ok(row.try_get("value")?)
+    }
+
+    async fn save_sessions(&self, sessions: &[SessionRecord]) -> StoreResult<()> {
+        let now = int(super::now_unix_ms());
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM sessions WHERE expires_unix_ms < $1").bind(now).execute(&mut *tx).await?;
+        let col = |f: &dyn Fn(&SessionRecord) -> i64| sessions.iter().map(f).collect::<Vec<i64>>();
+        sqlx::query(
+            "INSERT INTO sessions (token_hash, player, name, created_unix_ms, last_seen_unix_ms, expires_unix_ms) \
+             SELECT * FROM UNNEST($1::text[], $2::bigint[], $3::text[], $4::bigint[], $5::bigint[], $6::bigint[]) \
+             ON CONFLICT (token_hash) DO UPDATE SET last_seen_unix_ms = EXCLUDED.last_seen_unix_ms, \
+             expires_unix_ms = EXCLUDED.expires_unix_ms",
+        )
+        .bind(sessions.iter().map(|r| r.token_hash.clone()).collect::<Vec<_>>())
+        .bind(col(&|r| i64::from(r.player)))
+        .bind(sessions.iter().map(|r| r.name.clone()).collect::<Vec<_>>())
+        .bind(col(&|r| int(r.created_unix_ms)))
+        .bind(col(&|r| int(r.last_seen_unix_ms)))
+        .bind(col(&|r| int(r.expires_unix_ms)))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn load_sessions(&self) -> StoreResult<Vec<SessionRecord>> {
+        let rows = sqlx::query(
+            "SELECT token_hash, player, name, created_unix_ms, last_seen_unix_ms, expires_unix_ms FROM sessions \
+             WHERE expires_unix_ms >= $1",
+        )
+        .bind(int(super::now_unix_ms()))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(SessionRecord {
+                    token_hash: r.try_get("token_hash")?,
+                    player: get_u64(r, "player")? as PlayerId,
+                    name: r.try_get("name")?,
+                    created_unix_ms: get_u64(r, "created_unix_ms")?,
+                    last_seen_unix_ms: get_u64(r, "last_seen_unix_ms")?,
+                    expires_unix_ms: get_u64(r, "expires_unix_ms")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn delete_session(&self, token_hash: &str) -> StoreResult<()> {
+        sqlx::query("DELETE FROM sessions WHERE token_hash = $1").bind(token_hash).execute(&self.pool).await?;
+        Ok(())
     }
 
     async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>> {

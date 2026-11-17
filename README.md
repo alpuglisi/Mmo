@@ -606,8 +606,11 @@ EVO_WORLDS="main;isle,seed=7,size=96,name=The Isle" evo-server
 evo-server --worlds-file worlds.json   # [{"id": "main"}, {"id": "isle", "seed": 7, "size": 96, "name": "The Isle"}]
 ```
 
-A world is `ID[,seed=N][,size=N][,name=TEXT]` (the name runs to the end, so
-it may contain commas). Ids are 1–32 of `[a-z0-9_-]` and unique; a missing
+A world is `ID[,seed=N][,size=N][,capacity=N][,name=TEXT]` (the name runs to
+the end, so it may contain commas). `capacity` is the number of players online
+before `GET /api/assign` sends new players to another world (default 3000;
+see `docs/load-test.md`, which also covers `evo-lobby`, the front door over
+several processes). Ids are 1–32 of `[a-z0-9_-]` and unique; a missing
 seed or size comes from `--seed`/`--size`, and every other setting (`--no-wild`,
 `--days-per-year`, `--lod`, tick rates, `--fresh`) applies to all worlds.
 The first world is the default. `--world`/`--worlds-file` replace
@@ -2033,8 +2036,12 @@ server generates a world from the seed and re-founds every stored design in
 player order, as before (a design that no longer fits the budget is skipped
 with a warning).
 
-**Not persisted:** login sessions and connections (players log in again;
-the level-of-detail focus of their views is dropped, so lineages nobody
+**Login sessions** survive a graceful restart: the stop saves them (the
+SHA-256 of each token, never the token) and the start restores them, so
+clients reconnect without logging in again; a logout deletes its saved
+session. A crash loses the sessions made since the last graceful stop.
+
+**Not persisted:** connections (the level-of-detail focus of their views is dropped, so lineages nobody
 watches fold into cohorts at the next day, as when everyone disconnects).
 Possession survives a restart. Records written after the last saved game
 (a crash between saves) are replayed by the restored world.
