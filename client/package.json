@@ -20,6 +20,7 @@
     "e2e:push": "node e2e/push.mjs",
     "e2e:onboarding": "node e2e/onboarding.mjs",
     "e2e:smoke": "node e2e/smoke.mjs",
+    "e2e:attack": "node e2e/attack.mjs",
     "e2e:lobby": "node e2e/lobby.mjs",
     "e2e:context-loss": "node e2e/context-loss.mjs",
     "e2e:mobile": "node e2e/mobile.mjs",

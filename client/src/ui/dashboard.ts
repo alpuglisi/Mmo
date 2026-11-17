@@ -88,7 +88,7 @@ export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
 
 export const KIND_LABEL: Record<FeedEntry['kind'], string> = {
   daily_summary: 'day', birth: 'birth', death: 'death', milestone: 'milestone', need: 'need', offer: 'offer',
-  world: 'world', achievement: 'prestige', market: 'market', group: 'group',
+  world: 'world', achievement: 'prestige', market: 'market', group: 'group', attack: 'attack',
 };
 
 /** The alerts feed, newest first. Entries naming an organism link to it. */
@@ -106,6 +106,7 @@ const KIND_HINT: Record<AlertKind, string> = {
   milestone: 'population and legacy milestones', need: 'a possessed organism parched or starving', world: 'catastrophes and eras',
   achievement: 'achievements', market: 'sales, purchases, refunds, renown',
   group: 'a migration arrived, a group left with no members',
+  attack: 'another player sent an animal to hunt one of yours',
 };
 
 /** Per-kind switches: show in the feed, and toast on arrival. `onChange` gets the new preferences. */

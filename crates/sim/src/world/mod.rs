@@ -43,6 +43,8 @@ pub mod groups;
 mod groups_tests;
 mod hosts;
 pub use hosts::HostTally;
+#[cfg(test)]
+mod attack_tests;
 pub mod lod;
 mod lod_meat;
 #[cfg(test)]
@@ -522,6 +524,15 @@ pub struct World {
     /// change (version 33).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v35::list"))]
     bonus_slots: BTreeMap<PlayerId, u32>,
+    /// Attack orders of possessed organisms, attacker → target
+    /// (`World::possess_attack`; version 36).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]
+    attack_orders: BTreeMap<OrgId, OrgId>,
+    /// The tick each lineage was founded, indexed like `lineages` (for
+    /// `Balance::attack_grace`; version 36: empty from older snapshots,
+    /// whose lineages count as founded at tick 0).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]
+    lineage_founded: Vec<u64>,
     /// Each lineage's crowding this tick, indexed like `lineages`: the
     /// litter multiplier and the hunger multiplier
     /// (`Balance::lineage_crowding`; `[1, 1]` when off and for the wild).
@@ -620,6 +631,8 @@ impl World {
             group_events: Vec::new(),
             slots_used: BTreeMap::new(),
             bonus_slots: BTreeMap::new(),
+            attack_orders: BTreeMap::new(),
+            lineage_founded: Vec::new(),
             crowding: Vec::new(),
             clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
@@ -919,6 +932,9 @@ impl World {
         let mut home = Vec2::ZERO;
         let lineage = self.lineages.len() as u32;
         self.lineages.push(Lineage { name: design.name.clone(), owner, founders: design.founders });
+        // Lineages from before version 36 count as founded at tick 0.
+        self.lineage_founded.resize(lineage as usize, 0);
+        self.lineage_founded.push(self.tick);
         // What the home search reads of the world, gathered once: founding
         // only adds this lineage's organisms, which it ignores except as a
         // crowd.

@@ -914,6 +914,31 @@ pub struct Balance {
     /// (`x - 1`, none below it), so food, not the cap, is what stops it.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v35"))]
     pub crowding_hunger: f32,
+    // Predators against players (version 36; *Predators against players*
+    // in the README). Off at 0, what snapshots before version 36 read
+    // (`serde_util::before_v36`).
+    /// Pack hunts: a pack hunter takes prey above the solo limit
+    /// (`decide::max_prey_mass`) with pack-mates around, and strikes harder
+    /// for each pack-mate hunting the same prey beside it
+    /// (`decide::pack_scale`, `World::pack_allies`). 0: off, every hunter
+    /// sizes prey and strikes as if alone. The default, 0.25, keeps the
+    /// wild balance (at 1, steppe antelope and herd grazers ran at half
+    /// their numbers in the balance sweep).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36"))]
+    pub pack_hunt: f32,
+    /// Territory defence against larger intruders: territory holders that
+    /// outnumber a stranger stronger than one of them chase it too, and a
+    /// defender's scare counts its kin around it (`Action::Defend`). 0: off,
+    /// a stronger stranger is left alone.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36"))]
+    pub territory_harass: f32,
+    /// Days after a player lineage is founded into a running world (after
+    /// tick 0) during which other players can't order attacks on it
+    /// (`World::possess_attack`) and their animals don't hunt it, so a
+    /// newcomer's founding site can't be camped. Wild predators still hunt
+    /// it. 0: no grace.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36"))]
+    pub attack_grace: f32,
 }
 
 impl Balance {
@@ -1170,12 +1195,15 @@ impl Default for Balance {
             crowding_ceiling: 2.0,
             crowding_juveniles: 0.25,
             crowding_hunger: 0.3,
+            pack_hunt: 0.25,
+            territory_harass: 1.0,
+            attack_grace: 20.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 126;
+    pub const FIELD_COUNT: usize = 129;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1311,6 +1339,9 @@ impl Balance {
             ("crowding_ceiling", &mut self.crowding_ceiling),
             ("crowding_juveniles", &mut self.crowding_juveniles),
             ("crowding_hunger", &mut self.crowding_hunger),
+            ("pack_hunt", &mut self.pack_hunt),
+            ("territory_harass", &mut self.territory_harass),
+            ("attack_grace", &mut self.attack_grace),
         ]
     }
 

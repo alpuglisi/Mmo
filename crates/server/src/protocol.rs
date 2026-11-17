@@ -34,6 +34,15 @@ pub enum ClientMsg {
     Possess { organism: OrgId },
     /// Walk a possessed organism toward a point (tile units).
     OrderMove { organism: OrgId, x: f32, y: f32 },
+    /// Order a possessed organism to attack `target` (another player's or a
+    /// wild organism within sight): it pursues it and strikes in reach by
+    /// the usual strike rules, and its pack-mates nearby join in. Refused on
+    /// your own organisms (`own_target`), out of sight (`target_out_of_sight`), too
+    /// heavy (`too_big`, with `mass` and `limit` in `detail`), in its burrow
+    /// (`sheltered`) or of a lineage founded within the attack grace
+    /// (`newcomer_grace`, with `days_left`). The target's owner is alerted.
+    /// A move order or a release ends it.
+    PossessAttack { organism: OrgId, target: OrgId },
     /// Return a possessed organism to its genetic behavior.
     Release { organism: OrgId },
     /// Propose a directed mating between your organism `mine` and `partner`.
@@ -237,6 +246,7 @@ impl ClientMsg {
         match self {
             ClientMsg::Possess { .. } => "possess",
             ClientMsg::OrderMove { .. } => "order_move",
+            ClientMsg::PossessAttack { .. } => "possess_attack",
             ClientMsg::Release { .. } => "release",
             ClientMsg::RequestMating { .. } => "request_mating",
             ClientMsg::PreviewMating { .. } => "preview_mating",
@@ -276,6 +286,7 @@ impl ClientMsg {
 pub const COMMAND_NAMES: &[&str] = &[
     "possess",
     "order_move",
+    "possess_attack",
     "release",
     "request_mating",
     "preview_mating",
@@ -488,10 +499,12 @@ pub enum AlertKind {
     /// A group order ended on its own: a migration arrived, a group was
     /// left with no members.
     Group,
+    /// Another player ordered an attack on one of your organisms.
+    Attack,
 }
 
 impl AlertKind {
-    pub const ALL: [AlertKind; 8] = [
+    pub const ALL: [AlertKind; 10] = [
         AlertKind::DailySummary,
         AlertKind::Birth,
         AlertKind::Death,
@@ -500,6 +513,8 @@ impl AlertKind {
         AlertKind::World,
         AlertKind::Achievement,
         AlertKind::Market,
+        AlertKind::Group,
+        AlertKind::Attack,
     ];
 
     /// The wire name (`daily_summary`, `birth`, ...).
@@ -514,6 +529,7 @@ impl AlertKind {
             AlertKind::Achievement => "achievement",
             AlertKind::Market => "market",
             AlertKind::Group => "group",
+            AlertKind::Attack => "attack",
         }
     }
 
@@ -540,7 +556,14 @@ impl AlertPrefs {
     /// Toasted by default: what needs attention now.
     pub fn default_toast() -> Vec<AlertKind> {
         // World events (catastrophes, era ends) too: they must not be missed.
-        vec![AlertKind::Death, AlertKind::Need, AlertKind::World, AlertKind::Market, AlertKind::Group]
+        vec![
+            AlertKind::Death,
+            AlertKind::Need,
+            AlertKind::World,
+            AlertKind::Market,
+            AlertKind::Group,
+            AlertKind::Attack,
+        ]
     }
 
     /// Sorted, without duplicates, and nothing hidden is toasted.
@@ -755,10 +778,17 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             NoTerritory(_) => "no_territory",
             ClaimCooldown { .. } => "claim_cooldown",
             NoRally(_) => "no_rally",
+            OwnTarget(_) => "own_target",
+            OutOfSight(_) => "target_out_of_sight",
+            TooBig { .. } => "too_big",
+            Sheltered(_) => "sheltered",
+            NewcomerGrace { .. } => "newcomer_grace",
         };
         let info = ErrorInfo::new(code, e.to_string());
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
+            TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
+            NewcomerGrace { days_left } => info.with_detail(serde_json::json!({ "days_left": days_left })),
             _ => info,
         }
     }

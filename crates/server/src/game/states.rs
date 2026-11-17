@@ -476,6 +476,7 @@ impl Game {
         match msg {
             ClientMsg::Possess { organism }
             | ClientMsg::OrderMove { organism, .. }
+            | ClientMsg::PossessAttack { organism, .. }
             | ClientMsg::Release { organism } => c.steer(*organism),
             ClientMsg::Migrate { .. }
             | ClientMsg::ClearMigration { .. }

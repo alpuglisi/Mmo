@@ -1152,6 +1152,11 @@ impl Game {
                 let to = self.world.order_move(player, organism, Vec2::new(x, y)).map_err(e)?;
                 Ok(Some(target_data(Vec2::new(x, y), to, "it can't get there; it goes as near as it can")))
             }
+            ClientMsg::PossessAttack { organism, target } => {
+                self.world.possess_attack(player, organism, target).map_err(e)?;
+                self.alert_attacked(player, organism, target, out);
+                Ok(Some(serde_json::json!({ "organism": organism, "target": target })))
+            }
             ClientMsg::Release { organism } => self.world.release(player, organism).map(|_| None).map_err(e),
             ClientMsg::Migrate { x, y, group } => {
                 finite(&[x, y])?;
@@ -2667,6 +2672,20 @@ impl Game {
             _ => None,
         };
         self.alert_push(player, kind, push, text, organism, out);
+    }
+
+    /// Tell the owner of `target` that `player` ordered `attacker` to attack
+    /// it (`ClientMsg::PossessAttack`); nobody to tell for a wild one.
+    fn alert_attacked(&mut self, player: PlayerId, attacker: OrgId, target: OrgId, out: &mut Outbox) {
+        let w = &self.world;
+        let (Some(a), Some(t)) = (w.organism(attacker), w.organism(target)) else { return };
+        if t.owner == WILD || t.owner == player {
+            return;
+        }
+        let kind = |l: u32| w.lineages.get(l as usize).map_or("an animal", |x| x.name.as_str()).to_string();
+        let (owner, theirs, mine) = (t.owner, kind(t.lineage), kind(a.lineage));
+        let text = format!("A {theirs} of yours (#{target}) is being hunted by a player's {mine} (#{attacker})");
+        self.alert(owner, AlertKind::Attack, text, Some(target), out);
     }
 
     /// Record a push notice (`crate::webpush`) for a player.

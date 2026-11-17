@@ -4,7 +4,7 @@ import type { ErrorInfo } from './protocol';
 
 /** What each command is called in the interface. */
 const COMMANDS: Record<string, string> = {
-  possess: 'Possess', order_move: 'Move', release: 'Release',
+  possess: 'Possess', order_move: 'Move', possess_attack: 'Attack', release: 'Release',
   request_mating: 'Mating request', preview_mating: 'Mating preview', respond_mating: 'Answer',
   complete_mating: 'Mating', cancel_mating: 'Cancel offer',
   migrate: 'Migrate', clear_migration: 'Stop migrating', claim_territory: 'Territory', abandon_territory: 'Territory',

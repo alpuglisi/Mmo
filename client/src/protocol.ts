@@ -16,6 +16,13 @@ export type ClientMsg =
   | { type: 'possess'; organism: OrgId }
   | { type: 'order_move'; organism: OrgId; x: number; y: number }
   | { type: 'release'; organism: OrgId }
+  /**
+   * Order the possessed organism `organism` to attack `target` (another player's or a wild organism within sight):
+   * it pursues and strikes by the usual strike rules, and its pack-mates nearby join. Refused: `own_target`,
+   * `target_out_of_sight`, `too_big` (detail `{mass, limit}`), `sheltered`, `newcomer_grace` (detail `{days_left}`).
+   * The target's owner gets an `attack` alert; a move order or a release ends it. Data: `{organism, target}`.
+   */
+  | { type: 'possess_attack'; organism: OrgId; target: OrgId }
   | { type: 'request_mating'; mine: OrgId; partner: OrgId; price?: number }
   /** What a mating of `mine` with `partner` would give; data: `MatingPreviewView`. */
   | { type: 'preview_mating'; mine: OrgId; partner: OrgId }
@@ -455,10 +462,10 @@ export interface MatingUpdateMsg {
   error?: ErrorInfo;
 }
 
-export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need' | 'world' | 'achievement' | 'market' | 'group';
+export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need' | 'world' | 'achievement' | 'market' | 'group' | 'attack';
 
 /** Every alert kind, in the server's order. */
-export const ALERT_KINDS: readonly AlertKind[] = ['daily_summary', 'birth', 'death', 'milestone', 'need', 'world', 'achievement', 'market', 'group'];
+export const ALERT_KINDS: readonly AlertKind[] = ['daily_summary', 'birth', 'death', 'milestone', 'need', 'world', 'achievement', 'market', 'group', 'attack'];
 
 /**
  * `GET` / `POST /api/alerts/prefs`: which alert kinds show in the feed and
@@ -473,7 +480,7 @@ export interface AlertPrefs {
 }
 
 /** What the server answers before a player saves any preferences. */
-export const DEFAULT_ALERT_PREFS: AlertPrefs = { hidden: [], toast: ['death', 'need', 'world', 'market', 'group'] };
+export const DEFAULT_ALERT_PREFS: AlertPrefs = { hidden: [], toast: ['death', 'need', 'world', 'market', 'group', 'attack'] };
 
 /** What a push notification is about (crates/server/src/protocol.rs `PushKind`). */
 export type PushKind = 'mating' | 'death' | 'market' | 'species' | 'season' | 'catastrophe';
