@@ -693,11 +693,11 @@ pub struct Balance {
     pub roaming_forage: f32,
     // The carnivore-diet rules (version 26; *Predators that live on meat*
     // and *Predators in their niches* in the README's Balance section).
-    // Each is off at 0: the default (with the predator brakes below they
-    // met the long-run acceptance but not the 120-day sweep, see the README)
-    // and what snapshots before version 26 read (`serde_util::before_v26`).
-    // `Balance::carnivore_diet` turns them all on at their tested values,
-    // for the founder designs of `presets::niche_world`. The tunables are
+    // Each is off at 0, what snapshots before version 26 read
+    // (`serde_util::before_v26`); on by default from version 28, with the
+    // food values (*Food by its value* in the README).
+    // `Balance::carnivore_diet` turns them all on at their tested values
+    // and `carnivore_diet_off` off. The tunables are
     // global scales: how far each rule applies
     // to an animal comes from its genes (`world::apply::meat_reliance` from
     // carnivory: none up to 0.45, in full from 0.7; and the genes named
@@ -754,7 +754,7 @@ pub struct Balance {
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v26"))]
     pub breeding_territory: f32,
     // The predator brakes (version 27; *Predators in their niches* in the
-    // README's Balance section), off by default. Global scales and switches:
+    // README's Balance section), on by default from version 28. Global scales and switches:
     // how strongly each animal applies them comes from its genes. Off at 0,
     // what snapshots before version 27 read (`serde_util::before_v27`).
     /// Prey switching (a type-III functional response): a hunter gives up on
@@ -779,7 +779,8 @@ pub struct Balance {
     pub condition_litter: f32,
     // Food values (version 28; *Food by its value* in the README's Balance
     // section). Off at 0, what snapshots before version 28 read
-    // (`serde_util::before_v28`): every food worth the same per unit.
+    // (`serde_util::before_v28`): every food worth the same per unit. On by
+    // default (`Balance::food_values`).
     /// Extra food value of meat over leafy plants: a unit of meat (carcass,
     /// eggs) is worth `1 + meat_energy` units of leaves before digestion
     /// (meat is 80–90% digestible, leaves 20–60%). Digestion still follows
@@ -805,12 +806,23 @@ pub struct Balance {
     /// (`terrain::insect_capacity`: most in marsh and moist ground), out
     /// whenever the ground is above freezing (none in winter, a spring
     /// flush) and back within days of being eaten.
-    /// Small meat: digested by the meat gut (`Traits::meat_efficiency`) at
-    /// the value of meat (`meat_energy`), gathered at half the pace of
-    /// other food (small items), on any errand a meat eater makes, roaming
-    /// for prey included. 0: no invertebrates.
+    /// Small meat, at the value of meat (`meat_energy`), digested as far as
+    /// the gut is an omnivore's or a flexible hunter's
+    /// (`Traits::insect_efficiency`), gathered at half the pace of other
+    /// food (small items), on any errand a meat eater makes, roaming for
+    /// prey included. 0: no invertebrates.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
     pub insect_crop: f32,
+    /// How sharply prey switching (`prey_switching`) spares a rare prey: a
+    /// hunter still hunts a prey species at `r` of its threshold with chance
+    /// `r^switching_power` (times its pickiness's share), so at 4 a species
+    /// at half its threshold is hunted at a sixteenth of the rate, at 2 a
+    /// quarter. Hunting effort then collapses on a declining prey well
+    /// before it is gone, even when an abundant other prey keeps many
+    /// hunters fed (apparent competition). 0 reads as 2, the square of
+    /// before version 28.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
+    pub switching_power: f32,
 }
 
 impl Balance {
@@ -837,7 +849,7 @@ impl Balance {
     }
 
     /// These rules with the carnivore-diet rules and the predator brakes on
-    /// at their tested values (off by default: *Predators that live on meat*
+    /// at their tested values (the defaults from version 28: *Predators that live on meat*
     /// and *Predators in their niches* in the README's Balance section),
     /// tuned with the founder designs of `presets::niche_world`: carcasses
     /// rot a quarter as fast, carnivores gorge into fat, smell and remember
@@ -854,11 +866,13 @@ impl Balance {
         self.breeding_territory = 12.0;
         self.prey_switching = 1.0;
         self.condition_litter = 1.0;
+        self.switching_power = 4.0;
         self
     }
 
     /// These rules with the carnivore-diet rules and the predator brakes
-    /// (`prey_switching`, `condition_litter`) off: the defaults' values.
+    /// (`prey_switching`, `condition_litter`) off: the rules of before
+    /// version 28 (with `food_values_off`).
     pub fn carnivore_diet_off(mut self) -> Self {
         self.carcass_keep = 0.0;
         self.carnivore_fat = 0.0;
@@ -868,13 +882,14 @@ impl Balance {
         self.breeding_territory = 0.0;
         self.prey_switching = 0.0;
         self.condition_litter = 0.0;
+        self.switching_power = 0.0;
         self
     }
 
     /// These rules with the food values on at their tested values (*Food
     /// by its value* in the README's Balance section): meat richer than
     /// leaves in place of the carnivores' slower hunger, and the seasonal
-    /// fruit and seed layer.
+    /// fruit and seed and invertebrate layers (the defaults from version 28).
     pub fn food_values(mut self) -> Self {
         self.meat_energy = 0.8;
         self.fruit_crop = 1.0;
@@ -1049,12 +1064,13 @@ impl Default for Balance {
             fruit_crop: 1.0,
             fruit_energy: 0.5,
             insect_crop: 1.0,
+            switching_power: 4.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 114;
+    pub const FIELD_COUNT: usize = 115;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1178,6 +1194,7 @@ impl Balance {
             ("fruit_crop", &mut self.fruit_crop),
             ("fruit_energy", &mut self.fruit_energy),
             ("insect_crop", &mut self.insect_crop),
+            ("switching_power", &mut self.switching_power),
         ]
     }
 

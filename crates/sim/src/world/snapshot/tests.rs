@@ -341,6 +341,7 @@ fn food_values_off(b: &mut crate::Balance) {
     b.fruit_crop = old;
     b.fruit_energy = old;
     b.insect_crop = old;
+    b.switching_power = old;
 }
 
 /// A small world, 1 day and 7 ticks in, under the old morphology rules

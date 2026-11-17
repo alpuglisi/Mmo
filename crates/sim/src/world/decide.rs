@@ -1074,7 +1074,13 @@ impl World {
         }
         let alive = self.lineage_alive.get(l as usize).copied().unwrap_or(0) + self.lod.lineage_count(l).alive;
         let r = (alive as f32 / (k * lineage.founders.max(1) as f32)).min(1.0);
-        1.0 - r * r
+        // `Balance::switching_power`; 0 is the square of before version 28.
+        let power = self.config.balance.switching_power;
+        if power <= 0.0 {
+            1.0 - r * r
+        } else {
+            1.0 - r.powf(power)
+        }
     }
 
     /// Prey switching (`Balance::prey_switching`): has hunter `o` given up
