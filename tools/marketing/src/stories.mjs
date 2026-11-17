@@ -21,14 +21,14 @@ function arr(json, keys) {
 
 export function normalizeStory(raw, i = 0) {
   const facts = { ...(raw.facts || raw.data || raw.stats || {}) };
-  for (const k of ['day', 'year', 'season', 'species', 'lineage', 'count', 'deaths', 'share']) {
+  for (const k of ['day', 'year', 'season', 'species', 'lineage', 'count', 'deaths', 'share', 'start_day', 'end_day', 'when']) {
     if (raw[k] !== undefined && facts[k] === undefined) facts[k] = raw[k];
   }
   const story = {
     id: String(raw.id ?? raw.story_id ?? `story-${i + 1}`),
     kind: String(raw.kind ?? raw.type ?? raw.category ?? 'event'),
-    title: String(raw.title ?? raw.headline ?? raw.summary ?? '').trim(),
-    summary: String(raw.summary ?? raw.description ?? raw.text ?? '').trim(),
+    title: String(raw.title ?? raw.headline ?? raw.hook ?? raw.summary ?? '').trim(),
+    summary: String(raw.summary ?? raw.description ?? raw.text ?? [raw.hook, raw.when].filter(Boolean).join(' (') + (raw.hook && raw.when ? ')' : '')).trim(),
     facts,
     media: (raw.media ?? raw.media_ids ?? raw.clips ?? []).map(String),
     // Players are only named in copy when they opted in to being featured.
