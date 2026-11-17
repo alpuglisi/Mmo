@@ -50,6 +50,12 @@ pub enum Request {
         player: PlayerId,
         reply: oneshot::Sender<usize>,
     },
+    /// Test hook (`EVO_E2E_HOOKS`): a catastrophe starts today.
+    E2eCatastrophe {
+        kind: evo_sim::chronicle::CatastropheKind,
+        days: Option<u64>,
+        reply: oneshot::Sender<u32>,
+    },
     Found {
         player: PlayerId,
         name: String,
@@ -74,6 +80,8 @@ pub enum Request {
     /// `render_rgb` at `scale` pixels per tile: (width, height, rgb).
     Snapshot {
         scale: usize,
+        /// Whose map: their organisms and others within their sight.
+        player: PlayerId,
         reply: oneshot::Sender<(usize, usize, Vec<u8>)>,
     },
     /// The tile grid: every layer, or only the dynamic ones.
@@ -86,10 +94,19 @@ pub enum Request {
         player: PlayerId,
         reply: oneshot::Sender<LineageStats>,
     },
+    MatingHistory {
+        player: PlayerId,
+        reply: oneshot::Sender<Vec<crate::protocol::MatingRecord>>,
+    },
     /// The family tree of a player's lineage.
     FamilyTree {
         player: PlayerId,
         reply: oneshot::Sender<crate::protocol::FamilyTree>,
+    },
+    /// The spectator view (`GET /api/spectate`), as of the first request of
+    /// the current day (`Runner::spectate`).
+    Spectate {
+        reply: oneshot::Sender<Arc<crate::game::Spectate>>,
     },
     /// Species, eras, catastrophes and achievements.
     Chronicle {
@@ -200,6 +217,9 @@ pub struct Runner {
     season: Arc<LiveSeason>,
     /// Connections that sent `watch_season`, with their rows per category.
     season_watchers: BTreeMap<ConnId, usize>,
+    /// The spectator view and the day it was taken: spectators see the
+    /// world at most once a simulated day, never live.
+    spectate: Option<(u64, Arc<crate::game::Spectate>)>,
     /// The standings changed since the last push to the watchers.
     season_dirty: bool,
     season_pushed: Instant,
@@ -241,6 +261,7 @@ impl Runner {
             notifier: None,
             season,
             season_watchers: BTreeMap::new(),
+            spectate: None,
             season_dirty: false,
             season_pushed: Instant::now(),
         };
@@ -439,6 +460,19 @@ impl Runner {
         self.saver.submit(capture);
     }
 
+    /// The spectator view, taken afresh at most once per simulated day.
+    fn spectate(&mut self) -> Arc<crate::game::Spectate> {
+        let day = self.game.world.day();
+        match &self.spectate {
+            Some((d, s)) if *d == day => s.clone(),
+            _ => {
+                let s = Arc::new(self.game.spectate());
+                self.spectate = Some((day, s.clone()));
+                s
+            }
+        }
+    }
+
     /// Save once more, wait until the saver has encoded it and sent it on
     /// to the store task, then reply.
     fn shutdown(&mut self, reply: oneshot::Sender<()>) {
@@ -467,8 +501,8 @@ impl Runner {
                 self.season_watchers.remove(&conn);
                 self.game.disconnect(conn);
             }
-            Request::Snapshot { scale, reply } => {
-                let _ = reply.send(evo_sim::render::render_rgb(&self.game.world, scale));
+            Request::Snapshot { scale, player, reply } => {
+                let _ = reply.send(self.game.map_rgb(player, scale));
             }
             Request::Terrain { full, reply } => {
                 let w = &self.game.world;
@@ -481,6 +515,14 @@ impl Runner {
             Request::E2eWipeOut { player, reply } => {
                 let _ = reply.send(self.game.e2e_wipe_out(player));
             }
+            Request::E2eCatastrophe { kind, days, reply } => {
+                let w = &mut self.game.world;
+                let day = w.day();
+                let _ = reply.send(w.schedule_catastrophe(kind, day, days));
+            }
+            Request::MatingHistory { player, reply } => {
+                let _ = reply.send(self.game.mating_history(player));
+            }
             Request::Stats { player, reply } => {
                 let _ = reply.send(self.game.lineage_stats(player));
             }
@@ -489,6 +531,9 @@ impl Runner {
             }
             Request::Chronicle { reply } => {
                 let _ = reply.send(Box::new(self.game.chronicle()));
+            }
+            Request::Spectate { reply } => {
+                let _ = reply.send(self.spectate());
             }
             Request::Command { conn, id, msg: ClientMsg::WatchSeason { on, limit }, .. } => {
                 self.watch_season(conn, id, on, limit);

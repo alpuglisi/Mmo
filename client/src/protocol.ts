@@ -22,7 +22,12 @@ export type ClientMsg =
   | { type: 'respond_mating'; request: number; accept: boolean }
   | { type: 'complete_mating'; request: number }
   | { type: 'cancel_mating'; request: number }
-  /** Group command: without `group` every group of yours migrates; replaces the territory of the groups it reaches. Data: `{x, y}` (clamped). */
+  /**
+   * Group command: group `group` (default 0, the main group) migrates; replaces its territory or rally. Off-map
+   * targets are refused (`off_map`); one on deep water or a cliff moves to the nearest land (`moved`, `note`) or is
+   * refused (`unreachable`). The order ends once most of the group has arrived (a `group` alert). Data:
+   * `{x, y, group, route?, moved?, note?}`.
+   */
   | { type: 'migrate'; x: number; y: number; group?: number }
   | { type: 'clear_migration'; group?: number }
   /** Group `group` (default 0) holds a circle (radius kept within its `max_radius`); data: `TerritoryView`. */
@@ -35,6 +40,11 @@ export type ClientMsg =
   | { type: 'split_group'; group?: number; organisms?: OrgId[] }
   /** Every member of `from` joins `into` (default 0); data: `{moved}`. */
   | { type: 'merge_groups'; from: number; into?: number }
+  /**
+   * Retire your living lineage `lineage` to start over: its animals, cohorts and eggs leave the world (removed, not
+   * killed or turned wild) and you may found again at once. Data: `{removed}`.
+   */
+  | { type: 'retire_lineage'; lineage: number }
   | { type: 'set_view'; x: number; y: number; radius: number }
   | { type: 'clear_view' }
   /** Put one of your adults on the stud marketplace; data: `{ listing: ListingView }`. */
@@ -50,6 +60,8 @@ export type ClientMsg =
   | ({ type: 'browse_market' } & MarketQuery)
   /** Balance and recent ledger entries; data: `LedgerView`. */
   | { type: 'ledger'; limit?: number }
+  /** Block or unblock a player's mating requests, or decline them all; no fields reads the settings. Data: `{blocked, auto_decline}`. */
+  | { type: 'mating_prefs'; block?: PlayerId; unblock?: PlayerId; auto_decline?: boolean }
   /** The renown shop's prices; data: `ShopView`. */
   | { type: 'renown_shop' }
   /** Buy an extra directed-mating slot for the rest of the weather season; data: `ShopView`. */
@@ -118,6 +130,16 @@ export interface MatingOutcome {
 }
 
 export type OfferStatus = 'pending' | 'accepted' | 'completed' | 'declined' | 'cancelled' | 'failed' | 'expired';
+
+/** One finished mating of `GET /api/matings/history`, newest first (an offer, or a mating within the player's lineage). */
+export interface MatingRecord {
+  tick: number;
+  offer?: OfferView;
+  mine: OrgId;
+  partner: OrgId;
+  outcome?: MatingOutcome;
+  error?: ErrorInfo;
+}
 
 export const OPEN_STATUSES: readonly OfferStatus[] = ['pending', 'accepted'];
 
@@ -276,6 +298,8 @@ export interface GroupView {
   members: number;
   adults: number;
   migration?: [number, number];
+  /** The way the migration should go (around water and thin ice), from the group's middle to the target (absent: none planned). */
+  route?: [number, number][];
   territory?: TerritoryView;
   rally?: RallyView;
   /** Largest territory radius the group could claim now. */
@@ -431,10 +455,10 @@ export interface MatingUpdateMsg {
   error?: ErrorInfo;
 }
 
-export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need' | 'world' | 'achievement' | 'market';
+export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need' | 'world' | 'achievement' | 'market' | 'group';
 
 /** Every alert kind, in the server's order. */
-export const ALERT_KINDS: readonly AlertKind[] = ['daily_summary', 'birth', 'death', 'milestone', 'need', 'world', 'achievement', 'market'];
+export const ALERT_KINDS: readonly AlertKind[] = ['daily_summary', 'birth', 'death', 'milestone', 'need', 'world', 'achievement', 'market', 'group'];
 
 /**
  * `GET` / `POST /api/alerts/prefs`: which alert kinds show in the feed and
@@ -449,7 +473,7 @@ export interface AlertPrefs {
 }
 
 /** What the server answers before a player saves any preferences. */
-export const DEFAULT_ALERT_PREFS: AlertPrefs = { hidden: [], toast: ['death', 'need', 'market'] };
+export const DEFAULT_ALERT_PREFS: AlertPrefs = { hidden: [], toast: ['death', 'need', 'world', 'market', 'group'] };
 
 /** What a push notification is about (crates/server/src/protocol.rs `PushKind`). */
 export type PushKind = 'mating' | 'death' | 'market' | 'species' | 'season' | 'catastrophe';
@@ -779,6 +803,12 @@ export interface WorldSummary {
   days_to_winter?: number;
   /** A lineage founded now starts fed with full fat reserves (winter provision). */
   winter_provision?: boolean;
+  /** Most living organisms, young included, one player may have; at it births pause (absent from older servers). */
+  lineage_cap?: number;
+  /** Days in a year (four equal seasons); absent from older servers. */
+  days_per_year?: number;
+  /** Ticks in a game day; absent from older servers. */
+  ticks_per_day?: number;
 }
 
 /**
@@ -797,6 +827,8 @@ export interface TerrainView {
   river: string;
   /** Water depth at normal wetness, centimeters (capped at 255). */
   base_water: string;
+  /** Most plant food each tile holds, 0..255 for none..the map's richest tile (absent from older servers). */
+  veg_max?: string;
   dynamic: TerrainDynamic;
 }
 
@@ -1137,6 +1169,11 @@ export interface SpeciesView {
   lineages: SpeciesLineage[];
   carnivory: number;
   body_size: number;
+  /** Mean thermoregulation and birth mode genes, usual leg and eye counts (absent from older servers). */
+  endothermy?: number;
+  birth_mode?: number;
+  leg_count?: number;
+  eye_count?: number;
 }
 
 /** A group's typical body plan: counts and shapes by majority, axes by mean (server `BodyPlanMode`). */
@@ -1398,4 +1435,37 @@ export function parseServerMsg(text: string): ServerMsg | null {
     default:
       return null;
   }
+}
+
+// Spectator view (`GET /api/spectate`, server `game::spectate`): a world as a
+// logged-out watcher sees it, at most once a simulated day: per-lineage head
+// counts on coarse cells, the most common look, public names and shares.
+
+export interface SpectateLineage {
+  lineage: number;
+  name: string;
+  /** The owner's public name, or "wild". */
+  owner: string;
+  wild: boolean;
+  alive: number;
+  adults: number;
+  /** The owner's allele share (player lineages only). */
+  share?: number;
+  /** The most common look of its adults; absent once extinct. */
+  look?: Appearance;
+  /** `[cell x, cell y, count]` on `Spectate.cell`-tile cells (wild) or `player_cell` (players'). */
+  cells: [number, number, number][];
+}
+
+export interface Spectate {
+  clock: ClockView;
+  width: number;
+  height: number;
+  /** Cell side in tiles of the wild lineages. */
+  cell: number;
+  /** Cell side in tiles of the players' lineages (coarser: as a market listing's position). */
+  player_cell?: number;
+  /** Catastrophes under way. */
+  catastrophes: CatastropheView[];
+  lineages: SpectateLineage[];
 }

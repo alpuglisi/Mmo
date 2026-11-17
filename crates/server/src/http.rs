@@ -257,6 +257,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
         .route("/api/lineage/stats", get(lineage_stats))
+        .route("/api/matings/history", get(mating_history))
         .route("/api/lineage/tree", get(family_tree))
         .merge(e2e_hooks())
         .route("/api/alerts/prefs", get(alert_prefs).post(set_alert_prefs))
@@ -277,6 +278,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/terrain", get(terrain))
         .route("/api/terrain/dynamic", get(terrain_dynamic))
         .route("/api/map.png", get(map_png))
+        .route("/api/spectate", get(spectate))
         .route_layer(middleware::from_fn_with_state(state.clone(), limit_reads));
     Router::new()
         .route("/api/register", post(register))
@@ -681,14 +683,33 @@ async fn family_tree(
     Ok(Json(rx.await.map_err(ApiError::internal)?))
 }
 
+/// The caller's recent finished matings, newest first (closed offers with
+/// their outcome or error, and matings within their own lineage). Kept in
+/// memory: a reload of the page keeps it, a server restart does not.
+async fn mating_history(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::protocol::MatingRecord>>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::MatingHistory { player: session.player, reply })?;
+    Ok(Json(rx.await.map_err(ApiError::internal)?))
+}
+
 /// Test-only routes, mounted only when the server runs with
 /// `EVO_E2E_HOOKS=1` (the client's e2e scripts set it): `POST
 /// /api/e2e/wipe-out` kills the caller's lineage at once, so re-founding can
-/// be tested without waiting for a real extinction. Absent (404) otherwise.
+/// be tested without waiting for a real extinction, and `POST
+/// /api/e2e/catastrophe {"kind": "severe_winter", "days": 8}` starts a
+/// catastrophe today (the marketing capture script, tools/marketing).
+/// Absent (404) otherwise.
 fn e2e_hooks() -> Router<AppState> {
     if std::env::var("EVO_E2E_HOOKS").as_deref() == Ok("1") {
         tracing::warn!("EVO_E2E_HOOKS=1: test-only routes are mounted (never set this in production)");
-        Router::new().route("/api/e2e/wipe-out", post(e2e_wipe_out))
+        Router::new()
+            .route("/api/e2e/wipe-out", post(e2e_wipe_out))
+            .route("/api/e2e/catastrophe", post(e2e_catastrophe))
     } else {
         Router::new()
     }
@@ -704,6 +725,27 @@ async fn e2e_wipe_out(
     send_request(&w.tx, Request::E2eWipeOut { player: session.player, reply })?;
     let killed = rx.await.map_err(ApiError::internal)?;
     Ok(Json(serde_json::json!({ "killed": killed })))
+}
+
+#[derive(Deserialize)]
+struct CatastropheAsk {
+    /// `severe_winter`, `megadrought`, `epidemic` or `flood_year`.
+    kind: String,
+    /// Its length in days (default: its usual length).
+    days: Option<u64>,
+}
+
+async fn e2e_catastrophe(
+    World(w): World,
+    Json(ask): Json<CatastropheAsk>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let kind = evo_sim::chronicle::CatastropheKind::from_label(&ask.kind).ok_or_else(|| {
+        ApiError::new(StatusCode::BAD_REQUEST, "bad_kind", "kind: severe_winter, megadrought, epidemic or flood_year")
+    })?;
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::E2eCatastrophe { kind, days: ask.days, reply })?;
+    let id = rx.await.map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({ "id": id })))
 }
 
 /// The caller's alert preferences (the defaults until they save some).
@@ -975,14 +1017,22 @@ struct MapQuery {
     scale: Option<usize>,
 }
 
-async fn map_png(World(w): World, Query(q): Query<MapQuery>) -> Result<Response, ApiError> {
+async fn map_png(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+    Query(q): Query<MapQuery>,
+) -> Result<Response, ApiError> {
+    // The caller's own organisms and those within their sight: anyone could
+    // otherwise see every player's animals.
+    let session = authed(&app, &headers)?;
     let side = {
         let s = &w.published.borrow().summary;
         s.width.max(s.height)
     };
     let scale = map_scale(q.scale, side);
     let (reply, rx) = oneshot::channel();
-    send_request(&w.tx, Request::Snapshot { scale, reply })?;
+    send_request(&w.tx, Request::Snapshot { scale, player: session.player, reply })?;
     let (w, h, rgb) = rx.await.map_err(ApiError::internal)?;
     let png = tokio::task::spawn_blocking(move || encode_png(w, h, &rgb))
         .await
@@ -1205,15 +1255,23 @@ async fn client_session(
                     }
                 }
                 // Malformed messages count against the command rate too.
-                Err(e) => {
+                Err(_) => {
+                    // The reply carries the request's id (and names its
+                    // command) when they can be read, so the client matches
+                    // it instead of timing out; the parser's own text (which
+                    // listed every command name) stays on the server.
+                    let (id, command) = malformed_id(frame.payload());
                     let err = match bucket.take(rate, Instant::now()) {
-                        Ok(()) => ErrorInfo::new("bad_message", e.to_string()),
+                        Ok(()) => ErrorInfo::new(
+                            "bad_message",
+                            "the server didn't understand that command (unknown, or a field is missing or wrong)",
+                        ),
                         Err(wait) => ErrorInfo::new(
                             "rate_limited",
                             format!("too many commands; retry in {} ms", wait.as_millis().max(1)),
                         ),
                     };
-                    local(ServerMsg::err(None, "message", err));
+                    local(ServerMsg::err(id, command, err));
                 }
             },
             OpCode::Close => break,
@@ -1229,11 +1287,30 @@ async fn client_session(
     }
 }
 
+/// The request id and command name of a message that didn't parse as a
+/// command, if it is JSON with them: `id` a number, `type` one of the known
+/// command names ("message" otherwise, never the client's text).
+pub fn malformed_id(text: &[u8]) -> (Option<u64>, &'static str) {
+    let v: serde_json::Value = serde_json::from_slice(text).unwrap_or_default();
+    let id = v.get("id").and_then(serde_json::Value::as_u64);
+    let command = v.get("type").and_then(|t| t.as_str()).and_then(crate::protocol::command_name).unwrap_or("message");
+    (id, command)
+}
+
 /// The world thread's chronicle (species, eras, catastrophes, achievements).
 async fn chronicle(w: &WorldHandle) -> Result<ChronicleView, ApiError> {
     let (reply, rx) = oneshot::channel();
     send_request(&w.tx, Request::Chronicle { reply })?;
     Ok(*rx.await.map_err(ApiError::internal)?)
+}
+
+/// `GET /api/spectate`: the read-only spectator view of the world (no login;
+/// nothing private: see `game::spectate`), for watch links and streams.
+async fn spectate(World(w): World) -> Result<Json<crate::game::Spectate>, ApiError> {
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::Spectate { reply })?;
+    let s = rx.await.map_err(ApiError::internal)?;
+    Ok(Json((*s).clone()))
 }
 
 /// `GET /api/species`: every detected species (living first, by size), with

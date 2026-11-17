@@ -668,7 +668,14 @@ impl World {
             }
         }
         let season_dest = self.seasonal_destination(o, juvenile_care);
-        let ordered = self.migrate_orders.contains_key(&(o.owner, o.group)) && o.matured;
+        // An ordered migrant breaks off to drink or eat when the need is
+        // pressing, and goes back to the order once it is down again
+        // (`commands::MIGRATE_BREAK`), so a migration doesn't pin a group
+        // through a drought.
+        let ordered = o.matured
+            && !self.migrate_orders.is_empty()
+            && self.migrate_orders.contains_key(&(o.owner, o.group))
+            && !migrant_breaks_off(o, hunger, thirst);
         // Group commands as genes: obedience weighs the orders against the
         // instincts, and its price is tameness (a later flight).
         let heed = super::groups::heed(o);
@@ -699,8 +706,17 @@ impl World {
         // and resting on hold (`threat_caution`), except for the parched.
         let calm = 1.0 - cfg.balance.threat_caution * threat.min(1.0);
 
+        // Desperate animals take risks (`Balance::desperate_risk`): going to
+        // ground costs a burrower nothing, so without this a parched or
+        // starving one hid from every threat in sight until it died.
+        let desperate = {
+            let x = ((thirst - 0.7) / 0.3).clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        };
+        let hide = if can_dig { 1.0 - cfg.balance.desperate_risk * desperate } else { 1.0 };
+
         let mut options: [(Action, f32); 17] = [
-            (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless) * tame),
+            (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless) * tame * hide),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
             (Action::Drink, thirst.powf(1.5) * 1.3 * calm + if thirst > 0.8 { 0.5 } else { 0.0 }),
             (Action::Rest, tired * tired * 1.1 * calm),
@@ -1479,6 +1495,20 @@ impl World {
         intent.target = Some(t);
         intent.new_wander = Some(t);
     }
+}
+
+/// Whether an organism under a migration order sets it aside this tick to
+/// see to a need (`hunger`, `thirst` as 0–1): one past
+/// [`MIGRATE_BREAK`](super::commands::MIGRATE_BREAK) (moved by obedience),
+/// or one it is already eating or drinking for until it is down to
+/// [`ORDER_RESUME`](super::commands::ORDER_RESUME).
+fn migrant_breaks_off(o: &Organism, hunger: f32, thirst: f32) -> bool {
+    use super::commands::{MIGRATE_BREAK, MIGRATE_BREAK_OBEDIENCE, ORDER_RESUME};
+    let limit = MIGRATE_BREAK + MIGRATE_BREAK_OBEDIENCE * (o.pheno[Gene::Obedience] - 0.5);
+    let resume = ORDER_RESUME / 100.0;
+    let drinking = o.action == Action::Drink && thirst > resume;
+    let eating = matches!(o.action, Action::Graze | Action::Hunt | Action::Scavenge) && hunger > resume;
+    hunger.max(thirst) >= limit || drinking || eating
 }
 
 #[cfg(test)]

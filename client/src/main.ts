@@ -13,6 +13,7 @@ import { loginScreen } from './ui/login';
 import { detectEnv, isOpenMessage, openParams, registerServiceWorker } from './push';
 import { openTarget, type PushPlugin } from './nativePush';
 import { h } from './ui/dom';
+import { parseWatch } from './spectate';
 
 const root = document.getElementById('app')!;
 
@@ -110,6 +111,7 @@ function start(session: Session): void {
 async function showDesign(r: Running, refound = false): Promise<void> {
   const el = await designScreen({
     token: r.session.token,
+    player: r.session.player,
     onFounded: () => void showGame(r),
     onUnauthorized: sessionExpired,
     onLogout: logout,
@@ -209,7 +211,10 @@ if (opened.world !== null || opened.tab !== null) window.history.replaceState(nu
 pendingTab = opened.tab;
 // `?builder`: the body builder alone (a dev / e2e harness), no login.
 const builderParam = new URLSearchParams(window.location.search).get('builder');
-const saved = builderParam === null ? loadSession() : null;
-if (builderParam !== null) void import('./ui/builder/harness').then((mod) => mod.mountBuilderHarness(root, builderParam));
+// `?watch=<world>[&lineage=<n>][&stream=1]`: the read-only spectator view, no login.
+const watch = parseWatch(window.location.search);
+const saved = builderParam === null && !watch ? loadSession() : null;
+if (watch) void import('./ui/spectate').then((mod) => mod.mountSpectator(root, watch));
+else if (builderParam !== null) void import('./ui/builder/harness').then((mod) => mod.mountBuilderHarness(root, builderParam));
 else if (saved) start(opened.world ? { ...saved, world: opened.world } : saved);
 else showLogin();

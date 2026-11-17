@@ -8,9 +8,11 @@
 
 import type {
   FamilyTree,
+  Spectate,
   AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, CurrentSeason, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
   LineageStats, NativeService, PlayerId, PlayerSeasonHistory, PushDeviceView, PushKeyView, PushPrefs, PushSubscriptionView, RankedSeasonList, RankedSeasonPage, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldList,
   WorldSummary,
+  MatingRecord,
 } from './protocol';
 import { PROTO_VISION } from './wire';
 
@@ -105,6 +107,7 @@ export const api = {
   terrain: () => request<TerrainView>('GET', withWorld('/api/terrain')),
   terrainDynamic: () => request<TerrainDynamic>('GET', withWorld('/api/terrain/dynamic')),
   lineageStats: (token: string) => request<LineageStats>('GET', withWorld('/api/lineage/stats'), undefined, token),
+  matingHistory: (token: string) => request<MatingRecord[]>('GET', withWorld('/api/matings/history'), undefined, token),
   familyTree: (token: string) => request<FamilyTree>('GET', withWorld('/api/lineage/tree'), undefined, token),
   alertPrefs: (token: string) => request<AlertPrefs>('GET', '/api/alerts/prefs', undefined, token),
   setAlertPrefs: (token: string, prefs: AlertPrefs) => request<AlertPrefs>('POST', '/api/alerts/prefs', prefs, token),
@@ -126,6 +129,8 @@ export const api = {
   eras: () => request<EraList>('GET', withWorld('/api/eras')),
   catastrophes: () => request<CatastropheList>('GET', withWorld('/api/catastrophes')),
   achievements: () => request<AchievementList>('GET', withWorld('/api/achievements')),
+  /** The read-only spectator view (no login). */
+  spectate: () => request<Spectate>('GET', withWorld('/api/spectate')),
   // Ranked seasons of the chosen world; `map` is the generated map a finished season belongs to (its `world_id`).
   rankedSeasons: (offset = 0, limit = 10) => request<RankedSeasonList>('GET', withWorld(`/api/seasons?offset=${offset}&limit=${limit}`)),
   currentSeason: (player: PlayerId, limit = 5) => request<CurrentSeason>('GET', withWorld(`/api/seasons/current?limit=${limit}&player=${player}`)),

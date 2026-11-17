@@ -865,9 +865,32 @@ pub struct Balance {
     /// before version 31.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31"))]
     pub switching_power: f32,
-    // Lineage crowding: the soft cap (version 33; *Soft lineage cap* in the
-    // README). Off at 0, what snapshots before version 33 read
-    // (`serde_util::before_v33`): a player's lineage stops being born into
+    // Playtest 1 ecology fixes (version 34; *Playtest 1: ecology fixes* in
+    // the README's Balance section). Off at 0, what snapshots before version
+    // 34 read (`serde_util::before_v34`); on by default.
+    /// Desperate animals take risks: a burrower that would go to ground from
+    /// a threat (a free escape, so it hid even while dying) does so less as
+    /// its hunger or thirst passes 0.7, by `desperate_risk ×
+    /// smoothstep(0.7, 1, max(hunger, thirst))`, and goes to drink or eat
+    /// instead. Before, parched and starving burrowers sat in their burrows
+    /// in sight of water until they died ("rest" at hunger or thirst 100).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v34"))]
+    pub desperate_risk: f32,
+    /// Founding by food: a lineage founded into a running world (after its
+    /// first tick) picks homes by the food still standing around them (the
+    /// home's plant score times the share of the vegetation left within 4
+    /// tiles), not by what the ground could grow, so founders don't land on
+    /// grazed-out ground; and a player's founding of more than
+    /// `World::FOUNDING_GROUP` (48) is placed in groups of at most that
+    /// many, each at its own home, spread over enough pasture for their
+    /// number. Before, a player's founders all landed at one home however
+    /// many, and 80–140 founders lost most of their number in weeks.
+    /// Founding at world creation is unchanged.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v34"))]
+    pub founding_food: f32,
+    // Lineage crowding: the soft cap (version 35; *Soft lineage cap* in the
+    // README). Off at 0, what snapshots before version 35 read
+    // (`serde_util::before_v35`): a player's lineage stops being born into
     // at `WorldConfig::lineage_cap`, the old hard wall.
     /// Steepness of a player lineage's crowding: its litters are multiplied
     /// by `1 / (1 + x^lineage_crowding)`, where `x` is the lineage's
@@ -875,21 +898,21 @@ pub struct Balance {
     /// `WorldConfig::lineage_cap`, now the soft cap. At the soft cap a
     /// lineage breeds at half its pace, at 1.5× it at a sixth. Wild lineages
     /// keep their hard caps. 0: off (the hard cap at `lineage_cap`).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v33"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v35"))]
     pub lineage_crowding: f32,
     /// The hard safety ceiling on a player lineage while crowding is on, as
     /// a multiple of `lineage_cap` (every member counts, juveniles too, as
     /// the old cap counted them). Values below 1 read as 1.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v33"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v35"))]
     pub crowding_ceiling: f32,
     /// How much a juvenile counts toward its lineage's crowding, against 1
     /// for an adult: the young eat, but neither breed nor score.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v33"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v35"))]
     pub crowding_juveniles: f32,
     /// Competition within a crowded lineage: its members' hunger rises by
     /// this times how far the crowding count is past the soft cap
     /// (`x - 1`, none below it), so food, not the cap, is what stops it.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v33"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v35"))]
     pub crowding_hunger: f32,
 }
 
@@ -1141,6 +1164,8 @@ impl Default for Balance {
             fruit_energy: 0.5,
             insect_crop: 1.0,
             switching_power: 4.0,
+            desperate_risk: 1.0,
+            founding_food: 1.0,
             lineage_crowding: 4.0,
             crowding_ceiling: 2.0,
             crowding_juveniles: 0.25,
@@ -1150,7 +1175,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 124;
+    pub const FIELD_COUNT: usize = 126;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1280,6 +1305,8 @@ impl Balance {
             ("fruit_energy", &mut self.fruit_energy),
             ("insect_crop", &mut self.insect_crop),
             ("switching_power", &mut self.switching_power),
+            ("desperate_risk", &mut self.desperate_risk),
+            ("founding_food", &mut self.founding_food),
             ("lineage_crowding", &mut self.lineage_crowding),
             ("crowding_ceiling", &mut self.crowding_ceiling),
             ("crowding_juveniles", &mut self.crowding_juveniles),

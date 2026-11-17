@@ -225,6 +225,11 @@ fn restored_world_continues_exactly() {
     // Player 4's main group answers a rally.
     let rp = a.organisms.iter().find(|o| o.alive && o.owner == 4 && o.group == 0).expect("player 4 alive").pos;
     a.rally_group(4, 0, rp).unwrap();
+    // The main group's migration ended on arrival; give it another to carry
+    // across the snapshot.
+    if a.migration_order(2, 0).is_none() {
+        a.command_migrate_group(2, 0, Vec2::new(54.0, 54.0)).unwrap();
+    }
 
     let bytes = a.snapshot();
     let mut b = World::restore(&bytes, Some(a.map.terrain().clone())).expect("restore");
@@ -314,6 +319,7 @@ fn old_morph_rules(mut config: WorldConfig) -> WorldConfig {
     config.balance = config.balance.morphology_off();
     config.balance.roaming_forage = crate::serde_util::before_v25::OLD_VALUE;
     carnivore_diet_off(&mut config.balance);
+    playtest_off(&mut config.balance);
     config
 }
 
@@ -362,16 +368,24 @@ fn strike_fixes_off(b: &mut crate::Balance) {
 /// `Balance::decide_interval` as snapshots before version 32 read it.
 fn stagger_off(b: &mut crate::Balance) {
     b.decide_interval = crate::serde_util::before_v32::OLD_VALUE;
-    crowding_off(b);
+    playtest_off(b);
 }
 
-/// The lineage crowding tunables as snapshots before version 33 read them.
+/// The lineage crowding tunables as snapshots before version 35 read them.
 fn crowding_off(b: &mut crate::Balance) {
-    let old = crate::serde_util::before_v33::OLD_VALUE;
+    let old = crate::serde_util::before_v35::OLD_VALUE;
     b.lineage_crowding = old;
     b.crowding_ceiling = old;
     b.crowding_juveniles = old;
     b.crowding_hunger = old;
+}
+
+/// `b` as snapshots before version 34 read it: the playtest 1 ecology
+/// fixes off.
+fn playtest_off(b: &mut crate::Balance) {
+    b.desperate_risk = crate::serde_util::before_v34::OLD_VALUE;
+    b.founding_food = crate::serde_util::before_v34::OLD_VALUE;
+    crowding_off(b);
 }
 
 /// A small world, 1 day and 7 ticks in, under the old morphology rules
@@ -918,33 +932,34 @@ fn version_30_snapshots_restore_without_staggered_decisions() {
     assert_eq!(r.config.balance.decide_interval, crate::serde_util::before_v32::OLD_VALUE);
     assert!(r.last_intents.is_empty());
     stagger_off(&mut w.config.balance);
+    playtest_off(&mut w.config.balance);
     w.last_intents.clear();
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v30() == old);
 }
 
-/// Version 32 snapshots (before the soft lineage cap) restore with the
+/// Version 34 snapshots (before the soft lineage cap) restore with the
 /// crowding tunables off (the old hard cap) and no bought mating slots, and
 /// are otherwise the same world.
 #[test]
-fn version_32_snapshots_restore_without_crowding() {
+fn version_34_snapshots_restore_without_crowding() {
     let mut w = fixture_world();
     w.grant_mating_slots(1, 2);
     assert_eq!(w.bonus_slots(1), 2);
-    let old = w.snapshot_v32();
+    let old = w.snapshot_v34();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 32);
+    assert_eq!(h.version, 34);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.lineage_crowding, crate::serde_util::before_v33::OLD_VALUE);
+    assert_eq!(r.config.balance.lineage_crowding, crate::serde_util::before_v35::OLD_VALUE);
     assert_eq!(r.bonus_slots(1), 0);
     assert_eq!(r.player_ceiling(), r.config.lineage_cap);
     crowding_off(&mut w.config.balance);
     w.bonus_slots.clear();
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
-    assert!(r.snapshot_v32() == old);
+    assert!(r.snapshot_v34() == old);
     // This version keeps them.
     let mut w = fixture_world();
     w.config.balance.lineage_crowding = 4.0;
@@ -1016,6 +1031,7 @@ fn version_30_snapshots_restore_without_food_values() {
     assert_eq!(r.map.insects, vec![0.0; w.map.tiles.len()]);
     food_values_off(&mut w.config.balance);
     stagger_off(&mut w.config.balance);
+    playtest_off(&mut w.config.balance);
     w.last_intents.clear();
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
@@ -1057,10 +1073,32 @@ fn version_31_snapshots_keep_food_values_without_staggered_decisions() {
     assert_eq!(r.map.fruit, w.map.fruit);
     assert_eq!(r.map.insects, w.map.insects);
     stagger_off(&mut w.config.balance);
+    playtest_off(&mut w.config.balance);
     w.last_intents.clear();
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v31() == old);
+}
+
+/// Version 32 snapshots (before the playtest 1 ecology fixes) restore with
+/// the fixes off (`Balance::desperate_risk`, `founding_food` at 0), as
+/// those worlds ran, and write back the same bytes.
+#[test]
+fn version_32_snapshots_restore_without_playtest_fixes() {
+    let mut w = fixture_world();
+    w.config.balance.desperate_risk = 1.0;
+    w.config.balance.founding_food = 1.0;
+    w.step();
+    let old = w.snapshot_v32();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 32);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.desperate_risk, r.config.balance.founding_food), (0.0, 0.0));
+    w.config.balance.desperate_risk = 0.0;
+    w.config.balance.founding_food = 0.0;
+    crowding_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot_v32() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

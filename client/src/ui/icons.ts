@@ -14,6 +14,7 @@ const PATHS = {
   pin: 'M8 10.5v4M5 2h6l-1 4.2 2.2 2.8H3.8L6 6.2z',
   legend: 'M3 4h1M6.5 4H13M3 8h1M6.5 8H13M3 12h1M6.5 12H13',
   more: 'M3.5 8h.01M8 8h.01M12.5 8h.01',
+  food: 'M3 13.5C3 7 7 3 13.5 2.5C13 9 9 13 3 13.5zM3 13.5L9 7.5',
 } as const;
 
 export type IconName = keyof typeof PATHS;

@@ -48,6 +48,8 @@ mod lod_meat;
 #[cfg(test)]
 mod morph_tests;
 pub mod offline;
+#[cfg(test)]
+mod orders_tests;
 mod par_apply;
 #[cfg(test)]
 mod path_tests;
@@ -476,6 +478,14 @@ pub struct World {
     /// snapshots before version 15 (`serde_util::before_v15`).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v15"))]
     rallies: BTreeMap<(PlayerId, u8), groups::Rally>,
+    /// Floor on a rally's length in ticks (`World::set_rally_min_ticks`),
+    /// set by the host; not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    rally_min_ticks: u64,
+    /// Group orders that ended on their own, for the host
+    /// (`World::take_group_events`); not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    group_events: Vec<commands::GroupEvent>,
     slots_used: BTreeMap<PlayerId, u32>,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
     clutch_at: IdMap<(usize, usize), usize>,
@@ -510,7 +520,7 @@ pub struct World {
     /// Extra directed-mating slots each player bought this season
     /// (`World::grant_mating_slots`), reset with `slots_used` at a season
     /// change (version 33).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v33::list"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v35::list"))]
     bonus_slots: BTreeMap<PlayerId, u32>,
     /// Each lineage's crowding this tick, indexed like `lineages`: the
     /// litter multiplier and the hunger multiplier
@@ -606,6 +616,8 @@ impl World {
             territories: BTreeMap::new(),
             territory_claims: BTreeMap::new(),
             rallies: BTreeMap::new(),
+            rally_min_ticks: 0,
+            group_events: Vec::new(),
             slots_used: BTreeMap::new(),
             bonus_slots: BTreeMap::new(),
             crowding: Vec::new(),
@@ -705,6 +717,40 @@ impl World {
         self.territories.retain(|&(p, _), _| p != player);
         self.territory_claims.retain(|&(p, _), _| p != player);
         self.rallies.retain(|&(p, _), _| p != player);
+    }
+
+    /// Retire a player's lineage: every organism they own (agents and
+    /// cohorts in abstract regions) and their eggs leave the world at once,
+    /// and their group orders go. Not deaths: nothing is counted as one,
+    /// no carcass is left, nothing goes wild (wild animals carrying the
+    /// player's tagged alleles would keep scoring for them). The lineage
+    /// stays in `lineages` as an extinct one. The number removed.
+    pub fn retire_player(&mut self, player: PlayerId) -> usize {
+        let mut removed = 0;
+        for k in 0..self.organisms.len() {
+            let o = &mut self.organisms[k];
+            if !o.alive || o.owner != player {
+                continue;
+            }
+            o.alive = false;
+            o.death = None;
+            o.possessed_by = None;
+            o.order = None;
+            let lineage = o.lineage;
+            if let Some(c) = self.owner_counts.get_mut(&player) {
+                *c = c.saturating_sub(1);
+            }
+            self.count_lineage(lineage, -1);
+            removed += 1;
+        }
+        removed += self.retire_cohorts(player);
+        self.clutches.retain(|c| c.owner != player);
+        self.clutch_at.clear();
+        for (k, c) in self.clutches.iter().enumerate() {
+            self.clutch_at.insert(self.map.tile_coords(c.pos), k);
+        }
+        self.clear_group_orders(player);
+        removed
     }
 
     pub fn owner_count(&self, owner: PlayerId) -> usize {
@@ -847,7 +893,15 @@ impl World {
     /// ecosystem, tests). Player lineages start as one group; the wild
     /// ecosystem is scattered in small groups across the map.
     pub fn found_lineage_unchecked(&mut self, owner: PlayerId, design: &FounderDesign) -> Vec<OrgId> {
-        let group_size = if owner == crate::WILD { 12 } else { design.founders.max(1) };
+        let group_size = if owner == crate::WILD {
+            12
+        } else if self.config.balance.founding_food > 0.0 {
+            // Founding by food (`Balance::founding_food`): a big founding
+            // spreads over several homes.
+            design.founders.clamp(1, Self::FOUNDING_GROUP)
+        } else {
+            design.founders.max(1)
+        };
         self.found_lineage_grouped(owner, design, group_size)
     }
 
@@ -901,6 +955,33 @@ impl World {
             ids.push(self.insert(o));
         }
         ids
+    }
+
+    /// Most founders a player's lineage places at one home with
+    /// `Balance::founding_food` on; a bigger founding is split into groups
+    /// of at most this many, each at its own home. Above every preset
+    /// design's founding (46), so the standard worlds found as before.
+    pub const FOUNDING_GROUP: u32 = 48;
+
+    /// Share of the vegetation still standing within 4 tiles of `p` (1 where
+    /// the ground grows nothing), against what it held when the world began
+    /// (`terrain`'s 0.8 of the most it could grow), capped at 1.
+    fn standing_share(&self, p: Vec2) -> f32 {
+        let (cx, cy) = self.map.tile_coords(p);
+        let (mut now, mut max) = (0.0f32, 0.0f32);
+        let ground = self.map.ground();
+        for y in cy.saturating_sub(4)..(cy + 5).min(self.map.height) {
+            for x in cx.saturating_sub(4)..(cx + 5).min(self.map.width) {
+                let i = self.map.idx(x, y);
+                now += self.map.tiles[i].veg;
+                max += 0.8 * ground[i].veg_max;
+            }
+        }
+        if max <= 0.0 {
+            1.0
+        } else {
+            (now / max).min(1.0)
+        }
     }
 
     /// A start location the design can live on: passable, comfortable, edible,
@@ -991,7 +1072,12 @@ impl World {
                 })
                 .sum();
             let productivity = (t.base_temp / 12.0).clamp(0.2, 1.0);
-            let food = t.veg_max / 40.0 * productivity * plant_eff + meat_eff * 0.04 * prey_count.min(60.0);
+            // Founding by food (`Balance::founding_food`): in a running
+            // world, what is still standing around the spot, not what the
+            // ground could grow.
+            let standing =
+                if self.tick > 0 && self.config.balance.founding_food > 0.0 { self.standing_share(p) } else { 1.0 };
+            let food = t.veg_max / 40.0 * productivity * plant_eff * standing + meat_eff * 0.04 * prey_count.min(60.0);
             let score = water + food + comfort
                 - 0.05 * crowd_n
                 - (0.3 * danger).min(4.0)

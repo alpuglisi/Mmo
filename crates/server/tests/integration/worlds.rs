@@ -463,3 +463,43 @@ async fn ranked_seasons_are_per_world() {
     assert_eq!((s, v["code"].as_str()), (StatusCode::NOT_FOUND, Some("unknown_world")), "{v}");
     srv.shutdown().await;
 }
+
+/// The spectator view (`GET /api/spectate`) needs no login, answers per
+/// world, names a player's lineage by its public name with coarse cells and
+/// a look, shows nothing private, and changes at most once a simulated day.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spectators_watch_a_world_without_logging_in() {
+    let srv = server(Arc::new(MemoryStore::default())).await;
+    let ann = register(srv.addr, "ann").await;
+    let (s, v) = found(srv.addr, "isle", &ann, "Isle striders").await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let lineage = v["lineage"].as_u64().unwrap();
+    let view = get(srv.addr, "/api/spectate?world=isle").await;
+    assert_eq!(
+        (view["width"].as_u64(), view["cell"].as_u64(), view["player_cell"].as_u64()),
+        (Some(48), Some(8), Some(16))
+    );
+    let mine =
+        view["lineages"].as_array().unwrap().iter().find(|l| l["lineage"] == lineage).expect("the lineage").clone();
+    assert_eq!(
+        (mine["owner"].as_str(), mine["wild"].as_bool(), mine["alive"].as_u64()),
+        (Some("ann"), Some(false), Some(10))
+    );
+    assert!(mine["look"]["size"].is_u64(), "{mine}");
+    let cells = mine["cells"].as_array().unwrap();
+    assert_eq!(cells.iter().map(|c| c[2].as_u64().unwrap()).sum::<u64>(), 10);
+    // A player's lineage on 16-tile cells (as coarse as a market listing).
+    assert!(cells.iter().all(|c| c[0].as_u64().unwrap() < 3 && c[1].as_u64().unwrap() < 3), "{cells:?}");
+    let text = view.to_string();
+    for private in ["\"id\":", "\"x\":", "\"genes\"", "\"pregnant\"", "\"token\""] {
+        assert!(!text.contains(private), "{private} in {text}");
+    }
+    // The default world doesn't have it; a tick later the isle's view is the same day's copy.
+    let main = get(srv.addr, "/api/spectate").await;
+    assert!(main["lineages"].as_array().unwrap().iter().all(|l| l["owner"] != "ann"));
+    srv.step_world("isle", 5).await;
+    assert_eq!(get(srv.addr, "/api/spectate?world=isle").await["clock"], view["clock"]);
+    srv.step_world("isle", DAY).await;
+    assert_ne!(get(srv.addr, "/api/spectate?world=isle").await["clock"], view["clock"]);
+    srv.shutdown().await;
+}

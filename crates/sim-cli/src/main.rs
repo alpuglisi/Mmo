@@ -14,6 +14,7 @@ use evo_sim::organism::{Action, DeathCause, Dormancy, Infection};
 use evo_sim::{presets, render, Balance, Gene, LodConfig, PlayerId, ScoringConfig, World, WorldConfig, WILD};
 
 mod adaptive;
+mod film;
 mod genetics;
 mod jobs;
 mod rankcheck;
@@ -35,6 +36,7 @@ USAGE:
     evo-sim rankcheck [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--spread F] [--screen-days D,..] [--eta F] [--out PATH]
                       [--from PATH]
     evo-sim genetics [--long] [--level genome|ecology|all] [--out DIR] [--seed N] [--years N] [--size N] [--seeds N]
+    evo-sim film   [--years N] [--out DIR] [--frame-days N] [--formats 9x16,1x1] [world options] (`evo-sim film --help`)
     evo-sim designs
     evo-sim merge  [--cache-out PATH] FILES..
 
@@ -54,6 +56,9 @@ COMMANDS:
     genetics Statistical population-genetics validation over many generations and
              replicates (Wright–Fisher on the real genome code, plus full worlds);
              writes report.md and checks.csv (`evo-sim genetics --help`)
+    film     Headless time-lapse of a long run in the client's art (9:16 and 1:1 frames,
+             MP4/GIF via ffmpeg) plus ranked stories.json and devlog charts
+             (tools/marketing/README.md)
     designs  List the sample player designs (and the migrating one) and their point costs
     merge    Combine the partial-results files of `--shard` runs of one command line and print
              the report of the unsharded run (or, for a command with several dependent stages,
@@ -432,6 +437,9 @@ fn main() -> ExitCode {
 fn dispatch(argv: &[String]) -> ExitCode {
     if argv.first().map(String::as_str) == Some("genetics") {
         return genetics::main(&argv[1..]);
+    }
+    if argv.first().map(String::as_str) == Some("film") {
+        return film::main(&argv[1..]);
     }
     let args = match parse_args(argv) {
         Ok(a) => a,

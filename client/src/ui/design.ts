@@ -13,7 +13,9 @@ import { designCost, validateDesign } from '../cost';
 import { seasonNotice } from '../seasonNotice';
 import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign, starterValue } from '../designMorph';
 import { defaultMorphology, sameMorphology, type Morphology } from '../morphology';
-import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, ThermoSpec, WorldSummary } from '../protocol';
+import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
+import { hybridAdvice } from '../hybrid';
+import { foundingHint } from '../foodHint';
 import { avatarView } from './avatarView';
 import { createBodyBuilder, type BodyBuilder, type BuilderChange } from './builder/builder';
 import type { BuilderPreset } from './builder/presets';
@@ -25,6 +27,8 @@ import { visionReadoutView } from './visionReadout';
 
 export interface DesignCallbacks {
   token: string;
+  /** The player (to tell their own species from others' in the interbreeding check). */
+  player?: PlayerId;
   onFounded: (r: FoundResponse | null) => void;
   onUnauthorized: () => void;
   onLogout: () => void;
@@ -46,15 +50,17 @@ export async function designScreen(cb: DesignCallbacks): Promise<HTMLElement> {
   let cat: GeneCatalog;
   // The season (for the winter notice) is a nicety: the editor opens without it.
   const world = api.world().catch(() => null);
+  // The living species, for the interbreeding check (optional too).
+  const species = api.species().catch(() => null);
   try {
     cat = await api.genes();
   } catch (e) {
     return h('div', { class: 'screen center' }, h('div', { class: 'card' }, h('p', { class: 'error' }, `Could not load the gene list: ${(e as Error).message}`)));
   }
-  return buildEditor(cat, cb, await world);
+  return buildEditor(cat, cb, await world, await species);
 }
 
-export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldSummary | null = null): HTMLElement {
+export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldSummary | null = null, species: SpeciesList | null = null): HTMLElement {
   // The one design both modes edit: traits plus the whole body plan.
   const spec = newEditorDesign(cat);
   const seasonText = seasonNotice(world);
@@ -170,18 +176,21 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const modeHint = h('p', { class: 'muted small design-mode-hint', id: 'design-mode-hint' }, '');
 
   /** The total cost if the body plan were `m` (a preset's cost change). */
-  const costWith = (m: Morphology): number => {
-    const copy = { ...spec, traits: { ...spec.traits } };
+  const costWith = (m: Morphology, traits: Record<string, number> = {}): number => {
+    const copy = { ...spec, traits: { ...spec.traits, ...traits } };
     applyMorphology(copy, m);
     return designCost(designPayload(copy, cat), cat).total;
   };
 
   /** A preset that changes the cost asks first, inline (no blocking dialog). */
   let pendingPreset: ((ok: boolean) => void) | null = null;
+  /** The preset being applied: its genes follow its body plan (`onBuilderChange`). */
+  let presetTraits: Record<string, number> | null = null;
   const confirmPreset = (preset: BuilderPreset, next: Morphology): boolean | Promise<boolean> => {
     pendingPreset?.(false);
+    presetTraits = preset.traits ?? null;
     const now = designCost(payload(), cat).total;
-    const then = costWith(next);
+    const then = costWith(next, preset.traits);
     const delta = then - now;
     if (Math.abs(delta) < 0.05) return true;
     return new Promise<boolean>((resolve) => {
@@ -206,6 +215,16 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   };
 
   const onBuilderChange = (value: Morphology, change: BuilderChange) => {
+    if (change.source === 'preset' && presetTraits) {
+      // The preset's genes (diet), on their sliders as a player would set them.
+      for (const [g, v] of Object.entries(presetTraits)) {
+        const s = sliders.get(g);
+        if (!s) continue;
+        s.value = String(v);
+        s.dispatchEvent(new Event('input'));
+      }
+      presetTraits = null;
+    }
     for (const gene of applyMorphology(spec, value)) showTrait(gene);
     // Costs, captions and validation wait for the end of a drag.
     update(change.final);
@@ -248,9 +267,19 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     name.focus({ preventScroll: true });
   });
   const unspent = h('p', { class: 'muted small', id: 'design-unspent' });
+  // Who this design could interbreed with (wild and rival species), and the market it implies.
+  const hybridBox = h('section', { class: 'card hybrid-card', id: 'design-hybrid', hidden: !species, 'aria-live': 'polite' });
+  // Founding size against the land's food (playtest 1, finding 4).
+  const foodBox = h('p', { class: 'small food-hint', id: 'design-food' });
   const needName = h('p', { class: 'muted small', id: 'design-need-name' }, nameLink, ' (Basics, at the top) to found it.');
   const serverError = h('p', { class: 'error', id: 'design-server-error', role: 'alert' });
   const submit = h('button', { id: 'design-submit', type: 'button' }, 'Found lineage');
+  // Phones: the budget card sits below ~45 sliders, so a bar along the bottom
+  // keeps the total in sight and jumps to it (and the Found button).
+  const dockTotal = h('span', { class: 'dock-total', id: 'design-dock-total' });
+  const budgetCard = h('section', { class: 'card budget', id: 'design-budget' });
+  const dock = h('div', { class: 'design-dock narrow-only', id: 'design-dock' }, dockTotal,
+    h('button', { type: 'button', id: 'design-dock-go', onclick: () => budgetCard.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, 'Review & found ↓'));
   const reset = h('button', { type: 'button', class: 'secondary' }, 'Reset traits');
 
   reset.addEventListener('click', () => {
@@ -270,6 +299,22 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     return designPayload(spec, cat);
   }
 
+  let hybridKey = '';
+  function renderHybrid(): void {
+    if (!species) return;
+    const p = payload();
+    const a = hybridAdvice(p, species.species, cb.player ?? -1);
+    const key = JSON.stringify(a);
+    if (key === hybridKey) return;
+    hybridKey = key;
+    hybridBox.className = `card hybrid-card hybrid-${a.level}`;
+    hybridBox.replaceChildren(
+      h('h2', {}, 'Interbreeding'),
+      h('p', { class: 'hybrid-headline' }, a.level === 'warn' ? '⚠ ' : '', a.headline),
+      h('ul', { class: 'small hybrid-points' }, ...a.points.map((t) => h('li', {}, t))),
+      h('p', { class: 'small muted hybrid-market', id: 'design-hybrid-market' }, a.market));
+  }
+
   /** Redraw from the design; `full` (default) also recomputes costs, captions and validation. */
   function update(full = true): void {
     avatar.update(spec, spec.morphology);
@@ -279,6 +324,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     builder?.setDesign(spec);
     const c = designCost(payload(), cat);
     total.textContent = `${c.total.toFixed(1)} / ${cat.budget} points`;
+    dockTotal.textContent = `${c.total.toFixed(1)} / ${cat.budget} points · founding with points left is fine`;
     const frac = c.total / cat.budget;
     bar.style.width = `${Math.min(100, frac * 100)}%`;
     bar.classList.toggle('over', frac > 1 + 1e-5);
@@ -291,7 +337,11 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     const left = cat.budget - c.total;
     unspent.textContent = left > cat.budget / 2
       ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore ready for its first winter: raise the traits that suit the world, or try a preset in Builder mode.`
-      : '';
+      : left > 0.05 ? `${left.toFixed(1)} points left to spend.` : left >= -1e-3 ? 'Every point spent.' : '';
+    renderHybrid();
+    const food = foundingHint(payload(), world);
+    foodBox.textContent = food.text;
+    foodBox.className = `small food-hint food-${food.level}`;
     for (const [g, cell] of costCells) {
       const p = c.perGene[g];
       cell.textContent = p ? p.toFixed(1) : '';
@@ -357,8 +407,10 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         h('section', { class: 'card' }, h('h2', {}, 'Behavior, diet and mate preferences'), h('p', { class: 'muted small' }, 'Free: these are trade-offs.'),
           h('div', { class: 'traits' }, ...free.map(traitRow)))),
       h('aside', { class: 'design-side' }, avatar.el,
-        h('section', { class: 'card budget' }, h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, problem, needName, serverError,
-          h('div', { class: 'row' }, submit, reset)))));
+        (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, problem, needName, serverError,
+          h('div', { class: 'row' }, submit, reset)), budgetCard),
+        hybridBox),
+      dock));
   setMode(mode, false);
   update();
   return page;

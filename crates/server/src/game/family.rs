@@ -84,6 +84,16 @@ pub fn default_body_plan() -> BodyPlanMode {
     }
 }
 
+/// Mean expressed value of one gene over representatives (`None` without any).
+pub fn rep_mean(rows: &[evo_sim::species::Expr], g: Gene) -> Option<f32> {
+    (!rows.is_empty()).then(|| r3(rows.iter().map(|e| e[g.index()] as f64).sum::<f64>() / rows.len() as f64))
+}
+
+/// The usual value of a discrete morphology locus over representatives.
+pub fn rep_count(rows: &[evo_sim::species::Expr], l: MorphLocus) -> Option<u8> {
+    majority(rows.iter().map(|e| e[Gene::COUNT + l.index()].round().max(0.0) as u8)).map(|p| l.value_at(p))
+}
+
 /// Gene means of a group of expressed-value rows (genes first).
 fn gene_means(rows: &[evo_sim::species::Expr]) -> BTreeMap<String, f32> {
     let n = rows.len().max(1) as f64;
@@ -115,6 +125,22 @@ fn core_plan(rows: &[evo_sim::species::Expr], mut base: BodyPlanMode) -> BodyPla
 }
 
 impl Game {
+    /// The founders as they landed: the family tree's first stage.
+    pub(super) fn founding_sample(&self, founders: &[evo_sim::organism::OrgId]) -> FamilySample {
+        let members: Vec<&evo_sim::organism::Organism> =
+            founders.iter().filter_map(|&id| self.world.organism(id)).collect();
+        let n = members.len().max(1) as f64;
+        FamilySample {
+            day: self.world.day(),
+            alive: members.len(),
+            genes: Gene::ALL
+                .iter()
+                .map(|&g| (gene_key(g), r3(members.iter().map(|o| o.pheno[g] as f64).sum::<f64>() / n)))
+                .collect(),
+            morph: body_plan_mode(members.iter().map(|o| &o.morph)),
+        }
+    }
+
     /// The family tree of a player's lineage (see the module docs).
     pub fn family_tree(&self, player: evo_sim::PlayerId) -> FamilyTree {
         let lineage = self.lineage_of(player);
@@ -125,7 +151,11 @@ impl Game {
         };
         let mut timeline: Vec<FamilySample> = Vec::new();
         if let Some(l) = lineage {
-            for r in &self.history {
+            // The founding as it happened, when recorded; then the days after it.
+            let founding = self.founded.get(&l).cloned();
+            let after = founding.as_ref().map(|f| f.day);
+            timeline.extend(founding);
+            for r in self.history.iter().filter(|r| after.is_none_or(|d| r.day > d)) {
                 let Some(e) = r.lineages.iter().find(|e| e.lineage == l) else { continue };
                 if e.genes.is_empty() {
                     continue;

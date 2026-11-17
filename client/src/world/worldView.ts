@@ -27,14 +27,14 @@
 // context does not come back within a few seconds.
 
 import { clampCam } from './camera';
-import { Application, Container, Graphics, Texture, UPDATE_PRIORITY, type Renderer } from 'pixi.js';
+import { Application, BufferImageSource, Container, Graphics, Sprite, Texture, UPDATE_PRIORITY, type Renderer } from 'pixi.js';
 import { actionHint, bodyRadius, creatureKey, markerScaleFor, NEAR_SCALE, specOf, type CreatureSpec, type Hint } from './creature';
 import { CreatureSprites, type MarkerParts, type StatusKind } from './sprites';
 import { ContextGuard, ErrorLog, type GuardState } from './renderGuard';
 import type { NearbyOrganism, OrgId, OwnOrganism, StateView } from '../protocol';
 import { OWN_COLOR, ownerColor } from './colors';
 import { groupColor, groupsOf, homeRangeGroup, type TerritoryDraft } from '../groups';
-import type { TerrainGrid } from './terrain';
+import { foodPixels, type TerrainGrid } from './terrain';
 import { TerrainLayer, type TerrainStats } from './terrainLayer';
 import { MARK } from './palette';
 import { isOpenGround, newTrack, Predictor, RECONCILE_SNAP, RECONCILE_TAU_MS, retarget, smoothToward, TickClock, trackAt, type Point, type Track } from './motion';
@@ -52,6 +52,12 @@ export interface WorldClick {
   x: number;
   y: number;
   organism: OrgId | null;
+  /** Every organism within reach of the point, the player's own first, then nearest (a tap in a herd). */
+  candidates?: OrgId[];
+  /** Shift, Ctrl, Alt or ⌘ held (select instead of walking while possessing). */
+  modifier?: boolean;
+  /** A finger or pen, not a mouse. */
+  touch?: boolean;
 }
 
 interface Marker {
@@ -156,6 +162,9 @@ export class WorldView {
   private mapLayer = new Container();
   /** The painted terrain (world units, under the overlay). */
   readonly terrainLayer = new TerrainLayer();
+  /** The Food layer (`setFoodOverlay`): one texel per tile, over the painted map. */
+  private foodSprite = new Sprite();
+  private foodSource: BufferImageSource | null = null;
   private overlay = new Graphics();
   private markerLayer = new Container();
   private markers = new Map<OrgId, Marker>();
@@ -202,7 +211,8 @@ export class WorldView {
 
   async init(parent: HTMLElement): Promise<void> {
     this.parent = parent;
-    this.mapLayer.addChild(this.terrainLayer.root, this.overlay);
+    this.mapLayer.addChild(this.terrainLayer.root, this.foodSprite, this.overlay);
+    this.foodSprite.visible = false;
     await this.startApp(this.app);
     this.adopt(this.app);
   }
@@ -334,6 +344,34 @@ export class WorldView {
     this.terrain = g;
     this.setWorldSize(g.width, g.height);
     this.terrainLayer.setTerrain(g);
+    if (this.foodSprite.visible) this.paintFood();
+  }
+
+  /** The Food layer: where plants (and so grazers) are, bare to rich, over the map. */
+  setFoodOverlay(on: boolean): void {
+    this.foodSprite.visible = on;
+    if (on) this.paintFood();
+  }
+
+  get foodOverlay(): boolean {
+    return this.foodSprite.visible;
+  }
+
+  private paintFood(): void {
+    const g = this.terrain;
+    if (!g) return;
+    const px = foodPixels(g);
+    const same = this.foodSource && this.foodSource.width === g.width && this.foodSource.height === g.height;
+    if (same) {
+      (this.foodSource!.resource as Uint8Array).set(px);
+      this.foodSource!.update();
+      return;
+    }
+    this.foodSprite.texture?.destroy(true);
+    this.foodSource = new BufferImageSource({ resource: px, width: g.width, height: g.height, scaleMode: 'nearest' });
+    this.foodSprite.texture = new Texture({ source: this.foodSource });
+    this.foodSprite.position.set(0, 0);
+    this.foodSprite.scale.set(1);
   }
 
   /** The painted map: sizes, detail level, chunks and paint timings (tests and debugging). */
@@ -445,7 +483,7 @@ export class WorldView {
     /** The group whose territory is drawn as the home range, or null. */
     home: number | null;
   } {
-    const groups = groupsOf(this.state);
+    const groups = drawnGroups(this.state);
     const territories = groups.flatMap((g) => (g.territory ? [{ group: g.id, x: g.territory.x, y: g.territory.y, radius: g.territory.radius }] : []));
     const rallies = groups.flatMap((g) => (g.rally ? [{ group: g.id, x: g.rally.x, y: g.rally.y, radius: g.rally.radius }] : []));
     return { territories, rallies, draft: this.territoryDraft, home: homeRangeGroup(groups)?.id ?? null };
@@ -646,7 +684,7 @@ export class WorldView {
     g.stroke({ width: 1.75 * px, color: MARK.view, alpha: 0.7, cap: 'round', join: 'round' });
     // Each group's territory (a tinted disc, the picked group's outline
     // bolder) and migration target (a cross in a ring; pink for a lone group).
-    const groups = groupsOf(s);
+    const groups = drawnGroups(s);
     for (const grp of groups) {
       const color = groups.length > 1 ? groupColor(grp.id) : 0xf778ba;
       const t = grp.territory;
@@ -677,6 +715,13 @@ export class WorldView {
       }
       if (grp.migration) {
         const [mx, my] = grp.migration;
+        // The planned way there (around water and thin ice).
+        const route = grp.route ?? [];
+        if (route.length >= 2) {
+          g.moveTo(route[0][0], route[0][1]);
+          for (const [rx, ry] of route.slice(1)) g.lineTo(rx, ry);
+          g.stroke({ width: 1.5 * px, color, alpha: 0.55 });
+        }
         g.circle(mx, my, 8 * px).stroke({ width: 2 * px, color });
         g.moveTo(mx - 5 * px, my).lineTo(mx + 5 * px, my).moveTo(mx, my - 5 * px).lineTo(mx, my + 5 * px).stroke({ width: 2 * px, color });
       }
@@ -718,11 +763,24 @@ export class WorldView {
     return best;
   }
 
+  /** Every organism within its tap radius of a screen point: own first, then nearest. */
+  hitAll(sx: number, sy: number, touch = false): OrgId[] {
+    const min = touch ? TOUCH_HIT_PX : HIT_PX;
+    const hits: { id: OrgId; d: number; own: boolean }[] = [];
+    for (const [id, m] of this.markers) {
+      const p = this.worldToScreen(m.x, m.y);
+      const d = (p.x - sx) ** 2 + (p.y - sy) ** 2;
+      const reach = Math.max(min, m.r * 1.6 * this.markerScale);
+      if (d <= reach * reach) hits.push({ id, d, own: m.own });
+    }
+    return hits.sort((a, b) => Number(b.own) - Number(a.own) || a.d - b.d).map((h) => h.id);
+  }
+
   private bindInput(canvas: HTMLCanvasElement): void {
     // Active pointers (mouse, pen or fingers) by id, at their latest position.
     const pointers = new Map<number, { x: number; y: number }>();
     // The single-pointer gesture in progress: a tap, a long press or a drag.
-    let press: { id: number; x: number; y: number; camX: number; camY: number; touch: boolean; dragging: boolean; timer: number | null; done: boolean; hit: OrgId | null } | null = null;
+    let press: { id: number; x: number; y: number; camX: number; camY: number; touch: boolean; dragging: boolean; timer: number | null; done: boolean; hit: OrgId | null; modifier: boolean } | null = null;
     // The two-finger gesture in progress: distance and midpoint at the last move.
     let pinch: { d: number; mx: number; my: number } | null = null;
     const local = (e: PointerEvent | WheelEvent) => {
@@ -737,9 +795,9 @@ export class WorldView {
       const [a, b] = [...pointers.values()];
       return { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
     };
-    const click = (x: number, y: number, touch: boolean): WorldClick => {
+    const click = (x: number, y: number, touch: boolean, modifier = false): WorldClick => {
       const w = this.screenToWorld(x, y);
-      return { x: w.x, y: w.y, organism: this.hitTest(x, y, touch) };
+      return { x: w.x, y: w.y, organism: this.hitTest(x, y, touch), candidates: this.hitAll(x, y, touch), modifier, touch };
     };
 
     const longPress = (pr: NonNullable<typeof press>) => {
@@ -772,7 +830,7 @@ export class WorldView {
       // The organism under the finger when it went down: a long press acts on
       // it even if its marker glides away during the hold.
       const pr = { id: e.pointerId, x: p.x, y: p.y, camX: this.cam.x, camY: this.cam.y, touch, dragging: false, timer: null as number | null, done: false,
-        hit: this.hitTest(p.x, p.y, touch) };
+        hit: this.hitTest(p.x, p.y, touch), modifier: e.shiftKey || e.ctrlKey || e.altKey || e.metaKey };
       if (e.button === 0 || touch) pr.timer = window.setTimeout(() => longPress(pr), LONG_PRESS_MS);
       press = pr;
     });
@@ -812,7 +870,7 @@ export class WorldView {
       if (!press || e.pointerId !== press.id) return;
       const pr = press;
       cancelPress();
-      if (!cancelled && !pr.dragging && !pr.done) this.onClick(click(pr.x, pr.y, pr.touch));
+      if (!cancelled && !pr.dragging && !pr.done) this.onClick(click(pr.x, pr.y, pr.touch, pr.modifier));
     };
     canvas.addEventListener('pointerup', (e) => up(e, false));
     canvas.addEventListener('pointercancel', (e) => {
@@ -902,3 +960,9 @@ function applyMarker(sprites: CreatureSprites, parts: MarkerParts, spec: Creatur
     parts.icon.position.set(r * 1.1, -r * 1.75 - 3);
   }
 }
+
+/** The groups the map draws: an emptied group (every member dead) shows no territory, rally or target. */
+function drawnGroups(s: Parameters<typeof groupsOf>[0]): ReturnType<typeof groupsOf> {
+  return groupsOf(s).filter((g) => g.id === 0 || g.members > 0);
+}
+

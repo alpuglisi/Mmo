@@ -67,6 +67,9 @@ pub struct TerrainRaw {
     pub elevation: Vec<u8>,
     pub river: Vec<u8>,
     pub base_water: Vec<u8>,
+    /// Most plant food each tile holds, 0..255 for nothing..the map's
+    /// richest tile (with `veg`, the client's food layer).
+    pub veg_max: Vec<u8>,
     pub dynamic: DynamicRaw,
 }
 
@@ -109,6 +112,10 @@ pub fn terrain_raw(world: &World) -> TerrainRaw {
         elevation: ground_layer(m, |g| quantize(g.elevation, 1.0)),
         river: ground_layer(m, |g| quantize(g.river, 1.0)),
         base_water: ground_layer(m, |g| centimeters(g.base_water)),
+        veg_max: {
+            let top = m.ground().iter().map(|g| g.veg_max).fold(0.0f32, f32::max);
+            ground_layer(m, |g| if top > 0.0 { quantize(g.veg_max / top, 1.0) } else { 0 })
+        },
         dynamic: dynamic_raw(world),
     }
 }
@@ -144,6 +151,7 @@ impl TerrainRaw {
             elevation: b64(&self.elevation),
             river: b64(&self.river),
             base_water: b64(&self.base_water),
+            veg_max: b64(&self.veg_max),
             dynamic: self.dynamic.encode(),
         }
     }
@@ -171,6 +179,7 @@ mod tests {
             &view.elevation,
             &view.river,
             &view.base_water,
+            &view.veg_max,
             &view.dynamic.water,
             &view.dynamic.snow,
             &view.dynamic.wetness,

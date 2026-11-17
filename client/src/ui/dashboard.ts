@@ -9,6 +9,7 @@ import {
 } from './charts';
 import { h, pct } from './dom';
 import { traitName } from './traitNames';
+import { originExplain } from '../hybrid';
 
 /** Genes shown as drift sparklines; the full table lists every gene. */
 const TOP_DRIFT = 6;
@@ -45,33 +46,36 @@ export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
   const all = [...s.genes].sort((a, b) => traitName(a.gene).localeCompare(traitName(b.gene)));
   const origins = originRows(s.origins ?? [], s.player);
   const own = origins.find((o) => o.mine)?.share ?? 0;
+  const why = origins.length ? originExplain(s.origins ?? [], s.player) : null;
+  // After extinction there are no members to measure: say so instead of charting zeros.
+  const noMembers = s.agents === 0;
   // Keep the gene table open across refreshes.
   const tableOpen = el.querySelector<HTMLDetailsElement>('details#all-genes')?.open ?? false;
-  el.replaceChildren(
+  el.replaceChildren(...([
     h('h3', {}, `${s.name ?? 'Lineage'} · day ${s.day + 1}`),
     kv,
+    // Whose genes: right under the counts, since it decides the score (playtest 1, finding 2).
+    ...(origins.length === 0 ? [] : [h('section', { class: `chart-card whose-genes${own < 0.9 ? ' diluted' : ''}`, id: 'allele-origins' },
+      h('h4', {}, 'Whose genes'),
+      h('p', { class: 'whose-headline', id: 'whose-headline' }, why!.headline),
+      originBar(origins),
+      h('ul', { class: 'origin-list' }, ...origins.map((o) => h('li', {},
+        h('i', { class: 'dot square-fill', style: `background:${o.color}` }),
+        h('span', {}, o.label),
+        h('span', { class: 'muted small' }, ` ${pct(o.share)}`)))),
+      h('ul', { class: 'whose-why small' }, ...why!.points.map((p) => h('li', {}, p))))]),
     card('Population by age', 'Females left, males right; oldest at the top.',
       legend([[SERIES[0], 'female'], [SERIES[1], 'male']]), pyramidChart(s.age_bands)),
     card('Births and deaths', `Last ${s.vitals.length} days (the last bar is today so far): ${births} born, ${deaths} died.`,
       legend([[SERIES[2], 'born'], ...st.causes.map((c) => [CAUSE_COLORS[c], c.replace('_', ' ')] as [string, string])]), vitalsChart(s.vitals)),
     card('Legacy share', latest ? `Now ${pct(latest.share, 2)} of breeding alleles (weighted ${pct(latest.weighted_share, 2)}).` : 'Recorded at the end of each day.',
       legend([[SERIES[0], 'share'], [SERIES[2], 'weighted by offspring raised']]), legacyChart(s.legacy)),
-    ...(origins.length === 0 ? [] : [h('section', { class: 'chart-card', id: 'allele-origins' },
-      h('h4', {}, 'Whose genes'),
-      h('p', { class: 'muted small' }, own >= 0.9995
-        ? 'Every allele your organisms carry traces back to your founders (or mutated in your lineage).'
-        : `${pct(own)} of the alleles your organisms carry trace back to you; the rest came in by mating with other lineages.`),
-      originBar(origins),
-      h('ul', { class: 'origin-list' }, ...origins.map((o) => h('li', {},
-        h('i', { class: 'dot square-fill', style: `background:${o.color}` }),
-        h('span', {}, o.label),
-        h('span', { class: 'muted small' }, ` ${pct(o.share)}`)))))]),
-    card('Gene drift', recorded > 0 ? `Largest changes of the lineage mean since founding (${recorded} recorded days); dashed: founding value.` : 'Drift shows after the first recorded day.',
-      h('div', { class: 'drift-list', id: 'drift-list' }, ...drift.map((d) => h('div', { class: 'drift-row' },
+    card('Gene drift', noMembers ? 'No data: none of your organisms are alive to measure.' : recorded > 0 ? `Largest changes of the lineage mean since founding (${recorded} recorded days); dashed: founding value.` : 'Drift shows after the first recorded day.',
+      noMembers ? null : h('div', { class: 'drift-list', id: 'drift-list' }, ...drift.map((d) => h('div', { class: 'drift-row' },
         h('span', { class: 'gene-name' }, d.label),
         geneSparkline(d),
         h('span', { class: 'small' }, `${d.mean.toFixed(2)} (${d.drift >= 0 ? '+' : ''}${d.drift.toFixed(3)})`))))),
-    h('details', { class: 'chart-card', id: 'all-genes', open: tableOpen },
+    noMembers ? null : h('details', { class: 'chart-card', id: 'all-genes', open: tableOpen },
       h('summary', {}, `All genes: distributions (${all.length})`),
       h('p', { class: 'muted small' }, 'Members per tenth of the 0 … 1 range; dashed: founding mean.'),
       h('table', { class: 'gene-table', id: 'gene-table' },
@@ -79,12 +83,12 @@ export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
         h('tbody', {}, ...all.map((g) => h('tr', {},
           h('td', {}, traitName(g.gene)), h('td', {}, g.mean.toFixed(2)), h('td', {}, g.sd.toFixed(3)),
           h('td', {}, g.bins && g.bins.length > 0 ? geneHistogram(traitName(g.gene), g.bins, g.founding_mean) : spreadBar(g.mean, g.sd, g.founding_mean))))))),
-  );
+  ] as (Node | null)[]).filter((x): x is Node => x !== null));
 }
 
 export const KIND_LABEL: Record<FeedEntry['kind'], string> = {
   daily_summary: 'day', birth: 'birth', death: 'death', milestone: 'milestone', need: 'need', offer: 'offer',
-  world: 'world', achievement: 'prestige', market: 'market',
+  world: 'world', achievement: 'prestige', market: 'market', group: 'group',
 };
 
 /** The alerts feed, newest first. Entries naming an organism link to it. */
@@ -101,6 +105,7 @@ const KIND_HINT: Record<AlertKind, string> = {
   daily_summary: 'births and deaths of each day', birth: 'first offspring, new generations', death: 'possessed organisms and founders',
   milestone: 'population and legacy milestones', need: 'a possessed organism parched or starving', world: 'catastrophes and eras',
   achievement: 'achievements', market: 'sales, purchases, refunds, renown',
+  group: 'a migration arrived, a group left with no members',
 };
 
 /** Per-kind switches: show in the feed, and toast on arrival. `onChange` gets the new preferences. */

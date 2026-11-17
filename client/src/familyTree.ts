@@ -285,7 +285,10 @@ export function buildFamilyTree(t: FamilyTree): FamilyModel {
         key: `s${s.id}`,
         kind: 'species',
         title: s.name,
-        subtitle: `Split on day ${s.founded_day + 1} · ${status}`,
+        // A species older than the lineage: it joined it (by interbreeding), it did not split from it.
+        subtitle: s.founded_day < samples[0].day
+          ? `Joined (species since day ${s.founded_day + 1}) · ${status}`
+          : `Split on day ${s.founded_day + 1} · ${status}`,
         day: s.founded_day,
         extinct: gone,
         design: designOf(s.name, s.genes),

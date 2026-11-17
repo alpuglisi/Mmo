@@ -7,6 +7,7 @@
 // `buy_mating_slot`, `reinforce`) and which lineages can breed with the
 // player's (`compatibility`).
 
+import { reconcile, setText } from './reconcile';
 import type { GameModel } from '../model';
 import type { ClientMsg, CompatibilityView, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg, ShopView } from '../protocol';
 import { parseCompatibilityView, parseLedgerView, parseMarketView, parseShopView } from '../protocol';
@@ -14,7 +15,7 @@ import { h, pct } from './dom';
 import { traitName } from './traitNames';
 import './market.css';
 import {
-  auctionText, balanceText, bidProblem, buyProblem, compatRowText, DEFAULT_FILTER, shopText, expiresIn, ledgerRows, ledgerTotals, listingCompat,
+  auctionText, expiryText, balanceText, bidProblem, buyProblem, compatRowText, DEFAULT_FILTER, shopText, expiresIn, ledgerRows, ledgerTotals, listingCompat,
   marketQuery, mergePages, ownAdults, pageText, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
 } from './marketData';
 
@@ -23,6 +24,8 @@ export interface MarketDeps {
   send: (m: ClientMsg) => Promise<ResultMsg>;
   /** Show an organism (center the camera, open the inspector). */
   onOrganism: (id: OrgId, x?: number, y?: number) => void;
+  /** Measured real milliseconds per tick (for "≈ 2 min" next to game time). */
+  msPerTick?: () => number;
 }
 
 export interface MarketPanel {
@@ -164,13 +167,12 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const key = adults.map((o) => `${o.id}${o.pregnant ? 'p' : ''}${listed.has(o.id) ? 'l' : ''}`).join(',');
     if (key === optionsKey) return;
     optionsKey = key;
-    const keepMine = mineSel.value;
-    const keepList = listOrg.value;
-    const opt = (o: (typeof adults)[number]) => h('option', { value: o.id }, `#${o.id} ${o.sex}${o.pregnant ? ' (pregnant)' : ''} · gen ${o.generation}`);
-    mineSel.replaceChildren(h('option', { value: '' }, '(none: no compatibility)'), ...adults.map(opt));
-    if ([...mineSel.options].some((o) => o.value === keepMine)) mineSel.value = keepMine;
-    listOrg.replaceChildren(...adults.filter((o) => !listed.has(o.id)).map(opt));
-    if ([...listOrg.options].some((o) => o.value === keepList)) listOrg.value = keepList;
+    // Options updated in place: an open list stays open, the choice stays put.
+    const label = (o: (typeof adults)[number] | null) => (o ? `#${o.id} ${o.sex}${o.pregnant ? ' (pregnant)' : ''} · gen ${o.generation}` : '(none: no compatibility)');
+    const option = (o: (typeof adults)[number] | null) => h('option', { value: o ? o.id : '' }) as HTMLOptionElement;
+    const fill = (opt: HTMLOptionElement, o: (typeof adults)[number] | null) => setText(opt, label(o));
+    reconcile(mineSel, [null, ...adults], (o) => (o ? String(o.id) : ''), option, fill);
+    reconcile(listOrg, adults.filter((o) => !listed.has(o.id)), (o) => String(o.id), option, fill);
   }
 
   function renderBalance(): void {
@@ -233,7 +235,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
         if (!mine) return;
         const r = await deps.send({ type: 'buy_listing', listing: l.id, mine: mine.id });
         if (r.ok) {
-          model.toast('info', `Bought a mating of #${mine.id} with ${l.owner_name}'s #${l.organism}: escort it from the Matings tab.`);
+          model.toast('info', `Bought a mating of #${mine.id} with ${l.owner_name}'s #${l.organism}: escort it from the Mates tab.`);
           await refresh();
         }
       });
@@ -245,14 +247,14 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
         h('strong', {}, `${l.role === 'stud' ? 'Stud' : 'Dam'} #${l.organism}`),
         h('span', { class: 'muted' }, ` · ${l.owner_name}'s ${l.lineage_name}`),
         h('span', { class: 'fee' }, price)),
-      a && h('div', { class: 'small auction-line' }, auctionText(l, model.player, tick, TICKS_PER_DAY)),
+      a && h('div', { class: 'small auction-line' }, auctionText(l, model.player, tick, TICKS_PER_DAY, deps.msPerTick?.())),
       h('div', { class: 'small' }, traitSummary(l.traits)),
       h('div', { class: 'small muted' },
         `gen ${l.generation}, ${parents} · ${l.age_days.toFixed(0)} days · health ${l.health.toFixed(0)} · raised ${l.offspring_raised}`,
         ` · at ${l.x.toFixed(0)}, ${l.y.toFixed(0)}`,
         l.sales ? ` · ${l.sales} sold` : '',
-        days !== null ? ` · ${days < 1 ? 'expires today' : `${days.toFixed(0)} days left`}` : '',
         l.busy ? ' · promised' : '', l.pregnant ? ' · pregnant' : ''),
+      days !== null && h('div', { class: 'small expires-line' }, expiryText(l, tick, TICKS_PER_DAY, deps.msPerTick?.()) ?? ''),
       h('div', { class: 'trait-bars' }, ...l.traits.filter((t) => t.value >= 0.5 || t.gene === 'body_size').slice(0, 6).map((t) =>
         h('span', { class: 'trait', title: `${traitName(t.gene)} ${t.value.toFixed(2)}` }, traitName(t.gene),
           h('span', { class: 'trait-bar' }, h('span', { style: `width:${pct(Math.max(0, Math.min(1, t.value)), 0)}` }))))),
@@ -261,7 +263,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       h('div', { class: 'row' },
         action,
         h('button', { class: 'secondary', onclick: () => deps.onOrganism(l.organism, l.x, l.y) }, 'Show'),
-        !isOwn && problem && h('span', { class: 'muted small' }, problem)));
+        // Why Buy / Bid is off, in words next to it (not only in a hover title).
+        !isOwn && problem && h('span', { class: 'small why-not' }, `Can't ${a ? 'bid' : 'buy'}: ${problem === 'pick one of your adults' ? 'pick your adult in "For my adult" above' : problem}`)));
   }
 
   // Rebuild the listing cards only when what they show changes.
@@ -277,7 +280,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     const balance = s?.balance ?? market?.balance ?? 0;
     const slots = s?.slots_left ?? 0;
     const why = (l: ListingView) => (l.auction ? bidProblem(l, model.player, balance, slots, mine, l.auction.min_bid) : buyProblem(l, model.player, balance, slots, mine));
-    const key = JSON.stringify([shown.map((l) => [l.id, l.sales, l.busy, l.pregnant, l.preview?.fertility, l.preview?.distance?.toFixed(0),
+    const key = JSON.stringify([shown.map((l) => [l.id, l.sales, l.busy, l.pregnant, l.preview?.fertility, l.preview?.compatible,
       l.auction?.high_bid, l.auction?.high_bidder, why(l)]), market === null, mine?.id ?? null]);
     if (key !== listingsKey) {
       listingsKey = key;
@@ -302,10 +305,21 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   function refreshAuctionLines(root: HTMLElement, ls: ListingView[]): void {
     const tick = model.state?.clock.tick ?? 0;
     const byId = new Map(ls.map((l) => [l.id, l]));
-    for (const card of root.querySelectorAll<HTMLElement>('.listing[data-kind="auction"]')) {
+    const ms = deps.msPerTick?.();
+    // The countdowns tick on between rebuilds of the cards.
+    for (const card of root.querySelectorAll<HTMLElement>('.listing')) {
       const l = byId.get(Number(card.dataset.listing));
-      const line = card.querySelector('.auction-line');
-      if (l && line) line.textContent = auctionText(l, model.player, tick, TICKS_PER_DAY);
+      if (!l) continue;
+      const auctionLine = card.querySelector('.auction-line');
+      if (auctionLine) setText(auctionLine, auctionText(l, model.player, tick, TICKS_PER_DAY, ms));
+      const expires = card.querySelector('.expires-line');
+      if (expires) setText(expires, expiryText(l, tick, TICKS_PER_DAY, ms) ?? '');
+      const compat = card.querySelector<HTMLElement>('.compat');
+      const c = listingCompat(l);
+      if (compat && c) {
+        setText(compat, c.text);
+        compat.dataset.level = c.level;
+      }
     }
   }
 

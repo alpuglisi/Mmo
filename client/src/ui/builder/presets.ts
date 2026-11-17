@@ -10,6 +10,11 @@ export interface BuilderPreset {
   /** One line on what the shape is good for. */
   hint: string;
   value: Partial<Morphology>;
+  /**
+   * Genes the design editor sets with it (the builder itself edits only the
+   * body plan): a stalker eats meat, a grazer plants.
+   */
+  traits?: Record<string, number>;
 }
 
 export const DEFAULT_PRESETS: readonly BuilderPreset[] = [
@@ -18,12 +23,14 @@ export const DEFAULT_PRESETS: readonly BuilderPreset[] = [
     label: 'Grazer',
     hint: 'Eyes on the sides: sees nearly all round and nothing sneaks up behind, but blind straight ahead.',
     value: { eye_count: 2, eye_azimuth: 100, eye_size: 0.5, ear_count: 2, ear_shape: 'long', ear_size: 0.6, leg_count: 4, leg_length: 0.5, snout_length: 0.6, fang_size: 0 },
+    traits: { carnivory: 0.05 },
   },
   {
     id: 'stalker',
     label: 'Stalker',
     hint: 'Forward eyes and a short snout: a wide depth zone for judging the pounce, blind behind.',
     value: { eye_count: 2, eye_azimuth: 25, eye_size: 0.6, ear_count: 2, ear_shape: 'pointed', ear_size: 0.4, leg_count: 4, leg_length: 0.5, snout_length: 0.3, fang_size: 0.5 },
+    traits: { carnivory: 0.85 },
   },
   {
     id: 'watcher',

@@ -121,6 +121,13 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         organisms: Option<Vec<OrgId>>,
     },
+    /// Retire your living lineage, `lineage` (which must be it, so a late
+    /// click can't retire the next one), to start over: every animal,
+    /// cohort and egg of it leaves the world at once (removed, not killed,
+    /// and not turned wild), its orders end, and you may found again at
+    /// once. Renown, ledger, records and the old lineage's history stay.
+    /// Data: `{removed}`.
+    RetireLineage { lineage: u32 },
     /// Group command: every member of group `from` joins group `into`
     /// (default 0); `from`'s orders end. Data: `{moved}`.
     MergeGroups {
@@ -170,6 +177,19 @@ pub enum ClientMsg {
     /// `mine` with the listed organism if given. Data: [`MarketView`]. With
     /// no fields: the newest [`MARKET_PAGE`] listings of every kind.
     BrowseMarket(MarketQuery),
+    /// Who may send you mating requests: `block` or `unblock` a player
+    /// (their requests are refused with `requests_refused`), turn
+    /// `auto_decline` on to refuse every request (listings and auctions are
+    /// unaffected: they are your own offer). With no fields, just read the
+    /// settings. Data: [`MatingPrefs`].
+    MatingPrefs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        block: Option<PlayerId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unblock: Option<PlayerId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auto_decline: Option<bool>,
+    },
     /// Your balance and recent ledger entries (newest first, at most `limit`,
     /// default 50). Data: [`LedgerView`].
     Ledger {
@@ -231,6 +251,7 @@ impl ClientMsg {
             ClientMsg::CancelRally { .. } => "cancel_rally",
             ClientMsg::SplitGroup { .. } => "split_group",
             ClientMsg::MergeGroups { .. } => "merge_groups",
+            ClientMsg::RetireLineage { .. } => "retire_lineage",
             ClientMsg::SetView { .. } => "set_view",
             ClientMsg::ClearView => "clear_view",
             ClientMsg::CreateListing { .. } => "create_listing",
@@ -240,6 +261,7 @@ impl ClientMsg {
             ClientMsg::Bid { .. } => "bid",
             ClientMsg::BrowseMarket { .. } => "browse_market",
             ClientMsg::Ledger { .. } => "ledger",
+            ClientMsg::MatingPrefs { .. } => "mating_prefs",
             ClientMsg::RenownShop => "renown_shop",
             ClientMsg::BuyMatingSlot => "buy_mating_slot",
             ClientMsg::Reinforce => "reinforce",
@@ -248,6 +270,44 @@ impl ClientMsg {
             ClientMsg::WatchSeason { .. } => "watch_season",
         }
     }
+}
+
+/// Every command's wire name (`type`), as [`ClientMsg::name`] gives them.
+pub const COMMAND_NAMES: &[&str] = &[
+    "possess",
+    "order_move",
+    "release",
+    "request_mating",
+    "preview_mating",
+    "respond_mating",
+    "complete_mating",
+    "cancel_mating",
+    "migrate",
+    "clear_migration",
+    "claim_territory",
+    "abandon_territory",
+    "rally",
+    "cancel_rally",
+    "split_group",
+    "merge_groups",
+    "set_view",
+    "clear_view",
+    "create_listing",
+    "withdraw_listing",
+    "buy_listing",
+    "create_auction",
+    "bid",
+    "browse_market",
+    "ledger",
+    "mating_prefs",
+    "resync",
+    "watch_season",
+];
+
+/// The known command named `t`, as a static name (for replies to messages
+/// that didn't parse: never the client's own text).
+pub fn command_name(t: &str) -> Option<&'static str> {
+    COMMAND_NAMES.iter().copied().find(|&n| n == t)
 }
 
 impl ClientMsg {
@@ -425,6 +485,9 @@ pub enum AlertKind {
     /// The marketplace and renown: a listing bought, a sale paid, a refund,
     /// a listing closed, an achievement bonus.
     Market,
+    /// A group order ended on its own: a migration arrived, a group was
+    /// left with no members.
+    Group,
 }
 
 impl AlertKind {
@@ -450,6 +513,7 @@ impl AlertKind {
             AlertKind::World => "world",
             AlertKind::Achievement => "achievement",
             AlertKind::Market => "market",
+            AlertKind::Group => "group",
         }
     }
 
@@ -475,7 +539,8 @@ pub struct AlertPrefs {
 impl AlertPrefs {
     /// Toasted by default: what needs attention now.
     pub fn default_toast() -> Vec<AlertKind> {
-        vec![AlertKind::Death, AlertKind::Need, AlertKind::Market]
+        // World events (catastrophes, era ends) too: they must not be missed.
+        vec![AlertKind::Death, AlertKind::Need, AlertKind::World, AlertKind::Market, AlertKind::Group]
     }
 
     /// Sorted, without duplicates, and nothing hidden is toasted.
@@ -672,6 +737,9 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         let code = match e {
             NotFound(_) => "not_found",
             NotOwned(_) => "not_owned",
+            NotPossessed(_) => "not_possessed",
+            OffMap => "off_map",
+            Unreachable => "unreachable",
             NoConsent => "no_consent",
             NotMature(_) => "not_mature",
             SameSex => "same_sex",
@@ -694,6 +762,24 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             _ => info,
         }
     }
+}
+
+/// One finished mating of `GET /api/matings/history`: a closed offer (with
+/// its outcome or error), or a mating within the player's own lineage (no
+/// offer). Newest first; kept in memory, so it survives reloads but not a
+/// server restart.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MatingRecord {
+    pub tick: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<OfferView>,
+    /// The player's organism and the partner (for an offer, as in the offer).
+    pub mine: OrgId,
+    pub partner: OrgId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<MatingOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorInfo>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -932,6 +1018,16 @@ impl From<evo_sim::world::groups::Rally> for RallyView {
     }
 }
 
+/// A player's mating-request settings ([`ClientMsg::MatingPrefs`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MatingPrefs {
+    /// Players whose requests are refused.
+    pub blocked: Vec<PlayerId>,
+    /// Refuse every request.
+    pub auto_decline: bool,
+}
+
 /// One of the player's groups (`World::groups`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GroupView {
@@ -943,6 +1039,12 @@ pub struct GroupView {
     pub adults: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration: Option<[f32; 2]>,
+    /// The way the migration is expected to go, from the group's middle to
+    /// the target (around water and thin ice), for drawing: at most
+    /// `commands::ROUTE_POINTS` points; absent without a migration (or
+    /// briefly, after a restart, until it is planned).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub route: Vec<[f32; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub territory: Option<TerritoryView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -974,6 +1076,7 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             members: g.members,
             adults: g.adults,
             migration: g.migration.map(|p| [p.x, p.y]),
+            route: Vec::new(),
             territory: g.territory.map(TerritoryView::from),
             rally: g.rally.map(RallyView::from),
             max_radius: g.max_radius,
@@ -1068,10 +1171,20 @@ pub struct WorldSummary {
     /// Whole days until winter; 0 during winter.
     #[serde(default)]
     pub days_to_winter: u32,
+    /// Days in a year (four seasons of a quarter each; offers expire when the season changes).
+    #[serde(default)]
+    pub days_per_year: u32,
+    /// Ticks in a game day.
+    #[serde(default)]
+    pub ticks_per_day: u32,
     /// A lineage founded now starts provisioned for winter (fed, fat
     /// reserves full: `GameConfig::winter_provision`).
     #[serde(default)]
     pub winter_provision: bool,
+    /// Most living organisms (young included) one player may have: at it,
+    /// births pause (`WorldConfig::lineage_cap`, scaled to the map).
+    #[serde(default)]
+    pub lineage_cap: usize,
 }
 
 /// One world of `GET /api/worlds`.
@@ -1117,6 +1230,11 @@ pub struct TerrainView {
     pub river: String,
     /// Water depth at normal wetness, centimeters (capped at 255).
     pub base_water: String,
+    /// Most plant food each tile holds, 0..255 for none..the map's richest
+    /// tile (absent from older servers). With the dynamic `veg` share it gives
+    /// the food on a tile now.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub veg_max: String,
     pub dynamic: TerrainDynamic,
 }
 
@@ -1977,6 +2095,18 @@ pub struct SpeciesView {
     pub lineages: Vec<SpeciesLineage>,
     pub carnivory: f32,
     pub body_size: f32,
+    /// Mean expressed thermoregulation and birth mode genes of its
+    /// representatives, and their usual leg and eye counts: with `carnivory`
+    /// and `body_size`, what decides who it can interbreed with
+    /// (`mating::body_plan_gap`). Absent from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endothermy: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birth_mode: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leg_count: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eye_count: Option<u8>,
 }
 
 /// `GET /api/lineage/tree`: what the caller's lineage looked like over
