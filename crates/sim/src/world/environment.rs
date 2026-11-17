@@ -149,6 +149,7 @@ impl World {
 
         if self.day_of_year().is_multiple_of(self.config.days_per_season()) {
             self.slots_used.clear();
+            self.bonus_slots.clear();
         }
         self.chronicle_daily();
     }

@@ -498,12 +498,17 @@ impl Game {
             | ClientMsg::CompleteMating { .. }
             | ClientMsg::CancelMating { .. }
             | ClientMsg::WithdrawListing { .. } => {}
+            // New organisms: `Game::reinforce` invalidates the whole cache.
+            ClientMsg::Reinforce => {}
             ClientMsg::SetView { .. }
             | ClientMsg::ClearView
             | ClientMsg::PreviewMating { .. }
             | ClientMsg::BrowseMarket(_)
             | ClientMsg::Ledger { .. }
             | ClientMsg::MatingPrefs { .. }
+            | ClientMsg::RenownShop
+            | ClientMsg::BuyMatingSlot
+            | ClientMsg::Compatibility
             | ClientMsg::Resync
             | ClientMsg::WatchSeason { .. } => {}
         }

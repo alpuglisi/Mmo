@@ -53,6 +53,18 @@ export function morphCost(m: MorphSpec | undefined, cat: Pick<GeneCatalog, 'morp
   return out;
 }
 
+/** Points `founders` founders cost (`design::founder_cost` on the server): free
+ * up to `base_founders`, `cost_per_extra_founder` each up to `flat_founders`,
+ * then each one `founder_cost_step` dearer than the last. */
+export function founderCost(founders: number, cat: GeneCatalog): number {
+  const n = Math.floor(founders);
+  const extra = Math.max(0, n - cat.base_founders);
+  const flat = Math.max(cat.flat_founders ?? Infinity, cat.base_founders);
+  const past = Math.max(0, n - flat);
+  const step = cat.founder_cost_step ?? 0;
+  return extra * cat.cost_per_extra_founder + (past > 0 ? (step * past * (past + 1)) / 2 : 0);
+}
+
 export function designCost(d: DesignSpec, cat: GeneCatalog): CostBreakdown {
   const perGene: Record<string, number> = {};
   let traits = 0;
@@ -63,7 +75,7 @@ export function designCost(d: DesignSpec, cat: GeneCatalog): CostBreakdown {
     traits += c;
   }
   const litter = Math.max(0, Math.floor(d.litter_size) - 1) * cat.cost_per_extra_offspring;
-  const founders = Math.max(0, Math.floor(d.founders) - cat.base_founders) * cat.cost_per_extra_founder;
+  const founders = founderCost(d.founders, cat);
   const sizeGene = cat.genes.find((g) => g.name === 'body_size');
   const smaller = sizeGene ? Math.max(0, sizeGene.default - (d.traits.body_size ?? sizeGene.default)) : 0;
   const body = (d.thermo === 'cold' ? cat.cost_cold_blooded ?? 0 : 0) + smaller * (cat.cost_per_smaller_body ?? 0);

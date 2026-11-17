@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AuctionView, LedgerEntry, ListingView, MatingPreviewView, OwnOrganism, StateView } from '../protocol';
 import { parseLedgerView, parseMarketView } from '../protocol';
 import {
-  auctionText, expiryText, balanceText, bidProblem, buyProblem, DEFAULT_FILTER, expiresIn, ledgerRows, ledgerTotals, listingCompat, marketQuery,
+  auctionText, expiryText, balanceText, bidProblem, buyProblem, compatRowText, DEFAULT_FILTER, shopText, expiresIn, ledgerRows, ledgerTotals, listingCompat, marketQuery,
   mergePages, ownAdults, PAGE_SIZE, pageText, traitSummary,
 } from './marketData';
 
@@ -127,6 +127,23 @@ describe('buyProblem', () => {
     expect(buyProblem(listing(1, { preview: preview({ compatible: false }) }), 1, 50, 2, own(10))).toBe('cannot conceive');
     expect(buyProblem(l, 1, 50, 0, own(10))).toBe('no mating slots left');
     expect(buyProblem(l, 1, 9, 2, own(10))).toBe('needs 10 renown');
+    expect(buyProblem(listing(1, { compatible: false }), 1, 50, 2, own(10))).toBe('body plans too different: sterile with your lineage');
+  });
+});
+
+describe('compatibility and the shop', () => {
+  const row = { lineage: 4, lineage_name: 'Foxes', owner: 3, owner_name: 'ann', fertility: 1, compatible: true, limiting: 'carnivory', gap: 0.05 };
+  it('says who can breed with whom and why not', () => {
+    expect(compatRowText(row)).toBe("ann's Foxes: fully fertile");
+    expect(compatRowText({ ...row, fertility: 0.5, gap: 0.21 })).toBe("ann's Foxes: 50% fertile (diet 0.21 apart)");
+    expect(compatRowText({ ...row, owner: 0, fertility: 0, compatible: false, gap: 0.45 }))
+      .toBe('wild Foxes: sterile (diet 0.45 apart; 0.30 is sterile)');
+  });
+  it('explains the fee and royalty', () => {
+    const t = shopText({ balance: 10, slots_left: 6, slots_bought: 0, slot_price: 30, reinforce_size: 10, reinforce_price: 150,
+      reinforce_max_alive: 300, market_fee_percent: 10, royalty_per_point: 2 });
+    expect(t).toContain('10% market fee');
+    expect(t).toContain('royalty of 2 renown');
   });
 });
 

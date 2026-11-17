@@ -44,9 +44,15 @@ pub const MAX_ROWS: usize = 200;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
-    /// Mean legacy share over the season's daily snapshots (a day without
+    /// Mean legacy score over the season's daily snapshots (a day without
     /// a share counts as 0); ties go to the higher final share. The season's
-    /// champion.
+    /// champion. A day's score is the mean of the raw and the weighted
+    /// legacy share (the weighted share counts alleles times offspring
+    /// raised to adulthood), so a fresh founding, whose founders have
+    /// raised nothing yet, counts half until its young grow up: founding
+    /// big late in a season, or re-founding just before it ends, no longer
+    /// takes the title. Seasons that began before this rule (a tracker
+    /// saved without `seasoned`) finish on the raw share.
     Legacy,
     /// Most living members the player's lineage had on a recorded day.
     Lineage,
@@ -287,6 +293,10 @@ pub struct SeasonTracker {
     /// same buyer counts half the one before (`add_sale`).
     sale_counts: BTreeMap<PlayerId, BTreeMap<PlayerId, u32>>,
     survived: BTreeMap<PlayerId, u64>,
+    /// The legacy category counts the mean of the raw and weighted share
+    /// (`Category::Legacy`); false in trackers saved before that rule,
+    /// which finish their season on the raw share.
+    seasoned: bool,
     /// Bumped by every change to the standings (not saved; see
     /// [`Generation`]).
     #[serde(skip)]
@@ -315,7 +325,7 @@ impl Generation {
 
 impl SeasonTracker {
     pub fn new(season: u32, first_day: u64, length: u64) -> Self {
-        Self { season, first_day, end_day: first_day + length.max(1), ..Default::default() }
+        Self { season, first_day, end_day: first_day + length.max(1), seasoned: true, ..Default::default() }
     }
 
     /// Changes to the standings so far (see [`Generation`]); with the
@@ -356,7 +366,8 @@ impl SeasonTracker {
             *v = 0.0;
         }
         for e in r.legacy.iter().filter(|e| e.player != WILD) {
-            *self.legacy_sum.entry(e.player).or_default() += e.share;
+            let score = if self.seasoned { (e.share + e.weighted_share) / 2.0 } else { e.share };
+            *self.legacy_sum.entry(e.player).or_default() += score;
             self.final_share.insert(e.player, e.share);
         }
         let mut alive: BTreeMap<PlayerId, u64> = BTreeMap::new();
@@ -674,6 +685,30 @@ mod tests {
 
     fn name(p: PlayerId) -> String {
         format!("p{p}")
+    }
+
+    /// The legacy title counts the mean of raw and weighted share: a fresh
+    /// big founding (raw share, nothing raised yet) counts half. A tracker
+    /// saved before the rule (`seasoned` false) keeps the raw share.
+    #[test]
+    fn a_fresh_founding_counts_half_toward_the_legacy_title() {
+        let mut rec = day(0, &[(1, 0.2), (2, 0.1)], &[(1, 50), (2, 30)]);
+        rec.legacy[0].weighted_share = 0.0;
+        let mut t = SeasonTracker::new(1, 0, 3);
+        t.record_day(&rec);
+        let r = t.clone().finish("w", 1, 1, name);
+        let rows: Vec<(PlayerId, f64)> = r.standings[0].rows.iter().map(|r| (r.player, r.value)).collect();
+        assert_eq!(rows, vec![(1, 0.1), (2, 0.1)]);
+        let mut old: SeasonTracker = serde_json::from_value({
+            let mut v = serde_json::to_value(SeasonTracker::new(1, 0, 3)).unwrap();
+            v.as_object_mut().unwrap().remove("seasoned");
+            v
+        })
+        .unwrap();
+        old.record_day(&rec);
+        let r = old.finish("w", 1, 1, name);
+        assert_eq!(r.standings[0].rows[0].player, 1);
+        assert!((r.standings[0].rows[0].value - 0.2).abs() < 1e-12);
     }
 
     #[test]

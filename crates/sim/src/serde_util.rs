@@ -69,6 +69,11 @@
 //!   between decisions (`World::last_intents`), left out while a world
 //!   snapshot of version 31 or before is read (1, every organism decides
 //!   every tick; none kept).
+//! - `before_v35`: the lineage crowding tunables (`Balance::lineage_crowding`,
+//!   `crowding_ceiling`, `crowding_juveniles`, `crowding_hunger`) and the
+//!   mating slots players bought (`World::bonus_slots`,
+//!   `before_v35::list`), left out while a world snapshot of version 34 or
+//!   before is read (0, off: the old hard lineage cap; none bought).
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1844,6 +1849,78 @@ pub mod before_v31 {
                 Ok(Vec::new())
             } else {
                 Vec::<f32>::deserialize(d)
+            }
+        }
+    }
+}
+
+/// `#[serde(with = "crate::serde_util::before_v35")]` on the lineage
+/// crowding tunables (`Balance::lineage_crowding` and the rest), and
+/// `before_v35::list` on `World::bonus_slots`. On a thread holding a
+/// [`before_v35::Guard`] (reading or hashing a snapshot of version 32 or
+/// before) none is written or read: the tunables read as 0 (off, the hard
+/// lineage cap those worlds ran under) and no slots were bought.
+pub mod before_v35 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The crowding tunables before version 35: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+
+    /// The same for a value that older versions don't have at all: its
+    /// default when reading them.
+    pub mod list {
+        use super::*;
+
+        pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(T::default())
+            } else {
+                T::deserialize(d)
             }
         }
     }

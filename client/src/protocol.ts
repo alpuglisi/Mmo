@@ -62,6 +62,14 @@ export type ClientMsg =
   | { type: 'ledger'; limit?: number }
   /** Block or unblock a player's mating requests, or decline them all; no fields reads the settings. Data: `{blocked, auto_decline}`. */
   | { type: 'mating_prefs'; block?: PlayerId; unblock?: PlayerId; auto_decline?: boolean }
+  /** The renown shop's prices; data: `ShopView`. */
+  | { type: 'renown_shop' }
+  /** Buy an extra directed-mating slot for the rest of the weather season; data: `ShopView`. */
+  | { type: 'buy_mating_slot' }
+  /** Reinforcements for a small lineage (adults copied from its own); data: `{ added: OrgId[], shop: ShopView }`. */
+  | { type: 'reinforce' }
+  /** Which lineages yours can breed with; data: `CompatibilityView`. */
+  | { type: 'compatibility' }
   /** Protocol 2: the delta states stopped decoding; the next state is a keyframe (no reply). */
   | { type: 'resync' }
   /**
@@ -546,7 +554,7 @@ export type ServerMsg = WelcomeMsg | StateMsg | ResultMsg | MatingRequestMsg | M
 // ---------------------------------------------------------------- economy and marketplace
 // Data of the `ledger`, `browse_market` and `create_listing` commands.
 
-export type LedgerKind = 'grant' | 'income' | 'achievement' | 'escrow' | 'sale' | 'refund';
+export type LedgerKind = 'grant' | 'income' | 'achievement' | 'escrow' | 'sale' | 'refund' | 'royalty' | 'purchase';
 
 /** One change of a player's renown balance. */
 export interface LedgerEntry {
@@ -639,6 +647,10 @@ export interface ListingView {
   traits: TraitView[];
   /** Compatibility with the organism passed to `browse_market`. */
   preview?: MatingPreviewView;
+  /** Whether your lineage can breed with it at all (body plans 0.30 apart are sterile); absent on older servers. */
+  compatible?: boolean;
+  /** Best body-plan fertility of a sample of your adults with it, 0..1. */
+  body_plan_fertility?: number;
   /** `fixed` when absent (servers before auctions). */
   kind: 'fixed' | 'auction';
   auction?: AuctionView;
@@ -761,6 +773,11 @@ export interface GeneCatalog {
   budget: number;
   base_founders: number;
   cost_per_extra_founder: number;
+  /** Founders up to which each extra costs `cost_per_extra_founder`; past it
+   * each costs `founder_cost_step` more than the last (absent on older servers:
+   * a flat price). */
+  flat_founders?: number;
+  founder_cost_step?: number;
   cost_per_extra_offspring: number;
   /** Points for a cold-blooded design (absent on older servers: 0). */
   cost_cold_blooded?: number;
@@ -904,8 +921,81 @@ export interface LineageStats {
   genes: GeneStat[];
   /** Whose alleles the members carry, largest share first. */
   origins?: AlleleOrigin[];
+  /** How the legacy share comes about: genes, not heads (absent on older servers). */
+  score?: ScoreBreakdown;
+  /** The soft lineage cap and how crowded the lineage is (absent on older servers). */
+  crowding?: CrowdingView;
   legacy: LegacyPoint[];
   alerts: AlertView[];
+}
+
+/**
+ * `lineage_stats.score`. Every share is of all alleles in the world's breeding adults, as the legacy
+ * share is. `share = home_share + exported_share`; `head_share = home_share + foreign_share`.
+ */
+export interface ScoreBreakdown {
+  day: number;
+  /** The legacy share: your alleles wherever they live. */
+  share: number;
+  /** Your lineage's share of all alleles, whoever's: its head count among breeding adults. */
+  head_share: number;
+  /** Your alleles in your own lineage. */
+  home_share: number;
+  /** Your alleles in rivals' animals and the wild (earns the royalty). */
+  exported_share: number;
+  /** Others' alleles your lineage carries: what hybridising cost. */
+  foreign_share: number;
+  /** Whose alleles your breeding adults carry; `share` of your lineage's alleles. */
+  carried: { player: PlayerId; name: string; share: number }[];
+  /** Where your alleles live; `share` of your alleles. */
+  placed: { lineage: number; lineage_name: string; owner: PlayerId; owner_name: string; share: number }[];
+  /** Renown a day the royalty pays now. */
+  royalty: number;
+}
+
+/** `lineage_stats.crowding`: breeding slows toward `soft_cap` (half pace at it) and stops at `hard_cap`. */
+export interface CrowdingView {
+  soft_cap: number;
+  hard_cap: number;
+  /** Adults plus juveniles at `juvenile_weight`. */
+  count: number;
+  juvenile_weight: number;
+  /** Litter multiplier (1: uncrowded). */
+  litter: number;
+  /** Hunger multiplier (1 below the soft cap). */
+  hunger: number;
+}
+
+/** `renown_shop`: what renown buys. */
+export interface ShopView {
+  balance: number;
+  slots_left: number;
+  slots_bought: number;
+  /** Price of the next extra slot (absent at the limit). */
+  slot_price?: number;
+  reinforce_size: number;
+  reinforce_price: number;
+  reinforce_max_alive: number;
+  /** Why reinforcements aren't possible now. */
+  reinforce_blocked?: string;
+  market_fee_percent: number;
+  royalty_per_point: number;
+}
+
+/** `compatibility`: which lineages yours can breed with. */
+export interface CompatibilityView {
+  lineage?: number;
+  rows: {
+    lineage: number;
+    lineage_name: string;
+    owner: PlayerId;
+    owner_name: string;
+    fertility: number;
+    compatible: boolean;
+    /** `carnivory`, `endothermy`, `birth_mode`, `body_size` or `morphology`. */
+    limiting: string;
+    gap: number;
+  }[];
 }
 
 export interface SeasonRow {
@@ -1281,6 +1371,20 @@ export function parseMarketView(data: unknown): MarketView | null {
   if (isStr(data.next_cursor)) view.next_cursor = data.next_cursor;
   if (Array.isArray(data.own)) view.own = listings(data.own);
   return view;
+}
+
+/** The data of a `renown_shop` result (or `buy_mating_slot`, or `reinforce`'s `shop`). */
+export function parseShopView(data: unknown): ShopView | null {
+  if (!isObj(data) || !isNum(data.balance) || !isNum(data.reinforce_price) || !isNum(data.slots_left)) return null;
+  return data as unknown as ShopView;
+}
+
+/** The data of a `compatibility` result. */
+export function parseCompatibilityView(data: unknown): CompatibilityView | null {
+  if (!isObj(data) || !Array.isArray(data.rows)) return null;
+  const rows = data.rows.filter((r): r is CompatibilityView['rows'][number] =>
+    isObj(r) && isNum(r.lineage) && isNum(r.fertility) && isStr(r.lineage_name) && isStr(r.owner_name));
+  return { ...(isNum(data.lineage) ? { lineage: data.lineage } : {}), rows };
 }
 
 /** The data of a `ledger` result. */

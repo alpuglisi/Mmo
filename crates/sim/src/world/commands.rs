@@ -193,7 +193,23 @@ impl World {
     }
 
     pub fn mating_slots_left(&self, player: PlayerId) -> u32 {
-        self.config.mating_slots_per_season.saturating_sub(self.slots_used.get(&player).copied().unwrap_or(0))
+        (self.config.mating_slots_per_season + self.bonus_slots(player))
+            .saturating_sub(self.slots_used.get(&player).copied().unwrap_or(0))
+    }
+
+    /// Extra directed-mating slots `player` holds this season
+    /// ([`World::grant_mating_slots`]).
+    pub fn bonus_slots(&self, player: PlayerId) -> u32 {
+        self.bonus_slots.get(&player).copied().unwrap_or(0)
+    }
+
+    /// Give `player` `n` extra directed-mating slots until the season
+    /// changes (the server sells them for renown). Returns the extra slots
+    /// held now.
+    pub fn grant_mating_slots(&mut self, player: PlayerId, n: u32) -> u32 {
+        let b = self.bonus_slots.entry(player).or_default();
+        *b = b.saturating_add(n);
+        *b
     }
 
     /// Pair two organisms, overriding their own preferences at a cost that

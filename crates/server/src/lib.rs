@@ -462,14 +462,21 @@ async fn load_world(
     }
     let unfounded: Vec<_> = designs.iter().filter(|d| game.lineage_of(d.player).is_none()).collect();
     for d in unfounded {
-        match d.design.to_design() {
-            Ok(design) => match game.found(d.player, &design) {
+        // A design stored under the old flat founder price is founded with
+        // as many founders as today's budget buys.
+        match d.design.to_design_fitted() {
+            Ok((design, dropped)) => match game.found(d.player, &design) {
                 Ok(ok) => tracing::info!(
-                    "re-founded {:?} for player {} as lineage {} in world {}",
+                    "re-founded {:?} for player {} as lineage {} in world {}{}",
                     d.design.name,
                     d.player,
                     ok.lineage,
-                    spec.id
+                    spec.id,
+                    if dropped > 0 {
+                        format!(" ({dropped} fewer founders, to fit today's founder prices)")
+                    } else {
+                        String::new()
+                    }
                 ),
                 Err(e) => tracing::warn!("could not re-found the design of player {} in {}: {e:?}", d.player, spec.id),
             },

@@ -3,17 +3,19 @@
 // auction and withdraw) and the ledger. Talks to the server with
 // `browse_market`, `create_listing`, `create_auction`, `withdraw_listing`,
 // `buy_listing`, `bid` and `ledger`; the agreements it creates show in the
-// Matings tab like any other.
+// Matings tab like any other. Also the renown shop (`renown_shop`,
+// `buy_mating_slot`, `reinforce`) and which lineages can breed with the
+// player's (`compatibility`).
 
 import { reconcile, setText } from './reconcile';
 import type { GameModel } from '../model';
-import type { ClientMsg, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg } from '../protocol';
-import { parseLedgerView, parseMarketView } from '../protocol';
+import type { ClientMsg, CompatibilityView, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg, ShopView } from '../protocol';
+import { parseCompatibilityView, parseLedgerView, parseMarketView, parseShopView } from '../protocol';
 import { h, pct } from './dom';
 import { traitName } from './traitNames';
 import './market.css';
 import {
-  auctionText, expiryText, balanceText, bidProblem, buyProblem, DEFAULT_FILTER, expiresIn, ledgerRows, ledgerTotals, listingCompat,
+  auctionText, expiryText, balanceText, bidProblem, buyProblem, compatRowText, DEFAULT_FILTER, shopText, expiresIn, ledgerRows, ledgerTotals, listingCompat,
   marketQuery, mergePages, ownAdults, pageText, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
 } from './marketData';
 
@@ -45,6 +47,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   let pages: ListingView[][] = [];
   let own: ListingView[] = [];
   let ledger: LedgerView | null = null;
+  let shop: ShopView | null = null;
+  let compat: CompatibilityView | null = null;
   let filter: MarketFilter = { ...DEFAULT_FILTER };
   let fetching = false;
   /** A refresh asked for while another was in flight: run it after (it may carry new filters or follow a change). */
@@ -130,8 +134,13 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   // --- ledger
   const ledgerEl = h('div', { id: 'market-ledger' });
 
+  // --- renown shop and who can breed with whom
+  const shopEl = h('div', { id: 'market-shop' });
+  const compatEl = h('div', { id: 'market-compat' });
+
   const el = h('div', { class: 'market' },
     balanceEl,
+    h('h3', {}, 'Who your lineage can breed with'), compatEl,
     h('h3', {}, 'Stud marketplace'),
     h('div', { class: 'form market-filters' },
       h('label', {}, 'For my adult', mineSel),
@@ -147,6 +156,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       h('div', { class: 'row' }, listBtn),
       h('p', { class: 'muted small' }, 'Anyone may buy one mating with a listed organism: the listing is your consent. The fee is held in escrow and paid to you when the two meet and mate; it is refunded if they never do. A dam takes one buyer at a time. An auction sells one mating to the highest bid at or above the reserve when it closes; bids are held in escrow and refunded when outbid.')),
     h('h4', {}, 'My listings'), myListingsEl,
+    h('h3', {}, 'Renown shop'), shopEl,
     h('h3', {}, 'Ledger'), ledgerEl);
 
   // Options of the two organism pickers, rebuilt only when the adults change.
@@ -249,6 +259,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
         h('span', { class: 'trait', title: `${traitName(t.gene)} ${t.value.toFixed(2)}` }, traitName(t.gene),
           h('span', { class: 'trait-bar' }, h('span', { style: `width:${pct(Math.max(0, Math.min(1, t.value)), 0)}` }))))),
       compat && h('div', { class: `small compat`, 'data-level': compat.level }, compat.text),
+      l.compatible === false && !isOwn && h('div', { class: 'small compat', 'data-level': 'bad' }, 'Sterile with your lineage: body plans too different.'),
       h('div', { class: 'row' },
         action,
         h('button', { class: 'secondary', onclick: () => deps.onOrganism(l.organism, l.x, l.y) }, 'Show'),
@@ -332,10 +343,69 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
             h('td', { class: r.positive ? 'good' : 'bad' }, r.amount), h('td', { class: 'small' }, r.text), h('td', {}, String(r.balance)))))));
   }
 
+  function renderShop(): void {
+    if (!shop) {
+      shopEl.replaceChildren(h('p', { class: 'muted small' }, 'Loading…'));
+      return;
+    }
+    const s = shop;
+    const key = JSON.stringify(s);
+    if (shopEl.dataset.key === key) return;
+    shopEl.dataset.key = key;
+    const slotBtn = h('button', { id: 'shop-slot', class: 'secondary', disabled: s.slot_price === undefined || s.balance < s.slot_price },
+      s.slot_price === undefined ? 'Slot limit reached' : `Extra mating slot: ${s.slot_price} renown`);
+    slotBtn.addEventListener('click', async () => {
+      const r = await deps.send({ type: 'buy_mating_slot' });
+      if (r.ok) {
+        shop = parseShopView(r.data) ?? shop;
+        model.toast('info', 'One more directed-mating slot this season.');
+        render();
+      }
+    });
+    const blocked = s.reinforce_blocked;
+    const reinBtn = h('button', { id: 'shop-reinforce', class: 'secondary', disabled: blocked !== undefined || s.balance < s.reinforce_price,
+      title: blocked ?? `${s.reinforce_size} adults copied from your own join your lineage` },
+    `Reinforcements (${s.reinforce_size} adults): ${s.reinforce_price} renown`);
+    reinBtn.addEventListener('click', async () => {
+      const r = await deps.send({ type: 'reinforce' });
+      if (r.ok) {
+        const d = r.data as { added?: unknown[]; shop?: unknown } | undefined;
+        shop = parseShopView(d?.shop) ?? shop;
+        model.toast('info', `${d?.added?.length ?? 0} adults joined your lineage.`);
+        render();
+      }
+    });
+    shopEl.replaceChildren(
+      h('p', { class: 'muted small' }, shopText(s)),
+      h('div', { class: 'row' }, slotBtn, h('span', { class: 'muted small' }, `${s.slots_bought} bought this season; the price doubles with each.`)),
+      h('div', { class: 'row' }, reinBtn, h('span', { class: 'muted small' },
+        blocked ?? `For lineages of at most ${s.reinforce_max_alive}; the price doubles with each in a ranked season.`)));
+  }
+
+  function renderCompat(): void {
+    const key = JSON.stringify(compat);
+    if (compatEl.dataset.key === key) return;
+    compatEl.dataset.key = key;
+    if (!compat || compat.lineage === undefined) {
+      compatEl.replaceChildren(h('p', { class: 'muted small' }, compat ? 'No living adult to compare.' : 'Loading…'));
+      return;
+    }
+    const fertile = compat.rows.filter((r) => r.compatible);
+    const sterile = compat.rows.filter((r) => !r.compatible);
+    compatEl.replaceChildren(
+      h('p', { class: 'muted small' }, 'Lineages whose diet, warmth, birth mode or size differ by 0.30 or more from yours are sterile with it: only the fertile ones are worth trading with.'),
+      h('ul', { class: 'small compat-list' },
+        ...fertile.map((r) => h('li', { 'data-lineage': r.lineage, class: 'good' }, compatRowText(r))),
+        ...sterile.slice(0, 6).map((r) => h('li', { 'data-lineage': r.lineage, class: 'muted' }, compatRowText(r)))),
+      ...(fertile.length === 0 ? [h('p', { class: 'small' }, 'No lineage can breed with yours right now.')] : []));
+  }
+
   function render(): void {
     renderBalance();
     renderPickers();
     renderListings();
+    renderShop();
+    renderCompat();
     renderLedger();
   }
 
@@ -357,8 +427,11 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     again = false;
     try {
       const want = Math.max(1, Math.min(MAX_PAGES, pages.length));
-      const [first, l] = await Promise.all([fetchPage(), deps.send({ type: 'ledger', limit: 50 })]);
+      const [first, l, sh, cp] = await Promise.all([fetchPage(), deps.send({ type: 'ledger', limit: 50 }),
+        deps.send({ type: 'renown_shop' }), deps.send({ type: 'compatibility' })]);
       if (l.ok) ledger = parseLedgerView(l.data) ?? ledger;
+      if (sh.ok) shop = parseShopView(sh.data) ?? shop;
+      if (cp.ok) compat = parseCompatibilityView(cp.data) ?? compat;
       if (first) {
         const next: ListingView[][] = [first.listings];
         own = first.own ?? own;

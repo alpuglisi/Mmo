@@ -368,6 +368,16 @@ fn strike_fixes_off(b: &mut crate::Balance) {
 /// `Balance::decide_interval` as snapshots before version 32 read it.
 fn stagger_off(b: &mut crate::Balance) {
     b.decide_interval = crate::serde_util::before_v32::OLD_VALUE;
+    playtest_off(b);
+}
+
+/// The lineage crowding tunables as snapshots before version 35 read them.
+fn crowding_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v35::OLD_VALUE;
+    b.lineage_crowding = old;
+    b.crowding_ceiling = old;
+    b.crowding_juveniles = old;
+    b.crowding_hunger = old;
 }
 
 /// `b` as snapshots before version 34 read it: the playtest 1 ecology
@@ -375,6 +385,7 @@ fn stagger_off(b: &mut crate::Balance) {
 fn playtest_off(b: &mut crate::Balance) {
     b.desperate_risk = crate::serde_util::before_v34::OLD_VALUE;
     b.founding_food = crate::serde_util::before_v34::OLD_VALUE;
+    crowding_off(b);
 }
 
 /// A small world, 1 day and 7 ticks in, under the old morphology rules
@@ -928,6 +939,35 @@ fn version_30_snapshots_restore_without_staggered_decisions() {
     assert!(r.snapshot_v30() == old);
 }
 
+/// Version 34 snapshots (before the soft lineage cap) restore with the
+/// crowding tunables off (the old hard cap) and no bought mating slots, and
+/// are otherwise the same world.
+#[test]
+fn version_34_snapshots_restore_without_crowding() {
+    let mut w = fixture_world();
+    w.grant_mating_slots(1, 2);
+    assert_eq!(w.bonus_slots(1), 2);
+    let old = w.snapshot_v34();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 34);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.lineage_crowding, crate::serde_util::before_v35::OLD_VALUE);
+    assert_eq!(r.bonus_slots(1), 0);
+    assert_eq!(r.player_ceiling(), r.config.lineage_cap);
+    crowding_off(&mut w.config.balance);
+    w.bonus_slots.clear();
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v34() == old);
+    // This version keeps them.
+    let mut w = fixture_world();
+    w.config.balance.lineage_crowding = 4.0;
+    w.grant_mating_slots(1, 2);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.bonus_slots(1), r.config.balance.lineage_crowding), (2, 4.0));
+}
+
 /// The busy world with staggered decisions (possession, migration, a
 /// territory, catastrophes, LOD) continues exactly after a restore.
 #[test]
@@ -1056,6 +1096,7 @@ fn version_32_snapshots_restore_without_playtest_fixes() {
     assert_eq!((r.config.balance.desperate_risk, r.config.balance.founding_food), (0.0, 0.0));
     w.config.balance.desperate_risk = 0.0;
     w.config.balance.founding_food = 0.0;
+    crowding_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot_v32() == old);
 }

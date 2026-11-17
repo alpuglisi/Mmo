@@ -6,6 +6,8 @@
     "cost_per_extra_founder": 0.699999988079071,
     "cost_per_extra_offspring": 2.5,
     "cost_per_smaller_body": 40.0,
+    "flat_founders": 50,
+    "founder_cost_step": 0.07000000029802322,
     "genes": [
       {
         "cost": 0.0,
@@ -496,6 +498,19 @@
         "thermo": "warm",
         "traits": {
           "wings": 0.4000000059604645
+        }
+      }
+    },
+    {
+      "cost": 57.51,
+      "spec": {
+        "birth": "live",
+        "founders": 72,
+        "litter_size": 2,
+        "name": "Big founding",
+        "thermo": "warm",
+        "traits": {
+          "fur": 0.30000001192092896
         }
       }
     }

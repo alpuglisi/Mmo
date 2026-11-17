@@ -396,7 +396,9 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
           h('fieldset', {}, h('legend', {}, 'Birth type'), ...birthRadios),
           h('div', { class: 'row' },
             h('label', {}, `Offspring per birth (1–${cat.max_litter}, ${cat.cost_per_extra_offspring} pts each above 1)`, litter),
-            h('label', {}, `Founders (${cat.base_founders} included, ${cat.cost_per_extra_founder} pts each extra)`, founders))),
+            h('label', {}, cat.flat_founders !== undefined && cat.founder_cost_step
+              ? `Founders (${cat.base_founders} included, ${cat.cost_per_extra_founder} pts each up to ${cat.flat_founders}, then each ${cat.founder_cost_step} pts dearer than the last)`
+              : `Founders (${cat.base_founders} included, ${cat.cost_per_extra_founder} pts each extra)`, founders))),
         h('section', { class: 'card design-traits' },
           h('div', { class: 'design-traits-head' }, h('h2', {}, 'Traits'), modeSwitch),
           modeHint, presetNote, builderHost,

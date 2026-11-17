@@ -28,6 +28,7 @@ mod market;
 mod offline;
 #[cfg(test)]
 mod orders_tests;
+mod shop;
 mod spectate;
 mod states;
 
@@ -377,6 +378,10 @@ struct Offer {
     /// mating runs, refunded on any other ending.
     #[serde(default)]
     escrow: u64,
+    /// The market fee kept from the payout (`economy::market_fee`, fixed
+    /// when the escrow was taken; 0 for offers saved before the fee).
+    #[serde(default)]
+    fee: u64,
 }
 
 struct Conn {
@@ -493,6 +498,10 @@ pub struct Game {
     /// ramp of the season's legacy score ([`FOUNDING_RAMP_DAYS`]); absent
     /// for lineages founded before it was kept (counted in full).
     founded_day: BTreeMap<PlayerId, u64>,
+    /// Alleles in breeding adults by (host lineage, origin), taken with
+    /// each daily record (`World::legacy_hosts`): the royalty and the score
+    /// breakdown read it. Not saved; recomputed on a restore.
+    hosts: evo_sim::world::HostTally,
     /// Tests: take the plain, slower paths these shortcuts replace (full
     /// hold scans, a fresh index per new connection) to compare against.
     #[cfg(test)]
@@ -640,6 +649,7 @@ impl Game {
         let season = SeasonTracker::new(1, first_day, cfg.season_days);
         let economy = Economy::new();
         let market = market::MarketIndex::build(&economy, &world);
+        let hosts = world.legacy_hosts();
         let mut g = Self {
             world,
             cfg,
@@ -682,6 +692,7 @@ impl Game {
             market,
             routes: BTreeMap::new(),
             founded_day: BTreeMap::new(),
+            hosts,
             #[cfg(test)]
             reference: false,
         };
@@ -1005,6 +1016,15 @@ impl Game {
     /// renown, ledger, records and seen alerts stay, the old lineage stays in
     /// the history as extinct, and the dead lineage's group orders go.
     pub fn found(&mut self, player: PlayerId, design: &FounderDesign) -> Result<FoundOk, FoundError> {
+        design.validate().map_err(FoundError::Design)?;
+        self.found_at_any_price(player, design)
+    }
+
+    /// [`Game::found`] without the point-budget check, for offline tools
+    /// that replay older prices (`examples/competition.rs` founds playtest
+    /// 1's 130-founder swarms); the server never calls it.
+    #[doc(hidden)]
+    pub fn found_at_any_price(&mut self, player: PlayerId, design: &FounderDesign) -> Result<FoundOk, FoundError> {
         if let Some(&lineage) = self.lineage_of.get(&player) {
             if !self.is_extinct(player) {
                 return Err(FoundError::AlreadyFounded { lineage });
@@ -1012,7 +1032,7 @@ impl Game {
         }
         let refounding = self.lineage_of.contains_key(&player);
         let lineage = self.world.lineages.len() as u32;
-        let founders = self.world.found_lineage(player, design).map_err(FoundError::Design)?;
+        let founders = self.world.found_lineage_unchecked(player, design);
         if self.winter_provision_now() {
             self.world.provision_for_winter(&founders);
         }
@@ -1290,6 +1310,13 @@ impl Game {
                 };
                 Ok(Some(serde_json::to_value(view).unwrap()))
             }
+            ClientMsg::RenownShop => Ok(Some(serde_json::to_value(self.shop_view(player)).unwrap())),
+            ClientMsg::BuyMatingSlot => Ok(Some(serde_json::to_value(self.buy_mating_slot(player)?).unwrap())),
+            ClientMsg::Reinforce => {
+                let (ids, shop) = self.reinforce(player)?;
+                Ok(Some(serde_json::json!({ "added": ids, "shop": shop })))
+            }
+            ClientMsg::Compatibility => Ok(Some(serde_json::to_value(self.compatibility(player)).unwrap())),
             // The connection answers it (`http.rs`); nothing to do here.
             // Answered by the world thread (`crate::runner`) before it gets here.
             ClientMsg::Resync | ClientMsg::WatchSeason { .. } => Ok(None),
@@ -1429,8 +1456,19 @@ impl Game {
     ) -> Result<u64, ErrorInfo> {
         let id = self.next_offer;
         self.next_offer += 1;
-        let offer =
-            Offer { id, from, to, mine, partner, price, status, created_tick: self.world.tick(), listing, escrow: 0 };
+        let offer = Offer {
+            id,
+            from,
+            to,
+            mine,
+            partner,
+            price,
+            status,
+            created_tick: self.world.tick(),
+            listing,
+            escrow: 0,
+            fee: 0,
+        };
         self.offers.insert(id, offer);
         if let Some(p) = price.filter(|&p| p > 0) {
             let what = match listing {
@@ -1441,7 +1479,11 @@ impl Game {
             };
             let debit = i64::try_from(p).ok().map(|p| -p);
             match debit.map(|d| self.post(from, d, LedgerKind::Escrow, what, Some(id), listing)) {
-                Some(Ok(_)) => self.offers.get_mut(&id).unwrap().escrow = p,
+                Some(Ok(_)) => {
+                    let o = self.offers.get_mut(&id).unwrap();
+                    o.escrow = p;
+                    o.fee = economy::market_fee(p);
+                }
                 _ => {
                     self.offers.remove(&id);
                     let balance = self.balance(from);
@@ -1918,14 +1960,26 @@ impl Game {
             y: coarse(o.pos.y),
             traits: LISTING_TRAITS.iter().map(|&g| TraitView { gene: gene_key(g), value: o.pheno[g] }).collect(),
             preview,
+            compatible: None,
+            body_plan_fertility: None,
             kind: if l.auction.is_some() { ListingKind::Auction } else { ListingKind::Fixed },
             auction,
         })
     }
 
     /// One page of the open listings matching `q`, in its order, with
-    /// compatibility against `q.mine`.
+    /// compatibility against `q.mine`, and each listing's body-plan
+    /// compatibility with the player's lineage.
     pub fn market(&self, player: PlayerId, q: &MarketQuery) -> Result<MarketView, ErrorInfo> {
+        let mut page = self.market_page(player, q)?;
+        self.annotate_compatibility(player, &mut page.listings);
+        if let Some(own) = page.own.as_mut() {
+            self.annotate_compatibility(player, own);
+        }
+        Ok(page)
+    }
+
+    fn market_page(&self, player: PlayerId, q: &MarketQuery) -> Result<MarketView, ErrorInfo> {
         let sort = q.sort.unwrap_or_default();
         let early = q.mine.is_some() && (q.compatible || sort == MarketSort::Fertility);
         // The index counts by kind and role only; other filters (and
@@ -2421,9 +2475,14 @@ impl Game {
                 Some(l) => format!("listing #{l}"),
                 None => format!("offer #{}", o.id),
             };
-            let text = format!("Sale: {amount} renown from {from} for {what} (your #{} with #{})", o.partner, o.mine);
-            if self.post(o.to, amount as i64, LedgerKind::Sale, text.clone(), Some(o.id), o.listing).is_ok() {
-                self.season.add_sale(o.to, o.from, amount);
+            // The market fee is destroyed: only the rest is paid out.
+            let fee = o.fee.min(amount);
+            let net = amount - fee;
+            let fee_note = if fee > 0 { format!(", less a {fee} renown market fee") } else { String::new() };
+            let text =
+                format!("Sale: {net} renown from {from} for {what}{fee_note} (your #{} with #{})", o.partner, o.mine);
+            if self.post(o.to, net as i64, LedgerKind::Sale, text.clone(), Some(o.id), o.listing).is_ok() {
+                self.season.add_sale(o.to, o.from, net);
             }
             self.alert(o.to, AlertKind::Market, format!("{text}."), Some(o.partner), out);
             let paid =
@@ -2507,7 +2566,9 @@ impl Game {
             self.last_legacy_day = legacy_day;
             let record = self.daily_record();
             self.season_day(&record, &mut out);
+            self.refresh_hosts();
             self.pay_income(&record);
+            self.pay_royalties(record.day);
             self.daily_alerts(&record, &mut out);
             self.chronicle_alerts(&mut out);
             self.history.push_back(record.clone());
@@ -3426,6 +3487,8 @@ impl Game {
             history_days,
             genes,
             origins,
+            score: self.score_breakdown(player),
+            crowding: self.crowding_view(player),
             legacy,
             alerts: self.alerts(player),
         }
@@ -4789,9 +4852,11 @@ mod tests {
         assert!(out.iter().any(
             |(_, m)| matches!(m, ServerMsg::MatingUpdate { offer, .. } if offer.status == OfferStatus::Completed)
         ));
-        assert_eq!((g.balance(1), g.escrow(1), g.balance(2)), (start - 30, 0, start + 30));
+        // Bob is paid the price less the 10% market fee, which is destroyed.
+        assert_eq!((g.balance(1), g.escrow(1), g.balance(2)), (start - 30, 0, start + 27));
         let bob_alert = alerts_in(&out, 2).into_iter().find(|x| x.kind == AlertKind::Market).expect("sale alert");
-        assert!(bob_alert.text.starts_with("Sale: 30 renown from ann"), "{}", bob_alert.text);
+        assert!(bob_alert.text.starts_with("Sale: 27 renown from ann"), "{}", bob_alert.text);
+        assert!(bob_alert.text.contains("less a 3 renown market fee"), "{}", bob_alert.text);
         assert!(alerts_in(&out, 1).iter().any(|x| x.kind == AlertKind::Market && x.text.starts_with("Paid 30")));
         // The sale is news to the seller; the buyer's payment is not.
         let notices = g.take_notices();
@@ -4804,6 +4869,125 @@ mod tests {
             (t[0].price, t[0].settlement.as_deref(), t[0].status.as_str()),
             (Some(30), Some("paid"), "completed")
         );
+    }
+
+    /// Alleles of a player living in a rival's lineage: the score breakdown
+    /// shows where they live and whose genes each lineage carries, and the
+    /// royalty pays for them.
+    #[test]
+    fn royalty_and_score_breakdown_follow_genes_into_rivals_lineages() {
+        let (mut g, a, b) = game();
+        // Two of Bob's animals carry Ann's genome (as if sired by her studs
+        // for generations); they stay Bob's.
+        let ann = g.world.organism(a[0]).unwrap().genome.clone();
+        for &id in &b[..2] {
+            g.world.organisms.iter_mut().find(|o| o.id == id).unwrap().genome = ann.clone();
+        }
+        g.refresh_hosts();
+        let s1 = g.score_breakdown(1).unwrap();
+        let s2 = g.score_breakdown(2).unwrap();
+        // 6 + 6 founders, all breeding adults: Ann's alleles in 8, Bob's in 4.
+        let close = |x: f64, y: f64| (x - y).abs() < 1e-9;
+        assert!(close(s1.share, 8.0 / 12.0) && close(s1.head_share, 0.5) && close(s1.exported_share, 2.0 / 12.0));
+        assert!(close(s1.home_share + s1.exported_share, s1.share));
+        assert!(close(s2.share, 4.0 / 12.0) && close(s2.head_share, 0.5) && close(s2.foreign_share, 2.0 / 12.0));
+        assert_eq!(s2.carried.iter().map(|c| c.player).collect::<Vec<_>>(), vec![2, 1]);
+        assert!(close(s2.carried[1].share, 1.0 / 3.0));
+        assert_eq!(s1.placed.len(), 2);
+        assert!(close(s1.placed[1].share, 0.25) && s1.placed[1].owner == 2);
+        assert_eq!(s1.royalty, economy::royalty(2.0 / 12.0, true));
+        assert_eq!(s2.royalty, 0);
+        // The royalty is paid with the daily income.
+        let before = g.balance(1);
+        g.pay_royalties(0);
+        assert_eq!(g.balance(1), before + s1.royalty);
+        assert_eq!(ledger_kinds(&g, 1).last(), Some(&LedgerKind::Royalty));
+        assert_eq!(ledger_kinds(&g, 2), vec![LedgerKind::Grant]);
+        // And it comes with the lineage statistics, with the crowding.
+        let stats = g.lineage_stats(2);
+        assert!(stats.score.is_some());
+        let c = stats.crowding.unwrap();
+        assert_eq!((c.soft_cap, c.hard_cap), (g.world.config.lineage_cap, 2 * g.world.config.lineage_cap));
+        assert!(c.litter > 0.99 && c.hunger == 1.0);
+    }
+
+    /// The renown shop: mating slots at doubling prices up to a limit, and
+    /// reinforcements for a small lineage; renown spent is gone.
+    #[test]
+    fn the_renown_shop_sells_slots_and_reinforcements() {
+        let (mut g, a, _) = game();
+        let _ = g.post(1, 2000, LedgerKind::Income, "test".into(), None, None);
+        let slots = g.world.mating_slots_left(1);
+        let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
+        assert_eq!((shop.slot_price, shop.reinforce_price, shop.reinforce_blocked), (Some(30), 150, None));
+        let mut spent = 0;
+        for k in 0..economy::MAX_BOUGHT_SLOTS {
+            let out = g.command(10, 1, None, ClientMsg::BuyMatingSlot);
+            let v: ShopView = serde_json::from_value(data(&out)).unwrap();
+            spent += economy::SLOT_BASE_PRICE << k;
+            assert_eq!(
+                (v.slots_left, v.slots_bought, v.balance),
+                (slots + k + 1, k + 1, economy::FOUNDING_GRANT + 2000 - spent)
+            );
+        }
+        let out = g.command(10, 1, None, ClientMsg::BuyMatingSlot);
+        assert_eq!(result(&out).1.as_deref(), Some("limit_reached"));
+        assert_eq!(ledger_kinds(&g, 1).last(), Some(&LedgerKind::Purchase));
+        // Reinforcements: ten adults copied from the lineage's own.
+        let alive = |g: &Game| g.world.organisms.iter().filter(|o| o.alive && o.owner == 1).count();
+        let n = alive(&g);
+        let out = g.command(10, 1, None, ClientMsg::Reinforce);
+        let d = data(&out);
+        assert_eq!(d["added"].as_array().unwrap().len(), economy::REINFORCE_SIZE as usize);
+        assert_eq!(d["shop"]["reinforce_price"], 300);
+        assert_eq!(alive(&g), n + economy::REINFORCE_SIZE as usize);
+        let lineage = g.lineage_of(1).unwrap();
+        assert!(g.world.organisms.iter().filter(|o| o.owner == 1).all(|o| o.lineage == lineage));
+        // Not for a lineage past a fifth of the soft cap.
+        g.world.config.lineage_cap = 50;
+        let out = g.command(10, 1, None, ClientMsg::Reinforce);
+        assert_eq!(result(&out).1.as_deref(), Some("too_large"));
+        let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
+        assert!(shop.reinforce_blocked.unwrap().contains("at most 10"));
+        // Bought slots end with the weather season.
+        let _ = a;
+        let season = g.world.season();
+        while g.world.season() == season {
+            g.world.step();
+        }
+        assert_eq!(g.world.bonus_slots(1), 0);
+        // Broke: refused, nothing spent.
+        let (mut g, _, _) = game();
+        for _ in 0..2 {
+            g.command(10, 1, None, ClientMsg::BuyMatingSlot);
+        }
+        assert_eq!(g.balance(1), economy::FOUNDING_GRANT - 30);
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)).1.as_deref(), Some("insufficient_funds"));
+    }
+
+    /// Which lineages can breed with whom: same body plans are fertile, a
+    /// diet 0.30 apart is sterile, in the list and on every listing.
+    #[test]
+    fn compatibility_shows_the_diet_split() {
+        let (mut g, a, _) = game();
+        let hunter = FounderDesign::new("C", Thermo::Warm, BirthType::Live, 2).founders(6).with(Gene::Carnivory, 0.85);
+        let c = g.found(3, &hunter).unwrap().founders;
+        g.set_name(3, "cat");
+        let v: CompatibilityView =
+            serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::Compatibility))).unwrap();
+        assert_eq!(v.lineage, g.lineage_of(1));
+        assert_eq!(v.rows.len(), 2);
+        assert!(v.rows[0].compatible && v.rows[0].owner == 2 && v.rows[0].fertility == 1.0);
+        let cat = &v.rows[1];
+        assert!(!cat.compatible && cat.owner == 3 && cat.limiting == "carnivory" && cat.gap > 0.6, "{cat:?}");
+        // On listings: Cat's stud is sterile with Ann's lineage, Bob's isn't.
+        let _ = a;
+        let mc = male(&g, &c);
+        g.command(30, 3, None, ClientMsg::CreateListing { organism: mc, fee: 5, expires_days: None });
+        let m = g.market(1, &MarketQuery::default()).unwrap();
+        assert_eq!((m.listings[0].compatible, m.listings[0].body_plan_fertility), (Some(false), Some(0.0)));
+        let m = g.market(3, &MarketQuery { with_own: true, ..Default::default() }).unwrap();
+        assert_eq!(m.own.unwrap()[0].compatible, Some(true));
     }
 
     #[test]
@@ -4973,7 +5157,8 @@ mod tests {
             g.world.config.mating_slots_per_season,
             "the lister's slots are untouched"
         );
-        assert_eq!((g.balance(1), g.balance(2), g.escrow(2)), (start + 12, start - 12, 0));
+        // Less the market fee (10% of 12, rounded down).
+        assert_eq!((g.balance(1), g.balance(2), g.escrow(2)), (start + 11, start - 12, 0));
         let t = trades(&mut g);
         assert_eq!((t[0].listing, t[0].settlement.as_deref()), (Some(listing.id), Some("paid")));
         // Withdraw: only the owner.
@@ -5461,7 +5646,7 @@ mod tests {
         place_together(&mut g, ma, fc);
         g.after_tick();
         assert!(!g.offers.contains_key(&offer.id));
-        assert_eq!((g.balance(1), g.balance(3), g.escrow(3)), (b1 + 20, b3, 0));
+        assert_eq!((g.balance(1), g.balance(3), g.escrow(3)), (b1 + 18, b3, 0), "less the market fee");
         let t = trades(&mut g);
         assert_eq!((t[0].listing, t[0].price, t[0].settlement.as_deref()), (Some(id), Some(20), Some("paid")));
     }
@@ -6011,11 +6196,11 @@ mod tests {
         g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
         place_together(&mut g, fa, mb);
         g.command(10, 1, None, ClientMsg::CompleteMating { request: id });
-        assert_eq!((g.balance(1), g.balance(2)), (start - 20, start + 20));
+        assert_eq!((g.balance(1), g.balance(2)), (start - 20, start + 18));
         g.command(20, 2, None, ClientMsg::CancelMating { request: id });
         g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false });
         g.after_tick();
-        assert_eq!((g.balance(1), g.balance(2)), (start - 20, start + 20));
+        assert_eq!((g.balance(1), g.balance(2)), (start - 20, start + 18));
 
         // Prices: above the cap, or more than the balance, are refused and
         // take nothing; a direct escrow the balance can't cover makes no offer.
@@ -6029,7 +6214,7 @@ mod tests {
         let open = g.offers.len();
         let err = g.open_offer(2, 1, fb, ma, Some(g.balance(2) + 1), OfferStatus::Pending, None).unwrap_err();
         assert_eq!(err.code, "insufficient_funds");
-        assert_eq!((g.offers.len(), g.balance(2)), (open, start + 20));
+        assert_eq!((g.offers.len(), g.balance(2)), (open, start + 18));
         // Negative or oversized numbers never parse.
         for bad in [
             r#"{"type":"request_mating","mine":1,"partner":2,"price":-5}"#,
