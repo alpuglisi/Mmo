@@ -300,6 +300,29 @@
       },
       {
         "cost": 0.0,
+        "default": "curved",
+        "kind": "enum",
+        "name": "horn_form",
+        "values": [
+          "curved",
+          "straight",
+          "branched"
+        ]
+      },
+      {
+        "cost": 0.0,
+        "default": "plain",
+        "kind": "enum",
+        "name": "pattern",
+        "values": [
+          "plain",
+          "spots",
+          "stripes",
+          "mottled"
+        ]
+      },
+      {
+        "cost": 0.0,
         "default": 60.0,
         "kind": "axis",
         "max": 180.0,
@@ -313,6 +336,22 @@
         "max": 1.0,
         "min": 0.0,
         "name": "snout_length"
+      },
+      {
+        "cost": 4.0,
+        "default": 0.0,
+        "kind": "axis",
+        "max": 1.0,
+        "min": 0.0,
+        "name": "horn_size"
+      },
+      {
+        "cost": 0.0,
+        "default": 0.5,
+        "kind": "axis",
+        "max": 1.0,
+        "min": 0.0,
+        "name": "wing_aspect"
       }
     ]
   },
@@ -438,6 +477,25 @@
         "traits": {
           "body_size": 0.10000000149011612,
           "toxins": 0.5
+        }
+      }
+    },
+    {
+      "cost": 14.5,
+      "spec": {
+        "birth": "live",
+        "founders": 20,
+        "litter_size": 2,
+        "morph": {
+          "horn_form": "branched",
+          "horn_size": 0.6000000238418579,
+          "pattern": "stripes",
+          "wing_aspect": 0.20000000298023224
+        },
+        "name": "Antlered striped glider",
+        "thermo": "warm",
+        "traits": {
+          "wings": 0.4000000059604645
         }
       }
     }

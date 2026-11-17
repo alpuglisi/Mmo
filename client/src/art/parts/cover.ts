@@ -221,3 +221,50 @@ export function crest(b: BodyPart, height: number, n = 7): Point[] {
   }
   return pts;
 }
+
+/**
+ * A coat pattern (Phase 3 `pattern`): dapples, vertical stripes or broken
+ * blotches in the pattern tone, over the flank and back (clipped to the
+ * silhouette). Plain draws nothing. Seeded, so it never jumps.
+ */
+export function coatPattern(b: BodyPart, pattern: 'plain' | 'spots' | 'stripes' | 'mottled', pal: CreaturePalette, lod: Lod): Shape[] {
+  const { rx, ry, cy } = b.params;
+  const out: Shape[] = [];
+  const dark = mix(pal.pattern, pal.ink, 0.25);
+  if (pattern === 'spots') {
+    const R = rng(41);
+    const n = lod === 'sprite' ? 9 : 22;
+    for (let i = 0; i < n; i++) {
+      const x = (R() * 2 - 1) * rx * 0.95;
+      const y = cy + (R() * 2 - 1.2) * ry * 0.75;
+      if (!b.inside(x, y, 0.95)) continue;
+      const s = ry * (lod === 'sprite' ? 0.14 : 0.09) * (0.75 + 0.5 * R());
+      out.push({ part: 'body', tag: 'pattern', kind: 'ellipse', x, y, rx: s * 1.2, ry: s, fill: dark, alpha: 0.75 });
+    }
+  } else if (pattern === 'stripes') {
+    const n = lod === 'sprite' ? 5 : 8;
+    for (let i = 0; i < n; i++) {
+      const t = -0.82 + (1.64 * i) / (n - 1);
+      const x = rx * t;
+      const w = rx * (lod === 'sprite' ? 0.09 : 0.06);
+      // From over the back (overshooting the rim: the clip trims it) to low on the flank, leaning back.
+      out.push({ part: 'body', tag: 'pattern', kind: 'curve', closed: true, points: [[x - w, cy - ry * 1.4], [x + w, cy - ry * 1.4], [x - w * 0.2 + ry * 0.08, cy + ry * 0.45], [x - w * 1.6 + ry * 0.08, cy + ry * 0.4]], fill: dark, alpha: 0.7 });
+    }
+  } else if (pattern === 'mottled') {
+    const R = rng(47);
+    const n = lod === 'sprite' ? 6 : 12;
+    for (let i = 0; i < n; i++) {
+      const x = (R() * 2 - 1) * rx * 1.0;
+      const y = cy + (R() * 2 - 1.2) * ry * 0.8;
+      const r = ry * (0.16 + 0.14 * R());
+      const pts: Point[] = [];
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        const q = r * (0.5 + 0.7 * R());
+        pts.push([x + Math.cos(a) * q * 1.4, y + Math.sin(a) * q]);
+      }
+      out.push({ part: 'body', tag: 'pattern', kind: 'curve', closed: true, points: pts, fill: i % 2 ? mix(pal.body.light, pal.belly, 0.5) : dark, alpha: i % 2 ? 0.55 : 0.6 });
+    }
+  }
+  return out;
+}

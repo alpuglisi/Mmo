@@ -67,9 +67,10 @@ pack hunters 58–263.
 | Low–medium (pre-existing) | **A poisoned hunter kept acting.** In `attack`, a hunter killed by toxins (`kill(i, Toxin)`) didn't return. The same strike could still go on to kill and leave the prey, and back in `act` the dead hunter ate meat from its tile (`eat_meat` doesn't check `alive`). | `attack` returns after the toxin death, and `act` feeds a hunter only while it lives. | `a_poisoned_hunter_strikes_no_more` |
 | Low (pre-existing) | **Double meal on the kill tick.** `attack` called `eat_meat(i, 1.0)` after a kill, and the `Hunt` branch of `act` called it again: up to twice the per-tick intake, the second helping going to fat with gorging. | Only `act` feeds the hunter. | `a_kill_is_eaten_once` |
 
-Gated by snapshot version 29 (`serde_util::before_v29`; older saves read
+Gated by snapshot version 30 (`serde_util::before_v30`; older saves read
 `strike_fixes` = 0, the old strike). Default sweep: 11.63 (old strike
-11.60). `compare --seed 101 --size 96 --adaptive vs --set
+11.60); on the base with the Phase 3 morphology merged, 11.50 (old strike
+11.68, −0.18). `compare --seed 101 --size 96 --adaptive vs --set
 strike_fixes=0`: unresolved at 48 seeds, sequential 95% CI −0.36 … +0.11;
 pack hunters survive 96% against 100% (−4 ± 6%, not significant).
 

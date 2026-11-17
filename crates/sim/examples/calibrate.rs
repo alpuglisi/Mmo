@@ -427,6 +427,9 @@ fn random_morph(rng: &mut impl Rng) -> (MorphDesign, f32) {
         tail_shape: *TailShape::ALL.choose(rng).unwrap(),
         eye_azimuth: rng.gen_range(0.0..=180.0),
         snout_length: rng.gen_range(0.0..=1.0),
+        // Phase 3 loci stay at their defaults here (not yet in the
+        // calibration draws).
+        ..MorphDesign::default()
     };
     (m, tail)
 }

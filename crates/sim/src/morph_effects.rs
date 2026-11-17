@@ -194,6 +194,12 @@ pub struct MorphContext {
     /// Factor on the escape chance of prey lighter than 0.2× this hunter's
     /// mass (snout length).
     pub small_prey_escape: f32,
+    /// Stealth of the coat pattern at a perfect biome match
+    /// (`morph_extra`; 0 for a plain coat or with `Balance::morph_pattern`
+    /// at 0). Detection adds `morph_extra::camouflage` only when above 0.
+    pub camo: f32,
+    /// The coat pattern `camo` belongs to.
+    pub pattern: crate::morph::Pattern,
 }
 
 impl MorphContext {
@@ -208,6 +214,8 @@ impl MorphContext {
             rest_insulation: 0.0,
             fight_back: 0.0,
             small_prey_escape: 1.0,
+            camo: 0.0,
+            pattern: crate::morph::Pattern::Plain,
         }
     }
 }
@@ -529,6 +537,9 @@ impl MorphEffects {
 /// `morph_*` tunable at 0 (the default) it changes nothing.
 pub fn apply(t: &mut Traits, p: &Phenotype, plan: &BodyPlan, bal: &Balance) {
     apply_plan(t, p, plan, Knobs::of(bal));
+    // The Phase 3 loci (horns, wing shape, pattern), behind their own
+    // tunables.
+    crate::morph_extra::apply(t, p, plan, bal);
 }
 
 /// [`apply`] at explicit knob strengths (tests and readouts).

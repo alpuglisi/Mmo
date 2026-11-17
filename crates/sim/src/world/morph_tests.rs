@@ -21,6 +21,10 @@ const BUG: MorphDesign = MorphDesign {
     leg_count: 6,
     tail_shape: TailShape::Fin,
     snout_length: 0.5,
+    horn_size: 0.0,
+    horn_form: crate::morph::HornForm::Curved,
+    wing_aspect: 0.5,
+    pattern: crate::morph::Pattern::Plain,
 };
 
 /// A world with one designed lineage (voles with a tail and some swimming,

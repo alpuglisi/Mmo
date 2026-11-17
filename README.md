@@ -6074,15 +6074,16 @@ Two old flaws in the strike, found in the predator review
   (`attack`) and another in its turn (`act`). Now it eats once, in its
   turn.
 
-The standard sweep from seed 31 scores 11.63 (11.60 with the old strike).
+The standard sweep from seed 31 scores 11.63 (11.60 with the old strike);
+after the Phase 3 morphology merge, 11.50 against 11.68 (−0.18).
 `compare --seed 101 --size 96 --adaptive vs --set strike_fixes=0`:
 unresolved at the 48-seed cap, sequential 95% CI −0.36 … +0.11 (contains
 0, wider than ±0.3); pack hunters survive 96% against 100% (−4 ± 6%), the
 fox 96% against 98%, no other lineage moves outside its CI except the
-burrowing omnivores (+9 ± 8 alive). Snapshots move to format version 29
-(28 is another branch's step; to be renumbered at merge): versions 10–28
-read `strike_fixes` as 0, the old strike (`serde_util::before_v29`, test
-`version_27_snapshots_restore_with_the_old_strike`).
+burrowing omnivores (+9 ± 8 alive). Snapshots move to format version 30
+(28 is reserved for the food rules): versions 10–29 read `strike_fixes`
+as 0, the old strike (`serde_util::before_v30`, test
+`version_29_snapshots_restore_with_the_old_strike`).
 
 ## Genetics validation
 
