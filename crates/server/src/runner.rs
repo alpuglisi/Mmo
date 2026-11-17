@@ -26,7 +26,7 @@
 //!    saves once more, waits for the saver to encode that last save and
 //!    stops the thread.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -171,6 +171,9 @@ pub struct Runner {
     cfg: RunnerConfig,
     rx: Receiver<Request>,
     conns: BTreeMap<ConnId, (PlayerId, PushSender)>,
+    /// Each player's connections, ascending (the same as `conns`, by
+    /// player: a message to a player doesn't scan every connection).
+    by_player: HashMap<PlayerId, Vec<ConnId>>,
     queued: Vec<Request>,
     published: watch::Sender<Arc<Published>>,
     persist: mpsc::UnboundedSender<PersistEvent>,
@@ -216,6 +219,7 @@ impl Runner {
             cfg,
             rx,
             conns: BTreeMap::new(),
+            by_player: HashMap::new(),
             queued: Vec::new(),
             published,
             persist,
@@ -336,8 +340,16 @@ impl Runner {
         let started = Instant::now();
         let queued = std::mem::take(&mut self.queued);
         let n = queued.len();
+        let mut costs: Vec<(&'static str, f64)> = Vec::with_capacity(n);
         for req in queued {
+            let name = match &req {
+                Request::Command { msg, .. } => msg.name(),
+                Request::Found { .. } => "found",
+                _ => "other",
+            };
+            let t = Instant::now();
             self.apply(req);
+            costs.push((name, ms_since(t)));
         }
         // A command can change the standings (a stud fee): publish them now
         // rather than at the end of the next tick.
@@ -345,6 +357,11 @@ impl Runner {
         self.push_season();
         let mut m = self.metrics.lock().unwrap();
         m.apply.push(ms_since(started));
+        for (name, ms) in costs {
+            let e = m.apply_by_command.entry(name).or_default();
+            e.0 += 1;
+            e.1 += ms;
+        }
         m.applied += n as u64;
         m.max_queued = m.max_queued.max(n);
     }
@@ -371,15 +388,17 @@ impl Runner {
             let started = Instant::now();
             self.last_state = started;
             let states = self.game.states();
+            let built = ms_since(started);
             self.dispatch(states);
-            ms_since(started)
+            (ms_since(started), built)
         });
         {
             let mut m = self.metrics.lock().unwrap();
             m.tick.push(tick_ms);
             m.ticks += 1;
-            if let Some(ms) = states_ms {
+            if let Some((ms, built)) = states_ms {
                 m.states.push(ms);
+                m.states_build.push(built);
                 m.state_pushes += 1;
             }
             m.conns = self.conns.len();
@@ -419,12 +438,12 @@ impl Runner {
     fn receive(&mut self, req: Request) {
         match req {
             Request::Connect { conn, player, name, tx } => {
-                self.conns.insert(conn, (player, tx));
+                self.add_conn(conn, player, tx);
                 let out = self.game.connect(conn, player, &name);
                 self.dispatch(out);
             }
             Request::Disconnect { conn } => {
-                self.conns.remove(&conn);
+                self.remove_conn(conn);
                 self.season_watchers.remove(&conn);
                 self.game.disconnect(conn);
             }
@@ -484,12 +503,34 @@ impl Runner {
         }
     }
 
+    fn add_conn(&mut self, conn: ConnId, player: PlayerId, tx: PushSender) {
+        if let Some((old, _)) = self.conns.insert(conn, (player, tx)) {
+            self.unlist(conn, old);
+        }
+        let list = self.by_player.entry(player).or_default();
+        if let Err(at) = list.binary_search(&conn) {
+            list.insert(at, conn);
+        }
+    }
+
+    fn remove_conn(&mut self, conn: ConnId) {
+        if let Some((player, _)) = self.conns.remove(&conn) {
+            self.unlist(conn, player);
+        }
+    }
+
+    fn unlist(&mut self, conn: ConnId, player: PlayerId) {
+        if let Some(list) = self.by_player.get_mut(&player) {
+            list.retain(|&c| c != conn);
+            if list.is_empty() {
+                self.by_player.remove(&player);
+            }
+        }
+    }
+
     /// Distinct players with a connection open to this world.
     fn players_online(&self) -> usize {
-        let mut players: Vec<PlayerId> = self.conns.values().map(|(p, _)| *p).collect();
-        players.sort_unstable();
-        players.dedup();
-        players.len()
+        self.by_player.len()
     }
 
     /// Pass the game's push notices on to the push service without waiting
@@ -499,7 +540,7 @@ impl Runner {
         let notices = self.game.take_notices();
         let Some(n) = &self.notifier else { return };
         for x in notices {
-            if !self.conns.values().any(|(p, _)| *p == x.player) {
+            if !self.by_player.contains_key(&x.player) {
                 n.notify(x.player, x.kind, x.text, x.organism);
             }
         }
@@ -507,17 +548,25 @@ impl Runner {
 
     fn dispatch(&mut self, out: Outbox) {
         self.forward_notices();
+        let (mut skipped, mut dropped) = (0, 0);
         for (target, msg) in out {
-            let conns: Vec<ConnId> = match target {
-                Target::Conn(c) => vec![c],
-                Target::Player(p) => self.conns.iter().filter(|(_, (q, _))| *q == p).map(|(&c, _)| c).collect(),
+            let (one, many);
+            let conns: &[ConnId] = match target {
+                Target::Conn(c) => {
+                    one = [c];
+                    &one
+                }
+                Target::Player(p) => {
+                    many = self.by_player.get(&p).cloned().unwrap_or_default();
+                    &many
+                }
             };
             // Each connection but the last gets a copy; the last takes the
             // message itself (a state, sent to one connection, is never
             // copied).
             let mut msg = Some(msg);
             let last = conns.len().saturating_sub(1);
-            for (k, c) in conns.into_iter().enumerate() {
+            for (k, &c) in conns.iter().enumerate() {
                 let Some((_, tx)) = self.conns.get(&c) else { continue };
                 let m = if k == last { msg.take() } else { msg.clone() };
                 let Some(m) = m else { break };
@@ -525,7 +574,7 @@ impl Runner {
                     Ok(Pushed::Queued) => continue,
                     // A state not sent yet was replaced by this newer one.
                     Ok(Pushed::Replaced) => {
-                        self.metrics.lock().unwrap().skipped_states += 1;
+                        skipped += 1;
                         continue;
                     }
                     // States coalesce (`crate::push`), so a full queue is a
@@ -533,14 +582,19 @@ impl Runner {
                     // (or a closed one), which closes its socket.
                     Err(PushError::Full) => {
                         tracing::warn!("connection {c} is too far behind on replies and events; dropping it");
-                        self.metrics.lock().unwrap().dropped_conns += 1;
+                        dropped += 1;
                     }
                     Err(PushError::Closed) => {}
                 }
-                self.conns.remove(&c);
+                self.remove_conn(c);
                 self.season_watchers.remove(&c);
                 self.game.disconnect(c);
             }
+        }
+        if skipped + dropped > 0 {
+            let mut m = self.metrics.lock().unwrap();
+            m.skipped_states += skipped;
+            m.dropped_conns += dropped;
         }
     }
 

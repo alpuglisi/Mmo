@@ -29,6 +29,7 @@
 //   a crowded wide view.
 
 import type { Appearance, EarShape, NearbyOrganism, OwnOrganism, SizeBucket, TailLook } from '../protocol';
+import { HORN_FORMS, PATTERNS, type CoatPattern, type HornForm } from '../morphology';
 
 export type Point = [number, number];
 
@@ -52,6 +53,12 @@ export interface Morph {
   tailSize: SizeBucket;
   snout: SizeBucket;
   fangs: SizeBucket;
+  /** Horns: 0 none, 1 small, 2 large (`look.horns`). */
+  horns: SizeBucket;
+  hornForm: HornForm;
+  /** Wing shape: 0 broad, 1 default, 2 narrow (`look.wing_aspect`). */
+  wingSet: SizeBucket;
+  pattern: CoatPattern;
 }
 
 export const EAR_SHAPES: readonly EarShape[] = ['round', 'pointed', 'long', 'fan'];
@@ -118,6 +125,10 @@ export function morphOf(l: Appearance): Morph {
     tailSize: bucket(l.tail_size, 1),
     snout: bucket(l.snout, 1),
     fangs: bucket(l.fangs, l.diet === 'carnivore' ? 1 : 0),
+    horns: bucket(l.horns, 0),
+    hornForm: HORN_FORMS.includes(l.horn_form as HornForm) ? (l.horn_form as HornForm) : 'curved',
+    wingSet: bucket(l.wing_aspect, 1),
+    pattern: PATTERNS.includes(l.pattern as CoatPattern) ? (l.pattern as CoatPattern) : 'plain',
   };
 }
 
@@ -140,6 +151,8 @@ export function visibleMorph(l: Appearance, far = false): Morph {
   if (m.tail === 'none') m.tailSize = 1;
   // A single eye sits on the midline wherever the pairs would go.
   if (m.eyes === 1) m.eyeSet = 1;
+  if (m.horns === 0) m.hornForm = 'curved';
+  if (l.locomotion !== 'fly' && l.locomotion !== 'glide') m.wingSet = 1;
   return m;
 }
 
@@ -163,7 +176,11 @@ export function creatureKey(s: CreatureSpec): string {
   const cover = l.cover === 'scales' ? 'c' : l.cover[0];
   const m = visibleMorph(l, s.far);
   return `${l.size}${l.diet[0]}${l.warm ? 'w' : 'c'}${l.locomotion[0]}${cover}${l.coloring[0]}${s.juvenile ? 'j' : 'a'}`
-    + `-${m.eyes}${m.eyeSize}${EYE_SET_CODE[m.eyeSet]}${m.ears}${m.earShape[0]}${m.earSize}${m.legs}${TAIL_CODE[m.tail]}${m.tailSize}${m.snout}${m.fangs}`;
+    + `-${m.eyes}${m.eyeSize}${EYE_SET_CODE[m.eyeSet]}${m.ears}${m.earShape[0]}${m.earSize}${m.legs}${TAIL_CODE[m.tail]}${m.tailSize}${m.snout}${m.fangs}`
+    // Phase 3 features, only when not the default (default keys are unchanged).
+    + (m.horns > 0 ? `h${m.horns}${m.hornForm[0]}` : '')
+    + (m.wingSet !== 1 ? `w${m.wingSet}` : '')
+    + (m.pattern !== 'plain' ? `p${m.pattern[0]}` : '');
 }
 
 /** Marker scale for a zoom (pixels per tile): 1 at the default zoom, bigger zoomed in, smaller zoomed out. */

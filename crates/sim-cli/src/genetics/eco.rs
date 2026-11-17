@@ -54,55 +54,71 @@ pub struct EcoOpts {
 }
 
 /// One lineage at one sample.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Row {
     pub world: u64,
     pub day: u64,
     pub lineage: usize,
     pub name: String,
     pub alive: usize,
+    #[serde(with = "crate::jobs::nan")]
     pub gen_mean: f64,
     pub gen_max: u32,
     /// Mean unbiased infinite-alleles heterozygosity over the distance genes.
+    #[serde(with = "crate::jobs::nan")]
     pub h_genes: f64,
     /// The same over this lineage's neutral loci (seasonal genes it does
     /// not express).
+    #[serde(with = "crate::jobs::nan")]
     pub h_neutral: f64,
     /// Mean within-lineage allele variance over the distance genes / the
     /// neutral loci.
+    #[serde(with = "crate::jobs::nan")]
     pub v_genes: f64,
+    #[serde(with = "crate::jobs::nan")]
     pub v_neutral: f64,
     /// Mean |lineage mean − founders' mean| of expressed values over the
     /// distance genes / neutral loci.
+    #[serde(with = "crate::jobs::nan")]
     pub drift_genes: f64,
+    #[serde(with = "crate::jobs::nan")]
     pub drift_neutral: f64,
     /// Mean genetic distance (Genome::distance) between random members.
+    #[serde(with = "crate::jobs::nan")]
     pub within: f64,
     /// Net divergence between the west and east halves: mean between-half
     /// distance − mean within-half distance; and mean fertility between.
+    #[serde(with = "crate::jobs::nan")]
     pub ew_net: f64,
+    #[serde(with = "crate::jobs::nan")]
     pub ew_fertility: f64,
     /// Non-default discrete morphology alleles per allele, and members
     /// expressing any non-default discrete value.
+    #[serde(with = "crate::jobs::nan")]
     pub morph_alleles: f64,
+    #[serde(with = "crate::jobs::nan")]
     pub morph_expressed: f64,
+    #[serde(with = "crate::jobs::nan")]
     pub harmful_per_org: f64,
+    #[serde(with = "crate::jobs::nan")]
     pub affected: f64,
 }
 
 /// A pair of lineages that could hybridize at founding.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct PairRow {
     pub world: u64,
     pub a: usize,
     pub b: usize,
+    #[serde(with = "crate::jobs::nan")]
     pub distance: f64,
+    #[serde(with = "crate::jobs::nan")]
     pub fertility: f64,
     /// Hybrid offspring born so far (either way round).
     pub hybrids: u64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Births {
     /// Per segment (genes, obedience, load, morph discrete, morph continuous):
     /// alleles examined and mutations seen.
@@ -115,13 +131,17 @@ struct Births {
     identical_backgrounds: u64,
 }
 
-struct WorldResult {
+/// One world's samples and counts (a [`crate::jobs`] result).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct WorldResult {
     rows: Vec<Row>,
     pairs: Vec<PairRow>,
     births: Births,
     invalid_sampled: u64,
     names: Vec<String>,
+    #[serde(with = "crate::jobs::nan_vec")]
     founders_h: Vec<f64>,
+    #[serde(with = "crate::jobs::nan")]
     seconds: f64,
 }
 
@@ -236,7 +256,7 @@ fn count_birth(c: &Genome, owner: PlayerId, m: &Genome, f: &Genome, b: &mut Birt
     b.invalid += invalid_morph(c);
 }
 
-fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
+pub fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
     let started = std::time::Instant::now();
     let seed = opts.seed + world;
     let balance = if opts.meat { Balance::default().carnivore_diet() } else { Balance::default() };
@@ -464,8 +484,14 @@ fn h_eq(ne: f64, mu: f64) -> f64 {
     t / (1.0 + t)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn run(opts: &EcoOpts, log: bool) -> EcoResults {
     let worlds: Vec<WorldResult> = (0..opts.seeds).into_par_iter().map(|k| run_world(opts, k, log)).collect();
+    summarize(opts, worlds)
+}
+
+/// The checks, sections and CSV of the worlds `0..opts.seeds`, in order.
+pub fn summarize(opts: &EcoOpts, worlds: Vec<WorldResult>) -> EcoResults {
     let mut checks = Vec::new();
     let mut sections = Vec::new();
     let mu = WorldConfig::default().mutation.rate as f64;

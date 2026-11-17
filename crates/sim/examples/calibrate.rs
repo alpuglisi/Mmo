@@ -44,6 +44,12 @@
 //! into TO, for a paired test of one free shape against another), `--deaths` (print each
 //! player lineage's deaths by cause to stderr: `deaths,seed,slot,cause=n,...`).
 //!
+//! Worlds run in parallel on every core (`--threads N` to limit). Across
+//! machines: `--shard i/n` on machine i of n runs every n-th world and
+//! writes `calibrate-shard-i-of-n.json` (or `--shard-out FILE`); `calibrate
+//! --merge FILES..` then prints exactly the unsharded run's rows (and its
+//! `--deaths` lines on stderr).
+//!
 //! Columns: `mode,seed,world,slot,template,option,delta,points,share_final,
 //! share_mean,alive,adults,design`. `share_final` is the mean legacy share
 //! over the last 10 days, `share_mean` over every day after day 10.
@@ -58,6 +64,9 @@ use evo_sim::rng::rng_for;
 use evo_sim::{presets, Balance, BirthType, FounderDesign, Gene, PlayerId, Thermo, World, WorldConfig};
 use rand::seq::SliceRandom;
 use rand::Rng;
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 struct Opts {
     seeds: u64,
@@ -73,6 +82,14 @@ struct Opts {
     deaths: bool,
     morph: bool,
     swap_tail: Option<(TailShape, TailShape)>,
+    threads: Option<usize>,
+    /// `--shard i/n`: (i - 1, n).
+    shard: Option<(usize, usize)>,
+    shard_out: Option<String>,
+    /// The command line without the sharding flags (for the results file).
+    argv: Vec<String>,
+    /// `--merge`: every world's output, from the shards' files.
+    merged: Option<BTreeMap<String, Out>>,
 }
 
 fn parse(args: &[String]) -> Opts {
@@ -90,6 +107,11 @@ fn parse(args: &[String]) -> Opts {
         deaths: false,
         morph: false,
         swap_tail: None,
+        threads: None,
+        shard: None,
+        shard_out: None,
+        argv: Vec::new(),
+        merged: None,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -105,6 +127,8 @@ fn parse(args: &[String]) -> Opts {
             "--world0" => o.world0 = v().parse().unwrap(),
             "--only" => o.only = Some(v().split(',').map(str::to_string).collect()),
             "--deaths" => o.deaths = true,
+            "--threads" => o.threads = Some(v().parse().unwrap()),
+
             "--morph" => o.morph = true,
             "--swap-tail" => {
                 let s = v();
@@ -150,7 +174,11 @@ fn describe(d: &FounderDesign) -> String {
 
 /// Run a world with the given player designs and return each player's
 /// `(share_final, share_mean, alive, adults)`.
-fn run(seed: u64, o: &Opts, designs: &[FounderDesign]) -> Vec<(f64, f64, usize, usize)> {
+/// Per design: final and mean legacy share, alive, adults.
+type Shares = Vec<(f64, f64, usize, usize)>;
+
+/// One world's per-design results and (`--deaths`) its deaths lines.
+fn run(seed: u64, o: &Opts, designs: &[FounderDesign]) -> (Shares, Vec<String>) {
     let config = WorldConfig { seed, width: o.size, height: o.size, balance: o.balance, ..Default::default() };
     let mut world: World = presets::wild_world(config, 1);
     let first = world.lineages.len();
@@ -165,6 +193,7 @@ fn run(seed: u64, o: &Opts, designs: &[FounderDesign]) -> Vec<(f64, f64, usize, 
             legacy.push(l.clone());
         }
     }
+    let mut deaths = Vec::new();
     if o.deaths {
         for k in 0..designs.len() {
             let mut line = format!("deaths,{seed},{k}");
@@ -185,12 +214,12 @@ fn run(seed: u64, o: &Opts, designs: &[FounderDesign]) -> Vec<(f64, f64, usize, 
                 e.overheated,
                 e.raided
             ));
-            eprintln!("{line}");
+            deaths.push(line);
         }
     }
     let counts = world.lineage_counts();
     let tail = legacy.len().saturating_sub(10);
-    (0..designs.len())
+    let rows = (0..designs.len())
         .map(|k| {
             let p = k as PlayerId + 1;
             let mean = |from: usize| {
@@ -200,7 +229,76 @@ fn run(seed: u64, o: &Opts, designs: &[FounderDesign]) -> Vec<(f64, f64, usize, 
             let c = counts[first + k];
             (mean(tail), mean(10), c.alive, c.adults)
         })
-        .collect()
+        .collect();
+    (rows, deaths)
+}
+
+/// One world's output: its CSV rows and `--deaths` lines.
+#[derive(Clone, Serialize, Deserialize)]
+struct Out {
+    rows: Vec<String>,
+    deaths: Vec<String>,
+}
+
+/// A shard's results file (the format of `evo-sim`'s partial results).
+#[derive(Serialize, Deserialize)]
+struct Partial {
+    format: String,
+    version: u32,
+    /// The command line without the sharding flags, `calibrate` first.
+    argv: Vec<String>,
+    shard: Option<String>,
+    complete: bool,
+    /// World key → its output.
+    results: BTreeMap<String, Out>,
+}
+
+/// Runs the worlds `keys` names (`work(j)` runs world j) in parallel, or
+/// under `--shard` this machine's share of them, or with `--merge` takes
+/// them from the shards' files; prints the rows in world order, or writes
+/// the shard's results file.
+fn emit(o: &Opts, keys: Vec<String>, work: impl Fn(usize) -> Out + Sync) {
+    if let Some(merged) = &o.merged {
+        let missing: Vec<&String> = keys.iter().filter(|k| !merged.contains_key(*k)).collect();
+        assert!(missing.is_empty(), "no results for {missing:?}: merge every shard's file");
+        for k in &keys {
+            print_out(&merged[k]);
+        }
+        return;
+    }
+    let mine: Vec<usize> = (0..keys.len()).filter(|j| o.shard.is_none_or(|(i, n)| j % n == i)).collect();
+    let outs: Vec<Out> = mine.par_iter().map(|&j| work(j)).collect();
+    match o.shard {
+        None => outs.iter().for_each(print_out),
+        Some((i, n)) => {
+            let path = o.shard_out.clone().unwrap_or_else(|| format!("calibrate-shard-{}-of-{n}.json", i + 1));
+            let p = Partial {
+                format: "evo-sim-partial".into(),
+                version: 1,
+                argv: o.argv.clone(),
+                shard: Some(format!("{}/{n}", i + 1)),
+                complete: true,
+                results: mine.iter().map(|&j| keys[j].clone()).zip(outs).collect(),
+            };
+            std::fs::write(&path, serde_json::to_string(&p).expect("serializable")).expect("write the results file");
+            eprintln!(
+                "shard {}/{n}: {} of {} worlds written to {path}; when every shard is done: \
+                 cargo run --release --example calibrate -- --merge <every shard's file>",
+                i + 1,
+                mine.len(),
+                keys.len()
+            );
+        }
+    }
+}
+
+fn print_out(out: &Out) {
+    for d in &out.deaths {
+        eprintln!("{d}");
+    }
+    for r in &out.rows {
+        println!("{r}");
+    }
 }
 
 #[derive(Clone)]
@@ -369,22 +467,28 @@ fn marginal(o: &Opts) {
         variants.retain(|v| only.contains(&v.name()));
     }
     let n = variants.len();
-    for s in 0..o.seeds {
+    let worlds: Vec<(u64, usize)> = (0..o.seeds).flat_map(|s| (0..n).map(move |w| (s, w))).collect();
+    let keys = worlds.iter().map(|&(s, w)| format!("marginal seed={} world={w}", o.seed0 + s)).collect();
+    emit(o, keys, |j| {
+        let (s, w) = worlds[j];
         let seed = o.seed0 + s;
-        for w in 0..n {
-            let picks: Vec<(FounderDesign, String, f32)> = templates
-                .iter()
-                .enumerate()
-                .map(|(t, d)| {
-                    let v = &variants[(w + t * (n / 4 + 1) + s as usize * 3) % n];
-                    let (design, delta) = v.apply(d, o);
-                    (design, v.name(), delta)
-                })
-                .collect();
-            let designs: Vec<FounderDesign> = picks.iter().map(|p| p.0.clone()).collect();
-            let out = run(seed, o, &designs);
-            for (t, ((design, name, delta), r)) in picks.iter().zip(out).enumerate() {
-                println!(
+        let picks: Vec<(FounderDesign, String, f32)> = templates
+            .iter()
+            .enumerate()
+            .map(|(t, d)| {
+                let v = &variants[(w + t * (n / 4 + 1) + s as usize * 3) % n];
+                let (design, delta) = v.apply(d, o);
+                (design, v.name(), delta)
+            })
+            .collect();
+        let designs: Vec<FounderDesign> = picks.iter().map(|p| p.0.clone()).collect();
+        let (out, deaths) = run(seed, o, &designs);
+        let rows = picks
+            .iter()
+            .zip(out)
+            .enumerate()
+            .map(|(t, ((design, name, delta), r))| {
+                format!(
                     "marginal,{seed},{w},{t},{},{name},{delta:.3},{:.1},{:.5},{:.5},{},{},{}",
                     templates[t].name,
                     design.point_cost(),
@@ -393,10 +497,11 @@ fn marginal(o: &Opts) {
                     r.2,
                     r.3,
                     describe(design)
-                );
-            }
-        }
-    }
+                )
+            })
+            .collect();
+        Out { rows, deaths }
+    });
 }
 
 /// A random body plan (`tournament --morph`): each count is the default
@@ -427,6 +532,9 @@ fn random_morph(rng: &mut impl Rng) -> (MorphDesign, f32) {
         tail_shape: *TailShape::ALL.choose(rng).unwrap(),
         eye_azimuth: rng.gen_range(0.0..=180.0),
         snout_length: rng.gen_range(0.0..=1.0),
+        // Phase 3 loci stay at their defaults here (not yet in the
+        // calibration draws).
+        ..MorphDesign::default()
     };
     (m, tail)
 }
@@ -490,7 +598,10 @@ fn random_design(rng: &mut impl Rng, name: String, morph: MorphDesign, tail: f32
 }
 
 fn tournament(o: &Opts) {
-    for w in o.world0..o.world0 + o.worlds {
+    let worlds: Vec<u64> = (o.world0..o.world0 + o.worlds).collect();
+    let keys = worlds.iter().map(|&w| format!("tournament seed={} world={w}", o.seed0 + w)).collect();
+    emit(o, keys, |j| {
+        let w = worlds[j];
         let seed = o.seed0 + w;
         let mut rng = rng_for(seed, 0xca1, w, 0);
         let designs: Vec<FounderDesign> = (0..4)
@@ -506,20 +617,26 @@ fn tournament(o: &Opts) {
                 d
             })
             .collect();
-        let out = run(seed, o, &designs);
-        for (k, (d, r)) in designs.iter().zip(out).enumerate() {
-            println!(
-                "tournament,{seed},{w},{k},{},random,0,{:.1},{:.5},{:.5},{},{},{}",
-                d.name,
-                d.point_cost(),
-                r.0,
-                r.1,
-                r.2,
-                r.3,
-                describe(d)
-            );
-        }
-    }
+        let (out, deaths) = run(seed, o, &designs);
+        let rows = designs
+            .iter()
+            .zip(out)
+            .enumerate()
+            .map(|(k, (d, r))| {
+                format!(
+                    "tournament,{seed},{w},{k},{},random,0,{:.1},{:.5},{:.5},{},{},{}",
+                    d.name,
+                    d.point_cost(),
+                    r.0,
+                    r.1,
+                    r.2,
+                    r.3,
+                    describe(d)
+                )
+            })
+            .collect();
+        Out { rows, deaths }
+    });
 }
 
 fn costs() {
@@ -535,17 +652,69 @@ fn costs() {
 }
 
 fn main() {
-    rayon::ThreadPoolBuilder::new().num_threads(1).build_global().unwrap();
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some(mode) = args.first() else {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("--merge") {
+        merge(&raw[1..]);
+        return;
+    }
+    // The sharding flags are not part of the command line a results file records.
+    let (mut shard, mut shard_out, mut args) = (None, None, Vec::new());
+    let mut it = raw.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--shard" => {
+                let s = it.next().expect("--shard i/n");
+                let (i, n) = s.split_once('/').unwrap_or_else(|| panic!("--shard expects i/n, got {s}"));
+                let (i, n): (usize, usize) = (i.parse().unwrap(), n.parse().unwrap());
+                assert!(n > 0 && (1..=n).contains(&i), "--shard i/n needs 1 <= i <= n");
+                shard = Some((i - 1, n));
+            }
+            "--shard-out" => shard_out = Some(it.next().expect("--shard-out FILE")),
+            _ => args.push(a),
+        }
+    }
+    let Some(mode) = args.first().cloned() else {
         eprintln!("usage: calibrate marginal|tournament|costs [options]");
         return;
     };
-    let o = parse(&args[1..]);
-    match mode.as_str() {
-        "marginal" => marginal(&o),
-        "tournament" => tournament(&o),
+    let mut o = parse(&args[1..]);
+    o.argv = std::iter::once("calibrate".to_string()).chain(args).collect();
+    (o.shard, o.shard_out) = (shard, shard_out);
+    if let Some(n) = o.threads {
+        rayon::ThreadPoolBuilder::new().num_threads(n).build_global().unwrap();
+    }
+    dispatch(&mode, &o);
+}
+
+fn dispatch(mode: &str, o: &Opts) {
+    match mode {
+        "marginal" => marginal(o),
+        "tournament" => tournament(o),
         "costs" => costs(),
         _ => eprintln!("unknown mode {mode}"),
     }
+}
+
+/// `--merge FILES..`: the unsharded run's output from the shards' files.
+fn merge(files: &[String]) {
+    assert!(!files.is_empty(), "--merge needs the shards' results files");
+    let mut argv: Option<Vec<String>> = None;
+    let mut all = BTreeMap::new();
+    for f in files {
+        let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("could not read {f}: {e}"));
+        let p: Partial = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{f}: not a results file: {e}"));
+        assert!(
+            p.format == "evo-sim-partial" && p.argv.first().map(String::as_str) == Some("calibrate"),
+            "{f}: not a calibrate results file"
+        );
+        match &argv {
+            None => argv = Some(p.argv.clone()),
+            Some(a) => assert!(*a == p.argv, "{f} is from another command line ({:?} vs {a:?})", p.argv),
+        }
+        all.extend(p.results);
+    }
+    let argv = argv.expect("at least one file");
+    let mut o = parse(&argv[2..]);
+    o.merged = Some(all);
+    dispatch(&argv[1], &o);
 }

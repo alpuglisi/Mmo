@@ -203,3 +203,49 @@ export function horn(base: Point, len: number, w: number, pal: CreaturePalette):
     }),
   ];
 }
+
+/** Straight spikes: a tapering cone raked back and up from `base` (Phase 3 `horn_form` straight). */
+export function spikeHorn(base: Point, len: number, w: number, pal: CreaturePalette): Shape[] {
+  const [x, y] = base;
+  const centre: Point[] = [];
+  for (let i = 0; i <= 6; i++) {
+    const t = i / 6;
+    centre.push([x - len * 0.42 * t, y - len * 0.9 * t]);
+  }
+  const widths = centre.map((_, i) => Math.max(0.9, w * 1.8 * (1 - i / 6.4)));
+  const fill = mix(pal.bone, pal.hoof, 0.3);
+  return [
+    { part: 'head', tag: 'horn', kind: 'curve', closed: true, points: limbOutline(centre, widths), fill, stroke: pal.ink, width: 1.2 },
+    ...[1, 3].map((i): Shape => {
+      const [cx, cy] = centre[i];
+      const h = widths[i] * 0.5;
+      return { part: 'head', tag: 'horn', kind: 'line', points: [[cx - h, cy - h * 0.2], [cx + h, cy + h * 0.2]], stroke: mix(fill, pal.ink, 0.45), width: 0.9, alpha: 0.8 };
+    }),
+  ];
+}
+
+/** A branched rack (antlers): a beam sweeping back and up with tines forward (Phase 3 `horn_form` branched). */
+export function antler(base: Point, len: number, w: number, pal: CreaturePalette, lod: 'portrait' | 'sprite' = 'portrait'): Shape[] {
+  const [x, y] = base;
+  const beam: Point[] = [];
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8;
+    beam.push([x - len * (0.5 * t - 0.15 * t * t), y - len * (0.35 * t + 0.6 * t * t)]);
+  }
+  const fill = mix(pal.bone, pal.hoof, 0.38);
+  const bw = Math.max(1.4, w * 1.3);
+  const out: Shape[] = [
+    { part: 'head', tag: 'horn', kind: 'curve', closed: true, points: limbOutline(beam, beam.map((_, i) => Math.max(0.9, bw * (1 - i / 11)))), fill, stroke: pal.ink, width: 1.2 },
+  ];
+  // Tines off the beam, forward and up; fewer at sprite size, so they read.
+  const at = lod === 'sprite' ? [3, 6] : [2, 4, 6];
+  for (const i of at) {
+    const [bx, by] = beam[i];
+    const tl = len * (0.28 + 0.06 * (i % 3));
+    const tip: Point = [bx + tl * 0.55, by - tl * 0.85];
+    const mid: Point = [bx + tl * 0.18, by - tl * 0.5];
+    const tw = Math.max(0.8, bw * 0.75 * (1 - i / 12));
+    out.push({ part: 'head', tag: 'horn', kind: 'curve', closed: true, points: limbOutline([[bx, by], mid, tip], [tw, tw * 0.75, 0.6]), fill, stroke: pal.ink, width: 1.1 });
+  }
+  return out;
+}

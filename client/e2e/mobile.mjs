@@ -416,8 +416,10 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   await page.evaluate((id) => window.evo.socket.send({ type: 'release', organism: id }), lp);
 
   // One-finger drag pans (and stops following); a pinch zooms.
-  // From the middle of the map, so the camera clamp at the edges can't eat the pan.
-  await page.evaluate(() => { const v = window.evo.screen().view; v.setFollow(false); v.cam.zoom = 8; v.centerOn(32, 32); });
+  // From the middle of the map, zoomed in enough that the map overflows the
+  // screen both ways: the camera keeps the map filling the screen, so a map
+  // smaller than the screen along an axis can't pan along it.
+  await page.evaluate(() => { const v = window.evo.screen().view; v.setFollow(false); v.cam.zoom = 16; v.centerOn(32, 32); });
   await page.waitForTimeout(100);
   const before = await page.evaluate(() => ({ ...window.evo.screen().view.cam }));
   const mid = { x: canvas.width / 2, y: canvas.height / 2 };
@@ -596,7 +598,7 @@ async function desktopChecks(browser, base, errors) {
   await page.evaluate(() => window.__scales.destroy({ children: true }));
 
   // A taller window, so every gallery row clears the map legend.
-  await page.setViewportSize({ width: 1280, height: 1040 });
+  await page.setViewportSize({ width: 1280, height: 1240 });
   await page.waitForTimeout(300);
   // Morphology variants (legs, ears, eyes and their placement, tails, snouts and fangs, and a few
   // combinations), labelled, with the time to generate each texture.
@@ -640,6 +642,15 @@ async function desktopChecks(browser, base, errors) {
       ['snout', [
         ['short', { snout: 0 }], ['long', { snout: 2 }], ['omni long', { diet: 'omnivore', snout: 2 }], ['carn, no fangs', { diet: 'carnivore', fangs: 0, snout: 0 }],
         ['carn fangs L', { diet: 'carnivore', fangs: 2, snout: 2 }], ['herb tusks', { fangs: 2 }], ['far detail', { diet: 'carnivore', fangs: 2, snout: 2, legs: 8, far: true }],
+      ]],
+      // Phase 3 morphology: horns (look.horns, horn_form), coat patterns and wing shape.
+      ['horns', [
+        ['curved S', { horns: 1 }], ['curved L', { horns: 2 }], ['straight', { horns: 2, horn_form: 'straight' }], ['antlers', { horns: 2, horn_form: 'branched' }],
+        ['antlers S', { horns: 1, horn_form: 'branched', size: 2 }], ['carn spikes', { diet: 'carnivore', horns: 2, horn_form: 'straight' }], ['cold curved', { ...cold, horns: 2 }],
+      ]],
+      ['coat, wings', [
+        ['spots', { pattern: 'spots' }], ['stripes', { pattern: 'stripes' }], ['mottled', { pattern: 'mottled' }], ['fur stripes', { cover: 'fur', pattern: 'stripes', horns: 2, horn_form: 'branched' }],
+        ['broad wings', { locomotion: 'fly', cover: 'skin', wing_aspect: 0 }], ['wings', { locomotion: 'fly', cover: 'skin' }], ['narrow wings', { locomotion: 'fly', cover: 'skin', wing_aspect: 2 }],
       ]],
       ['mixes', [
         ['spider', { ...cold, cover: 'skin', diet: 'carnivore', legs: 8, eyes: 6, tail: 'none', size: 0, coloring: 'warning' }],
@@ -699,7 +710,9 @@ async function desktopChecks(browser, base, errors) {
     }
     const burst = v.spriteStats();
     const eyeRow = rows.findIndex((r) => r[0] === 'eyes');
+    const hornRow = rows.findIndex((r) => r[0] === 'horns');
     return {
+      phase3: { y: top + hornRow * cell, x: x0 + left, w: cell * 7, h: cell * 2 + 16, canvasLeft: canvas.left, canvasTop: canvas.top, canvasW: canvas.width },
       eyes: { y: top + eyeRow * cell, x: x0 + left, w: cell * 4, h: cell * 3 + 16, canvasLeft: canvas.left, canvasTop: canvas.top, canvasW: canvas.width },
       shown: rows.reduce((n, r) => n + r[1].length, 0), made: after.made - before.made, ms,
       burstMade: burst.made - made0, burstMs: performance.now() - t1, maxMakeMs: burst.maxMakeMs, textures: burst.textures, evicted: burst.evicted, bytes: burst.bytes,
@@ -718,6 +731,15 @@ async function desktopChecks(browser, base, errors) {
   }, morph.eyes);
   await page.waitForTimeout(200);
   await shot(page, 'desktop-morphology-eyes.png', eyesClip);
+  // The Phase 3 rows (horns; coat patterns and wing shape) close up.
+  const phase3Clip = await page.evaluate((e) => {
+    const k = Math.min(1.6, (e.canvasW - 16) / e.w);
+    window.__morph.scale.set(k);
+    window.__morph.position.set(8 - e.x * k, 8 - e.y * k);
+    return { x: e.canvasLeft, y: e.canvasTop, width: Math.ceil(e.w * k) + 16, height: Math.ceil(e.h * k) + 16 };
+  }, morph.phase3);
+  await page.waitForTimeout(200);
+  await shot(page, 'desktop-morphology-phase3.png', phase3Clip);
   await page.evaluate(() => { window.__morph.destroy({ children: true }); document.getElementById('morph-labels')?.remove(); });
   const per = (ms, n) => (n ? (ms / n).toFixed(2) : '-');
   step(`morphology gallery: ${morph.shown} variants, ${morph.made} new textures, ${per(morph.ms, morph.made)} ms each`);

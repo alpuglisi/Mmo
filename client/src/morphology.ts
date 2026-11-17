@@ -13,6 +13,12 @@ export type EarShape = (typeof EAR_SHAPES)[number];
 export const TAIL_SHAPES = ['thin', 'bushy', 'fin', 'club', 'prehensile'] as const;
 export type TailShape = (typeof TAIL_SHAPES)[number];
 
+export const HORN_FORMS = ['curved', 'straight', 'branched'] as const;
+export type HornForm = (typeof HORN_FORMS)[number];
+
+export const PATTERNS = ['plain', 'spots', 'stripes', 'mottled'] as const;
+export type CoatPattern = (typeof PATTERNS)[number];
+
 export const LEG_COUNTS = [0, 2, 4, 6, 8] as const;
 export type LegCount = (typeof LEG_COUNTS)[number];
 
@@ -42,6 +48,12 @@ export interface Morphology {
   snout_length: number;
   /** 0–1 (the `fangs` gene); no fangs below 0.1. */
   fang_size: number;
+  /** 0–1 (Phase 3); no horns below `HORNS_MIN`. */
+  horn_size: number;
+  horn_form: HornForm;
+  /** 0 broad to 1 narrow (only drawn, and only matters, with wings). */
+  wing_aspect: number;
+  pattern: CoatPattern;
 }
 
 export const EYE_COUNT_MIN = 1;
@@ -57,6 +69,8 @@ export const SNOUT_OCCLUSION = 40;
 export const TAIL_PRESENT_MIN = 0.05;
 /** Below this there are no fangs. */
 export const FANG_MIN = 0.1;
+/** Below this there are no horns (sim `morph::HORNS_SHOW`). */
+export const HORNS_MIN = 0.1;
 /**
  * Today's creature: the new fields at their contract defaults, the shared
  * genes at their design defaults (all 0, so no tail).
@@ -75,6 +89,10 @@ export const DEFAULT_MORPHOLOGY: Readonly<Morphology> = Object.freeze({
   tail_length: 0,
   snout_length: 0.5,
   fang_size: 0,
+  horn_size: 0,
+  horn_form: 'curved',
+  wing_aspect: 0.5,
+  pattern: 'plain',
 } satisfies Morphology);
 
 export function defaultMorphology(): Morphology {
@@ -118,6 +136,10 @@ export function clampMorphology(input: unknown, base: Readonly<Morphology> = DEF
     tail_length: unit(o.tail_length, base.tail_length),
     snout_length: unit(o.snout_length, base.snout_length),
     fang_size: unit(o.fang_size, base.fang_size),
+    horn_size: unit(o.horn_size, base.horn_size),
+    horn_form: oneOf(HORN_FORMS, o.horn_form, base.horn_form),
+    wing_aspect: unit(o.wing_aspect, base.wing_aspect),
+    pattern: oneOf(PATTERNS, o.pattern, base.pattern),
   };
 }
 
@@ -132,6 +154,10 @@ export function eyeFieldWidth(eyeSize: number): number {
 
 export function hasFangs(m: Readonly<Morphology>): boolean {
   return m.fang_size >= FANG_MIN;
+}
+
+export function hasHorns(m: Readonly<Pick<Morphology, 'horn_size'>>): boolean {
+  return m.horn_size >= HORNS_MIN;
 }
 
 /** One placed eye: its signed azimuth and, for a mirrored eye, which pair it belongs to. */

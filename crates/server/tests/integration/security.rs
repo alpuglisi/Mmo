@@ -404,6 +404,25 @@ async fn a_trusted_proxy_is_not_capped_per_address() {
     srv.shutdown().await;
 }
 
+/// A connection that has not sent a byte holds no request: a graceful
+/// shutdown closes it at once instead of waiting out the header timeout
+/// (30 s by default) for it to speak.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_does_not_wait_for_silent_connections() {
+    let srv = server(config()).await;
+    let mut silent = tokio::net::TcpStream::connect(srv.addr).await.unwrap();
+    // Accepted before the shutdown: the server's world summary answers.
+    let (s, _) = req(srv.addr, Method::GET, "/api/world", None, Vec::new()).await;
+    assert_eq!(s, StatusCode::OK);
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(10), srv.shutdown()).await.expect("shutdown waited for a silent client");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    // The server closed the silent connection.
+    let mut buf = [0u8; 16];
+    let n = tokio::time::timeout(Duration::from_secs(5), silent.read(&mut buf)).await.expect("closed").unwrap_or(0);
+    assert_eq!(n, 0);
+}
+
 /// `?map=` names a cached season record: a long one would let a client fill
 /// the cache with huge keys.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

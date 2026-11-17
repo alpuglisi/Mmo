@@ -189,6 +189,10 @@ pub fn rankcheck(args: &RankCheckArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// One world's score at every checkpoint (a [`crate::jobs`] result).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Scores(#[serde(with = "crate::jobs::nan_vec")] Vec<f64>);
+
 fn simulate(args: &RankCheckArgs) -> Data {
     let mut checkpoints: Vec<u32> = args.checkpoints.iter().copied().filter(|&d| d > 0 && d < args.days).collect();
     checkpoints.sort_unstable();
@@ -210,19 +214,34 @@ fn simulate(args: &RankCheckArgs) -> Data {
         (0..args.trials).map(|k| perturb(&args.center, args.spread, args.base_seed, 0, k)).collect();
     let jobs: Vec<(usize, u64)> = (0..args.trials).flat_map(|k| (0..args.seeds).map(move |s| (k, s))).collect();
     // `results[job][checkpoint]` = score at that checkpoint.
-    let results: Vec<Vec<f64>> = jobs
-        .par_iter()
-        .map(|&(k, s)| {
+    let results: Vec<Vec<f64>> = crate::jobs::run(
+        jobs,
+        |&(k, s)| {
+            format!(
+                "rankcheck balance={} seed={} size={} parallel_apply={} niches={} checkpoints={checkpoints:?}",
+                crate::jobs::digest(&balances[k]),
+                args.base_seed + s,
+                args.size,
+                args.parallel_apply,
+                crate::sweep::NICHES.load(std::sync::atomic::Ordering::Relaxed)
+            )
+        },
+        |(k, s)| {
             let mut run = ScoredRun::new(balances[k], args.base_seed + s, args.size, args.parallel_apply, None);
-            checkpoints
-                .iter()
-                .map(|&d| {
-                    run.advance_to(d);
-                    run.metrics(d).score()
-                })
-                .collect()
-        })
-        .collect();
+            Scores(
+                checkpoints
+                    .iter()
+                    .map(|&d| {
+                        run.advance_to(d);
+                        run.metrics(d).score()
+                    })
+                    .collect(),
+            )
+        },
+    )
+    .into_iter()
+    .map(|Scores(v)| v)
+    .collect();
     let seeds = args.seeds as usize;
     let scores: Vec<Vec<Vec<f64>>> = (0..checkpoints.len())
         .map(|c| (0..args.trials).map(|k| (0..seeds).map(|s| results[k * seeds + s][c]).collect()).collect())

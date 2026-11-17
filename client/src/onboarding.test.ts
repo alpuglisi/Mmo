@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FeedEntry, OfferEntry } from './model';
 import {
-  autoStarts, CARD_MARGIN, dueHints, HINT_IDS, HINTS, loadProgress, NEW_PROGRESS, onboardingDisabled, parseProgress, placeCard,
+  autoStarts, CARD_MARGIN, dueHints, HINT_IDS, HINTS, hintsAfterReset, loadProgress, NEW_PROGRESS, onboardingDisabled, parseProgress, placeCard,
   progressKey, saveProgress, tourReduce, tourSteps, type HintInput, type KeyValueStore, type Progress, type TourEvent,
 } from './onboarding';
 import type { OfferView } from './protocol';
@@ -124,6 +124,15 @@ describe('hint triggers', () => {
   });
   const entry = (kind: FeedEntry['kind'], text = 'x'): FeedEntry => ({ kind, text, tick: 1 });
   const input = (over: Partial<HintInput> = {}): HintInput => ({ player: ME, organisms: [], feed: [], offers: [], ...over });
+
+  it('"Show tips again" keeps the tip on screen as seen, so answering it does not bring it back', () => {
+    const feed = [entry('death', 'Founder #4 starved.')];
+    // The death tip is showing when the player resets: it is not due again.
+    expect(dueHints(input({ feed }), hintsAfterReset('death'))).toEqual([]);
+    // With nothing on screen every tip can come again.
+    expect(hintsAfterReset(null)).toEqual([]);
+    expect(dueHints(input({ feed }), hintsAfterReset(null))).toEqual(['death']);
+  });
 
   it('fires nothing for a quiet lineage', () => {
     expect(dueHints(input({ organisms: [{ pregnant: false }], feed: [entry('birth'), entry('daily_summary'), entry('achievement', 'Survivor: your lineage came through a drought.')] }), [])).toEqual([]);

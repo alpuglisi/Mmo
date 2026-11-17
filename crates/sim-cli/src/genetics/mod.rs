@@ -25,7 +25,7 @@ pub mod eco;
 pub mod wf;
 
 /// How a check is judged.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Verdict {
     /// Strict check passed.
     Pass,
@@ -68,7 +68,7 @@ impl Verdict {
 }
 
 /// One row of the report.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Check {
     pub level: &'static str,
     pub group: &'static str,
@@ -80,6 +80,37 @@ pub struct Check {
     pub verdict: Verdict,
     /// Model, replicates, notes.
     pub detail: String,
+}
+
+/// A [`Check`] read back from a results file (`evo-sim merge`).
+#[derive(serde::Deserialize)]
+struct CheckFile {
+    level: String,
+    group: String,
+    name: String,
+    expected: String,
+    observed: String,
+    ci: String,
+    verdict: Verdict,
+    detail: String,
+}
+
+impl<'de> serde::Deserialize<'de> for Check {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Check, D::Error> {
+        let c = <CheckFile as serde::Deserialize>::deserialize(d)?;
+        // A handful of short names, kept for the rest of the process.
+        let keep = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        Ok(Check {
+            level: keep(c.level),
+            group: keep(c.group),
+            name: c.name,
+            expected: c.expected,
+            observed: c.observed,
+            ci: c.ci,
+            verdict: c.verdict,
+            detail: c.detail,
+        })
+    }
 }
 
 /// Number formatting that keeps small and large values readable.
@@ -363,6 +394,19 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
     })
 }
 
+/// A job of `evo-sim genetics`: one genome check group or one ecology world.
+enum Unit {
+    Genome(&'static str),
+    World(u64),
+}
+
+/// A job's result.
+#[derive(serde::Serialize, serde::Deserialize)]
+enum Done {
+    Genome(wf::Results),
+    World(Box<eco::WorldResult>),
+}
+
 /// Entry point of `evo-sim genetics`.
 pub fn main(args: &[String]) -> ExitCode {
     let opts = match parse(args) {
@@ -380,18 +424,49 @@ pub fn main(args: &[String]) -> ExitCode {
     let mut sections = Vec::new();
     let mut timings = Vec::new();
     let started = Instant::now();
+    // One batch of independent jobs (`crate::jobs`): every genome check
+    // group and every ecology world, all in parallel, or split across
+    // machines with `--shard`.
+    let groups = if opts.genome { wf::groups(opts.only.as_deref()) } else { Vec::new() };
+    let worlds = if opts.ecology { opts.eco.seeds } else { 0 };
+    let units: Vec<Unit> = groups.iter().map(|&g| Unit::Genome(g)).chain((0..worlds).map(Unit::World)).collect();
+    let results = crate::jobs::run(
+        units,
+        |u| match u {
+            Unit::Genome(g) => format!("genetics genome group={g} profile={:?} seed={}", opts.profile, opts.seed),
+            Unit::World(k) => format!("genetics ecology world={k} opts={:?}", opts.eco),
+        },
+        |u| {
+            let t = Instant::now();
+            let out = match u {
+                Unit::Genome(g) => Done::Genome(wf::run_group(&opts.profile, opts.seed, g, true)),
+                Unit::World(k) => Done::World(Box::new(eco::run_world(&opts.eco, k, true))),
+            };
+            (out, t.elapsed().as_secs_f64())
+        },
+    );
+    let mut eco_worlds = Vec::new();
+    let (mut genome_s, mut eco_s) = (0.0, 0.0f64);
+    for (r, seconds) in results {
+        match r {
+            Done::Genome(r) => {
+                genome_s += seconds;
+                checks.extend(r.checks);
+                sections.extend(r.sections);
+            }
+            Done::World(w) => {
+                eco_s = eco_s.max(seconds);
+                eco_worlds.push(*w);
+            }
+        }
+    }
     if opts.genome {
-        let t = Instant::now();
-        let r = wf::run_all(&opts.profile, opts.seed, opts.only.as_deref(), true);
-        timings.push(("genome level", t.elapsed().as_secs_f64()));
-        checks.extend(r.checks);
-        sections.extend(r.sections);
+        timings.push(("genome level", genome_s));
     }
     let mut eco_csv = None;
     if opts.ecology {
-        let t = Instant::now();
-        let r = eco::run(&opts.eco, true);
-        timings.push(("ecology level", t.elapsed().as_secs_f64()));
+        let r = eco::summarize(&opts.eco, eco_worlds);
+        timings.push(("ecology level", eco_s));
         checks.extend(r.checks);
         sections.extend(r.sections);
         eco_csv = Some(r.csv);

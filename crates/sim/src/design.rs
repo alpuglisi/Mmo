@@ -21,7 +21,7 @@ use std::fmt;
 use rand::Rng;
 
 use crate::genome::{Gene, Genome, PlayerId};
-pub use crate::morph::{EarShape, MorphDesign, MorphError, TailShape};
+pub use crate::morph::{EarShape, HornForm, MorphDesign, MorphError, Pattern, TailShape};
 
 pub const DESIGN_BUDGET: f32 = 100.0;
 /// Founding population included in the base price.
@@ -42,16 +42,21 @@ pub const COST_PER_EXTRA_EYE: f32 = 1.0;
 pub const COST_PER_EXTRA_LEG_PAIR: f32 = 2.0;
 /// Points for a second pair of ears.
 pub const COST_PER_EXTRA_EAR_PAIR: f32 = 2.0;
+/// Points per unit of horn size (Phase 3): a floor price like the size
+/// genes of the senses and armor (`docs/morphology.md` decision 21).
+pub const COST_PER_HORN_SIZE: f32 = 4.0;
 
-/// Points a body plan costs: extra structures only (`docs/morphology.md`
-/// §4). Shapes, placement and snout length are free trade-offs, and fewer
-/// structures than the default neither cost nor refund anything.
+/// Points a body plan costs: extra structures and horn size only
+/// (`docs/morphology.md` §4). Shapes, placement, snout length, wing aspect
+/// and coat patterns are free trade-offs, and fewer structures than the
+/// default neither cost nor refund anything.
 pub fn morph_cost(m: &MorphDesign) -> f32 {
     let d = MorphDesign::default();
     let extra = |v: u8, base: u8| v.saturating_sub(base) as f32;
     extra(m.eye_count, d.eye_count) * COST_PER_EXTRA_EYE
         + extra(m.leg_count, d.leg_count) / 2.0 * COST_PER_EXTRA_LEG_PAIR
         + extra(m.ear_count, d.ear_count) / 2.0 * COST_PER_EXTRA_EAR_PAIR
+        + (m.horn_size - d.horn_size).max(0.0) * COST_PER_HORN_SIZE
 }
 
 /// Standard deviation of founder alleles around the design value.
@@ -387,11 +392,18 @@ mod tests {
             tail_shape: TailShape::Club,
             eye_azimuth: 170.0,
             snout_length: 1.0,
+            horn_size: 0.5,
+            horn_form: HornForm::Branched,
+            wing_aspect: 1.0,
+            pattern: Pattern::Stripes,
         });
         assert!(six.validate().is_ok());
-        // 4 extra eyes, 2 extra leg pairs, a second ear pair; shapes and
-        // placement are free.
-        let extra = 4.0 * COST_PER_EXTRA_EYE + 2.0 * COST_PER_EXTRA_LEG_PAIR + COST_PER_EXTRA_EAR_PAIR;
+        // 4 extra eyes, 2 extra leg pairs, a second ear pair, half-size
+        // horns; shapes, placement, wing aspect and patterns are free.
+        let extra = 4.0 * COST_PER_EXTRA_EYE
+            + 2.0 * COST_PER_EXTRA_LEG_PAIR
+            + COST_PER_EXTRA_EAR_PAIR
+            + 0.5 * COST_PER_HORN_SIZE;
         assert!((six.point_cost() - base.point_cost() - extra).abs() < 1e-4);
         // Fewer structures than the default cost nothing and refund nothing.
         let fewer = MorphDesign {

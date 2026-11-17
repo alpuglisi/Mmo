@@ -739,9 +739,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     renderVision(own);
     if (!own && !other) {
       keyed(inspActions, 'none', () => []);
+      const tap = (narrow() || window.matchMedia('(pointer: coarse)').matches) ? 'Tap' : 'Click';
       inspDetails.replaceChildren(h('p', { class: 'muted' }, model.selected === null
-        ? 'Click an organism on the map, or pick one from the Lineage tab.'
-        : `#${model.selected} is out of sight (or dead).`));
+        ? `${tap} an organism on the map, or pick one from the Lineage tab.`
+        : `#${model.selected} is no longer in view: it may have died or wandered out of sight. ${tap} another organism on the map, or pick one from the Lineage tab.`));
       return;
     }
     if (own) {
@@ -1036,7 +1037,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
             h('th', {}, 'Final'), h('th', {}, 'Peak'), h('th', { title: 'Most organisms alive on a recorded day' }, 'Peak alive'))),
           h('tbody', {}, ...b.rows.slice(0, 8).map((r, k) => h('tr', { class: r.player === model.player ? 'me' : '' },
             h('td', {}, String(k + 1)),
-            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), r.name),
+            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), h('span', { class: 'who', title: r.name }, r.name)),
             h('td', {}, pct(r.mean_share)), h('td', {}, pct(r.final_share)), h('td', {}, pct(r.peak_share)), h('td', {}, String(r.peak_alive))))))));
     });
   }
@@ -1062,6 +1063,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ['Mating slots left', h('span', { id: 'slots-left' }, String(s.slots_left))],
       ['Migration', s.migration ? `toward ${s.migration[0].toFixed(0)}, ${s.migration[1].toFixed(0)}` : 'none'],
     ]));
+    // A founded lineage with nobody left: say so plainly, and where to see why.
+    if (s.lineage !== null && s.population === 0) {
+      statsEl.prepend(h('p', { class: 'notice bad', id: 'lineage-extinct', role: 'status' },
+        h('strong', {}, 'Your lineage has died out.'), ' None of your organisms are alive. The Genetics tab charts what killed them.'));
+    }
     renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb), () => lb.rows.length === 0
@@ -1070,7 +1076,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         h('table', { class: 'board' },
           h('thead', {}, h('tr', {}, h('th', {}, 'Player'), h('th', {}, 'Share'), h('th', { title: 'Weighted by offspring raised to adulthood' }, 'Weighted'), h('th', {}, 'Alive'))),
           h('tbody', {}, ...lb.rows.map((r) => h('tr', { class: r.player === model.player ? 'me' : '' },
-            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), r.name),
+            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), h('span', { class: 'who', title: r.name }, r.name)),
             h('td', {}, h('span', { class: 'share-bar', style: `--w:${(r.share * 100).toFixed(1)}%` }, pct(r.share))),
             h('td', {}, pct(r.weighted_share)), h('td', {}, String(r.alive))))))]);
     const shown = [...orgs].sort((a, b) => Number(b.possessed) - Number(a.possessed) || Number(b.matured) - Number(a.matured) || a.id - b.id).slice(0, 60);
@@ -1127,7 +1133,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   function renderToasts(): void {
     clear(toasts);
-    for (const t of model.toasts.slice(-4)) append(toasts, [h('div', { class: `toast ${t.kind}` }, t.text)]);
+    for (const t of model.toasts.slice(-4)) append(toasts, [h('div', { class: `toast ${t.kind}` }, t.text, t.count ? h('span', { class: 'toast-more' }, ` (and ${t.count - 1} more like it)`) : null)]);
   }
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
 

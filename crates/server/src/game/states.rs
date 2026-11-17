@@ -28,6 +28,12 @@
 //! - A founding (new organisms) or a new tick drops the cache: the next
 //!   push or sub-step builds it again.
 //!
+//! A build reads the world, the index and the caches only, so its states
+//! are made on rayon's pool ([`Game::build`]): each connection's window
+//! and neighbors, then the neighbor views missing from the cache (each
+//! made once), then the messages, in connection order. A new connection's
+//! first state uses the kept index too ([`Game::state_now`]).
+//!
 //! What a client receives is the same, byte for byte, as when every state
 //! was built from scratch (`tests::cached_substep_states_match_the_old_build`
 //! compares both over a busy world with commands between sub-steps).
@@ -37,14 +43,21 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use evo_sim::math::Vec2;
 use evo_sim::organism::Organism;
 use evo_sim::{PlayerId, WILD};
+use rayon::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{ConnId, Game, Outbox, Target};
+use super::{Conn, ConnId, Game, Outbox, Target};
 use crate::protocol::*;
 
 /// Side of a [`StateIndex`] grid cell, in tiles.
 const STATE_CELL: f32 = 16.0;
 /// `Slot::cell` of an organism that isn't indexed (dead).
 const NO_CELL: u32 = u32::MAX;
+/// Fewer connections than this are built on the world thread alone.
+/// (Two in tests, so that their few connections take the parallel path.)
+const PAR_MIN_CONNS: usize = if cfg!(test) { 2 } else { 32 };
+/// Connections per rayon task.
+const PAR_CHUNK: usize = 8;
 
 /// What the index keeps of an organism: enough to pick the ones inside a
 /// view window without reading the organism itself.
@@ -272,20 +285,27 @@ impl<T: Clone> ViewCache<T> {
         }
     }
 
-    fn get(&mut self, i: u32, make: impl FnOnce() -> T) -> T {
-        let i = i as usize;
-        if i >= self.entries.len() {
-            self.entries.resize_with(i + 1, || (0, None));
-        }
-        let e = &mut self.entries[i];
-        match &e.1 {
-            Some(v) if e.0 == self.stamp => v.clone(),
-            _ => {
-                let v = make();
-                *e = (self.stamp, Some(v.clone()));
-                v
+    /// Whether entry `i` must be made again.
+    fn stale(&self, i: u32) -> bool {
+        self.entries.get(i as usize).is_none_or(|e| e.0 != self.stamp || e.1.is_none())
+    }
+
+    /// Keep views made for the current stamp.
+    fn store(&mut self, made: Vec<(u32, T)>) {
+        for (i, v) in made {
+            let i = i as usize;
+            if i >= self.entries.len() {
+                self.entries.resize_with(i + 1, || (0, None));
             }
+            self.entries[i] = (self.stamp, Some(v));
         }
+    }
+
+    /// An entry [`Self::store`] made or found current.
+    fn peek(&self, i: u32) -> &T {
+        let e = &self.entries[i as usize];
+        debug_assert_eq!(e.0, self.stamp);
+        e.1.as_ref().expect("filled")
     }
 }
 
@@ -337,6 +357,16 @@ impl StateCache {
 
     fn valid(&self) -> bool {
         self.tick.is_some()
+    }
+
+    /// The indices of `player`'s living organisms (and maybe some that died
+    /// since), from the index when it is this tick's and no organism was
+    /// added since; `None` otherwise. Organisms never change hands and are
+    /// only added by a tick or a founding, so nothing of the player's is
+    /// missing from it.
+    pub(super) fn owned_now(&self, w: &evo_sim::World, player: PlayerId) -> Option<&[u32]> {
+        let idx = self.idx.as_ref()?;
+        (self.tick == Some(w.tick()) && idx.slots.len() == w.organisms.len()).then(|| idx.owned(player))
     }
 
     /// A command may have changed organism `id`.
@@ -486,29 +516,41 @@ impl Game {
     /// [`StateIndex`] for this one message; [`Game::states`] shares one
     /// between every connection.
     pub fn state_for(&self, conn: ConnId) -> Option<StateView> {
-        self.conns.get(&conn)?;
-        self.state_with(conn, &StateIndex::new(self), None)
+        let c = self.conns.get(&conn)?;
+        let idx = StateIndex::new(self);
+        let (view, picked) = self.plan(c, &idx);
+        Some(self.assemble(c, &idx, view, &picked, None, None))
     }
 
-    /// [`Game::state_for`] from a prebuilt index: the cost is the size of
-    /// the message (own organisms, the view window's cells, the player's
-    /// offers), not the size of the world. With `cache`, organism views
-    /// come from it (made and kept there when missing).
-    fn state_with(&self, conn: ConnId, idx: &StateIndex, cache: Option<Caches<'_>>) -> Option<StateView> {
-        let c = self.conns.get(&conn)?;
+    /// [`Game::state_for`] from the kept index, brought up to date (or
+    /// built, when there is none for this tick): the first state of a new
+    /// connection costs what it contains, not a pass over the world (a
+    /// burst of reconnections after a restart would otherwise index the
+    /// world once each).
+    pub(super) fn state_now(&mut self, conn: ConnId) -> Option<StateView> {
+        #[cfg(test)]
+        if self.reference {
+            return self.state_for(conn);
+        }
+        if !self.conns.contains_key(&conn) {
+            return None;
+        }
+        let mut cache = std::mem::take(&mut self.state_cache);
+        cache.prepare(self);
+        let idx = cache.idx.as_ref().expect("prepared");
+        let c = &self.conns[&conn];
+        let (view, picked) = self.plan(c, idx);
+        let s = self.assemble(c, idx, view, &picked, None, None);
+        self.state_cache = cache;
+        Some(s)
+    }
+
+    /// A connection's view window and the neighbors in it (organism
+    /// indices, in the order they are sent), from a prebuilt index.
+    fn plan(&self, c: &Conn, idx: &StateIndex) -> (ViewWindow, Vec<u32>) {
         let player = c.player;
-        let tpd = self.world.config.ticks_per_day;
         let orgs = &self.world.organisms;
         let mine = idx.owned(player);
-        let (near, own_views) = cache.map_or((None, None), |c| (Some(c.near), c.own));
-        let own_view = |i: u32| self.own_view(&orgs[i as usize], tpd);
-        let own = match own_views {
-            Some(views) => {
-                let list = views.entry(player).or_insert_with(|| vec![None; mine.len()]);
-                mine.iter().zip(list.iter_mut()).map(|(&i, v)| v.get_or_insert_with(|| own_view(i)).clone()).collect()
-            }
-            None => mine.iter().map(|&i| own_view(i)).collect(),
-        };
         let view = c.view.unwrap_or_else(|| {
             // Centered on the possessed organism (the first, in organism
             // order), else on the lineage.
@@ -516,18 +558,42 @@ impl Game {
             let center = possessed.map(|o| o.pos).unwrap_or_else(|| self.lineage_center_of(player, mine));
             ViewWindow { x: center.x, y: center.y, radius: self.cfg.default_view_radius }
         });
-        let picked = idx.nearby(&view, player, self.cfg.max_nearby);
-        let near_view = |i: u32| NearbyOrganism::from_org(&orgs[i as usize]);
+        let picked = idx.nearby(&view, player, self.cfg.max_nearby).into_iter().map(|(_, i)| i).collect();
+        (view, picked)
+    }
+
+    /// The state message for connection `c` from its [`Game::plan`]: the
+    /// cost is the size of the message (own organisms, the neighbors, the
+    /// player's offers), not the size of the world. Neighbor views come from
+    /// `near` and own views from `own` when given (filled beforehand), else
+    /// they are made here.
+    fn assemble(
+        &self,
+        c: &Conn,
+        idx: &StateIndex,
+        view: ViewWindow,
+        picked: &[u32],
+        near: Option<&ViewCache<NearbyOrganism>>,
+        own: Option<&[Option<OwnOrganism>]>,
+    ) -> StateView {
+        let player = c.player;
+        let tpd = self.world.config.ticks_per_day;
+        let orgs = &self.world.organisms;
+        let mine = idx.owned(player);
+        let own = match own {
+            Some(views) => views.iter().map(|v| v.clone().expect("filled")).collect(),
+            None => mine.iter().map(|&i| self.own_view(&orgs[i as usize], tpd)).collect(),
+        };
         let nearby: Vec<NearbyOrganism> = match near {
-            Some(near) => picked.into_iter().map(|(_, i)| near.get(i, || near_view(i))).collect(),
-            None => picked.into_iter().map(|(_, i)| near_view(i)).collect(),
+            Some(near) => picked.iter().map(|&i| near.peek(i).clone()).collect(),
+            None => picked.iter().map(|&i| NearbyOrganism::from_org(&orgs[i as usize])).collect(),
         };
         let ids = idx.offers.get(&player).map_or(&[][..], Vec::as_slice);
         let offers = ids.iter().map(|&id| self.offer_view(id)).collect();
         let escrow = ids.iter().map(|id| &self.offers[id]).filter(|o| o.from == player).map(|o| o.escrow).sum::<u64>()
             + idx.bids.get(&player).copied().unwrap_or(0);
         let leaderboard = self.state_leaderboard(&idx.board, player, &nearby);
-        Some(StateView {
+        StateView {
             clock: idx.clock.clone(),
             weather: idx.weather.clone(),
             player,
@@ -543,7 +609,7 @@ impl Game {
             offers,
             balance: self.balance(player),
             escrow,
-        })
+        }
     }
 
     /// The leaderboard as sent in a state: the whole board when it has at
@@ -592,23 +658,88 @@ impl Game {
     /// States for the connections of the players `to` takes, from `idx` and
     /// (with `cache`) the views kept there, own views only for the players
     /// in its set.
+    ///
+    /// Every state reads the world and the index only, so they are built on
+    /// rayon's pool (the world thread waits for it, as for the sim's
+    /// parallel phases): first each connection's view window and neighbors,
+    /// then the views missing from the caches, then the messages, in
+    /// connection order. The messages are the same as one by one.
     fn build(
         &self,
         idx: &StateIndex,
-        mut cache: Option<(&mut ViewCache<NearbyOrganism>, &mut OwnViews, &BTreeSet<PlayerId>)>,
+        cache: Option<(&mut ViewCache<NearbyOrganism>, &mut OwnViews, &BTreeSet<PlayerId>)>,
         to: impl Fn(PlayerId) -> bool,
     ) -> Outbox {
-        self.conns
-            .iter()
-            .filter(|(_, c)| to(c.player))
-            .filter_map(|(&c, conn)| {
-                let caches = cache
-                    .as_mut()
-                    .map(|(near, own, keep)| Caches { near, own: keep.contains(&conn.player).then_some(&mut **own) });
-                let s = self.state_with(c, idx, caches)?;
-                Some((Target::Conn(c), ServerMsg::State(Box::new(s))))
-            })
-            .collect()
+        let list: Vec<(ConnId, &Conn)> =
+            self.conns.iter().filter(|(_, c)| to(c.player)).map(|(&k, c)| (k, c)).collect();
+        let par = list.len() >= PAR_MIN_CONNS;
+        let plans: Vec<(ViewWindow, Vec<u32>)> = if par {
+            list.par_iter().with_min_len(PAR_CHUNK).map(|(_, c)| self.plan(c, idx)).collect()
+        } else {
+            list.iter().map(|(_, c)| self.plan(c, idx)).collect()
+        };
+        let orgs = &self.world.organisms;
+        let tpd = self.world.config.ticks_per_day;
+        let (near, own, keep) = match cache {
+            Some((near, own, keep)) => {
+                // The neighbor views missing from the cache, each made once
+                // (windows overlap): the first window to claim one in a
+                // bitset makes it.
+                let claimed: Vec<AtomicU64> = (0..orgs.len().div_ceil(64)).map(|_| AtomicU64::new(0)).collect();
+                let cached: &ViewCache<NearbyOrganism> = near;
+                let first = |&i: &u32| {
+                    let bit = 1u64 << (i % 64);
+                    claimed[i as usize / 64].fetch_or(bit, Ordering::Relaxed) & bit == 0 && cached.stale(i)
+                };
+                let make = |i: u32| (i, NearbyOrganism::from_org(&orgs[i as usize]));
+                let made: Vec<(u32, NearbyOrganism)> = if par {
+                    plans
+                        .par_iter()
+                        .with_min_len(PAR_CHUNK)
+                        .flat_map_iter(|(_, p)| p.iter().filter(|i| first(i)).copied())
+                        .map(make)
+                        .collect()
+                } else {
+                    plans.iter().flat_map(|(_, p)| p.iter().filter(|i| first(i)).copied()).map(make).collect()
+                };
+                near.store(made);
+                // Own views of the players who steer, made where missing.
+                let mut wanted: Vec<PlayerId> =
+                    list.iter().map(|(_, c)| c.player).filter(|p| keep.contains(p)).collect();
+                wanted.sort_unstable();
+                wanted.dedup();
+                let mut lists: Vec<(PlayerId, Vec<Option<OwnOrganism>>)> = wanted
+                    .into_iter()
+                    .map(|p| (p, own.remove(&p).unwrap_or_else(|| vec![None; idx.owned(p).len()])))
+                    .collect();
+                let fill = |(p, list): &mut (PlayerId, Vec<Option<OwnOrganism>>)| {
+                    for (&i, v) in idx.owned(*p).iter().zip(list.iter_mut()) {
+                        if v.is_none() {
+                            *v = Some(self.own_view(&orgs[i as usize], tpd));
+                        }
+                    }
+                };
+                if par {
+                    lists.par_iter_mut().for_each(fill);
+                } else {
+                    lists.iter_mut().for_each(fill);
+                }
+                own.extend(lists);
+                (Some(&*near), Some(&*own), Some(keep))
+            }
+            None => (None, None, None),
+        };
+        let make = |((k, c), (view, picked)): ((ConnId, &Conn), (ViewWindow, Vec<u32>))| {
+            let own = own.filter(|_| keep.is_some_and(|keep| keep.contains(&c.player)));
+            let own = own.and_then(|own| own.get(&c.player)).map(Vec::as_slice);
+            let s = self.assemble(c, idx, view, &picked, near, own);
+            (Target::Conn(k), ServerMsg::State(Box::new(s)))
+        };
+        if par {
+            list.into_par_iter().zip(plans).with_min_len(PAR_CHUNK).map(make).collect()
+        } else {
+            list.into_iter().zip(plans).map(make).collect()
+        }
     }
 
     /// One possession sub-step between ticks (`World::substep`): possessed
@@ -634,12 +765,6 @@ impl Game {
         self.state_cache = cache;
         out
     }
-}
-
-/// The organism views a state build reads and fills.
-struct Caches<'a> {
-    near: &'a mut ViewCache<NearbyOrganism>,
-    own: Option<&'a mut OwnViews>,
 }
 
 /// Own organism views of players who steer, aligned with

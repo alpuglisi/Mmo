@@ -53,3 +53,8 @@ tail balance/swim/defence factors.
   120° + 80°·size → 140° + 60°·size (default keeps 20° binocular instead of 0°);
   placement rule for eye counts above 3; `ear_count` 0–4 → 0/2/4; dominance rule
   defined; snout occlusion of binocular overlap; allele-budget note.
+- **Phase 3** (docs/morphology.md, decisions 18–25): `horn_size` (0–1,
+  default 0, horns from 0.1), `horn_form` (curved > straight > branched),
+  `wing_aspect` (0 broad – 1 narrow, default 0.5) and `pattern` (plain >
+  spots > stripes > mottled) join the morphology segment after the v1 loci
+  (snapshot version 29). The kinship key keeps the v1 loci only.

@@ -48,10 +48,13 @@ pub mod offline;
 mod par_apply;
 #[cfg(test)]
 mod path_tests;
+#[cfg(test)]
+mod predator_tests;
 mod seasonal;
 #[cfg(feature = "serde")]
 mod snapshot;
 mod spatial;
+mod stagger;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -88,6 +91,23 @@ const PREY_ON_TOP: f32 = 8.0;
 const PREY_SHARE: f32 = 0.15;
 /// Spatial index cell side in tiles.
 const GRID_CELL: f32 = 4.0;
+
+/// Items below which a parallel pass of light per-item work runs on the
+/// calling thread (`light_min_len`).
+const LIGHT_PAR: usize = 8192;
+
+/// `with_min_len` for a parallel pass over `n` items of light work (a few
+/// dozen nanoseconds each): below [`LIGHT_PAR`] items the whole pass runs
+/// on the calling thread, as waking the pool's sleeping workers would cost
+/// more than it saves; above it, pieces of at least a thousand. Where the
+/// items are processed changes nothing they compute.
+pub(crate) fn light_min_len(n: usize) -> usize {
+    if n < LIGHT_PAR {
+        usize::MAX
+    } else {
+        1024
+    }
+}
 
 /// Hasher of the world's lookup maps (organism index by id, things by
 /// tile): small integer keys, looked up many times a tick, never chosen by
@@ -410,6 +430,10 @@ pub struct World {
     /// Wall-clock time spent in each phase of `step` (for `bench`).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub phase_times: PhaseTimes,
+    /// Last tick's intents with their organism's and target's ids, for
+    /// staggered decisions (`Balance::decide_interval`; empty when off).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    last_intents: Vec<(OrgId, Intent, Option<OrgId>)>,
 }
 
 /// Cumulative wall-clock seconds per phase of `World::step`. Timing never
@@ -507,6 +531,7 @@ impl World {
             lod,
             offline: Default::default(),
             phase_times: PhaseTimes::default(),
+            last_intents: Vec::new(),
             config,
         }
     }
@@ -898,6 +923,19 @@ impl World {
 
     /// Advance one tick.
     pub fn step(&mut self) {
+        // The tick's parallel parts run on the rayon pool. Called from
+        // outside it (a main thread, a server's runner), each of them would
+        // hand its work over to the pool and wait for it, a dozen round
+        // trips a tick; entering the pool once for the whole tick is far
+        // cheaper. Where a closure runs changes nothing it computes.
+        if rayon::current_thread_index().is_none() {
+            rayon::scope(|_| self.step_in_pool());
+        } else {
+            self.step_in_pool();
+        }
+    }
+
+    fn step_in_pool(&mut self) {
         let tpd = self.config.ticks_per_day as u64;
         let mut clock = std::time::Instant::now();
         let mut lap = || {
@@ -917,18 +955,40 @@ impl World {
             self.hourly();
             self.refresh_home_ranges();
         }
-        self.environment_slice();
-        self.phase_times.environment += lap();
         if self.tick.is_multiple_of(tpd) {
+            self.environment_slice();
+            self.phase_times.environment += lap();
             self.daily();
+            self.phase_times.daily += lap();
+            self.settle_orders();
+            self.grid.rebuild(&self.organisms);
+            self.phase_times.grid += lap();
+        } else {
+            // Off the day, the environment chunks (the map's tiles) and the
+            // grid rebuild (the organisms) share nothing, and settling
+            // orders touches neither the map nor positions: the two run at
+            // once, with the same results as one after the other.
+            self.settle_orders();
+            let tph = self.config.ticks_per_hour();
+            let (phase, doy, hour) = (self.tick % tph, self.day_of_year(), self.hour());
+            let (dpy, bal) = (self.config.days_per_year, self.config.balance);
+            let (map, grid, orgs) = (&mut self.map, &mut self.grid, &self.organisms);
+            let timed = |f: &mut dyn FnMut()| {
+                let start = std::time::Instant::now();
+                f();
+                start.elapsed().as_secs_f64()
+            };
+            let (env, rebuild) = rayon::join(
+                || timed(&mut || map.update_chunks(phase, tph, doy, hour, dpy, &bal)),
+                || timed(&mut || grid.rebuild(orgs)),
+            );
+            lap();
+            self.phase_times.environment += env;
+            self.phase_times.grid += rebuild;
         }
-        self.phase_times.daily += lap();
-
-        self.settle_orders();
-        self.grid.rebuild(&self.organisms);
-        self.phase_times.grid += lap();
         let n = self.organisms.len();
         let intents = self.decide_all();
+        self.remember_intents(&intents);
         self.phase_times.decide += lap();
 
         let mut rng = rng_for(self.config.seed, stream::APPLY, self.tick, 0);
