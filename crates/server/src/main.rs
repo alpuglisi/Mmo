@@ -4,7 +4,7 @@
 //! evo-server [--bind ADDR] [--data DIR | --memory | --database-url URL] [--size N] [--seed N]
 //!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
 //!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
-//!            [--season-days N] [--offline-protection-hours H] [--home-range-hours H] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE]
+//!            [--season-days N] [--offline-protection-hours H] [--home-range-hours H] [--fresh] [--world ID[,seed=N][,size=N][,capacity=N][,name=TEXT]]... [--worlds-file FILE]
 //!            [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:...] [--push-per-hour N]
 //!            [--push-allow-any-endpoint] [--fcm-service-account FILE] [--apns-key FILE --apns-key-id ID
 //!            --apns-team-id ID [--apns-topic BUNDLE_ID] [--apns-sandbox]] [--hash-concurrency N] [--hash-queue N]
@@ -64,7 +64,7 @@ const USAGE: &str =
     "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory | --database-url URL] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
 [--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] \
-[--season-days 60] [--offline-protection-hours 12] [--home-range-hours 12] [--fresh] [--world ID[,seed=N][,size=N][,name=TEXT]]... [--worlds-file FILE] \
+[--season-days 60] [--offline-protection-hours 12] [--home-range-hours 12] [--fresh] [--world ID[,seed=N][,size=N][,capacity=N][,name=TEXT]]... [--worlds-file FILE] \
 [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:you@example.org] [--push-per-hour 4] \
 [--push-allow-any-endpoint] [--fcm-service-account FILE] [--apns-key FILE --apns-key-id ID --apns-team-id ID \
 [--apns-topic org.evolutionmmo.client] [--apns-sandbox]] [--hash-concurrency N] [--hash-queue N] \

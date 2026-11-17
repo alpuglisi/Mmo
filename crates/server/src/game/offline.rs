@@ -370,7 +370,7 @@ mod tests {
                 build_world(&WorldSettings { seed: 3, width: 96, height: 96, wild: true, ..Default::default() });
             let mut g = Game::new(world, GameConfig { offline_protection_ticks: 400, ..GameConfig::default() });
             for p in 1..=6u32 {
-                let d = FounderDesign::new(&format!("L{p}"), Thermo::Warm, BirthType::Live, 2).founders(4);
+                let d = FounderDesign::new(format!("L{p}"), Thermo::Warm, BirthType::Live, 2).founders(4);
                 g.found(p, &d).unwrap();
             }
             g
