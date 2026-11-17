@@ -635,29 +635,53 @@ impl World {
     }
 
     /// Graze the current tile. Fattening organisms (`seasonal::fat_room`)
-    /// keep eating past full and store the surplus as fat.
+    /// keep eating past full and store the surplus as fat. Ripe fruit and
+    /// seeds (`Map::fruit`, `Balance::fruit_crop`) come first: they are worth
+    /// more per unit to any gut (`Traits::fruit_efficiency` times
+    /// `Balance::fruit_value`), and leaves make up the rest.
     fn eat_plants(&mut self, i: usize, rate: f32) {
         let o = &self.organisms[i];
-        let eff = o.traits.plant_efficiency(&self.config.balance);
+        let bal = &self.config.balance;
+        let eff = o.traits.plant_efficiency(bal);
         let fat_room = self.fat_room(o);
         let room = o.needs.hunger + fat_room;
-        if o.traits.carnivory > 0.95 || eff <= 0.0 || room < 5.0 {
-            return;
-        }
-        let want = (MAX_INTAKE_PER_DAY * self.config.dt_days() * rate).min(room);
-        let fph = o.food_per_hunger();
         let (pos, body) = (o.pos, o.traits.body);
-        let share = self.config.balance.canopy_share;
         let (x, y) = self.map.tile_coords(pos);
         let k = self.map.idx(x, y);
-        let got = (want * fph / eff).min(self.map.tiles[k].reachable_veg(&self.map.ground()[k], &body, share));
-        self.map.tiles[k].veg -= got;
-        self.feed(i, got * eff / fph, fat_room);
+        let fruit = self.map.fruit.get(k).copied().unwrap_or(0.0);
+        let leaves = o.traits.carnivory <= 0.95 && eff > 0.0;
+        if (!leaves && fruit <= 0.0) || room < 5.0 {
+            return;
+        }
+        let mut want = (MAX_INTAKE_PER_DAY * self.config.dt_days() * rate).min(room);
+        let fph = o.food_per_hunger();
+        let mut gained = 0.0;
+        if fruit > 0.0 {
+            let fruit_eff = o.traits.fruit_efficiency() * bal.fruit_value();
+            let got = (want * fph / fruit_eff).min(fruit);
+            self.map.fruit[k] -= got;
+            gained = got * fruit_eff / fph;
+            want -= gained;
+        }
+        if leaves && want > 0.0 {
+            let share = self.config.balance.canopy_share;
+            let got = (want * fph / eff).min(self.map.tiles[k].reachable_veg(&self.map.ground()[k], &body, share));
+            self.map.tiles[k].veg -= got;
+            gained += got * eff / fph;
+        }
+        self.feed(i, gained, fat_room);
     }
 
+    /// Eat carcass meat on the current tile, worth `Balance::meat_value`
+    /// units of leaves a unit, then insects, worms and grubs (`Map::insects`,
+    /// `Balance::insect_crop`) at the same value, digested as far as the
+    /// gut is an omnivore's (`Traits::insect_efficiency`) and gathered at
+    /// half the pace, for what it still has room for.
     fn eat_meat(&mut self, i: usize, rate: f32) {
         let o = &self.organisms[i];
-        let eff = o.traits.meat_efficiency(self.config.balance.generalist_tax);
+        let bal = &self.config.balance;
+        let eff = o.traits.meat_efficiency(bal.generalist_tax) * bal.meat_value();
+        let bugs_eff = o.traits.insect_efficiency() * bal.meat_value();
         let fat_room = self.meat_fat_room(o);
         let room = o.needs.hunger + fat_room;
         if o.traits.carnivory < 0.2 || room < 5.0 {
@@ -666,10 +690,22 @@ impl World {
         let want = (MAX_INTAKE_PER_DAY * self.config.dt_days() * rate).min(room);
         let fph = o.food_per_hunger();
         let pos = o.pos;
-        let tile = self.map.tile_at_mut(pos);
+        let (x, y) = self.map.tile_coords(pos);
+        let k = self.map.idx(x, y);
+        let tile = &mut self.map.tiles[k];
         let got = (want * fph / eff).min(tile.meat);
         tile.meat -= got;
-        self.feed(i, got * eff / fph, fat_room);
+        let mut gained = got * eff / fph;
+        let bugs = self.map.insects.get(k).copied().unwrap_or(0.0);
+        if bugs > 0.0 && bugs_eff > 0.0 {
+            let more = (0.5 * want).min(want - gained);
+            if more > 0.0 {
+                let got = (more * fph / bugs_eff).min(bugs);
+                self.map.insects[k] -= got;
+                gained += got * bugs_eff / fph;
+            }
+        }
+        self.feed(i, gained, fat_room);
     }
 
     fn drink(&mut self, i: usize) {
@@ -938,7 +974,8 @@ impl World {
         }
         let n = c.eggs.len().min(3);
         let food = n as f32 * c.egg_mass * self.config.balance.meat_per_kg;
-        let eaten = food * o.traits.meat_efficiency(self.config.balance.generalist_tax) / o.food_per_hunger();
+        let bal = &self.config.balance;
+        let eaten = food * o.traits.meat_efficiency(bal.generalist_tax) * bal.meat_value() / o.food_per_hunger();
         let c = &mut self.clutches[k];
         c.eggs.truncate(c.eggs.len() - n);
         self.counters.eggs_lost += n as u64;

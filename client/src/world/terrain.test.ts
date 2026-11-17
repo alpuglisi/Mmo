@@ -64,6 +64,19 @@ describe('terrain decoding', () => {
 describe('tile colors', () => {
   const lum = (c: number[]) => c[0] + c[1] + c[2];
 
+  it('tints fruiting land faintly warm and reads a missing fruit layer as none', () => {
+    const base = decodeTerrain(view({}, 10));
+    expect(base.fruit).toBeUndefined();
+    const g = decodeTerrain(view({}, 10));
+    applyDynamic(g, { ...view().dynamic, tick: 11, fruit: b64([0, 0, 0, 255, 255, 0]) });
+    expect(g.fruit?.[3]).toBe(255);
+    const [plain, fruiting] = [tileColor(base, 4), tileColor(g, 4)];
+    expect(fruiting[0]).toBeGreaterThan(plain[0]); // redder
+    expect(fruiting[1]).toBeLessThan(plain[1]);
+    expect(Math.abs(lum(fruiting) - lum(plain))).toBeLessThan(60); // subtle
+    expect(tileColor(g, 5)).toEqual(tileColor(base, 5)); // no fruit, no tint
+  });
+
   it('shows snow, ice, drought, floods and dry river beds', () => {
     const base = decodeTerrain(view());
     const grass = tileColor(base, 3);

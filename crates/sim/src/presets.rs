@@ -29,7 +29,9 @@ pub fn niche_world(config: WorldConfig, scale: u32) -> World {
     standard_world_from(config, scale, niche_wild_designs(), niche_player_designs())
 }
 
-fn standard_world_from(
+/// The standard world's layout from the given wild and player designs (the
+/// lineages keep the standard world's indices if the lists keep its order).
+pub fn standard_world_from(
     config: WorldConfig,
     scale: u32,
     wild: Vec<(PlayerId, FounderDesign)>,

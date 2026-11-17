@@ -14,7 +14,9 @@
 //! runs `Balance::morphology_off()`, `--meat` the carnivore-diet rules and
 //! predator brakes (`Balance::carnivore_diet()`, off by default) with the
 //! predators in their niches (`presets::niche_world`; `--meat-only` keeps
-//! the standard designs). Each seed also reports adult females and males of
+//! the standard designs; after `--meat`, `--std-fox` and `--std-pack` keep
+//! that predator's standard design), `--food` the food values
+//! (`Balance::food_values`). Each seed also reports adult females and males of
 //! each predator at the end, every prey lineage's lowest head count, and the
 //! predators' mean expressed values of the genes the rules read at the start
 //! and the end (with their mean drift over the surviving seeds), to see
@@ -84,7 +86,7 @@ fn main() {
     let mut balance = Balance::default();
     let mut pos: Vec<String> = Vec::new();
     let mut every = 60u32;
-    let mut niches = false;
+    let (mut niche_fox, mut niche_pack) = (false, false);
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         if a == "--set" {
@@ -95,9 +97,15 @@ fn main() {
             balance = balance.morphology_off();
         } else if a == "--meat" {
             balance = balance.carnivore_diet();
-            niches = true;
+            (niche_fox, niche_pack) = (true, true);
         } else if a == "--meat-only" {
             balance = balance.carnivore_diet();
+        } else if a == "--food" {
+            balance = balance.food_values();
+        } else if a == "--std-fox" {
+            niche_fox = false;
+        } else if a == "--std-pack" {
+            niche_pack = false;
         } else if a == "--every" {
             every = args.next().expect("--every DAYS").parse().unwrap();
         } else {
@@ -112,7 +120,9 @@ fn main() {
         .par_iter()
         .map(|&seed| {
             let config = WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() };
-            let mut w = if niches { presets::niche_world(config, 1) } else { presets::standard_world(config, 1) };
+            let fox = if niche_fox { presets::niche_wild_designs() } else { presets::wild_designs() };
+            let pack = if niche_pack { presets::niche_player_designs() } else { presets::player_designs() };
+            let mut w = presets::standard_world_from(config, 1, fox, pack);
             let genes0 = [gene_means(&w, 3), gene_means(&w, 4)];
             let mut prey_min = [usize::MAX; 6];
             let tpd = w.config.ticks_per_day;

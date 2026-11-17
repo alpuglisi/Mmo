@@ -777,6 +777,40 @@ pub struct Balance {
     /// Predator numbers follow their food.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v27"))]
     pub condition_litter: f32,
+    // Food values (version 28; *Food by its value* in the README's Balance
+    // section). Off at 0, what snapshots before version 28 read
+    // (`serde_util::before_v28`): every food worth the same per unit.
+    /// Extra food value of meat over leafy plants: a unit of meat (carcass,
+    /// eggs) is worth `1 + meat_energy` units of leaves before digestion
+    /// (meat is 80–90% digestible, leaves 20–60%). Digestion still follows
+    /// the Carnivory gene (`Traits::meat_efficiency`). With the richer food,
+    /// `carnivore_hunger_discount` (a slower hunger standing in for it) can
+    /// go.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
+    pub meat_energy: f32,
+    /// The seasonal fruit and seed layer: scale on each tile's crop of
+    /// fruit, seeds and nuts (`terrain::fruit_capacity`: most in moist
+    /// forest, some in marsh, grassland seeds and tundra berries), which
+    /// ripens from late summer, peaks in early autumn and rots or is eaten
+    /// through the winter (`terrain::fruit_season`). 0: no fruit layer.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
+    pub fruit_crop: f32,
+    /// Extra food value of fruit and seeds over leaves: a unit is worth
+    /// `1 + fruit_energy` before digestion. Fruit is digested well by
+    /// herbivores, omnivores and flexible hunters alike, poorly only by
+    /// full carnivores (`stats::fruit_efficiency`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
+    pub fruit_energy: f32,
+    /// The invertebrate layer: scale on each tile's insects, worms and grubs
+    /// (`terrain::insect_capacity`: most in marsh and moist ground), out
+    /// whenever the ground is above freezing (none in winter, a spring
+    /// flush) and back within days of being eaten.
+    /// Small meat: digested by the meat gut (`Traits::meat_efficiency`) at
+    /// the value of meat (`meat_energy`), gathered at half the pace of
+    /// other food (small items), on any errand a meat eater makes, roaming
+    /// for prey included. 0: no invertebrates.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
+    pub insect_crop: f32,
 }
 
 impl Balance {
@@ -836,6 +870,41 @@ impl Balance {
         self.condition_litter = 0.0;
         self
     }
+
+    /// These rules with the food values on at their tested values (*Food
+    /// by its value* in the README's Balance section): meat richer than
+    /// leaves in place of the carnivores' slower hunger, and the seasonal
+    /// fruit and seed layer.
+    pub fn food_values(mut self) -> Self {
+        self.meat_energy = 0.8;
+        self.fruit_crop = 1.0;
+        self.fruit_energy = 0.5;
+        self.insect_crop = 1.0;
+        self.carnivore_hunger_discount = 0.0;
+        self
+    }
+
+    /// These rules with the food values off, as before version 28: every
+    /// food worth the same per unit, no fruit layer, and full carnivores'
+    /// hunger 44% slower in its place.
+    pub fn food_values_off(mut self) -> Self {
+        self.meat_energy = 0.0;
+        self.fruit_crop = 0.0;
+        self.fruit_energy = 0.0;
+        self.insect_crop = 0.0;
+        self.carnivore_hunger_discount = 0.44;
+        self
+    }
+
+    /// Food value of a unit of meat relative to leaves (`meat_energy`).
+    pub fn meat_value(&self) -> f32 {
+        1.0 + self.meat_energy
+    }
+
+    /// Food value of a unit of fruit relative to leaves (`fruit_energy`).
+    pub fn fruit_value(&self) -> f32 {
+        1.0 + self.fruit_energy
+    }
 }
 
 /// How a shielded home range softens predation (`World::set_home_ranges`).
@@ -878,7 +947,7 @@ impl Default for Balance {
             stealth_effect: 0.4,
             perception_range: 4.6,
             attack_power: 0.75,
-            carnivore_hunger_discount: 0.44,
+            carnivore_hunger_discount: 0.0,
             generalist_tax: 0.5,
             cold_heat_burn: 1.0,
             size_burn: 0.25,
@@ -968,20 +1037,24 @@ impl Default for Balance {
             morph_step_rate: crate::morph::RECOMMENDED_STEP_RATE,
             morph_legacy: 1.0,
             roaming_forage: 100.0,
-            carcass_keep: 0.0,
-            carnivore_fat: 0.0,
-            carcass_scent: 0.0,
-            carrion: 0.0,
-            provisioning: 0.0,
-            breeding_territory: 0.0,
-            prey_switching: 0.0,
-            condition_litter: 0.0,
+            carcass_keep: 0.75,
+            carnivore_fat: 60.0,
+            carcass_scent: 8.0,
+            carrion: 1.0,
+            provisioning: 1.0,
+            breeding_territory: 12.0,
+            prey_switching: 1.0,
+            condition_litter: 1.0,
+            meat_energy: 0.8,
+            fruit_crop: 1.0,
+            fruit_energy: 0.5,
+            insect_crop: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 110;
+    pub const FIELD_COUNT: usize = 114;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1101,6 +1174,10 @@ impl Balance {
             ("breeding_territory", &mut self.breeding_territory),
             ("prey_switching", &mut self.prey_switching),
             ("condition_litter", &mut self.condition_litter),
+            ("meat_energy", &mut self.meat_energy),
+            ("fruit_crop", &mut self.fruit_crop),
+            ("fruit_energy", &mut self.fruit_energy),
+            ("insect_crop", &mut self.insect_crop),
         ]
     }
 

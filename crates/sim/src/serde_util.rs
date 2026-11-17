@@ -51,6 +51,10 @@
 //! - `before_v27`: the predator brakes (`Balance::prey_switching`,
 //!   `condition_litter`), left out while a world snapshot of version 26 or
 //!   before is read (0, off).
+//! - `before_v28`: the food values (`Balance::meat_energy`, `fruit_crop`,
+//!   `fruit_energy`, `carnivore_hunger_discount` keeps its stored value) and
+//!   the map's fruit layer (`Map::fruit`, `before_v28::vec`), left out while
+//!   a world snapshot of version 27 or before is read (0, off; no fruit).
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1522,6 +1526,80 @@ pub mod before_v27 {
             Ok(OLD_VALUE)
         } else {
             f32::deserialize(d)
+        }
+    }
+}
+
+/// The food values (`Balance::meat_energy`, `fruit_crop`, `fruit_energy`),
+/// added in world snapshot version 28:
+/// `#[serde(with = "crate::serde_util::before_v28")]`, and the map's fruit
+/// layer (`Map::fruit`, [`before_v28::vec`]). On a thread holding a
+/// [`before_v28::Guard`] (reading or hashing a snapshot of version 27 or
+/// before) they are neither written nor read: the values read as 0 (off,
+/// meat and fruit worth what leaves are, no fruit) and the fruit layer as
+/// empty (`World::restore` fills it with zeros), as those worlds ran.
+pub mod before_v28 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The food values before version 28: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+
+    /// The map's fruit layer (`Map::fruit`): left out before version 28,
+    /// read back as empty.
+    pub mod vec {
+        use super::*;
+
+        pub fn serialize<S: Serializer>(v: &Vec<f32>, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f32>, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(Vec::new())
+            } else {
+                Vec::<f32>::deserialize(d)
+            }
         }
     }
 }

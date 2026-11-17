@@ -1099,18 +1099,36 @@ impl World {
     fn choose_food(&self, o: &Organism, prey: Option<(f32, usize)>, intent: &mut Intent, rng: &mut SimRng) {
         // Food values use what the gut extracts (`Traits::plant_efficiency`):
         // a generalist values both foods less than a specialist would.
-        let tax = self.config.balance.generalist_tax;
-        let (plant_eff, c) = (o.traits.plant_efficiency(&self.config.balance), o.traits.meat_efficiency(tax));
+        // Meat and fruit count at their food values (`Balance::meat_value`,
+        // `fruit_value`: 1 with the food values off).
+        let bal = &self.config.balance;
+        let plant_eff = o.traits.plant_efficiency(bal);
+        let c = o.traits.meat_efficiency(bal.generalist_tax) * bal.meat_value();
+        let fruit_eff = o.traits.fruit_efficiency() * bal.fruit_value();
+        // Invertebrates: small meat for an omnivore's gut, gathered at half
+        // the pace.
+        let bugs_eff =
+            if o.traits.carnivory < 0.2 { 0.0 } else { 0.5 * o.traits.insect_efficiency() * bal.meat_value() };
         let bound = self.roam_bound(o);
         let here = self.map.tile_at(o.pos);
+        let k_here = {
+            let (x, y) = self.map.tile_coords(o.pos);
+            self.map.idx(x, y)
+        };
         // Browse in the canopy only counts if the body can reach it.
         let (body, share) = (&o.traits.body, self.config.balance.canopy_share);
         let veg = |g: &crate::terrain::Ground, t: &crate::terrain::Tile| t.reachable_veg(g, body, share);
+        // Food a tile offers besides carcasses: leaves, ripe fruit and seeds,
+        // and invertebrates (small meat gathered at half the pace).
+        let layer = |l: &[f32], k: usize| l.get(k).copied().unwrap_or(0.0);
+        let plants = |g: &crate::terrain::Ground, t: &crate::terrain::Tile, k: usize| {
+            veg(g, t) * plant_eff + layer(&self.map.fruit, k) * fruit_eff + layer(&self.map.insects, k) * bugs_eff
+        };
 
         // Value of each option in rough "food I can get" terms.
         let hunt_value = prey.map(|(s, _)| s * 4.0 * c).unwrap_or(0.0);
         let meat_here = here.meat * c;
-        let graze_here = veg(self.map.ground_at(o.pos), here) * plant_eff;
+        let graze_here = plants(self.map.ground_at(o.pos), here, k_here);
 
         if meat_here > 1.0 && meat_here >= graze_here {
             intent.action = Action::Scavenge;
@@ -1137,7 +1155,7 @@ impl World {
                 }
             }
             // Carnivore with nothing in sight: look for carcasses, else roam.
-            if let Some(t) = self.find_tile(o, rng, 1.0, |_, t| t.meat * c) {
+            if let Some(t) = self.find_tile(o, rng, 1.0, |_, t, _| t.meat * c) {
                 intent.action = Action::Scavenge;
                 intent.target = Some(t);
             } else {
@@ -1166,7 +1184,7 @@ impl World {
         // tile steps to the best neighboring tile with a bite on it, rather
         // than passing it by for a patch found by sampling further out.
         if self.config.balance.pasture_search > 0.0 {
-            if let Some(t) = self.best_neighbor(o, bite, |g, t| veg(g, t) * plant_eff + t.meat * c) {
+            if let Some(t) = self.best_neighbor(o, bite, |g, t, k| plants(g, t, k) + t.meat * c) {
                 intent.target = Some(t);
                 return;
             }
@@ -1179,12 +1197,13 @@ impl World {
         // Keep heading for the patch chosen earlier while it still has food.
         if let Some(t) = o.forage_target.filter(|&t| self.confine(t, bound) == t) {
             let tile = self.map.tile_at(t);
-            if veg(self.map.ground_at(t), tile) * plant_eff + tile.meat * c >= bite {
+            let (x, y) = self.map.tile_coords(t);
+            if plants(self.map.ground_at(t), tile, self.map.idx(x, y)) + tile.meat * c >= bite {
                 intent.target = Some(t);
                 return;
             }
         }
-        match self.find_tile(o, rng, 2.0 * bite, |g, t| veg(g, t) * plant_eff + t.meat * c) {
+        match self.find_tile(o, rng, 2.0 * bite, |g, t, k| plants(g, t, k) + t.meat * c) {
             Some(t) => {
                 intent.target = Some(t);
                 intent.new_forage = Some(Some(t));
@@ -1287,7 +1306,7 @@ impl World {
         &self,
         o: &Organism,
         min_value: f32,
-        value: impl Fn(&crate::terrain::Ground, &crate::terrain::Tile) -> f32,
+        value: impl Fn(&crate::terrain::Ground, &crate::terrain::Tile, usize) -> f32,
     ) -> Option<Vec2> {
         let (x0, y0) = self.map.tile_coords(o.pos);
         let bound = self.roam_bound(o);
@@ -1299,7 +1318,7 @@ impl World {
             }
             let k = self.map.idx(x as usize, y as usize);
             let (g, t) = (&self.map.ground()[k], &self.map.tiles[k]);
-            let v = value(g, t);
+            let v = value(g, t, k);
             if v < min_value || best.is_some_and(|(s, _)| v <= s) {
                 continue;
             }
@@ -1321,7 +1340,7 @@ impl World {
         o: &Organism,
         rng: &mut SimRng,
         min_value: f32,
-        value: impl Fn(&crate::terrain::Ground, &crate::terrain::Tile) -> f32,
+        value: impl Fn(&crate::terrain::Ground, &crate::terrain::Tile, usize) -> f32,
     ) -> Option<Vec2> {
         let near = 2.0 + 6.0 * o.pheno[Gene::ForagingRange];
         let mut best: Option<(f32, Vec2)> = None;
@@ -1351,7 +1370,7 @@ impl World {
             if !matches!(traverse(&o.traits.body, g, t, &Weather::still(t.wind), false), Traverse::Passable { .. }) {
                 continue;
             }
-            let v = value(g, t);
+            let v = value(g, t, k);
             let score = v / (1.0 + 0.3 * o.pos.dist(cand));
             if v >= min_value && best.is_none_or(|(s, _)| score > s) {
                 best = Some((score, cand));
@@ -1369,7 +1388,7 @@ impl World {
             intent.target = Some(c);
         } else if self.map.tile_at(o.pos).veg * eff > 0.5 * bite {
             intent.target = None;
-        } else if let Some(t) = self.find_tile(o, rng, 2.0 * bite, |_, t| t.veg * eff) {
+        } else if let Some(t) = self.find_tile(o, rng, 2.0 * bite, |_, t, _| t.veg * eff) {
             intent.target = Some(t);
         } else {
             self.wander(o, intent, rng, 5.0);

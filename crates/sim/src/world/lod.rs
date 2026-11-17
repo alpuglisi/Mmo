@@ -524,6 +524,16 @@ struct Day {
     plant_need: f32,
     meat_need: f32,
     veg: f32,
+    /// Ripe fruit and seeds on its tiles (`Map::fruit`), and the food units
+    /// of it wanted and the share of that met.
+    fruit: f32,
+    fruit_need: f32,
+    s_fruit: f32,
+    /// Invertebrates on its tiles (`Map::insects`), wanted and met, as for
+    /// fruit.
+    insects: f32,
+    insect_need: f32,
+    s_insect: f32,
     s_plant: f32,
     s_meat: f32,
 }
@@ -1090,6 +1100,13 @@ impl World {
                 .iter()
                 .map(|&t| state[t as usize].reachable_veg(&ground[t as usize], &body, bal.canopy_share))
                 .sum();
+            let layer = |l: &[f32]| tiles.iter().map(|&t| l.get(t as usize).copied().unwrap_or(0.0)).sum::<f32>();
+            x.fruit = if bal.fruit_crop > 0.0 { layer(&self.map.fruit) } else { 0.0 };
+            x.insects = if bal.insect_crop > 0.0 && crate::stats::insect_efficiency(rep.carnivory) > 0.0 {
+                layer(&self.map.insects)
+            } else {
+                0.0
+            };
             x.dormant =
                 (rep.winter > 0.0 && temp < bal.dormancy_temp && matches!(season, Season::Autumn | Season::Winter))
                     || (rep.estivation > 0.0 && temp > bal.estivation_temp && season == Season::Summer);
@@ -1121,10 +1138,34 @@ impl World {
             // above 0.45) hunt first, and those that can digest plants
             // (omnivores) graze for the rest.
             x.food = x.units * h * fph;
-            x.meat_need = if carn > HUNTER { x.food / carn } else { 0.0 };
+            // Meat is worth `Balance::meat_value` units of leaves a unit.
+            x.meat_need = if carn > HUNTER { x.food / (carn * bal.meat_value()) } else { 0.0 };
         }
         self.lod.regions[r] = cs;
         d
+    }
+
+    /// Take `eaten` food units from region `r`'s tiles of a food layer
+    /// (`Map::fruit`, `Map::insects`), in proportion to what each holds.
+    fn eat_layer(&mut self, r: usize, eaten: f32, layer: impl Fn(&mut Map) -> &mut Vec<f32>) {
+        if eaten <= 0.0 {
+            return;
+        }
+        let cx = self.map.chunks_x;
+        let (x0, y0) = ((r % cx) * CHUNK, (r / cx) * CHUNK);
+        let (x1, y1) = ((x0 + CHUNK).min(self.map.width), (y0 + CHUNK).min(self.map.height));
+        let w = self.map.width;
+        let l = layer(&mut self.map);
+        if l.is_empty() {
+            return;
+        }
+        let total: f32 = (y0..y1).flat_map(|y| (x0..x1).map(move |x| y * w + x)).map(|i| l[i]).sum();
+        let keep = if total > 0.0 { (1.0 - eaten / total).max(0.0) } else { 0.0 };
+        for y in y0..y1 {
+            for x in x0..x1 {
+                l[y * w + x] *= keep;
+            }
+        }
     }
 
     /// Hunting by the predator cohorts of region `r`: each takes prey in
@@ -1257,11 +1298,48 @@ impl World {
         let n = cs.len();
         d.resize(n, Day::default());
 
-        // Plant food for what meat didn't cover.
+        // Invertebrates (`Map::insects`, as meat, at half the pace) and then
+        // ripe fruit and seeds (`Map::fruit`, at `Balance::fruit_value` and
+        // `stats::fruit_efficiency`) for what kills didn't cover, as agents
+        // eat them before leaves.
+        let mut demand = 0.0f32;
+        for x in d.iter_mut() {
+            let eff = crate::stats::insect_efficiency(x.carnivory) * bal.meat_value();
+            let rest = if x.meat_need > 0.0 { 1.0 - x.s_meat } else { 1.0 };
+            x.insect_need = if x.insects > 0.0 { 0.5 * x.food * rest / eff } else { 0.0 };
+            demand += x.insect_need;
+        }
+        let mut eaten = 0.0f32;
+        for x in d.iter_mut() {
+            if x.insect_need > 0.0 {
+                x.s_insect = 0.5 * (cfg.graze_fraction * x.insects / demand).min(1.0);
+                eaten += 2.0 * x.s_insect * x.insect_need;
+            }
+        }
+        self.eat_layer(r, eaten, |m| &mut m.insects);
+        let mut demand = 0.0f32;
+        for x in d.iter_mut() {
+            let eff = crate::stats::fruit_efficiency(x.carnivory) * bal.fruit_value();
+            let rest = if x.meat_need > 0.0 { 1.0 - x.s_meat } else { 1.0 } * (1.0 - x.s_insect);
+            x.fruit_need = if x.fruit > 0.0 { x.food * rest / eff } else { 0.0 };
+            demand += x.fruit_need;
+        }
+        let mut eaten = 0.0f32;
+        for x in d.iter_mut() {
+            if x.fruit_need > 0.0 {
+                x.s_fruit = (cfg.graze_fraction * x.fruit / demand).min(1.0);
+                eaten += x.s_fruit * x.fruit_need;
+            }
+            // From here on, `s_fruit` is the share fruit and invertebrates met.
+            x.s_fruit = x.s_insect + (1.0 - x.s_insect) * x.s_fruit;
+        }
+        self.eat_layer(r, eaten, |m| &mut m.fruit);
+
+        // Plant food for what meat and fruit didn't cover.
         let mut plant_demand = 0.0f32;
         for x in d.iter_mut() {
             let eff = 1.0 - x.carnivory;
-            let rest = if x.meat_need > 0.0 { 1.0 - x.s_meat } else { 1.0 };
+            let rest = if x.meat_need > 0.0 { 1.0 - x.s_meat } else { 1.0 } * (1.0 - x.s_fruit);
             x.plant_need = if eff >= PLANT_EATER { x.food * rest / eff } else { 0.0 };
             plant_demand += x.plant_need;
         }
@@ -1305,17 +1383,26 @@ impl World {
                 continue;
             }
             let plant_cap = ((1.0 - x.carnivory) / cfg.plant_diet.max(1e-3)).min(1.0);
+            // Fruit first, then leaves for the rest (no fruit: `s_fruit` 0,
+            // the products in the order they had before the fruit layer).
             let s = if x.meat_need > 0.0 {
-                x.s_meat + (1.0 - x.s_meat) * x.s_plant * plant_cap
+                x.s_meat + (1.0 - x.s_meat) * x.s_fruit + (1.0 - x.s_meat) * (1.0 - x.s_fruit) * x.s_plant * plant_cap
             } else {
-                x.s_plant * plant_cap
+                x.s_fruit + (1.0 - x.s_fruit) * x.s_plant * plant_cap
             };
             // Hunters live on plants between kills but breed on meat: plants
             // count toward breeding condition only in proportion to how well
             // they digest them (agents grazing in passing stay hungry, and
             // hungry agents don't court).
+            // Fruit counts in full as far as the gut digests it.
             let breed_s = if x.meat_need > 0.0 {
-                x.s_meat + (1.0 - x.s_meat) * x.s_plant * plant_cap * ((1.0 - x.carnivory) / (1.0 - HUNTER)).min(1.0)
+                let fruit = (1.0 - x.s_meat) * x.s_fruit * crate::stats::fruit_efficiency(x.carnivory);
+                let leaves = (1.0 - x.s_meat)
+                    * (1.0 - x.s_fruit)
+                    * x.s_plant
+                    * plant_cap
+                    * ((1.0 - x.carnivory) / (1.0 - HUNTER)).min(1.0);
+                x.s_meat + fruit + leaves
             } else {
                 s
             };

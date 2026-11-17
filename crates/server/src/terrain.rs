@@ -4,8 +4,9 @@
 //! The world thread copies the map into byte layers ([`TerrainRaw`],
 //! [`DynamicRaw`]: one `u8` per tile, row-major) and the HTTP handler
 //! base64-encodes them off that thread. A 128×128 map is 16 KiB per layer;
-//! the dynamic part (water, ice, snow, vegetation, wetness) is five layers,
-//! about 110 KB of JSON, which the client polls every few seconds.
+//! the dynamic part (water, ice, snow, vegetation, wetness, and fruit while
+//! any tile bears some) is five or six layers, about 110 KB of JSON, which
+//! the client polls every few seconds.
 
 use base64::Engine;
 use evo_sim::terrain::{Biome, Map};
@@ -50,7 +51,12 @@ pub struct DynamicRaw {
     pub snow: Vec<u8>,
     pub veg: Vec<u8>,
     pub wetness: Vec<u8>,
+    /// Ripe fruit, 0..255 for 0..[`FRUIT_FULL`] food units (all 0 without it).
+    pub fruit: Vec<u8>,
 }
+
+/// Food units of fruit at which the fruit layer's byte saturates.
+pub const FRUIT_FULL: f32 = 8.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerrainRaw {
@@ -89,6 +95,7 @@ pub fn dynamic_raw(world: &World) -> DynamicRaw {
             .map(|(g, t)| if g.veg_max > 0.0 { quantize(t.veg / g.veg_max, 1.0) } else { 0 })
             .collect(),
         wetness: layer(m, |t| quantize(t.wetness, 1.0)),
+        fruit: m.fruit.iter().map(|&f| quantize(f, FRUIT_FULL)).collect(),
     }
 }
 
@@ -122,6 +129,7 @@ impl DynamicRaw {
             snow: b64(&self.snow),
             veg: b64(&self.veg),
             wetness: b64(&self.wetness),
+            fruit: if self.fruit.iter().any(|&f| f > 0) { b64(&self.fruit) } else { String::new() },
         }
     }
 }
