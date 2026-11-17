@@ -300,7 +300,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   });
 
   const page = h('div', { class: 'screen design' },
-    h('header', { class: 'topbar' }, h('strong', {}, 'Design your founders'),
+    h('header', { class: 'topbar' }, h('strong', { class: 'topbar-title' }, 'Design your founders'),
       h('span', { class: 'muted' }, 'After launch the design changes only through breeding, mutation and selection.'),
       h('span', { class: 'spacer' }), h('button', { class: 'secondary', onclick: cb.onLogout }, 'Log out')),
     h('div', { class: 'design-body' },

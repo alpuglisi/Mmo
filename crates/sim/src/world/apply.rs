@@ -230,6 +230,7 @@ impl World {
         }
         if intent.action == Action::Migrate && self.journey_death(i, moved, rng) {
             self.kill(i, DeathCause::Journey);
+            self.leave_carrion(i, DeathCause::Journey);
             return false;
         }
 
@@ -277,6 +278,11 @@ impl World {
             _ => {}
         }
         if !self.organisms[i].alive {
+            // A hunter poisoned by its prey (`attack`) lies where it fell,
+            // once its turn is over (it still eats and strikes in it).
+            if self.organisms[i].death == Some(DeathCause::Toxin) {
+                self.leave_carrion(i, DeathCause::Toxin);
+            }
             return false;
         }
 
@@ -351,16 +357,7 @@ impl World {
     pub(super) fn finish(&mut self, i: usize, settled: Settled, rng: &mut SimRng) {
         if let Some(cause) = settled.death {
             self.kill(i, cause);
-            // Carrion (`Balance::carrion`): a body that died of anything
-            // but drowning is left as a carcass, a starved one at half.
-            let carrion = self.config.balance.carrion;
-            if carrion > 0.0 && cause != DeathCause::Drowning {
-                let o = &self.organisms[i];
-                let lean = if cause == DeathCause::Starvation { 0.5 } else { 1.0 };
-                let meat = o.mass() * self.config.balance.meat_per_kg * carrion * lean;
-                let pos = o.pos;
-                self.map.tile_at_mut(pos).meat += meat;
-            }
+            self.leave_carrion(i, cause);
             return;
         }
         if settled.matured {
@@ -373,6 +370,20 @@ impl World {
         }
         if matches!(&self.organisms[i].pregnancy, Some(p) if self.tick >= p.due_tick) {
             self.give_birth(i, rng);
+        }
+    }
+
+    /// Carrion (`Balance::carrion`): the body of organism `i`, dead of
+    /// `cause`, is left as a carcass where it fell, a starved one at half;
+    /// not after predation (the hunter leaves the carcass) or drowning.
+    pub(super) fn leave_carrion(&mut self, i: usize, cause: DeathCause) {
+        let carrion = self.config.balance.carrion;
+        if carrion > 0.0 && !matches!(cause, DeathCause::Drowning | DeathCause::Predation) {
+            let o = &self.organisms[i];
+            let lean = if cause == DeathCause::Starvation { 0.5 } else { 1.0 };
+            let meat = o.mass() * self.config.balance.meat_per_kg * carrion * lean;
+            let pos = o.pos;
+            self.map.tile_at_mut(pos).meat += meat;
         }
     }
 
@@ -859,6 +870,12 @@ impl World {
             return;
         }
         let (f, m) = if a.sex == Sex::Female { (i, j) } else { (j, i) };
+        // A breeding territory taken since the pair decided, by a female of
+        // her lineage who conceived earlier this tick
+        // (`Balance::breeding_territory`; false with the rule off).
+        if self.territory_taken(&self.organisms[f]) {
+            return;
+        }
         let (female, male) = (&self.organisms[f], &self.organisms[m]);
         let mf = mating::mismatch(&female.pheno, male.display());
         let mm = mating::mismatch(&male.pheno, female.display());

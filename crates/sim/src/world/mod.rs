@@ -48,6 +48,8 @@ pub mod offline;
 mod par_apply;
 #[cfg(test)]
 mod path_tests;
+#[cfg(test)]
+mod predator_tests;
 mod seasonal;
 #[cfg(feature = "serde")]
 mod snapshot;
