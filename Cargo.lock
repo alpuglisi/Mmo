@@ -576,6 +576,7 @@ dependencies = [
  "rand_pcg 0.3.1",
  "rayon",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -586,6 +587,8 @@ dependencies = [
  "png",
  "rand 0.8.8",
  "rayon",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

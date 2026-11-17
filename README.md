@@ -329,6 +329,83 @@ eras' rankings and achievements. `--catastrophes` turns on random
 catastrophes, `--catastrophe KIND@DAY` forces one (`severe_winter`,
 `megadrought`, `epidemic`, `flood_year`), `--era-years N` sets the era length.
 
+### Running experiments across machines
+
+The balance experiments run many independent worlds, so any of them can be
+split across machines (or processes) and merged back into exactly the
+report of a single run. Every machine needs the same commit (a result does
+not record the rules that produced it). Within one machine the worlds of a
+batch always run in parallel on every core (`--threads N` to limit).
+
+**`evo-sim` (sweep, compare, compare --adaptive, rankcheck, genetics).**
+Add `--shard i/n` on machine `i` of `n` (1-based); keep every other
+argument identical. Each command runs its worlds as batches of jobs (a
+sweep round's trials × seeds, a compare's two sides × seeds, the genome
+check groups and ecology worlds of `genetics`) and a shard runs only the
+jobs at positions `j` with `j % n == i - 1`. It writes everything it
+computed to `evo-sim-shard-i-of-n.json` (`--shard-out PATH`): JSON with
+the command line and one result per job key (the key names the balance,
+seed, map size, days and designs). Then, anywhere:
+
+```sh
+# machine 1, 2 and 3 (same commit, same arguments):
+evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31 --shard 1/3
+evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31 --shard 2/3
+evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31 --shard 3/3
+# collect the three files, then:
+evo-sim merge evo-sim-shard-*.json      # prints the unsharded report: score 11.60, same per-seed metrics
+```
+
+`merge` checks that the files come from one command line, replays that
+command with every world's result taken from them (nothing is simulated)
+and prints its report; `--out` files (CSV, `genetics` reports) are written
+as an unsharded run writes them. Only timings differ.
+
+**Commands with dependent stages.** A sweep's later rounds recenter on the
+earlier rounds' winner, and a screened sweep (`--screen-days`, the
+successive-halving tournament) promotes trials on the screens' results, so
+their jobs are not known until the previous stage is merged. A shard runs
+the first stage's share and stops; `merge` then writes the merged results
+to `evo-sim-merged.json` (`--cache-out PATH`), prints the next stage's
+command and exits with status 3. Run each stage on every machine with
+`--cache`; the shards' files include the merged results, so each merge
+needs only the latest files:
+
+```sh
+evo-sim sweep --trials 24 --seeds 12 --rounds 2 --shard $I/4                          # stage 1 (round 1)
+evo-sim merge evo-sim-shard-*.json                                                     # exit 3: needs round 2
+evo-sim sweep --trials 24 --seeds 12 --rounds 2 --shard $I/4 --cache evo-sim-merged.json   # stage 2
+evo-sim merge evo-sim-shard-*.json                                                     # the full report
+```
+
+Results already in a `--cache` file are never recomputed, so a stage that
+finds its whole batch cached carries on to the next one. A screened sweep
+resumes promoted worlds in memory; under `--shard` a promoted world whose
+screen ran on another machine is rerun from day 0 (the same world, so the
+same result), which costs the screen days again.
+
+**Adaptive compare.** `compare --adaptive` decides after each look whether
+to add seeds, so its looks are dependent stages. Under `--shard` it runs
+every seed up to `--max-seeds` in one stage (the fixed seed batches of all
+the looks at once); `merge` then replays the sequential test look by look on
+those results and stops at the same look with the same interval and verdict
+as an unsharded run. The price is the seeds past the stopping look (at most
+`--max-seeds`, default 48, of which an unsharded run might use 12). To avoid
+it, add `--stagewise`: one stage per look (`merge` between looks, as for a
+sweep's rounds), exact as well.
+
+**The examples.** `calibrate` (`marginal`, `tournament`) and `predlong`
+take `--shard i/n` too (worlds, or seeds, at positions `j % n == i - 1`) and
+write `calibrate-shard-i-of-n.json` / `predlong-shard-i-of-n.json` in the
+same format; their own `--merge` prints exactly the unsharded output:
+
+```sh
+cargo run --release --example calibrate -- tournament --worlds 40 --shard 2/4
+cargo run --release --example calibrate -- --merge calibrate-shard-*.json > tournament.csv
+cargo run --release --example predlong -- 6 31 32 33 34 35 36 --meat --shard 1/2
+cargo run --release --example predlong -- --merge predlong-shard-*.json
+```
+
 ### Species, eras and achievements
 
 The design doc's supporting scoring rules (`species`, `chronicle`,
