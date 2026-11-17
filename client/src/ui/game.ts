@@ -740,7 +740,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!own && !other) {
       keyed(inspActions, 'none', () => []);
       inspDetails.replaceChildren(h('p', { class: 'muted' }, model.selected === null
-        ? 'Click an organism on the map, or pick one from the Lineage tab.'
+        ? `${(narrow() || window.matchMedia('(pointer: coarse)').matches) ? 'Tap' : 'Click'} an organism on the map, or pick one from the Lineage tab.`
         : `#${model.selected} is out of sight (or dead).`));
       return;
     }

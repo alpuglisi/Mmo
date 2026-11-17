@@ -140,7 +140,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 /* A hint that wraps lines up under the label, not under the radio. */
 .choice > input[type='radio'] { width: 1.2em; margin: 0 0.4em 0 0; vertical-align: -0.1em; text-indent: 0; }
 .choice small { color: var(--muted); margin-left: 0.6em; }
-.traits { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 2px 24px; align-items: start; }
+.traits { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: 2px 24px; align-items: start; }
 /* `.traits >`: market.css styles its own `.trait` chips, loaded after this file. */
 .traits > .trait { display: grid; grid-template-columns: 9.5em 1fr 3em 3em; align-items: center; gap: 8px; padding: 3px 0; }
 .trait-label { display: flex; align-items: center; gap: 4px; min-width: 0; }
@@ -388,7 +388,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .tabs { order: 2; border-bottom: 0; border-top: 1px solid var(--border); min-height: var(--tabbar-h, 50px); flex-shrink: 0;
     padding-bottom: env(safe-area-inset-bottom); }
   .tabs { display: flex; }
-  .tab { flex: 1 1 0; min-height: 48px; font-size: 12px; border-bottom: 0; border-top: 2px solid transparent; }
+  .tab { flex: 1 1 auto; min-height: 48px; font-size: 12px; border-bottom: 0; border-top: 2px solid transparent; }
   /* The bottom bar is tight: the count sits above the label's corner. */
   .tab .badge { position: absolute; top: 3px; right: 2px; margin-left: 0; }
   .game:not(.sheet-open) .tab.active { color: var(--muted); border-top-color: transparent; }
