@@ -367,6 +367,10 @@ mod tests {
         assert_eq!(f(&w, ids[1]), 1.0, "possessed");
     }
 
+    /// Days the hunting tests run: long enough for the wild world's hunters
+    /// (a part-fruit-eating fox since the fox took its own niche) to take voles.
+    const HUNT_DAYS: u32 = 40;
+
     /// Protected prey isn't killed by hunters while kill chance is cut to
     /// zero; unprotected, the same prey is hunted. Other lineages carry on.
     #[test]
@@ -379,7 +383,7 @@ mod tests {
             if protect {
                 w.set_offline_protection(BTreeSet::from([0]), HashSet::new());
             }
-            for _ in 0..20 * w.config.ticks_per_day {
+            for _ in 0..HUNT_DAYS * w.config.ticks_per_day {
                 w.step();
             }
             w.counters.deaths_by_lineage.get(&(0, DeathCause::Predation)).copied().unwrap_or(0)
@@ -498,7 +502,7 @@ mod tests {
                     HomeRange { owner, lineage: 0, group, center: Vec2::new(32.0, 32.0), radius: 100.0, strength: 1.0 };
                 w.set_home_ranges(vec![r]);
             }
-            for _ in 0..20 * w.config.ticks_per_day {
+            for _ in 0..HUNT_DAYS * w.config.ticks_per_day {
                 w.step();
             }
             w.counters.deaths_by_lineage.get(&(0, DeathCause::Predation)).copied().unwrap_or(0)

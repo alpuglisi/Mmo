@@ -45,5 +45,7 @@ fn founding_picks_the_same_homes() {
 }
 
 /// From the home search before `World::passable_regions` used
-/// `terrain::passable` and run labelling (commit c50ca26).
-const EXPECTED: u64 = 0x43e1_cbe2_a1a0_2b21;
+/// `terrain::passable` and run labelling (commit c50ca26: 0x43e1_cbe2_a1a0_2b21),
+/// re-recorded when the standard fox's design changed (carnivory 0.6, *The
+/// fox in its own niche*): the search is unchanged, the fox's homes moved.
+const EXPECTED: u64 = 0xfe77_2129_f5d8_f371;
