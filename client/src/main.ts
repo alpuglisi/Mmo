@@ -110,6 +110,7 @@ function start(session: Session): void {
 async function showDesign(r: Running, refound = false): Promise<void> {
   const el = await designScreen({
     token: r.session.token,
+    player: r.session.player,
     onFounded: () => void showGame(r),
     onUnauthorized: sessionExpired,
     onLogout: logout,

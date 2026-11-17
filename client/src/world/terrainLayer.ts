@@ -9,8 +9,8 @@
 //
 // The light of the hour (palette.ts `lightAt`) tints the whole layer, eased.
 
-import { BufferImageSource, Container, Sprite, Texture } from 'pixi.js';
-import { baseTpxFor, buildFields, detailFor, paintRegion, regionHash, type TerrainFields } from './terrainArt';
+import { BufferImageSource, Container, Rectangle, Sprite, Texture } from 'pixi.js';
+import { baseTpxFor, buildFields, detailFor, paintRegion, regionHash, upsample, type TerrainFields } from './terrainArt';
 import type { TerrainGrid } from './terrain';
 import { TextureCache } from './textureCache';
 import { lightAt, toHex, type Rgb } from './palette';
@@ -25,6 +25,19 @@ const SLICE_TEXELS = 4096;
 const CHUNK_BYTES = 24 * 1024 * 1024;
 /** Easing of the hour's light (ms). */
 const LIGHT_TAU_MS = 1500;
+/**
+ * Tiles of border painted round every chunk (and cropped by its texture
+ * frame): the linear filter at a chunk's edge then blends with the real
+ * neighbouring ground instead of the chunk's own clamped edge, so there is
+ * no seam between chunks.
+ */
+export const APRON = 1;
+/**
+ * A repainted chunk waits to be shown with the other visible chunks being
+ * repainted (no patchwork of old and new); never longer than this (ms), so a
+ * map that keeps changing (fast clocks) can't hold old snow on screen forever.
+ */
+export const HOLD_MAX_MS = 600;
 
 interface Chunk {
   key: string;
@@ -33,6 +46,8 @@ interface Chunk {
   tpx: number;
   tw: number;
   th: number;
+  /** Texel rows of its painting (the apron included). */
+  rows: number;
   buf: Uint8Array;
   source: BufferImageSource;
   texture: Texture;
@@ -40,12 +55,14 @@ interface Chunk {
   /** Fields checksum the chunk was (or is being) painted from, and the terrain generation it was checked at. */
   hash: number;
   gen: number;
-  /** Next texel row to paint; `th * tpx` when done. */
+  /** Next texel row to paint; `rows` when done. */
   row: number;
   /** Shown at least once (its texture holds a whole painting). */
   shown: boolean;
   /** Repainted, waiting to be shown together with the other visible chunks being repainted. */
   held: boolean;
+  /** When it started waiting (ms, `performance.now`). */
+  heldSince: number;
 }
 
 export interface TerrainStats {
@@ -141,11 +158,7 @@ export class TerrainLayer {
     const buf = new Uint8Array(W * h * tpx * 4);
     const quick = new Uint8Array(w * h * 4);
     paintRegion(this.fields!, 0, 0, w, h, 1, quick);
-    const q32 = new Uint32Array(quick.buffer), b32 = new Uint32Array(buf.buffer);
-    for (let y = 0; y < h * tpx; y++) {
-      const qr = ((y / tpx) | 0) * w, br = y * W;
-      for (let x = 0; x < W; x++) b32[br + x] = q32[qr + ((x / tpx) | 0)];
-    }
+    upsample(quick, w, h, tpx, buf);
     this.stats.baseMs = performance.now() - t0;
     this.stats.texels += w * h;
     const pot = (n: number) => (n & (n - 1)) === 0;
@@ -210,19 +223,19 @@ export class TerrainLayer {
       const c = this.chunk(cx, cy, detail);
       if (fresh) painted = true;
       this.visible.add(c);
-      if (c.row >= c.th * c.tpx) {
+      if (c.row >= c.rows) {
         // Painted: repaint if its tiles changed (keep showing the old one meanwhile).
         if (c.gen !== this.gen) {
           c.gen = this.gen;
-          const h = regionHash(f, c.cx * CHUNK, c.cy * CHUNK, c.tw, c.th);
+          const h = chunkHash(f, c.cx, c.cy, c.tw, c.th);
           if (h !== c.hash) { c.hash = h; c.row = 0; }
         }
       }
-      while (c.row < c.th * c.tpx && budgetLeft()) {
+      while (c.row < c.rows && budgetLeft()) {
         this.paintSlice(c);
         painted = true;
       }
-      if (c.row < c.th * c.tpx) pending++;
+      if (c.row < c.rows) pending++;
       c.sprite.visible = c.shown;
       if (!c.shown) this.standIn(cx, cy, detail);
     }
@@ -231,10 +244,16 @@ export class TerrainLayer {
       this.paintBaseSlice();
       painted = true;
     }
-    // Repainted chunks show at once, when no visible one is still repainting.
+    // Repainted chunks show at once, when no visible one is still repainting
+    // (or when one has waited too long).
     let repainting = false;
-    for (const c of this.visible) if (c.shown && c.row < c.th * c.tpx) repainting = true;
-    if (!repainting) {
+    let overdue = false;
+    const now = performance.now();
+    for (const c of this.visible) {
+      if (c.shown && c.row < c.rows) repainting = true;
+      if (c.held && now - c.heldSince > HOLD_MAX_MS) overdue = true;
+    }
+    if (!repainting || overdue) {
       for (const c of this.visible) {
         if (!c.held) continue;
         c.held = false;
@@ -266,16 +285,20 @@ export class TerrainLayer {
     return this.chunks.get(key, () => {
       const f = this.fields!;
       const tw = Math.min(CHUNK, f.width - cx * CHUNK), th = Math.min(CHUNK, f.height - cy * CHUNK);
-      const buf = new Uint8Array(tw * tpx * th * tpx * 4);
-      const source = new BufferImageSource({ resource: buf, width: tw * tpx, height: th * tpx, scaleMode: 'linear' });
-      const texture = new Texture({ source });
+      // Painted with an apron of neighbouring tiles; the frame shows the chunk itself.
+      const pw = (tw + 2 * APRON) * tpx, ph = (th + 2 * APRON) * tpx;
+      const buf = new Uint8Array(pw * ph * 4);
+      const source = new BufferImageSource({ resource: buf, width: pw, height: ph, scaleMode: 'linear' });
+      const texture = new Texture({ source, frame: new Rectangle(APRON * tpx, APRON * tpx, tw * tpx, th * tpx) });
       const sprite = new Sprite(texture);
-      // A hair larger than the chunk so neighbours overlap instead of leaving a seam.
       sprite.position.set(cx * CHUNK, cy * CHUNK);
-      sprite.scale.set((tw + 0.02) / (tw * tpx), (th + 0.02) / (th * tpx));
+      sprite.scale.set(1 / tpx);
       sprite.visible = false;
       this.chunkLayer.addChild(sprite);
-      return { key, cx, cy, tpx, tw, th, buf, source, texture, sprite, hash: regionHash(f, cx * CHUNK, cy * CHUNK, tw, th), gen: this.gen, row: 0, shown: false, held: false };
+      return {
+        key, cx, cy, tpx, tw, th, rows: ph, buf, source, texture, sprite, hash: chunkHash(f, cx, cy, tw, th), gen: this.gen, row: 0,
+        shown: false, held: false, heldSince: 0,
+      };
     });
   }
 
@@ -297,16 +320,19 @@ export class TerrainLayer {
 
   private paintSlice(c: Chunk): void {
     const t0 = performance.now();
-    const w = c.tw * c.tpx;
+    const w = (c.tw + 2 * APRON) * c.tpx;
     const rows = Math.max(1, Math.floor(SLICE_TEXELS / w));
-    const to = Math.min(c.th * c.tpx, c.row + rows);
-    paintRegion(this.fields!, c.cx * CHUNK, c.cy * CHUNK, c.tw, c.th, c.tpx, c.buf, c.row, to);
+    const to = Math.min(c.rows, c.row + rows);
+    paintRegion(this.fields!, c.cx * CHUNK - APRON, c.cy * CHUNK - APRON, c.tw + 2 * APRON, c.th + 2 * APRON, c.tpx, c.buf, c.row, to);
     this.stats.maxSliceMs = Math.max(this.stats.maxSliceMs, performance.now() - t0);
     this.stats.texels += (to - c.row) * w;
     c.row = to;
-    if (to >= c.th * c.tpx) {
-      if (c.shown) c.held = true; // a repaint: shown with the others (no patchwork of old and new)
-      else {
+    if (to >= c.rows) {
+      if (c.shown) {
+        // A repaint: shown with the others (no patchwork of old and new), or after `HOLD_MAX_MS`.
+        if (!c.held) c.heldSince = performance.now();
+        c.held = true;
+      } else {
         c.source.update();
         c.shown = true;
       }
@@ -334,4 +360,9 @@ export class TerrainLayer {
     this.baseTex?.destroy(true);
     this.root.destroy({ children: true });
   }
+}
+
+/** A chunk's tiles and its apron: what its painting depends on. */
+function chunkHash(f: TerrainFields, cx: number, cy: number, tw: number, th: number): number {
+  return regionHash(f, cx * CHUNK - APRON, cy * CHUNK - APRON, tw + 2 * APRON, th + 2 * APRON);
 }

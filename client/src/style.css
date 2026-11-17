@@ -229,7 +229,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .dot.ring { background: none; border: 2px solid; }
 .dot.square { background: none; border: 1.5px solid; border-radius: 1px; }
-.toasts { position: absolute; top: 56px; left: 10px; display: flex; flex-direction: column; gap: 6px; max-width: min(460px, 80%); pointer-events: none; }
+.toasts { position: absolute; top: calc(56px + var(--cat-h, 0px)); left: 10px; display: flex; flex-direction: column; gap: 6px; max-width: min(460px, 80%); pointer-events: none; }
 .toast { padding: 6px 10px; border-radius: 6px; background: rgba(22, 27, 34, 0.94); border-left: 3px solid var(--accent); }
 .toast.error { border-left-color: var(--bad); }
 .toast-more { color: var(--muted); }
@@ -245,7 +245,6 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 /* Eight tabs don't fit one row of the desktop sidebar: two rows of four columns, never cut off. */
 .tab { white-space: nowrap; background: none; color: var(--muted); border-radius: 0; border-bottom: 2px solid transparent; }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
-.tab-short { display: none; }
 .panel { padding: 10px 14px 20px; overflow: auto; flex: 1; }
 .panel[hidden] { display: none; }
 
@@ -305,6 +304,13 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .design-side { display: contents; }
   .design-main { order: 0; width: 100%; }
   .budget { order: 1; width: 100%; }
+  .hybrid-card { order: 2; width: 100%; }
+  /* A bar along the bottom with the total and a jump to the Budget card (the page is long). */
+  .design-body > .design-dock { order: 3; display: flex; position: sticky; bottom: -16px; z-index: 2; width: calc(100% + 32px); margin: 0 -16px -16px;
+    align-items: center; gap: 10px; padding: 8px 16px calc(8px + env(safe-area-inset-bottom)); background: rgba(13, 17, 23, 0.94);
+    border-top: 1px solid var(--border, #30363d); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+  .design-dock .dock-total { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); }
+  .design-dock button { flex-shrink: 0; }
   .avatar-card {
     order: -1; position: sticky; top: -16px; z-index: 2; width: 100%; margin-top: -4px;
     display: grid; grid-template-columns: 132px minmax(0, 1fr); grid-template-areas: 'fig head' 'fig cap' 'read read';
@@ -357,7 +363,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
      window fold into its menu) and Legend; icons only but in the menu. */
   .toolbar { right: 8px; left: 8px; top: 8px; flex-wrap: nowrap; gap: 6px; }
   .tool { flex-shrink: 0; min-height: 40px; min-width: 40px; justify-content: center; }
-  .toolbar > .tool-group .tool-label, #legend-toggle .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .toolbar > .tool-group .tool-label, #legend-toggle .tool-label, #food-toggle .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .tool .icon { width: 18px; height: 18px; }
   .tools-menu { display: none; position: absolute; top: 48px; left: 0; min-width: 220px; max-width: calc(100% - 0px); flex-direction: column; gap: 6px;
     background: rgba(13, 17, 23, 0.92); border-radius: 12px; padding: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); z-index: 4;
@@ -376,7 +382,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .legends { width: auto; left: 8px; right: 8px; top: 56px; bottom: auto; }
   .stage-wrap.show-legend .toasts { display: none; } /* the open legend takes their place */
   .hint { max-width: none; }
-  .toasts { top: 58px; left: 8px; right: 8px; max-width: none; }
+  .toasts { top: calc(58px + var(--cat-h, 0px)); left: 8px; right: 8px; max-width: none; }
   .toast { font-size: 12px; padding: 4px 8px; }
   .toast:nth-last-child(n+3) { display: none; } /* the two newest only: keep the map visible */
 
@@ -397,9 +403,6 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .tabs { display: flex; }
   /* Eight tabs share the bar equally (a phone of 390 px gives each about 48 px). */
   #tabbar .tab { flex: 1 1 0; min-width: 0; overflow: hidden; }
-  /* Short labels in the bottom bar (`TAB_SHORT`). */
-  .tab .tab-long { display: none; }
-  .tab .tab-short { display: inline; }
   .tab { min-height: 48px; font-size: 11.5px; padding-left: 1px; padding-right: 1px; letter-spacing: -0.01em; border-bottom: 0; border-top: 2px solid transparent; }
   /* The bottom bar is tight: the count sits above the label's corner. */
   .tab .badge { position: absolute; top: 3px; right: 2px; margin-left: 0; }
@@ -489,3 +492,57 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .vision-swatch.seen { background: color-mix(in srgb, var(--vision-seen) 30%, transparent); border-color: color-mix(in srgb, var(--vision-seen) 75%, transparent); }
 .vision-swatch.depth { background: radial-gradient(circle, color-mix(in srgb, var(--vision-depth) 70%, white) 1.2px, transparent 1.5px) 0 0 / 5px 5px, color-mix(in srgb, var(--vision-depth) 48%, var(--panel)); border-color: var(--vision-depth); }
 .vision-swatch.blind { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--vision-blind) 60%, transparent) 0 1.3px, color-mix(in srgb, var(--vision-blind) 20%, transparent) 1.3px 4.2px); border-color: var(--vision-blind); }
+
+/* A catastrophe under way: pinned over the map under the toolbar, never truncated (it wraps). */
+.catastrophe-alert { position: absolute; z-index: 6; left: 50%; transform: translateX(-50%); top: 52px; width: min(640px, calc(100% - 16px)); display: flex; gap: 8px; align-items: flex-start;
+  background: color-mix(in srgb, #3a1515 92%, transparent); border: 1px solid var(--bad); border-radius: 8px; padding: 8px 10px; color: var(--text); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4); font-size: 0.92em; }
+.catastrophe-alert[hidden] { display: none; }
+.catastrophe-alert .cat-icon { color: var(--bad); font-size: 1.2em; line-height: 1.2; }
+.catastrophe-alert .cat-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.catastrophe-alert .cat-title { color: #ffb4ab; }
+.catastrophe-alert .cat-left { color: var(--muted); }
+.catastrophe-alert .cat-effect { overflow-wrap: anywhere; }
+.catastrophe-alert.folded .cat-effect { display: none; }
+.catastrophe-alert .cat-fold { padding: 2px 8px; font-size: 0.85em; flex-shrink: 0; }
+@media (max-width: 760px) {
+  /* Phones: under the toolbar row, full width; the top bar pill is dropped (the date keeps the room). */
+  .catastrophe-alert { top: 56px; font-size: 13px; }
+  .topbar .catastrophe-pill { display: none; }
+}
+
+/* The clock: the long form on wide screens, a compact one on phones (no ellipsis). */
+#clock .clock-short { display: none; }
+@media (max-width: 760px) {
+  /* The date never gives way: the pills beside it shrink (one line each) instead. */
+  #clock { text-overflow: clip; flex: 0 0 auto; }
+  .topbar .pill { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+  /* Renown as its number (the title and label say the rest); a live connection as a green dot. */
+  .balance-pill .pill-word { display: none; }
+  .topbar .pill.conn-open { font-size: 0; width: 12px; height: 12px; padding: 0; border-radius: 50%; background: var(--good, #3fb950); flex: 0 0 auto; }
+  #clock .clock-long { display: none; }
+  #clock .clock-short { display: inline; }
+}
+
+/* The population cap (Lineage tab). */
+.cap-status { font-weight: 600; }
+.cap-near { color: var(--warn, #d29922); }
+.cap-full { color: var(--bad); }
+.cap-note { margin: 2px 0 8px; }
+
+/* Whose genes (Genes tab): first after the counts, with the reasons spelled out. */
+.whose-genes .whose-headline { font-size: 1.05rem; font-weight: 600; margin: 2px 0 6px; }
+.whose-genes.diluted { border-color: var(--warn, #d29922); }
+.whose-genes.diluted .whose-headline { color: var(--warn, #d29922); }
+.whose-why { margin: 6px 0 0; padding-left: 1.2em; color: var(--muted); }
+.whose-why li { margin: 2px 0; }
+
+/* Design editor: interbreeding check and founding-size hint. */
+.hybrid-card h2 { margin-bottom: 4px; }
+.hybrid-card .hybrid-headline { font-weight: 600; margin: 2px 0 4px; }
+.hybrid-warn { border-color: var(--warn, #d29922); }
+.hybrid-warn .hybrid-headline { color: var(--warn, #d29922); }
+.hybrid-ok .hybrid-headline { color: var(--good, #3fb950); }
+.hybrid-points { margin: 4px 0; padding-left: 1.2em; }
+.hybrid-points li { margin: 3px 0; }
+.food-hint { margin: 4px 0; color: var(--muted); }
+.food-hint.food-warn { color: var(--warn, #d29922); }

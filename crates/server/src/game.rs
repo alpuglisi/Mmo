@@ -359,6 +359,12 @@ pub struct Game {
     progress: BTreeMap<PlayerId, Progress>,
     /// Last day a `need` alert was raised per organism.
     need_alerted: BTreeMap<OrgId, u64>,
+    /// Watched organisms' deaths not yet announced: grouped per player into
+    /// one alert per game hour (`announce_deaths`). Not saved.
+    pending_deaths: BTreeMap<PlayerId, Vec<(OrgId, Watch, Option<DeathCause>)>>,
+    /// Each player lineage's founding: the day, the founders and their mean
+    /// genes and body plan (the family tree's first stage). Saved.
+    founded: BTreeMap<u32, crate::protocol::FamilySample>,
     /// Players whose view windows are the world's level-of-detail focus.
     focused: BTreeSet<PlayerId>,
     /// Chronicle entries already announced: achievements, eras, and per
@@ -439,6 +445,9 @@ pub struct SavedGame {
     /// Offline protection spells (absent in older saves: every player with
     /// a lineage starts one at the restore).
     offline: Option<OfflineTracker>,
+    /// Each player lineage's founding as it happened (absent in older saves:
+    /// the family tree then starts at the first recorded day).
+    founded: BTreeMap<u32, crate::protocol::FamilySample>,
 }
 
 impl SavedGame {
@@ -542,6 +551,8 @@ impl Game {
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
             need_alerted: BTreeMap::new(),
+            pending_deaths: BTreeMap::new(),
+            founded: BTreeMap::new(),
             focused: BTreeSet::new(),
             seen_achievements: 0,
             seen_eras: 0,
@@ -586,6 +597,7 @@ impl Game {
             season: Some(self.season.clone()),
             last_season_record: self.last_season_record.clone(),
             offline: Some(self.offline.clone()),
+            founded: self.founded.clone(),
         }
     }
 
@@ -660,6 +672,7 @@ impl Game {
         // every lineage is unattended.
         g.sync_focus();
         g.offline_resume(saved.offline);
+        g.founded = saved.founded;
         g
     }
 
@@ -879,6 +892,7 @@ impl Game {
         // New organisms: the next state build indexes the world again.
         self.state_cache.invalidate();
         self.lineage_of.insert(player, lineage);
+        self.founded.insert(lineage, self.founding_sample(&founders));
         for &id in &founders {
             self.watched.insert(id, (player, Watch::Founder));
         }
@@ -2501,6 +2515,11 @@ impl Game {
         })
     }
 
+    /// Deaths of founders and possessed organisms, told to their owner with
+    /// the cause. Deaths are gathered per player and announced once a game
+    /// hour: one death as "Founder #12 starved.", several as one alert
+    /// ("5 founders died: 3 eaten, 2 starved (#12, #14, …).") rather than one
+    /// alert each.
     fn announce_deaths(&mut self, out: &mut Outbox) {
         let dead: Vec<(OrgId, PlayerId, Watch)> = self
             .watched
@@ -2511,20 +2530,22 @@ impl Game {
         for (id, player, watch) in dead {
             self.watched.remove(&id);
             self.need_alerted.remove(&id);
-            let cause = self.world.organisms.iter().find(|o| o.id == id).and_then(|o| o.death);
-            let how = match cause {
-                Some(DeathCause::Predation) => "was eaten".to_string(),
-                Some(DeathCause::OldAge) => "died of old age".to_string(),
-                Some(DeathCause::Starvation) => "starved".to_string(),
-                Some(DeathCause::Drowning) => "drowned".to_string(),
-                Some(c) => format!("died ({})", c.label()),
-                None => "died".to_string(),
+            let Some(o) = self.world.organisms.iter().find(|o| o.id == id) else {
+                // Gone without a body: with level of detail on it went into a
+                // statistical cohort far from every player, alive; not a death.
+                if !self.world.config.lod.enabled {
+                    self.pending_deaths.entry(player).or_default().push((id, watch, None));
+                }
+                continue;
             };
-            let who = match watch {
-                Watch::Founder => "Founder",
-                Watch::Possessed => "Possessed",
-            };
-            self.alert(player, AlertKind::Death, format!("{who} #{id} {how}."), Some(id), out);
+            self.pending_deaths.entry(player).or_default().push((id, watch, o.death));
+        }
+        if !self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) || self.pending_deaths.is_empty() {
+            return;
+        }
+        for (player, deaths) in std::mem::take(&mut self.pending_deaths) {
+            let (text, organism) = death_alert_text(&deaths);
+            self.alert(player, AlertKind::Death, text, organism, out);
         }
     }
 
@@ -2603,7 +2624,7 @@ impl Game {
                         p,
                         AlertKind::World,
                         Some(PushKind::Catastrophe),
-                        format!("Catastrophe: {what} has begun (until about day {}).", c.end_day + 1),
+                        format!("Catastrophe: {what} has begun (through about day {}).", c.end_day),
                     ));
                 }
             }
@@ -2615,7 +2636,10 @@ impl Game {
                         p,
                         AlertKind::World,
                         None,
-                        format!("The {what} is over: {lost} fewer organisms in the world than at its start."),
+                        format!(
+                            "{} is over: {lost} fewer organisms in the world than at its start.",
+                            catastrophe_name(c.kind)
+                        ),
                     ));
                 }
             }
@@ -2705,6 +2729,10 @@ impl Game {
                     .collect(),
                 carnivory: s.carnivory,
                 body_size: s.body_size,
+                endothermy: family::rep_mean(s.reps(), Gene::Endothermy),
+                birth_mode: family::rep_mean(s.reps(), Gene::BirthMode),
+                leg_count: family::rep_count(s.reps(), evo_sim::morph::MorphLocus::LegCount),
+                eye_count: family::rep_count(s.reps(), evo_sim::morph::MorphLocus::EyeCount),
             })
             .collect();
         species.sort_by(|a, b| {
@@ -3076,6 +3104,7 @@ impl Game {
             lineages: self.world.lineages.len(),
             days_to_winter: self.world.days_until_winter(),
             winter_provision: self.winter_provision_now(),
+            lineage_cap: self.world.config.lineage_cap,
         }
     }
 }
@@ -3092,6 +3121,79 @@ pub fn catastrophe_view(c: &Catastrophe) -> CatastropheView {
         population_after: c.population_after,
         players_before: c.players_before.clone(),
         survivors: c.survivors.clone(),
+    }
+}
+
+/// How a death is told: "was eaten", "starved", "died of thirst", …
+fn death_words(cause: Option<DeathCause>) -> &'static str {
+    match cause {
+        Some(DeathCause::Predation) => "was eaten",
+        Some(DeathCause::OldAge) => "died of old age",
+        Some(DeathCause::Starvation) => "starved",
+        Some(DeathCause::Thirst) => "died of thirst",
+        Some(DeathCause::Exposure) => "died of cold or heat",
+        Some(DeathCause::Toxin) => "was poisoned",
+        Some(DeathCause::Drowning) => "drowned",
+        Some(DeathCause::Attrition) => "died of exhaustion",
+        Some(DeathCause::Recessive) => "died of an inherited defect",
+        Some(DeathCause::Disease) => "died of disease",
+        Some(DeathCause::Journey) => "died on a journey",
+        None => "died",
+    }
+}
+
+/// A cause as a count's noun phrase: "3 eaten", "2 of thirst".
+fn death_count_words(cause: Option<DeathCause>, n: usize) -> String {
+    let what = match cause {
+        Some(DeathCause::Predation) => "eaten",
+        Some(DeathCause::OldAge) => "of old age",
+        Some(DeathCause::Starvation) => "starved",
+        Some(DeathCause::Thirst) => "of thirst",
+        Some(DeathCause::Exposure) => "of cold or heat",
+        Some(DeathCause::Toxin) => "poisoned",
+        Some(DeathCause::Drowning) => "drowned",
+        Some(DeathCause::Attrition) => "of exhaustion",
+        Some(DeathCause::Recessive) => "of an inherited defect",
+        Some(DeathCause::Disease) => "of disease",
+        Some(DeathCause::Journey) => "on a journey",
+        None => "of an unrecorded cause",
+    };
+    format!("{n} {what}")
+}
+
+/// One alert for a player's deaths in the last hour, and the organism it
+/// is about when there is just one.
+fn death_alert_text(deaths: &[(OrgId, Watch, Option<DeathCause>)]) -> (String, Option<OrgId>) {
+    let role = |w: Watch| match w {
+        Watch::Founder => "Founder",
+        Watch::Possessed => "Possessed",
+    };
+    if let [(id, watch, cause)] = deaths {
+        return (format!("{} #{id} {}.", role(*watch), death_words(*cause)), Some(*id));
+    }
+    let founders = deaths.iter().all(|d| d.1 == Watch::Founder);
+    let mut by_cause: Vec<(Option<DeathCause>, usize)> = Vec::new();
+    for d in deaths {
+        match by_cause.iter_mut().find(|(c, _)| *c == d.2) {
+            Some(e) => e.1 += 1,
+            None => by_cause.push((d.2, 1)),
+        }
+    }
+    by_cause.sort_by_key(|b| std::cmp::Reverse(b.1));
+    let causes: Vec<String> = by_cause.iter().map(|&(c, n)| death_count_words(c, n)).collect();
+    let ids: Vec<String> = deaths.iter().take(6).map(|d| format!("#{}", d.0)).collect();
+    let more = if deaths.len() > 6 { ", …" } else { "" };
+    let who = if founders { "founders" } else { "watched organisms" };
+    (format!("{} {who} died: {} ({}{more}).", deaths.len(), causes.join(", "), ids.join(", ")), None)
+}
+
+/// The catastrophe's name to start a sentence ("The severe winter").
+fn catastrophe_name(k: CatastropheKind) -> &'static str {
+    match k {
+        CatastropheKind::SevereWinter => "The severe winter",
+        CatastropheKind::Megadrought => "The megadrought",
+        CatastropheKind::Epidemic => "The epidemic",
+        CatastropheKind::FloodYear => "The flood year",
     }
 }
 
@@ -3188,6 +3290,22 @@ mod tests {
         g.connect(10, 1, "ann");
         g.connect(20, 2, "bob");
         (g, a, b)
+    }
+
+    #[test]
+    fn death_alerts_name_the_cause_and_group() {
+        let (t, id) = death_alert_text(&[(5, Watch::Founder, Some(DeathCause::Starvation))]);
+        assert_eq!((t.as_str(), id), ("Founder #5 starved.", Some(5)));
+        let many = [
+            (1, Watch::Founder, Some(DeathCause::Predation)),
+            (2, Watch::Founder, Some(DeathCause::Thirst)),
+            (3, Watch::Founder, Some(DeathCause::Predation)),
+        ];
+        let (t, id) = death_alert_text(&many);
+        assert_eq!(t, "3 founders died: 2 eaten, 1 of thirst (#1, #2, #3).");
+        assert_eq!(id, None);
+        let mixed = [(1, Watch::Founder, None), (2, Watch::Possessed, None)];
+        assert_eq!(death_alert_text(&mixed).0, "2 watched organisms died: 2 of an unrecorded cause (#1, #2).");
     }
 
     fn place_together(g: &mut Game, a: OrgId, b: OrgId) {

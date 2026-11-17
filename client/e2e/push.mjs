@@ -9,7 +9,7 @@
 // the test checks everything from the settings card to the server's stored
 // subscription. The service worker itself registers for real.
 //
-// Checks: the card shows in the Genetics tab with every push kind; Enable
+// Checks: the card shows in the Genes tab with every push kind; Enable
 // asks for nothing more (permission granted), subscribes with the server's
 // VAPID key and POSTs the subscription, which the server then lists; a kind
 // switched off is saved to the account; a reload finds the device still
@@ -196,7 +196,7 @@ async function main() {
     const kinds = await page.$$eval('#push-kinds input[data-push-kind]', (els) => els.map((e) => [e.dataset.pushKind, e.checked]));
     if (kinds.length !== key.kinds.length || !kinds.every(([, on]) => on)) throw new Error(`push kinds: ${JSON.stringify(kinds)}`);
     if (await page.$eval('#push-toggle', (b) => b.disabled)) throw new Error('Enable is disabled');
-    step(`the settings card shows in the Genetics tab with ${kinds.length} kinds, all on`);
+    step(`the settings card shows in the Genes tab with ${kinds.length} kinds, all on`);
 
     const [req] = await Promise.all([
       page.waitForRequest((r) => r.url().endsWith('/api/push/subscribe') && r.method() === 'POST'),

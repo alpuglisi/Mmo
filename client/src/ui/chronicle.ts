@@ -34,6 +34,12 @@ export function catastropheLabel(kind: string): string {
   return CATASTROPHE_LABELS[kind] ?? kind.replace(/_/g, ' ');
 }
 
+/** What a catastrophe does, in a sentence (empty for an unknown kind). */
+export function catastropheEffect(kind: string): string {
+  const e = CATASTROPHE_EFFECTS[kind];
+  return e ? e.charAt(0).toUpperCase() + e.slice(1) + '.' : '';
+}
+
 /** The banner text for the catastrophe under way, or null. */
 export function catastropheBanner(c: CatastropheView | undefined | null, today: number): string | null {
   if (!c || !c.active) return null;
@@ -88,9 +94,13 @@ function speciesStatus(s: SpeciesView, byId: Map<number, SpeciesView>): string {
   return `~${Math.round(s.adults)} adults`;
 }
 
-/** Diet word for a mean carnivory. */
+/**
+ * Diet word for a mean carnivory: the same classes as the creature sprites
+ * and the server's appearance (`appearance.rs`: below 0.34 herbivore, below
+ * 0.67 omnivore), so one animal never gets two diet words.
+ */
 export function dietLabel(carnivory: number): string {
-  return carnivory < 0.3 ? 'herbivore' : carnivory < 0.6 ? 'omnivore' : 'carnivore';
+  return carnivory < 0.34 ? 'herbivore' : carnivory < 0.67 ? 'omnivore' : 'carnivore';
 }
 
 /** "diet:carnivore" → "carnivores", "biome:forest" → "forest". */
@@ -136,8 +146,9 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
             + `${e.catastrophes.length ? ` · ${e.catastrophes.length} catastrophe${e.catastrophes.length === 1 ? '' : 's'}` : ''}`),
           h('table', { class: 'board' },
             h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Player'), h('th', {}, 'Final share'), h('th', { title: 'Weighted by offspring raised to adulthood' }, 'Weighted'))),
-            h('tbody', {}, ...e.rows.slice(0, 8).map((r, k) => h('tr', { class: r.player === me ? 'me' : '' },
-              h('td', {}, String(k + 1)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name)), h('td', {}, pct(r.share)), h('td', {}, pct(r.weighted_share)))))),
+            // Players are ranked among players (as "you #N" says); the wild ecosystem's row has no rank.
+            h('tbody', {}, ...e.rows.slice(0, 8).map((r) => h('tr', { class: r.player === me ? 'me' : '' },
+              h('td', {}, r.player === 0 ? '—' : String(e.rows.filter((x) => x.player !== 0).indexOf(r) + 1)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name)), h('td', {}, pct(r.share)), h('td', {}, pct(r.weighted_share)))))),
           e.niches.length > 0 && h('p', { class: 'muted small' }, 'Niche leaders: ',
             e.niches.map((n) => `${nicheLabel(n.niche)} ${n.name} ${pct(n.share, 0)}`).join(' · ')));
       })),
@@ -153,7 +164,7 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
         swatch(s.dominant, me),
         h('strong', {}, s.name),
         h('span', { class: 'muted small' }, ` · ${dietLabel(s.carnivory)} · ${r.status} · ${s.dominant_name} ${pct(s.dominant_share, 0)} of alleles`
-          + `${s.founder_name ? ` · founded by ${s.founder_name}` : ''} · since day ${s.founded_day + 1}`));
+          + `${s.founder_name ? ` · founded by ${s.founder_name}` : ''} · detected on day ${s.founded_day + 1}`));
     })),
     species.founded.length > 0 ? h('p', { class: 'small' }, 'Species founded: ', species.founded.map((f) => `${f.name} ${f.count}`).join(' · ')) : null,
     h('h3', {}, 'Catastrophes'),

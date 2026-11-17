@@ -27,14 +27,14 @@
 // context does not come back within a few seconds.
 
 import { clampCam } from './camera';
-import { Application, Container, Graphics, Texture, UPDATE_PRIORITY, type Renderer } from 'pixi.js';
+import { Application, BufferImageSource, Container, Graphics, Sprite, Texture, UPDATE_PRIORITY, type Renderer } from 'pixi.js';
 import { actionHint, bodyRadius, creatureKey, markerScaleFor, NEAR_SCALE, specOf, type CreatureSpec, type Hint } from './creature';
 import { CreatureSprites, type MarkerParts, type StatusKind } from './sprites';
 import { ContextGuard, ErrorLog, type GuardState } from './renderGuard';
 import type { NearbyOrganism, OrgId, OwnOrganism, StateView } from '../protocol';
 import { OWN_COLOR, ownerColor } from './colors';
 import { groupColor, groupsOf, homeRangeGroup, type TerritoryDraft } from '../groups';
-import type { TerrainGrid } from './terrain';
+import { foodPixels, type TerrainGrid } from './terrain';
 import { TerrainLayer, type TerrainStats } from './terrainLayer';
 import { MARK } from './palette';
 import { isOpenGround, newTrack, Predictor, RECONCILE_SNAP, RECONCILE_TAU_MS, retarget, smoothToward, TickClock, trackAt, type Point, type Track } from './motion';
@@ -156,6 +156,9 @@ export class WorldView {
   private mapLayer = new Container();
   /** The painted terrain (world units, under the overlay). */
   readonly terrainLayer = new TerrainLayer();
+  /** The Food layer (`setFoodOverlay`): one texel per tile, over the painted map. */
+  private foodSprite = new Sprite();
+  private foodSource: BufferImageSource | null = null;
   private overlay = new Graphics();
   private markerLayer = new Container();
   private markers = new Map<OrgId, Marker>();
@@ -202,7 +205,8 @@ export class WorldView {
 
   async init(parent: HTMLElement): Promise<void> {
     this.parent = parent;
-    this.mapLayer.addChild(this.terrainLayer.root, this.overlay);
+    this.mapLayer.addChild(this.terrainLayer.root, this.foodSprite, this.overlay);
+    this.foodSprite.visible = false;
     await this.startApp(this.app);
     this.adopt(this.app);
   }
@@ -334,6 +338,34 @@ export class WorldView {
     this.terrain = g;
     this.setWorldSize(g.width, g.height);
     this.terrainLayer.setTerrain(g);
+    if (this.foodSprite.visible) this.paintFood();
+  }
+
+  /** The Food layer: where plants (and so grazers) are, bare to rich, over the map. */
+  setFoodOverlay(on: boolean): void {
+    this.foodSprite.visible = on;
+    if (on) this.paintFood();
+  }
+
+  get foodOverlay(): boolean {
+    return this.foodSprite.visible;
+  }
+
+  private paintFood(): void {
+    const g = this.terrain;
+    if (!g) return;
+    const px = foodPixels(g);
+    const same = this.foodSource && this.foodSource.width === g.width && this.foodSource.height === g.height;
+    if (same) {
+      (this.foodSource!.resource as Uint8Array).set(px);
+      this.foodSource!.update();
+      return;
+    }
+    this.foodSprite.texture?.destroy(true);
+    this.foodSource = new BufferImageSource({ resource: px, width: g.width, height: g.height, scaleMode: 'nearest' });
+    this.foodSprite.texture = new Texture({ source: this.foodSource });
+    this.foodSprite.position.set(0, 0);
+    this.foodSprite.scale.set(1);
   }
 
   /** The painted map: sizes, detail level, chunks and paint timings (tests and debugging). */
@@ -445,7 +477,7 @@ export class WorldView {
     /** The group whose territory is drawn as the home range, or null. */
     home: number | null;
   } {
-    const groups = groupsOf(this.state);
+    const groups = drawnGroups(this.state);
     const territories = groups.flatMap((g) => (g.territory ? [{ group: g.id, x: g.territory.x, y: g.territory.y, radius: g.territory.radius }] : []));
     const rallies = groups.flatMap((g) => (g.rally ? [{ group: g.id, x: g.rally.x, y: g.rally.y, radius: g.rally.radius }] : []));
     return { territories, rallies, draft: this.territoryDraft, home: homeRangeGroup(groups)?.id ?? null };
@@ -646,7 +678,7 @@ export class WorldView {
     g.stroke({ width: 1.75 * px, color: MARK.view, alpha: 0.7, cap: 'round', join: 'round' });
     // Each group's territory (a tinted disc, the picked group's outline
     // bolder) and migration target (a cross in a ring; pink for a lone group).
-    const groups = groupsOf(s);
+    const groups = drawnGroups(s);
     for (const grp of groups) {
       const color = groups.length > 1 ? groupColor(grp.id) : 0xf778ba;
       const t = grp.territory;
@@ -902,3 +934,9 @@ function applyMarker(sprites: CreatureSprites, parts: MarkerParts, spec: Creatur
     parts.icon.position.set(r * 1.1, -r * 1.75 - 3);
   }
 }
+
+/** The groups the map draws: an emptied group (every member dead) shows no territory, rally or target. */
+function drawnGroups(s: Parameters<typeof groupsOf>[0]): ReturnType<typeof groupsOf> {
+  return groupsOf(s).filter((g) => g.id === 0 || g.members > 0);
+}
+

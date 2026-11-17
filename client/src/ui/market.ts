@@ -223,7 +223,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
         if (!mine) return;
         const r = await deps.send({ type: 'buy_listing', listing: l.id, mine: mine.id });
         if (r.ok) {
-          model.toast('info', `Bought a mating of #${mine.id} with ${l.owner_name}'s #${l.organism}: escort it from the Matings tab.`);
+          model.toast('info', `Bought a mating of #${mine.id} with ${l.owner_name}'s #${l.organism}: escort it from the Mates tab.`);
           await refresh();
         }
       });

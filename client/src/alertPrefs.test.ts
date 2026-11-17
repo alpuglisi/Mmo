@@ -8,7 +8,7 @@ describe('alert preferences', () => {
     const p = normalizePrefs({ hidden: ['world', 'daily_summary', 'world', 'bogus' as AlertKind], toast: ['world', 'market', 'birth', 'birth'] });
     expect(p).toEqual({ hidden: ['daily_summary', 'world'], toast: ['birth', 'market'] });
     expect(normalizePrefs(null)).toEqual({ hidden: [], toast: [] });
-    expect(normalizePrefs(DEFAULT_ALERT_PREFS)).toEqual({ hidden: [], toast: ['death', 'need', 'market'] });
+    expect(normalizePrefs(DEFAULT_ALERT_PREFS)).toEqual({ hidden: [], toast: ['death', 'need', 'world', 'market'] });
   });
 
   it('switches show and toast per kind', () => {
@@ -19,7 +19,7 @@ describe('alert preferences', () => {
     // Hiding a kind stops its toasts too.
     p = setPref(p, 'death', 'show', false);
     expect(shows(p, 'death') || toasts(p, 'death')).toBe(false);
-    expect(p).toEqual({ hidden: ['death'], toast: ['birth', 'need', 'market'] });
+    expect(p).toEqual({ hidden: ['death'], toast: ['birth', 'need', 'world', 'market'] });
     // Toasting a hidden kind shows it again.
     p = setPref(p, 'death', 'toast', true);
     expect(shows(p, 'death') && toasts(p, 'death')).toBe(true);

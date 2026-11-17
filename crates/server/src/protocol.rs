@@ -453,7 +453,8 @@ pub struct AlertPrefs {
 impl AlertPrefs {
     /// Toasted by default: what needs attention now.
     pub fn default_toast() -> Vec<AlertKind> {
-        vec![AlertKind::Death, AlertKind::Need, AlertKind::Market]
+        // World events (catastrophes, era ends) too: they must not be missed.
+        vec![AlertKind::Death, AlertKind::Need, AlertKind::World, AlertKind::Market]
     }
 
     /// Sorted, without duplicates, and nothing hidden is toasted.
@@ -1050,6 +1051,10 @@ pub struct WorldSummary {
     /// reserves full: `GameConfig::winter_provision`).
     #[serde(default)]
     pub winter_provision: bool,
+    /// Most living organisms (young included) one player may have: at it,
+    /// births pause (`WorldConfig::lineage_cap`, scaled to the map).
+    #[serde(default)]
+    pub lineage_cap: usize,
 }
 
 /// One world of `GET /api/worlds`.
@@ -1095,6 +1100,11 @@ pub struct TerrainView {
     pub river: String,
     /// Water depth at normal wetness, centimeters (capped at 255).
     pub base_water: String,
+    /// Most plant food each tile holds, 0..255 for none..the map's richest
+    /// tile (absent from older servers). With the dynamic `veg` share it gives
+    /// the food on a tile now.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub veg_max: String,
     pub dynamic: TerrainDynamic,
 }
 
@@ -1800,6 +1810,18 @@ pub struct SpeciesView {
     pub lineages: Vec<SpeciesLineage>,
     pub carnivory: f32,
     pub body_size: f32,
+    /// Mean expressed thermoregulation and birth mode genes of its
+    /// representatives, and their usual leg and eye counts: with `carnivory`
+    /// and `body_size`, what decides who it can interbreed with
+    /// (`mating::body_plan_gap`). Absent from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endothermy: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birth_mode: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leg_count: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eye_count: Option<u8>,
 }
 
 /// `GET /api/lineage/tree`: what the caller's lineage looked like over
