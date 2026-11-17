@@ -2992,10 +2992,12 @@ cargo run --release --features serde -p evo-sim --example perfbench -- --seeds 4
 default balance (`presets::standard_world`) and with
 `Balance::carnivore_diet()` + `presets::niche_world`, and prints the wall
 time, the time per phase and a determinism fingerprint (FNV-1a of the final
-snapshot). Every optimisation below leaves the fingerprints
-(`e37d27fc27ac144e` default, `c32bf3e8057496e8` meat, seed 31), the sweep
-check (`evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`:
-score 11.60) and the `predlong` output byte for byte unchanged.
+snapshot). Every exact optimisation below left the fingerprints of its
+day (`e37d27fc27ac144e` default, `c32bf3e8057496e8` meat, seed 31, at the
+time), the sweep check (`evo-sim sweep --size 96 --trials 1 --seeds 12
+--rounds 1 --seed 31`: score 11.60 then) and the `predlong` output byte for
+byte unchanged; staggered decisions (below, on by default since snapshot
+version 32) are the one deliberate change of results.
 
 What changed:
 
@@ -3045,15 +3047,17 @@ cells and 6–8-tile ranges, under 1% of far cells lie wholly in range), and
 fewer close looks (the cost moves to the far-neighbor loop and the
 selection: no gain).
 
-**Staggered decisions** (`Balance::decide_interval`, off by default, so
-default worlds are unchanged): at `k >= 2` a calm organism decides afresh
+**Staggered decisions** (`Balance::decide_interval`, 2 by default since
+snapshot version 32; saves from version 31 and before read 1, every tick,
+and keep running as they did): at `k >= 2` a calm organism decides afresh
 every `k` ticks (staggered by id) and keeps its last intent in between,
 following its target organism (`world::stagger`). Every organism decides on
 the day's first tick, and so does every hunter and any organism that is
 possessed, fleeing, courting, provisioning or defending, that saw a threat,
 or whose target died (a first version without the hunter rule cost the
-pack hunters 3 of 4 seeds). It is not saved in snapshots. Measured
-(`--set decide_interval=K` on `perfbench`, `sweep`, `predlong`):
+pack hunters 3 of 4 seeds). Snapshots save the interval and the kept
+intents, so a restored world continues exactly. Measured before it was
+turned on (`--set decide_interval=K` on `perfbench`, `sweep`, `predlong`):
 
 | | off | `k = 2` | `k = 3` |
 | --- | --- | --- | --- |
@@ -3065,10 +3069,23 @@ pack hunters 3 of 4 seeds). It is not saved in snapshots. Measured
 | `predlong -- 3 --meat`, seeds 31–34: fox / pack hunters | 4/4, 4/4 | 3/4, 4/4 | |
 
 The scores and survival counts lie within seed noise of the defaults (four
-seeds swing the fox from 1/4 to 3/4 between equally valid trajectories),
-but the setting changes reaction times, so it stays off until a longer
-comparison (`evo-sim compare --set decide_interval=2 vs defaults`) says
-it is safe.
+seeds swing the fox from 1/4 to 3/4 between equally valid trajectories).
+Before turning it on, on top of the strike fixes (default sweep check
+11.50):
+
+- `evo-sim compare --adaptive --set decide_interval=2` against every-tick
+  decisions, 48 paired seeds (96×96, 120 days): A − B = +0.09 (95% CI
+  −0.06 … +0.24; sequential CI −0.09 … +0.27), verdict "no difference that
+  matters" (within ±0.3). Survival of every lineage within ±6%; the one
+  clear shift is the meadow voles' mean head count (−98 ± 35) and the wild
+  legacy share (−2.6 ± 1.9 points, herd grazers +1.7).
+- `predlong -- 6` on seeds 31–38: the predators die out on every seed
+  either way in the standard world (fox mean extinction day 297 every tick,
+  341 staggered; pack hunters 337 and 320); with `--meat`, fox 6/8 both,
+  pack hunters 4/8 every tick and 6/8 staggered. Wall time 533 → 416 s
+  (standard) and 479 → 400 s (meat).
+
+`--set decide_interval=1` restores every-tick decisions.
 
 Where the time goes now (one world, single thread, two years): perception
 in `decide` is about two thirds (neighbor scan, nearest-32 selection, the
