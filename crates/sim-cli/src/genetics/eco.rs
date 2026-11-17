@@ -44,10 +44,14 @@ pub struct EcoOpts {
     pub seeds: u64,
     pub sample_days: u32,
     pub seed: u64,
-    /// The carnivore-diet rules and predator brakes on
-    /// (`Balance::carnivore_diet`) and the predators in their niches
-    /// (`presets::niche_world`).
-    pub meat: bool,
+    /// The rules the worlds run under (the defaults unless `--meat`,
+    /// `--food` or `--classic` changed them).
+    pub balance: Balance,
+    /// Found the predators in their niches (`presets::niche_world`).
+    pub niches: bool,
+    /// How the niche world is founded with `niches` (`--founding SPEC`,
+    /// `presets::NicheFounding`; the default founds the designs).
+    pub founding: presets::NicheFounding,
 }
 
 /// One lineage at one sample.
@@ -256,9 +260,13 @@ fn count_birth(c: &Genome, owner: PlayerId, m: &Genome, f: &Genome, b: &mut Birt
 pub fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
     let started = std::time::Instant::now();
     let seed = opts.seed + world;
-    let balance = if opts.meat { Balance::default().carnivore_diet() } else { Balance::default() };
+    let balance = opts.balance;
     let config = WorldConfig { seed, width: opts.size, height: opts.size, balance, ..Default::default() };
-    let mut w = if opts.meat { presets::niche_world(config, 1) } else { presets::standard_world(config, 1) };
+    let mut w = if opts.niches {
+        presets::niche_world_with(config, 1, &opts.founding)
+    } else {
+        presets::standard_world(config, 1)
+    };
     let tpd = w.config.ticks_per_day;
     let days = opts.days;
     let names: Vec<String> = w.lineages.iter().map(|l| l.name.clone()).collect();
@@ -838,7 +846,20 @@ mod tests {
     /// reads without changing the world.
     #[test]
     fn short_world_invariants() {
-        let r = run(&EcoOpts { days: 30, years: 0, size: 48, seeds: 1, sample_days: 5, seed: 3, meat: false }, false);
+        let r = run(
+            &EcoOpts {
+                days: 30,
+                years: 0,
+                size: 48,
+                seeds: 1,
+                sample_days: 5,
+                seed: 3,
+                balance: Balance::default(),
+                niches: false,
+                founding: Default::default(),
+            },
+            false,
+        );
         let failed: Vec<&Check> = r.checks.iter().filter(|c| c.verdict == Verdict::Fail).collect();
         assert!(failed.is_empty(), "{failed:?}");
         assert!(r.csv.lines().count() > 10);
@@ -850,7 +871,17 @@ mod tests {
     #[ignore]
     fn long_ecology_runs() {
         let r = run(
-            &EcoOpts { days: 12 * 120, years: 12, size: 96, seeds: 4, sample_days: 10, seed: 1, meat: false },
+            &EcoOpts {
+                days: 12 * 120,
+                years: 12,
+                size: 96,
+                seeds: 4,
+                sample_days: 10,
+                seed: 1,
+                balance: Balance::default(),
+                niches: false,
+                founding: Default::default(),
+            },
             true,
         );
         let failed: Vec<&Check> = r.checks.iter().filter(|c| c.verdict == Verdict::Fail).collect();

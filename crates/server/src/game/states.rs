@@ -632,7 +632,8 @@ impl Game {
             slots_left: self.world.mating_slots_left(player),
             population: self.owner_population(player),
             migration: self.world.migration_order(player, 0).map(|p| [p.x, p.y]),
-            groups: self.group_views(&self.world.groups_of(player, mine.iter().map(|&i| &orgs[i as usize]))),
+            groups: self
+                .group_views_for(player, &self.world.groups_of(player, mine.iter().map(|&i| &orgs[i as usize]))),
             view,
             organisms: own,
             nearby,

@@ -160,8 +160,25 @@ export function homeRangeGroup(groups: GroupView[]): GroupView | null {
  */
 export function homeRangeNote(g: GroupView): string {
   if (!g.home_range || !g.territory) return '';
-  return 'Home range: when you log off, members inside this territory are hunted less ' +
+  const note = 'Home range: when you log off, members inside this territory are hunted less ' +
     '(from 10 minutes after you leave, fading after 12 hours). Hunger and thirst still bite.';
+  const left = protectionLeft(g);
+  return left ? `${note} ${left}` : note;
+}
+
+/**
+ * The offline protection left, for the home range's note: at most 12 hours
+ * in any 24, however often the player reconnects. Empty when the server
+ * doesn't say.
+ */
+export function protectionLeft(g: GroupView): string {
+  const m = g.protection_left_min;
+  if (m === undefined || !Number.isFinite(m)) return '';
+  if (m <= 0) return 'Protection used up for now: it comes back over the next 24 hours.';
+  const h = Math.floor(m / 60);
+  const min = Math.floor(m % 60);
+  const time = h > 0 ? (min > 0 ? `${h} h ${min} min` : `${h} h`) : `${min} min`;
+  return `Protection left: ${time} (at most 12 hours in any 24).`;
 }
 
 /** Members of each group among the drawn organisms, by group id. */

@@ -5,9 +5,11 @@
 //! [`ServerMsg::Result`] so a client can pair replies with requests.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::appearance::Appearance;
+use crate::store::BodyPlanMode;
 use crate::vision::VisionView;
 use evo_sim::organism::{Action, Organism, Sex};
 use evo_sim::terrain::Season;
@@ -936,6 +938,11 @@ pub struct GroupView {
     /// they are offline (`game::offline`; absent: no).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub home_range: bool,
+    /// On the home range: minutes of offline protection the player has
+    /// left (at most 12 hours of protection in any 24, however often they
+    /// reconnect; `game::offline`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection_left_min: Option<u32>,
 }
 
 impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
@@ -951,6 +958,7 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             claim_ready_tick: g.claim_ready_tick,
             obedience: g.obedience,
             home_range: false,
+            protection_left_min: None,
         }
     }
 }
@@ -1101,6 +1109,12 @@ pub struct TerrainDynamic {
     pub veg: String,
     /// Regional soil wetness, 0..255 for 0..1 (0.5 normal; below 0.3 is drought).
     pub wetness: String,
+    /// Ripe fruit, seeds and nuts (`Map::fruit`), 0..255 for 0..8 food units
+    /// (a full forest crop is about 6–9). Left out while no tile bears any
+    /// (no fruit layer, or out of season), so older clients and payloads
+    /// stay as they were.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fruit: String,
 }
 
 /// Count of one sex in an age band.
@@ -1779,6 +1793,63 @@ pub struct SpeciesView {
     pub lineages: Vec<SpeciesLineage>,
     pub carnivory: f32,
     pub body_size: f32,
+}
+
+/// `GET /api/lineage/tree`: what the caller's lineage looked like over
+/// time and the species it split into (the family tree view). Built from
+/// the daily history and the species tracker (`game::family`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FamilyTree {
+    pub player: PlayerId,
+    pub lineage: Option<u32>,
+    pub name: Option<String>,
+    pub day: u64,
+    /// Living members now (0: the lineage died out).
+    pub alive: usize,
+    /// Oldest first: every recorded day with gene means for the lineage,
+    /// then today's living members.
+    pub timeline: Vec<FamilySample>,
+    /// Species the lineage's members belong or belonged to, with their
+    /// ancestors, oldest first.
+    pub species: Vec<FamilySpecies>,
+}
+
+/// The lineage on one day.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FamilySample {
+    pub day: u64,
+    pub alive: usize,
+    /// Mean expressed value of every gene, by wire name (3 decimals).
+    pub genes: BTreeMap<String, f32>,
+    /// The typical body plan (absent in records from before it was kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub morph: Option<BodyPlanMode>,
+}
+
+/// One species on the family tree.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FamilySpecies {
+    pub id: u32,
+    pub name: String,
+    /// `initial`, `founding` or `split`.
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u32>,
+    pub founded_day: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extinct_day: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_into: Option<u32>,
+    /// Estimated breeding adults at the last detection.
+    pub adults: f64,
+    /// Of them, the caller's lineage's (0: an ancestor only).
+    pub mine: f64,
+    /// Mean expressed genes of its representative members (3 decimals).
+    pub genes: BTreeMap<String, f32>,
+    /// Counts and shapes from its representatives; placement, snout, horns,
+    /// wing shape and pattern from the lineage's record nearest its last
+    /// sighting (the species tracker keeps only the core body plan).
+    pub morph: BodyPlanMode,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

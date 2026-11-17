@@ -26,6 +26,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cappedBrowser, FPS } from './frames.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -81,7 +82,7 @@ async function main() {
   let serverLog = '';
   server.stdout.on('data', (d) => (serverLog += d));
   server.stderr.on('data', (d) => (serverLog += d));
-  const browser = await chromium.launch({ headless: !process.env.HEADED });
+  const browser = cappedBrowser(await chromium.launch({ headless: !process.env.HEADED }));
   const pages = [];
   try {
     await waitFor('server', async () => (await fetch(`${base}/api/world`)).ok);
@@ -314,6 +315,27 @@ async function main() {
     });
     if (!keys.far && !keys.keys.some((k) => /^[^-]*-3/.test(k))) throw new Error(`no three-eyed sprite among own markers: ${JSON.stringify(keys)}`);
     step(`the third eye shows: ${looks.length} own organisms look three-eyed${keys.far ? '' : `; sprite ${keys.keys[0]}`}`);
+
+    // The family tree (Family tab, `GET /api/lineage/tree`): the founding
+    // stage at least, drawn with its portrait, three-eyed and six-legged.
+    await page.click('#tab-family');
+    const tree = await waitFor('the family tree', () => page.evaluate(() => {
+      const nodes = [...document.querySelectorAll('#panel-family .ft-node')];
+      if (!nodes.length) return null;
+      return {
+        nodes: nodes.length,
+        kinds: nodes.map((n) => n.dataset.kind),
+        portraits: document.querySelectorAll('#panel-family .ft-portrait svg').length,
+        label: nodes[0].querySelector('.ft-portrait').getAttribute('aria-label'),
+        summary: document.querySelector('#family-summary')?.textContent ?? '',
+      };
+    }), 20000);
+    if (tree.kinds[0] !== 'founding' || tree.portraits !== tree.nodes || !/three eyes/.test(tree.label) || !/six legs/.test(tree.label)) {
+      throw new Error(`family tree: ${JSON.stringify(tree)}`);
+    }
+    await page.locator('#sidebar').screenshot({ path: path.join(shots, 'family-tree-live.png') });
+    step(`family tree: ${tree.nodes} stage(s) (${tree.kinds.join(', ')}), portrait "${tree.label.slice(0, 60)}…"`);
+    await page.click('#tab-lineage');
 
     // Tile map: the terrain grid from /api/terrain, painted (blended and
     // textured) into a base texture of a few texels per tile, with detail
@@ -1245,6 +1267,9 @@ async function main() {
       throw new Error(`organism #${id} did not walk toward any of ${attempts} targets (actions seen: ${[...actions].join(', ')})`);
     }
 
+    // The motion check compares the drawn marker with the server position
+    // every frame: at the browser's own frame rate, not the e2e cap.
+    await page.evaluate(() => window.__e2eFrameCap?.(0));
     const tried = [];
     let walked = null;
     for (let round = 1; round <= 4 && !walked; round++) {
@@ -1274,6 +1299,7 @@ async function main() {
       throw new Error(`drawn #${walked.id} was ${o.gap.toFixed(2)} tiles from the server position (${o.predicted ? 'predicted' : 'glided'}, speed ${o.speed?.toFixed(2)}; bound ${o.bound.toFixed(2)})`);
     }
     step(`prediction: speed ${walked.speed.toFixed(2)} tiles/tick, drawn marker at most ${walked.maxGap.toFixed(2)} tiles from the server position (${walked.samples.predicted} predicted, ${walked.samples.glided} glided frames sampled)`);
+    await page.evaluate((fps) => window.__e2eFrameCap?.(fps), FPS);
 
     // Group command and a server-side error surfaced as a toast.
     await page.click('#migrate');

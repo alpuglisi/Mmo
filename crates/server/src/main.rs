@@ -291,6 +291,7 @@ fn parse_args() -> Result<ServerConfig, String> {
     let tick_ms = if cfg.runner.tick.is_zero() { 1000.0 } else { cfg.runner.tick.as_secs_f64() * 1000.0 };
     let hours = offline_hours.unwrap_or(evo_server::game::DEFAULT_PROTECTION_HOURS);
     cfg.game.offline_protection_ticks = (hours * 3_600_000.0 / tick_ms).round() as u64;
+    cfg.game.tick_ms = tick_ms;
     // The home range: full strength for H hours after a logout (from 10
     // minutes in), then fading over 2H more.
     let ticks = |hours: f64| (hours * 3_600_000.0 / tick_ms).round() as u64;

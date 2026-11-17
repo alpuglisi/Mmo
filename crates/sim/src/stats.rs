@@ -206,7 +206,41 @@ pub fn generalist_factor(carnivory: f32, tax: f32) -> f32 {
     1.0 - tax * mix.clamp(0.0, 1.0).powi(3)
 }
 
+/// Share of fruit and seeds' value a gut of carnivory `c` extracts:
+/// `1 − 0.85 × smoothstep(0.6, 1, c)`. Ripe fruit, seeds and nuts are rich
+/// and easy to digest without a herbivore's long gut, so herbivores,
+/// omnivores and flexible hunters (a red fox at 0.65 keeps 96%) all get
+/// most of it; only a full carnivore's short gut loses most (0.95: 19%).
+/// No generalist tax and no fang cost: picking fruit needs no cropping teeth.
+pub fn fruit_efficiency(carnivory: f32) -> f32 {
+    let t = ((carnivory - 0.6) / 0.4).clamp(0.0, 1.0);
+    1.0 - 0.85 * t * t * (3.0 - 2.0 * t)
+}
+
+/// Share of invertebrates' value (insects, earthworms, grubs: small meat)
+/// a gut of carnivory `c` gets: `smoothstep(0.2, 0.5, c) × (1 − 0.85 ×
+/// smoothstep(0.6, 1, c))`. Living on small invertebrates is the trade of
+/// omnivores and flexible mesopredators (badgers, foxes, jackals,
+/// hedgehogs): a burrowing omnivore at 0.5 and a red fox at 0.65 (96%) get
+/// nearly all of it, a herbivore's gut none and a full carnivore, built for
+/// big meals, little (0.95: 19%).
+pub fn insect_efficiency(carnivory: f32) -> f32 {
+    let t = ((carnivory - 0.2) / 0.3).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t) * fruit_efficiency(carnivory)
+}
+
 impl Traits {
+    /// Share of invertebrates' value the gut gets (see [`insect_efficiency`]).
+    pub fn insect_efficiency(&self) -> f32 {
+        insect_efficiency(self.carnivory)
+    }
+
+    /// Share of fruit and seeds' value the gut extracts
+    /// (see [`fruit_efficiency`]).
+    pub fn fruit_efficiency(&self) -> f32 {
+        fruit_efficiency(self.carnivory)
+    }
+
     /// Share of plant food's value the gut extracts: `(1 - carnivory)`
     /// times the generalist factor (see [`generalist_factor`]), times
     /// `1 - fang_grazing × fang size × (1 - carnivory)`: long fangs get in

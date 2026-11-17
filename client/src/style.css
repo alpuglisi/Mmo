@@ -233,12 +233,16 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .toast { padding: 6px 10px; border-radius: 6px; background: rgba(22, 27, 34, 0.94); border-left: 3px solid var(--accent); }
 .toast.error { border-left-color: var(--bad); }
 .toast-more { color: var(--muted); }
+.link-btn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; min-height: 0; }
+.notice { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: var(--panel-2); border-left: 3px solid var(--accent); }
+.notice.bad { border-left-color: var(--bad); }
 
 .sidebar { width: 360px; flex-shrink: 0; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
 .tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--border); }
-/* Seven tabs don't fit one row of the desktop sidebar: two rows of four columns, never cut off. */
+/* Eight tabs don't fit one row of the desktop sidebar: two rows of four columns, never cut off. */
 .tab { white-space: nowrap; background: none; color: var(--muted); border-radius: 0; border-bottom: 2px solid transparent; }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.tab-short { display: none; }
 .panel { padding: 10px 14px 20px; overflow: auto; flex: 1; }
 .panel[hidden] { display: none; }
 
@@ -388,7 +392,12 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .tabs { order: 2; border-bottom: 0; border-top: 1px solid var(--border); min-height: var(--tabbar-h, 50px); flex-shrink: 0;
     padding-bottom: env(safe-area-inset-bottom); }
   .tabs { display: flex; }
-  .tab { flex: 1 1 auto; min-height: 48px; font-size: 12px; border-bottom: 0; border-top: 2px solid transparent; }
+  /* Eight tabs share the bar equally (a phone of 390 px gives each about 48 px). */
+  #tabbar .tab { flex: 1 1 0; min-width: 0; overflow: hidden; }
+  /* Short labels in the bottom bar (`TAB_SHORT`). */
+  .tab .tab-long { display: none; }
+  .tab .tab-short { display: inline; }
+  .tab { min-height: 48px; font-size: 11.5px; padding-left: 1px; padding-right: 1px; letter-spacing: -0.01em; border-bottom: 0; border-top: 2px solid transparent; }
   /* The bottom bar is tight: the count sits above the label's corner. */
   .tab .badge { position: absolute; top: 3px; right: 2px; margin-left: 0; }
   .game:not(.sheet-open) .tab.active { color: var(--muted); border-top-color: transparent; }
@@ -463,7 +472,7 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .standing .board td.num { text-align: right; white-space: nowrap; }
 .standing .board td { overflow-wrap: anywhere; }
 #season-more { margin-top: 6px; }
-/* Seven tabs share a phone's width: smaller labels, no side padding to spare. */
+/* Eight tabs share a phone's width: smaller labels, no side padding to spare. */
 @media (max-width: 760px) {
   .tab { font-size: 11px; padding-left: 1px; padding-right: 1px; min-width: 0; letter-spacing: -0.01em; }
 }

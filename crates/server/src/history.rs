@@ -93,8 +93,9 @@ pub fn thin(r: &mut DailyRecord, keep: Keep) -> bool {
     r.lineages.retain(|l| l.alive > 0 || l.adults > 0 || l.born > 0 || !l.deaths.is_empty());
     let mut changed = r.lineages.len() != before;
     if keep >= Keep::Lean {
-        for l in r.lineages.iter_mut().filter(|l| !l.genes.is_empty()) {
+        for l in r.lineages.iter_mut().filter(|l| !l.genes.is_empty() || l.morph.is_some()) {
             l.genes.clear();
+            l.morph = None;
             changed = true;
         }
     }
@@ -205,11 +206,12 @@ pub fn select(records: &[DailyRecord], q: &DailyQuery) -> Vec<DailyRecord> {
     out
 }
 
-/// `r` without gene means unless `genes`.
+/// `r` without gene means (and body plans) unless `genes`.
 pub fn strip_genes(mut r: DailyRecord, genes: bool) -> DailyRecord {
     if !genes {
         for l in &mut r.lineages {
             l.genes.clear();
+            l.morph = None;
         }
     }
     r
@@ -283,6 +285,7 @@ mod tests {
             born: 0,
             deaths: BTreeMap::new(),
             genes: (0..3).map(|g| (format!("g{g}"), 0.5)).collect(),
+            morph: None,
         };
         DailyRecord {
             world_id: world.into(),
@@ -432,6 +435,7 @@ mod tests {
             } else {
                 BTreeMap::new()
             },
+            morph: None,
         };
         let mut lineages: Vec<LineageEntry> = (0..500).map(|k| lineage(k, 120, true)).collect();
         lineages.extend((500..530).map(|k| lineage(k, 2000, false)));

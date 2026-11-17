@@ -308,7 +308,8 @@ evo-sim genetics — statistical validation of the population genetics
 
 USAGE:
     evo-sim genetics [--long] [--level genome|ecology|all] [--out DIR] [--seed N]
-                     [--years N] [--size N] [--seeds N] [--sample-days N] [--meat]
+                     [--years N] [--size N] [--seeds N] [--sample-days N] [--meat] [--food]
+                     [--classic] [--niches] [--founding SPEC]
 
     --long          Large replicate counts (minutes); default is the quick CI-sized run
     --level L       genome (Wright–Fisher on the real genome code), ecology (full worlds)
@@ -321,8 +322,14 @@ USAGE:
     --seeds N       Ecology: worlds, run in parallel (default 1 quick, 4 long)
     --sample-days N Ecology: days between samples (default 10)
     --meat          Ecology: run with the carnivore-diet rules and predator brakes on
-                    (`Balance::carnivore_diet`; off by default) and the predators in their
-                    niches (`presets::niche_world`)
+                    (`Balance::carnivore_diet`) and the predators in their niches
+                    (`presets::niche_world`)
+    --food          Ecology: the food values on (`Balance::food_values`)
+    --classic       Ecology: the carnivore-diet rules, brakes and food values off, as
+                    before snapshot version 31
+    --niches        Ecology: the predators in their niches
+    --founding SPEC Ecology: found the niche world as SPEC says (implies --niches;
+                    `presets::NicheFounding`, as for `evo-sim sweep --founding`)
     --only NAME     Genome level: only the check groups whose name contains NAME
                     (neutral drift, mutation-drift equilibrium, morphology step mutation,
                     mutation rates, dominance, additive inheritance, recessive load,
@@ -338,7 +345,9 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
     let mut seed = 1;
     let mut only = None;
     let (mut years, mut size, mut seeds, mut sample_days) = (None, None, None, 10);
-    let mut meat = false;
+    let mut balance = evo_sim::Balance::default();
+    let mut niches = false;
+    let mut founding = evo_sim::presets::NicheFounding::default();
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         let mut value = || it.next().cloned().ok_or(format!("{flag} needs a value"));
@@ -354,7 +363,17 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             "--size" => size = Some(num(value()?)? as usize),
             "--seeds" => seeds = Some(num(value()?)?.max(1)),
             "--sample-days" => sample_days = num(value()?)?.max(1) as u32,
-            "--meat" => meat = true,
+            "--meat" => {
+                balance = balance.carnivore_diet();
+                niches = true;
+            }
+            "--food" => balance = balance.food_values(),
+            "--classic" => balance = balance.carnivore_diet_off().food_values_off(),
+            "--niches" => niches = true,
+            "--founding" => {
+                founding = evo_sim::presets::NicheFounding::parse(&value()?).map_err(|e| format!("--founding: {e}"))?;
+                niches = true;
+            }
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown option {other}")),
         }
@@ -381,7 +400,9 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             seeds: seeds.unwrap_or(if long { 4 } else { 1 }),
             sample_days,
             seed,
-            meat,
+            balance,
+            niches,
+            founding,
         },
     })
 }

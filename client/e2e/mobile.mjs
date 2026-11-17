@@ -23,6 +23,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cappedBrowser, chromiumDevice } from './frames.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
@@ -63,10 +64,9 @@ function step(msg) {
   console.log(`  ✓ ${msg}`);
 }
 
-/** A device descriptor for Chromium (the WebKit default of iPhones dropped). */
+/** A device descriptor for Chromium, at the e2e pixel ratio (frames.mjs). */
 function device(name) {
-  const { defaultBrowserType: _ignored, ...d } = devices[name];
-  return d;
+  return chromiumDevice(devices, name);
 }
 
 async function register(page, base, name, lineage, onDesign = async () => {}) {
@@ -294,7 +294,11 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   step(`${tag}: tab tap opens the bottom sheet, a second tap closes it`);
 
   // Seasons tab: the season under way, your record and the hall of fame fit
-  // the phone; a finished season opens onto its standings.
+  // the phone; a finished season opens onto its standings. The tab fetches
+  // the finished seasons when it opens (then every 30 s): open it once the
+  // server has finished two (two-day seasons) rather than wait on its timer,
+  // the newest one begun after the founding, so it has standings.
+  await waitFor('two finished ranked seasons on the server', async () => (await (await fetch(`${base}/api/seasons`)).json()).total >= 2, 20000);
   await page.tap('#tab-seasons');
   const fits = () => page.evaluate(() => {
     const p = document.querySelector('#panel-seasons');
@@ -801,16 +805,18 @@ async function desktopChecks(browser, base, errors) {
     // The first frame uploads the new textures.
     const [first] = timeFrames(1);
     timeFrames(5);
-    const times = timeFrames(60);
+    const times = timeFrames(30);
+    // The browser's own frames, not the e2e frame cap (frames.mjs).
+    const raf = window.__e2eNativeRaf ?? requestAnimationFrame;
     const intervals = [];
     await new Promise((resolve) => {
       let last = performance.now();
       const tick = (t) => {
         intervals.push(t - last);
         last = t;
-        if (intervals.length < 90) requestAnimationFrame(tick); else resolve();
+        if (intervals.length < 30) raf(tick); else resolve();
       };
-      requestAnimationFrame(tick);
+      raf(tick);
     });
     window.__perfLayer = layer;
     intervals.sort((a, b) => a - b);
@@ -914,7 +920,7 @@ async function main() {
   if (!existsSync(bin)) throw new Error(`no server binary at ${bin}; run cargo build --release -p evo-server`);
   if (!existsSync(path.join(dist, 'index.html'))) throw new Error('no client/dist; run npm run build');
   mkdirSync(shots, { recursive: true });
-  const browser = await chromium.launch({ headless: !process.env.HEADED });
+  const browser = cappedBrowser(await chromium.launch({ headless: !process.env.HEADED }));
   const errors = [];
   try {
     // The phone sections tap and hold their own organisms for minutes: no

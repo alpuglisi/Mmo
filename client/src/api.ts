@@ -7,6 +7,7 @@
 // none chosen they go to the server's default world.
 
 import type {
+  FamilyTree,
   AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, CurrentSeason, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
   LineageStats, NativeService, PlayerId, PlayerSeasonHistory, PushDeviceView, PushKeyView, PushPrefs, PushSubscriptionView, RankedSeasonList, RankedSeasonPage, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldList,
   WorldSummary,
@@ -104,6 +105,7 @@ export const api = {
   terrain: () => request<TerrainView>('GET', withWorld('/api/terrain')),
   terrainDynamic: () => request<TerrainDynamic>('GET', withWorld('/api/terrain/dynamic')),
   lineageStats: (token: string) => request<LineageStats>('GET', withWorld('/api/lineage/stats'), undefined, token),
+  familyTree: (token: string) => request<FamilyTree>('GET', withWorld('/api/lineage/tree'), undefined, token),
   alertPrefs: (token: string) => request<AlertPrefs>('GET', '/api/alerts/prefs', undefined, token),
   setAlertPrefs: (token: string, prefs: AlertPrefs) => request<AlertPrefs>('POST', '/api/alerts/prefs', prefs, token),
   // Push notifications: global (one account, every world; a notification names its world).
