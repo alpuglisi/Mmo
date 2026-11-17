@@ -19,6 +19,11 @@ fn possessed(w: &World) -> Option<&crate::organism::Organism> {
 fn busy_world() -> World {
     let mut config = WorldConfig { seed: 29, width: 96, height: 96, days_per_year: 16, ..Default::default() };
     config.lod.enabled = true;
+    // Every tick decides: with staggered decisions the possessed organism
+    // walks elsewhere and no region ever leaves focus, so the snapshot
+    // would hold no cohorts (`staggered_busy_world_continues_exactly`
+    // covers staggering).
+    config.balance.decide_interval = 1.0;
     config.scoring.catastrophes = true;
     config.scoring.catastrophe_first_year = 0;
     config.scoring.species_interval_days = 1;
@@ -332,9 +337,16 @@ fn predator_brakes_off(b: &mut crate::Balance) {
     strike_fixes_off(b);
 }
 
-/// `Balance::strike_fixes` as snapshots before version 30 read it.
+/// `Balance::strike_fixes` as snapshots before version 30 read it, and
+/// staggered decisions as before version 32.
 fn strike_fixes_off(b: &mut crate::Balance) {
     b.strike_fixes = crate::serde_util::before_v30::OLD_VALUE;
+    stagger_off(b);
+}
+
+/// `Balance::decide_interval` as snapshots before version 32 read it.
+fn stagger_off(b: &mut crate::Balance) {
+    b.decide_interval = crate::serde_util::before_v32::OLD_VALUE;
 }
 
 /// A small world, 1 day and 7 ticks in, under the old morphology rules
@@ -854,14 +866,72 @@ fn version_29_snapshots_restore_with_the_old_strike() {
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 29);
     assert!(h.restorable());
-    // Without the parameter (an f32), against a current snapshot.
-    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    // Without the parameter (an f32), against a version 30 snapshot.
+    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot_v30()).unwrap().raw_len);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.strike_fixes, crate::serde_util::before_v30::OLD_VALUE);
     strike_fixes_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v29() == old);
+}
+
+/// Version 30 snapshots (before staggered decisions) restore with every
+/// organism deciding every tick and no kept intents, and are otherwise the
+/// same world.
+#[test]
+fn version_30_snapshots_restore_without_staggered_decisions() {
+    let mut w = fixture_world();
+    w.config.balance.decide_interval = 2.0;
+    w.step();
+    assert!(!w.last_intents.is_empty());
+    let old = w.snapshot_v30();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 30);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.decide_interval, crate::serde_util::before_v32::OLD_VALUE);
+    assert!(r.last_intents.is_empty());
+    stagger_off(&mut w.config.balance);
+    w.last_intents.clear();
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v30() == old);
+}
+
+/// The busy world with staggered decisions (possession, migration, a
+/// territory, catastrophes, LOD) continues exactly after a restore.
+#[test]
+fn staggered_busy_world_continues_exactly() {
+    let mut a = busy_world();
+    a.config.balance.decide_interval = 2.0;
+    for _ in 0..3 * 48 + 17 {
+        a.step();
+    }
+    assert!(!a.last_intents.is_empty());
+    let mut b = World::restore(&a.snapshot(), Some(a.map.terrain().clone())).unwrap();
+    for _ in 0..2 * 48 {
+        a.step();
+        b.step();
+    }
+    assert_same(&a, &b);
+}
+
+/// A world with staggered decisions continues exactly after a snapshot and
+/// restore: the kept intents are saved.
+#[test]
+fn staggered_worlds_continue_exactly_after_a_restore() {
+    let mut w = fixture_world();
+    w.config.balance.decide_interval = 2.0;
+    for _ in 0..5 {
+        w.step();
+    }
+    let mut r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    for _ in 0..30 {
+        w.step();
+        r.step();
+    }
+    assert!(r.snapshot() == w.snapshot());
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

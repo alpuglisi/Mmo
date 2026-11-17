@@ -432,7 +432,8 @@ pub struct World {
     pub phase_times: PhaseTimes,
     /// Last tick's intents with their organism's and target's ids, for
     /// staggered decisions (`Balance::decide_interval`; empty when off).
-    #[cfg_attr(feature = "serde", serde(skip))]
+    /// Saved, so a restored world continues exactly (version 32).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v32::list"))]
     last_intents: Vec<(OrgId, Intent, Option<OrgId>)>,
 }
 
@@ -457,6 +458,7 @@ pub struct PhaseTimes {
 
 /// The decision for one organism this tick.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct Intent {
     pub action: crate::organism::Action,
     pub target: Option<Vec2>,
