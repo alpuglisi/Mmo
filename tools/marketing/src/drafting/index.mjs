@@ -54,7 +54,7 @@ export async function draftStory(story, manifest, { platforms, config, client = 
       storyId: story.id,
       platform: p,
       fields,
-      media: picked[p].map((m) => ({ path: m.path, type: m.type, alt: m.alt || story.title, vertical: m.vertical, durationS: m.durationS })),
+      media: picked[p].map((m) => ({ path: m.path, relPath: m.relPath, type: m.type, alt: m.alt || story.title, vertical: m.vertical, durationS: m.durationS })),
       link: ctx[p].link,
       hashtags: ctx[p].hashtags,
       source,

@@ -1,6 +1,9 @@
 //! Story mining: scan a [`Timeline`] for notable events and rank them by how
-//! interesting they are, for captions and posts. Every story carries its
-//! time range, a one-line hook and the numbers behind it.
+//! interesting they are. Writes the `stories.json` that the publishing tool
+//! reads (tools/marketing/PUBLISHING.md, "Inputs"): each story has a stable
+//! `id`, a `kind`, a one-line `title`, a short `summary`, flat `facts` (the
+//! only numbers copy may cite), `media` ids from `manifest.json` and
+//! `players`, plus its time range and the series behind it.
 
 use serde::Serialize;
 
@@ -8,25 +11,45 @@ use super::timeline::Timeline;
 
 #[derive(Serialize, Clone, Debug)]
 pub struct Story {
-    /// speciation, species_end, extinction, catastrophe, boom_crash, comeback,
-    /// trait_shift.
+    /// Stable for a seed: `s{seed}-{kind}-{subject}-d{start_day}`.
+    pub id: String,
+    /// speciation, species_extinction, extinction, catastrophe,
+    /// predator_boom, population_boom, comeback, trait_shift.
     pub kind: &'static str,
+    /// One-line headline, true as stated.
+    pub title: String,
+    /// One to three sentences.
+    pub summary: String,
+    /// `{ name: value }`, scalars only: every number the copy may cite.
+    pub facts: serde_json::Map<String, serde_json::Value>,
+    /// Ids of this story's items in `manifest.json` (filled in by `film`).
+    pub media: Vec<String>,
+    /// Never anyone: sample lineages belong to no real player.
+    pub players: Vec<serde_json::Value>,
     /// Higher is more interesting; roughly 0..1.
     pub score: f64,
     pub start_day: u64,
     pub end_day: u64,
     /// "year 2, spring (day 151) – year 3, winter (day 350)".
     pub when: String,
-    pub hook: String,
     pub lineages: Vec<String>,
-    /// The numbers behind it (kind-specific; series are `[day, value]`).
-    pub data: serde_json::Value,
+    /// The series behind it (`[day, value]`, thinned), for charts.
+    pub series: serde_json::Value,
+}
+
+/// The `stories.json` file.
+#[derive(Serialize)]
+pub struct StoriesFile<'a> {
+    pub generated_at: String,
+    pub world: String,
+    pub seed: u64,
+    pub stories: &'a [Story],
 }
 
 /// Every story found, best first.
 pub fn mine(t: &Timeline) -> Vec<Story> {
     let mut out = Vec::new();
-    speciation(t, &mut out);
+    species(t, &mut out);
     extinctions(t, &mut out);
     catastrophes(t, &mut out);
     for l in 0..t.lineages.len() {
@@ -35,12 +58,25 @@ pub fn mine(t: &Timeline) -> Vec<Story> {
         comeback(t, l, &series, &mut out);
         trait_shifts(t, l, &mut out);
     }
+    let dpy = t.days_per_year.max(4) as u64;
     for s in &mut out {
         s.when = if s.start_day == s.end_day {
             t.date(s.start_day)
         } else {
             format!("{} – {}", t.date(s.start_day), t.date(s.end_day))
         };
+        let subject = s
+            .lineages
+            .first()
+            .cloned()
+            .or_else(|| s.facts.get("catastrophe").and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_else(|| s.kind.to_string());
+        s.id = format!("s{}-{}-{}-d{}", t.seed, s.kind, slug(&subject), s.start_day);
+        let f = &mut s.facts;
+        f.entry("year").or_insert((s.start_day / dpy + 1).into());
+        f.entry("season").or_insert(season(t, s.start_day).into());
+        f.entry("start_day").or_insert(s.start_day.into());
+        f.entry("end_day").or_insert(s.end_day.into());
     }
     // Variety: each further story of a kind already ranked counts a little
     // less, so one busy kind doesn't fill the top of the list.
@@ -52,19 +88,73 @@ pub fn mine(t: &Timeline) -> Vec<Story> {
         *k += 1;
     }
     out.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.start_day.cmp(&b.start_day)));
+    // Ids must be unique (the publisher dedupes on them).
+    let mut ids: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for s in &mut out {
+        let n = ids.entry(s.id.clone()).or_insert(0);
+        *n += 1;
+        if *n > 1 {
+            s.id = format!("{}-{n}", s.id);
+        }
+    }
     out
 }
 
+fn slug(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+fn season(t: &Timeline, day: u64) -> &'static str {
+    let dpy = t.days_per_year.max(4) as u64;
+    ["spring", "summer", "autumn", "winter"][((day % dpy) * 4 / dpy) as usize]
+}
+
+/// "year 3 (winter)".
+fn at(t: &Timeline, day: u64) -> String {
+    format!("year {} ({})", day / t.days_per_year.max(4) as u64 + 1, season(t, day))
+}
+
+fn facts(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    match v {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn story(
     kind: &'static str,
     score: f64,
-    start: u64,
-    end: u64,
-    hook: String,
+    (start_day, end_day): (u64, u64),
+    title: String,
+    summary: String,
     lineages: Vec<String>,
-    data: serde_json::Value,
+    f: serde_json::Value,
+    series: serde_json::Value,
 ) -> Story {
-    Story { kind, score, start_day: start, end_day: end, when: String::new(), hook, lineages, data }
+    Story {
+        id: String::new(),
+        kind,
+        title,
+        summary,
+        facts: facts(f),
+        media: Vec::new(),
+        players: Vec::new(),
+        score,
+        start_day,
+        end_day,
+        when: String::new(),
+        lineages,
+        series,
+    }
 }
 
 /// Day-indexed population of lineage `l` (one value per sample).
@@ -82,7 +172,7 @@ fn smooth(s: &[(u64, f64)], r: usize) -> Vec<(u64, f64)> {
         .collect()
 }
 
-/// At most `n` evenly spaced `[day, value]` points of a series (for the JSON).
+/// At most `n` evenly spaced `[day, value]` points of a series.
 fn thin(s: &[(u64, f64)], n: usize) -> serde_json::Value {
     let step = s.len().div_ceil(n.max(1)).max(1);
     let pts: Vec<_> = s
@@ -98,20 +188,26 @@ fn total_at(t: &Timeline, day: u64) -> u32 {
     t.days.iter().find(|d| d.day >= day).or(t.days.last()).map_or(0, |d| d.population.iter().sum())
 }
 
+fn round(v: f64) -> u64 {
+    v.max(0.0).round() as u64
+}
+
 /// Species splits that held at least `MIN_SPECIES_DAYS` (shorter ones are
 /// the clusterer flickering at a boundary, not a story), and the end of any
 /// species that held for a season or more.
 const MIN_SPECIES_DAYS: u64 = 20;
 
-fn speciation(t: &Timeline, out: &mut Vec<Story>) {
+fn species(t: &Timeline, out: &mut Vec<Story>) {
     let end = t.days.last().map_or(0, |d| d.day);
     for s in &t.species {
         let lived = s.extinct_day.unwrap_or(end).saturating_sub(s.founded_day);
+        let peak = round(s.peak_adults);
+        let lineages: Vec<String> = s.main_lineage.iter().cloned().collect();
         if s.origin == "split" && lived >= MIN_SPECIES_DAYS {
             let parent = s.parent.clone().unwrap_or_else(|| "its ancestors".into());
-            let tail = match s.extinct_day {
-                Some(_) => format!(" It lasted {lived} days."),
-                None => format!(" It peaked at {} adults.", s.peak_adults.round()),
+            let fate = match s.extinct_day {
+                Some(_) => format!("It lasted {lived} days, peaking at {peak} adults."),
+                None => format!("It is still alive, and peaked at {peak} adults."),
             };
             let score = 0.6
                 + 0.2 * (lived as f64 / 120.0).min(1.0)
@@ -120,12 +216,17 @@ fn speciation(t: &Timeline, out: &mut Vec<Story>) {
             out.push(story(
                 "speciation",
                 score,
-                s.founded_day,
-                s.extinct_day.unwrap_or(s.founded_day),
-                format!("A new species branched off the {parent}: {}.{tail}", s.name),
-                s.main_lineage.iter().cloned().collect(),
-                serde_json::json!({ "species": s.name, "parent": s.parent, "peak_adults": s.peak_adults,
-                                    "founded_day": s.founded_day, "extinct_day": s.extinct_day, "days": lived }),
+                (s.founded_day, s.extinct_day.unwrap_or(s.founded_day)),
+                format!("{}: a new species branched off the {parent}", s.name),
+                format!(
+                    "In {}, part of the {parent} became a species of its own: {}. {fate}",
+                    at(t, s.founded_day),
+                    s.name
+                ),
+                lineages.clone(),
+                serde_json::json!({ "species": s.name, "parent_species": parent, "peak_adults": peak,
+                                    "days_lasted": lived, "still_alive": s.extinct_day.is_none() }),
+                serde_json::Value::Null,
             ));
         }
         if let Some(gone) = s.extinct_day {
@@ -139,18 +240,26 @@ fn speciation(t: &Timeline, out: &mut Vec<Story>) {
                 .map(|c| c.name.as_str())
                 .collect();
             let tail = match heirs.as_slice() {
-                [] => " No descendants survive.".to_string(),
-                [one] => format!(" Its line lives on as {one}."),
-                many => format!(" Its line lives on as {}.", many.join(", ")),
+                [] => "No descendant species survive it.".to_string(),
+                [one] => format!("Its line lives on as {one}."),
+                many => format!("Its line lives on as {}.", many.join(", ")),
             };
             out.push(story(
-                "species_end",
+                "species_extinction",
                 0.45 + 0.2 * (s.peak_adults / 300.0).min(1.0) + if heirs.is_empty() { 0.1 } else { 0.0 },
-                s.founded_day,
-                gone,
-                format!("The {} species is gone after {lived} days.{tail}", s.name),
-                s.main_lineage.iter().cloned().collect(),
-                serde_json::json!({ "species": s.name, "peak_adults": s.peak_adults, "extinct_day": gone, "heirs": heirs }),
+                // Its last season, for the clip; the facts give its whole span.
+                (gone.saturating_sub(t.days_per_year as u64 / 2).max(s.founded_day), gone),
+                format!("The {} species is gone", s.name),
+                format!(
+                    "The {} died out in {} after {lived} days, having peaked at {peak} adults. {tail}",
+                    s.name,
+                    at(t, gone)
+                ),
+                lineages,
+                serde_json::json!({ "species": s.name, "peak_adults": peak, "days_lasted": lived,
+                                    "extinct_year": gone / t.days_per_year.max(4) as u64 + 1,
+                                    "descendants": heirs.join(", ") }),
+                serde_json::Value::Null,
             ));
         }
     }
@@ -170,12 +279,21 @@ fn extinctions(t: &Timeline, out: &mut Vec<Story>) {
         out.push(story(
             "extinction",
             0.45 + 0.3 * (peak / 100.0).min(1.0),
-            peak_day,
-            day,
-            format!("The last of the {} died out — {} of them at their peak.", info.name, peak as u64),
+            (peak_day, day),
+            format!("The last of the {} died out", info.name),
+            format!("The {} peaked at {} in {} and were gone by {}.", info.name, round(peak), at(t, peak_day), at(t, day)),
             vec![info.name.clone()],
-            serde_json::json!({ "peak": peak, "peak_day": peak_day, "extinct_day": day, "population": thin(&series, 40) }),
+            serde_json::json!({ "lineage": info.name, "peak": round(peak), "extinct_year": day / t.days_per_year.max(4) as u64 + 1 }),
+            thin(&series, 40),
         ));
+    }
+}
+
+fn article(word: &str) -> &'static str {
+    if word.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "An"
+    } else {
+        "A"
     }
 }
 
@@ -184,39 +302,42 @@ fn catastrophes(t: &Timeline, out: &mut Vec<Story>) {
         let before = c.population_before.max(1) as f64;
         let after = c.population_after.map(|a| a as f64).unwrap_or_else(|| total_at(t, c.end_day) as f64);
         let drop = (1.0 - after / before).clamp(0.0, 1.0);
-        let hook = if drop >= 0.05 {
-            format!(
-                "A {} struck and wiped out {:.0}% of all life ({} → {}).",
-                c.kind,
-                drop * 100.0,
-                c.population_before,
-                after as u64
+        let pct = round(drop * 100.0);
+        let (title, outcome) = if drop >= 0.05 {
+            (
+                format!("{} {} wiped out {pct}% of all life", article(&c.kind), c.kind),
+                format!("The living population fell from {} to {}.", c.population_before, round(after)),
             )
         } else {
-            format!(
-                "{} {} struck — and life held on ({} → {}).",
-                article(&c.kind),
-                c.kind,
-                c.population_before,
-                after as u64
+            (
+                format!("{} {} struck, and life held on", article(&c.kind), c.kind),
+                format!("The living population went from {} to {}.", c.population_before, round(after)),
             )
         };
         out.push(story(
             "catastrophe",
             0.5 + 0.4 * drop + 0.1 * c.severity.clamp(0.0, 1.0) as f64,
-            c.start_day,
-            c.end_day,
-            hook,
+            (c.start_day, c.end_day),
+            title,
+            format!(
+                "{} {} began in {} and lasted {} days. {outcome}",
+                article(&c.kind),
+                c.kind,
+                at(t, c.start_day),
+                c.end_day.saturating_sub(c.start_day)
+            ),
             Vec::new(),
-            serde_json::json!({ "catastrophe": c.kind, "severity": c.severity, "population_before": c.population_before,
-                                "population_after": after, "drop": drop }),
+            serde_json::json!({ "catastrophe": c.kind, "severity": (c.severity * 100.0).round() / 100.0,
+                                "population_before": c.population_before, "population_after": round(after),
+                                "lost_pct": pct, "days_lasted": c.end_day.saturating_sub(c.start_day) }),
+            serde_json::Value::Null,
         ));
     }
 }
 
 /// A population that at least doubled from where it was to a peak, then fell
 /// to at most 40% of it, within about a year each way. Only the biggest boom
-/// per lineage; carnivores (predators) get the "predator" wording.
+/// per lineage; carnivores (mean carnivory over 0.5) are predator booms.
 fn boom_crash(t: &Timeline, l: usize, s: &[(u64, f64)], out: &mut Vec<Story>) {
     let window = t.days_per_year as u64;
     let mut best: Option<(f64, usize, usize, usize)> = None; // (ratio, base, peak, crash)
@@ -240,23 +361,21 @@ fn boom_crash(t: &Timeline, l: usize, s: &[(u64, f64)], out: &mut Vec<Story>) {
     let Some((ratio, b, p, c)) = best else { return };
     let info = &t.lineages[l];
     let predator = mean_gene(t, l, "carnivory", s[b].0, s[c].0).is_some_and(|m| m > 0.5);
-    let what = if predator { "Predator boom and bust" } else { "Boom and bust" };
+    let (base, peak, crash) = (round(s[b].1), round(s[p].1), round(s[c].1));
+    let (rise, fall) = (s[p].0 - s[b].0, s[c].0 - s[p].0);
     out.push(story(
-        "boom_crash",
+        if predator { "predator_boom" } else { "population_boom" },
         0.55 + 0.25 * (ratio.ln() / 8f64.ln()).clamp(0.0, 1.0) + if predator { 0.1 } else { 0.0 },
-        s[b].0,
-        s[c].0,
+        (s[b].0, s[c].0),
+        format!("{} boom and bust: the {}", if predator { "Predator" } else { "Population" }, info.name),
         format!(
-            "{what}: the {} went from {} to {} in {} days — then crashed to {}.",
-            info.name,
-            s[b].1.round(),
-            s[p].1.round(),
-            s[p].0 - s[b].0,
-            s[c].1.round()
+            "The {} went from {base} to {peak} in {rise} days, then crashed to {crash} within {fall} days.",
+            info.name
         ),
         vec![info.name.clone()],
-        serde_json::json!({ "predator": predator, "base": s[b].1, "peak": s[p].1, "crash": s[c].1,
-                            "peak_day": s[p].0, "population": thin(&s[b..=c], 40) }),
+        serde_json::json!({ "lineage": info.name, "predator": predator, "from": base, "peak": peak, "crash": crash,
+                            "rise_days": rise, "fall_days": fall }),
+        thin(&s[b..=c], 40),
     ));
 }
 
@@ -295,21 +414,21 @@ fn comeback(t: &Timeline, l: usize, s: &[(u64, f64)], out: &mut Vec<Story>) {
     }
     let Some((depth, p, lo, r)) = best else { return };
     let info = &t.lineages[l];
+    let (peak, low, back) = (round(s[p].1), round(s[lo].1), round(s[r].1));
     out.push(story(
         "comeback",
         0.7 + 0.25 * depth,
-        s[p].0,
-        s[r].0,
+        (s[p].0, s[r].0),
+        format!("Back from the brink: the {}", info.name),
         format!(
-            "Back from the brink: the {} fell from {} to just {} — and recovered to {}.",
+            "The {} fell from {peak} to just {low} in {}, then recovered to {back} by {}.",
             info.name,
-            s[p].1.round(),
-            s[lo].1.round(),
-            s[r].1.round()
+            at(t, s[lo].0),
+            at(t, s[r].0)
         ),
         vec![info.name.clone()],
-        serde_json::json!({ "peak": s[p].1, "low": s[lo].1, "low_day": s[lo].0, "recovered": s[r].1,
-                            "population": thin(&s[p..=r], 40) }),
+        serde_json::json!({ "lineage": info.name, "peak": peak, "low": low, "recovered": back }),
+        thin(&s[p..=r], 40),
     ));
 }
 
@@ -346,7 +465,6 @@ fn trait_shifts(t: &Timeline, l: usize, out: &mut Vec<Story>) {
             while s[b].0 - s[a].0 > window {
                 a += 1;
             }
-            // The extreme of [a, b) against b.
             for i in a..b {
                 let d = s[b].1 - s[i].1;
                 if d.abs() >= 0.15 && best.is_none_or(|x| d.abs() > x.0.abs()) {
@@ -355,53 +473,48 @@ fn trait_shifts(t: &Timeline, l: usize, out: &mut Vec<Story>) {
             }
         }
         let Some((d, i, b)) = best else { continue };
-        let (from, to) = (s[i].1, s[b].1);
+        let (from, to) = ((s[i].1 * 100.0).round() / 100.0, (s[b].1 * 100.0).round() / 100.0);
+        let days = s[b].0 - s[i].0;
         out.push(story(
             "trait_shift",
-            0.4 + 0.5 * (d.abs() / 0.5).min(1.0)
-                + if gene == "pack instinct" || gene == "carnivory" { 0.05 } else { 0.0 },
-            s[i].0,
-            s[b].0,
-            trait_hook(&info.name, gene, from, to, s[b].0 - s[i].0),
+            0.4 + 0.5 * (d.abs() / 0.5).min(1.0) + if gene == "pack instinct" || gene == "carnivory" { 0.05 } else { 0.0 },
+            (s[i].0, s[b].0),
+            format!("The {} {}", info.name, trait_phrase(gene, to > from)),
+            format!(
+                "Over {days} days from {}, the {}' average {gene} moved from {from:.2} to {to:.2} (on a 0 to 1 scale), by natural selection and drift alone.",
+                at(t, s[i].0),
+                info.name
+            ),
             vec![info.name.clone()],
-            serde_json::json!({ "gene": gene, "from": from, "to": to, "change": d, "mean": thin(&s[i..=b], 40) }),
+            serde_json::json!({ "lineage": info.name, "gene": gene, "from": from, "to": to, "days": days }),
+            thin(&s[i..=b], 40),
         ));
     }
 }
 
-fn article(word: &str) -> &'static str {
-    if word.starts_with(['a', 'e', 'i', 'o', 'u']) {
-        "An"
-    } else {
-        "A"
-    }
-}
-
-fn trait_hook(name: &str, gene: &str, from: f64, to: f64, days: u64) -> String {
-    let up = to > from;
-    let phrase = match (gene, up) {
-        ("carnivory", true) => "turned to hunting".to_string(),
-        ("carnivory", false) => "gave up meat for plants".to_string(),
-        ("pack instinct", true) => "evolved pack hunting".to_string(),
-        ("pack instinct", false) => "abandoned pack hunting".to_string(),
-        ("body size", true) => "grew bigger".to_string(),
-        ("body size", false) => "shrank".to_string(),
-        ("group tolerance", true) => "became more social".to_string(),
-        ("group tolerance", false) => "turned solitary".to_string(),
-        ("aggression", true) => "turned aggressive".to_string(),
-        ("aggression", false) => "mellowed out".to_string(),
-        ("boldness", true) => "grew bolder".to_string(),
-        ("boldness", false) => "grew cautious".to_string(),
-        ("litter size", true) => "started having bigger litters".to_string(),
-        ("litter size", false) => "started having fewer young".to_string(),
-        ("fat stores", true) => "put on fat for hard times".to_string(),
-        ("fat stores", false) => "slimmed down".to_string(),
-        ("pickiness", true) => "became picky eaters".to_string(),
-        ("pickiness", false) => "started eating anything".to_string(),
+fn trait_phrase(gene: &str, up: bool) -> String {
+    match (gene, up) {
+        ("carnivory", true) => "turned to hunting".into(),
+        ("carnivory", false) => "gave up meat for plants".into(),
+        ("pack instinct", true) => "evolved pack hunting".into(),
+        ("pack instinct", false) => "abandoned pack hunting".into(),
+        ("body size", true) => "grew bigger".into(),
+        ("body size", false) => "shrank".into(),
+        ("group tolerance", true) => "became more social".into(),
+        ("group tolerance", false) => "turned solitary".into(),
+        ("aggression", true) => "turned aggressive".into(),
+        ("aggression", false) => "mellowed out".into(),
+        ("boldness", true) => "grew bolder".into(),
+        ("boldness", false) => "grew cautious".into(),
+        ("litter size", true) => "started having bigger litters".into(),
+        ("litter size", false) => "started having fewer young".into(),
+        ("fat stores", true) => "put on fat for hard times".into(),
+        ("fat stores", false) => "slimmed down".into(),
+        ("pickiness", true) => "became picky eaters".into(),
+        ("pickiness", false) => "started eating anything".into(),
         (g, true) => format!("evolved a stronger {g}"),
         (g, false) => format!("lost their {g}"),
-    };
-    format!("The {name} {phrase} in {days} days ({gene} {from:.2} → {to:.2}).")
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +543,7 @@ mod tests {
                 peak_adults: 30.0,
                 main_lineage: Some("Foxes".into()),
             }],
+            film: Default::default(),
             catastrophes: vec![CatastropheEvent {
                 kind: "severe winter".into(),
                 severity: 0.8,
@@ -457,14 +571,22 @@ mod tests {
         let gene = |d: u64| (0.2 + 0.5 * ((d as f32 - 50.0) / 200.0).clamp(0.0, 1.0)).min(0.7);
         let stories = mine(&timeline(pop, gene));
         let kinds: Vec<_> = stories.iter().map(|s| s.kind).collect();
-        for k in ["speciation", "catastrophe", "boom_crash", "comeback", "trait_shift", "extinction"] {
+        for k in ["speciation", "catastrophe", "predator_boom", "comeback", "trait_shift", "extinction"] {
             assert!(kinds.contains(&k), "no {k} in {kinds:?}");
         }
         assert!(stories.windows(2).all(|w| w[0].score >= w[1].score));
         let pack = stories.iter().find(|s| s.kind == "trait_shift").unwrap();
-        assert!(pack.hook.contains("evolved pack hunting"), "{}", pack.hook);
-        let boom = stories.iter().find(|s| s.kind == "boom_crash").unwrap();
-        assert!(boom.hook.starts_with("Predator boom"), "{}", boom.hook);
+        assert!(pack.title.contains("evolved pack hunting"), "{}", pack.title);
+        // The publisher's contract: unique ids, a title, scalar facts.
+        let mut ids: Vec<_> = stories.iter().map(|s| s.id.as_str()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), stories.len());
+        for s in &stories {
+            assert!(!s.title.is_empty() && !s.summary.is_empty());
+            assert!(s.facts.values().all(|v| !v.is_object() && !v.is_array()), "{}: {:?}", s.id, s.facts);
+            assert!(s.facts.contains_key("year"));
+        }
     }
 
     #[test]

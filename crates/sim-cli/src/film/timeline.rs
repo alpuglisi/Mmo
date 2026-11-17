@@ -76,6 +76,16 @@ pub struct Timeline {
     pub days: Vec<DaySample>,
     pub species: Vec<SpeciesEvent>,
     pub catastrophes: Vec<CatastropheEvent>,
+    /// How the film was cut (0 frames: no film), so `--from` can list it.
+    #[serde(default)]
+    pub film: FilmInfo,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct FilmInfo {
+    pub frames: u32,
+    pub frame_days: u32,
+    pub fps: u32,
 }
 
 impl Timeline {
@@ -90,6 +100,7 @@ impl Timeline {
             days: Vec::new(),
             species: Vec::new(),
             catastrophes: Vec::new(),
+            film: FilmInfo::default(),
         }
     }
 

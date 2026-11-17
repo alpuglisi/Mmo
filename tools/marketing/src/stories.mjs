@@ -49,9 +49,15 @@ export function normalizeMediaItem(raw, i = 0, baseDir = '.') {
   if (['clip', 'film', 'timelapse', 'time-lapse', 'mp4'].includes(type)) type = 'video';
   const width = Number(raw.width ?? raw.w ?? 0) || null;
   const height = Number(raw.height ?? raw.h ?? 0) || null;
+  const abs = path.isAbsolute(p) ? p : path.resolve(baseDir, p);
+  // For embedding in copy (devlog bodies): relative to the manifest, never
+  // the machine's absolute path; just the file name if it lies outside.
+  let rel = path.relative(path.resolve(baseDir), abs);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) rel = path.basename(abs);
   return {
     id: String(raw.id ?? raw.name ?? path.basename(p)),
-    path: path.isAbsolute(p) ? p : path.resolve(baseDir, p),
+    path: abs,
+    relPath: rel.split(path.sep).join('/'),
     type,
     durationS: Number(raw.duration_s ?? raw.duration ?? raw.seconds ?? 0) || null,
     width,
