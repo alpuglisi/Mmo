@@ -972,7 +972,7 @@ impl Default for Balance {
             ambush: 0.4,
             crowding: 0.03,
             toxin_damage: 48.0,
-            larval_competition: 13.0,
+            larval_competition: 9.5,
             larval_stage: 1.0,
             adult_mortality: 0.011,
             burrow_shelter: 1.0,
