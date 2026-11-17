@@ -157,7 +157,7 @@ mod old {
             slots_left: g.world.mating_slots_left(player),
             population: g.owner_population(player),
             migration: g.world.migration_order(player, 0).map(|p| [p.x, p.y]),
-            groups: g.group_views(&g.world.groups_of(player, mine.iter().map(|&i| &orgs[i as usize]))),
+            groups: g.group_views_for(player, &g.world.groups_of(player, mine.iter().map(|&i| &orgs[i as usize]))),
             view,
             organisms: own,
             nearby,

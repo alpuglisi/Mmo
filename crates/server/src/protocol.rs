@@ -936,6 +936,11 @@ pub struct GroupView {
     /// they are offline (`game::offline`; absent: no).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub home_range: bool,
+    /// On the home range: minutes of offline protection the player has
+    /// left (at most 12 hours of protection in any 24, however often they
+    /// reconnect; `game::offline`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection_left_min: Option<u32>,
 }
 
 impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
@@ -951,6 +956,7 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             claim_ready_tick: g.claim_ready_tick,
             obedience: g.obedience,
             home_range: false,
+            protection_left_min: None,
         }
     }
 }
