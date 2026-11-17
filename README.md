@@ -6648,7 +6648,7 @@ designs.
 | `genetics --long --level ecology` (12 years, 4 worlds): strict checks | all | **7 of 7** (and 9 of 9 soft) | all |
 | same: both predators survive | ≥ 3 of 4 worlds | **fox 2, pack hunters 2** (both together in 1; no prey lost, lowest newts 15, voles 42) | fox 0, pack hunters 0 (*Predators over the years*) |
 | `sweep --seed 31` (12 seeds, 120 days) | ≥ 11.30 | **11.71** (11.70 after merging staggered decisions) | 11.60 at the time |
-| `compare --seed 101 --adaptive vs --classic` | no significant loss | **−0.09** (sequential 95% CI −0.24 … +0.06 after 24 seeds: no difference that matters) | |
+| `compare --seed 101 --adaptive vs --classic` | no significant loss | **−0.09** (sequential 95% CI −0.24 … +0.06 after 24 seeds: no difference that matters); after merging staggered decisions (6a6e6bc): unresolved at the 48-seed cap, mean −0.10, sequential CI −0.33 … +0.14 (contains 0) | |
 | `calibrate tournament`, 90 days, sets 70001– and 80001–, 96 worlds each: top class | < ~38% | **27.1% and 25.0%** (warm live birth; cold abandoned eggs 15.6% / 12.5%) | 39.4% for cold abandoned eggs in the tuning set (*Thermoregulation × birth mode*) |
 
 On the predator half F clears the bar on the tuning seeds and misses it on
