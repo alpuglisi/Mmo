@@ -153,7 +153,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   const presetNote = h('div', { class: 'design-preset-confirm', id: 'design-preset-confirm', role: 'status', hidden: true });
   const modeBtn = (m: EditorMode, text: string, title: string) =>
     h('button', { type: 'button', id: `design-mode-${m}`, class: 'secondary', 'data-mode': m, 'aria-pressed': 'false', title }, text);
-  const modeBtns = [modeBtn('simple', 'Simple', 'Sliders only'), modeBtn('builder', 'Builder', 'Shape eyes, ears, legs, tail and snout by dragging')];
+  const modeBtns = [modeBtn('simple', 'Simple', 'Sliders only'), modeBtn('builder', 'Builder', 'Shape eyes, ears, legs, tail, snout and horns by dragging')];
   const modeSwitch = h('div', { class: 'design-mode', role: 'group', 'aria-label': 'Editor mode' }, ...modeBtns);
   const modeHint = h('p', { class: 'muted small design-mode-hint', id: 'design-mode-hint' }, '');
 
@@ -214,11 +214,11 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
         builderHost.appendChild(builder.el);
       } else syncBuilder();
       builderHost.hidden = false;
-      modeHint.textContent = 'Drag the eyes, ears, legs, tail and snout. Eye, ear, leg, tail and fang sizes are also sliders below; both stay in step.';
+      modeHint.textContent = 'Drag the eyes, ears, legs, tail, snout and horns; pick a coat pattern and wing shape. Eye, ear, leg, tail and fang sizes are also sliders below; both stay in step.';
     } else {
       builderHost.hidden = true;
       pendingPreset?.(false);
-      modeHint.textContent = 'Builder mode shapes the body by dragging: eye count and placement, ears, legs, tail and snout.';
+      modeHint.textContent = 'Builder mode shapes the body by dragging: eye count and placement, ears, legs, tail, snout, horns, coat pattern and wing shape.';
     }
     page.classList.toggle('builder-mode', m === 'builder');
   }

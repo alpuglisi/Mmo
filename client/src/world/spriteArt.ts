@@ -32,6 +32,10 @@ const EAR_SIZE = { warm: [0.15, 0.5, 0.9], cold: [0.5, 0.72, 0.95] } as const;
 const TAIL_LENGTH = [0.25, 0.5, 0.85] as const;
 const SNOUT = [0.15, 0.5, 0.9] as const;
 const FANG = [0, 0.55, 0.95] as const;
+/** Horn bucket → horn size (none, small, large). */
+const HORN_SIZE = [0, 0.4, 0.85] as const;
+/** Wing shape bucket → wing aspect (broad, default, narrow). */
+const WING_ASPECT = [0.1, 0.5, 0.9] as const;
 /** Eye placement bucket → the pair angle: forward-set (both eyes show), the default, side-set. */
 export const EYE_AZIMUTH = [20, 60, 110] as const;
 /** Body size gene per size class (heft follows it; heads shrink with it, so it stays low: big heads read at marker size). */
@@ -103,6 +107,10 @@ export function spriteModel(s: CreatureSpec): AvatarModel {
     tail_length: m.tail === 'none' ? 0 : pick(TAIL_LENGTH, m.tailSize),
     snout_length: pick(SNOUT, m.snout),
     fang_size: pick(FANG, m.fangs),
+    horn_size: HORN_SIZE[m.horns],
+    horn_form: m.hornForm,
+    wing_aspect: WING_ASPECT[m.wingSet],
+    pattern: m.pattern,
     look,
     warm: l.warm,
     size,
@@ -120,8 +128,8 @@ export function spriteModel(s: CreatureSpec): AvatarModel {
     cover: { fur: layer('fur'), scales: layer('scales'), armor: layer('armor'), dominant: l.cover },
     carnivory: carn,
     nose: 0.3,
-    // Horns on large adult herbivores (as the old sprite and the avatar).
-    horns: l.diet === 'herbivore' && big ? 0.35 + 0.25 * (l.size - 2) : 0,
+    // Horns from the look (a body-plan locus; juveniles grow them later).
+    horns: s.juvenile ? 0 : HORN_SIZE[m.horns],
     coloring: {
       kind: l.coloring,
       camo: l.coloring === 'camo' ? 0.8 : 0,

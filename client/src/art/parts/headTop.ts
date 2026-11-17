@@ -10,10 +10,10 @@
 // linear function of snout length, chosen by the caller) so the panel's
 // snout-shadow band starts at its tip.
 
-import { lerp, rng, scallopRing, type Point, type Piece, type Shape } from '../geom';
+import { lerp, limbOutline, rng, scallopRing, type Point, type Piece, type Shape } from '../geom';
 import { GLINT, PUPIL, mix, type CreaturePalette } from '../palette';
 import type { Group } from '../render';
-import type { EarShape } from '../../morphology';
+import type { CoatPattern, EarShape, HornForm } from '../../morphology';
 import { ear, earAxis, earLength } from './ears';
 import type { Lod } from './cover';
 
@@ -41,6 +41,10 @@ export interface HeadTopParams {
   /** A furred body gets a soft locked edge. */
   furry: boolean;
   lod: Lod;
+  /** Horns seen from above (Phase 3): length 0..1 (0 none) and form. */
+  horns?: { size: number; form: HornForm };
+  /** Coat pattern on the back (Phase 3). */
+  pattern?: CoatPattern;
 }
 
 export interface HeadTopPart {
@@ -192,7 +196,68 @@ export function headTop(p: HeadTopParams, pal: CreaturePalette): HeadTopPart {
     ...[-1, 1].map((sgn): Shape => ({ part: 'body', tag: 'shoulder', kind: 'curve', closed: false, points: [[sgn * r * 0.2, r * 0.95], [sgn * r * 0.5, r * 1.05], [sgn * r * 0.62, r * 1.35]], stroke: pal.body.shade, width: 0.9, alpha: 0.6 })),
   );
 
+  // --- coat pattern along the back (clipped to the body).
+  if (p.pattern && p.pattern !== 'plain') body.detail.push(...patternTop(p.pattern, r * bw, pal, p.lod));
+
+  // --- horns: a pair from the crown, sweeping back and out (inked overlays, over the ears).
+  if (p.horns && p.horns.size > 0) head.over.push(...hornsTop(p.horns.form, p.horns.size, r, pal));
+
   return { body, head, eyes: p.eyes.map((e) => eyeTop(e, p, pal)), anchors: { snoutTip: [0, -L], nose, earTips } };
+}
+
+/** A pair of horns from above: curved (sweep out and curl back), straight (spikes raked out-back) or a branched rack. */
+export function hornsTop(form: HornForm, size: number, r: number, pal: CreaturePalette): Shape[] {
+  const len = r * (0.7 + 0.9 * size);
+  const w = r * 0.12;
+  const fill = mix(pal.bone, pal.hoof, form === 'branched' ? 0.38 : 0.25);
+  const out: Shape[] = [];
+  for (const sgn of [-1, 1]) {
+    const base: Point = [sgn * r * 0.3, r * 0.15];
+    const centre: Point[] = [];
+    for (let i = 0; i <= 8; i++) {
+      const t = i / 8;
+      const [dx, dy] = form === 'straight'
+        ? [0.55 * t, 0.75 * t]
+        : form === 'curved'
+          ? [0.75 * t - 0.3 * t * t * t, 0.35 * t + 0.55 * t * t]
+          : [0.6 * t, 0.45 * t + 0.3 * t * t];
+      centre.push([base[0] + sgn * len * dx, base[1] + len * dy]);
+    }
+    const widths = centre.map((_, i) => Math.max(0.8, w * 2 * (1 - i / 9)));
+    out.push({ part: 'head', tag: 'horn', kind: 'curve', closed: true, points: limbOutline(centre, widths), fill, stroke: pal.ink, width: 1.1 });
+    if (form === 'branched') {
+      // Tines off the beam, out to the side.
+      for (const i of [3, 5, 7]) {
+        const [bx, by] = centre[i];
+        const tl = len * 0.32;
+        const tip: Point = [bx + sgn * tl * 0.75, by - tl * 0.45];
+        out.push({ part: 'head', tag: 'horn', kind: 'curve', closed: true, points: limbOutline([[bx, by], [(bx + tip[0]) / 2, (by + tip[1]) / 2], tip], [widths[i] * 0.8, widths[i] * 0.55, 0.5]), fill, stroke: pal.ink, width: 1 });
+      }
+    }
+  }
+  return out;
+}
+
+/** The coat pattern on the back from above: dapples, stripes across the back, or blotches. */
+function patternTop(pattern: CoatPattern, w: number, pal: CreaturePalette, lod: Lod): Shape[] {
+  const dark = mix(pal.pattern, pal.ink, 0.25);
+  const out: Shape[] = [];
+  const R = rng(pattern === 'spots' ? 41 : 47);
+  if (pattern === 'stripes') {
+    for (let i = 0; i < 6; i++) {
+      const y = w * (0.75 + 0.36 * i);
+      out.push({ part: 'body', tag: 'pattern', kind: 'curve', closed: true, points: [[-w * 1.2, y + w * 0.12], [0, y - w * 0.08], [w * 1.2, y + w * 0.12], [w * 1.2, y + w * 0.22], [0, y + w * 0.04], [-w * 1.2, y + w * 0.22]], fill: dark, alpha: 0.7 });
+    }
+  } else {
+    const n = pattern === 'spots' ? (lod === 'sprite' ? 8 : 16) : 9;
+    for (let i = 0; i < n; i++) {
+      const x = (R() * 2 - 1) * w * 0.9;
+      const y = w * (0.6 + R() * 2.2);
+      const s = w * (pattern === 'spots' ? 0.09 + 0.05 * R() : 0.16 + 0.12 * R());
+      out.push({ part: 'body', tag: 'pattern', kind: 'ellipse', x, y, rx: s * 1.3, ry: s, fill: pattern === 'mottled' && i % 2 ? mix(pal.body.light, pal.belly, 0.5) : dark, alpha: 0.65 });
+    }
+  }
+  return out;
 }
 
 /** One eye from above: an inked socket along the skull's outline, iris and pupil looking out along `az`, glint to the top left. */

@@ -947,8 +947,14 @@ impl World {
             let burrow = if q.sheltered { 0.5 + 0.3 * (self.burrow_depth(q) - q.traits.body.burrow) } else { 0.0 };
             let den = if q.dormancy.is_deep() { cfg.balance.den_concealment } else { 0.0 };
             let hidden = burrow.max(den);
-            let mut detect =
-                radius * (1.0 - cfg.balance.stealth_effect * q.traits.stats.stealth - hidden).max(0.25 + 0.3 * alarm);
+            // A coat pattern blends in on matching ground (`morph_extra`).
+            let camo = if q.traits.morph.camo > 0.0 {
+                crate::morph_extra::camouflage(&q.traits.morph, self.map.ground_at(q.pos).biome)
+            } else {
+                0.0
+            };
+            let mut detect = radius
+                * (1.0 - cfg.balance.stealth_effect * (q.traits.stats.stealth + camo) - hidden).max(0.25 + 0.3 * alarm);
             // Directional vision: a neighbor in a blind sector is noticed
             // by ear and nose, and by sight only as far as a viewer standing
             // still (no target last tick) scans around (`vision::detect_factor`).

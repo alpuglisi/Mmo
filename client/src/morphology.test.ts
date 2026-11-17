@@ -19,6 +19,7 @@ describe('morphology', () => {
     expect(m).toEqual({
       eye_count: 2, eye_azimuth: 60, eye_size: 0, ear_count: 2, ear_shape: 'round', ear_size: 0, leg_count: 4, leg_length: 0,
       tail_present: false, tail_shape: 'thin', tail_length: 0, snout_length: 0.5, fang_size: 0,
+      horn_size: 0, horn_form: 'curved', wing_aspect: 0.5, pattern: 'plain',
     });
     expect(Object.isFrozen(DEFAULT_MORPHOLOGY)).toBe(true);
     m.eye_count = 5;
@@ -29,10 +30,12 @@ describe('morphology', () => {
     const m = clampMorphology({
       eye_count: 9.4, eye_azimuth: -20, eye_size: 1.7, ear_count: 2.6, ear_shape: 'floppy', ear_size: -1,
       leg_count: 5, leg_length: NaN, tail_present: 'yes', tail_shape: 'fin', tail_length: 2, snout_length: '0.3', fang_size: 0.05,
+      horn_size: 1.4, horn_form: 'spiral', wing_aspect: -2, pattern: 'stripes',
     });
     expect(m).toEqual({
       eye_count: 6, eye_azimuth: 0, eye_size: 1, ear_count: 2, ear_shape: 'round', ear_size: 0,
       leg_count: 6, leg_length: 0, tail_present: false, tail_shape: 'fin', tail_length: 1, snout_length: 0.5, fang_size: 0.05,
+      horn_size: 1, horn_form: 'curved', wing_aspect: 0, pattern: 'stripes',
     });
     expect(clampMorphology({ eye_count: 0, ear_count: 7, eye_azimuth: 999 })).toMatchObject({ eye_count: 1, ear_count: 4, eye_azimuth: 180 });
     expect(clampMorphology({ ear_count: 1 }).ear_count).toBe(2);
