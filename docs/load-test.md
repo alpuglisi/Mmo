@@ -19,7 +19,10 @@ processes. The later sections cover that and the follow-up work:
   players everyone was back 9.4 s after the server answered again,
   instead of 70.9 s.
 - *Beyond one box:* world capacities, `GET /api/assign`, the `evo-lobby`
-  front door, and the capacity and cost plan.
+  front door the web client now uses, accounts shared safely across
+  servers, and the capacity and cost plan.
+- *Compression:* the game WebSocket negotiates permessage-deflate. That
+  cuts traffic 2.6× for 12–15% more server CPU.
 
 ## Method
 
@@ -382,14 +385,138 @@ Limits of the prototype:
 
 - **Accounts.** They must live in one shared PostgreSQL database for an
   account to work on every backend; separate file stores have separate
-  accounts. Player ids are assigned by each process from its own
-  maximum, so registrations should go to one designated backend (or the
-  id should come from a database sequence) before several processes
-  register at once.
+  accounts. With one database, several servers now register safely; see
+  *Accounts across servers* below.
 - **Login sessions.** They are per process: a player logs in on the
-  server the lobby picked.
-- **Client.** The web client doesn't call the lobby yet. Today it picks a
-  world from `/api/worlds`.
+  server the lobby picked. The web client does that.
+
+### Accounts across servers
+
+Each server used to hand out player ids from its own in-memory counter,
+seeded with the highest id it loaded at start. Two servers on one
+database would give two new accounts the same id, and the second insert
+would fail.
+
+- **Id allocation.** Ids now come from the store (`Store::allocate_player`).
+  PostgreSQL uses a `player_ids` sequence (migration 0012), seeded past
+  the highest id in use and never handing out an id at or below it. The
+  file and memory stores, which serve one process each, use a counter
+  under their lock.
+- **Races.** The database's unique `player` column is the real guard: a
+  registration that loses a race retries with a new id. A name registered
+  on two servers at once ends as one account, and the other server
+  answers `name_taken`.
+- **Logins.** A login, and the lobby's `?name=` lookup, for an account
+  another server registered after this one started now reads it from the
+  store (`Store::find_account`) and keeps it.
+
+Tested with two servers on one PostgreSQL database (two connection
+pools, as two processes would have) and on one shared in-memory store:
+
+- 24 concurrent registrations, 12 on each server, got distinct ids;
+- a name raced on both servers gave one account and one `name_taken`;
+- an account made on one server logged in on the other with the same
+  player id.
+
+The PostgreSQL run used a local PostgreSQL 16 in this container; the
+whole integration suite also passes against it (`DATABASE_URL`).
+
+### The client and the lobby
+
+Before logging in, the web client asks where to play (`client/src/assign.ts`):
+
+- **Who it asks.** It asks the lobby when one is configured
+  (`?lobby=https://lobby.example.org` on the page URL, which it remembers,
+  or the build-time `VITE_EVO_LOBBY`, e.g. for the store apps), else the
+  game server's own `/api/assign`. The answer comes within 2.5 s or not
+  at all.
+- **Another server.** If the lobby names one, the client logs in there.
+  It remembers that server, because the session belongs to it.
+- **Which world.** The player's own pick in the world list wins, then the
+  world holding their lineage, then the world remembered for them, then
+  the world the server would fill, then the server's default.
+- **Fallback.** No answer (an older server, a lobby that is down, a slow
+  reply, every world full) leaves the login exactly as before.
+- **CORS.** `evo-lobby` sends CORS headers, because the page usually
+  comes from another origin.
+
+`e2e/lobby.mjs` checks this in Chromium with two servers and a lobby:
+
+- a new player opening server A's page with `?lobby=` is sent to A's
+  first world with room;
+- a player whose lineage lives on server B, opening A's page, ends up
+  playing on B;
+- without a lobby, A's own `/api/assign` keeps a player with their
+  lineage in their world.
+
+## Compression: permessage-deflate
+
+axum's WebSocket (tungstenite 0.24, and still in 0.30) has no
+permessage-deflate. It also rejects compressed frames, which browsers
+send once the extension is agreed. The game WebSocket now runs on
+`yawc` (RFC 6455 and RFC 7692 over hyper 1, Autobahn-tested, MPL-2.0)
+and negotiates compression whenever the client offers it
+(`--ws-compression`):
+
+| Mode | What it does |
+| --- | --- |
+| `context` (default) | Each connection keeps its deflate stream, so a message can refer back to earlier ones. |
+| `message` | Each message is compressed on its own, with deflate state shared by all connections; the client is asked to do the same. |
+| `off` | Plain frames. |
+
+In every mode, messages under 64 bytes go out plain. Client messages
+stay bounded at 16 KiB, before and after inflating.
+
+**Who negotiates it.**
+
+- Every browser offers `permessage-deflate; client_max_window_bits`.
+  Chromium accepting it from this server is checked in `e2e/lobby.mjs`,
+  from the DevTools protocol's handshake events, and smoke, mobile and
+  android-desktop run over compressed sockets.
+- The Capacitor apps use their web view's WebSocket: Chromium on Android,
+  as tested. iOS (WKWebView) could not be checked here. If a client
+  doesn't offer the extension, the server sends plain frames, so nothing
+  breaks.
+- Clients that don't offer it get plain frames: the load generator with
+  `--no-ws-deflate`, and the tests' tokio-tungstenite clients.
+
+**Cost against saving.** The load generator now negotiates compression
+as a browser does, and counts the bytes it reads off each socket.
+
+| | 1000 off | 1000 `message` | 1000 `context` | 4000 off | 4000 `message` | 4000 `context` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Wire bytes per player | 2.26 KB/s | 1.04 KB/s (2.2×) | **0.85 KB/s (2.6×)** | 2.23 KB/s | 1.03 KB/s (2.2×) | **0.87 KB/s (2.6×)** |
+| Server CPU | 0.36 | 0.45 (+25%) | 0.41 (+15%) | 1.82 | 2.13 (+17%) | 2.04 (+12%) |
+| Server RSS | 390 MB | 398 MB | 590 MB | 1244 MB | 1348 MB | 2065 MB |
+| Command → result p99 | 249 ms | 251 ms | 250 ms | 391 ms | 591 ms | 512 ms |
+| Ticks/s | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+
+At 4000 players the box was close to full: server and load generator
+used about 3.2 of 4 cores, and both now spend CPU on deflate. That is why
+the latency tails grew there. More sub-step states were also replaced by
+newer ones before slow writers sent them: 0.2% of states in compressed
+mode, against almost none uncompressed. Nothing was dropped and no
+decode failed.
+
+`context` takes the most off for the least CPU. It costs about 200 KB of
+deflate state per connection: 0.8 GB at 4000 players, which is more RAM
+than CPU per player. `message` costs almost no memory but more CPU, and
+saves less, because small deltas barely shrink on their own. For servers
+short of memory, `--ws-compression message` is the choice.
+
+The traffic is now about half quantised delta states and half
+`browse_market` JSON:
+
+- State frames were already quantised binary deltas: positions ×64,
+  needs ×10, per-record change masks, and palettes for looks, actions and
+  eyes (`wire.rs`).
+- Keyframes go out once a minute.
+- Nothing cheaper is left in them without changing the protocol.
+
+The market's 20-listing pages, each listing with its traits and a mating
+preview, compress well. Making them smaller (fewer fields, or previews
+on demand) would change what the client receives, so it is not done
+here.
 
 ### Capacity plan
 
@@ -401,26 +528,26 @@ numbers are pessimistic.
 | Per 1000 concurrent heavy players | Measured | Plan with |
 | --- | --- | --- |
 | Server CPU | 0.40 cores (1 world × 1000); 0.41 per 1000 at 2 × 2000 | 1 vCPU (2.5× headroom for bursts, saves and restarts) |
-| Memory (RSS) | +0.3 MB per player over a ~180 MB world (512², 20k organisms) | 0.5 GB, plus 0.25 GB per world |
-| Outbound bandwidth | 3.0–3.9 KB/s per player: 25–31 Mbit/s, about 8–10 TB a month at full occupancy | 10 TB a month without compression, about 4 TB with permessage-deflate |
+| Memory (RSS) | +0.3 MB per player over a ~180 MB world (512², 20k organisms), +0.2 MB per connection for deflate contexts | 0.75 GB, plus 0.25 GB per world |
+| Outbound bandwidth | 2.2–3.9 KB/s per player uncompressed, depending on the build (2.2 with the current food rules); **0.85–0.87 KB/s with permessage-deflate** (measured, `context`): about 7 Mbit/s, 2.3 TB a month at full occupancy | 2.5 TB a month (6 TB uncompressed) |
 | Players per world | 4000 held at 1 tick/s; 3000 default capacity | ≤ 3000 per world, one world per 1–2 vCPU |
 
 **Rough cost per 1000 concurrent heavy players a month.** These are
 approximate on-demand list prices; check current pricing.
 
-| Provider (instance) | Compute | Traffic (10 TB raw / 4 TB deflated) | Total |
+| Provider (instance) | Compute | Traffic (2.5 TB deflated; 6 TB uncompressed) | Total |
 | --- | --- | --- | --- |
-| AWS c7g.xlarge (4 vCPU, 8 GB, ≈ $106/mo; 4000 CCU per box at 1 vCPU each) | ≈ $27 | ≈ $900 / $360 at $0.09 per GB | ≈ $390–930 |
-| GCP c3-standard-4 (4 vCPU, 16 GB, ≈ $150/mo) | ≈ $38 | ≈ $850 / $340 at ≈ $0.085 per GB | ≈ $380–890 |
-| Hetzner CCX23 (4 dedicated vCPU, 16 GB, ≈ €30/mo, 20 TB included) | ≈ €8 | included up to 20 TB per box (2000 raw / 5000 deflated CCU), then ≈ €1 per TB | ≈ €8–15 |
+| AWS c7g.xlarge (4 vCPU, 8 GB, ≈ $106/mo; 4000 CCU per box at 1 vCPU each) | ≈ $27 | ≈ $225 ($540) at $0.09 per GB | ≈ $250 |
+| GCP c3-standard-4 (4 vCPU, 16 GB, ≈ $150/mo) | ≈ $38 | ≈ $210 ($510) at ≈ $0.085 per GB | ≈ $250 |
+| Hetzner CCX23 (4 dedicated vCPU, 16 GB, ≈ €30/mo, 20 TB included) | ≈ €8 | included (20 TB per box covers its 4000 CCU) | ≈ €8 |
 
-Compute is cheap. **Outbound traffic dominates on the big clouds**: about
-30× the compute at AWS and GCP egress prices. The levers, in order:
+Compute is cheap. **Outbound traffic still dominates on the big clouds**,
+about 8× the compute at AWS and GCP egress prices, even after
+permessage-deflate cut it 2.6× (now on by default). The remaining levers:
 
-1. Turn on permessage-deflate (2.6× on states, more on JSON replies).
-2. Send `browse_market` results less often or smaller: they are half the
-   bytes.
-3. Host where traffic is included.
+1. Send `browse_market` results less often or smaller: they are about
+   half the bytes.
+2. Host where traffic is included.
 
 ## What is left
 

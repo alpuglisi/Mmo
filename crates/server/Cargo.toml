@@ -22,7 +22,7 @@ evo-sim = { path = "../sim", features = ["serde"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 argon2 = { version = "0.5", features = ["std"] }
 async-trait = "0.1"
-axum = { version = "0.7", features = ["ws"] }
+axum = "0.7"
 base64 = "0.22"
 png = "0.17"
 # Web Push (`webpush`): RFC 8291 message encryption and RFC 8292 VAPID
@@ -53,6 +53,10 @@ tower-http = { version = "0.6", default-features = false, features = ["fs", "cor
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 tower-service = "0.3"
+# The game WebSocket (`http.rs`): RFC 6455 with permessage-deflate
+# (RFC 7692), which axum's tungstenite-based WebSocket lacks. No TLS (a
+# reverse proxy terminates it).
+yawc = { version = "0.5", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs"] }
 tracing = "0.1"
 tikv-jemallocator = { version = "0.6", optional = true }

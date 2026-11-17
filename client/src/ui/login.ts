@@ -1,4 +1,5 @@
 import { api, apiBase, ApiError, setApiBase } from '../api';
+import { askAssignment, chooseWorld, initialLobby } from '../assign';
 import type { WorldList } from '../protocol';
 import { withRetry } from '../retry';
 import { isNativeShell, normalizeOrigin, saveOrigin } from '../serverOrigin';
@@ -19,6 +20,8 @@ export function loginScreen(onLogin: (s: Session) => void, notice?: string): HTM
   const serverBox = h('details', { class: 'server-box', id: 'server-box' }, h('summary', {}, 'Server: ', h('span', { id: 'server-current' }, apiBase() || 'this page')),
     h('label', {}, 'Game server address', server));
   if (native && !apiBase()) serverBox.open = true;
+  // A front door over several servers, if one is configured (`assign.ts`).
+  const lobby = initialLobby();
 
   // The world picker: shown when the server hosts more than one world. It
   // preselects the world this name played last on this server (or the last
@@ -101,15 +104,29 @@ export function loginScreen(onLogin: (s: Session) => void, notice?: string): HTM
     if (!applyServer()) return;
     login.disabled = register.disabled = true;
     try {
-      await loadWorlds();
       const [n, p] = [name.value.trim(), password.value];
+      // Where to play (the lobby may name another server): no answer
+      // leaves things as they were.
+      const assigned = await askAssignment({ name: n, server: apiBase(), lobby });
+      let movedServer = false;
+      if (assigned?.server && assigned.server !== apiBase()) {
+        // The session will belong to that server: keep it for next time.
+        server.value = assigned.server;
+        movedServer = applyServer();
+      }
+      await loadWorlds();
       // A server busy with other logins (after a restart, everyone at
       // once) says when to come back: wait and retry rather than fail.
       const s = await withRetry(() => (kind === 'login' ? api.login(n, p) : api.register(n, p)), {
         onWait: (ms) => { error.textContent = `The server is busy; retrying in ${Math.max(1, Math.round(ms / 1000))} s…`; },
       });
       error.textContent = '';
-      const world = worlds ? pickWorld(worlds, worldSelect.value) : '';
+      const want = chooseWorld({
+        picked: picked && !movedServer ? worldSelect.value : null,
+        assigned,
+        remembered: remembered(loadMemory(), apiBase(), s.name),
+      });
+      const world = worlds ? pickWorld(worlds, want) : want ?? '';
       if (world) saveMemory(remember(loadMemory(), apiBase(), s.name, world));
       onLogin({ ...s, world });
     } catch (e) {

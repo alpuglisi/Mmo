@@ -53,6 +53,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (9, "push_devices", include_str!("../../migrations/0009_push_devices.sql")),
     (10, "history_retention", include_str!("../../migrations/0010_history_retention.sql")),
     (11, "sessions", include_str!("../../migrations/0011_sessions.sql")),
+    (12, "player_ids", include_str!("../../migrations/0012_player_ids.sql")),
 ];
 
 #[derive(Debug)]
@@ -212,6 +213,35 @@ impl Store for PgStore {
             return Err(StoreError(format!("account {:?} exists", account.name)));
         }
         Ok(())
+    }
+
+    async fn allocate_player(&self) -> StoreResult<PlayerId> {
+        // Past every id in use too (accounts written without the sequence,
+        // e.g. imported); a race between servers is caught by the unique
+        // `player` column and retried by the caller.
+        let row = sqlx::query(
+            "SELECT setval('player_ids', GREATEST(nextval('player_ids'), \
+             (SELECT COALESCE(MAX(player), 0) + 1 FROM accounts))) AS player",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(get_u64(&row, "player")? as PlayerId)
+    }
+
+    async fn find_account(&self, name: &str) -> StoreResult<Option<AccountRecord>> {
+        let row = sqlx::query("SELECT name, player, password_hash, created_unix FROM accounts WHERE name = $1")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|r| {
+            Ok(AccountRecord {
+                name: r.try_get("name")?,
+                player: get_u64(&r, "player")? as PlayerId,
+                password_hash: r.try_get("password_hash")?,
+                created_unix: get_u64(&r, "created_unix")?,
+            })
+        })
+        .transpose()
     }
 
     async fn put_push_subscription(&self, s: &PushSubscriptionRecord) -> StoreResult<()> {

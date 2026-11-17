@@ -25,6 +25,9 @@
 //! plays on.
 //!
 //! `GET /lobby/servers` shows each backend's worlds and load as last asked.
+//!
+//! The web client asks the lobby when given one (`?lobby=URL` or the
+//! build-time `VITE_EVO_LOBBY`, `client/src/assign.ts`), before logging in.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -157,6 +160,13 @@ async fn main() {
     let app = Router::new()
         .route("/lobby/assign", get(lobby_assign))
         .route("/lobby/servers", get(lobby_servers))
+        // Pages from anywhere (the game servers' own pages, the apps) ask
+        // it; it holds no credentials.
+        .layer(
+            tower_http::cors::CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods([axum::http::Method::GET]),
+        )
         .with_state(lobby);
     let listener = tokio::net::TcpListener::bind(bind).await.expect("bind");
     tracing::info!("lobby on http://{}", listener.local_addr().unwrap());

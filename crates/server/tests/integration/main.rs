@@ -13,3 +13,4 @@ mod security;
 mod server;
 mod standings;
 mod worlds;
+mod ws_compression;

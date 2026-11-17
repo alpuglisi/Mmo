@@ -2060,7 +2060,8 @@ store) found and fixed:
   default and passwords not at all (argon2 hashes any length): now 64 KiB and
   1024 bytes. WebSocket frames were bounded only by tungstenite's 16 MB
   default (a frame is read whole before the 16 KiB message limit applies):
-  now 16 KiB too. `GET /api/map.png?scale=8` on a 1024-tile map rendered a
+  now 16 KiB too (the WebSocket is now yawc's, with the same 16 KiB bound on
+  frames and on whole messages, after decompression). `GET /api/map.png?scale=8` on a 1024-tile map rendered a
   200 MB image on the world thread: the side is capped at 2048 px.
 - **Unauthenticated work for the world thread.** Terrain, map, chronicle,
   history, seasons and lineage stats requests were unlimited and could fill
@@ -2751,7 +2752,14 @@ order: `?server=https://host:port` on the page URL (remembered), the
 until set), or a build default `VITE_EVO_SERVER=https://game.example.org
 npm run build`; otherwise the page's own origin (`setApiBase()` in
 `api.ts`, `serverOrigin.ts`). The WebSocket follows the same origin
-(`wss://` for https). For a plain-http LAN server during development, run
+(`wss://` for https). Before logging in, the client asks where to play
+(`assign.ts`): an `evo-lobby` front door when one is configured
+(`?lobby=https://lobby.example.org` on the page URL, remembered, or a build
+default `VITE_EVO_LOBBY`), which may send the player to another server
+(the session then belongs to it), else the game server's own
+`GET /api/assign`. The answer picks the world (the player's lineage first);
+no answer, an older server or a lobby that is down leaves the login as it
+was. See `docs/load-test.md`. For a plain-http LAN server during development, run
 `EVO_CAP_CLEARTEXT=1 npm run cap:sync` (cleartext and mixed content on
 Android; on iOS an App Transport Security exception in
 `ios/App/App/Info.plist`: `NSAllowsArbitraryLoadsInWebContent` and
@@ -3779,9 +3787,9 @@ total is command replies and events.
   quantized positions and the binary records shrink them **80–85×** on
   their own (a tick's delta is mostly two-byte position changes, a sub-step
   only the possessed organism), and deflate would take another 2.8× off
-  those. The WebSocket stack here (axum 0.7, tungstenite 0.24) has no
-  permessage-deflate, and delta states alone already take state traffic
-  below the rest, so protocol 2 has no compression.
+  those. The game WebSocket now negotiates permessage-deflate
+  (`--ws-compression`, on by default; see `docs/load-test.md`), which takes
+  that 2.6–2.8× off delta states and more off JSON replies.
 - **CPU:** encoding a delta costs less than serializing the JSON did (a
   micro-benchmark, `wire::tests::encoding_cost`: 256 nearby and 12 own
   organisms, 54 leaderboard rows: JSON 110 µs and 64 KB; a tick's delta
@@ -7500,10 +7508,9 @@ sections above).
    per-organism invalidation (push p50 −16%, sub-step p99 −22% at 500
    players, results byte-identical); what remains per state is copying what
    it contains, which only shared (`Arc`) state parts would avoid.
-6. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
-   protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
-   doesn't offer it; revisit when it does (states are already ~1 KB/s a
-   client, so this is low priority). (Saving the map's tiles as a delta
+6. **Bandwidth and saves.** permessage-deflate is now on (the WebSocket is
+   yawc's; `--ws-compression context|message|off`): 2.6× less traffic at
+   1000 players for 15% more server CPU (`docs/load-test.md`). (Saving the map's tiles as a delta
    against an earlier save was measured and rejected: 2% off a save; see
    *Tile deltas between saves* in [Persistence](#persistence).) Saves:
    eggs' and young organisms' genomes are now written against their

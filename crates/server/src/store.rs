@@ -328,6 +328,14 @@ pub trait Store: Send + Sync {
     async fn load_accounts(&self) -> StoreResult<Vec<AccountRecord>>;
     /// Fails if the name is taken.
     async fn insert_account(&self, account: &AccountRecord) -> StoreResult<()>;
+    /// A player id never handed out before, by this process or any other
+    /// sharing the store (PostgreSQL: a sequence), for a new account.
+    async fn allocate_player(&self) -> StoreResult<PlayerId>;
+    /// The account named `name`, also one another process sharing the store
+    /// registered since this one loaded the accounts.
+    async fn find_account(&self, name: &str) -> StoreResult<Option<AccountRecord>> {
+        Ok(self.load_accounts().await?.into_iter().find(|a| a.name == name))
+    }
     /// Insert or replace a player's alert preferences.
     async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()>;
     /// A player's alert preferences, if they ever saved any.
@@ -585,6 +593,8 @@ pub struct MemoryStore {
 #[derive(Default)]
 struct MemInner {
     accounts: Vec<AccountRecord>,
+    /// The last player id handed out.
+    last_player: PlayerId,
     alert_prefs: BTreeMap<PlayerId, AlertPrefsRecord>,
     push_subscriptions: BTreeMap<String, PushSubscriptionRecord>,
     push_devices: BTreeMap<(NativeService, String), PushDeviceRecord>,
@@ -631,11 +641,18 @@ impl Store for MemoryStore {
 
     async fn insert_account(&self, account: &AccountRecord) -> StoreResult<()> {
         let mut g = self.inner.lock().await;
-        if g.accounts.iter().any(|a| a.name == account.name) {
+        if g.accounts.iter().any(|a| a.name == account.name || a.player == account.player) {
             return Err(StoreError(format!("account {:?} exists", account.name)));
         }
         g.accounts.push(account.clone());
         Ok(())
+    }
+
+    async fn allocate_player(&self) -> StoreResult<PlayerId> {
+        let mut g = self.inner.lock().await;
+        let p = g.accounts.iter().map(|a| a.player).max().unwrap_or(0).max(g.last_player) + 1;
+        g.last_player = p;
+        Ok(p)
     }
 
     async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()> {
@@ -903,6 +920,8 @@ type HistorySlot = Arc<std::sync::Mutex<Option<history_files::HistoryFiles>>>;
 
 struct Tables {
     accounts: Vec<AccountRecord>,
+    /// The last player id handed out (one process per data directory).
+    last_player: PlayerId,
     alert_prefs: Vec<AlertPrefsRecord>,
     push_subscriptions: Vec<PushSubscriptionRecord>,
     push_devices: Vec<PushDeviceRecord>,
@@ -960,6 +979,7 @@ impl FileStore {
             Err(e) => return Err(e.into()),
         };
         let tables = Tables {
+            last_player: 0,
             accounts,
             alert_prefs,
             push_subscriptions,
@@ -1154,9 +1174,16 @@ impl Store for FileStore {
         Ok(self.tables.lock().await.accounts.clone())
     }
 
+    async fn allocate_player(&self) -> StoreResult<PlayerId> {
+        let mut t = self.tables.lock().await;
+        let p = t.accounts.iter().map(|a| a.player).max().unwrap_or(0).max(t.last_player) + 1;
+        t.last_player = p;
+        Ok(p)
+    }
+
     async fn insert_account(&self, account: &AccountRecord) -> StoreResult<()> {
         let mut t = self.tables.lock().await;
-        if t.accounts.iter().any(|a| a.name == account.name) {
+        if t.accounts.iter().any(|a| a.name == account.name || a.player == account.player) {
             return Err(StoreError(format!("account {:?} exists", account.name)));
         }
         t.accounts.push(account.clone());

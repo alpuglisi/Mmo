@@ -80,7 +80,7 @@ use tokio_tungstenite::tungstenite::Message;
 const USAGE: &str = "usage: loadgen [--players 50] [--duration 120] [--ramp 20] [--actions-per-min 30] \
 [--url http://HOST:PORT | --server PATH] [--data DIR] [--size 512] [--seed 1] [--tick-ms 1000] [--state-ms 1000] \
 [--fast] [--lod] [--warm-until 0] [--report 10] [--json FILE] [--dump-state FILE] [--founders 12] [--proto 2] [--deflate] \
-[--world ID | --worlds N] [--csv FILE] [--restart-at SECS]";
+[--world ID | --worlds N] [--csv FILE] [--restart-at SECS] [--no-ws-deflate] [--server-arg ARG]...";
 
 #[derive(Clone, Debug)]
 struct Args {
@@ -118,6 +118,10 @@ struct Args {
     /// (graceful stop, then start from its save on the same port) and let
     /// every player reconnect.
     restart_at: Option<f64>,
+    /// Offer permessage-deflate, as browsers do (`--no-ws-deflate`: don't).
+    ws_deflate: bool,
+    /// Extra arguments for the started server (`--server-arg`, repeated).
+    server_args: Vec<String>,
 }
 
 impl Args {
@@ -182,6 +186,8 @@ fn parse_args() -> Result<Args, String> {
         worlds: 1,
         csv: None,
         restart_at: None,
+        ws_deflate: true,
+        server_args: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -213,6 +219,8 @@ fn parse_args() -> Result<Args, String> {
             "--world" => a.world = Some(v("--world")?),
             "--worlds" => a.worlds = num("--worlds", v("--worlds")?)?,
             "--csv" => a.csv = Some(v("--csv")?.into()),
+            "--no-ws-deflate" => a.ws_deflate = false,
+            "--server-arg" => a.server_args.push(v("--server-arg")?),
             "--restart-at" => a.restart_at = Some(num("--restart-at", v("--restart-at")?)?),
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -317,6 +325,7 @@ fn spawn_server(args: &Args, data: &Path, port: u16, fast: bool, log_name: &str)
     if args.lod {
         cmd.arg("--lod");
     }
+    cmd.args(&args.server_args);
     for (i, w) in args.world_ids().into_iter().enumerate() {
         if let (Some(w), true) = (w, args.worlds > 1) {
             cmd.args(["--world", &format!("{w},seed={}", args.seed + i as u64)]);
@@ -434,6 +443,9 @@ struct Stats {
     /// `--restart-at`: connections lost and opened again, logins needed
     /// for it, players who gave up, and each outage (lost → first state).
     reconnects: AtomicU64,
+    /// Bytes read from the WebSocket connections: the server's frames as
+    /// sent, compressed or not.
+    wire_in: Arc<AtomicU64>,
     relogins: AtomicU64,
     reconnect_failed: AtomicU64,
     outages: Mutex<Vec<f32>>,
@@ -733,6 +745,7 @@ struct Ctx {
     args: Args,
     http: Http,
     ws_base: String,
+    ws_addr: SocketAddr,
     run: u32,
     stats: Stats,
 }
@@ -774,7 +787,80 @@ async fn auth_call(ctx: &Ctx, path: &str, creds: &Value, rng: &mut StdRng) -> Re
     ctx.http.call(Method::POST, path, None, Some(creds.clone())).await
 }
 
-type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type Ws = yawc::WebSocket<Counted>;
+
+/// A client socket that counts the bytes it reads: what the server sent on
+/// the wire, compressed or not (WebSocket framing included, TCP/IP not).
+struct Counted {
+    io: tokio::net::TcpStream,
+    read: Arc<AtomicU64>,
+}
+
+impl tokio::io::AsyncRead for Counted {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let r = std::pin::Pin::new(&mut self.io).poll_read(cx, buf);
+        self.read.fetch_add((buf.filled().len() - before) as u64, Ordering::Relaxed);
+        r
+    }
+}
+
+impl tokio::io::AsyncWrite for Counted {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+
+/// Open a WebSocket to `url` (`ws://host:port/path`), offering
+/// permessage-deflate as browsers do unless `--no-ws-deflate`.
+async fn ws_connect(ctx: &Ctx, url: &str) -> Result<Ws, String> {
+    let io = tokio::net::TcpStream::connect(ctx.ws_addr).await.map_err(|e| e.to_string())?;
+    let _ = io.set_nodelay(true);
+    let io = Counted { io, read: ctx.stats.wire_in.clone() };
+    let opts = if ctx.args.ws_deflate {
+        yawc::Options::default().with_low_latency_compression()
+    } else {
+        yawc::Options::default().without_compression()
+    };
+    let url = url.parse().map_err(|e| format!("{e:?}"))?;
+    yawc::WebSocket::handshake(url, io, opts).await.map_err(|e| e.to_string())
+}
+
+/// The next message, as tungstenite would give it (the rest of this file
+/// was written against it).
+async fn next_msg(ws: &mut Ws) -> Option<Result<Message, ()>> {
+    let f = ws.next().await?;
+    Some(Ok(match f.opcode() {
+        yawc::frame::OpCode::Text => Message::Text(String::from_utf8_lossy(f.payload()).into_owned()),
+        yawc::frame::OpCode::Binary => Message::Binary(f.into_payload().to_vec()),
+        yawc::frame::OpCode::Close => Message::Close(None),
+        _ => Message::Pong(Vec::new()),
+    }))
+}
+
+async fn send_text(ws: &mut Ws, text: String) -> Result<(), ()> {
+    ws.send(yawc::Frame::text(text)).await.map_err(|_| ())
+}
 
 /// Open the game WebSocket and wait for `welcome` (its player id). The
 /// first time, a failure is final. Reconnecting, it retries as the web
@@ -809,9 +895,9 @@ async fn open_ws(
         }
         attempt += 1;
         let url = in_world(&format!("{}/ws?token={token}&proto={}", ctx.ws_base, ctx.args.proto), world);
-        match tokio_tungstenite::connect_async(url).await {
-            Ok((mut ws, _)) => loop {
-                match ws.next().await {
+        match ws_connect(ctx, &url).await {
+            Ok(mut ws) => loop {
+                match next_msg(&mut ws).await {
                     Some(Ok(Message::Text(t))) => {
                         let v: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
                         if v["type"] == "welcome" {
@@ -924,11 +1010,11 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
                     msg["id"] = json!(id);
                     p.pending.insert(id, (Instant::now(), name));
                     st.commands.fetch_add(1, Ordering::Relaxed);
-                    if ws.send(Message::Text(msg.to_string())).await.is_err() {
+                    if send_text(&mut ws, msg.to_string()).await.is_err() {
                         break true;
                     }
                 }
-                frame = ws.next() => {
+                frame = next_msg(&mut ws) => {
                     let text = match frame {
                         Some(Ok(Message::Text(t))) => t,
                         Some(Ok(Message::Binary(b))) => {
@@ -958,7 +1044,7 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
                                 }
                                 Err(_) => {
                                     st.decode_errors.fetch_add(1, Ordering::Relaxed);
-                                    if ws.send(Message::Text(json!({"type": "resync"}).to_string())).await.is_err() {
+                                    if send_text(&mut ws, json!({"type": "resync"}).to_string()).await.is_err() {
                                         break true;
                                     }
                                 }
@@ -1043,7 +1129,7 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
                             p.pending.insert(id, (Instant::now(), "respond_mating"));
                             st.commands.fetch_add(1, Ordering::Relaxed);
                             let msg = json!({"type": "respond_mating", "id": id, "request": offer.id, "accept": accept});
-                            if ws.send(Message::Text(msg.to_string())).await.is_err() {
+                            if send_text(&mut ws, msg.to_string()).await.is_err() {
                                 break true;
                             }
                         }
@@ -1061,7 +1147,7 @@ async fn run_player(i: usize, ctx: Arc<Ctx>, mut stop: watch::Receiver<bool>) {
         };
         st.connected.fetch_sub(1, Ordering::Relaxed);
         if !closed {
-            let _ = ws.close(None).await;
+            let _ = ws.close().await;
             return;
         }
         if ctx.args.restart_at.is_none() {
@@ -1253,6 +1339,7 @@ async fn main() {
         args: args.clone(),
         http: http.clone(),
         ws_base: format!("ws://{addr}"),
+        ws_addr: addr,
         run,
         stats: Stats { track_window: args.csv.is_some(), ..Stats::default() },
     });
@@ -1613,8 +1700,15 @@ async fn main() {
             "cpu_cores_max_after": after.iter().map(|s| s.cpu_cores).fold(0.0, f64::max),
         })
     });
+    let (wire, payload) = (st.wire_in.load(Ordering::Relaxed), st.bytes_in.load(Ordering::Relaxed));
     let summary = json!({
         "restart": restart_json,
+        "ws_deflate": args.ws_deflate,
+        // What the players read off their sockets (frames as sent), and the
+        // messages it carried.
+        "wire_kb_s_per_client": per_client(wire),
+        "payload_kb_s_per_client": per_client(payload),
+        "wire_saving": if wire > 0 { payload as f64 / wire as f64 } else { 0.0 },
         "players": args.players,
         "worlds": per_world,
         "connected": st.connected.load(Ordering::Relaxed),
