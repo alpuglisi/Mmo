@@ -3122,9 +3122,11 @@ merged defaults differ only in `decide_interval`):
 | µs per organism-tick, 2 years, 1 thread: standard / meat world | 1.96 / 1.85 | 1.81 / 1.71 (−8% each) |
 
 The fix keeps about 8% of a tick (unguarded staggering saved 13–15%,
-because in a crowd most calm organisms now have a hunter in sight). It
-stays off by default (`decide_interval` 1, *Food by its value*); setting
-it to 2 is the whole switch.
+because in a crowd most calm organisms now have a hunter in sight). With
+the fix passing both checks (no prey lost on either seed set, compare
+within noise), **staggering is on by default again** (`decide_interval`
+2); a version 32 save keeps the interval it stored, and
+`--set decide_interval=1` restores every-tick decisions.
 
 Where the time goes now (one world, single thread, two years): perception
 in `decide` is about two thirds (neighbor scan, nearest-32 selection, the
@@ -6728,7 +6730,8 @@ to hunters that always decide afresh, and the voles pay for it. So with
 these rules on by default **`decide_interval` goes back to 1** (every
 organism decides every tick): prey survival is worth more than the 13–15%
 of a tick it saved. The field and the version 32 format stay; a version 32
-save keeps the interval it stored.
+save keeps the interval it stored. (Later the danger-in-sight check fixed
+this, and staggering is on by default again: see *Performance*.)
 
 **Old saves keep their rules.** Snapshots move to format version 31 (28
 was reserved for this change and never written): `meat_energy`,

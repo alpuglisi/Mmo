@@ -802,10 +802,10 @@ pub struct Balance {
     /// 30 read (`serde_util::before_v30`).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v30"))]
     pub strike_fixes: f32,
-    /// Staggered decisions (an approximation for speed; 2 by default in
-    /// snapshot version 32, back to 1, off, with the food values and
-    /// carnivore rules on by default: with them it cost the voles on fresh
-    /// seeds, *Food by its value* in the README): at 2 or more, a calm organism decides afresh only every
+    /// Staggered decisions (an approximation for speed; 2 by default: briefly
+    /// 1 after the food values cost the voles on fresh seeds, then 2 again
+    /// once a kept intent also required no danger in sight, README
+    /// *Performance*): at 2 or more, a calm organism decides afresh only every
     /// `decide_interval` ticks (staggered by id) and keeps its last intent
     /// in between, its chase target's position updated
     /// (`World::reused_intent`). Every organism decides on the day's first
@@ -816,7 +816,7 @@ pub struct Balance {
     /// 0 or 1: every organism decides every tick, what snapshots before
     /// version 32 read (`serde_util::before_v32`). About 13–15% off a tick
     /// in crowds; the paired comparison and predator survival are in the
-    /// README (Performance).
+    /// README (Performance); about 8% with the danger check.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v32"))]
     pub decide_interval: f32,
     // Food values (version 31; *Food by its value* in the README's Balance
@@ -1101,7 +1101,7 @@ impl Default for Balance {
             morph_wing_shape: 1.0,
             morph_pattern: 1.0,
             strike_fixes: 1.0,
-            decide_interval: 1.0,
+            decide_interval: 2.0,
             carcass_keep: 0.75,
             carnivore_fat: 60.0,
             carcass_scent: 8.0,
