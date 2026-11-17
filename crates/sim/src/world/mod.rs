@@ -204,6 +204,68 @@ impl<T> PointGrid<T> {
     }
 }
 
+/// Connected regions (8-neighbor) of the tiles of a `w` × `h` map that
+/// `open` marks with anything but `u32::MAX`: a label per tile, regions
+/// numbered in the order of their first tile, `u32::MAX` elsewhere
+/// (`World::passable_regions`). Runs of open tiles in a row are joined
+/// (union-find) to the runs of the row above that touch them, diagonals
+/// included.
+fn label_runs(open: &[u32], w: usize, h: usize) -> Vec<u32> {
+    fn root(parent: &mut [u32], mut a: u32) -> u32 {
+        while parent[a as usize] != a {
+            parent[a as usize] = parent[parent[a as usize] as usize];
+            a = parent[a as usize];
+        }
+        a
+    }
+    // Runs as (row start index + x0, x1 exclusive), row by row.
+    let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+    let mut parent: Vec<u32> = Vec::new();
+    let mut prev = 0..0;
+    for y in 0..h {
+        let row = &open[y * w..(y + 1) * w];
+        let first = runs.len();
+        let mut x = 0;
+        while x < w {
+            if row[x] == u32::MAX {
+                x += 1;
+                continue;
+            }
+            let x0 = x;
+            while x < w && row[x] != u32::MAX {
+                x += 1;
+            }
+            let id = runs.len() as u32;
+            runs.push((y, x0, x));
+            parent.push(id);
+            // Runs of the row above touching [x0 - 1, x + 1).
+            for k in prev.clone() {
+                let (_, a0, a1) = runs[k];
+                if a1 + 1 > x0 && a0 < x + 1 {
+                    let (ra, rb) = (root(&mut parent, k as u32), root(&mut parent, id));
+                    if ra != rb {
+                        let (lo, hi) = (ra.min(rb), ra.max(rb));
+                        parent[hi as usize] = lo;
+                    }
+                }
+            }
+        }
+        prev = first..runs.len();
+    }
+    let mut label = vec![u32::MAX; w * h];
+    let mut of_root = vec![u32::MAX; runs.len()];
+    let mut next = 0;
+    for (k, &(y, x0, x1)) in runs.iter().enumerate() {
+        let r = root(&mut parent, k as u32) as usize;
+        if of_root[r] == u32::MAX {
+            of_root[r] = next;
+            next += 1;
+        }
+        label[y * w + x0..y * w + x1].fill(of_root[r]);
+    }
+    label
+}
+
 /// What founding's home search (`World::pick_home`) reads of the other
 /// lineages, gathered once per founded lineage.
 struct HomeSearch {
@@ -224,37 +286,48 @@ struct HomeSearch {
 
 impl HomeSearch {
     fn new(w: &World, probe: &Organism, lineage: u32) -> Self {
-        let region = w.passable_regions(probe);
+        let hunter = probe.traits.carnivory > 0.45;
+        // Regions only tell a hunter's prey apart (reachable from home or
+        // not); for anyone else every passable tile reads 0.
+        let region = if hunter { w.passable_regions(probe) } else { w.passable_map(probe) };
         let region_at = |p: Vec2| {
             let (x, y) = w.map.tile_coords(p);
             region[w.map.idx(x, y)]
         };
-        let hunter = probe.traits.carnivory > 0.45;
         // Prey it can take alone: a pack placed by big prey it can only
         // take together eats through that prey lineage before it settles.
         let max_prey = decide::max_prey_mass(probe, 0.0);
-        let others = || w.organisms.iter().filter(move |o| o.alive && o.lineage != lineage);
         let resistance = probe.resistance();
-        let threats: Vec<(Vec2, f32)> = others()
-            .filter_map(|o| {
+        // One pass over the organisms (each read once): threats and prey in
+        // organism order, every organism (the dead too) in the crowd.
+        let mut threats: Vec<(Vec2, f32)> = Vec::new();
+        let mut prey: Vec<(Vec2, u32, u32)> = Vec::new();
+        let mut crowd = PointGrid::new(&w.map);
+        for o in &w.organisms {
+            crowd.insert(o.pos, o.traits.carnivory);
+            if !o.alive || o.lineage == lineage {
+                continue;
+            }
+            // Both ways to threaten the founders need a hunter's carnivory:
+            // the rest are ruled out before the costlier tests.
+            if o.traits.carnivory > 0.45 {
                 let coop = if GroupTrait::CooperativeHunting.is_carrier(&o.pheno) { 1.0 } else { 0.0 };
-                let can_take = o.traits.carnivory > 0.45 && probe.mass() < decide::max_prey_mass(o, coop);
-                (decide::can_threaten(o, probe) || can_take).then(|| {
+                let can_take = probe.mass() < decide::max_prey_mass(o, coop);
+                if decide::can_threaten(o, probe) || can_take {
                     let power = o.power() * (1.0 + coop);
-                    (o.pos, (2.0 * power / (power + resistance + 1e-3)).min(1.0))
-                })
-            })
-            .collect();
-        // Reachable prey: land hunters can't take newts in deep water.
-        let prey: Vec<(Vec2, u32, u32)> = if hunter {
-            others()
-                .filter(|o| o.traits.carnivory < 0.4 && o.mass() < max_prey && !decide::can_threaten(o, probe))
-                .filter(|o| w.passable_for(probe, o.pos))
-                .map(|o| (o.pos, o.lineage, region_at(o.pos)))
-                .collect()
-        } else {
-            Vec::new()
-        };
+                    threats.push((o.pos, (2.0 * power / (power + resistance + 1e-3)).min(1.0)));
+                }
+            }
+            // Reachable prey: land hunters can't take newts in deep water.
+            if hunter
+                && o.traits.carnivory < 0.4
+                && o.mass() < max_prey
+                && !decide::can_threaten(o, probe)
+                && region_at(o.pos) != u32::MAX
+            {
+                prey.push((o.pos, o.lineage, region_at(o.pos)));
+            }
+        }
         let mut threat_grid = PointGrid::new(&w.map);
         for (k, t) in threats.iter().enumerate() {
             threat_grid.insert(t.0, k as u32);
@@ -262,10 +335,6 @@ impl HomeSearch {
         let mut prey_grid = PointGrid::new(&w.map);
         for (k, q) in prey.iter().enumerate() {
             prey_grid.insert(q.0, k as u32);
-        }
-        let mut crowd = PointGrid::new(&w.map);
-        for o in &w.organisms {
-            crowd.insert(o.pos, o.traits.carnivory);
         }
         HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd }
     }
@@ -700,7 +769,9 @@ impl World {
             for _ in 0..20 {
                 let off = Vec2::new(rng.gen_range(-spread..spread), rng.gen_range(-spread..spread));
                 let cand = self.map.clamp(home + off);
-                if self.passable_for(&probe, cand) {
+                // Passable (`passable_for`), from the search's region map.
+                let (cx, cy) = self.map.tile_coords(cand);
+                if search.as_ref().is_some_and(|s| s.region[self.map.idx(cx, cy)] != u32::MAX) {
                     pos = cand;
                     break;
                 }
@@ -744,12 +815,14 @@ impl World {
         // plus a margin.
         let scatter = 3.0 + 10.0 * (1.0 - probe.pheno[crate::Gene::GroupTolerance]) + 8.0;
         let reach = buffer.max(1e-3).max(scatter);
-        let mut per_lineage: BTreeMap<u32, f32> = BTreeMap::new();
+        // Prey counted per lineage (index), summed in lineage order below.
+        let mut per_lineage: Vec<f32> = vec![0.0; self.lineages.len()];
         let mut near: Vec<u32> = Vec::new();
         let mut best = (f32::MIN, Map::tile_center(self.map.width / 2, self.map.height / 2));
         for _ in 0..200 {
             let p = Vec2::new(rng.gen_range(0.0..self.map.width as f32), rng.gen_range(0.0..self.map.height as f32));
-            if !self.passable_for(probe, p) {
+            // Passable (`passable_for`): the region map marks every tile.
+            if region_at(p) == u32::MAX {
                 continue;
             }
             let t = self.map.ground_at(p);
@@ -759,7 +832,7 @@ impl World {
                 -(18.0 - t.base_temp).max(0.0) * 0.1
             };
             // A short walk to drinking water that avoids the threats.
-            let water = if self.water_reachable(probe, p, threat_grid) { 1.0 } else { -2.0 };
+            let water = if self.water_reachable(region, p, threat_grid) { 1.0 } else { -2.0 };
             // Competitors share a diet: an omnivore competes with grazers and
             // hunters alike (diet overlap `1 - |carnivory difference|` above
             // 0.45), specialists only with their own kind.
@@ -785,7 +858,7 @@ impl World {
             // hunters don't settle on most of one prey lineage; prey right on
             // the spot counts against it too.
             let home_region = region_at(p);
-            per_lineage.clear();
+            per_lineage.iter_mut().for_each(|n| *n = 0.0);
             let mut on_top = 0u32;
             prey_grid.near(p, PREY_RANGE, |_, &k| {
                 let (q, l, r) = prey[k as usize];
@@ -793,14 +866,16 @@ impl World {
                 if d < PREY_ON_TOP {
                     on_top += 1;
                 } else if d < PREY_RANGE && r == home_region {
-                    *per_lineage.entry(l).or_default() += 1.0;
+                    per_lineage[l as usize] += 1.0;
                 }
             });
             let on_top = on_top as f32;
             let prey_count: f32 = per_lineage
                 .iter()
-                .map(|(&l, &n)| {
-                    let share = (PREY_SHARE * self.lineages[l as usize].founders as f32).max(3.0);
+                .enumerate()
+                .filter(|&(_, &n)| n > 0.0)
+                .map(|(l, &n)| {
+                    let share = (PREY_SHARE * self.lineages[l].founders as f32).max(3.0);
                     n.min(share) - (n - 2.0 * share).max(0.0)
                 })
                 .sum();
@@ -819,40 +894,29 @@ impl World {
         best.1
     }
 
+    /// Whether the organism can walk each tile (`passable_for`, with only
+    /// the tests that block): 0 if so, `u32::MAX` if not.
+    fn passable_map(&self, o: &Organism) -> Vec<u32> {
+        let (ground, body) = (&self.map.terrain().ground, &o.traits.body);
+        (0..self.map.width * self.map.height)
+            .map(|i| if crate::terrain::passable(body, &ground[i], &self.map.tiles[i]) { 0 } else { u32::MAX })
+            .collect()
+    }
+
     /// Connected regions of tiles the organism can walk (8-neighbor), as a
-    /// label per tile; `u32::MAX` for impassable tiles.
+    /// label per tile; `u32::MAX` for impassable tiles. Regions are numbered
+    /// in the order of their first tile (row by row), from runs of open
+    /// tiles joined to the overlapping runs of the row above.
     fn passable_regions(&self, o: &Organism) -> Vec<u32> {
-        let (w, h) = (self.map.width, self.map.height);
-        let open: Vec<bool> = (0..w * h).map(|i| self.passable_for(o, Map::tile_center(i % w, i / w))).collect();
-        let mut label = vec![u32::MAX; w * h];
-        let mut next = 0;
-        let mut stack = Vec::new();
-        for start in 0..w * h {
-            if !open[start] || label[start] != u32::MAX {
-                continue;
-            }
-            label[start] = next;
-            stack.push(start);
-            while let Some(i) = stack.pop() {
-                let (x, y) = (i % w, i / w);
-                for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
-                    for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
-                        let j = ny * w + nx;
-                        if open[j] && label[j] == u32::MAX {
-                            label[j] = next;
-                            stack.push(j);
-                        }
-                    }
-                }
-            }
-            next += 1;
-        }
-        label
+        let w = self.map.width;
+        let open = self.passable_map(o);
+        label_runs(&open, w, self.map.height)
     }
 
     /// A spot where it can drink within `WATER_STEPS` steps (8-neighbor) of
-    /// `p`, walking only over passable tiles that keep clear of `threats`.
-    fn water_reachable(&self, o: &Organism, p: Vec2, threats: &PointGrid<u32>) -> bool {
+    /// `p`, walking only over passable tiles (those `region` labels,
+    /// `passable_regions`) that keep clear of `threats`.
+    fn water_reachable(&self, region: &[u32], p: Vec2, threats: &PointGrid<u32>) -> bool {
         const STEPS: usize = WATER_STEPS;
         const CLEARANCE: f32 = 5.0;
         let side = 2 * STEPS + 1;
@@ -884,7 +948,7 @@ impl World {
                             threats.near(q, CLEARANCE, |t, _| clear &= t.dist(q) >= CLEARANCE);
                             clear
                         };
-                        if self.passable_for(o, q) && clear() {
+                        if region[self.map.idx(nx, ny)] != u32::MAX && clear() {
                             next.push((nx, ny));
                         }
                     }
@@ -1048,6 +1112,83 @@ impl World {
 mod tests {
     use super::*;
     use crate::presets;
+
+    /// The flood fill `World::passable_regions` used before run labelling:
+    /// the reference [`label_runs`] must match tile for tile.
+    fn flood_labels(open: &[u32], w: usize, h: usize) -> Vec<u32> {
+        let mut label = vec![u32::MAX; w * h];
+        let (mut next, mut stack) = (0, Vec::new());
+        for start in 0..w * h {
+            if open[start] == u32::MAX || label[start] != u32::MAX {
+                continue;
+            }
+            label[start] = next;
+            stack.push(start);
+            while let Some(i) = stack.pop() {
+                let (x, y) = (i % w, i / w);
+                for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+                    for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                        let j = ny * w + nx;
+                        if open[j] != u32::MAX && label[j] == u32::MAX {
+                            label[j] = next;
+                            stack.push(j);
+                        }
+                    }
+                }
+            }
+            next += 1;
+        }
+        label
+    }
+
+    #[test]
+    fn run_labels_match_the_flood_fill() {
+        let mut rng = crate::rng::rng_for(7, 1, 2, 3);
+        for (w, h) in [(1, 1), (1, 9), (9, 1), (7, 5), (33, 17), (64, 64)] {
+            for density in [0.1, 0.4, 0.55, 0.7, 0.95, 1.0] {
+                let open: Vec<u32> =
+                    (0..w * h).map(|_| if rng.gen::<f64>() < density { 0 } else { u32::MAX }).collect();
+                assert_eq!(label_runs(&open, w, h), flood_labels(&open, w, h), "{w}x{h} at {density}");
+            }
+        }
+        // Real maps, for every founding body.
+        for seed in 1..4 {
+            let mut w = small_world(seed);
+            w.run_days(1);
+            for o in w.organisms.iter().step_by(7) {
+                let open = w.passable_map(o);
+                let (mw, mh) = (w.map.width, w.map.height);
+                assert_eq!(w.passable_regions(o), flood_labels(&open, mw, mh));
+            }
+        }
+    }
+
+    /// `terrain::passable` (founding's whole-map passability) agrees with
+    /// `traverse` on every tile, for bodies of every lineage, as the tiles
+    /// change through the seasons (water, ice, snow), and for bodies made
+    /// to sit on each threshold.
+    #[test]
+    fn passable_agrees_with_traverse() {
+        let mut w = small_world(11);
+        let mut bodies: Vec<crate::stats::Body> = w.organisms.iter().map(|o| o.traits.body).collect();
+        let base = bodies[0];
+        for v in [0.0, 0.1, 0.25, 0.39, 0.4, 0.41, 0.5, 0.75, 1.0] {
+            bodies.push(crate::stats::Body { swim: v, climb: v, height: v, mass: 40.0 * v, ..base });
+        }
+        for day in 0..4 {
+            if day > 0 {
+                w.run_days(15);
+            }
+            let ground = &w.map.terrain().ground;
+            for b in &bodies {
+                for (i, (g, t)) in ground.iter().zip(&w.map.tiles).enumerate() {
+                    let weather = crate::terrain::Weather { wind: t.wind, dir: 0.0 };
+                    let walk = matches!(crate::terrain::traverse(b, g, t, &weather, false), Traverse::Passable { .. });
+                    assert_eq!(crate::terrain::passable(b, g, t), walk, "tile {i}, day {day}, {b:?}");
+                }
+            }
+        }
+    }
 
     fn small_world(seed: u64) -> World {
         let mut w = World::new(WorldConfig { seed, width: 64, height: 64, ..Default::default() });
