@@ -42,6 +42,7 @@ pub mod groups;
 #[cfg(test)]
 mod groups_tests;
 pub mod lod;
+mod lod_meat;
 #[cfg(test)]
 mod morph_tests;
 pub mod offline;

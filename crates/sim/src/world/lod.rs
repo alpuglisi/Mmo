@@ -32,6 +32,12 @@
 //! recombinant of two pool genomes: alleles and origin tags are conserved in
 //! expectation), dependent young placed next to a mother.
 //!
+//! The carnivore-diet rules and predator brakes (`Balance::carnivore_diet`)
+//! apply to cohorts approximately, in `world::lod_meat` (carcasses and
+//! carrion on the tiles, scavenging, gorging, provisioning, breeding
+//! territories, prey switching, litters by condition); each is a no-op with
+//! its tunable at 0.
+//!
 //! Legacy scoring and population caps count cohorts like agents
 //! (`World::lod_legacy`, `World::cap_usage`). Group traits and disease state
 //! are agent-only: infections are forgotten on collapse.
@@ -40,7 +46,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use rand::Rng;
 
-use super::{decide, LineageCount, World};
+use super::{decide, lod_meat, LineageCount, World};
 use crate::design::BirthType;
 use crate::genome::{Gene, Genome, MutationParams, PlayerId};
 use crate::group::GroupTrait;
@@ -526,6 +532,9 @@ struct Day {
     veg: f32,
     s_plant: f32,
     s_meat: f32,
+    /// Fat (hunger points per member) banked from meat beyond the need
+    /// (`lod_meat`, gorging).
+    fat_gain: f32,
 }
 
 impl World {
@@ -1162,6 +1171,18 @@ impl World {
                 a[0] + a[1] >= 3
             };
             let max_mass = decide::max_prey_mass(&prep.probe, if pack { 1.0 } else { 0.0 });
+            // The carnivore rules (`lod_meat`): hunt for the fat room too
+            // (gorging), after eating the carcass meat in range.
+            let room = lod_meat::gorge_room(&bal, prep.carnivory, prep.fat_stores, pc.fat);
+            let fat_meat = room * x.units * prep.food_per_hunger() / prep.carnivory.max(1e-3);
+            let want = x.meat_need + fat_meat;
+            let scavenged = if lod_meat::scavenges(&bal) {
+                let shares = lod_meat::scavenge_shares(&bal, prep.carnivory, &prep.probe, &range);
+                self.lod_scavenge(&shares, want)
+            } else {
+                0.0
+            };
+            let hunt_need = want - scavenged;
             // (region, cohort, juveniles?, exposed count, mass each)
             let mut prey: Vec<(usize, usize, bool, f32, f32)> = Vec::new();
             for &nr in &range {
@@ -1181,7 +1202,8 @@ impl World {
                         * (1.0 - bal.stealth_effect * qrep.stealth)
                         * (1.0 - 0.5 * bal.burrow_shelter * qrep.burrow).max(0.0)
                         * if dormant { 1.0 - bal.den_concealment } else { 1.0 }
-                        * self.offline_cohort_predation(qc.lineage, nr);
+                        * self.offline_cohort_predation(qc.lineage, nr)
+                        * self.cohort_switch(&prep.probe, qc.lineage);
                     let a = qc.adults(today);
                     let adults = (a[0] + a[1]) as f32;
                     let juveniles = qc.count() as f32 - adults;
@@ -1203,12 +1225,13 @@ impl World {
             }
             let exposed: f32 = prey.iter().map(|e| e.3).sum();
             if exposed <= 0.0 {
+                days[r][p].s_meat = (scavenged / x.meat_need).min(1.0);
                 continue;
             }
             let density = exposed / range_tiles as f32;
             let mean_mass = prey.iter().map(|e| e.3 * e.4).sum::<f32>() / exposed;
             let meat_each = mean_mass * bal.meat_per_kg * cfg.carcass_use;
-            let wanted = x.meat_need / meat_each.max(1e-3);
+            let wanted = hunt_need / meat_each.max(1e-3);
             let kills = wanted * density / (density + cfg.prey_half_density.max(1e-6));
             let mut meat = 0.0;
             for &(nr, q, juvenile, e, mass) in &prey {
@@ -1229,8 +1252,17 @@ impl World {
                 if juvenile && killed > 0 {
                     *self.counters.juvenile_deaths.entry(lineage).or_default() += killed;
                 }
+                // What the killer leaves (`lod_meat`, carcasses).
+                if bal.carcass_keep > 0.0 && killed > 0 {
+                    self.lod_leave_meat(nr, killed as f32 * mass * bal.meat_per_kg * (1.0 - cfg.carcass_use));
+                }
             }
+            let meat = meat + scavenged;
             days[r][p].s_meat = (meat / x.meat_need).min(1.0);
+            if room > 0.0 && meat > x.meat_need {
+                let gain = (meat - x.meat_need) * prep.carnivory / (prep.food_per_hunger() * x.units).max(1e-6);
+                days[r][p].fat_gain = gain.min(room);
+            }
         }
     }
 
@@ -1315,7 +1347,10 @@ impl World {
             // they digest them (agents grazing in passing stay hungry, and
             // hungry agents don't court).
             let breed_s = if x.meat_need > 0.0 {
-                x.s_meat + (1.0 - x.s_meat) * x.s_plant * plant_cap * ((1.0 - x.carnivory) / (1.0 - HUNTER)).min(1.0)
+                let own = x.s_meat
+                    + (1.0 - x.s_meat) * x.s_plant * plant_cap * ((1.0 - x.carnivory) / (1.0 - HUNTER)).min(1.0);
+                // Providers feed the mothers (`lod_meat`, provisioning).
+                lod_meat::provisioned(&bal, &rep.probe, own, s)
             } else {
                 s
             };
@@ -1331,6 +1366,8 @@ impl World {
                 let cap = bal.fat_capacity * (1.0 + rep.fat_stores) + bal.cache_capacity * rep.caching;
                 c.fat = (c.fat + 0.5 * x.hunger.max(10.0)).min(cap);
             }
+            // Meat beyond the need, banked (`lod_meat`, gorging).
+            c.fat += x.fat_gain;
             c.hunger = if deficit > 0.0 { (c.hunger + deficit).min(100.0) } else { (c.hunger - 30.0).max(10.0) };
             let fed = if x.hunger > 0.0 { 1.0 - deficit / x.hunger } else { 1.0 };
             if c.hunger >= 90.0 {
@@ -1404,6 +1441,11 @@ impl World {
                             .map_or(DeathCause::Attrition, |c| c.1);
                         *self.counters.deaths.entry(cause).or_default() += 1;
                         *self.counters.deaths_by_lineage.entry((c.lineage, cause)).or_default() += 1;
+                        if bal.carrion > 0.0 {
+                            // The body is left (`lod_meat`, carrion).
+                            let body = if adult { rep.mass } else { rep.mass * rep.growth_at(age).max(0.03) };
+                            self.lod_carrion(r, body, cause);
+                        }
                         if !adult {
                             *self.counters.juvenile_deaths.entry(c.lineage).or_default() += 1;
                         }
@@ -1434,7 +1476,17 @@ impl World {
                     0.0
                 };
                 let cycle = gestation + rep.recovery + lactation + cfg.mate_search_days / breed_factor.max(0.05);
-                let lambda = a[0] as f32 * rep.litter * condition * fed.min(breed_s) * suppression / cycle;
+                let mut lambda = a[0] as f32 * rep.litter * condition * fed.min(breed_s) * suppression / cycle;
+                // Litters follow condition, one litter at a time per breeding
+                // territory (`lod_meat`).
+                let share = lod_meat::litter_share(&bal, c.hunger, c.fat, rep.litter);
+                lambda *= share;
+                let busy = gestation + crate::stats::weaning_days(rep.maturity, rep.newborn_growth);
+                if let Some(cap) =
+                    lod_meat::territory_births(&bal, rep.carnivory, &rep.probe, x.tiles, rep.litter, busy)
+                {
+                    lambda = lambda.min(cap * share);
+                }
                 let births = (poisson(lambda as f64, rng) as usize).min(*room_l);
                 *room_l -= births;
                 let mutation = self.config.mutation;

@@ -6402,6 +6402,66 @@ two founding levers that worked (predator numbers and spread) together
 with whatever the food round finds, and fresh seeds for every long-run
 acceptance.
 
+### LOD cohorts and the carnivore rules
+
+Offline (level-of-detail) regions run as cohorts (`world::lod`), which
+modelled none of the carnivore-diet rules or predator brakes, so with the
+rules on an abstract world and an agent world disagreed most about the
+predators: cohort pack hunters starved out by day 60–120 on most seeds,
+cohort foxes, with no territories, sat at their cap. The rules now apply to
+cohorts approximately (`world::lod_meat`, hooked into `lod.rs` at a few
+marked lines), each behind its existing tunable and a no-op at 0, without
+random draws, so default worlds run bit for bit as before (standard sweep
+11.50, `lodmeat` output with the rules off identical) and no snapshot
+changes (carcass meat lives on the map tiles, which rot it as for agents):
+
+| Rule | In a cohort |
+| --- | --- |
+| `carcass_keep` | what the killer doesn't eat of a kill is left on a tile of the prey's region (with `LodConfig::carcass_use` at 1, the default, nothing is left) |
+| `carrion` | a member dead of anything but predation or drowning leaves its body (a starved one at half) on its region's centre tile |
+| scavenging (`carcass_keep` or `carrion`) | a hunting cohort first eats the carcass meat it finds, all of its own region's and of the surrounding regions of its hunting range the share its carcass scent covers (`carcass_scent × reliance × (0.5 + nose)` tiles: π·scent² over a region's 256 tiles), and hunts for the rest |
+| `carnivore_fat` | it hunts for its fat room too, up to the agents' gorging capacity, and banks meat beyond its need as fat in any season |
+| `provisioning` | its breeding condition (meat share, plus plants by how well it digests them) rises toward its whole food share by `2 × provisioning × care` |
+| `breeding_territory` | at most `territories × litter / (gestation + weaning)` births a day, `territories` = usable tiles × (1 − group tolerance) over the agents' territory area (a tolerant kind keeps together, so a group shares one territory) |
+| `prey_switching` | each prey lineage is exposed less by `min(1, 2 × pickiness) × prey_scarcity` (the share of agents that would give it up today) |
+| `condition_litter` | births scale by the agents' litter share at the cohort's mean hunger and fat |
+
+**Agreement** (`cargo run --release --example lodmeat -- 3 SEEDS --meat`:
+the niche world with the rules on, 96×96, 3 years, once all agents and once
+all cohorts; per lineage the mean over samples every 60 days and seeds of
+`|ln((agents + 1) / (cohorts + 1))|`, 0.69 being a factor of two; alive =
+seeds with the lineage alive at year 3, agents / cohorts):
+
+| Lineage | Seeds 31–34, before | after | Seeds 41–44, before | after |
+| --- | --- | --- | --- | --- |
+| Meadow vole | 1.39 (4/3) | 0.54 (4/4) | 1.49 (4/3) | 0.69 (4/4) |
+| Steppe antelope | 0.41 | 0.54 | 0.49 | 0.46 |
+| Marsh newt | 0.40 | 0.19 | 1.18 (4/3) | 0.35 (4/4) |
+| Red fox | 0.84 (3/4) | 1.04 (3/3) | 0.72 | 0.57 |
+| Pack hunters | 2.85 (3/0) | 1.10 (3/2) | 2.61 (3/1) | 1.61 (3/4) |
+| Herd grazers | 0.69 | 0.93 | 0.71 | 0.59 |
+| Toxic frogs | 0.42 | 0.25 | 0.73 (4/3) | 0.26 (4/4) |
+| Burrowing omnivores | 1.27 | 1.20 | 1.34 | 1.27 |
+| **Mean** | **1.03** | **0.72** | **1.16** | **0.72** |
+
+For scale, the standard world at the defaults disagrees by 1.78 (seeds
+31–33: cohorts hold 5–7 times the agents' foxes and pack hunters and
+less than half their newts), so with the rules on cohorts now follow agents more
+closely than they do without them. The cohort pack hunters persist and stay
+in the agents' range (mean 10–18 against 39–88; agents fluctuate more)
+instead of dying out; the fox is a little low on seeds 31–34 (55 against
+95) and right on 41–44. What is left is old LOD bias, not these rules:
+cohorts hold about three times the agents' burrowing omnivores and half
+to two thirds of their herd grazers, with the rules on or off.
+
+Tried on the way (seeds 31–33 or 31–34): scavenging the whole hunting range
+(mean 1.09; cohort pack hunters boom or bust: 0 on one seed, 289 and 481 on
+others, against 18–104), only the own region (1.16; pack hunters gone on
+every seed), the scent-share range with territories not shared by groups
+(1.13; booms of 416–488 on two seeds). The territory share by group
+tolerance is what stopped the booms: in cohorts members spread over every
+region, while agents of a tolerant kind stay together in a few territories.
+
 ### Strike fixes
 
 Two old flaws in the strike, found in the predator review
