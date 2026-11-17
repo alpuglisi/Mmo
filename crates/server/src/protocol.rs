@@ -1043,6 +1043,13 @@ pub struct WorldSummary {
     /// Organisms simulated as full agents (all of them with level of detail off).
     pub agents: usize,
     pub lineages: usize,
+    /// Whole days until winter; 0 during winter.
+    #[serde(default)]
+    pub days_to_winter: u32,
+    /// A lineage founded now starts provisioned for winter (fed, fat
+    /// reserves full: `GameConfig::winter_provision`).
+    #[serde(default)]
+    pub winter_provision: bool,
 }
 
 /// One world of `GET /api/worlds`.

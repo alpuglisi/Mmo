@@ -181,7 +181,16 @@ pub struct GameConfig {
     /// tick; 1000 when it runs as fast as it can), to show the protection
     /// left in minutes.
     pub tick_ms: f64,
+    /// A player's founders start fed with full fat reserves when founded
+    /// within `WINTER_PROVISION_DAYS` before winter (or during it). Off with
+    /// `--no-winter-provision`. Only new foundings change; a restored world
+    /// runs as before until someone founds.
+    pub winter_provision: bool,
 }
+
+/// How close to winter a founding has to be for the founders to start
+/// provisioned (`GameConfig::winter_provision`).
+pub const WINTER_PROVISION_DAYS: u32 = 30;
 
 impl Default for GameConfig {
     fn default() -> Self {
@@ -197,6 +206,7 @@ impl Default for GameConfig {
             home_range_onset_ticks: DEFAULT_HOME_RANGE_ONSET_TICKS,
             home_range_fade_ticks: DEFAULT_HOME_RANGE_FADE_TICKS,
             tick_ms: 1000.0,
+            winter_provision: true,
         }
     }
 }
@@ -828,6 +838,11 @@ impl Game {
             && !self.world.clutches.iter().any(|c| c.owner == player)
     }
 
+    /// Whether founders founded now start provisioned for winter.
+    pub fn winter_provision_now(&self) -> bool {
+        self.cfg.winter_provision && self.world.days_until_winter() <= WINTER_PROVISION_DAYS
+    }
+
     /// Test hook (`EVO_E2E_HOOKS`): every organism the player owns dies at
     /// once (and their eggs), as if a catastrophe struck; the number killed.
     pub fn e2e_wipe_out(&mut self, player: PlayerId) -> usize {
@@ -849,6 +864,9 @@ impl Game {
         let refounding = self.lineage_of.contains_key(&player);
         let lineage = self.world.lineages.len() as u32;
         let founders = self.world.found_lineage(player, design).map_err(FoundError::Design)?;
+        if self.winter_provision_now() {
+            self.world.provision_for_winter(&founders);
+        }
         if refounding {
             self.world.clear_group_orders(player);
             // Milestones count for the new lineage (the legacy share's best stays).
@@ -3056,6 +3074,8 @@ impl Game {
             organisms: self.world.population(),
             agents: self.world.alive_count(),
             lineages: self.world.lineages.len(),
+            days_to_winter: self.world.days_until_winter(),
+            winter_provision: self.winter_provision_now(),
         }
     }
 }
@@ -3237,6 +3257,41 @@ mod tests {
         assert!(
             matches!(g.found(1, &design("third")), Err(FoundError::AlreadyFounded { lineage }) if lineage == ok.lineage)
         );
+    }
+
+    #[test]
+    fn founders_start_provisioned_just_before_winter() {
+        let world = build_world(&WorldSettings {
+            seed: 7,
+            width: 64,
+            height: 64,
+            wild: false,
+            days_per_year: 120,
+            ..Default::default()
+        });
+        let mut g = Game::new(world, GameConfig::default());
+        // Spring: founded as before (no fat, ordinary hunger).
+        assert!(!g.winter_provision_now());
+        let spring = g.found(1, &design("Spring")).unwrap().founders;
+        assert!(spring.iter().all(|&id| g.world.organism(id).unwrap().fat == 0.0));
+        // Ten days before winter: fed, fat reserves full.
+        while g.world.days_until_winter() > 10 {
+            g.world.step();
+        }
+        assert!(g.winter_provision_now());
+        assert_eq!(g.summary().days_to_winter, 10);
+        assert!(g.summary().winter_provision);
+        let late = g.found(2, &design("Late")).unwrap().founders;
+        for &id in &late {
+            let o = g.world.organism(id).unwrap();
+            assert_eq!(o.needs.hunger, 0.0);
+            assert!(o.fat > 0.0, "founder {id} has no fat");
+        }
+        // Switched off: founded as before.
+        g.cfg.winter_provision = false;
+        assert!(!g.winter_provision_now());
+        let off = g.found(3, &design("Off")).unwrap().founders;
+        assert!(off.iter().all(|&id| g.world.organism(id).unwrap().fat == 0.0));
     }
 
     #[test]

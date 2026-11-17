@@ -236,6 +236,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .link-btn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; min-height: 0; }
 .notice { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: var(--panel-2); border-left: 3px solid var(--accent); }
 .notice.bad { border-left-color: var(--bad); }
+.season-notice { margin: 0 0 12px; border-left-color: #79c0ff; }
 .notice p { margin: 0.2em 0; }
 .notice .new-lineage { margin-top: 0.3em; }
 

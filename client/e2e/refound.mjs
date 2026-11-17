@@ -3,7 +3,8 @@
 // mounts the test-only `POST /api/e2e/wipe-out` (kills the caller's lineage
 // at once, so the test doesn't wait for a real extinction).
 //
-// A new player founds the starting design; a second founding is refused
+// The design screen shows the winter notice (eight-day years keep winter
+// near). A new player founds the starting design; a second founding is refused
 // while the lineage lives (409 already_founded); the lineage is wiped out;
 // the Lineage tab and the inspector say it died out and offer "Start a new
 // lineage"; the design screen says it is a new lineage and can go back to
@@ -93,7 +94,7 @@ async function main() {
   mkdirSync(shots, { recursive: true });
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
-  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', '3', '--no-wild', '--bind', `127.0.0.1:${port}`, '--static', dist], {
+  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', '3', '--no-wild', '--days-per-year', '8', '--bind', `127.0.0.1:${port}`, '--static', dist], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, EVO_E2E_HOOKS: '1' },
   });
@@ -113,6 +114,10 @@ async function main() {
     await page.fill('#login-password', 'a long password');
     await page.click('#register-submit');
     await page.waitForSelector('#design-name', { timeout: UI_MS });
+    // Eight-day years: winter is never more than a few days off, so the season notice shows.
+    const season = await page.textContent('#design-season');
+    check(/winter/i.test(season) && season.includes('Fur, fat stores and hibernation') && season.includes('start fed'), 'season notice', season);
+    step(`the design screen warns about winter: "${season}"`);
     await page.fill('#design-name', 'First try');
     await page.click('#design-submit');
     await page.waitForSelector('#world-canvas', { timeout: UI_MS });
