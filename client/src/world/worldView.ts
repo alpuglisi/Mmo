@@ -26,6 +26,7 @@
 // rebuilt from the current state on restore, or on a new renderer if the
 // context does not come back within a few seconds.
 
+import { clampCam } from './camera';
 import { Application, Container, Graphics, Texture, UPDATE_PRIORITY, type Renderer } from 'pixi.js';
 import { actionHint, bodyRadius, creatureKey, markerScaleFor, NEAR_SCALE, specOf, type CreatureSpec, type Hint } from './creature';
 import { CreatureSprites, type MarkerParts, type StatusKind } from './sprites';
@@ -504,8 +505,6 @@ export class WorldView {
       this.cam.x += (v.x - this.cam.x) * k * 0.5;
       this.cam.y += (v.y - this.cam.y) * k * 0.5;
     }
-    this.cam.x = Math.min(this.worldW, Math.max(0, this.cam.x));
-    this.cam.y = Math.min(this.worldH, Math.max(0, this.cam.y));
     const { width, height } = this.app.screen;
     if (!this.zoomFitted && width > 0 && height > 0) {
       // A big window starts closer in, so the creatures read and the map fills
@@ -513,6 +512,8 @@ export class WorldView {
       this.zoomFitted = true;
       this.cam.zoom = Math.min(18, Math.max(8, Math.min(width, height) / 40));
     }
+    this.cam.x = clampCam(this.cam.x, width / 2 / this.cam.zoom, this.worldW);
+    this.cam.y = clampCam(this.cam.y, height / 2 / this.cam.zoom, this.worldH);
     this.mapLayer.scale.set(this.cam.zoom);
     this.mapLayer.position.set(width / 2 - this.cam.x * this.cam.zoom, height / 2 - this.cam.y * this.cam.zoom);
     const tl = this.screenToWorld(0, 0), br = this.screenToWorld(width, height);

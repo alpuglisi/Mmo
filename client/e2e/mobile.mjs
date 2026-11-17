@@ -416,8 +416,10 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   await page.evaluate((id) => window.evo.socket.send({ type: 'release', organism: id }), lp);
 
   // One-finger drag pans (and stops following); a pinch zooms.
-  // From the middle of the map, so the camera clamp at the edges can't eat the pan.
-  await page.evaluate(() => { const v = window.evo.screen().view; v.setFollow(false); v.cam.zoom = 8; v.centerOn(32, 32); });
+  // From the middle of the map, zoomed in enough that the map overflows the
+  // screen both ways: the camera keeps the map filling the screen, so a map
+  // smaller than the screen along an axis can't pan along it.
+  await page.evaluate(() => { const v = window.evo.screen().view; v.setFollow(false); v.cam.zoom = 16; v.centerOn(32, 32); });
   await page.waitForTimeout(100);
   const before = await page.evaluate(() => ({ ...window.evo.screen().view.cam }));
   const mid = { x: canvas.width / 2, y: canvas.height / 2 };

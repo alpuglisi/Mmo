@@ -35,8 +35,19 @@ export interface HandleTrack {
   to: Point;
 }
 
-function drawingFor(m: Morphology) {
-  return avatarDrawing(morphologyOf(SIDE_DESIGN, m));
+/**
+ * The design the builder paints: the player's own (covering, colours,
+ * pattern, warm or cold blood, diet), at the builder's fixed body size so
+ * every plan fits the panels and the handles keep their scale. Without one,
+ * `SIDE_DESIGN`.
+ */
+export function builderDesign(d?: DesignSpec | null): DesignSpec {
+  if (!d) return SIDE_DESIGN;
+  return { ...d, traits: { ...d.traits, body_size: SIDE_DESIGN.traits.body_size } };
+}
+
+function drawingFor(m: Morphology, design: DesignSpec) {
+  return avatarDrawing(morphologyOf(design, m));
 }
 
 /** A creature point in side-view units, for a drawing whose torso centre is at `cy`. */
@@ -53,8 +64,8 @@ export interface SideView {
   markup: (id: string) => string;
 }
 
-export function sideView(m: Morphology): SideView {
-  const d = drawingFor(m);
+export function sideView(m: Morphology, design: DesignSpec = SIDE_DESIGN): SideView {
+  const d = drawingFor(m, design);
   const ty = SIDE.bodyY - SIDE.k * d.anchors.body.cy;
   return {
     transform: `translate(${SIDE.x} ${Math.round(ty * 100) / 100}) scale(${SIDE.k})`,
@@ -64,9 +75,9 @@ export function sideView(m: Morphology): SideView {
 }
 
 /** Where each length / size handle runs for the current body plan (null: that feature is absent). */
-export function sideTracks(m: Morphology): { snout: HandleTrack; fangs: HandleTrack; ears: HandleTrack | null; legs: HandleTrack | null; tail: HandleTrack | null; horns: HandleTrack } {
+export function sideTracks(m: Morphology, design: DesignSpec = SIDE_DESIGN): { snout: HandleTrack; fangs: HandleTrack; ears: HandleTrack | null; legs: HandleTrack | null; tail: HandleTrack | null; horns: HandleTrack } {
   const tip = (patch: Partial<Morphology>, pick: (a: AvatarAnchors) => Point | null): Point | null => {
-    const a = drawingFor({ ...m, ...patch }).anchors;
+    const a = drawingFor({ ...m, ...patch }, design).anchors;
     const p = pick(a);
     return p ? toSide(p, a) : null;
   };

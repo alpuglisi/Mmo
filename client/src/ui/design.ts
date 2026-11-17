@@ -210,7 +210,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     for (const b of modeBtns) b.setAttribute('aria-pressed', String(b.dataset.mode === m));
     if (m === 'builder') {
       if (!builder) {
-        builder = createBodyBuilder({ value: spec.morphology, onChange: onBuilderChange, confirmPreset, idPrefix: 'design-bb', prices: morphPrices(cat) });
+        builder = createBodyBuilder({ value: spec.morphology, onChange: onBuilderChange, confirmPreset, idPrefix: 'design-bb', prices: morphPrices(cat), design: spec });
         builderHost.appendChild(builder.el);
       } else syncBuilder();
       builderHost.hidden = false;
@@ -254,6 +254,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     avatar.update(spec, spec.morphology);
     readout.update(spec.morphology);
     if (!full) return;
+    // The builder wears the design's covering and colours (sliders change them).
+    builder?.setDesign(spec);
     const c = designCost(payload(), cat);
     total.textContent = `${c.total.toFixed(1)} / ${cat.budget} points`;
     const frac = c.total / cat.budget;

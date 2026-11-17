@@ -40,6 +40,8 @@ export interface HeadTopParams {
   eyes: HeadTopEye[];
   /** A furred body gets a soft locked edge. */
   furry: boolean;
+  /** Another covering on the back: scale rows, armour plates or feathers (a scalloped edge and rows). */
+  cover?: 'scales' | 'armor' | 'feathers';
   lod: Lod;
   /** Horns seen from above (Phase 3): length 0..1 (0 none) and form. */
   horns?: { size: number; form: HornForm };
@@ -175,7 +177,28 @@ export function headTop(p: HeadTopParams, pal: CreaturePalette): HeadTopPart {
   const back: Point[] = [...side, [0, r * 2.97], ...mirror(side).reverse()];
   const furred = p.furry && p.lod === 'portrait';
   // Fur: chunky locks along the edge, longest over the shoulders and rump, so the coat reads at panel size.
-  body.pieces.push(piece('body', furred ? scallopRing(back, 20, (i) => 2.8 + 1.4 * Math.abs(Math.sin(((i + 0.5) / 20) * Math.PI * 2)), 0, rng(11), true) : back));
+  const feathered = p.cover === 'feathers' && p.lod === 'portrait';
+  body.pieces.push(piece('body', furred ? scallopRing(back, 20, (i) => 2.8 + 1.4 * Math.abs(Math.sin(((i + 0.5) / 20) * Math.PI * 2)), 0, rng(11), true)
+    : feathered ? scallopRing(back, 16, () => 2.2, 0.9, rng(13), true) : back));
+  // Scales and feathers: rows of small arcs across the back, open toward the tail; armour: plates with a lit front edge.
+  if (p.lod === 'portrait' && (p.cover === 'scales' || feathered)) {
+    const step = p.cover === 'scales' ? r * 0.2 : r * 0.3;
+    const rad0 = step * 0.55;
+    for (let y = r * 0.75, row = 0; y < r * 2.8; y += step * 0.8, row++) {
+      for (let x = -r + (row % 2) * step * 0.5; x <= r; x += step) {
+        body.detail.push({ part: 'body', tag: p.cover === 'scales' ? 'scale' : 'feather', kind: 'curve', closed: false,
+          points: [[x - rad0, y], [x, y + rad0 * 0.8], [x + rad0, y]], stroke: pal.body.shade, width: p.cover === 'scales' ? 0.8 : 1, alpha: 0.75 });
+      }
+    }
+  } else if (p.cover === 'armor') {
+    for (let i = 0; i < 6; i++) {
+      const y = r * (0.85 + 0.34 * i);
+      const w = r * bw * (i < 2 ? 0.75 : lerp(0.72, 0.4, (i - 2) / 4));
+      body.detail.push(
+        { part: 'body', tag: 'plate', kind: 'curve', closed: true, points: [[-w, y + r * 0.1], [0, y - r * 0.04], [w, y + r * 0.1], [w * 0.92, y + r * 0.3], [0, y + r * 0.2], [-w * 0.92, y + r * 0.3]], fill: pal.body.light, stroke: pal.body.shade, width: 1, alpha: 0.55 },
+      );
+    }
+  }
   if (furred) {
     // Hair strokes swept back from each flank, toward the edge.
     const R = rng(19);
