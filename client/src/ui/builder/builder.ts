@@ -8,8 +8,9 @@
 //   view, the depth vision in front and the blind spots are drawn, labelled
 //   and counted (`vision.ts`).
 //   Side view: ears (count, shape, size), legs (count, length), tail (none or
-//   a shape, length), snout length and fangs, each length or size on a
-//   handle.
+//   a shape, length), snout length, fangs and horns (none or a form, size),
+//   each length or size on a handle; the coat pattern and the wing shape
+//   (broad to narrow) are chips and a slider under it.
 //
 // Every handle takes mouse, touch and pen (pointer events) and the keyboard
 // (Tab to it; arrows move or resize, Shift for bigger steps, Home / End;
@@ -26,10 +27,15 @@ import {
   EAR_SHAPES,
   EYE_COUNT_MAX,
   EYE_COUNT_MIN,
+  HORN_FORMS,
+  HORNS_MIN,
   LEG_COUNTS,
+  PATTERNS,
   sameMorphology,
   TAIL_SHAPES,
+  type CoatPattern,
   type EarShape,
+  type HornForm,
   type Morphology,
   type TailShape,
 } from '../../morphology';
@@ -41,9 +47,11 @@ import { History } from './history';
 import { DEFAULT_PRESETS, type BuilderPreset } from './presets';
 import { createEyeView } from './eyeView';
 import { earIcon, s, tailIcon } from './svg';
-import { sideTracks, sideView, type HandleTrack } from './sideView';
+import { MORPH_NAMES, traitName } from '../traitNames';
+import { builderDesign, sideTracks, sideView, type HandleTrack } from './sideView';
+import type { DesignSpec } from '../../protocol';
 
-export type BuilderFeature = 'eyes' | 'ears' | 'legs' | 'tail' | 'snout' | 'fangs';
+export type BuilderFeature = 'eyes' | 'ears' | 'legs' | 'tail' | 'snout' | 'fangs' | 'horns' | 'pattern' | 'wings';
 
 export interface BuilderChange {
   /** What made the change. */
@@ -74,7 +82,9 @@ export interface BodyBuilderOptions {
    * Points per extra structure (the server catalog's `morph` costs), named
    * on the add buttons. Absent or 0: nothing is said about points.
    */
-  prices?: { eye?: number; legPair?: number; earPair?: number };
+  prices?: { eye?: number; legPair?: number; earPair?: number; hornSize?: number };
+  /** The design being built: both drawings wear its covering, colours and blood (`builderDesign`). */
+  design?: DesignSpec;
 }
 
 /** " (+3 points each beyond two)", or nothing for a free structure. */
@@ -102,6 +112,8 @@ export interface BodyBuilder {
   reset(): void;
   /** Apply a preset (after `confirmPreset`, if given); resolves whether it was applied. */
   applyPreset(id: string): Promise<boolean>;
+  /** Repaint for the design's look (covering, colours, warm / cold); the body plan is unchanged. */
+  setDesign(design: DesignSpec): void;
   destroy(): void;
 }
 
@@ -119,6 +131,10 @@ const TAIL_SHOWN = 0.3;
 
 const EAR_LABEL: Record<EarShape, string> = { round: 'Round', pointed: 'Pointed', long: 'Long', fan: 'Fan' };
 const TAIL_LABEL: Record<TailShape, string> = { thin: 'Thin', bushy: 'Bushy', fin: 'Fin', club: 'Club', prehensile: 'Grasping' };
+const HORN_LABEL: Record<HornForm, string> = { curved: 'Curved', straight: 'Straight', branched: 'Branched' };
+const PATTERN_LABEL: Record<CoatPattern, string> = { plain: 'Plain', spots: 'Spots', stripes: 'Stripes', mottled: 'Mottled' };
+/** Picking a horn form makes horns at least this long, so the choice shows. */
+const HORNS_SHOWN = 0.4;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 const round = (v: number): number => Math.round(v);
@@ -146,6 +162,10 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
   const p = opts.idPrefix ?? 'bb';
   const uid = `${p}-${++instances}`;
   const presets = opts.presets ?? DEFAULT_PRESETS;
+  // The look's key leaves out what the drawings don't wear (the name, the body plan they're given anyway).
+  const keyOf = (d: DesignSpec) => JSON.stringify({ ...d, name: '', morphology: undefined });
+  let look = builderDesign(opts.design);
+  let lookKey = keyOf(look);
   const history = new History<Morphology>(clampMorphology(opts.value ?? {}), { same: sameMorphology, mergeMs: 1200, limit: 100 });
   let vision = visionOf(history.value);
   const m = (): Morphology => history.value;
@@ -252,7 +272,32 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
     choice('tail', 'none', 'No tail', tailIcon(null), () => commit({ tail_present: false }, { source: 'control', feature: 'tail', final: true })),
     ...TAIL_SHAPES.map((sh) => choice('tail', sh, `${TAIL_LABEL[sh]} tail`, tailIcon(sh), () => commit({ tail_present: true, tail_shape: sh, tail_length: Math.max(m().tail_length, TAIL_SHOWN) }, { source: 'control', feature: 'tail', final: true }))),
   ];
-  const choices = [...earShapeBtns, ...legBtns, ...tailBtns];
+  const hornBtns = [
+    choice('horns', 'none', 'No horns', null, () => commit({ horn_size: 0 }, { source: 'control', feature: 'horns', final: true })),
+    ...HORN_FORMS.map((f) => choice('horns', f, `${HORN_LABEL[f]} horns`, null, () => commit({ horn_form: f, horn_size: Math.max(m().horn_size, HORNS_SHOWN) }, { source: 'control', feature: 'horns', final: true }))),
+  ];
+  for (const b of hornBtns) b.textContent = b.dataset.value === 'none' ? 'None' : HORN_LABEL[b.dataset.value as HornForm];
+  const patternBtns = PATTERNS.map((pt) => {
+    const b = choice('pattern', pt, `${PATTERN_LABEL[pt]} coat`, null, () => commit({ pattern: pt }, { source: 'control', feature: 'pattern', final: true }));
+    b.textContent = PATTERN_LABEL[pt];
+    return b;
+  });
+  const [broad, narrow] = MORPH_NAMES.wing_aspect.ends!;
+  const wingInput = h('input', {
+    type: 'range', min: '0', max: '1', step: '0.05', id: `${p}-wing-aspect`, class: 'bb-range',
+    'aria-label': `${traitName('wing_aspect')}: ${broad} to ${narrow} (only matters with wings)`,
+  }) as HTMLInputElement;
+  let wingGroup = 0;
+  wingInput.addEventListener('input', () => commit({ wing_aspect: Math.round(Number(wingInput.value) * 100) / 100 }, { source: 'control', feature: 'wings', final: false }, `wing-${wingGroup}`));
+  wingInput.addEventListener('change', () => {
+    wingGroup++;
+    history.seal();
+    emit({ source: 'control', feature: 'wings', final: true });
+  });
+  const wingRow = h('div', { class: 'bb-row', 'data-feature': 'wings' },
+    h('span', { class: 'bb-row-label' }, traitName('wing_aspect')),
+    h('div', { class: 'bb-range-wrap' }, h('span', { class: 'muted small' }, broad), wingInput, h('span', { class: 'muted small' }, narrow)));
+  const choices = [...earShapeBtns, ...legBtns, ...tailBtns, ...hornBtns, ...patternBtns];
   const group = (feature: BuilderFeature, label: string, ...kids: HTMLElement[]) =>
     h('div', { class: 'bb-row', 'data-feature': feature }, h('span', { class: 'bb-row-label' }, label), h('div', { class: 'bb-choices', role: 'group', 'aria-label': label }, ...kids));
 
@@ -263,7 +308,10 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
     group('ears', 'Ear shape', ...earShapeBtns),
     group('legs', 'Legs', ...legBtns),
     group('tail', 'Tail', ...tailBtns),
-    h('p', { class: 'bb-hint muted small' }, 'Drag the round knobs to size the ears, legs, tail, snout and fangs.'));
+    group('horns', 'Horns', ...hornBtns),
+    group('pattern', traitName('pattern'), ...patternBtns),
+    wingRow,
+    h('p', { class: 'bb-hint muted small' }, 'Drag the round knobs to size the ears, legs, tail, snout, fangs and horns. Wing shape only matters for a body with wings.'));
 
   const el = h('div', { class: 'bb', id: p }, toolbar, h('div', { class: 'bb-panels' }, eyesPanel, bodyPanel));
 
@@ -395,7 +443,7 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
   // ------------------------------------------------------------ drawing
 
   function renderTop(cur: Morphology, out: Map<string, HandleSpec & { svg: SVGSVGElement; layer: SVGGElement }>): void {
-    for (const [key, spec] of eyeView.render(cur, vision)) out.set(key, { ...spec, svg: topSvg, layer: topHandles });
+    for (const [key, spec] of eyeView.render(cur, vision, look)) out.set(key, { ...spec, svg: topSvg, layer: topHandles });
   }
 
   function renderSide(cur: Morphology, out: Map<string, HandleSpec & { svg: SVGSVGElement; layer: SVGGElement }>): void {
@@ -405,7 +453,7 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
 
     // The creature from the art library (`sideView.ts`), its torso pinned in
     // place so the handles stay put while other features change.
-    const view = sideView(cur);
+    const view = sideView(cur, look);
     add(s('line', { x1: -10, y1: view.groundY, x2: 300, y2: view.groundY, class: 'bb-ground' }));
     const creature = s('g', { class: 'bb-creature', transform: view.transform, 'aria-hidden': 'true' });
     creature.innerHTML = view.markup(`${uid}-av`);
@@ -414,12 +462,14 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
     // Handles ride the features' tips: each track runs from the tip at 0 to the tip at 1.
     const track = (feature: BuilderFeature, field: keyof Morphology, label: string, t: HandleTrack) =>
       at(linear(feature, field, label, t.from[0], t.from[1], t.to[0], t.to[1]));
-    const tracks = sideTracks(cur);
+    const tracks = sideTracks(cur, look);
     out.set('snout', track('snout', 'snout_length', 'Snout length', tracks.snout));
     out.set('fangs', track('fangs', 'fang_size', 'Fang size (none below 10%)', tracks.fangs));
     if (tracks.ears) out.set('ears', track('ears', 'ear_size', 'Ear size', tracks.ears));
     if (tracks.legs) out.set('legs', track('legs', 'leg_length', 'Leg length', tracks.legs));
     if (tracks.tail) out.set('tail', track('tail', 'tail_length', 'Tail length', tracks.tail));
+    const hornPts = opts.prices?.hornSize ? ` (+${Number(opts.prices.hornSize.toFixed(1))} points at full size)` : '';
+    out.set('horns', track('horns', 'horn_size', `${traitName('horn_size')} (none below ${Math.round(HORNS_MIN * 100)}%)${hornPts}`, tracks.horns));
   }
 
   function render(): void {
@@ -455,12 +505,16 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
     earStep.plus.disabled = cur.ear_count >= EAR_COUNT_MAX;
     for (const b of choices) {
       const v = b.dataset.value;
-      const on = b.dataset.group === 'ear-shape' ? v === cur.ear_shape
-        : b.dataset.group === 'legs' ? v === String(cur.leg_count)
-          : v === (cur.tail_present ? cur.tail_shape : 'none');
+      const g = b.dataset.group;
+      const on = g === 'ear-shape' ? v === cur.ear_shape
+        : g === 'legs' ? v === String(cur.leg_count)
+          : g === 'horns' ? v === (cur.horn_size >= HORNS_MIN ? cur.horn_form : 'none')
+            : g === 'pattern' ? v === cur.pattern
+              : v === (cur.tail_present ? cur.tail_shape : 'none');
       b.setAttribute('aria-pressed', String(on));
       if (b.dataset.group === 'ear-shape') b.disabled = cur.ear_count === 0;
     }
+    if (document.activeElement !== wingInput) wingInput.value = String(cur.wing_aspect);
     undoBtn.disabled = !history.canUndo;
     redoBtn.disabled = !history.canRedo;
     for (const b of presetBtns) {
@@ -486,6 +540,7 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
       case 'ears': return commit({ ear_count: clamp(cur.ear_count + 2 * d, 0, EAR_COUNT_MAX) as Morphology['ear_count'] }, src);
       case 'legs': return commit({ leg_count: clamp(cur.leg_count + 2 * d, 0, 8) as Morphology['leg_count'] }, src);
       case 'tail': return commit({ tail_present: d > 0 }, src);
+      case 'horns': return commit({ horn_size: d > 0 ? Math.max(cur.horn_size, HORNS_SHOWN) : 0 }, src);
       default: return false;
     }
   }
@@ -563,6 +618,14 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
     redo: doRedo,
     reset: doReset,
     applyPreset,
+    setDesign(design) {
+      const next = builderDesign(design);
+      const key = keyOf(next);
+      if (key === lookKey) return;
+      look = next;
+      lookKey = key;
+      render();
+    },
     destroy() {
       el.remove();
       specs.clear();

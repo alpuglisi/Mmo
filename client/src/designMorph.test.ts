@@ -59,6 +59,26 @@ describe('feature detection', () => {
     expect(p.traits).toEqual({ large_eyes: 0.4 });
   });
 
+  it('sends horns, coat pattern and wing shape (Phase 3) when the server lists them', () => {
+    const rows: MorphInfo[] = [
+      ...morphRows,
+      { name: 'horn_form', kind: 'enum', values: ['curved', 'straight', 'branched'], default: 'curved', cost: 0 },
+      { name: 'pattern', kind: 'enum', values: ['plain', 'spots', 'stripes', 'mottled'], default: 'plain', cost: 0 },
+      { name: 'horn_size', kind: 'axis', min: 0, max: 1, default: 0, cost: 4 },
+      { name: 'wing_aspect', kind: 'axis', min: 0, max: 1, default: 0.5, cost: 0 },
+    ];
+    const cat = { ...oldCat, morph: rows };
+    const d = newEditorDesign(cat);
+    applyMorphology(d, { ...d.morphology, horn_size: 0.5, horn_form: 'branched', pattern: 'stripes', wing_aspect: 0.5 });
+    const p = designPayload(d, cat);
+    expect(p.morph).toEqual({ horn_size: 0.5, horn_form: 'branched', pattern: 'stripes' });
+    // Horn size is priced per unit, as the server charges it.
+    expect(designCost(p, cat).perMorph).toEqual({ horn_size: 2 });
+    expect(morphPrices(cat).hornSize).toBe(4);
+    // Without the rows (a server before Phase 3) none of it is sent.
+    expect(designPayload(d, newCat).morph).toBeUndefined();
+  });
+
   it('reads the structure prices for the builder', () => {
     expect(morphPrices(oldCat)).toEqual({ eye: undefined, legPair: undefined, earPair: undefined });
     const priced = { morph: morphRows.map((r) => ({ ...r, cost: ({ eye_count: 3, leg_count: 5, ear_count: 2 } as Record<string, number>)[r.name] ?? 0 })) };

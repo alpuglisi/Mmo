@@ -412,15 +412,15 @@ pub struct Map {
     /// 0 without the fruit layer, `Balance::fruit_crop`): a second plant
     /// food beside `Tile::veg`, seasonal and richer (`Balance::fruit_energy`).
     /// Its own list rather than a `Tile` field, so the tile planes of the
-    /// snapshot and the wire keep their layout; snapshots before version 28
-    /// have none (`serde_util::before_v28::vec`; restored as zeros).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28::vec"))]
+    /// snapshot and the wire keep their layout; snapshots before version 31
+    /// have none (`serde_util::before_v31::vec`; restored as zeros).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31::vec"))]
     pub fruit: Vec<f32>,
     /// Insects, worms and grubs on each tile (food units, row-major; all 0
     /// without the invertebrate layer, `Balance::insect_crop`): small meat,
     /// in season from spring to early autumn. As `fruit`, its own list
-    /// (`serde_util::before_v28::vec`).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28::vec"))]
+    /// (`serde_util::before_v31::vec`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31::vec"))]
     pub insects: Vec<f32>,
     /// Steps to the nearest drinkable tile (BFS, recomputed hourly when chunk
     /// updates changed where water is). Lets any organism walk downhill to
@@ -988,6 +988,9 @@ impl Map {
             chunks_x: cx,
             chunks_y: self.chunks_y,
         };
+        // A small map's share runs on the calling thread: waking the pool
+        // would cost more than it saves.
+        let min_len = if self.tiles.len() / every < 16384 { usize::MAX } else { 1 };
         let (dirty, changed) = self
             .tiles
             .par_chunks_mut(rows)
@@ -996,6 +999,7 @@ impl Map {
             .zip(self.pass_sig.par_chunks_mut(rows))
             .zip(self.melt_acc.par_chunks_mut(cx))
             .zip(self.chunk_version.par_chunks_mut(cx))
+            .with_min_len(min_len)
             .enumerate()
             .map(|(cy, (((((tiles, fruit), insects), sig), melt), version))| {
                 let (mut dirty, mut changed) = (false, 0u64);
@@ -1051,15 +1055,17 @@ struct Shared<'a> {
 }
 
 impl Shared<'_> {
-    /// Weather cell values at a tile, interpolated between cell centers.
-    fn sample_cells(&self, x: usize, y: usize) -> (f32, f32, f32) {
-        let axis = |v: usize, n: usize| {
-            let f = ((v as f32 + 0.5) / CHUNK as f32 - 0.5).clamp(0.0, (n - 1) as f32);
-            let i0 = f as usize;
-            (i0, (i0 + 1).min(n - 1), f - i0 as f32)
-        };
-        let (x0, x1, tx) = axis(x, self.chunks_x);
-        let (y0, y1, ty) = axis(y, self.chunks_y);
+    /// Where a tile coordinate `v` falls between weather cell centers on an
+    /// axis of `n` cells: the two cells and the weight of the second.
+    fn axis(v: usize, n: usize) -> (usize, usize, f32) {
+        let f = ((v as f32 + 0.5) / CHUNK as f32 - 0.5).clamp(0.0, (n - 1) as f32);
+        let i0 = f as usize;
+        (i0, (i0 + 1).min(n - 1), f - i0 as f32)
+    }
+
+    /// Weather cell values at a tile, interpolated between cell centers,
+    /// from its column's and row's [`Self::axis`].
+    fn sample_cells(&self, (x0, x1, tx): (usize, usize, f32), (y0, y1, ty): (usize, usize, f32)) -> (f32, f32, f32) {
         let cell = |cx: usize, cy: usize| &self.cells[cy * self.chunks_x + cx];
         let mix = |f: fn(&WeatherCell) -> f32| {
             let top = f(cell(x0, y0)) + (f(cell(x1, y0)) - f(cell(x0, y0))) * tx;
@@ -1088,11 +1094,17 @@ impl Shared<'_> {
         let (x0, y0) = ((c % self.chunks_x) * CHUNK, (c / self.chunks_x) * CHUNK);
         let (x1, y1) = ((x0 + CHUNK).min(self.width), (y0 + CHUNK).min(self.height));
         let (mut melt, mut changed, mut dirty) = (0.0f32, false, false);
+        // Each column's and row's place between cell centers, once.
+        let mut xs = [(0, 0, 0.0); CHUNK];
+        for (x, a) in (x0..x1).zip(&mut xs) {
+            *a = Self::axis(x, self.chunks_x);
+        }
         for y in y0..y1 {
+            let ya = Self::axis(y, self.chunks_y);
             for x in x0..x1 {
                 let i = y * self.width + x;
                 let local = i - y0 * self.width;
-                let (wind, rain, wet) = self.sample_cells(x, y);
+                let (wind, rain, wet) = self.sample_cells(xs[x - x0], ya);
                 let source = &self.cells[self.terrain.catchment[i] as usize];
                 let env = TileEnv {
                     offset,

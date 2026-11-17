@@ -366,6 +366,15 @@ pub struct Game {
     /// The state index and organism views kept between the state builds
     /// of a tick (`game::states`).
     state_cache: states::StateCache,
+    /// The tick of the last full [`Game::hold_consented_females`]: until
+    /// the next tick, a command need only hold what it adds
+    /// ([`Game::hold_added`]).
+    held_tick: Option<u64>,
+    /// Tests: take the plain, slower paths these shortcuts replace (full
+    /// hold scans, `World::command_migrate`, a fresh index per new
+    /// connection) to compare against.
+    #[cfg(test)]
+    reference: bool,
 }
 
 /// The game-side state saved with each world snapshot (`crate::snapshot`):
@@ -449,6 +458,10 @@ fn parse_cursor(c: &str) -> Result<(u64, u64), ErrorInfo> {
     Ok((a, u64::MAX - b))
 }
 
+/// A listing a market query matched: its sort key, and its preview when
+/// the query needed every one.
+type MarketRow<'a> = ((u64, u64), &'a Listing, Option<Box<MatingPreviewView>>);
+
 /// Where a listing goes in a `browse_market` order: ascending by (key,
 /// newest first). `preview` is the buyer's compatibility, for `fertility`.
 fn market_key(sort: MarketSort, l: &Listing, preview: Option<&MatingPreviewView>, mine: bool) -> (u64, u64) {
@@ -514,6 +527,9 @@ impl Game {
             offline: OfflineTracker::default(),
             names_changed: 0,
             state_cache: states::StateCache::default(),
+            held_tick: None,
+            #[cfg(test)]
+            reference: false,
         }
     }
 
@@ -809,7 +825,7 @@ impl Game {
         if first {
             self.offline_login(player, &mut out);
         }
-        if let Some(s) = self.state_for(conn) {
+        if let Some(s) = self.state_now(conn) {
             out.push((Target::Conn(conn), ServerMsg::State(Box::new(s))));
         }
         out
@@ -861,7 +877,7 @@ impl Game {
                 finite(&[x, y])?;
                 let target = self.world.map.clamp(Vec2::new(x, y));
                 match group {
-                    None => self.world.command_migrate(player, target),
+                    None => self.migrate_all(player, target),
                     Some(g) => {
                         self.world.command_migrate_group(player, g, target).map_err(e)?;
                     }
@@ -986,6 +1002,33 @@ impl Game {
         }
     }
 
+    /// `World::command_migrate` (the main group and every group with a
+    /// member), finding the player's groups from the state index when it is
+    /// current instead of a scan of every organism.
+    fn migrate_all(&mut self, player: PlayerId, target: Vec2) {
+        #[cfg(test)]
+        if self.reference {
+            return self.world.command_migrate(player, target);
+        }
+        let Some(owned) = self.state_cache.owned_now(&self.world, player) else {
+            return self.world.command_migrate(player, target);
+        };
+        let mut groups = [false; MAX_GROUPS as usize];
+        groups[0] = true;
+        for &i in owned {
+            let o = &self.world.organisms[i as usize];
+            if o.alive && o.owner == player {
+                if let Some(g) = groups.get_mut(o.group as usize) {
+                    *g = true;
+                }
+            }
+        }
+        for g in (0..MAX_GROUPS).filter(|&g| groups[g as usize]) {
+            // Only fails for a group past the last.
+            let _ = self.world.command_migrate_group(player, g, target);
+        }
+    }
+
     fn offer_for(&self, request: u64, player: PlayerId) -> Result<&Offer, ErrorInfo> {
         self.offers
             .get(&request)
@@ -1030,7 +1073,7 @@ impl Game {
         let id = self.open_offer(player, to, mine, partner, price, OfferStatus::Pending, None)?;
         // Holds the requester's own female; the partner's waits for her
         // owner's acceptance (see `hold_consented_females`).
-        self.hold_consented_females();
+        self.hold_added(Some(id), None);
         let view = self.offer_view(id);
         let price = view.price.map_or(String::new(), |p| format!(" for {p} renown"));
         let text = format!("{} asks to mate their #{mine} with your #{partner}{price}.", view.from_name);
@@ -1087,6 +1130,8 @@ impl Game {
                 }
             }
         }
+        // Its organisms stay agents from the next level-of-detail update.
+        self.sync_focus();
         Ok(id)
     }
 
@@ -1185,7 +1230,8 @@ impl Game {
         let tick = self.world.tick();
         let expires = expires_days.map(|d| tick + d as u64 * self.world.config.ticks_per_day as u64);
         let l = self.economy.add_listing(player, organism, fee, tick, expires);
-        self.hold_consented_females();
+        self.hold_added(None, Some(l.id));
+        self.sync_focus();
         Ok(l)
     }
 
@@ -1230,7 +1276,8 @@ impl Game {
         }
         let tick = self.world.tick();
         let l = self.economy.add_auction(player, organism, reserve, tick, tick + duration);
-        self.hold_consented_females();
+        self.hold_added(None, Some(l.id));
+        self.sync_focus();
         Ok(l)
     }
 
@@ -1307,7 +1354,8 @@ impl Game {
             a.high = Some(Bid { bidder: player, amount, mine, tick });
             a.bids += 1;
         }
-        self.hold_consented_females();
+        self.hold_added(None, Some(listing));
+        self.sync_focus();
         let role = self.world.organism(l.organism).map_or("organism", |o| role_name(o.sex));
         let text = format!(
             "{} bid {amount} renown on your auction #{listing} of your {role} #{}.",
@@ -1352,7 +1400,7 @@ impl Game {
             return;
         };
         self.record_auction(l, "sold", Some(id));
-        self.hold_consented_females();
+        self.hold_added(Some(id), None);
         let view = self.offer_view(id);
         let text = format!(
             "Won auction #{} with {} renown: #{} will mate with {}'s #{} (held in escrow until they meet).",
@@ -1465,7 +1513,7 @@ impl Game {
         if let Some(x) = self.economy.listings.get_mut(&listing) {
             x.sales += 1;
         }
-        self.hold_consented_females();
+        self.hold_added(Some(id), Some(listing));
         let view = self.offer_view(id);
         let role = self.world.organism(l.organism).map_or("organism", |o| role_name(o.sex));
         let text = format!(
@@ -1549,7 +1597,9 @@ impl Game {
         // Previews of every candidate only when the filter or the order
         // needs them; otherwise only for the page.
         let early = q.mine.is_some() && (q.compatible || sort == MarketSort::Fertility);
-        let mut rows: Vec<((u64, u64), &Listing, Option<MatingPreviewView>)> = Vec::new();
+        // (Previews boxed: most queries have none, and a row is moved
+        // around while the page is picked.)
+        let mut rows: Vec<MarketRow<'_>> = Vec::with_capacity(self.economy.listings.len());
         for l in self.economy.listings.values() {
             let Some(o) = self.world.organism(l.organism) else { continue };
             let role = if o.sex == Sex::Male { ListingRole::Stud } else { ListingRole::Dam };
@@ -1567,18 +1617,27 @@ impl Game {
             if q.compatible && q.mine.is_some() && !preview.as_ref().is_some_and(|p| p.compatible) {
                 continue;
             }
-            rows.push((market_key(sort, l, preview.as_ref(), q.mine.is_some()), l, preview));
+            rows.push((market_key(sort, l, preview.as_ref(), q.mine.is_some()), l, preview.map(Box::new)));
+        }
+        let total = rows.len();
+        // The page is the `limit` smallest keys after the cursor (keys are
+        // unique), plus one to tell whether there is a next page: select
+        // those and sort only them.
+        if let Some(c) = after {
+            rows.retain(|r| r.0 > c);
+        }
+        if rows.len() > limit + 1 {
+            rows.select_nth_unstable_by_key(limit, |r| r.0);
+            rows.truncate(limit + 1);
         }
         rows.sort_unstable_by_key(|r| r.0);
-        let total = rows.len();
-        let start = after.map_or(0, |c| rows.partition_point(|r| r.0 <= c));
-        let page = &rows[start..];
+        let page = &rows[..];
         let next_cursor = (page.len() > limit).then(|| cursor_text(page[limit - 1].0));
-        let view = |l: &Listing, p: Option<MatingPreviewView>| {
-            let p = if early { p } else { q.mine.and_then(|m| self.listing_preview(player, m, l)) };
+        let view = |(_, l, p): &MarketRow<'_>| {
+            let p = if early { p.as_deref().cloned() } else { q.mine.and_then(|m| self.listing_preview(player, m, l)) };
             self.listing_view(l, p)
         };
-        let listings = page.iter().take(limit).filter_map(|(_, l, p)| view(l, p.clone())).collect();
+        let listings = page.iter().take(limit).filter_map(view).collect();
         let own = q.with_own.then(|| {
             self.economy
                 .listings
@@ -1682,7 +1741,7 @@ impl Game {
             return Ok(None);
         }
         self.offers.get_mut(&request).unwrap().status = OfferStatus::Accepted;
-        self.hold_consented_females();
+        self.hold_added(Some(request), None);
         // Try at once; if the organisms are apart, the agreement stands until
         // they meet (checked every tick) or the season ends.
         // The responder's answer succeeded either way; the mating's own
@@ -1777,6 +1836,7 @@ impl Game {
     /// otherwise she would rarely be free when one comes. Runs on request,
     /// on acceptance, on listing and every tick.
     fn hold_consented_females(&mut self) {
+        self.held_tick = Some(self.world.tick());
         let until = self.world.tick() + 2;
         // The highest bidder's female too: the bid is her owner's consent,
         // and she must be free when the auction settles.
@@ -1797,6 +1857,38 @@ impl Game {
             .collect();
         for id in held {
             self.world.hold_breeding(id, until);
+        }
+    }
+
+    /// [`Game::hold_consented_females`] after a command that opened or
+    /// changed `offer` and/or opened or changed `listing` and nothing else:
+    /// every other female was held at this tick already, with the same
+    /// deadline (a hold only ever extends), so only those two can add one.
+    /// The whole scan when no full hold ran this tick.
+    fn hold_added(&mut self, offer: Option<u64>, listing: Option<u64>) {
+        #[cfg(test)]
+        if self.reference {
+            return self.hold_consented_females();
+        }
+        if self.held_tick != Some(self.world.tick()) {
+            return self.hold_consented_females();
+        }
+        let until = self.world.tick() + 2;
+        let mut ids: Vec<OrgId> = Vec::new();
+        if let Some(o) = offer.and_then(|id| self.offers.get(&id)).filter(|o| o.status.is_open()) {
+            ids.push(o.mine);
+            if o.status == OfferStatus::Accepted {
+                ids.push(o.partner);
+            }
+        }
+        if let Some(l) = listing.and_then(|id| self.economy.listings.get(&id)) {
+            ids.push(l.organism);
+            ids.extend(l.auction.as_ref().and_then(|a| a.high.as_ref()).map(|b| b.mine));
+        }
+        for id in ids {
+            if self.world.organism(id).is_some_and(|x| x.sex == Sex::Female) {
+                self.world.hold_breeding(id, until);
+            }
         }
     }
 
@@ -2116,6 +2208,20 @@ impl Game {
         for c in self.conns.values() {
             let v = self.view_of(c);
             points.entry(c.player).or_default().push(Vec2::new(v.x, v.y));
+        }
+        // Organisms in open agreements, on the market and offered as an
+        // auction's highest bid stay agents: in a cohort they are gone to
+        // the game, which would fail the agreement or close the listing as
+        // if they had died.
+        let offers = self.offers.values().filter(|o| o.status.is_open()).flat_map(|o| [o.mine, o.partner]);
+        let listed = self.economy.listings.values().flat_map(|l| {
+            std::iter::once(l.organism).chain(l.auction.as_ref().and_then(|a| a.high.as_ref()).map(|b| b.mine))
+        });
+        let traded: BTreeSet<OrgId> = offers.chain(listed).collect();
+        for id in traded {
+            if let Some(o) = self.world.organism(id).filter(|o| o.owner != WILD) {
+                points.entry(o.owner).or_default().push(o.pos);
+            }
         }
         for p in std::mem::take(&mut self.focused) {
             if !points.contains_key(&p) {
@@ -3365,6 +3471,48 @@ mod tests {
         g.found(1, &design("A").founders(12)).unwrap();
         g.connect(10, 1, "ann");
         g
+    }
+
+    /// With level of detail on, organisms in open agreements and on the
+    /// market stay agents while nobody watches them: folded into a cohort
+    /// they were "gone", so the agreement failed as if they had died, the
+    /// listing closed as "no longer alive" and an auction's bids were
+    /// refunded.
+    #[test]
+    fn level_of_detail_keeps_traded_organisms_as_agents() {
+        let world = build_world(&WorldSettings {
+            seed: 7,
+            width: 128,
+            height: 128,
+            wild: true,
+            lod: true,
+            ..Default::default()
+        });
+        let mut g = Game::new(world, GameConfig::default());
+        let a = g.found(1, &design("A").founders(12)).unwrap().founders;
+        let b = g.found(2, &design("B").founders(12)).unwrap().founders;
+        let (dam, stud) = (female(&g, &a), male(&g, &b));
+        let listed = male(&g, &a);
+        assert!(
+            result(&g.command(
+                10,
+                1,
+                Some(1),
+                ClientMsg::CreateListing { organism: listed, fee: 5, expires_days: None }
+            ))
+            .0
+        );
+        assert!(
+            result(&g.command(20, 2, Some(2), ClientMsg::RequestMating { mine: stud, partner: dam, price: None })).0
+        );
+        // Nobody is connected: every region may fold into cohorts.
+        run_days(&mut g, 2);
+        assert!(g.world.abstract_count() > 0, "the test needs cohorts");
+        for id in [dam, stud, listed] {
+            assert!(g.world.organism(id).is_some(), "#{id} was folded into a cohort");
+        }
+        assert_eq!(g.offers.values().filter(|o| o.status.is_open()).count(), 1);
+        assert!(g.economy.listing_of(listed).is_some(), "the listing closed");
     }
 
     fn lineage_agents(g: &Game, lineage: u32) -> usize {
@@ -5030,6 +5178,42 @@ mod tests {
         let r = Game::resume(world, cfg, serde_json::from_value(old).unwrap(), Vec::new());
         let cur = r.current_season(0, 10, None);
         assert_eq!((cur.season, cur.first_day, cur.days), (1, 3, 0));
+    }
+
+    /// World-thread cost of `browse_market` with many listings, for
+    /// docs/load-test.md (`cargo test --release -p evo-server --lib
+    /// game::tests::market_cost -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn market_cost() {
+        let players = std::env::var("EVO_MARKET_PLAYERS").ok().and_then(|p| p.parse().ok()).unwrap_or(2000u32);
+        let world = build_world(&WorldSettings { seed: 5, width: 512, height: 512, wild: false, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        for p in 1..=players {
+            g.set_name(p, &format!("p{p}"));
+            let ids = g.found(p, &design(&format!("L{p}"))).unwrap().founders;
+            for &id in ids.iter().take(2) {
+                let _ = g.command(
+                    p as u64,
+                    p,
+                    None,
+                    ClientMsg::CreateListing { organism: id, fee: p as u64 % 20, expires_days: Some(10) },
+                );
+            }
+        }
+        let listings = g.economy.listings.len();
+        let mut times = Vec::new();
+        for round in 0..400u32 {
+            let p = 1 + round * 7 % players;
+            let mine = g.world.organisms.iter().find(|o| o.alive && o.owner == p).map(|o| o.id);
+            let q: MarketQuery = serde_json::from_value(serde_json::json!({"mine": mine, "hide_own": true})).unwrap();
+            let t = std::time::Instant::now();
+            let v = g.market(p, &q).unwrap();
+            times.push(t.elapsed().as_secs_f64() * 1e6);
+            assert_eq!(v.listings.len(), 20);
+        }
+        times.sort_by(f64::total_cmp);
+        eprintln!("{listings} listings: browse_market {:.0} µs (median), p90 {:.0} µs", times[200], times[360]);
     }
 
     /// World-thread cost of possession sub-steps and state pushes with many

@@ -10,13 +10,14 @@
 //! missing ones (or the whole object) take the contract defaults, so old
 //! clients and stored designs are unchanged. Extra structures cost points
 //! (`design::morph_cost`: each eye beyond two, each leg pair beyond two, a
-//! second ear pair); shapes, placement and snout length are free. The
+//! second ear pair; horn size per unit); shapes, placement, snout length, wing
+//! aspect and coat patterns are free. The
 //! catalog's `morph` rows carry those prices, so the client's budget matches.
 
 use std::collections::BTreeMap;
 
 use evo_sim::design::{self, DesignError, DESIGN_BUDGET};
-use evo_sim::morph::{EarShape, MorphDesign, MorphGene, MorphLocus, TailShape};
+use evo_sim::morph::{EarShape, HornForm, MorphDesign, MorphGene, MorphLocus, Pattern, TailShape};
 use evo_sim::{BirthType, FounderDesign, Gene, Thermo};
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +84,18 @@ pub struct MorphSpec {
     /// 0–1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snout_length: Option<f32>,
+    /// 0–1 (horns show from 0.1); priced per unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horn_size: Option<f32>,
+    /// `"curved"`, `"straight"` or `"branched"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horn_form: Option<String>,
+    /// 0 broad to 1 narrow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wing_aspect: Option<f32>,
+    /// `"plain"`, `"spots"`, `"stripes"` or `"mottled"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
 }
 
 impl MorphSpec {
@@ -97,7 +110,19 @@ impl MorphSpec {
             None => d.tail_shape,
             Some(s) => TailShape::from_key(s.trim()).ok_or(SpecError::BadMorph("tail_shape"))?,
         };
+        let horn_form = match &self.horn_form {
+            None => d.horn_form,
+            Some(s) => HornForm::from_key(s.trim()).ok_or(SpecError::BadMorph("horn_form"))?,
+        };
+        let pattern = match &self.pattern {
+            None => d.pattern,
+            Some(s) => Pattern::from_key(s.trim()).ok_or(SpecError::BadMorph("pattern"))?,
+        };
         Ok(MorphDesign {
+            horn_size: self.horn_size.unwrap_or(d.horn_size),
+            horn_form,
+            wing_aspect: self.wing_aspect.unwrap_or(d.wing_aspect),
+            pattern,
             eye_count: self.eye_count.unwrap_or(d.eye_count),
             eye_azimuth: self.eye_azimuth.unwrap_or(d.eye_azimuth),
             ear_count: self.ear_count.unwrap_or(d.ear_count),
@@ -263,6 +288,10 @@ fn morph_catalog() -> Vec<MorphInfo> {
                 MorphLocus::TailShape => {
                     (TailShape::ALL.iter().map(|s| json!(s.key())).collect(), json!(d.tail_shape.key()))
                 }
+                MorphLocus::HornForm => {
+                    (HornForm::ALL.iter().map(|s| json!(s.key())).collect(), json!(d.horn_form.key()))
+                }
+                MorphLocus::Pattern => (Pattern::ALL.iter().map(|s| json!(s.key())).collect(), json!(d.pattern.key())),
                 _ => ((lo..=hi).filter(|&v| l.is_valid(v)).map(|v| json!(v)).collect(), json!(l.default_value())),
             };
             let kind = if l.is_shape() { "enum" } else { "count" };
@@ -270,7 +299,7 @@ fn morph_catalog() -> Vec<MorphInfo> {
                 MorphLocus::EyeCount => design::COST_PER_EXTRA_EYE,
                 MorphLocus::LegCount => design::COST_PER_EXTRA_LEG_PAIR,
                 MorphLocus::EarCount => design::COST_PER_EXTRA_EAR_PAIR,
-                MorphLocus::EarShape | MorphLocus::TailShape => 0.0,
+                MorphLocus::EarShape | MorphLocus::TailShape | MorphLocus::HornForm | MorphLocus::Pattern => 0.0,
             };
             MorphInfo { name: l.key().into(), kind: kind.into(), values, min: None, max: None, default, cost }
         })
@@ -283,7 +312,7 @@ fn morph_catalog() -> Vec<MorphInfo> {
             min: Some(0.0),
             max: Some(g.scale()),
             default: json!(g.default_param()),
-            cost: 0.0,
+            cost: if g == MorphGene::HornSize { design::COST_PER_HORN_SIZE } else { 0.0 },
         });
     }
     out
@@ -364,6 +393,10 @@ mod tests {
         assert_eq!(bad(MorphSpec { snout_length: Some(2.0), ..m() }), ("bad_morph", "snout_length".into()));
         assert_eq!(bad(MorphSpec { ear_shape: Some("square".into()), ..m() }), ("bad_morph", "ear_shape".into()));
         assert_eq!(bad(MorphSpec { tail_shape: Some("".into()), ..m() }), ("bad_morph", "tail_shape".into()));
+        assert_eq!(bad(MorphSpec { horn_form: Some("spiral".into()), ..m() }), ("bad_morph", "horn_form".into()));
+        assert_eq!(bad(MorphSpec { pattern: Some("plaid".into()), ..m() }), ("bad_morph", "pattern".into()));
+        assert_eq!(bad(MorphSpec { horn_size: Some(1.5), ..m() }), ("bad_morph", "horn_size".into()));
+        assert_eq!(bad(MorphSpec { wing_aspect: Some(-0.1), ..m() }), ("bad_morph", "wing_aspect".into()));
     }
 
     #[test]
@@ -372,14 +405,26 @@ mod tests {
         let names: Vec<&str> = c.morph.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(
             names,
-            ["eye_count", "ear_count", "ear_shape", "leg_count", "tail_shape", "eye_azimuth", "snout_length"]
+            [
+                "eye_count",
+                "ear_count",
+                "ear_shape",
+                "leg_count",
+                "tail_shape",
+                "horn_form",
+                "pattern",
+                "eye_azimuth",
+                "snout_length",
+                "horn_size",
+                "wing_aspect"
+            ]
         );
         let legs = &c.morph[3];
         assert_eq!(legs.values, [0, 2, 4, 6, 8].map(|v| serde_json::json!(v)));
         assert_eq!(legs.default, serde_json::json!(4));
         assert_eq!(c.morph[1].values, [0, 2, 4].map(|v| serde_json::json!(v)));
         assert_eq!(c.morph[4].default, serde_json::json!("thin"));
-        assert_eq!(c.morph[5].max, Some(180.0));
+        assert_eq!(c.morph[7].max, Some(180.0));
         // Counts carry the structure prices; shapes and axes are free.
         let costs: Vec<f32> = c.morph.iter().map(|m| m.cost).collect();
         assert_eq!(
@@ -391,6 +436,10 @@ mod tests {
                 design::COST_PER_EXTRA_LEG_PAIR,
                 0.0,
                 0.0,
+                0.0,
+                0.0,
+                0.0,
+                design::COST_PER_HORN_SIZE,
                 0.0
             ]
         );
@@ -434,6 +483,13 @@ mod tests {
             &[("body_size", 0.1), ("toxins", 0.5)],
             6,
             morph(json!({"leg_count": 8, "eye_count": 4, "ear_count": 0})),
+        );
+        add(
+            "Antlered striped glider",
+            ThermoSpec::Warm,
+            &[("wings", 0.4)],
+            2,
+            morph(json!({"horn_size": 0.6, "horn_form": "branched", "pattern": "stripes", "wing_aspect": 0.2})),
         );
         let rows: Vec<serde_json::Value> = designs
             .iter()

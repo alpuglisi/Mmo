@@ -153,7 +153,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   const presetNote = h('div', { class: 'design-preset-confirm', id: 'design-preset-confirm', role: 'status', hidden: true });
   const modeBtn = (m: EditorMode, text: string, title: string) =>
     h('button', { type: 'button', id: `design-mode-${m}`, class: 'secondary', 'data-mode': m, 'aria-pressed': 'false', title }, text);
-  const modeBtns = [modeBtn('simple', 'Simple', 'Sliders only'), modeBtn('builder', 'Builder', 'Shape eyes, ears, legs, tail and snout by dragging')];
+  const modeBtns = [modeBtn('simple', 'Simple', 'Sliders only'), modeBtn('builder', 'Builder', 'Shape eyes, ears, legs, tail, snout and horns by dragging')];
   const modeSwitch = h('div', { class: 'design-mode', role: 'group', 'aria-label': 'Editor mode' }, ...modeBtns);
   const modeHint = h('p', { class: 'muted small design-mode-hint', id: 'design-mode-hint' }, '');
 
@@ -210,15 +210,15 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     for (const b of modeBtns) b.setAttribute('aria-pressed', String(b.dataset.mode === m));
     if (m === 'builder') {
       if (!builder) {
-        builder = createBodyBuilder({ value: spec.morphology, onChange: onBuilderChange, confirmPreset, idPrefix: 'design-bb', prices: morphPrices(cat) });
+        builder = createBodyBuilder({ value: spec.morphology, onChange: onBuilderChange, confirmPreset, idPrefix: 'design-bb', prices: morphPrices(cat), design: spec });
         builderHost.appendChild(builder.el);
       } else syncBuilder();
       builderHost.hidden = false;
-      modeHint.textContent = 'Drag the eyes, ears, legs, tail and snout. Eye, ear, leg, tail and fang sizes are also sliders below; both stay in step.';
+      modeHint.textContent = 'Drag the eyes, ears, legs, tail, snout and horns; pick a coat pattern and wing shape. Eye, ear, leg, tail and fang sizes are also sliders below; both stay in step.';
     } else {
       builderHost.hidden = true;
       pendingPreset?.(false);
-      modeHint.textContent = 'Builder mode shapes the body by dragging: eye count and placement, ears, legs, tail and snout.';
+      modeHint.textContent = 'Builder mode shapes the body by dragging: eye count and placement, ears, legs, tail, snout, horns, coat pattern and wing shape.';
     }
     page.classList.toggle('builder-mode', m === 'builder');
   }
@@ -229,6 +229,14 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   const bar = h('div', { class: 'bar-fill' });
   const breakdown = h('div', { class: 'muted small' });
   const problem = h('p', { class: 'error', id: 'design-problem', role: 'alert' });
+  // Before a name is typed the button is off: say why, and take the player to the field.
+  const nameLink = h('button', { type: 'button', class: 'link-btn', id: 'design-need-name-go' }, 'Name your lineage');
+  nameLink.addEventListener('click', () => {
+    name.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    name.focus({ preventScroll: true });
+  });
+  const unspent = h('p', { class: 'muted small', id: 'design-unspent' });
+  const needName = h('p', { class: 'muted small', id: 'design-need-name' }, nameLink, ' (Basics, at the top) to found it.');
   const serverError = h('p', { class: 'error', id: 'design-server-error', role: 'alert' });
   const submit = h('button', { id: 'design-submit', type: 'button' }, 'Found lineage');
   const reset = h('button', { type: 'button', class: 'secondary' }, 'Reset traits');
@@ -254,6 +262,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     avatar.update(spec, spec.morphology);
     readout.update(spec.morphology);
     if (!full) return;
+    // The builder wears the design's covering and colours (sliders change them).
+    builder?.setDesign(spec);
     const c = designCost(payload(), cat);
     total.textContent = `${c.total.toFixed(1)} / ${cat.budget} points`;
     const frac = c.total / cat.budget;
@@ -264,6 +274,11 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
       c.body > 0 ? `cold blood / small body ${c.body.toFixed(1)}` : '',
     ].filter(Boolean);
     breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, `extra founders ${c.founders.toFixed(1)}`, ...extras].join(' · ');
+    // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
+    const left = cat.budget - c.total;
+    unspent.textContent = left > cat.budget / 2
+      ? `${left.toFixed(1)} points still unspent. Traits start at their defaults, which cost nothing: raise the ones that suit the world, or try a preset in Builder mode.`
+      : '';
     for (const [g, cell] of costCells) {
       const p = c.perGene[g];
       cell.textContent = p ? p.toFixed(1) : '';
@@ -276,6 +291,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     }
     const p = validateDesign(payload(), cat);
     problem.textContent = p && !(p.code === 'bad_name' && spec.name === '') ? p.message : '';
+    needName.hidden = spec.name.trim() !== '';
     submit.disabled = p !== null;
     serverError.textContent = '';
   }
@@ -320,7 +336,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
         h('section', { class: 'card' }, h('h2', {}, 'Behavior, diet and mate preferences'), h('p', { class: 'muted small' }, 'Free: these are trade-offs.'),
           h('div', { class: 'traits' }, ...free.map(traitRow)))),
       h('aside', { class: 'design-side' }, avatar.el,
-        h('section', { class: 'card budget' }, h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, problem, serverError,
+        h('section', { class: 'card budget' }, h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, problem, needName, serverError,
           h('div', { class: 'row' }, submit, reset)))));
   setMode(mode, false);
   update();

@@ -353,6 +353,9 @@ fn cached_substep_states_match_the_old_build() {
     for (max_nearby, rows) in [(256, 50), (7, 4)] {
         let cfg = GameConfig { max_nearby, state_leaderboard_rows: rows, ..Default::default() };
         let (mut new, mut old) = (busy(cfg.clone()), busy(cfg));
+        // The old game also takes the plain paths for holds, migrations
+        // and a new connection's first state.
+        old.reference = true;
         let mut rng = rand::rngs::StdRng::seed_from_u64(max_nearby as u64);
         let (mut enc_new, mut enc_old) = (HashMap::new(), HashMap::new());
         for p in 1..=PLAYERS {
@@ -394,7 +397,7 @@ fn cached_substep_states_match_the_old_build() {
                 }
                 if round == 4 && sub == 1 {
                     // A second connection, then a lineage founded mid-tick.
-                    assert_eq!(new.connect(11, 1, "p1").len(), old.connect(11, 1, "p1").len());
+                    assert_eq!(format!("{:?}", new.connect(11, 1, "p1")), format!("{:?}", old.connect(11, 1, "p1")));
                     let (late, d) = (PLAYERS + 1, design("late", true));
                     assert!(new.found(late, &d).is_ok() && old.found(late, &d).is_ok());
                     new.connect(170, late, "late");
@@ -413,8 +416,17 @@ fn cached_substep_states_match_the_old_build() {
             new.world.step();
             old.world.step();
             let _ = (new.after_tick(), old.after_tick());
-            let pos = |g: &Game| g.world.organisms.iter().map(|o| (o.id, o.pos.x, o.pos.y)).collect::<Vec<_>>();
+            let pos = |g: &Game| {
+                g.world.organisms.iter().map(|o| (o.id, o.pos.x, o.pos.y, o.breed_ready_tick)).collect::<Vec<_>>()
+            };
             assert_eq!(pos(&new), pos(&old));
+            let orders = |g: &Game| {
+                (1..=PLAYERS + 1)
+                    .flat_map(|p| (0..evo_sim::world::groups::MAX_GROUPS).map(move |k| (p, k)))
+                    .map(|(p, k)| g.world.migration_order(p, k))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(orders(&new), orders(&old));
         }
         assert!(sub_states > 200 && ok > 200 && matings > 0, "{sub_states} {ok} {matings}");
     }

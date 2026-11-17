@@ -60,12 +60,24 @@ be needed to tell whether the fixes cost the fox anything. No prey
 lineage is lost in any run. Final head counts (31–38, after): foxes 1–108,
 pack hunters 58–263.
 
+## Fixed in the follow-up (on by default, `Balance::strike_fixes`)
+
+| Severity | Finding | Fix | Test |
+| --- | --- | --- | --- |
+| Low–medium (pre-existing) | **A poisoned hunter kept acting.** In `attack`, a hunter killed by toxins (`kill(i, Toxin)`) didn't return. The same strike could still go on to kill and leave the prey, and back in `act` the dead hunter ate meat from its tile (`eat_meat` doesn't check `alive`). | `attack` returns after the toxin death, and `act` feeds a hunter only while it lives. | `a_poisoned_hunter_strikes_no_more` |
+| Low (pre-existing) | **Double meal on the kill tick.** `attack` called `eat_meat(i, 1.0)` after a kill, and the `Hunt` branch of `act` called it again: up to twice the per-tick intake, the second helping going to fat with gorging. | Only `act` feeds the hunter. | `a_kill_is_eaten_once` |
+
+Gated by snapshot version 30 (`serde_util::before_v30`; older saves read
+`strike_fixes` = 0, the old strike). Default sweep: 11.63 (old strike
+11.60); on the base with the Phase 3 morphology merged, 11.50 (old strike
+11.68, −0.18). `compare --seed 101 --size 96 --adaptive vs --set
+strike_fixes=0`: unresolved at 48 seeds, sequential 95% CI −0.36 … +0.11;
+pack hunters survive 96% against 100% (−4 ± 6%, not significant).
+
 ## Not fixed (reported)
 
 | Severity | Finding | Why not fixed |
 | --- | --- | --- |
-| Low–medium (pre-existing) | **A poisoned hunter keeps acting.** In `attack`, a hunter killed by toxins (`kill(i, Toxin)`) doesn't return. The same strike can still go on to kill and leave the prey, and back in `act` the dead hunter eats meat from its tile (`eat_meat` doesn't check `alive`). | Not part of the predator rules. Fixing it changes default worlds (the 11.60 sweep). The carrion fix (5) works around it by leaving the poisoned body only after the turn, so a corpse doesn't feed on itself. |
-| Low (pre-existing) | **Double meal on the kill tick.** `attack` calls `eat_meat(i, 1.0)` after a kill, and the `Hunt` branch of `act` calls it again. A hunter eats up to twice the per-tick intake on the tick it kills, and with gorging the second helping goes to fat. | Changes defaults. Small: one tick in a meal of several. |
 | Low | **A hunter killed by prey that fought back leaves no carcass**, even with carrion on (it dies by `kill_by` and counts as predation, but nobody eats it). | Matches the rule as written ("other than predation"). A design choice; flagged in case it should change. |
 | Low | `prey_scarcity` is documented as using "agents at the last daily count" but reads the live `lineage_alive` count. | Deterministic either way: reads are in the parallel decide, where nothing writes, or in the sequential apply (`raid_clutch`). Doc mismatch only. |
 | Low | `carcass_keep` isn't range-checked. Above 1, carcass meat grows every hour (energy from nothing); below 0 it rots faster than default. | It's a tunable set by hand (`--set`); no tunable in `Balance` is validated. Worth a clamp if tunables ever become player-facing. |
@@ -86,7 +98,7 @@ pack hunters 58–263.
 - **Gorging.** `meat_fat_room` takes the larger of the seasonal room and the
   gorging room. `feed` banks only what fits after hunger, and `eat_meat`
   never takes more than hunger + room. No double counting beyond the
-  pre-existing kill-tick meal above.
+  kill-tick meal, now fixed (`strike_fixes`).
 - **Carrion** is placed once per death: `kill` is idempotent, and `finish`
   and `act` only resolve living organisms. Bodies come from the dead
   animal's mass, half for the starved.

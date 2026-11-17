@@ -10,10 +10,10 @@
 // linear function of snout length, chosen by the caller) so the panel's
 // snout-shadow band starts at its tip.
 
-import { lerp, rng, scallopRing, type Point, type Piece, type Shape } from '../geom';
+import { lerp, limbOutline, rng, scallopRing, type Point, type Piece, type Shape } from '../geom';
 import { GLINT, PUPIL, mix, type CreaturePalette } from '../palette';
 import type { Group } from '../render';
-import type { EarShape } from '../../morphology';
+import type { CoatPattern, EarShape, HornForm } from '../../morphology';
 import { ear, earAxis, earLength } from './ears';
 import type { Lod } from './cover';
 
@@ -40,7 +40,13 @@ export interface HeadTopParams {
   eyes: HeadTopEye[];
   /** A furred body gets a soft locked edge. */
   furry: boolean;
+  /** Another covering on the back: scale rows, armour plates or feathers (a scalloped edge and rows). */
+  cover?: 'scales' | 'armor' | 'feathers';
   lod: Lod;
+  /** Horns seen from above (Phase 3): length 0..1 (0 none) and form. */
+  horns?: { size: number; form: HornForm };
+  /** Coat pattern on the back (Phase 3). */
+  pattern?: CoatPattern;
 }
 
 export interface HeadTopPart {
@@ -171,7 +177,28 @@ export function headTop(p: HeadTopParams, pal: CreaturePalette): HeadTopPart {
   const back: Point[] = [...side, [0, r * 2.97], ...mirror(side).reverse()];
   const furred = p.furry && p.lod === 'portrait';
   // Fur: chunky locks along the edge, longest over the shoulders and rump, so the coat reads at panel size.
-  body.pieces.push(piece('body', furred ? scallopRing(back, 20, (i) => 2.8 + 1.4 * Math.abs(Math.sin(((i + 0.5) / 20) * Math.PI * 2)), 0, rng(11), true) : back));
+  const feathered = p.cover === 'feathers' && p.lod === 'portrait';
+  body.pieces.push(piece('body', furred ? scallopRing(back, 20, (i) => 2.8 + 1.4 * Math.abs(Math.sin(((i + 0.5) / 20) * Math.PI * 2)), 0, rng(11), true)
+    : feathered ? scallopRing(back, 16, () => 2.2, 0.9, rng(13), true) : back));
+  // Scales and feathers: rows of small arcs across the back, open toward the tail; armour: plates with a lit front edge.
+  if (p.lod === 'portrait' && (p.cover === 'scales' || feathered)) {
+    const step = p.cover === 'scales' ? r * 0.2 : r * 0.3;
+    const rad0 = step * 0.55;
+    for (let y = r * 0.75, row = 0; y < r * 2.8; y += step * 0.8, row++) {
+      for (let x = -r + (row % 2) * step * 0.5; x <= r; x += step) {
+        body.detail.push({ part: 'body', tag: p.cover === 'scales' ? 'scale' : 'feather', kind: 'curve', closed: false,
+          points: [[x - rad0, y], [x, y + rad0 * 0.8], [x + rad0, y]], stroke: pal.body.shade, width: p.cover === 'scales' ? 0.8 : 1, alpha: 0.75 });
+      }
+    }
+  } else if (p.cover === 'armor') {
+    for (let i = 0; i < 6; i++) {
+      const y = r * (0.85 + 0.34 * i);
+      const w = r * bw * (i < 2 ? 0.75 : lerp(0.72, 0.4, (i - 2) / 4));
+      body.detail.push(
+        { part: 'body', tag: 'plate', kind: 'curve', closed: true, points: [[-w, y + r * 0.1], [0, y - r * 0.04], [w, y + r * 0.1], [w * 0.92, y + r * 0.3], [0, y + r * 0.2], [-w * 0.92, y + r * 0.3]], fill: pal.body.light, stroke: pal.body.shade, width: 1, alpha: 0.55 },
+      );
+    }
+  }
   if (furred) {
     // Hair strokes swept back from each flank, toward the edge.
     const R = rng(19);
@@ -192,7 +219,68 @@ export function headTop(p: HeadTopParams, pal: CreaturePalette): HeadTopPart {
     ...[-1, 1].map((sgn): Shape => ({ part: 'body', tag: 'shoulder', kind: 'curve', closed: false, points: [[sgn * r * 0.2, r * 0.95], [sgn * r * 0.5, r * 1.05], [sgn * r * 0.62, r * 1.35]], stroke: pal.body.shade, width: 0.9, alpha: 0.6 })),
   );
 
+  // --- coat pattern along the back (clipped to the body).
+  if (p.pattern && p.pattern !== 'plain') body.detail.push(...patternTop(p.pattern, r * bw, pal, p.lod));
+
+  // --- horns: a pair from the crown, sweeping back and out (inked overlays, over the ears).
+  if (p.horns && p.horns.size > 0) head.over.push(...hornsTop(p.horns.form, p.horns.size, r, pal));
+
   return { body, head, eyes: p.eyes.map((e) => eyeTop(e, p, pal)), anchors: { snoutTip: [0, -L], nose, earTips } };
+}
+
+/** A pair of horns from above: curved (sweep out and curl back), straight (spikes raked out-back) or a branched rack. */
+export function hornsTop(form: HornForm, size: number, r: number, pal: CreaturePalette): Shape[] {
+  const len = r * (0.7 + 0.9 * size);
+  const w = r * 0.12;
+  const fill = mix(pal.bone, pal.hoof, form === 'branched' ? 0.38 : 0.25);
+  const out: Shape[] = [];
+  for (const sgn of [-1, 1]) {
+    const base: Point = [sgn * r * 0.3, r * 0.15];
+    const centre: Point[] = [];
+    for (let i = 0; i <= 8; i++) {
+      const t = i / 8;
+      const [dx, dy] = form === 'straight'
+        ? [0.55 * t, 0.75 * t]
+        : form === 'curved'
+          ? [0.75 * t - 0.3 * t * t * t, 0.35 * t + 0.55 * t * t]
+          : [0.6 * t, 0.45 * t + 0.3 * t * t];
+      centre.push([base[0] + sgn * len * dx, base[1] + len * dy]);
+    }
+    const widths = centre.map((_, i) => Math.max(0.8, w * 2 * (1 - i / 9)));
+    out.push({ part: 'head', tag: 'horn', kind: 'curve', closed: true, points: limbOutline(centre, widths), fill, stroke: pal.ink, width: 1.1 });
+    if (form === 'branched') {
+      // Tines off the beam, out to the side.
+      for (const i of [3, 5, 7]) {
+        const [bx, by] = centre[i];
+        const tl = len * 0.32;
+        const tip: Point = [bx + sgn * tl * 0.75, by - tl * 0.45];
+        out.push({ part: 'head', tag: 'horn', kind: 'curve', closed: true, points: limbOutline([[bx, by], [(bx + tip[0]) / 2, (by + tip[1]) / 2], tip], [widths[i] * 0.8, widths[i] * 0.55, 0.5]), fill, stroke: pal.ink, width: 1 });
+      }
+    }
+  }
+  return out;
+}
+
+/** The coat pattern on the back from above: dapples, stripes across the back, or blotches. */
+function patternTop(pattern: CoatPattern, w: number, pal: CreaturePalette, lod: Lod): Shape[] {
+  const dark = mix(pal.pattern, pal.ink, 0.25);
+  const out: Shape[] = [];
+  const R = rng(pattern === 'spots' ? 41 : 47);
+  if (pattern === 'stripes') {
+    for (let i = 0; i < 6; i++) {
+      const y = w * (0.75 + 0.36 * i);
+      out.push({ part: 'body', tag: 'pattern', kind: 'curve', closed: true, points: [[-w * 1.2, y + w * 0.12], [0, y - w * 0.08], [w * 1.2, y + w * 0.12], [w * 1.2, y + w * 0.22], [0, y + w * 0.04], [-w * 1.2, y + w * 0.22]], fill: dark, alpha: 0.7 });
+    }
+  } else {
+    const n = pattern === 'spots' ? (lod === 'sprite' ? 8 : 16) : 9;
+    for (let i = 0; i < n; i++) {
+      const x = (R() * 2 - 1) * w * 0.9;
+      const y = w * (0.6 + R() * 2.2);
+      const s = w * (pattern === 'spots' ? 0.09 + 0.05 * R() : 0.16 + 0.12 * R());
+      out.push({ part: 'body', tag: 'pattern', kind: 'ellipse', x, y, rx: s * 1.3, ry: s, fill: pattern === 'mottled' && i % 2 ? mix(pal.body.light, pal.belly, 0.5) : dark, alpha: 0.65 });
+    }
+  }
+  return out;
 }
 
 /** One eye from above: an inked socket along the skull's outline, iris and pupil looking out along `az`, glint to the top left. */

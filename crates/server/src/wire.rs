@@ -1312,7 +1312,16 @@ mod tests {
         let mut g = Game::new(world, GameConfig::default());
         for p in 1..=6u32 {
             g.set_name(p, &format!("p{p}"));
-            let d = FounderDesign::new(format!("L{p}"), Thermo::Warm, BirthType::Live, 2).founders(6);
+            let mut d = FounderDesign::new(format!("L{p}"), Thermo::Warm, BirthType::Live, 2).founders(6);
+            if p == 1 {
+                // Phase 3 morphology in the looks: antlers and stripes.
+                d = d.with_morph(evo_sim::morph::MorphDesign {
+                    horn_size: 0.8,
+                    horn_form: evo_sim::morph::HornForm::Branched,
+                    pattern: evo_sim::morph::Pattern::Stripes,
+                    ..Default::default()
+                });
+            }
             g.found(p, &d).unwrap();
             g.connect(p as u64, p, &format!("p{p}"));
         }

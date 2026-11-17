@@ -51,10 +51,17 @@
 //! - `before_v27`: the predator brakes (`Balance::prey_switching`,
 //!   `condition_litter`), left out while a world snapshot of version 26 or
 //!   before is read (0, off).
-//! - `before_v28`: the food values (`Balance::meat_energy`, `fruit_crop`,
-//!   `fruit_energy`, `carnivore_hunger_discount` keeps its stored value) and
-//!   the map's fruit layer (`Map::fruit`, `before_v28::vec`), left out while
-//!   a world snapshot of version 27 or before is read (0, off; no fruit).
+//! - `before_v29`: the Phase 3 morphology loci (horns, wing aspect,
+//!   pattern) in genomes' morphology segment and their tunables
+//!   (`Balance::morph_horns`, `morph_wing_shape`, `morph_pattern`), left out
+//!   while a world snapshot of version 28 or before is read (defaults, off).
+//! - `before_v30`: `Balance::strike_fixes`, left out while a world snapshot
+//!   of version 29 or before is read (0, the old strike).
+//! - `before_v31`: the food values (`Balance::meat_energy`, `fruit_crop`,
+//!   `fruit_energy`, `insect_crop`, `switching_power`) and the map's fruit
+//!   and invertebrate layers (`Map::fruit`, `Map::insects`,
+//!   `before_v31::vec`), left out while a world snapshot of version 30 or
+//!   before is read (0, off; no fruit, no invertebrates).
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1530,15 +1537,18 @@ pub mod before_v27 {
     }
 }
 
-/// The food values (`Balance::meat_energy`, `fruit_crop`, `fruit_energy`),
-/// added in world snapshot version 28:
-/// `#[serde(with = "crate::serde_util::before_v28")]`, and the map's fruit
-/// layer (`Map::fruit`, [`before_v28::vec`]). On a thread holding a
-/// [`before_v28::Guard`] (reading or hashing a snapshot of version 27 or
-/// before) they are neither written nor read: the values read as 0 (off,
-/// meat and fruit worth what leaves are, no fruit) and the fruit layer as
-/// empty (`World::restore` fills it with zeros), as those worlds ran.
-pub mod before_v28 {
+/// What world snapshot version 29 added (numbered apart from a concurrent
+/// version 28; renumber at merge): the Phase 3 morphology loci (horn size
+/// and form, wing aspect, coat pattern) at the end of every genome's
+/// morphology segment, and their tunables (`Balance::morph_horns`,
+/// `morph_wing_shape`, `morph_pattern`):
+/// `#[serde(with = "crate::serde_util::before_v29")]`. On a thread holding a
+/// [`before_v29::Guard`] (reading or hashing a snapshot of version 28 or
+/// before) genomes are written and read with the core segment only (the new
+/// loci read as their defaults, tagged like their anchor genes:
+/// `MorphGenes::reset_extra_from`), and the tunables are neither written nor
+/// read and read as 0: off, as those worlds ran.
+pub mod before_v29 {
     use std::cell::Cell;
 
     use super::*;
@@ -1547,7 +1557,113 @@ pub mod before_v28 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The food values before version 28: off.
+    /// The Phase 3 tunables before version 29: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// Whether the old layout is in force on this thread.
+    pub fn active() -> bool {
+        OLD.with(Cell::get)
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if active() {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if active() {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// `Balance::strike_fixes`, added in world snapshot version 30:
+/// `#[serde(with = "crate::serde_util::before_v30")]`. On a thread holding a
+/// [`before_v30::Guard`] (reading or hashing a snapshot of version 29 or
+/// before) it is neither written nor read and reads as 0: the old strike, as
+/// those worlds ran.
+pub mod before_v30 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// `strike_fixes` before version 30: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// The food values (`Balance::meat_energy`, `fruit_crop`, `fruit_energy`,
+/// `insect_crop`, `switching_power`), added in world snapshot version 31:
+/// `#[serde(with = "crate::serde_util::before_v31")]`, and the map's fruit
+/// and invertebrate layers (`Map::fruit`, `Map::insects`, [`before_v31::vec`]). On a thread holding a
+/// [`before_v31::Guard`] (reading or hashing a snapshot of version 30 or
+/// before) they are neither written nor read: the values read as 0 (off,
+/// meat and fruit worth what leaves are, no fruit) and the fruit layer as
+/// empty (`World::restore` fills it with zeros), as those worlds ran.
+pub mod before_v31 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The food values before version 31: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.
@@ -1581,7 +1697,8 @@ pub mod before_v28 {
         }
     }
 
-    /// The map's fruit layer (`Map::fruit`): left out before version 28,
+    /// The map's fruit and invertebrate layers (`Map::fruit`,
+    /// `Map::insects`): left out before version 31,
     /// read back as empty.
     pub mod vec {
         use super::*;

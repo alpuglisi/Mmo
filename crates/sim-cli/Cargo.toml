@@ -13,3 +13,6 @@ evo-sim = { path = "../sim" }
 png = "0.17"
 rayon.workspace = true
 rand.workspace = true
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: merged results must equal the unsharded run's exactly.
+serde_json = { version = "1", features = ["float_roundtrip"] }

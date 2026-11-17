@@ -170,6 +170,93 @@ impl TailShape {
     }
 }
 
+/// Horn forms (Phase 3, `docs/morphology.md` decisions 18–19). Codes in the
+/// order listed, which is also the dominance order (curved, the wild type,
+/// first). Horns show only when `horn_size` ≥ [`HORNS_SHOW`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum HornForm {
+    /// Swept back like a ram's or an ibex's: the least snagging.
+    #[default]
+    Curved,
+    /// Straight spikes: the best stab.
+    Straight,
+    /// A branched rack (antlers): the best display and parry, snags the most.
+    Branched,
+}
+
+impl HornForm {
+    pub const ALL: [HornForm; 3] = [HornForm::Curved, HornForm::Straight, HornForm::Branched];
+
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(c: u8) -> Option<HornForm> {
+        Self::ALL.get(c as usize).copied()
+    }
+
+    /// Wire name (`"curved"`, `"straight"`, `"branched"`).
+    pub fn key(self) -> &'static str {
+        match self {
+            HornForm::Curved => "curved",
+            HornForm::Straight => "straight",
+            HornForm::Branched => "branched",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<HornForm> {
+        Self::ALL.into_iter().find(|e| e.key() == s)
+    }
+}
+
+/// Coat patterns and markings (Phase 3; decision 9: genetic, free, outside
+/// the genetic distance). Codes in the order listed, also the dominance
+/// order (plain, the wild type, first).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum Pattern {
+    #[default]
+    Plain,
+    /// Dapples: broken light under trees.
+    Spots,
+    /// Vertical stripes: tall grass and reeds.
+    Stripes,
+    /// Irregular blotches: rock, scree and snow patches.
+    Mottled,
+}
+
+impl Pattern {
+    pub const ALL: [Pattern; 4] = [Pattern::Plain, Pattern::Spots, Pattern::Stripes, Pattern::Mottled];
+
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(c: u8) -> Option<Pattern> {
+        Self::ALL.get(c as usize).copied()
+    }
+
+    /// Wire name (`"plain"`, `"spots"`, `"stripes"`, `"mottled"`).
+    pub fn key(self) -> &'static str {
+        match self {
+            Pattern::Plain => "plain",
+            Pattern::Spots => "spots",
+            Pattern::Stripes => "stripes",
+            Pattern::Mottled => "mottled",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<Pattern> {
+        Self::ALL.into_iter().find(|e| e.key() == s)
+    }
+}
+
+/// `horn_size` from which an organism grows horns.
+pub const HORNS_SHOW: f32 = 0.1;
+
 /// Feet, derived from the `Hooves`, `Claws` and `FootWidth` genes: the
 /// strongest of the three if it shows (≥ [`FOOT_SHOWS`]; ties in that
 /// order), else plain.
@@ -200,12 +287,27 @@ pub enum MorphLocus {
     EarShape,
     LegCount,
     TailShape,
+    /// Phase 3 (snapshot version 29).
+    HornForm,
+    /// Phase 3 (snapshot version 29).
+    Pattern,
 }
 
 impl MorphLocus {
-    pub const ALL: [MorphLocus; 5] =
-        [MorphLocus::EyeCount, MorphLocus::EarCount, MorphLocus::EarShape, MorphLocus::LegCount, MorphLocus::TailShape];
+    pub const ALL: [MorphLocus; 7] = [
+        MorphLocus::EyeCount,
+        MorphLocus::EarCount,
+        MorphLocus::EarShape,
+        MorphLocus::LegCount,
+        MorphLocus::TailShape,
+        MorphLocus::HornForm,
+        MorphLocus::Pattern,
+    ];
     pub const COUNT: usize = Self::ALL.len();
+    /// The contract v1 loci (snapshot version 23), first in [`Self::ALL`]:
+    /// the kinship key and the genome's original random streams cover these
+    /// only, so the Phase 3 loci leave existing worlds bit-identical.
+    pub const CORE: usize = 5;
 
     pub fn index(self) -> usize {
         self as usize
@@ -219,6 +321,23 @@ impl MorphLocus {
             MorphLocus::EarShape => "ear_shape",
             MorphLocus::LegCount => "leg_count",
             MorphLocus::TailShape => "tail_shape",
+            MorphLocus::HornForm => "horn_form",
+            MorphLocus::Pattern => "pattern",
+        }
+    }
+
+    /// Display name of the parameter (`trait_display_name`'s counterpart;
+    /// the client's `MORPH_NAMES` in `client/src/ui/traitNames.ts` must
+    /// match, through `traitNames.fixture.json`).
+    pub fn display_name(self) -> &'static str {
+        match self {
+            MorphLocus::EyeCount => "Eye count",
+            MorphLocus::EarCount => "Ear count",
+            MorphLocus::EarShape => "Ear shape",
+            MorphLocus::LegCount => "Leg count",
+            MorphLocus::TailShape => "Tail shape",
+            MorphLocus::HornForm => "Horn shape",
+            MorphLocus::Pattern => "Coat pattern",
         }
     }
 
@@ -229,7 +348,7 @@ impl MorphLocus {
             MorphLocus::EarCount => 2,
             MorphLocus::EarShape => 0,
             MorphLocus::LegCount => 4,
-            MorphLocus::TailShape => 0,
+            MorphLocus::TailShape | MorphLocus::HornForm | MorphLocus::Pattern => 0,
         }
     }
 
@@ -241,6 +360,8 @@ impl MorphLocus {
             MorphLocus::EarShape => (0, EarShape::ALL.len() as u8 - 1),
             MorphLocus::LegCount => (0, 8),
             MorphLocus::TailShape => (0, TailShape::ALL.len() as u8 - 1),
+            MorphLocus::HornForm => (0, HornForm::ALL.len() as u8 - 1),
+            MorphLocus::Pattern => (0, Pattern::ALL.len() as u8 - 1),
         }
     }
 
@@ -254,7 +375,7 @@ impl MorphLocus {
 
     /// A shape (enum) rather than a count.
     pub const fn is_shape(self) -> bool {
-        matches!(self, MorphLocus::EarShape | MorphLocus::TailShape)
+        matches!(self, MorphLocus::EarShape | MorphLocus::TailShape | MorphLocus::HornForm | MorphLocus::Pattern)
     }
 
     pub fn is_valid(self, v: u8) -> bool {
@@ -271,7 +392,7 @@ impl MorphLocus {
             MorphLocus::TailShape => {
                 TailShape::DOMINANCE.iter().position(|t| t.code() == v).unwrap_or(v as usize) as u8
             }
-            MorphLocus::EarShape => v,
+            MorphLocus::EarShape | MorphLocus::HornForm | MorphLocus::Pattern => v,
             _ => v.saturating_sub(self.range().0) / self.step(),
         }
     }
@@ -280,7 +401,7 @@ impl MorphLocus {
     pub fn value_at(self, p: u8) -> u8 {
         match self {
             MorphLocus::TailShape => TailShape::DOMINANCE[p as usize].code(),
-            MorphLocus::EarShape => p,
+            MorphLocus::EarShape | MorphLocus::HornForm | MorphLocus::Pattern => p,
             _ => self.range().0 + p * self.step(),
         }
     }
@@ -309,6 +430,8 @@ impl MorphLocus {
             MorphLocus::EarCount | MorphLocus::EarShape => Gene::Ears,
             MorphLocus::LegCount => Gene::LegLength,
             MorphLocus::TailShape => Gene::Tail,
+            MorphLocus::HornForm => Gene::Armor,
+            MorphLocus::Pattern => Gene::Camouflage,
         }
     }
 }
@@ -320,11 +443,19 @@ pub enum MorphGene {
     /// Degrees / 180: the angle of the first eye pair from straight ahead.
     EyeAzimuth,
     SnoutLength,
+    /// Phase 3: horn length, 0 (none) to 1 (snapshot version 29).
+    HornSize,
+    /// Phase 3: wing shape, 0 broad to 1 narrow (snapshot version 29).
+    WingAspect,
 }
 
 impl MorphGene {
-    pub const ALL: [MorphGene; 2] = [MorphGene::EyeAzimuth, MorphGene::SnoutLength];
+    pub const ALL: [MorphGene; 4] =
+        [MorphGene::EyeAzimuth, MorphGene::SnoutLength, MorphGene::HornSize, MorphGene::WingAspect];
     pub const COUNT: usize = Self::ALL.len();
+    /// The contract v1 continuous loci, first in [`Self::ALL`] (see
+    /// [`MorphLocus::CORE`]).
+    pub const CORE: usize = 2;
 
     pub fn index(self) -> usize {
         self as usize
@@ -334,6 +465,18 @@ impl MorphGene {
         match self {
             MorphGene::EyeAzimuth => "eye_azimuth",
             MorphGene::SnoutLength => "snout_length",
+            MorphGene::HornSize => "horn_size",
+            MorphGene::WingAspect => "wing_aspect",
+        }
+    }
+
+    /// Display name of the parameter (see [`MorphLocus::display_name`]).
+    pub fn display_name(self) -> &'static str {
+        match self {
+            MorphGene::EyeAzimuth => "Eye placement",
+            MorphGene::SnoutLength => "Snout length",
+            MorphGene::HornSize => "Horn size",
+            MorphGene::WingAspect => "Wing shape",
         }
     }
 
@@ -341,7 +484,7 @@ impl MorphGene {
     pub fn scale(self) -> f32 {
         match self {
             MorphGene::EyeAzimuth => 180.0,
-            MorphGene::SnoutLength => 1.0,
+            MorphGene::SnoutLength | MorphGene::HornSize | MorphGene::WingAspect => 1.0,
         }
     }
 
@@ -349,7 +492,8 @@ impl MorphGene {
     pub fn default_param(self) -> f32 {
         match self {
             MorphGene::EyeAzimuth => 60.0,
-            MorphGene::SnoutLength => 0.5,
+            MorphGene::SnoutLength | MorphGene::WingAspect => 0.5,
+            MorphGene::HornSize => 0.0,
         }
     }
 
@@ -359,6 +503,8 @@ impl MorphGene {
         match self {
             MorphGene::EyeAzimuth => Gene::Eyes,
             MorphGene::SnoutLength => Gene::Nose,
+            MorphGene::HornSize => Gene::Armor,
+            MorphGene::WingAspect => Gene::Wings,
         }
     }
 }
@@ -382,6 +528,52 @@ pub const RECOMMENDED_STEP_RATE: f32 = 0.0005;
 
 /// Alleles in [`MorphGenes`]: two per discrete and per continuous locus.
 pub const MORPH_ALLELES: usize = 2 * (MorphLocus::COUNT + MorphGene::COUNT);
+/// Alleles of the contract v1 loci ([`MorphLocus::CORE`],
+/// [`MorphGene::CORE`]): the wire prefix snapshots of versions 23 to 28
+/// hold.
+pub const CORE_MORPH_ALLELES: usize = 2 * (MorphLocus::CORE + MorphGene::CORE);
+
+/// Wire layout of the morphology alleles ([`MorphGenes::wire_alleles`]):
+/// the core discrete loci, the core continuous ones, then the Phase 3
+/// discrete and continuous ones, so an older snapshot's segment is a prefix.
+/// Whether wire allele `k` is a discrete one.
+pub fn wire_is_discrete(k: usize) -> bool {
+    let cd = 2 * MorphLocus::CORE;
+    let xd = CORE_MORPH_ALLELES + 2 * (MorphLocus::COUNT - MorphLocus::CORE);
+    k < cd || (CORE_MORPH_ALLELES..xd).contains(&k)
+}
+
+/// The wire slots, in order: `(true, locus)` for a discrete locus,
+/// `(false, gene)` for a continuous one (indices into the arrays).
+const WIRE_LOCI: [(bool, usize); MorphLocus::COUNT + MorphGene::COUNT] = {
+    let mut out = [(false, 0); MorphLocus::COUNT + MorphGene::COUNT];
+    let mut k = 0;
+    let mut i = 0;
+    while i < MorphLocus::CORE {
+        out[k] = (true, i);
+        k += 1;
+        i += 1;
+    }
+    i = 0;
+    while i < MorphGene::CORE {
+        out[k] = (false, i);
+        k += 1;
+        i += 1;
+    }
+    i = MorphLocus::CORE;
+    while i < MorphLocus::COUNT {
+        out[k] = (true, i);
+        k += 1;
+        i += 1;
+    }
+    i = MorphGene::CORE;
+    while i < MorphGene::COUNT {
+        out[k] = (false, i);
+        k += 1;
+        i += 1;
+    }
+    out
+};
 
 /// A genome's morphology segment (see the module docs).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -426,6 +618,14 @@ impl MorphGenes {
         m
     }
 
+    /// The Phase 3 loci (absent from snapshots before version 29) at their
+    /// defaults, tagged like their anchor genes' alleles in `loci`.
+    pub fn reset_extra_from(&mut self, loci: &[Locus]) {
+        let fresh = MorphGenes::from_genes(loci);
+        self.discrete[MorphLocus::CORE..].copy_from_slice(&fresh.discrete[MorphLocus::CORE..]);
+        self.continuous[MorphGene::CORE..].copy_from_slice(&fresh.continuous[MorphGene::CORE..]);
+    }
+
     /// Expressed value of a discrete locus.
     pub fn expressed(&self, l: MorphLocus) -> u8 {
         l.express(&self.discrete[l.index()])
@@ -444,7 +644,7 @@ impl MorphGenes {
         })
     }
 
-    /// The kinship key of the expressed discrete loci ([`MorphKey`]).
+    /// The kinship key of the expressed core discrete loci ([`MorphKey`]).
     pub fn key(&self) -> MorphKey {
         std::array::from_fn(|k| {
             let l = MorphLocus::ALL[k];
@@ -462,22 +662,26 @@ impl MorphGenes {
         mutation: crate::genome::MutationParams,
         rng: &mut impl Rng,
     ) -> MorphGenes {
-        let discrete = std::array::from_fn(|k| {
-            let (pm, pf) = (&m.discrete[k], &f.discrete[k]);
-            let from_m = if rng.gen::<bool>() { pm.a } else { pm.b };
-            let from_f = if rng.gen::<bool>() { pf.a } else { pf.b };
-            MorphLocusPair { a: from_m, b: from_f }
-        });
-        let continuous = std::array::from_fn(|k| {
-            let (pm, pf) = (&m.continuous[k], &f.continuous[k]);
-            let from_m = if rng.gen::<bool>() { pm.a } else { pm.b };
-            let from_f = if rng.gen::<bool>() { pf.a } else { pf.b };
-            Locus {
-                a: crate::genome::mutate(from_m, owner, mutation, rng),
-                b: crate::genome::mutate(from_f, owner, mutation, rng),
+        // In wire order (core loci first), so the core loci draw exactly
+        // what they drew before the Phase 3 loci existed.
+        let mut out = *m;
+        for &(disc, k) in &WIRE_LOCI {
+            if disc {
+                let (pm, pf) = (&m.discrete[k], &f.discrete[k]);
+                let from_m = if rng.gen::<bool>() { pm.a } else { pm.b };
+                let from_f = if rng.gen::<bool>() { pf.a } else { pf.b };
+                out.discrete[k] = MorphLocusPair { a: from_m, b: from_f };
+            } else {
+                let (pm, pf) = (&m.continuous[k], &f.continuous[k]);
+                let from_m = if rng.gen::<bool>() { pm.a } else { pm.b };
+                let from_f = if rng.gen::<bool>() { pf.a } else { pf.b };
+                out.continuous[k] = Locus {
+                    a: crate::genome::mutate(from_m, owner, mutation, rng),
+                    b: crate::genome::mutate(from_f, owner, mutation, rng),
+                };
             }
-        });
-        MorphGenes { discrete, continuous }
+        }
+        out
     }
 
     /// Step mutations of the discrete alleles, each with probability `rate`
@@ -497,39 +701,42 @@ impl MorphGenes {
     /// as its integer, a continuous one's as its `f32` bits.
     pub fn wire_alleles(&self) -> [(u32, PlayerId); MORPH_ALLELES] {
         let mut out = [(0, 0); MORPH_ALLELES];
-        let mut k = 0;
-        for p in &self.discrete {
-            for a in [p.a, p.b] {
-                out[k] = (a.value as u32, a.origin);
-                k += 1;
-            }
-        }
-        for p in &self.continuous {
-            for a in [p.a, p.b] {
-                out[k] = (a.value.to_bits(), a.origin);
-                k += 1;
-            }
+        for (slot, &(disc, l)) in WIRE_LOCI.iter().enumerate() {
+            let pair = if disc {
+                let p = &self.discrete[l];
+                [(p.a.value as u32, p.a.origin), (p.b.value as u32, p.b.origin)]
+            } else {
+                let p = &self.continuous[l];
+                [(p.a.value.to_bits(), p.a.origin), (p.b.value.to_bits(), p.b.origin)]
+            };
+            out[2 * slot] = pair[0];
+            out[2 * slot + 1] = pair[1];
         }
         out
     }
 
-    /// From [`MorphGenes::wire_alleles`]; fails on a discrete value that is
-    /// not valid for its locus.
-    pub fn from_wire_alleles(v: &[(u32, PlayerId); MORPH_ALLELES]) -> Result<MorphGenes, String> {
+    /// From [`MorphGenes::wire_alleles`], or a prefix of them (an older
+    /// snapshot's: the alleles left out keep the defaults, tagged
+    /// [`crate::genome::WILD`]; see [`MorphGenes::reset_extra_from`]); fails
+    /// on a discrete value that is not valid for its locus.
+    pub fn from_wire_alleles(v: &[(u32, PlayerId)]) -> Result<MorphGenes, String> {
         let bad = || "morphology allele out of range".to_string();
-        let d = |k: usize| -> Result<MorphAllele, String> {
-            let (bits, origin) = v[k];
-            Ok(MorphAllele { value: u8::try_from(bits).map_err(|_| bad())?, origin })
-        };
-        let c = |k: usize| Allele { value: f32::from_bits(v[k].0), origin: v[k].1 };
-        let blank = MorphAllele { value: 0, origin: 0 };
-        let mut discrete = [MorphLocusPair { a: blank, b: blank }; MorphLocus::COUNT];
-        for (l, p) in discrete.iter_mut().enumerate() {
-            *p = MorphLocusPair { a: d(2 * l)?, b: d(2 * l + 1)? };
+        if v.len() > MORPH_ALLELES || !v.len().is_multiple_of(2) {
+            return Err(bad());
         }
-        let base = 2 * MorphLocus::COUNT;
-        let continuous = std::array::from_fn(|l| Locus { a: c(base + 2 * l), b: c(base + 2 * l + 1) });
-        let g = MorphGenes { discrete, continuous };
+        let mut g = MorphGenes::uniform(&MorphDesign::default(), crate::genome::WILD);
+        for (slot, &(disc, l)) in WIRE_LOCI.iter().enumerate().take(v.len() / 2) {
+            let (a, b) = (v[2 * slot], v[2 * slot + 1]);
+            if disc {
+                let d = |(bits, origin): (u32, PlayerId)| -> Result<MorphAllele, String> {
+                    Ok(MorphAllele { value: u8::try_from(bits).map_err(|_| bad())?, origin })
+                };
+                g.discrete[l] = MorphLocusPair { a: d(a)?, b: d(b)? };
+            } else {
+                let c = |(bits, origin): (u32, PlayerId)| Allele { value: f32::from_bits(bits), origin };
+                g.continuous[l] = Locus { a: c(a), b: c(b) };
+            }
+        }
         if !g.is_valid() {
             return Err(bad());
         }
@@ -557,7 +764,7 @@ fn mutate_discrete(l: MorphLocus, a: MorphAllele, owner: PlayerId, rate: f32, rn
 /// The expressed discrete loci of an organism as positions on their axes
 /// ([`MorphLocus::position`], in [`MorphLocus`] order), as `f32` so they pack
 /// beside the expressed genes the kinship tests read.
-pub const MORPH_KEY: usize = MorphLocus::COUNT;
+pub const MORPH_KEY: usize = MorphLocus::CORE;
 
 pub type MorphKey = [f32; MORPH_KEY];
 
@@ -588,6 +795,12 @@ pub struct MorphDesign {
     pub tail_shape: TailShape,
     /// 0–1.
     pub snout_length: f32,
+    /// 0–1; horns show from [`HORNS_SHOW`].
+    pub horn_size: f32,
+    pub horn_form: HornForm,
+    /// 0 broad to 1 narrow (only matters with wings).
+    pub wing_aspect: f32,
+    pub pattern: Pattern,
 }
 
 impl Default for MorphDesign {
@@ -600,6 +813,10 @@ impl Default for MorphDesign {
             leg_count: MorphLocus::LegCount.default_value(),
             tail_shape: TailShape::Thin,
             snout_length: MorphGene::SnoutLength.default_param(),
+            horn_size: MorphGene::HornSize.default_param(),
+            horn_form: HornForm::Curved,
+            wing_aspect: MorphGene::WingAspect.default_param(),
+            pattern: Pattern::Plain,
         }
     }
 }
@@ -612,6 +829,8 @@ pub enum MorphError {
     LegCount(u8),
     EyeAzimuth(f32),
     SnoutLength(f32),
+    HornSize(f32),
+    WingAspect(f32),
 }
 
 impl MorphError {
@@ -623,6 +842,8 @@ impl MorphError {
             MorphError::LegCount(_) => "leg_count",
             MorphError::EyeAzimuth(_) => "eye_azimuth",
             MorphError::SnoutLength(_) => "snout_length",
+            MorphError::HornSize(_) => "horn_size",
+            MorphError::WingAspect(_) => "wing_aspect",
         }
     }
 }
@@ -635,6 +856,8 @@ impl std::fmt::Display for MorphError {
             MorphError::LegCount(n) => write!(f, "leg count {n} not one of 0, 2, 4, 6, 8"),
             MorphError::EyeAzimuth(x) => write!(f, "eye azimuth {x} not in [0, 180]"),
             MorphError::SnoutLength(x) => write!(f, "snout length {x} not in [0, 1]"),
+            MorphError::HornSize(x) => write!(f, "horn size {x} not in [0, 1]"),
+            MorphError::WingAspect(x) => write!(f, "wing aspect {x} not in [0, 1]"),
         }
     }
 }
@@ -656,17 +879,36 @@ impl MorphDesign {
         if !(0.0..=1.0).contains(&self.snout_length) {
             return Err(MorphError::SnoutLength(self.snout_length));
         }
+        if !(0.0..=1.0).contains(&self.horn_size) {
+            return Err(MorphError::HornSize(self.horn_size));
+        }
+        if !(0.0..=1.0).contains(&self.wing_aspect) {
+            return Err(MorphError::WingAspect(self.wing_aspect));
+        }
         Ok(())
     }
 
     /// Allele values of the discrete loci, in [`MorphLocus`] order.
     pub fn discrete_values(&self) -> [u8; MorphLocus::COUNT] {
-        [self.eye_count, self.ear_count, self.ear_shape.code(), self.leg_count, self.tail_shape.code()]
+        [
+            self.eye_count,
+            self.ear_count,
+            self.ear_shape.code(),
+            self.leg_count,
+            self.tail_shape.code(),
+            self.horn_form.code(),
+            self.pattern.code(),
+        ]
     }
 
     /// Allele values of the continuous loci, in [`MorphGene`] order.
     pub fn continuous_values(&self) -> [f32; MorphGene::COUNT] {
-        [self.eye_azimuth / MorphGene::EyeAzimuth.scale(), self.snout_length / MorphGene::SnoutLength.scale()]
+        [
+            self.eye_azimuth / MorphGene::EyeAzimuth.scale(),
+            self.snout_length / MorphGene::SnoutLength.scale(),
+            self.horn_size / MorphGene::HornSize.scale(),
+            self.wing_aspect / MorphGene::WingAspect.scale(),
+        ]
     }
 }
 
@@ -704,6 +946,14 @@ pub struct Morphology {
     pub snout_length: f32,
     /// The `Fangs` gene, 0–1 (none shown below [`FANGS_SHOW`]).
     pub fang_size: f32,
+    /// 0–1 (Phase 3).
+    pub horn_size: f32,
+    /// Derived: `horn_size ≥ HORNS_SHOW`.
+    pub horns_present: bool,
+    pub horn_form: HornForm,
+    /// 0 broad to 1 narrow (Phase 3; matters only with wings).
+    pub wing_aspect: f32,
+    pub pattern: Pattern,
 }
 
 /// Eye field width in degrees per eye (contract v1): `140 + 60 × eye_size`.
@@ -739,6 +989,11 @@ impl Morphology {
             tail_length,
             snout_length: m.expressed_gene(MorphGene::SnoutLength) * MorphGene::SnoutLength.scale(),
             fang_size: p[Gene::Fangs],
+            horn_size: m.expressed_gene(MorphGene::HornSize),
+            horns_present: m.expressed_gene(MorphGene::HornSize) >= HORNS_SHOW,
+            horn_form: HornForm::from_code(m.expressed(MorphLocus::HornForm)).unwrap_or_default(),
+            wing_aspect: m.expressed_gene(MorphGene::WingAspect),
+            pattern: Pattern::from_code(m.expressed(MorphLocus::Pattern)).unwrap_or_default(),
         }
     }
 
@@ -751,6 +1006,9 @@ impl Morphology {
         Morphology {
             eye_azimuth: MorphGene::EyeAzimuth.default_param(),
             snout_length: MorphGene::SnoutLength.default_param(),
+            horn_size: MorphGene::HornSize.default_param(),
+            horns_present: false,
+            wing_aspect: MorphGene::WingAspect.default_param(),
             ..Morphology::new(&MorphGenes::uniform(&MorphDesign::default(), crate::genome::WILD), p)
         }
     }

@@ -381,3 +381,30 @@ fn a_rally_gathers_the_group_and_holds_it_until_it_lapses() {
     let r = w.rally_group(HERD, 0, point).unwrap();
     assert_eq!(w.cancel_rally(HERD, 0), Ok(r));
 }
+
+/// The claim cooldown belongs to the organisms that claimed, not to a group
+/// id: splitting a group or merging it into another can't reset it (a split
+/// used to clear the new group's cooldown, so split, claim, merge back and
+/// split again claimed as often as the rate limit allowed).
+#[test]
+fn splits_and_merges_keep_the_claim_cooldown() {
+    let mut w = world();
+    let c = centroid(&members(&w, HERD, 0));
+    w.claim_territory(HERD, 0, c, 5.0).unwrap();
+    let cooldown = (CLAIM_COOLDOWN_DAYS * w.config.ticks_per_day as f32) as u64;
+    // A split's new half carries the cooldown.
+    let new = w.split_group(HERD, 0, None).unwrap().group;
+    assert_eq!(w.claim_territory(HERD, new, c, 5.0), Err(CommandError::ClaimCooldown { ticks_left: cooldown }));
+    // Merged back and split again: still cooling down.
+    w.merge_groups(HERD, new, 0).unwrap();
+    let new = w.split_group(HERD, 0, None).unwrap().group;
+    assert!(matches!(w.claim_territory(HERD, new, c, 5.0), Err(CommandError::ClaimCooldown { .. })));
+    // Merging a cooling group into a fresh one hands the cooldown over.
+    w.merge_groups(HERD, 0, new).unwrap();
+    assert!(matches!(w.claim_territory(HERD, new, c, 5.0), Err(CommandError::ClaimCooldown { .. })));
+    // A group that never claimed is free once the cooldown has run.
+    for _ in 0..cooldown {
+        w.step();
+    }
+    assert!(w.claim_territory(HERD, new, c, 5.0).is_ok());
+}

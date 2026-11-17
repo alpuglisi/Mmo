@@ -253,7 +253,15 @@ impl World {
         if o.possessed_by.is_some_and(|p| p != player) {
             return Err(CommandError::PossessedByOther(id));
         }
-        o.possessed_by = Some(player);
+        // One at a time: possessing another releases the player's others,
+        // or the possession bonuses would apply to a whole lineage.
+        for (k, x) in self.organisms.iter_mut().enumerate() {
+            if k != i && x.possessed_by == Some(player) {
+                x.possessed_by = None;
+                x.order = None;
+            }
+        }
+        self.organisms[i].possessed_by = Some(player);
         Ok(())
     }
 
@@ -485,6 +493,25 @@ mod tests {
         w.organisms[ib].pos += Vec2::new(5.0, 0.0);
         let req = DirectedMating { player: 1, a, b, partner_consent: false };
         assert!(matches!(w.directed_mating(req), Err(CommandError::TooFar { .. })));
+    }
+
+    /// A player possesses one organism at a time: possessing another
+    /// releases the first (and drops its order). Possession was unlimited,
+    /// so a player could possess the whole lineage for the possession
+    /// bonuses (10% speed, 20% perception) on every member.
+    #[test]
+    fn a_player_possesses_one_organism_at_a_time() {
+        let (mut w, a, b) = world_with_pair(false);
+        w.possess(1, a).unwrap();
+        let ia = w.index[&a];
+        w.order_move(1, a, Vec2::new(3.0, 3.0)).unwrap();
+        w.possess(1, b).unwrap();
+        let possessed: Vec<OrgId> = w.organisms.iter().filter(|o| o.possessed_by == Some(1)).map(|o| o.id).collect();
+        assert_eq!(possessed, vec![b]);
+        assert_eq!(w.organisms[ia].order, None);
+        // Possessing the same one again changes nothing.
+        w.possess(1, b).unwrap();
+        assert_eq!(w.organisms.iter().filter(|o| o.possessed_by == Some(1)).count(), 1);
     }
 
     #[test]

@@ -31,6 +31,7 @@ import { coveringOf, morphologyOf, paintOf } from '../../world/avatar';
 import { h } from '../dom';
 import type { HandleSpec } from './builder';
 import { SIDE_DESIGN } from './sideView';
+import type { DesignSpec } from '../../protocol';
 import { azimuthOf, polar, s, wedgePath } from './svg';
 
 /** Radius of the field-of-view rim, of the head (eyes sit on its outline), of the midline eye's spot on the forehead. */
@@ -62,7 +63,7 @@ export interface EyeView {
   /** The colour key under the drawing. */
   readonly legend: HTMLElement;
   /** Redraw for `cur`; returns the handles to show, by key. */
-  render(cur: Morphology, vision: VisionStats): Map<string, HandleSpec>;
+  render(cur: Morphology, vision: VisionStats, design?: DesignSpec): Map<string, HandleSpec>;
   /** Hide the first-use hint for good (the player has dragged or used the keys). */
   dismissHint(): void;
 }
@@ -133,13 +134,17 @@ function blindIcon(x: number, y: number, size: number): SVGElement {
 }
 
 /** The head, snout, ears and body from above, in the art library's style (`art/parts/headTop.ts`), painted like the side view's creature. */
-function headArt(cur: Morphology, eyes: EyePlacement[], spots: [number, number][], snoutTip: number): HeadTopPart {
-  const model = morphologyOf(SIDE_DESIGN, cur);
+function headArt(cur: Morphology, eyes: EyePlacement[], spots: [number, number][], snoutTip: number, design: DesignSpec): HeadTopPart {
+  const model = morphologyOf(design, cur);
+  const covering = coveringOf(model);
   return headTop({
     r: HEAD_R, snoutTip, carn: model.carnivory, cold: !model.warm,
     ears: { count: cur.ear_count, shape: cur.ear_shape, size: cur.ear_size },
     eyes: eyes.map((e, i) => ({ x: spots[i][0], y: spots[i][1], az: e.side === 'mid' ? 0 : e.azimuth, r: 5 + 3.8 * cur.eye_size })),
-    furry: coveringOf(model) === 'fur', lod: 'portrait',
+    furry: covering === 'fur', lod: 'portrait',
+    cover: covering === 'scales' || covering === 'armor' || covering === 'feathers' ? covering : undefined,
+    horns: { size: model.horns, form: cur.horn_form },
+    pattern: cur.pattern,
   }, paintOf(model));
 }
 
@@ -278,7 +283,7 @@ export function createEyeView(opts: { idPrefix: string; uid: string }): EyeView 
       s('text', { x: f(lx), y: f(ly), class: 'ev-hint-text', 'text-anchor': 'middle', 'dominant-baseline': 'central' }, 'Drag an eye')));
   }
 
-  function render(cur: Morphology, vision: VisionStats): Map<string, HandleSpec> {
+  function render(cur: Morphology, vision: VisionStats, design: DesignSpec = SIDE_DESIGN): Map<string, HandleSpec> {
     draw.replaceChildren();
     const out = new Map<string, HandleSpec>();
     const add = <T extends SVGElement>(el: T): T => draw.appendChild(el);
@@ -298,7 +303,7 @@ export function createEyeView(opts: { idPrefix: string; uid: string }): EyeView 
       ...fields.map((d) => s('path', { d, fill: '#000' }))));
 
     // The ground round the head, and the body trailing behind (which way is front), under the overlays.
-    const art = headArt(cur, eyes, spots, snoutTip);
+    const art = headArt(cur, eyes, spots, snoutTip, design);
     add(s('circle', { r: RIM, class: 'ev-ground' }));
     add(artNode(groupSvg(art.body, 'body', { id: uid, outline: ART.outline, rim: ART.rim, animate: false }, INK), { class: 'ev-body' }));
 

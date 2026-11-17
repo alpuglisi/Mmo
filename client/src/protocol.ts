@@ -331,9 +331,19 @@ export interface Appearance {
   snout?: SizeBucket;
   /** Fangs: 0 none, 1 small, 2 large. */
   fangs?: SizeBucket;
+  /** Horns (Phase 3): 0 none (absent), 1 small, 2 large. */
+  horns?: SizeBucket;
+  /** Horn form; absent for curved (the default) or no horns. */
+  horn_form?: HornForm;
+  /** Wing shape of a glider or flier: 0 broad, 1 default (absent), 2 narrow. */
+  wing_aspect?: SizeBucket;
+  /** Coat pattern; absent for plain. */
+  pattern?: CoatPattern;
 }
 
 export type SizeBucket = 0 | 1 | 2;
+export type HornForm = 'curved' | 'straight' | 'branched';
+export type CoatPattern = 'plain' | 'spots' | 'stripes' | 'mottled';
 export type EarShape = 'round' | 'pointed' | 'long' | 'fan';
 export type TailLook = 'none' | 'thin' | 'bushy' | 'fin' | 'club' | 'prehensile';
 
@@ -681,6 +691,12 @@ export interface MorphSpec {
   leg_count?: number;
   tail_shape?: string;
   snout_length?: number;
+  /** 0–1; horns show from 0.1 (priced per unit). */
+  horn_size?: number;
+  horn_form?: string;
+  /** 0 broad to 1 narrow. */
+  wing_aspect?: number;
+  pattern?: string;
 }
 
 /** One row of `GET /api/genes`' `morph` section. */

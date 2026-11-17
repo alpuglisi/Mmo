@@ -35,6 +35,7 @@ pub mod math;
 pub mod mating;
 pub mod morph;
 pub mod morph_effects;
+pub mod morph_extra;
 pub mod organism;
 pub mod pathfinding;
 pub mod presets;

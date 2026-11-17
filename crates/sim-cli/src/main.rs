@@ -15,6 +15,7 @@ use evo_sim::{presets, render, Balance, Gene, LodConfig, PlayerId, ScoringConfig
 
 mod adaptive;
 mod genetics;
+mod jobs;
 mod rankcheck;
 mod stats;
 mod sweep;
@@ -35,6 +36,10 @@ USAGE:
                       [--from PATH]
     evo-sim genetics [--long] [--level genome|ecology|all] [--out DIR] [--seed N] [--years N] [--size N] [--seeds N]
     evo-sim designs
+    evo-sim merge  [--cache-out PATH] FILES..
+
+    Across machines (sweep, compare, rankcheck, genetics): add --shard i/n [--cache FILE ..] [--shard-out PATH]
+    on machine i of n, then `evo-sim merge` the shards' files (README: Running experiments across machines)
 
 COMMANDS:
     run      Found the wild ecosystem and four sample player lineages, run, report
@@ -50,6 +55,9 @@ COMMANDS:
              replicates (Wright–Fisher on the real genome code, plus full worlds);
              writes report.md and checks.csv (`evo-sim genetics --help`)
     designs  List the sample player designs (and the migrating one) and their point costs
+    merge    Combine the partial-results files of `--shard` runs of one command line and print
+             the report of the unsharded run (or, for a command with several dependent stages,
+             write the merged results and print the next stage's command; exit status 3)
 
 OPTIONS:
     --seed N        World seed (default 1)
@@ -113,7 +121,7 @@ OPTIONS:
     --food          The food values on (`Balance::food_values`: meat richer than leaves,
                     the seasonal fruit and invertebrate layers); like --set
     --classic       The carnivore-diet rules, predator brakes and food values off, as
-                    before snapshot version 28 (`Balance::carnivore_diet_off`,
+                    before snapshot version 31 (`Balance::carnivore_diet_off`,
                     `food_values_off`); like --set, e.g. `compare vs --classic`
     --migrant-gene GENE=V  Compare: found the migrating caribou with GENE set to V (implies
                     --migrants; spaces in gene names as underscores; repeatable; before `vs`
@@ -126,6 +134,11 @@ OPTIONS:
     --catastrophe KIND@DAY  Force a catastrophe starting on DAY (0-based, repeatable):
                     severe_winter, megadrought, epidemic, flood_year
     --era-years N   Era length in years (default 3)
+    --shard i/n     Run only machine i's share (every n-th job of each batch) and write its
+                    results to evo-sim-shard-i-of-n.json (or --shard-out PATH)
+    --cache FILE    Reuse the results in a partial-results or merged file (repeatable)
+    --stagewise     Compare --adaptive --shard: one stage per look (merge between looks)
+                    instead of every seed up to --max-seeds in one stage
 
 Balance parameters: hunger_rate thirst_rate starvation_damage veg_regrowth base_speed sprint
 attack_reach stealth_effect perception_range attack_power carnivore_hunger_discount
@@ -146,7 +159,7 @@ home_range_predation home_range_residents offline_stack_floor lactation warm_upk
 fang_grazing scale_cover morph_effects morph_tail_drag morph_tail_chill morph_long_legs
 directional_vision vision_scan
 morph_step_rate morph_legacy roaming_forage carcass_keep carnivore_fat carcass_scent carrion
-provisioning breeding_territory prey_switching condition_litter
+provisioning breeding_territory prey_switching condition_litter strike_fixes
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
 juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump
@@ -195,8 +208,8 @@ struct Args {
     offline: Vec<PlayerId>,
 }
 
-fn parse_args() -> Result<Args, String> {
-    let mut it = std::env::args().skip(1);
+fn parse_args(argv: &[String]) -> Result<Args, String> {
+    let mut it = argv.iter().cloned();
     let command = it.next().unwrap_or_else(|| "help".into());
     let mut a = Args {
         command,
@@ -373,11 +386,31 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn main() -> ExitCode {
-    if std::env::args().nth(1).as_deref() == Some("genetics") {
-        let rest: Vec<String> = std::env::args().skip(2).collect();
-        return genetics::main(&rest);
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let plan =
+        if argv.first().map(String::as_str) == Some("merge") { jobs::init_merge(&argv[1..]) } else { jobs::init(argv) };
+    let plan = match plan {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let status = dispatch(&plan);
+    if let Err(e) = jobs::finish() {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
     }
-    let args = match parse_args() {
+    status
+}
+
+/// Runs the command line `argv` (without the program name and the
+/// sharding flags `jobs::init` takes).
+fn dispatch(argv: &[String]) -> ExitCode {
+    if argv.first().map(String::as_str) == Some("genetics") {
+        return genetics::main(&argv[1..]);
+    }
+    let args = match parse_args(argv) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: {e}\n\n{USAGE}");
@@ -387,9 +420,9 @@ fn main() -> ExitCode {
     if let Some(n) = args.threads {
         rayon::ThreadPoolBuilder::new().num_threads(n).build_global().expect("thread pool");
     }
-    let size_given = std::env::args().any(|a| a == "--size");
-    let trials_given = std::env::args().any(|a| a == "--trials");
-    let spread_given = std::env::args().any(|a| a == "--spread");
+    let size_given = argv.iter().any(|a| a == "--size");
+    let trials_given = argv.iter().any(|a| a == "--trials");
+    let spread_given = argv.iter().any(|a| a == "--spread");
     let size = if args.size == 128 && !size_given { 96 } else { args.size };
     match args.command.as_str() {
         "run" => run(&args),

@@ -694,7 +694,7 @@ pub struct Balance {
     // The carnivore-diet rules (version 26; *Predators that live on meat*
     // and *Predators in their niches* in the README's Balance section).
     // Each is off at 0, what snapshots before version 26 read
-    // (`serde_util::before_v26`); on by default from version 28, with the
+    // (`serde_util::before_v26`); on by default from version 31, with the
     // food values (*Food by its value* in the README).
     // `Balance::carnivore_diet` turns them all on at their tested values
     // and `carnivore_diet_off` off. The tunables are
@@ -754,7 +754,7 @@ pub struct Balance {
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v26"))]
     pub breeding_territory: f32,
     // The predator brakes (version 27; *Predators in their niches* in the
-    // README's Balance section), on by default from version 28. Global scales and switches:
+    // README's Balance section), on by default from version 31. Global scales and switches:
     // how strongly each animal applies them comes from its genes. Off at 0,
     // what snapshots before version 27 read (`serde_util::before_v27`).
     /// Prey switching (a type-III functional response): a hunter gives up on
@@ -777,9 +777,45 @@ pub struct Balance {
     /// Predator numbers follow their food.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v27"))]
     pub condition_litter: f32,
-    // Food values (version 28; *Food by its value* in the README's Balance
-    // section). Off at 0, what snapshots before version 28 read
-    // (`serde_util::before_v28`): every food worth the same per unit. On by
+    /// Horns (`morph_extra`, Phase 3 morphology): scales their defense,
+    /// fight-back and display and their mass, upkeep and snagging in dense
+    /// vegetation. 0 turns horns cosmetic.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v29"))]
+    pub morph_horns: f32,
+    /// Wing shape (`morph_extra`): narrow wings fly faster and further but
+    /// turn worse and snag in forest; broad wings take off easier. 0 turns
+    /// wing aspect cosmetic.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v29"))]
+    pub morph_wing_shape: f32,
+    /// Coat patterns (`morph_extra`): a pattern adds stealth on matching
+    /// ground (spots in forest, stripes in grass and marsh, mottling on rock
+    /// and tundra) and costs a little where it stands out. 0 turns patterns
+    /// cosmetic.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v29"))]
+    pub morph_pattern: f32,
+    /// Strike fixes (version 30; on at 1, the default): a hunter killed in
+    /// its own strike (by its prey's toxins or by prey that fought back)
+    /// does nothing more that turn, where before it could still bring the
+    /// prey down and eat; and a kill is eaten once in the hunter's turn,
+    /// where before the hunter ate a full helping at the kill and another
+    /// right after. 0 is the old behaviour, what snapshots before version
+    /// 30 read (`serde_util::before_v30`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v30"))]
+    pub strike_fixes: f32,
+    /// Staggered decisions (an approximation for speed, off by default):
+    /// at 2 or more, a calm organism decides afresh only every
+    /// `decide_interval` ticks (staggered by id) and keeps its last intent
+    /// in between, its chase target's position updated
+    /// (`World::reused_intent`). Every organism decides on the day's first
+    /// tick, and so does every hunter and any organism that is possessed, fleeing, courting,
+    /// provisioning or defending, that saw a threat, or whose target died.
+    /// 0 or 1: every organism decides every tick. Not saved in snapshots or
+    /// sent to clients.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub decide_interval: f32,
+    // Food values (version 31; *Food by its value* in the README's Balance
+    // section). Off at 0, what snapshots before version 31 read
+    // (`serde_util::before_v31`): every food worth the same per unit. On by
     // default (`Balance::food_values`).
     /// Extra food value of meat over leafy plants: a unit of meat (carcass,
     /// eggs) is worth `1 + meat_energy` units of leaves before digestion
@@ -787,20 +823,20 @@ pub struct Balance {
     /// the Carnivory gene (`Traits::meat_efficiency`). With the richer food,
     /// `carnivore_hunger_discount` (a slower hunger standing in for it) can
     /// go.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31"))]
     pub meat_energy: f32,
     /// The seasonal fruit and seed layer: scale on each tile's crop of
     /// fruit, seeds and nuts (`terrain::fruit_capacity`: most in moist
     /// forest, some in marsh, grassland seeds and tundra berries), which
     /// ripens from late summer, peaks in early autumn and rots or is eaten
     /// through the winter (`terrain::fruit_season`). 0: no fruit layer.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31"))]
     pub fruit_crop: f32,
     /// Extra food value of fruit and seeds over leaves: a unit is worth
     /// `1 + fruit_energy` before digestion. Fruit is digested well by
     /// herbivores, omnivores and flexible hunters alike, poorly only by
     /// full carnivores (`stats::fruit_efficiency`).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31"))]
     pub fruit_energy: f32,
     /// The invertebrate layer: scale on each tile's insects, worms and grubs
     /// (`terrain::insect_capacity`: most in marsh and moist ground), out
@@ -811,7 +847,7 @@ pub struct Balance {
     /// (`Traits::insect_efficiency`), gathered at half the pace of other
     /// food (small items), on any errand a meat eater makes, roaming for
     /// prey included. 0: no invertebrates.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31"))]
     pub insect_crop: f32,
     /// How sharply prey switching (`prey_switching`) spares a rare prey: a
     /// hunter still hunts a prey species at `r` of its threshold with chance
@@ -820,8 +856,8 @@ pub struct Balance {
     /// quarter. Hunting effort then collapses on a declining prey well
     /// before it is gone, even when an abundant other prey keeps many
     /// hunters fed (apparent competition). 0 reads as 2, the square of
-    /// before version 28.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v28"))]
+    /// before version 31.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31"))]
     pub switching_power: f32,
 }
 
@@ -845,11 +881,14 @@ impl Balance {
         self.directional_vision = 0.0;
         self.morph_step_rate = 0.0;
         self.morph_legacy = 0.0;
+        self.morph_horns = 0.0;
+        self.morph_wing_shape = 0.0;
+        self.morph_pattern = 0.0;
         self
     }
 
     /// These rules with the carnivore-diet rules and the predator brakes on
-    /// at their tested values (the defaults from version 28: *Predators that live on meat*
+    /// at their tested values (the defaults from version 31: *Predators that live on meat*
     /// and *Predators in their niches* in the README's Balance section),
     /// tuned with the founder designs of `presets::niche_world`: carcasses
     /// rot a quarter as fast, carnivores gorge into fat, smell and remember
@@ -872,7 +911,7 @@ impl Balance {
 
     /// These rules with the carnivore-diet rules and the predator brakes
     /// (`prey_switching`, `condition_litter`) off: the rules of before
-    /// version 28 (with `food_values_off`).
+    /// version 31 (with `food_values_off`).
     pub fn carnivore_diet_off(mut self) -> Self {
         self.carcass_keep = 0.0;
         self.carnivore_fat = 0.0;
@@ -889,7 +928,7 @@ impl Balance {
     /// These rules with the food values on at their tested values (*Food
     /// by its value* in the README's Balance section): meat richer than
     /// leaves in place of the carnivores' slower hunger, and the seasonal
-    /// fruit and seed and invertebrate layers (the defaults from version 28).
+    /// fruit and seed and invertebrate layers (the defaults from version 31).
     pub fn food_values(mut self) -> Self {
         self.meat_energy = 0.8;
         self.fruit_crop = 1.0;
@@ -899,7 +938,7 @@ impl Balance {
         self
     }
 
-    /// These rules with the food values off, as before version 28: every
+    /// These rules with the food values off, as before version 31: every
     /// food worth the same per unit, no fruit layer, and full carnivores'
     /// hunger 44% slower in its place.
     pub fn food_values_off(mut self) -> Self {
@@ -1052,6 +1091,11 @@ impl Default for Balance {
             morph_step_rate: crate::morph::RECOMMENDED_STEP_RATE,
             morph_legacy: 1.0,
             roaming_forage: 100.0,
+            morph_horns: 1.0,
+            morph_wing_shape: 1.0,
+            morph_pattern: 1.0,
+            strike_fixes: 1.0,
+            decide_interval: 0.0,
             carcass_keep: 0.75,
             carnivore_fat: 60.0,
             carcass_scent: 8.0,
@@ -1070,7 +1114,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 115;
+    pub const FIELD_COUNT: usize = 120;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1190,6 +1234,11 @@ impl Balance {
             ("breeding_territory", &mut self.breeding_territory),
             ("prey_switching", &mut self.prey_switching),
             ("condition_litter", &mut self.condition_litter),
+            ("morph_horns", &mut self.morph_horns),
+            ("morph_wing_shape", &mut self.morph_wing_shape),
+            ("morph_pattern", &mut self.morph_pattern),
+            ("strike_fixes", &mut self.strike_fixes),
+            ("decide_interval", &mut self.decide_interval),
             ("meat_energy", &mut self.meat_energy),
             ("fruit_crop", &mut self.fruit_crop),
             ("fruit_energy", &mut self.fruit_energy),

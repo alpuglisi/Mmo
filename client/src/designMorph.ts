@@ -31,7 +31,10 @@ export interface EditorDesign extends DesignSpec {
 /** The genes the body plan shares with the sliders. */
 export const SHARED_GENES: readonly string[] = Object.values(GENE_OF) as string[];
 
-const MORPH_WIRE: readonly (keyof MorphSpec)[] = ['eye_count', 'eye_azimuth', 'ear_count', 'ear_shape', 'leg_count', 'tail_shape', 'snout_length'];
+const MORPH_WIRE: readonly (keyof MorphSpec)[] = [
+  'eye_count', 'eye_azimuth', 'ear_count', 'ear_shape', 'leg_count', 'tail_shape', 'snout_length',
+  'horn_size', 'horn_form', 'wing_aspect', 'pattern',
+];
 
 /**
  * Feature detection: the `morph` rows a server accepts in a design, or null
@@ -50,10 +53,10 @@ export function morphSupport(cat: Pick<GeneCatalog, 'morph'>): MorphInfo[] | nul
  * total comes from `designCost`, which charges the same rows). Empty for a
  * server without a `morph` section.
  */
-export function morphPrices(cat: Pick<GeneCatalog, 'morph'>): { eye?: number; legPair?: number; earPair?: number } {
+export function morphPrices(cat: Pick<GeneCatalog, 'morph'>): { eye?: number; legPair?: number; earPair?: number; hornSize?: number } {
   const rows = morphSupport(cat) ?? [];
   const cost = (name: string) => rows.find((r) => r.name === name)?.cost;
-  return { eye: cost('eye_count'), legPair: cost('leg_count'), earPair: cost('ear_count') };
+  return { eye: cost('eye_count'), legPair: cost('leg_count'), earPair: cost('ear_count'), hornSize: cost('horn_size') };
 }
 
 const sameValue = (a: unknown, b: unknown): boolean =>

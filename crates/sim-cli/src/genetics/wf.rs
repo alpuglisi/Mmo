@@ -113,7 +113,7 @@ pub fn variant(l: MorphLocus) -> u8 {
         MorphLocus::EarCount => 4,
         MorphLocus::EarShape => 1,
         MorphLocus::LegCount => 6,
-        MorphLocus::TailShape => 1,
+        MorphLocus::TailShape | MorphLocus::HornForm | MorphLocus::Pattern => 1,
     }
 }
 
@@ -250,42 +250,57 @@ fn rng(seed: u64, check: u64, rep: u64) -> SimRng {
 }
 
 /// Results of the genome level.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Results {
     pub checks: Vec<Check>,
     pub sections: Vec<(String, String)>,
 }
 
+type Step = fn(&Profile, u64, &mut Results);
+
+/// The check groups, in report order.
+const STEPS: [(&str, Step); 9] = [
+    ("neutral drift", drift),
+    ("mutation-drift equilibrium", equilibrium),
+    ("morphology step mutation", morph_stationary),
+    ("mutation rates", mutation_rates),
+    ("dominance", dominance),
+    ("additive inheritance", additive),
+    ("recessive load", recessive_load),
+    ("legacy tags", legacy),
+    ("linkage", linkage),
+];
+
+/// The names of the check groups whose name contains `only` (all without
+/// it), in report order.
+pub fn groups(only: Option<&str>) -> Vec<&'static str> {
+    STEPS.iter().map(|(n, _)| *n).filter(|n| only.is_none_or(|o| n.contains(o))).collect()
+}
+
+/// One check group's checks and sections (each group draws from its own
+/// streams, so groups can run apart: in parallel, or on other machines).
+/// `log` prints progress to stderr.
+pub fn run_group(p: &Profile, seed: u64, name: &str, log: bool) -> Results {
+    let mut r = Results { checks: Vec::new(), sections: Vec::new() };
+    let (_, f) = STEPS.iter().find(|(n, _)| *n == name).unwrap_or_else(|| panic!("no check group {name}"));
+    let t = std::time::Instant::now();
+    f(p, seed, &mut r);
+    if log {
+        let fails = r.checks.iter().filter(|c| c.verdict == Verdict::Fail).count();
+        eprintln!("genetics: {name}: {} checks, {fails} failed ({:.1} s)", r.checks.len(), t.elapsed().as_secs_f64());
+    }
+    r
+}
+
 /// Every genome-level check (or those whose group name contains `only`).
 /// `log` prints progress to stderr.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn run_all(p: &Profile, seed: u64, only: Option<&str>, log: bool) -> Results {
     let mut r = Results { checks: Vec::new(), sections: Vec::new() };
-    type Step = fn(&Profile, u64, &mut Results);
-    let steps: [(&str, Step); 9] = [
-        ("neutral drift", drift),
-        ("mutation-drift equilibrium", equilibrium),
-        ("morphology step mutation", morph_stationary),
-        ("mutation rates", mutation_rates),
-        ("dominance", dominance),
-        ("additive inheritance", additive),
-        ("recessive load", recessive_load),
-        ("legacy tags", legacy),
-        ("linkage", linkage),
-    ];
-    for (name, f) in steps {
-        if only.is_some_and(|o| !name.contains(o)) {
-            continue;
-        }
-        let t = std::time::Instant::now();
-        let before = r.checks.len();
-        f(p, seed, &mut r);
-        if log {
-            let fails = r.checks[before..].iter().filter(|c| c.verdict == Verdict::Fail).count();
-            eprintln!(
-                "genetics: {name}: {} checks, {fails} failed ({:.1} s)",
-                r.checks.len() - before,
-                t.elapsed().as_secs_f64()
-            );
-        }
+    for name in groups(only) {
+        let g = run_group(p, seed, name, log);
+        r.checks.extend(g.checks);
+        r.sections.extend(g.sections);
     }
     r
 }
@@ -604,7 +619,16 @@ fn equilibrium_rep(n: usize, varied: bool, burn: usize, gens: usize, every: usiz
     } else {
         (0..n).map(|_| Genome::uniform(&[0.5; Gene::COUNT], 1)).collect()
     };
-    let sites: Vec<Site> = Site::all().into_iter().filter(|s| matches!(s, Site::Gene(_) | Site::MorphC(_))).collect();
+    // The core continuous loci only, as calibrated (horn size starts at the
+    // clamp bound 0, where the unbounded-locus formula doesn't hold).
+    let sites: Vec<Site> = Site::all()
+        .into_iter()
+        .filter(|s| match s {
+            Site::Gene(_) => true,
+            Site::MorphC(k) => *k < MorphGene::CORE,
+            _ => false,
+        })
+        .collect();
     let (mut h, mut v, mut cnt) = ([0.0; 5], [0.0; 5], [0.0; 5]);
     let mut buf = Vec::with_capacity(2 * n);
     let two_n = (2 * n) as f64;
@@ -1128,7 +1152,7 @@ fn contract_dominant(l: MorphLocus, x: u8, y: u8) -> u8 {
             // Dominance order thin > bushy > prehensile > fin > club
             // (codes thin 0, bushy 1, fin 2, club 3, prehensile 4).
             MorphLocus::TailShape => [0, 1, 3, 4, 2][v as usize],
-            MorphLocus::EarShape => v as i32,
+            MorphLocus::EarShape | MorphLocus::HornForm | MorphLocus::Pattern => v as i32,
             MorphLocus::LegCount | MorphLocus::EarCount => v as i32 / 2,
             MorphLocus::EyeCount => v as i32,
         }

@@ -71,7 +71,11 @@ fn dir_bytes(dir: &std::path::Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// Long (830 simulated days, about 35 s): left out of a plain `cargo test`;
+/// CI runs it (`cargo test --release --workspace --test integration --
+/// --ignored`, README "Continuous integration").
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "long: cargo test --release --workspace --test integration -- --ignored"]
 async fn a_long_running_worlds_history_stays_bounded() {
     let dir = data_dir("history-bounded");
     let cfg = ServerConfig {

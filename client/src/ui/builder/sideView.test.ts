@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { clampMorphology, type Morphology } from '../../morphology';
 import { avatarDrawing, morphologyOf } from '../../world/avatar';
 import { drawingBounds } from '../../art/render';
-import { FANG_KNOB_DROP, SIDE, SIDE_DESIGN, sideTracks, sideView, toSide } from './sideView';
+import { builderDesign, FANG_KNOB_DROP, SIDE, SIDE_DESIGN, sideTracks, sideView, toSide } from './sideView';
+import { coveringOf } from '../../world/avatar';
 
 const m = (f: Partial<Morphology> = {}) => clampMorphology(f);
 const anchorsOf = (f: Partial<Morphology>) => avatarDrawing(morphologyOf(SIDE_DESIGN, m(f))).anchors;
@@ -62,5 +63,18 @@ describe('builder side view', () => {
       // Ids are prefixed, so the builder's creature cannot collide with the preview card's.
       expect(sideView(m(p)).markup('bbx')).not.toMatch(/id="(?!bbx-)/);
     }
+  });
+});
+
+describe('builder look', () => {
+  it('wears the design\'s covering at the builder\'s body size', () => {
+    const scaly = { ...SIDE_DESIGN, name: 'Scaly', thermo: 'cold' as const, traits: { body_size: 0.9, scales: 0.8 } };
+    const d = builderDesign(scaly);
+    expect(d.traits.body_size).toBe(SIDE_DESIGN.traits.body_size);
+    expect(coveringOf(morphologyOf(d, m()))).toBe('scales');
+    expect(builderDesign(undefined)).toBe(SIDE_DESIGN);
+    // The handles still ride the same scale: the snout track starts where the default body's does.
+    expect(sideTracks(m(), d).legs).not.toBeNull();
+    expect(sideView(m(), d).markup('t')).not.toBe(sideView(m()).markup('t'));
   });
 });
