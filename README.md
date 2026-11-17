@@ -7049,6 +7049,79 @@ omnivore effect. A mate-recognition rule beyond the body-plan gap (females
 courting only kin, `mating::is_kin`) was not tried: it is a rule change for
 every species, not a design one, and would need its own round.
 
+### Founders, the soft cap and the market
+
+Playtest 1 (`docs/playtest-1.md`) found three balance problems this
+section addresses: founders were so cheap that 130–141 of them took an
+instant 5–13% share (and a late joiner could take season titles by
+founding big); the 1,500 lineage cap was a hard wall the leader just sat
+at; and the mating market had no reason to exist (zero trades).
+
+**Founder price.** Founders cost 0.7 points each above 20 up to 50
+founders, as calibrated, then each 0.07 more than the one before
+(`design::founder_cost`): 60 founders cost 31.9 points, 70 cost 49.7, 80
+cost 74.6, and a whole budget buys 88 (it bought 160). Every sample design
+and the calibration's random designs (10–60 founders) cost the same or
+almost the same, so the sweep and tournament are unchanged by it. The
+catalog (`GET /api/genes`) gives `flat_founders` and `founder_cost_step`,
+and the client's budget follows them (`cost.ts` `founderCost`, checked
+against the server by `cost.fixture.json`). A design stored under the flat
+price that no longer fits is re-founded with as many founders as fit
+(`DesignSpec::to_design_fitted`, logged). Founders that arrive pregnant are
+the ecology session's subject; their price is the same.
+
+**Soft lineage cap** (`Balance::lineage_crowding` 4, `crowding_ceiling`
+2, `crowding_juveniles` 0.25, `crowding_hunger` 0.3; snapshot version 33,
+older snapshots read them as 0 and keep the old hard cap). A player
+lineage's crowding count is its adults plus a quarter of its juveniles
+(agents and cohort members); against `lineage_cap` (1,500 on the
+reference map, scaled by area) as `x`, its litters are multiplied by
+`1 / (1 + x^4)` (0.94 at half the cap, 0.5 at the cap, 0.17 at 1.5×,
+0.06 at 2×) and its members' hunger by `1 + 0.3 · max(0, x − 1)`. The hard
+safety ceiling is twice the cap, every member counted. So a lineage near
+the cap slows down instead of stopping with hundreds pregnant, food rather
+than the cap decides where it settles, and its share can grow past it only
+through its genes living in other lineages. Wild species keep their hard
+caps. `lineage_stats.crowding` shows the numbers; the multipliers are
+recomputed from the organisms at the start of each tick (not saved, the
+same after a restore).
+
+**Competition: the economy and the soft cap**
+(`cargo run --release -p evo-server --example competition -- --seeds 6
+--days 360`). Four scripted players on the server's 128² world (wild
+ecosystem on) through `Game` itself, on the same six seeds under three
+rule sets: Swarm founds the starter design with as many founders as the
+budget buys; Steady and Broker found a normal 40-founder design (same body
+plan, so all can breed); from day 30 Broker offers its males to Steady's
+and Late's females every day for 20 renown (escorted at once) and buys
+extra slots; Late founds a swarm on day 150 (mid-season). The legacy title
+is counted for each 60-day season from the daily records, by the old rule
+(mean raw share) and the new one (mean of raw and weighted). Under the old
+rules the dam owners decline (accepting only dilutes them and renown buys
+nothing: playtest 1's zero trades); in the middle arm they still decline
+under the new rules (what the price and the soft cap do alone); in the new
+arm they accept and spend the renown on reinforcements while small.
+
+| Arm | Swarm (founders, final share, titles old/new rule) | Steady | Broker | Late | Trades a world |
+| --- | --- | --- | --- | --- | --- |
+| Old rules | 149, 11.4%, 19 / 17 | 14.0%, 9 / 10 | 13.3%, 8 / 9 | 149, 1.9%, 0 / 0 | 0 |
+| New rules, no trades | 85, 9.4%, 16 / 15 | 16.3%, 11 / 11 | 15.3%, 9 / 10 | 85, 2.4%, 0 / 0 | 0 |
+| New rules | 85, 9.0%, 13 / 12 | 17.6%, 14 / 15 | 17.4%, 9 / 9 | 85, 0.7%, 0 / 0 | 105 |
+
+(36 seasons per arm; mean final shares over the seeds; peak lineages 1,313
+/ 1,484 / 1,309 under the hard cap against 1,176 / 1,695 / 1,564 with the
+soft cap.) Trading pays both sides: against the same rules without it,
+the host (Steady) ends 1.3 points higher and takes 4 more titles, with
+7,358 renown at the end on average (5,599 without trades), and the broker 2.1 points higher, its alleles
+outside its lineage at 8.5% of all (7.1% without trades, 4.7% under the
+old rules), having spent nearly all its renown (fees, 37 extra slots a
+world; 209 renown of fees destroyed). The swarm no longer wins most
+titles (19 → 13 of 36), and the late joiner founding big mid-season never
+wins one under either rule (its founders starve in late summer, as in the
+playtest). The host's renown still piles up once it is too big for
+reinforcements: more sinks (cosmetics, design slots) remain open.
+
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
