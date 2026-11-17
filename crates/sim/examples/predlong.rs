@@ -267,8 +267,11 @@ fn merge(files: &[String]) {
 fn run_seed(opts: &Opts, seed: u64) -> SeedResult {
     let (balance, every, years) = (opts.balance, opts.every, opts.years);
     let config = WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() };
-    let mut w =
-        if opts.niches { presets::niche_world_with(config, 1, &opts.founding) } else { presets::standard_world(config, 1) };
+    let mut w = if opts.niches {
+        presets::niche_world_with(config, 1, &opts.founding)
+    } else {
+        presets::standard_world(config, 1)
+    };
     let genes0 = [gene_means(&w, 3), gene_means(&w, 4)];
     let mut prey_min = [usize::MAX; 6];
     let tpd = w.config.ticks_per_day;

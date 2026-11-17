@@ -996,6 +996,33 @@ fn version_30_snapshots_restore_without_food_values() {
     assert!(r.snapshot() == w.snapshot());
 }
 
+/// Version 31 snapshots (the food values, before staggered decisions) keep
+/// their food values and fruit and invertebrate layers and restore with
+/// every organism deciding every tick.
+#[test]
+fn version_31_snapshots_keep_food_values_without_staggered_decisions() {
+    let mut w = fixture_world();
+    w.config.balance = w.config.balance.food_values();
+    w.config.balance.decide_interval = 2.0;
+    w.step();
+    for (k, f) in w.map.fruit.iter_mut().enumerate() {
+        *f = (k % 3) as f32 * 0.5;
+    }
+    let old = w.snapshot_v31();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 31);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.meat_energy, w.config.balance.meat_energy);
+    assert_eq!(r.config.balance.insect_crop, w.config.balance.insect_crop);
+    assert_eq!(r.map.fruit, w.map.fruit);
+    assert_eq!(r.map.insects, w.map.insects);
+    stagger_off(&mut w.config.balance);
+    w.last_intents.clear();
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v31() == old);
+}
+
 /// The tile planes round-trip every bit pattern (negative zero, NaN,
 /// subnormals), on maps whose width is not a power of two.
 #[test]
