@@ -319,12 +319,32 @@ pub struct Accounts {
 
 struct Inner {
     by_name: HashMap<String, AccountRecord>,
+    /// Account names by [`name_skeleton`]: a new name may not look like one.
+    by_skeleton: HashMap<String, String>,
     /// Names reserved by registrations still hashing or persisting.
     pending: Vec<String>,
     sessions: HashMap<TokenHash, SessionEntry>,
 }
 
 impl Inner {
+    /// Whether `name`, or a name that looks like it ([`name_skeleton`]), has
+    /// an account or a registration persisting.
+    fn taken(&self, name: &str) -> bool {
+        let key = name_skeleton(name);
+        self.by_name.contains_key(name)
+            || self.by_skeleton.contains_key(&key)
+            || self.pending.iter().any(|n| name_skeleton(n) == key)
+    }
+
+    /// The account a login names: exactly, else the one account whose name
+    /// differs only in case (`ann` logs in to `Ann`).
+    fn login_name(&self, name: &str) -> Option<String> {
+        if self.by_name.contains_key(name) {
+            return Some(name.to_string());
+        }
+        self.by_skeleton.get(&name_skeleton(name)).filter(|n| n.eq_ignore_ascii_case(name)).cloned()
+    }
+
     /// Start a session, dropping expired ones.
     fn open_session(&mut self, session: Session, policy: SessionPolicy) -> String {
         let now = Instant::now();
@@ -337,6 +357,25 @@ impl Inner {
 
 fn valid_name(name: &str) -> bool {
     (3..=24).contains(&name.len()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// What a name looks like, for telling look-alike names apart: lower case,
+/// with the ASCII characters that read alike folded together (`0`/`o`,
+/// `1`/`l`/`i`, `_`/`-`, `rn`/`m`, `vv`/`w`). Names are ASCII letters,
+/// digits, `_` and `-` only, so no other confusables can occur. Two names
+/// with the same skeleton can't both be registered (`Herdmaster`,
+/// `herdmaster` and `HerdMaster` are one name; so are `Ann_1` and `ann-l`).
+pub fn name_skeleton(name: &str) -> String {
+    let folded: String = name
+        .chars()
+        .map(|c| match c.to_ascii_lowercase() {
+            '0' => 'o',
+            '1' | 'i' => 'l',
+            '_' => '-',
+            c => c,
+        })
+        .collect();
+    folded.replace("rn", "m").replace("vv", "w")
 }
 
 fn new_token() -> String {
@@ -360,12 +399,16 @@ impl Accounts {
         policy: SessionPolicy,
         hashing: HashPolicy,
     ) -> Self {
+        let mut by_skeleton = HashMap::new();
+        for a in &existing {
+            by_skeleton.entry(name_skeleton(&a.name)).or_insert_with(|| a.name.clone());
+        }
         let by_name = existing.into_iter().map(|a| (a.name.clone(), a)).collect();
         Self {
             store,
             policy,
             hashing: HashLimiter::new(hashing),
-            inner: Mutex::new(Inner { by_name, pending: Vec::new(), sessions: HashMap::new() }),
+            inner: Mutex::new(Inner { by_name, by_skeleton, pending: Vec::new(), sessions: HashMap::new() }),
         }
     }
 
@@ -407,7 +450,7 @@ impl Accounts {
             .map_err(|e| AuthError::Internal(e.to_string()))?;
         {
             let mut g = self.inner.lock().unwrap();
-            if g.by_name.contains_key(name) || g.pending.iter().any(|n| n == name) {
+            if g.taken(name) {
                 return Err(AuthError::NameTaken);
             }
             g.pending.push(name.to_string());
@@ -417,6 +460,7 @@ impl Accounts {
         g.pending.retain(|n| n != name);
         let record = result?;
         let player = record.player;
+        g.by_skeleton.entry(name_skeleton(name)).or_insert_with(|| name.to_string());
         g.by_name.insert(name.to_string(), record);
         let session = Session { player, name: name.to_string() };
         let token = g.open_session(session.clone(), self.policy);
@@ -425,8 +469,7 @@ impl Accounts {
 
     /// Whether the name has an account or a registration persisting.
     fn name_in_use(&self, name: &str) -> bool {
-        let g = self.inner.lock().unwrap();
-        g.by_name.contains_key(name) || g.pending.iter().any(|n| n == name)
+        self.inner.lock().unwrap().taken(name)
     }
 
     /// Store a new account under a player id from the store (unique across
@@ -460,7 +503,9 @@ impl Accounts {
             return Some(r);
         }
         let r = self.store.find_account(name).await.ok().flatten()?;
-        self.inner.lock().unwrap().by_name.entry(name.to_string()).or_insert_with(|| r.clone());
+        let mut g = self.inner.lock().unwrap();
+        g.by_skeleton.entry(name_skeleton(name)).or_insert_with(|| name.to_string());
+        g.by_name.entry(name.to_string()).or_insert_with(|| r.clone());
         Some(r)
     }
 
@@ -469,6 +514,9 @@ impl Accounts {
             // No account has one this long; don't hash it.
             return Err(AuthError::BadCredentials);
         }
+        // A name differing only in case finds its account.
+        let exact = self.inner.lock().unwrap().login_name(name);
+        let name = exact.as_deref().unwrap_or(name);
         let record = if valid_name(name) { self.account(name).await } else { None };
         let password = password.to_string();
         let hash = record.as_ref().map(|r| r.password_hash.clone());
@@ -631,6 +679,30 @@ mod tests {
         assert!(acc2.session(&t3).is_none());
         assert_eq!(acc2.login("bob", "bob's password").await.unwrap().1.player, 2);
         assert_eq!(acc2.register("carol", "carol's password").await.unwrap().1.player, 3);
+    }
+
+    /// Look-alike names are refused (case, and the ASCII characters that
+    /// read alike), and a login differing only in case finds its account.
+    #[tokio::test]
+    async fn look_alike_names_are_refused() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+        let acc = Accounts::new(store.clone(), vec![]);
+        acc.register("Herdmaster", "correct horse").await.unwrap();
+        for name in ["herdmaster", "HerdMaster", "HERDMASTER", "Herdrnaster", "herdMaster"] {
+            assert_eq!(acc.register(name, "another one").await.unwrap_err(), AuthError::NameTaken, "{name}");
+        }
+        acc.register("Ann_1", "ann's password").await.unwrap();
+        for name in ["ann-l", "ANN_I", "Ann-1"] {
+            assert_eq!(acc.register(name, "another one").await.unwrap_err(), AuthError::NameTaken, "{name}");
+        }
+        assert!(acc.register("Annabel", "annabel's password").await.is_ok(), "a different name");
+        // A login in another case reaches the account; a look-alike doesn't.
+        assert_eq!(acc.login("herdmaster", "correct horse").await.unwrap().1.name, "Herdmaster");
+        assert_eq!(acc.login("Herdrnaster", "correct horse").await.unwrap_err(), AuthError::BadCredentials);
+        // After a restart too.
+        let acc2 = Accounts::new(store.clone(), store.load_accounts().await.unwrap());
+        assert_eq!(acc2.register("HERDMASTER", "another one").await.unwrap_err(), AuthError::NameTaken);
+        assert_eq!(name_skeleton("Vv_0rn1"), "w-oml");
     }
 
     #[tokio::test]

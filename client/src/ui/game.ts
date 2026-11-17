@@ -4,6 +4,7 @@
 // ranked seasons (hall of fame) and the world chronicle (species, eras,
 // catastrophes, achievements).
 
+import { commandError } from '../errors';
 import { DEFAULT_TICKS_PER_DAY, gameAndReal, ticksToNextSeason } from './duration';
 import { reconcile, setText } from './reconcile';
 import { friendlyError, MEETING_TILES } from './friendlyErrors';
@@ -113,7 +114,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   const send = async (m: ClientMsg): Promise<ResultMsg> => {
     const r = await deps.send(m);
-    if (!r.ok && r.error && LOCAL_CODES.has(r.error.code)) model.toast('error', `${m.type}: ${r.error.message}`);
+    if (!r.ok && r.error && LOCAL_CODES.has(r.error.code)) model.toast('error', commandError(m.type, r.error));
     return r;
   };
 

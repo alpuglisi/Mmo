@@ -220,13 +220,26 @@ async fn play_over_websocket() {
     send(&mut wa, json!({"type": "fly_to_the_moon"})).await;
     let r = wait_for(&mut wa, "parse error", |v| v["type"] == "result" && v["ok"] == false).await;
     assert_eq!(r["error"]["code"], "bad_message");
+    // A malformed command's reply carries its id and command name, and not
+    // the parser's text (which listed every command name).
+    send(&mut wa, json!({"type": "fly_to_the_moon", "id": 77})).await;
+    let r = wait_for(&mut wa, "parse error with id", |v| v["type"] == "result" && v["id"] == 77).await;
+    assert_eq!((r["error"]["code"].as_str(), r["command"].as_str()), (Some("bad_message"), Some("message")));
+    let text = r["error"]["message"].as_str().unwrap();
+    assert!(!text.contains("possess") && !text.contains("expected"), "{text}");
+    send(&mut wa, json!({"type": "possess", "id": 78})).await;
+    let r = wait_for(&mut wa, "missing field", |v| v["type"] == "result" && v["id"] == 78).await;
+    assert_eq!((r["error"]["code"].as_str(), r["command"].as_str()), (Some("bad_message"), Some("possess")));
 
     // Read-only endpoints.
     let (s, board) = json_req(addr, Method::GET, "/api/leaderboard", None, None).await;
     assert_eq!(s, StatusCode::OK);
     let names: Vec<&str> = board["rows"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"ann") && names.contains(&"bob"), "{board}");
-    let (s, png) = http(addr, Method::GET, "/api/map.png?scale=2", None, None).await;
+    // The map image needs a login (it shows the caller's sight only).
+    let (s, _) = http(addr, Method::GET, "/api/map.png?scale=2", None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, png) = http(addr, Method::GET, "/api/map.png?scale=2", Some(&ann), None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     let (s, w) = json_req(addr, Method::GET, "/api/world", None, None).await;

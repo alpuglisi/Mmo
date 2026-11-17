@@ -990,14 +990,22 @@ struct MapQuery {
     scale: Option<usize>,
 }
 
-async fn map_png(World(w): World, Query(q): Query<MapQuery>) -> Result<Response, ApiError> {
+async fn map_png(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+    Query(q): Query<MapQuery>,
+) -> Result<Response, ApiError> {
+    // The caller's own organisms and those within their sight: anyone could
+    // otherwise see every player's animals.
+    let session = authed(&app, &headers)?;
     let side = {
         let s = &w.published.borrow().summary;
         s.width.max(s.height)
     };
     let scale = map_scale(q.scale, side);
     let (reply, rx) = oneshot::channel();
-    send_request(&w.tx, Request::Snapshot { scale, reply })?;
+    send_request(&w.tx, Request::Snapshot { scale, player: session.player, reply })?;
     let (w, h, rgb) = rx.await.map_err(ApiError::internal)?;
     let png = tokio::task::spawn_blocking(move || encode_png(w, h, &rgb))
         .await
@@ -1220,15 +1228,23 @@ async fn client_session(
                     }
                 }
                 // Malformed messages count against the command rate too.
-                Err(e) => {
+                Err(_) => {
+                    // The reply carries the request's id (and names its
+                    // command) when they can be read, so the client matches
+                    // it instead of timing out; the parser's own text (which
+                    // listed every command name) stays on the server.
+                    let (id, command) = malformed_id(frame.payload());
                     let err = match bucket.take(rate, Instant::now()) {
-                        Ok(()) => ErrorInfo::new("bad_message", e.to_string()),
+                        Ok(()) => ErrorInfo::new(
+                            "bad_message",
+                            "the server didn't understand that command (unknown, or a field is missing or wrong)",
+                        ),
                         Err(wait) => ErrorInfo::new(
                             "rate_limited",
                             format!("too many commands; retry in {} ms", wait.as_millis().max(1)),
                         ),
                     };
-                    local(ServerMsg::err(None, "message", err));
+                    local(ServerMsg::err(id, command, err));
                 }
             },
             OpCode::Close => break,
@@ -1242,6 +1258,16 @@ async fn client_session(
     if tokio::time::timeout(Duration::from_secs(2), &mut writer).await.is_err() {
         writer.abort();
     }
+}
+
+/// The request id and command name of a message that didn't parse as a
+/// command, if it is JSON with them: `id` a number, `type` one of the known
+/// command names ("message" otherwise, never the client's text).
+pub fn malformed_id(text: &[u8]) -> (Option<u64>, &'static str) {
+    let v: serde_json::Value = serde_json::from_slice(text).unwrap_or_default();
+    let id = v.get("id").and_then(serde_json::Value::as_u64);
+    let command = v.get("type").and_then(|t| t.as_str()).and_then(crate::protocol::command_name).unwrap_or("message");
+    (id, command)
 }
 
 /// The world thread's chronicle (species, eras, catastrophes, achievements).
