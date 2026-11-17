@@ -33,18 +33,19 @@ use crate::stats::{wilson, Summary};
 /// the standard designs (`--niches`; run, sweep, compare, rankcheck). Set
 /// once while parsing, before any world is founded.
 pub static NICHES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// Found only the red fox in its niche (`presets::niche_fox`) with the
-/// standard pack hunters (`--niche-fox`).
-pub static NICHE_FOX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How the niche world is founded (`--founding SPEC`, implies [`NICHES`];
+/// `presets::NicheFounding`). Set once while parsing.
+pub static FOUNDING: std::sync::OnceLock<presets::NicheFounding> = std::sync::OnceLock::new();
 
 /// The world every command founds: the standard world, or with
-/// [`NICHES`] the niche designs, plus the migrating lineage if given.
+/// [`NICHES`] the niche designs (founded as [`FOUNDING`] says), plus the
+/// migrating lineage if given.
 pub(crate) fn found_world(config: WorldConfig, scale: u32, migrants: Option<&FounderDesign>) -> World {
     match migrants {
         Some(d) => presets::extended_world_with(config, scale, d),
-        None if NICHES.load(std::sync::atomic::Ordering::Relaxed) => presets::niche_world(config, scale),
-        None if NICHE_FOX.load(std::sync::atomic::Ordering::Relaxed) => {
-            presets::standard_world_from(config, scale, presets::niche_wild_designs(), presets::player_designs())
+        None if NICHES.load(std::sync::atomic::Ordering::Relaxed) => {
+            presets::niche_world_with(config, scale, FOUNDING.get_or_init(Default::default))
         }
         None => presets::standard_world(config, scale),
     }

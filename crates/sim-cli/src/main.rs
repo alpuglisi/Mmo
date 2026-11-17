@@ -25,11 +25,11 @@ evo-sim — Evolution MMO simulation prototype
 
 USAGE:
     evo-sim run    [--seed N] [--size N] [--days N] [--report N] [--snapshot PATH] [--threads N] [--lod] [--focus X,Y] [--sequential-apply]
-                   [--catastrophes] [--catastrophe KIND@DAY] [--era-years N] [--migrants] [--niches] [--meat] [--food] [--classic]
+                   [--catastrophes] [--catastrophe KIND@DAY] [--era-years N] [--migrants] [--niches] [--founding SPEC] [--meat] [--food] [--classic]
     evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N,..] [--lod] [--focus X,Y] [--sequential-apply] [--compare-apply]
     evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH] [--sequential-apply]
-                   [--screen-days D,..] [--screen-seeds N] [--eta F] [--migrants] [--niches] [--meat] [--food] [--classic]
-    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--niches] [--meat] [--food] [--classic] [--set NAME=V ..]
+                   [--screen-days D,..] [--screen-seeds N] [--eta F] [--migrants] [--niches] [--founding SPEC] [--meat] [--food] [--classic]
+    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--niches] [--founding SPEC] [--meat] [--food] [--classic] [--set NAME=V ..]
                     [--migrant-gene GENE=V ..] [vs [defaults | --meat | --food | --classic | --set NAME=V .. | --migrant-gene GENE=V ..]]
                     [--adaptive] [--max-seeds N] [--batch N] [--tolerance F] [--offline-owner P ..]
     evo-sim rankcheck [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--spread F] [--screen-days D,..] [--eta F] [--out PATH]
@@ -115,7 +115,11 @@ OPTIONS:
                     a flexible mesopredator, the pack hunters a cooperative carnivore of the
                     herds) instead of the standard designs (run, sweep, compare, rankcheck;
                     both sides of a compare)
-    --niche-fox     Only the red fox in its niche, with the standard pack hunters
+    --founding SPEC Found the niche world (implies --niches) with founder counts and starting
+                    state other than the designs' (`presets::NicheFounding`; off by default):
+                    comma-separated NAME=V of wild_predators, player_predators, predators
+                    (both), prey (founder counts, times the designed; caps unchanged),
+                    predator_fat, predator_drive, prey_young, prey_drive, predator_group
     --meat          The carnivore-diet rules and predator brakes on (`Balance::carnivore_diet`,
                     off by default; tuned with --niches); like --set, before `vs` for A
     --food          The food values on (`Balance::food_values`: meat richer than leaves,
@@ -340,7 +344,11 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--sequential-apply" => a.sequential_apply = true,
             "--migrants" => a.migrants = true,
             "--niches" => sweep::NICHES.store(true, std::sync::atomic::Ordering::Relaxed),
-            "--niche-fox" => sweep::NICHE_FOX.store(true, std::sync::atomic::Ordering::Relaxed),
+            "--founding" => {
+                let f = presets::NicheFounding::parse(&value()?).map_err(|e| format!("--founding: {e}"))?;
+                sweep::FOUNDING.set(f).map_err(|_| "--founding given twice".to_string())?;
+                sweep::NICHES.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             "--meat" => {
                 let target = a.balance_b.as_mut().unwrap_or(&mut a.balance);
                 *target = target.carnivore_diet();

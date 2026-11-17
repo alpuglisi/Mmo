@@ -6282,6 +6282,151 @@ burrowing omnivores (+9 ± 8 alive). Snapshots move to format version 30
 as 0, the old strike (`serde_util::before_v30`, test
 `version_29_snapshots_restore_with_the_old_strike`).
 
+### First-year prey boom: founding
+
+*Predators in their niches* left the first-year prey boom: with the
+carnivore-diet rules and the niche designs (`--niches --meat`) the 120-day
+sweep scores 10.88 against the defaults' 11.60, because the newts and
+toxic frogs sit at their population caps while the predators are still few.
+This round tried the founding side only (founder counts, the founders'
+starting state and placement; the food rules were left to a parallel
+round), with **no default changed**.
+
+**Where the cap days come from** (`examples/boom`, below; seeds 31–34):
+the newts reach their cap (791 on 96×96: a wild species' share of
+`wild_cap` follows its founders) from day 58–65 on two seeds and stay there,
+the toxic frogs reach the player cap (843) from day 90 on one; the voles
+come close (1204 of 1271). Under the default rules on the standard world
+the newts stay at 46–364. The predators lag because of how they are
+founded: wild founders are placed in groups of 12 and a player's lineage as
+one group, so the 14 founding foxes (on 96×96) sit at two homes and the 24
+pack hunters within 5 tiles of one, while a breeding territory (8–14 tiles
+for these designs) holds one litter at a time. A founding of 38 predators
+breeds as two or three territories until it spreads.
+
+**The option** (`presets::NicheFounding`, `presets::niche_world_with`;
+`evo-sim run|sweep|compare --founding SPEC`, `genetics --founding SPEC`,
+`predlong --founding SPEC`; each implies the niche world, and `--meat` is
+still needed in run, sweep and compare). SPEC is comma-separated
+`NAME=V`; the default founds exactly as `niche_world`, so nothing changes
+unless it is given. Predators are the lineages designed at carnivory 0.6 or
+above. Population caps and the founding counts the rules and the sweep's
+health term measure against (`Lineage::founders`) stay the designs', so
+only the animals placed change; no snapshot change.
+
+| Name | Founds |
+| --- | --- |
+| `predators`, `wild_predators`, `player_predators` | predator founders × V (both, the fox, the pack hunters) |
+| `prey` | prey founders × V |
+| `predator_fat` | predator founders with V hunger points of fat (up to their capacity) |
+| `predator_drive` | predator founders with breeding drive at least V |
+| `prey_young` | that share of prey founders as weaned juveniles (aged between weaning and maturity) |
+| `prey_drive` | prey founders' starting breeding drive × V |
+| `predator_group` | predator founders in groups of V, each at its own home (`World::found_lineage_grouped`) |
+
+**Screened at 120 days** (`evo-sim sweep --size 96 --trials 1 --seeds 12
+--rounds 1 --seed S --founding SPEC --meat`; score, pack hunters survived of
+12; every other lineage survived on all 12 unless noted; the second column
+from seed 101 where run):
+
+| SPEC | Seed 31 | Seed 101 |
+| --- | --- | --- |
+| (none: `--niches --meat`) | 10.88, 10 | 10.74, 7 |
+| `predators=1.5` / `2` / `2.5` / `3` | 10.99, 10 / 11.30, 9 / 11.18, 10 / 11.11, 11 | |
+| **`predators=2,predator_fat=40`** | **11.62, 11** | **11.27, 10** |
+| `predators=2,predator_fat=20` / `60` | 11.53, 11 / 11.50, 10 | — / 11.25, 9 |
+| `predators=2,predator_fat=40,predator_drive=40` | 11.38, 10 | 11.04, 9 |
+| `predators=2,predator_drive=60` | 11.36, 10 | |
+| `predators=2,predator_fat=40,prey=0.5` | 11.28, 10 | 11.07, 7 |
+| `predators=2.5,predator_fat=40` / `predators=1.5,predator_fat=40` | 11.22, 11 / 11.06, 10 | 10.97, 8 / — |
+| `wild_predators=2` / with `predator_fat=40` | 10.88, 9 / 10.97, 10 | — / 11.04, 10 |
+| `wild_predators=2.5,predator_fat=40` | 10.57, 9 | 11.31, 11 |
+| `wild_predators=2,player_predators=1.5,predator_fat=40` | 11.08, 9 | 11.50, 12 |
+| `player_predators=2` | 10.97, 11 (fox 11) | |
+| `predator_fat=40` / with `predator_drive=60` | 10.98, 10 / 10.71, 8 | |
+| `prey=0.5` | 11.37, 12 | 10.88, 6 |
+| `prey_young=0.5,prey_drive=0` | 10.94, 9 (fox 11) | |
+| `predator_group=2` (pairs) | 11.40, 12 | 11.21, 10 |
+| `predator_group=2,predator_fat=40` / `predators=1.5` | 11.43, 11 / 11.26, 9 | 11.13, 10 / 11.25, 10 |
+| `predator_group=4` / `6` | 10.70, 9 / 11.03, 11 | |
+
+The prey levers do nothing reliable (fewer prey placed, juveniles, no
+starting drive: the prey still reach their caps a few weeks later, and the
+predators' numbers, not the prey's start, decide the summer). More
+predators do: doubling both predators' founders, in some fat, cuts the
+capped days from 37 to 10 of 120 (`boom`, 12 seeds) and gains about 0.5–0.7
+points on both seed sets. Neither predator doubled alone does it (the fox
+alone 10.88–11.04): the newts are eaten by both. Fat alone does nothing,
+and a starting breeding drive costs pack hunters. Founding the predators in
+pairs (the same animals, spread as territorial pairs) gains about 0.4.
+
+**Over the years** (`predlong 6 SEEDS --founding SPEC`; survived
+(viable: both sexes at the end); the 3-year screen on seeds 31, 34, 37 gave
+the defaults' 3 (3) and 2 (2) for `predators=2,predator_fat=40`):
+
+| SPEC | Seeds | Fox | Pack hunters | Prey lost |
+| --- | --- | --- | --- | --- |
+| (none) | 31–38 | 6 (6) | 7 (7) | none |
+| `predators=2,predator_fat=40` | 31–38 | 6 (6) | 6 (5) | newts (36) |
+| `predators=2,predator_fat=60` | 31–38 | 6 (4) | 4 (4) | omnivores (35) |
+| `wild_predators=2,player_predators=1.5,predator_fat=40` | 31–38 | 6 (6) | 4 (4) | omnivores (36) |
+| `predator_group=2` | 31–38 | 6 (5) | 6 (5) | omnivores (36) |
+| (none) | 41–48 | 7 (7) | 5 (5) | omnivores (48) |
+| `predators=2,predator_fat=40` | 41–48 | 7 (6) | 7 (6) | antelope, omnivores (48) |
+| `predator_group=2` | 41–48 | 4 (4) | 6 (6) | omnivores (48) |
+
+No founding passes the long-run acceptance on seeds 31–38 (both predators
+viable on 6 of 8, no prey lost): every change tried loses a pack or a prey
+lineage there that the defaults keep. But those are the seeds the niche
+designs were chosen on, and on fresh seeds 41–48 the defaults miss the same
+acceptance (pack hunters viable on 5, the omnivores lost on seed 48: two of
+the three pack losses are in the founding year, day 119–121), while
+`predators=2,predator_fat=40` meets the predator half of it (6 and 6) and
+loses the same seed's omnivores plus its antelope. Over the 16 seeds the
+best founding is level with the defaults within the noise (fox viable 12
+against 13, pack hunters 11 against 12, prey lost on 2 seeds against 1):
+it buys the 120-day score without a measurable long-run cost, but not the
+long-run acceptance as stated. Pairs cost the fox on fresh seeds (4 of 8).
+
+The genetics harness's ecology level on fresh seeds (`evo-sim genetics
+--long --level ecology --founding predators=2,predator_fat=40`, 12 years, 4
+worlds 96×96, seeds 1–4) passes every check (7 of 7 strict, 9 of 9 soft) and
+loses no prey lineage, but trades one predator for the other: the fox lives
+in all four worlds (6, 101, 135 and 197, the last at its cap) against two
+with the designed founding, and the pack hunters die out in all four (day
+100, 480, 820, 1120) against two. With both predators founded twice over,
+the fox and the pack hunters meet as two big populations on the same voles
+and newts from the start, and on these seeds the fox wins; with the pack
+hunters gone the prey sit at their caps (newts 783–790) by year 12.
+
+**Decision: no default changes; the option stays off.** The standard sweep
+still scores 11.60 bit for bit (the default founding is `niche_world`, and
+`found_lineage_unchecked` is `found_lineage_grouped` at its old group
+sizes). `--founding predators=2,predator_fat=40` is the founding to start
+from for the next round: the 120-day sweep's target (11.30, at 11.62 / 11.27)
+is met; the 6-year acceptance on the tuning seeds is not, and on the
+genetics seeds it costs the pack hunters.
+
+**On the score.** The sweep's cap penalty counts a day on which any lineage
+is at 95% of its cap. For the newts that is fair: a wild cap is the designed
+food pyramid's share and a species held there is held by the engine, not by
+its predators or food. For the toxic frogs it is less clear: their cap is the
+per-player game limit, and a toxic, well-defended player lineage reaches it
+under the default rules too (16 days on seed 32). Not changed; worth knowing
+when reading a capped day.
+
+`cargo run --release --example boom -- [days] [seeds..] [--founding SPEC]
+[--standard]` (read only) prints each lineage's head count against its cap
+every `--every` days (default 15) and per seed the days each lineage spent
+at its cap and from when, with the sweep penalty they cost; `--standard`
+runs the standard world with the default rules.
+
+Left for the next round: a founding (or a food rule from the parallel
+round) that keeps the pack hunters' founding year safe on all seeds, the
+two founding levers that worked (predator numbers and spread) together
+with whatever the food round finds, and fresh seeds for every long-run
+acceptance.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

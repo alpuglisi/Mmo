@@ -49,6 +49,9 @@ pub struct EcoOpts {
     pub balance: Balance,
     /// Found the predators in their niches (`presets::niche_world`).
     pub niches: bool,
+    /// How the niche world is founded with `niches` (`--founding SPEC`,
+    /// `presets::NicheFounding`; the default founds the designs).
+    pub founding: presets::NicheFounding,
 }
 
 /// One lineage at one sample.
@@ -259,7 +262,11 @@ pub fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
     let seed = opts.seed + world;
     let balance = opts.balance;
     let config = WorldConfig { seed, width: opts.size, height: opts.size, balance, ..Default::default() };
-    let mut w = if opts.niches { presets::niche_world(config, 1) } else { presets::standard_world(config, 1) };
+    let mut w = if opts.niches {
+        presets::niche_world_with(config, 1, &opts.founding)
+    } else {
+        presets::standard_world(config, 1)
+    };
     let tpd = w.config.ticks_per_day;
     let days = opts.days;
     let names: Vec<String> = w.lineages.iter().map(|l| l.name.clone()).collect();
@@ -849,6 +856,7 @@ mod tests {
                 seed: 3,
                 balance: Balance::default(),
                 niches: false,
+                founding: Default::default(),
             },
             false,
         );
@@ -872,6 +880,7 @@ mod tests {
                 seed: 1,
                 balance: Balance::default(),
                 niches: false,
+                founding: Default::default(),
             },
             true,
         );
