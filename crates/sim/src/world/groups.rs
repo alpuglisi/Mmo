@@ -471,8 +471,13 @@ impl World {
         let key = (player, new);
         self.migrate_orders.remove(&key);
         self.territories.remove(&key);
-        self.territory_claims.remove(&key);
         self.rallies.remove(&key);
+        // The new half carries the group's claim cooldown: a split must not
+        // reset it.
+        match self.territory_claims.get(&(player, group)).copied() {
+            Some(at) => self.territory_claims.insert(key, at),
+            None => self.territory_claims.remove(&key),
+        };
         for &i in &moving {
             self.organisms[i].group = new;
         }
@@ -499,6 +504,11 @@ impl World {
         }
         for o in self.organisms.iter_mut().filter(|o| o.alive && o.owner == player && o.group == from) {
             o.group = into;
+        }
+        // The merged group keeps the later of the two claim cooldowns.
+        if let Some(at) = self.territory_claims.get(&(player, from)).copied() {
+            let e = self.territory_claims.entry((player, into)).or_insert(at);
+            *e = (*e).max(at);
         }
         self.migrate_orders.remove(&(player, from));
         self.territories.remove(&(player, from));

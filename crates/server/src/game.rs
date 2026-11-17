@@ -1130,6 +1130,8 @@ impl Game {
                 }
             }
         }
+        // Its organisms stay agents from the next level-of-detail update.
+        self.sync_focus();
         Ok(id)
     }
 
@@ -1229,6 +1231,7 @@ impl Game {
         let expires = expires_days.map(|d| tick + d as u64 * self.world.config.ticks_per_day as u64);
         let l = self.economy.add_listing(player, organism, fee, tick, expires);
         self.hold_added(None, Some(l.id));
+        self.sync_focus();
         Ok(l)
     }
 
@@ -1274,6 +1277,7 @@ impl Game {
         let tick = self.world.tick();
         let l = self.economy.add_auction(player, organism, reserve, tick, tick + duration);
         self.hold_added(None, Some(l.id));
+        self.sync_focus();
         Ok(l)
     }
 
@@ -1351,6 +1355,7 @@ impl Game {
             a.bids += 1;
         }
         self.hold_added(None, Some(listing));
+        self.sync_focus();
         let role = self.world.organism(l.organism).map_or("organism", |o| role_name(o.sex));
         let text = format!(
             "{} bid {amount} renown on your auction #{listing} of your {role} #{}.",
@@ -2203,6 +2208,20 @@ impl Game {
         for c in self.conns.values() {
             let v = self.view_of(c);
             points.entry(c.player).or_default().push(Vec2::new(v.x, v.y));
+        }
+        // Organisms in open agreements, on the market and offered as an
+        // auction's highest bid stay agents: in a cohort they are gone to
+        // the game, which would fail the agreement or close the listing as
+        // if they had died.
+        let offers = self.offers.values().filter(|o| o.status.is_open()).flat_map(|o| [o.mine, o.partner]);
+        let listed = self.economy.listings.values().flat_map(|l| {
+            std::iter::once(l.organism).chain(l.auction.as_ref().and_then(|a| a.high.as_ref()).map(|b| b.mine))
+        });
+        let traded: BTreeSet<OrgId> = offers.chain(listed).collect();
+        for id in traded {
+            if let Some(o) = self.world.organism(id).filter(|o| o.owner != WILD) {
+                points.entry(o.owner).or_default().push(o.pos);
+            }
         }
         for p in std::mem::take(&mut self.focused) {
             if !points.contains_key(&p) {
@@ -3452,6 +3471,48 @@ mod tests {
         g.found(1, &design("A").founders(12)).unwrap();
         g.connect(10, 1, "ann");
         g
+    }
+
+    /// With level of detail on, organisms in open agreements and on the
+    /// market stay agents while nobody watches them: folded into a cohort
+    /// they were "gone", so the agreement failed as if they had died, the
+    /// listing closed as "no longer alive" and an auction's bids were
+    /// refunded.
+    #[test]
+    fn level_of_detail_keeps_traded_organisms_as_agents() {
+        let world = build_world(&WorldSettings {
+            seed: 7,
+            width: 128,
+            height: 128,
+            wild: true,
+            lod: true,
+            ..Default::default()
+        });
+        let mut g = Game::new(world, GameConfig::default());
+        let a = g.found(1, &design("A").founders(12)).unwrap().founders;
+        let b = g.found(2, &design("B").founders(12)).unwrap().founders;
+        let (dam, stud) = (female(&g, &a), male(&g, &b));
+        let listed = male(&g, &a);
+        assert!(
+            result(&g.command(
+                10,
+                1,
+                Some(1),
+                ClientMsg::CreateListing { organism: listed, fee: 5, expires_days: None }
+            ))
+            .0
+        );
+        assert!(
+            result(&g.command(20, 2, Some(2), ClientMsg::RequestMating { mine: stud, partner: dam, price: None })).0
+        );
+        // Nobody is connected: every region may fold into cohorts.
+        run_days(&mut g, 2);
+        assert!(g.world.abstract_count() > 0, "the test needs cohorts");
+        for id in [dam, stud, listed] {
+            assert!(g.world.organism(id).is_some(), "#{id} was folded into a cohort");
+        }
+        assert_eq!(g.offers.values().filter(|o| o.status.is_open()).count(), 1);
+        assert!(g.economy.listing_of(listed).is_some(), "the listing closed");
     }
 
     fn lineage_agents(g: &Game, lineage: u32) -> usize {
