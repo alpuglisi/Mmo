@@ -1136,6 +1136,8 @@ impl World {
             };
             let diet = 1.0 - bal.carnivore_hunger_discount * rep.carnivory;
             let mut h = bal.hunger_rate * rep.metabolism * diet * thermo * ACTIVITY;
+            // Competition past the soft lineage cap (`Balance::crowding_hunger`).
+            h *= self.lineage_crowding(c.lineage)[1];
             if x.dormant {
                 h *= bal.dormant_metabolism;
             }
@@ -1565,6 +1567,8 @@ impl World {
                 };
                 let cycle = gestation + rep.recovery + lactation + cfg.mate_search_days / breed_factor.max(0.05);
                 let mut lambda = a[0] as f32 * rep.litter * condition * fed.min(breed_s) * suppression / cycle;
+                // The soft lineage cap (`Balance::lineage_crowding`).
+                lambda *= self.lineage_crowding(lineage)[0];
                 // Litters follow condition, one litter at a time per breeding
                 // territory (`lod_meat`).
                 let share = lod_meat::litter_share(&bal, c.hunger, c.fat, rep.litter);

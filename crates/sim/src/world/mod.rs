@@ -41,6 +41,8 @@ mod group_tests;
 pub mod groups;
 #[cfg(test)]
 mod groups_tests;
+mod hosts;
+pub use hosts::HostTally;
 pub mod lod;
 mod lod_meat;
 #[cfg(test)]
@@ -505,6 +507,18 @@ pub struct World {
     /// Saved, so a restored world continues exactly (version 32).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v32::list"))]
     last_intents: Vec<(OrgId, Intent, Option<OrgId>)>,
+    /// Extra directed-mating slots each player bought this season
+    /// (`World::grant_mating_slots`), reset with `slots_used` at a season
+    /// change (version 33).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v33::list"))]
+    bonus_slots: BTreeMap<PlayerId, u32>,
+    /// Each lineage's crowding this tick, indexed like `lineages`: the
+    /// litter multiplier and the hunger multiplier
+    /// (`Balance::lineage_crowding`; `[1, 1]` when off and for the wild).
+    /// Recomputed from the organisms before every tick's decisions, so not
+    /// saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    crowding: Vec<[f32; 2]>,
 }
 
 /// Cumulative wall-clock seconds per phase of `World::step`. Timing never
@@ -593,6 +607,8 @@ impl World {
             territory_claims: BTreeMap::new(),
             rallies: BTreeMap::new(),
             slots_used: BTreeMap::new(),
+            bonus_slots: BTreeMap::new(),
+            crowding: Vec::new(),
             clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
             season_offset: Map::seasonal_offset(0, config.days_per_year),
@@ -711,8 +727,80 @@ impl World {
             let alive = self.lineage_alive.get(lineage as usize).copied().unwrap_or(0);
             (alive + self.lod.lineage_count(lineage).alive, cap as usize)
         } else {
-            (self.owner_count(l.owner) + self.lod.owner_count(l.owner), self.config.cap_for(l.owner))
+            (self.owner_count(l.owner) + self.lod.owner_count(l.owner), self.player_ceiling())
         }
+    }
+
+    /// The hard cap on a player's lineage: `lineage_cap`, or with lineage
+    /// crowding on (the soft cap) `crowding_ceiling` times it.
+    pub fn player_ceiling(&self) -> usize {
+        let bal = &self.config.balance;
+        if bal.lineage_crowding > 0.0 {
+            (self.config.lineage_cap as f32 * bal.crowding_ceiling.max(1.0)).round() as usize
+        } else {
+            self.config.lineage_cap
+        }
+    }
+
+    /// The litter and hunger multipliers lineage crowding gives a player
+    /// lineage whose crowding count (adults, plus juveniles at
+    /// `crowding_juveniles`) is `count` (`Balance::lineage_crowding`).
+    pub fn crowding_effect(&self, count: f32) -> [f32; 2] {
+        let bal = &self.config.balance;
+        if bal.lineage_crowding <= 0.0 {
+            return [1.0, 1.0];
+        }
+        let x = count / self.config.lineage_cap.max(1) as f32;
+        [1.0 / (1.0 + x.powf(bal.lineage_crowding)), 1.0 + bal.crowding_hunger * (x - 1.0).max(0.0)]
+    }
+
+    /// Each player's crowding count: adults, plus juveniles at
+    /// `crowding_juveniles` (agents and cohort members alike).
+    pub fn crowding_counts(&self) -> BTreeMap<PlayerId, f32> {
+        let jw = self.config.balance.crowding_juveniles;
+        // Per lineage first (a vector, cheap on every tick), then per owner.
+        let mut per: Vec<(usize, usize)> = (0..self.lineages.len())
+            .map(|l| {
+                let c = self.lod.lineage_count(l as u32);
+                (c.alive, c.adults)
+            })
+            .collect();
+        for o in self.organisms.iter().filter(|o| o.alive) {
+            if let Some(e) = per.get_mut(o.lineage as usize) {
+                e.0 += 1;
+                e.1 += usize::from(o.matured);
+            }
+        }
+        let mut out: BTreeMap<PlayerId, f32> = BTreeMap::new();
+        for (l, &(alive, adults)) in self.lineages.iter().zip(&per) {
+            if l.owner != crate::WILD {
+                *out.entry(l.owner).or_default() += adults as f32 + jw * alive.saturating_sub(adults) as f32;
+            }
+        }
+        out
+    }
+
+    /// The crowding multipliers `[litter, hunger]` of `lineage` this tick.
+    pub fn lineage_crowding(&self, lineage: u32) -> [f32; 2] {
+        self.crowding.get(lineage as usize).copied().unwrap_or([1.0, 1.0])
+    }
+
+    /// Recompute every lineage's crowding (as each tick starts).
+    fn refresh_crowding(&mut self) {
+        self.crowding.clear();
+        if self.config.balance.lineage_crowding <= 0.0 {
+            return;
+        }
+        let counts = self.crowding_counts();
+        let crowding: Vec<[f32; 2]> = self
+            .lineages
+            .iter()
+            .map(|l| match counts.get(&l.owner) {
+                Some(&n) if l.owner != crate::WILD => self.crowding_effect(n),
+                _ => [1.0, 1.0],
+            })
+            .collect();
+        self.crowding = crowding;
     }
 
     /// Births `lineage` can still add before reaching its cap.
@@ -1066,6 +1154,9 @@ impl World {
         // taken now, so a world steps the same whether or not anyone calls
         // `substep` (only when orders arrive can differ).
         self.finish_substeps();
+        // Lineage crowding from the organisms as the tick starts (the same
+        // after a restore, which keeps no cache).
+        self.refresh_crowding();
         if self.config.lod.enabled && self.tick.is_multiple_of(self.config.ticks_per_hour()) {
             self.lod_update();
         }

@@ -31,6 +31,15 @@ Example: 10,000 breeding adults × 50 genes × 2 alleles = 1,000,000 alleles. 80
 - **Seasonal leaderboards:** Snapshot and rank at the end of each era, possibly right after a catastrophe.
 - **Secondary achievements (prestige only):** Species founded, lineage longevity, niche dominance, surviving catastrophes.
 - **Anti-exploit:** Offspring cost food and parent time, and only breeding adults count, so flooding the world with genes doesn't pay.
+- **Genes, not heads.** A lineage that interbreeds with a wild species or another player's lineage carries their alleles, so its share falls below its head count; alleles a player's studs spread into other lineages count for that player. This is intended, and the genetics dashboard shows the arithmetic: the lineage's head share, the part of the share at home and abroad, and whose alleles the lineage carries (README, *Whose genes score*).
+- **Season titles** count each day the mean of raw and weighted share, so a fresh founding (founders that have raised nothing yet) counts half until its young grow up, and founding big late in a season doesn't take the title.
+
+**Why trade** (playtest 1 had zero trades: accepting a rival's stud only dilutes you). Renown, earned only in play, now pays and buys things:
+
+- **Breeder's royalty:** renown a day for a player's alleles living outside their own lineage, so siring into rivals' dams pays the breeder beyond the share it already counts for.
+- **Renown shop (sinks):** extra directed-mating slots for the season (rising price), and reinforcements for a small lineage (adults copied from its own; only below a fifth of the soft cap, rising price): a large lineage spreads its genes by paying others' dams, a small one earns renown by hosting them and spends it on catching up.
+- **Market fee:** 10% of every payout is destroyed.
+- **Compatibility shown:** body plans 0.30 apart (diet, warmth, birth mode, size) are sterile; the market lists which lineages can breed with yours.
 
 ## Player controls
 
@@ -312,7 +321,7 @@ Server load scales with organism count: players × organisms per lineage, plus a
 - **Slow world clock:** about 1 tick per second or slower; possessed organisms tick faster. (Implemented as movement sub-steps: a possessed organism following a move order moves in quarter-tick steps between world ticks and new orders apply at the next sub-step; decisions and needs stay on the world clock. See README, Server.)
 - **Level of detail:** full agents near active players; distant populations run as statistical models (birth, death, gene frequencies) and switch back to agents when a player arrives.
 - **Slow environment updates:** weather, vegetation regrowth and snow depth update per simulated hour, chunk by chunk.
-- **Population limits:** food-based carrying capacity, plus a hard cap per lineage.
+- **Population limits:** food-based carrying capacity, plus a soft cap per player lineage: as a lineage's adults (juveniles count a quarter) approach the cap its litters shrink (half at the cap) and past it its members get hungrier, up to a hard safety ceiling at twice the cap. Food, not the cap, is the real limiter, and a lineage at the cap grows its share by spreading its genes into others (README, *Soft lineage cap*). Wild species keep hard caps.
 - **Parallel regions:** map split into chunks updated across all cores.
 - **More worlds, not bigger ones:** scale by adding independent worlds (shards), each with its own ecosystem, seasons and leaderboard.
 
@@ -324,7 +333,7 @@ Server load scales with organism count: players × organisms per lineage, plus a
 - [ ] Duplicate mutations: separate tags per origin, or credit only whoever had it first? *(Currently separate tags per origin: with continuous alleles, "first" needs a rule for when two alleles count as the same. See README, Suggested next steps.)*
 - [ ] Seasonal strategy: fixed at design, or an evolvable gene?
 - [x] Group commands (migration, splitting): keep as player levers, or make genetic? *(Both: the commands stay player levers, and an obedience gene sets how strongly a group heeds them against its own instincts. Obedience is paid for in tameness: an obedient animal flees a threat later. See README, Groups and territory.)*
-- [ ] Point costs for each trait and for founding population size
+- [ ] Point costs for each trait and for founding population size *(Founders: 0.7 points each up to 50, then each 0.07 dearer than the last, so a whole budget buys 88 founders instead of 160; playtest 1's 130–141-founder swarms took an instant 5–13% share. See README, Point costs.)*
 - [ ] Tick rate, and whether the world runs real-time or slow and async
 - [x] Offline protection: home ranges or surviving founder groups *(Built as surviving founder groups: for up to 12 hours after logout, a lineage down to its last 12 members suffers a quarter of the kills and half the starvation and thirst; organisms in a trade or on the market are exempt. Home ranges too: the territory of a player's largest group shields the members inside it from hunters while they are away (half the kill chance, shared out above 20 residents, from 10 minutes after logout, fading after 12 hours; starvation untouched). See README, Offline protection.)*
 - [ ] Server compute: full simulation near players, statistical models elsewhere

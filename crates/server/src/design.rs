@@ -224,6 +224,28 @@ impl DesignSpec {
         d.validate().map_err(SpecError::Design)?;
         Ok(d)
     }
+
+    /// [`DesignSpec::to_design`] for a design stored under earlier point
+    /// costs: if only its founders put it over today's budget (founders
+    /// past `design::FLAT_FOUNDERS` now cost more each), it is founded with
+    /// as many founders as the budget buys instead of not at all. The
+    /// second value says how many founders were dropped.
+    pub fn to_design_fitted(&self) -> Result<(FounderDesign, u32), SpecError> {
+        match self.to_design() {
+            Err(SpecError::Design(DesignError::OverBudget { .. })) if self.founders > design::BASE_FOUNDERS => {
+                let mut spec = self.clone();
+                while spec.founders > design::BASE_FOUNDERS {
+                    spec.founders -= 1;
+                    match spec.to_design() {
+                        Err(SpecError::Design(DesignError::OverBudget { .. })) => continue,
+                        other => return other.map(|d| (d, self.founders - spec.founders)),
+                    }
+                }
+                self.to_design().map(|d| (d, 0))
+            }
+            other => other.map(|d| (d, 0)),
+        }
+    }
 }
 
 /// One row of `GET /api/genes`: what a design can set and what it costs.
@@ -240,6 +262,12 @@ pub struct GeneCatalog {
     pub budget: f32,
     pub base_founders: u32,
     pub cost_per_extra_founder: f32,
+    /// Founders up to which each extra one costs `cost_per_extra_founder`;
+    /// past it each founder costs `founder_cost_step` more than the one
+    /// before (`design::founder_cost`): the k-th founder past it costs
+    /// `cost_per_extra_founder + k · founder_cost_step`.
+    pub flat_founders: u32,
+    pub founder_cost_step: f32,
     pub cost_per_extra_offspring: f32,
     /// Points for a cold-blooded design.
     pub cost_cold_blooded: f32,
@@ -323,6 +351,8 @@ pub fn catalog() -> GeneCatalog {
         budget: DESIGN_BUDGET,
         base_founders: design::BASE_FOUNDERS,
         cost_per_extra_founder: design::COST_PER_EXTRA_FOUNDER,
+        flat_founders: design::FLAT_FOUNDERS,
+        founder_cost_step: design::FOUNDER_COST_STEP,
         cost_per_extra_offspring: design::COST_PER_EXTRA_OFFSPRING,
         cost_cold_blooded: design::COST_COLD_BLOODED,
         cost_per_smaller_body: design::COST_PER_SMALLER_BODY,
@@ -491,6 +521,11 @@ mod tests {
             2,
             morph(json!({"horn_size": 0.6, "horn_form": "branched", "pattern": "stripes", "wing_aspect": 0.2})),
         );
+        // Founders past the flat price (`design::founder_cost`).
+        let mut big = spec(&[("fur", 0.3)]);
+        big.name = "Big founding".into();
+        big.founders = 72;
+        designs.push(big);
         let rows: Vec<serde_json::Value> = designs
             .iter()
             .map(|s| {
@@ -505,6 +540,25 @@ mod tests {
         }
         let have = std::fs::read_to_string(&path).unwrap_or_default();
         assert!(have == text, "{} is stale: rerun with UPDATE_COST_FIXTURE=1", path.display());
+    }
+
+    /// A design stored under the flat founder price that today's rising
+    /// price puts over budget is re-founded with as many founders as fit.
+    #[test]
+    fn stored_designs_over_the_new_founder_price_are_fitted() {
+        let mut s = spec(&[("fur", 0.5)]);
+        s.founders = 140;
+        assert!(matches!(s.to_design(), Err(SpecError::Design(DesignError::OverBudget { .. }))));
+        let (d, dropped) = s.to_design_fitted().unwrap();
+        assert!(d.validate().is_ok());
+        assert_eq!(d.founders + dropped, 140);
+        assert!(d.clone().founders(d.founders + 1).validate().is_err(), "as many as fit");
+        // Anything else wrong still fails, and fitting designs are untouched.
+        let mut bad = s.clone();
+        bad.name = String::new();
+        assert!(bad.to_design_fitted().is_err());
+        let ok = spec(&[("fur", 0.5)]);
+        assert_eq!(ok.to_design_fitted().unwrap().1, 0);
     }
 
     #[test]

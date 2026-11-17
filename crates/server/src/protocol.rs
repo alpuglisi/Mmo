@@ -176,6 +176,24 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<usize>,
     },
+    /// The renown shop's prices and your standing in it. Data: [`ShopView`].
+    RenownShop,
+    /// Buy one extra directed-mating slot for the rest of the weather
+    /// season (`economy::slot_price`: 30 renown, doubling with each one
+    /// bought, at most `economy::MAX_BOUGHT_SLOTS`). The renown is spent
+    /// (destroyed). Data: [`ShopView`] after the purchase.
+    BuyMatingSlot,
+    /// Reinforcements for a small lineage: `economy::REINFORCE_SIZE` adults,
+    /// copies of your lineage's living adults, join it near one of them
+    /// (`economy::reinforce_price`: 150 renown, doubling with each purchase
+    /// in a ranked season). Only while at most `economy::REINFORCE_MAX_SHARE`
+    /// of the soft lineage cap is alive (`reinforce_blocked` in the shop
+    /// says why not). Data: `{added: [ids], shop: ShopView}`.
+    Reinforce,
+    /// Which lineages yours can breed with: the best body-plan fertility
+    /// between a sample of your adults and each other lineage's, and the
+    /// body-plan gene that keeps you apart. Data: [`CompatibilityView`].
+    Compatibility,
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
     /// `result`), never by the world.
@@ -222,6 +240,10 @@ impl ClientMsg {
             ClientMsg::Bid { .. } => "bid",
             ClientMsg::BrowseMarket { .. } => "browse_market",
             ClientMsg::Ledger { .. } => "ledger",
+            ClientMsg::RenownShop => "renown_shop",
+            ClientMsg::BuyMatingSlot => "buy_mating_slot",
+            ClientMsg::Reinforce => "reinforce",
+            ClientMsg::Compatibility => "compatibility",
             ClientMsg::Resync => "resync",
             ClientMsg::WatchSeason { .. } => "watch_season",
         }
@@ -1220,10 +1242,147 @@ pub struct LineageStats {
     /// Whose alleles the living members carry, largest share first.
     #[serde(default)]
     pub origins: Vec<AlleleOrigin>,
+    /// How the legacy share comes about, from the last daily snapshot:
+    /// genes, not heads (see [`ScoreBreakdown`]). Absent before the first
+    /// daily snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<ScoreBreakdown>,
+    /// The soft lineage cap and how crowded the lineage is now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crowding: Option<CrowdingView>,
     /// Legacy share per recorded day, oldest first.
     pub legacy: Vec<LegacyPoint>,
     /// Recent alerts, newest last.
     pub alerts: Vec<AlertView>,
+}
+
+/// Whose genes make up a legacy share (`lineage_stats.score`). The score
+/// counts alleles in breeding adults wherever they live, so a lineage's
+/// share is not its head count: animals that carry a wild species' or
+/// another player's alleles (a design that hybridised) score less than
+/// their number, and alleles of yours in other lineages score for you.
+/// Every share here is of all alleles in the world's breeding adults, as
+/// the legacy share is (morphology alleles included when they count).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ScoreBreakdown {
+    /// The daily snapshot this is from.
+    pub day: u64,
+    /// The legacy share: your alleles wherever they live.
+    pub share: f64,
+    /// Your lineage's share of all alleles, whoever's they are: its head
+    /// count among breeding adults (genomes are the same size).
+    pub head_share: f64,
+    /// Your alleles in your own lineage (the part of `share` at home).
+    pub home_share: f64,
+    /// Your alleles outside your lineage: in rivals' animals and the wild.
+    /// Earns the royalty.
+    pub exported_share: f64,
+    /// Others' alleles your lineage carries (`head_share - home_share`):
+    /// what hybridising cost your share.
+    pub foreign_share: f64,
+    /// Whose alleles your lineage's breeding adults carry, largest first;
+    /// `share` here is of your lineage's alleles (sums to 1).
+    pub carried: Vec<GeneSource>,
+    /// Where your alleles live, largest first; `share` here is of your
+    /// alleles (sums to 1).
+    pub placed: Vec<GeneHost>,
+    /// Renown a day the royalty pays at this `exported_share`.
+    pub royalty: u64,
+}
+
+/// Whose alleles: a player (0, the wild ecosystem: wild alleles carry no
+/// species) and their share.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GeneSource {
+    pub player: PlayerId,
+    pub name: String,
+    pub share: f64,
+}
+
+/// Where alleles live: a lineage (a wild species or a player's) and the
+/// share there.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GeneHost {
+    pub lineage: u32,
+    pub lineage_name: String,
+    pub owner: PlayerId,
+    pub owner_name: String,
+    pub share: f64,
+}
+
+/// The soft lineage cap (`lineage_stats.crowding`): births slow as the
+/// crowding count nears `soft_cap` (half pace at it) and stop only at
+/// `hard_cap`; past the soft cap members get hungrier too.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CrowdingView {
+    /// Breeding slows from here (`WorldConfig::lineage_cap`, scaled to the
+    /// map). With crowding off this is the hard cap.
+    pub soft_cap: usize,
+    /// No births past this many living members (juveniles count).
+    pub hard_cap: usize,
+    /// Adults plus juveniles at `juvenile_weight`.
+    pub count: f32,
+    pub juvenile_weight: f32,
+    /// Litters are multiplied by this (1: no crowding).
+    pub litter: f32,
+    /// Hunger is multiplied by this (1 below the soft cap).
+    pub hunger: f32,
+}
+
+/// `renown_shop` (and after a purchase): what renown buys.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ShopView {
+    pub balance: u64,
+    /// Directed-mating slots left this weather season, bought ones included.
+    pub slots_left: u32,
+    /// Extra slots bought this weather season.
+    pub slots_bought: u32,
+    /// Price of the next one (absent at the limit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_price: Option<u64>,
+    /// Adults one reinforcement adds.
+    pub reinforce_size: u32,
+    /// Price of the next reinforcement.
+    pub reinforce_price: u64,
+    /// Most living members a lineage may have to be reinforced.
+    pub reinforce_max_alive: usize,
+    /// Why a reinforcement isn't possible now (absent when it is).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reinforce_blocked: Option<String>,
+    /// Kept (destroyed) from every stud fee or price paid out, percent.
+    pub market_fee_percent: u64,
+    /// Royalty: renown a day per percentage point of all alleles that are
+    /// yours and live outside your lineage.
+    pub royalty_per_point: f64,
+}
+
+/// `compatibility`: which lineages yours can breed with.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CompatibilityView {
+    /// Your lineage (absent: none, or no living adult to compare).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<u32>,
+    /// Every other lineage with living adults, most fertile first.
+    pub rows: Vec<CompatibilityRow>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CompatibilityRow {
+    pub lineage: u32,
+    pub lineage_name: String,
+    /// 0: the wild ecosystem.
+    pub owner: PlayerId,
+    pub owner_name: String,
+    /// Best body-plan fertility between a sample of your adults and theirs,
+    /// 0 (sterile) to 1. A mating's fertility is also limited by the
+    /// whole-genome distance (`preview_mating`).
+    pub fertility: f32,
+    pub compatible: bool,
+    /// The body-plan gene with the widest gap in the best pair (`carnivory`,
+    /// `endothermy`, `birth_mode`, `body_size`, or `morphology` for eye or
+    /// leg counts), and the gap; sterile at 0.30.
+    pub limiting: String,
+    pub gap: f32,
 }
 
 /// One player's standing over a season of the history.
@@ -1270,6 +1429,11 @@ pub enum LedgerKind {
     Sale,
     /// Escrow returned: the agreement ended without a mating.
     Refund,
+    /// Daily breeder's royalty: renown for alleles living outside the
+    /// player's lineage (`economy::royalty`).
+    Royalty,
+    /// Renown spent in the shop (negative): a mating slot, reinforcements.
+    Purchase,
 }
 
 impl LedgerKind {
@@ -1281,6 +1445,8 @@ impl LedgerKind {
             LedgerKind::Escrow => "escrow",
             LedgerKind::Sale => "sale",
             LedgerKind::Refund => "refund",
+            LedgerKind::Royalty => "royalty",
+            LedgerKind::Purchase => "purchase",
         }
     }
 
@@ -1292,6 +1458,8 @@ impl LedgerKind {
             LedgerKind::Escrow,
             LedgerKind::Sale,
             LedgerKind::Refund,
+            LedgerKind::Royalty,
+            LedgerKind::Purchase,
         ]
         .into_iter()
         .find(|k| k.name() == s)
@@ -1372,6 +1540,15 @@ pub struct ListingView {
     /// `mine`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<MatingPreviewView>,
+    /// Whether your lineage can breed with the listed organism at all: its
+    /// best body-plan fertility with a sample of your adults is above 0
+    /// (absent with no living adult of yours). A diet, warmth, birth-mode or
+    /// size gap of 0.30 or more is sterile (`compatibility` says which).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatible: Option<bool>,
+    /// That best body-plan fertility, 0..1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_plan_fertility: Option<f32>,
     /// `fixed` or `auction` (listings from before auctions read as fixed).
     #[serde(default = "fixed_kind")]
     pub kind: ListingKind,

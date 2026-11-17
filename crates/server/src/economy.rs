@@ -18,11 +18,29 @@
 //! - achievements: species founded 100, niche dominance 40, survived a
 //!   catastrophe 25, each year of lineage longevity 20.
 //!
+//!   Plus a **breeder's royalty** ([`royalty`]): [`ROYALTY_PER_POINT`]
+//!   renown per percentage point of all scored alleles that are the
+//!   player's and live outside their own lineage (in rivals' animals or the
+//!   wild), so genes that spread through trades earn their breeder renown.
+//!
 //! **Spending**: a directed request with a price, or buying a stud
 //! marketplace listing, moves the price from the payer's balance into
 //! escrow on the agreement. When the mating runs (`completed`, conceived or
-//! not) the escrow goes to the partner's owner; any other ending (declined,
-//! cancelled, failed, expired) refunds it.
+//! not) the escrow goes to the partner's owner, less the
+//! [`MARKET_FEE_PERCENT`] market fee, which is destroyed (a sink); any
+//! other ending (declined, cancelled, failed, expired) refunds it in full.
+//!
+//! **The renown shop** (sinks; renown is earned in play, so each perk is
+//! modest and priced to rise): an extra directed-mating slot for the rest
+//! of the weather season ([`slot_price`], doubling with each one bought,
+//! at most [`MAX_BOUGHT_SLOTS`]); and **reinforcements** for a small
+//! lineage ([`reinforce_price`]): [`REINFORCE_SIZE`] adults copied from its
+//! own living adults join it, only while it has at most
+//! [`REINFORCE_MAX_SHARE`] of the soft lineage cap alive, at a price that
+//! doubles with each purchase in a ranked season. Together they give the
+//! mating market its reason: a large lineage near its soft cap spreads its
+//! genes by paying others' dams (fees, royalty), a small lineage earns
+//! renown by hosting them and spends it on catching up.
 //!
 //! **Auctions** ([`Auction`]) are listings that sell one mating to the
 //! highest bid at a deadline. A bid moves its amount from the bidder's
@@ -57,6 +75,51 @@ pub const MAX_LISTINGS: usize = 8;
 pub const MAX_LISTING_DAYS: u32 = 365;
 /// Longest auction, in simulated days.
 pub const MAX_AUCTION_DAYS: u32 = 30;
+/// Share of every stud fee or price paid out that is destroyed, percent.
+pub const MARKET_FEE_PERCENT: u64 = 10;
+/// Renown a day per percentage point of all scored alleles that are a
+/// player's and live outside their lineage ([`royalty`]).
+pub const ROYALTY_PER_POINT: f64 = 2.0;
+/// Price of the first extra mating slot of a weather season; each further
+/// one costs twice the last ([`slot_price`]).
+pub const SLOT_BASE_PRICE: u64 = 30;
+/// Most extra mating slots one player may buy in a weather season.
+pub const MAX_BOUGHT_SLOTS: u32 = 6;
+/// Adults one reinforcement adds.
+pub const REINFORCE_SIZE: u32 = 10;
+/// Price of a ranked season's first reinforcement; each further one costs
+/// twice the last ([`reinforce_price`]).
+pub const REINFORCE_BASE_PRICE: u64 = 150;
+/// A lineage may be reinforced only while at most this share of the soft
+/// lineage cap (`WorldConfig::lineage_cap`) is alive.
+pub const REINFORCE_MAX_SHARE: f64 = 0.2;
+
+/// The market fee kept from a payout of `amount` (rounded down, so tiny
+/// prices pay none).
+pub fn market_fee(amount: u64) -> u64 {
+    amount * MARKET_FEE_PERCENT / 100
+}
+
+/// Renown a day from alleles living outside the player's own lineage:
+/// [`ROYALTY_PER_POINT`] per percentage point of all scored alleles,
+/// rounded (none for an extinct lineage).
+pub fn royalty(exported_share: f64, alive: bool) -> u64 {
+    if !alive {
+        return 0;
+    }
+    (100.0 * ROYALTY_PER_POINT * exported_share.clamp(0.0, 1.0)).round() as u64
+}
+
+/// Price of the next extra mating slot after `bought` this weather season
+/// (none at [`MAX_BOUGHT_SLOTS`]).
+pub fn slot_price(bought: u32) -> Option<u64> {
+    (bought < MAX_BOUGHT_SLOTS).then(|| SLOT_BASE_PRICE << bought)
+}
+
+/// Price of the next reinforcement after `bought` this ranked season.
+pub fn reinforce_price(bought: u32) -> u64 {
+    REINFORCE_BASE_PRICE.saturating_mul(1u64.checked_shl(bought.min(40)).unwrap_or(u64::MAX))
+}
 
 /// Renown for one simulated day: the stipend while the lineage lives, plus
 /// one per percentage point of the mean of raw and weighted legacy share.
@@ -160,6 +223,9 @@ pub struct Economy {
     pub granted: BTreeSet<PlayerId>,
     pub listings: BTreeMap<u64, Listing>,
     pub next_listing: u64,
+    /// Reinforcements bought per player: (ranked season, how many in it).
+    /// Absent from older saves (none bought).
+    pub reinforcements: BTreeMap<PlayerId, (u32, u32)>,
 }
 
 /// Not enough renown for a payment.
@@ -297,6 +363,20 @@ impl Economy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shop_prices_rise_and_fees_and_royalties_round() {
+        assert_eq!(market_fee(9), 0);
+        assert_eq!(market_fee(40), 4);
+        assert_eq!(royalty(0.025, true), 5);
+        assert_eq!(royalty(0.5, false), 0);
+        assert_eq!(slot_price(0), Some(30));
+        assert_eq!(slot_price(2), Some(120));
+        assert_eq!(slot_price(MAX_BOUGHT_SLOTS), None);
+        assert_eq!(reinforce_price(0), 150);
+        assert_eq!(reinforce_price(3), 1200);
+        assert!(reinforce_price(80) > 1_000_000_000_000, "never wraps");
+    }
 
     #[test]
     fn income_follows_the_legacy_share() {

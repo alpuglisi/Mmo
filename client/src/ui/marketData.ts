@@ -2,7 +2,7 @@
 // pure functions over the server's `browse_market` / `ledger` data and the
 // state, so they are unit-tested without a DOM.
 
-import type { ClientMsg, LedgerEntry, ListingView, MarketSort, MarketView, OrgId, OwnOrganism, PlayerId, StateView, TraitView } from '../protocol';
+import type { CompatibilityView, ShopView, ClientMsg, LedgerEntry, ListingView, MarketSort, MarketView, OrgId, OwnOrganism, PlayerId, StateView, TraitView } from '../protocol';
 import { compatSummary, type CompatSummary } from './mating';
 
 export type RoleFilter = 'any' | 'stud' | 'dam';
@@ -106,9 +106,31 @@ export function buyProblem(l: ListingView, me: PlayerId, balance: number, slotsL
   if (mine.sex === l.sex) return `needs a ${l.sex === 'male' ? 'female' : 'male'}`;
   if (mine.pregnant || (l.pregnant && l.sex === 'female')) return 'pregnant';
   if (l.preview && !l.preview.compatible) return 'cannot conceive';
+  if (l.compatible === false) return 'body plans too different: sterile with your lineage';
   if (slotsLeft <= 0) return 'no mating slots left';
   if (balance < l.fee) return `needs ${l.fee} renown`;
   return null;
+}
+
+/** How a body-plan gene reads in a compatibility line. */
+const BODY_PLAN_WORDS: Record<string, string> = {
+  carnivory: 'diet', endothermy: 'warm/cold blood', birth_mode: 'birth mode', body_size: 'body size', morphology: 'eye or leg count',
+};
+
+/** One line of the "who can breed with you" list. */
+export function compatRowText(r: CompatibilityView['rows'][number]): string {
+  const who = r.owner === 0 ? `wild ${r.lineage_name}` : `${r.owner_name}'s ${r.lineage_name}`;
+  const what = BODY_PLAN_WORDS[r.limiting] ?? r.limiting;
+  if (!r.compatible) return `${who}: sterile (${what} ${r.gap.toFixed(2)} apart; 0.30 is sterile)`;
+  if (r.fertility >= 0.999) return `${who}: fully fertile`;
+  return `${who}: ${Math.round(r.fertility * 100)}% fertile (${what} ${r.gap.toFixed(2)} apart)`;
+}
+
+/** The shop's explanation line. */
+export function shopText(s: ShopView): string {
+  return `Renown spent here is gone for good. Sales pay out less a ${s.market_fee_percent}% market fee; `
+    + `alleles of yours living outside your lineage (studs siring into others' dams) earn a royalty of `
+    + `${s.royalty_per_point} renown a day per 1% of all alleles.`;
 }
 
 /**

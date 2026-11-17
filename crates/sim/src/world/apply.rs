@@ -1119,6 +1119,9 @@ impl World {
         let diet = 1.0 - bal.carnivore_hunger_discount * o.traits.meat_efficiency(bal.generalist_tax);
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
+        // Competition in a lineage crowded past its soft cap
+        // (`Balance::crowding_hunger`; 1 below it, when off and in the wild).
+        let crowd = crowd * self.lineage_crowding(o.lineage)[1];
         // Small bodies burn through food and water faster (`Balance::size_burn`).
         let size_burn = if bal.size_burn == 0.0 { 1.0 } else { o.traits.body.mass.powf(-bal.size_burn) };
         let mut hunger = bal.hunger_rate
@@ -1311,7 +1314,9 @@ impl World {
             * preg.fertility
             * mother.condition().clamp(0.3, 1.0)
             * self.breeding_suppression(i)
-            * litter_condition(&self.config.balance, mother);
+            * litter_condition(&self.config.balance, mother)
+            // The soft lineage cap (`Balance::lineage_crowding`).
+            * self.lineage_crowding(mother.lineage)[0];
         let mut count = expected.floor() as usize + usize::from(rng.gen::<f32>() < expected.fract());
         if !traits.birth.lays_eggs() {
             count = count.min(self.cap_room(mother.lineage));
@@ -1650,6 +1655,57 @@ mod tests {
         let born = w.counters.births as usize;
         assert!(born >= 1);
         assert_eq!(w.cap_usage(1), (5 + born, 10));
+    }
+
+    /// The soft lineage cap (`Balance::lineage_crowding`): a player lineage
+    /// at its soft cap still breeds, at half pace; its hunger rises past it;
+    /// juveniles count at `crowding_juveniles`; the hard ceiling is
+    /// `crowding_ceiling` times the cap. Off, the old hard wall is back and
+    /// the wild is never crowded.
+    #[test]
+    fn player_lineages_crowd_softly_toward_a_higher_ceiling() {
+        let mut w = presets::standard_world(WorldConfig { seed: 3, width: 64, height: 64, ..Default::default() }, 1);
+        let herd = w.lineages.iter().position(|l| l.name == "Herd grazers").unwrap() as u32;
+        let owner = w.lineages[herd as usize].owner;
+        let n = w.organisms.iter().filter(|o| o.alive && o.owner == owner).count();
+        assert!(w.organisms.iter().filter(|o| o.owner == owner).all(|o| o.matured));
+        w.config.lineage_cap = n;
+        assert_eq!(w.player_ceiling(), 2 * n);
+        assert_eq!(w.cap_usage(herd), (n, 2 * n));
+        w.refresh_crowding();
+        let [litter, hunger] = w.lineage_crowding(herd);
+        assert!((litter - 0.5).abs() < 1e-4 && (hunger - 1.0).abs() < 1e-6, "{litter} {hunger}");
+        let wild = w.lineages.iter().position(|l| l.owner == crate::WILD).unwrap() as u32;
+        assert_eq!(w.lineage_crowding(wild), [1.0, 1.0]);
+        // Past the soft cap: fewer young, hungrier.
+        let [l2, h2] = w.crowding_effect(1.5 * n as f32);
+        assert!(l2 < 0.2 && (h2 - 1.15).abs() < 1e-4, "{l2} {h2}");
+        // Juveniles count a quarter.
+        let i = w.organisms.iter().position(|o| o.owner == owner).unwrap();
+        w.organisms[i].matured = false;
+        let c = w.crowding_counts()[&owner];
+        assert!((c - (n as f32 - 0.75)).abs() < 1e-4);
+        // At the soft cap a mother still gives birth.
+        let mother = w.organisms.iter().position(|o| o.alive && o.lineage == herd && o.sex == Sex::Female).unwrap();
+        make_pregnant(&mut w, mother);
+        let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+        let before = w.counters.births;
+        for _ in 0..4 {
+            let m = w
+                .organisms
+                .iter()
+                .position(|o| o.alive && o.lineage == herd && o.sex == Sex::Female && o.pregnancy.is_none())
+                .unwrap();
+            make_pregnant(&mut w, m);
+            w.give_birth(m, &mut rng);
+        }
+        w.give_birth(mother, &mut rng);
+        assert!(w.counters.births > before, "births go on at the soft cap");
+        // Off: the hard wall at the cap.
+        w.config.balance.lineage_crowding = 0.0;
+        w.refresh_crowding();
+        assert_eq!(w.lineage_crowding(herd), [1.0, 1.0]);
+        assert_eq!(w.player_ceiling(), n);
     }
 
     /// An incubating parent recovers from the end of her brood, as a live

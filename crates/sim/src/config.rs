@@ -865,6 +865,32 @@ pub struct Balance {
     /// before version 31.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31"))]
     pub switching_power: f32,
+    // Lineage crowding: the soft cap (version 33; *Soft lineage cap* in the
+    // README). Off at 0, what snapshots before version 33 read
+    // (`serde_util::before_v33`): a player's lineage stops being born into
+    // at `WorldConfig::lineage_cap`, the old hard wall.
+    /// Steepness of a player lineage's crowding: its litters are multiplied
+    /// by `1 / (1 + x^lineage_crowding)`, where `x` is the lineage's
+    /// crowding count (adults, plus juveniles at `crowding_juveniles`) over
+    /// `WorldConfig::lineage_cap`, now the soft cap. At the soft cap a
+    /// lineage breeds at half its pace, at 1.5× it at a sixth. Wild lineages
+    /// keep their hard caps. 0: off (the hard cap at `lineage_cap`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v33"))]
+    pub lineage_crowding: f32,
+    /// The hard safety ceiling on a player lineage while crowding is on, as
+    /// a multiple of `lineage_cap` (every member counts, juveniles too, as
+    /// the old cap counted them). Values below 1 read as 1.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v33"))]
+    pub crowding_ceiling: f32,
+    /// How much a juvenile counts toward its lineage's crowding, against 1
+    /// for an adult: the young eat, but neither breed nor score.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v33"))]
+    pub crowding_juveniles: f32,
+    /// Competition within a crowded lineage: its members' hunger rises by
+    /// this times how far the crowding count is past the soft cap
+    /// (`x - 1`, none below it), so food, not the cap, is what stops it.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v33"))]
+    pub crowding_hunger: f32,
 }
 
 impl Balance {
@@ -1115,12 +1141,16 @@ impl Default for Balance {
             fruit_energy: 0.5,
             insect_crop: 1.0,
             switching_power: 4.0,
+            lineage_crowding: 4.0,
+            crowding_ceiling: 2.0,
+            crowding_juveniles: 0.25,
+            crowding_hunger: 0.3,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 120;
+    pub const FIELD_COUNT: usize = 124;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1250,6 +1280,10 @@ impl Balance {
             ("fruit_energy", &mut self.fruit_energy),
             ("insect_crop", &mut self.insect_crop),
             ("switching_power", &mut self.switching_power),
+            ("lineage_crowding", &mut self.lineage_crowding),
+            ("crowding_ceiling", &mut self.crowding_ceiling),
+            ("crowding_juveniles", &mut self.crowding_juveniles),
+            ("crowding_hunger", &mut self.crowding_hunger),
         ]
     }
 

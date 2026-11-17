@@ -26,8 +26,28 @@ pub use crate::morph::{EarShape, HornForm, MorphDesign, MorphError, Pattern, Tai
 pub const DESIGN_BUDGET: f32 = 100.0;
 /// Founding population included in the base price.
 pub const BASE_FOUNDERS: u32 = 20;
-/// Points per extra founder above [`BASE_FOUNDERS`].
+/// Points per extra founder above [`BASE_FOUNDERS`], up to
+/// [`FLAT_FOUNDERS`] founders.
 pub const COST_PER_EXTRA_FOUNDER: f32 = 0.7;
+/// Founders up to which each extra one costs [`COST_PER_EXTRA_FOUNDER`].
+/// Beyond it every founder costs [`FOUNDER_COST_STEP`] more than the one
+/// before (a rising marginal cost; see [`founder_cost`]).
+pub const FLAT_FOUNDERS: u32 = 50;
+/// How much each founder beyond [`FLAT_FOUNDERS`] costs more than the last.
+pub const FOUNDER_COST_STEP: f32 = 0.07;
+
+/// Points `founders` founders cost: nothing for the first
+/// [`BASE_FOUNDERS`], [`COST_PER_EXTRA_FOUNDER`] each up to
+/// [`FLAT_FOUNDERS`], then a rising marginal cost (the k-th founder past
+/// [`FLAT_FOUNDERS`] costs `0.7 + 0.07·k`). 50 founders cost 21 points, 60
+/// cost 31.9, 70 cost 49.7, 80 cost 74.6: a whole budget buys 88, where
+/// at a flat 0.7 it bought 160 (playtest 1: 130–141 founders took an
+/// instant 5–13% share).
+pub fn founder_cost(founders: u32) -> f32 {
+    let extra = founders.saturating_sub(BASE_FOUNDERS) as f32;
+    let past = founders.saturating_sub(FLAT_FOUNDERS.max(BASE_FOUNDERS)) as f32;
+    extra * COST_PER_EXTRA_FOUNDER + FOUNDER_COST_STEP * past * (past + 1.0) / 2.0
+}
 /// Points per offspring per birth above one.
 pub const COST_PER_EXTRA_OFFSPRING: f32 = 2.5;
 /// Points per unit of body size below its default: small bodies fit more
@@ -304,7 +324,7 @@ impl FounderDesign {
         let v = self.values();
         let traits: f32 = Gene::ALL.iter().map(|&g| (v[g.index()] - default_value(g)).max(0.0) * trait_cost(g)).sum();
         let litter = self.litter_size.saturating_sub(1) as f32 * COST_PER_EXTRA_OFFSPRING;
-        let founders = self.founders.saturating_sub(BASE_FOUNDERS) as f32 * COST_PER_EXTRA_FOUNDER;
+        let founders = founder_cost(self.founders);
         let small = (default_value(Gene::BodySize) - v[Gene::BodySize.index()]).max(0.0) * COST_PER_SMALLER_BODY;
         let thermo = if self.thermo == Thermo::Cold { COST_COLD_BLOODED } else { 0.0 };
         traits + litter + founders + small + thermo + morph_cost(&self.morph)
@@ -363,6 +383,23 @@ mod tests {
         let more = d.clone().with_morph(all);
         assert!(more.point_cost() > d.point_cost());
         assert!(matches!(more.validate(), Err(DesignError::OverBudget { .. })));
+    }
+
+    /// Founders cost 0.7 each up to 50, then each one more than the last:
+    /// a full budget no longer buys a 130-founder swarm.
+    #[test]
+    fn founders_have_a_rising_marginal_cost() {
+        assert_eq!(founder_cost(BASE_FOUNDERS), 0.0);
+        assert!((founder_cost(46) - 26.0 * 0.7).abs() < 1e-4);
+        assert!((founder_cost(50) - 21.0).abs() < 1e-4);
+        assert!((founder_cost(51) - 21.77).abs() < 1e-4);
+        assert!((founder_cost(80) - 74.55).abs() < 1e-3);
+        let marginal: Vec<f32> = (21..200).map(|n| founder_cost(n) - founder_cost(n - 1)).collect();
+        assert!(marginal.windows(2).all(|w| w[1] >= w[0] - 1e-4));
+        let biggest = (BASE_FOUNDERS..400).take_while(|&n| founder_cost(n) <= DESIGN_BUDGET).last().unwrap();
+        assert_eq!(biggest, 88);
+        let swarm = FounderDesign::new("swarm", Thermo::Warm, BirthType::Live, 1).founders(130);
+        assert!(matches!(swarm.validate(), Err(DesignError::OverBudget { .. })));
     }
 
     #[test]
