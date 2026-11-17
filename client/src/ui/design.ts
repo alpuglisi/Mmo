@@ -284,7 +284,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
     const left = cat.budget - c.total;
     unspent.textContent = left > cat.budget / 2
-      ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore that costs almost nothing: raise the traits that suit the world, or try a preset in Builder mode.`
+      ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore ready for its first winter: raise the traits that suit the world, or try a preset in Builder mode.`
       : '';
     for (const [g, cell] of costCells) {
       const p = c.perGene[g];

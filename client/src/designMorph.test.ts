@@ -41,15 +41,17 @@ describe('feature detection', () => {
     expect(morphSupport(newCat)?.map((r) => r.name)).toContain('eye_count');
   });
 
-  it('starts from the sturdy starter: free genes only, the rest at the catalog defaults', () => {
+  it('starts from the sturdy starter, the rest at the catalog defaults', () => {
     const d = newEditorDesign(oldCat);
     for (const g of oldCat.genes) expect(d.traits[g.name]).toBe(STARTER_TRAITS[g.name] ?? g.default);
     for (const name of Object.keys(STARTER_TRAITS)) expect(starterValue(oldCat, name)).toBe(STARTER_TRAITS[name]);
-    // With the server's real catalog (cost.fixture.json) the starter costs no trait points.
+    // With the server's real catalog (cost.fixture.json) the starter leaves most of the budget.
     const real = (costFixture as unknown as { catalog: GeneCatalog }).catalog;
     const s = newEditorDesign(real);
     s.name = 'Starter';
-    expect(designCost(designPayload(s, real), real).traits).toBe(0);
+    const c = designCost(designPayload(s, real), real);
+    expect(c.traits).toBeCloseTo(7, 5);
+    expect(c.total).toBeLessThan(real.budget * 0.1);
   });
 
   it('an old server never gets morph, whatever the body plan', () => {
