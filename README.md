@@ -522,6 +522,21 @@ Select packages with `--workspace` plus `--test`/a filter rather than `-p`
 where you can: a `-p` build resolves dependency features for that package
 alone and so builds its own copies of the shared dependencies.
 
+**End-to-end speed.** Headless Chromium draws the WebGL map in software
+(SwiftShader), and that, not the server or the steps, was where an e2e run
+spent its time: three cores busy at 60 fps, more for a phone at pixel ratio
+3. `npm run e2e` (`client/e2e/run-all.mjs`) therefore runs the pages with
+`requestAnimationFrame` capped at 5 fps (`E2E_FPS`; `client/e2e/frames.mjs`)
+and the emulated phones at pixel ratio 1 (`E2E_DPR`; the phone checks are
+in CSS pixels), and runs the scripts two at a time on 4 cores (`E2E_JOBS`,
+default half the cores up to 4; each script has its own server and
+browser). A step that checks what is drawn frame by frame (the smoke test's
+motion bound) lifts the cap for its duration (`window.__e2eFrameCap(0)`).
+Steps wait on conditions (a finished season on the server, a settled tour
+card), not on the client's refresh timers. On a 4-core box the run went
+from ~350 s to ~90 s idle, and from ~730 s to ~170 s with two cores busy
+elsewhere.
+
 **Determinism in tests.** The server integration tests that need exact
 timing use a manual world clock: `ServerConfig::manual()` makes the world
 thread tick only on `RunningServer::step(n)` (which pushes state once at the
@@ -2215,7 +2230,7 @@ npm run build        # typecheck + static bundle in client/dist
 npm run typecheck
 npm test             # Vitest unit tests
 npm run e2e          # Playwright smoke, phone-emulation, onboarding, push and Android-driver tests (needs `npm run build` and `cargo build --release -p evo-server`)
-E2E_JOBS=3 npm run e2e   # the same scripts, three at a time (each starts its own server; worth it on 8+ cores: WebGL renders in software)
+E2E_JOBS=1 E2E_FPS=0 E2E_DPR=device npm run e2e   # one script at a time, uncapped frames, phones at their own pixel ratio (full-resolution screenshots)
 ```
 
 Serve the built client from the game server (one origin, no proxy):

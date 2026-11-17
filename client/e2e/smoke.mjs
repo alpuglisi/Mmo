@@ -26,6 +26,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cappedBrowser, FPS } from './frames.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -81,7 +82,7 @@ async function main() {
   let serverLog = '';
   server.stdout.on('data', (d) => (serverLog += d));
   server.stderr.on('data', (d) => (serverLog += d));
-  const browser = await chromium.launch({ headless: !process.env.HEADED });
+  const browser = cappedBrowser(await chromium.launch({ headless: !process.env.HEADED }));
   const pages = [];
   try {
     await waitFor('server', async () => (await fetch(`${base}/api/world`)).ok);
@@ -1266,6 +1267,9 @@ async function main() {
       throw new Error(`organism #${id} did not walk toward any of ${attempts} targets (actions seen: ${[...actions].join(', ')})`);
     }
 
+    // The motion check compares the drawn marker with the server position
+    // every frame: at the browser's own frame rate, not the e2e cap.
+    await page.evaluate(() => window.__e2eFrameCap?.(0));
     const tried = [];
     let walked = null;
     for (let round = 1; round <= 4 && !walked; round++) {
@@ -1295,6 +1299,7 @@ async function main() {
       throw new Error(`drawn #${walked.id} was ${o.gap.toFixed(2)} tiles from the server position (${o.predicted ? 'predicted' : 'glided'}, speed ${o.speed?.toFixed(2)}; bound ${o.bound.toFixed(2)})`);
     }
     step(`prediction: speed ${walked.speed.toFixed(2)} tiles/tick, drawn marker at most ${walked.maxGap.toFixed(2)} tiles from the server position (${walked.samples.predicted} predicted, ${walked.samples.glided} glided frames sampled)`);
+    await page.evaluate((fps) => window.__e2eFrameCap?.(fps), FPS);
 
     // Group command and a server-side error surfaced as a toast.
     await page.click('#migrate');
