@@ -93,16 +93,47 @@ const possessedNow = (page) => page.evaluate(() => {
   return o ? { id: o.id, x: o.x, y: o.y, action: o.action } : null;
 });
 
-/** Possess a grown, healthy animal of ours: its id. */
+/** Possess a grown animal of ours, the least thirsty (founders here can die of thirst within the test): its id. */
 async function possessOne(page) {
   const id = await page.evaluate(() => {
-    const own = window.evo.model.state.organisms.filter((o) => o.matured).sort((a, b) => b.health - a.health);
+    const own = window.evo.model.state.organisms.filter((o) => o.matured)
+      .sort((a, b) => a.needs.thirst - b.needs.thirst || b.health - a.health);
     return own[0]?.id ?? window.evo.model.state.organisms[0]?.id;
   });
   const r = await send(page, { type: 'possess', organism: id });
   check(r.ok, 'possess', r);
   await waitFor('the possession bar', () => page.locator('#possess-bar').isVisible());
   return id;
+}
+
+/**
+ * Possessing someone, with the possession bar up. Possession ends on its own
+ * when the possessed animal dies (the bar then hides, and so does Attack):
+ * that is the world, not the interface, so the test possesses another and
+ * says so rather than clicking a hidden button until it times out.
+ */
+async function ensurePossessed(page, why) {
+  const p = await possessedNow(page);
+  if (p && (await page.locator('#possess-bar').isVisible())) return p.id;
+  const id = await possessOne(page);
+  step(`possession had ended${why ? ` (${why})` : ''}; possessed #${id}`);
+  return id;
+}
+
+/** Attack mode on, from the possession bar's button. */
+async function attackMode(page) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await ensurePossessed(page, 'before Attack');
+    if ((await page.getAttribute('#possess-attack', 'aria-pressed')) === 'true') return;
+    try {
+      await page.click('#possess-attack', { timeout: 3000 });
+    } catch (e) {
+      const bar = await page.locator('#possess-bar').isVisible();
+      step(`Attack click missed (possession bar ${bar ? 'visible' : 'hidden'}): retrying`);
+      if (bar) throw e;
+    }
+  }
+  check((await page.getAttribute('#possess-attack', 'aria-pressed')) === 'true', 'attack mode should be on');
 }
 
 /** Wild animals in sight of `p` (within 7 tiles), nearest first. */
@@ -144,7 +175,12 @@ async function main() {
   mkdirSync(shots, { recursive: true });
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
-  const server = spawn(bin, ['--fast', '--memory', '--size', '64', '--seed', '3', '--bind', `127.0.0.1:${port}`, '--static', dist], {
+  // A slow clock with a state push every tick: under --fast alone (50 ticks a
+  // second, state every 5 ticks) the positions the page shows lag the
+  // server's by several tiles, so a target in sight on the page could be out
+  // of sight on the server, and the possessed animal could die of thirst
+  // between two steps of the test.
+  const server = spawn(bin, ['--fast', '--tick-ms', '250', '--state-ms', '250', '--memory', '--size', '64', '--seed', '3', '--bind', `127.0.0.1:${port}`, '--static', dist], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';
@@ -164,7 +200,7 @@ async function main() {
     // Possess one, and attack mode from the possession bar.
     let me = await possessOne(page);
     check(await page.locator('#possess-attack').isVisible(), 'the possession bar should have an Attack button');
-    await page.click('#possess-attack');
+    await attackMode(page);
     check(await page.getAttribute('#possess-attack', 'aria-pressed') === 'true', 'Attack should be pressed');
     const hint = await page.textContent('#possess-bar');
     check(/click the animal to attack/i.test(hint), 'the possession bar should say how to attack', hint);
@@ -182,11 +218,9 @@ async function main() {
     // A wild animal in sight: walk toward the nearest wild one first if none.
     let ordered = null;
     for (let round = 0; round < 8 && !ordered; round++) {
+      me = await ensurePossessed(page, 'looking for prey');
       const p = await possessedNow(page);
-      if (!p) {
-        me = await possessOne(page);
-        continue;
-      }
+      if (!p) continue;
       const wild = await wildNear(page, p);
       if (wild.length === 0) {
         const far = await page.evaluate(([px, py]) => window.evo.model.state.nearby.filter((o) => o.owner === 0)
@@ -196,7 +230,7 @@ async function main() {
         continue;
       }
       for (const target of wild.slice(0, 4)) {
-        if ((await page.getAttribute('#possess-attack', 'aria-pressed')) !== 'true') await page.click('#possess-attack');
+        await attackMode(page);
         await page.evaluate(() => { document.querySelector('#toasts')?.replaceChildren(); });
         if (!(await clickMarker(page, target))) continue;
         const said = await waitFor('an answer to the attack order', () => attackAnswer(page, target), 8000).catch(() => '');
@@ -217,29 +251,37 @@ async function main() {
     step(`tapped wild #${ordered.target}: "${ordered.said.trim()}"${hunting ? `, and #${hunting.id} is hunting` : ' (the order already ended: caught, lost or broken off)'}`);
 
     // The inspector of a wild animal offers the attack while possessing.
-    if (!(await possessedNow(page))) await possessOne(page);
-    const p = await possessedNow(page);
-    {
+    // The button goes with the possession (the inspector is rebuilt for the
+    // new possessor), so a possession that ends mid-step is retried.
+    let inspected = null;
+    for (let attempt = 0; attempt < 3 && !inspected; attempt++) {
+      await ensurePossessed(page, 'before the inspector');
+      const p = await possessedNow(page);
       const wild = await wildNear(page, p);
       const other = (await page.evaluate(() => window.evo.model.state.nearby.filter((o) => o.owner === 0).map((o) => o.id)))[0];
       const pick = wild[0] ?? other;
       check(pick !== undefined, 'no wild animal in view for the inspector');
-      {
-        await page.evaluate((id) => window.evo.model.select(id), pick);
-        await page.click('#tab-organism');
-        await page.waitForSelector('#btn-attack', { timeout: UI_MS });
+      await page.evaluate((id) => window.evo.model.select(id), pick);
+      await page.click('#tab-organism');
+      try {
+        await page.waitForSelector('#btn-attack', { timeout: 5000 });
         const label = await page.textContent('#btn-attack');
         check(label.includes(`Attack with #${p.id}`), 'the inspector attack button', label);
         await page.evaluate(() => { document.querySelector('#toasts')?.replaceChildren(); });
-        await page.click('#btn-attack');
+        await page.click('#btn-attack', { timeout: 3000 });
         const said = await waitFor('an answer', () => attackAnswer(page, pick), 8000);
-        check(!/`|unknown variant|expected/.test(said), 'the answer should read as a sentence', said);
-        step(`the inspector of wild #${pick} offers "${label}": "${said.trim()}"`);
+        inspected = { pick, label, said };
+      } catch (e) {
+        if (await possessedNow(page)) throw e;
+        step('possession ended during the inspector step: retrying');
       }
     }
+    check(inspected, 'the inspector attack never went through');
+    check(!/`|unknown variant|expected/.test(inspected.said), 'the answer should read as a sentence', inspected.said);
+    step(`the inspector of wild #${inspected.pick} offers "${inspected.label}": "${inspected.said.trim()}"`);
 
     // Over the socket: our own animal, and a second player's newcomer.
-    const p2 = (await possessedNow(page)) ?? { id: await possessOne(page) };
+    const p2 = { id: await ensurePossessed(page, 'before the socket checks') };
     const ownTarget = await page.evaluate((me) => window.evo.model.state.organisms.find((o) => o.id !== me)?.id, p2.id);
     if (ownTarget !== undefined) {
       const r = await send(page, { type: 'possess_attack', organism: p2.id, target: ownTarget });
@@ -251,16 +293,22 @@ async function main() {
     bob.on('pageerror', (e) => errors.push(e.message));
     await register(bob, base, `newcomer_${Date.now().toString(36)}`);
     const bobs = await bob.evaluate(() => window.evo.model.state.organisms.map((o) => o.id));
-    const r = await send(page, { type: 'possess_attack', organism: p2.id, target: bobs[0] });
+    let r = await send(page, { type: 'possess_attack', organism: p2.id, target: bobs[0] });
+    if (['not_found', 'not_possessed'].includes(r.error?.code)) {
+      // Our attacker died meanwhile.
+      r = await send(page, { type: 'possess_attack', organism: await ensurePossessed(page, 'before the newcomer check'), target: bobs[0] });
+    }
     check(!r.ok && ['newcomer_grace', 'target_out_of_sight'].includes(r.error?.code), "a newcomer's animal should be refused", r);
     step(`a second player's freshly founded #${bobs[0]} is refused (${r.error.code}: ${r.error.message})`);
     await bobContext.close();
 
     // Release: the bar goes, and attack mode with it.
-    await page.click('#possess-attack');
-    await page.click('#possess-release');
+    await attackMode(page);
+    await page.click('#possess-release', { timeout: 5000 });
     await waitFor('the possession bar to hide', () => page.locator('#possess-bar').isHidden());
-    step('releasing hides the possession bar and ends attack mode');
+    await possessOne(page);
+    check(await page.getAttribute('#possess-attack', 'aria-pressed') === 'false', 'attack mode should end with the possession');
+    step('releasing hides the possession bar and ends attack mode (possessing again starts in walk mode)');
     check(errors.length === 0, 'page errors', errors);
     console.log('attack e2e: ok');
   } catch (e) {
