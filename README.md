@@ -3009,6 +3009,45 @@ and the new build, seed 31):
 | `evo-sim sweep` check (12 seeds × 120 days) | 48.8 s | 46.7 s | 1.05× |
 | `evo-sim run --days 120` (128×128) | 11.7 s | 11.2 s | 1.04× |
 
+A later pass made the decision phase's neighbor query branchless
+(`SpatialGrid::query_into`: every candidate is written and only those in
+range kept, the same ones in the same order), worth about 10% of decide
+time in crowds, again with identical results.
+
+**Exact limits.** Perception sums neighbor positions (the kin centroid and
+the estimate beyond the nearest 32) in the order the nearest-32 selection
+leaves the list, so an exact method must reproduce that permutation: it
+can't drop candidates or reorder cells. Two approximations were measured
+and dropped: counting far grid cells from per-cell summaries (with 4-tile
+cells and 6–8-tile ranges, under 1% of far cells lie wholly in range), and
+fewer close looks (the cost moves to the far-neighbor loop and the
+selection: no gain).
+
+**Staggered decisions** (`Balance::decide_interval`, off by default, so
+default worlds are unchanged): at `k >= 2` a calm organism decides afresh
+every `k` ticks (staggered by id) and keeps its last intent in between,
+following its target organism (`world::stagger`). Every organism decides on
+the day's first tick, and so does every hunter and any organism that is
+possessed, fleeing, courting, provisioning or defending, that saw a threat,
+or whose target died (a first version without the hunter rule cost the
+pack hunters 3 of 4 seeds). It is not saved in snapshots. Measured
+(`--set decide_interval=K` on `perfbench`, `sweep`, `predlong`):
+
+| | off | `k = 2` | `k = 3` |
+| --- | --- | --- | --- |
+| µs per organism-tick, default, 2 years, 1 thread | 1.84 | 1.60 | 1.55 |
+| µs per organism-tick, meat, 2 years, 1 thread | 1.85 | 1.58 | 1.48 |
+| sweep check wall time (12 seeds × 120 days) | 46.0 s | 35.6 s | 34.9 s |
+| sweep check score (95% CI) | 11.68 (± 0.33) | 11.74 (± 0.27) | 11.59 (± 0.42) |
+| `predlong -- 3`, seeds 31–42: fox / pack hunters survive | 5/12, 7/12 | 6/12, 5/12 | |
+| `predlong -- 3 --meat`, seeds 31–34: fox / pack hunters | 4/4, 4/4 | 3/4, 4/4 | |
+
+The scores and survival counts lie within seed noise of the defaults (four
+seeds swing the fox from 1/4 to 3/4 between equally valid trajectories),
+but the setting changes reaction times, so it stays off until a longer
+comparison (`evo-sim compare --set decide_interval=2 vs defaults`) says
+it is safe.
+
 Where the time goes now (one world, single thread, two years): perception
 in `decide` is about two thirds (neighbor scan, nearest-32 selection, the
 close look at each), apply a quarter, environment chunks and the grid

@@ -802,6 +802,17 @@ pub struct Balance {
     /// 30 read (`serde_util::before_v30`).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v30"))]
     pub strike_fixes: f32,
+    /// Staggered decisions (an approximation for speed, off by default):
+    /// at 2 or more, a calm organism decides afresh only every
+    /// `decide_interval` ticks (staggered by id) and keeps its last intent
+    /// in between, its chase target's position updated
+    /// (`World::reused_intent`). Every organism decides on the day's first
+    /// tick, and so does every hunter and any organism that is possessed, fleeing, courting,
+    /// provisioning or defending, that saw a threat, or whose target died.
+    /// 0 or 1: every organism decides every tick. Not saved in snapshots or
+    /// sent to clients.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub decide_interval: f32,
 }
 
 impl Balance {
@@ -1008,6 +1019,7 @@ impl Default for Balance {
             morph_wing_shape: 1.0,
             morph_pattern: 1.0,
             strike_fixes: 1.0,
+            decide_interval: 0.0,
         }
     }
 }
@@ -1137,6 +1149,7 @@ impl Balance {
             ("morph_wing_shape", &mut self.morph_wing_shape),
             ("morph_pattern", &mut self.morph_pattern),
             ("strike_fixes", &mut self.strike_fixes),
+            ("decide_interval", &mut self.decide_interval),
         ]
     }
 
