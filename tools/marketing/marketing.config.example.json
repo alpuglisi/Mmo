@@ -1,0 +1,15 @@
+{
+  "timezone": "Europe/Rome",
+  "site": { "url": "https://evolution-mmo.example", "campaign": "launch" },
+  "claude": { "model": "claude-opus-5-5", "effort": "medium" },
+  "bluesky": { "service": "https://bsky.social" },
+  "mastodon": { "visibility": "public", "maxChars": 500 },
+  "youtube": { "privacyStatus": "public" },
+  "reddit": { "ownSubreddits": ["EvolutionMMO"], "defaultTarget": "EvolutionMMO" },
+  "discord": { "username": "Evolution MMO", "allowEveryone": false },
+  "email": { "provider": "buttondown", "sendNow": false, "from": "Evolution MMO <news@evolution-mmo.example>", "listFile": null, "unsubscribeUrl": null },
+  "tiktok": { "enabled": false, "appApproved": false, "mode": "inbox", "privacyLevel": "SELF_ONLY" },
+  "instagram": { "enabled": false, "appApproved": false, "graphHost": "graph.facebook.com", "graphVersion": "v23.0", "publicMediaBaseUrl": null },
+  "pressKit": { "developer": null, "releaseDate": null, "platforms": "Web browser (mobile apps in development)", "price": null, "contact": null },
+  "calendar": { "channels": { "x": { "postsPerWeek": 4 } } }
+}
