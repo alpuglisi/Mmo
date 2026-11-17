@@ -6876,6 +6876,60 @@ pack gap completely but the fox then survives 6 years on only 5 of 8 seeds
 in both sets; a fox further from the pack hunters in carnivory is a weaker
 fox in these rules, so 0.6 is the trade.
 
+### Voles and burrowing omnivores
+
+Two questions left by *The fox in its own niche* (measured on staggered
+main, `decide_interval` 2, fox carnivory 0.6): the fox crosses with the
+burrowing omnivores (26–509 hybrids per genetics world, held apart only by
+the birth-mode gap, live 0.85 against incubated eggs 0.5), and the voles
+die out on seed 32 under every variant and dip to about 20 on several
+seeds. **No default changes**: neither design-level fix found passes
+without hurting a lineage. Both are `--design` options.
+
+**Why the voles fall** (`cargo run --release --example voles -- 6 32 37`,
+new, read only: a prey lineage's head count, births, deaths by cause and
+kills by killer lineage every 30 days). On seed 32 the fox dies out around
+day 300 and the pack hunters boom to about 670. Prey switching still spares
+the voles in proportion, but at that many hunters the share that keeps
+hunting kills 45–53 voles a month when only 38–64 are left, and the voles
+end on day 660. On seed 37, where the pack stays near 100–300, its kills
+fall to 5–30 a month as the voles thin and they recover. Thirst kills
+10–30% of voles throughout (they drink near their burrows and predators)
+and starvation spikes each spring; neither differs much between seeds. Vole
+design changes did nothing reliable over 3 years on seeds 32, 34, 36, 43,
+45 (lowest voles; baseline 54, 79, 63, 72, 45): burrowing 0.8 → 82, 79,
+59, 46, 35; camouflage 0.6 → 77, 80, 55, 83, 19.
+
+**Separating the fox and the omnivores.** The body-plan gap is the largest
+difference in endothermy, birth mode, body size or carnivory; the two
+differ by 0.02 in size and 0.1 in carnivory, so only birth mode keeps them
+apart, and hybrids' intermediate birth-mode alleles erode it. A second
+full gap needs omnivore body size ≥ 0.62 or carnivory ≤ 0.3 (or the fox
+moving, which reopens the pack hunters' gap).
+
+| Check | Current (main) | Omnivores body size 0.62 (badger-sized, ~9 kg) | Omnivores carnivory 0.3 |
+| --- | --- | --- | --- |
+| `predlong 6 31–38`: fox, pack (viable) | 8 (6), 8 (8) | 8 (8), 7 (7) | 7 (7), 7 (7) |
+| same: prey lost; lowest voles | voles on 32; 0, 31, 50 | **none**; 20, 39, 58 (seed 32: 85) | **none**; 45, 55, 61 (seed 32: 82); **omnivores down to 1** (34) and 17 (36) |
+| `predlong 6 41–48`: fox, pack (viable) | 7 (7), 8 (8) | 8 (7), 8 (5) | |
+| same: prey lost; lowest voles | none; 22, 43, 49 | none; 51, 66, 78 | |
+| genetics: fox, pack | 4, 3 of 4 | 4, 3 of 4 | 4, 4 of 4 |
+| same: prey; checks | none lost; all pass | **herd grazers lost in one world**, antelope down to 8 and 25 at the end; 1 soft warning | none lost (omnivores 25 at the end in one world); 1 soft warning |
+| same: fox × omnivore hybrids | 26, 434, 509 | **none** | 60 and 1 (fertility → 0) |
+| `compare --seed 101 --adaptive … vs` | | +0.06 (sequential CI −0.17 … +0.30; omnivores −87 alive) | |
+
+Both separations keep the voles on every seed, seed 32 included: the
+burrowing omnivores (which burrow, eat insects and seeds, and take a few
+voles, 2–12 a month on seed 32) weigh on the voles more than their own
+kills show, and changing their niche relieves them. But a herd-sized
+omnivore eats the grazers' pasture (grazers lost in one genetics world),
+and a mostly plant-eating one loses the insects it lived on
+(`stats::insect_efficiency` 0.26 at carnivory 0.3) and nearly dies out on
+some seeds. An intermediate size (0.45–0.5) would not reach the 0.3 gap
+from the fox. Left for a later round: an omnivore design between the two
+(e.g. a smaller size change together with fewer founders, or a different
+diet mix), or a mate-recognition rule beyond the body-plan gap.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
