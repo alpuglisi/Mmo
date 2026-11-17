@@ -113,7 +113,19 @@ fn split_groups_follow_separate_orders_and_young_join_their_mothers_group() {
     let (a, b) = (members(&w, HERD, 0), members(&w, HERD, 1));
     let gap = centroid(&a).dist(centroid(&b));
     assert!(gap > gap0 + 15.0, "groups {gap0:.1} -> {gap:.1} tiles apart");
-    assert!(centroid(&a).dist(west) < start.0.dist(west) && centroid(&b).dist(east) < start.1.dist(east));
+    assert!(centroid(&b).dist(east) < start.1.dist(east));
+    // Both got there (the west one quickly: it started 6 tiles off), which
+    // ended their orders.
+    let arrived: Vec<u8> = w
+        .take_group_events()
+        .iter()
+        .filter_map(|e| match *e {
+            super::commands::GroupEvent::Arrived { player: HERD, group, .. } => Some(group),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(arrived, vec![0, 1]);
+    assert_eq!((w.migration_order(HERD, 0), w.migration_order(HERD, 1)), (None, None));
     // Young are born into their mother's group (if she is the same
     // player's).
     let mother = members(&w, HERD, 1)[0];
@@ -123,9 +135,11 @@ fn split_groups_follow_separate_orders_and_young_join_their_mothers_group() {
     assert_eq!(w.organism(calf).unwrap().group, 1);
     let adopted = w.spawn_newborn(genome, 1, lineage, pos, 1, id, id, 0.2, &mut rng);
     assert_eq!(w.organism(adopted).unwrap().group, 0);
-    // A whole-lineage order reaches every group; clearing clears all.
-    w.command_migrate(HERD, west);
-    assert_eq!((w.migration_order(HERD, 0), w.migration_order(HERD, 1)), (Some(west), Some(west)));
+    // An order without a group is for the main group, like a rally or a
+    // territory; clearing without a group clears all.
+    w.command_migrate_group(HERD, 1, east).unwrap();
+    w.command_migrate(HERD, west).unwrap();
+    assert_eq!((w.migration_order(HERD, 0), w.migration_order(HERD, 1)), (Some(west), Some(east)));
     w.clear_migration_group(HERD, 1);
     assert_eq!(w.migration_order(HERD, 1), None);
     w.clear_migration(HERD);
@@ -141,7 +155,7 @@ fn territory_claims_are_validated() {
     assert!(limit > TERRITORY_MIN_RADIUS && limit <= TERRITORY_MAX_RADIUS, "{limit}");
     assert_eq!(World::territory_radius_limit(0), TERRITORY_BASE_RADIUS);
     assert_eq!(World::territory_radius_limit(100_000), TERRITORY_MAX_RADIUS);
-    w.command_migrate(HERD, Vec2::new(1.0, 1.0));
+    w.command_migrate(HERD, Vec2::new(1.0, 1.0)).unwrap();
     let t = w.claim_territory(HERD, 0, c, 1000.0).unwrap();
     assert_eq!((t.center, t.radius, t.claimed_tick), (c, limit, 0));
     // The claim replaced the migration order.
@@ -157,9 +171,11 @@ fn territory_claims_are_validated() {
         w.step();
     }
     assert_eq!(w.groups(HERD)[0].claim_ready_tick, 0);
-    let t = w.claim_territory(HERD, 0, Vec2::new(-5.0, 500.0), 0.5).unwrap();
+    // Off the map is refused, not clamped to the edge.
+    assert_eq!(w.claim_territory(HERD, 0, Vec2::new(-5.0, 500.0), 0.5), Err(CommandError::OffMap));
+    let t = w.claim_territory(HERD, 0, Vec2::new(0.0, 64.0), 0.5).unwrap();
     assert_eq!(t.radius, TERRITORY_MIN_RADIUS, "rounded up");
-    assert_eq!(t.center, w.map.clamp(Vec2::new(-5.0, 500.0)), "clamped to the map");
+    assert_eq!(t.center, w.map.clamp(Vec2::new(0.0, 64.0)), "the edge is on the map");
     // A migration order replaces the territory; abandoning twice fails.
     w.command_migrate_group(HERD, 0, c).unwrap();
     assert_eq!(w.territory(HERD, 0), None);
@@ -282,7 +298,7 @@ fn obedience_weighs_orders_against_hunger() {
     let mut w = world();
     w.grid.rebuild(&w.organisms);
     let i = w.organisms.iter().position(|o| o.owner == HERD && o.matured).unwrap();
-    w.command_migrate(HERD, Vec2::new(60.0, 60.0));
+    w.command_migrate(HERD, Vec2::new(60.0, 60.0)).unwrap();
     let set = |w: &mut World, obedience: f32, hunger: f32| {
         let o = &mut w.organisms[i];
         o.pheno.0[Gene::Obedience.index()] = obedience;
@@ -315,7 +331,7 @@ fn a_rally_gathers_the_group_and_holds_it_until_it_lapses() {
     let n = members(&w, HERD, 0).len();
     let c = centroid(&members(&w, HERD, 0));
     let point = w.map.clamp(c + Vec2::new(12.0, 0.0));
-    w.command_migrate(HERD, Vec2::new(1.0, 1.0));
+    w.command_migrate(HERD, Vec2::new(1.0, 1.0)).unwrap();
     let r = w.rally_group(HERD, 0, point).unwrap();
     assert_eq!((r.center, r.radius), (point, World::rally_radius(n)));
     assert_eq!(r.expires_tick, (RALLY_DAYS * w.config.ticks_per_day as f32) as u64);

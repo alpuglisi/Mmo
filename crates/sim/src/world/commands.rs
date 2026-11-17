@@ -12,7 +12,10 @@ use crate::genome::{Gene, PlayerId};
 use crate::math::Vec2;
 use crate::mating;
 use crate::organism::{Action, Dormancy, OrgId, Sex};
+use crate::pathfinding::{enter_cost, Outcome};
 use crate::rng::{rng_for, stream};
+use crate::stats::Body;
+use crate::terrain::{passable, traverse, Map, Tile, Weather};
 
 /// Organisms must physically meet for a directed mating.
 pub const MEETING_DISTANCE: f32 = 1.5;
@@ -24,11 +27,46 @@ pub const ORDER_ARRIVAL: f32 = 0.75;
 /// Need level a possessed organism that broke off its order to eat or drink
 /// (`Balance::possess_urgency`) brings it down to before going back.
 pub const ORDER_RESUME: f32 = 30.0;
+/// How far (tiles) a migration target on deep water or a cliff is moved to
+/// the nearest tile the group can stand on; farther than this, refused.
+pub const MIGRATE_SNAP_RADIUS: i32 = 8;
+/// Tiles a migrating group's adults must be within (at least, see
+/// [`World::arrival_radius`]) of the target for the order to be done.
+pub const MIGRATE_ARRIVAL: f32 = 3.0;
+/// Need (0–1, hunger or thirst) at which an ordered migrant breaks off to
+/// eat or drink, at the design default obedience; it goes back to the
+/// order once the need is down to [`ORDER_RESUME`]. Obedience moves it by
+/// `MIGRATE_BREAK_OBEDIENCE × (obedience − 0.5)`.
+pub const MIGRATE_BREAK: f32 = 0.6;
+pub const MIGRATE_BREAK_OBEDIENCE: f32 = 0.2;
+/// Most points in a [`World::migration_route`].
+pub const ROUTE_POINTS: usize = 32;
+/// Most group events kept for the server ([`World::take_group_events`]).
+pub(super) const GROUP_EVENTS_KEPT: usize = 256;
+
+/// Something that happened to a group order on its own, for the owner
+/// ([`World::take_group_events`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GroupEvent {
+    /// Most of the group's adults reached its migration target: the order
+    /// is done.
+    Arrived { player: PlayerId, group: u8, target: Vec2 },
+    /// The group has no living members left: its migration, territory and
+    /// rally are gone.
+    Emptied { player: PlayerId, group: u8 },
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CommandError {
     NotFound(OrgId),
     NotOwned(OrgId),
+    /// The player's own organism, but a move or release needs it possessed.
+    NotPossessed(OrgId),
+    /// A target outside the map (refused rather than clamped to the edge).
+    OffMap,
+    /// A target in deep water or up a cliff with no land the animals could
+    /// stand on near it (`MIGRATE_SNAP_RADIUS`), or that they can't reach.
+    Unreachable,
     /// The other organism belongs to another player who hasn't consented.
     NoConsent,
     NotMature(OrgId),
@@ -62,6 +100,11 @@ impl fmt::Display for CommandError {
         match self {
             CommandError::NotFound(id) => write!(f, "organism {id} not found"),
             CommandError::NotOwned(id) => write!(f, "organism {id} is not yours"),
+            CommandError::NotPossessed(id) => write!(f, "organism {id} must be possessed first"),
+            CommandError::OffMap => write!(f, "that target is outside the map"),
+            CommandError::Unreachable => {
+                write!(f, "that target is deep water or impassable terrain, with no land they could reach near it")
+            }
             CommandError::NoConsent => write!(f, "the other player has not consented"),
             CommandError::NotMature(id) => write!(f, "organism {id} is not old enough to breed"),
             CommandError::SameSex => write!(f, "organisms are the same sex"),
@@ -266,25 +309,77 @@ impl World {
     }
 
     /// Move a possessed organism. It still eats and drinks where it stands.
-    pub fn order_move(&mut self, player: PlayerId, id: OrgId, target: Vec2) -> Result<(), CommandError> {
+    /// A target it can't get to (out at sea, up a cliff, across water it
+    /// can't swim) becomes the nearest tile it can reach, so the order ends
+    /// there instead of leaving it standing at the shore: the target used.
+    pub fn order_move(&mut self, player: PlayerId, id: OrgId, target: Vec2) -> Result<Vec2, CommandError> {
         let i = self.live_index(id)?;
-        let target = self.map.clamp(target);
-        let o = &mut self.organisms[i];
+        let o = &self.organisms[i];
         if o.possessed_by != Some(player) {
-            return Err(CommandError::NotOwned(id));
+            return Err(if o.owner == player { CommandError::NotPossessed(id) } else { CommandError::NotOwned(id) });
         }
-        o.order = Some(target);
-        Ok(())
+        let target = self.reachable_order_target(i, self.map.clamp(target))?;
+        self.organisms[i].order = Some(target);
+        Ok(target)
+    }
+
+    /// Where organism `i` can actually get toward `target`: the target
+    /// itself if a route reaches its tile, else the tile the route ends on
+    /// (next to a blocked goal) or, with no route at all, the reachable
+    /// tile nearest the target. Flyers go anywhere.
+    fn reachable_order_target(&mut self, i: usize, target: Vec2) -> Result<Vec2, CommandError> {
+        let o = &self.organisms[i];
+        let body = o.traits.body;
+        if body.can_fly || self.config.balance.path_nodes < 1.0 {
+            return Ok(target);
+        }
+        let from = o.pos;
+        let w = self.map.width;
+        let tile = |p: Vec2| {
+            let (x, y) = self.map.tile_coords(p);
+            (y * w + x) as u32
+        };
+        let center = |k: u32| Map::tile_center(k as usize % w, k as usize / w);
+        let mut scratch = std::mem::take(&mut self.path_scratch);
+        let mut way = Vec::new();
+        let goal = target;
+        let outcome = scratch.search_toward(
+            &self.map,
+            from,
+            goal,
+            self.map.width * self.map.height,
+            |g, t| enter_cost(traverse(&body, g, t, &Weather::still(t.wind), false)),
+            &mut way,
+        );
+        let nearest = scratch.nearest();
+        self.path_scratch = scratch;
+        match outcome {
+            Outcome::Found => match way.first() {
+                Some(&end) if end != tile(goal) => Ok(center(end)),
+                _ => Ok(goal),
+            },
+            Outcome::Partial => Ok(goal),
+            Outcome::None => match nearest {
+                Some(k) => Ok(center(k)),
+                None if tile(from) == tile(goal) => Ok(goal),
+                None => Err(CommandError::Unreachable),
+            },
+        }
     }
 
     /// Drop the move orders of possessed organisms that have arrived (or
     /// died, or are no longer possessed), and rallies that have lapsed. Runs
     /// once per tick, before decide.
+    /// An order whose route search found no way (the terrain changed under
+    /// it: ice gone, a river up) is dropped too, rather than leaving the
+    /// organism standing until it starves.
     pub(crate) fn settle_orders(&mut self) {
         self.settle_rallies();
+        self.settle_groups();
         for o in &mut self.organisms {
             if let Some(t) = o.order {
-                if !o.alive || o.possessed_by.is_none() || o.pos.dist(t) <= ORDER_ARRIVAL {
+                let stuck = o.path.as_ref().is_some_and(|p| p.failed && p.serves(o.pos, t));
+                if !o.alive || o.possessed_by.is_none() || o.pos.dist(t) <= ORDER_ARRIVAL || stuck {
                     o.order = None;
                 }
             }
@@ -351,43 +446,183 @@ impl World {
         let i = self.live_index(id)?;
         let o = &mut self.organisms[i];
         if o.possessed_by != Some(player) {
-            return Err(CommandError::NotOwned(id));
+            return Err(if o.owner == player { CommandError::NotPossessed(id) } else { CommandError::NotOwned(id) });
         }
         o.possessed_by = None;
         o.order = None;
         Ok(())
     }
 
-    /// Group command: the player's adults drift toward `target` when no
-    /// urgent need overrides it. Given to every group (the main group and
-    /// any with members), each of which gives up its territory or rally.
-    pub fn command_migrate(&mut self, player: PlayerId, target: Vec2) {
-        let target = self.map.clamp(target);
-        let mut groups = [false; MAX_GROUPS as usize];
-        groups[0] = true;
-        for o in self.organisms.iter().filter(|o| o.alive && o.owner == player) {
-            if let Some(g) = groups.get_mut(o.group as usize) {
-                *g = true;
-            }
-        }
-        for g in (0..MAX_GROUPS).filter(|&g| groups[g as usize]) {
-            self.migrate_orders.insert((player, g), target);
-            self.territories.remove(&(player, g));
-            self.rallies.remove(&(player, g));
-        }
+    /// Group command for the main group (group 0), like a rally or a
+    /// territory given without a group: [`World::command_migrate_group`].
+    pub fn command_migrate(&mut self, player: PlayerId, target: Vec2) -> Result<Vec2, CommandError> {
+        self.command_migrate_group(player, 0, target)
     }
 
     /// Group command for one group: its adults drift toward `target`. Replaces
-    /// the group's territory or rally, if it had one.
+    /// the group's territory or rally, if it had one. A target off the map
+    /// is refused; one on deep water (frozen or not) or a cliff moves to the
+    /// nearest tile most of the group can stand on, within
+    /// [`MIGRATE_SNAP_RADIUS`], else is refused. The target used.
+    ///
+    /// The order is done once most of the group's adults have arrived
+    /// ([`World::settle_groups`]). On the way, members break off to drink
+    /// or eat when a need passes [`MIGRATE_BREAK`] and go back to it once
+    /// it is down to [`ORDER_RESUME`], and they keep off ice over water
+    /// that would drown them if it melted (`World::ice_trap`).
     pub fn command_migrate_group(&mut self, player: PlayerId, group: u8, target: Vec2) -> Result<Vec2, CommandError> {
         if group >= MAX_GROUPS {
             return Err(CommandError::NoSuchGroup(group));
         }
-        let target = self.map.clamp(target);
+        let target = self.on_map(target)?;
+        let bodies = self.group_bodies(player, group);
+        let target = self.standable_near(&bodies, target, MIGRATE_SNAP_RADIUS).ok_or(CommandError::Unreachable)?;
         self.migrate_orders.insert((player, group), target);
         self.territories.remove(&(player, group));
         self.rallies.remove(&(player, group));
         Ok(target)
+    }
+
+    /// The way a migrating group is expected to go, for drawing: from its
+    /// member nearest the group's middle (an adult if it has any) to the
+    /// target, as that member would route it (around water it can't
+    /// cross and ice it would drown under, `World::ice_trap`), thinned to
+    /// at most [`ROUTE_POINTS`] points. Ends short of the target where no
+    /// route reaches it. Empty without an order; just the target without
+    /// members. A one-off full-map search: a host computes it when the
+    /// order is given and keeps it.
+    pub fn migration_route(&mut self, player: PlayerId, group: u8) -> Vec<Vec2> {
+        let Some(target) = self.migration_order(player, group) else { return Vec::new() };
+        let mine = |adult: bool| {
+            self.organisms
+                .iter()
+                .enumerate()
+                .filter(move |(_, o)| o.alive && o.owner == player && o.group == group && (o.matured || !adult))
+                .map(|(k, _)| k)
+                .collect::<Vec<usize>>()
+        };
+        let mut members = mine(true);
+        if members.is_empty() {
+            members = mine(false);
+        }
+        if members.is_empty() {
+            return vec![target];
+        }
+        let mid = members.iter().fold(Vec2::ZERO, |s, &k| s + self.organisms[k].pos) * (1.0 / members.len() as f32);
+        let lead = *members
+            .iter()
+            .min_by(|&&a, &&b| self.organisms[a].pos.dist(mid).total_cmp(&self.organisms[b].pos.dist(mid)))
+            .expect("members");
+        let (from, body) = (self.organisms[lead].pos, self.organisms[lead].traits.body);
+        if body.can_fly {
+            return vec![from, target];
+        }
+        let w = self.map.width;
+        let center = |k: u32| Map::tile_center(k as usize % w, k as usize / w);
+        let mut scratch = std::mem::take(&mut self.path_scratch);
+        let mut way = Vec::new();
+        let outcome = scratch.search_toward(
+            &self.map,
+            from,
+            target,
+            self.map.width * self.map.height,
+            |g, t| {
+                if super::apply::ice_trap(&body, t) {
+                    return None;
+                }
+                enter_cost(traverse(&body, g, t, &Weather::still(t.wind), false))
+            },
+            &mut way,
+        );
+        let nearest = scratch.nearest();
+        self.path_scratch = scratch;
+        let (tx, ty) = self.map.tile_coords(target);
+        let goal = (ty * w + tx) as u32;
+        let mut tiles: Vec<u32> = way.iter().rev().copied().collect();
+        let end = match outcome {
+            Outcome::Found if tiles.last() == Some(&goal) || tiles.is_empty() => {
+                tiles.pop();
+                Some(target)
+            }
+            Outcome::Found | Outcome::Partial => tiles.pop().map(center),
+            Outcome::None => nearest.map(center),
+        };
+        let stride = tiles.len().div_ceil(ROUTE_POINTS.saturating_sub(2).max(1)).max(1);
+        let mut route = vec![from];
+        route.extend(tiles.iter().skip(stride - 1).step_by(stride).map(|&k| center(k)));
+        if let Some(e) = end {
+            if route.last() != Some(&e) {
+                route.push(e);
+            }
+        }
+        route
+    }
+
+    /// `p` if it lies on the map (edges included), else [`CommandError::OffMap`].
+    pub(super) fn on_map(&self, p: Vec2) -> Result<Vec2, CommandError> {
+        let (w, h) = (self.map.width as f32, self.map.height as f32);
+        if (0.0..=w).contains(&p.x) && (0.0..=h).contains(&p.y) {
+            Ok(self.map.clamp(p))
+        } else {
+            Err(CommandError::OffMap)
+        }
+    }
+
+    /// Bodies of up to 64 members of a group (adults first), or of the
+    /// player's organisms if the group has none: whose footing a target is
+    /// checked against.
+    fn group_bodies(&self, player: PlayerId, group: u8) -> Vec<Body> {
+        const SAMPLE: usize = 64;
+        let mine = || self.organisms.iter().filter(move |o| o.alive && o.owner == player);
+        let mut bodies: Vec<Body> =
+            mine().filter(|o| o.group == group && o.matured).take(SAMPLE).map(|o| o.traits.body).collect();
+        if bodies.is_empty() {
+            bodies = mine().filter(|o| o.group == group).take(SAMPLE).map(|o| o.traits.body).collect();
+        }
+        if bodies.is_empty() {
+            bodies = mine().take(SAMPLE).map(|o| o.traits.body).collect();
+        }
+        bodies
+    }
+
+    /// The point nearest `target` (itself if it qualifies) on a tile at
+    /// least half of `bodies` could stand on even with its ice gone, within
+    /// `radius` tiles; any target with no bodies to check.
+    pub(super) fn standable_near(&self, bodies: &[Body], target: Vec2, radius: i32) -> Option<Vec2> {
+        if bodies.is_empty() {
+            return Some(target);
+        }
+        let (w, h) = (self.map.width as i32, self.map.height as i32);
+        let ok = |x: i32, y: i32| {
+            let k = self.map.idx(x as usize, y as usize);
+            let tile = Tile { ice: 0.0, ..self.map.tiles[k].clone() };
+            let g = &self.map.ground()[k];
+            2 * bodies.iter().filter(|b| passable(b, g, &tile)).count() >= bodies.len()
+        };
+        let (tx, ty) = self.map.tile_coords(target);
+        let (tx, ty) = (tx as i32, ty as i32);
+        if ok(tx, ty) {
+            return Some(target);
+        }
+        for r in 1..=radius {
+            let mut best: Option<(f32, Vec2)> = None;
+            for y in (ty - r).max(0)..=(ty + r).min(h - 1) {
+                for x in (tx - r).max(0)..=(tx + r).min(w - 1) {
+                    if (x - tx).abs().max((y - ty).abs()) != r || !ok(x, y) {
+                        continue;
+                    }
+                    let c = Map::tile_center(x as usize, y as usize);
+                    let d = c.dist(target);
+                    if best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, c));
+                    }
+                }
+            }
+            if let Some((_, c)) = best {
+                return Some(c);
+            }
+        }
+        None
     }
 
     /// Drop the migration orders of all the player's groups.
@@ -539,7 +774,8 @@ mod tests {
         w.possess(1, a).unwrap();
         let p = w.organisms[i].pos;
         let target = w.map.clamp(Vec2::new(if p.x < 24.0 { 47.0 } else { 0.0 }, p.y));
-        w.order_move(1, a, target).unwrap();
+        // (Moved to the nearest tile it can reach, if it can't reach that one.)
+        let target = w.order_move(1, a, target).unwrap();
         (w, a, target)
     }
 
