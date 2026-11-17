@@ -728,6 +728,88 @@ async fn restart_keeps_login_sessions(backend: Backend) {
     backend.cleanup().await;
 }
 
+/// Two servers sharing one store, as two processes sharing one
+/// PostgreSQL database behind `evo-lobby`: registrations on both at once
+/// get distinct player ids, a name raced on both goes to one of them, and
+/// an account made on one logs in on the other with the same player.
+async fn two_servers_share_accounts(a_cfg: ServerConfig, b_cfg: ServerConfig) {
+    let world = |id: &str| evo_server::worlds::WorldSpec::new(id);
+    let a = start(ServerConfig { worlds: vec![world("east")], ..a_cfg }).await.unwrap();
+    let b = start(ServerConfig { worlds: vec![world("west")], ..b_cfg }).await.unwrap();
+    let (ca, cb) = (reqwest_like::Client::new(a.addr), reqwest_like::Client::new(b.addr));
+    let register = |c: &reqwest_like::Client, name: String| {
+        let body = format!(r#"{{"name":"{name}","password":"a long password"}}"#);
+        let c = c.clone();
+        async move { c.post_json("/api/register", &body, None).await }
+    };
+    // Twelve registrations on each server, all at once.
+    let mut calls = Vec::new();
+    for k in 0..12 {
+        calls.push(tokio::spawn(register(&ca, format!("east{k}"))));
+        calls.push(tokio::spawn(register(&cb, format!("west{k}"))));
+    }
+    let mut players = Vec::new();
+    for c in calls {
+        let v = c.await.unwrap();
+        players.push(v["player"].as_u64().unwrap_or_else(|| panic!("registered: {v}")));
+    }
+    let mut unique = players.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), players.len(), "player ids collide: {players:?}");
+    // The same name on both at once: one account.
+    let (x, y) = tokio::join!(register(&ca, "both".into()), register(&cb, "both".into()));
+    let won = [&x, &y].iter().filter(|v| v["player"].is_u64()).count();
+    let lost: Vec<_> = [&x, &y].iter().filter_map(|v| v["code"].as_str()).collect();
+    assert_eq!((won, lost), (1, vec!["name_taken"]), "{x} {y}");
+    // An account made on east, after west started, logs in on west.
+    let made = register(&ca, "late".into()).await;
+    let v = cb.post_json("/api/login", r#"{"name":"late","password":"a long password"}"#, None).await;
+    assert_eq!(v["player"], made["player"], "{v}");
+    let v = cb.get_json("/api/assign?name=late").await;
+    assert_eq!(v["has_account"], true, "{v}");
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn memory_store_two_servers_share_accounts() {
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    let cfg = || {
+        ServerConfig {
+            bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            store: Some(evo_server::SharedStore(store.clone())),
+            world: WorldSettings { seed: 5, width: 48, height: 48, wild: false, ..Default::default() },
+            limits: evo_server::limits::Limits::unlimited(),
+            ..Default::default()
+        }
+        .fast()
+    };
+    two_servers_share_accounts(cfg(), cfg()).await;
+}
+
+/// The same with two connection pools on one PostgreSQL database (two
+/// processes), when `DATABASE_URL` is set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pg_two_servers_share_accounts() {
+    let Some(backend) = Backend::pg("two_servers").await else { return };
+    let cfg = || {
+        backend.config(
+            ServerConfig {
+                bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+                world: WorldSettings { seed: 5, width: 48, height: 48, wild: false, ..Default::default() },
+                limits: evo_server::limits::Limits::unlimited(),
+                ..Default::default()
+            }
+            .fast(),
+        )
+    };
+    // Migrate once first, so the two servers don't race to create the schema.
+    drop(backend.open_all().await);
+    two_servers_share_accounts(cfg(), cfg()).await;
+    backend.cleanup().await;
+}
+
 async fn world_clock(client: &reqwest_like::Client) -> (u64, u64) {
     let v = client.get_json("/api/world").await;
     (v["clock"]["tick"].as_u64().unwrap(), v["clock"]["day"].as_u64().unwrap())
@@ -1591,6 +1673,7 @@ mod reqwest_like {
     use hyper_util::client::legacy::Client as Hyper;
     use hyper_util::rt::TokioExecutor;
 
+    #[derive(Clone)]
     pub struct Client {
         addr: SocketAddr,
         inner: Hyper<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>>,

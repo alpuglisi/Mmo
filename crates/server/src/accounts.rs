@@ -322,7 +322,6 @@ struct Inner {
     /// Names reserved by registrations still hashing or persisting.
     pending: Vec<String>,
     sessions: HashMap<TokenHash, SessionEntry>,
-    next_player: PlayerId,
 }
 
 impl Inner {
@@ -361,13 +360,12 @@ impl Accounts {
         policy: SessionPolicy,
         hashing: HashPolicy,
     ) -> Self {
-        let next_player = existing.iter().map(|a| a.player).max().unwrap_or(0) + 1;
         let by_name = existing.into_iter().map(|a| (a.name.clone(), a)).collect();
         Self {
             store,
             policy,
             hashing: HashLimiter::new(hashing),
-            inner: Mutex::new(Inner { by_name, pending: Vec::new(), sessions: HashMap::new(), next_player }),
+            inner: Mutex::new(Inner { by_name, pending: Vec::new(), sessions: HashMap::new() }),
         }
     }
 
@@ -407,20 +405,18 @@ impl Accounts {
             })
             .await?
             .map_err(|e| AuthError::Internal(e.to_string()))?;
-        let player = {
+        {
             let mut g = self.inner.lock().unwrap();
             if g.by_name.contains_key(name) || g.pending.iter().any(|n| n == name) {
                 return Err(AuthError::NameTaken);
             }
             g.pending.push(name.to_string());
-            let p = g.next_player;
-            g.next_player += 1;
-            p
-        };
-        let result = self.persist(name, password_hash, player).await;
+        }
+        let result = self.persist(name, password_hash).await;
         let mut g = self.inner.lock().unwrap();
         g.pending.retain(|n| n != name);
         let record = result?;
+        let player = record.player;
         g.by_name.insert(name.to_string(), record);
         let session = Session { player, name: name.to_string() };
         let token = g.open_session(session.clone(), self.policy);
@@ -433,11 +429,39 @@ impl Accounts {
         g.by_name.contains_key(name) || g.pending.iter().any(|n| n == name)
     }
 
-    async fn persist(&self, name: &str, password_hash: String, player: PlayerId) -> Result<AccountRecord, AuthError> {
+    /// Store a new account under a player id from the store (unique across
+    /// every server sharing it). Another server may register the same name
+    /// at the same moment (`NameTaken`), or win a race for the id (retried).
+    async fn persist(&self, name: &str, password_hash: String) -> Result<AccountRecord, AuthError> {
+        let internal = |e: crate::store::StoreError| AuthError::Internal(e.to_string());
         let created_unix = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let record = AccountRecord { name: name.to_string(), player, password_hash, created_unix };
-        self.store.insert_account(&record).await.map_err(|e| AuthError::Internal(e.to_string()))?;
-        Ok(record)
+        let mut last = None;
+        for _ in 0..5 {
+            let player = self.store.allocate_player().await.map_err(internal)?;
+            let record =
+                AccountRecord { name: name.to_string(), player, password_hash: password_hash.clone(), created_unix };
+            match self.store.insert_account(&record).await {
+                Ok(()) => return Ok(record),
+                Err(e) => {
+                    if self.store.find_account(name).await.map_err(internal)?.is_some() {
+                        return Err(AuthError::NameTaken);
+                    }
+                    last = Some(e);
+                }
+            }
+        }
+        Err(internal(last.expect("tried")))
+    }
+
+    /// The account named `name`: known here, or registered by another
+    /// server sharing the store since this one started (then kept).
+    async fn account(&self, name: &str) -> Option<AccountRecord> {
+        if let Some(r) = self.inner.lock().unwrap().by_name.get(name).cloned() {
+            return Some(r);
+        }
+        let r = self.store.find_account(name).await.ok().flatten()?;
+        self.inner.lock().unwrap().by_name.entry(name.to_string()).or_insert_with(|| r.clone());
+        Some(r)
     }
 
     pub async fn login(&self, name: &str, password: &str) -> Result<(String, Session), AuthError> {
@@ -445,7 +469,7 @@ impl Accounts {
             // No account has one this long; don't hash it.
             return Err(AuthError::BadCredentials);
         }
-        let record = self.inner.lock().unwrap().by_name.get(name).cloned();
+        let record = if valid_name(name) { self.account(name).await } else { None };
         let password = password.to_string();
         let hash = record.as_ref().map(|r| r.password_hash.clone());
         let ok = self
@@ -466,9 +490,13 @@ impl Accounts {
         Ok((token, session))
     }
 
-    /// The player of an account name.
-    pub fn player_of(&self, name: &str) -> Option<PlayerId> {
-        self.inner.lock().unwrap().by_name.get(name).map(|a| a.player)
+    /// The player of an account name (also one another server sharing the
+    /// store registered).
+    pub async fn player_of(&self, name: &str) -> Option<PlayerId> {
+        if !valid_name(name) {
+            return None;
+        }
+        self.account(name).await.map(|a| a.player)
     }
 
     /// The live session of a token, marking it used.

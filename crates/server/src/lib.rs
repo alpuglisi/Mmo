@@ -144,6 +144,8 @@ pub struct ServerConfig {
     /// How long a client may take to send a request's head (and how long
     /// an idle keep-alive connection stays open): [`DEFAULT_HEADER_TIMEOUT`].
     pub header_timeout: Duration,
+    /// permessage-deflate on the game WebSocket (`--ws-compression`).
+    pub ws_compression: http::WsCompression,
 }
 
 /// [`ServerConfig::header_timeout`] by default.
@@ -173,6 +175,7 @@ impl Default for ServerConfig {
             push: webpush::PushConfig::default(),
             trusted_proxies: limits::TrustedProxies::default(),
             header_timeout: DEFAULT_HEADER_TIMEOUT,
+            ws_compression: http::WsCompression::default(),
         }
     }
 }
@@ -372,6 +375,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         limiters: Arc::new(Limiters::new(cfg.limits, cfg.trusted_proxies.clone())),
         ws_conns: Default::default(),
         push,
+        ws: http::ws_options(cfg.ws_compression),
     };
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     let addr = listener.local_addr()?;
