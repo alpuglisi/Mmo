@@ -24,7 +24,9 @@ Where the design's build order stands:
   it for iOS and Android (the Android debug APK builds headless and in CI; neither
   app has run on a device yet); see [Client](#client).
 
-What remains is in [Suggested next steps](#suggested-next-steps).
+What remains is in [Suggested next steps](#suggested-next-steps). Launch
+marketing (drafting, human approval, scheduling and publishing on the
+owner's accounts) lives in [`tools/marketing/`](tools/marketing/PUBLISHING.md).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
 
@@ -38,6 +40,7 @@ crates/
 client/      web client: TypeScript, PixiJS 8, Vite (npm)
 deploy/      docker compose deployment: evo-server, PostgreSQL, Caddy (HTTPS); see Deployment
 Dockerfile   image with evo-server and the built client
+tools/marketing/  launch marketing: drafts, approval queue, calendar, official-API publishing
 docs/
   game-design.md
 ```
@@ -131,9 +134,59 @@ score).
   and sentries is unchanged). Cohorts of abstract regions (level of detail)
   belong to no group: agents expanded from them start in the main group.
 - **Per-group orders.** Migration orders are kept per (player, group).
-  `migrate` without a group reaches every group, as before; with one, only
-  it. A group has at most one of a migration order, a territory and a
-  rally: the newest order replaces the others.
+  `migrate` without a group is the main group's (group 0), like a rally or
+  a territory (it used to reach every group; the client's "All groups"
+  sends one per group). A group has at most one of a migration order, a
+  territory and a rally: the newest order replaces the others.
+- **Migration** (`command_migrate_group`; playtest 1). A target off the
+  map is refused (`off_map`). One on deep water (frozen or not: the ice
+  goes in spring) or a cliff moves to the nearest tile at least half the
+  group's bodies could stand on, within 8 tiles (`MIGRATE_SNAP_RADIUS`;
+  the reply says `moved` with a note), else it is refused
+  (`unreachable`). On the way, members keep off ice they would drown under
+  if it melted (`apply::ice_trap`: treated as blocked by steering and
+  route planning, so a frozen lake is walked around, not across), and
+  break off to drink or eat when a need passes 60 (`MIGRATE_BREAK`, ±0.1
+  with obedience), going back to the order once it is down to 30
+  (`ORDER_RESUME`), so a migration no longer pins a group through a
+  drought. The order is done, and dropped, once most of the group's
+  adults are within its arrival radius of the target (the rally circle,
+  at least 3 tiles; checked on the hour, `settle_groups`), and the player
+  gets a `group` alert. The server plans the route a member near the
+  group's middle would take (`World::migration_route`, at most 32 points)
+  when the order is given and sends it in the group's `route` for the
+  client to draw.
+- **Emptied groups.** A group whose last member dies loses its migration,
+  territory and rally on the next hour (the main group only once the
+  player has nothing alive, since its agents may all be cohorts in
+  abstract regions); a `group` alert says so for the other groups.
+- **Possession orders.** A move order the organism can't reach (into the
+  sea, onto an island, up a cliff) becomes the nearest tile it can reach
+  (a full route search when the order is given), so the order ends there
+  instead of leaving the animal standing at the shore; an order whose
+  route later fails (ice gone) is dropped. A move or release of your own
+  unpossessed animal says `not_possessed` ("must be possessed first")
+  rather than `not_owned`.
+- **Retiring a lineage** (`retire_lineage`, with the lineage's id so a late
+  click can't retire the next one; `World::retire_player`,
+  `Game::retire`). Players can start over without drowning their animals:
+  every animal, cohort and egg of the lineage is **removed** from the
+  world at once. Not killed (no deaths counted, no carcasses, no death
+  alerts) and not turned wild: wild animals carrying the player's
+  origin-tagged alleles would keep scoring for them, and a sudden wild herd
+  would upset the ecosystem. Group orders and possession end; the player
+  can found again at once (`found`), keeping renown, ledger, records and
+  the old lineage's history. Marketplace offers and listings of the
+  removed animals close on the next tick, as for any animal gone.
+- **Founding ramp** (closes the re-founding exploit). A fresh founding
+  has a large legacy share at once (all adults, many pregnant: 0.07% →
+  8.1% in the playtest), so dying out and founding again paid. The ranked
+  season's legacy score now counts a lineage's daily share at
+  `days since founding / 10` of its value (`FOUNDING_RAMP_DAYS`), full
+  after 10 days; with the season's mean-of-days score, re-founding near
+  a season's end gains nothing. The shares shown and stored are
+  unchanged; the founding day is kept in the saved game (older saves
+  count every lineage in full).
 - **Territory** (`claim_territory`): a circle a group holds. Its radius is
   kept between 3 tiles and `4 + 2·√adults` (at most 24): a few animals
   can't hold a valley. Members roam and forage inside it (wander targets
@@ -165,7 +218,11 @@ score).
   but nobody is chased off and there is no cooldown. It stands until it is
   cancelled, replaced by another order (a migration, a claim, a new rally;
   a split or merge ends it like the other orders) or lapses after
-  `RALLY_DAYS` (3 days: re-issue it to keep the group there). Lapsed
+  `RALLY_DAYS` (3 days: re-issue it to keep the group there), or after
+  the host's floor if longer: the server makes it at least 5 minutes of
+  wall-clock time (`GameConfig::rally_min_minutes`, `World::set_rally_min_ticks`),
+  since 3 game days pass in seconds at a fast tick. Off-map rally (and
+  territory) targets are refused (`off_map`) rather than clamped. Lapsed
   rallies are dropped before decide each tick. Saved (snapshot version
   15; older saves load with no rally standing, `serde_util::before_v15`).
 - **Obedience: group commands as genes** (the doc's open question, "keep
@@ -797,6 +854,21 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
   members are not agents, so they are never in `organisms` or `nearby`; age
   bands, pregnancies and gene statistics cover agents only.
 
+### Spectator mode, share cards and marketing capture
+
+A logged-out watch link (`/?watch=<world>&lineage=<n>&stream=1`) shows a
+world read-only: the map with every lineage as soft discs, the followed
+lineage's portrait and numbers, a population chart, and a banner while a
+catastrophe is under way. Data comes from `GET /api/spectate`, which is coarse
+(8-tile cells), has no genes or animal ids, and changes at most once a day.
+The Family tab shares a portrait card and a family-tree card as PNG, through
+the Web Share API or by download, together with the watch link.
+`tools/marketing/capture.mjs` records scripted scenes (a species evolving,
+predator-prey boom and bust, the builder, a catastrophe) as vertical and
+square MP4s and GIFs, with a manifest of titles, captions and hashtags. See
+[tools/marketing/README.md](tools/marketing/README.md); samples are in
+`docs/marketing/samples/`.
+
 ### HTTP API (JSON)
 
 | Method and path | Auth | What it does |
@@ -832,7 +904,8 @@ HTTP / WS handlers (Tokio, Axum) ──Request──▶ world thread (owns Game 
 | `GET /api/push/subscriptions` | Bearer | The caller's devices, oldest first: `{subscriptions: [{endpoint, created_unix, label?}], devices?: [{service, created_unix, label?}]}` (keys and tokens stay on the server; `devices` left out when there are none) |
 | `GET /api/push/prefs` | Bearer | The push kinds the caller switched off, `{off: [kind]}` (`mating`, `death`, `market`, `species`, `season`, `catastrophe`); `{off: []}` until saved |
 | `POST /api/push/prefs` | Bearer | Replace them; the reply is normalized (sorted, no duplicates); an unknown kind is refused (422) |
-| `GET /api/map.png?scale=4` | | PNG of the world (`render_rgb`, 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
+| `GET /api/map.png?scale=4` | yes | PNG of the world as the caller may see it (`Game::map_rgb`: the terrain, their organisms and others only within their view radius of them; 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
+| `GET /api/spectate` | | The read-only spectator view (watch links `?watch=<world>&lineage=<n>`, `tools/marketing/README.md`): clock, active catastrophes and every lineage's public name, owner, head counts, share, most common look and members per 8-tile cell; no ids, positions, genes or needs, and refreshed at most once per simulated day |
 | `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`), the process's `cpu_seconds` and `rss_bytes` (Linux), the `allocator` (`jemalloc` by default, `glibc` without the feature) and its `heap` statistics (`allocated`: live allocations; `retained`: resident memory the allocator holds but has not handed out; read at most every 2 s), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
@@ -879,26 +952,28 @@ Client → server:
 | `type` | Fields | |
 | --- | --- | --- |
 | `possess` | `organism` | Take control of one of your organisms |
-| `order_move` | `organism, x, y` | Walk a possessed organism to a point (tiles) |
-| `release` | `organism` | Back to genetic behavior |
+| `order_move` | `organism, x, y` | Walk a possessed organism to a point (tiles). A point it can't reach becomes the nearest it can; `data` = `{x, y}` used, with `moved, note` when changed. `not_possessed` for your own unpossessed organism |
+| `release` | `organism` | Back to genetic behavior (`not_possessed` if it isn't) |
 | `request_mating` | `mine, partner, price?` | Directed mating. Your own pair runs at once; another player's organism sends them a `mating_request`. A `price` (renown) goes into escrow at once (`insufficient_funds` if you can't cover it) |
 | `preview_mating` | `mine, partner` | What the mating would give now, nothing spent: `data` = `{compatible, fertility, body_plan_fertility, distance_fertility, body_plan_gaps: [{gene, gap}], mismatch, cost, failure_chance, distance, meeting_distance, problem?}` |
 | `respond_mating` | `request, accept` | The partner's owner answers |
 | `complete_mating` | `request` | Retry an accepted agreement now |
 | `cancel_mating` | `request` | Either side withdraws an open offer |
-| `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for your adults: every group without `group`, else that group (`no_such_group` past 3); `data` = the clamped `{x, y}`. Replaces the territory of the groups it reaches |
+| `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for the adults of group `group` (default 0, the main group; `no_such_group` past 3); replaces its territory or rally. `off_map` off the map; a target on deep water, ice or a cliff moves to the nearest land within 8 tiles (`data.moved`, `data.note`) or gives `unreachable`. `data` = `{x, y, group, route?, moved?, note?}`; the order ends when most of the group has arrived (a `group` alert). `clear_migration` without `group` clears every group's |
+| `retire_lineage` | `lineage` | Retire your living lineage (its id) to start over: its animals, cohorts and eggs are removed (not killed, not turned wild), its orders end, and you may found again at once; `data` = `{removed}`. `no_lineage` if it isn't your living lineage |
 | `claim_territory` | `group?, x, y, radius` | Group `group` (default 0) holds the circle around `x, y`: the radius is kept between 3 and the group's `max_radius`; replaces its migration order; `data` = `{x, y, radius, claimed_tick}`. `claim_cooldown` (`detail.ticks_left`) within half a day of the group's last claim; `no_such_group` for a group without members; `bad_coordinates` for a non-finite number |
 | `abandon_territory` | `group?` | Give the territory up (`no_territory` if none) |
-| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 24) for 3 days; replaces its migration order or territory; `data` = `{x, y, radius, expires_tick}`. `no_such_group` for a group without members, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
+| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 24) for 3 days; replaces its migration order or territory; `data` = `{x, y, radius, expires_tick}`. Stands at least 5 minutes of wall-clock time. `no_such_group` for a group without members, `off_map` off the map, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
 | `split_group` | `group?, organisms?` | Divide a group (default 0) in two: the named organisms (yours, in that group, at most 2000), else the far half across its widest spread; `data` = `{group, moved, kept}`. `group_limit` at 4 groups, `group_too_small` if a side would be empty, `not_in_group`, `not_owned`, `too_many_organisms` |
 | `merge_groups` | `from, into?` | Every member of `from` joins `into` (default 0); `data` = `{moved}`; `same_group`, `no_such_group` |
-| `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window |
+| `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window; only within the view radius of your organisms or your lineage's center (`out_of_sight` elsewhere) |
 | `create_listing` | `organism, fee, expires_days?` | List one of your adults on the stud marketplace (a male as a stud, a female as a dam); `data` = `{listing}` |
 | `withdraw_listing` | `listing` | Take your listing down (agreements already bought stand) |
 | `buy_listing` | `listing, mine` | Buy one mating with a listed organism for your adult `mine`: an already accepted agreement, the fee in escrow; `data` = `{offer}`. Not for auctions (`auction_listing`) |
 | `create_auction` | `organism, reserve, days?, ticks?` | Auction one mating with one of your adults: it closes after `ticks` ticks if given, else `days` simulated days (default 1, at most 30; not both: `bad_duration`); `data` = `{listing}` |
 | `bid` | `listing, amount, mine` | Bid on an auction for your adult `mine` (the same checks as `buy_listing`): at least `auction.min_bid` (`bid_too_low`, `detail.min_bid`), held in escrow (raising your own highest bid holds only the difference), refunded at once when outbid; `data` = `{listing}` |
 | `browse_market` | `mine?, limit?, cursor?, sort?, kind?, role?, max_price?, lineage?, species?, compatible?, hide_own?, with_own?` | One page: `data` = `{balance, escrow, slots_left, total, next_cursor?, own?, listings: [{id, owner, owner_name, organism, role (stud/dam), sex, fee, created_tick, expires_tick?, sales, busy, pregnant, lineage, lineage_name, generation, mother?, father?, offspring_raised, age_days, health, x, y, traits: [{gene, value}], preview?, kind (fixed/auction), auction?: {reserve, deadline_tick, high_bid?, high_bidder?, bids, min_bid}}]}`. `limit` default 20, at most 50; `next_cursor` (absent on the last page) goes back as `cursor` for the next page in the same order and filters; `total` counts the matches. `sort`: `newest` (default), `price_asc`, `price_desc` (price: the fee, or an auction's highest bid, its reserve before any), `ending` (deadline or expiry, none last), `fertility` (with `mine`: compatible first by expected fertility). Filters: `kind` `fixed`/`auction`, `role` `stud`/`dam`, `max_price`, `lineage`, `species` (its lineages, `GET /api/species`), `compatible` (with `mine`), `hide_own`; `with_own` adds `own`, all your listings. `preview` is `preview_mating` of your `mine` with the listed organism. `bad_cursor` for a cursor the server didn't make |
+| `mating_prefs` | `block?, unblock?, auto_decline?` | Who may send you mating requests: block or unblock a player, or decline every request (listings and auctions are unaffected). `data` = `{blocked, auto_decline}`; no fields just reads them. Saved with the game |
 | `ledger` | `limit?` | `data` = `{balance, escrow, entries: [{seq, player, tick, day, delta, balance, kind, text, offer?, listing?}]}`, newest first (default 50, at most 100); `kind`: `grant`, `income`, `achievement`, `escrow`, `sale`, `refund` |
 | `resync` | – | Protocol 2 only: the next state is a keyframe (no `result`; see below) |
 | `watch_season` | `on`, `limit?` | `on: true`: a `season` message at once (after the `result`) and then one whenever the ranked season's standings change, at most one a second (rows `0..limit` per category, default 5, at most 200, plus yours); `on: false` stops them. A new connection starts unwatched. Answered between ticks, never queued behind world changes |
@@ -909,7 +984,7 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one; `heading`, its facing as one of 32 directions, and `vision`, its eyes for the vision cones: see *Vision cones* below), `nearby` (others in the window, also with `look`; never a heading or eyes), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command, with its `id` (also for a message that doesn't parse, when it is JSON with a numeric `id`: `bad_message`, named after its `type` if that is a command, else `message`, and never with the parser's text). Day numbers in `day` fields count from 0; player-facing texts (ledger, alerts) count from 1. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, the request rules' `requests_refused` (the partner's owner blocked you or declines every request), `too_many_requests` (at most 3 requests to one player an hour; `detail.ticks_left`), `too_many_blocked`, `partner_unavailable` (another player's female can't mate now: her pregnancy is not told), `out_of_sight` (`set_view`), `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
@@ -1094,7 +1169,8 @@ that logging out never pays as a strategy:
   untouched, and protection does nothing for breeding. Predators lose little:
   12 organisms of a player's are a small part of any hunting range.
 - **Not protected.** Organisms in an open directed-mating agreement (either
-  side, pending or accepted), listed on the stud marketplace or an auction,
+  side, once accepted: a pending request carries no consent and used to let a rival strip a
+  logged-out player's protection just by asking), listed on the stud marketplace or an auction,
   or put up as the organism of an auction's highest bid: the doc's "the trip
   carries risk" stands, and a player can't shield a stud by logging off.
   Possessed organisms aren't protected either (possession outlives a

@@ -866,6 +866,26 @@ impl World {
         }
     }
 
+    /// Drop every cohort `player` owns (`World::retire_player`); the
+    /// members dropped.
+    pub(super) fn retire_cohorts(&mut self, player: PlayerId) -> usize {
+        if self.lod.owner_count(player) == 0 {
+            return 0;
+        }
+        let mut removed = 0;
+        for cs in &mut self.lod.regions {
+            cs.retain(|c| {
+                let keep = c.owner != player;
+                if !keep {
+                    removed += c.count() as usize;
+                }
+                keep
+            });
+        }
+        self.recount_lod();
+        removed
+    }
+
     /// Recompute cohort totals per owner and lineage.
     fn recount_lod(&mut self) {
         let today = self.today();

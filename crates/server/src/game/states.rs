@@ -376,16 +376,6 @@ impl StateCache {
         self.tick.is_some()
     }
 
-    /// The indices of `player`'s living organisms (and maybe some that died
-    /// since), from the index when it is this tick's and no organism was
-    /// added since; `None` otherwise. Organisms never change hands and are
-    /// only added by a tick or a founding, so nothing of the player's is
-    /// missing from it.
-    pub(super) fn owned_now(&self, w: &evo_sim::World, player: PlayerId) -> Option<&[u32]> {
-        let idx = self.idx.as_ref()?;
-        (self.tick == Some(w.tick()) && idx.slots.len() == w.organisms.len()).then(|| idx.owned(player))
-    }
-
     /// A command may have changed organism `id`.
     pub(super) fn touch(&mut self, id: u64) {
         if self.valid() {
@@ -494,7 +484,8 @@ impl Game {
             | ClientMsg::Rally { .. }
             | ClientMsg::CancelRally { .. }
             | ClientMsg::SplitGroup { .. }
-            | ClientMsg::MergeGroups { .. } => c.touch_owner(player),
+            | ClientMsg::MergeGroups { .. }
+            | ClientMsg::RetireLineage { .. } => c.touch_owner(player),
             ClientMsg::RequestMating { mine, partner, .. } => {
                 c.touch(*mine);
                 c.touch(*partner);
@@ -512,6 +503,7 @@ impl Game {
             | ClientMsg::PreviewMating { .. }
             | ClientMsg::BrowseMarket(_)
             | ClientMsg::Ledger { .. }
+            | ClientMsg::MatingPrefs { .. }
             | ClientMsg::Resync
             | ClientMsg::WatchSeason { .. } => {}
         }

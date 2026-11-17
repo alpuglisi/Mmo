@@ -194,7 +194,7 @@ async fn terrain_stats_and_seasons() {
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     let (s, p) = json_req(addr, Method::GET, "/api/alerts/prefs", Some(&ann), None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(p, serde_json::json!({"hidden": [], "toast": ["death", "need", "market"]}));
+    assert_eq!(p, serde_json::json!({"hidden": [], "toast": ["death", "need", "market", "group"]}));
     let body = serde_json::json!({"hidden": ["world", "daily_summary"], "toast": ["birth", "world"]});
     let (s, p) = json_req(addr, Method::POST, "/api/alerts/prefs", Some(&ann), Some(body)).await;
     assert_eq!(s, StatusCode::OK, "{p}");

@@ -355,6 +355,17 @@ impl Species {
         &self.reps
     }
 
+    /// No adults found: the estimate and every lineage's count drop to 0
+    /// (the lineages stay listed, in order, as what it was), so a lineage
+    /// isn't counted here and in the species it is now part of, and an
+    /// extinct species shows none.
+    fn clear_counts(&mut self) {
+        self.adults = 0.0;
+        for l in &mut self.lineages {
+            l.1 = 0.0;
+        }
+    }
+
     /// Main founding lineage at the last detection.
     pub fn main_lineage(&self) -> Option<u32> {
         self.lineages.first().map(|l| l.0)
@@ -524,10 +535,20 @@ impl SpeciesTracker {
                 seen[keep] = true;
                 for &k in rest {
                     seen[k] = true;
+                    let gone = live[k] as u32;
                     let s = &mut self.species[live[k]];
                     s.extinct_day = Some(day);
                     s.merged_into = Some(id);
+                    // Its members are counted in the species it merged into
+                    // now, not here as well.
+                    s.clear_counts();
                     events.push(SpeciesEvent::Extinct { species: s.id, merged_into: Some(id) });
+                    // Species that had merged into it now point at where it
+                    // went: "merged into" always names a living successor or
+                    // the last one, never reads round in a circle.
+                    for o in self.species.iter_mut().filter(|o| o.merged_into == Some(gone)) {
+                        o.merged_into = Some(id);
+                    }
                 }
                 self.update(id, day, &sum, samples, members, p.reps);
                 assigned[c] = Some(id);
@@ -596,7 +617,7 @@ impl SpeciesTracker {
             }
             let sp = &mut self.species[s];
             sp.missed += 1;
-            sp.adults = 0.0;
+            sp.clear_counts();
             if sp.missed >= p.extinct_after.max(1) {
                 sp.extinct_day = Some(sp.last_seen);
                 events.push(SpeciesEvent::Extinct { species: sp.id, merged_into: None });
@@ -777,6 +798,63 @@ mod tests {
         let r = rule();
         assert!(!r.linked(&samples[0].expr, &samples[samples.len() - 1].expr));
         assert_eq!(cluster(&samples, &r).len(), 1);
+    }
+
+    /// A species that merges into another counts no adults any more (its
+    /// lineages aren't counted in two species at once), and "merged into"
+    /// follows a chain to the last successor (A into C, then C into E:
+    /// A reads "merged into E", never round in a circle).
+    #[test]
+    fn merged_species_count_nothing_and_merge_chains_point_at_the_survivor() {
+        let p = params();
+        let name = |l: u32| format!("L{l}");
+        let mut t = SpeciesTracker::default();
+        let kind = |size: f32| base().with(Gene::BodySize, size);
+        // Lineage 0 at body size 0.1, 1 at 0.5, 2 at 0.9; `bridge` adds
+        // intermediates (of the lineage given) in steps of 0.1.
+        let day = |seed: u64, bridges: &[(u32, PlayerId, f32)]| {
+            let mut v: Vec<Sample> = (group(&kind(0.1), 10, 0, 1, seed).into_iter())
+                .chain(group(&kind(0.5), 20, 1, 2, seed + 1))
+                .chain(group(&kind(0.9), 160, 2, 3, seed + 2))
+                .collect();
+            for (k, &(l, owner, size)) in bridges.iter().enumerate() {
+                v.extend(group(&kind(size), 6, l, owner, seed + 3 + k as u64));
+            }
+            v
+        };
+        t.detect(0, &day(1, &[]), &p, name);
+        assert_eq!(t.species.len(), 3, "three kinds");
+        let id_of = |t: &SpeciesTracker, l: u32| t.species.iter().find(|s| s.main_lineage() == Some(l)).unwrap().id;
+        let (a, c, e) = (id_of(&t, 0), id_of(&t, 1), id_of(&t, 2));
+        // Day 5: intermediates join A and C into one; A, the smaller, merges.
+        let ac = [(0, 1, 0.2), (0, 1, 0.3), (0, 1, 0.4)];
+        t.detect(5, &day(10, &ac), &p, name);
+        let sa = &t.species[a as usize];
+        assert_eq!(
+            sa.merged_into,
+            Some(c),
+            "{:?}",
+            t.species.iter().map(|s| (s.id, s.merged_into)).collect::<Vec<_>>()
+        );
+        assert_eq!(sa.adults, 0.0);
+        assert!(sa.lineages.iter().all(|l| l.1 == 0.0), "a merged species counts no lineage: {:?}", sa.lineages);
+        // Day 10: C (with A's members) joins E, the larger: both A and C
+        // read "merged into E".
+        let all = [(0, 1, 0.2), (0, 1, 0.3), (0, 1, 0.4), (1, 2, 0.6), (1, 2, 0.7), (1, 2, 0.8)];
+        t.detect(10, &day(20, &all), &p, name);
+        let state: Vec<_> = t.species.iter().map(|s| (s.id, s.merged_into, s.adults)).collect();
+        assert_eq!(t.species[c as usize].merged_into, Some(e), "{state:?}");
+        assert_eq!(t.species[a as usize].merged_into, Some(e), "the chain points at the survivor");
+        // No lineage is counted in two living species.
+        let mut counted: BTreeMap<u32, u32> = BTreeMap::new();
+        for sp in &t.species {
+            for &(l, n) in &sp.lineages {
+                if n > 0.0 {
+                    *counted.entry(l).or_default() += 1;
+                }
+            }
+        }
+        assert!(counted.values().all(|&n| n == 1), "{counted:?}");
     }
 
     #[test]

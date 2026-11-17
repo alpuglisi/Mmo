@@ -215,8 +215,13 @@ impl World {
         // A possessed organism's order moves it in sub-steps
         // (`World::substep`); the tick's own move is the last of them.
         let frac = if intent.action == Action::Ordered { self.substep_frac() } else { 1.0 };
+        // Under a player's migration order, it keeps off ice that would
+        // drown it if it melted (a frozen lake looks like a short cut).
+        let wary = intent.action == Action::Migrate
+            && !self.migrate_orders.is_empty()
+            && self.migrate_orders.contains_key(&(o.owner, o.group));
         match intent.target {
-            Some(target) => self.step_toward(o, chase.unwrap_or(target), intent.sprint, frac, scratch, paths),
+            Some(target) => self.step_toward(o, chase.unwrap_or(target), intent.sprint, frac, wary, scratch, paths),
             None => 0.0,
         }
     }
@@ -395,10 +400,16 @@ impl World {
     /// Move organism `i` toward `target` (see `step_toward`), `frac` of a
     /// tick's movement.
     pub(super) fn move_toward(&mut self, i: usize, target: Vec2, sprint: bool, frac: f32) -> f32 {
+        self.move_toward_with(i, target, sprint, frac, false)
+    }
+
+    /// [`Self::move_toward`], keeping off ice traps if `wary` (as under a
+    /// migration order).
+    pub(super) fn move_toward_with(&mut self, i: usize, target: Vec2, sprint: bool, frac: f32, wary: bool) -> f32 {
         let mut orgs = std::mem::take(&mut self.organisms);
         let mut scratch = std::mem::take(&mut self.path_scratch);
         let mut paths = PathCount::default();
-        let moved = self.step_toward(&mut orgs[i], target, sprint, frac, &mut scratch, &mut paths);
+        let moved = self.step_toward(&mut orgs[i], target, sprint, frac, wary, &mut scratch, &mut paths);
         self.organisms = orgs;
         self.path_scratch = scratch;
         paths.add_to(&mut self.counters);
@@ -434,19 +445,22 @@ impl World {
     /// Steer `o` toward `target`, following or planning a route (A* in
     /// `scratch`, searches counted in `paths`) when the way is blocked, by
     /// `frac` of a tick's movement (1 except for possession sub-steps).
-    /// Touches nothing but `o`, so the parallel apply can run it for many
-    /// organisms at once. Returns the distance moved.
+    /// A `wary` walker treats ice it would drown under as blocked
+    /// ([`ice_trap`]). Touches nothing but `o`, so the parallel apply can
+    /// run it for many organisms at once. Returns the distance moved.
+    #[allow(clippy::too_many_arguments)]
     fn step_toward(
         &self,
         o: &mut Organism,
         target: Vec2,
         sprint: bool,
         frac: f32,
+        wary: bool,
         scratch: &mut PathScratch,
         paths: &mut PathCount,
     ) -> f32 {
         let from = o.pos;
-        let moved = self.step_toward_inner(o, target, sprint, frac, scratch, paths);
+        let moved = self.step_toward_inner(o, target, sprint, frac, wary, scratch, paths);
         // Facing follows the last movement (`Organism::heading`).
         if moved > 0.0 {
             let dir = (o.pos - from).norm();
@@ -458,12 +472,14 @@ impl World {
     }
 
     /// [`Self::step_toward`] without the heading update.
+    #[allow(clippy::too_many_arguments)]
     fn step_toward_inner(
         &self,
         o: &mut Organism,
         target: Vec2,
         sprint: bool,
         frac: f32,
+        wary: bool,
         scratch: &mut PathScratch,
         paths: &mut PathCount,
     ) -> f32 {
@@ -491,8 +507,10 @@ impl World {
         // step is blocked (flyers only meet storms, which ground everything).
         // Short sprints (fleeing, the last lunge at prey) stay greedy.
         let pathing = !stranded && !fly && self.config.balance.path_nodes >= 1.0;
+        let wary = wary && !fly;
+        let trap = |p: Vec2| wary && ice_trap(&body, self.map.tile_at(p));
         if pathing {
-            if let Some(moved) = self.follow_path(o, target, step, effort) {
+            if let Some(moved) = self.follow_path(o, target, step, effort, wary) {
                 return moved;
             }
         }
@@ -503,6 +521,8 @@ impl World {
             let dest = self.map.clamp(pos + dd * step);
             let rule = if stranded {
                 Traverse::Passable { speed: 0.3, energy: 2.0 }
+            } else if trap(dest) {
+                Traverse::Blocked
             } else {
                 let rule = self.map.traverse_at(&body, dest, fly);
                 // Flyers ride or fight the wind; gliders launch from height.
@@ -523,7 +543,7 @@ impl World {
                 let new_pos = self.map.clamp(pos + dd * dist);
                 // The end point can fall short of the checked tile (or cut a
                 // corner): never step onto a tile the body can't use.
-                if stranded || self.map.traverse_at(&body, new_pos, fly) != Traverse::Blocked {
+                if stranded || (self.map.traverse_at(&body, new_pos, fly) != Traverse::Blocked && !trap(new_pos)) {
                     o.pos = new_pos;
                     o.needs.energy = (o.needs.energy - effort.cost(dist, e)).max(0.0);
                     if fly && air.storm() {
@@ -533,8 +553,8 @@ impl World {
                 }
             }
             // The way straight ahead is blocked: find a way around.
-            if k == 0 && can_plan && self.plan_path(o, target, scratch, paths) {
-                if let Some(moved) = self.follow_path(o, target, step, effort) {
+            if k == 0 && can_plan && self.plan_path(o, target, wary, scratch, paths) {
+                if let Some(moved) = self.follow_path(o, target, step, effort, wary) {
                     return moved;
                 }
             }
@@ -564,7 +584,14 @@ impl World {
     /// it on the organism. A failed search is kept too, so it isn't repeated
     /// until the terrain changes (on the hour) or the target moves. True if
     /// there is a route to follow, possibly partial.
-    fn plan_path(&self, o: &mut Organism, target: Vec2, scratch: &mut PathScratch, paths: &mut PathCount) -> bool {
+    fn plan_path(
+        &self,
+        o: &mut Organism,
+        target: Vec2,
+        wary: bool,
+        scratch: &mut PathScratch,
+        paths: &mut PathCount,
+    ) -> bool {
         let epoch = self.tick / self.config.ticks_per_hour();
         if let Some(p) = &o.path {
             if p.failed && p.epoch == epoch && p.serves(o.pos, target) {
@@ -580,7 +607,12 @@ impl World {
             from,
             target,
             budget,
-            |g, t| enter_cost(traverse(&body, g, t, &Weather::still(t.wind), false)),
+            |g, t| {
+                if wary && ice_trap(&body, t) {
+                    return None;
+                }
+                enter_cost(traverse(&body, g, t, &Weather::still(t.wind), false))
+            },
             &mut path.waypoints,
         );
         path.goal = target;
@@ -599,7 +631,7 @@ impl World {
     /// dropped, if it has no route that still serves the target, has been
     /// pushed off it, or the terrain ahead has closed (ice melted); the
     /// caller then steers greedily, re-planning if the direct way is blocked.
-    fn follow_path(&self, o: &mut Organism, target: Vec2, step: f32, effort: Effort) -> Option<f32> {
+    fn follow_path(&self, o: &mut Organism, target: Vec2, step: f32, effort: Effort, wary: bool) -> Option<f32> {
         let path = o.path.as_mut()?;
         let first = path.next_tile()?;
         let pos = o.pos;
@@ -608,6 +640,9 @@ impl World {
         let center = |k: u32| Map::tile_center(k as usize % w, k as usize / w);
         let rule = |k: u32| {
             let t = &self.map.tiles[k as usize];
+            if wary && ice_trap(&body, t) {
+                return Traverse::Blocked;
+            }
             traverse(&body, &self.map.ground()[k as usize], t, &Weather::still(t.wind), false)
         };
         let (cx, cy) = self.map.tile_coords(pos);
@@ -1472,6 +1507,16 @@ impl World {
         o.needs.hunger = 30.0;
         self.insert(o)
     }
+}
+
+/// Ice over water too deep for `body` to stand in or swim if the ice
+/// went: a tile a migrating group keeps off, since it drowns there at the
+/// melt. The water test is `terrain::passable`'s.
+pub(super) fn ice_trap(body: &crate::stats::Body, t: &crate::terrain::Tile) -> bool {
+    t.ice > 0.0
+        && t.water_depth > 0.0
+        && t.water_depth > body.height.max(0.1) * 0.8
+        && body.swim < 0.25 + 0.5 * t.current
 }
 
 #[cfg(test)]

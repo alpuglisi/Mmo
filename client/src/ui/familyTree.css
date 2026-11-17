@@ -35,3 +35,6 @@
   .ft-wide .ft-branch { margin-left: calc(12px * var(--depth, 0)); }
   .ft-wide .ft-branch::before { left: -10px; top: 26px; width: 8px; height: 0; border-left: 0; border-radius: 0; }
 }
+
+/* The Share bar (share/familyShare.ts). */
+.ft-share { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }

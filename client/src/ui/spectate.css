@@ -1,0 +1,70 @@
+/* Spectator mode (ui/spectate.ts): the map fills the window, the panel sits
+   beside it in landscape and under it in portrait. `.sp-stream` is the
+   stream layout: no controls, larger type. */
+
+html.spectate-page, html.spectate-page body { overflow: hidden; }
+
+.spectate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 30vw);
+  height: 100vh;
+  height: 100dvh;
+  background: #0d1117;
+  color: #e6edf3;
+}
+
+.sp-stage { position: relative; min-width: 0; min-height: 0; }
+.sp-map { display: block; width: 100%; height: 100%; }
+
+.sp-clock {
+  position: absolute; left: 12px; top: 12px;
+  padding: 6px 12px; border-radius: 999px;
+  background: rgba(13, 17, 23, 0.78); font-weight: 600;
+}
+
+.sp-banner {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+  max-width: calc(100% - 24px); padding: 8px 16px; border-radius: 10px;
+  background: rgba(13, 17, 23, 0.85); border: 2px solid #f0883e;
+  font-weight: 700; text-align: center;
+}
+.sp-banner[data-kind='severe_winter'] { border-color: #a5d6ff; }
+.sp-banner[data-kind='megadrought'] { border-color: #d29922; }
+.sp-banner[data-kind='epidemic'] { border-color: #bc8cff; }
+.sp-banner[data-kind='flood_year'] { border-color: #58a6ff; }
+
+.sp-panel {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 14px; overflow-y: auto; min-height: 0;
+  border-left: 1px solid #30363d; background: #11161d;
+}
+.sp-follow { text-align: center; }
+.sp-portrait { width: 100%; max-width: 360px; aspect-ratio: 36 / 26; height: auto; }
+.sp-name { margin: 4px 0 0; font-size: 1.4rem; }
+.sp-owner { margin: 2px 0; }
+.sp-facts { margin: 4px 0; font-weight: 600; color: #7ee787; }
+.sp-section h3 { margin: 0 0 6px; font-size: 0.95rem; color: #9aa7b4; }
+.sp-chart { width: 100%; height: auto; aspect-ratio: 60 / 22; }
+.sp-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.sp-list li { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.sp-list li.sp-on .sp-pick { font-weight: 700; color: #e6edf3; }
+.sp-swatch { width: 14px; height: 14px; border-radius: 50%; }
+.sp-pick {
+  all: unset; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c9d1d9;
+  min-height: 24px; line-height: 24px;
+}
+.sp-pick:focus-visible { outline: 2px solid #58a6ff; }
+.sp-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sp-brand { margin-top: auto; }
+
+@media (orientation: portrait) {
+  .spectate { grid-template-columns: 1fr; grid-template-rows: minmax(0, 58fr) minmax(0, 42fr); }
+  .sp-panel { border-left: 0; border-top: 1px solid #30363d; }
+  .sp-follow { display: grid; grid-template-columns: 42% 1fr; grid-template-rows: auto auto 1fr; text-align: left; column-gap: 12px; }
+  .sp-portrait { grid-row: 1 / span 3; }
+}
+
+.sp-stream { font-size: 18px; }
+.sp-stream .sp-name { font-size: 1.7rem; }
+.sp-stream .sp-clock { font-size: 1.2rem; }
+.sp-stream .sp-banner { font-size: 1.25rem; }
