@@ -72,6 +72,9 @@ pub struct PathScratch {
     /// field.
     nodes: Vec<Node>,
     heap: BinaryHeap<Reverse<(u32, u32)>>,
+    /// The last search's tile closest to its goal, other than the start
+    /// ([`PathScratch::nearest`]).
+    nearest: Option<u32>,
 }
 
 /// A search's state of one tile (`PathScratch::nodes`).
@@ -146,7 +149,38 @@ impl PathScratch {
         cost: impl Fn(&Ground, &Tile) -> Option<f32>,
         out: &mut Vec<u32>,
     ) -> Outcome {
+        self.search_impl(map, from, to, budget, cost, out, true)
+    }
+
+    /// [`PathScratch::search`], but a goal with no tile to stand on next to
+    /// it is searched for anyway, so that [`PathScratch::nearest`] says how
+    /// close a walker can get (for one-off searches: it explores everything
+    /// reachable within the budget).
+    pub fn search_toward(
+        &mut self,
+        map: &Map,
+        from: Vec2,
+        to: Vec2,
+        budget: usize,
+        cost: impl Fn(&Ground, &Tile) -> Option<f32>,
+        out: &mut Vec<u32>,
+    ) -> Outcome {
+        self.search_impl(map, from, to, budget, cost, out, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn search_impl(
+        &mut self,
+        map: &Map,
+        from: Vec2,
+        to: Vec2,
+        budget: usize,
+        cost: impl Fn(&Ground, &Tile) -> Option<f32>,
+        out: &mut Vec<u32>,
+        give_up_offshore: bool,
+    ) -> Outcome {
         out.clear();
+        self.nearest = None;
         let w = map.width;
         let n = w * map.height;
         self.begin(n);
@@ -166,7 +200,7 @@ impl PathScratch {
                     shore |= self.nodes[y * w + x].enter.is_finite();
                 }
             }
-            if !shore {
+            if !shore && give_up_offshore {
                 return Outcome::None;
             }
         }
@@ -234,6 +268,7 @@ impl PathScratch {
                 }
             }
         }
+        self.nearest = (best.1 != start).then_some(best.1 as u32);
         let (end, outcome) = match found {
             Some(e) => (e, Outcome::Found),
             None if best.1 != start && expanded > budget => (best.1, Outcome::Partial),
@@ -245,6 +280,15 @@ impl PathScratch {
             k = self.nodes[k].parent as usize;
         }
         outcome
+    }
+
+    /// The tile the last [`PathScratch::search`] reached nearest its goal
+    /// (by the search's distance estimate), other than the start: where a
+    /// walker gets closest to a goal it has no route to. `None` if the
+    /// search never left the start (or gave up at once, a goal far out in
+    /// the water).
+    pub fn nearest(&self) -> Option<u32> {
+        self.nearest
     }
 
     fn relax(&mut self, i: usize, j: usize, g: f32, h: f32) {

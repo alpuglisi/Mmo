@@ -683,6 +683,13 @@ export class WorldView {
       }
       if (grp.migration) {
         const [mx, my] = grp.migration;
+        // The planned way there (around water and thin ice).
+        const route = grp.route ?? [];
+        if (route.length >= 2) {
+          g.moveTo(route[0][0], route[0][1]);
+          for (const [rx, ry] of route.slice(1)) g.lineTo(rx, ry);
+          g.stroke({ width: 1.5 * px, color, alpha: 0.55 });
+        }
         g.circle(mx, my, 8 * px).stroke({ width: 2 * px, color });
         g.moveTo(mx - 5 * px, my).lineTo(mx + 5 * px, my).moveTo(mx, my - 5 * px).lineTo(mx, my + 5 * px).stroke({ width: 2 * px, color });
       }

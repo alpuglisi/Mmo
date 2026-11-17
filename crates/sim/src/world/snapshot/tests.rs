@@ -225,6 +225,11 @@ fn restored_world_continues_exactly() {
     // Player 4's main group answers a rally.
     let rp = a.organisms.iter().find(|o| o.alive && o.owner == 4 && o.group == 0).expect("player 4 alive").pos;
     a.rally_group(4, 0, rp).unwrap();
+    // The main group's migration ended on arrival; give it another to carry
+    // across the snapshot.
+    if a.migration_order(2, 0).is_none() {
+        a.command_migrate_group(2, 0, Vec2::new(54.0, 54.0)).unwrap();
+    }
 
     let bytes = a.snapshot();
     let mut b = World::restore(&bytes, Some(a.map.terrain().clone())).expect("restore");
