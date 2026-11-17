@@ -1096,7 +1096,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // The cards (and their buttons) are rebuilt only when the buttons
     // change; sizes and orders are updated in place, so a button isn't
     // replaced under the cursor at every birth.
-    const key = JSON.stringify([groupChoice, groups.map((g) => [g.id, !!g.territory, !!g.rally, claimWait(g, tick) > 0, g.members === 0, canSplit(g, groups), !!g.home_range])]);
+    const key = JSON.stringify([groupChoice, groups.map((g) => [g.id, !!g.territory, !!g.rally, claimWait(g, tick) > 0, g.members === 0, canSplit(g, groups), !!g.home_range, g.protection_left_min])]);
     keyed(groupsEl, key, () => groups.map((g) => {
       const wait = claimWait(g, tick);
       const swatch = h('span', { class: 'swatch', style: `background:${cssColor(groupColor(g.id))}` });

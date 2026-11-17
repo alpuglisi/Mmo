@@ -1008,8 +1008,6 @@ async fn client_session(
     let local = |msg: ServerMsg| weak.try_send(msg);
     let rate = app.limiters.limits.commands;
     let mut bucket = Bucket::new(rate, Instant::now());
-    let group_rate = app.limiters.limits.group_commands;
-    let mut group_bucket = Bucket::new(group_rate, Instant::now());
     let mut check = tokio::time::interval(session_check_interval(&app));
     check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -1038,7 +1036,13 @@ async fn client_session(
                     if let Err(wait) = bucket
                         .take(rate, now)
                         .and_then(|_| app.limiters.ip_commands.check_at(&ip, now))
-                        .and_then(|_| if group_change { group_bucket.take(group_rate, now) } else { Ok(()) })
+                        .and_then(|_| {
+                            if group_change {
+                                app.limiters.group_commands.check_at(&session.player, now)
+                            } else {
+                                Ok(())
+                            }
+                        })
                     {
                         let msg = format!("too many commands; retry in {} ms", wait.as_millis().max(1));
                         local(ServerMsg::err(env.id, name, ErrorInfo::new("rate_limited", msg)));

@@ -891,7 +891,7 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one; `heading`, its facing as one of 32 directions, and `vision`, its eyes for the vision cones: see *Vision cones* below), `nearby` (others in the window, also with `look`; never a heading or eyes), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor` |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
@@ -1051,9 +1051,15 @@ that logging out never pays as a strategy:
   world tracks its own connections, so a player on world A is offline in
   world B. A restart counts as everyone logging out; a spell already running
   keeps its clock (the spells are in the saved game, `game::offline`), so a
-  restart never hands out a fresh 12 hours. A new spell needs a login in
-  between; there is no cooldown beyond that, since the floor below already
-  keeps protection from helping a lineage that is doing well.
+  restart never hands out a fresh 12 hours. **A rolling budget:** a lineage
+  gets at most 12 hours of protection in any 24 (twice the cap), however
+  often its owner reconnects: a new spell's clock starts at the protection
+  already used in the last 24 hours, for the surviving core and the home
+  range alike (`Spell::credit`). A single long night is protected exactly as
+  before; a script reconnecting every 11 hours no longer renews it. The
+  home-range group in the state carries `protection_left_min`, the minutes
+  left if the player logged off now, and the client shows it in the home
+  range's note.
 - **When it applies.** Only while the lineage is down to its last 12 living
   members (agents plus cohort members of abstract regions,
   `ProtectionRules::floor`), checked at each day boundary and whenever the
@@ -2174,9 +2180,10 @@ Checked and judged acceptable:
   OS keeps; whoever has one can already receive those pushes); a WebSocket
   leaves the per-address connection count once upgraded (players are capped
   at 8); `GET /api/metrics` is public; renown passed between two accounts
-  of one person still counts as sales for the season's ranking (wash
-  trading; the economy itself can't be inflated, since every sale is a
-  transfer); `ApiError::internal` still returns the error text (store and
+  of one person still counts as sales for the season's ranking, though with
+  diminishing returns per buyer since the server rules review (the first
+  sale to a buyer counts in full, each further one half the one before;
+  `SeasonTracker::add_sale`); `ApiError::internal` still returns the error text (store and
   channel errors) to the client.
 
 ## Deployment

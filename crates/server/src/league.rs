@@ -283,6 +283,9 @@ pub struct SeasonTracker {
     peak_alive: BTreeMap<PlayerId, u64>,
     species: BTreeMap<PlayerId, u64>,
     sales: BTreeMap<PlayerId, u64>,
+    /// Sales this season by seller, then buyer: each further sale to the
+    /// same buyer counts half the one before (`add_sale`).
+    sale_counts: BTreeMap<PlayerId, BTreeMap<PlayerId, u32>>,
     survived: BTreeMap<PlayerId, u64>,
     /// Bumped by every change to the standings (not saved; see
     /// [`Generation`]).
@@ -373,9 +376,20 @@ impl SeasonTracker {
         }
     }
 
-    pub fn add_sale(&mut self, player: PlayerId, renown: u64) {
-        if player != WILD && renown > 0 {
-            *self.sales.entry(player).or_default() += renown;
+    /// A sale of `renown` by `seller` to `buyer` towards the market
+    /// standing. Each counterparty gives diminishing returns within a
+    /// season: the first sale to a buyer counts in full, each further one
+    /// half the one before, so trading back and forth with a second account
+    /// gains little. A sale to oneself counts nothing.
+    pub fn add_sale(&mut self, seller: PlayerId, buyer: PlayerId, renown: u64) {
+        if seller == WILD || seller == buyer || renown == 0 {
+            return;
+        }
+        let n = self.sale_counts.entry(seller).or_default().entry(buyer).or_default();
+        let credit = renown.checked_shr(*n).unwrap_or(0);
+        *n = n.saturating_add(1);
+        if credit > 0 {
+            *self.sales.entry(seller).or_default() += credit;
             self.generation.bump();
         }
     }
@@ -670,8 +684,8 @@ mod tests {
         t.record_day(&day(2, &[(1, 0.125), (2, 0.25), (3, 0.625)], &[(1, 45), (2, 10), (3, 5)]));
         t.add_species(2);
         t.add_species(WILD);
-        t.add_sale(1, 30);
-        t.add_sale(2, 30);
+        t.add_sale(1, 9, 30);
+        t.add_sale(2, 9, 30);
         t.add_survival(3);
         let r = t.finish("w", 144, 1000, name);
         assert_eq!(r.head.days, 3);
@@ -733,9 +747,9 @@ mod tests {
         changed(&t, true);
         t.add_species(WILD);
         changed(&t, false);
-        t.add_sale(2, 10);
+        t.add_sale(2, 9, 10);
         changed(&t, true);
-        t.add_sale(2, 0);
+        t.add_sale(2, 9, 0);
         changed(&t, false);
         t.add_survival(3);
         changed(&t, true);
@@ -746,13 +760,38 @@ mod tests {
         assert_eq!(restored, t);
     }
 
+    /// The market standing gives diminishing returns per buyer: full credit
+    /// for the first sale to a buyer, half for the next, and so on; another
+    /// buyer starts again at full; a sale to oneself counts nothing.
+    #[test]
+    fn repeated_sales_to_one_buyer_count_less() {
+        let mut t = SeasonTracker::new(1, 0, 3);
+        for _ in 0..4 {
+            t.add_sale(1, 2, 80);
+        }
+        t.add_sale(1, 3, 80);
+        t.add_sale(1, 1, 1000);
+        let market = |t: &SeasonTracker| {
+            let s = t.standings(name);
+            let m = s.iter().find(|s| s.category == Category::Market).unwrap();
+            m.rows.iter().find(|r| r.player == 1).map(|r| r.value)
+        };
+        assert_eq!(market(&t), Some((80 + 40 + 20 + 10 + 80) as f64));
+        // A new season starts the counts over.
+        let mut n = t.next(3, 3);
+        n.add_sale(1, 2, 80);
+        assert_eq!(market(&n), Some(80.0));
+        let restored: SeasonTracker = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(restored, t);
+    }
+
     /// A live season's pages are [`page`]'s, own row included.
     #[test]
     fn live_pages_match_page() {
         let mut t = SeasonTracker::new(1, 0, 2);
         let shares: Vec<(PlayerId, f64)> = (1..=30).map(|p| (p, p as f64 / 1000.0)).collect();
         t.record_day(&day(0, &shares, &[(4, 9), (5, 3)]));
-        t.add_sale(7, 5);
+        t.add_sale(7, 9, 5);
         let s = t.standings(name);
         let key = LiveKey { season: 1, generation: t.generation(), days_left: 1, names: 0 };
         let live = LiveSeason::new(key, "w", &t, s.clone());

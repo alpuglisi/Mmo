@@ -319,6 +319,31 @@ async fn group_commands_over_the_socket_and_their_rate_limit() {
     srv.shutdown().await;
 }
 
+/// The group-command rate is per player: a second connection of the same
+/// player shares the first one's budget (it used to have its own, so 8
+/// connections gave 8 times the rate).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_group_command_rate_is_per_player() {
+    let mut cfg = config();
+    cfg.limits = Limits { group_commands: Rate::new(0.01, 1.0), ..Limits::unlimited() };
+    let srv = server(cfg).await;
+    let addr = srv.addr;
+    let ann = register(addr, "ann").await;
+    found(addr, &ann, "Herd").await;
+    let mut a = ws(addr, &ann).await;
+    wait_for(&mut a, "welcome", |v| v["type"] == "welcome").await;
+    let mut b = ws(addr, &ann).await;
+    wait_for(&mut b, "welcome", |v| v["type"] == "welcome").await;
+    let abandon = |id: u64| Message::Text(json!({"type": "abandon_territory", "group": 0, "id": id}).to_string());
+    a.send(abandon(1)).await.unwrap();
+    let r = wait_for(&mut a, "result", |v| v["type"] == "result" && v["id"] == 1).await;
+    assert_ne!(r["error"]["code"], "rate_limited", "{r}");
+    b.send(abandon(2)).await.unwrap();
+    let r = wait_for(&mut b, "result", |v| v["type"] == "result" && v["id"] == 2).await;
+    assert_eq!(r["error"]["code"], "rate_limited", "the second connection had its own budget: {r}");
+    srv.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_sessions_expire_and_close_the_socket() {
     // Wide margins, so a slow machine can't fake either outcome: commands are

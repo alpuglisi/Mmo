@@ -278,6 +278,8 @@ export interface GroupView {
   obedience?: number;
   /** Its territory is the player's home range, shielded while they are offline (absent: no). */
   home_range?: boolean;
+  /** On the home range: minutes of offline protection left (at most 12 hours in any 24, however often you reconnect; absent from older servers). */
+  protection_left_min?: number;
 }
 
 /** Someone else's organism inside the view window: only what can be seen. */
