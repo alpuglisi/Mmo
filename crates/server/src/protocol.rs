@@ -674,6 +674,24 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
     }
 }
 
+/// One finished mating of `GET /api/matings/history`: a closed offer (with
+/// its outcome or error), or a mating within the player's own lineage (no
+/// offer). Newest first; kept in memory, so it survives reloads but not a
+/// server restart.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MatingRecord {
+    pub tick: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<OfferView>,
+    /// The player's organism and the partner (for an offer, as in the offer).
+    pub mine: OrgId,
+    pub partner: OrgId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<MatingOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorInfo>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct MatingOutcome {
     pub mismatch: f32,
@@ -1046,6 +1064,12 @@ pub struct WorldSummary {
     /// Whole days until winter; 0 during winter.
     #[serde(default)]
     pub days_to_winter: u32,
+    /// Days in a year (four seasons of a quarter each; offers expire when the season changes).
+    #[serde(default)]
+    pub days_per_year: u32,
+    /// Ticks in a game day.
+    #[serde(default)]
+    pub ticks_per_day: u32,
     /// A lineage founded now starts provisioned for winter (fed, fat
     /// reserves full: `GameConfig::winter_provision`).
     #[serde(default)]

@@ -4,12 +4,16 @@
 // ranked seasons (hall of fame) and the world chronicle (species, eras,
 // catastrophes, achievements).
 
+import { DEFAULT_TICKS_PER_DAY, gameAndReal, ticksToNextSeason } from './duration';
+import { reconcile, setText } from './reconcile';
+import { friendlyError, MEETING_TILES } from './friendlyErrors';
+import { historyRows, offerLine } from './matingHistory';
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
 import { buildFamilyTree, type FamilyModel } from '../familyTree';
 import { renderFamilyTree } from './familyTree';
 import { exposeCards, familyShareBar } from '../share/familyShare';
-import type { AlertPrefs, ClientMsg, LineageStats, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
+import type { AlertPrefs, ClientMsg, LineageStats, MatingOutcome, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
 import { WILD } from '../protocol';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, terrainSummary, type TerrainGrid } from '../world/terrain';
@@ -23,7 +27,7 @@ import { icon, type IconName } from './icons';
 import { renderAlertPrefs, renderDashboard, renderFeed } from './dashboard';
 import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
 import { renderCurrentSeason, renderSeasons as renderRanked, seasonKey, type SeasonsData } from './seasons';
-import { compatSummary } from './mating';
+import { compatSummary, type PairContext } from './mating';
 import { buildMarket } from './market';
 import { balanceText } from './marketData';
 import { createOnboarding } from './onboarding';
@@ -200,8 +204,15 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const terrainLegend = h('div', { class: 'legend terrain-legend', id: 'terrain-legend' });
   // Possess / release the selected own organism without opening the panel (phones).
   const fab = h('button', { class: 'fab', id: 'fab-possess', hidden: true });
+  // While possessing: who, how to walk and select, and Release always in reach (not only in the inspector).
+  const possessText = h('span', { class: 'possess-text' });
+  const possessInspect = h('button', { class: 'secondary small', id: 'possess-inspect', type: 'button' }, 'Inspect');
+  const possessRelease = h('button', { class: 'small danger', id: 'possess-release', type: 'button' }, 'Release');
+  const possessBar = h('div', { class: 'possess-bar', id: 'possess-bar', hidden: true, role: 'status' }, possessText, possessInspect, possessRelease);
+  // A tap on overlapping animals (touch): the most relevant one is picked; these chips pick another.
+  const chooser = h('div', { class: 'pick-chooser', id: 'pick-chooser', hidden: true, role: 'group', 'aria-label': 'Animals here' });
   const legends = h('div', { class: 'legends', id: 'legends' }, terrainLegend, legend);
-  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, hint, legends, fab, toasts);
+  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, hint, legends, fab, possessBar, chooser, toasts);
   // The legend is collapsible: hidden by default (it covers part of the map;
   // the tour points to its button), the choice remembered on this device.
   function setLegend(on: boolean, remember: boolean): void {
@@ -237,7 +248,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   let seenFeed = 0;
   const sheetHandle = h('button', { class: 'sheet-handle narrow-only', id: 'sheet-handle', 'aria-label': 'Show or hide the panel' });
   const sidebar = h('aside', { class: 'sidebar', id: 'sidebar' }, sheetHandle, h('nav', { class: 'tabs', id: 'tabbar' }, ...tabBtns), ...Object.values(tabs));
-  const el = h('div', { class: 'screen game' }, top, h('div', { class: 'game-body' }, stageWrap, sidebar));
+  const el = h('div', { class: 'screen game starting' }, top, h('div', { class: 'game-body' }, stageWrap, sidebar));
 
   // On phones the panels are a bottom sheet: the tab bar always shows; the
   // sheet opens on a tab tap (or a selection) and closes on a second tap of
@@ -255,17 +266,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   cleanups.push(() => narrowQuery.removeEventListener('change', onNarrowChange));
 
   let tab: Tab = 'lineage';
+  /**
+   * False until the whole screen is built. The tabs are on screen while it
+   * awaits the canvas and the terrain, and the tab refreshes and panel
+   * renderers use parts declared further down: before then a tab click only
+   * switches the visible panel (once ready, the chosen tab loads), and the map
+   * toolbar ignores clicks (`.starting`).
+   */
+  let ready = false;
   function tabClicked(t: Tab): void {
     if (narrow() && sheetOpen && tab === t) return setSheet(false);
     setSheet(true);
     showTab(t);
   }
-  // The screen is on the page (and its tabs clickable) before the rest of
-  // this function has run past its awaits: a tab shown meanwhile only
-  // switches the panel, and its data loads once everything is set up (the
-  // refreshes below use state declared further down: playtest 1's startup
-  // "Cannot access … before initialization").
-  let ready = false;
   function showTab(t: Tab): void {
     tab = t;
     for (const b of tabBtns) b.classList.toggle('active', b.dataset.tab === t);
@@ -278,6 +291,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (t === 'seasons') void refreshRanked();
     watchSeason(t === 'seasons');
     if (t === 'market') void market.refresh();
+    if (t === 'matings') void refreshMatingHistory();
     renderPanels(true);
   }
 
@@ -317,7 +331,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const key = JSON.stringify(opts);
     if (key !== groupMenuKey) {
       groupMenuKey = key;
-      groupSelect.replaceChildren(...opts.map((o) => h('option', { value: o.value }, o.text)));
+      // In place: member counts change at every birth, and a rebuild closed an open list.
+      reconcile(groupSelect, opts, (o) => o.value, (o) => h('option', { value: o.value }) as HTMLOptionElement, (opt, o) => setText(opt, o.text));
     }
     const valid = validChoice(groupChoice, groups);
     if (valid !== groupChoice || groupSelect.value !== String(valid)) setGroupChoice(valid);
@@ -374,7 +389,57 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       : p ? `Possessing #${p.id}: ${tap.toLowerCase()} the map to walk there.`
       : touch ? 'Tap an organism to inspect it, long-press yours to possess. Drag to pan, pinch to zoom.'
       : 'Click an organism to inspect it (hold to possess yours). Drag to pan, wheel to zoom.';
+    // The possession bar says it all while possessing.
+    hint.hidden = !!p && mode === 'select';
     renderFab();
+    renderPossessBar();
+  }
+
+  function renderPossessBar(): void {
+    const p = possessed();
+    possessBar.hidden = !p;
+    if (!p) return;
+    const touch = narrow() || window.matchMedia('(pointer: coarse)').matches;
+    possessBar.dataset.org = String(p.id);
+    setText(possessText, touch
+      ? `Possessing #${p.id}: tap to walk (even onto other animals); long-press one to select it.`
+      : `Possessing #${p.id}: click to walk (even onto other animals); Shift-click or hold to select one.`);
+  }
+  possessRelease.addEventListener('click', () => {
+    const id = Number(possessBar.dataset.org);
+    if (id) void send({ type: 'release', organism: id });
+  });
+  possessInspect.addEventListener('click', () => {
+    const id = Number(possessBar.dataset.org);
+    if (!id) return;
+    model.select(id);
+    if (narrow()) setSheet(true);
+    showTab('organism');
+  });
+
+  let chooserTimer: ReturnType<typeof setTimeout> | undefined;
+  function hideChooser(): void {
+    clearTimeout(chooserTimer);
+    chooser.hidden = true;
+  }
+  /** Several animals under a finger: chips to pick another than the one chosen. */
+  function showChooser(ids: OrgId[], chosen: OrgId): void {
+    const s = model.state;
+    const label = (id: OrgId) => {
+      const own = s?.organisms.find((o) => o.id === id);
+      if (own) return `#${id} ${own.sex === 'female' ? '♀' : '♂'} yours`;
+      const n = s?.nearby?.find((o) => o.id === id);
+      return `#${id} ${n?.owner === WILD ? 'wild' : 'other player'}`;
+    };
+    chooser.replaceChildren(h('span', { class: 'muted small' }, 'Here:'),
+      ...ids.slice(0, 6).map((id) => h('button', {
+        type: 'button', class: `chip${id === chosen ? ' active' : ''}`, 'data-org': id,
+        onclick: () => { model.select(id); hideChooser(); if (!narrow() || sheetOpen) showTab('organism'); },
+      }, label(id))),
+      h('button', { type: 'button', class: 'chip close', 'aria-label': 'Close', onclick: hideChooser }, '×'));
+    chooser.hidden = false;
+    clearTimeout(chooserTimer);
+    chooserTimer = setTimeout(hideChooser, 8000);
   }
 
   /** The floating Possess / Release button for the selected own organism. */
@@ -464,18 +529,30 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       }
       return;
     }
+    hideChooser();
+    const p = possessed();
+    // Possessing: a click walks there, even onto other animals in a herd;
+    // a modifier click (or a long press) selects, as does a click on the
+    // possessed animal itself.
+    if (p && !c.modifier && c.organism !== p.id) {
+      view.setMoveTarget({ x: c.x, y: c.y });
+      const r = await send({ type: 'order_move', organism: p.id, x: c.x, y: c.y });
+      if (!r.ok) view.rejectMove();
+      return;
+    }
     if (c.organism !== null) {
-      model.select(c.organism);
+      // A tap on overlapping animals picks the most relevant (yours, then the nearest) and offers the others.
+      const pick = c.touch && c.candidates?.length ? c.candidates[0] : c.organism;
+      model.select(pick);
+      if (c.touch && (c.candidates?.length ?? 0) > 1) showChooser(c.candidates!, pick);
       // On phones a selection shows the inspector only if the sheet is up;
       // the floating button covers possess without hiding the map.
       if (!narrow() || sheetOpen) showTab('organism');
       return;
     }
-    const p = possessed();
     if (p) {
-      view.setMoveTarget({ x: c.x, y: c.y });
-      const r = await send({ type: 'order_move', organism: p.id, x: c.x, y: c.y });
-      if (!r.ok) view.rejectMove();
+      // A modifier click on empty ground while possessing: just clear the selection.
+      model.select(null);
     } else {
       model.select(null);
       if (narrow()) setSheet(false);
@@ -490,7 +567,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (own && !own.possessed) await possess(own.id);
       return;
     }
-    await view.onClick(c);
+    // Held on another animal: select it (while possessing, a plain tap would walk).
+    await view.onClick({ ...c, modifier: true });
   };
 
   // Tile map: the whole grid once, then the dynamic layers periodically.
@@ -523,8 +601,15 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       /* try again next time */
     }
   }
+  // The calendar, for countdowns (offers expire when the season changes).
+  let daysPerYear = 0;
+  let ticksPerDay = DEFAULT_TICKS_PER_DAY;
+  const msPerTick = () => view.tickClock.msPerTick;
+  const span = (ticks: number) => gameAndReal(ticks, ticksPerDay, msPerTick());
   try {
     const w = await api.world();
+    if (w.days_per_year) daysPerYear = w.days_per_year;
+    if (w.ticks_per_day) ticksPerDay = w.ticks_per_day;
     view.setWorldSize(w.width, w.height);
     view.centerOn(w.width / 2, w.height / 2);
   } catch {
@@ -536,6 +621,18 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   // Genetics dashboard: fetched while its tab is open (and once now, for the feed).
   let stats: LineageStats | null = null;
+  // Finished matings from the server (survive a reload; include matings
+  // within the lineage and those that closed while the tab was shut).
+  async function refreshMatingHistory(): Promise<void> {
+    try {
+      model.setMatingLog(await api.matingHistory(deps.token));
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) deps.onUnauthorized();
+      // An older server without the endpoint: the history is this session's only.
+    }
+  }
+  void refreshMatingHistory();
+
   async function refreshStats(): Promise<void> {
     try {
       stats = await api.lineageStats(deps.token);
@@ -689,6 +786,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   let renderQueued = false;
   let lastRender = 0;
   function renderPanels(now = false): void {
+    // Its renderers are declared further down (see `ready`).
+    if (!ready) return;
     if (now) {
       lastRender = performance.now();
       renderTopbar();
@@ -863,19 +962,29 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   ]);
 
   function buildMatingForm() {
-    const mine = h('select', { id: 'mating-mine' });
-    const partner = h('input', { id: 'mating-partner', type: 'number', min: 1, placeholder: 'organism id' });
-    const price = h('input', { id: 'mating-price', type: 'number', min: 0, placeholder: 'optional' });
+    const mine = h('select', { id: 'mating-mine' }) as HTMLSelectElement;
+    // The partner: picked from a list (yours and other players' visible
+    // adults, nearest first); typing an id stays possible on a desktop.
+    const partnerPick = h('select', { id: 'mating-partner-pick' }) as HTMLSelectElement;
+    const partner = h('input', { id: 'mating-partner', type: 'number', min: 1, placeholder: 'or type an id' }) as HTMLInputElement;
+    const price = h('input', { id: 'mating-price', type: 'number', min: 0, placeholder: 'optional' }) as HTMLInputElement;
     const submit = h('button', { id: 'mating-submit' }, 'Send request');
     const slots = h('p', { class: 'muted small' });
     // Compatibility of the chosen pair (server `preview_mating`), refreshed
     // when the pair changes and every few seconds (distance, condition).
     const compat = h('p', { id: 'mating-compat', class: 'small compat' });
-    let optionKey = '';
-    let wantMine: OrgId | null = null;
+    let picked = false;
     let previewSeq = 0;
     let previewAt = 0;
     let previewTimer: ReturnType<typeof setTimeout> | undefined;
+    const ownById = (id: number) => model.state?.organisms.find((o) => o.id === id);
+    const ownerName = (p: number) => model.state?.leaderboard.rows.find((r) => r.player === p)?.name ?? `player ${p}`;
+    function pairContext(m: number, p: number): PairContext {
+      const a = ownById(m);
+      const b = ownById(p);
+      const pregnant = a?.pregnant ? a.id : b?.pregnant ? b.id : null;
+      return { ownPair: !!a && !!b, pregnant };
+    }
     async function updateCompat(): Promise<void> {
       const m = Number(mine.value);
       const p = Number(partner.value);
@@ -891,11 +1000,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (seq !== previewSeq) return;
       compat.dataset.pair = `${m}:${p}`;
       if (r.ok) {
-        const c = compatSummary(r.data as MatingPreviewView);
+        const c = compatSummary(r.data as MatingPreviewView, pairContext(m, p));
         compat.textContent = c.text;
         compat.dataset.level = c.level;
       } else {
-        compat.textContent = r.error ? `Can't preview: ${r.error.message}` : '';
+        compat.textContent = r.error ? `Can't preview: ${friendlyError(r.error)}` : '';
         compat.dataset.level = 'bad';
       }
     }
@@ -903,51 +1012,81 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       clearTimeout(previewTimer);
       previewTimer = setTimeout(() => void updateCompat(), 250);
     };
-    mine.addEventListener('change', schedulePreview);
-    partner.addEventListener('input', schedulePreview);
+    mine.addEventListener('change', () => { picked = true; schedulePreview(); });
+    partner.addEventListener('input', () => {
+      partnerPick.value = [...partnerPick.options].some((o) => o.value === partner.value) ? partner.value : '';
+      schedulePreview();
+    });
+    partnerPick.addEventListener('change', () => {
+      if (partnerPick.value) partner.value = partnerPick.value;
+      schedulePreview();
+    });
     submit.addEventListener('click', async () => {
       const m = Number(mine.value);
       const p = Number(partner.value);
-      if (!m || !p) return model.toast('error', 'Pick one of your adults and a partner id.');
+      if (!m || !p) return model.toast('error', 'Pick one of your adults and a partner.');
+      const preg = pairContext(m, p).pregnant;
+      if (preg) return model.toast('error', `#${preg} is already pregnant: pick another female, or wait until she gives birth.`);
       const msg: ClientMsg = { type: 'request_mating', mine: m, partner: p };
       if (price.value !== '') msg.price = Math.max(0, Math.floor(Number(price.value)));
       const r = await send(msg);
-      if (r.ok) {
-        const d = r.data as { offer?: { id: number } } | undefined;
-        model.toast('info', d?.offer ? `Offer ${d.offer.id} sent; waiting for consent.` : 'Mating done within your lineage.');
+      if (!r.ok) {
+        if (r.error) model.toast('error', friendlyError(r.error));
+        return;
+      }
+      const d = r.data as { offer?: { id: number } } | MatingOutcome | undefined;
+      if (d && 'offer' in d && d.offer) {
+        model.toast('info', `Offer ${d.offer.id} sent; waiting for consent.`);
+      } else {
+        const outcome = d as MatingOutcome | undefined;
+        model.addMating({ tick: model.state?.clock.tick ?? 0, mine: m, partner: p, outcome });
+        model.toast('info', outcome?.conceived ? `#${m} × #${p}: conceived.` : `#${m} × #${p}: mated, but not conceived.`);
       }
     });
     function refresh(s: StateView): void {
       const adults = s.organisms.filter((o) => o.matured).sort((a, b) => a.id - b.id);
-      const key = adults.map((o) => `${o.id}${o.pregnant ? 'p' : ''}`).join(',');
-      if (key !== optionKey) {
-        optionKey = key;
-        const keep = wantMine ?? Number(mine.value);
-        mine.replaceChildren(...adults.map((o) => h('option', { value: o.id }, `#${o.id} ${o.sex}${o.pregnant ? ' (pregnant)' : ''} · gen ${o.generation}`)));
-        if (adults.some((o) => o.id === keep)) mine.value = String(keep);
-        wantMine = null;
-        schedulePreview();
-      } else if (Date.now() - previewAt > 3000 && partner.value !== '') {
-        void updateCompat();
+      // Options are updated in place, so an open list stays open and the choice stays put.
+      reconcile(mine, adults, (o) => String(o.id), (o) => h('option', { value: o.id }) as HTMLOptionElement,
+        (opt, o) => setText(opt, `#${o.id} ${o.sex}${o.pregnant ? ' (pregnant)' : ''} · gen ${o.generation}`));
+      if (!picked) {
+        // Nothing chosen yet: not a pregnant female (she can't conceive).
+        const first = adults.find((o) => !o.pregnant) ?? adults[0];
+        if (first && mine.value !== String(first.id)) {
+          mine.value = String(first.id);
+          schedulePreview();
+        }
       }
+      const me = ownById(Number(mine.value));
+      const opposite = (sex: string) => !me || sex !== me.sex;
+      const here = me ? { x: me.x, y: me.y } : view.cam;
+      const dist = (o: { x: number; y: number }) => Math.hypot(o.x - here.x, o.y - here.y);
+      const ownPartners = adults.filter((o) => o.id !== me?.id && opposite(o.sex) && !o.pregnant)
+        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} (yours) · ${dist(o).toFixed(0)} tiles`, d: dist(o) }));
+      const others = (s.nearby ?? []).filter((o) => o.matured && o.owner !== WILD && o.owner !== model.player && opposite(o.sex))
+        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} · ${ownerName(o.owner)} · ${dist(o).toFixed(0)} tiles`, d: dist(o) }));
+      const choices = [{ id: 0, label: ownPartners.length + others.length ? 'Choose a partner…' : 'No partner in sight', d: -1 },
+        ...[...ownPartners, ...others].sort((a, b) => a.d - b.d).slice(0, 40)];
+      if (document.activeElement !== partnerPick) {
+        reconcile(partnerPick, choices, (c) => String(c.id), (c) => h('option', { value: c.id || '' }) as HTMLOptionElement,
+          (opt, c) => setText(opt, c.label));
+        partnerPick.value = [...partnerPick.options].some((o) => o.value === partner.value) ? partner.value : '';
+      }
+      if (Date.now() - previewAt > 3000 && partner.value !== '') void updateCompat();
       slots.textContent = `${s.slots_left} directed-mating slot${s.slots_left === 1 ? '' : 's'} left this season.`;
     }
     const el = h('div', { class: 'form' },
       h('label', {}, 'My adult', mine),
-      h('div', { class: 'row' }, h('label', {}, 'Partner organism', partner), h('label', {}, 'Price', price)),
+      h('label', {}, 'Partner', partnerPick),
+      h('div', { class: 'row' }, h('label', { class: 'partner-id' }, 'Partner id', partner), h('label', {}, 'Price', price)),
       compat,
       h('div', { class: 'row' }, submit), slots,
-      h('p', { class: 'muted small' }, 'Pick a partner on the map and press "Request mating…". Pairs within your own lineage run at once; another player must consent, then the two must meet.'));
+      h('p', { class: 'muted small' }, `Pick a partner from the list, or on the map ("Request mating…"). Within your own lineage the pair mates at once when within ${MEETING_TILES} tiles; another player must agree, then the two must meet.`));
     return {
       el,
       refresh,
-      setMine: (id: OrgId) => { wantMine = id; mine.value = String(id); optionKey = ''; schedulePreview(); },
-      setPartner: (id: OrgId) => { partner.value = String(id); schedulePreview(); },
+      setMine: (id: OrgId) => { picked = true; mine.value = String(id); schedulePreview(); },
+      setPartner: (id: OrgId) => { partner.value = String(id); partnerPick.value = [...partnerPick.options].some((o) => o.value === String(id)) ? String(id) : ''; schedulePreview(); },
     };
-  }
-
-  function offerLine(o: { id: number; mine: OrgId; partner: OrgId; from_name: string; to_name: string; price?: number; status: string }): string {
-    return `#${o.id}: ${o.from_name}'s #${o.mine} × ${o.to_name}'s #${o.partner}${o.price !== undefined ? ` · price ${o.price}` : ''} · ${o.status}`;
   }
 
   /** Possess `mine` and walk it to `partner`'s last seen position: the trip to the meeting. */
@@ -969,6 +1108,13 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (r.ok) model.toast('info', `#${mine} is walking to #${partner}.`);
   }
 
+  /** When open offers lapse: at the next change of season (game and real time). */
+  function offerTime(): string {
+    const tick = model.state?.clock.tick;
+    if (tick === undefined || !daysPerYear) return 'Open offers lapse when the season changes.';
+    return `Lapses when the season changes, in ${span(ticksToNextSeason(tick, ticksPerDay, daysPerYear))}.`;
+  }
+
   function renderMatings(): void {
     const s = model.state;
     if (s) matingForm.refresh(s);
@@ -977,30 +1123,61 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const incoming = all.filter((e) => e.offer.to_player === me && e.offer.status === 'pending');
     const open = all.filter((e) => (e.offer.from_player === me || (e.offer.to_player === me && e.offer.status === 'accepted')) && ['pending', 'accepted'].includes(e.offer.status));
     const closed = all.filter((e) => !['pending', 'accepted'].includes(e.offer.status));
-    keyed(incomingEl, incoming.map((e) => `${e.offer.id}`).join(','), () => incoming.length === 0 ? [h('p', { class: 'muted small' }, 'None.')] : incoming.map((e) =>
-      h('div', { class: 'offer', 'data-offer': e.offer.id }, h('span', {}, offerLine(e.offer)),
+    // Rows are kept by offer id and updated in place (oldest first, new ones
+    // below), so Accept / Decline never move under a click.
+    const none = (el: HTMLElement, text: string, empty: boolean) => {
+      const ph = el.previousElementSibling as HTMLElement | null;
+      if (ph?.classList.contains('offers-none')) ph.hidden = !empty;
+      else el.before(h('p', { class: 'muted small offers-none', hidden: !empty }, text));
+    };
+    const inc = [...incoming].sort((a, b) => a.offer.id - b.offer.id);
+    none(incomingEl, 'None.', inc.length === 0);
+    reconcile(incomingEl, inc, (e) => String(e.offer.id), (e) => {
+      const id = e.offer.id;
+      return h('div', { class: 'offer', 'data-offer': id }, h('span', { class: 'offer-line' }), h('small', { class: 'muted offer-time' }),
         h('div', { class: 'row' },
-          h('button', { class: 'accept', onclick: () => void send({ type: 'respond_mating', request: e.offer.id, accept: true }) }, 'Accept'),
-          h('button', { class: 'secondary', onclick: () => void send({ type: 'respond_mating', request: e.offer.id, accept: false }) }, 'Decline')))));
-    keyed(openEl, open.map((e) => `${e.offer.id}:${e.offer.status}:${e.error?.code ?? ''}`).join(','), () => open.length === 0 ? [h('p', { class: 'muted small' }, 'None.')] : open.map((e) => {
+          h('button', { class: 'accept', onclick: () => void send({ type: 'respond_mating', request: id, accept: true }) }, 'Accept'),
+          h('button', { class: 'secondary decline', onclick: () => void send({ type: 'respond_mating', request: id, accept: false }) }, 'Decline')));
+    }, (row, e) => {
+      setText(row.querySelector('.offer-line')!, offerLine(e.offer));
+      setText(row.querySelector('.offer-time')!, offerTime());
+    });
+    const opn = [...open].sort((a, b) => a.offer.id - b.offer.id);
+    none(openEl, 'None.', opn.length === 0);
+    reconcile(openEl, opn, (e) => `${e.offer.id}:${e.offer.status}`, (e) => {
       const mineId = e.offer.from_player === me ? e.offer.mine : e.offer.partner;
-      return h('div', { class: 'offer', 'data-offer': e.offer.id }, h('span', {}, offerLine(e.offer)),
-        e.offer.status === 'accepted' && h('small', { class: 'muted' }, `Agreed${e.error ? ` (${e.error.message})` : ''}: escort #${mineId} to the partner; it completes when they meet.`),
+      const accepted = e.offer.status === 'accepted';
+      return h('div', { class: 'offer', 'data-offer': e.offer.id }, h('span', { class: 'offer-line' }), h('small', { class: 'muted offer-time' }),
+        accepted && h('small', { class: 'muted offer-note' }),
         h('div', { class: 'row' },
-          e.offer.status === 'accepted' && h('button', { onclick: () => void send({ type: 'complete_mating', request: e.offer.id }) }, 'Complete now'),
-          e.offer.status === 'accepted' && h('button', { class: 'secondary', title: 'Possess your organism and walk it to the partner (if the partner is in sight)', onclick: () => void escort(mineId, e.offer.from_player === me ? e.offer.partner : e.offer.mine) }, `Escort #${mineId}`),
+          accepted && h('button', { onclick: () => void send({ type: 'complete_mating', request: e.offer.id }) }, 'Complete now'),
+          accepted && h('button', { class: 'secondary', title: 'Possess your organism and walk it to the partner (if the partner is in sight)', onclick: () => void escort(mineId, e.offer.from_player === me ? e.offer.partner : e.offer.mine) }, `Escort #${mineId}`),
           h('button', { class: 'secondary', onclick: () => void send({ type: 'cancel_mating', request: e.offer.id }) }, 'Cancel')));
-    }));
-    keyed(closedEl, closed.map((e) => `${e.offer.id}:${e.offer.status}`).join(','), () => closed.length === 0 ? [h('p', { class: 'muted small' }, 'None yet.')] : closed.map((e) =>
-      h('div', { class: `offer closed status-${e.offer.status}` }, h('span', {}, offerLine(e.offer)),
-        e.outcome && h('small', {}, `${e.outcome.conceived ? 'Conceived' : 'Not conceived'} · mismatch ${e.outcome.mismatch.toFixed(2)} · fertility ${pct(e.outcome.fertility, 0)} · failure chance ${pct(e.outcome.failure_chance, 0)}`),
-        e.error && h('small', { class: 'error' }, e.error.message))));
+    }, (row, e) => {
+      setText(row.querySelector('.offer-line')!, offerLine(e.offer));
+      setText(row.querySelector('.offer-time')!, offerTime());
+      const note = row.querySelector<HTMLElement>('.offer-note');
+      if (note) {
+        const mineId = e.offer.from_player === me ? e.offer.mine : e.offer.partner;
+        setText(note, `Agreed${e.error ? ` (${friendlyError(e.error)})` : ''}: escort #${mineId} to the partner; it completes when they meet.`);
+      }
+    });
+    const done = historyRows(closed, model.matingLog);
+    none(closedEl, 'None yet.', done.length === 0);
+    reconcile(closedEl, done, (e) => e.key, (e) => h('div', { class: `offer closed status-${e.status}` },
+      h('span', { class: 'offer-line' }), h('small', { class: 'offer-outcome' }), h('small', { class: 'error offer-error' })),
+    (row, e) => {
+      setText(row.querySelector('.offer-line')!, e.line);
+      setText(row.querySelector('.offer-outcome')!, e.outcome ?? '');
+      setText(row.querySelector('.offer-error')!, e.error ?? '');
+    });
   }
 
   // --- Market: renown, the stud marketplace and the ledger
   const market = buildMarket({
     model,
     send,
+    msPerTick,
     onOrganism: (id, x, y) => {
       model.select(id);
       view.setFollow(false);
@@ -1080,11 +1257,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const boardEl = h('div', { id: 'leaderboard' });
   const seasonsEl = h('div', { id: 'season-boards' });
   const listEl = h('div', { id: 'organism-list', class: 'org-list' });
+  const listMore = h('p', { class: 'muted small', id: 'organism-list-more' });
   const groupsEl = h('div', { id: 'group-list' });
   append(tabs.lineage, [lineageExtinct, statsEl,
     h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
     h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter; the Seasons tab has the ranked seasons' }, 'By world season'), seasonsEl,
-    h('h3', {}, 'My organisms'), listEl]);
+    h('h3', {}, 'My organisms'), listEl, listMore]);
 
   function renderSeasons(): void {
     const list = seasons;
@@ -1139,14 +1317,21 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
             h('td', {}, h('span', { class: 'share-bar', style: `--w:${(r.share * 100).toFixed(1)}%` }, pct(r.share))),
             h('td', {}, pct(r.weighted_share)), h('td', {}, String(r.alive))))))]);
     const shown = [...orgs].sort((a, b) => Number(b.possessed) - Number(a.possessed) || Number(b.matured) - Number(a.matured) || a.id - b.id).slice(0, 60);
-    keyed(listEl, shown.map((o) => `${o.id}${o.possessed ? 'P' : ''}${o.matured ? 'a' : ''}${o.pregnant ? 'g' : ''}${o.action}`).join(','), () => shown.map((o) =>
-      h('button', { class: `org-item${o.possessed ? ' possessed' : ''}`, 'data-org': o.id, onclick: () => {
-        model.select(o.id);
+    // One button per organism, kept and updated in place (no row moves under a click).
+    reconcile(listEl, shown, (o) => String(o.id), (o) => {
+      const id = o.id;
+      return h('button', { class: 'org-item', 'data-org': id, onclick: () => {
+        const cur = model.state?.organisms.find((x) => x.id === id);
+        model.select(id);
         view.setFollow(false);
-        view.centerOn(o.x, o.y);
+        if (cur) view.centerOn(cur.x, cur.y);
         showTab('organism');
-      } }, `#${o.id} ${o.sex === 'female' ? 'F' : 'M'}${o.matured ? '' : ' juv'}${o.pregnant ? ' preg' : ''} · ${label(o.action)}`)));
-    if (orgs.length > shown.length) append(listEl, [h('p', { class: 'muted small' }, `…and ${orgs.length - shown.length} more`)]);
+      } });
+    }, (btn, o) => {
+      btn.classList.toggle('possessed', o.possessed);
+      setText(btn, `#${o.id} ${o.sex === 'female' ? 'F' : 'M'}${o.matured ? '' : ' juv'}${o.pregnant ? ' preg' : ''} · ${label(o.action)}`);
+    });
+    setText(listMore, orgs.length > shown.length ? `…and ${orgs.length - shown.length} more` : '');
   }
 
   function renderGroups(s: StateView): void {
@@ -1172,7 +1357,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           g.territory && h('button', { class: 'secondary small', 'data-action': 'abandon', onclick: () => void send({ type: 'abandon_territory', group: g.id }) }, 'Abandon territory'),
           h('button', { class: 'secondary small', 'data-action': 'rally', title: 'Gather the group at a point you tap; it holds there for a few days',
             disabled: g.members === 0, onclick: () => { setGroupChoice(g.id); setMode('rally'); if (narrow()) setSheet(false); } }, 'Rally…'),
-          g.rally && h('button', { class: 'secondary small', 'data-action': 'cancel-rally', title: `Lapses on its own in ${rallyLeft(g, tick)} ticks`,
+          g.rally && h('button', { class: 'secondary small', 'data-action': 'cancel-rally', title: `Lapses on its own in ${span(rallyLeft(g, tick))}`,
             onclick: () => void send({ type: 'cancel_rally', group: g.id }) }, 'Cancel rally'),
           canSplit(g, groups) && h('button', { class: 'secondary small', 'data-action': 'split', onclick: () => void splitGroup(g.id) }, 'Split'),
           g.id !== 0 && h('button', { class: 'secondary small', 'data-action': 'merge', onclick: () => void send({ type: 'merge_groups', from: g.id, into: 0 }) }, 'Merge into A'),
@@ -1185,7 +1370,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     for (const g of groups) {
       const el = groupsEl.querySelector(`.group-card[data-group="${g.id}"] .group-summary`);
       const heed = groupObedience(g);
-      const text = `${g.members} (${g.adults} adults) · ${groupOrders(g)}${heed ? ` · ${heed}` : ''}`;
+      const lapse = g.rally ? ` (lapses in ${span(rallyLeft(g, tick))})` : '';
+      const text = `${g.members} (${g.adults} adults) · ${groupOrders(g)}${lapse}${heed ? ` · ${heed}` : ''}`;
       if (el && el.textContent !== text) el.textContent = text;
     }
   }
@@ -1229,8 +1415,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   renderConn();
   updateHint();
-  // Set up: the tab shown (Lineage, or one clicked meanwhile) loads its data.
   ready = true;
+  el.classList.remove('starting');
+  // The tab the player picked while the screen was loading, else Lineage.
   showTab(tab);
 
   // First-session onboarding: the guided tour (once per account on this

@@ -1,120 +1,195 @@
 {
-  "generated": "2026-11-17T14:13:37.986Z",
+  "generated_at": "2026-11-17T14:34:36.050Z",
+  "source": "tools/marketing/capture.mjs",
+  "fps": 6,
   "ffmpeg": true,
-  "fps": 10,
   "items": [
     {
-      "id": "evolution",
-      "title": "A species evolving over the years",
-      "caption": "Forty founders, a few game years: watch a player-designed species spread, adapt and branch. Every animal is simulated.",
-      "hashtags": [
-        "#EvolutionMMO",
-        "#indiegame",
-        "#gamedev",
-        "#evolution",
-        "#simulation",
-        "#ArtificialLife",
-        "#procedural"
-      ],
-      "duration_s": 8,
-      "fps": 10,
-      "files": {
-        "vertical": {
-          "mp4": "evolution-vertical.mp4",
-          "gif": "evolution-vertical.gif"
-        },
-        "square": {
-          "mp4": "evolution-square.mp4",
-          "gif": "evolution-square.gif"
-        }
-      },
-      "cards": {
-        "family-tree": "evolution-family-tree.png",
-        "portrait": "evolution-portrait.png"
-      }
+      "id": "evolution-vertical",
+      "path": "evolution-vertical.mp4",
+      "type": "video",
+      "duration_s": 4,
+      "width": 1080,
+      "height": 1920,
+      "story_id": "evolution",
+      "alt": "Time-lapse of a player-designed species (three eyes, six legs) spreading over the map for game years, ending on its family-tree card (vertical 9:16 video)"
     },
     {
-      "id": "boom-bust",
-      "title": "Predators and prey: boom and bust",
-      "caption": "Foxes thrive on voles until the voles run out. The population chart tells the rest. No scripts, just the simulation.",
-      "hashtags": [
-        "#EvolutionMMO",
-        "#indiegame",
-        "#gamedev",
-        "#evolution",
-        "#simulation",
-        "#ecology",
-        "#predator"
-      ],
-      "duration_s": 8,
-      "fps": 10,
-      "files": {
-        "vertical": {
-          "mp4": "boom-bust-vertical.mp4",
-          "gif": "boom-bust-vertical.gif"
-        },
-        "square": {
-          "mp4": "boom-bust-square.mp4",
-          "gif": "boom-bust-square.gif"
-        }
-      },
-      "cards": {
-        "portrait": "boom-bust-portrait.png"
-      }
+      "id": "evolution-vertical-gif",
+      "path": "evolution-vertical.gif",
+      "type": "image",
+      "duration_s": 4,
+      "width": 360,
+      "height": 640,
+      "story_id": "evolution",
+      "alt": "Time-lapse of a player-designed species (three eyes, six legs) spreading over the map for game years, ending on its family-tree card (vertical 9:16 GIF)"
     },
     {
-      "id": "builder",
-      "title": "Design a weird creature",
-      "caption": "Six legs, three eyes, fan ears and a club tail: the body builder shows what every choice does to sight and speed.",
-      "hashtags": [
-        "#EvolutionMMO",
-        "#indiegame",
-        "#gamedev",
-        "#evolution",
-        "#simulation",
-        "#creaturedesign",
-        "#builder"
-      ],
-      "duration_s": 8,
-      "fps": 10,
-      "files": {
-        "vertical": {
-          "mp4": "builder-vertical.mp4",
-          "gif": "builder-vertical.gif"
-        },
-        "square": {
-          "mp4": "builder-square.mp4",
-          "gif": "builder-square.gif"
-        }
-      },
-      "cards": {}
+      "id": "evolution-square",
+      "path": "evolution-square.mp4",
+      "type": "video",
+      "duration_s": 4,
+      "width": 1080,
+      "height": 1080,
+      "story_id": "evolution",
+      "alt": "Time-lapse of a player-designed species (three eyes, six legs) spreading over the map for game years, ending on its family-tree card (square video)"
     },
     {
-      "id": "catastrophe",
-      "title": "A catastrophe sweeps the map",
-      "caption": "A severe winter rolls over the world. Which lineages ride it out? Catastrophes reshape the rankings every era.",
-      "hashtags": [
-        "#EvolutionMMO",
-        "#indiegame",
-        "#gamedev",
-        "#evolution",
-        "#simulation",
-        "#survival",
-        "#catastrophe"
-      ],
-      "duration_s": 8,
-      "fps": 10,
-      "files": {
-        "vertical": {
-          "mp4": "catastrophe-vertical.mp4",
-          "gif": "catastrophe-vertical.gif"
-        },
-        "square": {
-          "mp4": "catastrophe-square.mp4",
-          "gif": "catastrophe-square.gif"
-        }
-      },
-      "cards": {}
+      "id": "evolution-square-gif",
+      "path": "evolution-square.gif",
+      "type": "image",
+      "duration_s": 4,
+      "width": 400,
+      "height": 400,
+      "story_id": "evolution",
+      "alt": "Time-lapse of a player-designed species (three eyes, six legs) spreading over the map for game years, ending on its family-tree card (square GIF)"
+    },
+    {
+      "id": "evolution-family-tree",
+      "path": "evolution-family-tree.png",
+      "type": "card",
+      "width": 1080,
+      "height": 1920,
+      "story_id": "evolution",
+      "alt": "Family-tree card of Glimmer striders: its stages from founding to today"
+    },
+    {
+      "id": "evolution-portrait",
+      "path": "evolution-portrait.png",
+      "type": "card",
+      "width": 1080,
+      "height": 1350,
+      "story_id": "evolution",
+      "alt": "Portrait card of Glimmer striders"
+    },
+    {
+      "id": "boom-bust-vertical",
+      "path": "boom-bust-vertical.mp4",
+      "type": "video",
+      "duration_s": 4,
+      "width": 1080,
+      "height": 1920,
+      "story_id": "boom-bust",
+      "alt": "Time-lapse of the wild red fox and its prey on the map, with a population chart rising and falling (vertical 9:16 video)"
+    },
+    {
+      "id": "boom-bust-vertical-gif",
+      "path": "boom-bust-vertical.gif",
+      "type": "image",
+      "duration_s": 4,
+      "width": 360,
+      "height": 640,
+      "story_id": "boom-bust",
+      "alt": "Time-lapse of the wild red fox and its prey on the map, with a population chart rising and falling (vertical 9:16 GIF)"
+    },
+    {
+      "id": "boom-bust-square",
+      "path": "boom-bust-square.mp4",
+      "type": "video",
+      "duration_s": 4,
+      "width": 1080,
+      "height": 1080,
+      "story_id": "boom-bust",
+      "alt": "Time-lapse of the wild red fox and its prey on the map, with a population chart rising and falling (square video)"
+    },
+    {
+      "id": "boom-bust-square-gif",
+      "path": "boom-bust-square.gif",
+      "type": "image",
+      "duration_s": 4,
+      "width": 400,
+      "height": 400,
+      "story_id": "boom-bust",
+      "alt": "Time-lapse of the wild red fox and its prey on the map, with a population chart rising and falling (square GIF)"
+    },
+    {
+      "id": "boom-bust-portrait",
+      "path": "boom-bust-portrait.png",
+      "type": "card",
+      "width": 1080,
+      "height": 1350,
+      "story_id": "boom-bust",
+      "alt": "Portrait card of Red fox"
+    },
+    {
+      "id": "builder-vertical",
+      "path": "builder-vertical.mp4",
+      "type": "video",
+      "duration_s": 4,
+      "width": 1080,
+      "height": 1920,
+      "story_id": "builder",
+      "alt": "The body builder turning a four-legged strider into a creature with three eyes, six legs, four fan ears, a club tail, horns and stripes (vertical 9:16 video)"
+    },
+    {
+      "id": "builder-vertical-gif",
+      "path": "builder-vertical.gif",
+      "type": "image",
+      "duration_s": 4,
+      "width": 360,
+      "height": 640,
+      "story_id": "builder",
+      "alt": "The body builder turning a four-legged strider into a creature with three eyes, six legs, four fan ears, a club tail, horns and stripes (vertical 9:16 GIF)"
+    },
+    {
+      "id": "builder-square",
+      "path": "builder-square.mp4",
+      "type": "video",
+      "duration_s": 4,
+      "width": 1080,
+      "height": 1080,
+      "story_id": "builder",
+      "alt": "The body builder turning a four-legged strider into a creature with three eyes, six legs, four fan ears, a club tail, horns and stripes (square video)"
+    },
+    {
+      "id": "builder-square-gif",
+      "path": "builder-square.gif",
+      "type": "image",
+      "duration_s": 4,
+      "width": 400,
+      "height": 400,
+      "story_id": "builder",
+      "alt": "The body builder turning a four-legged strider into a creature with three eyes, six legs, four fan ears, a club tail, horns and stripes (square GIF)"
+    },
+    {
+      "id": "catastrophe-vertical",
+      "path": "catastrophe-vertical.mp4",
+      "type": "video",
+      "duration_s": 4,
+      "width": 1080,
+      "height": 1920,
+      "story_id": "catastrophe",
+      "alt": "Time-lapse of a severe winter sweeping over the map, with its banner, while the lineages' numbers change (vertical 9:16 video)"
+    },
+    {
+      "id": "catastrophe-vertical-gif",
+      "path": "catastrophe-vertical.gif",
+      "type": "image",
+      "duration_s": 4,
+      "width": 360,
+      "height": 640,
+      "story_id": "catastrophe",
+      "alt": "Time-lapse of a severe winter sweeping over the map, with its banner, while the lineages' numbers change (vertical 9:16 GIF)"
+    },
+    {
+      "id": "catastrophe-square",
+      "path": "catastrophe-square.mp4",
+      "type": "video",
+      "duration_s": 4,
+      "width": 1080,
+      "height": 1080,
+      "story_id": "catastrophe",
+      "alt": "Time-lapse of a severe winter sweeping over the map, with its banner, while the lineages' numbers change (square video)"
+    },
+    {
+      "id": "catastrophe-square-gif",
+      "path": "catastrophe-square.gif",
+      "type": "image",
+      "duration_s": 4,
+      "width": 400,
+      "height": 400,
+      "story_id": "catastrophe",
+      "alt": "Time-lapse of a severe winter sweeping over the map, with its banner, while the lineages' numbers change (square GIF)"
     }
   ]
 }

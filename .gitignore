@@ -9,5 +9,7 @@ client/e2e/out/
 client/android/
 client/ios/
 deploy/.env
-# Marketing capture output (tools/marketing/capture.mjs): only samples in docs/marketing/samples are kept.
+# Marketing output (evo-sim film, tools/marketing/capture.mjs): never commit media; small samples live in docs/marketing/samples.
+film-out/
 tools/marketing/out/
+*.mp4

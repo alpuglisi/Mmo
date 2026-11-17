@@ -24,7 +24,9 @@ Where the design's build order stands:
   it for iOS and Android (the Android debug APK builds headless and in CI; neither
   app has run on a device yet); see [Client](#client).
 
-What remains is in [Suggested next steps](#suggested-next-steps).
+What remains is in [Suggested next steps](#suggested-next-steps). Launch
+marketing (drafting, human approval, scheduling and publishing on the
+owner's accounts) lives in [`tools/marketing/`](tools/marketing/PUBLISHING.md).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
 
@@ -38,6 +40,7 @@ crates/
 client/      web client: TypeScript, PixiJS 8, Vite (npm)
 deploy/      docker compose deployment: evo-server, PostgreSQL, Caddy (HTTPS); see Deployment
 Dockerfile   image with evo-server and the built client
+tools/marketing/  launch marketing: drafts, approval queue, calendar, official-API publishing
 docs/
   game-design.md
 ```

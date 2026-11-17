@@ -8,7 +8,9 @@
 //       [--no-ffmpeg] [--keep-frames]
 //
 // Needs the release server (`cargo build --release -p evo-server`) and the
-// built client (`cd client && npm run build`). Each scene starts its own
+// built client (`cd client && npm run build`). Writes manifest.json and
+// stories.json in the publishing tool's format (PUBLISHING.md, "Inputs";
+// capture-manifest.mjs). Each scene starts its own
 // in-memory server with a fast clock (`--tick-ms`), drives the client in
 // headless Chromium (Playwright) and screenshots it frame by frame: a scene
 // is a time-lapse, its frames as far apart in game time as the world moved
@@ -22,6 +24,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeGif } from './gif.mjs';
+import { boomBust, outputs, sceneItems, sceneStory } from './capture-manifest.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../..');
@@ -242,10 +245,19 @@ const WEIRD = {
   morph: { eye_count: 3, leg_count: 6, ear_count: 4, ear_shape: 'long', tail_present: true, tail_shape: 'bushy' },
 };
 
+/** Days per year of a scene's server (its `--days-per-year`). */
+const daysPerYear = (sc) => Number(sc.server[sc.server.indexOf('--days-per-year') + 1]) || 120;
+
+const pct = (x) => Math.round(x * 1000) / 10;
+
+// Each scene: its story `kind` (PUBLISHING.md picks hashtags and communities
+// by it), `alt` text for its media, the server's flags, and `run`, which
+// records the frames and returns them with what it measured: the story's
+// title, summary and facts, true of that run.
 const scenes = {
   evolution: {
-    title: 'A species evolving over the years',
-    caption: 'Forty founders, a few game years: watch a player-designed species spread, adapt and branch. Every animal is simulated.',
+    kind: 'lineage',
+    alt: 'Time-lapse of a player-designed species (three eyes, six legs) spreading over the map for game years, ending on its family-tree card',
     tags: ['#ArtificialLife', '#procedural'],
     server: ['--fast', '--tick-ms', '4', '--state-ms', '500', '--size', '64', '--seed', '11', '--days-per-year', '24', '--no-catastrophes'],
     async run({ base, page, dir, frames, cards }) {
@@ -253,6 +265,7 @@ const scenes = {
       await page.goto(`${base}/?watch=main&lineage=${p.lineage}&stream=1`);
       await spectating(page);
       const shots = await record(page, dir, frames - Math.round(opts.fps * 2.5), () => sleep(120));
+      const end = await page.evaluate(() => ({ s: window.evoSpectator.last(), f: window.evoSpectator.followed() }));
       // The family tree at the end, from the game itself (logged in as the player).
       await page.addInitScript((s) => localStorage.setItem('evo.session', JSON.stringify(s)), p.auth);
       await page.goto(`${base}/?tour=off`);
@@ -263,27 +276,39 @@ const scenes = {
       const portrait = await page.evaluate(() => window.evoCards.portrait());
       cards.push(['family-tree', tree], ['portrait', portrait]);
       shots.push(...(await holdImage(page, dir, shots.length, frames - shots.length, tree)));
-      return shots;
+      const years = end.s.clock.year + 1;
+      const f = end.f;
+      const share = f.share ? pct(f.share) : 0;
+      return {
+        shots,
+        subject: f.name,
+        measured: {
+          title: `${f.name}: from ${WEIRD.founders} founders to ${f.alive} animals in ${years} game years`,
+          summary: `A three-eyed, six-legged, four-eared design founded with ${WEIRD.founders} animals; ${years} game years later ${f.alive} of them live${share ? `, ${share}% of the world's genes` : ''}.`,
+          facts: { lineage: f.name, founders: WEIRD.founders, alive: f.alive, years, day: end.s.clock.day, ...(share ? { share_pct: share } : {}) },
+        },
+      };
     },
   },
   'boom-bust': {
-    title: 'Predators and prey: boom and bust',
-    caption: 'Foxes thrive on voles until the voles run out. The population chart tells the rest. No scripts, just the simulation.',
+    kind: 'predator_boom',
+    alt: 'Time-lapse of the wild red fox and its prey on the map, with a population chart rising and falling',
     tags: ['#ecology', '#predator'],
     server: ['--fast', '--tick-ms', '3', '--state-ms', '500', '--size', '64', '--seed', '7', '--days-per-year', '24', '--no-catastrophes'],
-    async run({ base, page, dir, frames, cards }) {
+    async run({ base, page, dir, frames, cards, sc }) {
       const s = await api(base, 'GET', '/api/spectate');
       const fox = s.lineages.find((l) => /fox/i.test(l.name)) ?? s.lineages.find((l) => l.look?.diet === 'carnivore') ?? s.lineages[0];
       await page.goto(`${base}/?watch=main&lineage=${fox.lineage}&stream=1`);
       await spectating(page);
       const shots = await record(page, dir, frames, () => sleep(150));
       cards.push(['portrait', await page.evaluate(() => window.evoSpectator.portraitCard())]);
-      return shots;
+      const h = await page.evaluate(() => window.evoSpectator.history());
+      return { shots, subject: fox.name, measured: boomBust(fox.name, h.days, h.series[fox.lineage] ?? [0], daysPerYear(sc)) };
     },
   },
   builder: {
-    title: 'Design a weird creature',
-    caption: 'Six legs, three eyes, fan ears and a club tail: the body builder shows what every choice does to sight and speed.',
+    kind: 'devlog',
+    alt: 'The body builder turning a four-legged strider into a creature with three eyes, six legs, four fan ears, a club tail, horns and stripes',
     tags: ['#creaturedesign', '#builder'],
     server: ['--fast', '--size', '32', '--no-wild'],
     async run({ base, page, dir, frames }) {
@@ -296,16 +321,30 @@ const scenes = {
         { tail_length: 0.9 }, { horn_size: 0.7 }, { pattern: 'stripes' }, { snout_length: 0.8 }, { fang_size: 0.6 },
       ];
       const per = Math.max(1, Math.floor(frames / keys.length));
-      return record(page, dir, frames, async (i) => {
+      const shots = await record(page, dir, frames, async (i) => {
         const k = Math.floor(i / per);
         if (i % per === 0 && keys[k]) await page.evaluate((v) => window.evoBuilder.builder.set(v, { emit: true }), keys[k]);
         await sleep(40);
       });
+      const v = await page.evaluate(() => window.evoBuilder.builder.value);
+      const vision = await page.evaluate(() => window.evoBuilder.builder.vision);
+      return {
+        shots,
+        subject: 'a body-builder creature',
+        measured: {
+          title: 'Designing a weird creature in the body builder',
+          summary: `From the strider preset to ${v.eye_count} eyes, ${v.leg_count} legs, ${v.ear_count} ${v.ear_shape} ears and a ${v.tail_shape} tail, with horns and stripes; the builder shows what each change does to its sight.`,
+          facts: {
+            eyes: v.eye_count, legs: v.leg_count, ears: v.ear_count, ear_shape: v.ear_shape, tail: v.tail_shape, pattern: v.pattern,
+            ...(typeof vision?.coverage === 'number' ? { view_pct: Math.round(vision.coverage * 100) } : {}),
+          },
+        },
+      };
     },
   },
   catastrophe: {
-    title: 'A catastrophe sweeps the map',
-    caption: 'A severe winter rolls over the world. Which lineages ride it out? Catastrophes reshape the rankings every era.',
+    kind: 'catastrophe',
+    alt: 'Time-lapse of a severe winter sweeping over the map, with its banner, while the lineages\' numbers change',
     tags: ['#survival', '#catastrophe'],
     server: ['--fast', '--tick-ms', '12', '--state-ms', '500', '--size', '64', '--seed', '5', '--days-per-year', '48'],
     async run({ base, page, dir, frames }) {
@@ -313,10 +352,30 @@ const scenes = {
       await page.goto(`${base}/?watch=main&stream=1`);
       await spectating(page);
       const before = Math.round(frames * 0.2);
-      return record(page, dir, frames, async (i) => {
-        if (i === before) await api(base, 'POST', '/api/e2e/catastrophe', { kind: 'severe_winter', days: 400 });
+      const census = () => page.evaluate(() => {
+        const s = window.evoSpectator.last();
+        const alive = s.lineages.filter((l) => l.alive > 0);
+        return { day: s.clock.day, year: s.clock.year + 1, animals: alive.reduce((n, l) => n + l.alive, 0), lineages: alive.length };
+      });
+      let start = null;
+      const shots = await record(page, dir, frames, async (i) => {
+        if (i === before) {
+          start = await census();
+          await api(base, 'POST', '/api/e2e/catastrophe', { kind: 'severe_winter', days: 400 });
+        }
         await sleep(150);
       });
+      const end = await census();
+      const days = end.day - start.day;
+      return {
+        shots,
+        subject: 'a severe winter',
+        measured: {
+          title: 'A severe winter sweeps the map',
+          summary: `A severe winter hit in year ${start.year}: in the next ${days} game days the world went from ${start.animals} animals in ${start.lineages} lineages to ${end.animals} in ${end.lineages}.`,
+          facts: { catastrophe: 'severe winter', year: start.year, start_day: start.day, days, animals_before: start.animals, animals_after: end.animals, lineages_before: start.lineages, lineages_after: end.lineages },
+        },
+      };
     },
   },
 };
@@ -328,13 +387,20 @@ async function main() {
   if (!existsSync(path.join(dist, 'index.html'))) throw new Error('no client/dist: cd client && npm run build');
   mkdirSync(opts.out, { recursive: true });
   console.log(`capture: ${opts.scenes.join(', ')} · ${opts.formats.join(', ')} · ${opts.seconds} s at ${opts.fps} fps · ${hasFfmpeg ? 'ffmpeg' : 'no ffmpeg: frames + GIF'} → ${opts.out}`);
-  const manifest = { generated: new Date().toISOString(), ffmpeg: hasFfmpeg, fps: opts.fps, items: [] };
+  const items = [];
+  const stories = [];
+  const write = () => {
+    const out = outputs({ generatedAt: new Date().toISOString(), fps: opts.fps, ffmpeg: hasFfmpeg, stories, items });
+    writeFileSync(path.join(opts.out, 'manifest.json'), JSON.stringify(out.manifest, null, 2));
+    writeFileSync(path.join(opts.out, 'stories.json'), JSON.stringify(out.stories, null, 2));
+  };
   for (const id of opts.scenes) {
     const sc = scenes[id];
-    const item = {
-      id, title: sc.title, caption: sc.caption, hashtags: [...TAGS, ...sc.tags],
-      duration_s: opts.seconds, fps: opts.fps, files: {}, cards: {},
-    };
+    const recordings = [];
+    const cardFiles = {};
+    // The story's facts are those of the first format's run (each format
+    // is its own run of the scene).
+    let first = null;
     for (const fname of opts.formats) {
       const fmt = FORMATS[fname];
       const frames = Math.round(opts.seconds * opts.fps);
@@ -351,29 +417,34 @@ async function main() {
         rmSync(dir, { recursive: true, force: true });
         const cards = [];
         try {
-          const shots = await sc.run({ base, page, dir, frames, cards }).catch(async (e) => {
+          const result = await sc.run({ base, page, dir, frames, cards, sc }).catch(async (e) => {
             await page.screenshot({ path: path.join(opts.out, `failure-${id}-${fname}.png`) }).catch(() => {});
             e.message = `${id} ${fname}: ${e.message}${errors.length ? `; page errors: ${errors.join('; ')}` : ''}`;
             throw e;
           });
-          item.files[fname] = await encode(browser, dir, `${id}-${fname}`, shots, fmt);
+          first ??= result;
+          const files = await encode(browser, dir, `${id}-${fname}`, result.shots, fmt);
+          recordings.push({ format: fmt, formatName: fname, files });
           for (const [kind, url] of cards) {
-            if (!url || item.cards[kind]) continue;
+            if (!url || cardFiles[kind]) continue;
             const file = `${id}-${kind}.png`;
             writeFileSync(path.join(opts.out, file), Buffer.from(url.split(',')[1], 'base64'));
-            item.cards[kind] = file;
+            cardFiles[kind] = file;
           }
+          log(`${id} ${fname}: ${Object.values(files).join(', ')} (${((Date.now() - started) / 1000).toFixed(0)} s)`);
         } finally {
           await browser.close();
         }
         if (errors.length) throw new Error(`${id} ${fname}: page errors: ${errors.join('; ')}`);
       });
-      log(`${id} ${fname}: ${Object.values(item.files[fname]).join(', ')} (${((Date.now() - started) / 1000).toFixed(0)} s)`);
     }
-    manifest.items.push(item);
-    writeFileSync(path.join(opts.out, 'manifest.json'), JSON.stringify(manifest, null, 2));
+    const scene = { id, kind: sc.kind, alt: sc.alt, subject: first.subject, hashtags: [...TAGS, ...sc.tags] };
+    const mine = sceneItems(scene, recordings, cardFiles, opts.seconds);
+    items.push(...mine);
+    stories.push(sceneStory(scene, first.measured, mine));
+    write();
   }
-  console.log(`capture: done; manifest ${path.join(opts.out, 'manifest.json')}`);
+  console.log(`capture: done; ${path.join(opts.out, 'manifest.json')} and stories.json (PUBLISHING.md, "Inputs")`);
 }
 
 main().catch((e) => {

@@ -41,6 +41,8 @@ declare global {
       follow: (lineage: number) => void;
       /** The followed lineage's portrait card as a PNG data URL. */
       portraitCard: () => Promise<string | null>;
+      /** Head counts per lineage, one point per day seen (the population chart's data). */
+      history: () => { days: number[]; series: Record<number, number[]> };
     };
   }
 }
@@ -303,6 +305,7 @@ export async function mountSpectator(root: HTMLElement, params: WatchParams): Pr
     followed: () => followed,
     follow,
     portraitCard: async () => (await portraitCard())?.toDataURL('image/png') ?? null,
+    history: () => ({ days: history.days.slice(), series: Object.fromEntries([...history.series].map(([k, v]) => [k, v.slice()])) }),
   };
   await poll();
   const timer = setInterval(() => void poll(), POLL_MS);

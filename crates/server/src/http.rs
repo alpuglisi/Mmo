@@ -257,6 +257,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
         .route("/api/lineage/stats", get(lineage_stats))
+        .route("/api/matings/history", get(mating_history))
         .route("/api/lineage/tree", get(family_tree))
         .merge(e2e_hooks())
         .route("/api/alerts/prefs", get(alert_prefs).post(set_alert_prefs))
@@ -679,6 +680,20 @@ async fn family_tree(
     let session = authed(&app, &headers)?;
     let (reply, rx) = oneshot::channel();
     send_request(&w.tx, Request::FamilyTree { player: session.player, reply })?;
+    Ok(Json(rx.await.map_err(ApiError::internal)?))
+}
+
+/// The caller's recent finished matings, newest first (closed offers with
+/// their outcome or error, and matings within their own lineage). Kept in
+/// memory: a reload of the page keeps it, a server restart does not.
+async fn mating_history(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+) -> Result<Json<Vec<crate::protocol::MatingRecord>>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::MatingHistory { player: session.player, reply })?;
     Ok(Json(rx.await.map_err(ApiError::internal)?))
 }
 

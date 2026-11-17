@@ -195,6 +195,9 @@ pub struct GameConfig {
 /// provisioned (`GameConfig::winter_provision`).
 pub const WINTER_PROVISION_DAYS: u32 = 30;
 
+/// Finished matings kept per player (`Game::mating_history`).
+pub const MATING_LOG_LEN: usize = 40;
+
 impl Default for GameConfig {
     fn default() -> Self {
         Self {
@@ -357,6 +360,9 @@ pub struct Game {
     prev_born: BTreeMap<u32, u64>,
     prev_deaths: BTreeMap<(u32, DeathCause), u64>,
     alerts: BTreeMap<PlayerId, VecDeque<AlertView>>,
+    /// Each player's recent finished matings, newest first (memory only:
+    /// `GET /api/matings/history`).
+    mating_log: BTreeMap<PlayerId, VecDeque<MatingRecord>>,
     /// Organisms whose death is announced to their owner.
     watched: BTreeMap<OrgId, (PlayerId, Watch)>,
     progress: BTreeMap<PlayerId, Progress>,
@@ -542,6 +548,7 @@ impl Game {
             prev_born: BTreeMap::new(),
             prev_deaths: BTreeMap::new(),
             alerts: BTreeMap::new(),
+            mating_log: BTreeMap::new(),
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
             need_alerted: BTreeMap::new(),
@@ -839,6 +846,18 @@ impl Game {
         self.lineage_of.contains_key(&player)
             && self.owner_population(player) == 0
             && !self.world.clutches.iter().any(|c| c.owner == player)
+    }
+
+    /// Remember a finished mating for the player's history (newest first, capped).
+    fn log_mating(&mut self, player: PlayerId, record: MatingRecord) {
+        let log = self.mating_log.entry(player).or_default();
+        log.push_front(record);
+        log.truncate(MATING_LOG_LEN);
+    }
+
+    /// The player's recent finished matings, newest first.
+    pub fn mating_history(&self, player: PlayerId) -> Vec<MatingRecord> {
+        self.mating_log.get(&player).map(|l| l.iter().cloned().collect()).unwrap_or_default()
     }
 
     /// Whether founders founded now start provisioned for winter.
@@ -1143,8 +1162,13 @@ impl Game {
             let req = DirectedMating { player, a: mine, b: partner, partner_consent: false };
             self.state_cache.touch(mine);
             self.state_cache.touch(partner);
-            let outcome = self.world.directed_mating(req).map_err(e)?;
-            return Ok(Some(serde_json::to_value(MatingOutcome::from(outcome)).unwrap()));
+            let outcome = MatingOutcome::from(self.world.directed_mating(req).map_err(e)?);
+            let tick = self.world.tick();
+            self.log_mating(
+                player,
+                MatingRecord { tick, offer: None, mine, partner, outcome: Some(outcome), error: None },
+            );
+            return Ok(Some(serde_json::to_value(outcome).unwrap()));
         }
         let to = self.check_cross_pair(player, mine, partner)?;
         let price = price.filter(|&p| p > 0);
@@ -2118,11 +2142,15 @@ impl Game {
         o.status = status;
         let o = o.clone();
         let view = self.offer_view(request);
+        let tick = self.world.tick();
         for p in [o.from, o.to] {
             out.push((
                 Target::Player(p),
                 ServerMsg::MatingUpdate { offer: view.clone(), outcome, error: error.clone() },
             ));
+            let (mine, partner) = if p == o.from { (o.mine, o.partner) } else { (o.partner, o.mine) };
+            let record = MatingRecord { tick, offer: Some(view.clone()), mine, partner, outcome, error: error.clone() };
+            self.log_mating(p, record);
         }
         let settlement = self.settle(&o, status, out);
         self.persist.push(PersistEvent::Trade(TradeRecord {
@@ -3078,6 +3106,8 @@ impl Game {
             agents: self.world.alive_count(),
             lineages: self.world.lineages.len(),
             days_to_winter: self.world.days_until_winter(),
+            days_per_year: self.world.config.days_per_year,
+            ticks_per_day: self.world.config.ticks_per_day,
             winter_provision: self.winter_provision_now(),
         }
     }
@@ -3525,6 +3555,43 @@ mod tests {
         assert!(trades
             .iter()
             .any(|t| matches!(t, PersistEvent::Trade(r) if r.price == Some(30) && r.status == "completed")));
+    }
+
+    #[test]
+    fn mating_history_keeps_closed_offers_and_own_lineage_matings() {
+        let (mut g, a, b) = game();
+        assert!(g.mating_history(1).is_empty());
+        // Within ann's own lineage: recorded for her, no offer.
+        let (fa, ma) = (female(&g, &a), male(&g, &a));
+        place_together(&mut g, fa, ma);
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: ma, price: None });
+        assert_eq!(result(&out), (true, None));
+        let h = g.mating_history(1);
+        assert_eq!(h.len(), 1);
+        assert!(h[0].offer.is_none() && h[0].outcome.is_some());
+        assert_eq!((h[0].mine, h[0].partner), (fa, ma));
+        assert!(g.mating_history(2).is_empty());
+        // An offer bob declines: recorded for both, each from their own side.
+        let mb = male(&g, &b);
+        let fa2 = *a
+            .iter()
+            .find(|&&i| i != fa && g.world.organism(i).unwrap().sex == evo_sim::organism::Sex::Female)
+            .unwrap();
+        place_together(&mut g, fa2, mb);
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa2, partner: mb, price: None });
+        let id = match &out[1].1 {
+            ServerMsg::MatingRequest { offer } => offer.id,
+            m => panic!("{m:?}"),
+        };
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false });
+        let (h1, h2) = (g.mating_history(1), g.mating_history(2));
+        assert_eq!(h1.len(), 2, "newest first, the own-lineage mating after");
+        let declined =
+            |r: &MatingRecord| r.offer.as_ref().is_some_and(|o| o.id == id && o.status == OfferStatus::Declined);
+        assert!(declined(&h1[0]) && h1[1].offer.is_none());
+        assert!(declined(&h2[0]));
+        assert_eq!((h1[0].mine, h1[0].partner), (fa2, mb));
+        assert_eq!((h2[0].mine, h2[0].partner), (mb, fa2));
     }
 
     #[test]

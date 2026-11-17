@@ -92,6 +92,10 @@ pub enum Request {
         player: PlayerId,
         reply: oneshot::Sender<LineageStats>,
     },
+    MatingHistory {
+        player: PlayerId,
+        reply: oneshot::Sender<Vec<crate::protocol::MatingRecord>>,
+    },
     /// The family tree of a player's lineage.
     FamilyTree {
         player: PlayerId,
@@ -513,6 +517,9 @@ impl Runner {
                 let w = &mut self.game.world;
                 let day = w.day();
                 let _ = reply.send(w.schedule_catastrophe(kind, day, days));
+            }
+            Request::MatingHistory { player, reply } => {
+                let _ = reply.send(self.game.mating_history(player));
             }
             Request::Stats { player, reply } => {
                 let _ = reply.send(self.game.lineage_stats(player));

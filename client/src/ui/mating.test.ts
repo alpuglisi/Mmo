@@ -34,4 +34,15 @@ describe('compatSummary', () => {
     expect(s.text).toBe('Incompatible: different body plans (warm-bloodedness 0.80 apart, birth mode 0.70 apart). They cannot conceive.');
     expect(compatSummary({ ...base, compatible: false, fertility: 0, distance_fertility: 0 }).text).toContain('outbreeding');
   });
+
+  it('says when a female is pregnant, and how close an own-lineage pair must be', () => {
+    const preg = compatSummary(base, { pregnant: 7 });
+    expect(preg.level).toBe('bad');
+    expect(preg.text).toContain('#7 is already pregnant');
+    const own = compatSummary(base, { ownPair: true });
+    expect(own.level).toBe('warn');
+    expect(own.text).toContain('within 1.5 tiles to mate');
+    expect(compatSummary(base).text).toContain('must meet (within 1.5 tiles)');
+    expect(compatSummary({ ...base, distance: 1 }, { ownPair: true }).level).toBe('ok');
+  });
 });
