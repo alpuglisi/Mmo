@@ -76,14 +76,27 @@ Placing founders by the food actually present rather than the ground's
 potential (a change to the sim's `pick_home`) made no difference at all
 on those seeds, so it was dropped.
 
-The result: the starter keeps at least three in four lineages alive in
-every setting measured, and every one in the settings most new players
-meet. The hardest case (joining just before a year-2 winter) still loses
-about one in four. A design alone gets no further without spending most
-of the budget. A lineage that dies out can found again at once
-(re-founding, below). Whether newcomers should get help when they join
-just before winter, such as starting fed or being warned about the
-season, is a game-design question left open here.
+## Winter provision
+
+Players who found within 30 days before winter (or during it) now get
+their founders fed, with fat reserves filled to capacity. This applies to
+player lineages only and is deterministic. It sits behind
+`GameConfig::winter_provision` (on by default; off with
+`--no-winter-provision`). The code is in `Game::found` and
+`World::provision_for_winter`. The design screen also shows a season
+notice in those 30 days. The hardest case again, with the provision:
+
+| 128×128, 120-day years, joined on day 200, seeds 73–96 | Without the provision | With the provision |
+| --- | --- | --- |
+| Old default | 3/24, 12% (0) | 17/24, 71% (14) |
+| The starter (H) | 18/24, 75% (21) | 24/24, 100% (72) |
+
+With the provision the starter keeps every lineage alive in every setting
+measured. A new player who keeps the old bare design still loses about
+three in ten when joining just before winter. Most of their deaths are
+now to predators (709 of 1406), because the provision feeds them but the
+design does nothing to protect them. A lineage that dies out can found
+again at once (re-founding, below).
 
 ## Re-founding
 
