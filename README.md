@@ -6060,6 +6060,30 @@ for territories spared the pack hunters but let the foxes boom), the
 fragile fox on fresh seeds, and LOD cohorts, which don't model any of
 these rules.
 
+### Strike fixes
+
+Two old flaws in the strike, found in the predator review
+(`docs/predator-review.md`), are fixed and on by default
+(`Balance::strike_fixes`, 1; 0 restores the old strike):
+
+- A hunter killed in its own strike (by its prey's toxins) did nothing to
+  stop: the same strike could still bring the prey down, and the dead
+  hunter ate from its tile. Now its turn ends; once it is over, its body
+  is left as carrion where `Balance::carrion` is on.
+- A hunter ate twice on the tick it killed: a full helping at the kill
+  (`attack`) and another in its turn (`act`). Now it eats once, in its
+  turn.
+
+The standard sweep from seed 31 scores 11.63 (11.60 with the old strike).
+`compare --seed 101 --size 96 --adaptive vs --set strike_fixes=0`:
+unresolved at the 48-seed cap, sequential 95% CI −0.36 … +0.11 (contains
+0, wider than ±0.3); pack hunters survive 96% against 100% (−4 ± 6%), the
+fox 96% against 98%, no other lineage moves outside its CI except the
+burrowing omnivores (+9 ± 8 alive). Snapshots move to format version 29
+(28 is another branch's step; to be renumbered at merge): versions 10–28
+read `strike_fixes` as 0, the old strike (`serde_util::before_v29`, test
+`version_27_snapshots_restore_with_the_old_strike`).
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

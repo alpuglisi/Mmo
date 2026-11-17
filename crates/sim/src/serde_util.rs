@@ -51,6 +51,8 @@
 //! - `before_v27`: the predator brakes (`Balance::prey_switching`,
 //!   `condition_litter`), left out while a world snapshot of version 26 or
 //!   before is read (0, off).
+//! - `before_v29`: `Balance::strike_fixes`, left out while a world snapshot
+//!   of version 28 or before is read (0, the old strike).
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1492,6 +1494,55 @@ pub mod before_v27 {
     }
 
     /// The predator brakes before version 27: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// `Balance::strike_fixes`, added in world snapshot version 29:
+/// `#[serde(with = "crate::serde_util::before_v29")]`. On a thread holding a
+/// [`before_v29::Guard`] (reading or hashing a snapshot of version 28 or
+/// before) it is neither written nor read and reads as 0: the old strike, as
+/// those worlds ran.
+pub mod before_v29 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// `strike_fixes` before version 29: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

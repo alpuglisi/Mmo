@@ -140,7 +140,7 @@ home_range_predation home_range_residents offline_stack_floor lactation warm_upk
 fang_grazing scale_cover morph_effects morph_tail_drag morph_tail_chill morph_long_legs
 directional_vision vision_scan
 morph_step_rate morph_legacy roaming_forage carcass_keep carnivore_fat carcass_scent carrion
-provisioning breeding_territory prey_switching condition_litter
+provisioning breeding_territory prey_switching condition_litter strike_fixes
 
 Level-of-detail parameters: active_radius hysteresis pool_size graze_fraction
 juvenile_mortality prey_half_density plant_diet carcass_use migration mate_search_days clump

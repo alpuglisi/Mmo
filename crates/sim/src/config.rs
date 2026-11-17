@@ -777,6 +777,15 @@ pub struct Balance {
     /// Predator numbers follow their food.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v27"))]
     pub condition_litter: f32,
+    /// Strike fixes (version 29; on at 1, the default): a hunter killed in
+    /// its own strike (by its prey's toxins or by prey that fought back)
+    /// does nothing more that turn, where before it could still bring the
+    /// prey down and eat; and a kill is eaten once in the hunter's turn,
+    /// where before the hunter ate a full helping at the kill and another
+    /// right after. 0 is the old behaviour, what snapshots before version
+    /// 29 read (`serde_util::before_v29`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v29"))]
+    pub strike_fixes: f32,
 }
 
 impl Balance {
@@ -976,12 +985,13 @@ impl Default for Balance {
             breeding_territory: 0.0,
             prey_switching: 0.0,
             condition_litter: 0.0,
+            strike_fixes: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 110;
+    pub const FIELD_COUNT: usize = 111;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1101,6 +1111,7 @@ impl Balance {
             ("breeding_territory", &mut self.breeding_territory),
             ("prey_switching", &mut self.prey_switching),
             ("condition_litter", &mut self.condition_litter),
+            ("strike_fixes", &mut self.strike_fixes),
         ]
     }
 
