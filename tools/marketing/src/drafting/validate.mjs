@@ -8,8 +8,14 @@ function normNum(s) {
   return s.replace(/,/g, '').replace(/%$/, '').replace(/\.0+$/, '');
 }
 
+// Where copy points at things rather than says things: HTML src/href
+// attributes and Markdown link and image targets. Their digits (file names,
+// output folders) are not claims, so the fact check skips them.
+const ATTR_RE = /\b(?:src|href|poster)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi;
+const MD_TARGET_RE = /\]\(\s*<?[^)\s>]*>?(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g;
+
 export function numbersIn(text) {
-  const cleaned = text.replace(URL_RE, ' ').replace(HASHTAG_RE, ' ');
+  const cleaned = text.replace(ATTR_RE, ' ').replace(MD_TARGET_RE, '] ').replace(URL_RE, ' ').replace(HASHTAG_RE, ' ');
   return [...cleaned.matchAll(NUM_RE)].map((m) => normNum(m[0]));
 }
 

@@ -122,7 +122,9 @@ Every draft is then checked (`src/drafting/validate.mjs`): the length limits
 below with each platform's own counting, hashtag count, banned phrases,
 emoji count, YouTube's ban on `<` `>`, required video, video length and
 orientation, alt text, and the fact check (every number must appear in the
-story). Over-long copy is cut at a sentence or word boundary, never inside a
+story; URLs, `src`/`href` attributes and Markdown link targets are skipped,
+so digits in file names don't count). Devlog bodies link media by their path
+relative to the manifest, never the machine's absolute path. Over-long copy is cut at a sentence or word boundary, never inside a
 link.
 
 | Platform | Field limits (counting) | Tags |

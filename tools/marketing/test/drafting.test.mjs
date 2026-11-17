@@ -4,7 +4,7 @@ import { draftStory } from '../src/drafting/index.mjs';
 import { validateDraft, unsupportedNumbers } from '../src/drafting/validate.mjs';
 import { ALL_PLATFORMS, PLATFORMS } from '../src/platforms.mjs';
 import { counters } from '../src/text.mjs';
-import { factCorpus } from '../src/stories.mjs';
+import { factCorpus, normalizeMediaItem } from '../src/stories.mjs';
 import { buildSchema, FALLBACK_BETA } from '../src/drafting/claude.mjs';
 import { STORY, VIDEO, IMAGE, testConfig } from './helpers.mjs';
 
@@ -127,4 +127,32 @@ test('schema has one strict object per platform', () => {
   const s = buildSchema(['reddit', 'youtube']);
   assert.deepEqual(s.properties.reddit.required, ['title', 'body']);
   assert.equal(s.properties.youtube.additionalProperties, false);
+});
+
+test('devlog embeds manifest-relative paths, and digits in paths are not facts', async () => {
+  // An output folder full of digits, as `evo-sim film` writes them.
+  const base = '/tmp/claude-0/run-2026-11-17/film4';
+  const clip = normalizeMediaItem(
+    { id: 'clip-s31', path: 'clips/s31-catastrophe-epidemic-d147-9x16.mp4', type: 'video', duration_s: 12.5, width: 1080, height: 1920, story_id: 'y3-winter', alt: 'Snow spreads' },
+    0,
+    base,
+  );
+  const chart = normalizeMediaItem({ id: 'chart-population', path: `${base}/population.png`, type: 'chart', width: 1200, height: 604, story_id: 'y3-winter', alt: 'Population chart' }, 1, base);
+  assert.equal(clip.path, `${base}/clips/s31-catastrophe-epidemic-d147-9x16.mp4`);
+  assert.equal(clip.relPath, 'clips/s31-catastrophe-epidemic-d147-9x16.mp4');
+  assert.equal(chart.relPath, 'population.png');
+  for (const [media, embed] of [
+    [[clip], /<video src="clips\/s31-catastrophe-epidemic-d147-9x16\.mp4"/],
+    [[chart], /\]\(population\.png\)/],
+  ]) {
+    const { drafts } = await draftStory(STORY, media, { platforms: ['devlog'], config: testConfig() });
+    const body = drafts[0].fields.body;
+    assert.match(body, embed);
+    assert.doesNotMatch(body, /\/tmp\//);
+    assert.ok(drafts[0].validation.ok, String(drafts[0].validation.errors));
+  }
+  // The paths would still pass if absolute: src/href and Markdown targets are skipped.
+  assert.deepEqual(unsupportedNumbers(`<video src="${base}/a7.mp4"></video> ![x](${base}/b9.png) [y](https://e.example/42)`, ''), []);
+  // ...but numbers in the prose still count.
+  assert.deepEqual(unsupportedNumbers('![x](a1.png) The herd lost 99 animals.', 'herd'), ['99']);
 });
