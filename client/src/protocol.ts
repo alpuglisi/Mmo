@@ -1295,3 +1295,34 @@ export function parseServerMsg(text: string): ServerMsg | null {
       return null;
   }
 }
+
+// Spectator view (`GET /api/spectate`, server `game::spectate`): a world as a
+// logged-out watcher sees it, at most once a simulated day: per-lineage head
+// counts on coarse cells, the most common look, public names and shares.
+
+export interface SpectateLineage {
+  lineage: number;
+  name: string;
+  /** The owner's public name, or "wild". */
+  owner: string;
+  wild: boolean;
+  alive: number;
+  adults: number;
+  /** The owner's allele share (player lineages only). */
+  share?: number;
+  /** The most common look of its adults; absent once extinct. */
+  look?: Appearance;
+  /** `[cell x, cell y, count]` on `Spectate.cell`-tile cells. */
+  cells: [number, number, number][];
+}
+
+export interface Spectate {
+  clock: ClockView;
+  width: number;
+  height: number;
+  /** Cell side in tiles. */
+  cell: number;
+  /** Catastrophes under way. */
+  catastrophes: CatastropheView[];
+  lineages: SpectateLineage[];
+}
