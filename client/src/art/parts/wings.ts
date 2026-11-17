@@ -12,6 +12,8 @@ export interface WingParams {
   feathered: boolean;
   far: boolean;
   lod: 'portrait' | 'sprite';
+  /** Wing shape (Phase 3 `wing_aspect`): 0 broad and short, 0.5 the default (unchanged), 1 long and narrow. */
+  aspect?: number;
 }
 
 export interface WingPart {
@@ -20,8 +22,13 @@ export interface WingPart {
 }
 
 export function wing(p: WingParams, pal: CreaturePalette): WingPart {
-  const { root, span } = p;
-  const o = (x: number, y: number): Point => [root[0] + x * span, root[1] + y * span];
+  const { root } = p;
+  const a = Math.min(1, Math.max(0, p.aspect ?? 0.5));
+  // Exactly 1 at the default 0.5: longer and slimmer when narrow.
+  const long = 0.8 + 0.4 * a;
+  const deep = 1.25 - 0.5 * a;
+  const span = p.span * long;
+  const o = (x: number, y: number): Point => [root[0] + x * span, root[1] + y * span * deep / long];
   const part = p.far ? 'wing-far' : 'wing-near';
   const shade = p.far ? pal.far.shade : pal.body.shade;
   const pieces: Point[][] = [];
@@ -29,7 +36,7 @@ export function wing(p: WingParams, pal: CreaturePalette): WingPart {
   if (p.feathered) {
     // Folded along the flank: rounded at the shoulder, coverts in front,
     // primaries tapering back past the rump to a point. `span` is its length.
-    const h = span * 0.44;
+    const h = span * 0.44 * deep / long;
     const up = 0.16; // tip raised a little above horizontal
     const at = (u: number, v: number): Point => [root[0] - u * span * Math.cos(up) + v * Math.sin(up) * 0, root[1] - u * span * Math.sin(up) + v * h];
     const top: Point[] = [at(-0.06, 0.05), at(0.04, -0.32), at(0.25, -0.42), at(0.55, -0.34), at(0.85, -0.14), at(1, 0)];

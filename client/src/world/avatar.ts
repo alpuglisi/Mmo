@@ -27,20 +27,20 @@
 import type { Appearance, BirthSpec, DesignSpec } from '../protocol';
 import { adultMass, flight, geneValue } from '../bodyMath';
 import {
-  clampMorphology, FANG_MIN, hasFangs, morphologyFromTraits, pairAzimuth, TAIL_PRESENT_MIN, type Morphology,
+  clampMorphology, FANG_MIN, hasFangs, hasHorns, morphologyFromTraits, pairAzimuth, TAIL_PRESENT_MIN, type Morphology,
 } from '../morphology';
 import { describeLook, palette, type Palette } from './creature';
 import { clamp01, ellipsePts, rng, scallopRing, type Part, type Piece, type Point, type Shape } from '../art/geom';
 import { creaturePalette, INK, mix, type CreaturePalette } from '../art/palette';
 import { drawingBounds, drawingSvg, fmt, shapeSvg, type Drawing, type Group } from '../art/render';
 import { body } from '../art/parts/body';
-import { eyeShapes, eyeSpot, fang, head, horn, neck, tusk } from '../art/parts/head';
+import { antler, eyeShapes, eyeSpot, fang, head, horn, neck, spikeHorn, tusk } from '../art/parts/head';
 import { ear, earLength } from '../art/parts/ears';
 import { foot, leg, type FootStyle } from '../art/parts/legs';
 import { tail } from '../art/parts/tail';
 import { flaps, wing } from '../art/parts/wings';
 import {
-  armorPlates, camoBlotches, countershade, crest, featherField, featherRim, furMarks, furRim, saddle, scaleField, skinCreases, spots, warningBands, type Lod,
+  armorPlates, camoBlotches, coatPattern, countershade, crest, featherField, featherRim, furMarks, furRim, saddle, scaleField, skinCreases, spots, warningBands, type Lod,
 } from '../art/parts/cover';
 
 // ------------------------------------------------------------------ parameters
@@ -109,7 +109,7 @@ export interface AvatarModel extends Morphology {
   /** Carnivory 0..1: snout shape and teeth (its length is `snout_length`). */
   carnivory: number;
   nose: number;
-  /** Horn length 0..1 (large herbivores, as on the world sprite). */
+  /** Horn length 0..1 drawn: the body plan's `horn_size` when horns show (0 below `HORNS_MIN`). */
   horns: number;
   coloring: { kind: Coloring; camo: number; display: number; toxins: number; palette: Palette };
   extras: { birth: BirthSpec; seasonalCoat: boolean; swim: number };
@@ -192,7 +192,9 @@ export function morphologyOf(d: DesignSpec, features: Partial<Morphology> = {}):
     },
     carnivory: carn,
     nose: v('keen_nose'),
-    horns: carn < 0.34 && v('body_size') > 0.6 ? clamp01((v('body_size') - 0.6) / 0.4 + 0.3) : 0,
+    // Horns are a body-plan locus (Phase 3), no longer a cosmetic rule for
+    // large herbivores.
+    horns: hasHorns(contract) ? contract.horn_size : 0,
     coloring: { kind: look.coloring, camo: v('camouflage'), display: v('coloration'), toxins: v('toxins'), palette: palette(look) },
     extras: { birth: d.birth, seasonalCoat: v('seasonal_coat') >= THRESHOLDS.strategy && d.thermo === 'warm', swim },
   };
@@ -229,7 +231,10 @@ export function describeAvatar(m: AvatarModel): string {
   if (m.snout_length > 0.75) bits.push('long snout');
   else if (m.snout_length < 0.25) bits.push('short snout');
   if (m.nose > 0.5) bits.push('keen nose');
-  if (m.horns > 0) bits.push('horns');
+  if (m.horns > 0) bits.push(m.horn_form === 'branched' ? 'antlers' : m.horn_form === 'straight' ? 'straight horns' : 'curved horns');
+  if (m.pattern !== 'plain') bits.push(m.pattern === 'spots' ? 'a spotted coat' : m.pattern === 'stripes' ? 'a striped coat' : 'a mottled coat');
+  if (m.wings.stage === 'wings' && m.wing_aspect < 0.35) bits.push('broad wings');
+  if (m.wings.stage === 'wings' && m.wing_aspect > 0.65) bits.push('long narrow wings');
   const sec = (['fur', 'scales', 'armor'] as const).filter((c) => m.cover[c].role === 'secondary');
   if (sec.length) bits.push(`some ${sec.map((c) => (c === 'armor' ? 'armor plates' : c)).join(' and ')}`);
   if (m.coloring.kind !== 'camo' && m.coloring.camo >= 0.3) bits.push('faint camouflage');
@@ -274,6 +279,8 @@ export interface AvatarAnchors {
   foot: Point | null;
   /** End of the tail's centreline; null without a tail. */
   tailTip: Point | null;
+  /** Near the horn's tip, linear in `horn_size` (drawn or not: the builder's horn handle rides it). */
+  hornTip: Point;
   /** The torso: centre and half sizes. */
   body: { cx: number; cy: number; rx: number; ry: number };
 }
@@ -341,7 +348,7 @@ export function avatarDrawing(m: AvatarModel, opts: DrawOptions = {}): AvatarDra
       ? (far ? [rx * 0.5, cy - ry * 0.62] : [rx * 0.42, cy - ry * 0.32])
       : (far ? [wingRoot[0] + rx * 0.16, wingRoot[1] - 5] : wingRoot);
     const span = feathered ? rx * (1.35 + 0.45 * clamp01((m.wings.amount - THRESHOLDS.wings) / (1 - THRESHOLDS.wings))) : wingSpan;
-    const w = wing({ root, span, feathered, far, lod }, pal);
+    const w = wing({ root, span, feathered, far, lod, aspect: m.wing_aspect }, pal);
     return {
       part: far ? 'wing-far' : 'wing-near', tones: far ? pal.far : pal.body, pieces: w.pieces.map((p) => piece('wing', p)), detail: w.detail, over: [],
       sway: { pivot: root, deg: feathered ? -2 : -4, dur: 2.8 },
@@ -480,6 +487,8 @@ export function avatarDrawing(m: AvatarModel, opts: DrawOptions = {}): AvatarDra
   markings.push(...countershade(B, pal, style === 'armor' ? 0.7 : 1));
   if (c.kind === 'drab' || c.kind === 'camo') markings.push(...saddle(B, pal, c.kind === 'camo' ? 0.6 : 1));
   if (c.camo >= THRESHOLDS.secondary && c.kind !== 'warning') markings.push(...camoBlotches(B, c.kind === 'camo' ? c.camo : c.camo * 0.6, pal, lod));
+  // The body plan's coat pattern (Phase 3), under the colouring's own marks.
+  markings.push(...coatPattern(B, m.pattern, pal, lod));
   if (c.kind === 'warning') markings.push(...warningBands(B, pal.accent));
   else if (c.display >= 0.33) markings.push(...spots(B, c.display, c.kind === 'bright' ? pal.accent : pal.belly, lod));
   if (style === 'scales') markings.push(...scaleField(B, pal, lod));
@@ -575,7 +584,19 @@ export function avatarDrawing(m: AvatarModel, opts: DrawOptions = {}): AvatarDra
   if (m.eye_count % 2 === 1) O.push(...eyeShapes(eyeSpot(H, 0, 0, er), ep, pal));
   // A predator's brow ridge.
   if (m.carnivory >= 0.67) O.push({ part: 'head', tag: 'brow', kind: 'curve', closed: false, points: [[hx - hr * 0.05, hy - hr * 0.66 * flatK], [hx + hr * 0.3, hy - hr * 0.68 * flatK], [hx + hr * 0.6, hy - hr * 0.52 * flatK]], stroke: pal.ink, width: 1.8 });
-  if (m.horns > 0) O.push(...horn(H.anchors.hornBase, hr * (0.7 + 0.9 * m.horns), hr * 0.24, pal));
+  // Horns (Phase 3): sprites draw them bolder, so they read at marker size.
+  const hornBold = lod === 'sprite' ? 1.7 : 1;
+  const hornLen = (size: number) => hr * (0.6 + 1.3 * size) * (lod === 'sprite' ? 1.15 : 1) * (m.horn_form === 'branched' ? 1.15 : 1);
+  if (m.horns > 0) {
+    const len = hornLen(m.horns);
+    const base = H.anchors.hornBase;
+    if (m.horn_form === 'branched') O.push(...antler(base, len, hr * 0.2 * hornBold, pal, lod));
+    else if (m.horn_form === 'straight') O.push(...spikeHorn(base, len, hr * 0.22 * hornBold, pal));
+    else O.push(...horn(base, len, hr * 0.24 * hornBold, pal));
+  }
+  // The tip of each form's centreline (`head.ts`), linear in horn size.
+  const tipK: Point = m.horn_form === 'branched' ? [0.35, 0.95] : m.horn_form === 'straight' ? [0.42, 0.9] : [0.3, 1];
+  const hornTip: Point = [H.anchors.hornBase[0] - hornLen(m.horn_size) * tipK[0], H.anchors.hornBase[1] - hornLen(m.horn_size) * tipK[1]];
 
   groups.push(main);
   const wn = wingGroup(false);
@@ -587,7 +608,11 @@ export function avatarDrawing(m: AvatarModel, opts: DrawOptions = {}): AvatarDra
     ink: pal.ink,
     scale: 0.6 + 0.4 * m.size,
     pivots: { tail: tailRoot, wing: wingRoot },
-    anchors: { snoutTip: H.anchors.snoutTip, fangTip, earTip, foot: footPt, tailTip: tailTipPt, body: { cx: 0, cy, rx, ry } },
+    anchors: {
+      snoutTip: H.anchors.snoutTip, fangTip, earTip, foot: footPt, tailTip: tailTipPt,
+      hornTip,
+      body: { cx: 0, cy, rx, ry },
+    },
     label: describeAvatar(m),
   };
 }

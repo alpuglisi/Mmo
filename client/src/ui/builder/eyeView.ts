@@ -139,6 +139,8 @@ function headArt(cur: Morphology, eyes: EyePlacement[], spots: [number, number][
     ears: { count: cur.ear_count, shape: cur.ear_shape, size: cur.ear_size },
     eyes: eyes.map((e, i) => ({ x: spots[i][0], y: spots[i][1], az: e.side === 'mid' ? 0 : e.azimuth, r: 5 + 3.8 * cur.eye_size })),
     furry: coveringOf(model) === 'fur', lod: 'portrait',
+    horns: { size: model.horns, form: cur.horn_form },
+    pattern: cur.pattern,
   }, paintOf(model));
 }
 

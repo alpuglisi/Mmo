@@ -611,7 +611,9 @@ Parallel tracks once this spec's tables are fixed:
 - Drag handles (B), undo and redo, the presets gallery, the map vision fan.
 - New loci: horns, `wing_aspect`, `body_length`, `claw_bias`, second-ear-pair
   offset, asymmetry, patterns. These need the allele-budget change from
-  section 2 first.
+  section 2 first (done by the separate segment, decision 12). Horns,
+  `wing_aspect` and patterns are in (decisions 18–25); `body_length`,
+  `claw_bias`, the ear-pair offset and asymmetry remain.
 
 **Risks.**
 
@@ -728,7 +730,8 @@ settled on 2026-11-16 as recommended:
     boundary (decision 5; now `morph_legacy`, on for new worlds: decision
     17).
 14. Snapshot versions: v20 trait downsides, v21 body plan effects (package D),
-    v22 directional vision, v23 morphology genome loci, v24 `morph_legacy`.
+    v22 directional vision, v23 morphology genome loci, v24 `morph_legacy`,
+    v29 Phase 3 loci (decision 23).
 15. Wiring (2026-11-16): the genome's expressed `morph::Morphology`
     (`Organism::morph`) is the one body plan; `morph_effects::BodyPlan` is
     that type. It feeds the eye geometry and ear localization at birth
@@ -771,3 +774,72 @@ settled on 2026-11-16 as recommended:
     version 24), so the legacy change reaches a running world only when a
     server sets it, at a season boundary as decision 5 says. Numbers in the
     README, *Morphology on by default*.
+18. **Phase 3 loci (2026-11-17): horns, wing shape, coat patterns.** Four
+    loci join the genome's morphology segment, after the contract v1 loci:
+    `horn_form` (curved, straight, branched) and `pattern` (plain, spots,
+    stripes, mottled) as discrete loci, `horn_size` (0–1, default 0; horns
+    show from 0.1) and `wing_aspect` (0 broad – 1 narrow, default 0.5) as
+    continuous ones. Wild type dominant (curved, plain), step mutation at
+    `morph_step_rate`, founders vary the continuous ones by the usual
+    founder variation. Origin tags at migration copy `Armor` (horns),
+    `Wings` (wing aspect) and `Camouflage` (pattern). The second allele
+    budget concern of §2 doesn't arise: the segment has its own choice bits.
+19. **The core stays bit-identical.** The new loci sit after the v1 loci
+    in the wire order and draw after them on the genome's own morphology
+    stream, whose salts cover the v1 alleles only, so every v1 locus founds,
+    inherits and mutates exactly as before (checked against the previous
+    build's genome-level run). The kinship key (`MorphKey`) and species
+    representatives keep the five v1 loci: horn form and pattern are
+    outside the genetic distance and the body-plan gap (decision 9 for
+    patterns; horn form like the continuous loci of decision 13). They do
+    count in the legacy tally under `morph_legacy`, like the other
+    morphology alleles.
+20. **Effects (`morph_extra`, at birth, behind `Balance::morph_horns`,
+    `morph_wing_shape`, `morph_pattern`).** Exactly neutral at the default
+    body (no horns, aspect 0.5, plain coat).
+    - Horns, per unit of size: defense / fight-back / display (stealth −)
+      / snag in dense vegetation — curved 0.15 / 0.25 / 0.03 / 0.10,
+      straight 0.10 / 0.40 / 0.03 / 0.15, branched 0.20 / 0.20 / 0.06 /
+      0.30 (snag as tail drag: effective width +snag/3); mass × (1 +
+      0.08·h), upkeep +0.06·h. This replaces the cosmetic "large
+      herbivores have horns" rule on the map and the avatar.
+    - Wing aspect (only a body that glides or flies; `da = (aspect − 0.5)
+      · Wings`): speed +0.08·da, endurance +0.1·da, agility −0.15·da,
+      wing loading × (1 + 0.2·da) (broad wings take off easier), narrow
+      wings snag in forest (+0.1·max(0, da) width).
+    - Pattern: stealth `0.12 · (0.5 + 0.5·Camouflage)` times a biome match
+      (spots: forest 1, marsh 0.5, desert/tundra −0.5; stripes: grassland
+      and marsh 1, desert/tundra/mountain −0.5; mottled: mountain/tundra 1,
+      desert 0.5, marsh −0.5; plain 0). The one per-tick read: detection
+      adds it to the prey's stealth, only when the organism's `camo` is
+      above 0 (one guarded line in `decide.rs`; LOD cohorts leave it out).
+21. **Pricing:** 4 points per unit of horn size (a floor price like the
+    sense size genes and armor; horns are a structure, decision 4). Horn
+    form, wing aspect and patterns are free trade-offs. `/api/genes` lists
+    the four rows (`horn_size` as a priced axis); the client charges the
+    same rows (`cost.fixture.json`). Not yet calibrated with
+    `calibrate --morph` (its draws keep the new loci at their defaults).
+22. **On by default.** The three tunables default to 1: the standard sweep
+    (`sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`) scores
+    11.68 with them on (baseline 11.60), within ±0.3. The preset designs
+    have no horns and plain coats, so in the sweep only founder variation
+    of `horn_size` and `wing_aspect` reaches the rules.
+23. **Snapshot version 29** (numbered apart from a concurrent version 28;
+    renumber at merge): genomes carry the new loci, `Balance` the three
+    tunables. Older snapshots restore with the new loci at their defaults
+    (tags from the anchor genes) and the tunables at 0, as those worlds ran
+    (`serde_util::before_v29`).
+24. **Asymmetry is not done.** It would touch the eye geometry, ear
+    localization and every paired drawing (decision 3 asks for one locus
+    per paired feature): not cheap, so it stays a later candidate.
+25. **Client.** The builder's side view adds a horn row (none or a form)
+    with a size handle on the horn tip, a coat-pattern row and a wing-shape
+    slider (it only matters with wings, which the builder's plain body
+    lacks, so it shows on the map sprites and the founder avatar). The eye
+    view draws horns and the pattern from above. The look sends `horns`
+    (0/1/2), `horn_form`, `wing_aspect` (bucket, gliders and fliers only)
+    and `pattern`, each only when not the default, so default sprite keys
+    are unchanged. Names: "Horn size", "Horn shape", "Wing shape" (broad /
+    narrow), "Coat pattern" (`MORPH_NAMES`, with the Rust
+    `display_name`s through `traitNames.fixture.json`). Screenshots:
+    `docs/screenshots/morph-phase/`.
