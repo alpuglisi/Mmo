@@ -50,6 +50,10 @@ jobs:
           # Fail instead of skipping the PostgreSQL tests if the URL is lost.
           EVO_REQUIRE_DATABASE: "1"
         run: cargo test --release --workspace
+      # The long tests a plain `cargo test` leaves out (#[ignore]d in the
+      # server's integration tests: a world's history over 830 days).
+      - name: Test (long)
+        run: cargo test --release --workspace --test integration -- --ignored
       - name: Clippy
         run: cargo clippy --release --all-targets -- -D warnings
       - name: Clippy (evo-server without the postgres feature)

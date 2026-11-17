@@ -487,7 +487,7 @@ jobs (the Android emulator job waits for the Android one):
 
 | Job | What it runs |
 | --- | --- |
-| Rust | `cargo fmt --all --check` (`rustfmt.toml`: width 120), `cargo build --release --workspace`, `cargo test --release --workspace` with a `postgres:16` service container (`DATABASE_URL` set, so the persistence tests also run against `PgStore`; `EVO_REQUIRE_DATABASE=1` makes them fail rather than skip if it goes missing), `cargo clippy --release --all-targets -- -D warnings`, and clippy on `evo-server --no-default-features` (no sqlx) (stable toolchain, cargo cache) |
+| Rust | `cargo fmt --all --check` (`rustfmt.toml`: width 120), `cargo build --release --workspace`, `cargo test --release --workspace` with a `postgres:16` service container (`DATABASE_URL` set, so the persistence tests also run against `PgStore`; `EVO_REQUIRE_DATABASE=1` makes them fail rather than skip if it goes missing), then the long tests a plain `cargo test` leaves out (`cargo test --release --workspace --test integration -- --ignored`: a world's history over 830 days), `cargo clippy --release --all-targets -- -D warnings`, and clippy on `evo-server --no-default-features` (no sqlx) (stable toolchain, cargo cache) |
 | Balance smoke check | `scripts/balance-smoke.sh`: `evo-sim sweep --size 64 --trials 1 --seeds 3 --rounds 1 --days 60` with the default `Balance`, failing if fewer than 14 of the 24 lineage-worlds (8 lineages × 3 seeds) still hold 4 members with 2 adults, or the score drops below 7 of 12. The current rules make 23 of 24 and 11.54 (with the morphology on by default), so only a rule change that wrecks coexistence trips it; thresholds are env-overridable (`MIN_SURVIVORS`, `MIN_SCORE`, `SEEDS`, `DAYS`, `SIZE`). |
 | Client | `npm ci`, `npm run typecheck`, `npm test`, `npm run build` |
 | Android app | builds the client, generates the Capacitor project (`npx cap add android`), installs JDK 21 and the Android SDK (`android-actions/setup-android`: platform-tools, platform 36, build-tools 35.0.0), runs `./gradlew assembleDebug` and uploads `app-debug.apk` as the `evolution-mmo-debug-apk` artifact (14 days); then a second, plain-http build (`EVO_CAP_CLEARTEXT=1 npx cap sync android`, checked for `usesCleartextTraffic="true"` in the merged manifest) as `evolution-mmo-debug-apk-cleartext` for the emulator job |
@@ -500,14 +500,27 @@ Run the same checks locally before pushing:
 
 ```sh
 cargo build --release && cargo test --release --workspace
+cargo test --release --workspace --test integration -- --ignored   # the long tests (~35 s)
 cargo fmt --all --check
 cargo clippy --release --all-targets -- -D warnings
 cargo clippy --release -p evo-server --no-default-features --all-targets -- -D warnings
 # PostgreSQL runs of the persistence tests (skipped without DATABASE_URL):
-DATABASE_URL=postgres://evo:evo@localhost/evo_test cargo test --release -p evo-server --test persistence
+DATABASE_URL=postgres://evo:evo@localhost/evo_test cargo test --release --workspace --test integration persistence::
 scripts/balance-smoke.sh
 (cd client && npm ci && npm run typecheck && npm test && npm run build && npm run e2e)
 ```
+
+**Test-suite speed.** `cargo test --release --workspace` is the fast
+default: the server's integration tests are modules of one test binary
+(`crates/server/tests/integration/`, one link of the server instead of one
+per file; run one area with `--test integration security::`), and the tests
+that take long by design are `#[ignore]`d with the command that runs them:
+the 830-day history test, which CI runs as its own step, and the long
+genetics, ecology and benchmark runs (minutes to half an hour, never in
+CI; `cargo test --release --workspace -- --include-ignored` runs them all).
+Select packages with `--workspace` plus `--test`/a filter rather than `-p`
+where you can: a `-p` build resolves dependency features for that package
+alone and so builds its own copies of the shared dependencies.
 
 **Determinism in tests.** The server integration tests that need exact
 timing use a manual world clock: `ServerConfig::manual()` makes the world
@@ -934,7 +947,7 @@ web client handles both.
   equals the original after quantization (`wire::canonical`), that a
   sub-step delta carries only the possessed organism, that a lost frame is
   refused until a keyframe, and that truncated or garbled frames are
-  errors, not panics; a server test (`tests/server.rs`) compares a protocol
+  errors, not panics; a server test (`tests/integration/server.rs`) compares a protocol
   2 socket with a protocol 1 socket of the same player push by push and
   checks `resync`. A Rust test writes `client/src/wire.fixture.json`
   (frames of a short session and the states they decode to,
@@ -953,7 +966,7 @@ field, °), `blind` (behind, °), `front_gap` (ahead, °, absent at 0) and
 `directional` (present when `Balance::directional_vision` > 0, i.e. blind
 spots shorten detection; off, the cones only describe the eyes). Nearby
 organisms never carry either, whatever the protocol (tested in
-`tests/server.rs` and `wire.rs`). In JSON states (protocol 1) they are two
+`tests/integration/server.rs` and `wire.rs`). In JSON states (protocol 1) they are two
 more optional keys per own organism. A client asking for `proto=3` gets
 protocol 2 frames with two more own fields (bit 20 heading, bit 21 an index
 into a `visions` palette in the meta JSON, like `looks`); a client asking
@@ -1222,7 +1235,7 @@ seasons (spring…winter, `GET /api/leaderboard/seasons`, the Lineage tab's
   store would not be seen; one process serves a world.) Tested:
   `standings::tests` (invalidation on writes, worlds kept apart, a load
   racing a write), `league::tests` (generation per score change and
-  rollover), and `tests/standings.rs` (over HTTP and WebSocket, two worlds,
+  rollover), and `tests/integration/standings.rs` (over HTTP and WebSocket, two worlds,
   days and rollovers). Measured with `examples/standings_load.rs` (128²
   world, 60 players, 4 finished seasons, 100 ms ticks, 200 clients, load
   generator on the same 4-core box; server CPU per request above idle):
@@ -1447,7 +1460,7 @@ configured; without them the server runs exactly as before (`GET
   offers push when `client/android/app/google-services.json` existed at
   build time (or `VITE_EVO_FCM=1`); otherwise the card says push isn't set
   up in this build.
-- **Tested** in Rust against a mock server (`crates/server/tests/native_push.rs`:
+- **Tested** in Rust against a mock server (`crates/server/tests/integration/native_push.rs`:
   the token request and its RS256 assertion verified with the key, the FCM
   message, the APNs request over HTTP/2 with its ES256 token verified, every
   answer above, gone tokens deleted, the HTTP API) and unit tests for the
@@ -1532,13 +1545,13 @@ message instead of guessing. `0007_worlds.sql` adds `shard` to every
 per-world table with the default `'main'` for existing rows, drops the
 default and rebuilds the keys and indexes with `shard` first (ranked seasons with their placements and auction results included). Keep a world
 with the id `main` in the list to go on playing the old world (it is the
-default when there is no list). `tests/persistence.rs` writes a real
+default when there is no list). `tests/integration/persistence.rs` writes a real
 single-world save and every record kind in the old layout (files) and the
 0005 schema (PostgreSQL, through `PgStore::migrate_to`), opens the store,
 checks every record is `main`'s and none another world's, then starts a
 two-world server that continues the saved world as `main` beside a new
 world; for the memory store (which has no old form) it carries a
-single-world server's data into a two-world server. `tests/worlds.rs`
+single-world server's data into a two-world server. `tests/integration/worlds.rs`
 checks isolation end to end: commands on another world's organisms fail,
 a listing isn't on the other world's market and can't be bought from it,
 leaderboards, history, balances and ledgers are per world, and a restart
@@ -1610,7 +1623,7 @@ which the Dockerfile installs): glibc malloc kept the memory freed after a
 population peak (see *Memory after a population peak* under [Six worlds
 for three hours](#six-worlds-for-three-hours-soak)); without the feature
 the server uses the system allocator. The persistence tests
-(`tests/persistence.rs`) run the store round trip (terrains included),
+(`tests/integration/persistence.rs`) run the store round trip (terrains included),
 restart-keeps-accounts and restart-continues-the-saved-world (which also
 deletes the stored terrain behind the server's back and requires it to
 refuse to start) against the file store and, when
@@ -2195,6 +2208,7 @@ npm run build        # typecheck + static bundle in client/dist
 npm run typecheck
 npm test             # Vitest unit tests
 npm run e2e          # Playwright smoke, phone-emulation, onboarding, push and Android-driver tests (needs `npm run build` and `cargo build --release -p evo-server`)
+E2E_JOBS=3 npm run e2e   # the same scripts, three at a time (each starts its own server; worth it on 8+ cores: WebGL renders in software)
 ```
 
 Serve the built client from the game server (one origin, no proxy):
@@ -2912,7 +2926,7 @@ server's 65-byte key and POSTs the subscription, which
 reload the device is still on and the kind still off; Turn off removes it
 on the server; and with notifications blocked, or no `PushManager`, the
 card explains and offers no button. Screenshot: `push-settings.png`.
-The server side of delivery is tested in Rust (`crates/server/tests/push.rs`,
+The server side of delivery is tested in Rust (`crates/server/tests/integration/push.rs`,
 and `native_push.rs` for FCM and APNs) against mock push services.
 
 **Not yet:** native apps run on devices (the Android debug APK builds,
@@ -3988,7 +4002,7 @@ What it shows:
   `/api/leaderboard/history` takes a day range (`from`, `to`) and caps
   `limit` at 365: at 500 players a world's history is ~90 MB after a real
   day and ~130 MB after a real year instead of growing ~1.2 GB a day
-  (`tests/history.rs` runs a world for 830 days and checks the bound). The
+  (`tests/integration/history.rs` runs a world for 830 days and checks the bound). The
   world thread's in-memory window of 365 daily records is thinned the same
   way (~250 MB of JSON per 500-player world before, ~80 MB now); it was
   still filling during this run, so it may account for part of the RSS
