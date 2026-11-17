@@ -802,8 +802,10 @@ pub struct Balance {
     /// 30 read (`serde_util::before_v30`).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v30"))]
     pub strike_fixes: f32,
-    /// Staggered decisions (an approximation for speed; 2 by default since
-    /// snapshot version 32): at 2 or more, a calm organism decides afresh only every
+    /// Staggered decisions (an approximation for speed; 2 by default in
+    /// snapshot version 32, back to 1, off, with the food values and
+    /// carnivore rules on by default: with them it cost the voles on fresh
+    /// seeds, *Food by its value* in the README): at 2 or more, a calm organism decides afresh only every
     /// `decide_interval` ticks (staggered by id) and keeps its last intent
     /// in between, its chase target's position updated
     /// (`World::reused_intent`). Every organism decides on the day's first
@@ -1097,7 +1099,7 @@ impl Default for Balance {
             morph_wing_shape: 1.0,
             morph_pattern: 1.0,
             strike_fixes: 1.0,
-            decide_interval: 2.0,
+            decide_interval: 1.0,
             carcass_keep: 0.75,
             carnivore_fat: 60.0,
             carcass_scent: 8.0,

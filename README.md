@@ -2996,8 +2996,9 @@ snapshot). Every exact optimisation below left the fingerprints of its
 day (`e37d27fc27ac144e` default, `c32bf3e8057496e8` meat, seed 31, at the
 time), the sweep check (`evo-sim sweep --size 96 --trials 1 --seeds 12
 --rounds 1 --seed 31`: score 11.60 then) and the `predlong` output byte for
-byte unchanged; staggered decisions (below, on by default since snapshot
-version 32) are the one deliberate change of results.
+byte unchanged; staggered decisions (below, on by default in snapshot
+version 32, off again by default with the food values) are the one
+deliberate change of results.
 
 What changed:
 
@@ -3047,9 +3048,11 @@ cells and 6–8-tile ranges, under 1% of far cells lie wholly in range), and
 fewer close looks (the cost moves to the far-neighbor loop and the
 selection: no gain).
 
-**Staggered decisions** (`Balance::decide_interval`, 2 by default since
-snapshot version 32; saves from version 31 and before read 1, every tick,
-and keep running as they did): at `k >= 2` a calm organism decides afresh
+**Staggered decisions** (`Balance::decide_interval`, 2 by default in
+snapshot version 32, **back to 1 (off) by default** once the food values
+and carnivore rules came on, because with them it cost the voles on fresh
+seeds: *Food by its value*; saves keep the interval they stored, and saves
+from version 31 and before read 1): at `k >= 2` a calm organism decides afresh
 every `k` ticks (staggered by id) and keeps its last intent in between,
 following its target organism (`world::stagger`). Every organism decides on
 the day's first tick, and so does every hunter and any organism that is
@@ -6634,7 +6637,10 @@ the fox survives long enough. The niche designs avoid it.
 morphology extras):
 
 Measured on commit 3140238 (merged up to the strike fixes; before the
-staggered decisions of version 32), on cloud machines, unless noted. "Old
+staggered decisions of version 32), on cloud machines, unless noted. With
+`decide_interval` back to 1 the final defaults run those worlds unchanged
+(the sweep check scores 11.71 on both, lineage for lineage), so these are
+the numbers of the defaults as committed. "Old
 defaults" means the rules of before version 31 (`--classic`) on the standard
 designs.
 
@@ -6647,7 +6653,7 @@ designs.
 | same: prey lost | none | **omnivores on seed 48** (voles down to 30–41 on several seeds) | (niche world: omnivores on 48 too) |
 | `genetics --long --level ecology` (12 years, 4 worlds): strict checks | all | **7 of 7** (and 9 of 9 soft) | all |
 | same: both predators survive | ≥ 3 of 4 worlds | **fox 2, pack hunters 2** (both together in 1; no prey lost, lowest newts 15, voles 42) | fox 0, pack hunters 0 (*Predators over the years*) |
-| `sweep --seed 31` (12 seeds, 120 days) | ≥ 11.30 | **11.71** (11.70 after merging staggered decisions) | 11.60 at the time |
+| `sweep --seed 31` (12 seeds, 120 days) | ≥ 11.30 | **11.71** (11.70 with staggered decisions) | 11.60 at the time |
 | `compare --seed 101 --adaptive vs --classic` | no significant loss | **−0.09** (sequential 95% CI −0.24 … +0.06 after 24 seeds: no difference that matters); after merging staggered decisions (6a6e6bc): unresolved at the 48-seed cap, mean −0.10, sequential CI −0.33 … +0.14 (contains 0) | |
 | `calibrate tournament`, 90 days, sets 70001– and 80001–, 96 worlds each: top class | < ~38% | **27.1% and 25.0%** (warm live birth; cold abandoned eggs 15.6% / 12.5%) | 39.4% for cold abandoned eggs in the tuning set (*Thermoregulation × birth mode*) |
 
@@ -6671,6 +6677,22 @@ In the tournaments the hunters (carnivory ≥ 0.45) win 46% of worlds in
 both sets (mean final share 0.056 and 0.067), and no thermoregulation ×
 birth class is above 27%: lowering `larval_competition` took the cold
 abandoned-egg layers from the top (39%) to 13–16%.
+
+**With staggered decisions** (`decide_interval` 2, the default of
+version 32, merged on commit 6a6e6bc): `predlong 6 31–38` fox 7 (7),
+pack hunters 8 (8), no prey lost (voles down to 7 and 22); genetics fox
+3 of 4 worlds and pack hunters 4 of 4 (both in 3), all checks pass, but the
+newts die out in one world and the voles fall to 4 in another; `predlong 6
+41–48` fox 6, pack hunters 7, **prey lost on 4 seeds** (voles on 41, 43 and
+45, omnivores on 48); compare from seed 101 against `--classic`
+unresolved at the 48-seed cap (mean −0.10, sequential CI −0.33 … +0.14).
+Seeds 41, 43 and 45 with `--set decide_interval=1`: no prey lost (voles
+down to 36, 39 and 30). Calm prey that keep their last intent react late
+to hunters that always decide afresh, and the voles pay for it. So with
+these rules on by default **`decide_interval` goes back to 1** (every
+organism decides every tick): prey survival is worth more than the 13–15%
+of a tick it saved. The field and the version 32 format stay; a version 32
+save keeps the interval it stored.
 
 **Old saves keep their rules.** Snapshots move to format version 31 (28
 was reserved for this change and never written): `meat_energy`,
