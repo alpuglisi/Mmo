@@ -19,6 +19,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cappedBrowser, chromiumDevice } from './frames.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
@@ -65,8 +66,7 @@ function step(msg) {
 }
 
 function device(name) {
-  const { defaultBrowserType: _ignored, ...d } = devices[name];
-  return d;
+  return chromiumDevice(devices, name);
 }
 
 async function shot(page, name) {
@@ -115,10 +115,40 @@ const tourState = (page) => page.evaluate(() => {
   };
 });
 
+/** Why the tour card or its highlight does not fit, or null. */
+function misfit(t, tag) {
+  if (t.box.left < 0 || t.box.top < 0 || t.box.right > t.vw + 0.5 || t.box.bottom > t.vh + 0.5) return `${tag}: tour card off screen at ${t.step}: ${JSON.stringify(t)}`;
+  if (t.docW > t.vw + 1) return `${tag}: page scrolls sideways at ${t.step} (${t.docW} > ${t.vw})`;
+  if (t.ring && (t.ring.left < 0 || t.ring.right > t.vw + 0.5)) return `${tag}: highlight off screen at ${t.step}: ${JSON.stringify(t.ring)}`;
+  return null;
+}
+
 function checkFits(t, tag) {
-  if (t.box.left < 0 || t.box.top < 0 || t.box.right > t.vw + 0.5 || t.box.bottom > t.vh + 0.5) throw new Error(`${tag}: tour card off screen at ${t.step}: ${JSON.stringify(t)}`);
-  if (t.docW > t.vw + 1) throw new Error(`${tag}: page scrolls sideways at ${t.step} (${t.docW} > ${t.vw})`);
-  if (t.ring && (t.ring.left < 0 || t.ring.right > t.vw + 0.5)) throw new Error(`${tag}: highlight off screen at ${t.step}: ${JSON.stringify(t.ring)}`);
+  const why = misfit(t, tag);
+  if (why) throw new Error(why);
+}
+
+/**
+ * The tour at step `count`, once it has settled: the card places its
+ * highlight again on the next animation frame, after the step's layout, and
+ * the highlight slides there.
+ * Fails with the misfit if it does not fit within `ms`.
+ */
+async function settledStep(page, count, tag, ms) {
+  const deadline = Date.now() + ms;
+  let last = null;
+  for (;;) {
+    const prev = last;
+    last = await tourState(page);
+    // Settled: the same boxes as 100 ms ago (any slide has ended), and fitting.
+    const still = prev && last && JSON.stringify([prev.box, prev.ring]) === JSON.stringify([last.box, last.ring]);
+    if (still && last.count === count && !misfit(last, tag)) return last;
+    if (Date.now() > deadline) {
+      if (last && last.count === count) checkFits(last, tag);
+      throw new Error(`${tag}: the tour did not reach ${count}: ${JSON.stringify(last)}`);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 /** Nothing left over the map: the canvas center takes the pointer. */
@@ -149,8 +179,7 @@ async function desktopChecks(browser, base, errors) {
   const seen = [];
   for (let k = 0; k < 4; k++) {
     await page.click('#tour-next');
-    const t = await waitFor('next step', async () => { const s = await tourState(page); return s && s.count === `${k + 2} of ${STEPS}` && s; }, UI_MS);
-    checkFits(t, 'desktop');
+    const t = await settledStep(page, `${k + 2} of ${STEPS}`, 'desktop', UI_MS);
     if (!t.ring) throw new Error(`no highlight at ${t.step}`);
     seen.push(t.step);
   }
@@ -238,9 +267,7 @@ async function phoneChecks(browser, base, errors) {
 
   const steps = [];
   for (let k = 0; k < STEPS; k++) {
-    const t = await waitFor(`step ${k + 1}`, async () => { const s = await tourState(page); return s && s.count === `${k + 1} of ${STEPS}` && s; }, 20000);
-    await page.waitForTimeout(200); // the highlight's slide
-    checkFits(await tourState(page), 'phone');
+    const t = await settledStep(page, `${k + 1} of ${STEPS}`, 'phone', 20000);
     steps.push(t.step);
     if (t.step === 'lineage') await shot(page, 'onboarding-phone-lineage.png');
     if (k === STEPS - 1 && (await page.textContent('#tour-next')) !== 'Finish') throw new Error('no Finish on the last step');
@@ -276,7 +303,7 @@ async function main() {
   let log = '';
   server.stdout.on('data', (d) => (log += d));
   server.stderr.on('data', (d) => (log += d));
-  const browser = await chromium.launch({ headless: !process.env.HEADED });
+  const browser = cappedBrowser(await chromium.launch({ headless: !process.env.HEADED }));
   const errors = [];
   try {
     await waitFor('server', async () => (await fetch(`${base}/api/world`)).ok);

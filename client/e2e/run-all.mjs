@@ -1,8 +1,10 @@
 // Runs the browser end-to-end scripts (`npm run e2e`). Each script starts its
 // own evo-server on a free port with its own browser, so they are
-// independent: E2E_JOBS of them run at once (default 1, one after another;
-// more pays only on a machine with many cores: Chromium renders WebGL in
-// software here, so on 4 cores the scripts mostly slow each other down). With more than one job a
+// independent: E2E_JOBS of them run at once (default half the cores, at most
+// 4; E2E_JOBS=1 runs them one after another). The pages run at a capped
+// frame rate and the phones at pixel ratio 1 (frames.mjs: E2E_FPS, E2E_DPR),
+// which is what makes running several at once pay: uncapped, Chromium's
+// software WebGL alone kept three cores busy. With more than one job a
 // script's output is printed in one piece when it finishes. Every script runs
 // even after one fails; the run then fails and lists the failures, with each
 // script's time.
@@ -10,13 +12,16 @@
 // Usage: node e2e/run-all.mjs [script ...]   (names without .mjs; default all)
 
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const ALL = ['smoke', 'context-loss', 'mobile', 'onboarding', 'push', 'android-desktop', 'builder', 'vision'];
+// Longest first, so a parallel run does not end waiting on a long one.
+const ALL = ['smoke', 'mobile', 'android-desktop', 'onboarding', 'vision', 'builder', 'context-loss', 'push'];
 const scripts = process.argv.length > 2 ? process.argv.slice(2) : ALL;
-const jobs = Math.max(1, Number.parseInt(process.env.E2E_JOBS ?? '1', 10) || 1);
+const cores = os.availableParallelism?.() ?? os.cpus().length;
+const jobs = Math.max(1, Number.parseInt(process.env.E2E_JOBS ?? '', 10) || Math.min(4, Math.floor(cores / 2)));
 
 function run(name) {
   return new Promise((resolve) => {
