@@ -24,7 +24,9 @@ Where the design's build order stands:
   it for iOS and Android (the Android debug APK builds headless and in CI; neither
   app has run on a device yet); see [Client](#client).
 
-What remains is in [Suggested next steps](#suggested-next-steps).
+What remains is in [Suggested next steps](#suggested-next-steps). Launch
+marketing (drafting, human approval, scheduling and publishing on the
+owner's accounts) lives in [`tools/marketing/`](tools/marketing/PUBLISHING.md).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
 
@@ -38,6 +40,7 @@ crates/
 client/      web client: TypeScript, PixiJS 8, Vite (npm)
 deploy/      docker compose deployment: evo-server, PostgreSQL, Caddy (HTTPS); see Deployment
 Dockerfile   image with evo-server and the built client
+tools/marketing/  launch marketing: drafts, approval queue, calendar, official-API publishing
 docs/
   game-design.md
 ```
@@ -131,9 +134,59 @@ score).
   and sentries is unchanged). Cohorts of abstract regions (level of detail)
   belong to no group: agents expanded from them start in the main group.
 - **Per-group orders.** Migration orders are kept per (player, group).
-  `migrate` without a group reaches every group, as before; with one, only
-  it. A group has at most one of a migration order, a territory and a
-  rally: the newest order replaces the others.
+  `migrate` without a group is the main group's (group 0), like a rally or
+  a territory (it used to reach every group; the client's "All groups"
+  sends one per group). A group has at most one of a migration order, a
+  territory and a rally: the newest order replaces the others.
+- **Migration** (`command_migrate_group`; playtest 1). A target off the
+  map is refused (`off_map`). One on deep water (frozen or not: the ice
+  goes in spring) or a cliff moves to the nearest tile at least half the
+  group's bodies could stand on, within 8 tiles (`MIGRATE_SNAP_RADIUS`;
+  the reply says `moved` with a note), else it is refused
+  (`unreachable`). On the way, members keep off ice they would drown under
+  if it melted (`apply::ice_trap`: treated as blocked by steering and
+  route planning, so a frozen lake is walked around, not across), and
+  break off to drink or eat when a need passes 60 (`MIGRATE_BREAK`, ±0.1
+  with obedience), going back to the order once it is down to 30
+  (`ORDER_RESUME`), so a migration no longer pins a group through a
+  drought. The order is done, and dropped, once most of the group's
+  adults are within its arrival radius of the target (the rally circle,
+  at least 3 tiles; checked on the hour, `settle_groups`), and the player
+  gets a `group` alert. The server plans the route a member near the
+  group's middle would take (`World::migration_route`, at most 32 points)
+  when the order is given and sends it in the group's `route` for the
+  client to draw.
+- **Emptied groups.** A group whose last member dies loses its migration,
+  territory and rally on the next hour (the main group only once the
+  player has nothing alive, since its agents may all be cohorts in
+  abstract regions); a `group` alert says so for the other groups.
+- **Possession orders.** A move order the organism can't reach (into the
+  sea, onto an island, up a cliff) becomes the nearest tile it can reach
+  (a full route search when the order is given), so the order ends there
+  instead of leaving the animal standing at the shore; an order whose
+  route later fails (ice gone) is dropped. A move or release of your own
+  unpossessed animal says `not_possessed` ("must be possessed first")
+  rather than `not_owned`.
+- **Retiring a lineage** (`retire_lineage`, with the lineage's id so a late
+  click can't retire the next one; `World::retire_player`,
+  `Game::retire`). Players can start over without drowning their animals:
+  every animal, cohort and egg of the lineage is **removed** from the
+  world at once. Not killed (no deaths counted, no carcasses, no death
+  alerts) and not turned wild: wild animals carrying the player's
+  origin-tagged alleles would keep scoring for them, and a sudden wild herd
+  would upset the ecosystem. Group orders and possession end; the player
+  can found again at once (`found`), keeping renown, ledger, records and
+  the old lineage's history. Marketplace offers and listings of the
+  removed animals close on the next tick, as for any animal gone.
+- **Founding ramp** (closes the re-founding exploit). A fresh founding
+  has a large legacy share at once (all adults, many pregnant: 0.07% →
+  8.1% in the playtest), so dying out and founding again paid. The ranked
+  season's legacy score now counts a lineage's daily share at
+  `days since founding / 10` of its value (`FOUNDING_RAMP_DAYS`), full
+  after 10 days; with the season's mean-of-days score, re-founding near
+  a season's end gains nothing. The shares shown and stored are
+  unchanged; the founding day is kept in the saved game (older saves
+  count every lineage in full).
 - **Territory** (`claim_territory`): a circle a group holds. Its radius is
   kept between 3 tiles and `4 + 2·√adults` (at most 24): a few animals
   can't hold a valley. Members roam and forage inside it (wander targets
@@ -165,7 +218,11 @@ score).
   but nobody is chased off and there is no cooldown. It stands until it is
   cancelled, replaced by another order (a migration, a claim, a new rally;
   a split or merge ends it like the other orders) or lapses after
-  `RALLY_DAYS` (3 days: re-issue it to keep the group there). Lapsed
+  `RALLY_DAYS` (3 days: re-issue it to keep the group there), or after
+  the host's floor if longer: the server makes it at least 5 minutes of
+  wall-clock time (`GameConfig::rally_min_minutes`, `World::set_rally_min_ticks`),
+  since 3 game days pass in seconds at a fast tick. Off-map rally (and
+  territory) targets are refused (`off_map`) rather than clamped. Lapsed
   rallies are dropped before decide each tick. Saved (snapshot version
   15; older saves load with no rally standing, `serde_util::before_v15`).
 - **Obedience: group commands as genes** (the doc's open question, "keep
@@ -879,17 +936,18 @@ Client → server:
 | `type` | Fields | |
 | --- | --- | --- |
 | `possess` | `organism` | Take control of one of your organisms |
-| `order_move` | `organism, x, y` | Walk a possessed organism to a point (tiles) |
-| `release` | `organism` | Back to genetic behavior |
+| `order_move` | `organism, x, y` | Walk a possessed organism to a point (tiles). A point it can't reach becomes the nearest it can; `data` = `{x, y}` used, with `moved, note` when changed. `not_possessed` for your own unpossessed organism |
+| `release` | `organism` | Back to genetic behavior (`not_possessed` if it isn't) |
 | `request_mating` | `mine, partner, price?` | Directed mating. Your own pair runs at once; another player's organism sends them a `mating_request`. A `price` (renown) goes into escrow at once (`insufficient_funds` if you can't cover it) |
 | `preview_mating` | `mine, partner` | What the mating would give now, nothing spent: `data` = `{compatible, fertility, body_plan_fertility, distance_fertility, body_plan_gaps: [{gene, gap}], mismatch, cost, failure_chance, distance, meeting_distance, problem?}` |
 | `respond_mating` | `request, accept` | The partner's owner answers |
 | `complete_mating` | `request` | Retry an accepted agreement now |
 | `cancel_mating` | `request` | Either side withdraws an open offer |
-| `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for your adults: every group without `group`, else that group (`no_such_group` past 3); `data` = the clamped `{x, y}`. Replaces the territory of the groups it reaches |
+| `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for the adults of group `group` (default 0, the main group; `no_such_group` past 3); replaces its territory or rally. `off_map` off the map; a target on deep water, ice or a cliff moves to the nearest land within 8 tiles (`data.moved`, `data.note`) or gives `unreachable`. `data` = `{x, y, group, route?, moved?, note?}`; the order ends when most of the group has arrived (a `group` alert). `clear_migration` without `group` clears every group's |
+| `retire_lineage` | `lineage` | Retire your living lineage (its id) to start over: its animals, cohorts and eggs are removed (not killed, not turned wild), its orders end, and you may found again at once; `data` = `{removed}`. `no_lineage` if it isn't your living lineage |
 | `claim_territory` | `group?, x, y, radius` | Group `group` (default 0) holds the circle around `x, y`: the radius is kept between 3 and the group's `max_radius`; replaces its migration order; `data` = `{x, y, radius, claimed_tick}`. `claim_cooldown` (`detail.ticks_left`) within half a day of the group's last claim; `no_such_group` for a group without members; `bad_coordinates` for a non-finite number |
 | `abandon_territory` | `group?` | Give the territory up (`no_territory` if none) |
-| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 24) for 3 days; replaces its migration order or territory; `data` = `{x, y, radius, expires_tick}`. `no_such_group` for a group without members, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
+| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 24) for 3 days; replaces its migration order or territory; `data` = `{x, y, radius, expires_tick}`. Stands at least 5 minutes of wall-clock time. `no_such_group` for a group without members, `off_map` off the map, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
 | `split_group` | `group?, organisms?` | Divide a group (default 0) in two: the named organisms (yours, in that group, at most 2000), else the far half across its widest spread; `data` = `{group, moved, kept}`. `group_limit` at 4 groups, `group_too_small` if a side would be empty, `not_in_group`, `not_owned`, `too_many_organisms` |
 | `merge_groups` | `from, into?` | Every member of `from` joins `into` (default 0); `data` = `{moved}`; `same_group`, `no_such_group` |
 | `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window |

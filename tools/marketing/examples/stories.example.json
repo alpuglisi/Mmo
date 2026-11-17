@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-11-17T12:00:00Z",
+  "world": "playtest-1 (seed 7)",
+  "stories": [
+    {
+      "id": "y3-severe-winter",
+      "kind": "catastrophe",
+      "title": "A severe winter hit the northern steppe in year 3",
+      "summary": "Snow lay for weeks and the hibernating grazers that had fattened in autumn came through; the rest of the herd halved.",
+      "facts": { "year": 3, "season": "winter", "herd_before": 1240, "herd_after": 610, "biome": "steppe" },
+      "media": ["winter-timelapse"],
+      "score": 0.9
+    },
+    {
+      "id": "fox-hybrid",
+      "kind": "lineage",
+      "title": "A player's predator lineage quietly became wild foxes",
+      "summary": "Breeding with a nearby wild species turned most of the lineage's alleles wild: 65% of them now trace back to the wild fox.",
+      "facts": { "wild_share_pct": "65%", "animals": 1400 },
+      "media": ["fox-card"]
+    }
+  ]
+}

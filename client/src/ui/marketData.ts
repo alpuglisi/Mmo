@@ -3,6 +3,7 @@
 // state, so they are unit-tested without a DOM.
 
 import { dietLabel } from './chronicle';
+import { gameTime, realTime } from './duration';
 import type { ClientMsg, LedgerEntry, ListingView, MarketSort, MarketView, OrgId, OwnOrganism, PlayerId, StateView, TraitView } from '../protocol';
 import { compatSummary, type CompatSummary } from './mating';
 
@@ -132,7 +133,7 @@ export function bidProblem(l: ListingView, me: PlayerId, balance: number, slotsL
 }
 
 /** One line on an auction: the highest bid (and whether it is yours), the bid count and the time left. */
-export function auctionText(l: ListingView, me: PlayerId, tick: number, ticksPerDay: number): string {
+export function auctionText(l: ListingView, me: PlayerId, tick: number, ticksPerDay: number, msPerTick?: number): string {
   const a = l.auction;
   if (!a) return '';
   const high = a.high_bid === undefined
@@ -142,7 +143,17 @@ export function auctionText(l: ListingView, me: PlayerId, tick: number, ticksPer
   const when = left === 0 ? 'closing now'
     : left < ticksPerDay ? `closes in ${Math.max(1, Math.round((left / ticksPerDay) * 24))} h`
       : `closes in ${(left / ticksPerDay).toFixed(1)} days`;
-  return `Auction: ${high} · ${when}`;
+  const real = msPerTick && left > 0 ? ` (${realTime(left * msPerTick)})` : '';
+  return `Auction: ${high} · ${when}${real}`;
+}
+
+/** A fixed-fee listing's time left: "expires in 2.5 days (≈ 12 s)", "expires within the hour"; null without an expiry. */
+export function expiryText(l: ListingView, tick: number, ticksPerDay: number, msPerTick?: number): string | null {
+  if (l.expires_tick === undefined || l.kind === 'auction') return null;
+  const left = Math.max(0, l.expires_tick - tick);
+  if (left === 0) return 'expiring now';
+  const real = msPerTick ? ` (${realTime(left * msPerTick)})` : '';
+  return `expires in ${gameTime(left, ticksPerDay)}${real}`;
 }
 
 /** The player's adults that could be offered or used as a buyer, by id. */

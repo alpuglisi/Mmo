@@ -20,6 +20,9 @@
 .listing .compat[data-level='warn'] { color: var(--warn); }
 .listing .compat[data-level='bad'] { color: var(--bad); }
 .listing button[disabled] { opacity: 0.5; cursor: not-allowed; }
+/* An unavailable Buy / Bid must not look like a live button: flat and grey, its reason beside it. */
+.listing button.buy[disabled], .listing button.bid[disabled] { background: var(--panel-2); color: var(--muted); border: 1px dashed var(--border); opacity: 1; filter: none; }
+.listing .why-not { color: var(--warn, #d29922); }
 
 .trait-bars { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 0.8em; color: var(--muted); }
 .trait { display: inline-flex; align-items: center; gap: 4px; }

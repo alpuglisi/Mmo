@@ -4,10 +4,16 @@
 
 import { normalizePrefs, toasts, visibleFeed } from './alertPrefs';
 import {
-  DEFAULT_ALERT_PREFS, isOpen, type AlertKind, type AlertPrefs, type AlertView, type CurrentSeason, type ErrorInfo, type MatingOutcome, type OfferView, type OrgId,
+  DEFAULT_ALERT_PREFS, isOpen, type AlertKind, type AlertPrefs, type AlertView, type CurrentSeason, type ErrorInfo, type MatingOutcome, type MatingRecord, type OfferView, type OrgId,
   type ServerMsg, type StateView,
 } from './protocol';
 import type { ConnState } from './socket';
+import { friendlyError } from './ui/friendlyErrors';
+
+/** Commands whose errors the matings form shows itself. */
+const FORM_WORDED = new Set(['preview_mating', 'request_mating']);
+/** Mating commands: their errors toast in plain words (`friendlyError`). */
+const MATING_COMMANDS = new Set(['respond_mating', 'complete_mating', 'cancel_mating', 'buy_listing', 'bid_auction']);
 
 export interface OfferEntry {
   offer: OfferView;
@@ -73,6 +79,12 @@ export class GameModel {
   /** The ranked season under way, as last pushed (`watch_season`). */
   season: CurrentSeason | null = null;
   offers = new Map<number, OfferEntry>();
+  /**
+   * Finished matings from `GET /api/matings/history` (newest first), plus
+   * matings within the lineage made since: the Matings tab's history, so it
+   * survives a reload and shows what happened while the tab was closed.
+   */
+  matingLog: MatingRecord[] = [];
   selected: OrgId | null = null;
   conn: ConnState = 'closed';
   retryInMs: number | undefined;
@@ -103,6 +115,17 @@ export class GameModel {
         console.error(`[model] a '${topic}' subscriber failed:`, e);
       }
     }
+  }
+
+  setMatingLog(records: MatingRecord[]): void {
+    this.matingLog = records;
+    this.emit('offers');
+  }
+
+  /** A mating within the lineage just happened (the server's history has it too). */
+  addMating(record: MatingRecord): void {
+    this.matingLog = [record, ...this.matingLog];
+    this.emit('offers');
   }
 
   toast(kind: Toast['kind'], text: string): void {
@@ -169,8 +192,10 @@ export class GameModel {
         break;
       }
       case 'result':
-        // A preview is shown in the matings form, not as a toast.
-        if (!m.ok && m.error && m.command !== 'preview_mating') this.toast('error', `${m.command || 'command'}: ${m.error.message} (${m.error.code})`);
+        // The matings form shows previews and words its own request errors.
+        if (!m.ok && m.error && !FORM_WORDED.has(m.command)) {
+          this.toast('error', MATING_COMMANDS.has(m.command) ? friendlyError(m.error) : `${m.command || 'command'}: ${m.error.message} (${m.error.code})`);
+        }
         break;
       case 'mating_request': {
         this.offers.set(m.offer.id, { offer: m.offer, incoming: true });

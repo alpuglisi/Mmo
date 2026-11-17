@@ -22,7 +22,12 @@ export type ClientMsg =
   | { type: 'respond_mating'; request: number; accept: boolean }
   | { type: 'complete_mating'; request: number }
   | { type: 'cancel_mating'; request: number }
-  /** Group command: without `group` every group of yours migrates; replaces the territory of the groups it reaches. Data: `{x, y}` (clamped). */
+  /**
+   * Group command: group `group` (default 0, the main group) migrates; replaces its territory or rally. Off-map
+   * targets are refused (`off_map`); one on deep water or a cliff moves to the nearest land (`moved`, `note`) or is
+   * refused (`unreachable`). The order ends once most of the group has arrived (a `group` alert). Data:
+   * `{x, y, group, route?, moved?, note?}`.
+   */
   | { type: 'migrate'; x: number; y: number; group?: number }
   | { type: 'clear_migration'; group?: number }
   /** Group `group` (default 0) holds a circle (radius kept within its `max_radius`); data: `TerritoryView`. */
@@ -35,6 +40,11 @@ export type ClientMsg =
   | { type: 'split_group'; group?: number; organisms?: OrgId[] }
   /** Every member of `from` joins `into` (default 0); data: `{moved}`. */
   | { type: 'merge_groups'; from: number; into?: number }
+  /**
+   * Retire your living lineage `lineage` to start over: its animals, cohorts and eggs leave the world (removed, not
+   * killed or turned wild) and you may found again at once. Data: `{removed}`.
+   */
+  | { type: 'retire_lineage'; lineage: number }
   | { type: 'set_view'; x: number; y: number; radius: number }
   | { type: 'clear_view' }
   /** Put one of your adults on the stud marketplace; data: `{ listing: ListingView }`. */
@@ -110,6 +120,16 @@ export interface MatingOutcome {
 }
 
 export type OfferStatus = 'pending' | 'accepted' | 'completed' | 'declined' | 'cancelled' | 'failed' | 'expired';
+
+/** One finished mating of `GET /api/matings/history`, newest first (an offer, or a mating within the player's lineage). */
+export interface MatingRecord {
+  tick: number;
+  offer?: OfferView;
+  mine: OrgId;
+  partner: OrgId;
+  outcome?: MatingOutcome;
+  error?: ErrorInfo;
+}
 
 export const OPEN_STATUSES: readonly OfferStatus[] = ['pending', 'accepted'];
 
@@ -268,6 +288,8 @@ export interface GroupView {
   members: number;
   adults: number;
   migration?: [number, number];
+  /** The way the migration should go (around water and thin ice), from the group's middle to the target (absent: none planned). */
+  route?: [number, number][];
   territory?: TerritoryView;
   rally?: RallyView;
   /** Largest territory radius the group could claim now. */
@@ -423,10 +445,10 @@ export interface MatingUpdateMsg {
   error?: ErrorInfo;
 }
 
-export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need' | 'world' | 'achievement' | 'market';
+export type AlertKind = 'daily_summary' | 'birth' | 'death' | 'milestone' | 'need' | 'world' | 'achievement' | 'market' | 'group';
 
 /** Every alert kind, in the server's order. */
-export const ALERT_KINDS: readonly AlertKind[] = ['daily_summary', 'birth', 'death', 'milestone', 'need', 'world', 'achievement', 'market'];
+export const ALERT_KINDS: readonly AlertKind[] = ['daily_summary', 'birth', 'death', 'milestone', 'need', 'world', 'achievement', 'market', 'group'];
 
 /**
  * `GET` / `POST /api/alerts/prefs`: which alert kinds show in the feed and
@@ -441,7 +463,7 @@ export interface AlertPrefs {
 }
 
 /** What the server answers before a player saves any preferences. */
-export const DEFAULT_ALERT_PREFS: AlertPrefs = { hidden: [], toast: ['death', 'need', 'world', 'market'] };
+export const DEFAULT_ALERT_PREFS: AlertPrefs = { hidden: [], toast: ['death', 'need', 'world', 'market', 'group'] };
 
 /** What a push notification is about (crates/server/src/protocol.rs `PushKind`). */
 export type PushKind = 'mating' | 'death' | 'market' | 'species' | 'season' | 'catastrophe';
@@ -764,6 +786,10 @@ export interface WorldSummary {
   winter_provision?: boolean;
   /** Most living organisms, young included, one player may have; at it births pause (absent from older servers). */
   lineage_cap?: number;
+  /** Days in a year (four equal seasons); absent from older servers. */
+  days_per_year?: number;
+  /** Ticks in a game day; absent from older servers. */
+  ticks_per_day?: number;
 }
 
 /**

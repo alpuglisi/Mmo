@@ -189,7 +189,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .tool.icon-only { padding-left: 0.55em; padding-right: 0.55em; }
 .tool.icon-only .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .tool.active, .toolbar > .tool.active { background: rgba(47, 129, 247, 0.85); color: #fff; }
-.group-select { width: auto; background: transparent; border: 0; color: #c9d1d9; padding: 0.38em 0.5em; max-width: 9em; font-size: 13px; }
+.group-select { width: auto; background: transparent; border: 0; color: #c9d1d9; padding: 0.38em 0.5em; max-width: 15em; font-size: 13px; text-overflow: ellipsis; }
 .group-select option { background: var(--panel); }
 #legend-toggle { margin-left: auto; }
 .group-card { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; }
@@ -199,6 +199,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .legend .key.home-ring { --c: #e3b341; border-style: double; border-width: 3px; }
 .group-actions { margin-top: 4px; gap: 4px; }
 .group-actions button { padding: 0.2em 0.6em; }
+.hint[hidden] { display: none; }
 .hint { position: absolute; bottom: 10px; left: 10px; max-width: calc(100% - 300px); background: rgba(13, 17, 23, 0.72); padding: 4px 10px; border-radius: 8px; color: var(--muted); pointer-events: none; font-size: 12.5px;
   -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
 /* The legend: one collapsible card (the Legend button), terrain then creatures then map marks. */
@@ -233,6 +234,8 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .toast { padding: 6px 10px; border-radius: 6px; background: rgba(22, 27, 34, 0.94); border-left: 3px solid var(--accent); }
 .toast.error { border-left-color: var(--bad); }
 .toast-more { color: var(--muted); }
+/* While the game screen is still being built (game.ts `ready`), the map tools wait. */
+.game.starting .toolbar, .game.starting .fab { pointer-events: none; opacity: 0.6; }
 .link-btn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; min-height: 0; }
 .notice { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: var(--panel-2); border-left: 3px solid var(--accent); }
 .notice.bad { border-left-color: var(--bad); }
@@ -293,6 +296,20 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
 }
 .fab.active { background: #b62324; }
+/* Possessing: the bar with Release, always on the map (game.ts renderPossessBar). */
+.possess-bar { position: absolute; left: 50%; transform: translateX(-50%); bottom: 44px; z-index: 3; display: flex; align-items: center; gap: 8px;
+  max-width: min(640px, calc(100% - 20px)); padding: 6px 8px 6px 12px; border-radius: 10px; background: rgba(13, 17, 23, 0.9);
+  border: 1px solid #b62324; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); font-size: 13px; }
+.possess-bar[hidden] { display: none; }
+.possess-bar .possess-text { flex: 1; min-width: 0; }
+.possess-bar button { flex-shrink: 0; }
+button.danger { background: #b62324; color: #fff; }
+/* A tap on overlapping animals: chips to pick another. */
+.pick-chooser { position: absolute; left: 50%; transform: translateX(-50%); bottom: 92px; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  max-width: calc(100% - 20px); padding: 6px 8px; border-radius: 10px; background: rgba(13, 17, 23, 0.92); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); }
+.pick-chooser[hidden] { display: none; }
+.pick-chooser .chip { padding: 0.35em 0.7em; border-radius: 999px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); min-height: 36px; }
+.pick-chooser .chip.active { border-color: var(--accent); }
 .fab, .fab[hidden] { display: none; }
 
 /* Phones: the map takes the screen; the sidebar is a bottom sheet with a tab
@@ -369,6 +386,9 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
     background: rgba(13, 17, 23, 0.92); border-radius: 12px; padding: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); z-index: 4;
     -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
   .toolbar.more-open .tools-menu { display: flex; }
+  /* Open, the menu sits above the bottom sheet (z-index 5) and scrolls rather than running under the tab bar. */
+  .toolbar.more-open { z-index: 6; }
+  .tools-menu { max-height: calc(100dvh - 48px - 60px - var(--tabbar-h, 50px) - env(safe-area-inset-bottom)); overflow-y: auto; }
   .tools-menu .tool-group { flex-direction: column; background: none; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
   .tools-menu .tool-group + .tool-group { border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 6px; }
   .tools-menu .tool { justify-content: flex-start; border-radius: 8px !important; border-left: 0 !important; font-size: 15px; gap: 10px; }
@@ -378,6 +398,9 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   .group-actions button { min-height: 36px; }
   .hint { left: 8px; right: 8px; bottom: 8px; font-size: 12px; }
   .fab { display: block; bottom: 48px; }
+  .possess-bar { left: 8px; right: 8px; transform: none; max-width: none; bottom: 100px; flex-wrap: wrap; font-size: 12px; }
+  .possess-bar button { min-height: 40px; }
+  .pick-chooser { left: 8px; right: 8px; transform: none; max-width: none; bottom: 160px; }
   .fab[hidden] { display: none; }
   .legends { width: auto; left: 8px; right: 8px; top: 56px; bottom: auto; }
   .stage-wrap.show-legend .toasts { display: none; } /* the open legend takes their place */
@@ -546,3 +569,8 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .hybrid-points li { margin: 3px 0; }
 .food-hint { margin: 4px 0; color: var(--muted); }
 .food-hint.food-warn { color: var(--warn, #d29922); }
+
+/* The Food toggle as an icon (its title names it) where the toolbar would otherwise wrap. */
+@media (max-width: 1440px) {
+  #food-toggle .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}

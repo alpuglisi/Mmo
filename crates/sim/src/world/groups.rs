@@ -53,6 +53,8 @@
 //! steps exactly as before (every lookup is behind an empty map, every
 //! organism is in group 0).
 
+use std::collections::BTreeMap;
+
 use super::commands::CommandError;
 use super::World;
 use crate::genome::{Gene, PlayerId};
@@ -232,8 +234,93 @@ impl World {
         (RALLY_BASE_RADIUS + RALLY_RADIUS_PER_MEMBER * (members as f32).sqrt()).min(RALLY_MAX_RADIUS)
     }
 
-    fn rally_ticks(&self) -> u64 {
-        ((RALLY_DAYS * self.config.ticks_per_day as f32).round() as u64).max(1)
+    /// How long a rally stands: [`RALLY_DAYS`], or the host's floor in
+    /// ticks ([`World::set_rally_min_ticks`]) if longer.
+    pub fn rally_ticks(&self) -> u64 {
+        ((RALLY_DAYS * self.config.ticks_per_day as f32).round() as u64).max(self.rally_min_ticks).max(1)
+    }
+
+    /// A floor on how long a rally stands, in ticks: a server sets it to a
+    /// few minutes of real time, since [`RALLY_DAYS`] pass in seconds at a
+    /// fast tick rate. Not saved with the world (the host sets it again
+    /// after a restore); a standing rally keeps the expiry it was given.
+    pub fn set_rally_min_ticks(&mut self, ticks: u64) {
+        self.rally_min_ticks = ticks;
+    }
+
+    /// Tiles from its migration target within which a group of `members`
+    /// has arrived: [`MIGRATE_ARRIVAL`](super::commands::MIGRATE_ARRIVAL),
+    /// or the circle the group would gather in at a rally if larger.
+    pub fn arrival_radius(members: usize) -> f32 {
+        Self::rally_radius(members).max(super::commands::MIGRATE_ARRIVAL)
+    }
+
+    /// Once per hour (and only with group orders standing): a migration
+    /// most of whose group's adults (or members, with no adults) are within
+    /// [`World::arrival_radius`] of its target is done, and a group with no
+    /// living members loses its migration, territory and rally. The main
+    /// group only counts as empty once the player has nothing alive at all
+    /// (its agents may all be away as cohorts in abstract regions, where
+    /// they belong to no group). Each change is a [`GroupEvent`] for the
+    /// server.
+    pub(crate) fn settle_groups(&mut self) {
+        use super::commands::GroupEvent;
+        if self.migrate_orders.is_empty() && self.territories.is_empty() && self.rallies.is_empty() {
+            return;
+        }
+        if !self.tick.is_multiple_of(self.config.ticks_per_hour().max(1)) {
+            return;
+        }
+        // (members, adults, adults near the target, members near it).
+        let mut tally: BTreeMap<(PlayerId, u8), [usize; 4]> = BTreeMap::new();
+        for &k in self.migrate_orders.keys().chain(self.territories.keys()).chain(self.rallies.keys()) {
+            tally.insert(k, [0; 4]);
+        }
+        for o in self.organisms.iter().filter(|o| o.alive) {
+            if let Some(t) = tally.get_mut(&(o.owner, o.group)) {
+                t[0] += 1;
+                t[1] += usize::from(o.matured);
+            }
+        }
+        for o in self.organisms.iter().filter(|o| o.alive) {
+            let key = (o.owner, o.group);
+            let Some(&target) = self.migrate_orders.get(&key) else { continue };
+            let t = tally.get_mut(&key).expect("tallied");
+            if o.pos.dist(target) <= Self::arrival_radius(t[0]) {
+                t[2] += usize::from(o.matured);
+                t[3] += 1;
+            }
+        }
+        for (key, [members, adults, near_adults, near]) in tally {
+            let (player, group) = key;
+            let lineage_gone = || self.owner_count(player) == 0 && self.lod.owner_count(player) == 0;
+            if members == 0 && (group != 0 || lineage_gone()) {
+                self.migrate_orders.remove(&key);
+                self.territories.remove(&key);
+                self.rallies.remove(&key);
+                self.push_group_event(GroupEvent::Emptied { player, group });
+                continue;
+            }
+            let arrived = if adults > 0 { 2 * near_adults >= adults } else { members > 0 && 2 * near >= members };
+            if arrived {
+                if let Some(target) = self.migrate_orders.remove(&key) {
+                    self.push_group_event(GroupEvent::Arrived { player, group, target });
+                }
+            }
+        }
+    }
+
+    fn push_group_event(&mut self, e: super::commands::GroupEvent) {
+        if self.group_events.len() >= super::commands::GROUP_EVENTS_KEPT {
+            self.group_events.remove(0);
+        }
+        self.group_events.push(e);
+    }
+
+    /// Group orders that ended on their own since the last call (arrivals,
+    /// emptied groups), oldest first.
+    pub fn take_group_events(&mut self) -> Vec<super::commands::GroupEvent> {
+        std::mem::take(&mut self.group_events)
     }
 
     /// `p` pulled inside `bound` (90% of the radius) if it lies outside.
@@ -347,9 +434,10 @@ impl World {
                 return Err(CommandError::ClaimCooldown { ticks_left: ready - self.tick });
             }
         }
+        let center = self.on_map(center)?;
         let radius = if radius.is_finite() { radius } else { TERRITORY_MIN_RADIUS };
         let t = Territory {
-            center: self.map.clamp(center),
+            center,
             radius: radius.clamp(TERRITORY_MIN_RADIUS, Self::territory_radius_limit(adults)),
             claimed_tick: self.tick,
         };
@@ -376,8 +464,9 @@ impl World {
         if members == 0 {
             return Err(CommandError::NoSuchGroup(group));
         }
+        let center = self.on_map(center)?;
         let r = Rally {
-            center: self.map.clamp(center),
+            center,
             radius: Self::rally_radius(members),
             issued_tick: self.tick,
             expires_tick: self.tick + self.rally_ticks(),

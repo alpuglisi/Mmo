@@ -69,9 +69,10 @@ export function parseChoice(v: string): GroupChoice {
   return Number.isInteger(n) && n >= 0 && n < MAX_GROUPS ? n : 'all';
 }
 
-/** The migrate command for a choice ("all" moves every group, as the old command did). */
-export function migrateMsg(choice: GroupChoice, x: number, y: number): ClientMsg {
-  return choice === 'all' ? { type: 'migrate', x, y } : { type: 'migrate', x, y, group: choice };
+/** The migrate commands for a choice: one group, or each of `groups` for "all" (a migrate without a group is the main group's). */
+export function migrateMsgs(choice: GroupChoice, groups: GroupView[], x: number, y: number): ClientMsg[] {
+  const ids = choice === 'all' ? (groups.length > 0 ? groups.map((g) => g.id) : [0]) : [choice];
+  return ids.map((group) => ({ type: 'migrate', x, y, group }));
 }
 
 export function clearMigrationMsg(choice: GroupChoice): ClientMsg {
