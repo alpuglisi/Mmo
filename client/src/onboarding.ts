@@ -16,6 +16,16 @@ export type TourStatus = 'new' | 'active' | 'completed' | 'skipped';
 export type HintId = 'pregnancy' | 'death' | 'species' | 'offer';
 export const HINT_IDS: readonly HintId[] = ['pregnancy', 'death', 'species', 'offer'];
 
+/**
+ * The seen-hints list after Help's "Show tips again": empty, except the tip
+ * on screen right now. That one is being shown again already; forgetting it
+ * would bring it back once more after the player answers it (and after a
+ * reload, since the answer no longer records it).
+ */
+export function hintsAfterReset(showing: HintId | null): HintId[] {
+  return showing ? [showing] : [];
+}
+
 export interface Progress {
   tour: TourStatus;
   /** The step shown (or to resume at) while `tour` is `active`. */

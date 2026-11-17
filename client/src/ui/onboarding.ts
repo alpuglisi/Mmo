@@ -10,7 +10,7 @@
 import './onboarding.css';
 import type { GameModel } from '../model';
 import {
-  autoStarts, dueHints, HINTS, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
+  autoStarts, dueHints, HINTS, hintsAfterReset, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
   CARD_MARGIN, type HintId, type KeyValueStore, type Progress, type TourEvent, type TourStep, type TourTab,
 } from '../onboarding';
 import { h } from './dom';
@@ -265,7 +265,7 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
     });
     replay.addEventListener('click', () => startTour());
     tips.addEventListener('click', () => {
-      progress = { ...progress, hints: [] };
+      progress = { ...progress, hints: hintsAfterReset((hintEl?.dataset.hint as HintId | undefined) ?? null) };
       queue.length = 0;
       save();
       tips.textContent = 'Tips will show again';

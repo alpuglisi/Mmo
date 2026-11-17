@@ -233,6 +233,9 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .toast { padding: 6px 10px; border-radius: 6px; background: rgba(22, 27, 34, 0.94); border-left: 3px solid var(--accent); }
 .toast.error { border-left-color: var(--bad); }
 .toast-more { color: var(--muted); }
+.link-btn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; min-height: 0; }
+.notice { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: var(--panel-2); border-left: 3px solid var(--accent); }
+.notice.bad { border-left-color: var(--bad); }
 
 .sidebar { width: 360px; flex-shrink: 0; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
 .tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--border); }

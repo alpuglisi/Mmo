@@ -739,9 +739,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     renderVision(own);
     if (!own && !other) {
       keyed(inspActions, 'none', () => []);
+      const tap = (narrow() || window.matchMedia('(pointer: coarse)').matches) ? 'Tap' : 'Click';
       inspDetails.replaceChildren(h('p', { class: 'muted' }, model.selected === null
-        ? `${(narrow() || window.matchMedia('(pointer: coarse)').matches) ? 'Tap' : 'Click'} an organism on the map, or pick one from the Lineage tab.`
-        : `#${model.selected} is out of sight (or dead).`));
+        ? `${tap} an organism on the map, or pick one from the Lineage tab.`
+        : `#${model.selected} is no longer in view: it may have died or wandered out of sight. ${tap} another organism on the map, or pick one from the Lineage tab.`));
       return;
     }
     if (own) {
@@ -1062,6 +1063,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ['Mating slots left', h('span', { id: 'slots-left' }, String(s.slots_left))],
       ['Migration', s.migration ? `toward ${s.migration[0].toFixed(0)}, ${s.migration[1].toFixed(0)}` : 'none'],
     ]));
+    // A founded lineage with nobody left: say so plainly, and where to see why.
+    if (s.lineage !== null && s.population === 0) {
+      statsEl.prepend(h('p', { class: 'notice bad', id: 'lineage-extinct', role: 'status' },
+        h('strong', {}, 'Your lineage has died out.'), ' None of your organisms are alive. The Genetics tab charts what killed them.'));
+    }
     renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb), () => lb.rows.length === 0
