@@ -25,11 +25,11 @@ evo-sim — Evolution MMO simulation prototype
 
 USAGE:
     evo-sim run    [--seed N] [--size N] [--days N] [--report N] [--snapshot PATH] [--threads N] [--lod] [--focus X,Y] [--sequential-apply]
-                   [--catastrophes] [--catastrophe KIND@DAY] [--era-years N] [--migrants] [--niches] [--founding SPEC] [--meat] [--food] [--classic]
+                   [--catastrophes] [--catastrophe KIND@DAY] [--era-years N] [--migrants] [--niches] [--founding SPEC] [--design SPEC] [--meat] [--food] [--classic]
     evo-sim bench  [--seed N] [--size N] [--days N] [--scale N] [--threads N,..] [--lod] [--focus X,Y] [--sequential-apply] [--compare-apply]
     evo-sim sweep  [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--rounds N] [--spread F] [--out PATH] [--sequential-apply]
-                   [--screen-days D,..] [--screen-seeds N] [--eta F] [--migrants] [--niches] [--founding SPEC] [--meat] [--food] [--classic]
-    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--niches] [--founding SPEC] [--meat] [--food] [--classic] [--set NAME=V ..]
+                   [--screen-days D,..] [--screen-seeds N] [--eta F] [--migrants] [--niches] [--founding SPEC] [--design SPEC] [--meat] [--food] [--classic]
+    evo-sim compare [--seed N] [--size N] [--days N] [--seeds N] [--out PATH] [--migrants] [--niches] [--founding SPEC] [--design SPEC] [--meat] [--food] [--classic] [--set NAME=V ..]
                     [--migrant-gene GENE=V ..] [vs [defaults | --meat | --food | --classic | --set NAME=V .. | --migrant-gene GENE=V ..]]
                     [--adaptive] [--max-seeds N] [--batch N] [--tolerance F] [--offline-owner P ..]
     evo-sim rankcheck [--seed N] [--size N] [--days N] [--trials N] [--seeds N] [--spread F] [--screen-days D,..] [--eta F] [--out PATH]
@@ -120,6 +120,11 @@ OPTIONS:
                     comma-separated NAME=V of wild_predators, player_predators, predators
                     (both), prey (founder counts, times the designed; caps unchanged),
                     predator_fat, predator_drive, prey_young, prey_drive, predator_group
+    --design SPEC   Change the sample designs (`presets::DesignTweaks`; standard world only):
+                    comma-separated LINEAGE.GENE=V or LINEAGE.founders=N, the lineage by name
+                    (spaces as underscores) or fox / pack, the gene by label (spaces as
+                    underscores), e.g. `--design fox.carnivory=0.6` (repeatable; compare: before
+                    `vs` for A, after it for B)
     --meat          The carnivore-diet rules and predator brakes on (`Balance::carnivore_diet`,
                     off by default; tuned with --niches); like --set, before `vs` for A
     --food          The food values on (`Balance::food_values`: meat richer than leaves,
@@ -201,6 +206,9 @@ struct Args {
     balance_b: Option<Balance>,
     /// Compare: `--migrant-gene` overrides of the migrating lineage, for A and B.
     migrant_genes: [Vec<(Gene, f32)>; 2],
+    /// `--design` changes to the sample designs (for compare: A, then B
+    /// after `vs`).
+    designs: [presets::DesignTweaks; 2],
     /// Compare: `--adaptive` (or `--max-seeds`) given.
     adaptive: bool,
     max_seeds: u64,
@@ -243,6 +251,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         eta: 3.0,
         balance_b: None,
         migrant_genes: [Vec::new(), Vec::new()],
+        designs: Default::default(),
         adaptive: false,
         max_seeds: 48,
         batch: None,
@@ -344,6 +353,12 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--sequential-apply" => a.sequential_apply = true,
             "--migrants" => a.migrants = true,
             "--niches" => sweep::NICHES.store(true, std::sync::atomic::Ordering::Relaxed),
+            "--design" => {
+                let t = presets::DesignTweaks::parse(&value()?).map_err(|e| format!("--design: {e}"))?;
+                let side = &mut a.designs[usize::from(a.balance_b.is_some())];
+                side.genes.extend(t.genes);
+                side.founders.extend(t.founders);
+            }
             "--founding" => {
                 let f = presets::NicheFounding::parse(&value()?).map_err(|e| format!("--founding: {e}"))?;
                 sweep::FOUNDING.set(f).map_err(|_| "--founding given twice".to_string())?;
@@ -450,6 +465,7 @@ fn dispatch(argv: &[String]) -> ExitCode {
             screen_seeds: args.screen_seeds,
             eta: args.eta,
             migrants: args.migrants,
+            designs: args.designs[0].clone(),
         }),
         "compare" => {
             let seeds = args.seeds.unwrap_or(12);
@@ -464,6 +480,7 @@ fn dispatch(argv: &[String]) -> ExitCode {
                 parallel_apply: !args.sequential_apply,
                 migrants: args.migrants,
                 migrant_genes: args.migrant_genes.clone(),
+                designs: args.designs.clone(),
                 offline: args.offline.clone(),
                 adaptive: args.adaptive.then(|| adaptive::AdaptiveArgs {
                     initial: seeds,
@@ -523,8 +540,9 @@ fn build_world(args: &Args, scale: u32) -> World {
         scoring: args.scoring,
         ..Default::default()
     };
-    let migrant = args.migrants.then(presets::migrant_design);
-    let mut world = sweep::found_world(config, scale, migrant.as_ref());
+    let founding =
+        sweep::Founding { migrants: args.migrants.then(presets::migrant_design), designs: args.designs[0].clone() };
+    let mut world = sweep::found_world(config, scale, &founding);
     for &(kind, day) in &args.forced {
         world.schedule_catastrophe(kind, day, None);
     }

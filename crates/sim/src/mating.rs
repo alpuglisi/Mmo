@@ -254,7 +254,11 @@ mod tests {
         assert_eq!(fertility(&preset("Meadow vole"), &preset("Burrowing omnivores")), 0.0);
         // Similar designs of different owners can still interbreed.
         assert!(fertility(&preset("Steppe antelope"), &preset("Herd grazers")) > 0.9);
-        assert!(fertility(&preset("Red fox"), &preset("Pack hunters")) > 0.5);
+        // The standard fox (carnivory 0.6) and pack hunters (0.9) are a full
+        // body-plan gap apart (*The fox in its own niche*); at 0.85 the fox
+        // was fully fertile with them.
+        assert!(fertility(&preset("Red fox"), &preset("Pack hunters")) < 1e-5);
+        assert!(!kin(&preset("Red fox"), &preset("Pack hunters")));
         // In their niches (`presets::niche_world`) the fox (carnivory 0.65)
         // and the pack hunters (0.95) are a full body-plan gap apart: no
         // hybrids, and neither counts the other as its own kind.

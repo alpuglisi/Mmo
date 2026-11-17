@@ -16,9 +16,10 @@ fn possessed(w: &World) -> Option<&crate::organism::Organism> {
 /// the test asserts (seed 22 lost its LOD cohorts when the pack-hunter
 /// design shrank; seed 23 its second pregnancy when the morphology rules
 /// came on by default; seed 29 its possessed pack hunter or its state when
-/// the carnivore rules and food values did).
+/// the carnivore rules and food values did; seed 33 its possessed
+/// organism when the standard fox's carnivory went to 0.6).
 fn busy_world() -> World {
-    let mut config = WorldConfig { seed: 33, width: 96, height: 96, days_per_year: 16, ..Default::default() };
+    let mut config = WorldConfig { seed: 36, width: 96, height: 96, days_per_year: 16, ..Default::default() };
     config.lod.enabled = true;
     // Every tick decides: with staggered decisions the possessed organism
     // walks elsewhere and no region ever leaves focus, so the snapshot

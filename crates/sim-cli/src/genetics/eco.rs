@@ -52,6 +52,8 @@ pub struct EcoOpts {
     /// How the niche world is founded with `niches` (`--founding SPEC`,
     /// `presets::NicheFounding`; the default founds the designs).
     pub founding: presets::NicheFounding,
+    /// Changes to the standard designs (`--design`, `presets::DesignTweaks`).
+    pub designs: presets::DesignTweaks,
 }
 
 /// One lineage at one sample.
@@ -265,7 +267,7 @@ pub fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
     let mut w = if opts.niches {
         presets::niche_world_with(config, 1, &opts.founding)
     } else {
-        presets::standard_world(config, 1)
+        presets::standard_world_tweaked(config, 1, &opts.designs)
     };
     let tpd = w.config.ticks_per_day;
     let days = opts.days;
@@ -857,6 +859,7 @@ mod tests {
                 balance: Balance::default(),
                 niches: false,
                 founding: Default::default(),
+                designs: Default::default(),
             },
             false,
         );
@@ -881,6 +884,7 @@ mod tests {
                 balance: Balance::default(),
                 niches: false,
                 founding: Default::default(),
+                designs: Default::default(),
             },
             true,
         );
