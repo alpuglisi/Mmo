@@ -378,6 +378,15 @@ fn crowding_off(b: &mut crate::Balance) {
     b.crowding_ceiling = old;
     b.crowding_juveniles = old;
     b.crowding_hunger = old;
+    predators_off(b);
+}
+
+/// The predator tunables as snapshots before version 36 read them.
+fn predators_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v36::OLD_VALUE;
+    b.pack_hunt = old;
+    b.territory_harass = old;
+    b.attack_grace = old;
 }
 
 /// `b` as snapshots before version 34 read it: the playtest 1 ecology
@@ -957,6 +966,7 @@ fn version_34_snapshots_restore_without_crowding() {
     assert_eq!(r.player_ceiling(), r.config.lineage_cap);
     crowding_off(&mut w.config.balance);
     w.bonus_slots.clear();
+    w.attack_orders.clear();
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v34() == old);
@@ -1268,4 +1278,32 @@ fn snapshots_before_v29_restore_without_the_phase3_loci() {
     }
     assert!(w.organisms.iter().any(|o| o.morph.horns_present && o.morph.pattern == Pattern::Stripes));
     assert!(r.snapshot_v27() == old);
+}
+
+/// Version 35 snapshots (before predators against players) restore with the
+/// predator tunables off and no attack orders, and are otherwise the same
+/// world.
+#[test]
+fn version_35_snapshots_restore_without_predator_play() {
+    let mut w = fixture_world();
+    let (a, t) = (w.organisms[0].id, w.organisms[1].id);
+    w.attack_orders.insert(a, t);
+    let old = w.snapshot_v35();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 35);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.pack_hunt, crate::serde_util::before_v36::OLD_VALUE);
+    assert!(r.attack_orders.is_empty());
+    predators_off(&mut w.config.balance);
+    w.attack_orders.clear();
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v35() == old);
+    // This version keeps them.
+    let mut w = fixture_world();
+    w.config.balance.pack_hunt = 0.5;
+    w.attack_orders.insert(a, t);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.attack_orders.get(&a).copied(), r.config.balance.pack_hunt), (Some(t), 0.5));
 }

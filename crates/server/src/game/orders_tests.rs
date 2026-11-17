@@ -182,3 +182,47 @@ fn a_new_lineage_ramps_into_the_seasons_legacy_score() {
     // The record kept and shown is untouched.
     assert!(r.legacy.iter().all(|e| e.share == 0.3));
 }
+
+/// An attack order (`possess_attack`) through the protocol: refusals with
+/// their codes and specifics, and the target's owner alerted once it goes
+/// through.
+#[test]
+fn an_attack_order_alerts_the_targets_owner() {
+    let (mut g, a) = game();
+    g.world.config.balance.attack_grace = 0.0;
+    // bo joins a running world (a newcomer, with a founding grace).
+    tick(&mut g);
+    g.set_name(2, "bo");
+    let b = g.found(2, &design("B")).unwrap().founders;
+    g.connect(20, 2, "bo");
+    // Bring one of bo's next to ann's first.
+    let at = g.world.organism(a[0]).unwrap().pos;
+    let i = g.world.organisms.iter().position(|o| o.id == b[0]).unwrap();
+    g.world.organisms[i].pos = at + Vec2::new(1.0, 0.0);
+    g.world.organisms[i].sheltered = false;
+    g.world.organisms[i].growth = 0.3;
+    let msg = ClientMsg::PossessAttack { organism: a[0], target: b[0] };
+    assert_eq!(run(&mut g, msg.clone()), Err("not_possessed".into()));
+    run(&mut g, ClientMsg::Possess { organism: a[0] }).unwrap();
+    assert_eq!(run(&mut g, ClientMsg::PossessAttack { organism: a[0], target: a[1] }), Err("own_target".into()));
+    // A newcomer's grace, with the days left.
+    g.world.config.balance.attack_grace = 1e6;
+    let out = g.command(10, 1, Some(2), msg.clone());
+    match &out[0].1 {
+        ServerMsg::Result { error: Some(e), .. } if e.code == "newcomer_grace" => {
+            assert!(e.detail.as_ref().is_some_and(|d| d["days_left"].as_f64().is_some_and(|x| x > 1.0)), "{e:?}");
+        }
+        m => panic!("expected newcomer_grace, got {m:?}"),
+    }
+    g.world.config.balance.attack_grace = 0.0;
+    let d = run(&mut g, msg).unwrap();
+    assert_eq!((d["organism"].as_u64(), d["target"].as_u64()), (Some(a[0]), Some(b[0])));
+    assert_eq!(g.world.attack_target(a[0]), Some(b[0]));
+    let told: Vec<String> = g
+        .alerts
+        .get(&2)
+        .map_or(Vec::new(), |l| l.iter().filter(|x| x.kind == AlertKind::Attack).map(|x| x.text.clone()).collect());
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains(&format!("#{}", b[0])) && told[0].contains("hunted"), "{told:?}");
+    assert!(alerts(&g, AlertKind::Attack).is_empty(), "the attacker isn't alerted");
+}

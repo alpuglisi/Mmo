@@ -16,7 +16,7 @@ use crate::genome::Gene;
 use crate::group::GroupTrait;
 use crate::math::Vec2;
 use crate::mating;
-use crate::organism::{Action, Organism, Sex};
+use crate::organism::{Action, OrgId, Organism, Sex};
 use crate::rng::{rng_for, splitmix64, stream, SimRng};
 use crate::terrain::{traverse, Traverse, Weather};
 
@@ -51,7 +51,6 @@ struct Viewer<'a> {
     /// Sentry benefit where the viewer stands, if it is a group member:
     /// how much a kin sentry's warning counts.
     sentry: f32,
-    coop: f32,
     hunter: bool,
     can_breed: bool,
     my_power: f32,
@@ -113,7 +112,7 @@ fn beats(score: f32, j: usize, best: Option<(f32, usize)>) -> bool {
 /// term: `Genome::distance`, from the phenotype (which holds exactly the
 /// expressed values) and the cached morphology, so it reads `Gene::COUNT`
 /// contiguous floats instead of 76 scattered alleles.
-fn genetic_distance(a: &Organism, b: &Organism) -> f32 {
+pub(super) fn genetic_distance(a: &Organism, b: &Organism) -> f32 {
     use crate::genome::{DISTANCE_GENES, IN_DISTANCE};
     let diffs = a.pheno.0.iter().zip(&b.pheno.0).zip(IN_DISTANCE);
     let sum = diffs.map(|((x, y), counts)| if counts { (x - y).abs() } else { 0.0 }).sum::<f32>();
@@ -334,7 +333,95 @@ pub(crate) fn max_prey_mass(hunter: &Organism, coop: f32) -> f32 {
     hunter.mass() * (1.5 + 3.0 * coop)
 }
 
+/// Most pack-mates a pack hunt counts (`pack_scale`, `World::pack_allies`).
+pub(crate) const PACK_MAX: u16 = 4;
+/// Prey mass limit added per pack-mate around, at full pack instinct
+/// (`pack_scale`).
+pub(crate) const PACK_PREY: f32 = 0.25;
+/// Striking power added per pack-mate hunting the same prey beside the
+/// hunter (`World::pack_allies`).
+pub(crate) const PACK_POWER: f32 = 0.3;
+/// Tiles from the prey within which a pack-mate counts in a strike.
+pub(crate) const PACK_REACH: f32 = 2.5;
+/// Tiles within which pack-mates join a possessed leader's attack.
+pub(crate) const PACK_JOIN: f32 = 10.0;
+/// Hunger (0–100) above which a pack-mate joins a possessed leader's attack.
+pub(crate) const JOIN_HUNGER: f32 = 30.0;
+/// The least pack strength of a player-led hunt ([`led_pack`]).
+pub(crate) const LED_PACK: f32 = 1.0;
+
+/// How a pack hunter's prey mass limit grows with the pack-mates it has
+/// around (`Balance::pack_hunt`): by [`PACK_PREY`] per kin nearby (at most
+/// [`PACK_MAX`]), times its pack instinct (none at 0.3 or below, full at 0.9
+/// and above). 1 for loners, and with the rule off.
+pub(crate) fn pack_scale(b: &crate::Balance, o: &Organism) -> f32 {
+    pack_scale_at(b.pack_hunt, o)
+}
+
+/// [`pack_scale`] at pack strength `strength` (`Balance::pack_hunt`, or
+/// [`led_pack`] for a player-led hunt).
+pub(crate) fn pack_scale_at(strength: f32, o: &Organism) -> f32 {
+    if strength <= 0.0 {
+        return 1.0;
+    }
+    1.0 + strength * PACK_PREY * pack_instinct(o) * f32::from(o.kin_nearby.min(PACK_MAX))
+}
+
+/// Pack strength in a hunt a player leads (an attack order, and the
+/// pack-mates who join it): at least [`LED_PACK`] while pack hunts are on
+/// (`Balance::pack_hunt` above 0), the player coordinating the pack as the
+/// wild don't. 0 with the rule off.
+pub(crate) fn led_pack(b: &crate::Balance) -> f32 {
+    if b.pack_hunt > 0.0 {
+        b.pack_hunt.max(LED_PACK)
+    } else {
+        0.0
+    }
+}
+
+/// Pack instinct as it counts in a pack hunt: 0 at 0.3 or below, 1 at 0.9
+/// and above.
+pub(crate) fn pack_instinct(o: &Organism) -> f32 {
+    ((o.pheno[Gene::PackInstinct] - 0.3) / 0.6).clamp(0.0, 1.0)
+}
+
 impl World {
+    /// How far away a possessed organism can be ordered to attack: the
+    /// farthest any organism perceives (`WorldConfig::max_perception`),
+    /// what the player sees around it (`World::possess_attack`).
+    pub(crate) fn attack_range(&self) -> f32 {
+        self.config.max_perception
+    }
+
+    /// Pack-mates hunting the same prey beside hunter `i` as it strikes
+    /// prey `j` (`Balance::pack_hunt`): living organisms of its lineage
+    /// within [`PACK_REACH`] of the prey whose hunt is aimed at it, at most
+    /// [`PACK_MAX`]. 0 with the rule off.
+    pub(crate) fn pack_allies(&self, i: usize, j: usize) -> u16 {
+        if self.config.balance.pack_hunt <= 0.0 {
+            return 0;
+        }
+        let (a, b) = (&self.organisms[i], &self.organisms[j]);
+        let mut n = 0u16;
+        // The grid holds positions from before this tick's moves; a hunter
+        // covers well under a few tiles a tick.
+        self.grid.query(b.pos, PACK_REACH + 4.0, |slot, _| {
+            let k = self.grid.entry(slot).idx as usize;
+            let x = &self.organisms[k];
+            if k != i
+                && k != j
+                && x.alive
+                && x.lineage == a.lineage
+                && x.action == Action::Hunt
+                && x.pos.dist(b.pos) <= PACK_REACH
+                && x.target.is_some_and(|t| t.dist(b.pos) <= PACK_REACH)
+            {
+                n += 1;
+            }
+        });
+        n.min(PACK_MAX)
+    }
+
     pub(crate) fn coop_bonus(&self, o: &Organism) -> f32 {
         if GroupTrait::CooperativeHunting.is_carrier(&o.pheno) {
             self.group.benefit(GroupTrait::CooperativeHunting, o.pos)
@@ -511,14 +598,14 @@ impl World {
 
         let fight_power = o.power() * cfg.balance.attack_power;
         let risk_floor = 1.0 - n.hunger / 100.0 * o.traits.carnivory;
-        let (threat_floor, prey_cap, female) = (0.3 * o.mass(), max_prey_mass(o, coop), o.sex == Sex::Female);
+        let prey_cap = max_prey_mass(o, coop) * pack_scale(&cfg.balance, o);
+        let (threat_floor, female) = (0.3 * o.mass(), o.sex == Sex::Female);
         let v = Viewer {
             o,
             genes: genes_of(o),
             radius,
             alarm,
             sentry,
-            coop,
             hunter,
             can_breed,
             my_power,
@@ -632,6 +719,19 @@ impl World {
         // goes back to the order afterwards). Once there, it is on its own
         // again (`World::settle_orders` drops the order).
         let mut urgent = None;
+        // An attack order: pursue the target and strike in reach, unless
+        // thirst or hunger is urgent (the fight itself is no reason to
+        // break off). Pack-mates near a possessed leader join its attack.
+        if let Some(j) = self.attack_of(o) {
+            if self.order_override(o, 0.0).is_none() {
+                let q = &self.organisms[j];
+                intent.action = Action::Hunt;
+                intent.target = Some(q.pos);
+                intent.target_org = Some(j);
+                intent.sprint = o.needs.energy > 20.0;
+                return intent;
+            }
+        }
         if let (Some(_), Some(target)) = (o.possessed_by, o.order) {
             urgent = self.order_override(o, threat);
             if urgent.is_none() && o.pos.dist(target) > super::commands::ORDER_ARRIVAL {
@@ -896,6 +996,59 @@ impl World {
     /// `Balance::possess_urgency` (eat or drink, the worse of the two). An
     /// organism already eating or drinking for it keeps at it until the need
     /// is down to `ORDER_RESUME`, so it doesn't turn back after one sip.
+    /// Whether territory holder `o` and its kin around outnumber stranger
+    /// `q` enough to challenge it although `q` is the stronger
+    /// (`Balance::territory_harass`): at least one kin nearby, and their
+    /// combined power (`mob_size` × its own) above `q`'s.
+    fn outnumbers(&self, o: &Organism, q: &Organism) -> bool {
+        self.config.balance.territory_harass > 0.0 && o.kin_nearby >= 1 && self.mob_size(o) * o.power() > q.power()
+    }
+
+    /// How many a defender counts for when it chases a stranger
+    /// (`Balance::territory_harass`): itself and its kin nearby (at most
+    /// [`PACK_MAX`]), weighed by the rule's strength. 1 with the rule off.
+    fn mob_size(&self, o: &Organism) -> f32 {
+        1.0 + self.config.balance.territory_harass.max(0.0) * f32::from(o.kin_nearby.min(PACK_MAX))
+    }
+
+    /// The organism `o` should attack on a player's order, if any: its own
+    /// attack order's target if it is possessed, else (`Balance::pack_hunt`)
+    /// the target of a possessed pack-mate's order within [`PACK_JOIN`]
+    /// tiles, if `o` is a grown, hungry ([`JOIN_HUNGER`]) pack hunter
+    /// (carnivory above `HUNTER_CARNIVORY`, pack instinct above 0.3) of its
+    /// lineage and the target isn't one of its owner's. An index into
+    /// `organisms`.
+    pub(super) fn attack_of(&self, o: &Organism) -> Option<usize> {
+        if self.attack_orders.is_empty() {
+            return None;
+        }
+        let live = |id: &OrgId| self.index.get(id).copied().filter(|&k| self.organisms[k].alive);
+        if o.possessed_by.is_some() {
+            return self.attack_orders.get(&o.id).and_then(live);
+        }
+        let b = &self.config.balance;
+        // Only the hungry join (`JOIN_HUNGER`): a fed animal rests.
+        if b.pack_hunt <= 0.0
+            || !o.matured
+            || o.traits.carnivory <= HUNTER_CARNIVORY
+            || pack_instinct(o) <= 0.0
+            || o.needs.hunger < JOIN_HUNGER
+        {
+            return None;
+        }
+        self.attack_orders.iter().find_map(|(a, t)| {
+            let leader = &self.organisms[live(a)?];
+            let j = live(t)?;
+            let q = &self.organisms[j];
+            (leader.lineage == o.lineage
+                && leader.owner == o.owner
+                && q.owner != o.owner
+                && leader.pos.dist(o.pos) <= PACK_JOIN
+                && !q.sheltered)
+                .then_some(j)
+        })
+    }
+
     pub(super) fn order_override(&self, o: &Organism, threat: f32) -> Option<Action> {
         use super::commands::ORDER_RESUME;
         let b = &self.config.balance;
@@ -920,7 +1073,7 @@ impl World {
     /// Kinship comes from the grid's summary of it ([`Genes`] and `Entry`);
     /// the organism itself is read only for what kin can't settle.
     fn look(&self, v: &Viewer, seen: &mut Perception, slot: u32, d: f32, count: bool) {
-        let (o, radius, alarm, coop) = (v.o, v.radius, v.alarm, v.coop);
+        let (o, radius, alarm) = (v.o, v.radius, v.alarm);
         let cfg = &self.config;
         let e = self.grid.entry(slot);
         let j = e.idx as usize;
@@ -988,7 +1141,7 @@ impl World {
             if e.owner != o.owner
                 && !q.dormancy.is_deep()
                 && q.pos.dist(c) <= r
-                && !(can_threaten(q, o) && q.power() > o.power())
+                && (!(can_threaten(q, o) && q.power() > o.power()) || self.outnumbers(o, q))
                 && beats(-d, j, seen.intruder)
             {
                 seen.intruder = Some((-d, j));
@@ -1024,7 +1177,10 @@ impl World {
             }
             if d < detect {
                 if defender && self.territory_of(q).is_some_and(|t| t.contains(o.pos)) {
-                    let odds = q.power() / (q.power() + o.resistance() + 1e-3);
+                    // Defenders mob a larger intruder (`Balance::territory_harass`):
+                    // the defender's kin around it count with it.
+                    let mob = self.mob_size(q);
+                    let odds = mob * q.power() / (mob * q.power() + o.resistance() + 1e-3);
                     let level = (1.0 - d / detect) * odds * 2.0 * DEFENDER_SCARE;
                     if level > seen.threat || (level == seen.threat && level > 0.0 && j < seen.threat_from) {
                         seen.threat = level;
@@ -1043,7 +1199,7 @@ impl World {
                 }
                 let reachable =
                     || matches!(self.map.traverse_at(&o.traits.body, q.pos, false), Traverse::Passable { .. });
-                if v.hunter && q.mass() < max_prey_mass(o, coop) && !q.sheltered && reachable() {
+                if v.hunter && q.mass() < v.prey_cap && !q.sheltered && !self.grace_spares(o, q) && reachable() {
                     // Learned avoidance of bright prey where warning coloration holds.
                     let avoid = if q.pheno[Gene::Coloration] > 0.6 {
                         if o.bright_aversion {

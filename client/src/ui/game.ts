@@ -106,7 +106,7 @@ const TAB_TITLES: Record<Tab, string> = {
 const FOOD_KEY = 'evo.foodLayer';
 /** The family tree's refresh while its tab is open (it changes once a recorded day). */
 const FAMILY_REFRESH_MS = 20000;
-type Mode = 'select' | 'migrate' | 'territory' | 'rally';
+type Mode = 'select' | 'migrate' | 'territory' | 'rally' | 'attack';
 /** Narrow screens (phones): the sidebar becomes a bottom sheet over the map with a tab bar. */
 const NARROW = '(max-width: 760px)';
 
@@ -229,7 +229,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const possessText = h('span', { class: 'possess-text' });
   const possessInspect = h('button', { class: 'secondary small', id: 'possess-inspect', type: 'button' }, 'Inspect');
   const possessRelease = h('button', { class: 'small danger', id: 'possess-release', type: 'button' }, 'Release');
-  const possessBar = h('div', { class: 'possess-bar', id: 'possess-bar', hidden: true, role: 'status' }, possessText, possessInspect, possessRelease);
+  // Attack mode: the next tap on an animal sends the possessed one after it (a plain tap walks).
+  const possessAttack = h('button', { class: 'small', id: 'possess-attack', type: 'button', 'aria-pressed': 'false' }, 'Attack');
+  const possessBar = h('div', { class: 'possess-bar', id: 'possess-bar', hidden: true, role: 'status' }, possessText, possessAttack, possessInspect, possessRelease);
   // A tap on overlapping animals (touch): the most relevant one is picked; these chips pick another.
   const chooser = h('div', { class: 'pick-chooser', id: 'pick-chooser', hidden: true, role: 'group', 'aria-label': 'Animals here' });
   const legends = h('div', { class: 'legends', id: 'legends' }, terrainLegend, legend);
@@ -341,6 +343,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     migrateBtn.classList.toggle('active', m === 'migrate');
     territoryBtn.classList.toggle('active', m === 'territory');
     rallyBtn.classList.toggle('active', m === 'rally');
+    possessAttack.classList.toggle('active', m === 'attack');
+    possessAttack.setAttribute('aria-pressed', String(m === 'attack'));
     if (m !== 'territory') setDraft(null);
     updateHint();
   }
@@ -420,6 +424,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       : mode === 'rally' ? rallyHint()
       : mode === 'migrate'
       ? `${tap} the map to set the migration target${touch ? '' : ' (Esc cancels)'}.`
+      : mode === 'attack' && p
+      ? `${tap} the animal #${p.id} should attack: another player's or a wild one in sight${touch ? '' : ' (Esc cancels)'}.`
       : p ? `Possessing #${p.id}: ${tap.toLowerCase()} the map to walk there.`
       : touch ? 'Tap an organism to inspect it, long-press yours to possess. Drag to pan, pinch to zoom.'
       : 'Click an organism to inspect it (hold to possess yours). Drag to pan, wheel to zoom.';
@@ -432,12 +438,34 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   function renderPossessBar(): void {
     const p = possessed();
     possessBar.hidden = !p;
-    if (!p) return;
+    if (!p) {
+      // Possession over: so is attack mode.
+      if (mode === 'attack') {
+        mode = 'select';
+        possessAttack.classList.remove('active');
+        possessAttack.setAttribute('aria-pressed', 'false');
+      }
+      return;
+    }
     const touch = narrow() || window.matchMedia('(pointer: coarse)').matches;
     possessBar.dataset.org = String(p.id);
-    setText(possessText, touch
+    setText(possessText, mode === 'attack'
+      ? `#${p.id}: ${touch ? 'tap' : 'click'} the animal to attack.`
+      : touch
       ? `Possessing #${p.id}: tap to walk (even onto other animals); long-press one to select it.`
       : `Possessing #${p.id}: click to walk (even onto other animals); Shift-click or hold to select one.`);
+  }
+  possessAttack.addEventListener('click', () => setMode(mode === 'attack' ? 'select' : 'attack'));
+  /** Send the possessed organism `p` after `target`; the server says why not. */
+  async function attackWith(p: OwnOrganism, target: OrgId): Promise<boolean> {
+    const r = await send({ type: 'possess_attack', organism: p.id, target });
+    if (r.ok) {
+      model.toast('info', `#${p.id} is hunting #${target}; hungry pack-mates nearby join in`);
+      model.select(target);
+    } else if (r.error) {
+      model.toast('error', `Attack: ${r.error.message}`);
+    }
+    return r.ok;
   }
   possessRelease.addEventListener('click', () => {
     const id = Number(possessBar.dataset.org);
@@ -567,6 +595,21 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       } else if (r.error) {
         model.toast('error', `Territory: ${r.error.message}`);
       }
+      return;
+    }
+    if (mode === 'attack') {
+      const p = possessed();
+      if (!p) return setMode('select');
+      const own = (id: OrgId) => model.state?.organisms.some((o) => o.id === id);
+      // Under a finger, the nearest animal that isn't yours.
+      const target = [...(c.candidates ?? []), ...(c.organism !== null ? [c.organism] : [])].find((id) => !own(id));
+      if (target === undefined) {
+        if (c.organism === null) return setMode('select');
+        model.toast('info', "That's one of yours: pick another player's or a wild animal.");
+        return;
+      }
+      setMode('select');
+      await attackWith(p, target);
       return;
     }
     hideChooser();
@@ -1047,7 +1090,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—']]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
-    keyed(inspActions, `other:${o.id}:${wild}`, () => [
+    const hunter = possessed();
+    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}`, () => [
+      !!hunter && h('button', { id: 'btn-attack', class: 'danger', onclick: () => void attackWith(hunter, o.id) }, `Attack with #${hunter.id}`),
       wild ? h('p', { class: 'muted small' }, 'Wild organisms have no owner to consent to a mating.')
         : h('button', { id: 'btn-ask-mating', onclick: () => { matingForm.setPartner(o.id); showTab('matings'); } }, 'Request mating…'),
       h('button', { class: 'secondary', onclick: () => { view.setFollow(false); view.centerOn(o.x, o.y); } }, 'Center'),

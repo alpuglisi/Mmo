@@ -7289,6 +7289,100 @@ lineage nears the cap, so the balance tools barely see it:
 | `calibrate tournament --worlds 96 --days 90 --seed0 70001` (merged): top thermoregulation × birth class win share | 27.1% (warm live birth) before playtest 1 | 26.0% (warm live birth; warm incubated 25.0%, cold abandoned eggs 16.7%) |
 
 
+### Predators against players
+
+Deliberate predator-versus-player play (snapshot version 36; every rule
+below is off at 0, what snapshots of version 35 and before read,
+`serde_util::before_v36`).
+
+**Attack orders.** `possess_attack {organism, target}`
+(`World::possess_attack`): the possessed animal pursues the target and
+strikes when in reach, by the usual strike rules (`World::attack`:
+escape, reach, power against resistance, the burrow, offline protection,
+`strike_fixes`). The order gives way to urgent thirst or hunger like a
+move order (`Balance::possess_urgency`), and ends when either animal dies,
+the target goes to ground or gets more than 12 tiles off
+(1.5 × `World::attack_range`), the animal is released or possessing
+another, or a move order replaces it. It is refused, with a code and a
+sentence for the player, on the player's own animals (`own_target`), on a
+target more than 8 tiles off (`target_out_of_sight`: the farthest any
+animal perceives, `WorldConfig::max_perception`), on one heavier than the
+attacker can take with the pack-mates around it (`too_big`, with `mass`
+and `limit`), on one in its burrow (`sheltered`), and during a newcomer's
+grace (`newcomer_grace`, with `days_left`). The target's owner gets an
+`attack` alert (a new alert kind, toasted by default). The order is saved
+(`World::attack_orders`). In the client, the possession bar has an
+**Attack** button that switches to attack mode. The next tap on an animal
+that isn't the player's sends the order (a tap on one of their own says
+so and stays in the mode; a tap on empty ground or Esc cancels). A plain
+tap still walks, as playtest fix C made it. The inspector of another
+animal offers "Attack with #id" while possessing. The e2e script
+`e2e/attack.mjs` (in `npm run e2e`) covers all of this.
+
+**Pack hunts** (`Balance::pack_hunt` 0.25). A pack hunter's prey mass
+limit (`decide::max_prey_mass`) grows by `pack_hunt × 0.25` per kin
+around it, up to 4, times its pack instinct (none at 0.3 or below, full
+at 0.9) (`decide::pack_scale`). Its strike is `pack_hunt × 0.3` stronger
+per pack-mate hunting the same prey within 2.5 tiles
+(`World::pack_allies`). A possessed leader's attack draws in its hungry
+(hunger above 30) pack-mates within 10 tiles (`World::attack_of`), and a
+hunt a player leads counts the pack at strength 1 at least
+(`decide::led_pack`). At `pack_hunt` 1 in the wild, steppe antelope fell
+from 125 to 60 and herd grazers from 400 to 225 in the balance sweep
+(score 11.60). At 0.5 they were 73 and 322 (11.78), and at 0.25 they are
+94 and 380 (11.76). So the wild get 0.25 and player-led hunts get the
+full rule.
+
+**Territory defence against larger intruders**
+(`Balance::territory_harass` 1). Territory holders used to ignore a
+stranger that could threaten them and was stronger than one of them. Now
+they chase it too when they and their kin around them outnumber it
+(at least one kin nearby, and their combined power above its power). A
+defender's scare counts its kin around it (up to 4), so a mob drives
+off what one defender couldn't. Raising the intruder's threat raises its
+safety need, so it flees. Territories exist only where players claim
+them, so the balance tools don't see this rule.
+
+**Founding grace** (`Balance::attack_grace` 10 days). A player lineage
+founded into a running world (after tick 0: the world's first players
+have none) can't be the target of attack orders for its first 10 days.
+Other players' animals don't hunt it either (`World::grace_spares`, in
+perception and in the strike), while wild predators still do. Each
+lineage's founding tick is saved (`World::lineage_founded`). The first
+camping trial showed why the grace covers more than orders: with orders
+refused but the camper's own animals hunting freely, a camped newcomer
+kept 25 of its 72 founders by day 10.
+
+**Safeguards.** Offline protection still applies (`attack` multiplies by
+`offline_predation_factor`, orders included), and so does the burrow:
+orders on sheltered prey are refused, a target that goes to ground ends
+the order, and the burrow shelter still divides a strike.
+
+**Does deliberate hunting pay?** `cargo run --release -p evo-server
+--example hunt` (`crates/server/examples/hunt.rs`, beside E's
+`competition.rs`) plays four players through `Game` on the standard world
+with its wild species. Steady and Herd found the client's starter
+herbivore (40 founders each), Hunter founds playtest 1's pack (40
+founders: carnivory 0.9, pack instinct 0.95), and Late founds the starter
+on day 40. There are four arms. **Passive**: the Hunter's animals hunt on
+their own. **Deliberate**: every 6 ticks with no order standing, the
+Hunter possesses a grown, healthy, hungry hunter and orders it at the
+heaviest animal in sight it may attack (Late's first, then the other
+players', then wild ones), and its pack-mates join. **Camping**:
+deliberate, and for 20 days from Late's founding the Hunter migrates its
+pack onto Late's founding site, with the grace on and off. Four seeds,
+120 days:
+
+HUNT_TABLE
+
+GRACE_TEXT
+
+**Checks.**
+
+| Check | Before (`pack_hunt`, `territory_harass`, `attack_grace` 0) | After |
+| --- | --- | --- |
+CHECK_ROWS
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

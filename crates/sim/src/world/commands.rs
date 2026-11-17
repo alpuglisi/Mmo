@@ -93,6 +93,22 @@ pub enum CommandError {
     },
     /// The group is answering no rally.
     NoRally(u8),
+    /// An attack order on one of the player's own organisms.
+    OwnTarget(OrgId),
+    /// The target is farther than the possessed organism can see.
+    OutOfSight(OrgId),
+    /// The target is heavier than the attacker (with its pack-mates around)
+    /// can take on.
+    TooBig {
+        mass: f32,
+        limit: f32,
+    },
+    /// The target is down in its burrow.
+    Sheltered(OrgId),
+    /// The target's lineage was founded too recently (`Balance::attack_grace`).
+    NewcomerGrace {
+        days_left: f32,
+    },
 }
 
 impl fmt::Display for CommandError {
@@ -126,6 +142,23 @@ impl fmt::Display for CommandError {
                 write!(f, "the group claimed a territory recently; it can claim again in {ticks_left} ticks")
             }
             CommandError::NoRally(g) => write!(f, "group {g} has no rally to cancel"),
+            CommandError::OwnTarget(id) => write!(f, "organism {id} is yours; you can't attack your own animals"),
+            CommandError::OutOfSight(id) => write!(f, "organism {id} is out of sight; get closer first"),
+            CommandError::TooBig { mass, limit } => {
+                let kg = |x: f32| if x < 10.0 { format!("{x:.1}") } else { format!("{x:.0}") };
+                write!(
+                    f,
+                    "that animal ({} kg) is too big to take on; this one can tackle up to {} kg (more with pack-mates around)",
+                    kg(*mass),
+                    kg(*limit)
+                )
+            }
+            CommandError::Sheltered(id) => write!(f, "organism {id} is safe in its burrow"),
+            CommandError::NewcomerGrace { days_left } => write!(
+                f,
+                "that lineage was founded only recently; it can't be attacked for another {:.0} days",
+                days_left.ceil()
+            ),
         }
     }
 }
@@ -329,10 +362,84 @@ impl World {
             if k != i && x.possessed_by == Some(player) {
                 x.possessed_by = None;
                 x.order = None;
+                self.attack_orders.remove(&x.id);
             }
         }
         self.organisms[i].possessed_by = Some(player);
         Ok(())
+    }
+
+    /// Order a possessed organism to attack another player's (or a wild)
+    /// organism: it pursues the target and strikes when in reach, by the
+    /// usual strike rules (escape, reach, power against resistance, the
+    /// burrow and offline protection), and its pack-mates nearby join the
+    /// hunt (`Balance::pack_hunt`). Refused on the player's own organisms,
+    /// on a target out of sight, too heavy for the attacker with the
+    /// pack-mates it has around (`decide::max_prey_mass`, `pack_scale_at`
+    /// at the strength of a player-led hunt, `decide::led_pack`),
+    /// down in its burrow, or of a player lineage founded less than
+    /// `Balance::attack_grace` days ago. Replaces its move order. The order
+    /// ends when either dies, the target goes to ground or out of sight, or
+    /// the organism is released (`World::settle_orders`), and gives way to
+    /// urgent thirst or hunger like a move order (`Balance::possess_urgency`).
+    pub fn possess_attack(&mut self, player: PlayerId, id: OrgId, target: OrgId) -> Result<(), CommandError> {
+        let i = self.live_index(id)?;
+        let o = &self.organisms[i];
+        if o.possessed_by != Some(player) {
+            return Err(if o.owner == player { CommandError::NotPossessed(id) } else { CommandError::NotOwned(id) });
+        }
+        let j = self.live_index(target)?;
+        let q = &self.organisms[j];
+        if q.owner == player || j == i {
+            return Err(CommandError::OwnTarget(target));
+        }
+        if o.pos.dist(q.pos) > self.attack_range() {
+            return Err(CommandError::OutOfSight(target));
+        }
+        if q.sheltered {
+            return Err(CommandError::Sheltered(target));
+        }
+        let led = super::decide::led_pack(&self.config.balance);
+        let limit = super::decide::max_prey_mass(o, self.coop_bonus(o)) * super::decide::pack_scale_at(led, o);
+        if q.mass() >= limit {
+            return Err(CommandError::TooBig { mass: q.mass(), limit });
+        }
+        if let Some(days_left) = self.attack_grace_left(q) {
+            return Err(CommandError::NewcomerGrace { days_left });
+        }
+        self.organisms[i].order = None;
+        self.attack_orders.insert(id, target);
+        Ok(())
+    }
+
+    /// Days left of the grace a player lineage founded into a running
+    /// world has against other players (`Balance::attack_grace`), if any:
+    /// no attack orders on it and no hunting by other players' animals
+    /// (wild predators still hunt it). Lineages founded at tick 0 (the
+    /// world's first players) and wild ones have none.
+    pub(crate) fn attack_grace_left(&self, q: &crate::organism::Organism) -> Option<f32> {
+        let grace = self.config.balance.attack_grace;
+        if grace <= 0.0 || q.owner == crate::WILD {
+            return None;
+        }
+        let founded = *self.lineage_founded.get(q.lineage as usize)?;
+        if founded == 0 {
+            return None;
+        }
+        let tpd = self.config.ticks_per_day.max(1) as f32;
+        let left = grace - (self.tick - founded) as f32 / tpd;
+        (left > 0.0).then_some(left)
+    }
+
+    /// Whether hunter `a` is kept off prey `b` by `b`'s founding grace
+    /// (`World::attack_grace_left`): `a` is another player's.
+    pub(crate) fn grace_spares(&self, a: &crate::organism::Organism, b: &crate::organism::Organism) -> bool {
+        a.owner != crate::WILD && a.owner != b.owner && self.attack_grace_left(b).is_some()
+    }
+
+    /// The target of a possessed organism's attack order, if it has one.
+    pub fn attack_target(&self, id: OrgId) -> Option<OrgId> {
+        self.attack_orders.get(&id).copied()
     }
 
     /// Move a possessed organism. It still eats and drinks where it stands.
@@ -347,6 +454,7 @@ impl World {
         }
         let target = self.reachable_order_target(i, self.map.clamp(target))?;
         self.organisms[i].order = Some(target);
+        self.attack_orders.remove(&id);
         Ok(target)
     }
 
@@ -411,6 +519,29 @@ impl World {
                 }
             }
         }
+        self.settle_attack_orders();
+    }
+
+    /// Drop attack orders whose attacker died or was released, or whose
+    /// target died, went to ground or got out of sight (half as far again
+    /// as `World::attack_range`, so a chase isn't dropped at the edge).
+    fn settle_attack_orders(&mut self) {
+        if self.attack_orders.is_empty() {
+            return;
+        }
+        let orders = std::mem::take(&mut self.attack_orders);
+        self.attack_orders = orders
+            .into_iter()
+            .filter(|&(a, t)| {
+                let (Some(&i), Some(&j)) = (self.index.get(&a), self.index.get(&t)) else { return false };
+                let (o, q) = (&self.organisms[i], &self.organisms[j]);
+                o.alive
+                    && o.possessed_by.is_some()
+                    && q.alive
+                    && !q.sheltered
+                    && o.pos.dist(q.pos) <= 1.5 * self.attack_range()
+            })
+            .collect();
     }
 
     /// Fraction of a tick's movement one possession sub-step covers.
@@ -477,6 +608,7 @@ impl World {
         }
         o.possessed_by = None;
         o.order = None;
+        self.attack_orders.remove(&id);
         Ok(())
     }
 

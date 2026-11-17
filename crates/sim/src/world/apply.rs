@@ -770,8 +770,17 @@ impl World {
         if !b.alive || a.pos.dist(b.pos) > self.config.balance.attack_reach || self.tick < a.strike_ready_tick {
             return;
         }
+        // A newcomer's founding grace keeps other players' animals off it.
+        if self.grace_spares(a, b) {
+            return;
+        }
         let escape = self.escape_chance(a, b);
-        let pw = a.power() * (1.0 + self.coop_bonus(a)) * self.config.balance.attack_power;
+        // Pack-mates striking beside it (`Balance::pack_hunt`), the more so
+        // in a hunt a player leads (`decide::led_pack`).
+        let bal = &self.config.balance;
+        let strength = if self.attack_of(a) == Some(j) { super::decide::led_pack(bal) } else { bal.pack_hunt };
+        let pack = 1.0 + strength * super::decide::PACK_POWER * f32::from(self.pack_allies(i, j));
+        let pw = a.power() * (1.0 + self.coop_bonus(a)) * pack * self.config.balance.attack_power;
         let mut rs = b.resistance() * (1.0 + 1.5 * self.herd_bonus(b));
         // A parent standing over its dependent young fights for it.
         let (guard_rs, guard_power) = self.guardian(b);
