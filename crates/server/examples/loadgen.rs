@@ -997,6 +997,8 @@ struct Sample {
     tick_p99: f32,
     states_p50: f32,
     states_p99: f32,
+    /// Building the push's messages, without queueing them.
+    states_build_p50: f32,
     substep_p99: f32,
     ticks_per_s: f64,
     out_mb_s: f64,
@@ -1285,6 +1287,7 @@ async fn main() {
                 tick_p99: m.tick_ms.p99,
                 states_p50: m.states_ms.p50,
                 states_p99: m.states_ms.p99,
+                states_build_p50: m.states_build_ms.p50,
                 substep_p99: m.substep_ms.p99,
                 ticks_per_s: (m.ticks - pm.ticks) as f64 / dt,
                 out_mb_s: mb(m.bytes_out - pm.bytes_out) / dt,
@@ -1435,6 +1438,12 @@ async fn main() {
     kinds.sort_by_key(|e| std::cmp::Reverse(e.1));
     let per_client = |b: u64| b as f64 / 1e3 / elapsed / args.players.max(1) as f64;
     let by_kind: Vec<Value> = kinds.iter().take(10).map(|(k, b)| json!({"kind": k, "kb_s": per_client(*b)})).collect();
+    let mut costs: Vec<_> = final_m.apply_by_command.iter().filter(|c| c.n > 0).collect();
+    costs.sort_by(|a, b| b.ms.total_cmp(&a.ms));
+    let apply_costs: Vec<Value> = costs
+        .iter()
+        .map(|c| json!({"command": c.command, "n": c.n, "mean_us": c.ms * 1e3 / c.n as f64, "total_ms": c.ms}))
+        .collect();
     let summary = json!({
         "players": args.players,
         "worlds": per_world,
@@ -1455,6 +1464,10 @@ async fn main() {
         "tick_ms_p99_worst": max(&|s| s.tick_p99 as f64),
         "states_ms_p50": med(&|s| s.states_p50 as f64),
         "states_ms_p99": med(&|s| s.states_p99 as f64),
+        "states_build_ms_p50": med(&|s| s.states_build_p50 as f64),
+        "substep_ms_p50": final_m.substep_ms.p50,
+        "apply_ms_p50": final_m.apply_ms.p50, "apply_ms_p99": final_m.apply_ms.p99,
+        "apply_us_by_command": apply_costs,
         "substep_ms_p99": med(&|s| s.substep_p99 as f64),
         "ticks_per_s": med(&|s| s.ticks_per_s),
         "proto": args.proto,

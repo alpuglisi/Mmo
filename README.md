@@ -3529,7 +3529,9 @@ usual chaos band.
 ### Load and soak test
 
 `crates/server/examples/loadgen.rs` drives simulated players against a real
-server over the real protocol:
+server over the real protocol. The latest capacity measurements (10 to
+4000 players on one world) and the fixes they led to are in
+[docs/load-test.md](docs/load-test.md).
 
 ```sh
 cargo build --release -p evo-server --bins --examples
