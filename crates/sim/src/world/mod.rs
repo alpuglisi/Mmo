@@ -46,6 +46,8 @@ mod lod_meat;
 #[cfg(test)]
 mod morph_tests;
 pub mod offline;
+#[cfg(test)]
+mod orders_tests;
 mod par_apply;
 #[cfg(test)]
 mod path_tests;
@@ -474,6 +476,14 @@ pub struct World {
     /// snapshots before version 15 (`serde_util::before_v15`).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v15"))]
     rallies: BTreeMap<(PlayerId, u8), groups::Rally>,
+    /// Floor on a rally's length in ticks (`World::set_rally_min_ticks`),
+    /// set by the host; not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    rally_min_ticks: u64,
+    /// Group orders that ended on their own, for the host
+    /// (`World::take_group_events`); not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    group_events: Vec<commands::GroupEvent>,
     slots_used: BTreeMap<PlayerId, u32>,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::sorted_map"))]
     clutch_at: IdMap<(usize, usize), usize>,
@@ -592,6 +602,8 @@ impl World {
             territories: BTreeMap::new(),
             territory_claims: BTreeMap::new(),
             rallies: BTreeMap::new(),
+            rally_min_ticks: 0,
+            group_events: Vec::new(),
             slots_used: BTreeMap::new(),
             clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
@@ -689,6 +701,40 @@ impl World {
         self.territories.retain(|&(p, _), _| p != player);
         self.territory_claims.retain(|&(p, _), _| p != player);
         self.rallies.retain(|&(p, _), _| p != player);
+    }
+
+    /// Retire a player's lineage: every organism they own (agents and
+    /// cohorts in abstract regions) and their eggs leave the world at once,
+    /// and their group orders go. Not deaths: nothing is counted as one,
+    /// no carcass is left, nothing goes wild (wild animals carrying the
+    /// player's tagged alleles would keep scoring for them). The lineage
+    /// stays in `lineages` as an extinct one. The number removed.
+    pub fn retire_player(&mut self, player: PlayerId) -> usize {
+        let mut removed = 0;
+        for k in 0..self.organisms.len() {
+            let o = &mut self.organisms[k];
+            if !o.alive || o.owner != player {
+                continue;
+            }
+            o.alive = false;
+            o.death = None;
+            o.possessed_by = None;
+            o.order = None;
+            let lineage = o.lineage;
+            if let Some(c) = self.owner_counts.get_mut(&player) {
+                *c = c.saturating_sub(1);
+            }
+            self.count_lineage(lineage, -1);
+            removed += 1;
+        }
+        removed += self.retire_cohorts(player);
+        self.clutches.retain(|c| c.owner != player);
+        self.clutch_at.clear();
+        for (k, c) in self.clutches.iter().enumerate() {
+            self.clutch_at.insert(self.map.tile_coords(c.pos), k);
+        }
+        self.clear_group_orders(player);
+        removed
     }
 
     pub fn owner_count(&self, owner: PlayerId) -> usize {

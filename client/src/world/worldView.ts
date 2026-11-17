@@ -52,6 +52,12 @@ export interface WorldClick {
   x: number;
   y: number;
   organism: OrgId | null;
+  /** Every organism within reach of the point, the player's own first, then nearest (a tap in a herd). */
+  candidates?: OrgId[];
+  /** Shift, Ctrl, Alt or ⌘ held (select instead of walking while possessing). */
+  modifier?: boolean;
+  /** A finger or pen, not a mouse. */
+  touch?: boolean;
 }
 
 interface Marker {
@@ -677,6 +683,13 @@ export class WorldView {
       }
       if (grp.migration) {
         const [mx, my] = grp.migration;
+        // The planned way there (around water and thin ice).
+        const route = grp.route ?? [];
+        if (route.length >= 2) {
+          g.moveTo(route[0][0], route[0][1]);
+          for (const [rx, ry] of route.slice(1)) g.lineTo(rx, ry);
+          g.stroke({ width: 1.5 * px, color, alpha: 0.55 });
+        }
         g.circle(mx, my, 8 * px).stroke({ width: 2 * px, color });
         g.moveTo(mx - 5 * px, my).lineTo(mx + 5 * px, my).moveTo(mx, my - 5 * px).lineTo(mx, my + 5 * px).stroke({ width: 2 * px, color });
       }
@@ -718,11 +731,24 @@ export class WorldView {
     return best;
   }
 
+  /** Every organism within its tap radius of a screen point: own first, then nearest. */
+  hitAll(sx: number, sy: number, touch = false): OrgId[] {
+    const min = touch ? TOUCH_HIT_PX : HIT_PX;
+    const hits: { id: OrgId; d: number; own: boolean }[] = [];
+    for (const [id, m] of this.markers) {
+      const p = this.worldToScreen(m.x, m.y);
+      const d = (p.x - sx) ** 2 + (p.y - sy) ** 2;
+      const reach = Math.max(min, m.r * 1.6 * this.markerScale);
+      if (d <= reach * reach) hits.push({ id, d, own: m.own });
+    }
+    return hits.sort((a, b) => Number(b.own) - Number(a.own) || a.d - b.d).map((h) => h.id);
+  }
+
   private bindInput(canvas: HTMLCanvasElement): void {
     // Active pointers (mouse, pen or fingers) by id, at their latest position.
     const pointers = new Map<number, { x: number; y: number }>();
     // The single-pointer gesture in progress: a tap, a long press or a drag.
-    let press: { id: number; x: number; y: number; camX: number; camY: number; touch: boolean; dragging: boolean; timer: number | null; done: boolean; hit: OrgId | null } | null = null;
+    let press: { id: number; x: number; y: number; camX: number; camY: number; touch: boolean; dragging: boolean; timer: number | null; done: boolean; hit: OrgId | null; modifier: boolean } | null = null;
     // The two-finger gesture in progress: distance and midpoint at the last move.
     let pinch: { d: number; mx: number; my: number } | null = null;
     const local = (e: PointerEvent | WheelEvent) => {
@@ -737,9 +763,9 @@ export class WorldView {
       const [a, b] = [...pointers.values()];
       return { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
     };
-    const click = (x: number, y: number, touch: boolean): WorldClick => {
+    const click = (x: number, y: number, touch: boolean, modifier = false): WorldClick => {
       const w = this.screenToWorld(x, y);
-      return { x: w.x, y: w.y, organism: this.hitTest(x, y, touch) };
+      return { x: w.x, y: w.y, organism: this.hitTest(x, y, touch), candidates: this.hitAll(x, y, touch), modifier, touch };
     };
 
     const longPress = (pr: NonNullable<typeof press>) => {
@@ -772,7 +798,7 @@ export class WorldView {
       // The organism under the finger when it went down: a long press acts on
       // it even if its marker glides away during the hold.
       const pr = { id: e.pointerId, x: p.x, y: p.y, camX: this.cam.x, camY: this.cam.y, touch, dragging: false, timer: null as number | null, done: false,
-        hit: this.hitTest(p.x, p.y, touch) };
+        hit: this.hitTest(p.x, p.y, touch), modifier: e.shiftKey || e.ctrlKey || e.altKey || e.metaKey };
       if (e.button === 0 || touch) pr.timer = window.setTimeout(() => longPress(pr), LONG_PRESS_MS);
       press = pr;
     });
@@ -812,7 +838,7 @@ export class WorldView {
       if (!press || e.pointerId !== press.id) return;
       const pr = press;
       cancelPress();
-      if (!cancelled && !pr.dragging && !pr.done) this.onClick(click(pr.x, pr.y, pr.touch));
+      if (!cancelled && !pr.dragging && !pr.done) this.onClick(click(pr.x, pr.y, pr.touch, pr.modifier));
     };
     canvas.addEventListener('pointerup', (e) => up(e, false));
     canvas.addEventListener('pointercancel', (e) => {

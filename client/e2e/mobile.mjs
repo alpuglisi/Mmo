@@ -476,8 +476,20 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   const zoom = await page.evaluate(() => window.evo.screen().view.cam.zoom);
   await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height / 2);
   await waitFor('territory draft', () => page.evaluate(() => window.evo.screen().view.overlayInfo().draft !== null), 15000);
-  await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height / 2 + 5 * zoom);
-  const held = await waitFor('territory held', () => page.evaluate(() => window.evo.model.state.groups.find((g) => g.territory)?.territory), 15000);
+  // The edge tap. Under heavy load (the parallel runner) a quick tap now and
+  // then never reaches the map; the draft then stays: tap again, and say so.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height / 2 + 5 * zoom);
+    const taken = await waitFor('the edge tap', () => page.evaluate(() => window.evo.screen().view.overlayInfo().draft === null), 3000).then(() => true, () => false);
+    if (taken) break;
+    console.log(`  … ${tag}: the territory edge tap did not register (attempt ${attempt + 1}); tapping again`);
+  }
+  const held = await waitFor('territory held', () => page.evaluate(() => window.evo.model.state.groups.find((g) => g.territory)?.territory), 15000)
+    .catch(async (e) => {
+      // Say why: the claim's reply (a toast) and where the taps landed.
+      const why = await page.evaluate(() => ({ toasts: window.evo.model.toasts.map((t) => t.text), draft: window.evo.screen().view.overlayInfo().draft, groups: window.evo.model.state.groups }));
+      throw new Error(`${e.message}; ${JSON.stringify(why)}`);
+    });
   const tools = await page.evaluate(() => document.documentElement.scrollWidth);
   if (tools > vw.width + 1) throw new Error(`${tag}: the toolbar made the page scroll sideways (${tools})`);
   await shot(page, `${tag}-territory.png`);

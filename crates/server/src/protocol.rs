@@ -121,6 +121,13 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         organisms: Option<Vec<OrgId>>,
     },
+    /// Retire your living lineage, `lineage` (which must be it, so a late
+    /// click can't retire the next one), to start over: every animal,
+    /// cohort and egg of it leaves the world at once (removed, not killed,
+    /// and not turned wild), its orders end, and you may found again at
+    /// once. Renown, ledger, records and the old lineage's history stay.
+    /// Data: `{removed}`.
+    RetireLineage { lineage: u32 },
     /// Group command: every member of group `from` joins group `into`
     /// (default 0); `from`'s orders end. Data: `{moved}`.
     MergeGroups {
@@ -226,6 +233,7 @@ impl ClientMsg {
             ClientMsg::CancelRally { .. } => "cancel_rally",
             ClientMsg::SplitGroup { .. } => "split_group",
             ClientMsg::MergeGroups { .. } => "merge_groups",
+            ClientMsg::RetireLineage { .. } => "retire_lineage",
             ClientMsg::SetView { .. } => "set_view",
             ClientMsg::ClearView => "clear_view",
             ClientMsg::CreateListing { .. } => "create_listing",
@@ -455,6 +463,9 @@ pub enum AlertKind {
     /// The marketplace and renown: a listing bought, a sale paid, a refund,
     /// a listing closed, an achievement bonus.
     Market,
+    /// A group order ended on its own: a migration arrived, a group was
+    /// left with no members.
+    Group,
 }
 
 impl AlertKind {
@@ -480,6 +491,7 @@ impl AlertKind {
             AlertKind::World => "world",
             AlertKind::Achievement => "achievement",
             AlertKind::Market => "market",
+            AlertKind::Group => "group",
         }
     }
 
@@ -505,7 +517,7 @@ pub struct AlertPrefs {
 impl AlertPrefs {
     /// Toasted by default: what needs attention now.
     pub fn default_toast() -> Vec<AlertKind> {
-        vec![AlertKind::Death, AlertKind::Need, AlertKind::Market]
+        vec![AlertKind::Death, AlertKind::Need, AlertKind::Market, AlertKind::Group]
     }
 
     /// Sorted, without duplicates, and nothing hidden is toasted.
@@ -702,6 +714,9 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         let code = match e {
             NotFound(_) => "not_found",
             NotOwned(_) => "not_owned",
+            NotPossessed(_) => "not_possessed",
+            OffMap => "off_map",
+            Unreachable => "unreachable",
             NoConsent => "no_consent",
             NotMature(_) => "not_mature",
             SameSex => "same_sex",
@@ -724,6 +739,24 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             _ => info,
         }
     }
+}
+
+/// One finished mating of `GET /api/matings/history`: a closed offer (with
+/// its outcome or error), or a mating within the player's own lineage (no
+/// offer). Newest first; kept in memory, so it survives reloads but not a
+/// server restart.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MatingRecord {
+    pub tick: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<OfferView>,
+    /// The player's organism and the partner (for an offer, as in the offer).
+    pub mine: OrgId,
+    pub partner: OrgId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<MatingOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorInfo>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -983,6 +1016,12 @@ pub struct GroupView {
     pub adults: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration: Option<[f32; 2]>,
+    /// The way the migration is expected to go, from the group's middle to
+    /// the target (around water and thin ice), for drawing: at most
+    /// `commands::ROUTE_POINTS` points; absent without a migration (or
+    /// briefly, after a restart, until it is planned).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub route: Vec<[f32; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub territory: Option<TerritoryView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1014,6 +1053,7 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             members: g.members,
             adults: g.adults,
             migration: g.migration.map(|p| [p.x, p.y]),
+            route: Vec::new(),
             territory: g.territory.map(TerritoryView::from),
             rally: g.rally.map(RallyView::from),
             max_radius: g.max_radius,
@@ -1108,6 +1148,12 @@ pub struct WorldSummary {
     /// Whole days until winter; 0 during winter.
     #[serde(default)]
     pub days_to_winter: u32,
+    /// Days in a year (four seasons of a quarter each; offers expire when the season changes).
+    #[serde(default)]
+    pub days_per_year: u32,
+    /// Ticks in a game day.
+    #[serde(default)]
+    pub ticks_per_day: u32,
     /// A lineage founded now starts provisioned for winter (fed, fat
     /// reserves full: `GameConfig::winter_provision`).
     #[serde(default)]

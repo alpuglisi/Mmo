@@ -154,6 +154,11 @@ impl Game {
     /// protection the player has left in minutes.
     pub(super) fn group_views_for(&self, player: PlayerId, groups: &[GroupInfo]) -> Vec<GroupView> {
         let mut views = self.group_views(groups);
+        for v in &mut views {
+            if let Some((_, route)) = self.routes.get(&(player, v.id)) {
+                v.route.clone_from(route);
+            }
+        }
         let left = self.protection_left(player, self.world.tick());
         let minutes = (left as f64 * self.cfg.tick_ms / 60_000.0).floor() as u32;
         for v in views.iter_mut().filter(|v| v.home_range) {

@@ -26,6 +26,8 @@ use crate::protocol::*;
 mod family;
 mod market;
 mod offline;
+#[cfg(test)]
+mod orders_tests;
 mod states;
 pub use offline::{
     home_group, HomeClaim, OfflineTracker, Spell, DEFAULT_HOME_RANGE_FADE_TICKS, DEFAULT_HOME_RANGE_HOURS,
@@ -194,6 +196,9 @@ pub struct GameConfig {
     /// The window of the per-target request limit ([`REQUESTS_PER_TARGET`]):
     /// an hour at the default 1 s tick.
     pub request_window_ticks: u64,
+    /// Shortest a rally stands, in minutes of wall-clock time (at
+    /// `tick_ms`): the sim's `RALLY_DAYS` pass in seconds at a fast tick.
+    pub rally_min_minutes: f64,
 }
 
 /// Whether a "species founded" achievement of `player` for `species` on
@@ -237,9 +242,19 @@ pub const LAPSE_FEE_PERCENT: u64 = 10;
 /// (`GameConfig::purchase_deadline_ticks`).
 pub const PURCHASE_DEADLINE_MINUTES: f64 = 30.0;
 
+/// Days over which a new lineage's legacy share comes to count in full
+/// toward the ranked season's legacy score: on day `d` after its founding,
+/// `d / FOUNDING_RAMP_DAYS` of it. A fresh founding has a large share at
+/// once (its founders are all adults, many pregnant), so without the ramp
+/// letting a lineage die and founding again would pay.
+pub const FOUNDING_RAMP_DAYS: u64 = 10;
+
 /// How close to winter a founding has to be for the founders to start
 /// provisioned (`GameConfig::winter_provision`).
 pub const WINTER_PROVISION_DAYS: u32 = 30;
+
+/// Finished matings kept per player (`Game::mating_history`).
+pub const MATING_LOG_LEN: usize = 40;
 
 impl Default for GameConfig {
     fn default() -> Self {
@@ -258,6 +273,7 @@ impl Default for GameConfig {
             winter_provision: true,
             purchase_deadline_ticks: 30 * 60,
             request_window_ticks: 3600,
+            rally_min_minutes: 5.0,
         }
     }
 }
@@ -381,6 +397,9 @@ enum Watch {
     Possessed,
 }
 
+/// A migration's drawn route and the target it was planned for.
+type PlannedRoute = (Vec2, Vec<[f32; 2]>);
+
 pub struct Game {
     pub world: World,
     cfg: GameConfig,
@@ -405,6 +424,9 @@ pub struct Game {
     prev_born: BTreeMap<u32, u64>,
     prev_deaths: BTreeMap<(u32, DeathCause), u64>,
     alerts: BTreeMap<PlayerId, VecDeque<AlertView>>,
+    /// Each player's recent finished matings, newest first (memory only:
+    /// `GET /api/matings/history`).
+    mating_log: BTreeMap<PlayerId, VecDeque<MatingRecord>>,
     /// Organisms whose death is announced to their owner.
     watched: BTreeMap<OrgId, (PlayerId, Watch)>,
     progress: BTreeMap<PlayerId, Progress>,
@@ -453,9 +475,17 @@ pub struct Game {
     /// The marketplace listings indexed by every page order
     /// (`game::market`).
     market: market::MarketIndex,
+    /// Each migration order's route as drawn by clients
+    /// (`World::migration_route`), keyed by (player, group) with the
+    /// target it was planned for; planned when first missing (an order
+    /// just given, or after a restart) in [`Game::plan_routes`].
+    routes: BTreeMap<(PlayerId, u8), PlannedRoute>,
+    /// Day each player's current lineage was founded, for the founding
+    /// ramp of the season's legacy score ([`FOUNDING_RAMP_DAYS`]); absent
+    /// for lineages founded before it was kept (counted in full).
+    founded_day: BTreeMap<PlayerId, u64>,
     /// Tests: take the plain, slower paths these shortcuts replace (full
-    /// hold scans, `World::command_migrate`, a fresh index per new
-    /// connection) to compare against.
+    /// hold scans, a fresh index per new connection) to compare against.
     #[cfg(test)]
     reference: bool,
 }
@@ -503,6 +533,10 @@ pub struct SavedGame {
     /// Day each lineage last earned the species-founded bonus (absent in
     /// older saves: none).
     species_bonus: BTreeMap<u32, u64>,
+    /// The day each player's lineage was founded (the
+    /// founding ramp; absent in older saves, which count every lineage in
+    /// full).
+    founded_day: BTreeMap<PlayerId, u64>,
 }
 
 impl SavedGame {
@@ -594,7 +628,7 @@ impl Game {
         let season = SeasonTracker::new(1, first_day, cfg.season_days);
         let economy = Economy::new();
         let market = market::MarketIndex::build(&economy, &world);
-        Self {
+        let mut g = Self {
             world,
             cfg,
             world_id: format!("{:016x}", rand::random::<u64>()),
@@ -611,6 +645,7 @@ impl Game {
             prev_born: BTreeMap::new(),
             prev_deaths: BTreeMap::new(),
             alerts: BTreeMap::new(),
+            mating_log: BTreeMap::new(),
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
             need_alerted: BTreeMap::new(),
@@ -631,9 +666,14 @@ impl Game {
             state_cache: states::StateCache::default(),
             held_tick: None,
             market,
+            routes: BTreeMap::new(),
+            founded_day: BTreeMap::new(),
             #[cfg(test)]
             reference: false,
-        }
+        };
+        let floor = (g.cfg.rally_min_minutes * 60_000.0 / g.cfg.tick_ms.max(1.0)).round() as u64;
+        g.world.set_rally_min_ticks(floor);
+        g
     }
 
     /// The game-side state to save with a world snapshot.
@@ -663,6 +703,7 @@ impl Game {
             offline: Some(self.offline.clone()),
             mating_prefs: self.mating_prefs.clone(),
             species_bonus: self.species_bonus.clone(),
+            founded_day: self.founded_day.clone(),
         }
     }
 
@@ -691,6 +732,7 @@ impl Game {
             g.world_id = saved.world_id;
         }
         g.lineage_of = saved.lineage_of;
+        g.founded_day = saved.founded_day;
         // A player's lineage is in the world even if the saved table lost it.
         for (k, l) in g.world.lineages.iter().enumerate() {
             if l.owner != WILD {
@@ -917,6 +959,18 @@ impl Game {
             && !self.world.clutches.iter().any(|c| c.owner == player)
     }
 
+    /// Remember a finished mating for the player's history (newest first, capped).
+    fn log_mating(&mut self, player: PlayerId, record: MatingRecord) {
+        let log = self.mating_log.entry(player).or_default();
+        log.push_front(record);
+        log.truncate(MATING_LOG_LEN);
+    }
+
+    /// The player's recent finished matings, newest first.
+    pub fn mating_history(&self, player: PlayerId) -> Vec<MatingRecord> {
+        self.mating_log.get(&player).map(|l| l.iter().cloned().collect()).unwrap_or_default()
+    }
+
     /// Whether founders founded now start provisioned for winter.
     pub fn winter_provision_now(&self) -> bool {
         self.cfg.winter_provision && self.world.days_until_winter() <= WINTER_PROVISION_DAYS
@@ -958,6 +1012,7 @@ impl Game {
         // New organisms: the next state build indexes the world again.
         self.state_cache.invalidate();
         self.lineage_of.insert(player, lineage);
+        self.founded_day.insert(player, self.world.day());
         for &id in &founders {
             self.watched.insert(id, (player, Watch::Founder));
         }
@@ -966,6 +1021,40 @@ impl Game {
             let _ = self.post(player, economy::FOUNDING_GRANT as i64, LedgerKind::Grant, text, None, None);
         }
         Ok(FoundOk { lineage, founders, cost: design.point_cost() })
+    }
+
+    /// Retire the player's living lineage (`lineage` must name it, so a
+    /// late click can't retire the next one): every animal, cohort and egg
+    /// leaves the world at once (removed, not killed and not turned wild:
+    /// `World::retire_player`), its group orders and possession end, and
+    /// the player may found again at once ([`Game::found`]). Their renown,
+    /// ledger, records and the old lineage's history stay. Marketplace
+    /// offers and listings of the removed animals close on the next tick as
+    /// for any animal gone. The number removed.
+    pub fn retire(&mut self, player: PlayerId, lineage: u32) -> Result<usize, ErrorInfo> {
+        let current = self.lineage_of(player);
+        if current != Some(lineage) || self.is_extinct(player) {
+            return Err(ErrorInfo::new(
+                "no_lineage",
+                match current {
+                    Some(l) if l != lineage => format!("lineage {lineage} is not your living lineage (yours is {l})"),
+                    _ => "you have no living lineage to retire".to_string(),
+                },
+            ));
+        }
+        let n = self.world.retire_player(player);
+        // Not deaths: no alerts for founders or the possessed.
+        self.watched.retain(|_, (p, _)| *p != player);
+        self.routes.retain(|&(p, _), _| p != player);
+        if let Some(prog) = self.progress.get_mut(&player) {
+            prog.extinct = true;
+        }
+        // Organisms left the world outside a tick: the next state build
+        // indexes it again, the listings are checked again, holds are redone.
+        self.state_cache.invalidate();
+        self.market.validated = None;
+        self.held_tick = None;
+        Ok(n)
     }
 
     pub fn connect(&mut self, conn: ConnId, player: PlayerId, name: &str) -> Outbox {
@@ -1023,20 +1112,28 @@ impl Game {
             ClientMsg::Possess { organism } => self.world.possess(player, organism).map(|_| None).map_err(e),
             ClientMsg::OrderMove { organism, x, y } => {
                 finite(&[x, y])?;
-                self.world.order_move(player, organism, Vec2::new(x, y)).map_err(e)?;
-                Ok(None)
+                let to = self.world.order_move(player, organism, Vec2::new(x, y)).map_err(e)?;
+                Ok(Some(target_data(Vec2::new(x, y), to, "it can't get there; it goes as near as it can")))
             }
             ClientMsg::Release { organism } => self.world.release(player, organism).map(|_| None).map_err(e),
             ClientMsg::Migrate { x, y, group } => {
                 finite(&[x, y])?;
-                let target = self.world.map.clamp(Vec2::new(x, y));
-                match group {
-                    None => self.migrate_all(player, target),
-                    Some(g) => {
-                        self.world.command_migrate_group(player, g, target).map_err(e)?;
-                    }
+                // No group: the main group, like a rally or a territory.
+                let group = group.unwrap_or(0);
+                let asked = Vec2::new(x, y);
+                let to = self.world.command_migrate_group(player, group, asked).map_err(e)?;
+                self.plan_route(player, group);
+                let mut data =
+                    target_data(asked, to, "that is water or impassable; the group goes to the nearest land");
+                data["group"] = group.into();
+                if let Some((_, route)) = self.routes.get(&(player, group)) {
+                    data["route"] = serde_json::to_value(route).unwrap_or_default();
                 }
-                Ok(Some(serde_json::json!({ "x": target.x, "y": target.y })))
+                Ok(Some(data))
+            }
+            ClientMsg::RetireLineage { lineage } => {
+                let n = self.retire(player, lineage)?;
+                Ok(Some(serde_json::json!({ "removed": n })))
             }
             ClientMsg::ClearMigration { group } => {
                 match group {
@@ -1185,30 +1282,6 @@ impl Game {
     /// `World::command_migrate` (the main group and every group with a
     /// member), finding the player's groups from the state index when it is
     /// current instead of a scan of every organism.
-    fn migrate_all(&mut self, player: PlayerId, target: Vec2) {
-        #[cfg(test)]
-        if self.reference {
-            return self.world.command_migrate(player, target);
-        }
-        let Some(owned) = self.state_cache.owned_now(&self.world, player) else {
-            return self.world.command_migrate(player, target);
-        };
-        let mut groups = [false; MAX_GROUPS as usize];
-        groups[0] = true;
-        for &i in owned {
-            let o = &self.world.organisms[i as usize];
-            if o.alive && o.owner == player {
-                if let Some(g) = groups.get_mut(o.group as usize) {
-                    *g = true;
-                }
-            }
-        }
-        for g in (0..MAX_GROUPS).filter(|&g| groups[g as usize]) {
-            // Only fails for a group past the last.
-            let _ = self.world.command_migrate_group(player, g, target);
-        }
-    }
-
     fn offer_for(&self, request: u64, player: PlayerId) -> Result<&Offer, ErrorInfo> {
         self.offers
             .get(&request)
@@ -1244,8 +1317,13 @@ impl Game {
             let req = DirectedMating { player, a: mine, b: partner, partner_consent: false };
             self.state_cache.touch(mine);
             self.state_cache.touch(partner);
-            let outcome = self.world.directed_mating(req).map_err(e)?;
-            return Ok(Some(serde_json::to_value(MatingOutcome::from(outcome)).unwrap()));
+            let outcome = MatingOutcome::from(self.world.directed_mating(req).map_err(e)?);
+            let tick = self.world.tick();
+            self.log_mating(
+                player,
+                MatingRecord { tick, offer: None, mine, partner, outcome: Some(outcome), error: None },
+            );
+            return Ok(Some(serde_json::to_value(outcome).unwrap()));
         }
         let to = self.check_cross_pair(player, mine, partner)?;
         self.check_request_allowed(player, to)?;
@@ -2285,11 +2363,15 @@ impl Game {
         o.status = status;
         let o = o.clone();
         let view = self.offer_view(request);
+        let tick = self.world.tick();
         for p in [o.from, o.to] {
             out.push((
                 Target::Player(p),
                 ServerMsg::MatingUpdate { offer: view.clone(), outcome, error: error.clone() },
             ));
+            let (mine, partner) = if p == o.from { (o.mine, o.partner) } else { (o.partner, o.mine) };
+            let record = MatingRecord { tick, offer: Some(view.clone()), mine, partner, outcome, error: error.clone() };
+            self.log_mating(p, record);
         }
         let settlement = self.settle(&o, status, out);
         self.persist.push(PersistEvent::Trade(TradeRecord {
@@ -2397,6 +2479,8 @@ impl Game {
         }
         self.watch_possessed(&mut out);
         self.announce_deaths(&mut out);
+        self.announce_group_events(&mut out);
+        self.plan_routes();
         self.offline_after_tick();
         if self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) {
             self.sync_focus();
@@ -2446,7 +2530,20 @@ impl Game {
             self.persist.push(PersistEvent::Season(Box::new(finished.clone())));
             self.last_season_record = Some(finished);
         }
-        self.season.record_day(record);
+        self.season.record_day(&self.ramped(record));
+    }
+
+    /// `record` with each player's legacy shares scaled by their lineage's
+    /// founding ramp ([`FOUNDING_RAMP_DAYS`]), as the ranked season counts
+    /// them.
+    fn ramped(&self, record: &DailyRecord) -> DailyRecord {
+        let mut r = record.clone();
+        for e in &mut r.legacy {
+            let f = founding_ramp(self.founded_day.get(&e.player).copied(), record.day);
+            e.share *= f;
+            e.weighted_share *= f;
+        }
+        r
     }
 
     /// This world's id (daily records, ledger, seasons).
@@ -2552,7 +2649,9 @@ impl Game {
             } else {
                 (format!("starving (hunger {hunger:.0})"), "eat")
             };
-            let tail = if walking {
+            let tail = if walking && thirst.max(hunger) >= urgency {
+                format!("it has broken off your order to {act} and goes back to it afterwards")
+            } else if walking {
                 format!("it keeps to your order until the need reaches {urgency:.0}, then stops to {act}; walk it to water or food, or release it")
             } else {
                 "it is foraging on its own until you give it an order".to_string()
@@ -2743,6 +2842,59 @@ impl Game {
                 Watch::Possessed => "Possessed",
             };
             self.alert(player, AlertKind::Death, format!("{who} #{id} {how}."), Some(id), out);
+        }
+    }
+
+    /// Tell players about group orders that ended on their own: a
+    /// migration that arrived, a group left with no members.
+    fn announce_group_events(&mut self, out: &mut Outbox) {
+        use evo_sim::world::commands::GroupEvent;
+        for ev in self.world.take_group_events() {
+            match ev {
+                GroupEvent::Arrived { player, group, target } => {
+                    self.routes.remove(&(player, group));
+                    let text = format!(
+                        "{} reached its migration target ({:.0}, {:.0}); the order is done.",
+                        group_name(group),
+                        target.x,
+                        target.y
+                    );
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::Emptied { player, group } => {
+                    self.routes.remove(&(player, group));
+                    if group != 0 {
+                        let text =
+                            format!("{} has no members left; its orders and territory are gone.", group_name(group));
+                        self.alert(player, AlertKind::Group, text, None, out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Plan the route of one group's migration order for clients.
+    fn plan_route(&mut self, player: PlayerId, group: u8) {
+        let Some(target) = self.world.migration_order(player, group) else {
+            self.routes.remove(&(player, group));
+            return;
+        };
+        let route = self.world.migration_route(player, group).iter().map(|p| [p.x, p.y]).collect();
+        self.routes.insert((player, group), (target, route));
+    }
+
+    /// Keep the drawn routes in step with the orders: drop those whose order
+    /// ended or changed, plan a few missing ones (after a restart) per tick.
+    fn plan_routes(&mut self) {
+        let world = &self.world;
+        self.routes.retain(|&(p, g), (t, _)| world.migration_order(p, g) == Some(*t));
+        let missing: Vec<(PlayerId, u8)> = (self.lineage_of.keys())
+            .flat_map(|&p| (0..MAX_GROUPS).map(move |g| (p, g)))
+            .filter(|&(p, g)| world.migration_order(p, g).is_some() && !self.routes.contains_key(&(p, g)))
+            .take(2)
+            .collect();
+        for (p, g) in missing {
+            self.plan_route(p, g);
         }
     }
 
@@ -3307,6 +3459,8 @@ impl Game {
             agents: self.world.alive_count(),
             lineages: self.world.lineages.len(),
             days_to_winter: self.world.days_until_winter(),
+            days_per_year: self.world.config.days_per_year,
+            ticks_per_day: self.world.config.ticks_per_day,
             winter_provision: self.winter_provision_now(),
         }
     }
@@ -3398,6 +3552,38 @@ fn incompatibility(p: &MatingPreview) -> Option<ErrorInfo> {
         ));
     }
     None
+}
+
+/// A command's target as used: `{x, y}`, plus `{moved: true, note}` when
+/// the world moved it from `asked` (water, a cliff, out of reach).
+fn target_data(asked: Vec2, used: Vec2, note: &str) -> serde_json::Value {
+    let mut v = serde_json::json!({ "x": used.x, "y": used.y });
+    if asked.dist(used) > 0.01 {
+        v["moved"] = true.into();
+        v["note"] = note.into();
+    }
+    v
+}
+
+/// How a group is named to its player, as the client names it: "Group A
+/// (main)", "Group B"...
+fn group_name(group: u8) -> String {
+    let letter = (b'A' + group.min(25)) as char;
+    if group == 0 {
+        format!("Group {letter} (main)")
+    } else {
+        format!("Group {letter}")
+    }
+}
+
+/// The share of a lineage founded on `founded` counted toward the season
+/// on `day`: ramping from 0 to 1 over [`FOUNDING_RAMP_DAYS`] (1 if the
+/// founding day isn't known).
+pub fn founding_ramp(founded: Option<u64>, day: u64) -> f64 {
+    match founded {
+        Some(f) => (day.saturating_sub(f) as f64 / FOUNDING_RAMP_DAYS as f64).min(1.0),
+        None => 1.0,
+    }
 }
 
 #[cfg(test)]
@@ -3754,6 +3940,43 @@ mod tests {
         assert!(trades
             .iter()
             .any(|t| matches!(t, PersistEvent::Trade(r) if r.price == Some(30) && r.status == "completed")));
+    }
+
+    #[test]
+    fn mating_history_keeps_closed_offers_and_own_lineage_matings() {
+        let (mut g, a, b) = game();
+        assert!(g.mating_history(1).is_empty());
+        // Within ann's own lineage: recorded for her, no offer.
+        let (fa, ma) = (female(&g, &a), male(&g, &a));
+        place_together(&mut g, fa, ma);
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: ma, price: None });
+        assert_eq!(result(&out), (true, None));
+        let h = g.mating_history(1);
+        assert_eq!(h.len(), 1);
+        assert!(h[0].offer.is_none() && h[0].outcome.is_some());
+        assert_eq!((h[0].mine, h[0].partner), (fa, ma));
+        assert!(g.mating_history(2).is_empty());
+        // An offer bob declines: recorded for both, each from their own side.
+        let mb = male(&g, &b);
+        let fa2 = *a
+            .iter()
+            .find(|&&i| i != fa && g.world.organism(i).unwrap().sex == evo_sim::organism::Sex::Female)
+            .unwrap();
+        place_together(&mut g, fa2, mb);
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa2, partner: mb, price: None });
+        let id = match &out[1].1 {
+            ServerMsg::MatingRequest { offer } => offer.id,
+            m => panic!("{m:?}"),
+        };
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false });
+        let (h1, h2) = (g.mating_history(1), g.mating_history(2));
+        assert_eq!(h1.len(), 2, "newest first, the own-lineage mating after");
+        let declined =
+            |r: &MatingRecord| r.offer.as_ref().is_some_and(|o| o.id == id && o.status == OfferStatus::Declined);
+        assert!(declined(&h1[0]) && h1[1].offer.is_none());
+        assert!(declined(&h2[0]));
+        assert_eq!((h1[0].mine, h1[0].partner), (fa2, mb));
+        assert_eq!((h2[0].mine, h2[0].partner), (mb, fa2));
     }
 
     #[test]

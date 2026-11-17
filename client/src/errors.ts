@@ -41,7 +41,7 @@ function technical(message: string): boolean {
 }
 
 /** A failed command as a player should read it: "Label: what went wrong." */
-export function friendlyError(command: string | undefined, error: ErrorInfo): string {
+export function commandError(command: string | undefined, error: ErrorInfo): string {
   const text = FRIENDLY[error.code]
     ?? (error.message && !technical(error.message)
       ? error.message.charAt(0).toUpperCase() + error.message.slice(1)
