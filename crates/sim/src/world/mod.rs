@@ -54,6 +54,7 @@ mod seasonal;
 #[cfg(feature = "serde")]
 mod snapshot;
 mod spatial;
+mod stagger;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -429,6 +430,10 @@ pub struct World {
     /// Wall-clock time spent in each phase of `step` (for `bench`).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub phase_times: PhaseTimes,
+    /// Last tick's intents with their organism's and target's ids, for
+    /// staggered decisions (`Balance::decide_interval`; empty when off).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    last_intents: Vec<(OrgId, Intent, Option<OrgId>)>,
 }
 
 /// Cumulative wall-clock seconds per phase of `World::step`. Timing never
@@ -526,6 +531,7 @@ impl World {
             lod,
             offline: Default::default(),
             phase_times: PhaseTimes::default(),
+            last_intents: Vec::new(),
             config,
         }
     }
@@ -973,6 +979,7 @@ impl World {
         }
         let n = self.organisms.len();
         let intents = self.decide_all();
+        self.remember_intents(&intents);
         self.phase_times.decide += lap();
 
         let mut rng = rng_for(self.config.seed, stream::APPLY, self.tick, 0);

@@ -1,5 +1,5 @@
 //! Reproducible speed benchmark:
-//! `cargo run --release --features serde --example perfbench -- [--days N] [--seed N] [--seeds N] [--only default|meat]`.
+//! `cargo run --release --features serde --example perfbench -- [--days N] [--seed N] [--seeds N] [--only default|meat] [--set NAME=V]`.
 //!
 //! Runs a 96×96 world for two simulated years (240 days by default) twice:
 //! with the default balance (`presets::standard_world`) and with the
@@ -35,8 +35,11 @@ struct Run {
     fingerprint: u64,
 }
 
-fn run(seed: u64, meat: bool, days: Option<u32>) -> Run {
-    let balance = if meat { Balance::default().carnivore_diet() } else { Balance::default() };
+fn run(seed: u64, meat: bool, days: Option<u32>, sets: &[(String, f32)]) -> Run {
+    let mut balance = if meat { Balance::default().carnivore_diet() } else { Balance::default() };
+    for (n, v) in sets {
+        assert!(balance.set(n, *v), "unknown parameter {n}");
+    }
     let config = WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() };
     let start = Instant::now();
     let mut w = if meat { presets::niche_world(config, 1) } else { presets::standard_world(config, 1) };
@@ -55,6 +58,7 @@ fn main() {
     let mut seed = 31u64;
     let mut seeds = 1u64;
     let mut only: Option<String> = None;
+    let mut sets: Vec<(String, f32)> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -62,6 +66,11 @@ fn main() {
             "--seed" => seed = args.next().expect("--seed N").parse().expect("--seed N"),
             "--seeds" => seeds = args.next().expect("--seeds N").parse().expect("--seeds N"),
             "--only" => only = Some(args.next().expect("--only default|meat")),
+            "--set" => {
+                let s = args.next().expect("--set NAME=V");
+                let (n, v) = s.split_once('=').expect("--set NAME=V");
+                sets.push((n.to_string(), v.parse().expect("--set NAME=V")));
+            }
             other => panic!("unknown option {other}"),
         }
     }
@@ -74,9 +83,9 @@ fn main() {
         // One seed steps from the main thread, as `evo-sim run` and the
         // server do; several from inside the pool, as the experiments do.
         let runs: Vec<Run> = if seeds == 1 {
-            vec![run(seed, meat, days)]
+            vec![run(seed, meat, days, &sets)]
         } else {
-            (seed..seed + seeds).into_par_iter().map(|s| run(s, meat, days)).collect()
+            (seed..seed + seeds).into_par_iter().map(|s| run(s, meat, days, &sets)).collect()
         };
         let wall = start.elapsed().as_secs_f64();
         for (k, r) in runs.iter().enumerate() {
