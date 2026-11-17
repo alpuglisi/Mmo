@@ -81,6 +81,11 @@ pub enum Request {
         player: PlayerId,
         reply: oneshot::Sender<LineageStats>,
     },
+    /// The family tree of a player's lineage.
+    FamilyTree {
+        player: PlayerId,
+        reply: oneshot::Sender<crate::protocol::FamilyTree>,
+    },
     /// Species, eras, catastrophes and achievements.
     Chronicle {
         reply: oneshot::Sender<Box<ChronicleView>>,
@@ -441,6 +446,9 @@ impl Runner {
             }
             Request::Stats { player, reply } => {
                 let _ = reply.send(self.game.lineage_stats(player));
+            }
+            Request::FamilyTree { player, reply } => {
+                let _ = reply.send(self.game.family_tree(player));
             }
             Request::Chronicle { reply } => {
                 let _ = reply.send(Box::new(self.game.chronicle()));

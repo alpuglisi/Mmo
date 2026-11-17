@@ -122,6 +122,7 @@ fn parse_record(line: &str, genes: bool) -> StoreResult<DailyRecord> {
                 born: l.born,
                 deaths: l.deaths,
                 genes: BTreeMap::new(),
+                morph: None,
             })
             .collect(),
     })
@@ -409,6 +410,7 @@ mod tests {
             born: 1,
             deaths: BTreeMap::new(),
             genes: (0..20).map(|g| (format!("gene_{g}"), 0.25)).collect(),
+            morph: None,
         };
         DailyRecord {
             world_id: world.into(),

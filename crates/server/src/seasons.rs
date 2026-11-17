@@ -124,6 +124,7 @@ mod tests {
                     born: 0,
                     deaths: Default::default(),
                     genes: Default::default(),
+                    morph: None,
                 })
                 .collect(),
         }

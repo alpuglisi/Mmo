@@ -315,6 +315,27 @@ async function main() {
     if (!keys.far && !keys.keys.some((k) => /^[^-]*-3/.test(k))) throw new Error(`no three-eyed sprite among own markers: ${JSON.stringify(keys)}`);
     step(`the third eye shows: ${looks.length} own organisms look three-eyed${keys.far ? '' : `; sprite ${keys.keys[0]}`}`);
 
+    // The family tree (Family tab, `GET /api/lineage/tree`): the founding
+    // stage at least, drawn with its portrait, three-eyed and six-legged.
+    await page.click('#tab-family');
+    const tree = await waitFor('the family tree', () => page.evaluate(() => {
+      const nodes = [...document.querySelectorAll('#panel-family .ft-node')];
+      if (!nodes.length) return null;
+      return {
+        nodes: nodes.length,
+        kinds: nodes.map((n) => n.dataset.kind),
+        portraits: document.querySelectorAll('#panel-family .ft-portrait svg').length,
+        label: nodes[0].querySelector('.ft-portrait').getAttribute('aria-label'),
+        summary: document.querySelector('#family-summary')?.textContent ?? '',
+      };
+    }), 20000);
+    if (tree.kinds[0] !== 'founding' || tree.portraits !== tree.nodes || !/three eyes/.test(tree.label) || !/six legs/.test(tree.label)) {
+      throw new Error(`family tree: ${JSON.stringify(tree)}`);
+    }
+    await page.locator('#sidebar').screenshot({ path: path.join(shots, 'family-tree-live.png') });
+    step(`family tree: ${tree.nodes} stage(s) (${tree.kinds.join(', ')}), portrait "${tree.label.slice(0, 60)}…"`);
+    await page.click('#tab-lineage');
+
     // Tile map: the terrain grid from /api/terrain, painted (blended and
     // textured) into a base texture of a few texels per tile, with detail
     // chunks over the part on screen (STYLE.md).
