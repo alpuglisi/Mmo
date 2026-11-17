@@ -2868,6 +2868,71 @@ scheduler weight was raised for the multi-thread runs), so they are noisy
 lower bounds on what a dedicated machine does. Speed-up figures are medians
 of two runs, the rest single runs.
 
+### Performance (long experiments)
+
+```sh
+cargo run --release --features serde -p evo-sim --example perfbench            # one world, stepped from the main thread
+cargo run --release --features serde -p evo-sim --example perfbench -- --seeds 4  # four worlds at once, as experiments run
+```
+
+`perfbench` runs a 96×96 world for two simulated years (240 days) with the
+default balance (`presets::standard_world`) and with
+`Balance::carnivore_diet()` + `presets::niche_world`, and prints the wall
+time, the time per phase and a determinism fingerprint (FNV-1a of the final
+snapshot). Every optimisation below leaves the fingerprints
+(`e37d27fc27ac144e` default, `c32bf3e8057496e8` meat, seed 31), the sweep
+check (`evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`:
+score 11.60) and the `predlong` output byte for byte unchanged.
+
+What changed:
+
+- `World::step` enters the rayon pool once per tick when called from outside
+  it (`evo-sim run`, the server's runner) instead of handing each of a dozen
+  parallel passes to the pool and waiting.
+- Kin and mate tests first try bounds on the genetic distance through a
+  per-lineage reference point (the mean genes, refreshed every 240 ticks):
+  the distance is a metric, so `|d(a,c) - d(b,c)| <= d(a,b) <= d(a,c) + d(b,c)`.
+  The full 40-gene bound (`DistanceBounds::new`) is summed only when those
+  don't settle the test (its share of the profile fell from 12% to 4%).
+- Light parallel passes (grid rebuild, the parallel apply's local-act and
+  burrow sweeps, a small map's environment chunks) run on the calling thread
+  below 8,192 items: waking the pool cost more than it saved.
+- Off the day, the environment chunks and the grid rebuild run at once
+  (`rayon::join`; they share nothing), and the chunk update computes each
+  column's and row's weather interpolation once instead of per tile.
+- `evo-sim` (the simulation crate) builds in one codegen unit in release
+  (about 5%).
+
+Measured on the 4-core container (noisy; same-session runs of the original
+and the new build, seed 31):
+
+| Benchmark | Before | After | Speed-up |
+| --- | --- | --- | --- |
+| `perfbench`, one world, default, 2 years | 23.3 s | 21.1 s | 1.10× |
+| `perfbench`, one world, carnivore diet + niches, 2 years | 24.3 s | 23.0 s | 1.06× |
+| `perfbench --seeds 4`, default, 2 years | 55.0 s | 51.8 s | 1.06× |
+| `perfbench`, one world, default, first 80 days | 5.97 s | 3.98 s | 1.50× |
+| `predlong -- 2 31` | 22.3 s | 19.8 s | 1.13× |
+| `predlong -- 2 31 --meat` | 24.5 s | 21.9 s | 1.12× |
+| `predlong -- 1` (seeds 31–34 at once) | 14.6 s | 13.1 s | 1.11× |
+| `evo-sim sweep` check (12 seeds × 120 days) | 48.8 s | 46.7 s | 1.05× |
+| `evo-sim run --days 120` (128×128) | 11.7 s | 11.2 s | 1.04× |
+
+Where the time goes now (one world, single thread, two years): perception
+in `decide` is about two thirds (neighbor scan, nearest-32 selection, the
+close look at each), apply a quarter, environment chunks and the grid
+rebuild a few percent each. Late in a run herds are dense and each
+organism scans 50–100 neighbors; that scan, not kinship, is now the
+largest single cost. Tried and dropped (no measurable gain): trimming the
+grid query to the cells the circle reaches, software prefetch of
+organisms in grid order, bounding the body-plan gap through the reference
+point as well, fat LTO. Parallel scaling of one world stays modest
+(single thread 41 s, four threads 21 s for the default two years): the
+apply phase's parallel sweeps are about 0.2 ms per tick, too short to pay
+for waking the pool's workers, so experiments get the most from running
+seeds side by side, which they already do (`predlong`, `sweep`, `compare`,
+`genetics` run their worlds in parallel).
+
 ### Profile at the prototype target
 
 The doc's prototype stage is a 256×256 map with ~5k player and ~20k wild
