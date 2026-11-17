@@ -7026,6 +7026,84 @@ omnivore effect. A mate-recognition rule beyond the body-plan gap (females
 courting only kin, `mating::is_kin`) was not tried: it is a rule change for
 every species, not a design one, and would need its own round.
 
+### Playtest 1: ecology fixes
+
+The ecology problems players hit in *Playtest 1* (`docs/playtest-1.md`),
+looked into with `examples/founding` (new, read only: founds one of the
+playtest designs, `broker`, `nomad` or `apex`, into the 128×128 world of
+seed 7 at a given day and follows it: head count by sex, pregnant and
+dormant members, deaths by cause with thirst deaths split by dormancy and
+water nearby, what the parched are doing, and deaths by sex and stage).
+Two rules change, **on by default from snapshot version 34** (33 is founder
+pricing's; renumber at merge), off for older saves
+(`serde_util::before_v34`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `desperate_risk` (1) | A burrower that would go to ground from a threat (a free escape) does so less as its thirst passes 0.7, by `smoothstep(0.7, 1, thirst)`, and goes to drink. |
+| `founding_food` (1) | A founding into a running world picks homes by the vegetation still standing within 4 tiles (the home's plant score times its share left), not by what the ground could grow; a player's founding of more than 48 is placed in groups of at most 48 at their own homes. Founding at world creation is unchanged (presets found as before). |
+
+**Hibernators dying of thirst.** No dormant animal died of thirst in any
+run: deep dormancy already scales thirst by `dormant_metabolism` (0.05).
+The deaths are awake burrowers with water within 6 tiles: when parched,
+they sit sheltered in their burrows ("rest" at full energy, playtest item
+24) because going to ground from any threat in sight outweighs drinking
+(`burrow_caution` 2). Making them leave for water when parched fixes it,
+but only for thirst: leaving for food as well (hunger past 0.7) let 141
+founders out into the summer heat and they died of exposure and hunger
+within days (the burrow kept them cool). With both fixes, PocketNomad's
+141-founder hibernator (founded day 30, seeds 7–9) has 1,492 / 1,033 /
+782 alive on day 270 against 321 / 397 / 602 with founding by food alone;
+thirst deaths with water nearby 869 against 1,481 (exposure 47).
+
+**Large foundings starving.** The home search scored a spot by the ground's
+potential (`veg_max`) and placed a player's whole founding there, so 80–140
+founders landed together, sometimes on grazed-out ground. With founding by
+food (`desperate_risk` off, founded day 30, seeds 7–9): ApexHunter's 87
+pack hunters keep 107 / 149 / 119 on day 45 (57 / 120 / 57 before) and
+reach 167 / 196 / 253 by day 120 (127 / 166 / 73); the 141 hibernators
+225 / 269 / 318 on day 45 (168 / 278 / 292).
+
+**Adult sex ratio.** Births are even (one coin per young). The skew is
+mortality: pregnant females die of starvation and thirst at about twice
+the males' rate (on seed 7 over 240 days: 320 pregnant and 187 other adult
+females against 316 adult males), from the pregnancy's hunger cost (+47%
+for a litter of 3 at `pregnancy_cost` 0.74), the pregnant live bearer's
+slower walk (0.7) and conception at hunger up to 70. Not a bug; the
+condition-litter rule shrinks big litters of starving mothers but barely a
+litter of 2–3. A follow-up could let a starving mother resorb her whole
+litter (end the pregnancy below some condition). Not changed here.
+
+**Pregnant founders.** Founders are not created pregnant: they arrive as
+adults with a breeding drive drawn below 40 and mate within the first days
+(67 of 141 pregnant by day 4 in the probe), at the worst time for a big
+founding. Whether that should stay is for founder pricing (session E):
+founding with no breeding drive would delay it.
+
+**Predators hunting other players.** Not changed: the prey-mass limit (1.5×
+the hunter, up to 4.5× with cooperative hunting) and dormant prey in their
+dens being out of reach (`!sheltered`) both shape the measured
+predator–prey balance, and possession can't attack because a possessed
+animal follows its move order (re-issued onto a moving prey, it never
+arrives and never decides to hunt). An attack order is a protocol and
+client change; changing the mass limit needs its own measured round.
+
+**Acceptance** (fixes on against the previous defaults; previous
+predlong and genetics numbers as measured on commit 8a6d6b0, whose
+simulation this is apart from these fixes):
+
+| Check | Fixes on | Before |
+| --- | --- | --- |
+| `sweep --seed 31` (12 seeds) | 11.67 (target 11.75 ± 0.3) | 11.75 |
+| `compare --seed 101 --adaptive vs --set desperate_risk=0 --set founding_food=0` | +0.05, sequential CI −0.06 … +0.17 (no difference that matters) | |
+| `predlong 6 31–38`: fox, pack (viable); prey lost | 7 (7), 7 (7); **none** (seed-32 voles 61 at their lowest) | 8 (6), 8 (8); voles on 32 |
+| `predlong 6 41–48` | 8 (8), 7 (7); **omnivores on 48** (lowest voles 18, 25) | 7 (7), 8 (8); none (omnivores down to 2 on 48) |
+| `genetics --long --level ecology` | 7 of 7 strict, 8 of 9 soft (the east–west check, 1 warning); fox 3 of 4, pack 4 of 4; no prey lost | all pass; fox 4, pack 3; no prey lost |
+
+Over the 16 seeds the predators come out level (fox 15 against 15
+survived, viable 15 against 13; pack 14 against 16) and prey losses one each
+way (the seed-32 voles saved, the seed-48 omnivores, already at 2, lost).
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

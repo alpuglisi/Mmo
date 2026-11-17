@@ -865,6 +865,29 @@ pub struct Balance {
     /// before version 31.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31"))]
     pub switching_power: f32,
+    // Playtest 1 ecology fixes (version 34; *Playtest 1: ecology fixes* in
+    // the README's Balance section). Off at 0, what snapshots before version
+    // 34 read (`serde_util::before_v34`); on by default.
+    /// Desperate animals take risks: a burrower that would go to ground from
+    /// a threat (a free escape, so it hid even while dying) does so less as
+    /// its hunger or thirst passes 0.7, by `desperate_risk ×
+    /// smoothstep(0.7, 1, max(hunger, thirst))`, and goes to drink or eat
+    /// instead. Before, parched and starving burrowers sat in their burrows
+    /// in sight of water until they died ("rest" at hunger or thirst 100).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v34"))]
+    pub desperate_risk: f32,
+    /// Founding by food: a lineage founded into a running world (after its
+    /// first tick) picks homes by the food still standing around them (the
+    /// home's plant score times the share of the vegetation left within 4
+    /// tiles), not by what the ground could grow, so founders don't land on
+    /// grazed-out ground; and a player's founding of more than
+    /// `World::FOUNDING_GROUP` (48) is placed in groups of at most that
+    /// many, each at its own home, spread over enough pasture for their
+    /// number. Before, a player's founders all landed at one home however
+    /// many, and 80–140 founders lost most of their number in weeks.
+    /// Founding at world creation is unchanged.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v34"))]
+    pub founding_food: f32,
 }
 
 impl Balance {
@@ -1115,12 +1138,14 @@ impl Default for Balance {
             fruit_energy: 0.5,
             insect_crop: 1.0,
             switching_power: 4.0,
+            desperate_risk: 1.0,
+            founding_food: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 120;
+    pub const FIELD_COUNT: usize = 122;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1250,6 +1275,8 @@ impl Balance {
             ("fruit_energy", &mut self.fruit_energy),
             ("insect_crop", &mut self.insect_crop),
             ("switching_power", &mut self.switching_power),
+            ("desperate_risk", &mut self.desperate_risk),
+            ("founding_food", &mut self.founding_food),
         ]
     }
 

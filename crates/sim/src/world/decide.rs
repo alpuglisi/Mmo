@@ -706,8 +706,17 @@ impl World {
         // and resting on hold (`threat_caution`), except for the parched.
         let calm = 1.0 - cfg.balance.threat_caution * threat.min(1.0);
 
+        // Desperate animals take risks (`Balance::desperate_risk`): going to
+        // ground costs a burrower nothing, so without this a parched or
+        // starving one hid from every threat in sight until it died.
+        let desperate = {
+            let x = ((thirst - 0.7) / 0.3).clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        };
+        let hide = if can_dig { 1.0 - cfg.balance.desperate_risk * desperate } else { 1.0 };
+
         let mut options: [(Action, f32); 17] = [
-            (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless) * tame),
+            (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless) * tame * hide),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
             (Action::Drink, thirst.powf(1.5) * 1.3 * calm + if thirst > 0.8 { 0.5 } else { 0.0 }),
             (Action::Rest, tired * tired * 1.1 * calm),

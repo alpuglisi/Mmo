@@ -1629,6 +1629,8 @@ mod tests {
         let deaths_on = |seed: u64, competition: f32| {
             let mut config = WorldConfig { seed, width: 48, height: 48, ..Default::default() };
             config.balance.larval_competition = competition;
+            // All 80 in one crowd, as founded before `Balance::founding_food`.
+            config.balance.founding_food = 0.0;
             let mut w = World::new(config);
             let frogs = presets::player_designs().into_iter().find(|d| d.name == "Toxic frogs").unwrap();
             w.found_lineage_unchecked(1, &frogs.founders(80));

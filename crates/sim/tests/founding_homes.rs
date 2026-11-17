@@ -13,7 +13,12 @@ fn homes_hash() -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for seed in 1..=12u64 {
         let size = [64, 96, 128][seed as usize % 3];
-        let config = WorldConfig { seed, width: size, height: size, ..Default::default() };
+        let mut config = WorldConfig { seed, width: size, height: size, ..Default::default() };
+        // The search itself, without the playtest 1 fixes: founding by food
+        // (`Balance::founding_food`) moves homes in grown worlds by design,
+        // and `desperate_risk` changes the days the world grows first.
+        config.balance.founding_food = 0.0;
+        config.balance.desperate_risk = 0.0;
         // Founded empty: the wild ecosystem, then the sample players.
         let mut w = presets::standard_world(config, 1);
         for o in &w.organisms {

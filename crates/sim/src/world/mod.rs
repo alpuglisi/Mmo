@@ -805,7 +805,15 @@ impl World {
     /// ecosystem, tests). Player lineages start as one group; the wild
     /// ecosystem is scattered in small groups across the map.
     pub fn found_lineage_unchecked(&mut self, owner: PlayerId, design: &FounderDesign) -> Vec<OrgId> {
-        let group_size = if owner == crate::WILD { 12 } else { design.founders.max(1) };
+        let group_size = if owner == crate::WILD {
+            12
+        } else if self.config.balance.founding_food > 0.0 {
+            // Founding by food (`Balance::founding_food`): a big founding
+            // spreads over several homes.
+            design.founders.clamp(1, Self::FOUNDING_GROUP)
+        } else {
+            design.founders.max(1)
+        };
         self.found_lineage_grouped(owner, design, group_size)
     }
 
@@ -859,6 +867,33 @@ impl World {
             ids.push(self.insert(o));
         }
         ids
+    }
+
+    /// Most founders a player's lineage places at one home with
+    /// `Balance::founding_food` on; a bigger founding is split into groups
+    /// of at most this many, each at its own home. Above every preset
+    /// design's founding (46), so the standard worlds found as before.
+    pub const FOUNDING_GROUP: u32 = 48;
+
+    /// Share of the vegetation still standing within 4 tiles of `p` (1 where
+    /// the ground grows nothing), against what it held when the world began
+    /// (`terrain`'s 0.8 of the most it could grow), capped at 1.
+    fn standing_share(&self, p: Vec2) -> f32 {
+        let (cx, cy) = self.map.tile_coords(p);
+        let (mut now, mut max) = (0.0f32, 0.0f32);
+        let ground = self.map.ground();
+        for y in cy.saturating_sub(4)..(cy + 5).min(self.map.height) {
+            for x in cx.saturating_sub(4)..(cx + 5).min(self.map.width) {
+                let i = self.map.idx(x, y);
+                now += self.map.tiles[i].veg;
+                max += 0.8 * ground[i].veg_max;
+            }
+        }
+        if max <= 0.0 {
+            1.0
+        } else {
+            (now / max).min(1.0)
+        }
     }
 
     /// A start location the design can live on: passable, comfortable, edible,
@@ -949,7 +984,12 @@ impl World {
                 })
                 .sum();
             let productivity = (t.base_temp / 12.0).clamp(0.2, 1.0);
-            let food = t.veg_max / 40.0 * productivity * plant_eff + meat_eff * 0.04 * prey_count.min(60.0);
+            // Founding by food (`Balance::founding_food`): in a running
+            // world, what is still standing around the spot, not what the
+            // ground could grow.
+            let standing =
+                if self.tick > 0 && self.config.balance.founding_food > 0.0 { self.standing_share(p) } else { 1.0 };
+            let food = t.veg_max / 40.0 * productivity * plant_eff * standing + meat_eff * 0.04 * prey_count.min(60.0);
             let score = water + food + comfort
                 - 0.05 * crowd_n
                 - (0.3 * danger).min(4.0)

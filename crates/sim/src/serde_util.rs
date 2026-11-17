@@ -62,6 +62,9 @@
 //!   and invertebrate layers (`Map::fruit`, `Map::insects`,
 //!   `before_v31::vec`), left out while a world snapshot of version 30 or
 //!   before is read (0, off; no fruit, no invertebrates).
+//! - `before_v34`: the playtest 1 ecology fixes (`Balance::desperate_risk`),
+//!   left out while a world snapshot of version 33 or before is read or
+//!   hashed (version 33 is another change's; renumber at merge).
 //! - `before_v32`: `Balance::decide_interval` and the intents organisms keep
 //!   between decisions (`World::last_intents`), left out while a world
 //!   snapshot of version 31 or before is read (1, every organism decides
@@ -1616,6 +1619,55 @@ pub mod before_v30 {
     }
 
     /// `strike_fixes` before version 30: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// The playtest 1 ecology fixes (`Balance::desperate_risk`), added in world
+/// snapshot version 34: `#[serde(with = "crate::serde_util::before_v34")]`.
+/// On a thread holding a [`before_v34::Guard`] (reading or hashing a
+/// snapshot of version 33 or before) they are neither written nor read and
+/// read as 0: off, as those worlds ran.
+pub mod before_v34 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The fixes before version 34: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

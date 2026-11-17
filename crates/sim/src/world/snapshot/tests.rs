@@ -319,6 +319,7 @@ fn old_morph_rules(mut config: WorldConfig) -> WorldConfig {
     config.balance = config.balance.morphology_off();
     config.balance.roaming_forage = crate::serde_util::before_v25::OLD_VALUE;
     carnivore_diet_off(&mut config.balance);
+    playtest_off(&mut config.balance);
     config
 }
 
@@ -367,6 +368,13 @@ fn strike_fixes_off(b: &mut crate::Balance) {
 /// `Balance::decide_interval` as snapshots before version 32 read it.
 fn stagger_off(b: &mut crate::Balance) {
     b.decide_interval = crate::serde_util::before_v32::OLD_VALUE;
+}
+
+/// `b` as snapshots before version 34 read it: the playtest 1 ecology
+/// fixes off.
+fn playtest_off(b: &mut crate::Balance) {
+    b.desperate_risk = crate::serde_util::before_v34::OLD_VALUE;
+    b.founding_food = crate::serde_util::before_v34::OLD_VALUE;
 }
 
 /// A small world, 1 day and 7 ticks in, under the old morphology rules
@@ -913,6 +921,7 @@ fn version_30_snapshots_restore_without_staggered_decisions() {
     assert_eq!(r.config.balance.decide_interval, crate::serde_util::before_v32::OLD_VALUE);
     assert!(r.last_intents.is_empty());
     stagger_off(&mut w.config.balance);
+    playtest_off(&mut w.config.balance);
     w.last_intents.clear();
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
@@ -982,6 +991,7 @@ fn version_30_snapshots_restore_without_food_values() {
     assert_eq!(r.map.insects, vec![0.0; w.map.tiles.len()]);
     food_values_off(&mut w.config.balance);
     stagger_off(&mut w.config.balance);
+    playtest_off(&mut w.config.balance);
     w.last_intents.clear();
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
@@ -1023,10 +1033,31 @@ fn version_31_snapshots_keep_food_values_without_staggered_decisions() {
     assert_eq!(r.map.fruit, w.map.fruit);
     assert_eq!(r.map.insects, w.map.insects);
     stagger_off(&mut w.config.balance);
+    playtest_off(&mut w.config.balance);
     w.last_intents.clear();
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     assert!(r.snapshot_v31() == old);
+}
+
+/// Version 32 snapshots (before the playtest 1 ecology fixes) restore with
+/// the fixes off (`Balance::desperate_risk`, `founding_food` at 0), as
+/// those worlds ran, and write back the same bytes.
+#[test]
+fn version_32_snapshots_restore_without_playtest_fixes() {
+    let mut w = fixture_world();
+    w.config.balance.desperate_risk = 1.0;
+    w.config.balance.founding_food = 1.0;
+    w.step();
+    let old = w.snapshot_v32();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 32);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.desperate_risk, r.config.balance.founding_food), (0.0, 0.0));
+    w.config.balance.desperate_risk = 0.0;
+    w.config.balance.founding_food = 0.0;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot_v32() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,
