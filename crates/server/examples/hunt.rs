@@ -24,7 +24,7 @@
 //! wild's; its pack-mates join) and **camping** (the same, and for 20 days
 //! from Late's founding the Hunter migrates its pack to Late's founding
 //! site: the spawn-camping case), with the attack grace on (orders at Late
-//! refused for its first 10 days) and off.
+//! refused for its first `Balance::attack_grace` days, 20 by default) and off.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};

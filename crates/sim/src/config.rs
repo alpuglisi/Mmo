@@ -1197,7 +1197,7 @@ impl Default for Balance {
             crowding_hunger: 0.3,
             pack_hunt: 0.25,
             territory_harass: 1.0,
-            attack_grace: 10.0,
+            attack_grace: 20.0,
         }
     }
 }

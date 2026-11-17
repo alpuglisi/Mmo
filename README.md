@@ -7343,9 +7343,9 @@ off what one defender couldn't. Raising the intruder's threat raises its
 safety need, so it flees. Territories exist only where players claim
 them, so the balance tools don't see this rule.
 
-**Founding grace** (`Balance::attack_grace` 10 days). A player lineage
+**Founding grace** (`Balance::attack_grace` 20 days). A player lineage
 founded into a running world (after tick 0: the world's first players
-have none) can't be the target of attack orders for its first 10 days.
+have none) can't be the target of attack orders for its first 20 days.
 Other players' animals don't hunt it either (`World::grace_spares`, in
 perception and in the strike), while wild predators still do. Each
 lineage's founding tick is saved (`World::lineage_founded`). The first
@@ -7364,7 +7364,7 @@ the order, and the burrow shelter still divides a strike.
 with its wild species. Steady and Herd found the client's starter
 herbivore (40 founders each), Hunter founds playtest 1's pack (40
 founders: carnivory 0.9, pack instinct 0.95), and Late founds the starter
-on day 40. There are four arms. **Passive**: the Hunter's animals hunt on
+on day 40. The table was run with a 10-day grace, the first default. There are four arms. **Passive**: the Hunter's animals hunt on
 their own. **Deliberate**: every 6 ticks with no order standing, the
 Hunter possesses a grown, healthy, hungry hunter and orders it at the
 heaviest animal in sight it may attack (Late's first, then the other
@@ -7377,7 +7377,7 @@ pack onto Late's founding site, with the grace on and off. Four seeds,
 | --- | --- | --- | --- | --- | --- | --- |
 | Passive | 202 (peak 285) | 158 (221) | 236 (238), share 32.7% | 117 (146) | 72.5 | 261 / 2,122 |
 | Deliberate | 207 (294) | 123 (224) | **255 (258)**, share 32.7% | 108 (146) | 69.0 | 336 / 2,127 |
-| Camping, grace on (10 days) | 122 (207) | 82 (167) | 168 (213), share 45.2% | 8 (69), extinct on 1 of 4 | **68.8** | 359 / 2,549 |
+| Camping, grace 10 days | 122 (207) | 82 (167) | 168 (213), share 45.2% | 8 (69), extinct on 1 of 4 | **68.8** | 359 / 2,549 |
 | Camping, grace off | 132 (220) | 136 (190) | 105 (173), share 39.9% | 1 (40), extinct on 2 of 4 | 21.5 | 312 / 1,815 |
 
 Final head counts (peak in brackets) and the mean share of the four
@@ -7396,13 +7396,43 @@ camper (168 at the end against 236 passive), and so do the other
 players' losses along the way, yet it raises the camper's share of the
 four (45% against 33%), so it is still a lever for griefing.
 
-GRACE_TEXT
+The grace length, from camping runs with `--grace` (4 seeds, 120 days):
+
+| Grace | Late at the end (peak) | Late extinct | Late at day 10 | Steady at the end, extinct | Hunter at the end |
+| --- | --- | --- | --- | --- | --- |
+| off | 1 (40) | 2 of 4 | 21.5 | 132, 0 | 105 |
+| 10 days | 8 (69) | 1 of 4 | 68.8 | 122, 0 | 168 |
+| 20 days | 13 (77) | 0 of 4 | 68.8 | 109, 1 of 4 | 212 |
+| 30 days | 19 (96) | 0 of 4 | 68.8 | 110, 1 of 4 | 168 |
+
+The default is now 20 days, the shortest grace measured under which no
+camped newcomer died out. It still leaves a camped newcomer small, and
+the camper's pack then turns on the other players: with a 20- or 30-day
+grace, Steady died out on one seed of four. Longer graces barely change
+the deliberate arm (Hunter 255 at 10 or 20 days, 252 at 30). The grace
+covers only lineages founded after tick 0, so the balance sweep, the
+compare and `predlong` (all founded at tick 0) don't see it. **Open:**
+camping that outlasts the grace is still a griefing lever. Candidates
+are a grace that follows the newcomer's head count (until its first
+litters wean) rather than the calendar, and a cost on predators that
+leave their home range for another player's founding site.
 
 **Checks.**
 
 | Check | Before (`pack_hunt`, `territory_harass`, `attack_grace` 0) | After |
 | --- | --- | --- |
-CHECK_ROWS
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.64 (± 0.31) | 11.76 (± 0.26); every lineage 12 of 12 (at `pack_hunt` 1: 11.60, antelope 60 and herd 225 against 125 and 400) |
+| `compare --seed 101 --adaptive --set pack_hunt=0 --set territory_harass=0 --set attack_grace=0 vs defaults` | | +0.02 (sequential 95% CI −0.14 … +0.17 after 12 seeds: no difference that matters); herd grazers +43 ± 43 head (the CI excludes 0), the rest within noise |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); prey lost | 16/16 (16), 14/16 (14): packs out on seeds 33 and 44; omnivores on seed 48 | 16/16 (16), 14/16 (14): packs out on seeds 44 and 47; omnivores on seed 48 |
+| `predlong`: lowest prey head counts | antelope 26–39, voles 24–89 | antelope 7 (seed 31), 19 (46), 23 (47), else 29–39; voles down to 1 on seed 41 (recovered), else 36–88 |
+| `evo-sim genetics` | | 134 checks: 107 strict passed, 0 failed |
+| client typecheck, `vitest`, build, `npm run e2e` | | pass (421 tests; 14 e2e scripts, with the new `attack`) |
+
+The "before" column is this code with the three tunables at 0. The last
+recorded `predlong` (16/16 pack hunters) was on an earlier merge; with the
+new rules off, today's code also loses packs on two seeds, so the losses
+come from elsewhere. The pack rule shows in the lowest antelope counts:
+a pack now takes larger prey.
 
 ## Genetics validation
 
