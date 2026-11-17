@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { BRAND } from '../style.mjs';
 
 // Deterministic copy used when no ANTHROPIC_API_KEY is configured, or when
@@ -50,7 +51,11 @@ export function templateCopy(platform, story, media) {
     case 'discord':
       return { content: [`**${story.title.replace(/[.!]$/, '')}**`, detail, hasVideo ? 'Clip attached.' : ''].filter(Boolean).join('\n') };
     case 'devlog': {
-      const embeds = media.map((m) => (m.type === 'video' ? `<video src="${m.path}" controls></video>` : `![${m.alt || story.title}](${m.path})`));
+      // Paths relative to the manifest: the absolute path is this machine's business.
+      const embeds = media.map((m) => {
+        const src = m.relPath || path.basename(m.path);
+        return m.type === 'video' ? `<video src="${src}" controls></video>` : `![${m.alt || story.title}](${src})`;
+      });
       return {
         title: story.title.replace(/[.!]$/, ''),
         body: [
