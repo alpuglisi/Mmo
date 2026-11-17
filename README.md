@@ -6930,6 +6930,26 @@ from the fox. Left for a later round: an omnivore design between the two
 (e.g. a smaller size change together with fewer founders, or a different
 diet mix), or a mate-recognition rule beyond the body-plan gap.
 
+**Middle ground** (a further round; genetics first, then `predlong 6` for
+the one that lost no prey there):
+
+| Omnivore design | Genetics (12 years, 4 worlds) | `predlong 6 31–38` | `predlong 6 41–48` |
+| --- | --- | --- | --- |
+| Carnivory 0.4, body size 0.5 | no prey lost; fox 4, pack 3; fox × omnivore hybrids 1,411 in one world; 1 soft warning (east–west gene pools) | | |
+| **Carnivory 0.35, body size 0.5** | no prey lost; fox 3, pack 4; no fox × omnivore hybrids; 1 soft warning | fox 7 (7), pack 7 (7), **no prey lost** (seed-32 voles 57 at their lowest) | fox 6 (6), pack 8 (8), **omnivores lost on seed 48**, voles down to 6 (45) and 23–25 (41, 43) |
+| Body size 0.62, 20 founders | herd grazers lost in one world, antelope in another, omnivores in a third, pack hunters in one; 1 soft warning | | |
+
+None passes, so the round stops here with no default change. The soft
+warning is the genetics harness's east–west check ("within a lineage,
+west and east halves stay one gene pool", expected most): every changed
+omnivore design missed it (21–22 of 31 lineages against 28 of 31 on the
+current defaults), but the lineages that miss it are spread over the
+pack hunters, frogs, voles, newts and omnivores and change from run to run,
+so it reads as run-to-run spread the change happens to tip, not an
+omnivore effect. A mate-recognition rule beyond the body-plan gap (females
+courting only kin, `mating::is_kin`) was not tried: it is a rule change for
+every species, not a design one, and would need its own round.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
