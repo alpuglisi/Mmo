@@ -7278,6 +7278,16 @@ wins one under either rule (its founders starve in late summer, as in the
 playtest). The host's renown still piles up once it is too big for
 reinforcements: more sinks (cosmetics, design slots) remain open.
 
+**Checks.** The soft cap changes the simulation only where a player
+lineage nears the cap, so the balance tools barely see it:
+
+| Check | Before | After |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.75 (± 0.25) | 11.76 (± 0.25) on this change alone; 11.64 (± 0.31) merged with playtest fixes A–D and F |
+| `compare --seed 101 --adaptive --set lineage_crowding=0 vs defaults` (merged) | | +0.00 (sequential 95% CI −0.07 … +0.08 after 12 seeds: no difference) |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); prey lost | 15/16 (13), 16/16 (16); voles on seed 32 | 16/16 (16), 16/16 (15); omnivores on seed 48 (down to 2 before) |
+| `calibrate tournament --worlds 96 --days 90 --seed0 70001` (merged): top thermoregulation × birth class win share | 27.1% (warm live birth) before playtest 1 | 26.0% (warm live birth; warm incubated 25.0%, cold abandoned eggs 16.7%) |
+
 
 ## Genetics validation
 
