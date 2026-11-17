@@ -138,8 +138,14 @@ pub async fn serve(
         tokio::spawn(async move {
             let _slot = slot;
             let _done = done_rx;
-            // hyper's header timer starts only once the protocol is known.
-            if !matches!(tokio::time::timeout(limits.header_timeout, protocol_known(&stream)).await, Ok(Ok(()))) {
+            // hyper's header timer starts only once the protocol is known. A
+            // connection that has sent nothing yet holds no request: a
+            // shutdown closes it at once rather than waiting out the timer.
+            let known = tokio::select! {
+                r = tokio::time::timeout(limits.header_timeout, protocol_known(&stream)) => matches!(r, Ok(Ok(()))),
+                _ = stop_rx.changed() => false,
+            };
+            if !known {
                 return;
             }
             let service = hyper::service::service_fn(move |mut req: Request<Incoming>| {
