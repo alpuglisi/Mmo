@@ -55,6 +55,8 @@
 //!   pattern) in genomes' morphology segment and their tunables
 //!   (`Balance::morph_horns`, `morph_wing_shape`, `morph_pattern`), left out
 //!   while a world snapshot of version 28 or before is read (defaults, off).
+//! - `before_v30`: `Balance::strike_fixes`, left out while a world snapshot
+//!   of version 29 or before is read (0, the old strike).
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1583,6 +1585,55 @@ pub mod before_v29 {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
         if active() {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// `Balance::strike_fixes`, added in world snapshot version 30:
+/// `#[serde(with = "crate::serde_util::before_v30")]`. On a thread holding a
+/// [`before_v30::Guard`] (reading or hashing a snapshot of version 29 or
+/// before) it is neither written nor read and reads as 0: the old strike, as
+/// those worlds ran.
+pub mod before_v30 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// `strike_fixes` before version 30: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
             Ok(OLD_VALUE)
         } else {
             f32::deserialize(d)

@@ -267,7 +267,11 @@ impl World {
                 {
                     self.drink(i);
                 }
-                self.eat_meat(i, 1.0);
+                // A hunter killed in its strike eats nothing
+                // (`Balance::strike_fixes`).
+                if self.organisms[i].alive || self.config.balance.strike_fixes <= 0.0 {
+                    self.eat_meat(i, 1.0);
+                }
             }
             Action::Drink => self.drink(i),
             Action::SeekMate => {
@@ -279,7 +283,8 @@ impl World {
         }
         if !self.organisms[i].alive {
             // A hunter poisoned by its prey (`attack`) lies where it fell,
-            // once its turn is over (it still eats and strikes in it).
+            // once its turn is over (without `Balance::strike_fixes` it
+            // still strikes and eats in it).
             if self.organisms[i].death == Some(DeathCause::Toxin) {
                 self.leave_carrion(i, DeathCause::Toxin);
             }
@@ -736,6 +741,10 @@ impl World {
             }
             if a.health <= 0.0 {
                 self.kill(i, DeathCause::Toxin);
+                // Dead, it strikes no more (`Balance::strike_fixes`).
+                if self.config.balance.strike_fixes > 0.0 {
+                    return;
+                }
             }
         }
 
@@ -779,7 +788,9 @@ impl World {
             if self.config.balance.carcass_scent > 0.0 {
                 self.organisms[i].forage_target = Some(prey_pos);
             }
-            if self.organisms[i].alive {
+            // The hunter eats in its turn (`act`); before
+            // `Balance::strike_fixes` it also ate here, a second helping.
+            if self.organisms[i].alive && self.config.balance.strike_fixes <= 0.0 {
                 self.eat_meat(i, 1.0);
             }
         } else {

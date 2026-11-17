@@ -250,3 +250,70 @@ fn carnivore_rules_are_deterministic_and_resume_from_snapshots() {
     assert_eq!(a, b, "thread count changed the run");
     assert_eq!(a, ra, "the restored world went another way");
 }
+
+/// A hunter on a sure strike (no escape, overwhelming power) at prey `prey`
+/// next to it, ready to strike; `strike_fixes` as given.
+fn sure_strike(fixes: f32, hunter_health: f32, toxic: bool) -> (World, usize, usize) {
+    let mut w = niche(9);
+    (w.config.balance.escape, w.config.balance.attack_power) = (0.0, 1e3);
+    w.config.balance.fight_damage = 0.0;
+    w.config.balance.strike_fixes = fixes;
+    let h = adults(&mut w, Sex::Male, 1, &[])[0];
+    let prey = (0..w.organisms.len()).find(|&i| w.organisms[i].lineage == 0 && w.organisms[i].matured).unwrap();
+    clear_area(&mut w, &[h, prey]);
+    let at = Vec2::new(20.5, 20.5);
+    (w.organisms[h].pos, w.organisms[h].health, w.organisms[h].needs.hunger) = (at, hunter_health, 80.0);
+    w.organisms[prey].pos = at + Vec2::new(0.3, 0.0);
+    if toxic {
+        w.organisms[prey].pheno.0[Gene::Toxins.index()] = 0.9;
+    }
+    (w, h, prey)
+}
+
+fn strike(w: &mut World, h: usize, prey: usize) {
+    let at = w.organisms[prey].pos;
+    let intent = Intent { action: Action::Hunt, target: Some(at), target_org: Some(prey), ..Intent::idle() };
+    let mut rng = rng_for(9, stream::APPLY, 0, 0);
+    w.apply(h, &intent, &mut rng);
+}
+
+/// A hunter killed by its prey's toxins does nothing more in its turn: it
+/// neither brings the prey down nor eats (`Balance::strike_fixes`; before,
+/// the dead hunter's strike went on).
+#[test]
+fn a_poisoned_hunter_strikes_no_more() {
+    let kills = |fixes: f32| {
+        (0..12u64)
+            .filter(|&k| {
+                let (mut w, h, prey) = sure_strike(fixes, 0.01, true);
+                let at = w.organisms[prey].pos;
+                let intent =
+                    Intent { action: Action::Hunt, target: Some(at), target_org: Some(prey), ..Intent::idle() };
+                let mut rng = rng_for(k, stream::APPLY, 0, 0);
+                w.apply(h, &intent, &mut rng);
+                assert_eq!(w.organisms[h].death, Some(DeathCause::Toxin));
+                !w.organisms[prey].alive
+            })
+            .count()
+    };
+    assert_eq!(kills(1.0), 0);
+    assert!(kills(0.0) > 0, "the old strike went on after the hunter died");
+}
+
+/// A kill is eaten once in the hunter's turn: at most one helping (the
+/// most a tick allows), not one at the kill and another after
+/// (`Balance::strike_fixes`).
+#[test]
+fn a_kill_is_eaten_once() {
+    let helping = super::apply::MAX_INTAKE_PER_DAY / 48.0;
+    let ate = |fixes: f32| {
+        let (mut w, h, prey) = sure_strike(fixes, 100.0, false);
+        let before = w.organisms[h].needs.hunger;
+        strike(&mut w, h, prey);
+        assert!(!w.organisms[prey].alive);
+        before - w.organisms[h].needs.hunger
+    };
+    let (new, old) = (ate(1.0), ate(0.0));
+    assert!(new > 0.5 * helping && new <= 1.01 * helping, "one helping: {new} of {helping}");
+    assert!(old > 1.2 * new, "the old strike ate twice: {old} against {new}");
+}
