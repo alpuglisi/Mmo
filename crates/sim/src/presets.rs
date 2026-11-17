@@ -30,6 +30,103 @@ pub fn niche_world(config: WorldConfig, scale: u32) -> World {
     standard_world_from(config, scale, niche_wild_designs(), niche_player_designs())
 }
 
+/// Changes to the sample designs (`evo-sim ... --design SPEC`): gene values
+/// and founder counts per lineage over [`wild_designs`] and
+/// [`player_designs`], to try design variants against the standard world.
+/// The default changes nothing. A SPEC is comma-separated
+/// `LINEAGE.GENE=V` or `LINEAGE.founders=N`: the lineage by its name with
+/// spaces as underscores, case ignored (`red_fox`, `pack_hunters`), or
+/// `fox` / `pack` for the two predators; the gene by its label with spaces
+/// as underscores (`carnivory`, `body_size`, `group_tolerance`). A founder
+/// count other than the design's skips the point budget check.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DesignTweaks {
+    /// `(lineage name, gene, value)`.
+    pub genes: Vec<(String, Gene, f32)>,
+    /// `(lineage name, founders)`.
+    pub founders: Vec<(String, u32)>,
+}
+
+impl DesignTweaks {
+    /// Parse a SPEC (see [`DesignTweaks`]).
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let mut t = DesignTweaks::default();
+        let names: Vec<String> = wild_designs()
+            .into_iter()
+            .map(|(_, d)| d.name)
+            .chain(player_designs().into_iter().map(|d| d.name))
+            .collect();
+        for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (key, v) = part.split_once('=').ok_or_else(|| format!("{part}: expected LINEAGE.GENE=V"))?;
+            let (lineage, gene) =
+                key.trim().split_once('.').ok_or_else(|| format!("{part}: expected LINEAGE.GENE=V"))?;
+            let lineage = match lineage.to_lowercase().as_str() {
+                "fox" => "red fox".to_string(),
+                "pack" => "pack hunters".to_string(),
+                other => other.replace('_', " "),
+            };
+            let name = names
+                .iter()
+                .find(|n| n.to_lowercase() == lineage)
+                .ok_or_else(|| format!("{part}: no sample design named {lineage}"))?
+                .clone();
+            let v: f32 = v.trim().parse().map_err(|_| format!("{part}: not a number"))?;
+            if gene == "founders" {
+                t.founders.push((name, v.max(2.0).round() as u32));
+            } else {
+                let g = Gene::ALL
+                    .iter()
+                    .copied()
+                    .find(|g| g.label().replace(' ', "_") == gene)
+                    .ok_or_else(|| format!("{part}: unknown gene {gene} (spaces as underscores)"))?;
+                t.genes.push((name, g, v.clamp(0.0, 1.0)));
+            }
+        }
+        Ok(t)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.genes.is_empty() && self.founders.is_empty()
+    }
+
+    /// `design` with the changes that name it.
+    pub fn apply(&self, design: FounderDesign) -> FounderDesign {
+        let mut d = design;
+        for (n, g, v) in &self.genes {
+            if *n == d.name {
+                d = d.with(*g, *v);
+            }
+        }
+        for (n, f) in &self.founders {
+            if *n == d.name {
+                d = d.founders(*f);
+            }
+        }
+        d
+    }
+}
+
+/// [`standard_world`] with the sample designs changed as `tweaks` says (the
+/// default: exactly [`standard_world`]).
+pub fn standard_world_tweaked(config: WorldConfig, scale: u32, tweaks: &DesignTweaks) -> World {
+    if tweaks.is_empty() {
+        return standard_world(config, scale);
+    }
+    let wild = wild_designs().into_iter().map(|(o, d)| (o, tweaks.apply(d))).collect();
+    let players: Vec<FounderDesign> = player_designs().into_iter().map(|d| tweaks.apply(d)).collect();
+    let mut world = wild_world_from(config, scale, wild);
+    for (k, design) in players.into_iter().enumerate() {
+        let owner = k as PlayerId + 1;
+        let n = if scale <= 1 { design.founders } else { (design.founders * scale).max(4) };
+        if scale <= 1 && design.validate().is_ok() {
+            world.found_lineage(owner, &design).expect("validated");
+        } else {
+            world.found_lineage_unchecked(owner, &design.founders(n));
+        }
+    }
+    world
+}
+
 /// How [`niche_world_with`] founds the niche world: founder counts and the
 /// founders' starting state (*First-year prey boom: founding* in the
 /// README). The default founds exactly as [`niche_world`]. Predators are the
@@ -269,6 +366,10 @@ fn wild_world_with(
     world
 }
 
+/// The standard red fox's carnivory (0.85 before; *The fox in its own
+/// niche* in the README).
+pub const FOX_CARNIVORY: f32 = 0.6;
+
 /// The wild ecosystem. Founded without the point budget.
 pub fn wild_designs() -> Vec<(PlayerId, FounderDesign)> {
     use Gene::*;
@@ -320,7 +421,13 @@ pub fn wild_designs() -> Vec<(PlayerId, FounderDesign)> {
             WILD,
             FounderDesign::new("Red fox", Thermo::Warm, BirthType::Live, 4)
                 .with(BodySize, 0.32)
-                .with(Carnivory, 0.85)
+                // A flexible hunter that eats fruit, insects and plants
+                // too, a full body-plan gap (`mating::BODY_PLAN_STERILE`,
+                // 0.3) below the pack hunters' 0.9, so the two don't
+                // interbreed (*The fox in its own niche* in the README). At
+                // 0.85 they were one step apart and the fox took on the pack
+                // hunters' genes; at 0.55 it died out more often.
+                .with(Carnivory, FOX_CARNIVORY)
                 .with(LegLength, 0.5)
                 .with(Nose, 0.6)
                 .with(Ears, 0.5)
@@ -562,6 +669,27 @@ mod tests {
         let ((n0, far0), (n1, far1)) = (spread(&base), spread(&pairs));
         assert_eq!(n0, n1);
         assert!(far0 < 15.0 && far1 > 30.0, "pack spread {far0:.1} as designed, {far1:.1} in pairs");
+    }
+
+    /// The standard fox and pack hunters are a full body-plan gap apart, so
+    /// they can't interbreed (`mating::body_plan_fertility` nil between
+    /// their designs).
+    #[test]
+    fn standard_predators_cannot_interbreed() {
+        let fox = wild_designs().into_iter().map(|(_, d)| d).find(|d| d.name == "Red fox").unwrap();
+        let pack = player_designs().into_iter().find(|d| d.name == "Pack hunters").unwrap();
+        let gap = (fox.get(Gene::Carnivory) - pack.get(Gene::Carnivory)).abs();
+        assert!(gap >= crate::mating::BODY_PLAN_STERILE - 1e-6, "carnivory gap {gap}");
+        let genome = |d: &FounderDesign| {
+            crate::genome::Genome::founder_with_morph(
+                &d.values(),
+                &d.morph,
+                0,
+                0.0,
+                &mut crate::rng::rng_for(1, 1, 1, 1),
+            )
+        };
+        assert!(crate::mating::body_plan_fertility(&genome(&fox), &genome(&pack)) < 1e-5);
     }
 
     /// Foxes hunt alone: none of them carries cooperative hunting, so they

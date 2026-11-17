@@ -6803,6 +6803,79 @@ new defaults. `evo-sim ... --classic` (and `genetics --classic`,
 sweep's score, the days each lineage spent at its cap, each lineage's peak
 and final count and the predators on days 15, 30 and 60.
 
+### The fox in its own niche
+
+*Food by its value* left two predator problems with the standard designs:
+the red fox (carnivory 0.85) and the pack hunters (0.9) were one body-plan
+step apart, so they interbred (400–4,700 hybrid births per genetics world)
+and the fox took on the pack hunters' genes (group tolerance and pack
+instinct up by about 0.5 over 6 years); and the fox was the fragile
+predator (5 of 8 on fresh seeds 41–48, 2 of 4 genetics worlds). The niche
+designs fix both but cost about 0.4 on the fresh-seed 120-day score.
+
+**The change: the standard fox's carnivory goes from 0.85 to 0.6**
+(`presets::FOX_CARNIVORY`), everything else as before. That is a full
+body-plan gap (`mating::BODY_PLAN_STERILE`, 0.3) below the pack hunters,
+and at 0.6 the fox digests all of the fruit and invertebrates it eats
+(`stats::fruit_efficiency`, `insect_efficiency`; 42% of each at 0.85): a flexible
+mesopredator, as the niche fox was meant to be, without the niche pack
+hunters or the founding boost. The designs are only read when a world is
+founded, so saves keep their foxes and no snapshot change is needed; the
+old fox is `--design fox.carnivory=0.85`.
+
+**`--design SPEC`** (new, `presets::DesignTweaks`; `evo-sim run|sweep|compare`,
+`genetics`, `predlong`) changes the sample designs for an experiment:
+comma-separated `LINEAGE.GENE=V` or `LINEAGE.founders=N`, e.g. `--design
+fox.carnivory=0.6,pack.carnivory=0.95`; in a compare, `--design` before
+`vs` is side A and after it side B, so a design can be compared against
+the defaults on paired seeds (the niche options apply to both sides).
+
+**Screened** (120-day sweep, 12 seeds from 31 / from 101; defaults 11.71 /
+11.76):
+
+| Variant | Sweep | Note |
+| --- | --- | --- |
+| **Fox carnivory 0.6** | **11.77 / 11.74** | fox 12/12, twice the foxes (126 mean alive against 56) |
+| Fox 0.6, fangs 0.3 | 11.83 / — | 6 years on 41–48: fox 6 of 8, omnivores lost on 48 |
+| Fox 0.55 | 11.55 / 11.62 | no fox × pack hybrids at all in genetics (1 in 4 worlds), but 6 years: fox 5 of 8 on both seed sets |
+| Fox 0.5 | 11.08 / 11.32 | genetics: fox 2 of 4 |
+| Fox 0.65, pack 0.95 | 11.47 | |
+| Niche fox genes (0.65, fangs 0.3, fat 0.5, aggression 0.7), pack 0.95 / pack as is | 11.60 / 11.52 | |
+| Fox 0.7, pack 1.0 | 11.53 | |
+| `--niches` (no founding boost) / `--founding predators=1.5,predator_fat=40` / `predators=2` | 11.33 / 11.52 / 11.84 | |
+| Fox 0.6 with mate-size tolerance 0.15 | | genetics: 858 and 4,274 hybrids in two worlds: the preference doesn't hold |
+
+**Acceptance** (current main = the defaults before this change, rerun on
+this code with `--design fox.carnivory=0.85`; identical to the numbers in
+*Food by its value*):
+
+| Check | Bar | Fox 0.6 (new default) | Current main |
+| --- | --- | --- | --- |
+| `predlong 6 31–38`: fox survived (viable) | ≥ 6 of 8 | **8 (8)** | 7 (7) |
+| same: pack hunters | | 6 (6) (lost on 33 in the founding year, day 54; on 37 on day 456) | 8 (8) |
+| same: prey lost | no worse | **none** (voles down to 3 on seed 32) | voles on seed 32 |
+| `predlong 6 41–48`: fox | ≥ 6 of 8 | **7 (7)** | 5 (5) |
+| same: pack hunters | | 7 (7) | 8 (8) |
+| same: prey lost | no worse | **none** (voles down to 16, omnivores to 4 on seed 48) | omnivores on seed 48 |
+| `genetics --long --level ecology`: fox | ≥ 3 of 4 | **4 of 4** (143–197) | 2 of 4 |
+| same: pack hunters, prey, checks | | 3 of 4; no prey lost; 7 of 7 strict, 9 of 9 soft | 2 of 4 |
+| `compare --seed 101 --size 96 --adaptive --design fox.carnivory=0.6 vs` | no significant loss | **−0.11** (sequential 95% CI −0.27 … +0.06 after 36 seeds: no difference that matters); foxes +64 ± 20 alive, every lineage 100% on both sides | |
+| `sweep --seed 31` | | 11.77 | 11.71 |
+
+**Interbreeding: much less, not none.** In genetics the fox and pack
+hunters stay apart in two worlds (no hybrids listed) and in a third (34
+hybrids, fertility 0.08 → 0.002), but in one world the founders' spread
+(±0.05 per allele) leaves a few pairs partly fertile (0.17 at founding)
+and the two gene pools converge (2,186 hybrids, fertility → 0.97). Over 6
+years the fox's group tolerance and pack instinct rise by +0.29 and +0.36
+(31–38) against +0.57 and +0.57 for the old fox. The fox at 0.6 can now
+also cross with the burrowing omnivores (carnivory 0.5) where their birth
+modes' gap (live 0.85 against incubated eggs 0.5) erodes: 200–1,386 such
+hybrids in three worlds, fertility mostly falling. Fox 0.55 closes the
+pack gap completely but the fox then survives 6 years on only 5 of 8 seeds
+in both sets; a fox further from the pack hunters in carnivory is a weaker
+fox in these rules, so 0.6 is the trade.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

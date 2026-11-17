@@ -309,7 +309,7 @@ evo-sim genetics — statistical validation of the population genetics
 USAGE:
     evo-sim genetics [--long] [--level genome|ecology|all] [--out DIR] [--seed N]
                      [--years N] [--size N] [--seeds N] [--sample-days N] [--meat] [--food]
-                     [--classic] [--niches] [--founding SPEC]
+                     [--classic] [--niches] [--founding SPEC] [--design SPEC]
 
     --long          Large replicate counts (minutes); default is the quick CI-sized run
     --level L       genome (Wright–Fisher on the real genome code), ecology (full worlds)
@@ -330,6 +330,8 @@ USAGE:
     --niches        Ecology: the predators in their niches
     --founding SPEC Ecology: found the niche world as SPEC says (implies --niches;
                     `presets::NicheFounding`, as for `evo-sim sweep --founding`)
+    --design SPEC   Ecology: change the standard designs (`presets::DesignTweaks`, as for
+                    `evo-sim sweep --design`)
     --only NAME     Genome level: only the check groups whose name contains NAME
                     (neutral drift, mutation-drift equilibrium, morphology step mutation,
                     mutation rates, dominance, additive inheritance, recessive load,
@@ -348,6 +350,7 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
     let mut balance = evo_sim::Balance::default();
     let mut niches = false;
     let mut founding = evo_sim::presets::NicheFounding::default();
+    let mut designs = evo_sim::presets::DesignTweaks::default();
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         let mut value = || it.next().cloned().ok_or(format!("{flag} needs a value"));
@@ -370,6 +373,11 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             "--food" => balance = balance.food_values(),
             "--classic" => balance = balance.carnivore_diet_off().food_values_off(),
             "--niches" => niches = true,
+            "--design" => {
+                let t = evo_sim::presets::DesignTweaks::parse(&value()?).map_err(|e| format!("--design: {e}"))?;
+                designs.genes.extend(t.genes);
+                designs.founders.extend(t.founders);
+            }
             "--founding" => {
                 founding = evo_sim::presets::NicheFounding::parse(&value()?).map_err(|e| format!("--founding: {e}"))?;
                 niches = true;
@@ -403,6 +411,7 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             balance,
             niches,
             founding,
+            designs,
         },
     })
 }

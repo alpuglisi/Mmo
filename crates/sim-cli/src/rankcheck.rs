@@ -227,7 +227,13 @@ fn simulate(args: &RankCheckArgs) -> Data {
             )
         },
         |(k, s)| {
-            let mut run = ScoredRun::new(balances[k], args.base_seed + s, args.size, args.parallel_apply, None);
+            let mut run = ScoredRun::new(
+                balances[k],
+                args.base_seed + s,
+                args.size,
+                args.parallel_apply,
+                &crate::sweep::Founding::default(),
+            );
             Scores(
                 checkpoints
                     .iter()

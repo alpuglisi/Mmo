@@ -1,4 +1,4 @@
-//! Predators over the years: `cargo run --release --example predlong -- [years] [seeds..] [--every DAYS] [--set NAME=V] [--off] [--meat] [--meat-only] [--founding SPEC]`.
+//! Predators over the years: `cargo run --release --example predlong -- [years] [seeds..] [--every DAYS] [--set NAME=V] [--off] [--meat] [--meat-only] [--founding SPEC] [--design SPEC]`.
 //!
 //! Across machines: add `--shard i/n` (and optionally `--shard-out FILE`) on
 //! machine i of n to run every n-th seed and write its results to
@@ -30,7 +30,8 @@
 //! and the end (with their mean drift over the surviving seeds), to see
 //! whether selection acts on them. `--founding SPEC` founds the niche world
 //! as `presets::NicheFounding::parse(SPEC)` says (implies `--meat`; *First-year
-//! prey boom: founding*). Read only: the diagnosis of
+//! prey boom: founding*); `--design SPEC` changes the standard designs
+//! (`presets::DesignTweaks`). Read only: the diagnosis of
 //! *Predators over the years* (README, Balance).
 
 use std::collections::BTreeMap;
@@ -139,6 +140,8 @@ struct Opts {
     years: u32,
     seeds: Vec<u64>,
     founding: presets::NicheFounding,
+    /// Changes to the standard designs (`--design`).
+    designs: presets::DesignTweaks,
 }
 
 fn parse(argv: &[String]) -> Opts {
@@ -147,6 +150,7 @@ fn parse(argv: &[String]) -> Opts {
     let mut every = 60u32;
     let mut niches = false;
     let mut founding = presets::NicheFounding::default();
+    let mut designs = presets::DesignTweaks::default();
     let mut args = argv.iter().cloned();
     while let Some(a) = args.next() {
         if a == "--set" {
@@ -158,6 +162,10 @@ fn parse(argv: &[String]) -> Opts {
         } else if a == "--meat" {
             balance = balance.carnivore_diet();
             niches = true;
+        } else if a == "--design" {
+            let t = presets::DesignTweaks::parse(&args.next().expect("--design SPEC")).expect("design spec");
+            designs.genes.extend(t.genes);
+            designs.founders.extend(t.founders);
         } else if a == "--founding" {
             founding = presets::NicheFounding::parse(&args.next().expect("--founding SPEC")).expect("founding spec");
             balance = balance.carnivore_diet();
@@ -179,7 +187,7 @@ fn parse(argv: &[String]) -> Opts {
     let years: u32 = pos.first().and_then(|s| s.parse().ok()).unwrap_or(3);
     let seeds: Vec<u64> =
         if pos.len() > 1 { pos[1..].iter().map(|s| s.parse().unwrap()).collect() } else { (31..=34).collect() };
-    Opts { balance, every, niches, years, seeds, founding }
+    Opts { balance, every, niches, years, seeds, founding, designs }
 }
 
 fn seed_key(seed: u64) -> String {
@@ -270,7 +278,7 @@ fn run_seed(opts: &Opts, seed: u64) -> SeedResult {
     let mut w = if opts.niches {
         presets::niche_world_with(config, 1, &opts.founding)
     } else {
-        presets::standard_world(config, 1)
+        presets::standard_world_tweaked(config, 1, &opts.designs)
     };
     let genes0 = [gene_means(&w, 3), gene_means(&w, 4)];
     let mut prey_min = [usize::MAX; 6];

@@ -41,14 +41,29 @@ pub static FOUNDING: std::sync::OnceLock<presets::NicheFounding> = std::sync::On
 /// The world every command founds: the standard world, or with
 /// [`NICHES`] the niche designs (founded as [`FOUNDING`] says), plus the
 /// migrating lineage if given.
-pub(crate) fn found_world(config: WorldConfig, scale: u32, migrants: Option<&FounderDesign>) -> World {
-    match migrants {
+pub(crate) fn found_world(config: WorldConfig, scale: u32, founding: &Founding) -> World {
+    assert!(
+        founding.designs.is_empty()
+            || (founding.migrants.is_none() && !NICHES.load(std::sync::atomic::Ordering::Relaxed)),
+        "--design applies to the standard world only (not with --niches, --founding or --migrants)"
+    );
+    match founding.migrants.as_ref() {
         Some(d) => presets::extended_world_with(config, scale, d),
         None if NICHES.load(std::sync::atomic::Ordering::Relaxed) => {
             presets::niche_world_with(config, scale, FOUNDING.get_or_init(Default::default))
         }
-        None => presets::standard_world(config, scale),
+        None => presets::standard_world_tweaked(config, scale, &founding.designs),
     }
+}
+
+/// What a scored world founds besides its balance: the extra migrating
+/// lineage (`--migrants`, `--migrant-gene`) and changes to the sample
+/// designs (`--design`, `presets::DesignTweaks`). The default founds the
+/// standard world (or the niche world with [`NICHES`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Founding {
+    pub migrants: Option<FounderDesign>,
+    pub designs: presets::DesignTweaks,
 }
 
 pub struct SweepArgs {
@@ -74,6 +89,8 @@ pub struct SweepArgs {
     /// Found the extra migrating lineage too (`presets::extended_world`). It
     /// is reported but not scored, so scores keep their 12-point scale.
     pub migrants: bool,
+    /// Changes to the sample designs (`--design`).
+    pub designs: presets::DesignTweaks,
 }
 
 /// Outcome of one world run.
@@ -137,17 +154,11 @@ pub struct ScoredRun {
 }
 
 impl ScoredRun {
-    /// `migrants`: the extra fifth player lineage to found, if any (the
-    /// migrating caribou, or a variant of it).
-    pub fn new(
-        balance: Balance,
-        seed: u64,
-        size: usize,
-        parallel_apply: bool,
-        migrants: Option<&FounderDesign>,
-    ) -> ScoredRun {
+    /// `founding`: the extra fifth player lineage to found, if any (the
+    /// migrating caribou, or a variant of it), and design changes.
+    pub fn new(balance: Balance, seed: u64, size: usize, parallel_apply: bool, founding: &Founding) -> ScoredRun {
         let config = WorldConfig { seed, width: size, height: size, balance, parallel_apply, ..Default::default() };
-        let world = found_world(config, 1, migrants);
+        let world = found_world(config, 1, founding);
         let n = world.lineages.len();
         ScoredRun { world, extinct_day: vec![None; n], capped_days: 0, pop_sum: 0.0, days_run: 0, collapsed: false }
     }
@@ -253,15 +264,20 @@ pub(crate) fn run_key(
     size: usize,
     days: u32,
     parallel_apply: bool,
-    migrants: Option<&FounderDesign>,
+    founding: &Founding,
     offline: &[PlayerId],
 ) -> String {
+    let designs = if founding.designs.is_empty() {
+        String::new()
+    } else {
+        format!(" designs={}", jobs::digest(&founding.designs))
+    };
     format!(
         "run balance={} seed={seed} size={size} days={days} parallel_apply={parallel_apply} niches={} migrants={} \
-         offline={offline:?}",
+         offline={offline:?}{designs}",
         jobs::digest(balance),
         NICHES.load(std::sync::atomic::Ordering::Relaxed),
-        migrants.map_or("none".to_string(), jobs::digest),
+        founding.migrants.as_ref().map_or("none".to_string(), jobs::digest),
     )
 }
 
@@ -271,10 +287,10 @@ pub fn run_one(
     size: usize,
     days: u32,
     parallel_apply: bool,
-    migrants: Option<&FounderDesign>,
+    founding: &Founding,
     offline: &[PlayerId],
 ) -> RunMetrics {
-    let mut run = ScoredRun::new(balance, seed, size, parallel_apply, migrants);
+    let mut run = ScoredRun::new(balance, seed, size, parallel_apply, founding);
     run.go_offline(offline);
     run.advance_to(days);
     run.metrics(days)
@@ -397,7 +413,7 @@ pub fn sweep(args: &SweepArgs) {
     let mut csv = String::new();
     let mut all: Vec<Trial> = Vec::new();
     let lineage_names = lineage_names(args.migrants);
-    let migrant = args.migrants.then(presets::migrant_design);
+    let founding = Founding { migrants: args.migrants.then(presets::migrant_design), designs: args.designs.clone() };
     let stages = stages(args);
 
     println!(
@@ -444,25 +460,11 @@ pub fn sweep(args: &SweepArgs) {
             let results: Vec<(usize, u64, RunMetrics, Option<ScoredRun>)> = jobs::run_with(
                 jobs,
                 |&(k, s, _)| {
-                    run_key(
-                        &balances[k],
-                        args.base_seed + s,
-                        args.size,
-                        days,
-                        args.parallel_apply,
-                        migrant.as_ref(),
-                        &[],
-                    )
+                    run_key(&balances[k], args.base_seed + s, args.size, days, args.parallel_apply, &founding, &[])
                 },
                 |(k, s, run)| {
                     let mut run = run.unwrap_or_else(|| {
-                        ScoredRun::new(
-                            balances[k],
-                            args.base_seed + s,
-                            args.size,
-                            args.parallel_apply,
-                            migrant.as_ref(),
-                        )
+                        ScoredRun::new(balances[k], args.base_seed + s, args.size, args.parallel_apply, &founding)
                     });
                     run.advance_to(days);
                     (run.metrics(days), if last { None } else { Some(run) })
@@ -777,6 +779,9 @@ pub struct CompareArgs {
     /// (`--migrant-gene`, which implies `migrants`): e.g. the caribou with
     /// migration 0 against the preset, to measure what a gene buys a design.
     pub migrant_genes: [Vec<(Gene, f32)>; 2],
+    /// Changes to the sample designs on side A and side B (`--design`
+    /// before and after `vs`).
+    pub designs: [presets::DesignTweaks; 2],
     /// Players whose owners are away for the whole run on both sides
     /// (`--offline-owner`, [`ScoredRun::go_offline`]).
     pub offline: Vec<PlayerId>,
@@ -801,6 +806,13 @@ fn label(b: &Balance) -> String {
     }
 }
 
+/// Label of design changes (`--design`).
+fn design_label(t: &presets::DesignTweaks) -> String {
+    let genes = t.genes.iter().map(|(n, g, v)| format!(" {}.{}={v}", short(n), g.label().replace(' ', "_")));
+    let founders = t.founders.iter().map(|(n, f)| format!(" {}.founders={f}", short(n)));
+    genes.chain(founders).collect()
+}
+
 /// Label of a migrating-lineage gene override (`--migrant-gene`).
 fn gene_label(genes: &[(Gene, f32)]) -> String {
     genes.iter().map(|(g, v)| format!(" caribou {}={v}", g.label().replace(' ', "_"))).collect()
@@ -811,11 +823,15 @@ fn gene_label(genes: &[(Gene, f32)]) -> String {
 pub fn compare(args: &CompareArgs) -> Summary {
     let migrants = args.migrants || args.migrant_genes.iter().any(|g| !g.is_empty());
     let names = lineage_names(migrants);
-    let migrant: [Option<FounderDesign>; 2] = std::array::from_fn(|c| {
-        migrants.then(|| args.migrant_genes[c].iter().fold(presets::migrant_design(), |d, &(g, v)| d.with(g, v)))
+    let founding: [Founding; 2] = std::array::from_fn(|c| Founding {
+        migrants: migrants
+            .then(|| args.migrant_genes[c].iter().fold(presets::migrant_design(), |d, &(g, v)| d.with(g, v))),
+        designs: args.designs[c].clone(),
     });
-    let (la, lb) =
-        (label(&args.a) + &gene_label(&args.migrant_genes[0]), label(&args.b) + &gene_label(&args.migrant_genes[1]));
+    let (la, lb) = (
+        label(&args.a) + &gene_label(&args.migrant_genes[0]) + &design_label(&args.designs[0]),
+        label(&args.b) + &gene_label(&args.migrant_genes[1]) + &design_label(&args.designs[1]),
+    );
     let seed_range = match &args.adaptive {
         Some(ad) => format!(
             "seeds from {} in looks of {} (adaptive)",
@@ -855,7 +871,7 @@ pub fn compare(args: &CompareArgs) -> Summary {
                     args.size,
                     args.days,
                     args.parallel_apply,
-                    migrant[c].as_ref(),
+                    &founding[c],
                     &args.offline,
                 )
             },
@@ -867,7 +883,7 @@ pub fn compare(args: &CompareArgs) -> Summary {
                     args.size,
                     args.days,
                     args.parallel_apply,
-                    migrant[c].as_ref(),
+                    &founding[c],
                     &args.offline,
                 )
             },
@@ -1054,8 +1070,8 @@ mod tests {
     #[test]
     fn resumed_runs_match_straight_runs() {
         let b = Balance::default();
-        let straight = run_one(b, 5, 48, 6, true, None, &[]);
-        let mut run = ScoredRun::new(b, 5, 48, true, None);
+        let straight = run_one(b, 5, 48, 6, true, &Founding::default(), &[]);
+        let mut run = ScoredRun::new(b, 5, 48, true, &Founding::default());
         run.advance_to(2);
         let early = run.metrics(2);
         assert_eq!(early.days, 2);
@@ -1092,6 +1108,7 @@ mod tests {
             screen_seeds: Some(4),
             eta: 3.0,
             migrants: false,
+            designs: Default::default(),
         };
         assert_eq!(stages(&args), vec![(30, 4), (60, 4), (120, 12)]);
         assert_eq!(stages(&SweepArgs { screen_days: Vec::new(), ..args }), vec![(120, 12)]);
