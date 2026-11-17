@@ -758,6 +758,10 @@ export interface WorldSummary {
   /** Organisms simulated as agents. */
   agents: number;
   lineages: number;
+  /** Whole days until winter, 0 during winter (absent from older servers). */
+  days_to_winter?: number;
+  /** A lineage founded now starts fed with full fat reserves (winter provision). */
+  winter_provision?: boolean;
 }
 
 /**

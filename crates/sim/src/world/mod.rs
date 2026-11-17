@@ -632,6 +632,29 @@ impl World {
         Season::from_day(self.day_of_year(), self.config.days_per_year)
     }
 
+    /// Whole days until winter starts (`Season::from_day`); 0 during winter.
+    pub fn days_until_winter(&self) -> u32 {
+        let year = self.config.days_per_year.max(1);
+        // The first day of the year that `Season::from_day` calls winter.
+        let start = (3 * year).div_ceil(4);
+        start.saturating_sub(self.day_of_year())
+    }
+
+    /// Founders arriving just before (or in) winter start provisioned: not
+    /// hungry, with their fat reserve full (`fat_capacity`, larger with the
+    /// fat stores gene). Deterministic: no randomness.
+    pub fn provision_for_winter(&mut self, ids: &[OrgId]) {
+        for &id in ids {
+            let Some(&i) = self.index.get(&id) else { continue };
+            let cap = self.fat_capacity(&self.organisms[i]);
+            let o = &mut self.organisms[i];
+            if o.alive {
+                o.needs.hunger = 0.0;
+                o.fat = o.fat.max(cap);
+            }
+        }
+    }
+
     pub fn is_daytime(&self) -> bool {
         (6..19).contains(&self.hour())
     }
@@ -1275,5 +1298,31 @@ mod tests {
                 assert!(nearest > 8.0, "seed {seed}: {} founded {nearest:.1} tiles from a predator", lineage.name);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod winter_tests {
+    use super::*;
+
+    #[test]
+    fn days_until_winter_counts_down_to_the_first_winter_day() {
+        let mut w =
+            World::new(WorldConfig { seed: 1, width: 32, height: 32, days_per_year: 120, ..Default::default() });
+        let tpd = w.config.ticks_per_day as u64;
+        let at = |w: &mut World, day: u64| {
+            w.tick = day * tpd;
+            (w.days_until_winter(), w.season())
+        };
+        assert_eq!(at(&mut w, 0), (90, Season::Spring));
+        assert_eq!(at(&mut w, 89), (1, Season::Autumn));
+        assert_eq!(at(&mut w, 90), (0, Season::Winter));
+        assert_eq!(at(&mut w, 119), (0, Season::Winter));
+        assert_eq!(at(&mut w, 120), (90, Season::Spring));
+        // A year whose length is not a multiple of four: winter starts on the first day `Season::from_day` names.
+        w.config.days_per_year = 10;
+        let first = (0..10).find(|&d| Season::from_day(d, 10) == Season::Winter).unwrap() as u64;
+        assert_eq!(at(&mut w, first - 1).0, 1);
+        assert_eq!(at(&mut w, first).0, 0);
     }
 }

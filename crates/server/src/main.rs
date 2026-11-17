@@ -3,7 +3,7 @@
 //! ```text
 //! evo-server [--bind ADDR] [--data DIR | --memory | --database-url URL] [--size N] [--seed N]
 //!            [--no-wild] [--days-per-year N] [--tick-ms MS] [--state-ms MS] [--fast] [--static DIR]
-//!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes]
+//!            [--session-idle-min N] [--session-max-hours N] [--no-rate-limits] [--lod] [--no-catastrophes] [--no-winter-provision]
 //!            [--season-days N] [--offline-protection-hours H] [--home-range-hours H] [--fresh] [--world ID[,seed=N][,size=N][,capacity=N][,name=TEXT]]... [--worlds-file FILE] [--ws-compression context|message|off]
 //!            [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:...] [--push-per-hour N]
 //!            [--push-allow-any-endpoint] [--fcm-service-account FILE] [--apns-key FILE --apns-key-id ID
@@ -63,7 +63,7 @@ use evo_server::{start, ServerConfig};
 const USAGE: &str =
     "usage: evo-server [--bind 127.0.0.1:8080] [--data DIR | --memory | --database-url URL] [--size 128] [--seed 1] \
 [--no-wild] [--days-per-year 120] [--tick-ms 1000] [--state-ms 1000] [--fast] [--static client/dist] \
-[--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] \
+[--session-idle-min 60] [--session-max-hours 24] [--no-rate-limits] [--lod] [--no-catastrophes] [--no-winter-provision] \
 [--season-days 60] [--offline-protection-hours 12] [--home-range-hours 12] [--fresh] [--world ID[,seed=N][,size=N][,capacity=N][,name=TEXT]]... [--worlds-file FILE] [--ws-compression context|message|off] \
 [--no-push] [--vapid-private-key KEY] [--vapid-subject mailto:you@example.org] [--push-per-hour 4] \
 [--push-allow-any-endpoint] [--fcm-service-account FILE] [--apns-key FILE --apns-key-id ID --apns-team-id ID \
@@ -220,6 +220,7 @@ fn parse_args() -> Result<ServerConfig, String> {
             "--ws-compression" => cfg.ws_compression = value("--ws-compression")?.parse()?,
             "--lod" => cfg.world.lod = true,
             "--no-catastrophes" => cfg.world.catastrophes = false,
+            "--no-winter-provision" => cfg.game.winter_provision = false,
             "--season-days" => {
                 let n: u64 = value("--season-days")?.parse().map_err(|e| format!("--season-days: {e}"))?;
                 if !(1..=100_000).contains(&n) {

@@ -10,9 +10,10 @@
 
 import { api, ApiError } from '../api';
 import { designCost, validateDesign } from '../cost';
+import { seasonNotice } from '../seasonNotice';
 import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign, starterValue } from '../designMorph';
 import { defaultMorphology, sameMorphology, type Morphology } from '../morphology';
-import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, ThermoSpec } from '../protocol';
+import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, ThermoSpec, WorldSummary } from '../protocol';
 import { avatarView } from './avatarView';
 import { createBodyBuilder, type BodyBuilder, type BuilderChange } from './builder/builder';
 import type { BuilderPreset } from './builder/presets';
@@ -43,17 +44,20 @@ const BIRTHS: [BirthSpec, string, string][] = [
 
 export async function designScreen(cb: DesignCallbacks): Promise<HTMLElement> {
   let cat: GeneCatalog;
+  // The season (for the winter notice) is a nicety: the editor opens without it.
+  const world = api.world().catch(() => null);
   try {
     cat = await api.genes();
   } catch (e) {
     return h('div', { class: 'screen center' }, h('div', { class: 'card' }, h('p', { class: 'error' }, `Could not load the gene list: ${(e as Error).message}`)));
   }
-  return buildEditor(cat, cb);
+  return buildEditor(cat, cb, await world);
 }
 
-export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement {
+export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldSummary | null = null): HTMLElement {
   // The one design both modes edit: traits plus the whole body plan.
   const spec = newEditorDesign(cat);
+  const seasonText = seasonNotice(world);
 
   // --- basics
   const name = h('input', { id: 'design-name', maxlength: 40, placeholder: 'e.g. Marsh striders', value: '' });
@@ -335,6 +339,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
       h('button', { class: 'secondary', onclick: cb.onLogout }, 'Log out')),
     h('div', { class: 'design-body' },
       h('div', { class: 'design-main' },
+        seasonText ? h('p', { class: 'notice season-notice', id: 'design-season', role: 'note' }, seasonText) : null,
         h('section', { class: 'card' }, h('h2', {}, 'Basics'),
           h('label', {}, 'Lineage name', name),
           h('fieldset', {}, h('legend', {}, 'Thermoregulation'), ...thermoRadios),
