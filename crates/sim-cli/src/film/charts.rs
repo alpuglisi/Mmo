@@ -323,18 +323,26 @@ pub fn png(title: &str, panels: &[Panel], cols: usize, cw: f64, ch: f64) -> Canv
 }
 
 /// Write population.{svg,png} and genes.{svg,png} into `dir`.
-pub fn write_all(t: &Timeline, dir: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+/// A chart written by [`write_all`]: its name, the files, and the PNG's size.
+pub struct Written {
+    pub name: &'static str,
+    pub svg: std::path::PathBuf,
+    pub png: std::path::PathBuf,
+    pub width: usize,
+    pub height: usize,
+}
+
+pub fn write_all(t: &Timeline, dir: &std::path::Path) -> std::io::Result<Vec<Written>> {
     let title = format!("Seed {} · {}x{} map", t.seed, t.size, t.size);
     let pop = [population_panel(t)];
     let genes = gene_panels(t);
     let mut written = Vec::new();
-    let mut save = |name: &str, svg: String, png: Canvas| -> std::io::Result<()> {
-        let p = dir.join(format!("{name}.svg"));
-        std::fs::write(&p, svg)?;
-        written.push(p);
-        let p = dir.join(format!("{name}.png"));
-        png.save_png(&p)?;
-        written.push(p);
+    let mut save = |name: &'static str, svg: String, png: Canvas| -> std::io::Result<()> {
+        let svg_path = dir.join(format!("{name}.svg"));
+        std::fs::write(&svg_path, svg)?;
+        let png_path = dir.join(format!("{name}.png"));
+        png.save_png(&png_path)?;
+        written.push(Written { name, svg: svg_path, png: png_path, width: png.w, height: png.h });
         Ok(())
     };
     save("population", svg(&title, &pop, 1, 1200.0, 560.0), png(&title, &pop, 1, 1200.0, 560.0))?;

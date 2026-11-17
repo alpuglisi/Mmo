@@ -13,6 +13,10 @@ export const TAGS_BY_KIND = {
   lineage: ['evolution', 'genetics'],
   timelapse: ['simulation', 'gamedev'],
   devlog: ['gamedev', 'devlog'],
+  // Kinds from `evo-sim film` (predator_boom matches predator above).
+  boom: ['ecology', 'simulation'],
+  comeback: ['evolution', 'ecology'],
+  trait: ['evolution', 'genetics'],
 };
 
 const PLATFORM_EXTRA = {

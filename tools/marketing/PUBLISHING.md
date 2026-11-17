@@ -79,6 +79,9 @@ shapes and field-name variants so they keep working while those settle
 (`src/stories.mjs`). Examples: `examples/stories.example.json`,
 `examples/manifest.example.json`.
 
+`evo-sim film` writes both files in this format, with clips and charts
+(README.md, "Stories and manifest.json").
+
 **stories.json** (perf branch): `[Story]` or `{ "stories": [...] }`.
 
 | Field | Meaning |
