@@ -233,6 +233,32 @@ impl SpatialGrid {
         &self.items
     }
 
+    /// `(squared distance, slot)` of every organism within `radius` of `p`
+    /// except slot `skip`, into `out` (cleared first), in cell order: what
+    /// [`Self::query`] would call `f` with, in the same order. Without a
+    /// branch per candidate: in a crowd about half of them fall outside
+    /// the circle, too irregularly for the branch predictor.
+    pub fn query_into(&self, p: Vec2, radius: f32, skip: u32, out: &mut Vec<(f32, u32)>) {
+        let (c0, r0) = self.cell_of(Vec2::new(p.x - radius, p.y - radius));
+        let (c1, r1) = self.cell_of(Vec2::new(p.x + radius, p.y + radius));
+        let r2 = radius * radius;
+        let span = |r: usize| (self.starts[r * self.cols + c0] as usize, self.starts[r * self.cols + c1 + 1] as usize);
+        let total: usize = (r0..=r1).map(|r| span(r).1 - span(r).0).sum();
+        out.clear();
+        out.resize(total, (0.0, 0));
+        let mut k = 0;
+        for r in r0..=r1 {
+            let (a, b) = span(r);
+            for (slot, q) in (a..b).zip(&self.pos[a..b]) {
+                let (dx, dy) = (q.x - p.x, q.y - p.y);
+                let d2 = dx * dx + dy * dy;
+                out[k] = (d2, slot as u32);
+                k += usize::from(d2 <= r2 && slot as u32 != skip);
+            }
+        }
+        out.truncate(k);
+    }
+
     /// Calls `f(slot, squared distance)` for every organism within `radius`
     /// of `p`, in cell order. `slot` is for [`Self::entry`].
     pub fn query(&self, p: Vec2, radius: f32, mut f: impl FnMut(u32, f32)) {

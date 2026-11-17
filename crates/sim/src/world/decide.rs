@@ -553,13 +553,7 @@ impl World {
         let mut rest = [(0u32, Vec2::ZERO); 2];
         SCAN.with(|buf| {
             let mut near = buf.take();
-            near.clear();
-            let me = self.grid.slot_of(i);
-            self.grid.query(o.pos, radius, |slot, d2| {
-                if slot != me {
-                    near.push((d2, slot));
-                }
-            });
+            self.grid.query_into(o.pos, radius, self.grid.slot_of(i), &mut near);
             if near.len() > FOCUS {
                 // The nearest `FOCUS`, ties by organism index (litter-mates
                 // share a spot), so the set never depends on grid order.
