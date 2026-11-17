@@ -124,6 +124,28 @@ pub struct LineageEntry {
     /// name. Player lineages only (the genetics dashboard's drift charts).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub genes: BTreeMap<String, f32>,
+    /// The living members' body plan (counts and shapes by majority, axes
+    /// by mean): player lineages only, kept and thinned with `genes` (the
+    /// family tree's portraits). Absent in records from before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub morph: Option<BodyPlanMode>,
+}
+
+/// A group's typical body plan (`family::body_plan_mode`): the morphology
+/// parameters by wire name, as a design's `morph` object spells them.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BodyPlanMode {
+    pub eye_count: u8,
+    pub eye_azimuth: f32,
+    pub ear_count: u8,
+    pub ear_shape: String,
+    pub leg_count: u8,
+    pub tail_shape: String,
+    pub snout_length: f32,
+    pub horn_size: f32,
+    pub horn_form: String,
+    pub wing_aspect: f32,
+    pub pattern: String,
 }
 
 /// One simulated day: the legacy leaderboard and every lineage's size.

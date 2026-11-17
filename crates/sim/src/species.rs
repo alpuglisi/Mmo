@@ -349,6 +349,12 @@ impl Species {
         self.extinct_day.is_none()
     }
 
+    /// Representative members' expressed values (genes, then the
+    /// morphology key) from its last detection: what it looked like.
+    pub fn reps(&self) -> &[Expr] {
+        &self.reps
+    }
+
     /// Main founding lineage at the last detection.
     pub fn main_lineage(&self) -> Option<u32> {
         self.lineages.first().map(|l| l.0)

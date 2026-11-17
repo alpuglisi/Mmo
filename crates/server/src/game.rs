@@ -23,6 +23,7 @@ use crate::design::gene_key;
 use crate::economy::{self, Bid, Economy, Insufficient, Listing};
 use crate::league::{self, CurrentSeason, SeasonRecord, SeasonTracker};
 use crate::protocol::*;
+mod family;
 mod offline;
 mod states;
 pub use offline::{
@@ -2689,6 +2690,11 @@ impl Game {
         self.prev_born = self.world.counters.born.clone();
         self.prev_deaths = self.world.counters.deaths_by_lineage.clone();
         let sums = self.gene_sums();
+        // Player lineages' body plans, for the family tree.
+        let mut plans: BTreeMap<u32, Vec<&evo_sim::morph::Morphology>> = BTreeMap::new();
+        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
+            plans.entry(o.lineage).or_default().push(&o.morph);
+        }
         let gene_means = |k: u32| -> BTreeMap<String, f32> {
             match sums.get(&k) {
                 Some((n, s)) if *n > 0 => {
@@ -2725,6 +2731,11 @@ impl Game {
                         born: born.get(&k).copied().unwrap_or(0),
                         deaths: deaths.remove(&k).unwrap_or_default(),
                         genes: if l.owner == WILD { BTreeMap::new() } else { gene_means(k) },
+                        morph: if l.owner == WILD {
+                            None
+                        } else {
+                            plans.get(&k).and_then(|p| family::body_plan_mode(p.iter().copied()))
+                        },
                     }
                 })
                 .collect(),

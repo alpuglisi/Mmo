@@ -556,6 +556,7 @@ fn rich_day(world: &str, d: u64) -> DailyRecord {
         born: 0,
         deaths: Default::default(),
         genes: [("fur".to_string(), 0.5f32), ("claws".to_string(), 0.25)].into_iter().collect(),
+        morph: None,
     };
     DailyRecord { lineages: vec![lineage(0, 9), lineage(1, 0)], ..day(world, d, d as usize) }
 }

@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const ALL = ['smoke', 'context-loss', 'mobile', 'onboarding', 'push', 'android-desktop', 'builder', 'vision'];
+const ALL = ['smoke', 'context-loss', 'mobile', 'onboarding', 'push', 'android-desktop', 'builder', 'family', 'vision'];
 const scripts = process.argv.length > 2 ? process.argv.slice(2) : ALL;
 const jobs = Math.max(1, Number.parseInt(process.env.E2E_JOBS ?? '1', 10) || 1);
 
