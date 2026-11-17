@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import costFixture from './cost.fixture.json';
 import { designCost } from './cost';
 import {
-  applyMorphology, applyTrait, blindSpots, designPayload, morphPayload, morphPrices, morphSupport, newEditorDesign, SHARED_GENES, visionReadout,
+  applyMorphology, applyTrait, blindSpots, designPayload, morphPayload, morphPrices, morphSupport, newEditorDesign, SHARED_GENES, STARTER_TRAITS, starterValue, visionReadout,
 } from './designMorph';
 import { DEFAULT_MORPHOLOGY, defaultMorphology, traitsFromMorphology, type Morphology } from './morphology';
 import type { GeneCatalog, MorphInfo } from './protocol';
@@ -29,6 +30,8 @@ const morphRows: MorphInfo[] = [
   { name: 'snout_length', kind: 'axis', min: 0, max: 1, default: 0.5, cost: 0 },
 ];
 const newCat: GeneCatalog = { ...oldCat, morph: morphRows };
+/** The starter's departures from the defaults, for the genes a catalog lists. */
+const starterIn = (cat: GeneCatalog) => Object.fromEntries(Object.entries(STARTER_TRAITS).filter(([k]) => cat.genes.some((g) => g.name === k)));
 
 describe('feature detection', () => {
   it('only a catalog with a morph section takes morph', () => {
@@ -36,6 +39,17 @@ describe('feature detection', () => {
     expect(morphSupport({ morph: [] })).toBeNull();
     expect(morphSupport({ morph: 'yes' as unknown as MorphInfo[] })).toBeNull();
     expect(morphSupport(newCat)?.map((r) => r.name)).toContain('eye_count');
+  });
+
+  it('starts from the sturdy starter: free genes only, the rest at the catalog defaults', () => {
+    const d = newEditorDesign(oldCat);
+    for (const g of oldCat.genes) expect(d.traits[g.name]).toBe(STARTER_TRAITS[g.name] ?? g.default);
+    for (const name of Object.keys(STARTER_TRAITS)) expect(starterValue(oldCat, name)).toBe(STARTER_TRAITS[name]);
+    // With the server's real catalog (cost.fixture.json) the starter costs no trait points.
+    const real = (costFixture as unknown as { catalog: GeneCatalog }).catalog;
+    const s = newEditorDesign(real);
+    s.name = 'Starter';
+    expect(designCost(designPayload(s, real), real).traits).toBe(0);
   });
 
   it('an old server never gets morph, whatever the body plan', () => {
@@ -46,7 +60,7 @@ describe('feature detection', () => {
     expect(p).not.toHaveProperty('morph');
     expect(p).not.toHaveProperty('morphology');
     expect(p.name).toBe('Watchers');
-    expect(JSON.parse(JSON.stringify(p))).toEqual({ name: 'Watchers', thermo: 'warm', birth: 'live', litter_size: 2, traits: {}, founders: 10 });
+    expect(JSON.parse(JSON.stringify(p))).toEqual({ name: 'Watchers', thermo: 'warm', birth: 'live', litter_size: 2, traits: starterIn(oldCat), founders: 10 });
   });
 
   it('a new server gets the non-default morph fields only', () => {
@@ -56,7 +70,7 @@ describe('feature detection', () => {
     const p = designPayload(d, newCat);
     expect(p.morph).toEqual({ eye_count: 3, ear_shape: 'fan' });
     // The shared size goes in traits, never in morph.
-    expect(p.traits).toEqual({ large_eyes: 0.4 });
+    expect(p.traits).toEqual({ ...starterIn(newCat), large_eyes: 0.4 });
   });
 
   it('sends horns, coat pattern and wing shape (Phase 3) when the server lists them', () => {

@@ -571,6 +571,34 @@ impl World {
         self.owner_counts.values().sum()
     }
 
+    /// Kill every living organism a player owns and drop their eggs; the
+    /// number killed. For test hooks (the server's `EVO_E2E_HOOKS`) and
+    /// tests, never the simulation itself.
+    pub fn kill_all_of(&mut self, player: PlayerId, cause: DeathCause) -> usize {
+        let doomed: Vec<usize> = (0..self.organisms.len())
+            .filter(|&i| self.organisms[i].alive && self.organisms[i].owner == player)
+            .collect();
+        for &i in &doomed {
+            self.kill(i, cause);
+        }
+        self.clutches.retain(|c| c.owner != player);
+        self.clutch_at.clear();
+        for (k, c) in self.clutches.iter().enumerate() {
+            self.clutch_at.insert(self.map.tile_coords(c.pos), k);
+        }
+        doomed.len()
+    }
+
+    /// Drop a player's group orders (migrations, territories and their
+    /// claim cooldowns, rallies): for a lineage founded after the last one
+    /// died out, whose groups start afresh.
+    pub fn clear_group_orders(&mut self, player: PlayerId) {
+        self.migrate_orders.retain(|&(p, _), _| p != player);
+        self.territories.retain(|&(p, _), _| p != player);
+        self.territory_claims.retain(|&(p, _), _| p != player);
+        self.rallies.retain(|&(p, _), _| p != player);
+    }
+
     pub fn owner_count(&self, owner: PlayerId) -> usize {
         self.owner_counts.get(&owner).copied().unwrap_or(0)
     }

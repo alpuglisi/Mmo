@@ -45,9 +45,22 @@ export interface GameDeps {
   mountInto: (el: HTMLElement) => void;
   /** The world played in ('' for the server's default); named in the top bar when the server has several. */
   world?: string;
+  /** Open the design screen for a new lineage (offered once the player's lineage has died out). */
+  onNewLineage?: () => void;
 }
 
 const LOCAL_CODES = new Set(['not_connected', 'timeout', 'disconnected', 'closed']);
+
+/**
+ * Every organism of the player's lineage has died: say so, point to what
+ * killed them, and offer a new lineage (renown and records stay).
+ */
+function extinctNoticeEl(id: string, onNewLineage: (() => void) | undefined): HTMLElement {
+  return h('div', { class: 'notice bad', id, role: 'status' },
+    h('p', {}, h('strong', {}, 'Your lineage has died out.'), ' None of your organisms are alive. The Genetics tab charts what killed them.'),
+    onNewLineage ? h('p', {}, h('button', { type: 'button', class: 'new-lineage', id: `${id}-new`, onclick: onNewLineage }, 'Start a new lineage'),
+      h('span', { class: 'muted small' }, ' Your renown, records and titles stay.')) : null);
+}
 /** The dynamic terrain layers change every simulated hour. */
 const TERRAIN_REFRESH_MS = 4000;
 const STATS_REFRESH_MS = 5000;
@@ -90,6 +103,9 @@ export interface GameScreen {
 export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const { model } = deps;
   const cleanups: (() => void)[] = [];
+  const inspExtinct = extinctNoticeEl('inspector-extinct', deps.onNewLineage);
+  const lineageExtinct = extinctNoticeEl('lineage-extinct', deps.onNewLineage);
+  lineageExtinct.hidden = true;
 
   const send = async (m: ClientMsg): Promise<ResultMsg> => {
     const r = await deps.send(m);
@@ -185,8 +201,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const fab = h('button', { class: 'fab', id: 'fab-possess', hidden: true });
   const legends = h('div', { class: 'legends', id: 'legends' }, terrainLegend, legend);
   const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, hint, legends, fab, toasts);
-  // The legend is collapsible: shown by default on wide screens, hidden on
-  // phones; the choice is remembered.
+  // The legend is collapsible: hidden by default (it covers part of the map;
+  // the tour points to its button), the choice remembered on this device.
   function setLegend(on: boolean, remember: boolean): void {
     stageWrap.classList.toggle('show-legend', on);
     legendBtn.classList.toggle('active', on);
@@ -198,7 +214,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   {
     let stored: string | null = null;
     try { stored = localStorage.getItem('evo.legend'); } catch { /* storage may be blocked */ }
-    setLegend(stored ? stored === 'on' : !window.matchMedia(NARROW).matches, false);
+    setLegend(stored === 'on', false);
   }
   legendBtn.addEventListener('click', () => setLegend(!stageWrap.classList.contains('show-legend'), true));
 
@@ -765,6 +781,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!own && !other) {
       keyed(inspActions, 'none', () => []);
       const tap = (narrow() || window.matchMedia('(pointer: coarse)').matches) ? 'Tap' : 'Click';
+      const st = model.state;
+      if (st && st.lineage !== null && st.population === 0) {
+        // Kept, not rebuilt, on every state: its button must stay clickable.
+        if (inspDetails.firstElementChild !== inspExtinct) inspDetails.replaceChildren(inspExtinct);
+        return;
+      }
       inspDetails.replaceChildren(h('p', { class: 'muted' }, model.selected === null
         ? `${tap} an organism on the map, or pick one from the Lineage tab.`
         : `#${model.selected} is no longer in view: it may have died or wandered out of sight. ${tap} another organism on the map, or pick one from the Lineage tab.`));
@@ -1045,7 +1067,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const seasonsEl = h('div', { id: 'season-boards' });
   const listEl = h('div', { id: 'organism-list', class: 'org-list' });
   const groupsEl = h('div', { id: 'group-list' });
-  append(tabs.lineage, [statsEl,
+  append(tabs.lineage, [lineageExtinct, statsEl,
     h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
     h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter; the Seasons tab has the ranked seasons' }, 'By world season'), seasonsEl,
     h('h3', {}, 'My organisms'), listEl]);
@@ -1089,10 +1111,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ['Migration', s.migration ? `toward ${s.migration[0].toFixed(0)}, ${s.migration[1].toFixed(0)}` : 'none'],
     ]));
     // A founded lineage with nobody left: say so plainly, and where to see why.
-    if (s.lineage !== null && s.population === 0) {
-      statsEl.prepend(h('p', { class: 'notice bad', id: 'lineage-extinct', role: 'status' },
-        h('strong', {}, 'Your lineage has died out.'), ' None of your organisms are alive. The Genetics tab charts what killed them.'));
-    }
+    // One element, shown or hidden (rebuilding it each state would eat clicks on its button).
+    lineageExtinct.hidden = !(s.lineage !== null && s.population === 0);
     renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb), () => lb.rows.length === 0
