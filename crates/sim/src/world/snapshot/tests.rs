@@ -947,6 +947,7 @@ fn version_32_snapshots_restore_without_crowding() {
     assert!(r.snapshot_v32() == old);
     // This version keeps them.
     let mut w = fixture_world();
+    w.config.balance.lineage_crowding = 4.0;
     w.grant_mating_slots(1, 2);
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.bonus_slots(1), r.config.balance.lineage_crowding), (2, 4.0));
