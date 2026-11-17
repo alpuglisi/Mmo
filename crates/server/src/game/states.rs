@@ -512,6 +512,7 @@ impl Game {
             | ClientMsg::PreviewMating { .. }
             | ClientMsg::BrowseMarket(_)
             | ClientMsg::Ledger { .. }
+            | ClientMsg::MatingPrefs { .. }
             | ClientMsg::Resync
             | ClientMsg::WatchSeason { .. } => {}
         }

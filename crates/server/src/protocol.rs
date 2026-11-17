@@ -170,6 +170,19 @@ pub enum ClientMsg {
     /// `mine` with the listed organism if given. Data: [`MarketView`]. With
     /// no fields: the newest [`MARKET_PAGE`] listings of every kind.
     BrowseMarket(MarketQuery),
+    /// Who may send you mating requests: `block` or `unblock` a player
+    /// (their requests are refused with `requests_refused`), turn
+    /// `auto_decline` on to refuse every request (listings and auctions are
+    /// unaffected: they are your own offer). With no fields, just read the
+    /// settings. Data: [`MatingPrefs`].
+    MatingPrefs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        block: Option<PlayerId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unblock: Option<PlayerId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auto_decline: Option<bool>,
+    },
     /// Your balance and recent ledger entries (newest first, at most `limit`,
     /// default 50). Data: [`LedgerView`].
     Ledger {
@@ -222,10 +235,49 @@ impl ClientMsg {
             ClientMsg::Bid { .. } => "bid",
             ClientMsg::BrowseMarket { .. } => "browse_market",
             ClientMsg::Ledger { .. } => "ledger",
+            ClientMsg::MatingPrefs { .. } => "mating_prefs",
             ClientMsg::Resync => "resync",
             ClientMsg::WatchSeason { .. } => "watch_season",
         }
     }
+}
+
+/// Every command's wire name (`type`), as [`ClientMsg::name`] gives them.
+pub const COMMAND_NAMES: &[&str] = &[
+    "possess",
+    "order_move",
+    "release",
+    "request_mating",
+    "preview_mating",
+    "respond_mating",
+    "complete_mating",
+    "cancel_mating",
+    "migrate",
+    "clear_migration",
+    "claim_territory",
+    "abandon_territory",
+    "rally",
+    "cancel_rally",
+    "split_group",
+    "merge_groups",
+    "set_view",
+    "clear_view",
+    "create_listing",
+    "withdraw_listing",
+    "buy_listing",
+    "create_auction",
+    "bid",
+    "browse_market",
+    "ledger",
+    "mating_prefs",
+    "resync",
+    "watch_season",
+];
+
+/// The known command named `t`, as a static name (for replies to messages
+/// that didn't parse: never the client's own text).
+pub fn command_name(t: &str) -> Option<&'static str> {
+    COMMAND_NAMES.iter().copied().find(|&n| n == t)
 }
 
 impl ClientMsg {
@@ -908,6 +960,16 @@ impl From<evo_sim::world::groups::Rally> for RallyView {
     fn from(r: evo_sim::world::groups::Rally) -> Self {
         Self { x: r.center.x, y: r.center.y, radius: r.radius, expires_tick: r.expires_tick }
     }
+}
+
+/// A player's mating-request settings ([`ClientMsg::MatingPrefs`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MatingPrefs {
+    /// Players whose requests are refused.
+    pub blocked: Vec<PlayerId>,
+    /// Refuse every request.
+    pub auto_decline: bool,
 }
 
 /// One of the player's groups (`World::groups`).

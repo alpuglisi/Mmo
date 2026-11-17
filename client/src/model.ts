@@ -2,6 +2,7 @@
 // fed by server messages. UI code subscribes; it never talks to the socket
 // for reads.
 
+import { friendlyError } from './errors';
 import { normalizePrefs, toasts, visibleFeed } from './alertPrefs';
 import {
   DEFAULT_ALERT_PREFS, isOpen, type AlertKind, type AlertPrefs, type AlertView, type CurrentSeason, type ErrorInfo, type MatingOutcome, type OfferView, type OrgId,
@@ -170,7 +171,7 @@ export class GameModel {
       }
       case 'result':
         // A preview is shown in the matings form, not as a toast.
-        if (!m.ok && m.error && m.command !== 'preview_mating') this.toast('error', `${m.command || 'command'}: ${m.error.message} (${m.error.code})`);
+        if (!m.ok && m.error && m.command !== 'preview_mating') this.toast('error', friendlyError(m.command, m.error));
         break;
       case 'mating_request': {
         this.offers.set(m.offer.id, { offer: m.offer, incoming: true });

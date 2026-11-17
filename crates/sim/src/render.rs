@@ -58,6 +58,16 @@ fn tile_color(g: &Ground, t: &Tile) -> [u8; 3] {
 
 /// Returns `(width, height, rgb bytes)` at `scale` pixels per tile.
 pub fn render_rgb(world: &World, scale: usize) -> (usize, usize, Vec<u8>) {
+    render_rgb_visible(world, scale, |_| true)
+}
+
+/// [`render_rgb`] drawing only the organisms `visible` accepts (the terrain
+/// is drawn whole).
+pub fn render_rgb_visible(
+    world: &World,
+    scale: usize,
+    visible: impl Fn(&crate::organism::Organism) -> bool,
+) -> (usize, usize, Vec<u8>) {
     let scale = scale.max(1);
     let (w, h) = (world.map.width * scale, world.map.height * scale);
     let mut buf = vec![0u8; w * h * 3];
@@ -79,7 +89,7 @@ pub fn render_rgb(world: &World, scale: usize) -> (usize, usize, Vec<u8>) {
         }
     }
     let dot = (scale / 2).max(1);
-    for o in world.organisms.iter().filter(|o| o.alive) {
+    for o in world.organisms.iter().filter(|o| o.alive && visible(o)) {
         let c = owner_color(o.owner, o.traits.carnivory);
         let (px, py) = ((o.pos.x * scale as f32) as usize, (o.pos.y * scale as f32) as usize);
         for dy in 0..dot {

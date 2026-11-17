@@ -4,6 +4,7 @@
 // ranked seasons (hall of fame) and the world chronicle (species, eras,
 // catastrophes, achievements).
 
+import { friendlyError } from '../errors';
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
 import { buildFamilyTree, type FamilyModel } from '../familyTree';
@@ -109,7 +110,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   const send = async (m: ClientMsg): Promise<ResultMsg> => {
     const r = await deps.send(m);
-    if (!r.ok && r.error && LOCAL_CODES.has(r.error.code)) model.toast('error', `${m.type}: ${r.error.message}`);
+    if (!r.ok && r.error && LOCAL_CODES.has(r.error.code)) model.toast('error', friendlyError(m.type, r.error));
     return r;
   };
 

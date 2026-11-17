@@ -138,6 +138,17 @@ impl World {
         self.index.get(&id).copied().filter(|&i| self.organisms[i].alive).ok_or(CommandError::NotFound(id))
     }
 
+    /// Use up one of `player`'s directed-mating slots this season without a
+    /// mating (a forfeit: a bought agreement that lapsed unpaid). False if
+    /// none was left.
+    pub fn forfeit_mating_slot(&mut self, player: PlayerId) -> bool {
+        if self.mating_slots_left(player) == 0 {
+            return false;
+        }
+        *self.slots_used.entry(player).or_default() += 1;
+        true
+    }
+
     pub fn mating_slots_left(&self, player: PlayerId) -> u32 {
         self.config.mating_slots_per_season.saturating_sub(self.slots_used.get(&player).copied().unwrap_or(0))
     }
