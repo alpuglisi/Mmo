@@ -60,12 +60,18 @@ pub struct Metrics {
     /// Building and queueing the state messages of one push to every
     /// connection.
     pub states: Window,
+    /// The building part of `states` (the rest is handing each connection
+    /// its message).
+    pub states_build: Window,
     /// One possession sub-step and the states it sends.
     pub substep: Window,
     /// Applying the queued requests at a boundary.
     pub apply: Window,
     pub ticks: u64,
     pub state_pushes: u64,
+    /// Time spent applying each kind of command, since start: name →
+    /// (count, total ms).
+    pub apply_by_command: std::collections::BTreeMap<&'static str, (u64, f64)>,
     /// World-changing requests applied.
     pub applied: u64,
     /// Most requests queued at one boundary, since start.
@@ -140,6 +146,15 @@ pub struct HashStats {
     pub mean_ms: f32,
 }
 
+/// World-thread time spent on one kind of command.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CommandCost {
+    pub command: String,
+    pub n: u64,
+    /// Total, ms.
+    pub ms: f64,
+}
+
 /// `GET /api/metrics`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MetricsView {
@@ -155,8 +170,15 @@ pub struct MetricsView {
     pub players_online: usize,
     pub tick_ms: Timing,
     pub states_ms: Timing,
+    /// Building the push's messages, without queueing them (`states_ms`
+    /// is both).
+    #[serde(default)]
+    pub states_build_ms: Timing,
     pub substep_ms: Timing,
     pub apply_ms: Timing,
+    /// Applying each kind of command on the world thread, since start.
+    #[serde(default)]
+    pub apply_by_command: Vec<CommandCost>,
     pub state_pushes: u64,
     pub applied: u64,
     pub max_queued: usize,
@@ -211,8 +233,14 @@ impl MetricsView {
             players_online: m.players,
             tick_ms: m.tick.summary(),
             states_ms: m.states.summary(),
+            states_build_ms: m.states_build.summary(),
             substep_ms: m.substep.summary(),
             apply_ms: m.apply.summary(),
+            apply_by_command: m
+                .apply_by_command
+                .iter()
+                .map(|(&command, &(n, ms))| CommandCost { command: command.to_string(), n, ms })
+                .collect(),
             state_pushes: m.state_pushes,
             applied: m.applied,
             max_queued: m.max_queued,
