@@ -1053,15 +1053,26 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const opposite = (sex: string) => !me || sex !== me.sex;
       const here = me ? { x: me.x, y: me.y } : view.cam;
       const dist = (o: { x: number; y: number }) => Math.hypot(o.x - here.x, o.y - here.y);
-      const ownPartners = adults.filter((o) => o.id !== me?.id && opposite(o.sex) && !o.pregnant)
-        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} (yours) · ${dist(o).toFixed(0)} tiles`, d: dist(o) }));
+      // Every own adult of the other sex, wherever it is (the lineage is all
+      // known); a pregnant female is listed but can't be picked. Other
+      // players' animals: those the server sends (in or near the view).
+      const ownPartners = adults.filter((o) => o.id !== me?.id && opposite(o.sex))
+        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} (yours)${o.pregnant ? ' · pregnant' : ''} · ${dist(o).toFixed(0)} tiles`, d: dist(o), off: o.pregnant }));
       const others = (s.nearby ?? []).filter((o) => o.matured && o.owner !== WILD && o.owner !== model.player && opposite(o.sex))
-        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} · ${ownerName(o.owner)} · ${dist(o).toFixed(0)} tiles`, d: dist(o) }));
-      const choices = [{ id: 0, label: ownPartners.length + others.length ? 'Choose a partner…' : 'No partner in sight', d: -1 },
-        ...[...ownPartners, ...others].sort((a, b) => a.d - b.d).slice(0, 40)];
+        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} · ${ownerName(o.owner)} · ${dist(o).toFixed(0)} tiles`, d: dist(o), off: false }));
+      const open = [...ownPartners, ...others].filter((c) => !c.off).length;
+      const first = open > 0 ? 'Choose a partner…'
+        : ownPartners.length > 0 ? 'No partner free now (pregnant)'
+          : 'No partner: none of yours of the other sex, none of other players\' in view';
+      const choices = [{ id: 0, label: first, d: -1, off: false },
+        // Pickable first (nearest first), then the pregnant ones.
+        ...[...ownPartners, ...others].sort((a, b) => Number(a.off) - Number(b.off) || a.d - b.d).slice(0, 40)];
       if (document.activeElement !== partnerPick) {
         reconcile(partnerPick, choices, (c) => String(c.id), (c) => h('option', { value: c.id || '' }) as HTMLOptionElement,
-          (opt, c) => setText(opt, c.label));
+          (opt, c) => {
+            setText(opt, c.label);
+            opt.disabled = c.off;
+          });
         partnerPick.value = [...partnerPick.options].some((o) => o.value === partner.value) ? partner.value : '';
       }
       if (Date.now() - previewAt > 3000 && partner.value !== '') void updateCompat();
