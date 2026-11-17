@@ -7373,7 +7373,28 @@ deliberate, and for 20 days from Late's founding the Hunter migrates its
 pack onto Late's founding site, with the grace on and off. Four seeds,
 120 days:
 
-HUNT_TABLE
+| Arm | Steady | Herd | Hunter | Late | Late at day 10 | Hunter's kills (players / wild) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Passive | 202 (peak 285) | 158 (221) | 236 (238), share 32.7% | 117 (146) | 72.5 | 261 / 2,122 |
+| Deliberate | 207 (294) | 123 (224) | **255 (258)**, share 32.7% | 108 (146) | 69.0 | 336 / 2,127 |
+| Camping, grace on (10 days) | 122 (207) | 82 (167) | 168 (213), share 45.2% | 8 (69), extinct on 1 of 4 | **68.8** | 359 / 2,549 |
+| Camping, grace off | 132 (220) | 136 (190) | 105 (173), share 39.9% | 1 (40), extinct on 2 of 4 | 21.5 | 312 / 1,815 |
+
+Final head counts (peak in brackets) and the mean share of the four
+players' animals. Deliberate hunting pays a little: the Hunter ends 8%
+larger (255 against 236, peak 258 against 238) with 228 orders a world,
+and takes more of the players' animals (336 against 261 kills) without
+ending any player's lineage. Herd loses the most (158 → 123). Its share
+of the four is unchanged, though, and orders often fail (192 `too_big`
+refusals a world, because the script tries the heaviest first). The
+grace does what it is for in its first days: a camped newcomer keeps
+68.8 of its 72 founders at day 10 (21.5 without the grace; 25 when the
+grace only refused orders). But a pack parked on the site for 20 days
+still wipes the newcomer out once the grace ends (8 left and one of four
+worlds extinct, against 1 left and two extinct). Camping costs the
+camper (168 at the end against 236 passive), and so do the other
+players' losses along the way, yet it raises the camper's share of the
+four (45% against 33%), so it is still a lever for griefing.
 
 GRACE_TEXT
 
