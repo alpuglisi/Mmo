@@ -771,9 +771,11 @@ async function main() {
     const entry = (l, kind) => l.entries.find((e) => e.kind === kind && e.offer === bought.id);
     if (!entry(bobLedger, 'escrow') || entry(bobLedger, 'escrow').delta !== -fee) throw new Error(`no escrow entry: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
     if (fin.status === 'completed') {
-      if (entry(annLedger, 'sale')?.delta !== fee) throw new Error(`completed but ann not paid: ${JSON.stringify(annLedger.entries.slice(0, 5))}`);
+      // The seller gets the fee less the 10% market fee (floored; economy::market_fee).
+      const net = fee - Math.floor((fee * 10) / 100);
+      if (entry(annLedger, 'sale')?.delta !== net) throw new Error(`completed but ann not paid ${net}: ${JSON.stringify(annLedger.entries.slice(0, 5))}`);
       if (entry(bobLedger, 'refund')) throw new Error('completed and refunded');
-      step(`market mating completed (${fin.outcome?.conceived ? 'conceived' : 'not conceived'}): ann paid ${fee} renown from escrow`);
+      step(`market mating completed (${fin.outcome?.conceived ? 'conceived' : 'not conceived'}): ann paid ${fee - Math.floor((fee * 10) / 100)} of ${fee} renown from escrow`);
     } else {
       if (entry(bobLedger, 'refund')?.delta !== fee) throw new Error(`${fin.status} but bob not refunded: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
       if (entry(annLedger, 'sale')) throw new Error(`${fin.status} and paid`);
