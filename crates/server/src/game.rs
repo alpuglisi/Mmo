@@ -364,6 +364,10 @@ pub struct Game {
     offline: OfflineTracker,
     /// Name changes ([`Game::set_name`]), for [`Game::live_season_key`].
     names_changed: u64,
+    /// The players whose name changed, with the `names_changed` count after
+    /// each change, since the state index was last built (the kept
+    /// leaderboard patches their rows instead of being made again).
+    renamed: Vec<(u64, PlayerId)>,
     /// The state index and organism views kept between the state builds
     /// of a tick (`game::states`).
     state_cache: states::StateCache,
@@ -532,6 +536,7 @@ impl Game {
             last_season_record: None,
             offline: OfflineTracker::default(),
             names_changed: 0,
+            renamed: Vec::new(),
             state_cache: states::StateCache::default(),
             held_tick: None,
             market,
@@ -783,6 +788,7 @@ impl Game {
         if self.names.get(&player).map(String::as_str) != Some(name) {
             self.names.insert(player, name.to_string());
             self.names_changed += 1;
+            self.renamed.push((self.names_changed, player));
         }
     }
 
@@ -5363,6 +5369,34 @@ mod tests {
         }
         times.sort_by(f64::total_cmp);
         eprintln!("{listings} listings: browse_market {:.0} µs (median), p90 {:.0} µs", times[200], times[360]);
+    }
+
+    /// World-thread cost of a connection after a restart (every lineage
+    /// unattended), for docs/load-test.md (`cargo test --release -p
+    /// evo-server --lib game::tests::connect_cost -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn connect_cost() {
+        let players = std::env::var("EVO_CONNECT_PLAYERS").ok().and_then(|p| p.parse().ok()).unwrap_or(1000u32);
+        let world = build_world(&WorldSettings { seed: 5, width: 512, height: 512, wild: true, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        for p in 1..=players {
+            g.set_name(p, &format!("p{p}"));
+            g.found(p, &design(&format!("L{p}"))).unwrap();
+        }
+        g.world.run_days(1);
+        let _ = g.after_tick();
+        let saved = g.saved();
+        let world = g.world.clone();
+        let mut g = Game::resume(world, GameConfig::default(), saved, Vec::new());
+        // As the runner runs it.
+        g.defer_offline();
+        let t = std::time::Instant::now();
+        for p in 1..=players {
+            let _ = g.connect(p as u64, p, &format!("p{p}"));
+        }
+        let per = t.elapsed().as_secs_f64() * 1e6 / players as f64;
+        eprintln!("{} organisms, {players} players reconnecting: {per:.0} µs per connect", g.world.alive_count());
     }
 
     /// World-thread cost of possession sub-steps and state pushes with many

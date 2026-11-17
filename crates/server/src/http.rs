@@ -95,6 +95,8 @@ pub struct WorldHandle {
     /// `/api/seasons/:n` means its seasons unless the request names another
     /// map of the world (`?map=`, a world started over with `--fresh`).
     pub map_id: Arc<str>,
+    /// Players online before `GET /api/assign` sends new players elsewhere.
+    pub capacity: usize,
 }
 
 impl AppState {
@@ -230,6 +232,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/genes", get(genes))
         .route("/api/push/key", get(push_key))
         .route("/api/worlds", get(world_list))
+        .route("/api/assign", get(assign))
         .route("/api/world", get(world_summary))
         .route("/api/leaderboard", get(leaderboard))
         .route("/api/metrics", get(metrics))
@@ -475,6 +478,51 @@ async fn world_list(State(app): State<AppState>) -> Json<WorldList> {
         })
         .collect();
     Json(WorldList { default: app.worlds[0].id.to_string(), worlds })
+}
+
+#[derive(Deserialize)]
+struct AssignQuery {
+    /// An account name (the lobby asks for players who haven't logged in
+    /// here); a bearer token is used instead when there is one.
+    name: Option<String>,
+}
+
+/// `GET /api/assign`: the world this server would put a player in
+/// (`worlds::assign`): the one holding their lineage, else the busiest one
+/// under its fill target, else the emptiest one with room; 503 `full` when
+/// every world is full. `evo-lobby` asks every server and picks among them.
+async fn assign(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AssignQuery>,
+) -> Result<Json<crate::worlds::AssignView>, ApiError> {
+    let player = match bearer(&headers) {
+        Some(t) => Some(app.accounts.session(t).ok_or_else(ApiError::unauthorized)?.player),
+        None => q.name.as_deref().and_then(|n| app.accounts.player_of(n)),
+    };
+    let loads: Vec<crate::worlds::WorldLoad> = app
+        .worlds
+        .iter()
+        .map(|w| crate::worlds::WorldLoad {
+            players_online: w.metrics.lock().unwrap().players,
+            capacity: w.capacity,
+            has_lineage: player.is_some_and(|p| w.published.borrow().leaderboard.rows.iter().any(|r| r.player == p)),
+        })
+        .collect();
+    let Some((i, reason)) = crate::worlds::assign(&loads) else {
+        let mut e = ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "full", "every world here is full");
+        e.detail = Some(serde_json::json!({ "retry_after_ms": 30_000 }));
+        return Err(e);
+    };
+    let w = &app.worlds[i];
+    Ok(Json(crate::worlds::AssignView {
+        world: w.id.to_string(),
+        name: w.name.to_string(),
+        reason,
+        players_online: loads[i].players_online,
+        capacity: loads[i].capacity,
+        has_account: player.is_some(),
+    }))
 }
 
 async fn world_summary(World(w): World) -> Json<crate::protocol::WorldSummary> {

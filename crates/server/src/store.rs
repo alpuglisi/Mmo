@@ -83,6 +83,23 @@ impl From<serde_json::Error> for StoreError {
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
+/// A login session kept over a restart (`crate::accounts`): the SHA-256 of
+/// its token (hex; never the token), its player and wall-clock times.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SessionRecord {
+    pub token_hash: String,
+    pub player: PlayerId,
+    pub name: String,
+    pub created_unix_ms: u64,
+    pub last_seen_unix_ms: u64,
+    /// When it ends if unused (idle or maximum age, whichever is first).
+    pub expires_unix_ms: u64,
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AccountRecord {
     pub name: String,
@@ -314,6 +331,14 @@ pub trait Store: Send + Sync {
     /// return the stored value (`value` if it was absent). Several servers
     /// sharing a database agree on the first one written.
     async fn put_secret_if_absent(&self, name: &str, value: &str) -> StoreResult<String>;
+    /// Keep these login sessions over a restart (inserted, or replacing
+    /// those with their token hash), and drop expired ones. Several servers
+    /// sharing a database each add their own.
+    async fn save_sessions(&self, sessions: &[SessionRecord]) -> StoreResult<()>;
+    /// The saved sessions that haven't expired.
+    async fn load_sessions(&self) -> StoreResult<Vec<SessionRecord>>;
+    /// Forget a saved session (a logout).
+    async fn delete_session(&self, token_hash: &str) -> StoreResult<()>;
 
     async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>>;
     /// Insert or replace the player's design in the world.
@@ -543,6 +568,7 @@ struct MemInner {
     push_devices: BTreeMap<(NativeService, String), PushDeviceRecord>,
     push_prefs: BTreeMap<PlayerId, PushPrefsRecord>,
     secrets: BTreeMap<String, String>,
+    sessions: BTreeMap<String, SessionRecord>,
     worlds: BTreeMap<String, MemWorld>,
 }
 
@@ -642,6 +668,26 @@ impl Store for MemoryStore {
 
     async fn put_secret_if_absent(&self, name: &str, value: &str) -> StoreResult<String> {
         Ok(self.inner.lock().await.secrets.entry(name.to_string()).or_insert_with(|| value.to_string()).clone())
+    }
+
+    async fn save_sessions(&self, sessions: &[SessionRecord]) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        let now = now_unix_ms();
+        g.sessions.retain(|_, r| r.expires_unix_ms >= now);
+        for r in sessions {
+            g.sessions.insert(r.token_hash.clone(), r.clone());
+        }
+        Ok(())
+    }
+
+    async fn load_sessions(&self) -> StoreResult<Vec<SessionRecord>> {
+        let now = now_unix_ms();
+        Ok(self.inner.lock().await.sessions.values().filter(|r| r.expires_unix_ms >= now).cloned().collect())
+    }
+
+    async fn delete_session(&self, token_hash: &str) -> StoreResult<()> {
+        self.inner.lock().await.sessions.remove(token_hash);
+        Ok(())
     }
 
     async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>> {
@@ -800,6 +846,8 @@ fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
 ///   file, then rename) on every change;
 /// - `secrets.json`: server secrets (the generated VAPID private key),
 ///   written the same way, readable by the owner only (mode 0600 on Unix);
+/// - `sessions.json`: login sessions kept over a restart (token hashes),
+///   written the same way and readable by the owner only;
 ///
 /// and each world's records in `worlds/<world id>/`:
 ///
@@ -838,6 +886,7 @@ struct Tables {
     push_devices: Vec<PushDeviceRecord>,
     push_prefs: Vec<PushPrefsRecord>,
     secrets: BTreeMap<String, String>,
+    sessions: Vec<SessionRecord>,
     /// Each world's small tables, read on first use.
     worlds: BTreeMap<String, WorldTables>,
 }
@@ -866,6 +915,7 @@ const PUSH_SUBSCRIPTIONS_FILE: &str = "push_subscriptions.json";
 const PUSH_DEVICES_FILE: &str = "push_devices.json";
 const PUSH_PREFS_FILE: &str = "push_prefs.json";
 const SECRETS_FILE: &str = "secrets.json";
+const SESSIONS_FILE: &str = "sessions.json";
 
 impl FileStore {
     pub async fn open(dir: impl AsRef<Path>) -> StoreResult<Self> {
@@ -882,6 +932,11 @@ impl FileStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => return Err(e.into()),
         };
+        let sessions = match tokio::fs::read(dir.join(SESSIONS_FILE)).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e.into()),
+        };
         let tables = Tables {
             accounts,
             alert_prefs,
@@ -889,23 +944,35 @@ impl FileStore {
             push_devices,
             push_prefs,
             secrets,
+            sessions,
             worlds: BTreeMap::new(),
         };
         Ok(Self { dir, tables: Mutex::new(tables), histories: Default::default() })
     }
 
+    /// Write the saved sessions, readable by the owner only.
+    async fn write_sessions(&self, sessions: &[SessionRecord]) -> StoreResult<()> {
+        self.write_private(SESSIONS_FILE, &serde_json::to_vec(sessions)?).await
+    }
+
     /// Write the secrets, readable by the owner only.
     async fn write_secrets(&self, secrets: &BTreeMap<String, String>) -> StoreResult<()> {
-        let tmp = self.dir.join(format!("{SECRETS_FILE}.tmp"));
+        self.write_private(SECRETS_FILE, &serde_json::to_vec_pretty(secrets)?).await
+    }
+
+    /// Write `name` atomically (temp file, then rename), readable by the
+    /// owner only.
+    async fn write_private(&self, name: &str, bytes: &[u8]) -> StoreResult<()> {
+        let tmp = self.dir.join(format!("{name}.tmp"));
         let mut opts = tokio::fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
         opts.mode(0o600);
         let mut f = opts.open(&tmp).await?;
-        f.write_all(&serde_json::to_vec_pretty(secrets)?).await?;
+        f.write_all(bytes).await?;
         f.sync_all().await?;
         drop(f);
-        tokio::fs::rename(&tmp, self.dir.join(SECRETS_FILE)).await?;
+        tokio::fs::rename(&tmp, self.dir.join(name)).await?;
         Ok(())
     }
 
@@ -1162,6 +1229,37 @@ impl Store for FileStore {
 
     async fn load_push_prefs(&self, player: PlayerId) -> StoreResult<Option<PushPrefsRecord>> {
         Ok(self.tables.lock().await.push_prefs.iter().find(|r| r.player == player).cloned())
+    }
+
+    async fn save_sessions(&self, sessions: &[SessionRecord]) -> StoreResult<()> {
+        let mut t = self.tables.lock().await;
+        let now = now_unix_ms();
+        let new: std::collections::HashSet<&str> = sessions.iter().map(|s| s.token_hash.as_str()).collect();
+        let mut kept: Vec<SessionRecord> = t
+            .sessions
+            .iter()
+            .filter(|r| r.expires_unix_ms >= now && !new.contains(r.token_hash.as_str()))
+            .cloned()
+            .collect();
+        kept.extend(sessions.iter().cloned());
+        self.write_sessions(&kept).await?;
+        t.sessions = kept;
+        Ok(())
+    }
+
+    async fn load_sessions(&self) -> StoreResult<Vec<SessionRecord>> {
+        let now = now_unix_ms();
+        Ok(self.tables.lock().await.sessions.iter().filter(|r| r.expires_unix_ms >= now).cloned().collect())
+    }
+
+    async fn delete_session(&self, token_hash: &str) -> StoreResult<()> {
+        let mut t = self.tables.lock().await;
+        if t.sessions.iter().any(|r| r.token_hash == token_hash) {
+            let kept: Vec<SessionRecord> = t.sessions.iter().filter(|r| r.token_hash != token_hash).cloned().collect();
+            self.write_sessions(&kept).await?;
+            t.sessions = kept;
+        }
+        Ok(())
     }
 
     async fn put_secret_if_absent(&self, name: &str, value: &str) -> StoreResult<String> {
