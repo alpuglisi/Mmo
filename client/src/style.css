@@ -236,6 +236,8 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .link-btn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; min-height: 0; }
 .notice { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: var(--panel-2); border-left: 3px solid var(--accent); }
 .notice.bad { border-left-color: var(--bad); }
+.notice p { margin: 0.2em 0; }
+.notice .new-lineage { margin-top: 0.3em; }
 
 .sidebar { width: 360px; flex-shrink: 0; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
 .tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--border); }
@@ -342,7 +344,7 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
   #clock { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
   .topbar .spacer { display: none; }
   /* The design screen has no clock: its title stays, pushing Log out to the right. */
-  .topbar > strong.topbar-title { display: block; flex: 1; font-size: 14px; }
+  .topbar > strong.topbar-title { display: block; flex: 1; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .topbar button { padding: 0.35em 0.7em; }
   .catastrophe-pill { max-width: 9em; }
 

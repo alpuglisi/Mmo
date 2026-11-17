@@ -794,13 +794,45 @@ impl Game {
         std::mem::take(&mut self.notices)
     }
 
-    /// Found the player's lineage (one per player per world).
+    /// Whether everything the player founded has died out: no living
+    /// organisms (agents or level-of-detail cohorts) and no eggs waiting to
+    /// hatch. A player who never founded is not extinct.
+    pub fn is_extinct(&self, player: PlayerId) -> bool {
+        self.lineage_of.contains_key(&player)
+            && self.owner_population(player) == 0
+            && !self.world.clutches.iter().any(|c| c.owner == player)
+    }
+
+    /// Test hook (`EVO_E2E_HOOKS`): every organism the player owns dies at
+    /// once (and their eggs), as if a catastrophe struck; the number killed.
+    pub fn e2e_wipe_out(&mut self, player: PlayerId) -> usize {
+        let n = self.world.kill_all_of(player, evo_sim::organism::DeathCause::Predation);
+        self.state_cache.invalidate();
+        n
+    }
+
+    /// Found the player's lineage: one living lineage per player per world.
+    /// A player whose lineage has died out may found a new one at once; their
+    /// renown, ledger, records and seen alerts stay, the old lineage stays in
+    /// the history as extinct, and the dead lineage's group orders go.
     pub fn found(&mut self, player: PlayerId, design: &FounderDesign) -> Result<FoundOk, FoundError> {
         if let Some(&lineage) = self.lineage_of.get(&player) {
-            return Err(FoundError::AlreadyFounded { lineage });
+            if !self.is_extinct(player) {
+                return Err(FoundError::AlreadyFounded { lineage });
+            }
         }
+        let refounding = self.lineage_of.contains_key(&player);
         let lineage = self.world.lineages.len() as u32;
         let founders = self.world.found_lineage(player, design).map_err(FoundError::Design)?;
+        if refounding {
+            self.world.clear_group_orders(player);
+            // Milestones count for the new lineage (the legacy share's best stays).
+            if let Some(prog) = self.progress.get_mut(&player) {
+                prog.population = 0;
+                prog.generation = 0;
+                prog.extinct = false;
+            }
+        }
         // New organisms: the next state build indexes the world again.
         self.state_cache.invalidate();
         self.lineage_of.insert(player, lineage);
@@ -2993,6 +3025,42 @@ mod tests {
             .founders(300);
         assert!(matches!(g.found(3, &over), Err(FoundError::Design(DesignError::OverBudget { .. }))));
         assert_eq!(g.lineage_of(3), None);
+    }
+
+    /// Kill every organism the player owns and drop their eggs, then run a
+    /// day (the dead leave the world at the day boundary).
+    fn wipe_out(g: &mut Game, player: PlayerId) {
+        assert!(g.e2e_wipe_out(player) > 0);
+        for _ in 0..g.world.config.ticks_per_day {
+            g.world.step();
+        }
+    }
+
+    #[test]
+    fn refounding_only_after_extinction() {
+        let (mut g, _, _) = game();
+        let first = g.lineage_of(1).unwrap();
+        // Refused while the lineage lives.
+        assert!(!g.is_extinct(1));
+        assert!(matches!(g.found(1, &design("again")), Err(FoundError::AlreadyFounded { .. })));
+        // A player who never founded is not "extinct".
+        assert!(!g.is_extinct(99));
+        let renown = g.balance(1);
+        wipe_out(&mut g, 1);
+        assert_eq!(g.owner_population(1), 0);
+        assert!(g.is_extinct(1));
+        assert!(!g.is_extinct(2), "bob is untouched");
+        let ok = g.found(1, &design("Second try")).expect("refound after extinction");
+        assert_ne!(ok.lineage, first);
+        assert_eq!(g.lineage_of(1), Some(ok.lineage));
+        assert!(!ok.founders.is_empty());
+        assert_eq!(g.owner_population(1), ok.founders.len());
+        assert_eq!(g.world.lineages[first as usize].owner, 1, "the old lineage stays in the history");
+        assert_eq!(g.balance(1), renown, "renown kept, no second founding grant");
+        // The new lineage is alive: a further lineage is refused again.
+        assert!(
+            matches!(g.found(1, &design("third")), Err(FoundError::AlreadyFounded { lineage }) if lineage == ok.lineage)
+        );
     }
 
     #[test]

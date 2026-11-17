@@ -107,14 +107,24 @@ function start(session: Session): void {
   socket.start();
 }
 
-async function showDesign(r: Running): Promise<void> {
+async function showDesign(r: Running, refound = false): Promise<void> {
   const el = await designScreen({
     token: r.session.token,
     onFounded: () => void showGame(r),
     onUnauthorized: sessionExpired,
     onLogout: logout,
+    refound,
+    onCancel: refound ? () => void showGame(r) : undefined,
   });
   if (running === r) mount(el);
+}
+
+/** The lineage died out: leave the map for the design screen (the socket stays open). */
+function newLineage(r: Running): void {
+  if (running !== r) return;
+  r.screen?.destroy();
+  r.screen = null;
+  void showDesign(r, true);
 }
 
 async function showGame(r: Running): Promise<void> {
@@ -124,6 +134,7 @@ async function showGame(r: Running): Promise<void> {
   const screen = await gameScreen({
     model: r.model, send: (m) => r.socket.send(m), onLogout: logout, onUnauthorized: sessionExpired,
     token: r.session.token, mountInto: (el) => root.replaceChildren(el), world: r.session.world ?? '',
+    onNewLineage: () => newLineage(r),
   });
   if (running !== r) return screen.destroy();
   r.screen = screen;

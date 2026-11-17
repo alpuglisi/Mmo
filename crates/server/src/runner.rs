@@ -45,6 +45,11 @@ use crate::terrain::{dynamic_raw, terrain_raw, DynamicRaw, TerrainRaw};
 use crate::webpush::WorldNotifier;
 
 pub enum Request {
+    /// Test hook (`EVO_E2E_HOOKS`): the player's lineage dies at once.
+    E2eWipeOut {
+        player: PlayerId,
+        reply: oneshot::Sender<usize>,
+    },
     Found {
         player: PlayerId,
         name: String,
@@ -457,6 +462,9 @@ impl Runner {
                 } else {
                     TerrainReply::Dynamic(Box::new(dynamic_raw(w)))
                 });
+            }
+            Request::E2eWipeOut { player, reply } => {
+                let _ = reply.send(self.game.e2e_wipe_out(player));
             }
             Request::Stats { player, reply } => {
                 let _ = reply.send(self.game.lineage_stats(player));

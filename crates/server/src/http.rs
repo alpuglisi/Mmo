@@ -204,6 +204,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
         .route("/api/lineage/stats", get(lineage_stats))
+        .merge(e2e_hooks())
         .route("/api/alerts/prefs", get(alert_prefs).post(set_alert_prefs))
         .route("/api/push/subscriptions", get(push_subscriptions))
         .route("/api/push/subscribe", post(push_subscribe))
@@ -425,8 +426,9 @@ async fn found_lineage(
     let ok = match rx.await.map_err(ApiError::internal)? {
         Ok(ok) => ok,
         Err(FoundError::AlreadyFounded { lineage }) => {
-            let mut e =
-                ApiError::new(StatusCode::CONFLICT, "already_founded", "you already founded a lineage in this world");
+            const STILL_ALIVE: &str =
+                "your lineage in this world is still alive (organisms or eggs): a new one can be founded once it has died out";
+            let mut e = ApiError::new(StatusCode::CONFLICT, "already_founded", STILL_ALIVE);
             e.detail = Some(serde_json::json!({ "lineage": lineage }));
             return Err(e);
         }
@@ -562,6 +564,31 @@ async fn lineage_stats(
     let (reply, rx) = oneshot::channel();
     send_request(&w.tx, Request::Stats { player: session.player, reply })?;
     Ok(Json(rx.await.map_err(ApiError::internal)?))
+}
+
+/// Test-only routes, mounted only when the server runs with
+/// `EVO_E2E_HOOKS=1` (the client's e2e scripts set it): `POST
+/// /api/e2e/wipe-out` kills the caller's lineage at once, so re-founding can
+/// be tested without waiting for a real extinction. Absent (404) otherwise.
+fn e2e_hooks() -> Router<AppState> {
+    if std::env::var("EVO_E2E_HOOKS").as_deref() == Ok("1") {
+        tracing::warn!("EVO_E2E_HOOKS=1: test-only routes are mounted (never set this in production)");
+        Router::new().route("/api/e2e/wipe-out", post(e2e_wipe_out))
+    } else {
+        Router::new()
+    }
+}
+
+async fn e2e_wipe_out(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::E2eWipeOut { player: session.player, reply })?;
+    let killed = rx.await.map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({ "killed": killed })))
 }
 
 /// The caller's alert preferences (the defaults until they save some).

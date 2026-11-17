@@ -10,7 +10,7 @@
 
 import { api, ApiError } from '../api';
 import { designCost, validateDesign } from '../cost';
-import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign } from '../designMorph';
+import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign, starterValue } from '../designMorph';
 import { defaultMorphology, sameMorphology, type Morphology } from '../morphology';
 import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, ThermoSpec } from '../protocol';
 import { avatarView } from './avatarView';
@@ -27,6 +27,12 @@ export interface DesignCallbacks {
   onFounded: (r: FoundResponse | null) => void;
   onUnauthorized: () => void;
   onLogout: () => void;
+  /**
+   * Founding again after the last lineage died out: the screen says so and
+   * offers a way back to the map (`onCancel`).
+   */
+  refound?: boolean;
+  onCancel?: () => void;
 }
 
 const BIRTHS: [BirthSpec, string, string][] = [
@@ -242,12 +248,13 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   const reset = h('button', { type: 'button', class: 'secondary' }, 'Reset traits');
 
   reset.addEventListener('click', () => {
-    // Traits and body plan back to the defaults (the builder follows as one undo step).
+    // Traits and body plan back to the starting design (the builder follows as one undo step).
     spec.morphology = defaultMorphology();
     for (const g of cat.genes) {
-      spec.traits[g.name] = g.default;
+      const v = starterValue(cat, g.name);
+      spec.traits[g.name] = v;
       const s = sliders.get(g.name)!;
-      s.value = String(g.default);
+      s.value = String(v);
       s.dispatchEvent(new Event('input'));
     }
     syncBuilder();
@@ -277,7 +284,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
     const left = cat.budget - c.total;
     unspent.textContent = left > cat.budget / 2
-      ? `${left.toFixed(1)} points still unspent. Traits start at their defaults, which cost nothing: raise the ones that suit the world, or try a preset in Builder mode.`
+      ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore that costs almost nothing: raise the traits that suit the world, or try a preset in Builder mode.`
       : '';
     for (const [g, cell] of costCells) {
       const p = c.perGene[g];
@@ -305,7 +312,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     } catch (e) {
       if (e instanceof ApiError) {
         if (e.status === 401) return cb.onUnauthorized();
-        if (e.code === 'already_founded') return cb.onFounded(null);
+        // A first founding that raced another tab: the lineage exists, go play. Founding again: say why not.
+        if (e.code === 'already_founded' && !cb.refound) return cb.onFounded(null);
         const extra = e.code === 'over_budget' && e.body ? ` (server: ${Number(e.body.cost).toFixed(1)} of ${e.body.budget})` : '';
         serverError.textContent = `${e.code}: ${e.message}${extra}`;
       } else {
@@ -316,9 +324,13 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   });
 
   const page = h('div', { class: 'screen design' },
-    h('header', { class: 'topbar' }, h('strong', { class: 'topbar-title' }, 'Design your founders'),
-      h('span', { class: 'muted' }, 'After launch the design changes only through breeding, mutation and selection.'),
-      h('span', { class: 'spacer' }), h('button', { class: 'secondary', onclick: cb.onLogout }, 'Log out')),
+    h('header', { class: 'topbar' }, h('strong', { class: 'topbar-title' }, cb.refound ? 'Design a new lineage' : 'Design your founders'),
+      h('span', { class: 'muted' }, cb.refound
+        ? 'Your last lineage died out. Your renown, records and titles stay; the new founders start fresh.'
+        : 'After launch the design changes only through breeding, mutation and selection.'),
+      h('span', { class: 'spacer' }),
+      cb.onCancel ? h('button', { class: 'secondary', id: 'design-cancel', onclick: cb.onCancel }, 'Back to the map') : null,
+      h('button', { class: 'secondary', onclick: cb.onLogout }, 'Log out')),
     h('div', { class: 'design-body' },
       h('div', { class: 'design-main' },
         h('section', { class: 'card' }, h('h2', {}, 'Basics'),

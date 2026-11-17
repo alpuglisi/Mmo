@@ -27,7 +27,8 @@
     "cap:open:ios": "cap open ios",
     "capacitor:copy:after": "node scripts/ios-ats.mjs",
     "ios:build-sim": "bash scripts/ios-build-sim.sh",
-    "e2e:ios": "bash e2e/ios-simulator.sh"
+    "e2e:ios": "bash e2e/ios-simulator.sh",
+    "e2e:refound": "node e2e/refound.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.2",

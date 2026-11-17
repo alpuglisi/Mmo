@@ -99,8 +99,23 @@ export function designPayload(d: EditorDesign, cat: GeneCatalog): DesignSpec {
 }
 
 /** A fresh editor design: every gene at its default, the default body plan. */
+/**
+ * The starting design's departures from the gene defaults: a sturdy, social,
+ * cautious herbivore (a bigger body, a close herd, less boldness), all free
+ * genes, so the whole budget is left for the player. Measured with the
+ * server's founding path (`cargo run --release -p evo-server --example
+ * starter_survival`): docs/starter-design.md.
+ */
+export const STARTER_TRAITS: Readonly<Record<string, number>> = Object.freeze({ body_size: 0.5, group_tolerance: 0.9, boldness: 0.3 });
+
+/** A gene's value in the starting design: the starter's, else the catalog default. */
+export function starterValue(cat: GeneCatalog, gene: string): number {
+  const g = cat.genes.find((x) => x.name === gene);
+  return STARTER_TRAITS[gene] ?? g?.default ?? 0;
+}
+
 export function newEditorDesign(cat: GeneCatalog): EditorDesign {
-  const traits = Object.fromEntries(cat.genes.map((g) => [g.name, g.default]));
+  const traits = Object.fromEntries(cat.genes.map((g) => [g.name, starterValue(cat, g.name)]));
   return {
     name: '',
     thermo: 'warm',
