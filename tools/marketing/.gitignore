@@ -1,0 +1,7 @@
+node_modules/
+# Credentials and local state: never commit.
+marketing.config.json
+.env
+.env.*
+data/
+out/
