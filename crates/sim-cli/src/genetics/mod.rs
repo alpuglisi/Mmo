@@ -308,7 +308,7 @@ evo-sim genetics — statistical validation of the population genetics
 
 USAGE:
     evo-sim genetics [--long] [--level genome|ecology|all] [--out DIR] [--seed N]
-                     [--years N] [--size N] [--seeds N] [--sample-days N] [--meat]
+                     [--years N] [--size N] [--seeds N] [--sample-days N] [--meat] [--founding SPEC]
 
     --long          Large replicate counts (minutes); default is the quick CI-sized run
     --level L       genome (Wright–Fisher on the real genome code), ecology (full worlds)
@@ -323,6 +323,8 @@ USAGE:
     --meat          Ecology: run with the carnivore-diet rules and predator brakes on
                     (`Balance::carnivore_diet`; off by default) and the predators in their
                     niches (`presets::niche_world`)
+    --founding SPEC Ecology: found the niche world as SPEC says (implies --meat;
+                    `presets::NicheFounding`, as for `evo-sim sweep --founding`)
     --only NAME     Genome level: only the check groups whose name contains NAME
                     (neutral drift, mutation-drift equilibrium, morphology step mutation,
                     mutation rates, dominance, additive inheritance, recessive load,
@@ -339,6 +341,7 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
     let mut only = None;
     let (mut years, mut size, mut seeds, mut sample_days) = (None, None, None, 10);
     let mut meat = false;
+    let mut founding = evo_sim::presets::NicheFounding::default();
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         let mut value = || it.next().cloned().ok_or(format!("{flag} needs a value"));
@@ -355,6 +358,10 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             "--seeds" => seeds = Some(num(value()?)?.max(1)),
             "--sample-days" => sample_days = num(value()?)?.max(1) as u32,
             "--meat" => meat = true,
+            "--founding" => {
+                founding = evo_sim::presets::NicheFounding::parse(&value()?).map_err(|e| format!("--founding: {e}"))?;
+                meat = true;
+            }
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown option {other}")),
         }
@@ -382,6 +389,7 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             sample_days,
             seed,
             meat,
+            founding,
         },
     })
 }

@@ -1,4 +1,4 @@
-//! Predators over the years: `cargo run --release --example predlong -- [years] [seeds..] [--every DAYS] [--set NAME=V] [--off] [--meat] [--meat-only]`.
+//! Predators over the years: `cargo run --release --example predlong -- [years] [seeds..] [--every DAYS] [--set NAME=V] [--off] [--meat] [--meat-only] [--founding SPEC]`.
 //!
 //! Across machines: add `--shard i/n` (and optionally `--shard-out FILE`) on
 //! machine i of n to run every n-th seed and write its results to
@@ -24,7 +24,9 @@
 //! each predator at the end, every prey lineage's lowest head count, and the
 //! predators' mean expressed values of the genes the rules read at the start
 //! and the end (with their mean drift over the surviving seeds), to see
-//! whether selection acts on them. Read only: the diagnosis of
+//! whether selection acts on them. `--founding SPEC` founds the niche world
+//! as `presets::NicheFounding::parse(SPEC)` says (implies `--meat`; *First-year
+//! prey boom: founding*). Read only: the diagnosis of
 //! *Predators over the years* (README, Balance).
 
 use std::collections::BTreeMap;
@@ -131,6 +133,7 @@ struct Opts {
     niches: bool,
     years: u32,
     seeds: Vec<u64>,
+    founding: presets::NicheFounding,
 }
 
 fn parse(argv: &[String]) -> Opts {
@@ -138,6 +141,7 @@ fn parse(argv: &[String]) -> Opts {
     let mut pos: Vec<String> = Vec::new();
     let mut every = 60u32;
     let mut niches = false;
+    let mut founding = presets::NicheFounding::default();
     let mut args = argv.iter().cloned();
     while let Some(a) = args.next() {
         if a == "--set" {
@@ -147,6 +151,10 @@ fn parse(argv: &[String]) -> Opts {
         } else if a == "--off" {
             balance = balance.morphology_off();
         } else if a == "--meat" {
+            balance = balance.carnivore_diet();
+            niches = true;
+        } else if a == "--founding" {
+            founding = presets::NicheFounding::parse(&args.next().expect("--founding SPEC")).expect("founding spec");
             balance = balance.carnivore_diet();
             niches = true;
         } else if a == "--meat-only" {
@@ -160,7 +168,7 @@ fn parse(argv: &[String]) -> Opts {
     let years: u32 = pos.first().and_then(|s| s.parse().ok()).unwrap_or(3);
     let seeds: Vec<u64> =
         if pos.len() > 1 { pos[1..].iter().map(|s| s.parse().unwrap()).collect() } else { (31..=34).collect() };
-    Opts { balance, every, niches, years, seeds }
+    Opts { balance, every, niches, years, seeds, founding }
 }
 
 fn seed_key(seed: u64) -> String {
@@ -248,7 +256,8 @@ fn merge(files: &[String]) {
 fn run_seed(opts: &Opts, seed: u64) -> SeedResult {
     let (balance, every, niches, years) = (opts.balance, opts.every, opts.niches, opts.years);
     let config = WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() };
-    let mut w = if niches { presets::niche_world(config, 1) } else { presets::standard_world(config, 1) };
+    let mut w =
+        if niches { presets::niche_world_with(config, 1, &opts.founding) } else { presets::standard_world(config, 1) };
     let genes0 = [gene_means(&w, 3), gene_means(&w, 4)];
     let mut prey_min = [usize::MAX; 6];
     let tpd = w.config.ticks_per_day;
