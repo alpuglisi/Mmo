@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canSplit, claimWait, clearMigrationMsg, groupName, groupObedience, groupOptions, groupOrders, groupsOf, homeRangeGroup, homeRangeNote, memberCounts, protectionLeft, migrateMsg, parseChoice, rallyLeft, rallyMsg,
+  canSplit, claimWait, clearMigrationMsg, groupName, groupObedience, groupOptions, groupOrders, groupsOf, homeRangeGroup, homeRangeNote, memberCounts, protectionLeft, migrateMsgs, parseChoice, rallyLeft, rallyMsg,
   targetGroup, territoryRadius, territoryTap, validChoice, TERRITORY_MIN_RADIUS,
 } from './groups';
 import type { GroupView, OwnOrganism, StateView } from './protocol';
@@ -50,8 +50,9 @@ describe('groups', () => {
   });
 
   it('sends migration to every group or to one', () => {
-    expect(migrateMsg('all', 1, 2)).toEqual({ type: 'migrate', x: 1, y: 2 });
-    expect(migrateMsg(1, 1, 2)).toEqual({ type: 'migrate', x: 1, y: 2, group: 1 });
+    expect(migrateMsgs('all', [g(0), g(2)], 1, 2)).toEqual([{ type: 'migrate', x: 1, y: 2, group: 0 }, { type: 'migrate', x: 1, y: 2, group: 2 }]);
+    expect(migrateMsgs('all', [], 1, 2)).toEqual([{ type: 'migrate', x: 1, y: 2, group: 0 }]);
+    expect(migrateMsgs(1, [g(0), g(1)], 1, 2)).toEqual([{ type: 'migrate', x: 1, y: 2, group: 1 }]);
     expect(clearMigrationMsg('all')).toEqual({ type: 'clear_migration' });
     expect(clearMigrationMsg(0)).toEqual({ type: 'clear_migration', group: 0 });
   });

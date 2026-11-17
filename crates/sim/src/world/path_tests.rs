@@ -7,11 +7,11 @@ use crate::math::Vec2;
 use crate::terrain::{traverse, Biome, Map, Traverse};
 use crate::WorldConfig;
 
-const W: usize = 40;
-const H: usize = 24;
+pub(super) const W: usize = 40;
+pub(super) const H: usize = 24;
 
 /// A flat grassland world, `path_nodes` as given.
-fn flat_world(path_nodes: f32) -> World {
+pub(super) fn flat_world(path_nodes: f32) -> World {
     let mut config = WorldConfig { seed: 2, width: W, height: H, ..Default::default() };
     config.balance.path_nodes = path_nodes;
     let mut w = World::new(config);
@@ -30,7 +30,7 @@ fn flat_world(path_nodes: f32) -> World {
     w
 }
 
-fn set(w: &mut World, x: usize, y: usize, what: &str) {
+pub(super) fn set(w: &mut World, x: usize, y: usize, what: &str) {
     let k = y * W + x;
     match what {
         "lake" => {
@@ -47,7 +47,7 @@ fn set(w: &mut World, x: usize, y: usize, what: &str) {
     }
 }
 
-fn walker() -> FounderDesign {
+pub(super) fn walker() -> FounderDesign {
     FounderDesign::new("walker", Thermo::Warm, BirthType::Live, 2).founders(1)
 }
 
@@ -58,7 +58,7 @@ fn swimmer() -> FounderDesign {
 /// Found one organism of `design` at `at`, rested and fed; its index. It
 /// gets exactly the design's genes (no founder variation), so the outcome
 /// doesn't depend on random draws.
-fn place(w: &mut World, owner: u32, design: &FounderDesign, at: Vec2) -> usize {
+pub(super) fn place(w: &mut World, owner: u32, design: &FounderDesign, at: Vec2) -> usize {
     w.found_lineage_unchecked(owner, design);
     let i = w.organisms.len() - 1;
     let o = &mut w.organisms[i];

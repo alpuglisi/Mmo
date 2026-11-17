@@ -475,7 +475,10 @@ async fn spectators_watch_a_world_without_logging_in() {
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let lineage = v["lineage"].as_u64().unwrap();
     let view = get(srv.addr, "/api/spectate?world=isle").await;
-    assert_eq!((view["width"].as_u64(), view["cell"].as_u64()), (Some(48), Some(8)));
+    assert_eq!(
+        (view["width"].as_u64(), view["cell"].as_u64(), view["player_cell"].as_u64()),
+        (Some(48), Some(8), Some(16))
+    );
     let mine =
         view["lineages"].as_array().unwrap().iter().find(|l| l["lineage"] == lineage).expect("the lineage").clone();
     assert_eq!(
@@ -485,7 +488,8 @@ async fn spectators_watch_a_world_without_logging_in() {
     assert!(mine["look"]["size"].is_u64(), "{mine}");
     let cells = mine["cells"].as_array().unwrap();
     assert_eq!(cells.iter().map(|c| c[2].as_u64().unwrap()).sum::<u64>(), 10);
-    assert!(cells.iter().all(|c| c[0].as_u64().unwrap() < 6 && c[1].as_u64().unwrap() < 6), "{cells:?}");
+    // A player's lineage on 16-tile cells (as coarse as a market listing).
+    assert!(cells.iter().all(|c| c[0].as_u64().unwrap() < 3 && c[1].as_u64().unwrap() < 3), "{cells:?}");
     let text = view.to_string();
     for private in ["\"id\":", "\"x\":", "\"genes\"", "\"pregnant\"", "\"token\""] {
         assert!(!text.contains(private), "{private} in {text}");

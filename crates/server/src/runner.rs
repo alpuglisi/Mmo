@@ -80,6 +80,8 @@ pub enum Request {
     /// `render_rgb` at `scale` pixels per tile: (width, height, rgb).
     Snapshot {
         scale: usize,
+        /// Whose map: their organisms and others within their sight.
+        player: PlayerId,
         reply: oneshot::Sender<(usize, usize, Vec<u8>)>,
     },
     /// The tile grid: every layer, or only the dynamic ones.
@@ -499,8 +501,8 @@ impl Runner {
                 self.season_watchers.remove(&conn);
                 self.game.disconnect(conn);
             }
-            Request::Snapshot { scale, reply } => {
-                let _ = reply.send(evo_sim::render::render_rgb(&self.game.world, scale));
+            Request::Snapshot { scale, player, reply } => {
+                let _ = reply.send(self.game.map_rgb(player, scale));
             }
             Request::Terrain { full, reply } => {
                 let w = &self.game.world;

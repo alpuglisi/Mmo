@@ -52,6 +52,16 @@ describe('density', () => {
   });
 });
 
+describe('cellOf', () => {
+  it('counts players\' lineages on coarser cells than the wild ones', async () => {
+    const { cellOf } = await import('./spectate');
+    const s = { ...spec(1, []), player_cell: 16 };
+    expect(cellOf(s, lin(0, 1, true))).toBe(8);
+    expect(cellOf(s, lin(4, 1, false))).toBe(16);
+    expect(cellOf(spec(1, []), lin(4, 1, false))).toBe(8);
+  });
+});
+
 describe('PopulationHistory', () => {
   it('keeps one point per day, aligned across lineages', () => {
     const h = new PopulationHistory(3);

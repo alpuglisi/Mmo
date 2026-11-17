@@ -27,8 +27,8 @@
 //!   [`GameConfig::home_range_ticks`] (12 hours), then fades linearly to
 //!   nothing over [`GameConfig::home_range_fade_ticks`] (24 hours more), in
 //!   steps of 5%. It ends early if the territory is abandoned or replaced.
-//! - Organisms in an open directed-mating agreement (either side, pending or
-//!   accepted), listed on the marketplace, or offered as a bidder's organism
+//! - Organisms in an accepted directed-mating agreement (either side; a
+//!   pending request carries no consent), listed on the marketplace, or offered as a bidder's organism
 //!   on an auction are exempt from both: the trip and the trade carry risk
 //!   by design.
 //! - On login, a player whose lineage was actually shielded (it was small
@@ -42,7 +42,7 @@ use evo_sim::world::offline::HomeRange;
 use evo_sim::PlayerId;
 use serde::{Deserialize, Serialize};
 
-use super::{AlertKind, Game, GroupView, OrgId, Outbox};
+use super::{AlertKind, Game, GroupView, OfferStatus, OrgId, Outbox};
 
 /// Default length of a protection spell in hours (`--offline-protection-hours`).
 pub const DEFAULT_PROTECTION_HOURS: f64 = 12.0;
@@ -154,6 +154,11 @@ impl Game {
     /// protection the player has left in minutes.
     pub(super) fn group_views_for(&self, player: PlayerId, groups: &[GroupInfo]) -> Vec<GroupView> {
         let mut views = self.group_views(groups);
+        for v in &mut views {
+            if let Some((_, route)) = self.routes.get(&(player, v.id)) {
+                v.route.clone_from(route);
+            }
+        }
         let left = self.protection_left(player, self.world.tick());
         let minutes = (left as f64 * self.cfg.tick_ms / 60_000.0).floor() as u32;
         for v in views.iter_mut().filter(|v| v.home_range) {
@@ -377,7 +382,11 @@ impl Game {
         let exempt: BTreeSet<OrgId> = if lineages.is_empty() && ranges.is_empty() {
             BTreeSet::new()
         } else {
-            let offers = self.offers.values().filter(|o| o.status.is_open()).flat_map(|o| [o.mine, o.partner]);
+            // Only an accepted agreement: a pending request carries no
+            // consent from the partner's owner, and exempting on it let a
+            // rival strip a logged-out player's protection by asking.
+            let offers =
+                self.offers.values().filter(|o| o.status == OfferStatus::Accepted).flat_map(|o| [o.mine, o.partner]);
             let listed = self.economy.listings.values().flat_map(|l| {
                 std::iter::once(l.organism).chain(l.auction.as_ref().and_then(|a| a.high.as_ref()).map(|b| b.mine))
             });
@@ -604,6 +613,17 @@ mod tests {
         g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: None });
         g.disconnect(10);
         g.disconnect(20);
+        // A pending request strips nobody's protection: Bob never consented
+        // (and a rival could otherwise target a logged-out player's last
+        // animals just by asking).
+        let p = g.world.offline_protection();
+        assert!(!p.is_exempt(fa) && !p.is_exempt(mb), "a pending request exempted its organisms");
+        // Accepted, the trip carries risk for both.
+        let id = *g.offers.keys().next().unwrap();
+        g.connect(21, 2, "bob");
+        g.command(21, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.disconnect(21);
+        assert_eq!(g.offers[&id].status, OfferStatus::Accepted, "apart, the agreement waits");
         let p = g.world.offline_protection();
         assert!(p.is_exempt(fa) && p.is_exempt(mb));
         assert!(!p.is_exempt(a.iter().copied().find(|&i| i != fa).unwrap()));

@@ -68,6 +68,11 @@ export function lerpDensity(a: Density, b: Density, t: number): Density {
   return out;
 }
 
+/** The cell side in tiles of a lineage's counts: players' lineages are counted on coarser cells. */
+export function cellOf(s: Spectate, l: SpectateLineage): number {
+  return l.wild ? s.cell : s.player_cell ?? s.cell;
+}
+
 /** Disc radius in tiles for `n` animals in a cell of `cell` tiles: grows with the square root, at most half a cell past the edge. */
 export function discRadius(n: number, cell: number): number {
   if (n <= 0) return 0;

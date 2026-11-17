@@ -133,9 +133,13 @@ async function main() {
     // Matings: the "My adult" choice survives state pushes (same option element, same value).
     await page.click('#tab-matings');
     await waitFor('adults in the form', () => page.evaluate(() => document.querySelectorAll('#mating-mine option').length >= 4));
+    // A female (founders are half female; no predators in this world): her
+    // partners are males, who are never pregnant, so the partner list is
+    // never empty whatever the world is doing.
     const picked = await page.evaluate(() => {
       const sel = document.querySelector('#mating-mine');
-      const opt = sel.options[sel.options.length - 1];
+      const females = [...sel.options].filter((o) => / female /.test(o.textContent));
+      const opt = females[females.length - 1];
       sel.value = opt.value;
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       window.__pickedOption = opt;
@@ -149,9 +153,12 @@ async function main() {
     });
     check(after.tick > ticks0 + 20, 'the world should have moved on', { ticks0, after });
     check(after.value === picked && after.same, 'the picked adult should stay picked, in the same option element', { picked, after });
-    const partnerList = await page.evaluate(() => [...document.querySelectorAll('#mating-partner-pick option')].map((o) => o.textContent));
-    check(partnerList.length > 1 && partnerList.some((t) => t.includes('(yours)')), 'partner list', partnerList);
-    step(`"My adult" kept #${picked} over ${after.tick - ticks0} ticks of state pushes; partners listed (${partnerList.length - 1})`);
+    const partnerList = await waitFor('an own male to pick as partner', () => page.evaluate(() => {
+      const opts = [...document.querySelectorAll('#mating-partner-pick option')];
+      const free = opts.filter((o) => !o.disabled && o.value && o.textContent.includes(' male (yours)'));
+      return free.length > 0 ? opts.map((o) => o.textContent) : null;
+    }));
+    step(`"My adult" kept #${picked} (a female) over ${after.tick - ticks0} ticks of state pushes; partners listed (${partnerList.length - 1}, her own males among them)`);
 
     // History: the endpoint answers, and Recent outcomes shows it after a reload.
     const hist = await page.evaluate(async () => {

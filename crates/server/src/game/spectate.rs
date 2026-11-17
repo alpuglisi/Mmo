@@ -5,8 +5,9 @@
 //! Nothing here is private to a player (playtest 1, finding 27):
 //!
 //! - **No positions or ids of animals.** Each lineage's living members are
-//!   counted on a coarse grid of [`SPECTATE_CELL`]-tile cells, the same
-//!   resolution for wild and player lineages; no organism id, sex, needs,
+//!   counted on a coarse grid: [`PLAYER_CELL`]-tile cells for a player's
+//!   lineage (as coarse as a market listing's position), [`SPECTATE_CELL`]
+//!   for the wild species, which are no one's; no organism id, sex, needs,
 //!   action, order, pregnancy or group goes out.
 //! - **No genes.** A lineage shows its most common adult [`Appearance`] (the
 //!   coarse classes and buckets every player already sees on the map), not
@@ -26,8 +27,12 @@ use super::{catastrophe_view, Game};
 use crate::appearance::Appearance;
 use crate::protocol::{CatastropheView, ClockView};
 
-/// Side of a density cell in tiles.
+/// Side of a wild lineage's density cell in tiles.
 pub const SPECTATE_CELL: usize = 8;
+/// Side of a player lineage's density cell in tiles: the resolution a
+/// market listing gives an animal's position (`docs/server-review.md`,
+/// playtest fixes B).
+pub const PLAYER_CELL: usize = 16;
 
 /// One lineage as a spectator sees it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -48,8 +53,9 @@ pub struct SpectateLineage {
     /// has no adult); none once it died out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub look: Option<Appearance>,
-    /// Living members per cell: `[cell x, cell y, count]`, cells with none
-    /// left out.
+    /// Living members per cell: `[cell x, cell y, count]` on cells of
+    /// `Spectate::cell` tiles (wild) or `Spectate::player_cell` (players'),
+    /// cells with none left out.
     pub cells: Vec<[u32; 3]>,
 }
 
@@ -60,8 +66,10 @@ pub struct Spectate {
     /// Map size in tiles.
     pub width: usize,
     pub height: usize,
-    /// Cell side in tiles (`SPECTATE_CELL`).
+    /// Cell side in tiles of the wild lineages (`SPECTATE_CELL`).
     pub cell: usize,
+    /// Cell side in tiles of the players' lineages (`PLAYER_CELL`).
+    pub player_cell: usize,
     /// Catastrophes under way.
     pub catastrophes: Vec<CatastropheView>,
     /// Every lineage that ever lived here, by index (dead ones with no cells).
@@ -82,8 +90,9 @@ impl Game {
             if l >= n {
                 continue;
             }
-            let cx = (o.pos.x.max(0.0) as usize / SPECTATE_CELL) as u32;
-            let cy = (o.pos.y.max(0.0) as usize / SPECTATE_CELL) as u32;
+            let side = if w.lineages[l].owner == WILD { SPECTATE_CELL } else { PLAYER_CELL };
+            let cx = (o.pos.x.max(0.0) as usize / side) as u32;
+            let cy = (o.pos.y.max(0.0) as usize / side) as u32;
             *cells[l].entry((cx, cy)).or_default() += 1;
             let into = if o.matured { &mut looks[l] } else { &mut young[l] };
             *into.entry(Appearance::of(o)).or_default() += 1;
@@ -125,6 +134,7 @@ impl Game {
             width: w.map.width,
             height: w.map.height,
             cell: SPECTATE_CELL,
+            player_cell: PLAYER_CELL,
             catastrophes: w.chronicle.catastrophes.iter().filter(|c| c.is_active()).map(catastrophe_view).collect(),
             lineages,
         }

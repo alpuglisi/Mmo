@@ -4,6 +4,7 @@
 // ranked seasons (hall of fame) and the world chronicle (species, eras,
 // catastrophes, achievements).
 
+import { commandError } from '../errors';
 import { DEFAULT_TICKS_PER_DAY, gameAndReal, ticksToNextSeason } from './duration';
 import { reconcile, setText } from './reconcile';
 import { friendlyError, MEETING_TILES } from './friendlyErrors';
@@ -34,7 +35,7 @@ import { createOnboarding } from './onboarding';
 import { onboardingDisabled } from '../onboarding';
 import { pushSettings } from './push';
 import {
-  canSplit, claimWait, clearMigrationMsg, groupColor, groupName, groupObedience, groupOptions, groupOrders, groupsOf, migrateMsg, parseChoice,
+  canSplit, claimWait, clearMigrationMsg, groupColor, groupName, groupObedience, groupOptions, groupOrders, groupsOf, migrateMsgs, parseChoice,
   homeRangeNote, rallyLeft, rallyMsg, targetGroup, territoryTap, validChoice, type GroupChoice, type TerritoryDraft,
 } from '../groups';
 
@@ -114,7 +115,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   const send = async (m: ClientMsg): Promise<ResultMsg> => {
     const r = await deps.send(m);
-    if (!r.ok && r.error && LOCAL_CODES.has(r.error.code)) model.toast('error', `${m.type}: ${r.error.message}`);
+    if (!r.ok && r.error && LOCAL_CODES.has(r.error.code)) model.toast('error', commandError(m.type, r.error));
     return r;
   };
 
@@ -491,11 +492,17 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   view.onClick = async (c) => {
     if (mode === 'migrate') {
       setMode('select');
-      const r = await send(migrateMsg(groupChoice, c.x, c.y));
-      // The server clamps the target to the map and echoes it.
-      const t = (r.data as { x: number; y: number } | undefined) ?? c;
+      const msgs = migrateMsgs(groupChoice, groupsOf(model.state), c.x, c.y);
+      const rs = await Promise.all(msgs.map((m) => send(m)));
+      // The server echoes the target it used: on land, possibly moved off water.
+      const r = rs.find((x) => x.ok) ?? rs[0];
+      const t: { x: number; y: number; note?: string } = (r?.data as { x: number; y: number; note?: string } | undefined) ?? c;
       const who = groupChoice === 'all' ? 'Adults' : `${groupName(groupChoice)} adults`;
-      if (r.ok) model.toast('info', `${who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})`);
+      if (r?.ok) {
+        model.toast('info', `${who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? `: ${t.note}` : ''}`);
+      } else if (r?.error) {
+        model.toast('error', `Migrate: ${r.error.message}`);
+      }
       return;
     }
     if (mode === 'rally') {
@@ -538,6 +545,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       view.setMoveTarget({ x: c.x, y: c.y });
       const r = await send({ type: 'order_move', organism: p.id, x: c.x, y: c.y });
       if (!r.ok) view.rejectMove();
+      const used = r.data as { x: number; y: number; note?: string } | undefined;
+      if (r.ok && used?.note) {
+        // Out of reach: it walks as near as it can.
+        view.setMoveTarget({ x: used.x, y: used.y });
+        model.toast('info', `#${p.id}: ${used.note}`);
+      }
       return;
     }
     if (c.organism !== null) {
@@ -1060,15 +1073,26 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const opposite = (sex: string) => !me || sex !== me.sex;
       const here = me ? { x: me.x, y: me.y } : view.cam;
       const dist = (o: { x: number; y: number }) => Math.hypot(o.x - here.x, o.y - here.y);
-      const ownPartners = adults.filter((o) => o.id !== me?.id && opposite(o.sex) && !o.pregnant)
-        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} (yours) · ${dist(o).toFixed(0)} tiles`, d: dist(o) }));
+      // Every own adult of the other sex, wherever it is (the lineage is all
+      // known); a pregnant female is listed but can't be picked. Other
+      // players' animals: those the server sends (in or near the view).
+      const ownPartners = adults.filter((o) => o.id !== me?.id && opposite(o.sex))
+        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} (yours)${o.pregnant ? ' · pregnant' : ''} · ${dist(o).toFixed(0)} tiles`, d: dist(o), off: o.pregnant }));
       const others = (s.nearby ?? []).filter((o) => o.matured && o.owner !== WILD && o.owner !== model.player && opposite(o.sex))
-        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} · ${ownerName(o.owner)} · ${dist(o).toFixed(0)} tiles`, d: dist(o) }));
-      const choices = [{ id: 0, label: ownPartners.length + others.length ? 'Choose a partner…' : 'No partner in sight', d: -1 },
-        ...[...ownPartners, ...others].sort((a, b) => a.d - b.d).slice(0, 40)];
+        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} · ${ownerName(o.owner)} · ${dist(o).toFixed(0)} tiles`, d: dist(o), off: false }));
+      const open = [...ownPartners, ...others].filter((c) => !c.off).length;
+      const first = open > 0 ? 'Choose a partner…'
+        : ownPartners.length > 0 ? 'No partner free now (pregnant)'
+          : 'No partner: none of yours of the other sex, none of other players\' in view';
+      const choices = [{ id: 0, label: first, d: -1, off: false },
+        // Pickable first (nearest first), then the pregnant ones.
+        ...[...ownPartners, ...others].sort((a, b) => Number(a.off) - Number(b.off) || a.d - b.d).slice(0, 40)];
       if (document.activeElement !== partnerPick) {
         reconcile(partnerPick, choices, (c) => String(c.id), (c) => h('option', { value: c.id || '' }) as HTMLOptionElement,
-          (opt, c) => setText(opt, c.label));
+          (opt, c) => {
+            setText(opt, c.label);
+            opt.disabled = c.off;
+          });
         partnerPick.value = [...partnerPick.options].some((o) => o.value === partner.value) ? partner.value : '';
       }
       if (Date.now() - previewAt > 3000 && partner.value !== '') void updateCompat();
@@ -1259,10 +1283,32 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const listEl = h('div', { id: 'organism-list', class: 'org-list' });
   const listMore = h('p', { class: 'muted small', id: 'organism-list-more' });
   const groupsEl = h('div', { id: 'group-list' });
+  const retireBtn = h('button', { type: 'button', id: 'retire-lineage', class: 'danger' }, 'Retire lineage');
+  const retireEl = h('details', { id: 'lineage-retire', class: 'retire' },
+    h('summary', {}, 'Retire this lineage'),
+    h('p', { class: 'muted small' },
+      'Start over: every animal and egg of your lineage leaves the world at once (they are removed, not killed and not left wild), ',
+      'its orders end, and you can design and found a new lineage straight away. Your renown, records and titles stay. ',
+      'A new lineage\'s legacy share counts toward the ranked season gradually over its first days.'),
+    retireBtn);
+  retireEl.hidden = true;
+  retireBtn.addEventListener('click', async () => {
+    const lineage = model.state?.lineage;
+    if (lineage === null || lineage === undefined) return;
+    if (!window.confirm(`Retire lineage #${lineage}? All ${model.state?.population ?? 0} of its animals leave the world. This can't be undone.`)) return;
+    const r = await send({ type: 'retire_lineage', lineage });
+    if (r.ok) {
+      const n = (r.data as { removed?: number } | undefined)?.removed ?? 0;
+      model.toast('info', `Lineage #${lineage} retired: ${n} animals left the world. You can found a new lineage.`);
+      retireEl.open = false;
+    } else if (r.error) {
+      model.toast('error', `Retire: ${r.error.message}`);
+    }
+  });
   append(tabs.lineage, [lineageExtinct, statsEl,
     h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
     h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter; the Seasons tab has the ranked seasons' }, 'By world season'), seasonsEl,
-    h('h3', {}, 'My organisms'), listEl, listMore]);
+    h('h3', {}, 'My organisms'), listEl, listMore, retireEl]);
 
   function renderSeasons(): void {
     const list = seasons;
@@ -1305,6 +1351,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // A founded lineage with nobody left: say so plainly, and where to see why.
     // One element, shown or hidden (rebuilding it each state would eat clicks on its button).
     lineageExtinct.hidden = !(s.lineage !== null && s.population === 0);
+    retireEl.hidden = !(s.lineage !== null && s.population > 0);
     renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb), () => lb.rows.length === 0

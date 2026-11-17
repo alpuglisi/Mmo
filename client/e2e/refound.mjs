@@ -9,7 +9,9 @@
 // the Lineage tab and the inspector say it died out and offer "Start a new
 // lineage"; the design screen says it is a new lineage and can go back to
 // the map; founding again works (new lineage id, living founders, renown
-// kept) and the died-out notice is gone; a third founding is refused again.
+// kept) and the died-out notice is gone; a third founding is refused again;
+// the living lineage is retired from the Lineage tab ("Retire this
+// lineage", confirmed) and a third founded.
 // Screenshots: e2e/out/refound-*.png.
 //
 //   npm run build && node e2e/refound.mjs     (env as for smoke.mjs)
@@ -173,6 +175,29 @@ async function main() {
     const third = await api(page, 'POST', '/api/lineage', { name: 'Third', thermo: 'warm', birth: 'live', litter_size: 2, traits: {} });
     check(third.status === 409 && third.json?.code === 'already_founded', 'a further founding while the new lineage lives should be refused', third);
     step('a further founding while the new lineage lives is refused again');
+
+    // Retire the living lineage from the Lineage tab (no drowning needed),
+    // then found a third.
+    await page.click('#tab-lineage');
+    await page.waitForSelector('#lineage-retire', { state: 'visible', timeout: UI_MS });
+    await page.click('#lineage-retire summary');
+    page.once('dialog', (d) => void d.accept());
+    await page.click('#retire-lineage');
+    await page.waitForSelector('#lineage-extinct', { state: 'visible', timeout: UI_MS });
+    check(await page.locator('#lineage-retire').isHidden(), 'the retire section should hide once retired');
+    const retired = await lineageNow(page);
+    check(retired && retired.lineage === second.lineage && retired.population === 0, 'retired lineage', retired);
+    await page.screenshot({ path: path.join(shots, 'refound-retired.png') });
+    await page.click('#lineage-extinct-new');
+    await page.waitForSelector('#design-name', { timeout: UI_MS });
+    await page.fill('#design-name', 'Third try');
+    await page.click('#design-submit');
+    await page.waitForSelector('#world-canvas', { timeout: UI_MS });
+    const fresh = await waitFor('the third lineage', async () => {
+      const s = await lineageNow(page);
+      return s && s.lineage !== null && s.lineage !== second.lineage && s.population > 0 ? s : null;
+    });
+    step(`retired lineage #${second.lineage} from the Lineage tab and founded #${fresh.lineage}`);
     check(errors.length === 0, 'page errors', errors);
     await context.close();
     console.log('refound e2e passed');
