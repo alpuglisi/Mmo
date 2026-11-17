@@ -12,6 +12,7 @@
 //! starting design (every gene at its default, warm, live birth, 2 young,
 //! the base founders).
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -53,8 +54,11 @@ fn starting_design() -> DesignSpec {
     serde_json::from_str(r#"{"name":"Starter","thermo":"warm","birth":"live","litter_size":2,"traits":{}}"#).unwrap()
 }
 
-/// Population of the lineage at each checkpoint (after founding), and the day it died out.
-fn run(seed: u64, spec: &DesignSpec, a: &Args) -> (Vec<usize>, Option<u64>) {
+/// What one world gave: the population at each checkpoint (after founding),
+/// the day the lineage died out, and its deaths by cause.
+type Outcome = (Vec<usize>, Option<u64>, BTreeMap<String, u64>);
+
+fn run(seed: u64, spec: &DesignSpec, a: &Args) -> Outcome {
     let world = build_world(&WorldSettings {
         seed,
         width: a.size,
@@ -71,7 +75,7 @@ fn run(seed: u64, spec: &DesignSpec, a: &Args) -> (Vec<usize>, Option<u64>) {
     let player = 1_000_001;
     g.set_name(player, "starter");
     let design = spec.to_design().expect("the design is valid");
-    g.found(player, &design).expect("founded");
+    let lineage = g.found(player, &design).expect("founded").lineage;
     let mut at = Vec::new();
     let mut extinct = None;
     for day in 1..=a.days {
@@ -86,11 +90,17 @@ fn run(seed: u64, spec: &DesignSpec, a: &Args) -> (Vec<usize>, Option<u64>) {
         if CHECKPOINTS.contains(&day) || day == a.days {
             at.push(alive);
         }
-        if extinct.is_some() && day >= a.days {
+        if extinct.is_some() {
+            // Nothing more to see: the later checkpoints are all 0.
+            at.extend(CHECKPOINTS.iter().filter(|&&c| c > day).map(|_| 0));
             break;
         }
     }
-    (at, extinct)
+    let causes = (g.world.counters.deaths_by_lineage.iter())
+        .filter(|((l, _), _)| *l == lineage)
+        .map(|((_, c), &n)| (format!("{c:?}"), n))
+        .collect();
+    (at, extinct, causes)
 }
 
 fn main() {
@@ -123,25 +133,25 @@ fn main() {
                     break;
                 }
                 let seed = a.first_seed + k;
-                let (at, extinct) = run(seed, &spec, &a);
+                let (at, extinct, causes) = run(seed, &spec, &a);
                 println!(
-                    "  seed {seed:>3}: {at:?}{}",
+                    "  seed {seed:>3}: {at:?}{} deaths {causes:?}",
                     extinct.map_or(String::new(), |d| format!(" (died out on day {d})"))
                 );
-                results.lock().unwrap().push((seed, at, extinct));
+                results.lock().unwrap().push((seed, at, extinct, causes));
             });
         }
     });
     let results = results.into_inner().unwrap();
     let n = results.len() as f64;
-    let alive_at_end = results.iter().filter(|(_, _, e)| e.is_none()).count();
+    let alive_at_end = results.iter().filter(|(_, _, e, _)| e.is_none()).count();
     println!(
         "alive after {} days: {alive_at_end} of {} ({:.0}%)",
         a.days,
         results.len(),
         100.0 * alive_at_end as f64 / n
     );
-    let mut sizes: Vec<usize> = results.iter().map(|(_, at, _)| *at.last().unwrap_or(&0)).collect();
+    let mut sizes: Vec<usize> = results.iter().map(|(_, at, _, _)| *at.last().unwrap_or(&0)).collect();
     sizes.sort_unstable();
     println!(
         "population at the end: median {}, min {}, max {}",
@@ -149,4 +159,11 @@ fn main() {
         sizes[0],
         sizes[sizes.len() - 1]
     );
+    let mut causes: BTreeMap<&str, u64> = BTreeMap::new();
+    for (_, _, _, c) in &results {
+        for (k, n) in c {
+            *causes.entry(k.as_str()).or_default() += n;
+        }
+    }
+    println!("deaths by cause, all worlds: {causes:?}");
 }

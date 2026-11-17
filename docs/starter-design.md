@@ -50,7 +50,7 @@ the median population at the end in brackets.
 | 64×64, 480-day years (the dev and e2e setup), joined on day 30, seeds 1–24 | 16/24, 67% (36) | 24/24, 100% (258) |
 | 64×64, 480-day years, joined on day 30, seeds 25–48 | 15/24, 62% (9) | 24/24, 100% (303) |
 | 64×64, 480-day years, joined on day 200, seeds 49–72 | 9/24, 38% (0) | 24/24, 100% (173) |
-| 128×128, 120-day years, joined on day 200, seeds 73–96 | ROW_DEFAULT | ROW_STARTER |
+| 128×128, 120-day years, joined on day 200, seeds 73–96 | 3/24, 12% (0) | 14/24, 58% (9) |
 
 Two variants that also spent points did no better on the 64×64 seeds 1–24:
 sentry instinct 0.5, large ears 0.5 and fur 0.4 on top of the starter
@@ -58,9 +58,13 @@ sentry instinct 0.5, large ears 0.5 and fur 0.4 on top of the starter
 24/24 alive. A design that costs nothing extra does the job, so the
 starter leaves the points for the player.
 
-The weakest starter run was one seed in the day-200 join on the small map,
-which ended with a single organism. "Large majority" holds; "every world"
-is not promised. A lineage that does die out can now found again
+The starter is not yet good enough in the last row. That row is a
+newcomer joining a default-size world in late autumn of year 2 (day 200
+of 120-day years, with catastrophes on). On seeds 73–84 its deaths were
+mostly starvation (172) and cold exposure (87), with predation far behind
+(28), and several lineages starved within their first 6 to 9 days. Winter
+reserves are being tried next (fur, fat stores, a lighter body,
+hibernation). A lineage that does die out can now found again
 (re-founding, below).
 
 ## Re-founding
