@@ -1,4 +1,4 @@
-//! Predators over the years: `cargo run --release --example predlong -- [years] [seeds..] [--every DAYS] [--set NAME=V] [--off] [--meat] [--meat-only]`.
+//! Predators over the years: `cargo run --release --example predlong -- [years] [seeds..] [--every DAYS] [--set NAME=V] [--off] [--meat] [--meat-only] [--founding SPEC]`.
 //!
 //! Runs the standard world (96×96) on each seed (seeds in parallel; default
 //! 3 years on seeds 31–34) and follows the red fox (lineage 3) and the pack
@@ -18,7 +18,9 @@
 //! each predator at the end, every prey lineage's lowest head count, and the
 //! predators' mean expressed values of the genes the rules read at the start
 //! and the end (with their mean drift over the surviving seeds), to see
-//! whether selection acts on them. Read only: the diagnosis of
+//! whether selection acts on them. `--founding SPEC` founds the niche world
+//! as `presets::NicheFounding::parse(SPEC)` says (implies `--meat`; *First-year
+//! prey boom: founding*). Read only: the diagnosis of
 //! *Predators over the years* (README, Balance).
 
 use std::collections::BTreeMap;
@@ -85,6 +87,7 @@ fn main() {
     let mut pos: Vec<String> = Vec::new();
     let mut every = 60u32;
     let mut niches = false;
+    let mut founding = presets::NicheFounding::default();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         if a == "--set" {
@@ -94,6 +97,10 @@ fn main() {
         } else if a == "--off" {
             balance = balance.morphology_off();
         } else if a == "--meat" {
+            balance = balance.carnivore_diet();
+            niches = true;
+        } else if a == "--founding" {
+            founding = presets::NicheFounding::parse(&args.next().expect("--founding SPEC")).expect("founding spec");
             balance = balance.carnivore_diet();
             niches = true;
         } else if a == "--meat-only" {
@@ -112,7 +119,11 @@ fn main() {
         .par_iter()
         .map(|&seed| {
             let config = WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() };
-            let mut w = if niches { presets::niche_world(config, 1) } else { presets::standard_world(config, 1) };
+            let mut w = if niches {
+                presets::niche_world_with(config, 1, &founding)
+            } else {
+                presets::standard_world(config, 1)
+            };
             let genes0 = [gene_means(&w, 3), gene_means(&w, 4)];
             let mut prey_min = [usize::MAX; 6];
             let tpd = w.config.ticks_per_day;

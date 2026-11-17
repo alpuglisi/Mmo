@@ -5,6 +5,7 @@ use crate::config::WorldConfig;
 use crate::design::{BirthType, FounderDesign, Thermo};
 use crate::genome::{Gene, PlayerId, WILD};
 use crate::world::World;
+use rand::Rng;
 
 /// The reference map size the preset founder counts and caps are tuned for.
 pub const REFERENCE_SIZE: usize = 128;
@@ -27,6 +28,168 @@ pub fn standard_world(config: WorldConfig, scale: u32) -> World {
 /// in the README); the lineages keep their indices.
 pub fn niche_world(config: WorldConfig, scale: u32) -> World {
     standard_world_from(config, scale, niche_wild_designs(), niche_player_designs())
+}
+
+/// How [`niche_world_with`] founds the niche world: founder counts and the
+/// founders' starting state (*First-year prey boom: founding* in the
+/// README). The default founds exactly as [`niche_world`]. Predators are the
+/// lineages designed at carnivory 0.6 or above (the fox and the pack
+/// hunters), prey every other lineage. Population caps and the founding
+/// counts the rules and scores measure against (`Lineage::founders`) stay
+/// those of the designs, so only the animals placed change.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NicheFounding {
+    /// Wild predator founders (the red fox), times their designed count.
+    pub wild_predators: f32,
+    /// Player predator founders (the pack hunters), times their designed
+    /// count.
+    pub player_predators: f32,
+    /// Prey founders, times their designed count.
+    pub prey: f32,
+    /// Predator founders' starting fat, in hunger points (capped at their
+    /// fat capacity).
+    pub predator_fat: f32,
+    /// Predator founders' starting breeding drive is at least this.
+    pub predator_drive: f32,
+    /// Share of each prey lineage's founders that start as weaned juveniles
+    /// (aged between weaning and maturity) instead of adults.
+    pub prey_young: f32,
+    /// Prey founders' starting breeding drive, times its default (a uniform
+    /// draw below 40).
+    pub prey_drive: f32,
+    /// Predator founders per placement group, each group at its own home
+    /// (0: as designed, 12 per group for wild lineages and one group for a
+    /// player's). A breeding territory holds one litter at a time
+    /// (`Balance::breeding_territory`), so founders clumped in one place
+    /// breed as one territory until they spread.
+    pub predator_group: f32,
+}
+
+impl Default for NicheFounding {
+    fn default() -> Self {
+        NicheFounding {
+            wild_predators: 1.0,
+            player_predators: 1.0,
+            prey: 1.0,
+            predator_fat: 0.0,
+            predator_drive: 0.0,
+            prey_young: 0.0,
+            prey_drive: 1.0,
+            predator_group: 0.0,
+        }
+    }
+}
+
+/// Designed carnivory from which a lineage counts as a predator in
+/// [`NicheFounding`].
+const FOUNDING_PREDATOR: f32 = 0.6;
+
+impl NicheFounding {
+    /// Parse `name=value,name=value` (the field names; e.g.
+    /// `predators=1.5,predator_fat=30`; `predators` sets both predator
+    /// counts) over the defaults.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let mut f = NicheFounding::default();
+        for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (n, v) = part.split_once('=').ok_or_else(|| format!("{part}: expected name=value"))?;
+            let v: f32 = v.trim().parse().map_err(|_| format!("{part}: not a number"))?;
+            let slot = match n.trim() {
+                "predators" => {
+                    (f.wild_predators, f.player_predators) = (v, v);
+                    continue;
+                }
+                "wild_predators" => &mut f.wild_predators,
+                "player_predators" => &mut f.player_predators,
+                "prey" => &mut f.prey,
+                "predator_fat" => &mut f.predator_fat,
+                "predator_drive" => &mut f.predator_drive,
+                "prey_young" => &mut f.prey_young,
+                "prey_drive" => &mut f.prey_drive,
+                "predator_group" => &mut f.predator_group,
+                other => return Err(format!("unknown founding option {other}")),
+            };
+            *slot = v;
+        }
+        Ok(f)
+    }
+
+    fn is_default(&self) -> bool {
+        *self == NicheFounding::default()
+    }
+
+    fn count(&self, design: &FounderDesign, wild: bool) -> u32 {
+        let k = match (is_predator(design), wild) {
+            (true, true) => self.wild_predators,
+            (true, false) => self.player_predators,
+            (false, _) => self.prey,
+        };
+        ((design.founders as f32 * k).round() as u32).max(2)
+    }
+}
+
+fn is_predator(design: &FounderDesign) -> bool {
+    design.get(Gene::Carnivory) >= FOUNDING_PREDATOR
+}
+
+/// [`niche_world`] founded as `founding` says (the default: exactly
+/// [`niche_world`]). Founder counts other than the designs' skip the point
+/// budget check.
+pub fn niche_world_with(config: WorldConfig, scale: u32, founding: &NicheFounding) -> World {
+    if founding.is_default() {
+        return niche_world(config, scale);
+    }
+    let resize = |d: FounderDesign, wild: bool| {
+        let n = founding.count(&d, wild);
+        (d.founders, d.founders(n))
+    };
+    let wild: Vec<_> = niche_wild_designs().into_iter().map(|(o, d)| (o, resize(d, true))).collect();
+    let players: Vec<_> = niche_player_designs().into_iter().map(|d| resize(d, false)).collect();
+    let predator: Vec<bool> =
+        wild.iter().map(|(_, (_, d))| d).chain(players.iter().map(|(_, d)| d)).map(is_predator).collect();
+    let designed: Vec<u32> = wild.iter().map(|(_, (n, _))| *n).chain(players.iter().map(|(n, _)| *n)).collect();
+    let group = |d: &FounderDesign, n: u32, wild: bool| match founding.predator_group {
+        g if g >= 1.0 && is_predator(d) => g.round() as u32,
+        _ if wild => 12,
+        _ => n.max(1),
+    };
+    let mut world = wild_world_with(config, scale, wild.into_iter().map(|(o, (_, d))| (o, d)).collect(), group);
+    for (k, (_, design)) in players.into_iter().enumerate() {
+        let owner = k as PlayerId + 1;
+        let n = if scale <= 1 { design.founders } else { (design.founders * scale).max(4) };
+        world.found_lineage_grouped(owner, &design.clone().founders(n), group(&design, n, false));
+    }
+    // Caps and the founding counts the rules read stay the designs'.
+    let area = (world.config.width * world.config.height) as f32 / (REFERENCE_SIZE * REFERENCE_SIZE) as f32;
+    for (l, &n) in designed.iter().enumerate() {
+        let wild = world.lineages[l].owner == WILD;
+        world.lineages[l].founders = if wild {
+            ((n as f32 * area * scale as f32).round() as u32).max(4)
+        } else if scale <= 1 {
+            n
+        } else {
+            (n * scale).max(4)
+        };
+    }
+    let tpd = world.config.ticks_per_day as f32;
+    let mut rng = crate::rng::rng_for(world.config.seed, crate::rng::stream::FOUNDING, 0xF0_0D, 0);
+    for o in world.organisms.iter_mut().filter(|o| o.alive) {
+        if predator[o.lineage as usize] {
+            o.fat = founding.predator_fat.min(world.config.balance.fat_capacity * (1.0 + o.pheno[Gene::FatStores]));
+            o.needs.breeding = o.needs.breeding.max(founding.predator_drive);
+        } else {
+            o.needs.breeding *= founding.prey_drive;
+            if rng.gen::<f32>() < founding.prey_young {
+                let wean = crate::stats::weaning_days(o.traits.maturity_days, o.traits.newborn_growth);
+                let age = rng.gen_range(wean..o.traits.maturity_days.max(wean + 1e-3));
+                let progress = (age / o.traits.maturity_days).min(1.0);
+                o.age_ticks = (age * tpd) as u32;
+                o.growth = o.traits.newborn_growth + (1.0 - o.traits.newborn_growth) * progress;
+                o.matured = false;
+                o.needs.breeding = 0.0;
+            }
+        }
+    }
+    world
 }
 
 fn standard_world_from(
@@ -80,7 +243,18 @@ pub fn wild_world(config: WorldConfig, scale: u32) -> World {
     wild_world_from(config, scale, wild_designs())
 }
 
-fn wild_world_from(mut config: WorldConfig, scale: u32, wild: Vec<(PlayerId, FounderDesign)>) -> World {
+fn wild_world_from(config: WorldConfig, scale: u32, wild: Vec<(PlayerId, FounderDesign)>) -> World {
+    wild_world_with(config, scale, wild, |_, _, _| 12)
+}
+
+/// [`wild_world_from`] with each lineage's founders placed in groups of
+/// `group(design, founders, true)` (12 in [`wild_world_from`]).
+fn wild_world_with(
+    mut config: WorldConfig,
+    scale: u32,
+    wild: Vec<(PlayerId, FounderDesign)>,
+    group: impl Fn(&FounderDesign, u32, bool) -> u32,
+) -> World {
     let area = (config.width * config.height) as f32 / (REFERENCE_SIZE * REFERENCE_SIZE) as f32;
     config.wild_cap = ((config.wild_cap as f32 * area * scale as f32) as usize).max(50);
     config.lineage_cap = ((config.lineage_cap as f32 * area.max(0.5) * scale as f32) as usize).max(50);
@@ -88,7 +262,7 @@ fn wild_world_from(mut config: WorldConfig, scale: u32, wild: Vec<(PlayerId, Fou
     let grow = |n: u32| ((n as f32 * area * scale as f32).round() as u32).max(4);
     for (owner, design) in wild {
         let n = grow(design.founders);
-        world.found_lineage_unchecked(owner, &design.founders(n));
+        world.found_lineage_grouped(owner, &design.clone().founders(n), group(&design, n, true));
     }
     world
 }
@@ -331,6 +505,61 @@ mod tests {
         for d in player_designs().into_iter().chain([migrant_design(), niche_pack_hunters()]) {
             assert!(d.validate().is_ok(), "{}: {:?} (cost {:.1})", d.name, d.validate(), d.point_cost());
         }
+    }
+
+    /// The default founding is the niche world; other founder counts place
+    /// more or fewer animals but keep the caps and the founding counts the
+    /// rules read, and the founders' starting state follows the options.
+    #[test]
+    fn niche_founding_changes_only_the_founders() {
+        let config = || WorldConfig { seed: 9, width: 64, height: 64, ..Default::default() };
+        let base = niche_world(config(), 1);
+        let same = niche_world_with(config(), 1, &NicheFounding::default());
+        assert_eq!(base.organisms.len(), same.organisms.len());
+        assert!(base.organisms.iter().zip(&same.organisms).all(|(a, b)| a.pos == b.pos && a.genome == b.genome));
+
+        let f = NicheFounding::parse("predators=2, predator_fat=40, prey_young=1, prey_drive=0").unwrap();
+        assert_eq!((f.wild_predators, f.player_predators, f.predator_fat), (2.0, 2.0, 40.0));
+        assert!(NicheFounding::parse("wolves=2").is_err());
+        let w = niche_world_with(config(), 1, &f);
+        let count = |w: &World, l: u32| w.organisms.iter().filter(|o| o.lineage == l).count();
+        for l in 0..base.lineages.len() as u32 {
+            assert_eq!(w.cap_usage(l).1, base.cap_usage(l).1, "cap of lineage {l}");
+            assert_eq!(w.lineages[l as usize].founders, base.lineages[l as usize].founders);
+            let (designed, placed) = (count(&base, l), count(&w, l));
+            if l == 3 || l == 4 {
+                assert!(
+                    placed >= 2 * designed - 1 && placed <= 2 * designed + 1,
+                    "lineage {l}: {placed} of {designed}"
+                );
+                assert!(w.organisms.iter().filter(|o| o.lineage == l).all(|o| o.fat == 40.0 && o.matured));
+            } else {
+                assert_eq!(placed, designed);
+                assert!(w.organisms.iter().filter(|o| o.lineage == l).all(|o| !o.matured && o.needs.breeding == 0.0));
+            }
+        }
+    }
+
+    /// Predators founded in pairs are scattered over the map instead of in
+    /// one pack: the same animals, at more homes.
+    #[test]
+    fn predators_founded_in_pairs_spread_out() {
+        let config = || WorldConfig { seed: 4, width: 96, height: 96, ..Default::default() };
+        let base = niche_world(config(), 1);
+        let pairs = niche_world_with(config(), 1, &NicheFounding::parse("predator_group=2").unwrap());
+        let spread = |w: &World| {
+            let pack: Vec<_> = w.organisms.iter().filter(|o| o.lineage == 4).map(|o| o.pos).collect();
+            let mut far = 0.0f32;
+            for a in &pack {
+                for b in &pack {
+                    far = far.max(a.dist(*b));
+                }
+            }
+            (pack.len(), far)
+        };
+        let ((n0, far0), (n1, far1)) = (spread(&base), spread(&pairs));
+        assert_eq!(n0, n1);
+        assert!(far0 < 15.0 && far1 > 30.0, "pack spread {far0:.1} as designed, {far1:.1} in pairs");
     }
 
     /// Foxes hunt alone: none of them carries cooperative hunting, so they

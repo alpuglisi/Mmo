@@ -611,10 +611,19 @@ impl World {
     /// ecosystem, tests). Player lineages start as one group; the wild
     /// ecosystem is scattered in small groups across the map.
     pub fn found_lineage_unchecked(&mut self, owner: PlayerId, design: &FounderDesign) -> Vec<OrgId> {
+        let group_size = if owner == crate::WILD { 12 } else { design.founders.max(1) };
+        self.found_lineage_grouped(owner, design, group_size)
+    }
+
+    /// [`World::found_lineage_unchecked`] with the founders placed in groups
+    /// of `group_size`, each at its own home (`presets::NicheFounding`
+    /// scatters predators as territorial pairs or small packs). All stay in
+    /// the owner's main group.
+    pub fn found_lineage_grouped(&mut self, owner: PlayerId, design: &FounderDesign, group_size: u32) -> Vec<OrgId> {
+        let group_size = group_size.max(1);
         let mut rng = rng_for(self.config.seed, stream::FOUNDING, owner as u64, self.next_id);
         let mut probe = Organism::new(0, owner, design.founder_genome(owner, &mut rng), Sex::Female, Vec2::ZERO);
         probe.growth = 1.0;
-        let group_size = if owner == crate::WILD { 12 } else { design.founders.max(1) };
         let spread = 3.0 + 10.0 * (1.0 - probe.pheno[crate::Gene::GroupTolerance]);
         let mut ids = Vec::with_capacity(design.founders as usize);
         let mut home = Vec2::ZERO;
