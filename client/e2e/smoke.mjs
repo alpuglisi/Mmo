@@ -136,7 +136,7 @@ async function main() {
     }
     if (!(await page.isDisabled('#design-submit'))) throw new Error('over-budget design was not refused');
     if (!(await page.textContent('#design-problem')).includes('budget')) throw new Error('no over-budget message');
-    for (const g of maxed) await setTrait(g.name, g.default);
+    for (const g of maxed) await setTrait(g.name, start[g.name] ?? g.default);
     step(`live cost ${after.trim()}; over-budget design refused client-side`);
     // Trait captions: every slider has a live line saying what its setting
     // does, linked to it for screen readers, and it follows the rest of the
