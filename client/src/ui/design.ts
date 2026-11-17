@@ -98,12 +98,14 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     const title = traitName(g.name);
     const ends = traitEnds(g.name);
     const id = `trait-${g.name}`;
+    // The design's own value (the starting design raises some traits above their defaults).
+    const start = spec.traits[g.name] ?? g.default;
     const s = h('input', {
-      type: 'range', class: 'trait-slider', min: 0, max: 1, step: 0.01, value: g.default, 'data-gene': g.name,
+      type: 'range', class: 'trait-slider', min: 0, max: 1, step: 0.01, value: start, 'data-gene': g.name,
       'aria-label': ends ? `${title} (0 ${ends[0]}, 1 ${ends[1]})` : title,
       'aria-describedby': text ? `${id}-caption` : undefined,
     });
-    const val = h('span', { class: 'num trait-val' }, g.default.toFixed(2));
+    const val = h('span', { class: 'num trait-val' }, start.toFixed(2));
     const tip = g.cost > 0 ? `${g.cost} points per unit above ${g.default}` : 'free: a trade-off, not an upgrade';
     const cost = h('span', { class: 'num cost trait-cost', title: tip }, '');
     s.addEventListener('input', () => {
@@ -284,7 +286,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
     const left = cat.budget - c.total;
     unspent.textContent = left > cat.budget / 2
-      ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore that costs almost nothing: raise the traits that suit the world, or try a preset in Builder mode.`
+      ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore ready for its first winter: raise the traits that suit the world, or try a preset in Builder mode.`
       : '';
     for (const [g, cell] of costCells) {
       const p = c.perGene[g];

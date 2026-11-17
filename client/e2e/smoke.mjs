@@ -108,17 +108,21 @@ async function main() {
       el.dispatchEvent(new Event('input'));
     }, v);
     const before = await page.textContent('#budget-total');
+    // Where the sliders start (the starting design: some traits are above their defaults).
+    const start = await page.$$eval('input[data-gene]', (els) => Object.fromEntries(els.map((e) => [e.dataset.gene, Number(e.value)])));
     await setTrait('body_size', 0.45);
     await setTrait('fur', 0.4);
     await setTrait('keen_nose', 0.3);
     const after = await page.textContent('#budget-total');
     if (before === after) throw new Error(`cost did not change (${before})`);
-    // The starting cost plus each trait's rise above its default times its
-    // price, from the server's catalog (prices are tuned in the sim).
+    // The starting cost plus each trait's change in its rise above its
+    // default, times its price, from the server's catalog (prices are tuned
+    // in the sim).
     const catalog = await (await fetch(`${base}/api/genes`)).json();
     const gene = (n) => catalog.genes.find((g) => g.name === n);
     const set = { body_size: 0.45, fur: 0.4, keen_nose: 0.3 };
-    const expected = Number.parseFloat(before) + Object.entries(set).reduce((sum, [n, v]) => sum + Math.max(0, v - gene(n).default) * gene(n).cost, 0);
+    const rise = (n, v) => Math.max(0, v - gene(n).default) * gene(n).cost;
+    const expected = Number.parseFloat(before) + Object.entries(set).reduce((sum, [n, v]) => sum + rise(n, v) - rise(n, start[n] ?? gene(n).default), 0);
     if (Math.abs(Number.parseFloat(after) - expected) > 0.051) throw new Error(`unexpected cost ${after} (expected ${expected.toFixed(1)})`);
     // Max out the priciest traits until the design is over budget.
     const pricey = [...catalog.genes].filter((g) => g.cost > 0).sort((a, b) => b.cost * (1 - b.default) - a.cost * (1 - a.default));
@@ -133,7 +137,7 @@ async function main() {
     }
     if (!(await page.isDisabled('#design-submit'))) throw new Error('over-budget design was not refused');
     if (!(await page.textContent('#design-problem')).includes('budget')) throw new Error('no over-budget message');
-    for (const g of maxed) await setTrait(g.name, g.default);
+    for (const g of maxed) await setTrait(g.name, start[g.name] ?? g.default);
     step(`live cost ${after.trim()}; over-budget design refused client-side`);
     // Trait captions: every slider has a live line saying what its setting
     // does, linked to it for screen readers, and it follows the rest of the
