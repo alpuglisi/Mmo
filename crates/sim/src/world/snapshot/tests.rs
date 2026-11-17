@@ -15,9 +15,10 @@ fn possessed(w: &World) -> Option<&crate::organism::Organism> {
 /// species detection. The seed is one whose world has every kind of state
 /// the test asserts (seed 22 lost its LOD cohorts when the pack-hunter
 /// design shrank; seed 23 its second pregnancy when the morphology rules
-/// came on by default).
+/// came on by default; seed 29 its possessed pack hunter or its state when
+/// the carnivore rules and food values did).
 fn busy_world() -> World {
-    let mut config = WorldConfig { seed: 29, width: 96, height: 96, days_per_year: 16, ..Default::default() };
+    let mut config = WorldConfig { seed: 33, width: 96, height: 96, days_per_year: 16, ..Default::default() };
     config.lod.enabled = true;
     // Every tick decides: with staggered decisions the possessed organism
     // walks elsewhere and no region ever leaves focus, so the snapshot
@@ -335,6 +336,19 @@ fn predator_brakes_off(b: &mut crate::Balance) {
     b.prey_switching = old;
     b.condition_litter = old;
     strike_fixes_off(b);
+    food_values_off(b);
+}
+
+/// The food values as snapshots before version 31 read them
+/// (`carnivore_hunger_discount` and `larval_competition` are stored in every
+/// version and keep their values).
+fn food_values_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v31::OLD_VALUE;
+    b.meat_energy = old;
+    b.fruit_crop = old;
+    b.fruit_energy = old;
+    b.insect_crop = old;
+    b.switching_power = old;
 }
 
 /// `Balance::strike_fixes` as snapshots before version 30 read it, and
@@ -932,6 +946,81 @@ fn staggered_worlds_continue_exactly_after_a_restore() {
         r.step();
     }
     assert!(r.snapshot() == w.snapshot());
+}
+
+/// Version 30 snapshots (before the food values) restore with meat and
+/// fruit worth what leaves are, no fruit layer (zeros on every tile) and the
+/// hunger discount they stored, and are otherwise the same world; a version
+/// 31 snapshot keeps the fruit on each tile.
+#[test]
+fn version_30_snapshots_restore_without_food_values() {
+    let mut w = fixture_world();
+    let on = crate::Balance::default().food_values();
+    assert!(on.meat_energy > 0.0 && on.fruit_crop > 0.0 && on.fruit_energy > 0.0);
+    w.config.balance.meat_energy = on.meat_energy;
+    w.config.balance.fruit_crop = on.fruit_crop;
+    w.config.balance.fruit_energy = on.fruit_energy;
+    w.config.balance.carnivore_hunger_discount = 0.3;
+    let old = w.snapshot_v30();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 30);
+    assert!(h.restorable());
+    // Without the five parameters and the two food layers.
+    let n = w.map.tiles.len() as u64;
+    assert!(h.raw_len + 5 * 4 + 2 * 4 * n < SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.meat_energy, crate::serde_util::before_v31::OLD_VALUE);
+    assert_eq!(r.config.balance.fruit_crop, crate::serde_util::before_v31::OLD_VALUE);
+    assert_eq!(r.config.balance.carnivore_hunger_discount, 0.3);
+    assert_eq!(r.map.fruit, vec![0.0; w.map.tiles.len()]);
+    assert_eq!(r.map.insects, vec![0.0; w.map.tiles.len()]);
+    food_values_off(&mut w.config.balance);
+    stagger_off(&mut w.config.balance);
+    w.last_intents.clear();
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v30() == old);
+
+    // The fruit on each tile round-trips from version 31.
+    let mut w = fixture_world();
+    w.config.balance = w.config.balance.food_values();
+    for (k, f) in w.map.fruit.iter_mut().enumerate() {
+        *f = (k % 7) as f32 * 0.37;
+    }
+    for (k, f) in w.map.insects.iter_mut().enumerate() {
+        *f = (k % 5) as f32 * 0.21;
+    }
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.map.fruit, w.map.fruit);
+    assert_eq!(r.map.insects, w.map.insects);
+    assert!(r.snapshot() == w.snapshot());
+}
+
+/// Version 31 snapshots (the food values, before staggered decisions) keep
+/// their food values and fruit and invertebrate layers and restore with
+/// every organism deciding every tick.
+#[test]
+fn version_31_snapshots_keep_food_values_without_staggered_decisions() {
+    let mut w = fixture_world();
+    w.config.balance = w.config.balance.food_values();
+    w.config.balance.decide_interval = 2.0;
+    w.step();
+    for (k, f) in w.map.fruit.iter_mut().enumerate() {
+        *f = (k % 3) as f32 * 0.5;
+    }
+    let old = w.snapshot_v31();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 31);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.meat_energy, w.config.balance.meat_energy);
+    assert_eq!(r.config.balance.insect_crop, w.config.balance.insect_crop);
+    assert_eq!(r.map.fruit, w.map.fruit);
+    assert_eq!(r.map.insects, w.map.insects);
+    stagger_off(&mut w.config.balance);
+    w.last_intents.clear();
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v31() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,

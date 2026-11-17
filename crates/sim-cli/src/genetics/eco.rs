@@ -44,11 +44,12 @@ pub struct EcoOpts {
     pub seeds: u64,
     pub sample_days: u32,
     pub seed: u64,
-    /// The carnivore-diet rules and predator brakes on
-    /// (`Balance::carnivore_diet`) and the predators in their niches
-    /// (`presets::niche_world`).
-    pub meat: bool,
-    /// How the niche world is founded with `meat` (`--founding SPEC`,
+    /// The rules the worlds run under (the defaults unless `--meat`,
+    /// `--food` or `--classic` changed them).
+    pub balance: Balance,
+    /// Found the predators in their niches (`presets::niche_world`).
+    pub niches: bool,
+    /// How the niche world is founded with `niches` (`--founding SPEC`,
     /// `presets::NicheFounding`; the default founds the designs).
     pub founding: presets::NicheFounding,
 }
@@ -259,9 +260,9 @@ fn count_birth(c: &Genome, owner: PlayerId, m: &Genome, f: &Genome, b: &mut Birt
 pub fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
     let started = std::time::Instant::now();
     let seed = opts.seed + world;
-    let balance = if opts.meat { Balance::default().carnivore_diet() } else { Balance::default() };
+    let balance = opts.balance;
     let config = WorldConfig { seed, width: opts.size, height: opts.size, balance, ..Default::default() };
-    let mut w = if opts.meat {
+    let mut w = if opts.niches {
         presets::niche_world_with(config, 1, &opts.founding)
     } else {
         presets::standard_world(config, 1)
@@ -853,7 +854,8 @@ mod tests {
                 seeds: 1,
                 sample_days: 5,
                 seed: 3,
-                meat: false,
+                balance: Balance::default(),
+                niches: false,
                 founding: Default::default(),
             },
             false,
@@ -876,7 +878,8 @@ mod tests {
                 seeds: 4,
                 sample_days: 10,
                 seed: 1,
-                meat: false,
+                balance: Balance::default(),
+                niches: false,
                 founding: Default::default(),
             },
             true,

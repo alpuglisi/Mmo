@@ -795,6 +795,8 @@ export interface TerrainDynamic {
   veg: string;
   /** Regional soil wetness, 0..255 for 0..1 (0.5 normal, below 0.3 drought). */
   wetness: string;
+  /** Ripe fruit, seeds and nuts, 0..255 for 0..8 food units; absent while no tile bears any. */
+  fruit?: string;
 }
 
 export interface AgeBand {

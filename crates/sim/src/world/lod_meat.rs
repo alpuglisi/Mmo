@@ -222,10 +222,10 @@ mod tests {
     use crate::presets;
     use crate::Balance;
 
-    /// Every rule is a no-op at its default 0.
+    /// Every rule is a no-op at 0 (`Balance::carnivore_diet_off`).
     #[test]
     fn rules_off_change_nothing() {
-        let bal = Balance::default();
+        let bal = Balance::default().carnivore_diet_off();
         let probe = Organism::new(
             0,
             0,

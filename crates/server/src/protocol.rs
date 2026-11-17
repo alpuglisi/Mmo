@@ -1109,6 +1109,12 @@ pub struct TerrainDynamic {
     pub veg: String,
     /// Regional soil wetness, 0..255 for 0..1 (0.5 normal; below 0.3 is drought).
     pub wetness: String,
+    /// Ripe fruit, seeds and nuts (`Map::fruit`), 0..255 for 0..8 food units
+    /// (a full forest crop is about 6–9). Left out while no tile bears any
+    /// (no fruit layer, or out of season), so older clients and payloads
+    /// stay as they were.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fruit: String,
 }
 
 /// Count of one sex in an age band.

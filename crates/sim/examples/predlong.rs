@@ -18,9 +18,13 @@
 //! pregnancy, and the day each predator died out. The last lines pool
 //! deaths by cause and count the seeds each predator survived. `--off`
 //! runs `Balance::morphology_off()`, `--meat` the carnivore-diet rules and
-//! predator brakes (`Balance::carnivore_diet()`, off by default) with the
-//! predators in their niches (`presets::niche_world`; `--meat-only` keeps
-//! the standard designs). Each seed also reports adult females and males of
+//! predator brakes (`Balance::carnivore_diet()`, on by default from
+//! snapshot version 31) with the predators in their niches
+//! (`presets::niche_world`; `--meat-only` keeps the standard designs,
+//! `--niches` founds the niche designs without changing the rules),
+//! `--food` the food values (`Balance::food_values`, also on by default)
+//! and `--classic` the rules of before version 31 (both off). Each seed
+//! also reports adult females and males of
 //! each predator at the end, every prey lineage's lowest head count, and the
 //! predators' mean expressed values of the genes the rules read at the start
 //! and the end (with their mean drift over the surviving seeds), to see
@@ -130,6 +134,7 @@ struct Partial {
 struct Opts {
     balance: Balance,
     every: u32,
+    /// The predators in their niches (`presets::niche_world_with`).
     niches: bool,
     years: u32,
     seeds: Vec<u64>,
@@ -159,6 +164,12 @@ fn parse(argv: &[String]) -> Opts {
             niches = true;
         } else if a == "--meat-only" {
             balance = balance.carnivore_diet();
+        } else if a == "--food" {
+            balance = balance.food_values();
+        } else if a == "--classic" {
+            balance = balance.carnivore_diet_off().food_values_off();
+        } else if a == "--niches" {
+            niches = true;
         } else if a == "--every" {
             every = args.next().expect("--every DAYS").parse().unwrap();
         } else {
@@ -254,10 +265,13 @@ fn merge(files: &[String]) {
 
 /// Runs one seed for `opts.years` years.
 fn run_seed(opts: &Opts, seed: u64) -> SeedResult {
-    let (balance, every, niches, years) = (opts.balance, opts.every, opts.niches, opts.years);
+    let (balance, every, years) = (opts.balance, opts.every, opts.years);
     let config = WorldConfig { seed, width: 96, height: 96, balance, ..Default::default() };
-    let mut w =
-        if niches { presets::niche_world_with(config, 1, &opts.founding) } else { presets::standard_world(config, 1) };
+    let mut w = if opts.niches {
+        presets::niche_world_with(config, 1, &opts.founding)
+    } else {
+        presets::standard_world(config, 1)
+    };
     let genes0 = [gene_means(&w, 3), gene_means(&w, 4)];
     let mut prey_min = [usize::MAX; 6];
     let tpd = w.config.ticks_per_day;

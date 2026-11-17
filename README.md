@@ -2996,8 +2996,9 @@ snapshot). Every exact optimisation below left the fingerprints of its
 day (`e37d27fc27ac144e` default, `c32bf3e8057496e8` meat, seed 31, at the
 time), the sweep check (`evo-sim sweep --size 96 --trials 1 --seeds 12
 --rounds 1 --seed 31`: score 11.60 then) and the `predlong` output byte for
-byte unchanged; staggered decisions (below, on by default since snapshot
-version 32) are the one deliberate change of results.
+byte unchanged; staggered decisions (below, on by default in snapshot
+version 32, off again by default with the food values) are the one
+deliberate change of results.
 
 What changed:
 
@@ -3047,9 +3048,11 @@ cells and 6–8-tile ranges, under 1% of far cells lie wholly in range), and
 fewer close looks (the cost moves to the far-neighbor loop and the
 selection: no gain).
 
-**Staggered decisions** (`Balance::decide_interval`, 2 by default since
-snapshot version 32; saves from version 31 and before read 1, every tick,
-and keep running as they did): at `k >= 2` a calm organism decides afresh
+**Staggered decisions** (`Balance::decide_interval`, 2 by default in
+snapshot version 32, **back to 1 (off) by default** once the food values
+and carnivore rules came on, because with them it cost the voles on fresh
+seeds: *Food by its value*; saves keep the interval they stored, and saves
+from version 31 and before read 1): at `k >= 2` a calm organism decides afresh
 every `k` ticks (staggered by id) and keeps its last intent in between,
 following its target organism (`world::stagger`). Every organism decides on
 the day's first tick, and so does every hunter and any organism that is
@@ -6525,6 +6528,190 @@ burrowing omnivores (+9 ± 8 alive). Snapshots move to format version 30
 (28 is reserved for the food rules): versions 10–29 read `strike_fixes`
 as 0, the old strike (`serde_util::before_v30`, test
 `version_29_snapshots_restore_with_the_old_strike`).
+
+### Food by its value
+
+Until now plants and meat were one currency: a unit of meat was worth a
+unit of leaves, and full carnivores got a 44% slower hunger
+(`carnivore_hunger_discount`) to stand in for "meat is richer". Each tile
+had a single `veg` scalar, with no fruit, seeds or invertebrates. This
+round gives each food its own value, adds two seasonal food layers, and
+uses them, together with the carnivore rules already built, to make a
+predator–prey system that persists over the years. **All of it is on by
+default from snapshot version 31**, carnivore rules included.
+
+**The rules** (`Balance`; `Balance::food_values()` turns them on and
+`food_values_off()` turns them off; old saves keep their rules, below):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `meat_energy` (0.8) | A unit of meat (carcasses, raided eggs) is worth 1.8 units of leaves before digestion (meat is 80–90% digestible, leaves 20–60%). Digestion still follows the Carnivory gene (`Traits::meat_efficiency`), so diet stays evolvable. |
+| `carnivore_hunger_discount` (0, was 0.44) | Gone: meat's advantage now comes from the food, not from a slower hunger. A full carnivore living on meat comes out about where it was (hunger × 0.58 before, food × 1.8 now: 0.56), while the plants it nibbles are worth what they are. |
+| `fruit_crop` (1) | A second plant layer per tile (`Map::fruit`): fruit, seeds and nuts, at most 6 food units on forest, 3 marsh, 2 grassland (seeds), 1.5 tundra (berries), 1 mountain, 0.3 desert, times `0.5 + moisture` (`terrain::fruit_capacity`; leaves are 32–40). The crop is seasonal (`terrain::fruit_season`): it ripens from early summer (day 37 of 120), peaks in early autumn (day 67) and is gone from the trees at the start of winter (day 97), filling the gap to the season's crop at 15% a day, less in drought and none on flooded ground; what is left rots at 3% a day, so fallen nuts and seeds last into the winter. |
+| `fruit_energy` (0.5) | A unit of fruit is worth 1.5 units of leaves. Digestion: `stats::fruit_efficiency`, `1 − 0.85 × smoothstep(0.6, 1, carnivory)`: herbivores, omnivores and flexible hunters get most of it (the niche fox at 0.65: 96%; the standard fox at 0.85: 42%), a full carnivore little (0.95: 19%). No generalist tax and no fang cost. |
+| `insect_crop` (1) | A third layer (`Map::insects`): insects, earthworms and grubs, at most 1.5 food units on marsh, 1 forest, 0.8 grassland, 0.5 tundra, 0.25 mountain and desert, times `0.5 + moisture` (`terrain::insect_capacity`), times the warmth (`growth_warmth`: none at or below freezing, so none in winter and a flush as the ground warms), more on wet soil, none under snow or flood water; back within days of being eaten (50% of the gap a day). Small meat: worth what meat is, gathered at half the pace of other food, on any errand a meat eater makes (roaming for prey included), and digested as far as the gut is an omnivore's (`stats::insect_efficiency`, `smoothstep(0.2, 0.5, c) × fruit_efficiency(c)`: none for a herbivore, all for a burrowing omnivore at 0.5, 96% for the niche fox, 28% for the standard pack hunters at 0.9). |
+| `switching_power` (4) | Prey switching (`prey_switching`) spares a declining prey more sharply: a hunter still hunts a species at `r` of its threshold with chance `r^4` (`r²` before; 0 reads as 2), so effort collapses on a prey well before it is gone even when an abundant other prey keeps many hunters fed. |
+| `larval_competition` (9.5, was 13) | Re-tuned for the new rules (below): young of abandoned eggs thin out at lower density. |
+
+An animal eats what is worth most to it. Grazing eats ripe fruit first,
+then leaves; eating meat takes carcass meat first, then invertebrates for
+the room left; foraging decisions value a tile by leaves, fruit and
+invertebrates at what each gut gets from them (`World::choose_food`). The
+layers are deterministic (functions of the season and the regional
+weather, updated with the tiles chunk by chunk) and cost two `f32` per
+tile. LOD cohorts eat them too (`world::lod`): a hunting cohort's meat
+need is divided by the meat value, and cohorts take invertebrates (at half
+the pace) and then fruit for what kills didn't cover, before leaves, each
+in proportion to what the region holds.
+
+The map shows fruit as a faint warm tint on fruiting ground
+(`GROUND.fruit` in `client/src/world/terrain.ts`). `GET
+/api/terrain/dynamic` carries an optional `fruit` layer (0..255 for 0..8
+food units), left out while no tile bears any, so older clients and
+payloads are unchanged.
+
+**What was tried** (120 days, 8 seeds 31–38 with `examples/firstyear`,
+which prints the sweep's score, the capped days by lineage and each
+lineage's peak; or the 12-seed sweep from seed 31; then `predlong`):
+
+| Configuration | 120 days | Over the years |
+| --- | --- | --- |
+| Old defaults (rules off, standard designs) | 11.83 (8 seeds), 4.0 capped days; sweep 11.60 | predators die out (*Predators over the years*) |
+| `--niches --meat` (v27 rules, niche designs) | 11.01, 31 capped days; sweep 10.88 | |
+| Niche + meat + food values, no invertebrates | 10.93: the niche pack hunters still lose half their founders in 15 days (24 → 11–21), newts and frogs at their caps | |
+| Same, invertebrates on the meat gut | 11.01–11.02: the pack's founding is safe (35–56 on day 15) but it booms on insects (150–590 by year 3) and excludes the fox (fox 2 of 3 seeds over 3 years, one with 2 males) | |
+| Same, invertebrates on the omnivore curve (kept) | 11.14 | |
+| Niche fox, standard pack hunters | 11.21; sweep 11.11 | fox and pack 3 of 3 (3 years) |
+| Standard designs + carnivore rules (no food values) | 11.38, 11 capped days | |
+| **Standard designs + carnivore rules + food values** | 11.76, 9.5 capped days; sweep 11.58 (11.54 after the predator review) | fox 7 of 8 (6 viable), pack 8 of 8, voles lost on seed 32 |
+| `meat_energy` 1.2 / 1.6 / 2.0 (niche, 4 seeds) | 10.62 / 11.11 / 11.53, all within the 4-seed noise (±1.2) | |
+| Above + `prey_switching` 2 | sweep 11.27 (hunters give up on prey still near its founding count in the founding year) | 4 of 4 seeds both, no prey lost |
+| Above + `switching_power` 4 | sweep 11.34; compare vs old −0.52 (significant) | fox 7 (7), pack 8 (8), no prey lost |
+| Same, `prey_switching` 0.5 | sweep 11.32; compare −0.33 (significant) | |
+| **Same + `larval_competition` 9.5** | sweep 11.64; compare vs old +0.20 | fox 7 (7), pack 8 (8), no prey lost |
+
+Where the 120-day loss came from: in every row with the rules on, the
+lineages survive as often as under the old defaults; the score loses on
+the cap penalty, the newts (and toxic frogs) sitting at their caps for
+weeks in the first summer. The predators are now fed better per kill
+(richer meat, fruit in autumn, invertebrates), so they hunt less while
+fed, and breeding territories hold their numbers down in the founding
+year. Lowering `larval_competition` gives the abandoned-egg breeders
+(newts, toxic frogs and any player design of that birth mode) the density
+brake their predators no longer supply: compare on fresh seeds 101–124
+(`--set larval_competition=X vs --classic`): 13 → −0.52, 11 → −0.06, 9.5
+→ +0.20; toxic frogs end 172 ± 47 lower, still surviving on every seed.
+
+**Niche designs or standard designs.** The niche designs (fox 0.65, pack
+hunters 0.95) were the intended defaults. With the food values alone they
+fail the founding year: at carnivory 0.95 the pack hunters eat almost no
+plants, lose half their founders in two weeks and leave the newts
+uneaten. With the founding round's `--founding predators=2,predator_fat=40`
+(*First-year prey boom: founding*) on top of the food rules the sweep
+scores 11.84 (12 seeds from 31, defaults otherwise). The standard designs
+score 11.71 with the same rules. Over the years the niche option did
+worse (`predlong 6 31–38 --founding
+predators=2,predator_fat=40`: fox 7 (7), pack hunters 5 (5), no prey lost,
+antelope down to 1 on seed 34; genetics: fox 4 of 4 worlds, pack hunters 3
+of 4, no prey lost), and on fresh seeds it scores below the old defaults
+(compare from seed 101: 11.49 against 11.80 for F and 11.89 for the old
+defaults, unpaired). On fresh seeds 41–48 (6 years) N keeps both predators
+better than F: fox 7 (7), pack hunters 8 (8), the omnivores lost on seed 48
+as under every variant (antelope down to 11 and 18 on two seeds), against
+F's fox 5 (5), pack 8 (8). Over both seed sets N is fox 14, pack hunters
+13 of 16, against F's 12 and 16; genetics N 4 and 3 of 4 worlds, F 2 and
+2. **The standard designs (F) are the default** because N loses about 0.4
+on the fresh-seed 120-day score; N (`--founding
+predators=2,predator_fat=40` on these rules) is the documented alternative
+for a later round to recover that score. The niche designs and founding
+stay options (`--niches`, `--founding SPEC`).
+
+With the standard designs the fox (0.85) and the pack hunters (0.9) are
+one body-plan step apart (0.05 < 0.25), so they interbreed: over the
+years the fox's group tolerance and pack instinct rise by about 0.4
+(mean over seeds), and the genetics harness counts 400–4700 hybrid births
+per world (fertility 0.85 → 1.0). This was always so; it shows now because
+the fox survives long enough. The niche designs avoid it.
+
+**Acceptance** (after merging the predator review, strike fixes and
+morphology extras):
+
+Measured on commit 3140238 (merged up to the strike fixes; before the
+staggered decisions of version 32), on cloud machines, unless noted. With
+`decide_interval` back to 1 the final defaults run those worlds unchanged
+(the sweep check scores 11.71 on both, lineage for lineage), so these are
+the numbers of the defaults as committed. "Old
+defaults" means the rules of before version 31 (`--classic`) on the standard
+designs.
+
+| Check | Bar | F (the new defaults) | Old defaults |
+| --- | --- | --- | --- |
+| `predlong 6 31–38`: fox survived (viable) | ≥ 6 of 8 | **7 (7)** | 0 of 8 |
+| same: pack hunters | ≥ 6 of 8 | **8 (8)** | 0 of 8 |
+| same: prey lost | none | **voles on seed 32** (lowest elsewhere: voles 8, frogs 16, newts 14) | newts on seed 36 |
+| `predlong 6 41–48` (fresh seeds): fox, pack hunters | ≥ 6 of 8 each | **fox 5 (5)**, pack 8 (8) (pack hunters 15–840 at the end) | (niche world, v27 rules: 7 (7), 5 (5)) |
+| same: prey lost | none | **omnivores on seed 48** (voles down to 30–41 on several seeds) | (niche world: omnivores on 48 too) |
+| `genetics --long --level ecology` (12 years, 4 worlds): strict checks | all | **7 of 7** (and 9 of 9 soft) | all |
+| same: both predators survive | ≥ 3 of 4 worlds | **fox 2, pack hunters 2** (both together in 1; no prey lost, lowest newts 15, voles 42) | fox 0, pack hunters 0 (*Predators over the years*) |
+| `sweep --seed 31` (12 seeds, 120 days) | ≥ 11.30 | **11.71** (11.70 with staggered decisions) | 11.60 at the time |
+| `compare --seed 101 --adaptive vs --classic` | no significant loss | **−0.09** (sequential 95% CI −0.24 … +0.06 after 24 seeds: no difference that matters); after merging staggered decisions (6a6e6bc): unresolved at the 48-seed cap, mean −0.10, sequential CI −0.33 … +0.14 (contains 0) | |
+| `calibrate tournament`, 90 days, sets 70001– and 80001–, 96 worlds each: top class | < ~38% | **27.1% and 25.0%** (warm live birth; cold abandoned eggs 15.6% / 12.5%) | 39.4% for cold abandoned eggs in the tuning set (*Thermoregulation × birth mode*) |
+
+On the predator half F clears the bar on the tuning seeds and misses it on
+the fresh seeds (fox 5 of 8 on 41–48) and the genetics worlds (2 of 4
+each), where the old defaults keep neither predator anywhere; the pack
+hunters are safe everywhere (8 of 8 on both seed sets) and the fox, which
+interbreeds with them (above), is the fragile one. On the prey half it
+loses one lineage on one seed of eight in each set (voles on 32,
+omnivores on 48), as the old defaults lost the newts on one. Earlier F runs on the code before the predator
+review (same rules, without `switching_power` and with
+`larval_competition` 13) kept both predators in 3 of 4 genetics worlds;
+on these four worlds the result is seed-to-seed spread as much as rule.
+**Decision (coordinator):** judged against the defaults it replaces (no
+predator surviving 6 years on any seed or world, a prey lost on one
+seed), F is a large improvement at no measurable cost on the 120-day
+measures, so it is turned on although it misses the original bar on the
+genetics worlds and on one seed's voles.
+
+In the tournaments the hunters (carnivory ≥ 0.45) win 46% of worlds in
+both sets (mean final share 0.056 and 0.067), and no thermoregulation ×
+birth class is above 27%: lowering `larval_competition` took the cold
+abandoned-egg layers from the top (39%) to 13–16%.
+
+**With staggered decisions** (`decide_interval` 2, the default of
+version 32, merged on commit 6a6e6bc): `predlong 6 31–38` fox 7 (7),
+pack hunters 8 (8), no prey lost (voles down to 7 and 22); genetics fox
+3 of 4 worlds and pack hunters 4 of 4 (both in 3), all checks pass, but the
+newts die out in one world and the voles fall to 4 in another; `predlong 6
+41–48` fox 6, pack hunters 7, **prey lost on 4 seeds** (voles on 41, 43 and
+45, omnivores on 48); compare from seed 101 against `--classic`
+unresolved at the 48-seed cap (mean −0.10, sequential CI −0.33 … +0.14).
+Seeds 41, 43 and 45 with `--set decide_interval=1`: no prey lost (voles
+down to 36, 39 and 30). Calm prey that keep their last intent react late
+to hunters that always decide afresh, and the voles pay for it. So with
+these rules on by default **`decide_interval` goes back to 1** (every
+organism decides every tick): prey survival is worth more than the 13–15%
+of a tick it saved. The field and the version 32 format stay; a version 32
+save keeps the interval it stored.
+
+**Old saves keep their rules.** Snapshots move to format version 31 (28
+was reserved for this change and never written): `meat_energy`,
+`fruit_crop`, `fruit_energy`, `insect_crop` and `switching_power` are new
+`Balance` fields, and the map's fruit and invertebrate layers are one
+`f32` per tile each in the payload. Versions 10–30 read the new fields as
+0 (every food worth the same, no fruit, no invertebrates, prey switching
+on the square), keep the `carnivore_hunger_discount`, `larval_competition`
+and carnivore-diet values they stored (0.44, 13 and off for a save made
+under the old defaults), and restore with empty layers
+(`serde_util::before_v31`, test
+`version_30_snapshots_restore_without_food_values`). New worlds get the
+new defaults. `evo-sim ... --classic` (and `genetics --classic`,
+`predlong --classic`) runs the rules of before version 31.
+
+`cargo run --release --example firstyear -- [days] [seeds..] [--meat]
+[--niches] [--food] [--off] [--set NAME=V]` (read only) prints per seed the
+sweep's score, the days each lineage spent at its cap, each lineage's peak
+and final count and the predators on days 15, 30 and 60.
 
 ## Genetics validation
 

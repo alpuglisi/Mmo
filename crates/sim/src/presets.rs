@@ -192,7 +192,9 @@ pub fn niche_world_with(config: WorldConfig, scale: u32, founding: &NicheFoundin
     world
 }
 
-fn standard_world_from(
+/// The standard world's layout from the given wild and player designs (the
+/// lineages keep the standard world's indices if the lists keep its order).
+pub fn standard_world_from(
     config: WorldConfig,
     scale: u32,
     wild: Vec<(PlayerId, FounderDesign)>,

@@ -132,7 +132,16 @@
 //! rules) adds staggered decisions: `Balance::decide_interval` and the
 //! intents organisms keep between decisions; versions 10 to 31 read the
 //! interval as 1 (every organism decides every tick) and keep none
-//! (`serde_util::before_v32`).
+//! (`serde_util::before_v32`). Version 31 adds the food values
+//! (`Balance::meat_energy`, `fruit_crop`, `fruit_energy`, `insect_crop`,
+//! `switching_power`) and the map's fruit and invertebrate layers
+//! (`Map::fruit`, `Map::insects`, one `f32` per tile each in the payload);
+//! versions 10 to 30 read the values as 0 (every food worth the same per
+//! unit, no fruit or invertebrates, prey switching on the square), keep the
+//! `carnivore_hunger_discount`, `larval_competition` and carnivore-diet
+//! values they stored, and restore with no fruit or invertebrates on any
+//! tile (`serde_util::before_v31`). Version 28 was never written (it was
+//! reserved for this change).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -201,8 +210,12 @@ const PREDATOR_BRAKES_VERSION: u32 = 27;
 /// renumber at merge.
 const MORPH_EXTRA_VERSION: u32 = 29;
 /// The first version with `Balance::strike_fixes` (`serde_util::before_v30`).
-/// Version 28 is reserved for the food rules, which renumber after this.
 const STRIKE_FIXES_VERSION: u32 = 30;
+/// The first version with the food values (`Balance::meat_energy`,
+/// `fruit_crop`, `fruit_energy`, `insect_crop`, `switching_power`) and the
+/// fruit and invertebrate layers (`Map::fruit`, `Map::insects`,
+/// `serde_util::before_v31`). Version 28 was never written.
+const FOOD_VALUES_VERSION: u32 = 31;
 /// The first version with staggered decisions (`Balance::decide_interval`
 /// and the kept intents, `serde_util::before_v32`). Version 31 is reserved
 /// for the food rules; renumber at merge if needed.
@@ -601,6 +614,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let raw = payload_options().serialize(self).expect("world serializes");
         self.snapshot_with(OLDEST_RESTORABLE, FLAG_LZ4, raw.len(), &lz4_flex::block::compress(&raw))
@@ -627,6 +641,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         // The header's layout is unchanged since version 6: only the version
         // field differs.
@@ -656,6 +671,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&NEST_PREDATION_VERSION.to_le_bytes());
@@ -681,6 +697,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&OBEDIENCE_VERSION.to_le_bytes());
@@ -705,6 +722,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&RALLY_VERSION.to_le_bytes());
@@ -728,6 +746,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MIGRATION_ONSET_VERSION.to_le_bytes());
@@ -750,6 +769,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&HOME_RANGE_VERSION.to_le_bytes());
@@ -772,6 +792,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&BY_PARENTS_VERSION.to_le_bytes());
@@ -793,6 +814,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&WARM_COSTS_VERSION.to_le_bytes());
@@ -812,6 +834,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&TRAIT_COSTS_VERSION.to_le_bytes());
@@ -831,6 +854,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MORPH_EFFECTS_VERSION.to_le_bytes());
@@ -848,6 +872,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&DIRECTIONAL_VISION_VERSION.to_le_bytes());
@@ -864,6 +889,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MORPH_VERSION.to_le_bytes());
@@ -879,6 +905,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MORPH_LEGACY_VERSION.to_le_bytes());
@@ -893,6 +920,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&ROAMING_FORAGE_VERSION.to_le_bytes());
@@ -906,6 +934,7 @@ impl World {
         let _old27 = crate::serde_util::before_v27::Guard::new();
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&CARNIVORE_DIET_VERSION.to_le_bytes());
@@ -919,6 +948,7 @@ impl World {
     fn snapshot_v27(&self) -> Vec<u8> {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PREDATOR_BRAKES_VERSION.to_le_bytes());
@@ -930,6 +960,7 @@ impl World {
     #[cfg(test)]
     fn snapshot_v29(&self) -> Vec<u8> {
         let _old30 = crate::serde_util::before_v30::Guard::new();
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MORPH_EXTRA_VERSION.to_le_bytes());
@@ -940,13 +971,25 @@ impl World {
     /// before version 32 wrote, to test that they still restore.
     #[cfg(test)]
     fn snapshot_v30(&self) -> Vec<u8> {
+        let _old31 = crate::serde_util::before_v31::Guard::new();
         let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&STRIKE_FIXES_VERSION.to_le_bytes());
         out
     }
 
-    /// A world from [`World::snapshot`] bytes (or a version 10 to 28 snapshot's)
+    /// A version 31 snapshot (no staggered decisions), as the builds with
+    /// the food values before version 32 wrote, to test that they still
+    /// restore.
+    #[cfg(test)]
+    fn snapshot_v31(&self) -> Vec<u8> {
+        let _old32 = crate::serde_util::before_v32::Guard::new();
+        let mut out = self.snapshot();
+        out[8..12].copy_from_slice(&FOOD_VALUES_VERSION.to_le_bytes());
+        out
+    }
+
+    /// A world from [`World::snapshot`] bytes (or a version 10 to 31 snapshot's)
     /// and the terrain it names (`SnapshotHeader::terrain`), with its
     /// derived lookups rebuilt. Fails on another format version, a corrupt
     /// payload, or a missing or wrong terrain.
@@ -975,6 +1018,7 @@ impl World {
         let _old27 = (h.version < PREDATOR_BRAKES_VERSION).then(crate::serde_util::before_v27::Guard::new);
         let _old29 = (h.version < MORPH_EXTRA_VERSION).then(crate::serde_util::before_v29::Guard::new);
         let _old30 = (h.version < STRIKE_FIXES_VERSION).then(crate::serde_util::before_v30::Guard::new);
+        let _old31 = (h.version < FOOD_VALUES_VERSION).then(crate::serde_util::before_v31::Guard::new);
         let _old32 = (h.version < STAGGER_VERSION).then(crate::serde_util::before_v32::Guard::new);
         let body = &bytes[h.len()..];
         if fnv1a(body) != h.checksum {
@@ -1015,6 +1059,15 @@ impl World {
             return Err(decode_err("payload does not match its terrain"));
         }
         w.map.set_terrain(terrain);
+        // Before version 31 there are no fruit and invertebrate layers:
+        // none on any tile.
+        for layer in [&mut w.map.fruit, &mut w.map.insects] {
+            if layer.is_empty() {
+                *layer = vec![0.0; w.map.tiles.len()];
+            } else if layer.len() != w.map.tiles.len() {
+                return Err(decode_err("a food layer does not match the map's size"));
+            }
+        }
         if w.config.snapshot_hash() != h.config_hash || w.tick != h.tick {
             return Err(SnapshotError::Decode("payload does not match its header".into()));
         }

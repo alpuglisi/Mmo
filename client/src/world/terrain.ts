@@ -32,6 +32,8 @@ export interface TerrainGrid {
   snow: Uint8Array;
   veg: Uint8Array;
   wetness: Uint8Array;
+  /** Ripe fruit, seeds and nuts, 0..255 (absent: none). */
+  fruit?: Uint8Array;
   tick: number;
   day: number;
   hour: number;
@@ -84,6 +86,7 @@ export function applyDynamic(g: TerrainGrid, d: TerrainDynamic): TerrainGrid {
   g.snow = layer(d.snow, n, 'snow');
   g.veg = layer(d.veg, n, 'veg');
   g.wetness = layer(d.wetness, n, 'wetness');
+  g.fruit = d.fruit ? layer(d.fruit, n, 'fruit') : undefined;
   g.tick = d.tick;
   g.day = d.day;
   g.hour = d.hour;
@@ -140,6 +143,9 @@ export function groundColor(g: TerrainGrid, i: number): Rgb {
     c = mix(c, SEASON_GREEN[g.season] ?? SEASON_GREEN.spring, share);
     // Grazed-out land is browner.
     c = mix(GROUND.bare, c, 0.45 + 0.55 * (g.veg[i] / 255));
+    // Fruiting land (berries, mast, seed heads) takes a faint warm tint.
+    const fruit = g.fruit?.[i] ?? 0;
+    if (fruit > 0) c = mix(c, GROUND.fruit, Math.min(1, fruit / 200) * 0.22);
   }
   if (biome === B.mountain) c = mix(c, GROUND.peak, Math.max(0, (g.elevation[i] - 150) / 105) * 0.8);
   // Drought: parched land yellows toward straw.
