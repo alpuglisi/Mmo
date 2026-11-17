@@ -455,7 +455,12 @@ impl World {
     /// in the grid) stay idle, as `decide` would leave them.
     pub(super) fn decide_all(&self) -> Vec<Intent> {
         let entries = self.grid.entries();
-        let decided: Vec<Intent> = entries.par_iter().map(|e| self.decide(e.idx as usize)).collect();
+        // With staggered decisions (`Balance::decide_interval`) a calm
+        // organism may keep its last intent.
+        let decided: Vec<Intent> = entries
+            .par_iter()
+            .map(|e| self.reused_intent(e.idx as usize).unwrap_or_else(|| self.decide(e.idx as usize)))
+            .collect();
         let mut intents = vec![Intent::idle(); self.organisms.len()];
         for (e, intent) in entries.iter().zip(decided) {
             intents[e.idx as usize] = intent;
