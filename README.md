@@ -3090,6 +3090,35 @@ Before turning it on, on top of the strike fixes (default sweep check
 
 `--set decide_interval=1` restores every-tick decisions.
 
+**The voles and the fix.** With the food values and carnivore rules on
+(commit 6a6e6bc), `k = 2` lost the meadow voles on seeds 41, 43 and 45
+(lowest 0 on all three; `k = 1`: 36, 39, 30). The loss built up slowly:
+the 30-day logs show staggered voles trailing over years 2–4 and reaching
+0 between days 480 and 720, the mark of extra kills, not a single event. A
+calm vole kept last tick's intent for one more tick after a hunter came
+into range unseen, and the hunter, which always decides afresh, struck
+first. Now a kept intent also needs nothing within sight that could
+frighten it: no armed organism heavy enough to threaten it
+(`decide::can_threaten`'s mass test) and no sentry's warning within its
+largest possible perception radius this tick (`SpatialGrid::danger_near`,
+over the armed organisms' positions kept by cell at the grid rebuild). At
+`k = 1` nothing changes. With the fix, on the food rules (6a6e6bc; the
+merged defaults differ only in `decide_interval`):
+
+| | `k = 1` | `k = 2` with the fix |
+| --- | --- | --- |
+| `predlong 6 41–48`: fox, pack hunters survive | 5/8, 8/8 | 5/8, 8/8 |
+| same: prey lost | omnivores on 48 | none (voles down to 15 on 45, 21 on 48; omnivores to 3 on 48) |
+| `predlong 6 31–38`: fox, pack hunters survive | 7/8, 8/8 | 7/8 (viable 6), 7/8 |
+| same: prey lost | voles on 32 | none (newts down to 9 on 36) |
+| `compare --adaptive --set decide_interval=2` vs `k = 1` | | +0.09 (sequential CI −0.08 … +0.26 after 12 seeds: no difference that matters) |
+| µs per organism-tick, 2 years, 1 thread: standard / meat world | 1.96 / 1.85 | 1.81 / 1.71 (−8% each) |
+
+The fix keeps about 8% of a tick (unguarded staggering saved 13–15%,
+because in a crowd most calm organisms now have a hunter in sight). It
+stays off by default (`decide_interval` 1, *Food by its value*); setting
+it to 2 is the whole switch.
+
 Where the time goes now (one world, single thread, two years): perception
 in `decide` is about two thirds (neighbor scan, nearest-32 selection, the
 close look at each), apply a quarter, environment chunks and the grid
