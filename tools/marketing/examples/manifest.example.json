@@ -1,0 +1,6 @@
+{
+  "items": [
+    { "id": "winter-timelapse", "path": "media/winter-timelapse.mp4", "type": "video", "duration_s": 42, "width": 1080, "height": 1920, "story_id": "y3-severe-winter", "alt": "Time-lapse of snow spreading over the steppe while a herd thins out" },
+    { "id": "fox-card", "path": "media/fox-card.png", "type": "card", "width": 1200, "height": 675, "story_id": "fox-hybrid", "alt": "Share card: lineage allele origins, 65% wild fox" }
+  ]
+}
