@@ -128,15 +128,19 @@
 //! (`serde_util::before_v29`). Version 30 adds `Balance::strike_fixes` (a
 //! hunter killed in its strike does nothing more that turn; a kill is eaten
 //! once); versions 10 to 29 read it as 0, the old strike
-//! (`serde_util::before_v30`). Version 31 adds the food values
+//! (`serde_util::before_v30`). Version 32 (31 is reserved for the food
+//! rules) adds staggered decisions: `Balance::decide_interval` and the
+//! intents organisms keep between decisions; versions 10 to 31 read the
+//! interval as 1 (every organism decides every tick) and keep none
+//! (`serde_util::before_v32`). Version 31 adds the food values
 //! (`Balance::meat_energy`, `fruit_crop`, `fruit_energy`, `insect_crop`,
 //! `switching_power`) and the map's fruit and invertebrate layers
 //! (`Map::fruit`, `Map::insects`, one `f32` per tile each in the payload);
 //! versions 10 to 30 read the values as 0 (every food worth the same per
 //! unit, no fruit or invertebrates, prey switching on the square), keep the
-//! `carnivore_hunger_discount` and the carnivore-diet values they stored,
-//! and restore with no fruit or invertebrates on any tile
-//! (`serde_util::before_v31`). Version 28 was never written (it was
+//! `carnivore_hunger_discount`, `larval_competition` and carnivore-diet
+//! values they stored, and restore with no fruit or invertebrates on any
+//! tile (`serde_util::before_v31`). Version 28 was never written (it was
 //! reserved for this change).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
@@ -158,7 +162,7 @@ use crate::terrain::{Terrain, Tile};
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 31;
+pub const SNAPSHOT_VERSION: u32 = 32;
 /// The oldest format version that still restores: version 11's state with
 /// the tiles inside the payload, and both without `Balance::cold_gestation`
 /// (nor, with version 12, `Balance::nest_predation`).
@@ -212,6 +216,10 @@ const STRIKE_FIXES_VERSION: u32 = 30;
 /// fruit and invertebrate layers (`Map::fruit`, `Map::insects`,
 /// `serde_util::before_v31`). Version 28 was never written.
 const FOOD_VALUES_VERSION: u32 = 31;
+/// The first version with staggered decisions (`Balance::decide_interval`
+/// and the kept intents, `serde_util::before_v32`). Version 31 is reserved
+/// for the food rules; renumber at merge if needed.
+const STAGGER_VERSION: u32 = 32;
 /// Bump on any change to [`Terrain`]'s serialized form.
 pub const TERRAIN_VERSION: u32 = 1;
 
@@ -607,6 +615,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let raw = payload_options().serialize(self).expect("world serializes");
         self.snapshot_with(OLDEST_RESTORABLE, FLAG_LZ4, raw.len(), &lz4_flex::block::compress(&raw))
     }
@@ -633,6 +642,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         // The header's layout is unchanged since version 6: only the version
         // field differs.
         let mut out = self.snapshot();
@@ -662,6 +672,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&NEST_PREDATION_VERSION.to_le_bytes());
         out
@@ -687,6 +698,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&OBEDIENCE_VERSION.to_le_bytes());
         out
@@ -711,6 +723,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&RALLY_VERSION.to_le_bytes());
         out
@@ -734,6 +747,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MIGRATION_ONSET_VERSION.to_le_bytes());
         out
@@ -756,6 +770,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&HOME_RANGE_VERSION.to_le_bytes());
         out
@@ -778,6 +793,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&BY_PARENTS_VERSION.to_le_bytes());
         out
@@ -799,6 +815,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&WARM_COSTS_VERSION.to_le_bytes());
         out
@@ -818,6 +835,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&TRAIT_COSTS_VERSION.to_le_bytes());
         out
@@ -837,6 +855,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MORPH_EFFECTS_VERSION.to_le_bytes());
         out
@@ -854,6 +873,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&DIRECTIONAL_VISION_VERSION.to_le_bytes());
         out
@@ -870,6 +890,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MORPH_VERSION.to_le_bytes());
         out
@@ -885,6 +906,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MORPH_LEGACY_VERSION.to_le_bytes());
         out
@@ -899,6 +921,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&ROAMING_FORAGE_VERSION.to_le_bytes());
         out
@@ -912,6 +935,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&CARNIVORE_DIET_VERSION.to_le_bytes());
         out
@@ -925,6 +949,7 @@ impl World {
         let _old29 = crate::serde_util::before_v29::Guard::new();
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&PREDATOR_BRAKES_VERSION.to_le_bytes());
         out
@@ -936,23 +961,35 @@ impl World {
     fn snapshot_v29(&self) -> Vec<u8> {
         let _old30 = crate::serde_util::before_v30::Guard::new();
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&MORPH_EXTRA_VERSION.to_le_bytes());
         out
     }
 
-    /// A version 30 snapshot (no food values, no fruit or invertebrate
-    /// layers), as the builds before version 31 wrote, to test that they
-    /// still restore.
+    /// A version 30 snapshot (no staggered decisions), as the builds
+    /// before version 32 wrote, to test that they still restore.
     #[cfg(test)]
     fn snapshot_v30(&self) -> Vec<u8> {
         let _old31 = crate::serde_util::before_v31::Guard::new();
+        let _old32 = crate::serde_util::before_v32::Guard::new();
         let mut out = self.snapshot();
         out[8..12].copy_from_slice(&STRIKE_FIXES_VERSION.to_le_bytes());
         out
     }
 
-    /// A world from [`World::snapshot`] bytes (or a version 10 to 30 snapshot's)
+    /// A version 31 snapshot (no staggered decisions), as the builds with
+    /// the food values before version 32 wrote, to test that they still
+    /// restore.
+    #[cfg(test)]
+    fn snapshot_v31(&self) -> Vec<u8> {
+        let _old32 = crate::serde_util::before_v32::Guard::new();
+        let mut out = self.snapshot();
+        out[8..12].copy_from_slice(&FOOD_VALUES_VERSION.to_le_bytes());
+        out
+    }
+
+    /// A world from [`World::snapshot`] bytes (or a version 10 to 31 snapshot's)
     /// and the terrain it names (`SnapshotHeader::terrain`), with its
     /// derived lookups rebuilt. Fails on another format version, a corrupt
     /// payload, or a missing or wrong terrain.
@@ -982,6 +1019,7 @@ impl World {
         let _old29 = (h.version < MORPH_EXTRA_VERSION).then(crate::serde_util::before_v29::Guard::new);
         let _old30 = (h.version < STRIKE_FIXES_VERSION).then(crate::serde_util::before_v30::Guard::new);
         let _old31 = (h.version < FOOD_VALUES_VERSION).then(crate::serde_util::before_v31::Guard::new);
+        let _old32 = (h.version < STAGGER_VERSION).then(crate::serde_util::before_v32::Guard::new);
         let body = &bytes[h.len()..];
         if fnv1a(body) != h.checksum {
             return Err(SnapshotError::Checksum);

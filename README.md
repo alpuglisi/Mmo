@@ -522,6 +522,21 @@ Select packages with `--workspace` plus `--test`/a filter rather than `-p`
 where you can: a `-p` build resolves dependency features for that package
 alone and so builds its own copies of the shared dependencies.
 
+**End-to-end speed.** Headless Chromium draws the WebGL map in software
+(SwiftShader), and that, not the server or the steps, was where an e2e run
+spent its time: three cores busy at 60 fps, more for a phone at pixel ratio
+3. `npm run e2e` (`client/e2e/run-all.mjs`) therefore runs the pages with
+`requestAnimationFrame` capped at 5 fps (`E2E_FPS`; `client/e2e/frames.mjs`)
+and the emulated phones at pixel ratio 1 (`E2E_DPR`; the phone checks are
+in CSS pixels), and runs the scripts two at a time on 4 cores (`E2E_JOBS`,
+default half the cores up to 4; each script has its own server and
+browser). A step that checks what is drawn frame by frame (the smoke test's
+motion bound) lifts the cap for its duration (`window.__e2eFrameCap(0)`).
+Steps wait on conditions (a finished season on the server, a settled tour
+card), not on the client's refresh timers. On a 4-core box the run went
+from ~350 s to ~90 s idle, and from ~730 s to ~170 s with two cores busy
+elsewhere.
+
 **Determinism in tests.** The server integration tests that need exact
 timing use a manual world clock: `ServerConfig::manual()` makes the world
 thread tick only on `RunningServer::step(n)` (which pushes state once at the
@@ -891,7 +906,7 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one; `heading`, its facing as one of 32 directions, and `vision`, its eyes for the vision cones: see *Vision cones* below), `nearby` (others in the window, also with `look`; never a heading or eyes), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor` |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
@@ -1051,9 +1066,15 @@ that logging out never pays as a strategy:
   world tracks its own connections, so a player on world A is offline in
   world B. A restart counts as everyone logging out; a spell already running
   keeps its clock (the spells are in the saved game, `game::offline`), so a
-  restart never hands out a fresh 12 hours. A new spell needs a login in
-  between; there is no cooldown beyond that, since the floor below already
-  keeps protection from helping a lineage that is doing well.
+  restart never hands out a fresh 12 hours. **A rolling budget:** a lineage
+  gets at most 12 hours of protection in any 24 (twice the cap), however
+  often its owner reconnects: a new spell's clock starts at the protection
+  already used in the last 24 hours, for the surviving core and the home
+  range alike (`Spell::credit`). A single long night is protected exactly as
+  before; a script reconnecting every 11 hours no longer renews it. The
+  home-range group in the state carries `protection_left_min`, the minutes
+  left if the player logged off now, and the client shows it in the home
+  range's note.
 - **When it applies.** Only while the lineage is down to its last 12 living
   members (agents plus cohort members of abstract regions,
   `ProtectionRules::floor`), checked at each day boundary and whenever the
@@ -2174,9 +2195,10 @@ Checked and judged acceptable:
   OS keeps; whoever has one can already receive those pushes); a WebSocket
   leaves the per-address connection count once upgraded (players are capped
   at 8); `GET /api/metrics` is public; renown passed between two accounts
-  of one person still counts as sales for the season's ranking (wash
-  trading; the economy itself can't be inflated, since every sale is a
-  transfer); `ApiError::internal` still returns the error text (store and
+  of one person still counts as sales for the season's ranking, though with
+  diminishing returns per buyer since the server rules review (the first
+  sale to a buyer counts in full, each further one half the one before;
+  `SeasonTracker::add_sale`); `ApiError::internal` still returns the error text (store and
   channel errors) to the client.
 
 ## Deployment
@@ -2208,7 +2230,7 @@ npm run build        # typecheck + static bundle in client/dist
 npm run typecheck
 npm test             # Vitest unit tests
 npm run e2e          # Playwright smoke, phone-emulation, onboarding, push and Android-driver tests (needs `npm run build` and `cargo build --release -p evo-server`)
-E2E_JOBS=3 npm run e2e   # the same scripts, three at a time (each starts its own server; worth it on 8+ cores: WebGL renders in software)
+E2E_JOBS=1 E2E_FPS=0 E2E_DPR=device npm run e2e   # one script at a time, uncapped frames, phones at their own pixel ratio (full-resolution screenshots)
 ```
 
 Serve the built client from the game server (one origin, no proxy):
@@ -2970,10 +2992,12 @@ cargo run --release --features serde -p evo-sim --example perfbench -- --seeds 4
 default balance (`presets::standard_world`) and with
 `Balance::carnivore_diet()` + `presets::niche_world`, and prints the wall
 time, the time per phase and a determinism fingerprint (FNV-1a of the final
-snapshot). Every optimisation below leaves the fingerprints
-(`e37d27fc27ac144e` default, `c32bf3e8057496e8` meat, seed 31), the sweep
-check (`evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`:
-score 11.60) and the `predlong` output byte for byte unchanged.
+snapshot). Every exact optimisation below left the fingerprints of its
+day (`e37d27fc27ac144e` default, `c32bf3e8057496e8` meat, seed 31, at the
+time), the sweep check (`evo-sim sweep --size 96 --trials 1 --seeds 12
+--rounds 1 --seed 31`: score 11.60 then) and the `predlong` output byte for
+byte unchanged; staggered decisions (below, on by default since snapshot
+version 32) are the one deliberate change of results.
 
 What changed:
 
@@ -3023,15 +3047,17 @@ cells and 6–8-tile ranges, under 1% of far cells lie wholly in range), and
 fewer close looks (the cost moves to the far-neighbor loop and the
 selection: no gain).
 
-**Staggered decisions** (`Balance::decide_interval`, off by default, so
-default worlds are unchanged): at `k >= 2` a calm organism decides afresh
+**Staggered decisions** (`Balance::decide_interval`, 2 by default since
+snapshot version 32; saves from version 31 and before read 1, every tick,
+and keep running as they did): at `k >= 2` a calm organism decides afresh
 every `k` ticks (staggered by id) and keeps its last intent in between,
 following its target organism (`world::stagger`). Every organism decides on
 the day's first tick, and so does every hunter and any organism that is
 possessed, fleeing, courting, provisioning or defending, that saw a threat,
 or whose target died (a first version without the hunter rule cost the
-pack hunters 3 of 4 seeds). It is not saved in snapshots. Measured
-(`--set decide_interval=K` on `perfbench`, `sweep`, `predlong`):
+pack hunters 3 of 4 seeds). Snapshots save the interval and the kept
+intents, so a restored world continues exactly. Measured before it was
+turned on (`--set decide_interval=K` on `perfbench`, `sweep`, `predlong`):
 
 | | off | `k = 2` | `k = 3` |
 | --- | --- | --- | --- |
@@ -3043,10 +3069,23 @@ pack hunters 3 of 4 seeds). It is not saved in snapshots. Measured
 | `predlong -- 3 --meat`, seeds 31–34: fox / pack hunters | 4/4, 4/4 | 3/4, 4/4 | |
 
 The scores and survival counts lie within seed noise of the defaults (four
-seeds swing the fox from 1/4 to 3/4 between equally valid trajectories),
-but the setting changes reaction times, so it stays off until a longer
-comparison (`evo-sim compare --set decide_interval=2 vs defaults`) says
-it is safe.
+seeds swing the fox from 1/4 to 3/4 between equally valid trajectories).
+Before turning it on, on top of the strike fixes (default sweep check
+11.50):
+
+- `evo-sim compare --adaptive --set decide_interval=2` against every-tick
+  decisions, 48 paired seeds (96×96, 120 days): A − B = +0.09 (95% CI
+  −0.06 … +0.24; sequential CI −0.09 … +0.27), verdict "no difference that
+  matters" (within ±0.3). Survival of every lineage within ±6%; the one
+  clear shift is the meadow voles' mean head count (−98 ± 35) and the wild
+  legacy share (−2.6 ± 1.9 points, herd grazers +1.7).
+- `predlong -- 6` on seeds 31–38: the predators die out on every seed
+  either way in the standard world (fox mean extinction day 297 every tick,
+  341 staggered; pack hunters 337 and 320); with `--meat`, fox 6/8 both,
+  pack hunters 4/8 every tick and 6/8 staggered. Wall time 533 → 416 s
+  (standard) and 479 → 400 s (meat).
+
+`--set decide_interval=1` restores every-tick decisions.
 
 Where the time goes now (one world, single thread, two years): perception
 in `decide` is about two thirds (neighbor scan, nearest-32 selection, the
@@ -6257,31 +6296,6 @@ for territories spared the pack hunters but let the foxes boom), the
 fragile fox on fresh seeds, and LOD cohorts, which don't model any of
 these rules.
 
-### Strike fixes
-
-Two old flaws in the strike, found in the predator review
-(`docs/predator-review.md`), are fixed and on by default
-(`Balance::strike_fixes`, 1; 0 restores the old strike):
-
-- A hunter killed in its own strike (by its prey's toxins) did nothing to
-  stop: the same strike could still bring the prey down, and the dead
-  hunter ate from its tile. Now its turn ends; once it is over, its body
-  is left as carrion where `Balance::carrion` is on.
-- A hunter ate twice on the tick it killed: a full helping at the kill
-  (`attack`) and another in its turn (`act`). Now it eats once, in its
-  turn.
-
-The standard sweep from seed 31 scores 11.63 (11.60 with the old strike);
-after the Phase 3 morphology merge, 11.50 against 11.68 (−0.18).
-`compare --seed 101 --size 96 --adaptive vs --set strike_fixes=0`:
-unresolved at the 48-seed cap, sequential 95% CI −0.36 … +0.11 (contains
-0, wider than ±0.3); pack hunters survive 96% against 100% (−4 ± 6%), the
-fox 96% against 98%, no other lineage moves outside its CI except the
-burrowing omnivores (+9 ± 8 alive). Snapshots move to format version 30
-(28 is reserved for the food rules): versions 10–29 read `strike_fixes`
-as 0, the old strike (`serde_util::before_v30`, test
-`version_29_snapshots_restore_with_the_old_strike`).
-
 ### First-year prey boom: founding
 
 *Predators in their niches* left the first-year prey boom: with the
@@ -6426,6 +6440,91 @@ round) that keeps the pack hunters' founding year safe on all seeds, the
 two founding levers that worked (predator numbers and spread) together
 with whatever the food round finds, and fresh seeds for every long-run
 acceptance.
+
+### LOD cohorts and the carnivore rules
+
+Offline (level-of-detail) regions run as cohorts (`world::lod`), which
+modelled none of the carnivore-diet rules or predator brakes, so with the
+rules on an abstract world and an agent world disagreed most about the
+predators: cohort pack hunters starved out by day 60–120 on most seeds,
+cohort foxes, with no territories, sat at their cap. The rules now apply to
+cohorts approximately (`world::lod_meat`, hooked into `lod.rs` at a few
+marked lines), each behind its existing tunable and a no-op at 0, without
+random draws, so default worlds run bit for bit as before (standard sweep
+11.50, `lodmeat` output with the rules off identical) and no snapshot
+changes (carcass meat lives on the map tiles, which rot it as for agents):
+
+| Rule | In a cohort |
+| --- | --- |
+| `carcass_keep` | what the killer doesn't eat of a kill is left on a tile of the prey's region (with `LodConfig::carcass_use` at 1, the default, nothing is left) |
+| `carrion` | a member dead of anything but predation or drowning leaves its body (a starved one at half) on its region's centre tile |
+| scavenging (`carcass_keep` or `carrion`) | a hunting cohort first eats the carcass meat it finds, all of its own region's and of the surrounding regions of its hunting range the share its carcass scent covers (`carcass_scent × reliance × (0.5 + nose)` tiles: π·scent² over a region's 256 tiles), and hunts for the rest |
+| `carnivore_fat` | it hunts for its fat room too, up to the agents' gorging capacity, and banks meat beyond its need as fat in any season |
+| `provisioning` | its breeding condition (meat share, plus plants by how well it digests them) rises toward its whole food share by `2 × provisioning × care` |
+| `breeding_territory` | at most `territories × litter / (gestation + weaning)` births a day, `territories` = usable tiles × (1 − group tolerance) over the agents' territory area (a tolerant kind keeps together, so a group shares one territory) |
+| `prey_switching` | each prey lineage is exposed less by `min(1, 2 × pickiness) × prey_scarcity` (the share of agents that would give it up today) |
+| `condition_litter` | births scale by the agents' litter share at the cohort's mean hunger and fat |
+
+**Agreement** (`cargo run --release --example lodmeat -- 3 SEEDS --meat`:
+the niche world with the rules on, 96×96, 3 years, once all agents and once
+all cohorts; per lineage the mean over samples every 60 days and seeds of
+`|ln((agents + 1) / (cohorts + 1))|`, 0.69 being a factor of two; alive =
+seeds with the lineage alive at year 3, agents / cohorts):
+
+| Lineage | Seeds 31–34, before | after | Seeds 41–44, before | after |
+| --- | --- | --- | --- | --- |
+| Meadow vole | 1.39 (4/3) | 0.54 (4/4) | 1.49 (4/3) | 0.69 (4/4) |
+| Steppe antelope | 0.41 | 0.54 | 0.49 | 0.46 |
+| Marsh newt | 0.40 | 0.19 | 1.18 (4/3) | 0.35 (4/4) |
+| Red fox | 0.84 (3/4) | 1.04 (3/3) | 0.72 | 0.57 |
+| Pack hunters | 2.85 (3/0) | 1.10 (3/2) | 2.61 (3/1) | 1.61 (3/4) |
+| Herd grazers | 0.69 | 0.93 | 0.71 | 0.59 |
+| Toxic frogs | 0.42 | 0.25 | 0.73 (4/3) | 0.26 (4/4) |
+| Burrowing omnivores | 1.27 | 1.20 | 1.34 | 1.27 |
+| **Mean** | **1.03** | **0.72** | **1.16** | **0.72** |
+
+For scale, the standard world at the defaults disagrees by 1.78 (seeds
+31–33: cohorts hold 5–7 times the agents' foxes and pack hunters and
+less than half their newts), so with the rules on cohorts now follow agents more
+closely than they do without them. The cohort pack hunters persist and stay
+in the agents' range (mean 10–18 against 39–88; agents fluctuate more)
+instead of dying out; the fox is a little low on seeds 31–34 (55 against
+95) and right on 41–44. What is left is old LOD bias, not these rules:
+cohorts hold about three times the agents' burrowing omnivores and half
+to two thirds of their herd grazers, with the rules on or off.
+
+Tried on the way (seeds 31–33 or 31–34): scavenging the whole hunting range
+(mean 1.09; cohort pack hunters boom or bust: 0 on one seed, 289 and 481 on
+others, against 18–104), only the own region (1.16; pack hunters gone on
+every seed), the scent-share range with territories not shared by groups
+(1.13; booms of 416–488 on two seeds). The territory share by group
+tolerance is what stopped the booms: in cohorts members spread over every
+region, while agents of a tolerant kind stay together in a few territories.
+
+### Strike fixes
+
+Two old flaws in the strike, found in the predator review
+(`docs/predator-review.md`), are fixed and on by default
+(`Balance::strike_fixes`, 1; 0 restores the old strike):
+
+- A hunter killed in its own strike (by its prey's toxins) did nothing to
+  stop: the same strike could still bring the prey down, and the dead
+  hunter ate from its tile. Now its turn ends; once it is over, its body
+  is left as carrion where `Balance::carrion` is on.
+- A hunter ate twice on the tick it killed: a full helping at the kill
+  (`attack`) and another in its turn (`act`). Now it eats once, in its
+  turn.
+
+The standard sweep from seed 31 scores 11.63 (11.60 with the old strike);
+after the Phase 3 morphology merge, 11.50 against 11.68 (−0.18).
+`compare --seed 101 --size 96 --adaptive vs --set strike_fixes=0`:
+unresolved at the 48-seed cap, sequential 95% CI −0.36 … +0.11 (contains
+0, wider than ±0.3); pack hunters survive 96% against 100% (−4 ± 6%), the
+fox 96% against 98%, no other lineage moves outside its CI except the
+burrowing omnivores (+9 ± 8 alive). Snapshots move to format version 30
+(28 is reserved for the food rules): versions 10–29 read `strike_fixes`
+as 0, the old strike (`serde_util::before_v30`, test
+`version_29_snapshots_restore_with_the_old_strike`).
 
 ## Genetics validation
 

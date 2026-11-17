@@ -20,6 +20,7 @@ import { createConnection, createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { capFrameRate, pixelRatio } from './frames.mjs';
 import { runScenario } from './android/scenario.mjs';
 
 const require = createRequire(import.meta.url);
@@ -105,9 +106,10 @@ async function main() {
     // A phone-sized page; --remote-debugging-port is the WebView's DevTools socket stand-in.
     context = await chromium.launchPersistentContext(userData, {
       headless: true,
-      viewport: { width: 412, height: 915 }, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true,
+      viewport: { width: 412, height: 915 }, deviceScaleFactor: pixelRatio(2.625), isMobile: true, hasTouch: true,
       args: [`--remote-debugging-port=${cdpPort}`, '--remote-allow-origins=*'],
     });
+    await capFrameRate(context);
     const page = context.pages()[0] ?? await context.newPage();
     await page.goto(`http://127.0.0.1:${pagePort}/`);
     const pwCdp = await context.newCDPSession(page);

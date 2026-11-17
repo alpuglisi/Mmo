@@ -145,8 +145,9 @@ pub struct Limits {
     /// WebSocket commands per client IP over all its connections.
     pub ip_commands: Rate,
     /// Group changes (claim or abandon a territory, split or merge groups)
-    /// per connection, on top of `commands`: each rewrites standing orders
-    /// for a whole herd, so a client has no reason to send many.
+    /// per player over all their connections, on top of `commands`: each
+    /// rewrites standing orders for a whole herd, so a client has no reason
+    /// to send many (and holding more connections gives no more).
     pub group_commands: Rate,
     /// Public reads that cost the world thread or the store (terrain, map,
     /// chronicle, history, lineage stats, founding, WebSocket upgrades) per
@@ -282,6 +283,8 @@ pub struct Limiters {
     pub logins: KeyedLimiter<IpAddr>,
     pub ip_commands: KeyedLimiter<IpAddr>,
     pub reads: KeyedLimiter<IpAddr>,
+    /// Group changes per player (`Limits::group_commands`).
+    pub group_commands: KeyedLimiter<evo_sim::PlayerId>,
     /// Proxies whose `X-Forwarded-For` names the client.
     pub proxies: TrustedProxies,
 }
@@ -293,6 +296,7 @@ impl Limiters {
             logins: KeyedLimiter::new(limits.logins),
             ip_commands: KeyedLimiter::new(limits.ip_commands),
             reads: KeyedLimiter::new(limits.reads),
+            group_commands: KeyedLimiter::new(limits.group_commands),
             proxies,
         }
     }

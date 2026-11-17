@@ -23,6 +23,7 @@ use crate::design::gene_key;
 use crate::economy::{self, Bid, Economy, Insufficient, Listing};
 use crate::league::{self, CurrentSeason, SeasonRecord, SeasonTracker};
 use crate::protocol::*;
+mod family;
 mod offline;
 mod states;
 pub use offline::{
@@ -175,6 +176,10 @@ pub struct GameConfig {
     pub home_range_onset_ticks: u64,
     /// Ticks over which the home range then fades to nothing.
     pub home_range_fade_ticks: u64,
+    /// Milliseconds a tick stands for in wall-clock time (the runner's
+    /// tick; 1000 when it runs as fast as it can), to show the protection
+    /// left in minutes.
+    pub tick_ms: f64,
 }
 
 impl Default for GameConfig {
@@ -190,6 +195,7 @@ impl Default for GameConfig {
             home_range_ticks: DEFAULT_HOME_RANGE_TICKS,
             home_range_onset_ticks: DEFAULT_HOME_RANGE_ONSET_TICKS,
             home_range_fade_ticks: DEFAULT_HOME_RANGE_FADE_TICKS,
+            tick_ms: 1000.0,
         }
     }
 }
@@ -1053,6 +1059,8 @@ impl Game {
             return Err(e(CommandError::NotOwned(mine)));
         }
         let b = self.world.organism(partner).ok_or(e(CommandError::NotFound(partner)))?;
+        self.check_auction_lock(mine)?;
+        self.check_auction_lock(partner)?;
         if b.owner == player {
             // Within the player's own organisms: no consent needed (and no
             // price). A pair that can't conceive would only use up a slot.
@@ -1080,6 +1088,21 @@ impl Game {
         self.notice(to, PushKind::Mating, text, Some(partner));
         out.push((Target::Player(to), ServerMsg::MatingRequest { offer: view.clone() }));
         Ok(Some(serde_json::json!({ "offer": view })))
+    }
+
+    /// Refuse a promise or agreement for a dam in an open auction: she is
+    /// locked until the auction closes or is withdrawn, so the winner's
+    /// agreement can run (a stud may serve several).
+    fn check_auction_lock(&self, organism: OrgId) -> Result<(), ErrorInfo> {
+        let dam = self.world.organism(organism).is_some_and(|o| o.sex == Sex::Female);
+        match self.economy.listing_of(organism).filter(|l| dam && l.auction.is_some()) {
+            Some(l) => Err(ErrorInfo::new(
+                "in_auction",
+                format!("#{organism} is up for auction (#{}) until it closes or is withdrawn", l.id),
+            )
+            .with_detail(serde_json::json!({ "listing": l.id }))),
+            None => Ok(()),
+        }
     }
 
     /// Refuse a price or fee the player can't cover.
@@ -1317,6 +1340,7 @@ impl Game {
         if to != l.owner {
             return Err(ErrorInfo::new("unknown_listing", format!("listing {listing} is no longer valid")));
         }
+        self.check_auction_lock(mine)?;
         if self.offers.values().any(|o| o.status.is_open() && (o.mine == mine || o.partner == mine)) {
             return Err(ErrorInfo::new("organism_busy", format!("#{mine} is already promised in an open agreement")));
         }
@@ -1499,6 +1523,7 @@ impl Game {
         if to != l.owner {
             return Err(ErrorInfo::new("unknown_listing", format!("listing {listing} is no longer valid")));
         }
+        self.check_auction_lock(mine)?;
         if self.listing_busy(&l) {
             return Err(ErrorInfo::new(
                 "listing_busy",
@@ -1736,10 +1761,13 @@ impl Game {
         if offer.status != OfferStatus::Pending {
             return Err(ErrorInfo::new("offer_closed", format!("offer {request} is {:?}", offer.status)));
         }
+        let (mine, partner) = (offer.mine, offer.partner);
         if !accept {
             self.close(request, OfferStatus::Declined, None, None, out);
             return Ok(None);
         }
+        self.check_auction_lock(mine)?;
+        self.check_auction_lock(partner)?;
         self.offers.get_mut(&request).unwrap().status = OfferStatus::Accepted;
         self.hold_added(Some(request), None);
         // Try at once; if the organisms are apart, the agreement stands until
@@ -1957,7 +1985,7 @@ impl Game {
             };
             let text = format!("Sale: {amount} renown from {from} for {what} (your #{} with #{})", o.partner, o.mine);
             if self.post(o.to, amount as i64, LedgerKind::Sale, text.clone(), Some(o.id), o.listing).is_ok() {
-                self.season.add_sale(o.to, amount);
+                self.season.add_sale(o.to, o.from, amount);
             }
             self.alert(o.to, AlertKind::Market, format!("{text}."), Some(o.partner), out);
             let paid =
@@ -2662,6 +2690,11 @@ impl Game {
         self.prev_born = self.world.counters.born.clone();
         self.prev_deaths = self.world.counters.deaths_by_lineage.clone();
         let sums = self.gene_sums();
+        // Player lineages' body plans, for the family tree.
+        let mut plans: BTreeMap<u32, Vec<&evo_sim::morph::Morphology>> = BTreeMap::new();
+        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
+            plans.entry(o.lineage).or_default().push(&o.morph);
+        }
         let gene_means = |k: u32| -> BTreeMap<String, f32> {
             match sums.get(&k) {
                 Some((n, s)) if *n > 0 => {
@@ -2698,6 +2731,11 @@ impl Game {
                         born: born.get(&k).copied().unwrap_or(0),
                         deaths: deaths.remove(&k).unwrap_or_default(),
                         genes: if l.owner == WILD { BTreeMap::new() } else { gene_means(k) },
+                        morph: if l.owner == WILD {
+                            None
+                        } else {
+                            plans.get(&k).and_then(|p| family::body_plan_mode(p.iter().copied()))
+                        },
                     }
                 })
                 .collect(),
@@ -4727,6 +4765,51 @@ mod tests {
         assert_eq!(r.balance(4), economy::FOUNDING_GRANT);
     }
 
+    /// A dam in an open auction is locked: no request, acceptance, purchase,
+    /// bid or own directed mating may promise her until the auction closes
+    /// or is withdrawn (before, her owner could promise her elsewhere and the
+    /// winner's agreement then failed).
+    #[test]
+    fn a_dam_in_an_open_auction_is_locked() {
+        let (mut g, a, b) = game();
+        let dam = female(&g, &a);
+        let own_male = male(&g, &a);
+        let stud = male(&g, &b);
+        place_together(&mut g, dam, own_male);
+        let out = g.command(
+            10,
+            1,
+            Some(1),
+            ClientMsg::CreateAuction { organism: dam, reserve: 5, days: Some(2), ticks: None },
+        );
+        assert!(result(&out).0, "{out:?}");
+        let listing = g.economy.listing_of(dam).unwrap().id;
+        let locked = |out: &Outbox| result(out) == (false, Some("in_auction".to_string()));
+        // Another player asks for her; her owner promises her to someone else
+        // or mates her directly.
+        assert!(locked(&g.command(20, 2, Some(2), ClientMsg::RequestMating { mine: stud, partner: dam, price: None })));
+        assert!(locked(&g.command(10, 1, Some(3), ClientMsg::RequestMating { mine: dam, partner: stud, price: None })));
+        assert!(locked(&g.command(
+            10,
+            1,
+            Some(4),
+            ClientMsg::RequestMating { mine: dam, partner: own_male, price: None }
+        )));
+        assert!(g.world.organism(dam).unwrap().pregnancy.is_none());
+        // Bidding on the auction itself is still open.
+        g.economy.balances.insert(2, 100);
+        let out = g.command(20, 2, Some(5), ClientMsg::Bid { listing, amount: 5, mine: stud });
+        assert!(result(&out).0, "{out:?}");
+        // A stud in an auction isn't locked: he may serve several.
+        let out = g.command(
+            20,
+            2,
+            Some(6),
+            ClientMsg::CreateAuction { organism: stud, reserve: 5, days: Some(2), ticks: None },
+        );
+        assert!(!locked(&out));
+    }
+
     #[test]
     fn escrow_settles_once_and_only_the_parties_act_on_an_offer() {
         let (mut g, a, b) = game();
@@ -4969,7 +5052,7 @@ mod tests {
             slots_left: g.world.mating_slots_left(player),
             population: g.owner_population(player),
             migration: g.world.migration_order(player, 0).map(|p| [p.x, p.y]),
-            groups: g.group_views(&g.world.groups(player)),
+            groups: g.group_views_for(player, &g.world.groups(player)),
             view,
             organisms: own,
             nearby: nearby.into_iter().map(|(_, n)| n).collect(),

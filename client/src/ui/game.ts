@@ -6,6 +6,8 @@
 
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
+import { buildFamilyTree, type FamilyModel } from '../familyTree';
+import { renderFamilyTree } from './familyTree';
 import type { AlertPrefs, ClientMsg, LineageStats, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
 import { WILD } from '../protocol';
 import { WorldView } from '../world/worldView';
@@ -64,10 +66,14 @@ const RANKED_ROWS = 5;
 const RANKED_PAGE = 10;
 const MARKET_REFRESH_MS = 5000;
 
-type Tab = 'organism' | 'matings' | 'market' | 'genetics' | 'lineage' | 'seasons' | 'world';
+type Tab = 'organism' | 'matings' | 'market' | 'genetics' | 'family' | 'lineage' | 'seasons' | 'world';
 const TAB_LABELS: Record<Tab, string> = {
-  organism: 'Organism', matings: 'Matings', market: 'Market', genetics: 'Genetics', lineage: 'Lineage', seasons: 'Seasons', world: 'World',
+  organism: 'Organism', matings: 'Matings', market: 'Market', genetics: 'Genetics', family: 'Family', lineage: 'Lineage', seasons: 'Seasons', world: 'World',
 };
+/** Labels for a phone's bottom bar, where eight tabs share the width (the full name stays the accessible name). */
+const TAB_SHORT: Partial<Record<Tab, string>> = { organism: 'Animal', matings: 'Mates', genetics: 'Genes', seasons: 'Ranks' };
+/** The family tree's refresh while its tab is open (it changes once a recorded day). */
+const FAMILY_REFRESH_MS = 20000;
 type Mode = 'select' | 'migrate' | 'territory' | 'rally';
 /** Narrow screens (phones): the sidebar becomes a bottom sheet over the map with a tab bar. */
 const NARROW = '(max-width: 760px)';
@@ -201,12 +207,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     matings: h('div', { class: 'panel', id: 'panel-matings' }),
     market: h('div', { class: 'panel', id: 'panel-market' }),
     genetics: h('div', { class: 'panel', id: 'panel-genetics' }),
+    family: h('div', { class: 'panel', id: 'panel-family' }),
     lineage: h('div', { class: 'panel', id: 'panel-lineage' }),
     seasons: h('div', { class: 'panel', id: 'panel-seasons' }),
     world: h('div', { class: 'panel', id: 'panel-world' }),
   };
   const tabBtns = (Object.keys(tabs) as Tab[]).map((t) =>
-    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, onclick: () => tabClicked(t) }, TAB_LABELS[t]));
+    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, 'aria-label': TAB_LABELS[t], onclick: () => tabClicked(t) },
+      h('span', { class: 'tab-long' }, TAB_LABELS[t]), h('span', { class: 'tab-short', 'aria-hidden': 'true' }, TAB_SHORT[t] ?? TAB_LABELS[t])));
   const alertBadge = h('span', { class: 'badge', id: 'alert-badge', hidden: true });
   tabBtns.find((b) => b.dataset.tab === 'genetics')!.append(alertBadge);
   let seenFeed = 0;
@@ -242,6 +250,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (t === 'genetics') void refreshStats();
     if (t === 'lineage') void refreshSeasons();
     if (t === 'world') void refreshChronicle();
+    if (t === 'family') void refreshFamily();
     if (t === 'seasons') void refreshRanked();
     watchSeason(t === 'seasons');
     if (t === 'market') void market.refresh();
@@ -615,6 +624,21 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }, RANKED_REFRESH_MS);
   cleanups.push(() => clearInterval(rankedTimer));
 
+  // Family tree: fetched while its tab is open.
+  let family: FamilyModel | null = null;
+  async function refreshFamily(): Promise<void> {
+    try {
+      family = buildFamilyTree(await api.familyTree(deps.token));
+      if (tab === 'family') renderFamilyTree(tabs.family, family);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) deps.onUnauthorized();
+    }
+  }
+  const familyTimer = setInterval(() => {
+    if (tab === 'family') void refreshFamily();
+  }, FAMILY_REFRESH_MS);
+  cleanups.push(() => clearInterval(familyTimer));
+
   // World chronicle: fetched while its tab is open.
   let chronicle: Chronicle | null = null;
   async function refreshChronicle(): Promise<void> {
@@ -644,6 +668,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (tab === 'lineage') renderLineage();
       if (tab === 'genetics') renderFeedPanel();
       if (tab === 'world' && !chronicle) renderWorld(tabs.world, null, model.player, 0);
+      if (tab === 'family' && !family && !tabs.family.childElementCount) tabs.family.replaceChildren(h('p', { class: 'muted' }, 'Loading the family tree…'));
       if (tab === 'seasons') drawRanked();
       return;
     }
@@ -1096,7 +1121,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // The cards (and their buttons) are rebuilt only when the buttons
     // change; sizes and orders are updated in place, so a button isn't
     // replaced under the cursor at every birth.
-    const key = JSON.stringify([groupChoice, groups.map((g) => [g.id, !!g.territory, !!g.rally, claimWait(g, tick) > 0, g.members === 0, canSplit(g, groups), !!g.home_range])]);
+    const key = JSON.stringify([groupChoice, groups.map((g) => [g.id, !!g.territory, !!g.rally, claimWait(g, tick) > 0, g.members === 0, canSplit(g, groups), !!g.home_range, g.protection_left_min])]);
     keyed(groupsEl, key, () => groups.map((g) => {
       const wait = claimWait(g, tick);
       const swatch = h('span', { class: 'swatch', style: `background:${cssColor(groupColor(g.id))}` });

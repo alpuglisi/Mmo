@@ -19,6 +19,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cappedBrowser, chromiumDevice } from './frames.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium, devices } = require('playwright');
@@ -61,8 +62,7 @@ function step(msg) {
 }
 
 function device(name) {
-  const { defaultBrowserType: _ignored, ...d } = devices[name];
-  return d;
+  return chromiumDevice(devices, name);
 }
 
 function check(cond, msg, detail) {
@@ -306,7 +306,7 @@ async function main() {
   let serverLog = '';
   server.stdout.on('data', (d) => (serverLog += d));
   server.stderr.on('data', (d) => (serverLog += d));
-  const browser = await chromium.launch({ headless: !process.env.HEADED });
+  const browser = cappedBrowser(await chromium.launch({ headless: !process.env.HEADED }));
   try {
     await waitFor('server', async () => (await fetch(`${base}/api/world`)).ok);
     step(`server up on ${base}`);

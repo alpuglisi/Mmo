@@ -278,6 +278,8 @@ export interface GroupView {
   obedience?: number;
   /** Its territory is the player's home range, shielded while they are offline (absent: no). */
   home_range?: boolean;
+  /** On the home range: minutes of offline protection left (at most 12 hours in any 24, however often you reconnect; absent from older servers). */
+  protection_left_min?: number;
 }
 
 /** Someone else's organism inside the view window: only what can be seen. */
@@ -1041,6 +1043,61 @@ export interface SpeciesView {
   lineages: SpeciesLineage[];
   carnivory: number;
   body_size: number;
+}
+
+/** A group's typical body plan: counts and shapes by majority, axes by mean (server `BodyPlanMode`). */
+export interface BodyPlanMode {
+  eye_count: number;
+  eye_azimuth: number;
+  ear_count: number;
+  ear_shape: string;
+  leg_count: number;
+  tail_shape: string;
+  snout_length: number;
+  horn_size: number;
+  horn_form: string;
+  wing_aspect: number;
+  pattern: string;
+}
+
+/** The caller's lineage on one recorded day (or today). */
+export interface FamilySample {
+  day: number;
+  alive: number;
+  /** Mean expressed value of every gene, by wire name. */
+  genes: Record<string, number>;
+  /** Absent in records from before the server kept it. */
+  morph?: BodyPlanMode;
+}
+
+/** A species the caller's lineage belongs or belonged to (or an ancestor of one). */
+export interface FamilySpecies {
+  id: number;
+  name: string;
+  origin: 'initial' | 'founding' | 'split' | string;
+  parent?: number;
+  founded_day: number;
+  extinct_day?: number;
+  merged_into?: number;
+  adults: number;
+  /** Of them, the caller's lineage's (0: an ancestor only). */
+  mine: number;
+  genes: Record<string, number>;
+  morph: BodyPlanMode;
+}
+
+/** `GET /api/lineage/tree`: the family tree view's data. */
+export interface FamilyTree {
+  player: PlayerId;
+  lineage: number | null;
+  name: string | null;
+  day: number;
+  /** Living members now (0 with a lineage: it died out). */
+  alive: number;
+  /** Oldest first, today last (while alive). */
+  timeline: FamilySample[];
+  /** Oldest first. */
+  species: FamilySpecies[];
 }
 
 export interface FoundedCount {

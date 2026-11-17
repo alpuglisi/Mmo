@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canSplit, claimWait, clearMigrationMsg, groupName, groupObedience, groupOptions, groupOrders, groupsOf, homeRangeGroup, homeRangeNote, memberCounts, migrateMsg, parseChoice, rallyLeft, rallyMsg,
+  canSplit, claimWait, clearMigrationMsg, groupName, groupObedience, groupOptions, groupOrders, groupsOf, homeRangeGroup, homeRangeNote, memberCounts, protectionLeft, migrateMsg, parseChoice, rallyLeft, rallyMsg,
   targetGroup, territoryRadius, territoryTap, validChoice, TERRITORY_MIN_RADIUS,
 } from './groups';
 import type { GroupView, OwnOrganism, StateView } from './protocol';
@@ -104,5 +104,11 @@ describe('groups', () => {
     expect(homeRangeNote(home)).toContain('Hunger and thirst still bite');
     expect(homeRangeNote(g(0, { territory }))).toBe('');
     expect(homeRangeNote(g(0, { home_range: true }))).toBe('');
+    // The protection left, from the server.
+    expect(homeRangeNote({ ...home, protection_left_min: 450 })).toMatch(/Protection left: 7 h 30 min \(at most 12 hours in any 24\)\.$/);
+    expect(protectionLeft({ ...home, protection_left_min: 720 })).toBe('Protection left: 12 h (at most 12 hours in any 24).');
+    expect(protectionLeft({ ...home, protection_left_min: 5 })).toBe('Protection left: 5 min (at most 12 hours in any 24).');
+    expect(protectionLeft({ ...home, protection_left_min: 0 })).toMatch(/^Protection used up for now/);
+    expect(protectionLeft(home)).toBe('');
   });
 });

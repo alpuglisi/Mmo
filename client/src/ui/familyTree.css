@@ -1,0 +1,37 @@
+/* The family tree (ui/familyTree.ts): a trunk of stage cards joined by a line, branches beside or under them. */
+.ft-head h3 { display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; }
+.ft-summary { margin: 4px 0 10px; color: var(--muted); }
+.ft-trunk { list-style: none; margin: 0; padding: 0; }
+.ft-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 0 0 14px 18px; }
+/* The trunk line down the left edge, a dot on each stage. */
+.ft-row::before { content: ''; position: absolute; left: 6px; top: 0; bottom: 0; width: 2px; background: var(--border); }
+.ft-row.ft-last::before { bottom: auto; height: 34px; }
+.ft-row::after { content: ''; position: absolute; left: 1px; top: 28px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); border: 2px solid var(--panel, #161b22); }
+.ft-node { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; align-items: center; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; min-width: 0; }
+.ft-portrait { width: 112px; aspect-ratio: 3 / 2; }
+.ft-portrait svg { width: 100%; height: 100%; display: block; }
+.ft-text { min-width: 0; }
+.ft-title { margin: 0; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.ft-sub { margin: 2px 0 4px; }
+.ft-note { margin: 0; }
+.ft-changes { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.ft-chip { font-size: 12px; line-height: 1.5; padding: 0 7px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text); white-space: nowrap; }
+.ft-badge { font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 8px; background: #3a2324; color: #ffb4ab; border: 1px solid #6e3a3c; letter-spacing: 0.02em; }
+.ft-founding { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.ft-now { border-color: color-mix(in srgb, #3fb950 55%, var(--border)); }
+/* Extinct: greyed portrait, dashed edge. */
+.ft-extinct { border-style: dashed; opacity: 0.85; }
+.ft-extinct .ft-portrait { filter: grayscale(1) opacity(0.7); }
+/* Branches: indented under their stage, a short elbow from the trunk. */
+.ft-branches { display: flex; flex-direction: column; gap: 6px; }
+.ft-branch { position: relative; margin-left: calc(14px + 14px * var(--depth, 0)); }
+.ft-branch::before { content: ''; position: absolute; left: -12px; top: -6px; width: 10px; height: 34px; border-left: 2px solid var(--border); border-bottom: 2px solid var(--border); border-bottom-left-radius: 6px; }
+.ft-compact { grid-template-columns: 84px minmax(0, 1fr); }
+.ft-compact .ft-portrait { width: 84px; }
+.ft-legend { margin-top: 4px; }
+/* Wide panels (the harness, big desktop sidebars): branches beside their stage. */
+@media (min-width: 900px) {
+  .ft-wide .ft-row.ft-has-branches { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+  .ft-wide .ft-branch { margin-left: calc(12px * var(--depth, 0)); }
+  .ft-wide .ft-branch::before { left: -10px; top: 26px; width: 8px; height: 0; border-left: 0; border-radius: 0; }
+}

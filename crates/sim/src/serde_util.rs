@@ -62,6 +62,10 @@
 //!   and invertebrate layers (`Map::fruit`, `Map::insects`,
 //!   `before_v31::vec`), left out while a world snapshot of version 30 or
 //!   before is read (0, off; no fruit, no invertebrates).
+//! - `before_v32`: `Balance::decide_interval` and the intents organisms keep
+//!   between decisions (`World::last_intents`), left out while a world
+//!   snapshot of version 31 or before is read (1, every organism decides
+//!   every tick; none kept).
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -1642,6 +1646,78 @@ pub mod before_v30 {
             Ok(OLD_VALUE)
         } else {
             f32::deserialize(d)
+        }
+    }
+}
+
+/// `#[serde(with = "crate::serde_util::before_v32")]` on
+/// `Balance::decide_interval`, and `before_v32::list` on the intents kept
+/// between decisions. On a thread holding a [`before_v32::Guard`] (reading
+/// or hashing a snapshot of version 31 or before) neither is written nor
+/// read: the interval reads as 1 (every organism decides every tick, as
+/// those worlds ran) and no intents are kept.
+pub mod before_v32 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// `decide_interval` before version 32: every tick.
+    pub const OLD_VALUE: f32 = 1.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+
+    /// The same for a value that older versions don't have at all: its
+    /// default when reading them.
+    pub mod list {
+        use super::*;
+
+        pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(T::default())
+            } else {
+                T::deserialize(d)
+            }
         }
     }
 }

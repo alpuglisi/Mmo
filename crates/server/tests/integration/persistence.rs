@@ -408,7 +408,7 @@ fn season(world: &str, n: u32, players: &[u32], ended_unix: u64) -> SeasonRecord
         .map(|&p| evo_server::store::LegacyEntry { player: p, share: 0.1 * f64::from(p), weighted_share: 0.0 })
         .collect();
     t.record_day(&d);
-    t.add_sale(players[0], 5);
+    t.add_sale(players[0], 999, 5);
     t.finish(world, u64::from(n) * 480, ended_unix, |p| format!("p{p}"))
 }
 
@@ -556,6 +556,7 @@ fn rich_day(world: &str, d: u64) -> DailyRecord {
         born: 0,
         deaths: Default::default(),
         genes: [("fur".to_string(), 0.5f32), ("claws".to_string(), 0.25)].into_iter().collect(),
+        morph: None,
     };
     DailyRecord { lineages: vec![lineage(0, 9), lineage(1, 0)], ..day(world, d, d as usize) }
 }

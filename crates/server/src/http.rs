@@ -204,6 +204,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
         .route("/api/lineage/stats", get(lineage_stats))
+        .route("/api/lineage/tree", get(family_tree))
         .route("/api/alerts/prefs", get(alert_prefs).post(set_alert_prefs))
         .route("/api/push/subscriptions", get(push_subscriptions))
         .route("/api/push/subscribe", post(push_subscribe))
@@ -561,6 +562,18 @@ async fn lineage_stats(
     let session = authed(&app, &headers)?;
     let (reply, rx) = oneshot::channel();
     send_request(&w.tx, Request::Stats { player: session.player, reply })?;
+    Ok(Json(rx.await.map_err(ApiError::internal)?))
+}
+
+/// The family tree of the caller's lineage (`FamilyTree`).
+async fn family_tree(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+) -> Result<Json<crate::protocol::FamilyTree>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::FamilyTree { player: session.player, reply })?;
     Ok(Json(rx.await.map_err(ApiError::internal)?))
 }
 
@@ -1008,8 +1021,6 @@ async fn client_session(
     let local = |msg: ServerMsg| weak.try_send(msg);
     let rate = app.limiters.limits.commands;
     let mut bucket = Bucket::new(rate, Instant::now());
-    let group_rate = app.limiters.limits.group_commands;
-    let mut group_bucket = Bucket::new(group_rate, Instant::now());
     let mut check = tokio::time::interval(session_check_interval(&app));
     check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -1038,7 +1049,13 @@ async fn client_session(
                     if let Err(wait) = bucket
                         .take(rate, now)
                         .and_then(|_| app.limiters.ip_commands.check_at(&ip, now))
-                        .and_then(|_| if group_change { group_bucket.take(group_rate, now) } else { Ok(()) })
+                        .and_then(|_| {
+                            if group_change {
+                                app.limiters.group_commands.check_at(&session.player, now)
+                            } else {
+                                Ok(())
+                            }
+                        })
                     {
                         let msg = format!("too many commands; retry in {} ms", wait.as_millis().max(1));
                         local(ServerMsg::err(env.id, name, ErrorInfo::new("rate_limited", msg)));

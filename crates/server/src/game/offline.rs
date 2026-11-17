@@ -88,6 +88,19 @@ pub struct Spell {
     /// Ticks the home range applied with residents inside it.
     #[serde(default)]
     pub home_engaged: u64,
+    /// Protection already used in the rolling window when the spell began
+    /// (`Game::protection_used`): the spell's clock starts this far in, so
+    /// reconnecting can't renew the protection (absent in older saves: 0).
+    #[serde(default)]
+    pub credit: u64,
+}
+
+impl Spell {
+    /// How far into its protection the spell is at `tick`: the ticks since
+    /// logout plus the credit it started with.
+    pub fn elapsed(&self, tick: u64) -> u64 {
+        tick.saturating_sub(self.start).saturating_add(self.credit)
+    }
 }
 
 /// Offline players' protection spells. Saved with the game.
@@ -95,6 +108,10 @@ pub struct Spell {
 #[serde(default)]
 pub struct OfflineTracker {
     spells: BTreeMap<PlayerId, Spell>,
+    /// Ended spells within the rolling window, by player: (logout, login)
+    /// ticks, oldest first (`Game::protection_used`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    past: BTreeMap<PlayerId, Vec<(u64, u64)>>,
     /// What the world was last given, to skip unchanged updates.
     #[serde(skip)]
     sent: Option<(BTreeSet<u32>, BTreeSet<OrgId>)>,
@@ -126,6 +143,18 @@ impl Game {
         (groups.iter()).map(|g| GroupView { home_range: home == Some(g.id), ..GroupView::from(g) }).collect()
     }
 
+    /// [`Game::group_views`] for `player`, the home range carrying the
+    /// protection the player has left in minutes.
+    pub(super) fn group_views_for(&self, player: PlayerId, groups: &[GroupInfo]) -> Vec<GroupView> {
+        let mut views = self.group_views(groups);
+        let left = self.protection_left(player, self.world.tick());
+        let minutes = (left as f64 * self.cfg.tick_ms / 60_000.0).floor() as u32;
+        for v in views.iter_mut().filter(|v| v.home_range) {
+            v.protection_left_min = Some(minutes);
+        }
+        views
+    }
+
     /// Whether home ranges are on (`GameConfig::home_range_ticks`).
     pub(super) fn home_ranges_on(&self) -> bool {
         self.cfg.home_range_ticks > 0
@@ -148,7 +177,7 @@ impl Game {
         if spell.home.is_none() || c.home_range_ticks == 0 {
             return 0.0;
         }
-        let t = tick.saturating_sub(spell.start);
+        let t = spell.elapsed(tick);
         if t < c.home_range_onset_ticks {
             0.0
         } else if t < c.home_range_ticks {
@@ -167,15 +196,54 @@ impl Game {
         if self.lineage_of.contains_key(&player) && (self.cfg.offline_protection_ticks > 0 || self.home_ranges_on()) {
             let start = self.world.tick();
             let home = self.home_claim(player);
-            self.offline.spells.entry(player).or_insert(Spell { start, home, ..Spell::default() });
+            let credit = self.protection_used(player, start);
+            self.offline.spells.entry(player).or_insert(Spell { start, home, credit, ..Spell::default() });
         }
         self.sync_offline_protection();
+    }
+
+    /// The protection budget: at most this many ticks of protection in any
+    /// [`Game::protection_window`] (the surviving core's cap, else the home
+    /// range's full-strength span; 12 hours by default).
+    pub(super) fn protection_budget(&self) -> u64 {
+        if self.cfg.offline_protection_ticks > 0 {
+            self.cfg.offline_protection_ticks
+        } else {
+            self.cfg.home_range_ticks
+        }
+    }
+
+    /// The rolling window the budget counts over: twice the budget (24
+    /// hours by default).
+    pub(super) fn protection_window(&self) -> u64 {
+        2 * self.protection_budget()
+    }
+
+    /// Ticks `player` spent in protection spells (ended ones and the running
+    /// one) within the window before `tick`, up to the budget.
+    pub(super) fn protection_used(&self, player: PlayerId, tick: u64) -> u64 {
+        let from = tick.saturating_sub(self.protection_window());
+        let overlap = |a: u64, b: u64| b.min(tick).saturating_sub(a.max(from));
+        let past: u64 = self.offline.past.get(&player).map_or(0, |v| v.iter().map(|&(a, b)| overlap(a, b)).sum());
+        let running = self.offline.spells.get(&player).map_or(0, |s| overlap(s.start, tick));
+        (past + running).min(self.protection_budget())
+    }
+
+    /// Protection `player` would still have if they logged off at `tick`.
+    pub(super) fn protection_left(&self, player: PlayerId, tick: u64) -> u64 {
+        self.protection_budget() - self.protection_used(player, tick)
     }
 
     /// `player` connected while having no other connection: end their spell
     /// and say what it did.
     pub(super) fn offline_login(&mut self, player: PlayerId, out: &mut Outbox) {
         let Some(spell) = self.offline.spells.remove(&player) else { return };
+        // Keep the spell's span for the rolling budget, dropping spans that
+        // have left the window.
+        let (tick, window) = (self.world.tick(), self.protection_window());
+        let past = self.offline.past.entry(player).or_default();
+        past.push((spell.start, tick));
+        past.retain(|&(_, end)| end + window > tick);
         self.sync_offline_protection();
         let tpd = self.world.config.ticks_per_day.max(1) as u64;
         let days = |ticks: u64| {
@@ -209,6 +277,7 @@ impl Game {
     pub(super) fn offline_resume(&mut self, saved: Option<OfflineTracker>) {
         if let Some(t) = saved {
             self.offline.spells = t.spells;
+            self.offline.past = t.past;
         }
         let online: BTreeSet<PlayerId> = self.conns.values().map(|c| c.player).collect();
         let players: Vec<PlayerId> = self.lineage_of.keys().copied().filter(|p| !online.contains(p)).collect();
@@ -225,7 +294,7 @@ impl Game {
         let p = self.world.offline_protection();
         for (player, s) in self.offline.spells.iter_mut() {
             if !s.over {
-                if tick.saturating_sub(s.start) >= cap {
+                if s.elapsed(tick) >= cap {
                     s.over = true;
                 } else if self.lineage_of.get(player).is_some_and(|&l| p.engaged(l)) {
                     s.engaged += 1;
@@ -366,6 +435,85 @@ mod tests {
         g.disconnect(20);
         assert!(protected(&g).is_empty());
         assert!(!told(&g.connect(21, 2, "bob")));
+    }
+
+    /// The protection is a rolling budget: at most the cap's worth of
+    /// protection in any window of twice the cap, however often the player
+    /// reconnects (before, every logout started a fresh spell, so a script
+    /// reconnecting just before the cap kept a lineage protected for good).
+    #[test]
+    fn reconnecting_does_not_renew_protection() {
+        let (mut g, _, _) = game(10);
+        let lb = g.lineage_of(2).unwrap();
+        assert_eq!(g.protection_left(2, g.world.tick()), 10);
+        g.disconnect(20);
+        for _ in 0..6 {
+            tick(&mut g);
+        }
+        // A quick reconnect: the next spell starts six ticks in.
+        g.connect(21, 2, "bob");
+        assert_eq!(g.protection_left(2, g.world.tick()), 4);
+        g.disconnect(21);
+        assert_eq!(g.offline.spells()[&2].credit, 6);
+        for _ in 0..3 {
+            tick(&mut g);
+        }
+        assert_eq!(protected(&g), vec![lb], "budget left");
+        tick(&mut g);
+        assert!(protected(&g).is_empty(), "ten ticks of protection in the window, however split");
+        // Online again, the budget comes back as the window rolls on.
+        g.connect(22, 2, "bob");
+        for _ in 0..20 {
+            tick(&mut g);
+        }
+        assert_eq!(g.protection_left(2, g.world.tick()), 10);
+        g.disconnect(22);
+        assert_eq!(protected(&g), vec![lb]);
+    }
+
+    /// The budget's history survives a restart.
+    #[test]
+    fn the_protection_budget_survives_a_restart() {
+        let (mut g, _, _) = game(10);
+        g.disconnect(20);
+        for _ in 0..6 {
+            tick(&mut g);
+        }
+        g.connect(21, 2, "bob");
+        let (saved, world) = (g.saved(), g.world.clone());
+        let json = serde_json::to_string(&saved).unwrap();
+        let saved: SavedGame = serde_json::from_str(&json).unwrap();
+        let mut r = Game::resume(
+            world,
+            GameConfig { offline_protection_ticks: 10, ..GameConfig::default() },
+            saved,
+            Vec::new(),
+        );
+        r.connect(22, 2, "bob");
+        assert_eq!(r.protection_left(2, r.world.tick()), 4);
+    }
+
+    /// The home range shows the protection left, in minutes.
+    #[test]
+    fn the_home_range_shows_the_protection_left() {
+        let (mut g, a, _) = game(600);
+        g.cfg.tick_ms = 60_000.0;
+        let center = g.world.organism(a[0]).unwrap().pos;
+        g.world.claim_territory(1, 0, center, 6.0).unwrap();
+        let home = |g: &Game| {
+            let views = g.group_views_for(1, &g.world.groups(1));
+            views.iter().find(|v| v.home_range).and_then(|v| v.protection_left_min)
+        };
+        assert_eq!(home(&g), Some(600));
+        g.disconnect(10);
+        for _ in 0..90 {
+            tick(&mut g);
+        }
+        g.connect(11, 1, "ann");
+        assert_eq!(home(&g), Some(510));
+        // Groups without a home range carry nothing.
+        let views = g.group_views_for(2, &g.world.groups(2));
+        assert!(views.iter().all(|v| v.protection_left_min.is_none()));
     }
 
     #[test]
