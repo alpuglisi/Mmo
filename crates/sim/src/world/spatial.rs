@@ -84,6 +84,11 @@ pub(crate) struct SpatialGrid {
     refs_age: u32,
     /// Bounds on each slot's distance to its lineage's reference point.
     ref_bounds: Vec<DistanceBounds>,
+    /// Position and mass of every armed organism (`ARMED`) and every sentry
+    /// giving a warning (`ALERT`, as infinitely heavy), grouped by cell
+    /// (`danger_starts`), for staggered decisions (`World::reused_intent`).
+    danger: Vec<(Vec2, f32)>,
+    danger_starts: Vec<u32>,
     /// `rebuild`'s buffer: each organism's cell and entry, if alive.
     placed: Vec<Option<(u32, Entry)>>,
     /// Slot of each living organism, by organism index.
@@ -105,6 +110,8 @@ impl SpatialGrid {
             refs: Vec::new(),
             refs_age: 0,
             ref_bounds: Vec::new(),
+            danger: Vec::new(),
+            danger_starts: Vec::new(),
             placed: Vec::new(),
             slot_of: Vec::new(),
         }
@@ -162,6 +169,19 @@ impl SpatialGrid {
             .map(|e| genes_of(&orgs[e.idx as usize]))
             .collect_into_vec(&mut self.genes);
         self.refresh_refs();
+        self.danger.clear();
+        self.danger_starts.clear();
+        for c in 0..n {
+            self.danger_starts.push(self.danger.len() as u32);
+            for e in &self.items[self.starts[c] as usize..self.starts[c + 1] as usize] {
+                if e.flags & ALERT != 0 {
+                    self.danger.push((e.pos, f32::INFINITY));
+                } else if e.flags & ARMED != 0 {
+                    self.danger.push((e.pos, e.mass));
+                }
+            }
+        }
+        self.danger_starts.push(self.danger.len() as u32);
         let (refs, genes) = (&self.refs, &self.genes);
         self.items
             .par_iter()
@@ -211,6 +231,22 @@ impl SpatialGrid {
     /// Bounds that settle nothing for a slot not in the grid.
     pub fn ref_bounds(&self, slot: u32) -> DistanceBounds {
         self.ref_bounds.get(slot as usize).copied().unwrap_or(DistanceBounds { lo: 0.0, hi: f32::INFINITY })
+    }
+
+    /// Could anything within `radius` of `p` frighten an organism: an armed
+    /// one heavier than `floor` (`decide::can_threaten`'s test) or a
+    /// sentry's warning? As of the last rebuild (true before any).
+    pub fn danger_near(&self, p: Vec2, radius: f32, floor: f32) -> bool {
+        if self.danger_starts.is_empty() {
+            return true;
+        }
+        let (c0, r0) = self.cell_of(Vec2::new(p.x - radius, p.y - radius));
+        let (c1, r1) = self.cell_of(Vec2::new(p.x + radius, p.y + radius));
+        let r2 = radius * radius;
+        (r0..=r1).any(|r| {
+            let (a, b) = (self.danger_starts[r * self.cols + c0], self.danger_starts[r * self.cols + c1 + 1]);
+            self.danger[a as usize..b as usize].iter().any(|&(q, m)| m > floor && (q - p).dot(q - p) <= r2)
+        })
     }
 
     /// Kinship genes of the organism in `slot` (`decide::Genes`).
