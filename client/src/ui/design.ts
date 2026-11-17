@@ -153,7 +153,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   const presetNote = h('div', { class: 'design-preset-confirm', id: 'design-preset-confirm', role: 'status', hidden: true });
   const modeBtn = (m: EditorMode, text: string, title: string) =>
     h('button', { type: 'button', id: `design-mode-${m}`, class: 'secondary', 'data-mode': m, 'aria-pressed': 'false', title }, text);
-  const modeBtns = [modeBtn('simple', 'Simple', 'Sliders only'), modeBtn('builder', 'Builder', 'Shape eyes, ears, legs, tail and snout by dragging')];
+  const modeBtns = [modeBtn('simple', 'Simple', 'Sliders only'), modeBtn('builder', 'Builder', 'Shape eyes, ears, legs, tail, snout and horns by dragging')];
   const modeSwitch = h('div', { class: 'design-mode', role: 'group', 'aria-label': 'Editor mode' }, ...modeBtns);
   const modeHint = h('p', { class: 'muted small design-mode-hint', id: 'design-mode-hint' }, '');
 
@@ -210,15 +210,15 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     for (const b of modeBtns) b.setAttribute('aria-pressed', String(b.dataset.mode === m));
     if (m === 'builder') {
       if (!builder) {
-        builder = createBodyBuilder({ value: spec.morphology, onChange: onBuilderChange, confirmPreset, idPrefix: 'design-bb', prices: morphPrices(cat) });
+        builder = createBodyBuilder({ value: spec.morphology, onChange: onBuilderChange, confirmPreset, idPrefix: 'design-bb', prices: morphPrices(cat), design: spec });
         builderHost.appendChild(builder.el);
       } else syncBuilder();
       builderHost.hidden = false;
-      modeHint.textContent = 'Drag the eyes, ears, legs, tail and snout. Eye, ear, leg, tail and fang sizes are also sliders below; both stay in step.';
+      modeHint.textContent = 'Drag the eyes, ears, legs, tail, snout and horns; pick a coat pattern and wing shape. Eye, ear, leg, tail and fang sizes are also sliders below; both stay in step.';
     } else {
       builderHost.hidden = true;
       pendingPreset?.(false);
-      modeHint.textContent = 'Builder mode shapes the body by dragging: eye count and placement, ears, legs, tail and snout.';
+      modeHint.textContent = 'Builder mode shapes the body by dragging: eye count and placement, ears, legs, tail, snout, horns, coat pattern and wing shape.';
     }
     page.classList.toggle('builder-mode', m === 'builder');
   }
@@ -254,6 +254,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
     avatar.update(spec, spec.morphology);
     readout.update(spec.morphology);
     if (!full) return;
+    // The builder wears the design's covering and colours (sliders change them).
+    builder?.setDesign(spec);
     const c = designCost(payload(), cat);
     total.textContent = `${c.total.toFixed(1)} / ${cat.budget} points`;
     const frac = c.total / cat.budget;
@@ -300,7 +302,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks): HTMLElement 
   });
 
   const page = h('div', { class: 'screen design' },
-    h('header', { class: 'topbar' }, h('strong', {}, 'Design your founders'),
+    h('header', { class: 'topbar' }, h('strong', { class: 'topbar-title' }, 'Design your founders'),
       h('span', { class: 'muted' }, 'After launch the design changes only through breeding, mutation and selection.'),
       h('span', { class: 'spacer' }), h('button', { class: 'secondary', onclick: cb.onLogout }, 'Log out')),
     h('div', { class: 'design-body' },

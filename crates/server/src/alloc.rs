@@ -114,11 +114,28 @@ mod tests {
 
     #[test]
     fn heap_stats_see_a_live_allocation() {
-        let Some(before) = imp::heap_stats() else { return };
-        let block = std::hint::black_box(vec![1u8; 64 << 20]);
-        let during = imp::heap_stats().unwrap();
-        // Other tests allocate concurrently; 64 MB dwarfs them.
-        assert!(during.allocated >= before.allocated + (32 << 20), "{ALLOCATOR}: {before:?} -> {during:?}");
-        drop(std::hint::black_box(block));
+        const BLOCK: u64 = 64 << 20;
+        if imp::heap_stats().is_none() {
+            return;
+        }
+        // Other tests allocate and free concurrently, at times more than the
+        // block between two readings, so a single before/during pair can
+        // miss it. Each attempt takes the two readings back to back; the
+        // block must show in one of them, and every reading taken while it
+        // is live must count at least it (no concurrent free undoes that).
+        let mut misses = Vec::new();
+        for _ in 0..20 {
+            let before = imp::heap_stats().unwrap();
+            let block = std::hint::black_box(vec![1u8; BLOCK as usize]);
+            let during = imp::heap_stats().unwrap();
+            drop(std::hint::black_box(block));
+            assert!(during.allocated >= BLOCK, "{ALLOCATOR}: {during:?} with a live {BLOCK}-byte block");
+            if during.allocated >= before.allocated + BLOCK / 2 {
+                return;
+            }
+            misses.push((before, during));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("{ALLOCATOR}: no reading saw the block: {misses:?}");
     }
 }

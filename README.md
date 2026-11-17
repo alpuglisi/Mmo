@@ -329,6 +329,83 @@ eras' rankings and achievements. `--catastrophes` turns on random
 catastrophes, `--catastrophe KIND@DAY` forces one (`severe_winter`,
 `megadrought`, `epidemic`, `flood_year`), `--era-years N` sets the era length.
 
+### Running experiments across machines
+
+The balance experiments run many independent worlds, so any of them can be
+split across machines (or processes) and merged back into exactly the
+report of a single run. Every machine needs the same commit (a result does
+not record the rules that produced it). Within one machine the worlds of a
+batch always run in parallel on every core (`--threads N` to limit).
+
+**`evo-sim` (sweep, compare, compare --adaptive, rankcheck, genetics).**
+Add `--shard i/n` on machine `i` of `n` (1-based); keep every other
+argument identical. Each command runs its worlds as batches of jobs (a
+sweep round's trials × seeds, a compare's two sides × seeds, the genome
+check groups and ecology worlds of `genetics`) and a shard runs only the
+jobs at positions `j` with `j % n == i - 1`. It writes everything it
+computed to `evo-sim-shard-i-of-n.json` (`--shard-out PATH`): JSON with
+the command line and one result per job key (the key names the balance,
+seed, map size, days and designs). Then, anywhere:
+
+```sh
+# machine 1, 2 and 3 (same commit, same arguments):
+evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31 --shard 1/3
+evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31 --shard 2/3
+evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31 --shard 3/3
+# collect the three files, then:
+evo-sim merge evo-sim-shard-*.json      # prints the unsharded report: score 11.60, same per-seed metrics
+```
+
+`merge` checks that the files come from one command line, replays that
+command with every world's result taken from them (nothing is simulated)
+and prints its report; `--out` files (CSV, `genetics` reports) are written
+as an unsharded run writes them. Only timings differ.
+
+**Commands with dependent stages.** A sweep's later rounds recenter on the
+earlier rounds' winner, and a screened sweep (`--screen-days`, the
+successive-halving tournament) promotes trials on the screens' results, so
+their jobs are not known until the previous stage is merged. A shard runs
+the first stage's share and stops; `merge` then writes the merged results
+to `evo-sim-merged.json` (`--cache-out PATH`), prints the next stage's
+command and exits with status 3. Run each stage on every machine with
+`--cache`; the shards' files include the merged results, so each merge
+needs only the latest files:
+
+```sh
+evo-sim sweep --trials 24 --seeds 12 --rounds 2 --shard $I/4                          # stage 1 (round 1)
+evo-sim merge evo-sim-shard-*.json                                                     # exit 3: needs round 2
+evo-sim sweep --trials 24 --seeds 12 --rounds 2 --shard $I/4 --cache evo-sim-merged.json   # stage 2
+evo-sim merge evo-sim-shard-*.json                                                     # the full report
+```
+
+Results already in a `--cache` file are never recomputed, so a stage that
+finds its whole batch cached carries on to the next one. A screened sweep
+resumes promoted worlds in memory; under `--shard` a promoted world whose
+screen ran on another machine is rerun from day 0 (the same world, so the
+same result), which costs the screen days again.
+
+**Adaptive compare.** `compare --adaptive` decides after each look whether
+to add seeds, so its looks are dependent stages. Under `--shard` it runs
+every seed up to `--max-seeds` in one stage (the fixed seed batches of all
+the looks at once); `merge` then replays the sequential test look by look on
+those results and stops at the same look with the same interval and verdict
+as an unsharded run. The price is the seeds past the stopping look (at most
+`--max-seeds`, default 48, of which an unsharded run might use 12). To avoid
+it, add `--stagewise`: one stage per look (`merge` between looks, as for a
+sweep's rounds), exact as well.
+
+**The examples.** `calibrate` (`marginal`, `tournament`) and `predlong`
+take `--shard i/n` too (worlds, or seeds, at positions `j % n == i - 1`) and
+write `calibrate-shard-i-of-n.json` / `predlong-shard-i-of-n.json` in the
+same format; their own `--merge` prints exactly the unsharded output:
+
+```sh
+cargo run --release --example calibrate -- tournament --worlds 40 --shard 2/4
+cargo run --release --example calibrate -- --merge calibrate-shard-*.json > tournament.csv
+cargo run --release --example predlong -- 6 31 32 33 34 35 36 --meat --shard 1/2
+cargo run --release --example predlong -- --merge predlong-shard-*.json
+```
+
 ### Species, eras and achievements
 
 The design doc's supporting scoring rules (`species`, `chronicle`,
@@ -410,7 +487,7 @@ jobs (the Android emulator job waits for the Android one):
 
 | Job | What it runs |
 | --- | --- |
-| Rust | `cargo fmt --all --check` (`rustfmt.toml`: width 120), `cargo build --release --workspace`, `cargo test --release --workspace` with a `postgres:16` service container (`DATABASE_URL` set, so the persistence tests also run against `PgStore`; `EVO_REQUIRE_DATABASE=1` makes them fail rather than skip if it goes missing), `cargo clippy --release --all-targets -- -D warnings`, and clippy on `evo-server --no-default-features` (no sqlx) (stable toolchain, cargo cache) |
+| Rust | `cargo fmt --all --check` (`rustfmt.toml`: width 120), `cargo build --release --workspace`, `cargo test --release --workspace` with a `postgres:16` service container (`DATABASE_URL` set, so the persistence tests also run against `PgStore`; `EVO_REQUIRE_DATABASE=1` makes them fail rather than skip if it goes missing), then the long tests a plain `cargo test` leaves out (`cargo test --release --workspace --test integration -- --ignored`: a world's history over 830 days), `cargo clippy --release --all-targets -- -D warnings`, and clippy on `evo-server --no-default-features` (no sqlx) (stable toolchain, cargo cache) |
 | Balance smoke check | `scripts/balance-smoke.sh`: `evo-sim sweep --size 64 --trials 1 --seeds 3 --rounds 1 --days 60` with the default `Balance`, failing if fewer than 14 of the 24 lineage-worlds (8 lineages × 3 seeds) still hold 4 members with 2 adults, or the score drops below 7 of 12. The current rules make 23 of 24 and 11.54 (with the morphology on by default), so only a rule change that wrecks coexistence trips it; thresholds are env-overridable (`MIN_SURVIVORS`, `MIN_SCORE`, `SEEDS`, `DAYS`, `SIZE`). |
 | Client | `npm ci`, `npm run typecheck`, `npm test`, `npm run build` |
 | Android app | builds the client, generates the Capacitor project (`npx cap add android`), installs JDK 21 and the Android SDK (`android-actions/setup-android`: platform-tools, platform 36, build-tools 35.0.0), runs `./gradlew assembleDebug` and uploads `app-debug.apk` as the `evolution-mmo-debug-apk` artifact (14 days); then a second, plain-http build (`EVO_CAP_CLEARTEXT=1 npx cap sync android`, checked for `usesCleartextTraffic="true"` in the merged manifest) as `evolution-mmo-debug-apk-cleartext` for the emulator job |
@@ -423,14 +500,27 @@ Run the same checks locally before pushing:
 
 ```sh
 cargo build --release && cargo test --release --workspace
+cargo test --release --workspace --test integration -- --ignored   # the long tests (~35 s)
 cargo fmt --all --check
 cargo clippy --release --all-targets -- -D warnings
 cargo clippy --release -p evo-server --no-default-features --all-targets -- -D warnings
 # PostgreSQL runs of the persistence tests (skipped without DATABASE_URL):
-DATABASE_URL=postgres://evo:evo@localhost/evo_test cargo test --release -p evo-server --test persistence
+DATABASE_URL=postgres://evo:evo@localhost/evo_test cargo test --release --workspace --test integration persistence::
 scripts/balance-smoke.sh
 (cd client && npm ci && npm run typecheck && npm test && npm run build && npm run e2e)
 ```
+
+**Test-suite speed.** `cargo test --release --workspace` is the fast
+default: the server's integration tests are modules of one test binary
+(`crates/server/tests/integration/`, one link of the server instead of one
+per file; run one area with `--test integration security::`), and the tests
+that take long by design are `#[ignore]`d with the command that runs them:
+the 830-day history test, which CI runs as its own step, and the long
+genetics, ecology and benchmark runs (minutes to half an hour, never in
+CI; `cargo test --release --workspace -- --include-ignored` runs them all).
+Select packages with `--workspace` plus `--test`/a filter rather than `-p`
+where you can: a `-p` build resolves dependency features for that package
+alone and so builds its own copies of the shared dependencies.
 
 **Determinism in tests.** The server integration tests that need exact
 timing use a manual world clock: `ServerConfig::manual()` makes the world
@@ -857,7 +947,7 @@ web client handles both.
   equals the original after quantization (`wire::canonical`), that a
   sub-step delta carries only the possessed organism, that a lost frame is
   refused until a keyframe, and that truncated or garbled frames are
-  errors, not panics; a server test (`tests/server.rs`) compares a protocol
+  errors, not panics; a server test (`tests/integration/server.rs`) compares a protocol
   2 socket with a protocol 1 socket of the same player push by push and
   checks `resync`. A Rust test writes `client/src/wire.fixture.json`
   (frames of a short session and the states they decode to,
@@ -876,7 +966,7 @@ field, °), `blind` (behind, °), `front_gap` (ahead, °, absent at 0) and
 `directional` (present when `Balance::directional_vision` > 0, i.e. blind
 spots shorten detection; off, the cones only describe the eyes). Nearby
 organisms never carry either, whatever the protocol (tested in
-`tests/server.rs` and `wire.rs`). In JSON states (protocol 1) they are two
+`tests/integration/server.rs` and `wire.rs`). In JSON states (protocol 1) they are two
 more optional keys per own organism. A client asking for `proto=3` gets
 protocol 2 frames with two more own fields (bit 20 heading, bit 21 an index
 into a `visions` palette in the meta JSON, like `looks`); a client asking
@@ -1145,7 +1235,7 @@ seasons (spring…winter, `GET /api/leaderboard/seasons`, the Lineage tab's
   store would not be seen; one process serves a world.) Tested:
   `standings::tests` (invalidation on writes, worlds kept apart, a load
   racing a write), `league::tests` (generation per score change and
-  rollover), and `tests/standings.rs` (over HTTP and WebSocket, two worlds,
+  rollover), and `tests/integration/standings.rs` (over HTTP and WebSocket, two worlds,
   days and rollovers). Measured with `examples/standings_load.rs` (128²
   world, 60 players, 4 finished seasons, 100 ms ticks, 200 clients, load
   generator on the same 4-core box; server CPU per request above idle):
@@ -1370,7 +1460,7 @@ configured; without them the server runs exactly as before (`GET
   offers push when `client/android/app/google-services.json` existed at
   build time (or `VITE_EVO_FCM=1`); otherwise the card says push isn't set
   up in this build.
-- **Tested** in Rust against a mock server (`crates/server/tests/native_push.rs`:
+- **Tested** in Rust against a mock server (`crates/server/tests/integration/native_push.rs`:
   the token request and its RS256 assertion verified with the key, the FCM
   message, the APNs request over HTTP/2 with its ES256 token verified, every
   answer above, gone tokens deleted, the HTTP API) and unit tests for the
@@ -1455,13 +1545,13 @@ message instead of guessing. `0007_worlds.sql` adds `shard` to every
 per-world table with the default `'main'` for existing rows, drops the
 default and rebuilds the keys and indexes with `shard` first (ranked seasons with their placements and auction results included). Keep a world
 with the id `main` in the list to go on playing the old world (it is the
-default when there is no list). `tests/persistence.rs` writes a real
+default when there is no list). `tests/integration/persistence.rs` writes a real
 single-world save and every record kind in the old layout (files) and the
 0005 schema (PostgreSQL, through `PgStore::migrate_to`), opens the store,
 checks every record is `main`'s and none another world's, then starts a
 two-world server that continues the saved world as `main` beside a new
 world; for the memory store (which has no old form) it carries a
-single-world server's data into a two-world server. `tests/worlds.rs`
+single-world server's data into a two-world server. `tests/integration/worlds.rs`
 checks isolation end to end: commands on another world's organisms fail,
 a listing isn't on the other world's market and can't be bought from it,
 leaderboards, history, balances and ledgers are per world, and a restart
@@ -1533,7 +1623,7 @@ which the Dockerfile installs): glibc malloc kept the memory freed after a
 population peak (see *Memory after a population peak* under [Six worlds
 for three hours](#six-worlds-for-three-hours-soak)); without the feature
 the server uses the system allocator. The persistence tests
-(`tests/persistence.rs`) run the store round trip (terrains included),
+(`tests/integration/persistence.rs`) run the store round trip (terrains included),
 restart-keeps-accounts and restart-continues-the-saved-world (which also
 deletes the stored terrain behind the server's back and requires it to
 refuse to start) against the file store and, when
@@ -2118,6 +2208,7 @@ npm run build        # typecheck + static bundle in client/dist
 npm run typecheck
 npm test             # Vitest unit tests
 npm run e2e          # Playwright smoke, phone-emulation, onboarding, push and Android-driver tests (needs `npm run build` and `cargo build --release -p evo-server`)
+E2E_JOBS=3 npm run e2e   # the same scripts, three at a time (each starts its own server; worth it on 8+ cores: WebGL renders in software)
 ```
 
 Serve the built client from the game server (one origin, no proxy):
@@ -2835,7 +2926,7 @@ server's 65-byte key and POSTs the subscription, which
 reload the device is still on and the kind still off; Turn off removes it
 on the server; and with notifications blocked, or no `PushManager`, the
 card explains and offers no button. Screenshot: `push-settings.png`.
-The server side of delivery is tested in Rust (`crates/server/tests/push.rs`,
+The server side of delivery is tested in Rust (`crates/server/tests/integration/push.rs`,
 and `native_push.rs` for FCM and APNs) against mock push services.
 
 **Not yet:** native apps run on devices (the Android debug APK builds,
@@ -2867,6 +2958,110 @@ other busy agents (load average 7–14 on 4 cores; the benchmark session's
 scheduler weight was raised for the multi-thread runs), so they are noisy
 lower bounds on what a dedicated machine does. Speed-up figures are medians
 of two runs, the rest single runs.
+
+### Performance (long experiments)
+
+```sh
+cargo run --release --features serde -p evo-sim --example perfbench            # one world, stepped from the main thread
+cargo run --release --features serde -p evo-sim --example perfbench -- --seeds 4  # four worlds at once, as experiments run
+```
+
+`perfbench` runs a 96×96 world for two simulated years (240 days) with the
+default balance (`presets::standard_world`) and with
+`Balance::carnivore_diet()` + `presets::niche_world`, and prints the wall
+time, the time per phase and a determinism fingerprint (FNV-1a of the final
+snapshot). Every optimisation below leaves the fingerprints
+(`e37d27fc27ac144e` default, `c32bf3e8057496e8` meat, seed 31), the sweep
+check (`evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`:
+score 11.60) and the `predlong` output byte for byte unchanged.
+
+What changed:
+
+- `World::step` enters the rayon pool once per tick when called from outside
+  it (`evo-sim run`, the server's runner) instead of handing each of a dozen
+  parallel passes to the pool and waiting.
+- Kin and mate tests first try bounds on the genetic distance through a
+  per-lineage reference point (the mean genes, refreshed every 240 ticks):
+  the distance is a metric, so `|d(a,c) - d(b,c)| <= d(a,b) <= d(a,c) + d(b,c)`.
+  The full 40-gene bound (`DistanceBounds::new`) is summed only when those
+  don't settle the test (its share of the profile fell from 12% to 4%).
+- Light parallel passes (grid rebuild, the parallel apply's local-act and
+  burrow sweeps, a small map's environment chunks) run on the calling thread
+  below 8,192 items: waking the pool cost more than it saved.
+- Off the day, the environment chunks and the grid rebuild run at once
+  (`rayon::join`; they share nothing), and the chunk update computes each
+  column's and row's weather interpolation once instead of per tile.
+- `evo-sim` (the simulation crate) builds in one codegen unit in release
+  (about 5%).
+
+Measured on the 4-core container (noisy; same-session runs of the original
+and the new build, seed 31):
+
+| Benchmark | Before | After | Speed-up |
+| --- | --- | --- | --- |
+| `perfbench`, one world, default, 2 years | 23.3 s | 21.1 s | 1.10× |
+| `perfbench`, one world, carnivore diet + niches, 2 years | 24.3 s | 23.0 s | 1.06× |
+| `perfbench --seeds 4`, default, 2 years | 55.0 s | 51.8 s | 1.06× |
+| `perfbench`, one world, default, first 80 days | 5.97 s | 3.98 s | 1.50× |
+| `predlong -- 2 31` | 22.3 s | 19.8 s | 1.13× |
+| `predlong -- 2 31 --meat` | 24.5 s | 21.9 s | 1.12× |
+| `predlong -- 1` (seeds 31–34 at once) | 14.6 s | 13.1 s | 1.11× |
+| `evo-sim sweep` check (12 seeds × 120 days) | 48.8 s | 46.7 s | 1.05× |
+| `evo-sim run --days 120` (128×128) | 11.7 s | 11.2 s | 1.04× |
+
+A later pass made the decision phase's neighbor query branchless
+(`SpatialGrid::query_into`: every candidate is written and only those in
+range kept, the same ones in the same order), worth about 10% of decide
+time in crowds, again with identical results.
+
+**Exact limits.** Perception sums neighbor positions (the kin centroid and
+the estimate beyond the nearest 32) in the order the nearest-32 selection
+leaves the list, so an exact method must reproduce that permutation: it
+can't drop candidates or reorder cells. Two approximations were measured
+and dropped: counting far grid cells from per-cell summaries (with 4-tile
+cells and 6–8-tile ranges, under 1% of far cells lie wholly in range), and
+fewer close looks (the cost moves to the far-neighbor loop and the
+selection: no gain).
+
+**Staggered decisions** (`Balance::decide_interval`, off by default, so
+default worlds are unchanged): at `k >= 2` a calm organism decides afresh
+every `k` ticks (staggered by id) and keeps its last intent in between,
+following its target organism (`world::stagger`). Every organism decides on
+the day's first tick, and so does every hunter and any organism that is
+possessed, fleeing, courting, provisioning or defending, that saw a threat,
+or whose target died (a first version without the hunter rule cost the
+pack hunters 3 of 4 seeds). It is not saved in snapshots. Measured
+(`--set decide_interval=K` on `perfbench`, `sweep`, `predlong`):
+
+| | off | `k = 2` | `k = 3` |
+| --- | --- | --- | --- |
+| µs per organism-tick, default, 2 years, 1 thread | 1.84 | 1.60 | 1.55 |
+| µs per organism-tick, meat, 2 years, 1 thread | 1.85 | 1.58 | 1.48 |
+| sweep check wall time (12 seeds × 120 days) | 46.0 s | 35.6 s | 34.9 s |
+| sweep check score (95% CI) | 11.68 (± 0.33) | 11.74 (± 0.27) | 11.59 (± 0.42) |
+| `predlong -- 3`, seeds 31–42: fox / pack hunters survive | 5/12, 7/12 | 6/12, 5/12 | |
+| `predlong -- 3 --meat`, seeds 31–34: fox / pack hunters | 4/4, 4/4 | 3/4, 4/4 | |
+
+The scores and survival counts lie within seed noise of the defaults (four
+seeds swing the fox from 1/4 to 3/4 between equally valid trajectories),
+but the setting changes reaction times, so it stays off until a longer
+comparison (`evo-sim compare --set decide_interval=2 vs defaults`) says
+it is safe.
+
+Where the time goes now (one world, single thread, two years): perception
+in `decide` is about two thirds (neighbor scan, nearest-32 selection, the
+close look at each), apply a quarter, environment chunks and the grid
+rebuild a few percent each. Late in a run herds are dense and each
+organism scans 50–100 neighbors; that scan, not kinship, is now the
+largest single cost. Tried and dropped (no measurable gain): trimming the
+grid query to the cells the circle reaches, software prefetch of
+organisms in grid order, bounding the body-plan gap through the reference
+point as well, fat LTO. Parallel scaling of one world stays modest
+(single thread 41 s, four threads 21 s for the default two years): the
+apply phase's parallel sweeps are about 0.2 ms per tick, too short to pay
+for waking the pool's workers, so experiments get the most from running
+seeds side by side, which they already do (`predlong`, `sweep`, `compare`,
+`genetics` run their worlds in parallel).
 
 ### Profile at the prototype target
 
@@ -3913,7 +4108,7 @@ What it shows:
   `/api/leaderboard/history` takes a day range (`from`, `to`) and caps
   `limit` at 365: at 500 players a world's history is ~90 MB after a real
   day and ~130 MB after a real year instead of growing ~1.2 GB a day
-  (`tests/history.rs` runs a world for 830 days and checks the bound). The
+  (`tests/integration/history.rs` runs a world for 830 days and checks the bound). The
   world thread's in-memory window of 365 daily records is thinned the same
   way (~250 MB of JSON per 500-player world before, ~80 MB now); it was
   still filling during this run, so it may account for part of the RSS
@@ -5869,7 +6064,7 @@ design), except carrion and the slower rot, which feed every meat eater:
 
 | Tunable (tested value) | Rule |
 | --- | --- |
-| `carcass_keep` (0.75) | Carcasses rot a quarter as fast: tile meat loses 30% a day above 15 °C and 11% below (70% and 38% before), so one kill feeds the killer, its family and other scavengers for days. |
+| `carcass_keep` (0.75) | Carcasses rot a quarter as fast: tile meat loses 26% a day above 15 °C and 11% below (70% and 38% before), so one kill feeds the killer, its family and other scavengers for days. |
 | `carnivore_fat` (60) | Gorging: meat beyond hunger goes into fat (up to 60 hunger points, times one plus fat stores) in any season, not only before a dormancy, and a carnivore that knows of a carcass keeps eating while it has room. Fat pays for hunger above 50 as for any animal. |
 | `carcass_scent` (8) | A hungry carnivore with no prey in sight goes to the best carcass within 8 × (0.5 + nose) tiles before roaming, remembers its last kill (`forage_target`) and goes back to it, and a pregnant one goes to her mate's last kill; a roaming hunter also drinks where it passes water. Before, carcasses were found by sampling 8 random tiles, and roaming neither ate nor drank. |
 | `carrion` (1) | A death other than predation or drowning leaves the body as a carcass (half for a starved one): winter deaths are the scavengers' winter food. |
@@ -6061,6 +6256,31 @@ Left for the next round: the first-year prey boom (a founding-year grace
 for territories spared the pack hunters but let the foxes boom), the
 fragile fox on fresh seeds, and LOD cohorts, which don't model any of
 these rules.
+
+### Strike fixes
+
+Two old flaws in the strike, found in the predator review
+(`docs/predator-review.md`), are fixed and on by default
+(`Balance::strike_fixes`, 1; 0 restores the old strike):
+
+- A hunter killed in its own strike (by its prey's toxins) did nothing to
+  stop: the same strike could still bring the prey down, and the dead
+  hunter ate from its tile. Now its turn ends; once it is over, its body
+  is left as carrion where `Balance::carrion` is on.
+- A hunter ate twice on the tick it killed: a full helping at the kill
+  (`attack`) and another in its turn (`act`). Now it eats once, in its
+  turn.
+
+The standard sweep from seed 31 scores 11.63 (11.60 with the old strike);
+after the Phase 3 morphology merge, 11.50 against 11.68 (−0.18).
+`compare --seed 101 --size 96 --adaptive vs --set strike_fixes=0`:
+unresolved at the 48-seed cap, sequential 95% CI −0.36 … +0.11 (contains
+0, wider than ±0.3); pack hunters survive 96% against 100% (−4 ± 6%), the
+fox 96% against 98%, no other lineage moves outside its CI except the
+burrowing omnivores (+9 ± 8 alive). Snapshots move to format version 30
+(28 is reserved for the food rules): versions 10–29 read `strike_fixes`
+as 0, the old strike (`serde_util::before_v30`, test
+`version_29_snapshots_restore_with_the_old_strike`).
 
 ## Genetics validation
 

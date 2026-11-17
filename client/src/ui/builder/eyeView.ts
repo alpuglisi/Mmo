@@ -24,12 +24,14 @@ import './eyeView.css';
 import { eyeFieldWidth, eyePlacements, EYE_PLACEMENT_MAX, PAIR_STEP, type EyePlacement, type Morphology } from '../../morphology';
 import { arcContains, signedAngle, type Arc, type VisionStats } from '../../vision';
 import { INK } from '../../art/palette';
-import { groupSvg, shapeSvg } from '../../art/render';
+import { groupSvg, pieceD, shapeSvg, type Group } from '../../art/render';
+import type { Piece, Shape } from '../../art/geom';
 import { headTop, type HeadTopPart } from '../../art/parts/headTop';
 import { coveringOf, morphologyOf, paintOf } from '../../world/avatar';
 import { h } from '../dom';
 import type { HandleSpec } from './builder';
 import { SIDE_DESIGN } from './sideView';
+import type { DesignSpec } from '../../protocol';
 import { azimuthOf, polar, s, wedgePath } from './svg';
 
 /** Radius of the field-of-view rim, of the head (eyes sit on its outline), of the midline eye's spot on the forehead. */
@@ -61,7 +63,7 @@ export interface EyeView {
   /** The colour key under the drawing. */
   readonly legend: HTMLElement;
   /** Redraw for `cur`; returns the handles to show, by key. */
-  render(cur: Morphology, vision: VisionStats): Map<string, HandleSpec>;
+  render(cur: Morphology, vision: VisionStats, design?: DesignSpec): Map<string, HandleSpec>;
   /** Hide the first-use hint for good (the player has dragged or used the keys). */
   dismissHint(): void;
 }
@@ -132,14 +134,62 @@ function blindIcon(x: number, y: number, size: number): SVGElement {
 }
 
 /** The head, snout, ears and body from above, in the art library's style (`art/parts/headTop.ts`), painted like the side view's creature. */
-function headArt(cur: Morphology, eyes: EyePlacement[], spots: [number, number][], snoutTip: number): HeadTopPart {
-  const model = morphologyOf(SIDE_DESIGN, cur);
+function headArt(cur: Morphology, eyes: EyePlacement[], spots: [number, number][], snoutTip: number, design: DesignSpec): HeadTopPart {
+  const model = morphologyOf(design, cur);
+  const covering = coveringOf(model);
   return headTop({
     r: HEAD_R, snoutTip, carn: model.carnivory, cold: !model.warm,
     ears: { count: cur.ear_count, shape: cur.ear_shape, size: cur.ear_size },
     eyes: eyes.map((e, i) => ({ x: spots[i][0], y: spots[i][1], az: e.side === 'mid' ? 0 : e.azimuth, r: 5 + 3.8 * cur.eye_size })),
-    furry: coveringOf(model) === 'fur', lod: 'portrait',
+    furry: covering === 'fur', lod: 'portrait',
+    cover: covering === 'scales' || covering === 'armor' || covering === 'feathers' ? covering : undefined,
+    horns: { size: model.horns, form: cur.horn_form },
+    pattern: cur.pattern,
   }, paintOf(model));
+}
+
+/**
+ * The head drawn over the vision overlays without a seam where it lies on
+ * the neck: each layer is drawn as one merged silhouette with what it sits on
+ * (so the ink line runs round the outside only) and masked back to its own
+ * pieces plus the outline's width. Skull and snout merge with the body; the
+ * ears merge with the skull but keep their ink edge over the body (they lie
+ * on top of it). A thin shade line along the back of the skull keeps the
+ * head reading as raised over the neck, like the side view's inner lines.
+ */
+function headMarkup(art: HeadTopPart, uid: string): string {
+  const isEar = (pc: Piece) => pc.tag.startsWith('ear-');
+  const skull = art.head.pieces.filter((pc) => !isEar(pc));
+  const ears = art.head.pieces.filter(isEar);
+  const cranium = art.head.pieces.find((pc) => pc.tag === 'cranium');
+  const earDetail = (sh: Shape) => sh.tag === 'inner-ear';
+  const opts = { id: uid, outline: ART.outline, rim: ART.rim, animate: false };
+  const big = `x="${-RIM * 2}" y="${-RIM * 2}" width="${RIM * 4}" height="${RIM * 4}"`;
+  const masked = (g: Group, gid: string, keep: Piece[]): string => {
+    if (keep.length === 0) return '';
+    const mid = `${uid}-${gid}-keep`;
+    const shapes = keep.map((pc) => `<path d="${pieceD(pc)}"/>`).join('');
+    return `<defs><mask id="${mid}" maskUnits="userSpaceOnUse" ${big}><g fill="#fff" stroke="#fff" stroke-width="${f(ART.outline * 2 + 0.6)}" stroke-linejoin="round">${shapes}</g></mask></defs>` +
+      `<g mask="url(#${mid})">${groupSvg(g, gid, opts, INK)}</g>`;
+  };
+  // The back of the skull, where it overhangs the neck.
+  const nape: Shape[] = cranium ? [{
+    part: 'head', tag: 'nape', kind: 'curve', closed: false,
+    points: [128, 155, 180, 205, 232].map((a): [number, number] => {
+      const t = (a * Math.PI) / 180;
+      const w = HEAD_R * 0.97;
+      return [Math.sin(t) * w, -Math.cos(t) * HEAD_R * 0.99 + 1.5];
+    }),
+    stroke: art.head.tones.shade, width: 1.4, alpha: 0.9,
+  }] : [];
+  const skullG: Group = {
+    ...art.head,
+    pieces: [...skull, ...art.body.pieces],
+    detail: [...art.body.detail, ...art.head.detail.filter((sh) => !earDetail(sh)), ...nape],
+    over: [],
+  };
+  const earG: Group = { ...art.head, pieces: [...ears, ...(cranium ? [cranium] : [])], detail: art.head.detail.filter(earDetail), over: [] };
+  return masked(skullG, 'skull', skull) + masked(earG, 'ears', ears) + art.head.over.map(shapeSvg).join('');
 }
 
 /** Library markup (a group or shapes) as SVG nodes. */
@@ -233,7 +283,7 @@ export function createEyeView(opts: { idPrefix: string; uid: string }): EyeView 
       s('text', { x: f(lx), y: f(ly), class: 'ev-hint-text', 'text-anchor': 'middle', 'dominant-baseline': 'central' }, 'Drag an eye')));
   }
 
-  function render(cur: Morphology, vision: VisionStats): Map<string, HandleSpec> {
+  function render(cur: Morphology, vision: VisionStats, design: DesignSpec = SIDE_DESIGN): Map<string, HandleSpec> {
     draw.replaceChildren();
     const out = new Map<string, HandleSpec>();
     const add = <T extends SVGElement>(el: T): T => draw.appendChild(el);
@@ -253,7 +303,7 @@ export function createEyeView(opts: { idPrefix: string; uid: string }): EyeView 
       ...fields.map((d) => s('path', { d, fill: '#000' }))));
 
     // The ground round the head, and the body trailing behind (which way is front), under the overlays.
-    const art = headArt(cur, eyes, spots, snoutTip);
+    const art = headArt(cur, eyes, spots, snoutTip, design);
     add(s('circle', { r: RIM, class: 'ev-ground' }));
     add(artNode(groupSvg(art.body, 'body', { id: uid, outline: ART.outline, rim: ART.rim, animate: false }, INK), { class: 'ev-body' }));
 
@@ -284,7 +334,7 @@ export function createEyeView(opts: { idPrefix: string; uid: string }): EyeView 
     add(s('circle', { r: RIM, class: 'ev-rim' }));
 
     // The head from above, on top: skull, ears, snout forward with the nose at the tip.
-    add(artNode(groupSvg(art.head, 'head', { id: uid, outline: ART.outline, rim: ART.rim, animate: false }, INK), { class: 'ev-head' }));
+    add(artNode(headMarkup(art, uid), { class: 'ev-head' }));
 
     // Labels: plain words where the zones meet the rim.
     const label = (x: number, y: number, lines: string[], cls: string, anchor = 'middle') => {
@@ -334,16 +384,25 @@ export function createEyeView(opts: { idPrefix: string; uid: string }): EyeView 
     add(curvedArrow(edge + 7, edge + 17, RIM, 'ev-arrow ev-arrow-knob'));
 
     // The eyes themselves, on the head; slide arrows round the first pair.
+    // The arrows run just inside the skull's outline, either side of the eye
+    // (it slides round the head), so they never sit on the ears or the snout's
+    // edge; one that would cross another eye is left out.
+    const arrowR = HEAD_R - 8;
+    const eyeHalf = (1.18 * (5 + 3.8 * cur.eye_size) + 0.7) / HEAD_R * (180 / Math.PI);
+    const gap = Math.max(20, eyeHalf * 1.25 + 6);
+    const len = 20;
+    const clear = (a0: number, a1: number, self: EyePlacement) => eyes.every((o) => o === self || o.side === 'mid'
+      || Math.abs(signedAngle(o.azimuth - (a0 + a1) / 2)) > Math.abs(a1 - a0) / 2 + eyeHalf);
     eyes.forEach((e) => {
-      if (e.pair === 0) {
-        const sign = e.side === 'right' ? 1 : -1;
-        const a = e.azimuth;
-        // Along the head's outline, either side of the eye: it slides round the head.
-        const r = HEAD_R + 1;
-        const gap = 22 + 8 * cur.eye_size;
-        if (Math.abs(a) > gap + 4) add(curvedArrow(a - sign * gap, a - sign * (gap + 18), r, 'ev-arrow ev-arrow-eye'));
-        if (Math.abs(a) < EYE_PLACEMENT_MAX - 10) add(curvedArrow(a + sign * gap, a + sign * (gap + 18), r, 'ev-arrow ev-arrow-eye'));
-      }
+      if (e.pair !== 0) return;
+      const sign = e.side === 'right' ? 1 : -1;
+      const a = e.azimuth;
+      const back = [a + sign * gap, a + sign * (gap + len)] as const;
+      // Forward, it stops short of the midline (its mirror comes the other way).
+      const foreEnd = Math.max(8, Math.abs(a) - gap - len);
+      const fore = [a - sign * gap, sign * foreEnd] as const;
+      if (Math.abs(a) - gap - foreEnd >= 14 && clear(fore[0], fore[1], e)) add(curvedArrow(fore[0], fore[1], arrowR, 'ev-arrow ev-arrow-eye'));
+      if (Math.abs(a) < EYE_PLACEMENT_MAX - 10 && clear(back[0], back[1], e)) add(curvedArrow(back[0], back[1], arrowR, 'ev-arrow ev-arrow-eye'));
     });
     art.eyes.forEach((shapes, i) => add(artNode(shapes.map(shapeSvg).join(''), { class: 'ev-eye', 'data-eye': i })));
 

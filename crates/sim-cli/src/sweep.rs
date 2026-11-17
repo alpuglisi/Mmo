@@ -24,9 +24,9 @@ use evo_sim::rng::rng_for;
 use evo_sim::world::offline::HomeRange;
 use evo_sim::{presets, Balance, FounderDesign, Gene, PlayerId, World, WorldConfig};
 use rand::Rng;
-use rayon::prelude::*;
 
 use crate::adaptive::{self, AdaptiveArgs, Stop};
+use crate::jobs;
 use crate::stats::{wilson, Summary};
 
 /// Found the predators in their niches (`presets::niche_world`) instead of
@@ -70,7 +70,7 @@ pub struct SweepArgs {
 }
 
 /// Outcome of one world run.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RunMetrics {
     pub names: Vec<String>,
     pub founders: Vec<u32>,
@@ -81,9 +81,11 @@ pub struct RunMetrics {
     /// Days on which any owner was at ≥ 95% of its population cap.
     pub capped_days: u32,
     pub days: u32,
+    #[serde(with = "crate::jobs::nan")]
     pub mean_population: f64,
     /// Each lineage's owner's genetic legacy at the end: share of all alleles
     /// in breeding adults tagged with the owner (`LegacySnapshot::share`).
+    #[serde(with = "crate::jobs::nan_vec")]
     pub legacy: Vec<f64>,
     /// Lineages that count toward the score: the standard world's eight.
     /// Extra lineages (`--migrants`) come after them and are only reported.
@@ -235,6 +237,26 @@ impl ScoredRun {
 
 /// Lineages of the standard world, the ones a score counts.
 pub const SCORED_LINEAGES: usize = 8;
+
+/// The [`jobs`] key of a scored world run: everything its metrics depend on
+/// (the founded designs through [`NICHES`] and `migrants`).
+pub(crate) fn run_key(
+    balance: &Balance,
+    seed: u64,
+    size: usize,
+    days: u32,
+    parallel_apply: bool,
+    migrants: Option<&FounderDesign>,
+    offline: &[PlayerId],
+) -> String {
+    format!(
+        "run balance={} seed={seed} size={size} days={days} parallel_apply={parallel_apply} niches={} migrants={} \
+         offline={offline:?}",
+        jobs::digest(balance),
+        NICHES.load(std::sync::atomic::Ordering::Relaxed),
+        migrants.map_or("none".to_string(), jobs::digest),
+    )
+}
 
 pub fn run_one(
     balance: Balance,
@@ -408,9 +430,24 @@ pub fn sweep(args: &SweepArgs) {
                 .collect();
             world_days +=
                 jobs.iter().map(|(_, _, r)| (days - r.as_ref().map_or(0, ScoredRun::days_run)) as u64).sum::<u64>();
-            let results: Vec<(usize, u64, RunMetrics, Option<ScoredRun>)> = jobs
-                .into_par_iter()
-                .map(|(k, s, run)| {
+            // A job whose result came from another shard (`jobs`) has no
+            // world to resume: a later stage runs it again from day 0, which
+            // gives the same world.
+            let ids: Vec<(usize, u64)> = jobs.iter().map(|&(k, s, _)| (k, s)).collect();
+            let results: Vec<(usize, u64, RunMetrics, Option<ScoredRun>)> = jobs::run_with(
+                jobs,
+                |&(k, s, _)| {
+                    run_key(
+                        &balances[k],
+                        args.base_seed + s,
+                        args.size,
+                        days,
+                        args.parallel_apply,
+                        migrant.as_ref(),
+                        &[],
+                    )
+                },
+                |(k, s, run)| {
                     let mut run = run.unwrap_or_else(|| {
                         ScoredRun::new(
                             balances[k],
@@ -421,10 +458,13 @@ pub fn sweep(args: &SweepArgs) {
                         )
                     });
                     run.advance_to(days);
-                    let m = run.metrics(days);
-                    (k, s, m, if last { None } else { Some(run) })
-                })
-                .collect();
+                    (run.metrics(days), if last { None } else { Some(run) })
+                },
+            )
+            .into_iter()
+            .zip(ids)
+            .map(|((m, run), (k, s))| (k, s, m, run.flatten()))
+            .collect();
             for &k in &active {
                 stage_scores[k] = Some(Scored { runs: Vec::new() });
                 stage_days[k] = days;
@@ -798,29 +838,49 @@ pub fn compare(args: &CompareArgs) -> Summary {
     // Run seed offsets `from..to` on both sides in parallel, appending.
     let extend = |sides: &mut [Scored; 2], from: u64, to: u64| {
         let jobs: Vec<(usize, u64)> = (0..2).flat_map(|c| (from..to).map(move |s| (c, s))).collect();
-        let results: Vec<(usize, u64, RunMetrics)> = jobs
-            .par_iter()
-            .map(|&(c, s)| {
-                let balance = if c == 0 { args.a } else { args.b };
-                (
-                    c,
-                    s,
-                    run_one(
-                        balance,
-                        args.base_seed + s,
-                        args.size,
-                        args.days,
-                        args.parallel_apply,
-                        migrant[c].as_ref(),
-                        &args.offline,
-                    ),
+        let results: Vec<(usize, u64, RunMetrics)> = jobs::run(
+            jobs.clone(),
+            |&(c, s)| {
+                let balance = if c == 0 { &args.a } else { &args.b };
+                run_key(
+                    balance,
+                    args.base_seed + s,
+                    args.size,
+                    args.days,
+                    args.parallel_apply,
+                    migrant[c].as_ref(),
+                    &args.offline,
                 )
-            })
-            .collect();
+            },
+            |(c, s)| {
+                let balance = if c == 0 { args.a } else { args.b };
+                run_one(
+                    balance,
+                    args.base_seed + s,
+                    args.size,
+                    args.days,
+                    args.parallel_apply,
+                    migrant[c].as_ref(),
+                    &args.offline,
+                )
+            },
+        )
+        .into_iter()
+        .zip(jobs)
+        .map(|(m, (c, s))| (c, s, m))
+        .collect();
         for (c, s, m) in results {
             sides[c].runs.push((args.base_seed + s, m));
         }
     };
+    // A sharded adaptive compare runs every seed up to the cap in one stage
+    // (the looks are then replayed from the merged results, stopping where
+    // an unsharded run stops); `--stagewise` runs one look per stage instead.
+    if let Some(ad) = args.adaptive.filter(|_| jobs::sharded() && !jobs::stagewise()) {
+        let all = *ad.looks().last().expect("at least one look");
+        let mut scratch = [Scored { runs: Vec::new() }, Scored { runs: Vec::new() }];
+        extend(&mut scratch, 0, all);
+    }
     let adaptive = args.adaptive.map(|ad| {
         let (looks, stop) = adaptive::run(&ad, |from, to| {
             extend(&mut sides, from, to);

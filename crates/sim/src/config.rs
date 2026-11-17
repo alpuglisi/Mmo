@@ -705,7 +705,7 @@ pub struct Balance {
     // rot feed every meat eater.
     /// Share of a carcass's rot prevented: tile meat loses `0.05 × (1 −
     /// carcass_keep)` an hour above 15 °C and `0.02 × (1 − carcass_keep)`
-    /// below (0: 70% and 38% a day, as before; 0.75: 30% and 11%), so one
+    /// below (0: 70% and 38% a day, as before; 0.75: 26% and 11%), so one
     /// kill feeds the killer, its family and other scavengers for days.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v26"))]
     pub carcass_keep: f32,
@@ -777,6 +777,42 @@ pub struct Balance {
     /// Predator numbers follow their food.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v27"))]
     pub condition_litter: f32,
+    /// Horns (`morph_extra`, Phase 3 morphology): scales their defense,
+    /// fight-back and display and their mass, upkeep and snagging in dense
+    /// vegetation. 0 turns horns cosmetic.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v29"))]
+    pub morph_horns: f32,
+    /// Wing shape (`morph_extra`): narrow wings fly faster and further but
+    /// turn worse and snag in forest; broad wings take off easier. 0 turns
+    /// wing aspect cosmetic.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v29"))]
+    pub morph_wing_shape: f32,
+    /// Coat patterns (`morph_extra`): a pattern adds stealth on matching
+    /// ground (spots in forest, stripes in grass and marsh, mottling on rock
+    /// and tundra) and costs a little where it stands out. 0 turns patterns
+    /// cosmetic.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v29"))]
+    pub morph_pattern: f32,
+    /// Strike fixes (version 30; on at 1, the default): a hunter killed in
+    /// its own strike (by its prey's toxins or by prey that fought back)
+    /// does nothing more that turn, where before it could still bring the
+    /// prey down and eat; and a kill is eaten once in the hunter's turn,
+    /// where before the hunter ate a full helping at the kill and another
+    /// right after. 0 is the old behaviour, what snapshots before version
+    /// 30 read (`serde_util::before_v30`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v30"))]
+    pub strike_fixes: f32,
+    /// Staggered decisions (an approximation for speed, off by default):
+    /// at 2 or more, a calm organism decides afresh only every
+    /// `decide_interval` ticks (staggered by id) and keeps its last intent
+    /// in between, its chase target's position updated
+    /// (`World::reused_intent`). Every organism decides on the day's first
+    /// tick, and so does every hunter and any organism that is possessed, fleeing, courting,
+    /// provisioning or defending, that saw a threat, or whose target died.
+    /// 0 or 1: every organism decides every tick. Not saved in snapshots or
+    /// sent to clients.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub decide_interval: f32,
 }
 
 impl Balance {
@@ -799,6 +835,9 @@ impl Balance {
         self.directional_vision = 0.0;
         self.morph_step_rate = 0.0;
         self.morph_legacy = 0.0;
+        self.morph_horns = 0.0;
+        self.morph_wing_shape = 0.0;
+        self.morph_pattern = 0.0;
         self
     }
 
@@ -976,12 +1015,17 @@ impl Default for Balance {
             breeding_territory: 0.0,
             prey_switching: 0.0,
             condition_litter: 0.0,
+            morph_horns: 1.0,
+            morph_wing_shape: 1.0,
+            morph_pattern: 1.0,
+            strike_fixes: 1.0,
+            decide_interval: 0.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 110;
+    pub const FIELD_COUNT: usize = 115;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1101,6 +1145,11 @@ impl Balance {
             ("breeding_territory", &mut self.breeding_territory),
             ("prey_switching", &mut self.prey_switching),
             ("condition_litter", &mut self.condition_litter),
+            ("morph_horns", &mut self.morph_horns),
+            ("morph_wing_shape", &mut self.morph_wing_shape),
+            ("morph_pattern", &mut self.morph_pattern),
+            ("strike_fixes", &mut self.strike_fixes),
+            ("decide_interval", &mut self.decide_interval),
         ]
     }
 

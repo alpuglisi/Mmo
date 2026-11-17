@@ -6,7 +6,7 @@
 
 use rayon::prelude::*;
 
-use super::decide::{genes_of, Genes};
+use super::decide::{genes_of, DistanceBounds, Genes};
 use crate::math::Vec2;
 use crate::organism::{Action, Organism, Sex};
 
@@ -76,6 +76,14 @@ pub(crate) struct SpatialGrid {
     /// `items`: a crowd's genes lie together instead of scattered over the
     /// organisms.
     genes: Vec<Genes>,
+    /// A reference point per lineage (index), in the space of [`Genes`]:
+    /// the mean of its members' genes when last refreshed. Any point would
+    /// do; one central to the lineage gives the tightest bounds.
+    refs: Vec<Genes>,
+    /// Rebuilds until `refs` is refreshed.
+    refs_age: u32,
+    /// Bounds on each slot's distance to its lineage's reference point.
+    ref_bounds: Vec<DistanceBounds>,
     /// `rebuild`'s buffer: each organism's cell and entry, if alive.
     placed: Vec<Option<(u32, Entry)>>,
     /// Slot of each living organism, by organism index.
@@ -94,6 +102,9 @@ impl SpatialGrid {
             items: Vec::new(),
             pos: Vec::new(),
             genes: Vec::new(),
+            refs: Vec::new(),
+            refs_age: 0,
+            ref_bounds: Vec::new(),
             placed: Vec::new(),
             slot_of: Vec::new(),
         }
@@ -112,6 +123,7 @@ impl SpatialGrid {
         let mut placed = std::mem::take(&mut self.placed);
         let this = &*self;
         orgs.par_iter()
+            .with_min_len(super::light_min_len(orgs.len()))
             .enumerate()
             .map(|(i, o)| {
                 o.alive.then(|| {
@@ -143,7 +155,62 @@ impl SpatialGrid {
         self.placed = placed;
         self.pos.clear();
         self.pos.extend(self.items.iter().map(|e| e.pos));
-        self.items.par_iter().map(|e| genes_of(&orgs[e.idx as usize])).collect_into_vec(&mut self.genes);
+        let min_len = super::light_min_len(self.items.len());
+        self.items
+            .par_iter()
+            .with_min_len(min_len)
+            .map(|e| genes_of(&orgs[e.idx as usize]))
+            .collect_into_vec(&mut self.genes);
+        self.refresh_refs();
+        let (refs, genes) = (&self.refs, &self.genes);
+        self.items
+            .par_iter()
+            .with_min_len(min_len)
+            .zip(genes)
+            .map(|(e, g)| match refs.get(e.lineage as usize) {
+                Some(r) => DistanceBounds::new(g, r),
+                // No reference: bounds that settle nothing.
+                None => DistanceBounds { lo: 0.0, hi: f32::INFINITY },
+            })
+            .collect_into_vec(&mut self.ref_bounds);
+    }
+
+    /// Recompute the lineages' reference points (`refs`) every
+    /// `REFS_EVERY` rebuilds, or when a lineage has none. They only tighten
+    /// or loosen bounds, never change a result.
+    fn refresh_refs(&mut self) {
+        const REFS_EVERY: u32 = 240;
+        let lineages = self.items.iter().map(|e| e.lineage as usize + 1).max().unwrap_or(0);
+        if self.refs_age > 0 && self.refs.len() >= lineages {
+            self.refs_age -= 1;
+            return;
+        }
+        self.refs_age = REFS_EVERY;
+        let mut sums = vec![([0.0f64; std::mem::size_of::<Genes>() / 4], 0u32); lineages];
+        for (e, g) in self.items.iter().zip(&self.genes) {
+            let (sum, n) = &mut sums[e.lineage as usize];
+            for (s, &x) in sum.iter_mut().zip(g) {
+                *s += x as f64;
+            }
+            *n += 1;
+        }
+        self.refs = sums
+            .iter()
+            .map(|(sum, n)| {
+                let mut r: Genes = [0.0; std::mem::size_of::<Genes>() / 4];
+                for (r, &s) in r.iter_mut().zip(sum) {
+                    *r = (s / (*n).max(1) as f64) as f32;
+                }
+                r
+            })
+            .collect();
+    }
+
+    /// Bounds on the distance from the organism in `slot` to its lineage's
+    /// reference point (`decide::DistanceBounds::via_reference`).
+    /// Bounds that settle nothing for a slot not in the grid.
+    pub fn ref_bounds(&self, slot: u32) -> DistanceBounds {
+        self.ref_bounds.get(slot as usize).copied().unwrap_or(DistanceBounds { lo: 0.0, hi: f32::INFINITY })
     }
 
     /// Kinship genes of the organism in `slot` (`decide::Genes`).
@@ -164,6 +231,32 @@ impl SpatialGrid {
     /// grouped by where they stand.
     pub fn entries(&self) -> &[Entry] {
         &self.items
+    }
+
+    /// `(squared distance, slot)` of every organism within `radius` of `p`
+    /// except slot `skip`, into `out` (cleared first), in cell order: what
+    /// [`Self::query`] would call `f` with, in the same order. Without a
+    /// branch per candidate: in a crowd about half of them fall outside
+    /// the circle, too irregularly for the branch predictor.
+    pub fn query_into(&self, p: Vec2, radius: f32, skip: u32, out: &mut Vec<(f32, u32)>) {
+        let (c0, r0) = self.cell_of(Vec2::new(p.x - radius, p.y - radius));
+        let (c1, r1) = self.cell_of(Vec2::new(p.x + radius, p.y + radius));
+        let r2 = radius * radius;
+        let span = |r: usize| (self.starts[r * self.cols + c0] as usize, self.starts[r * self.cols + c1 + 1] as usize);
+        let total: usize = (r0..=r1).map(|r| span(r).1 - span(r).0).sum();
+        out.clear();
+        out.resize(total, (0.0, 0));
+        let mut k = 0;
+        for r in r0..=r1 {
+            let (a, b) = span(r);
+            for (slot, q) in (a..b).zip(&self.pos[a..b]) {
+                let (dx, dy) = (q.x - p.x, q.y - p.y);
+                let d2 = dx * dx + dy * dy;
+                out[k] = (d2, slot as u32);
+                k += usize::from(d2 <= r2 && slot as u32 != skip);
+            }
+        }
+        out.truncate(k);
     }
 
     /// Calls `f(slot, squared distance)` for every organism within `radius`

@@ -14,5 +14,12 @@ rayon = "1"
 [profile.release]
 debug = 1
 
+# The simulation crate in one codegen unit: LLVM inlines across the whole
+# tick (perception, movement, terrain), about 5% faster simulations for a
+# slower release build of this one crate. Results are identical (no float
+# reassociation either way).
+[profile.release.package.evo-sim]
+codegen-units = 1
+
 [profile.dev]
 opt-level = 1

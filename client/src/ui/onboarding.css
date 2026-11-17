@@ -39,6 +39,8 @@
 @media (max-width: 760px) {
   /* Above the floating Possess button, clear of the hint line. */
   .hint-card { left: 8px; right: 8px; width: auto; bottom: 100px; }
+  /* With a panel open the sheet fills the lower part: the tip moves up under the toolbar instead of covering it. */
+  .game.sheet-open .hint-card { top: 52px; bottom: auto; }
   .tour-card { padding: 10px 12px; font-size: 13px; }
   .tour-actions button { min-height: 40px; }
 }
