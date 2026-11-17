@@ -3151,6 +3151,49 @@ for waking the pool's workers, so experiments get the most from running
 seeds side by side, which they already do (`predlong`, `sweep`, `compare`,
 `genetics` run their worlds in parallel).
 
+### Founding cost
+
+```sh
+cargo run --release -p evo-sim --example founding -- --size 256 --scale 4 --days 5 --seeds 1..3 --repeat 5
+```
+
+Founding a lineage (`World::found_lineage`, a player's first design in a
+world) runs on the server's world thread. The example builds the server's
+world (the wild ecosystem scaled to the map; `--scale` multiplies it),
+runs it a few days, founds each sample design on copies of it and reports
+the time per founding and a hash of the founders' positions. The home
+search now:
+
+- tells passable tiles from the rest with only the tests that block
+  (`terrain::passable`: deep water the body can't swim, unless on ice that
+  holds it; a cliff it can't climb), instead of the whole `traverse` on
+  every tile, and reads that map for every passability check of the search
+  (candidate spots, the walk to water, the founders' scatter);
+- labels connected regions only for hunters (the only ones whose prey
+  must be reachable from home), by joining runs of open tiles row by row
+  (union-find), numbered as the flood fill numbered them;
+- reads every organism once (threats, prey and crowd in one pass, the
+  cheap carnivory test first) and counts prey per lineage in a vector
+  instead of a map.
+
+The chosen homes are the same: `tests/founding_homes.rs` hashes every
+founder's position over twelve worlds (founded empty and into grown
+worlds, the niche predators included) against the earlier search's value;
+`passable` is checked against `traverse` on every tile through the seasons,
+and the run labels against the flood fill; the sweep check still scores
+11.76. Per founding, same machine, median of `--repeat` runs:
+
+| World | Before | After |
+| --- | --- | --- |
+| 128² (the server's default), ~1.4k organisms | 1.58 ms | 0.91 ms |
+| 256², scale 4, ~9k organisms | 4.03 ms | 2.12 ms |
+| 512², scale 4, ~37k organisms | 19.5 ms | 8.3 ms |
+
+What remains at 512² is reading the organisms once (about half) and the
+200 candidate spots. (A cloned world, as the example founds into, also
+copies every organism on its first new one: the example reserves room
+first, as a running world usually has it.)
+
 ### Profile at the prototype target
 
 The doc's prototype stage is a 256×256 map with ~5k player and ~20k wild

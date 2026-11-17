@@ -1598,6 +1598,21 @@ pub fn ice_needed(mass: f32) -> f32 {
     0.1 + mass / 200.0
 }
 
+/// Whether a walking `body` can cross a tile at all: `matches!(traverse(body,
+/// g, tile, _, false), Traverse::Passable { .. })`, with only the tests that
+/// block (deep water it can't swim, unless on ice that holds it; a cliff
+/// it can't climb), so a whole map's passability costs little (founding's
+/// home search). Must stay in step with [`traverse`]
+/// (`world::tests::passable_agrees_with_traverse`).
+pub fn passable(body: &Body, g: &Ground, tile: &Tile) -> bool {
+    let height = body.height.max(0.1);
+    let on_ice = tile.water_depth > 0.0 && tile.ice >= ice_needed(body.mass);
+    let drowns =
+        !on_ice && tile.water_depth > 0.0 && tile.water_depth > height * 0.8 && body.swim < 0.25 + 0.5 * tile.current;
+    let cliff = g.slope > 0.6 && body.climb < 0.4;
+    !(drowns || cliff)
+}
+
 /// How `body` crosses a tile (`g` its ground, `tile` its state) in `weather`.
 pub fn traverse(body: &Body, g: &Ground, tile: &Tile, weather: &Weather, flying: bool) -> Traverse {
     if flying {
