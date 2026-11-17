@@ -810,7 +810,9 @@ pub struct Balance {
     /// in between, its chase target's position updated
     /// (`World::reused_intent`). Every organism decides on the day's first
     /// tick, and so does every hunter and any organism that is possessed, fleeing, courting,
-    /// provisioning or defending, that saw a threat, or whose target died.
+    /// provisioning or defending, that saw a threat, that has an armed
+    /// organism able to threaten it or a sentry's warning within sight
+    /// (`SpatialGrid::danger_near`), or whose target died.
     /// 0 or 1: every organism decides every tick, what snapshots before
     /// version 32 read (`serde_util::before_v32`). About 13–15% off a tick
     /// in crowds; the paired comparison and predator survival are in the
