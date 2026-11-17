@@ -278,6 +278,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/terrain", get(terrain))
         .route("/api/terrain/dynamic", get(terrain_dynamic))
         .route("/api/map.png", get(map_png))
+        .route("/api/spectate", get(spectate))
         .route_layer(middleware::from_fn_with_state(state.clone(), limit_reads));
     Router::new()
         .route("/api/register", post(register))
@@ -699,11 +700,16 @@ async fn mating_history(
 /// Test-only routes, mounted only when the server runs with
 /// `EVO_E2E_HOOKS=1` (the client's e2e scripts set it): `POST
 /// /api/e2e/wipe-out` kills the caller's lineage at once, so re-founding can
-/// be tested without waiting for a real extinction. Absent (404) otherwise.
+/// be tested without waiting for a real extinction, and `POST
+/// /api/e2e/catastrophe {"kind": "severe_winter", "days": 8}` starts a
+/// catastrophe today (the marketing capture script, tools/marketing).
+/// Absent (404) otherwise.
 fn e2e_hooks() -> Router<AppState> {
     if std::env::var("EVO_E2E_HOOKS").as_deref() == Ok("1") {
         tracing::warn!("EVO_E2E_HOOKS=1: test-only routes are mounted (never set this in production)");
-        Router::new().route("/api/e2e/wipe-out", post(e2e_wipe_out))
+        Router::new()
+            .route("/api/e2e/wipe-out", post(e2e_wipe_out))
+            .route("/api/e2e/catastrophe", post(e2e_catastrophe))
     } else {
         Router::new()
     }
@@ -719,6 +725,27 @@ async fn e2e_wipe_out(
     send_request(&w.tx, Request::E2eWipeOut { player: session.player, reply })?;
     let killed = rx.await.map_err(ApiError::internal)?;
     Ok(Json(serde_json::json!({ "killed": killed })))
+}
+
+#[derive(Deserialize)]
+struct CatastropheAsk {
+    /// `severe_winter`, `megadrought`, `epidemic` or `flood_year`.
+    kind: String,
+    /// Its length in days (default: its usual length).
+    days: Option<u64>,
+}
+
+async fn e2e_catastrophe(
+    World(w): World,
+    Json(ask): Json<CatastropheAsk>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let kind = evo_sim::chronicle::CatastropheKind::from_label(&ask.kind).ok_or_else(|| {
+        ApiError::new(StatusCode::BAD_REQUEST, "bad_kind", "kind: severe_winter, megadrought, epidemic or flood_year")
+    })?;
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::E2eCatastrophe { kind, days: ask.days, reply })?;
+    let id = rx.await.map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({ "id": id })))
 }
 
 /// The caller's alert preferences (the defaults until they save some).
@@ -1275,6 +1302,15 @@ async fn chronicle(w: &WorldHandle) -> Result<ChronicleView, ApiError> {
     let (reply, rx) = oneshot::channel();
     send_request(&w.tx, Request::Chronicle { reply })?;
     Ok(*rx.await.map_err(ApiError::internal)?)
+}
+
+/// `GET /api/spectate`: the read-only spectator view of the world (no login;
+/// nothing private: see `game::spectate`), for watch links and streams.
+async fn spectate(World(w): World) -> Result<Json<crate::game::Spectate>, ApiError> {
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::Spectate { reply })?;
+    let s = rx.await.map_err(ApiError::internal)?;
+    Ok(Json((*s).clone()))
 }
 
 /// `GET /api/species`: every detected species (living first, by size), with

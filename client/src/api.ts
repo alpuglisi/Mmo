@@ -8,6 +8,7 @@
 
 import type {
   FamilyTree,
+  Spectate,
   AchievementList, AlertPrefs, ApiErrorBody, AuthResponse, CatastropheList, CurrentSeason, DesignSpec, EraList, FoundResponse, GeneCatalog, Leaderboard,
   LineageStats, NativeService, PlayerId, PlayerSeasonHistory, PushDeviceView, PushKeyView, PushPrefs, PushSubscriptionView, RankedSeasonList, RankedSeasonPage, SeasonBoard, SpeciesList, TerrainDynamic, TerrainView, WorldList,
   WorldSummary,
@@ -128,6 +129,8 @@ export const api = {
   eras: () => request<EraList>('GET', withWorld('/api/eras')),
   catastrophes: () => request<CatastropheList>('GET', withWorld('/api/catastrophes')),
   achievements: () => request<AchievementList>('GET', withWorld('/api/achievements')),
+  /** The read-only spectator view (no login). */
+  spectate: () => request<Spectate>('GET', withWorld('/api/spectate')),
   // Ranked seasons of the chosen world; `map` is the generated map a finished season belongs to (its `world_id`).
   rankedSeasons: (offset = 0, limit = 10) => request<RankedSeasonList>('GET', withWorld(`/api/seasons?offset=${offset}&limit=${limit}`)),
   currentSeason: (player: PlayerId, limit = 5) => request<CurrentSeason>('GET', withWorld(`/api/seasons/current?limit=${limit}&player=${player}`)),

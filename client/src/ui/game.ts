@@ -13,6 +13,7 @@ import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
 import { buildFamilyTree, type FamilyModel } from '../familyTree';
 import { renderFamilyTree } from './familyTree';
+import { exposeCards, familyShareBar } from '../share/familyShare';
 import type { AlertPrefs, ClientMsg, LineageStats, MatingOutcome, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
 import { WILD } from '../protocol';
 import { WorldView } from '../world/worldView';
@@ -757,12 +758,18 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }, RANKED_REFRESH_MS);
   cleanups.push(() => clearInterval(rankedTimer));
 
-  // Family tree: fetched while its tab is open.
+  // Family tree: fetched while its tab is open, with its Share bar.
   let family: FamilyModel | null = null;
+  function showFamily(m: FamilyModel): void {
+    renderFamilyTree(tabs.family, m);
+    const bar = familyShareBar(m, { world: deps.world ?? '', lineage: model.state?.lineage ?? model.welcomeLineage ?? null });
+    if (bar) tabs.family.prepend(bar);
+  }
   async function refreshFamily(): Promise<void> {
     try {
       family = buildFamilyTree(await api.familyTree(deps.token));
-      if (tab === 'family') renderFamilyTree(tabs.family, family);
+      exposeCards(family);
+      if (tab === 'family') showFamily(family);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) deps.onUnauthorized();
     }

@@ -1,0 +1,136 @@
+{
+  "generated_at": "2026-11-17T14:34:36.050Z",
+  "source": "tools/marketing/capture.mjs",
+  "fps": 6,
+  "ffmpeg": true,
+  "stories": [
+    {
+      "id": "evolution",
+      "kind": "lineage",
+      "title": "Glimmer striders: from 40 founders to 90 animals in 2 game years",
+      "summary": "A three-eyed, six-legged, four-eared design founded with 40 animals; 2 game years later 90 of them live, 24.6% of the world's genes.",
+      "facts": {
+        "lineage": "Glimmer striders",
+        "founders": 40,
+        "alive": 90,
+        "years": 2,
+        "day": 33,
+        "share_pct": 24.6
+      },
+      "media": [
+        "evolution-vertical",
+        "evolution-vertical-gif",
+        "evolution-square",
+        "evolution-square-gif",
+        "evolution-family-tree",
+        "evolution-portrait"
+      ],
+      "players": [],
+      "hashtags": [
+        "#EvolutionMMO",
+        "#indiegame",
+        "#gamedev",
+        "#evolution",
+        "#simulation",
+        "#ArtificialLife",
+        "#procedural"
+      ]
+    },
+    {
+      "id": "boom-bust",
+      "kind": "predator_boom",
+      "title": "The Red fox over 6 game years",
+      "summary": "The Red fox went from 6 to 63, peaking at 64 in year 5.",
+      "facts": {
+        "lineage": "Red fox",
+        "start": 6,
+        "peak": 64,
+        "peak_year": 5,
+        "low_after_peak": 63,
+        "low_year": 6,
+        "end": 63,
+        "years": 6
+      },
+      "media": [
+        "boom-bust-vertical",
+        "boom-bust-vertical-gif",
+        "boom-bust-square",
+        "boom-bust-square-gif",
+        "boom-bust-portrait"
+      ],
+      "players": [],
+      "hashtags": [
+        "#EvolutionMMO",
+        "#indiegame",
+        "#gamedev",
+        "#evolution",
+        "#simulation",
+        "#ecology",
+        "#predator"
+      ]
+    },
+    {
+      "id": "builder",
+      "kind": "devlog",
+      "title": "Designing a weird creature in the body builder",
+      "summary": "From the strider preset to 3 eyes, 6 legs, 4 fan ears and a club tail, with horns and stripes; the builder shows what each change does to its sight.",
+      "facts": {
+        "eyes": 3,
+        "legs": 6,
+        "ears": 4,
+        "ear_shape": "fan",
+        "tail": "club",
+        "pattern": "stripes",
+        "view_pct": 100
+      },
+      "media": [
+        "builder-vertical",
+        "builder-vertical-gif",
+        "builder-square",
+        "builder-square-gif"
+      ],
+      "players": [],
+      "hashtags": [
+        "#EvolutionMMO",
+        "#indiegame",
+        "#gamedev",
+        "#evolution",
+        "#simulation",
+        "#creaturedesign",
+        "#builder"
+      ]
+    },
+    {
+      "id": "catastrophe",
+      "kind": "catastrophe",
+      "title": "A severe winter sweeps the map",
+      "summary": "A severe winter hit in year 1: in the next 24 game days the world went from 232 animals in 5 lineages to 416 in 5.",
+      "facts": {
+        "catastrophe": "severe winter",
+        "year": 1,
+        "start_day": 8,
+        "days": 24,
+        "animals_before": 232,
+        "animals_after": 416,
+        "lineages_before": 5,
+        "lineages_after": 5
+      },
+      "media": [
+        "catastrophe-vertical",
+        "catastrophe-vertical-gif",
+        "catastrophe-square",
+        "catastrophe-square-gif"
+      ],
+      "players": [],
+      "hashtags": [
+        "#EvolutionMMO",
+        "#indiegame",
+        "#gamedev",
+        "#evolution",
+        "#simulation",
+        "#survival",
+        "#catastrophe"
+      ]
+    }
+  ]
+}
