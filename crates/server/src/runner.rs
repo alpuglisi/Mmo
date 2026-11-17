@@ -86,6 +86,11 @@ pub enum Request {
         player: PlayerId,
         reply: oneshot::Sender<LineageStats>,
     },
+    /// The family tree of a player's lineage.
+    FamilyTree {
+        player: PlayerId,
+        reply: oneshot::Sender<crate::protocol::FamilyTree>,
+    },
     /// Species, eras, catastrophes and achievements.
     Chronicle {
         reply: oneshot::Sender<Box<ChronicleView>>,
@@ -209,7 +214,8 @@ pub struct RunnerHandles {
 }
 
 impl Runner {
-    pub fn new(game: Game, cfg: RunnerConfig) -> (Self, RunnerHandles) {
+    pub fn new(mut game: Game, cfg: RunnerConfig) -> (Self, RunnerHandles) {
+        game.defer_offline();
         let (tx, rx) = std::sync::mpsc::sync_channel(REQUEST_QUEUE);
         let season = Arc::new(game.live_season());
         let initial =
@@ -375,6 +381,7 @@ impl Runner {
     /// state to every connection if `push_state`.
     fn tick(&mut self, push_state: bool) {
         let started = Instant::now();
+        self.game.flush_offline();
         self.game.world.step();
         let out = self.game.after_tick();
         self.dispatch(out);
@@ -418,6 +425,7 @@ impl Runner {
     /// Capture the game and hand it to the saver, which encodes it and
     /// sends it to the store task. The world thread pays only for the copy.
     fn save(&mut self) {
+        self.game.flush_offline();
         let started = Instant::now();
         let capture = Capture::new(&self.game);
         self.metrics.lock().unwrap().save_capture_ms = ms_since(started) as f32;
@@ -443,9 +451,16 @@ impl Runner {
     fn receive(&mut self, req: Request) {
         match req {
             Request::Connect { conn, player, name, tx } => {
+                let started = Instant::now();
                 self.add_conn(conn, player, tx);
                 let out = self.game.connect(conn, player, &name);
                 self.dispatch(out);
+                // Connections are answered at once, not at a boundary;
+                // counted with the commands (a reconnect storm shows here).
+                let mut m = self.metrics.lock().unwrap();
+                let e = m.apply_by_command.entry("connect").or_default();
+                e.0 += 1;
+                e.1 += ms_since(started);
             }
             Request::Disconnect { conn } => {
                 self.remove_conn(conn);
@@ -468,6 +483,9 @@ impl Runner {
             }
             Request::Stats { player, reply } => {
                 let _ = reply.send(self.game.lineage_stats(player));
+            }
+            Request::FamilyTree { player, reply } => {
+                let _ = reply.send(self.game.family_tree(player));
             }
             Request::Chronicle { reply } => {
                 let _ = reply.send(Box::new(self.game.chronicle()));

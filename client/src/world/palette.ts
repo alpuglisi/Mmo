@@ -27,6 +27,8 @@ export const GROUND = {
   bare: [150, 136, 100] as Rgb,
   /** Parched land in drought. */
   straw: [205, 180, 112] as Rgb,
+  /** Fruiting ground: berries, mast and seed heads (a faint tint by the fruit layer). */
+  fruit: [176, 74, 96] as Rgb,
 };
 
 /** How plant cover looks per season (blended into plant-covered biomes). */

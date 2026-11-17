@@ -25,6 +25,15 @@ pub const MAX_WORLD_ID: usize = 32;
 pub const MAX_WORLD_NAME: usize = 40;
 /// Most worlds one process hosts (each is an OS thread ticking a world).
 pub const MAX_WORLDS: usize = 64;
+/// Players a world takes before `GET /api/assign` sends new players
+/// elsewhere, unless its spec says otherwise: one world thread kept heavy
+/// players at a steady 1 s tick up to 4000 on a 4-core box (see
+/// `docs/load-test.md`), so this leaves room for bursts.
+pub const DEFAULT_WORLD_CAPACITY: usize = 3000;
+/// The share of its capacity a world is filled to before `assign` starts
+/// spreading new players over emptier worlds (a busy world is a livelier
+/// one).
+pub const FILL_TARGET: f64 = 0.8;
 
 /// Whether `id` can name a world: 1 to [`MAX_WORLD_ID`] characters of
 /// lowercase ASCII letters, digits, `-` and `_` (ids name directories in
@@ -49,11 +58,20 @@ pub struct WorldSpec {
     /// Width and height in tiles (32 to 1024).
     #[serde(default)]
     pub size: Option<usize>,
+    /// Players online before `GET /api/assign` sends new players to other
+    /// worlds ([`DEFAULT_WORLD_CAPACITY`] when absent). Players with a
+    /// lineage here still come here.
+    #[serde(default)]
+    pub capacity: Option<usize>,
 }
 
 impl WorldSpec {
     pub fn new(id: &str) -> Self {
-        WorldSpec { id: id.to_string(), name: None, seed: None, size: None }
+        WorldSpec { id: id.to_string(), name: None, seed: None, size: None, capacity: None }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity.unwrap_or(DEFAULT_WORLD_CAPACITY)
     }
 
     pub fn display_name(&self) -> String {
@@ -79,7 +97,8 @@ impl WorldSpec {
         s
     }
 
-    /// Parse `ID[,seed=N][,size=N][,name=TEXT]` (`--world`, `EVO_WORLDS`).
+    /// Parse `ID[,seed=N][,size=N][,capacity=N][,name=TEXT]` (`--world`,
+    /// `EVO_WORLDS`).
     /// The name runs to the end, so it may contain commas.
     pub fn parse(text: &str) -> Result<Self, String> {
         let text = text.trim();
@@ -100,7 +119,8 @@ impl WorldSpec {
             match key {
                 "seed" => spec.seed = Some(value.parse().map_err(|e| format!("world {id:?}: seed: {e}"))?),
                 "size" => spec.size = Some(value.parse().map_err(|e| format!("world {id:?}: size: {e}"))?),
-                other => return Err(format!("world {id:?}: unknown setting {other:?} (seed, size, name)")),
+                "capacity" => spec.capacity = Some(value.parse().map_err(|e| format!("world {id:?}: capacity: {e}"))?),
+                other => return Err(format!("world {id:?}: unknown setting {other:?} (seed, size, capacity, name)")),
             }
             rest = next;
         }
@@ -148,6 +168,9 @@ pub fn validate(worlds: &[WorldSpec]) -> Result<(), String> {
                 return Err(format!("world {:?}: size must be in 32..=1024", w.id));
             }
         }
+        if w.capacity == Some(0) {
+            return Err(format!("world {:?}: the capacity must be at least 1", w.id));
+        }
         if let Some(name) = &w.name {
             let len = name.chars().count();
             if len == 0 || len > MAX_WORLD_NAME || name.chars().any(char::is_control) {
@@ -156,6 +179,69 @@ pub fn validate(worlds: &[WorldSpec]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// `GET /api/assign` (and `evo-lobby`'s answer, which adds the server).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssignView {
+    /// What `?world=` takes.
+    pub world: String,
+    pub name: String,
+    pub reason: AssignReason,
+    pub players_online: usize,
+    pub capacity: usize,
+    /// The name (or token) belongs to an account on this server.
+    pub has_account: bool,
+}
+
+/// What `assign` knows of a world.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldLoad {
+    pub players_online: usize,
+    pub capacity: usize,
+    /// The player has a lineage here.
+    pub has_lineage: bool,
+}
+
+/// Why a world was picked (`GET /api/assign`'s `reason`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssignReason {
+    /// The player's lineage lives there.
+    Lineage,
+    /// The busiest world still under its fill target.
+    Fill,
+    /// Every world is past its fill target: the emptiest one with room.
+    Spread,
+}
+
+/// The world a player should play in, from each world's load (`None`: all
+/// full). A player with a lineage goes to its world (the first, if several),
+/// full or not. Anyone else goes to the busiest world still under
+/// [`FILL_TARGET`] of its capacity, so new players meet others, and once
+/// every world is past that to the one with the most room relative to its
+/// capacity. Ties go to the earlier world. Used by `GET /api/assign` over
+/// one process's worlds and by `evo-lobby` over several processes.
+pub fn assign(worlds: &[WorldLoad]) -> Option<(usize, AssignReason)> {
+    if let Some(i) = worlds.iter().position(|w| w.has_lineage) {
+        return Some((i, AssignReason::Lineage));
+    }
+    let under = |w: &WorldLoad| (w.players_online as f64) < FILL_TARGET * w.capacity as f64;
+    let fill = worlds
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| under(w))
+        .max_by(|(i, a), (j, b)| a.players_online.cmp(&b.players_online).then(j.cmp(i)));
+    if let Some((i, _)) = fill {
+        return Some((i, AssignReason::Fill));
+    }
+    let free = |w: &WorldLoad| 1.0 - w.players_online as f64 / w.capacity.max(1) as f64;
+    worlds
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.players_online < w.capacity)
+        .max_by(|(i, a), (j, b)| free(a).total_cmp(&free(b)).then(j.cmp(i)))
+        .map(|(i, _)| (i, AssignReason::Spread))
 }
 
 #[cfg(test)]
@@ -168,7 +254,13 @@ mod tests {
         let w = WorldSpec::parse("isle-2, seed=9 ,size=96,name=Isle, the second").unwrap();
         assert_eq!(
             w,
-            WorldSpec { id: "isle-2".into(), name: Some("Isle, the second".into()), seed: Some(9), size: Some(96) }
+            WorldSpec {
+                id: "isle-2".into(),
+                name: Some("Isle, the second".into()),
+                seed: Some(9),
+                size: Some(96),
+                capacity: None
+            }
         );
         assert!(WorldSpec::parse("a,depth=3").is_err());
         assert!(WorldSpec::parse("a,seed").is_err());
@@ -176,7 +268,13 @@ mod tests {
         let list = WorldSpec::parse_list("main;second,seed=2;").unwrap();
         assert_eq!(list.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(), ["main", "second"]);
         let file = WorldSpec::parse_file(r#"[{"id":"main"},{"id":"b","seed":3,"size":64,"name":"Bee"}]"#).unwrap();
-        assert_eq!(file[1], WorldSpec { id: "b".into(), name: Some("Bee".into()), seed: Some(3), size: Some(64) });
+        assert_eq!(
+            file[1],
+            WorldSpec { id: "b".into(), name: Some("Bee".into()), seed: Some(3), size: Some(64), capacity: None }
+        );
+        assert_eq!(WorldSpec::parse("c,capacity=500").unwrap().capacity(), 500);
+        assert_eq!(WorldSpec::new("c").capacity(), DEFAULT_WORLD_CAPACITY);
+        assert!(validate(&[WorldSpec { capacity: Some(0), ..WorldSpec::new("a") }]).is_err());
         let obj = WorldSpec::parse_file(r#"{"worlds":[{"id":"x"}]}"#).unwrap();
         assert_eq!(obj, vec![WorldSpec::new("x")]);
         assert!(WorldSpec::parse_file(r#"[{"id":"x","colour":1}]"#).is_err());
@@ -192,6 +290,21 @@ mod tests {
         assert!(validate(&[WorldSpec::new("a"), WorldSpec::new("a")]).is_err());
         assert!(validate(&[WorldSpec { size: Some(16), ..WorldSpec::new("a") }]).is_err());
         assert!(validate(&[WorldSpec { name: Some(String::new()), ..WorldSpec::new("a") }]).is_err());
+    }
+
+    #[test]
+    fn assign_keeps_lineages_fills_then_spreads() {
+        let w = |players_online, capacity, has_lineage| WorldLoad { players_online, capacity, has_lineage };
+        assert_eq!(assign(&[]), None);
+        // A lineage wins, even in a full world.
+        assert_eq!(assign(&[w(10, 100, false), w(100, 100, true)]), Some((1, AssignReason::Lineage)));
+        // The busiest world under 80% of its capacity.
+        assert_eq!(assign(&[w(10, 100, false), w(70, 100, false), w(85, 100, false)]), Some((1, AssignReason::Fill)));
+        assert_eq!(assign(&[w(0, 100, false), w(0, 100, false)]), Some((0, AssignReason::Fill)));
+        // All past the target: the most room for its size.
+        assert_eq!(assign(&[w(90, 100, false), w(170, 200, false)]), Some((1, AssignReason::Spread)));
+        // All full.
+        assert_eq!(assign(&[w(100, 100, false), w(250, 200, false)]), None);
     }
 
     #[test]

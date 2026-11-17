@@ -1,6 +1,7 @@
 // Dev / test page for the body builder: `?builder` mounts it alone, with no
 // login or server, for the e2e test (e2e/builder.mjs) and screenshots.
 // `?builder=watcher` (any preset id) starts from that preset.
+// `?builder=family` shows the family tree view on a made-up lineage.
 // `?builder=gallery` shows the art library's reference creatures instead
 // (`art/gallery.ts`): each as the founder preview draws it, with its caption
 // and its 64 / 32 px sprites, for the e2e gallery screenshots.
@@ -10,6 +11,9 @@ import type { Morphology } from '../../morphology';
 import { createBodyBuilder, type BodyBuilder, type BuilderChange } from './builder';
 import { DEFAULT_PRESETS } from './presets';
 import { GALLERY } from '../../art/gallery';
+import { buildFamilyTree } from '../../familyTree';
+import { renderFamilyTree } from '../familyTree';
+import { DEMO_TREE } from '../familyDemo';
 import { avatarSpriteSvg, avatarSvg, captionOf, describeAvatar, morphologyOf } from '../../world/avatar';
 
 declare global {
@@ -36,7 +40,21 @@ export function mountAvatarGallery(root: HTMLElement): void {
     h('div', { class: 'gallery-grid', id: 'avatar-gallery' }, ...cards)));
 }
 
+/** The family tree view on a made-up tree (`?builder=family`), for the e2e test and screenshots. */
+export function mountFamilyHarness(root: HTMLElement): void {
+  document.documentElement.classList.add('bb-harness-page');
+  const panel = h('div', { class: 'panel ft-wide', id: 'panel-family' });
+  renderFamilyTree(panel, buildFamilyTree(DEMO_TREE));
+  root.replaceChildren(h('div', { class: 'screen bb-harness' },
+    h('div', { class: 'topbar' }, h('strong', {}, 'Family tree'), h('span', { class: 'muted small' }, 'dev harness, made-up lineage')),
+    panel));
+}
+
 export function mountBuilderHarness(root: HTMLElement, param: string): BodyBuilder | null {
+  if (param === 'family') {
+    mountFamilyHarness(root);
+    return null;
+  }
   if (param === 'gallery') {
     mountAvatarGallery(root);
     return null;

@@ -10,8 +10,19 @@ were turned away as `busy`. Up to 2000 players both builds keep the 1 s
 clock with room to spare (server under 1 core).
 
 The limit is the single world thread (sim, state builds, applying
-commands). Per player it now goes mostly to `browse_market` and to
-founding, which both scan the whole world or market (see *What is left*).
+commands). Past one world's size you add worlds (one thread each) and
+processes. The later sections cover that and the follow-up work:
+
+- *The market index:* `browse_market` costs its page now, not the whole
+  market.
+- *Reconnect storms:* a restart no longer logs everyone out. At 4000
+  players everyone was back 9.4 s after the server answered again,
+  instead of 70.9 s.
+- *Beyond one box:* world capacities, `GET /api/assign`, the `evo-lobby`
+  front door the web client now uses, accounts shared safely across
+  servers, and the capacity and cost plan.
+- *Compression:* the game WebSocket negotiates permessage-deflate. That
+  cuts traffic 2.6× for 12–15% more server CPU.
 
 ## Method
 
@@ -209,21 +220,346 @@ Checks:
   breeding holds and migration orders between the two games, and it
   exercises the parallel build path.
 
+## The market index
+
+`browse_market` scanned and filtered every listing on every call, and
+listings grow with players (2 per player in the load test), so the market
+cost grew with N². `game/market.rs` now keeps an index of the listings.
+For each page order it holds the listings' sort keys, the same keys the
+scan sorts by. It also counts listings by kind and role, overall and per
+owner, and keeps each owner's listings, the listing of each organism and
+the renown each bidder holds on auctions.
+
+Creating, withdrawing, bidding and maintenance update the index, and a
+restored or seeded economy is indexed again. A page walks one order from
+its cursor, testing each listing against the scan's filters, until it has
+a page and one more. The total comes from the counts. The counts are exact
+once the tick's maintenance has dropped listings whose organism died;
+organisms only die in a tick.
+
+Some queries still use the scan: those with `max_price`, `lineage` or
+`species`, and those whose order or filter needs every listing's preview
+(`compatible`, or `fertility` with `mine`). In tests, every indexed page
+is compared with the scan, and the index with a freshly built one. A
+randomized test drives listings, auctions, bids and withdrawals through
+300 rounds of paged queries.
+
+| 4000 listings (`market_cost` bench) | scan | index |
+| --- | --- | --- |
+| `browse_market`, median per page | 109 µs | 12 µs |
+
+At 4000 live players a page now averages about 360 µs, down from 713 µs.
+Nearly all of that is the 20 mating previews the page carries (the load
+generator always sends `mine`), so it no longer grows with the market.
+
+## Reconnect storms
+
+`loadgen --restart-at SECS` stops the server mid-run, gracefully (it
+saves), and starts it again from its save on the same port. Every player
+then reconnects as the web client does (`client/src/socket.ts`): a
+doubling backoff from 0.5 s to 15 s with ±20% jitter. After two refused
+attempts while the HTTP API answers, the session is gone. The web client
+then shows the login screen; the load generator logs in again at once,
+which is the worst case for the server. Each player's outage runs from
+losing the socket to its first state after reconnecting.
+
+**What hurt.**
+
+- Sessions lived in memory only, so a restart logged every player out.
+  The whole player base then had to log in again at once: one argon2 hash
+  of about 25 ms each, two at a time (`HashLimiter`). Most logins were
+  refused with `busy` and retried.
+- Every reconnection also cost the world thread 0.8–3.8 ms:
+  - The connecting player's name was "changed", which rebuilt the whole
+    leaderboard of the kept state index, and after a restart every row
+    also formatted a fallback name. That is O(players) per connect, so
+    O(N²) for a storm.
+  - The offline-protection update walked every offline spell, open offer
+    and listing, once per login.
+  - The first state rebuilt every neighbour view and followed every
+    steering organism.
+
+**Fixes.**
+
+1. **Sessions survive a graceful restart.** The stop saves them, as the
+   SHA-256 of each token (never the token) with its age and idle time.
+   The start restores them, keeping the idle and maximum-age limits. The
+   file store writes `sessions.json` (mode 0600); PostgreSQL uses a
+   `sessions` table (migration 0011). A logout deletes the saved session,
+   so it stays revoked across restarts. A crash loses only the sessions
+   made since the last graceful stop: those players log in again, as
+   before.
+2. **A rename patches its leaderboard row** instead of rebuilding the
+   board. Names don't affect the order, and nothing else on the board
+   changes between ticks.
+3. **Offline-protection updates are deferred inside the runner** until
+   the next world step or save, the only times the world reads them. A
+   test runs 300 random login/logout ticks on a world with hunters and
+   checks that the deferred and immediate games stay identical.
+4. **A new connection's first state uses the kept neighbour views.** The
+   kept index also skips the steering organisms when no sub-step has moved
+   them since it was last brought up to date. The states equivalence test
+   now opens connections mid-tick, right after sub-steps and back to back.
+
+| Restart with N connected | 1000, before | 1000, after | 4000, before | 4000, after |
+| --- | --- | --- | --- | --- |
+| Stop (with save) / start until the API answers | 0.4 / 0.8 s | 0.4 / 0.6 s | 2.9 / 5.4 s | 4.0 / 6.0 s |
+| Logins needed / refused `busy` | 1000 / 3103 | 0 / 0 | 4000 / 20 032 | 0 / 0 |
+| Everyone back, after the server answers | 21.2 s | 1.2 s | 70.9 s | 9.4 s |
+| Outage per player p50 / p99 (from losing the socket) | 6.8 / 20.7 s | 1.5 / 1.8 s | 31.6 / 69.1 s | 16.1 / 18.3 s |
+| World-thread time per connect | 772 µs | 482 µs\* | 3.83 ms | 1.18 ms |
+| Lowest ticks/s after the restart | 0.92 | 0.90 | 0.90 | 0.50 |
+
+\* The 1000-player "after" run had only fix 1. The 4000-player "after"
+run had all four.
+
+At 4000 players, the outage after the fixes is the server being down
+(about 10 s to save and load a 75k-organism world) plus the backoff the
+clients have grown by then; 99% are back within 18 s. One 10 s window
+ran at 0.5 ticks per second while 4000 states were built in a burst.
+Before the fixes, players waited up to 78 s, behind 20 000 refused logins.
+The web client would also have sent every one of them to the login
+screen.
+
+Not done here: a client that cuts its backoff when the server comes back
+(it could poll `/api/world`), and making the save and the load faster.
+Those two are now the larger part of a restart.
+
+## Beyond one box
+
+### Several worlds per process
+
+A process already hosts several worlds (`--world`, one thread each,
+staggered ticks; see the README). The same 4-core box, shared with the
+load generator, at the same per-player load:
+
+| | 1 world × 4000 | 2 worlds × 2000 | 3 worlds × 1500 (+ deflate estimate) |
+| --- | --- | --- | --- |
+| Ticks/s per world (median) | 1.00 | 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| Tick p99 per world | 185 ms | 156 / 144 ms | 452 / 419 / 482 ms |
+| Command → result p50 / p99 | 186 / 484 ms | 138 / 254 ms | 189 / 984 ms |
+| Server CPU / RSS | 1.89 cores / 1431 MB | 1.63 cores / 1390 MB | 1.82 cores / 1736 MB |
+| Load generator CPU | 1.0 core | 0.9 core | 2.0 cores |
+| Outbound per player | 3.9 KB/s | 3.6 KB/s | 3.5 KB/s |
+
+Splitting 4000 players over two worlds halves the command p99 and uses
+less CPU: two world threads share the work, and each world's
+O(players-in-view) costs are smaller. The 3 × 1500 run saturated the box.
+The load generator's own deflate estimate took two cores, so its tails are
+the box's, not the server's. That run also measured what permessage-deflate
+with context takeover would save on state frames: **2.6×** (state frames
+are half the traffic; the `browse_market` JSON, the other half, compresses
+better).
+
+### Assigning players: `GET /api/assign` and `evo-lobby`
+
+- **World capacity.** Each world has a capacity: `--world id,capacity=N`,
+  default 3000, which leaves headroom under the 4000 measured above.
+- **`GET /api/assign`** (with a token, or `?name=`) returns the world a
+  player should use (`worlds::assign`):
+  1. the world holding the player's lineage, even when it is full
+     (lineages don't move);
+  2. else the busiest world still under 80% of its capacity, so new
+     players meet others;
+  3. else the world with the most room for its size;
+  4. 503 `full` when every world is at capacity.
+
+  It answers from the world's published state (players online,
+  leaderboard). It does not touch the world thread.
+- **`evo-lobby`** (`crates/server/src/bin/evo-lobby.rs`) is a stateless
+  front door over several processes:
+  - `evo-lobby --backend http://a:8080 --backend http://b:8080` serves
+    `GET /lobby/assign?name=`.
+  - That asks every backend's `/api/assign` at once, with a 1 s timeout,
+    and applies the same rule across all of them: a backend reporting the
+    player's lineage wins, then the busiest world under its fill target,
+    then the most room.
+  - It answers with the `server` and `world`. The client then logs in on
+    that server and opens `/ws?world=` there.
+  - `GET /lobby/servers` lists each backend's worlds and load.
+  - Tested against two live processes (three worlds): a new name went to
+    the first world with room; a player with a lineage on the second
+    process was sent there.
+
+Limits of the prototype:
+
+- **Accounts.** They must live in one shared PostgreSQL database for an
+  account to work on every backend; separate file stores have separate
+  accounts. With one database, several servers now register safely; see
+  *Accounts across servers* below.
+- **Login sessions.** They are per process: a player logs in on the
+  server the lobby picked. The web client does that.
+
+### Accounts across servers
+
+Each server used to hand out player ids from its own in-memory counter,
+seeded with the highest id it loaded at start. Two servers on one
+database would give two new accounts the same id, and the second insert
+would fail.
+
+- **Id allocation.** Ids now come from the store (`Store::allocate_player`).
+  PostgreSQL uses a `player_ids` sequence (migration 0012), seeded past
+  the highest id in use and never handing out an id at or below it. The
+  file and memory stores, which serve one process each, use a counter
+  under their lock.
+- **Races.** The database's unique `player` column is the real guard: a
+  registration that loses a race retries with a new id. A name registered
+  on two servers at once ends as one account, and the other server
+  answers `name_taken`.
+- **Logins.** A login, and the lobby's `?name=` lookup, for an account
+  another server registered after this one started now reads it from the
+  store (`Store::find_account`) and keeps it.
+
+Tested with two servers on one PostgreSQL database (two connection
+pools, as two processes would have) and on one shared in-memory store:
+
+- 24 concurrent registrations, 12 on each server, got distinct ids;
+- a name raced on both servers gave one account and one `name_taken`;
+- an account made on one server logged in on the other with the same
+  player id.
+
+The PostgreSQL run used a local PostgreSQL 16 in this container; the
+whole integration suite also passes against it (`DATABASE_URL`).
+
+### The client and the lobby
+
+Before logging in, the web client asks where to play (`client/src/assign.ts`):
+
+- **Who it asks.** It asks the lobby when one is configured
+  (`?lobby=https://lobby.example.org` on the page URL, which it remembers,
+  or the build-time `VITE_EVO_LOBBY`, e.g. for the store apps), else the
+  game server's own `/api/assign`. The answer comes within 2.5 s or not
+  at all.
+- **Another server.** If the lobby names one, the client logs in there.
+  It remembers that server, because the session belongs to it.
+- **Which world.** The player's own pick in the world list wins, then the
+  world holding their lineage, then the world remembered for them, then
+  the world the server would fill, then the server's default.
+- **Fallback.** No answer (an older server, a lobby that is down, a slow
+  reply, every world full) leaves the login exactly as before.
+- **CORS.** `evo-lobby` sends CORS headers, because the page usually
+  comes from another origin.
+
+`e2e/lobby.mjs` checks this in Chromium with two servers and a lobby:
+
+- a new player opening server A's page with `?lobby=` is sent to A's
+  first world with room;
+- a player whose lineage lives on server B, opening A's page, ends up
+  playing on B;
+- without a lobby, A's own `/api/assign` keeps a player with their
+  lineage in their world.
+
+## Compression: permessage-deflate
+
+axum's WebSocket (tungstenite 0.24, and still in 0.30) has no
+permessage-deflate. It also rejects compressed frames, which browsers
+send once the extension is agreed. The game WebSocket now runs on
+`yawc` (RFC 6455 and RFC 7692 over hyper 1, Autobahn-tested, MPL-2.0)
+and negotiates compression whenever the client offers it
+(`--ws-compression`):
+
+| Mode | What it does |
+| --- | --- |
+| `context` (default) | Each connection keeps its deflate stream, so a message can refer back to earlier ones. |
+| `message` | Each message is compressed on its own, with deflate state shared by all connections; the client is asked to do the same. |
+| `off` | Plain frames. |
+
+In every mode, messages under 64 bytes go out plain. Client messages
+stay bounded at 16 KiB, before and after inflating.
+
+**Who negotiates it.**
+
+- Every browser offers `permessage-deflate; client_max_window_bits`.
+  Chromium accepting it from this server is checked in `e2e/lobby.mjs`,
+  from the DevTools protocol's handshake events, and smoke, mobile and
+  android-desktop run over compressed sockets.
+- The Capacitor apps use their web view's WebSocket: Chromium on Android,
+  as tested. iOS (WKWebView) could not be checked here. If a client
+  doesn't offer the extension, the server sends plain frames, so nothing
+  breaks.
+- Clients that don't offer it get plain frames: the load generator with
+  `--no-ws-deflate`, and the tests' tokio-tungstenite clients.
+
+**Cost against saving.** The load generator now negotiates compression
+as a browser does, and counts the bytes it reads off each socket.
+
+| | 1000 off | 1000 `message` | 1000 `context` | 4000 off | 4000 `message` | 4000 `context` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Wire bytes per player | 2.26 KB/s | 1.04 KB/s (2.2×) | **0.85 KB/s (2.6×)** | 2.23 KB/s | 1.03 KB/s (2.2×) | **0.87 KB/s (2.6×)** |
+| Server CPU | 0.36 | 0.45 (+25%) | 0.41 (+15%) | 1.82 | 2.13 (+17%) | 2.04 (+12%) |
+| Server RSS | 390 MB | 398 MB | 590 MB | 1244 MB | 1348 MB | 2065 MB |
+| Command → result p99 | 249 ms | 251 ms | 250 ms | 391 ms | 591 ms | 512 ms |
+| Ticks/s | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+
+At 4000 players the box was close to full: server and load generator
+used about 3.2 of 4 cores, and both now spend CPU on deflate. That is why
+the latency tails grew there. More sub-step states were also replaced by
+newer ones before slow writers sent them: 0.2% of states in compressed
+mode, against almost none uncompressed. Nothing was dropped and no
+decode failed.
+
+`context` takes the most off for the least CPU. It costs about 200 KB of
+deflate state per connection: 0.8 GB at 4000 players, which is more RAM
+than CPU per player. `message` costs almost no memory but more CPU, and
+saves less, because small deltas barely shrink on their own. For servers
+short of memory, `--ws-compression message` is the choice.
+
+The traffic is now about half quantised delta states and half
+`browse_market` JSON:
+
+- State frames were already quantised binary deltas: positions ×64,
+  needs ×10, per-record change masks, and palettes for looks, actions and
+  eyes (`wire.rs`).
+- Keyframes go out once a minute.
+- Nothing cheaper is left in them without changing the protocol.
+
+The market's 20-listing pages, each listing with its traits and a mating
+preview, compress well. Making them smaller (fewer fields, or previews
+on demand) would change what the client receives, so it is not done
+here.
+
+### Capacity plan
+
+These are measured with heavy players: 30 commands a minute, mostly
+steering, so about 2.7 states a second each. That is several times what
+a typical player sends. The box also ran the load generator, so the
+numbers are pessimistic.
+
+| Per 1000 concurrent heavy players | Measured | Plan with |
+| --- | --- | --- |
+| Server CPU | 0.40 cores (1 world × 1000); 0.41 per 1000 at 2 × 2000 | 1 vCPU (2.5× headroom for bursts, saves and restarts) |
+| Memory (RSS) | +0.3 MB per player over a ~180 MB world (512², 20k organisms), +0.2 MB per connection for deflate contexts | 0.75 GB, plus 0.25 GB per world |
+| Outbound bandwidth | 2.2–3.9 KB/s per player uncompressed, depending on the build (2.2 with the current food rules); **0.85–0.87 KB/s with permessage-deflate** (measured, `context`): about 7 Mbit/s, 2.3 TB a month at full occupancy | 2.5 TB a month (6 TB uncompressed) |
+| Players per world | 4000 held at 1 tick/s; 3000 default capacity | ≤ 3000 per world, one world per 1–2 vCPU |
+
+**Rough cost per 1000 concurrent heavy players a month.** These are
+approximate on-demand list prices; check current pricing.
+
+| Provider (instance) | Compute | Traffic (2.5 TB deflated; 6 TB uncompressed) | Total |
+| --- | --- | --- | --- |
+| AWS c7g.xlarge (4 vCPU, 8 GB, ≈ $106/mo; 4000 CCU per box at 1 vCPU each) | ≈ $27 | ≈ $225 ($540) at $0.09 per GB | ≈ $250 |
+| GCP c3-standard-4 (4 vCPU, 16 GB, ≈ $150/mo) | ≈ $38 | ≈ $210 ($510) at ≈ $0.085 per GB | ≈ $250 |
+| Hetzner CCX23 (4 dedicated vCPU, 16 GB, ≈ €30/mo, 20 TB included) | ≈ €8 | included (20 TB per box covers its 4000 CCU) | ≈ €8 |
+
+Compute is cheap. **Outbound traffic still dominates on the big clouds**,
+about 8× the compute at AWS and GCP egress prices, even after
+permessage-deflate cut it 2.6× (now on by default). The remaining levers:
+
+1. Send `browse_market` results less often or smaller: they are about
+   half the bytes.
+2. Host where traffic is included.
+
 ## What is left
 
-- **`browse_market` is O(listings) per call.** Listings grow with
-  players, so its total cost grows with N². At 4000 players (8000
-  listings) it averages 0.7 ms per call and is now the largest
-  steady-state cost on the world thread. A sorted listing index per sort
-  order, or answering market reads off the world thread from a published
-  snapshot, would make it O(page).
 - **Founding costs about 16–20 ms** of world-thread time, for the
-  sim-side home search over the whole world. In steady state that does
-  not matter, but a burst of 10 new players a second takes 20% of the
-  tick budget.
+  sim-side home search over the whole world (`crates/sim/src/world`, not
+  touched). In steady state that does not matter, but a burst of 10 new
+  players a second takes 20% of the tick budget.
 - **The floor on command latency** is the sub-step cadence, not load.
-- **Beyond about 4000 players per world**, the next limits are state
-  builds and applying commands on the world thread (about 150 ms p99 to
-  apply at 4000) and, on this box, CPU shared with the load generator.
-  For more players per process, more worlds (`--world`) scale better,
-  since each runs on its own thread.
+- **Restarts** now cost the save and load (about 10 s at 75k organisms)
+  plus the client's backoff.
+- **Past about 3000–4000 players per world**, the world thread's state
+  builds and command application are the limit: use more worlds. Past
+  one box, use the lobby, with a shared PostgreSQL database.
+- **`browse_market` with `max_price`, `lineage`, `species` or every
+  candidate's preview** still scans the market.

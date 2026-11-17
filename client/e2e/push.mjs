@@ -25,6 +25,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cappedBrowser } from './frames.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -159,9 +160,9 @@ async function main() {
   let browser;
   let shell = false;
   try {
-    browser = await chromium.launch({ headless: !process.env.HEADED, channel: 'chromium' });
+    browser = cappedBrowser(await chromium.launch({ headless: !process.env.HEADED, channel: 'chromium' }));
   } catch {
-    browser = await chromium.launch({ headless: !process.env.HEADED });
+    browser = cappedBrowser(await chromium.launch({ headless: !process.env.HEADED }));
     shell = true;
   }
   const errors = [];

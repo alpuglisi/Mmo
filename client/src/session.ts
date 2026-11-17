@@ -1,6 +1,7 @@
 // The login session, remembered across reloads when storage is available.
-// The server keeps tokens in memory only, so a server restart invalidates it
-// (the socket then fails and the client returns to the login screen).
+// The server keeps sessions over a graceful restart; one it lost (a crash,
+// a logout elsewhere, expiry) fails the socket and the client returns to
+// the login screen.
 
 import type { AuthResponse } from './protocol';
 

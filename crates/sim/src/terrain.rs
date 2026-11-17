@@ -408,6 +408,20 @@ pub struct Map {
     /// them in a section of their own (`serde_util::tiles`).
     #[cfg_attr(feature = "serde", serde(serialize_with = "crate::serde_util::tiles::serialize"))]
     pub tiles: Vec<Tile>,
+    /// Ripe fruit, seeds and nuts on each tile (food units, row-major; all
+    /// 0 without the fruit layer, `Balance::fruit_crop`): a second plant
+    /// food beside `Tile::veg`, seasonal and richer (`Balance::fruit_energy`).
+    /// Its own list rather than a `Tile` field, so the tile planes of the
+    /// snapshot and the wire keep their layout; snapshots before version 31
+    /// have none (`serde_util::before_v31::vec`; restored as zeros).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31::vec"))]
+    pub fruit: Vec<f32>,
+    /// Insects, worms and grubs on each tile (food units, row-major; all 0
+    /// without the invertebrate layer, `Balance::insect_crop`): small meat,
+    /// in season from spring to early autumn. As `fruit`, its own list
+    /// (`serde_util::before_v31::vec`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v31::vec"))]
+    pub insects: Vec<f32>,
     /// Steps to the nearest drinkable tile (BFS, recomputed hourly when chunk
     /// updates changed where water is). Lets any organism walk downhill to
     /// water without a search.
@@ -588,6 +602,8 @@ impl Map {
             height,
             terrain: Arc::new(terrain),
             tiles,
+            fruit: vec![0.0; n],
+            insects: vec![0.0; n],
             water_dist: vec![u16::MAX; n],
             chunks_x,
             chunks_y,
@@ -603,7 +619,10 @@ impl Map {
             pass_sig: vec![0; n],
             water_dirty: true,
         };
-        map.update_environment(0, 0, 12, 120, &Balance::default());
+        // The fruit and invertebrate layers start empty and fill as the
+        // world runs under its own rules (`Balance::fruit_crop`, `insect_crop`).
+        let bal = Balance { fruit_crop: 0.0, insect_crop: 0.0, ..Balance::default() };
+        map.update_environment(0, 0, 12, 120, &bal);
         map
     }
 
@@ -943,6 +962,16 @@ impl Map {
     ) {
         use rayon::prelude::*;
         let offset = Map::temperature_offset(hour, day_of_year, days_per_year) + self.climate_temp;
+        // The fruit layer's share of its crop in season (`Balance::fruit_crop`).
+        let fruit_scale = bal.fruit_crop * fruit_season(day_of_year, days_per_year);
+        let insect_scale = bal.insect_crop;
+        let scales = (fruit_scale, insect_scale);
+        if self.fruit.len() != self.tiles.len() {
+            self.fruit = vec![0.0; self.tiles.len()];
+        }
+        if self.insects.len() != self.tiles.len() {
+            self.insects = vec![0.0; self.tiles.len()];
+        }
         // This tick's chunks are those `phase` apart from each other. Each
         // writes only its own tiles, passability signatures, melt and
         // version, and reads the weather cells, which nothing writes here,
@@ -965,19 +994,22 @@ impl Map {
         let (dirty, changed) = self
             .tiles
             .par_chunks_mut(rows)
+            .zip(self.fruit.par_chunks_mut(rows))
+            .zip(self.insects.par_chunks_mut(rows))
             .zip(self.pass_sig.par_chunks_mut(rows))
             .zip(self.melt_acc.par_chunks_mut(cx))
             .zip(self.chunk_version.par_chunks_mut(cx))
             .with_min_len(min_len)
             .enumerate()
-            .map(|(cy, (((tiles, sig), melt), version))| {
+            .map(|(cy, (((((tiles, fruit), insects), sig), melt), version))| {
                 let (mut dirty, mut changed) = (false, 0u64);
                 for k in 0..cx {
                     let c = cy * cx + k;
                     if c % every != phase as usize % every || c < phase as usize {
                         continue;
                     }
-                    let (d, ch) = this.update_chunk(c, offset, bal, tiles, sig, &mut melt[k]);
+                    let slab = Slab { tiles, fruit, insects, sig };
+                    let (d, ch) = this.update_chunk(c, offset, scales, bal, slab, &mut melt[k]);
                     dirty |= d;
                     if ch {
                         version[k] += 1;
@@ -1000,6 +1032,15 @@ impl Map {
         let land = self.tiles.iter().filter(|t| t.water_depth < 1.0).count();
         land as f32 / self.tiles.len() as f32
     }
+}
+
+/// A chunk row's slab of tiles, fruit and passability signatures
+/// (`Map::update_chunks`).
+struct Slab<'a> {
+    tiles: &'a mut [Tile],
+    fruit: &'a mut [f32],
+    insects: &'a mut [f32],
+    sig: &'a mut [u32],
 }
 
 /// What a chunk update reads of the map besides its own tiles
@@ -1034,19 +1075,22 @@ impl Shared<'_> {
         (mix(|c| c.wind), mix(|c| c.rain), mix(|c| c.wetness))
     }
 
-    /// One chunk's hourly update (`Map::update_chunks`): `tiles` and `sig`
-    /// are its chunk row's slab of tiles and passability signatures, `melt`
-    /// its melt accumulator. Returns whether a tile gained or lost a water
-    /// source and whether any tile's passability changed.
+    /// One chunk's hourly update (`Map::update_chunks`): `slab` is its
+    /// chunk row's slab of tiles, fruit, insects and passability
+    /// signatures, `melt` its melt accumulator, `scales` the fruit and
+    /// invertebrate layers' shares of their crops today. Returns whether a tile gained or lost a water source and
+    /// whether any tile's passability changed.
     fn update_chunk(
         &self,
         c: usize,
         offset: f32,
+        scales: (f32, f32),
         bal: &Balance,
-        tiles: &mut [Tile],
-        sig: &mut [u32],
+        slab: Slab<'_>,
         melt_acc: &mut f32,
     ) -> (bool, bool) {
+        let Slab { tiles, fruit, insects, sig } = slab;
+        let (fruit_scale, insect_scale) = scales;
         let (x0, y0) = ((c % self.chunks_x) * CHUNK, (c / self.chunks_x) * CHUNK);
         let (x1, y1) = ((x0 + CHUNK).min(self.width), (y0 + CHUNK).min(self.height));
         let (mut melt, mut changed, mut dirty) = (0.0f32, false, false);
@@ -1072,7 +1116,14 @@ impl Shared<'_> {
                 };
                 let t = &mut tiles[local];
                 let had_water = t.water_source();
-                melt += update_tile(&self.terrain.ground[i], t, &env, bal);
+                let g = &self.terrain.ground[i];
+                melt += update_tile(g, t, &env, bal);
+                if fruit_scale > 0.0 || fruit[local] > 0.0 {
+                    update_fruit(g, t, &mut fruit[local], fruit_scale);
+                }
+                if insect_scale > 0.0 || insects[local] > 0.0 {
+                    update_insects(g, t, &mut insects[local], insect_scale);
+                }
                 dirty |= had_water != t.water_source();
                 let s = t.pass_signature();
                 if s != sig[local] {
@@ -1083,6 +1134,104 @@ impl Shared<'_> {
         }
         *melt_acc += melt / ((x1 - x0) * (y1 - y0)).max(1) as f32;
         (dirty, changed)
+    }
+}
+
+/// Fruit, seeds and nuts a tile bears at the peak of the season, before
+/// `Balance::fruit_crop` (food units): most in forest (mast and fruiting
+/// trees and shrubs), some in marsh (berries), grassland (grass and forb
+/// seeds) and tundra (berries), little on mountains and in desert; more on
+/// moister ground. Leaves are `Ground::veg_max` (32–40 on forest and
+/// grassland), so the crop is a small, rich extra.
+pub fn fruit_capacity(g: &Ground) -> f32 {
+    let base = match g.biome {
+        Biome::Forest => 6.0,
+        Biome::Marsh => 3.0,
+        Biome::Grassland => 2.0,
+        Biome::Tundra => 1.5,
+        Biome::Mountain => 1.0,
+        Biome::Desert => 0.3,
+        Biome::DeepWater | Biome::ShallowWater => 0.0,
+    };
+    base * (0.5 + g.moisture).clamp(0.5, 1.5)
+}
+
+/// Day of the year (as a share) at which the fruit crop peaks: early autumn.
+const FRUIT_PEAK: f32 = 0.56;
+/// Half-width of the fruiting season, as a share of the year: fruit sets
+/// from early summer and the last ripens at the start of winter.
+const FRUIT_HALF_SEASON: f32 = 0.25;
+/// Daily rate at which ripening fruit fills the gap to the season's crop
+/// (an eaten tile bears again within a week or two while in season).
+const FRUIT_RIPEN: f32 = 0.15;
+/// Daily rate at which fruit above the season's crop rots or is lost:
+/// fallen nuts and seeds last into the winter.
+const FRUIT_ROT: f32 = 0.03;
+
+/// The share of the fruit crop in season on `day_of_year`: `cos²` around
+/// [`FRUIT_PEAK`] (day 67 of 120, early autumn), none in spring and from
+/// the start of winter (what is left then rots slowly, [`FRUIT_ROT`]).
+pub fn fruit_season(day_of_year: u32, days_per_year: u32) -> f32 {
+    let phase = day_of_year as f32 / days_per_year.max(1) as f32;
+    let d = (phase - FRUIT_PEAK).abs();
+    if d >= FRUIT_HALF_SEASON {
+        0.0
+    } else {
+        let c = (std::f32::consts::PI * d / (2.0 * FRUIT_HALF_SEASON)).cos();
+        c * c
+    }
+}
+
+/// One hour of a tile's fruit layer (`Map::fruit`): it ripens toward the
+/// season's crop (`fruit_capacity` × `scale`, less in drought, none while
+/// flooded) and rots slowly above it.
+fn update_fruit(g: &Ground, t: &Tile, fruit: &mut f32, scale: f32) {
+    let flooded = g.plain > 0.0 && t.water_depth > 0.0;
+    let wet = (0.5 + t.wetness).clamp(0.6, 1.2);
+    let target = if flooded { 0.0 } else { fruit_capacity(g) * scale * wet };
+    if *fruit < target {
+        *fruit += FRUIT_RIPEN / 24.0 * (target - *fruit);
+    } else {
+        *fruit -= FRUIT_ROT / 24.0 * (*fruit - target);
+        if *fruit < 0.01 {
+            *fruit = 0.0;
+        }
+    }
+}
+
+/// Insects, worms and grubs a tile holds at the height of their season,
+/// before `Balance::insect_crop` (food units): most in marsh and moist
+/// forest litter, fewer in grassland, little on dry or high ground.
+pub fn insect_capacity(g: &Ground) -> f32 {
+    let base = match g.biome {
+        Biome::Marsh => 1.5,
+        Biome::Forest => 1.0,
+        Biome::Grassland => 0.8,
+        Biome::Tundra => 0.5,
+        Biome::Mountain | Biome::Desert => 0.25,
+        Biome::DeepWater | Biome::ShallowWater => 0.0,
+    };
+    base * (0.5 + g.moisture).clamp(0.5, 1.5)
+}
+
+/// Daily rate at which invertebrates fill the gap to the tile's stock
+/// (they breed and move in fast), and at which a stock above it dies off.
+const INSECT_RENEW: f32 = 0.5;
+
+/// One hour of a tile's invertebrates (`Map::insects`): toward its stock
+/// (`insect_capacity` × `scale`), which follows the warmth as plant growth
+/// does (`growth_warmth`: none at or below freezing, so none in winter, a
+/// spring flush as the ground warms, earthworms and beetles in the wet of
+/// spring and autumn), more where the soil is wet, none under snow or
+/// flood water.
+fn update_insects(g: &Ground, t: &Tile, insects: &mut f32, scale: f32) {
+    let flooded = g.plain > 0.0 && t.water_depth > 0.0;
+    let wet = (0.5 + t.wetness).clamp(0.5, 1.3);
+    let cover = (1.0 - t.snow * 3.0).clamp(0.0, 1.0);
+    let target = if flooded { 0.0 } else { insect_capacity(g) * scale * wet * growth_warmth(t.temp) * cover };
+    *insects += INSECT_RENEW / 24.0 * (target - *insects);
+    if *insects < 0.005 {
+        *insects = 0.0;
     }
 }
 
@@ -1447,6 +1596,21 @@ pub enum Traverse {
 /// Ice thickness needed to hold a body of this mass.
 pub fn ice_needed(mass: f32) -> f32 {
     0.1 + mass / 200.0
+}
+
+/// Whether a walking `body` can cross a tile at all: `matches!(traverse(body,
+/// g, tile, _, false), Traverse::Passable { .. })`, with only the tests that
+/// block (deep water it can't swim, unless on ice that holds it; a cliff
+/// it can't climb), so a whole map's passability costs little (founding's
+/// home search). Must stay in step with [`traverse`]
+/// (`world::tests::passable_agrees_with_traverse`).
+pub fn passable(body: &Body, g: &Ground, tile: &Tile) -> bool {
+    let height = body.height.max(0.1);
+    let on_ice = tile.water_depth > 0.0 && tile.ice >= ice_needed(body.mass);
+    let drowns =
+        !on_ice && tile.water_depth > 0.0 && tile.water_depth > height * 0.8 && body.swim < 0.25 + 0.5 * tile.current;
+    let cliff = g.slope > 0.6 && body.climb < 0.4;
+    !(drowns || cliff)
 }
 
 /// How `body` crosses a tile (`g` its ground, `tile` its state) in `weather`.

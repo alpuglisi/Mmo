@@ -14,8 +14,6 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use axum::extract::ws::rejection::WebSocketUpgradeRejection;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{
     ConnectInfo, DefaultBodyLimit, FromRequestParts, Path as UrlPath, Query, Request as HttpRequest, State,
 };
@@ -30,6 +28,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, watch};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
+use yawc::frame::OpCode;
+use yawc::{Frame, WebSocket};
 
 use evo_sim::PlayerId;
 
@@ -78,6 +78,57 @@ pub struct AppState {
     pub ws_conns: Arc<Mutex<HashMap<PlayerId, usize>>>,
     /// The push notification service (`None` with `--no-push`).
     pub push: Option<Arc<PushService>>,
+    /// The game WebSocket's settings: message limits and permessage-deflate
+    /// ([`ws_options`]).
+    pub ws: yawc::Options,
+}
+
+/// How the game WebSocket compresses (`--ws-compression`): with
+/// permessage-deflate (RFC 7692), which every browser and the Capacitor
+/// apps' web views offer. A client that doesn't offer it gets plain frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum WsCompression {
+    Off,
+    /// Each message compressed on its own (no context takeover) with
+    /// deflate state shared by all connections: little memory per
+    /// connection, but small messages (most deltas) barely shrink.
+    Message,
+    /// Each connection keeps its deflate stream (context takeover): later
+    /// messages refer back to earlier ones, so repetitive deltas and replies
+    /// shrink the most, at about 300 KB of deflate state per connection.
+    #[default]
+    Context,
+}
+
+impl std::str::FromStr for WsCompression {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "off" => Ok(Self::Off),
+            "message" => Ok(Self::Message),
+            "context" => Ok(Self::Context),
+            other => Err(format!("unknown WebSocket compression {other:?} (off, message, context)")),
+        }
+    }
+}
+
+/// The game WebSocket's options: client messages bounded by
+/// [`MAX_CLIENT_MESSAGE`] (frames and whole messages, compressed or not),
+/// and compression as configured. Messages under 64 bytes go out plain
+/// (deflate's framing would make them longer).
+pub fn ws_options(compression: WsCompression) -> yawc::Options {
+    let base = yawc::Options::default().with_limits(MAX_CLIENT_MESSAGE, MAX_CLIENT_MESSAGE).with_utf8();
+    match compression {
+        WsCompression::Off => base.without_compression(),
+        WsCompression::Message => base
+            .with_low_latency_compression()
+            .server_no_context_takeover()
+            .client_no_context_takeover()
+            .with_compression_threshold(64)
+            // About the number of runtime threads compressing at once.
+            .with_deflate_pool(yawc::DeflatePool::new(64)),
+        WsCompression::Context => base.with_low_latency_compression().with_compression_threshold(64),
+    }
 }
 
 /// One hosted world: its world thread, what it publishes, its metrics and
@@ -95,6 +146,8 @@ pub struct WorldHandle {
     /// `/api/seasons/:n` means its seasons unless the request names another
     /// map of the world (`?map=`, a world started over with `--fresh`).
     pub map_id: Arc<str>,
+    /// Players online before `GET /api/assign` sends new players elsewhere.
+    pub capacity: usize,
 }
 
 impl AppState {
@@ -204,6 +257,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
         .route("/api/lineage/stats", get(lineage_stats))
+        .route("/api/lineage/tree", get(family_tree))
         .merge(e2e_hooks())
         .route("/api/alerts/prefs", get(alert_prefs).post(set_alert_prefs))
         .route("/api/push/subscriptions", get(push_subscriptions))
@@ -231,6 +285,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/genes", get(genes))
         .route("/api/push/key", get(push_key))
         .route("/api/worlds", get(world_list))
+        .route("/api/assign", get(assign))
         .route("/api/world", get(world_summary))
         .route("/api/leaderboard", get(leaderboard))
         .route("/api/metrics", get(metrics))
@@ -479,6 +534,54 @@ async fn world_list(State(app): State<AppState>) -> Json<WorldList> {
     Json(WorldList { default: app.worlds[0].id.to_string(), worlds })
 }
 
+#[derive(Deserialize)]
+struct AssignQuery {
+    /// An account name (the lobby asks for players who haven't logged in
+    /// here); a bearer token is used instead when there is one.
+    name: Option<String>,
+}
+
+/// `GET /api/assign`: the world this server would put a player in
+/// (`worlds::assign`): the one holding their lineage, else the busiest one
+/// under its fill target, else the emptiest one with room; 503 `full` when
+/// every world is full. `evo-lobby` asks every server and picks among them.
+async fn assign(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AssignQuery>,
+) -> Result<Json<crate::worlds::AssignView>, ApiError> {
+    let player = match bearer(&headers) {
+        Some(t) => Some(app.accounts.session(t).ok_or_else(ApiError::unauthorized)?.player),
+        None => match q.name.as_deref() {
+            Some(n) => app.accounts.player_of(n).await,
+            None => None,
+        },
+    };
+    let loads: Vec<crate::worlds::WorldLoad> = app
+        .worlds
+        .iter()
+        .map(|w| crate::worlds::WorldLoad {
+            players_online: w.metrics.lock().unwrap().players,
+            capacity: w.capacity,
+            has_lineage: player.is_some_and(|p| w.published.borrow().leaderboard.rows.iter().any(|r| r.player == p)),
+        })
+        .collect();
+    let Some((i, reason)) = crate::worlds::assign(&loads) else {
+        let mut e = ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "full", "every world here is full");
+        e.detail = Some(serde_json::json!({ "retry_after_ms": 30_000 }));
+        return Err(e);
+    };
+    let w = &app.worlds[i];
+    Ok(Json(crate::worlds::AssignView {
+        world: w.id.to_string(),
+        name: w.name.to_string(),
+        reason,
+        players_online: loads[i].players_online,
+        capacity: loads[i].capacity,
+        has_account: player.is_some(),
+    }))
+}
+
 async fn world_summary(World(w): World) -> Json<crate::protocol::WorldSummary> {
     Json(w.published.borrow().summary.clone())
 }
@@ -563,6 +666,18 @@ async fn lineage_stats(
     let session = authed(&app, &headers)?;
     let (reply, rx) = oneshot::channel();
     send_request(&w.tx, Request::Stats { player: session.player, reply })?;
+    Ok(Json(rx.await.map_err(ApiError::internal)?))
+}
+
+/// The family tree of the caller's lineage (`FamilyTree`).
+async fn family_tree(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+) -> Result<Json<crate::protocol::FamilyTree>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::FamilyTree { player: session.player, reply })?;
     Ok(Json(rx.await.map_err(ApiError::internal)?))
 }
 
@@ -913,15 +1028,14 @@ async fn ws_upgrade(
     info: Option<ConnectInfo<SocketAddr>>,
     Query(q): Query<WsQuery>,
     headers: HeaderMap,
-    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+    mut request: axum::extract::Request,
 ) -> Result<Response, ApiError> {
     // Authenticate before looking at the upgrade, so a bad token is a 401.
     let token = q.token.as_deref().or_else(|| bearer(&headers)).ok_or_else(ApiError::unauthorized)?;
     let session = app.accounts.session(token).ok_or_else(ApiError::unauthorized)?;
-    let ws = match ws {
-        Ok(ws) => ws,
-        Err(rejection) => return Ok(rejection.into_response()),
-    };
+    if request.method() != axum::http::Method::GET {
+        return Err(ApiError::new(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "a WebSocket opens with GET"));
+    }
     let slot = ConnSlot::take(&app.ws_conns, session.player).ok_or_else(|| {
         ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -933,13 +1047,16 @@ async fn ws_upgrade(
     let ip = client_ip(&app, &info, &headers);
     let asked = q.proto.unwrap_or(PROTO_JSON);
     let proto = if asked >= PROTO_DELTA { asked.min(PROTO_MAX) } else { PROTO_JSON };
-    // A frame is read whole before the message limit applies: bound both.
-    Ok(ws.max_message_size(MAX_CLIENT_MESSAGE).max_frame_size(MAX_CLIENT_MESSAGE).on_upgrade(
-        move |socket| async move {
+    // Negotiates permessage-deflate when the client offers it.
+    let (response, upgrade) = WebSocket::upgrade_with_options(&mut request, app.ws.clone())
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_upgrade", format!("not a WebSocket upgrade: {e}")))?;
+    tokio::spawn(async move {
+        if let Ok(socket) = upgrade.await {
             client_session(socket, app, world, session, token, ip, proto).await;
-            drop(slot);
-        },
-    ))
+        }
+        drop(slot);
+    });
+    Ok(response.map(|_| axum::body::Body::empty()))
 }
 
 /// A protocol 2 connection, counted in `delta_conns` while its writer lives
@@ -966,7 +1083,7 @@ fn session_check_interval(app: &AppState) -> Duration {
 }
 
 async fn client_session(
-    socket: WebSocket,
+    socket: WebSocket<yawc::HttpStream>,
     app: AppState,
     world: WorldHandle,
     session: Session,
@@ -1008,18 +1125,14 @@ async fn client_session(
                         last_key = Instant::now();
                         net.keyframes_out.fetch_add(1, Ordering::Relaxed);
                     }
-                    Message::Binary(bytes)
+                    Frame::binary(bytes)
                 }
                 _ => match serde_json::to_string(&msg) {
-                    Ok(text) => Message::Text(text),
+                    Ok(text) => Frame::text(text),
                     Err(_) => continue,
                 },
             };
-            let len = match &frame {
-                Message::Binary(b) => b.len(),
-                Message::Text(t) => t.len(),
-                _ => 0,
-            };
+            let len = frame.payload().len();
             let state = matches!(msg, ServerMsg::State(_));
             if state {
                 net.state_encode_ns.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1035,8 +1148,6 @@ async fn client_session(
     let local = |msg: ServerMsg| weak.try_send(msg);
     let rate = app.limiters.limits.commands;
     let mut bucket = Bucket::new(rate, Instant::now());
-    let group_rate = app.limiters.limits.group_commands;
-    let mut group_bucket = Bucket::new(group_rate, Instant::now());
     let mut check = tokio::time::interval(session_check_interval(&app));
     check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -1050,9 +1161,9 @@ async fn client_session(
                 break;
             }
         };
-        let Some(Ok(frame)) = frame else { break };
-        match frame {
-            Message::Text(text) => match serde_json::from_str::<ClientEnvelope>(&text) {
+        let Some(frame) = frame else { break };
+        match frame.opcode() {
+            OpCode::Text => match serde_json::from_slice::<ClientEnvelope>(frame.payload()) {
                 Ok(env) => {
                     let name = env.msg.name();
                     // A command counts as use of the session.
@@ -1065,7 +1176,13 @@ async fn client_session(
                     if let Err(wait) = bucket
                         .take(rate, now)
                         .and_then(|_| app.limiters.ip_commands.check_at(&ip, now))
-                        .and_then(|_| if group_change { group_bucket.take(group_rate, now) } else { Ok(()) })
+                        .and_then(|_| {
+                            if group_change {
+                                app.limiters.group_commands.check_at(&session.player, now)
+                            } else {
+                                Ok(())
+                            }
+                        })
                     {
                         let msg = format!("too many commands; retry in {} ms", wait.as_millis().max(1));
                         local(ServerMsg::err(env.id, name, ErrorInfo::new("rate_limited", msg)));
@@ -1099,7 +1216,7 @@ async fn client_session(
                     local(ServerMsg::err(None, "message", err));
                 }
             },
-            Message::Close(_) => break,
+            OpCode::Close => break,
             _ => {}
         }
     }

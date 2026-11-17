@@ -83,6 +83,23 @@ impl From<serde_json::Error> for StoreError {
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
+/// A login session kept over a restart (`crate::accounts`): the SHA-256 of
+/// its token (hex; never the token), its player and wall-clock times.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SessionRecord {
+    pub token_hash: String,
+    pub player: PlayerId,
+    pub name: String,
+    pub created_unix_ms: u64,
+    pub last_seen_unix_ms: u64,
+    /// When it ends if unused (idle or maximum age, whichever is first).
+    pub expires_unix_ms: u64,
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AccountRecord {
     pub name: String,
@@ -124,6 +141,28 @@ pub struct LineageEntry {
     /// name. Player lineages only (the genetics dashboard's drift charts).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub genes: BTreeMap<String, f32>,
+    /// The living members' body plan (counts and shapes by majority, axes
+    /// by mean): player lineages only, kept and thinned with `genes` (the
+    /// family tree's portraits). Absent in records from before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub morph: Option<BodyPlanMode>,
+}
+
+/// A group's typical body plan (`family::body_plan_mode`): the morphology
+/// parameters by wire name, as a design's `morph` object spells them.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BodyPlanMode {
+    pub eye_count: u8,
+    pub eye_azimuth: f32,
+    pub ear_count: u8,
+    pub ear_shape: String,
+    pub leg_count: u8,
+    pub tail_shape: String,
+    pub snout_length: f32,
+    pub horn_size: f32,
+    pub horn_form: String,
+    pub wing_aspect: f32,
+    pub pattern: String,
 }
 
 /// One simulated day: the legacy leaderboard and every lineage's size.
@@ -289,6 +328,14 @@ pub trait Store: Send + Sync {
     async fn load_accounts(&self) -> StoreResult<Vec<AccountRecord>>;
     /// Fails if the name is taken.
     async fn insert_account(&self, account: &AccountRecord) -> StoreResult<()>;
+    /// A player id never handed out before, by this process or any other
+    /// sharing the store (PostgreSQL: a sequence), for a new account.
+    async fn allocate_player(&self) -> StoreResult<PlayerId>;
+    /// The account named `name`, also one another process sharing the store
+    /// registered since this one loaded the accounts.
+    async fn find_account(&self, name: &str) -> StoreResult<Option<AccountRecord>> {
+        Ok(self.load_accounts().await?.into_iter().find(|a| a.name == name))
+    }
     /// Insert or replace a player's alert preferences.
     async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()>;
     /// A player's alert preferences, if they ever saved any.
@@ -314,6 +361,14 @@ pub trait Store: Send + Sync {
     /// return the stored value (`value` if it was absent). Several servers
     /// sharing a database agree on the first one written.
     async fn put_secret_if_absent(&self, name: &str, value: &str) -> StoreResult<String>;
+    /// Keep these login sessions over a restart (inserted, or replacing
+    /// those with their token hash), and drop expired ones. Several servers
+    /// sharing a database each add their own.
+    async fn save_sessions(&self, sessions: &[SessionRecord]) -> StoreResult<()>;
+    /// The saved sessions that haven't expired.
+    async fn load_sessions(&self) -> StoreResult<Vec<SessionRecord>>;
+    /// Forget a saved session (a logout).
+    async fn delete_session(&self, token_hash: &str) -> StoreResult<()>;
 
     async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>>;
     /// Insert or replace the player's design in the world.
@@ -538,11 +593,14 @@ pub struct MemoryStore {
 #[derive(Default)]
 struct MemInner {
     accounts: Vec<AccountRecord>,
+    /// The last player id handed out.
+    last_player: PlayerId,
     alert_prefs: BTreeMap<PlayerId, AlertPrefsRecord>,
     push_subscriptions: BTreeMap<String, PushSubscriptionRecord>,
     push_devices: BTreeMap<(NativeService, String), PushDeviceRecord>,
     push_prefs: BTreeMap<PlayerId, PushPrefsRecord>,
     secrets: BTreeMap<String, String>,
+    sessions: BTreeMap<String, SessionRecord>,
     worlds: BTreeMap<String, MemWorld>,
 }
 
@@ -583,11 +641,18 @@ impl Store for MemoryStore {
 
     async fn insert_account(&self, account: &AccountRecord) -> StoreResult<()> {
         let mut g = self.inner.lock().await;
-        if g.accounts.iter().any(|a| a.name == account.name) {
+        if g.accounts.iter().any(|a| a.name == account.name || a.player == account.player) {
             return Err(StoreError(format!("account {:?} exists", account.name)));
         }
         g.accounts.push(account.clone());
         Ok(())
+    }
+
+    async fn allocate_player(&self) -> StoreResult<PlayerId> {
+        let mut g = self.inner.lock().await;
+        let p = g.accounts.iter().map(|a| a.player).max().unwrap_or(0).max(g.last_player) + 1;
+        g.last_player = p;
+        Ok(p)
     }
 
     async fn put_alert_prefs(&self, record: &AlertPrefsRecord) -> StoreResult<()> {
@@ -642,6 +707,26 @@ impl Store for MemoryStore {
 
     async fn put_secret_if_absent(&self, name: &str, value: &str) -> StoreResult<String> {
         Ok(self.inner.lock().await.secrets.entry(name.to_string()).or_insert_with(|| value.to_string()).clone())
+    }
+
+    async fn save_sessions(&self, sessions: &[SessionRecord]) -> StoreResult<()> {
+        let mut g = self.inner.lock().await;
+        let now = now_unix_ms();
+        g.sessions.retain(|_, r| r.expires_unix_ms >= now);
+        for r in sessions {
+            g.sessions.insert(r.token_hash.clone(), r.clone());
+        }
+        Ok(())
+    }
+
+    async fn load_sessions(&self) -> StoreResult<Vec<SessionRecord>> {
+        let now = now_unix_ms();
+        Ok(self.inner.lock().await.sessions.values().filter(|r| r.expires_unix_ms >= now).cloned().collect())
+    }
+
+    async fn delete_session(&self, token_hash: &str) -> StoreResult<()> {
+        self.inner.lock().await.sessions.remove(token_hash);
+        Ok(())
     }
 
     async fn load_designs(&self, shard: &str) -> StoreResult<Vec<DesignRecord>> {
@@ -800,6 +885,8 @@ fn same_day(a: &DailyRecord, b: &DailyRecord) -> bool {
 ///   file, then rename) on every change;
 /// - `secrets.json`: server secrets (the generated VAPID private key),
 ///   written the same way, readable by the owner only (mode 0600 on Unix);
+/// - `sessions.json`: login sessions kept over a restart (token hashes),
+///   written the same way and readable by the owner only;
 ///
 /// and each world's records in `worlds/<world id>/`:
 ///
@@ -833,11 +920,14 @@ type HistorySlot = Arc<std::sync::Mutex<Option<history_files::HistoryFiles>>>;
 
 struct Tables {
     accounts: Vec<AccountRecord>,
+    /// The last player id handed out (one process per data directory).
+    last_player: PlayerId,
     alert_prefs: Vec<AlertPrefsRecord>,
     push_subscriptions: Vec<PushSubscriptionRecord>,
     push_devices: Vec<PushDeviceRecord>,
     push_prefs: Vec<PushPrefsRecord>,
     secrets: BTreeMap<String, String>,
+    sessions: Vec<SessionRecord>,
     /// Each world's small tables, read on first use.
     worlds: BTreeMap<String, WorldTables>,
 }
@@ -866,6 +956,7 @@ const PUSH_SUBSCRIPTIONS_FILE: &str = "push_subscriptions.json";
 const PUSH_DEVICES_FILE: &str = "push_devices.json";
 const PUSH_PREFS_FILE: &str = "push_prefs.json";
 const SECRETS_FILE: &str = "secrets.json";
+const SESSIONS_FILE: &str = "sessions.json";
 
 impl FileStore {
     pub async fn open(dir: impl AsRef<Path>) -> StoreResult<Self> {
@@ -882,30 +973,48 @@ impl FileStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => return Err(e.into()),
         };
+        let sessions = match tokio::fs::read(dir.join(SESSIONS_FILE)).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e.into()),
+        };
         let tables = Tables {
+            last_player: 0,
             accounts,
             alert_prefs,
             push_subscriptions,
             push_devices,
             push_prefs,
             secrets,
+            sessions,
             worlds: BTreeMap::new(),
         };
         Ok(Self { dir, tables: Mutex::new(tables), histories: Default::default() })
     }
 
+    /// Write the saved sessions, readable by the owner only.
+    async fn write_sessions(&self, sessions: &[SessionRecord]) -> StoreResult<()> {
+        self.write_private(SESSIONS_FILE, &serde_json::to_vec(sessions)?).await
+    }
+
     /// Write the secrets, readable by the owner only.
     async fn write_secrets(&self, secrets: &BTreeMap<String, String>) -> StoreResult<()> {
-        let tmp = self.dir.join(format!("{SECRETS_FILE}.tmp"));
+        self.write_private(SECRETS_FILE, &serde_json::to_vec_pretty(secrets)?).await
+    }
+
+    /// Write `name` atomically (temp file, then rename), readable by the
+    /// owner only.
+    async fn write_private(&self, name: &str, bytes: &[u8]) -> StoreResult<()> {
+        let tmp = self.dir.join(format!("{name}.tmp"));
         let mut opts = tokio::fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
         opts.mode(0o600);
         let mut f = opts.open(&tmp).await?;
-        f.write_all(&serde_json::to_vec_pretty(secrets)?).await?;
+        f.write_all(bytes).await?;
         f.sync_all().await?;
         drop(f);
-        tokio::fs::rename(&tmp, self.dir.join(SECRETS_FILE)).await?;
+        tokio::fs::rename(&tmp, self.dir.join(name)).await?;
         Ok(())
     }
 
@@ -1065,9 +1174,16 @@ impl Store for FileStore {
         Ok(self.tables.lock().await.accounts.clone())
     }
 
+    async fn allocate_player(&self) -> StoreResult<PlayerId> {
+        let mut t = self.tables.lock().await;
+        let p = t.accounts.iter().map(|a| a.player).max().unwrap_or(0).max(t.last_player) + 1;
+        t.last_player = p;
+        Ok(p)
+    }
+
     async fn insert_account(&self, account: &AccountRecord) -> StoreResult<()> {
         let mut t = self.tables.lock().await;
-        if t.accounts.iter().any(|a| a.name == account.name) {
+        if t.accounts.iter().any(|a| a.name == account.name || a.player == account.player) {
             return Err(StoreError(format!("account {:?} exists", account.name)));
         }
         t.accounts.push(account.clone());
@@ -1162,6 +1278,37 @@ impl Store for FileStore {
 
     async fn load_push_prefs(&self, player: PlayerId) -> StoreResult<Option<PushPrefsRecord>> {
         Ok(self.tables.lock().await.push_prefs.iter().find(|r| r.player == player).cloned())
+    }
+
+    async fn save_sessions(&self, sessions: &[SessionRecord]) -> StoreResult<()> {
+        let mut t = self.tables.lock().await;
+        let now = now_unix_ms();
+        let new: std::collections::HashSet<&str> = sessions.iter().map(|s| s.token_hash.as_str()).collect();
+        let mut kept: Vec<SessionRecord> = t
+            .sessions
+            .iter()
+            .filter(|r| r.expires_unix_ms >= now && !new.contains(r.token_hash.as_str()))
+            .cloned()
+            .collect();
+        kept.extend(sessions.iter().cloned());
+        self.write_sessions(&kept).await?;
+        t.sessions = kept;
+        Ok(())
+    }
+
+    async fn load_sessions(&self) -> StoreResult<Vec<SessionRecord>> {
+        let now = now_unix_ms();
+        Ok(self.tables.lock().await.sessions.iter().filter(|r| r.expires_unix_ms >= now).cloned().collect())
+    }
+
+    async fn delete_session(&self, token_hash: &str) -> StoreResult<()> {
+        let mut t = self.tables.lock().await;
+        if t.sessions.iter().any(|r| r.token_hash == token_hash) {
+            let kept: Vec<SessionRecord> = t.sessions.iter().filter(|r| r.token_hash != token_hash).cloned().collect();
+            self.write_sessions(&kept).await?;
+            t.sessions = kept;
+        }
+        Ok(())
     }
 
     async fn put_secret_if_absent(&self, name: &str, value: &str) -> StoreResult<String> {

@@ -13,7 +13,9 @@ impl World {
     /// decides on the day's first tick (indices change when the dead are
     /// removed), when possessed, if it is a hunter, after seeing a threat, while fleeing,
     /// hunting, courting, provisioning, defending or following an order,
-    /// and when its target organism has died. A kept intent makes no
+    /// when anything within sight could frighten it (an armed organism
+    /// heavy enough to threaten it, or a sentry's warning:
+    /// `SpatialGrid::danger_near`), and when its target organism has died. A kept intent makes no
     /// one-off changes (wander or forage targets, alerts) and follows its
     /// target organism to where it stands now.
     pub(super) fn reused_intent(&self, i: usize) -> Option<Intent> {
@@ -32,6 +34,19 @@ impl World {
         use Action::*;
         let active = matches!(last.action, Flee | Hunt | SeekMate | Scavenge | Defend | Ordered);
         if id != o.id || last.threat > 0.0 || active {
+            return None;
+        }
+        // Something that could frighten it within sight (a hunter coming
+        // in unseen last tick, a sentry's warning): it decides.
+        // Within the farthest it could see this tick: its perception radius
+        // in `decide` with the alarm-call boost and a sentry's vigilance at
+        // their highest and no distraction.
+        let b = &self.config.balance;
+        let alarm = self.group.benefit(crate::group::GroupTrait::AlarmCalls, o.pos).max(0.0);
+        let sight = o.traits.stats.perception * (1.0 + 0.5 * alarm) * (1.0 + b.sentry_vigilance.max(0.0));
+        // (with a margin over rounding).
+        let radius = (2.0 + b.perception_range * sight).min(self.config.max_perception) * 1.001 + 0.01;
+        if self.grid.danger_near(o.pos, radius, 0.3 * o.mass()) {
             return None;
         }
         let mut intent = Intent { new_wander: None, new_forage: None, alert: None, ..last };

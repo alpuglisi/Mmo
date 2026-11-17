@@ -522,6 +522,21 @@ Select packages with `--workspace` plus `--test`/a filter rather than `-p`
 where you can: a `-p` build resolves dependency features for that package
 alone and so builds its own copies of the shared dependencies.
 
+**End-to-end speed.** Headless Chromium draws the WebGL map in software
+(SwiftShader), and that, not the server or the steps, was where an e2e run
+spent its time: three cores busy at 60 fps, more for a phone at pixel ratio
+3. `npm run e2e` (`client/e2e/run-all.mjs`) therefore runs the pages with
+`requestAnimationFrame` capped at 5 fps (`E2E_FPS`; `client/e2e/frames.mjs`)
+and the emulated phones at pixel ratio 1 (`E2E_DPR`; the phone checks are
+in CSS pixels), and runs the scripts two at a time on 4 cores (`E2E_JOBS`,
+default half the cores up to 4; each script has its own server and
+browser). A step that checks what is drawn frame by frame (the smoke test's
+motion bound) lifts the cap for its duration (`window.__e2eFrameCap(0)`).
+Steps wait on conditions (a finished season on the server, a settled tour
+card), not on the client's refresh timers. On a 4-core box the run went
+from ~350 s to ~90 s idle, and from ~730 s to ~170 s with two cores busy
+elsewhere.
+
 **Determinism in tests.** The server integration tests that need exact
 timing use a manual world clock: `ServerConfig::manual()` makes the world
 thread tick only on `RunningServer::step(n)` (which pushes state once at the
@@ -591,8 +606,11 @@ EVO_WORLDS="main;isle,seed=7,size=96,name=The Isle" evo-server
 evo-server --worlds-file worlds.json   # [{"id": "main"}, {"id": "isle", "seed": 7, "size": 96, "name": "The Isle"}]
 ```
 
-A world is `ID[,seed=N][,size=N][,name=TEXT]` (the name runs to the end, so
-it may contain commas). Ids are 1–32 of `[a-z0-9_-]` and unique; a missing
+A world is `ID[,seed=N][,size=N][,capacity=N][,name=TEXT]` (the name runs to
+the end, so it may contain commas). `capacity` is the number of players online
+before `GET /api/assign` sends new players to another world (default 3000;
+see `docs/load-test.md`, which also covers `evo-lobby`, the front door over
+several processes). Ids are 1–32 of `[a-z0-9_-]` and unique; a missing
 seed or size comes from `--seed`/`--size`, and every other setting (`--no-wild`,
 `--days-per-year`, `--lod`, tick rates, `--fresh`) applies to all worlds.
 The first world is the default. `--world`/`--worlds-file` replace
@@ -891,7 +909,7 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one; `heading`, its facing as one of 32 directions, and `vision`, its eyes for the vision cones: see *Vision cones* below), `nearby` (others in the window, also with `look`; never a heading or eyes), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements) |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor` |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
@@ -1051,9 +1069,15 @@ that logging out never pays as a strategy:
   world tracks its own connections, so a player on world A is offline in
   world B. A restart counts as everyone logging out; a spell already running
   keeps its clock (the spells are in the saved game, `game::offline`), so a
-  restart never hands out a fresh 12 hours. A new spell needs a login in
-  between; there is no cooldown beyond that, since the floor below already
-  keeps protection from helping a lineage that is doing well.
+  restart never hands out a fresh 12 hours. **A rolling budget:** a lineage
+  gets at most 12 hours of protection in any 24 (twice the cap), however
+  often its owner reconnects: a new spell's clock starts at the protection
+  already used in the last 24 hours, for the surviving core and the home
+  range alike (`Spell::credit`). A single long night is protected exactly as
+  before; a script reconnecting every 11 hours no longer renews it. The
+  home-range group in the state carries `protection_left_min`, the minutes
+  left if the player logged off now, and the client shows it in the home
+  range's note.
 - **When it applies.** Only while the lineage is down to its last 12 living
   members (agents plus cohort members of abstract regions,
   `ProtectionRules::floor`), checked at each day boundary and whenever the
@@ -2012,8 +2036,12 @@ server generates a world from the seed and re-founds every stored design in
 player order, as before (a design that no longer fits the budget is skipped
 with a warning).
 
-**Not persisted:** login sessions and connections (players log in again;
-the level-of-detail focus of their views is dropped, so lineages nobody
+**Login sessions** survive a graceful restart: the stop saves them (the
+SHA-256 of each token, never the token) and the start restores them, so
+clients reconnect without logging in again; a logout deletes its saved
+session. A crash loses the sessions made since the last graceful stop.
+
+**Not persisted:** connections (the level-of-detail focus of their views is dropped, so lineages nobody
 watches fold into cohorts at the next day, as when everyone disconnects).
 Possession survives a restart. Records written after the last saved game
 (a crash between saves) are replayed by the restored world.
@@ -2032,7 +2060,8 @@ store) found and fixed:
   default and passwords not at all (argon2 hashes any length): now 64 KiB and
   1024 bytes. WebSocket frames were bounded only by tungstenite's 16 MB
   default (a frame is read whole before the 16 KiB message limit applies):
-  now 16 KiB too. `GET /api/map.png?scale=8` on a 1024-tile map rendered a
+  now 16 KiB too (the WebSocket is now yawc's, with the same 16 KiB bound on
+  frames and on whole messages, after decompression). `GET /api/map.png?scale=8` on a 1024-tile map rendered a
   200 MB image on the world thread: the side is capped at 2048 px.
 - **Unauthenticated work for the world thread.** Terrain, map, chronicle,
   history, seasons and lineage stats requests were unlimited and could fill
@@ -2174,9 +2203,10 @@ Checked and judged acceptable:
   OS keeps; whoever has one can already receive those pushes); a WebSocket
   leaves the per-address connection count once upgraded (players are capped
   at 8); `GET /api/metrics` is public; renown passed between two accounts
-  of one person still counts as sales for the season's ranking (wash
-  trading; the economy itself can't be inflated, since every sale is a
-  transfer); `ApiError::internal` still returns the error text (store and
+  of one person still counts as sales for the season's ranking, though with
+  diminishing returns per buyer since the server rules review (the first
+  sale to a buyer counts in full, each further one half the one before;
+  `SeasonTracker::add_sale`); `ApiError::internal` still returns the error text (store and
   channel errors) to the client.
 
 ## Deployment
@@ -2208,7 +2238,7 @@ npm run build        # typecheck + static bundle in client/dist
 npm run typecheck
 npm test             # Vitest unit tests
 npm run e2e          # Playwright smoke, phone-emulation, onboarding, push and Android-driver tests (needs `npm run build` and `cargo build --release -p evo-server`)
-E2E_JOBS=3 npm run e2e   # the same scripts, three at a time (each starts its own server; worth it on 8+ cores: WebGL renders in software)
+E2E_JOBS=1 E2E_FPS=0 E2E_DPR=device npm run e2e   # one script at a time, uncapped frames, phones at their own pixel ratio (full-resolution screenshots)
 ```
 
 Serve the built client from the game server (one origin, no proxy):
@@ -2722,7 +2752,14 @@ order: `?server=https://host:port` on the page URL (remembered), the
 until set), or a build default `VITE_EVO_SERVER=https://game.example.org
 npm run build`; otherwise the page's own origin (`setApiBase()` in
 `api.ts`, `serverOrigin.ts`). The WebSocket follows the same origin
-(`wss://` for https). For a plain-http LAN server during development, run
+(`wss://` for https). Before logging in, the client asks where to play
+(`assign.ts`): an `evo-lobby` front door when one is configured
+(`?lobby=https://lobby.example.org` on the page URL, remembered, or a build
+default `VITE_EVO_LOBBY`), which may send the player to another server
+(the session then belongs to it), else the game server's own
+`GET /api/assign`. The answer picks the world (the player's lineage first);
+no answer, an older server or a lobby that is down leaves the login as it
+was. See `docs/load-test.md`. For a plain-http LAN server during development, run
 `EVO_CAP_CLEARTEXT=1 npm run cap:sync` (cleartext and mixed content on
 Android; on iOS an App Transport Security exception in
 `ios/App/App/Info.plist`: `NSAllowsArbitraryLoadsInWebContent` and
@@ -2970,10 +3007,13 @@ cargo run --release --features serde -p evo-sim --example perfbench -- --seeds 4
 default balance (`presets::standard_world`) and with
 `Balance::carnivore_diet()` + `presets::niche_world`, and prints the wall
 time, the time per phase and a determinism fingerprint (FNV-1a of the final
-snapshot). Every optimisation below leaves the fingerprints
-(`e37d27fc27ac144e` default, `c32bf3e8057496e8` meat, seed 31), the sweep
-check (`evo-sim sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`:
-score 11.60) and the `predlong` output byte for byte unchanged.
+snapshot). Every exact optimisation below left the fingerprints of its
+day (`e37d27fc27ac144e` default, `c32bf3e8057496e8` meat, seed 31, at the
+time), the sweep check (`evo-sim sweep --size 96 --trials 1 --seeds 12
+--rounds 1 --seed 31`: score 11.60 then) and the `predlong` output byte for
+byte unchanged; staggered decisions (below, on by default in snapshot
+version 32, off again by default with the food values) are the one
+deliberate change of results.
 
 What changed:
 
@@ -3023,15 +3063,19 @@ cells and 6–8-tile ranges, under 1% of far cells lie wholly in range), and
 fewer close looks (the cost moves to the far-neighbor loop and the
 selection: no gain).
 
-**Staggered decisions** (`Balance::decide_interval`, off by default, so
-default worlds are unchanged): at `k >= 2` a calm organism decides afresh
+**Staggered decisions** (`Balance::decide_interval`, 2 by default in
+snapshot version 32, **back to 1 (off) by default** once the food values
+and carnivore rules came on, because with them it cost the voles on fresh
+seeds: *Food by its value*; saves keep the interval they stored, and saves
+from version 31 and before read 1): at `k >= 2` a calm organism decides afresh
 every `k` ticks (staggered by id) and keeps its last intent in between,
 following its target organism (`world::stagger`). Every organism decides on
 the day's first tick, and so does every hunter and any organism that is
 possessed, fleeing, courting, provisioning or defending, that saw a threat,
 or whose target died (a first version without the hunter rule cost the
-pack hunters 3 of 4 seeds). It is not saved in snapshots. Measured
-(`--set decide_interval=K` on `perfbench`, `sweep`, `predlong`):
+pack hunters 3 of 4 seeds). Snapshots save the interval and the kept
+intents, so a restored world continues exactly. Measured before it was
+turned on (`--set decide_interval=K` on `perfbench`, `sweep`, `predlong`):
 
 | | off | `k = 2` | `k = 3` |
 | --- | --- | --- | --- |
@@ -3043,10 +3087,54 @@ pack hunters 3 of 4 seeds). It is not saved in snapshots. Measured
 | `predlong -- 3 --meat`, seeds 31–34: fox / pack hunters | 4/4, 4/4 | 3/4, 4/4 | |
 
 The scores and survival counts lie within seed noise of the defaults (four
-seeds swing the fox from 1/4 to 3/4 between equally valid trajectories),
-but the setting changes reaction times, so it stays off until a longer
-comparison (`evo-sim compare --set decide_interval=2 vs defaults`) says
-it is safe.
+seeds swing the fox from 1/4 to 3/4 between equally valid trajectories).
+Before turning it on, on top of the strike fixes (default sweep check
+11.50):
+
+- `evo-sim compare --adaptive --set decide_interval=2` against every-tick
+  decisions, 48 paired seeds (96×96, 120 days): A − B = +0.09 (95% CI
+  −0.06 … +0.24; sequential CI −0.09 … +0.27), verdict "no difference that
+  matters" (within ±0.3). Survival of every lineage within ±6%; the one
+  clear shift is the meadow voles' mean head count (−98 ± 35) and the wild
+  legacy share (−2.6 ± 1.9 points, herd grazers +1.7).
+- `predlong -- 6` on seeds 31–38: the predators die out on every seed
+  either way in the standard world (fox mean extinction day 297 every tick,
+  341 staggered; pack hunters 337 and 320); with `--meat`, fox 6/8 both,
+  pack hunters 4/8 every tick and 6/8 staggered. Wall time 533 → 416 s
+  (standard) and 479 → 400 s (meat).
+
+`--set decide_interval=1` restores every-tick decisions.
+
+**The voles and the fix.** With the food values and carnivore rules on
+(commit 6a6e6bc), `k = 2` lost the meadow voles on seeds 41, 43 and 45
+(lowest 0 on all three; `k = 1`: 36, 39, 30). The loss built up slowly:
+the 30-day logs show staggered voles trailing over years 2–4 and reaching
+0 between days 480 and 720, the mark of extra kills, not a single event. A
+calm vole kept last tick's intent for one more tick after a hunter came
+into range unseen, and the hunter, which always decides afresh, struck
+first. Now a kept intent also needs nothing within sight that could
+frighten it: no armed organism heavy enough to threaten it
+(`decide::can_threaten`'s mass test) and no sentry's warning within its
+largest possible perception radius this tick (`SpatialGrid::danger_near`,
+over the armed organisms' positions kept by cell at the grid rebuild). At
+`k = 1` nothing changes. With the fix, on the food rules (6a6e6bc; the
+merged defaults differ only in `decide_interval`):
+
+| | `k = 1` | `k = 2` with the fix |
+| --- | --- | --- |
+| `predlong 6 41–48`: fox, pack hunters survive | 5/8, 8/8 | 5/8, 8/8 |
+| same: prey lost | omnivores on 48 | none (voles down to 15 on 45, 21 on 48; omnivores to 3 on 48) |
+| `predlong 6 31–38`: fox, pack hunters survive | 7/8, 8/8 | 7/8 (viable 6), 7/8 |
+| same: prey lost | voles on 32 | none (newts down to 9 on 36) |
+| `compare --adaptive --set decide_interval=2` vs `k = 1` | | +0.09 (sequential CI −0.08 … +0.26 after 12 seeds: no difference that matters) |
+| µs per organism-tick, 2 years, 1 thread: standard / meat world | 1.96 / 1.85 | 1.81 / 1.71 (−8% each) |
+
+The fix keeps about 8% of a tick (unguarded staggering saved 13–15%,
+because in a crowd most calm organisms now have a hunter in sight). With
+the fix passing both checks (no prey lost on either seed set, compare
+within noise), **staggering is on by default again** (`decide_interval`
+2); a version 32 save keeps the interval it stored, and
+`--set decide_interval=1` restores every-tick decisions.
 
 Where the time goes now (one world, single thread, two years): perception
 in `decide` is about two thirds (neighbor scan, nearest-32 selection, the
@@ -3062,6 +3150,49 @@ apply phase's parallel sweeps are about 0.2 ms per tick, too short to pay
 for waking the pool's workers, so experiments get the most from running
 seeds side by side, which they already do (`predlong`, `sweep`, `compare`,
 `genetics` run their worlds in parallel).
+
+### Founding cost
+
+```sh
+cargo run --release -p evo-sim --example founding -- --size 256 --scale 4 --days 5 --seeds 1..3 --repeat 5
+```
+
+Founding a lineage (`World::found_lineage`, a player's first design in a
+world) runs on the server's world thread. The example builds the server's
+world (the wild ecosystem scaled to the map; `--scale` multiplies it),
+runs it a few days, founds each sample design on copies of it and reports
+the time per founding and a hash of the founders' positions. The home
+search now:
+
+- tells passable tiles from the rest with only the tests that block
+  (`terrain::passable`: deep water the body can't swim, unless on ice that
+  holds it; a cliff it can't climb), instead of the whole `traverse` on
+  every tile, and reads that map for every passability check of the search
+  (candidate spots, the walk to water, the founders' scatter);
+- labels connected regions only for hunters (the only ones whose prey
+  must be reachable from home), by joining runs of open tiles row by row
+  (union-find), numbered as the flood fill numbered them;
+- reads every organism once (threats, prey and crowd in one pass, the
+  cheap carnivory test first) and counts prey per lineage in a vector
+  instead of a map.
+
+The chosen homes are the same: `tests/founding_homes.rs` hashes every
+founder's position over twelve worlds (founded empty and into grown
+worlds, the niche predators included) against the earlier search's value;
+`passable` is checked against `traverse` on every tile through the seasons,
+and the run labels against the flood fill; the sweep check still scores
+11.76. Per founding, same machine, median of `--repeat` runs:
+
+| World | Before | After |
+| --- | --- | --- |
+| 128² (the server's default), ~1.4k organisms | 1.58 ms | 0.91 ms |
+| 256², scale 4, ~9k organisms | 4.03 ms | 2.12 ms |
+| 512², scale 4, ~37k organisms | 19.5 ms | 8.3 ms |
+
+What remains at 512² is reading the organisms once (about half) and the
+200 candidate spots. (A cloned world, as the example founds into, also
+copies every organism on its first new one: the example reserves room
+first, as a running world usually has it.)
 
 ### Profile at the prototype target
 
@@ -3699,9 +3830,9 @@ total is command replies and events.
   quantized positions and the binary records shrink them **80–85×** on
   their own (a tick's delta is mostly two-byte position changes, a sub-step
   only the possessed organism), and deflate would take another 2.8× off
-  those. The WebSocket stack here (axum 0.7, tungstenite 0.24) has no
-  permessage-deflate, and delta states alone already take state traffic
-  below the rest, so protocol 2 has no compression.
+  those. The game WebSocket now negotiates permessage-deflate
+  (`--ws-compression`, on by default; see `docs/load-test.md`), which takes
+  that 2.6–2.8× off delta states and more off JSON replies.
 - **CPU:** encoding a delta costs less than serializing the JSON did (a
   micro-benchmark, `wire::tests::encoding_cost`: 256 nearby and 12 own
   organisms, 54 leaderboard rows: JSON 110 µs and 64 KB; a tick's delta
@@ -6257,6 +6388,211 @@ for territories spared the pack hunters but let the foxes boom), the
 fragile fox on fresh seeds, and LOD cohorts, which don't model any of
 these rules.
 
+### First-year prey boom: founding
+
+*Predators in their niches* left the first-year prey boom: with the
+carnivore-diet rules and the niche designs (`--niches --meat`) the 120-day
+sweep scores 10.88 against the defaults' 11.60, because the newts and
+toxic frogs sit at their population caps while the predators are still few.
+This round tried the founding side only (founder counts, the founders'
+starting state and placement; the food rules were left to a parallel
+round), with **no default changed**.
+
+**Where the cap days come from** (`examples/boom`, below; seeds 31–34):
+the newts reach their cap (791 on 96×96: a wild species' share of
+`wild_cap` follows its founders) from day 58–65 on two seeds and stay there,
+the toxic frogs reach the player cap (843) from day 90 on one; the voles
+come close (1204 of 1271). Under the default rules on the standard world
+the newts stay at 46–364. The predators lag because of how they are
+founded: wild founders are placed in groups of 12 and a player's lineage as
+one group, so the 14 founding foxes (on 96×96) sit at two homes and the 24
+pack hunters within 5 tiles of one, while a breeding territory (8–14 tiles
+for these designs) holds one litter at a time. A founding of 38 predators
+breeds as two or three territories until it spreads.
+
+**The option** (`presets::NicheFounding`, `presets::niche_world_with`;
+`evo-sim run|sweep|compare --founding SPEC`, `genetics --founding SPEC`,
+`predlong --founding SPEC`; each implies the niche world, and `--meat` is
+still needed in run, sweep and compare). SPEC is comma-separated
+`NAME=V`; the default founds exactly as `niche_world`, so nothing changes
+unless it is given. Predators are the lineages designed at carnivory 0.6 or
+above. Population caps and the founding counts the rules and the sweep's
+health term measure against (`Lineage::founders`) stay the designs', so
+only the animals placed change; no snapshot change.
+
+| Name | Founds |
+| --- | --- |
+| `predators`, `wild_predators`, `player_predators` | predator founders × V (both, the fox, the pack hunters) |
+| `prey` | prey founders × V |
+| `predator_fat` | predator founders with V hunger points of fat (up to their capacity) |
+| `predator_drive` | predator founders with breeding drive at least V |
+| `prey_young` | that share of prey founders as weaned juveniles (aged between weaning and maturity) |
+| `prey_drive` | prey founders' starting breeding drive × V |
+| `predator_group` | predator founders in groups of V, each at its own home (`World::found_lineage_grouped`) |
+
+**Screened at 120 days** (`evo-sim sweep --size 96 --trials 1 --seeds 12
+--rounds 1 --seed S --founding SPEC --meat`; score, pack hunters survived of
+12; every other lineage survived on all 12 unless noted; the second column
+from seed 101 where run):
+
+| SPEC | Seed 31 | Seed 101 |
+| --- | --- | --- |
+| (none: `--niches --meat`) | 10.88, 10 | 10.74, 7 |
+| `predators=1.5` / `2` / `2.5` / `3` | 10.99, 10 / 11.30, 9 / 11.18, 10 / 11.11, 11 | |
+| **`predators=2,predator_fat=40`** | **11.62, 11** | **11.27, 10** |
+| `predators=2,predator_fat=20` / `60` | 11.53, 11 / 11.50, 10 | — / 11.25, 9 |
+| `predators=2,predator_fat=40,predator_drive=40` | 11.38, 10 | 11.04, 9 |
+| `predators=2,predator_drive=60` | 11.36, 10 | |
+| `predators=2,predator_fat=40,prey=0.5` | 11.28, 10 | 11.07, 7 |
+| `predators=2.5,predator_fat=40` / `predators=1.5,predator_fat=40` | 11.22, 11 / 11.06, 10 | 10.97, 8 / — |
+| `wild_predators=2` / with `predator_fat=40` | 10.88, 9 / 10.97, 10 | — / 11.04, 10 |
+| `wild_predators=2.5,predator_fat=40` | 10.57, 9 | 11.31, 11 |
+| `wild_predators=2,player_predators=1.5,predator_fat=40` | 11.08, 9 | 11.50, 12 |
+| `player_predators=2` | 10.97, 11 (fox 11) | |
+| `predator_fat=40` / with `predator_drive=60` | 10.98, 10 / 10.71, 8 | |
+| `prey=0.5` | 11.37, 12 | 10.88, 6 |
+| `prey_young=0.5,prey_drive=0` | 10.94, 9 (fox 11) | |
+| `predator_group=2` (pairs) | 11.40, 12 | 11.21, 10 |
+| `predator_group=2,predator_fat=40` / `predators=1.5` | 11.43, 11 / 11.26, 9 | 11.13, 10 / 11.25, 10 |
+| `predator_group=4` / `6` | 10.70, 9 / 11.03, 11 | |
+
+The prey levers do nothing reliable (fewer prey placed, juveniles, no
+starting drive: the prey still reach their caps a few weeks later, and the
+predators' numbers, not the prey's start, decide the summer). More
+predators do: doubling both predators' founders, in some fat, cuts the
+capped days from 37 to 10 of 120 (`boom`, 12 seeds) and gains about 0.5–0.7
+points on both seed sets. Neither predator doubled alone does it (the fox
+alone 10.88–11.04): the newts are eaten by both. Fat alone does nothing,
+and a starting breeding drive costs pack hunters. Founding the predators in
+pairs (the same animals, spread as territorial pairs) gains about 0.4.
+
+**Over the years** (`predlong 6 SEEDS --founding SPEC`; survived
+(viable: both sexes at the end); the 3-year screen on seeds 31, 34, 37 gave
+the defaults' 3 (3) and 2 (2) for `predators=2,predator_fat=40`):
+
+| SPEC | Seeds | Fox | Pack hunters | Prey lost |
+| --- | --- | --- | --- | --- |
+| (none) | 31–38 | 6 (6) | 7 (7) | none |
+| `predators=2,predator_fat=40` | 31–38 | 6 (6) | 6 (5) | newts (36) |
+| `predators=2,predator_fat=60` | 31–38 | 6 (4) | 4 (4) | omnivores (35) |
+| `wild_predators=2,player_predators=1.5,predator_fat=40` | 31–38 | 6 (6) | 4 (4) | omnivores (36) |
+| `predator_group=2` | 31–38 | 6 (5) | 6 (5) | omnivores (36) |
+| (none) | 41–48 | 7 (7) | 5 (5) | omnivores (48) |
+| `predators=2,predator_fat=40` | 41–48 | 7 (6) | 7 (6) | antelope, omnivores (48) |
+| `predator_group=2` | 41–48 | 4 (4) | 6 (6) | omnivores (48) |
+
+No founding passes the long-run acceptance on seeds 31–38 (both predators
+viable on 6 of 8, no prey lost): every change tried loses a pack or a prey
+lineage there that the defaults keep. But those are the seeds the niche
+designs were chosen on, and on fresh seeds 41–48 the defaults miss the same
+acceptance (pack hunters viable on 5, the omnivores lost on seed 48: two of
+the three pack losses are in the founding year, day 119–121), while
+`predators=2,predator_fat=40` meets the predator half of it (6 and 6) and
+loses the same seed's omnivores plus its antelope. Over the 16 seeds the
+best founding is level with the defaults within the noise (fox viable 12
+against 13, pack hunters 11 against 12, prey lost on 2 seeds against 1):
+it buys the 120-day score without a measurable long-run cost, but not the
+long-run acceptance as stated. Pairs cost the fox on fresh seeds (4 of 8).
+
+The genetics harness's ecology level on fresh seeds (`evo-sim genetics
+--long --level ecology --founding predators=2,predator_fat=40`, 12 years, 4
+worlds 96×96, seeds 1–4) passes every check (7 of 7 strict, 9 of 9 soft) and
+loses no prey lineage, but trades one predator for the other: the fox lives
+in all four worlds (6, 101, 135 and 197, the last at its cap) against two
+with the designed founding, and the pack hunters die out in all four (day
+100, 480, 820, 1120) against two. With both predators founded twice over,
+the fox and the pack hunters meet as two big populations on the same voles
+and newts from the start, and on these seeds the fox wins; with the pack
+hunters gone the prey sit at their caps (newts 783–790) by year 12.
+
+**Decision: no default changes; the option stays off.** The standard sweep
+still scores 11.60 bit for bit (the default founding is `niche_world`, and
+`found_lineage_unchecked` is `found_lineage_grouped` at its old group
+sizes). `--founding predators=2,predator_fat=40` is the founding to start
+from for the next round: the 120-day sweep's target (11.30, at 11.62 / 11.27)
+is met; the 6-year acceptance on the tuning seeds is not, and on the
+genetics seeds it costs the pack hunters.
+
+**On the score.** The sweep's cap penalty counts a day on which any lineage
+is at 95% of its cap. For the newts that is fair: a wild cap is the designed
+food pyramid's share and a species held there is held by the engine, not by
+its predators or food. For the toxic frogs it is less clear: their cap is the
+per-player game limit, and a toxic, well-defended player lineage reaches it
+under the default rules too (16 days on seed 32). Not changed; worth knowing
+when reading a capped day.
+
+`cargo run --release --example boom -- [days] [seeds..] [--founding SPEC]
+[--standard]` (read only) prints each lineage's head count against its cap
+every `--every` days (default 15) and per seed the days each lineage spent
+at its cap and from when, with the sweep penalty they cost; `--standard`
+runs the standard world with the default rules.
+
+Left for the next round: a founding (or a food rule from the parallel
+round) that keeps the pack hunters' founding year safe on all seeds, the
+two founding levers that worked (predator numbers and spread) together
+with whatever the food round finds, and fresh seeds for every long-run
+acceptance.
+
+### LOD cohorts and the carnivore rules
+
+Offline (level-of-detail) regions run as cohorts (`world::lod`), which
+modelled none of the carnivore-diet rules or predator brakes, so with the
+rules on an abstract world and an agent world disagreed most about the
+predators: cohort pack hunters starved out by day 60–120 on most seeds,
+cohort foxes, with no territories, sat at their cap. The rules now apply to
+cohorts approximately (`world::lod_meat`, hooked into `lod.rs` at a few
+marked lines), each behind its existing tunable and a no-op at 0, without
+random draws, so default worlds run bit for bit as before (standard sweep
+11.50, `lodmeat` output with the rules off identical) and no snapshot
+changes (carcass meat lives on the map tiles, which rot it as for agents):
+
+| Rule | In a cohort |
+| --- | --- |
+| `carcass_keep` | what the killer doesn't eat of a kill is left on a tile of the prey's region (with `LodConfig::carcass_use` at 1, the default, nothing is left) |
+| `carrion` | a member dead of anything but predation or drowning leaves its body (a starved one at half) on its region's centre tile |
+| scavenging (`carcass_keep` or `carrion`) | a hunting cohort first eats the carcass meat it finds, all of its own region's and of the surrounding regions of its hunting range the share its carcass scent covers (`carcass_scent × reliance × (0.5 + nose)` tiles: π·scent² over a region's 256 tiles), and hunts for the rest |
+| `carnivore_fat` | it hunts for its fat room too, up to the agents' gorging capacity, and banks meat beyond its need as fat in any season |
+| `provisioning` | its breeding condition (meat share, plus plants by how well it digests them) rises toward its whole food share by `2 × provisioning × care` |
+| `breeding_territory` | at most `territories × litter / (gestation + weaning)` births a day, `territories` = usable tiles × (1 − group tolerance) over the agents' territory area (a tolerant kind keeps together, so a group shares one territory) |
+| `prey_switching` | each prey lineage is exposed less by `min(1, 2 × pickiness) × prey_scarcity` (the share of agents that would give it up today) |
+| `condition_litter` | births scale by the agents' litter share at the cohort's mean hunger and fat |
+
+**Agreement** (`cargo run --release --example lodmeat -- 3 SEEDS --meat`:
+the niche world with the rules on, 96×96, 3 years, once all agents and once
+all cohorts; per lineage the mean over samples every 60 days and seeds of
+`|ln((agents + 1) / (cohorts + 1))|`, 0.69 being a factor of two; alive =
+seeds with the lineage alive at year 3, agents / cohorts):
+
+| Lineage | Seeds 31–34, before | after | Seeds 41–44, before | after |
+| --- | --- | --- | --- | --- |
+| Meadow vole | 1.39 (4/3) | 0.54 (4/4) | 1.49 (4/3) | 0.69 (4/4) |
+| Steppe antelope | 0.41 | 0.54 | 0.49 | 0.46 |
+| Marsh newt | 0.40 | 0.19 | 1.18 (4/3) | 0.35 (4/4) |
+| Red fox | 0.84 (3/4) | 1.04 (3/3) | 0.72 | 0.57 |
+| Pack hunters | 2.85 (3/0) | 1.10 (3/2) | 2.61 (3/1) | 1.61 (3/4) |
+| Herd grazers | 0.69 | 0.93 | 0.71 | 0.59 |
+| Toxic frogs | 0.42 | 0.25 | 0.73 (4/3) | 0.26 (4/4) |
+| Burrowing omnivores | 1.27 | 1.20 | 1.34 | 1.27 |
+| **Mean** | **1.03** | **0.72** | **1.16** | **0.72** |
+
+For scale, the standard world at the defaults disagrees by 1.78 (seeds
+31–33: cohorts hold 5–7 times the agents' foxes and pack hunters and
+less than half their newts), so with the rules on cohorts now follow agents more
+closely than they do without them. The cohort pack hunters persist and stay
+in the agents' range (mean 10–18 against 39–88; agents fluctuate more)
+instead of dying out; the fox is a little low on seeds 31–34 (55 against
+95) and right on 41–44. What is left is old LOD bias, not these rules:
+cohorts hold about three times the agents' burrowing omnivores and half
+to two thirds of their herd grazers, with the rules on or off.
+
+Tried on the way (seeds 31–33 or 31–34): scavenging the whole hunting range
+(mean 1.09; cohort pack hunters boom or bust: 0 on one seed, 289 and 481 on
+others, against 18–104), only the own region (1.16; pack hunters gone on
+every seed), the scent-share range with territories not shared by groups
+(1.13; booms of 416–488 on two seeds). The territory share by group
+tolerance is what stopped the booms: in cohorts members spread over every
+region, while agents of a tolerant kind stay together in a few territories.
+
 ### Strike fixes
 
 Two old flaws in the strike, found in the predator review
@@ -6281,6 +6617,191 @@ burrowing omnivores (+9 ± 8 alive). Snapshots move to format version 30
 (28 is reserved for the food rules): versions 10–29 read `strike_fixes`
 as 0, the old strike (`serde_util::before_v30`, test
 `version_29_snapshots_restore_with_the_old_strike`).
+
+### Food by its value
+
+Until now plants and meat were one currency: a unit of meat was worth a
+unit of leaves, and full carnivores got a 44% slower hunger
+(`carnivore_hunger_discount`) to stand in for "meat is richer". Each tile
+had a single `veg` scalar, with no fruit, seeds or invertebrates. This
+round gives each food its own value, adds two seasonal food layers, and
+uses them, together with the carnivore rules already built, to make a
+predator–prey system that persists over the years. **All of it is on by
+default from snapshot version 31**, carnivore rules included.
+
+**The rules** (`Balance`; `Balance::food_values()` turns them on and
+`food_values_off()` turns them off; old saves keep their rules, below):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `meat_energy` (0.8) | A unit of meat (carcasses, raided eggs) is worth 1.8 units of leaves before digestion (meat is 80–90% digestible, leaves 20–60%). Digestion still follows the Carnivory gene (`Traits::meat_efficiency`), so diet stays evolvable. |
+| `carnivore_hunger_discount` (0, was 0.44) | Gone: meat's advantage now comes from the food, not from a slower hunger. A full carnivore living on meat comes out about where it was (hunger × 0.58 before, food × 1.8 now: 0.56), while the plants it nibbles are worth what they are. |
+| `fruit_crop` (1) | A second plant layer per tile (`Map::fruit`): fruit, seeds and nuts, at most 6 food units on forest, 3 marsh, 2 grassland (seeds), 1.5 tundra (berries), 1 mountain, 0.3 desert, times `0.5 + moisture` (`terrain::fruit_capacity`; leaves are 32–40). The crop is seasonal (`terrain::fruit_season`): it ripens from early summer (day 37 of 120), peaks in early autumn (day 67) and is gone from the trees at the start of winter (day 97), filling the gap to the season's crop at 15% a day, less in drought and none on flooded ground; what is left rots at 3% a day, so fallen nuts and seeds last into the winter. |
+| `fruit_energy` (0.5) | A unit of fruit is worth 1.5 units of leaves. Digestion: `stats::fruit_efficiency`, `1 − 0.85 × smoothstep(0.6, 1, carnivory)`: herbivores, omnivores and flexible hunters get most of it (the niche fox at 0.65: 96%; the standard fox at 0.85: 42%), a full carnivore little (0.95: 19%). No generalist tax and no fang cost. |
+| `insect_crop` (1) | A third layer (`Map::insects`): insects, earthworms and grubs, at most 1.5 food units on marsh, 1 forest, 0.8 grassland, 0.5 tundra, 0.25 mountain and desert, times `0.5 + moisture` (`terrain::insect_capacity`), times the warmth (`growth_warmth`: none at or below freezing, so none in winter and a flush as the ground warms), more on wet soil, none under snow or flood water; back within days of being eaten (50% of the gap a day). Small meat: worth what meat is, gathered at half the pace of other food, on any errand a meat eater makes (roaming for prey included), and digested as far as the gut is an omnivore's (`stats::insect_efficiency`, `smoothstep(0.2, 0.5, c) × fruit_efficiency(c)`: none for a herbivore, all for a burrowing omnivore at 0.5, 96% for the niche fox, 28% for the standard pack hunters at 0.9). |
+| `switching_power` (4) | Prey switching (`prey_switching`) spares a declining prey more sharply: a hunter still hunts a species at `r` of its threshold with chance `r^4` (`r²` before; 0 reads as 2), so effort collapses on a prey well before it is gone even when an abundant other prey keeps many hunters fed. |
+| `larval_competition` (9.5, was 13) | Re-tuned for the new rules (below): young of abandoned eggs thin out at lower density. |
+
+An animal eats what is worth most to it. Grazing eats ripe fruit first,
+then leaves; eating meat takes carcass meat first, then invertebrates for
+the room left; foraging decisions value a tile by leaves, fruit and
+invertebrates at what each gut gets from them (`World::choose_food`). The
+layers are deterministic (functions of the season and the regional
+weather, updated with the tiles chunk by chunk) and cost two `f32` per
+tile. LOD cohorts eat them too (`world::lod`): a hunting cohort's meat
+need is divided by the meat value, and cohorts take invertebrates (at half
+the pace) and then fruit for what kills didn't cover, before leaves, each
+in proportion to what the region holds.
+
+The map shows fruit as a faint warm tint on fruiting ground
+(`GROUND.fruit` in `client/src/world/terrain.ts`). `GET
+/api/terrain/dynamic` carries an optional `fruit` layer (0..255 for 0..8
+food units), left out while no tile bears any, so older clients and
+payloads are unchanged.
+
+**What was tried** (120 days, 8 seeds 31–38 with `examples/firstyear`,
+which prints the sweep's score, the capped days by lineage and each
+lineage's peak; or the 12-seed sweep from seed 31; then `predlong`):
+
+| Configuration | 120 days | Over the years |
+| --- | --- | --- |
+| Old defaults (rules off, standard designs) | 11.83 (8 seeds), 4.0 capped days; sweep 11.60 | predators die out (*Predators over the years*) |
+| `--niches --meat` (v27 rules, niche designs) | 11.01, 31 capped days; sweep 10.88 | |
+| Niche + meat + food values, no invertebrates | 10.93: the niche pack hunters still lose half their founders in 15 days (24 → 11–21), newts and frogs at their caps | |
+| Same, invertebrates on the meat gut | 11.01–11.02: the pack's founding is safe (35–56 on day 15) but it booms on insects (150–590 by year 3) and excludes the fox (fox 2 of 3 seeds over 3 years, one with 2 males) | |
+| Same, invertebrates on the omnivore curve (kept) | 11.14 | |
+| Niche fox, standard pack hunters | 11.21; sweep 11.11 | fox and pack 3 of 3 (3 years) |
+| Standard designs + carnivore rules (no food values) | 11.38, 11 capped days | |
+| **Standard designs + carnivore rules + food values** | 11.76, 9.5 capped days; sweep 11.58 (11.54 after the predator review) | fox 7 of 8 (6 viable), pack 8 of 8, voles lost on seed 32 |
+| `meat_energy` 1.2 / 1.6 / 2.0 (niche, 4 seeds) | 10.62 / 11.11 / 11.53, all within the 4-seed noise (±1.2) | |
+| Above + `prey_switching` 2 | sweep 11.27 (hunters give up on prey still near its founding count in the founding year) | 4 of 4 seeds both, no prey lost |
+| Above + `switching_power` 4 | sweep 11.34; compare vs old −0.52 (significant) | fox 7 (7), pack 8 (8), no prey lost |
+| Same, `prey_switching` 0.5 | sweep 11.32; compare −0.33 (significant) | |
+| **Same + `larval_competition` 9.5** | sweep 11.64; compare vs old +0.20 | fox 7 (7), pack 8 (8), no prey lost |
+
+Where the 120-day loss came from: in every row with the rules on, the
+lineages survive as often as under the old defaults; the score loses on
+the cap penalty, the newts (and toxic frogs) sitting at their caps for
+weeks in the first summer. The predators are now fed better per kill
+(richer meat, fruit in autumn, invertebrates), so they hunt less while
+fed, and breeding territories hold their numbers down in the founding
+year. Lowering `larval_competition` gives the abandoned-egg breeders
+(newts, toxic frogs and any player design of that birth mode) the density
+brake their predators no longer supply: compare on fresh seeds 101–124
+(`--set larval_competition=X vs --classic`): 13 → −0.52, 11 → −0.06, 9.5
+→ +0.20; toxic frogs end 172 ± 47 lower, still surviving on every seed.
+
+**Niche designs or standard designs.** The niche designs (fox 0.65, pack
+hunters 0.95) were the intended defaults. With the food values alone they
+fail the founding year: at carnivory 0.95 the pack hunters eat almost no
+plants, lose half their founders in two weeks and leave the newts
+uneaten. With the founding round's `--founding predators=2,predator_fat=40`
+(*First-year prey boom: founding*) on top of the food rules the sweep
+scores 11.84 (12 seeds from 31, defaults otherwise). The standard designs
+score 11.71 with the same rules. Over the years the niche option did
+worse (`predlong 6 31–38 --founding
+predators=2,predator_fat=40`: fox 7 (7), pack hunters 5 (5), no prey lost,
+antelope down to 1 on seed 34; genetics: fox 4 of 4 worlds, pack hunters 3
+of 4, no prey lost), and on fresh seeds it scores below the old defaults
+(compare from seed 101: 11.49 against 11.80 for F and 11.89 for the old
+defaults, unpaired). On fresh seeds 41–48 (6 years) N keeps both predators
+better than F: fox 7 (7), pack hunters 8 (8), the omnivores lost on seed 48
+as under every variant (antelope down to 11 and 18 on two seeds), against
+F's fox 5 (5), pack 8 (8). Over both seed sets N is fox 14, pack hunters
+13 of 16, against F's 12 and 16; genetics N 4 and 3 of 4 worlds, F 2 and
+2. **The standard designs (F) are the default** because N loses about 0.4
+on the fresh-seed 120-day score; N (`--founding
+predators=2,predator_fat=40` on these rules) is the documented alternative
+for a later round to recover that score. The niche designs and founding
+stay options (`--niches`, `--founding SPEC`).
+
+With the standard designs the fox (0.85) and the pack hunters (0.9) are
+one body-plan step apart (0.05 < 0.25), so they interbreed: over the
+years the fox's group tolerance and pack instinct rise by about 0.4
+(mean over seeds), and the genetics harness counts 400–4700 hybrid births
+per world (fertility 0.85 → 1.0). This was always so; it shows now because
+the fox survives long enough. The niche designs avoid it.
+
+**Acceptance** (after merging the predator review, strike fixes and
+morphology extras):
+
+Measured on commit 3140238 (merged up to the strike fixes; before the
+staggered decisions of version 32), on cloud machines, unless noted. With
+`decide_interval` back to 1 the final defaults run those worlds unchanged
+(the sweep check scores 11.71 on both, lineage for lineage), so these are
+the numbers of the defaults as committed. "Old
+defaults" means the rules of before version 31 (`--classic`) on the standard
+designs.
+
+| Check | Bar | F (the new defaults) | Old defaults |
+| --- | --- | --- | --- |
+| `predlong 6 31–38`: fox survived (viable) | ≥ 6 of 8 | **7 (7)** | 0 of 8 |
+| same: pack hunters | ≥ 6 of 8 | **8 (8)** | 0 of 8 |
+| same: prey lost | none | **voles on seed 32** (lowest elsewhere: voles 8, frogs 16, newts 14) | newts on seed 36 |
+| `predlong 6 41–48` (fresh seeds): fox, pack hunters | ≥ 6 of 8 each | **fox 5 (5)**, pack 8 (8) (pack hunters 15–840 at the end) | (niche world, v27 rules: 7 (7), 5 (5)) |
+| same: prey lost | none | **omnivores on seed 48** (voles down to 30–41 on several seeds) | (niche world: omnivores on 48 too) |
+| `genetics --long --level ecology` (12 years, 4 worlds): strict checks | all | **7 of 7** (and 9 of 9 soft) | all |
+| same: both predators survive | ≥ 3 of 4 worlds | **fox 2, pack hunters 2** (both together in 1; no prey lost, lowest newts 15, voles 42) | fox 0, pack hunters 0 (*Predators over the years*) |
+| `sweep --seed 31` (12 seeds, 120 days) | ≥ 11.30 | **11.71** (11.70 with staggered decisions) | 11.60 at the time |
+| `compare --seed 101 --adaptive vs --classic` | no significant loss | **−0.09** (sequential 95% CI −0.24 … +0.06 after 24 seeds: no difference that matters); after merging staggered decisions (6a6e6bc): unresolved at the 48-seed cap, mean −0.10, sequential CI −0.33 … +0.14 (contains 0) | |
+| `calibrate tournament`, 90 days, sets 70001– and 80001–, 96 worlds each: top class | < ~38% | **27.1% and 25.0%** (warm live birth; cold abandoned eggs 15.6% / 12.5%) | 39.4% for cold abandoned eggs in the tuning set (*Thermoregulation × birth mode*) |
+
+On the predator half F clears the bar on the tuning seeds and misses it on
+the fresh seeds (fox 5 of 8 on 41–48) and the genetics worlds (2 of 4
+each), where the old defaults keep neither predator anywhere; the pack
+hunters are safe everywhere (8 of 8 on both seed sets) and the fox, which
+interbreeds with them (above), is the fragile one. On the prey half it
+loses one lineage on one seed of eight in each set (voles on 32,
+omnivores on 48), as the old defaults lost the newts on one. Earlier F runs on the code before the predator
+review (same rules, without `switching_power` and with
+`larval_competition` 13) kept both predators in 3 of 4 genetics worlds;
+on these four worlds the result is seed-to-seed spread as much as rule.
+**Decision (coordinator):** judged against the defaults it replaces (no
+predator surviving 6 years on any seed or world, a prey lost on one
+seed), F is a large improvement at no measurable cost on the 120-day
+measures, so it is turned on although it misses the original bar on the
+genetics worlds and on one seed's voles.
+
+In the tournaments the hunters (carnivory ≥ 0.45) win 46% of worlds in
+both sets (mean final share 0.056 and 0.067), and no thermoregulation ×
+birth class is above 27%: lowering `larval_competition` took the cold
+abandoned-egg layers from the top (39%) to 13–16%.
+
+**With staggered decisions** (`decide_interval` 2, the default of
+version 32, merged on commit 6a6e6bc): `predlong 6 31–38` fox 7 (7),
+pack hunters 8 (8), no prey lost (voles down to 7 and 22); genetics fox
+3 of 4 worlds and pack hunters 4 of 4 (both in 3), all checks pass, but the
+newts die out in one world and the voles fall to 4 in another; `predlong 6
+41–48` fox 6, pack hunters 7, **prey lost on 4 seeds** (voles on 41, 43 and
+45, omnivores on 48); compare from seed 101 against `--classic`
+unresolved at the 48-seed cap (mean −0.10, sequential CI −0.33 … +0.14).
+Seeds 41, 43 and 45 with `--set decide_interval=1`: no prey lost (voles
+down to 36, 39 and 30). Calm prey that keep their last intent react late
+to hunters that always decide afresh, and the voles pay for it. So with
+these rules on by default **`decide_interval` goes back to 1** (every
+organism decides every tick): prey survival is worth more than the 13–15%
+of a tick it saved. The field and the version 32 format stay; a version 32
+save keeps the interval it stored. (Later the danger-in-sight check fixed
+this, and staggering is on by default again: see *Performance*.)
+
+**Old saves keep their rules.** Snapshots move to format version 31 (28
+was reserved for this change and never written): `meat_energy`,
+`fruit_crop`, `fruit_energy`, `insect_crop` and `switching_power` are new
+`Balance` fields, and the map's fruit and invertebrate layers are one
+`f32` per tile each in the payload. Versions 10–30 read the new fields as
+0 (every food worth the same, no fruit, no invertebrates, prey switching
+on the square), keep the `carnivore_hunger_discount`, `larval_competition`
+and carnivore-diet values they stored (0.44, 13 and off for a save made
+under the old defaults), and restore with empty layers
+(`serde_util::before_v31`, test
+`version_30_snapshots_restore_without_food_values`). New worlds get the
+new defaults. `evo-sim ... --classic` (and `genetics --classic`,
+`predlong --classic`) runs the rules of before version 31.
+
+`cargo run --release --example firstyear -- [days] [seeds..] [--meat]
+[--niches] [--food] [--off] [--set NAME=V]` (read only) prints per seed the
+sweep's score, the days each lineage spent at its cap, each lineage's peak
+and final count and the predators on days 15, 30 and 60.
 
 ## Genetics validation
 
@@ -7030,10 +7551,9 @@ sections above).
    per-organism invalidation (push p50 −16%, sub-step p99 −22% at 500
    players, results byte-identical); what remains per state is copying what
    it contains, which only shared (`Arc`) state parts would avoid.
-6. **Bandwidth and saves.** permessage-deflate would take another 2.8× off
-   protocol 2 states, but the WebSocket stack (axum 0.7, tungstenite 0.24)
-   doesn't offer it; revisit when it does (states are already ~1 KB/s a
-   client, so this is low priority). (Saving the map's tiles as a delta
+6. **Bandwidth and saves.** permessage-deflate is now on (the WebSocket is
+   yawc's; `--ws-compression context|message|off`): 2.6× less traffic at
+   1000 players for 15% more server CPU (`docs/load-test.md`). (Saving the map's tiles as a delta
    against an earlier save was measured and rejected: 2% off a save; see
    *Tile deltas between saves* in [Persistence](#persistence).) Saves:
    eggs' and young organisms' genomes are now written against their

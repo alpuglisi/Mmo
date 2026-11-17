@@ -144,6 +144,8 @@ pub struct ServerConfig {
     /// How long a client may take to send a request's head (and how long
     /// an idle keep-alive connection stays open): [`DEFAULT_HEADER_TIMEOUT`].
     pub header_timeout: Duration,
+    /// permessage-deflate on the game WebSocket (`--ws-compression`).
+    pub ws_compression: http::WsCompression,
 }
 
 /// [`ServerConfig::header_timeout`] by default.
@@ -173,6 +175,7 @@ impl Default for ServerConfig {
             push: webpush::PushConfig::default(),
             trusted_proxies: limits::TrustedProxies::default(),
             header_timeout: DEFAULT_HEADER_TIMEOUT,
+            ws_compression: http::WsCompression::default(),
         }
     }
 }
@@ -218,6 +221,9 @@ pub struct RunningServer {
     shutdown: Option<oneshot::Sender<()>>,
     serve: tokio::task::JoinHandle<()>,
     worlds: Vec<RunningWorld>,
+    /// For saving the login sessions at a graceful stop.
+    accounts: Arc<Accounts>,
+    store: Arc<dyn Store>,
 }
 
 impl RunningServer {
@@ -229,6 +235,13 @@ impl RunningServer {
             let _ = tx.send(());
         }
         let _ = (&mut self.serve).await;
+        // Keep the login sessions, so players reconnect without logging in
+        // again (`crate::accounts`).
+        let sessions = self.accounts.session_records();
+        match self.store.save_sessions(&sessions).await {
+            Ok(()) => tracing::info!("saved {} login sessions", sessions.len()),
+            Err(e) => tracing::warn!("could not save the login sessions: {e}"),
+        }
         let mut saved = Vec::new();
         for w in &self.worlds {
             let (reply, rx) = oneshot::channel();
@@ -312,6 +325,14 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         games.push((spec, wstore, game));
     }
     let accounts = Arc::new(Accounts::with_policies(store.clone(), accounts, cfg.sessions, cfg.hashing));
+    match store.load_sessions().await {
+        Ok(saved) if !saved.is_empty() => {
+            let n = accounts.restore_sessions(saved);
+            tracing::info!("restored {n} login sessions");
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("could not read the saved login sessions: {e}"),
+    }
     let push = webpush::start(store.clone(), cfg.push.clone()).await?.map(Arc::new);
 
     let mut handles = Vec::new();
@@ -342,17 +363,19 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
             net: Arc::new(NetStats::default()),
             store: wstore,
             map_id,
+            capacity: spec.capacity(),
         });
     }
 
     let state = http::AppState {
         worlds: Arc::new(handles),
-        accounts,
-        store,
+        accounts: accounts.clone(),
+        store: store.clone(),
         next_conn: Arc::new(AtomicU64::new(1)),
         limiters: Arc::new(Limiters::new(cfg.limits, cfg.trusted_proxies.clone())),
         ws_conns: Default::default(),
         push,
+        ws: http::ws_options(cfg.ws_compression),
     };
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     let addr = listener.local_addr()?;
@@ -372,7 +395,7 @@ pub async fn start(cfg: ServerConfig) -> Result<RunningServer, BoxError> {
         specs.len(),
         specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>().join(", ")
     );
-    Ok(RunningServer { addr, shutdown: Some(shutdown), serve, worlds: running })
+    Ok(RunningServer { addr, shutdown: Some(shutdown), serve, worlds: running, accounts, store })
 }
 
 /// One world's game: restored from its newest readable saved game (unless

@@ -157,7 +157,7 @@ mod old {
             slots_left: g.world.mating_slots_left(player),
             population: g.owner_population(player),
             migration: g.world.migration_order(player, 0).map(|p| [p.x, p.y]),
-            groups: g.group_views(&g.world.groups_of(player, mine.iter().map(|&i| &orgs[i as usize]))),
+            groups: g.group_views_for(player, &g.world.groups_of(player, mine.iter().map(|&i| &orgs[i as usize]))),
             view,
             organisms: own,
             nearby,
@@ -405,9 +405,33 @@ fn cached_substep_states_match_the_old_build() {
                     let id = owned(&new, late)[0];
                     both(&mut new, &mut old, 170, late, ClientMsg::Possess { organism: id });
                 }
+                if round == 6 && sub == 1 {
+                    // A player comes back under a new name mid-tick: the
+                    // kept leaderboard renames its row.
+                    let (a, b) = (new.connect(12, 2, "p2-renamed"), old.connect(12, 2, "p2-renamed"));
+                    assert_eq!(format!("{a:?}"), format!("{b:?}"));
+                }
                 if round == 8 && sub == 0 {
                     new.disconnect(11);
                     old.disconnect(11);
+                }
+                if sub == 2 {
+                    // Two players open another connection mid-tick, one
+                    // after the other (the second without a sub-step
+                    // between): their first states use the kept index and
+                    // views. They close next round.
+                    for k in 0..2u32 {
+                        let p = 1 + (round * 3 + k * 5) % PLAYERS;
+                        let conn = 5000 + round as u64 * 10 + k as u64;
+                        let (a, b) = (new.connect(conn, p, &format!("p{p}")), old.connect(conn, p, &format!("p{p}")));
+                        assert_eq!(format!("{a:?}"), format!("{b:?}"), "connect, round {round}");
+                    }
+                    if round > 0 {
+                        for k in 0..2u64 {
+                            new.disconnect(5000 + (round as u64 - 1) * 10 + k);
+                            old.disconnect(5000 + (round as u64 - 1) * 10 + k);
+                        }
+                    }
                 }
                 let (a, b) = (new.substep(), old::substep(&mut old));
                 sub_states += a.len();
