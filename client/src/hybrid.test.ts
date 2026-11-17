@@ -1,0 +1,83 @@
+import { describe, expect, it } from 'vitest';
+import { designPlan, fertility, gapBetween, hybridAdvice, neighbours, originExplain } from './hybrid';
+import { foundingHint } from './foodHint';
+import type { DesignSpec, SpeciesView, WorldSummary } from './protocol';
+
+const design = (traits: Record<string, number> = {}, over: Partial<DesignSpec> = {}): DesignSpec => ({
+  name: 'Mine', thermo: 'warm', birth: 'live', litter_size: 2, founders: 20, traits: { body_size: 0.3, carnivory: 0, ...traits }, ...over,
+});
+
+const sp = (id: number, name: string, over: Partial<SpeciesView> = {}): SpeciesView => ({
+  id, name, origin: 'initial', founded_day: 0, dominant: 0, dominant_name: 'wild', dominant_share: 1, adults: 120, peak_adults: 150,
+  lineages: [{ lineage: id, name, owner: 0, adults: 120 }], carnivory: 0.05, body_size: 0.32, endothermy: 0.9, birth_mode: 0.85,
+  leg_count: 4, eye_count: 2, ...over,
+});
+
+describe('the body-plan gap', () => {
+  it('takes the largest difference and ramps fertility from 0.12 to 0.30', () => {
+    const a = designPlan(design({ carnivory: 0.5 }));
+    expect(gapBetween(a, { ...a, carnivory: 0.1 })).toEqual({ gap: 0.4, by: 'diet' });
+    expect(gapBetween(a, { ...a, leg_count: 8 }).by).toBe('legs');
+    expect([0, 0.12, 0.21, 0.3, 0.5].map(fertility)).toEqual([1, 1, 0.5, 0, 0]);
+  });
+});
+
+describe('the builder’s interbreeding check', () => {
+  const species = [
+    sp(1, 'Steppe antelope'),
+    sp(2, 'Marsh foxes', { carnivory: 0.85, dominant: 0 }),
+    sp(3, 'Broker voles', { dominant: 7, dominant_name: 'GeneBroker', body_size: 0.38, lineages: [{ lineage: 9, name: 'Voles', owner: 7, adults: 80 }] }),
+    sp(4, 'Gone', { extinct_day: 40 }),
+    sp(5, 'Mine', { lineages: [{ lineage: 2, name: 'Mine', owner: 3, adults: 50 }], dominant: 3 }),
+  ];
+
+  it('warns about wild species in range and says what to change', () => {
+    const near = neighbours(design(), species, 3);
+    expect(near.map((n) => n.species.name)).toEqual(['Steppe antelope', 'Broker voles']);
+    const a = hybridAdvice(design(), species, 3);
+    expect(a.level).toBe('warn');
+    expect(a.headline).toBe('Interbreeds with Steppe antelope');
+    expect(a.points[0]).toMatch(/wild genes, which count for the wild ecosystem/);
+    expect(a.points[1]).toMatch(/move (diet|body size|thermoregulation) at least 0\.\d\d further from Steppe antelope/);
+    expect(a.points.some((p) => p.includes('Voles'))).toBe(true);
+    expect(a.market).toMatch(/you could breed with Voles/);
+  });
+
+  it('says a distant design keeps its genes, and who it can never breed with', () => {
+    const a = hybridAdvice(design({ carnivory: 0.5 }), species, 3);
+    expect(a.level).toBe('ok');
+    expect(a.market).toMatch(/no other player's lineage is within breeding range/);
+    // Older servers (no thermoregulation or birth in the list): nothing to say.
+    expect(neighbours(design(), species.map((s) => ({ ...s, endothermy: undefined })), 3)).toEqual([]);
+  });
+});
+
+describe('whose genes', () => {
+  it('explains why the share is below the head count', () => {
+    const e = originExplain([
+      { player: 3, name: 'me', alleles: 30, share: 0.3 },
+      { player: 0, name: 'wild', alleles: 50, share: 0.5 },
+      { player: 7, name: 'Broker', alleles: 20, share: 0.2 },
+    ], 3);
+    expect(e.headline).toBe('Only 30% of your animals\' genes are yours');
+    expect(e.points.join(' ')).toMatch(/counts genes \(alleles\), not heads/);
+    expect(e.points.join(' ')).toMatch(/50% came from wild animals/);
+    expect(e.points.join(' ')).toMatch(/20% came from other players/);
+    expect(originExplain([{ player: 3, name: 'me', alleles: 9, share: 1 }], 3).headline).toBe('All of your animals\' genes are yours');
+  });
+});
+
+describe('the founding-size hint', () => {
+  const world = (season: string, drought: number): WorldSummary => ({
+    clock: { year: 0, day: 3, hour: 6, season, daytime: true, tick: 0 } as unknown as WorldSummary['clock'],
+    weather: { drought, flood: 0, mean_wind: 0, storm: false } as unknown as WorldSummary['weather'],
+    width: 96, height: 96, organisms: 500, agents: 500, lineages: 4, lineage_cap: 1500,
+  });
+  it('warns about big foundings, more so in summer drought', () => {
+    expect(foundingHint(design(), world('spring', 0)).level).toBe('ok');
+    expect(foundingHint(design(), world('spring', 0)).text).toMatch(/population cap of 1,500/);
+    const big = foundingHint(design({}, { founders: 120 }), world('summer', 0.5));
+    expect(big.level).toBe('warn');
+    expect(big.text).toMatch(/120 founders .* worse now that it is summer and there is a drought/);
+  });
+});

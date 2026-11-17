@@ -465,7 +465,7 @@ export interface AlertPrefs {
 }
 
 /** What the server answers before a player saves any preferences. */
-export const DEFAULT_ALERT_PREFS: AlertPrefs = { hidden: [], toast: ['death', 'need', 'market', 'group'] };
+export const DEFAULT_ALERT_PREFS: AlertPrefs = { hidden: [], toast: ['death', 'need', 'world', 'market', 'group'] };
 
 /** What a push notification is about (crates/server/src/protocol.rs `PushKind`). */
 export type PushKind = 'mating' | 'death' | 'market' | 'species' | 'season' | 'catastrophe';
@@ -786,6 +786,8 @@ export interface WorldSummary {
   days_to_winter?: number;
   /** A lineage founded now starts fed with full fat reserves (winter provision). */
   winter_provision?: boolean;
+  /** Most living organisms, young included, one player may have; at it births pause (absent from older servers). */
+  lineage_cap?: number;
   /** Days in a year (four equal seasons); absent from older servers. */
   days_per_year?: number;
   /** Ticks in a game day; absent from older servers. */
@@ -808,6 +810,8 @@ export interface TerrainView {
   river: string;
   /** Water depth at normal wetness, centimeters (capped at 255). */
   base_water: string;
+  /** Most plant food each tile holds, 0..255 for none..the map's richest tile (absent from older servers). */
+  veg_max?: string;
   dynamic: TerrainDynamic;
 }
 
@@ -1075,6 +1079,11 @@ export interface SpeciesView {
   lineages: SpeciesLineage[];
   carnivory: number;
   body_size: number;
+  /** Mean thermoregulation and birth mode genes, usual leg and eye counts (absent from older servers). */
+  endothermy?: number;
+  birth_mode?: number;
+  leg_count?: number;
+  eye_count?: number;
 }
 
 /** A group's typical body plan: counts and shapes by majority, axes by mean (server `BodyPlanMode`). */

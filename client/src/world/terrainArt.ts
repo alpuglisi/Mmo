@@ -192,8 +192,8 @@ export function buildFields(g: TerrainGrid, prev?: TerrainFields): TerrainFields
 export function regionHash(f: TerrainFields, x0: number, y0: number, tw: number, th: number): number {
   let hsh = 2166136261;
   const d = f.data;
-  for (let y = y0; y < Math.min(f.height, y0 + th); y++) {
-    for (let x = x0; x < Math.min(f.width, x0 + tw); x++) {
+  for (let y = Math.max(0, y0); y < Math.min(f.height, y0 + th); y++) {
+    for (let x = Math.max(0, x0); x < Math.min(f.width, x0 + tw); x++) {
       const o = (y * f.width + x) * F;
       for (let k = 0; k < F; k++) hsh = Math.imul(hsh ^ Math.round(k <= K.WB ? d[o + k] / 4 : d[o + k] * 24), 16777619);
     }
@@ -347,4 +347,28 @@ export function detailFor(devicePxPerTile: number, baseTpx: number): number {
 /** Texels per tile of the base texture: up to 4, within a 2048-texel side. */
 export function baseTpxFor(w: number, h: number): number {
   return Math.max(1, Math.min(4, Math.floor(2048 / Math.max(w, h))));
+}
+
+/**
+ * The quick one-texel-per-tile painting spread over the base texture with
+ * bilinear interpolation between tile centres (a nearest copy showed as a
+ * coarse blocky grid until the full painting arrived).
+ */
+export function upsample(src: Uint8Array, w: number, h: number, tpx: number, out: Uint8Array): void {
+  const W = w * tpx;
+  for (let y = 0; y < h * tpx; y++) {
+    let fy = (y + 0.5) / tpx - 0.5;
+    if (fy < 0) fy = 0; else if (fy > h - 1) fy = h - 1;
+    const y0 = Math.min(h - 1, fy | 0), y1 = Math.min(h - 1, y0 + 1), ay = fy - y0;
+    for (let x = 0; x < W; x++) {
+      let fx = (x + 0.5) / tpx - 0.5;
+      if (fx < 0) fx = 0; else if (fx > w - 1) fx = w - 1;
+      const x0 = Math.min(w - 1, fx | 0), x1 = Math.min(w - 1, x0 + 1), ax = fx - x0;
+      const o = (y * W + x) * 4;
+      const a = (y0 * w + x0) * 4, b = (y0 * w + x1) * 4, c = (y1 * w + x0) * 4, d = (y1 * w + x1) * 4;
+      for (let k = 0; k < 4; k++) {
+        out[o + k] = Math.round((src[a + k] * (1 - ax) + src[b + k] * ax) * (1 - ay) + (src[c + k] * (1 - ax) + src[d + k] * ax) * ay);
+      }
+    }
+  }
 }

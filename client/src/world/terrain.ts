@@ -26,6 +26,8 @@ export interface TerrainGrid {
   river: Uint8Array;
   /** Water depth at normal wetness, cm. */
   baseWater: Uint8Array;
+  /** Most plant food per tile, 0..255 for none..the map's richest (absent from older servers). */
+  vegMax?: Uint8Array;
   /** Current water depth, cm. */
   water: Uint8Array;
   ice: Uint8Array;
@@ -64,6 +66,7 @@ export function decodeTerrain(t: TerrainView): TerrainGrid {
     elevation: layer(t.elevation, n, 'elevation'),
     river: layer(t.river, n, 'river'),
     baseWater: layer(t.base_water, n, 'base_water'),
+    vegMax: t.veg_max ? layer(t.veg_max, n, 'veg_max') : undefined,
     water: new Uint8Array(n),
     ice: new Uint8Array(n),
     snow: new Uint8Array(n),
@@ -220,3 +223,42 @@ export function terrainSummary(g: TerrainGrid): { drought: number; flood: number
   }
   return { drought: drought / Math.max(1, land), flood: flood / Math.max(1, land), snow: snow / Math.max(1, land), ice: ice / Math.max(1, water) };
 }
+
+/**
+ * Food on a tile now, 0..1 of the map's richest pasture: the plants left
+ * (`veg`, a share of the tile's own maximum) times how much the tile can
+ * hold (`vegMax`; without it, the share alone). 0 on water.
+ */
+export function foodAt(g: TerrainGrid, i: number): number {
+  if (g.water[i] > 0) return 0;
+  const share = g.veg[i] / 255;
+  return g.vegMax ? share * (g.vegMax[i] / 255) : share;
+}
+
+/** Food bands of the map's Food layer (legend and colours). */
+export const FOOD_BANDS: { upTo: number; label: string; rgb: Rgb; alpha: number }[] = [
+  { upTo: 0.05, label: 'bare', rgb: [196, 74, 58], alpha: 0.55 },
+  { upTo: 0.25, label: 'sparse', rgb: [214, 160, 64], alpha: 0.5 },
+  { upTo: 0.55, label: 'fair', rgb: [168, 201, 88], alpha: 0.45 },
+  { upTo: 1.01, label: 'rich', rgb: [64, 196, 92], alpha: 0.5 },
+];
+
+/**
+ * The Food layer as one RGBA texel per tile: bands from bare (red) to rich
+ * (green), transparent on water.
+ */
+export function foodPixels(g: TerrainGrid): Uint8Array {
+  const n = g.width * g.height;
+  const out = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    if (g.water[i] > 0 || g.biome[i] <= B.shallow) continue;
+    const f = foodAt(g, i);
+    const band = FOOD_BANDS.find((b) => f < b.upTo) ?? FOOD_BANDS[FOOD_BANDS.length - 1];
+    out[i * 4] = band.rgb[0];
+    out[i * 4 + 1] = band.rgb[1];
+    out[i * 4 + 2] = band.rgb[2];
+    out[i * 4 + 3] = Math.round(band.alpha * 255);
+  }
+  return out;
+}
+

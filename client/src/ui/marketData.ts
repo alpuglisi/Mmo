@@ -2,6 +2,7 @@
 // pure functions over the server's `browse_market` / `ledger` data and the
 // state, so they are unit-tested without a DOM.
 
+import { dietLabel } from './chronicle';
 import { gameTime, realTime } from './duration';
 import type { ClientMsg, LedgerEntry, ListingView, MarketSort, MarketView, OrgId, OwnOrganism, PlayerId, StateView, TraitView } from '../protocol';
 import { compatSummary, type CompatSummary } from './mating';
@@ -88,7 +89,7 @@ export function traitSummary(traits: TraitView[], max = 4): string {
   }
   words.sort((a, b) => b[0] - a[0]);
   const c = v.get('carnivory');
-  const diet = c === undefined ? null : c < 0.3 ? 'herbivore' : c < 0.6 ? 'omnivore' : 'carnivore';
+  const diet = c === undefined ? null : dietLabel(c);
   const parts = [...(diet ? [diet] : []), ...words.slice(0, max).map((w) => w[1])];
   return parts.length ? parts.join(', ') : 'unremarkable';
 }

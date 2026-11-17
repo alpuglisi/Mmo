@@ -12,21 +12,22 @@ import { historyRows, offerLine } from './matingHistory';
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
 import { buildFamilyTree, type FamilyModel } from '../familyTree';
+import { actionText, capInfo, grouped, migrationText } from '../lineageInfo';
 import { renderFamilyTree } from './familyTree';
 import { exposeCards, familyShareBar } from '../share/familyShare';
 import type { AlertPrefs, ClientMsg, LineageStats, MatingOutcome, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
 import { WILD } from '../protocol';
 import { WorldView } from '../world/worldView';
-import { applyDynamic, decodeTerrain, terrainSummary, type TerrainGrid } from '../world/terrain';
+import { applyDynamic, decodeTerrain, FOOD_BANDS, terrainSummary, type TerrainGrid } from '../world/terrain';
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
 import { GROUND, ICE, SNOW, toCss, WATER, type Rgb } from '../world/palette';
 import { describeLook } from '../world/creature';
 import { visionLines, visionStats } from '../world/visionCones';
 import { visionSummary } from '../vision';
-import { append, clear, h, label, pct } from './dom';
+import { append, clear, h, pct } from './dom';
 import { icon, type IconName } from './icons';
 import { renderAlertPrefs, renderDashboard, renderFeed } from './dashboard';
-import { catastropheBanner, renderWorld, type Chronicle } from './chronicle';
+import { catastropheBanner, catastropheEffect, catastropheLabel, renderWorld, type Chronicle } from './chronicle';
 import { renderCurrentSeason, renderSeasons as renderRanked, seasonKey, type SeasonsData } from './seasons';
 import { compatSummary, type PairContext } from './mating';
 import { buildMarket } from './market';
@@ -63,7 +64,7 @@ const LOCAL_CODES = new Set(['not_connected', 'timeout', 'disconnected', 'closed
  */
 function extinctNoticeEl(id: string, onNewLineage: (() => void) | undefined): HTMLElement {
   return h('div', { class: 'notice bad', id, role: 'status' },
-    h('p', {}, h('strong', {}, 'Your lineage has died out.'), ' None of your organisms are alive. The Genetics tab charts what killed them.'),
+    h('p', {}, h('strong', {}, 'Your lineage has died out.'), ' None of your organisms are alive. The Genes tab charts what killed them.'),
     onNewLineage ? h('p', {}, h('button', { type: 'button', class: 'new-lineage', id: `${id}-new`, onclick: onNewLineage }, 'Start a new lineage'),
       h('span', { class: 'muted small' }, ' Your renown, records and titles stay.')) : null);
 }
@@ -87,10 +88,22 @@ const MARKET_REFRESH_MS = 5000;
 
 type Tab = 'organism' | 'matings' | 'market' | 'genetics' | 'family' | 'lineage' | 'seasons' | 'world';
 const TAB_LABELS: Record<Tab, string> = {
-  organism: 'Organism', matings: 'Matings', market: 'Market', genetics: 'Genetics', family: 'Family', lineage: 'Lineage', seasons: 'Seasons', world: 'World',
+  // One name per tab on every screen (the tour and Help use the same words).
+  organism: 'Animal', matings: 'Mates', market: 'Market', genetics: 'Genes', family: 'Family', lineage: 'Lineage', seasons: 'Ranks', world: 'World',
 };
-/** Labels for a phone's bottom bar, where eight tabs share the width (the full name stays the accessible name). */
-const TAB_SHORT: Partial<Record<Tab, string>> = { organism: 'Animal', matings: 'Mates', genetics: 'Genes', seasons: 'Ranks' };
+/** What each tab holds (its tooltip). */
+const TAB_TITLES: Record<Tab, string> = {
+  organism: 'Animal: the selected organism, its needs and actions',
+  matings: 'Mates: directed matings and requests',
+  market: 'Market: renown, stud listings and auctions',
+  genetics: 'Genes: the genetics dashboard, whose genes your lineage carries, and alerts',
+  family: 'Family: your lineage\'s family tree',
+  lineage: 'Lineage: counts, groups, the legacy leaderboard and your organisms',
+  seasons: 'Ranks: the ranked season under way and the hall of fame',
+  world: 'World: catastrophes, eras, species and achievements',
+};
+/** Remembers the Food layer switch. */
+const FOOD_KEY = 'evo.foodLayer';
 /** The family tree's refresh while its tab is open (it changes once a recorded day). */
 const FAMILY_REFRESH_MS = 20000;
 type Mode = 'select' | 'migrate' | 'territory' | 'rally';
@@ -109,6 +122,10 @@ export interface GameScreen {
 export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const { model } = deps;
   const cleanups: (() => void)[] = [];
+  /** Living organisms one player may have (`/api/world`), for the Lineage tab's cap row. */
+  let worldCap: number | undefined;
+  /** The genetics dashboard's data (declared up here: the Lineage tab reads it too, possibly before its fetch is set up). */
+  let stats: LineageStats | null = null;
   const inspExtinct = extinctNoticeEl('inspector-extinct', deps.onNewLineage);
   const lineageExtinct = extinctNoticeEl('lineage-extinct', deps.onNewLineage);
   lineageExtinct.hidden = true;
@@ -168,13 +185,16 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   moreBtn.setAttribute('aria-haspopup', 'true');
   moreBtn.setAttribute('aria-expanded', 'false');
   const legendBtn = tool('legend-toggle', 'legend', 'Legend', 'Show or hide the map legend');
+  // The Food layer: where plants (and so grazers) are, from bare to rich.
+  const foodBtn = tool('food-toggle', 'food', 'Food', 'Show or hide the Food layer: plant food on the ground, from bare (red) to rich (green)');
+  foodBtn.setAttribute('aria-pressed', 'false');
   legendBtn.setAttribute('aria-expanded', 'false');
   const toolsMenu = h('div', { class: 'tools-menu', id: 'tools-menu' },
     h('div', { class: 'tool-group', role: 'group', 'aria-label': 'Group commands' }, groupSelect, migrateBtn, clearMigBtn, territoryBtn, rallyBtn, splitBtn),
     h('div', { class: 'tool-group', role: 'group', 'aria-label': 'View window' }, pinBtn));
   const toolbar = h('div', { class: 'toolbar', role: 'toolbar', 'aria-label': 'Map tools' },
     h('div', { class: 'tool-group', role: 'group', 'aria-label': 'Camera' }, followBtn, zoomInBtn, zoomOutBtn),
-    toolsMenu, moreBtn, legendBtn);
+    toolsMenu, moreBtn, foodBtn, legendBtn);
   function setToolsMenu(open: boolean): void {
     toolbar.classList.toggle('more-open', open);
     moreBtn.classList.toggle('active', open);
@@ -213,7 +233,21 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   // A tap on overlapping animals (touch): the most relevant one is picked; these chips pick another.
   const chooser = h('div', { class: 'pick-chooser', id: 'pick-chooser', hidden: true, role: 'group', 'aria-label': 'Animals here' });
   const legends = h('div', { class: 'legends', id: 'legends' }, terrainLegend, legend);
-  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, hint, legends, fab, possessBar, chooser, toasts);
+  // A catastrophe under way: pinned over the map (not in the capped feed),
+  // wrapping on phones; it can be folded to one line but not dismissed.
+  const catTitle = h('strong', { class: 'cat-title' });
+  const catLeft = h('span', { class: 'cat-left' });
+  const catEffect = h('span', { class: 'cat-effect' });
+  const catFold = h('button', { class: 'secondary cat-fold', type: 'button', 'aria-expanded': 'true', title: 'Fold or unfold the catastrophe notice' }, 'Less');
+  const catAlert = h('div', { class: 'catastrophe-alert', id: 'catastrophe-alert', role: 'alert', hidden: true },
+    h('span', { class: 'cat-icon', 'aria-hidden': 'true' }, '⚠'), h('div', { class: 'cat-text' }, h('div', {}, catTitle, ' ', catLeft), catEffect), catFold);
+  catFold.addEventListener('click', () => {
+    const folded = catAlert.classList.toggle('folded');
+    catFold.textContent = folded ? 'More' : 'Less';
+    catFold.setAttribute('aria-expanded', String(!folded));
+  });
+  let catSeen: number | null = null;
+  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, catAlert, hint, legends, fab, possessBar, chooser, toasts);
   // The legend is collapsible: hidden by default (it covers part of the map;
   // the tour points to its button), the choice remembered on this device.
   function setLegend(on: boolean, remember: boolean): void {
@@ -242,8 +276,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     world: h('div', { class: 'panel', id: 'panel-world' }),
   };
   const tabBtns = (Object.keys(tabs) as Tab[]).map((t) =>
-    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, 'aria-label': TAB_LABELS[t], onclick: () => tabClicked(t) },
-      h('span', { class: 'tab-long' }, TAB_LABELS[t]), h('span', { class: 'tab-short', 'aria-hidden': 'true' }, TAB_SHORT[t] ?? TAB_LABELS[t])));
+    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, title: TAB_TITLES[t], onclick: () => tabClicked(t) }, TAB_LABELS[t]));
   const alertBadge = h('span', { class: 'badge', id: 'alert-badge', hidden: true });
   tabBtns.find((b) => b.dataset.tab === 'genetics')!.append(alertBadge);
   let seenFeed = 0;
@@ -594,8 +627,23 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       h('h4', {}, 'Terrain', h('span', { class: 'muted' }, ` · ${g.season}, ${String(g.hour).padStart(2, '0')}:00`)),
       chip(WATER.shallow, 'water'), chip(WATER.river, 'river'),
       chip(GROUND.straw, `drought ${pct(t.drought, 0)}`), chip(WATER.flood, `flooded ${pct(t.flood, 1)}`),
-      chip(SNOW, `snow ${pct(t.snow, 0)}`), chip(ICE, `ice ${pct(t.ice, 0)}`));
+      chip(SNOW, `snow ${pct(t.snow, 0)}`), chip(ICE, `ice ${pct(t.ice, 0)}`),
+      ...(view.foodOverlay ? [h('h4', {}, 'Food'), ...FOOD_BANDS.map((b) => chip(b.rgb, b.label))] : []));
   }
+  function setFood(on: boolean, remember: boolean): void {
+    view.setFoodOverlay(on);
+    foodBtn.classList.toggle('active', on);
+    foodBtn.setAttribute('aria-pressed', String(on));
+    if (remember) {
+      try {
+        localStorage.setItem(FOOD_KEY, on ? 'on' : 'off');
+      } catch {
+        /* private mode */
+      }
+    }
+    if (terrain) showTerrain(terrain);
+  }
+  foodBtn.addEventListener('click', () => setFood(!view.foodOverlay, true));
   async function loadTerrain(): Promise<void> {
     try {
       terrain = decodeTerrain(await api.terrain());
@@ -621,6 +669,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const span = (ticks: number) => gameAndReal(ticks, ticksPerDay, msPerTick());
   try {
     const w = await api.world();
+    worldCap = w.lineage_cap;
     if (w.days_per_year) daysPerYear = w.days_per_year;
     if (w.ticks_per_day) ticksPerDay = w.ticks_per_day;
     view.setWorldSize(w.width, w.height);
@@ -629,11 +678,15 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     /* defaults */
   }
   await loadTerrain();
+  try {
+    if (localStorage.getItem(FOOD_KEY) === 'on') setFood(true, false);
+  } catch {
+    /* private mode */
+  }
   const terrainTimer = setInterval(() => void refreshTerrain(), TERRAIN_REFRESH_MS);
   cleanups.push(() => clearInterval(terrainTimer));
 
   // Genetics dashboard: fetched while its tab is open (and once now, for the feed).
-  let stats: LineageStats | null = null;
   // Finished matings from the server (survive a reload; include matings
   // within the lineage and those that closed while the tab was shut).
   async function refreshMatingHistory(): Promise<void> {
@@ -828,13 +881,51 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const s = model.state;
     if (!s) return;
     const c = s.clock;
-    clockEl.textContent = `Year ${c.year + 1} · day ${c.day + 1} · ${String(c.hour).padStart(2, '0')}:00 · ${c.season} · ${c.daytime ? 'day' : 'night'}`;
+    const hour = `${String(c.hour).padStart(2, '0')}:00`;
+    const long = `Year ${c.year + 1} · day ${c.day + 1} · ${hour} · ${c.season} · ${c.daytime ? 'day' : 'night'}`;
+    // Phones get the same facts in a form that fits the bar without an ellipsis.
+    const short = `Y${c.year + 1} d${c.day + 1} ${hour} ${c.season} ${c.daytime ? '☀' : '☾'}`;
+    if (clockEl.dataset.text !== long) {
+      clockEl.dataset.text = long;
+      clockEl.title = long;
+      clockEl.replaceChildren(h('span', { class: 'clock-long' }, long), h('span', { class: 'clock-short', 'aria-hidden': 'true' }, short));
+    }
     const w = s.weather;
     weatherEl.textContent = `wind ${pct(w.mean_wind, 0)}${w.storm ? ' · STORM' : ''} · drought ${pct(w.drought, 0)} · flood ${pct(w.flood, 0)}`;
     const banner = catastropheBanner(w.catastrophe, c.day);
+    // The top bar keeps only a short pill on wide screens; the notice over the map carries the details.
     bannerEl.hidden = banner === null;
-    bannerEl.textContent = banner ?? '';
-    balanceEl.textContent = balanceText(s.balance, s.escrow);
+    bannerEl.textContent = banner === null ? '' : catastropheLabel(w.catastrophe!.kind);
+    bannerEl.title = banner ?? '';
+    const cat = w.catastrophe?.active ? w.catastrophe : null;
+    catAlert.hidden = cat === null;
+    if (cat) {
+      // `end_day` is the first day after it: its last day is day `end_day` as the clock counts (from 1).
+      const left = Math.max(0, cat.end_day - c.day);
+      catTitle.textContent = `Catastrophe: ${catastropheLabel(cat.kind)}`;
+      catLeft.textContent = left <= 1 ? '· last day' : `· ${left} days left (through day ${cat.end_day})`;
+      catEffect.textContent = catastropheEffect(cat.kind);
+      if (catSeen !== cat.id) {
+        // Its start: a toast as well, unless world alerts already toast (the server's alert does).
+        if (catSeen !== null || c.day - cat.start_day <= 1) {
+          if (!model.prefs.toast.includes('world')) model.toast('info', `Catastrophe: ${catastropheLabel(cat.kind)} has begun. ${catastropheEffect(cat.kind)}`);
+        }
+        catSeen = cat.id;
+        catAlert.classList.remove('folded');
+        catFold.textContent = 'Less';
+      }
+    } else if (catSeen !== null && catSeen !== -1) {
+      catSeen = -1;
+    }
+    // Toasts start below the notice, not under it.
+    stageWrap.style.setProperty('--cat-h', cat ? `${catAlert.offsetHeight + 8}px` : '0px');
+    const bal = balanceText(s.balance, s.escrow);
+    if (balanceEl.title !== bal) {
+      // Phones show the number alone (the CSS drops the word).
+      balanceEl.replaceChildren(String(s.balance ?? 0), h('span', { class: 'pill-word' }, bal.slice(String(s.balance ?? 0).length)));
+      balanceEl.title = bal;
+      balanceEl.setAttribute('aria-label', bal);
+    }
   }
 
   function renderConn(): void {
@@ -843,6 +934,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     connPill.textContent = s === 'open' ? 'connected'
       : s === 'reconnecting' ? `reconnecting${model.retryInMs ? ` in ${(model.retryInMs / 1000).toFixed(1)} s` : '…'}`
       : s === 'connecting' ? 'connecting…' : 'offline';
+    connPill.title = connPill.textContent;
   }
 
   // Rebuild a block only when its key changes, so buttons aren't replaced
@@ -923,7 +1015,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       inspDetails.replaceChildren(
         h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(OWN_COLOR)}` }), `#${own.id} · yours`),
         dl([
-          ['Action', label(own.action)], ['Sex', own.sex], ['Age', `${own.age_days.toFixed(1)} days`],
+          ['Action', actionText(own.action, own.needs)], ['Sex', own.sex], ['Age', `${own.age_days.toFixed(1)} days`],
           ['Stage', own.matured ? 'adult' : `juvenile (growth ${pct(own.growth, 0)})`],
           ['Health', meter(own.health, 100, 'good')], ['Lineage', `${own.lineage} · generation ${own.generation}`],
           ['Position', `${own.x.toFixed(1)}, ${own.y.toFixed(1)}`],
@@ -951,7 +1043,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const ownerName = wild ? 'wild' : model.state?.leaderboard.rows.find((r) => r.player === o.owner)?.name ?? `player ${o.owner}`;
     inspDetails.replaceChildren(
       h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(ownerColor(o.owner))}` }), `#${o.id} · ${ownerName}`),
-      dl([['Action', label(o.action)], ['Sex', o.sex], ['Stage', o.matured ? 'adult' : 'juvenile'], ['Lineage', String(o.lineage)],
+      dl([['Action', actionText(o.action)], ['Sex', o.sex], ['Stage', o.matured ? 'adult' : 'juvenile'], ['Lineage', String(o.lineage)],
         ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—']]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
@@ -1307,7 +1399,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   });
   append(tabs.lineage, [lineageExtinct, statsEl,
     h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
-    h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter; the Seasons tab has the ranked seasons' }, 'By world season'), seasonsEl,
+    h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter of the world\'s year (the Ranks tab has the ranked seasons, a competition of several weeks)' }, 'By time of year'), seasonsEl,
     h('h3', {}, 'My organisms'), listEl, listMore, retireEl]);
 
   function renderSeasons(): void {
@@ -1335,19 +1427,26 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }
     const orgs = s.organisms;
     const adults = orgs.filter((o) => o.matured).length;
+    const cap = capInfo(s.population, worldCap);
+    // With level of detail on, the dashboard's counts include the cohorts far from players.
+    const fresh = stats && stats.lineage === s.lineage && stats.alive === s.population;
+    const adultsAll = fresh ? stats!.adults : adults;
+    const youngAll = fresh ? stats!.juveniles : orgs.length - adults;
     const maxGen = orgs.reduce((m, o) => Math.max(m, o.generation), 0);
     statsEl.replaceChildren(dl([
       ['Lineage', s.lineage === null ? 'not founded' : `#${s.lineage}`],
-      ['Alive', h('span', {}, h('strong', { id: 'lineage-size' }, String(s.population)),
+      ['Alive', h('span', {}, h('strong', { id: 'lineage-size' }, cap.count),
+        cap.status ? h('span', { class: `cap-status cap-${cap.level}`, id: 'cap-status' }, ` — ${cap.status}`) : null,
         s.population > orgs.length
           ? h('span', { class: 'muted small', title: 'Level of detail: members far from any player run as statistical cohorts and are not drawn' }, ` · ${orgs.length} on the map`)
           : null)],
-      ['Adults / young', `${adults} / ${orgs.length - adults}`],
+      ['Adults / young', h('span', { id: 'adults-young', title: 'Young count toward the population cap too' }, `${grouped(adultsAll)} adults / ${grouped(youngAll)} young`)],
       ['Pregnant', String(orgs.filter((o) => o.pregnant).length)],
       ['Newest generation', String(maxGen)],
       ['Mating slots left', h('span', { id: 'slots-left' }, String(s.slots_left))],
-      ['Migration', s.migration ? `toward ${s.migration[0].toFixed(0)}, ${s.migration[1].toFixed(0)}` : 'none'],
+      ['Migration', migrationText(s.migration, s.groups)],
     ]));
+    if (cap.explain) statsEl.append(h('p', { class: `cap-note small${cap.level === 'ok' ? ' muted' : ''}`, id: 'cap-note' }, cap.explain));
     // A founded lineage with nobody left: say so plainly, and where to see why.
     // One element, shown or hidden (rebuilding it each state would eat clicks on its button).
     lineageExtinct.hidden = !(s.lineage !== null && s.population === 0);
@@ -1376,7 +1475,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       } });
     }, (btn, o) => {
       btn.classList.toggle('possessed', o.possessed);
-      setText(btn, `#${o.id} ${o.sex === 'female' ? 'F' : 'M'}${o.matured ? '' : ' juv'}${o.pregnant ? ' preg' : ''} · ${label(o.action)}`);
+      setText(btn, `#${o.id} ${o.sex === 'female' ? 'F' : 'M'}${o.matured ? '' : ' juv'}${o.pregnant ? ' preg' : ''} · ${actionText(o.action, o.needs)}`);
     });
     setText(listMore, orgs.length > shown.length ? `…and ${orgs.length - shown.length} more` : '');
   }

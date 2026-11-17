@@ -257,7 +257,7 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
         h('li', {}, touch ? 'Drag to pan, pinch to zoom; Follow keeps the camera on your lineage.' : 'Drag to pan, wheel or + / − to zoom; Follow keeps the camera on your lineage.'),
         h('li', {}, `${tap} an organism to inspect it; yours have a yellow ellipse at their feet.`),
         h('li', {}, touch ? 'Long-press one of yours (or press Possess) to control it, then tap the map to walk.' : 'Hold the mouse on one of yours (or press Possess) to control it, then click the map to walk.'),
-        h('li', {}, 'Matings and the Market pair your adults with others; Seasons ranks players; alerts badge the Genetics tab.')),
+        h('li', {}, 'Mates and Market pair your adults with others; Ranks shows the ranked seasons; alerts badge the Genes tab.')),
       h('div', { class: 'row wrap' }, replay, tips, close));
     const backdrop = h('div', { class: 'help-backdrop', id: 'help' }, dialog);
     backdrop.addEventListener('mousedown', (e) => {

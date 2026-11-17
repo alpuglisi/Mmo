@@ -126,3 +126,25 @@ describe('tile colors', () => {
     expect(s.flood).toBe(0);
   });
 });
+
+describe('the Food layer', () => {
+  it('bands food from bare to rich, scaled by what each tile can hold, and skips water', async () => {
+    const { foodAt, foodPixels, FOOD_BANDS } = await import('./terrain');
+    const n = 4;
+    const g = {
+      width: 4, height: 1, version: 1, biome: new Uint8Array([3, 3, 3, 0]), elevation: new Uint8Array(n), river: new Uint8Array(n),
+      baseWater: new Uint8Array(n), vegMax: new Uint8Array([255, 255, 40, 255]), water: new Uint8Array([0, 0, 0, 90]), ice: new Uint8Array(n),
+      snow: new Uint8Array(n), veg: new Uint8Array([255, 0, 255, 255]), wetness: new Uint8Array(n), tick: 1, day: 0, hour: 0, season: 'spring',
+    };
+    expect(foodAt(g, 0)).toBe(1);
+    expect(foodAt(g, 1)).toBe(0);
+    // A full poor tile holds little food.
+    expect(foodAt(g, 2)).toBeCloseTo(40 / 255, 3);
+    expect(foodAt(g, 3)).toBe(0);
+    const px = foodPixels(g);
+    expect([...px.slice(0, 3)]).toEqual(FOOD_BANDS[3].rgb);
+    expect([...px.slice(4, 7)]).toEqual(FOOD_BANDS[0].rgb);
+    expect([...px.slice(8, 11)]).toEqual(FOOD_BANDS[1].rgb);
+    expect(px[15]).toBe(0);
+  });
+});

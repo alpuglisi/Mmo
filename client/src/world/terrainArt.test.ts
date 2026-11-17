@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { B, decodeTerrain, type TerrainGrid } from './terrain';
-import { baseTpxFor, buildFields, detailFor, paintRegion, regionHash } from './terrainArt';
+import { baseTpxFor, buildFields, detailFor, paintRegion, regionHash, upsample } from './terrainArt';
 import { lightAt, LIGHT } from './palette';
 import type { TerrainView } from '../protocol';
 
@@ -114,5 +114,39 @@ describe('the light of the hour', () => {
     const dusk = lightAt(19);
     expect(dusk[0]).toBeGreaterThan(dusk[2] + 40);
     expect(lightAt(36)).toEqual(lightAt(12));
+  });
+});
+
+describe('chunk aprons and the quick base', () => {
+  it('a chunk painted with a border of neighbouring tiles matches the plain painting inside', () => {
+    const f = buildFields(grid());
+    const tpx = 4;
+    const plain = new Uint8Array(8 * tpx * 8 * tpx * 4);
+    paintRegion(f, 4, 4, 8, 8, tpx, plain);
+    const pw = 10 * tpx;
+    const apron = new Uint8Array(pw * 10 * tpx * 4);
+    paintRegion(f, 3, 3, 10, 10, tpx, apron);
+    for (let y = 0; y < 8 * tpx; y += 5) {
+      for (let x = 0; x < 8 * tpx; x += 3) {
+        const a = ((y + tpx) * pw + x + tpx) * 4, p = (y * 8 * tpx + x) * 4;
+        expect([...apron.slice(a, a + 4)]).toEqual([...plain.slice(p, p + 4)]);
+      }
+    }
+    // A border past the map edge clamps (no throw, no holes).
+    const edge = new Uint8Array(10 * tpx * 10 * tpx * 4);
+    paintRegion(f, -1, -1, 10, 10, tpx, edge);
+    expect(edge[3]).toBe(255);
+  });
+
+  it('spreads the quick painting smoothly (no blocks)', () => {
+    // Two tiles, black and white: the texels between their centres ramp.
+    const src = new Uint8Array([0, 0, 0, 255, 255, 255, 255, 255]);
+    const out = new Uint8Array(2 * 4 * 1 * 4 * 4);
+    upsample(src, 2, 1, 4, out);
+    const row = Array.from({ length: 8 }, (_, x) => out[x * 4]);
+    expect(row[0]).toBe(0);
+    expect(row[7]).toBe(255);
+    for (let x = 1; x < 8; x++) expect(row[x]).toBeGreaterThanOrEqual(row[x - 1]);
+    expect(new Set(row).size).toBeGreaterThan(4);
   });
 });

@@ -162,22 +162,22 @@ export function tourSteps({ touch, name }: TourContext): TourStep[] {
     },
     {
       id: 'market',
-      title: 'Matings and the Market',
+      title: 'Mates and the Market',
       body: 'Directed matings pair one of your adults with any partner, including another player\'s (they must agree; the two must meet). The Market tab spends renown, earned from your legacy share, on stud fees and auctions.',
       targets: ['#tab-market'],
       tab: 'market',
     },
     {
       id: 'seasons',
-      title: 'Seasons',
-      body: 'Ranked seasons last a few in-game weeks. The Seasons tab shows the one under way, your places and the hall of fame.',
+      title: 'Ranks',
+      body: 'Ranked seasons (competitions of a few in-game weeks, not the spring-to-winter time of year) are on the Ranks tab: the one under way, your places and the hall of fame.',
       targets: ['#tab-seasons'],
       tab: 'seasons',
     },
     {
       id: 'alerts',
       title: 'Alerts',
-      body: 'Births, deaths, needs, milestones and market news arrive as alerts: a badge on the Genetics tab, toasts on the map, and a feed under the genetics dashboard. Alert preferences choose which ones show.',
+      body: 'Births, deaths, needs, milestones and market news arrive as alerts: a badge on the Genes tab, toasts on the map, and a feed under the genetics dashboard. Alert preferences choose which ones show.',
       targets: ['#tab-genetics'],
       tab: 'genetics',
     },
@@ -243,7 +243,7 @@ export const HINTS: Record<HintId, HintDef> = {
   },
   death: {
     title: 'A death in your lineage',
-    body: 'Organisms die of hunger, thirst, cold, predators, age and accidents. The Genetics tab charts deaths by cause, which shows what is pressing on your lineage.',
+    body: 'Organisms die of hunger, thirst, cold, predators, age and accidents. The Genes tab charts deaths by cause, which shows what is pressing on your lineage.',
     tab: 'genetics',
   },
   species: {
@@ -253,7 +253,7 @@ export const HINTS: Record<HintId, HintDef> = {
   },
   offer: {
     title: 'A mating offer',
-    body: 'Another player wants to mate one of their organisms with yours. Accept or decline in the Matings tab; an accepted pair must still meet on the map.',
+    body: 'Another player wants to mate one of their organisms with yours. Accept or decline in the Mates tab; an accepted pair must still meet on the map.',
     tab: 'matings',
   },
 };

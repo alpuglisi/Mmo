@@ -1,4 +1,4 @@
-// The push notification settings card (Genetics tab, under the alert
+// The push notification settings card (Genes tab, under the alert
 // preferences): this device's status with an Enable / Turn off button, the
 // per-kind switches (saved to the account) and how many devices are
 // subscribed. In a browser the device subscribes with Web Push; in the

@@ -184,7 +184,7 @@ async function desktopChecks(browser, base, errors) {
     seen.push(t.step);
   }
   if (seen.join() !== 'map,lineage,inspector,possess') throw new Error(`unexpected steps ${seen}`);
-  if (!(await page.isVisible('#panel-organism'))) throw new Error('the inspector step did not open the Organism tab');
+  if (!(await page.isVisible('#panel-organism'))) throw new Error('the inspector step did not open the Animal tab');
   await shot(page, 'onboarding-desktop-possess.png');
   await page.keyboard.press('ArrowLeft');
   await waitFor('back', async () => (await tourState(page))?.step === 'inspector', UI_MS);
@@ -243,7 +243,7 @@ async function desktopChecks(browser, base, errors) {
   }, UI_MS);
   await shot(page, 'onboarding-desktop-hint.png');
   await page.click('#hint-show');
-  // The death hint closes and Genetics opens. The next due tip (the living
+  // The death hint closes and Genes opens. The next due tip (the living
   // world may have earned one meanwhile, more likely on a slow machine) may
   // take the hint's place at once, so wait for the death hint to go, not
   // for no hint at all.
@@ -255,7 +255,7 @@ async function desktopChecks(browser, base, errors) {
   await death('Your #3 starved after a reload (e2e).');
   await page.waitForTimeout(600);
   if (await page.$('#onboarding-hint[data-hint="death"]')) throw new Error('the death hint came back after a reload');
-  step('desktop: after "Show tips again", a death shows a one-time hint ("Show me" opens Genetics); it does not come back');
+  step('desktop: after "Show tips again", a death shows a one-time hint ("Show me" opens Genes); it does not come back');
   await context.close();
 }
 
