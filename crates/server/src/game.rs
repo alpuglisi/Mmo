@@ -36,7 +36,7 @@ pub use offline::{
     DEFAULT_HOME_RANGE_ONSET_TICKS, DEFAULT_HOME_RANGE_TICKS, DEFAULT_PROTECTION_HOURS, DEFAULT_PROTECTION_TICKS,
     HOME_RANGE_ONSET_MINUTES,
 };
-pub use spectate::{Spectate, SpectateLineage, SPECTATE_CELL};
+pub use spectate::{Spectate, SpectateLineage, PLAYER_CELL, SPECTATE_CELL};
 
 use crate::store::{AuctionRecord, BalanceRecord, DailyRecord, LedgerRecord, LegacyEntry, LineageEntry, TradeRecord};
 

@@ -1349,7 +1349,7 @@ export interface SpectateLineage {
   share?: number;
   /** The most common look of its adults; absent once extinct. */
   look?: Appearance;
-  /** `[cell x, cell y, count]` on `Spectate.cell`-tile cells. */
+  /** `[cell x, cell y, count]` on `Spectate.cell`-tile cells (wild) or `player_cell` (players'). */
   cells: [number, number, number][];
 }
 
@@ -1357,8 +1357,10 @@ export interface Spectate {
   clock: ClockView;
   width: number;
   height: number;
-  /** Cell side in tiles. */
+  /** Cell side in tiles of the wild lineages. */
   cell: number;
+  /** Cell side in tiles of the players' lineages (coarser: as a market listing's position). */
+  player_cell?: number;
   /** Catastrophes under way. */
   catastrophes: CatastropheView[];
   lineages: SpectateLineage[];

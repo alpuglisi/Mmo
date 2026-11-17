@@ -19,7 +19,7 @@ import { buildFields, paintRegion } from '../world/terrainArt';
 import { spriteModel } from '../world/spriteArt';
 import { describeAvatar, type AvatarModel } from '../world/avatar';
 import {
-  catastropheLine, catastropheTint, clockLine, densityOf, discRadius, lerpDensity, lineageColor, lineageFacts, pickFollowed,
+  catastropheLine, catastropheTint, cellOf, clockLine, densityOf, discRadius, lerpDensity, lineageColor, lineageFacts, pickFollowed,
   PopulationHistory, topLineages, type Density, type WatchParams,
 } from '../spectate';
 import { drawPortraitCard, newCanvas, paintCreature, pngBlob } from '../share/card';
@@ -231,7 +231,6 @@ export async function mountSpectator(root: HTMLElement, params: WatchParams): Pr
     }
     const shown = lerpDensity(from, to, (performance.now() - changedAt) / EASE_MS);
     const byId = new Map(last.lineages.map((l) => [l.lineage, l]));
-    const cell = last.cell;
     const fid = followed?.lineage ?? null;
     // Others first, the followed lineage on top.
     const keys = [...shown.keys()].sort((a, b) => Number(a.split(':')[0] === String(fid)) - Number(b.split(':')[0] === String(fid)));
@@ -242,6 +241,7 @@ export async function mountSpectator(root: HTMLElement, params: WatchParams): Pr
       const l = byId.get(li);
       if (!l) continue;
       const col = lineageColor(l, fid);
+      const cell = cellOf(last, l);
       const r = discRadius(n, cell) * k;
       const x = ox + (cx + 0.5) * cell * k, y = oy + (cy + 0.5) * cell * k;
       const g = ctx.createRadialGradient(x, y, 0, x, y, r);

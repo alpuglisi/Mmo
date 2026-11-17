@@ -245,7 +245,10 @@ rate-limited like the other reads. It follows the info-leak rules (playtest 1,
 finding 27):
 
 - **No animals:** no ids, exact positions, sex, needs, actions, orders,
-  pregnancies or groups. Each lineage's members are counted on 8-tile cells.
+  pregnancies or groups. A player's lineage is counted on 16-tile cells, as
+  coarse as a market listing's position (playtest fixes B,
+  `docs/server-review.md`); the wild species, which are no one's, on 8-tile
+  cells.
 - **No genes:** a lineage shows its most common adult look, the coarse classes
   every player already sees on the map.
 - **Not live:** the server answers from a copy taken at most once per simulated

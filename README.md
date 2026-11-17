@@ -860,7 +860,7 @@ A logged-out watch link (`/?watch=<world>&lineage=<n>&stream=1`) shows a
 world read-only: the map with every lineage as soft discs, the followed
 lineage's portrait and numbers, a population chart, and a banner while a
 catastrophe is under way. Data comes from `GET /api/spectate`, which is coarse
-(8-tile cells), has no genes or animal ids, and changes at most once a day.
+(16-tile cells for players' lineages, 8 for the wild species), has no genes or animal ids, and changes at most once a day.
 The Family tab shares a portrait card and a family-tree card as PNG, through
 the Web Share API or by download, together with the watch link.
 `tools/marketing/capture.mjs` records scripted scenes (a species evolving,
@@ -905,7 +905,7 @@ square MP4s and GIFs, with a manifest of titles, captions and hashtags. See
 | `GET /api/push/prefs` | Bearer | The push kinds the caller switched off, `{off: [kind]}` (`mating`, `death`, `market`, `species`, `season`, `catastrophe`); `{off: []}` until saved |
 | `POST /api/push/prefs` | Bearer | Replace them; the reply is normalized (sorted, no duplicates); an unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | yes | PNG of the world as the caller may see it (`Game::map_rgb`: the terrain, their organisms and others only within their view radius of them; 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
-| `GET /api/spectate` | | The read-only spectator view (watch links `?watch=<world>&lineage=<n>`, `tools/marketing/README.md`): clock, active catastrophes and every lineage's public name, owner, head counts, share, most common look and members per 8-tile cell; no ids, positions, genes or needs, and refreshed at most once per simulated day |
+| `GET /api/spectate` | | The read-only spectator view (watch links `?watch=<world>&lineage=<n>`, `tools/marketing/README.md`): clock, active catastrophes and every lineage's public name, owner, head counts, share, most common look and members per cell (16 tiles for a player's lineage, as coarse as a market listing; 8 for the wild species); no ids, positions, genes or needs, and refreshed at most once per simulated day |
 | `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`), the process's `cpu_seconds` and `rss_bytes` (Linux), the `allocator` (`jemalloc` by default, `glibc` without the feature) and its `heap` statistics (`allocated`: live allocations; `retained`: resident memory the allocator holds but has not handed out; read at most every 2 s), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
