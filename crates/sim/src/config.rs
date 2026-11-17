@@ -793,6 +793,15 @@ pub struct Balance {
     /// cosmetic.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v29"))]
     pub morph_pattern: f32,
+    /// Strike fixes (version 30; on at 1, the default): a hunter killed in
+    /// its own strike (by its prey's toxins or by prey that fought back)
+    /// does nothing more that turn, where before it could still bring the
+    /// prey down and eat; and a kill is eaten once in the hunter's turn,
+    /// where before the hunter ate a full helping at the kill and another
+    /// right after. 0 is the old behaviour, what snapshots before version
+    /// 30 read (`serde_util::before_v30`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v30"))]
+    pub strike_fixes: f32,
     /// Staggered decisions (an approximation for speed, off by default):
     /// at 2 or more, a calm organism decides afresh only every
     /// `decide_interval` ticks (staggered by id) and keeps its last intent
@@ -1009,13 +1018,14 @@ impl Default for Balance {
             morph_horns: 1.0,
             morph_wing_shape: 1.0,
             morph_pattern: 1.0,
+            strike_fixes: 1.0,
             decide_interval: 0.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 114;
+    pub const FIELD_COUNT: usize = 115;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1138,6 +1148,7 @@ impl Balance {
             ("morph_horns", &mut self.morph_horns),
             ("morph_wing_shape", &mut self.morph_wing_shape),
             ("morph_pattern", &mut self.morph_pattern),
+            ("strike_fixes", &mut self.strike_fixes),
             ("decide_interval", &mut self.decide_interval),
         ]
     }

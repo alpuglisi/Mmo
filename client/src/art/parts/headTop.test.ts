@@ -35,4 +35,14 @@ describe('headTop', () => {
     const socket = d.eyes[2][0];
     expect(socket.kind === 'ellipse' && socket.rx).toBeGreaterThan(8);
   });
+
+  it('wears the covering it is given on the back', () => {
+    const tags = (p: Partial<HeadTopParams>) => new Set(headTop({ ...base, furry: false, ...p }, pal).body.detail.map((d) => d.tag));
+    expect(tags({ cover: 'scales' }).has('scale')).toBe(true);
+    expect(tags({ cover: 'armor' }).has('plate')).toBe(true);
+    expect(tags({ cover: 'feathers' }).has('feather')).toBe(true);
+    expect(tags({ furry: true }).has('hair')).toBe(true);
+    const plain = tags({});
+    for (const t of ['scale', 'plate', 'feather', 'hair']) expect(plain.has(t)).toBe(false);
+  });
 });

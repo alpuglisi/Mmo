@@ -48,7 +48,8 @@ import { DEFAULT_PRESETS, type BuilderPreset } from './presets';
 import { createEyeView } from './eyeView';
 import { earIcon, s, tailIcon } from './svg';
 import { MORPH_NAMES, traitName } from '../traitNames';
-import { sideTracks, sideView, type HandleTrack } from './sideView';
+import { builderDesign, sideTracks, sideView, type HandleTrack } from './sideView';
+import type { DesignSpec } from '../../protocol';
 
 export type BuilderFeature = 'eyes' | 'ears' | 'legs' | 'tail' | 'snout' | 'fangs' | 'horns' | 'pattern' | 'wings';
 
@@ -82,6 +83,8 @@ export interface BodyBuilderOptions {
    * on the add buttons. Absent or 0: nothing is said about points.
    */
   prices?: { eye?: number; legPair?: number; earPair?: number; hornSize?: number };
+  /** The design being built: both drawings wear its covering, colours and blood (`builderDesign`). */
+  design?: DesignSpec;
 }
 
 /** " (+3 points each beyond two)", or nothing for a free structure. */
@@ -109,6 +112,8 @@ export interface BodyBuilder {
   reset(): void;
   /** Apply a preset (after `confirmPreset`, if given); resolves whether it was applied. */
   applyPreset(id: string): Promise<boolean>;
+  /** Repaint for the design's look (covering, colours, warm / cold); the body plan is unchanged. */
+  setDesign(design: DesignSpec): void;
   destroy(): void;
 }
 
@@ -157,6 +162,10 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
   const p = opts.idPrefix ?? 'bb';
   const uid = `${p}-${++instances}`;
   const presets = opts.presets ?? DEFAULT_PRESETS;
+  // The look's key leaves out what the drawings don't wear (the name, the body plan they're given anyway).
+  const keyOf = (d: DesignSpec) => JSON.stringify({ ...d, name: '', morphology: undefined });
+  let look = builderDesign(opts.design);
+  let lookKey = keyOf(look);
   const history = new History<Morphology>(clampMorphology(opts.value ?? {}), { same: sameMorphology, mergeMs: 1200, limit: 100 });
   let vision = visionOf(history.value);
   const m = (): Morphology => history.value;
@@ -434,7 +443,7 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
   // ------------------------------------------------------------ drawing
 
   function renderTop(cur: Morphology, out: Map<string, HandleSpec & { svg: SVGSVGElement; layer: SVGGElement }>): void {
-    for (const [key, spec] of eyeView.render(cur, vision)) out.set(key, { ...spec, svg: topSvg, layer: topHandles });
+    for (const [key, spec] of eyeView.render(cur, vision, look)) out.set(key, { ...spec, svg: topSvg, layer: topHandles });
   }
 
   function renderSide(cur: Morphology, out: Map<string, HandleSpec & { svg: SVGSVGElement; layer: SVGGElement }>): void {
@@ -444,7 +453,7 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
 
     // The creature from the art library (`sideView.ts`), its torso pinned in
     // place so the handles stay put while other features change.
-    const view = sideView(cur);
+    const view = sideView(cur, look);
     add(s('line', { x1: -10, y1: view.groundY, x2: 300, y2: view.groundY, class: 'bb-ground' }));
     const creature = s('g', { class: 'bb-creature', transform: view.transform, 'aria-hidden': 'true' });
     creature.innerHTML = view.markup(`${uid}-av`);
@@ -453,7 +462,7 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
     // Handles ride the features' tips: each track runs from the tip at 0 to the tip at 1.
     const track = (feature: BuilderFeature, field: keyof Morphology, label: string, t: HandleTrack) =>
       at(linear(feature, field, label, t.from[0], t.from[1], t.to[0], t.to[1]));
-    const tracks = sideTracks(cur);
+    const tracks = sideTracks(cur, look);
     out.set('snout', track('snout', 'snout_length', 'Snout length', tracks.snout));
     out.set('fangs', track('fangs', 'fang_size', 'Fang size (none below 10%)', tracks.fangs));
     if (tracks.ears) out.set('ears', track('ears', 'ear_size', 'Ear size', tracks.ears));
@@ -609,6 +618,14 @@ export function createBodyBuilder(opts: BodyBuilderOptions = {}): BodyBuilder {
     redo: doRedo,
     reset: doReset,
     applyPreset,
+    setDesign(design) {
+      const next = builderDesign(design);
+      const key = keyOf(next);
+      if (key === lookKey) return;
+      look = next;
+      lookKey = key;
+      render();
+    },
     destroy() {
       el.remove();
       specs.clear();

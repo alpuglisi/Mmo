@@ -15,6 +15,11 @@ lz4_flex = { version = "0.11", optional = true, default-features = false, featur
 # (miniz_oxide).
 flate2 = { version = "1", optional = true }
 
+[dev-dependencies]
+# The predlong example's partial-results files (`--shard`, `--merge`).
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
 [features]
 # World snapshots (`World::snapshot` / `World::restore`): serde derives on the
 # state types, bincode encoding, LZ4 and deflate compression.

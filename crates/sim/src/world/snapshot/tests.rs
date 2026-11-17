@@ -323,11 +323,18 @@ fn carnivore_diet_off(b: &mut crate::Balance) {
     predator_brakes_off(b);
 }
 
-/// The predator brakes as snapshots before version 27 read them.
+/// The predator brakes as snapshots before version 27 read them, and the
+/// strike as before version 30.
 fn predator_brakes_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v27::OLD_VALUE;
     b.prey_switching = old;
     b.condition_litter = old;
+    strike_fixes_off(b);
+}
+
+/// `Balance::strike_fixes` as snapshots before version 30 read it.
+fn strike_fixes_off(b: &mut crate::Balance) {
+    b.strike_fixes = crate::serde_util::before_v30::OLD_VALUE;
 }
 
 /// A small world, 1 day and 7 ticks in, under the old morphology rules
@@ -835,6 +842,26 @@ fn version_26_snapshots_restore_without_predator_brakes() {
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot_v27() == w.snapshot_v27());
     assert!(r.snapshot_v26() == old);
+}
+
+/// Version 29 snapshots (before `Balance::strike_fixes`) restore with the
+/// old strike and are otherwise the same world.
+#[test]
+fn version_29_snapshots_restore_with_the_old_strike() {
+    let mut w = fixture_world();
+    w.config.balance.strike_fixes = 1.0;
+    let old = w.snapshot_v29();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 29);
+    assert!(h.restorable());
+    // Without the parameter (an f32), against a current snapshot.
+    assert_eq!(h.raw_len + 4, SnapshotHeader::read(&w.snapshot()).unwrap().raw_len);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.strike_fixes, crate::serde_util::before_v30::OLD_VALUE);
+    strike_fixes_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v29() == old);
 }
 
 /// The tile planes round-trip every bit pattern (negative zero, NaN,
