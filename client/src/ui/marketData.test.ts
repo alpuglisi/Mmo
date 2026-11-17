@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AuctionView, LedgerEntry, ListingView, MatingPreviewView, OwnOrganism, StateView } from '../protocol';
 import { parseLedgerView, parseMarketView } from '../protocol';
 import {
-  auctionText, balanceText, bidProblem, buyProblem, DEFAULT_FILTER, expiresIn, ledgerRows, ledgerTotals, listingCompat, marketQuery,
+  auctionText, expiryText, balanceText, bidProblem, buyProblem, DEFAULT_FILTER, expiresIn, ledgerRows, ledgerTotals, listingCompat, marketQuery,
   mergePages, ownAdults, PAGE_SIZE, pageText, traitSummary,
 } from './marketData';
 
@@ -103,6 +103,11 @@ describe('auctions', () => {
     expect(auctionText(auction(1, { high_bid: 12, high_bidder: 1, bids: 1 }), 1, 72, 48)).toBe('Auction: high bid 12 (yours) · 1 bid · closes in 12 h');
     expect(auctionText(auction(1, { high_bid: 30, high_bidder: 2, bids: 4 }), 1, 95, 48)).toBe('Auction: high bid 30 · 4 bids · closes in 1 h');
     expect(auctionText(auction(1), 1, 200, 48)).toBe('Auction: reserve 10, no bids yet · closing now');
+    // With the measured tick rate, real time too (a fast server: 100 ms a tick).
+    expect(auctionText(auction(1), 1, 0, 48, 100)).toBe('Auction: reserve 10, no bids yet · closes in 2.0 days (≈ 10 s)');
+    expect(expiryText({ ...listing(1), expires_tick: 144 }, 24, 48, 1000)).toBe('expires in 2.5 days (≈ 2 min)');
+    expect(expiryText({ ...listing(1), expires_tick: 144 }, 144, 48)).toBe('expiring now');
+    expect(expiryText(listing(1), 0, 48)).toBeNull();
     // An auction's deadline is not shown as a listing expiry.
     expect(expiresIn(auction(1), 0, 48)).toBeNull();
   });

@@ -111,6 +111,16 @@ export interface MatingOutcome {
 
 export type OfferStatus = 'pending' | 'accepted' | 'completed' | 'declined' | 'cancelled' | 'failed' | 'expired';
 
+/** One finished mating of `GET /api/matings/history`, newest first (an offer, or a mating within the player's lineage). */
+export interface MatingRecord {
+  tick: number;
+  offer?: OfferView;
+  mine: OrgId;
+  partner: OrgId;
+  outcome?: MatingOutcome;
+  error?: ErrorInfo;
+}
+
 export const OPEN_STATUSES: readonly OfferStatus[] = ['pending', 'accepted'];
 
 export function isOpen(s: OfferStatus): boolean {
@@ -762,6 +772,10 @@ export interface WorldSummary {
   days_to_winter?: number;
   /** A lineage founded now starts fed with full fat reserves (winter provision). */
   winter_provision?: boolean;
+  /** Days in a year (four equal seasons); absent from older servers. */
+  days_per_year?: number;
+  /** Ticks in a game day; absent from older servers. */
+  ticks_per_day?: number;
 }
 
 /**
