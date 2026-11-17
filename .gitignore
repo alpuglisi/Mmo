@@ -9,3 +9,7 @@ client/e2e/out/
 client/android/
 client/ios/
 deploy/.env
+# Marketing output (evo-sim film, tools/marketing): never commit media.
+film-out/
+tools/marketing/out/
+*.mp4

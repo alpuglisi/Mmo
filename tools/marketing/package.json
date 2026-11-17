@@ -1,0 +1,17 @@
+{
+  "name": "evo-marketing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Drafting, approval queue, content calendar and official-API publishing for Evolution MMO launch marketing",
+  "type": "module",
+  "bin": { "evo-marketing": "bin/evo-marketing.mjs" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "cli": "node bin/evo-marketing.mjs"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^1.9.0",
+    "nodemailer": ">=6.9.0"
+  }
+}
