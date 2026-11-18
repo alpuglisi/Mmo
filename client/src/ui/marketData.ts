@@ -120,15 +120,29 @@ const BODY_PLAN_WORDS: Record<string, string> = {
 };
 
 /** How sure the "who can breed with you" list is (it samples animals; matings vary). */
-export const COMPAT_CONFIDENCE = 'From the best pair in a sample of adults on each side: animals vary, so a given mating can be less fertile, and whole-genome distance lowers it further. A mating preview gives a pair\'s exact odds.';
+export const COMPAT_CONFIDENCE = 'From a sample of adults on each side: the mean of every pair, the range most pairs fall in, and the share of pairs that can conceive at all. Animals vary and lineages drift, so a given mating can differ; a mating preview gives a pair\'s exact odds.';
 
-/** One line of the "who can breed with you" list. */
+const pct0 = (x: number) => `${Math.round(x * 100)}%`;
+
+/** One line of the "who can breed with you" list (sampled pairs: no "best pair" claim). */
 export function compatRowText(r: CompatibilityView['rows'][number]): string {
   const who = r.owner === 0 ? `wild ${r.lineage_name}` : `${r.owner_name}'s ${r.lineage_name}`;
   const what = BODY_PLAN_WORDS[r.limiting] ?? r.limiting;
-  if (!r.compatible) return `${who}: sterile (${what} ${r.gap.toFixed(2)} apart; 0.30 is sterile)`;
-  if (r.fertility >= 0.999) return `${who}: fully fertile`;
-  return `${who}: ${Math.round(r.fertility * 100)}% fertile (${what} ${r.gap.toFixed(2)} apart)`;
+  const range = r.fertility_low !== undefined && r.fertility_high !== undefined && r.fertility_high - r.fertility_low >= 0.05
+    ? `, most pairs ${pct0(r.fertility_low)}–${pct0(r.fertility_high)}` : '';
+  const share = r.fertile_share !== undefined ? `${pct0(r.fertile_share)} of pairs can conceive` : null;
+  const drift = r.drift_risk === 'high' ? ' · drift risk high' : r.drift_risk === 'low' ? ' · drift risk low' : '';
+  // The closest pair's widest body-plan gap: a cause, not a verdict (a
+  // gap under 0.30 lowers fertility; 0.30 or more makes a pair sterile).
+  const cause = r.limiting === 'morphology'
+    ? `closest pair differs in eye or leg count`
+    : r.gap >= 0.3 ? `${what} ${r.gap.toFixed(2)} apart even in the closest pair (0.30 is sterile)` : `${what} ${r.gap.toFixed(2)} apart in the closest pair`;
+  if (!r.compatible) {
+    if (share === null || (r.fertile_share ?? 0) <= 0) return `${who}: sterile (${cause})${drift}`;
+    return `${who}: mostly sterile: ${share}${range} (${cause})${drift}`;
+  }
+  if (r.fertility >= 0.999) return `${who}: fully fertile${drift}`;
+  return `${who}: ${pct0(r.fertility)} fertile on average${range}${share ? `; ${share}` : ''} (${cause})${drift}`;
 }
 
 /** The shop's explanation line. */

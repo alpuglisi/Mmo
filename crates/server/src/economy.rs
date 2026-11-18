@@ -20,8 +20,8 @@
 //!
 //!   Plus a **breeder's royalty** ([`royalty`]): [`ROYALTY_PER_POINT`]
 //!   renown per percentage point of all scored alleles that are the
-//!   player's and live outside their own lineage (in rivals' animals or the
-//!   wild), so genes that spread through trades earn their breeder renown.
+//!   player's and live in other players' lineages (not the wild), so genes
+//!   that spread through trades earn their breeder renown.
 //!
 //! **Spending**: a directed request with a price, or buying a stud
 //! marketplace listing, moves the price from the payer's balance into
@@ -103,10 +103,11 @@ pub const NAMEPLATE_COLORS: [&str; 8] = ["amber", "crimson", "emerald", "azure",
 /// in the species list, the chronicle and the family tree).
 pub const SPECIES_NAME_PRICE: u64 = 300;
 
-/// Most reinforcements one player may buy in a ranked season, whatever
-/// lineages they had in it: retiring and re-founding neither resets the
-/// price nor the count (playtest 2: 4,650 hoarded renown bought +50 adults
-/// right after a re-found).
+/// Most reinforcements one player may buy within a ranked season's length
+/// (a rolling window, not reset at a season boundary), whatever lineages
+/// they had in it: retiring and re-founding neither resets the price nor
+/// the count (playtest 2: 4,650 hoarded renown bought +50 adults right
+/// after a re-found; playtest 3: +40 across a season boundary).
 pub const MAX_REINFORCEMENTS_PER_SEASON: u32 = 2;
 /// A lineage may be reinforced only while at most this share of the soft
 /// lineage cap (`WorldConfig::lineage_cap`) is alive.
@@ -122,7 +123,7 @@ pub fn market_fee(amount: u64) -> u64 {
     (amount * MARKET_FEE_PERCENT / 100).max(1)
 }
 
-/// Renown a day from alleles living outside the player's own lineage:
+/// Renown a day from alleles living in other players' lineages:
 /// [`ROYALTY_PER_POINT`] per percentage point of all scored alleles,
 /// rounded (none for an extinct lineage).
 pub fn royalty(exported_share: f64, alive: bool) -> u64 {
@@ -246,8 +247,17 @@ pub struct Economy {
     pub listings: BTreeMap<u64, Listing>,
     pub next_listing: u64,
     /// Reinforcements bought per player: (ranked season, how many in it).
-    /// Absent from older saves (none bought).
+    /// Absent from older saves (none bought). Superseded by
+    /// `reinforce_days` (kept so older saves read).
     pub reinforcements: BTreeMap<PlayerId, (u32, u32)>,
+    /// The simulated day of each player's recent reinforcements: the cap
+    /// and the price count those within a ranked season's length
+    /// (a rolling window; playtest 3 bought +40 adults across a season
+    /// boundary in two minutes).
+    pub reinforce_days: BTreeMap<PlayerId, Vec<u64>>,
+    /// The day each player last retired a lineage (re-founding soon after
+    /// costs founders: `Game::found`).
+    pub retired_day: BTreeMap<PlayerId, u64>,
     /// Bought nameplates (`set_nameplate`): a color from [`NAMEPLATE_COLORS`]
     /// and a short title shown with the player's name. Cosmetic only.
     pub nameplates: BTreeMap<PlayerId, Nameplate>,

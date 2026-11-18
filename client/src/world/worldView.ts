@@ -26,7 +26,7 @@
 // rebuilt from the current state on restore, or on a new renderer if the
 // context does not come back within a few seconds.
 
-import { clampCam } from './camera';
+import { clampCam, followAxis } from './camera';
 import { Application, BufferImageSource, Container, Graphics, Sprite, Texture, UPDATE_PRIORITY, type Renderer } from 'pixi.js';
 import { actionHint, bodyRadius, creatureKey, markerScaleFor, NEAR_SCALE, specOf, type CreatureSpec, type Hint } from './creature';
 import { CreatureSprites, type MarkerParts, type StatusKind } from './sprites';
@@ -137,6 +137,9 @@ const TOUCH_HIT_PX = 20;
 const LONG_PRESS_MS = 450;
 /** Movement (px) that turns a press into a drag. */
 const DRAG_PX = 6;
+/** Follow's dead zone, as a share of half the screen's shorter side: the herd, and a possessed animal (`followAxis`). */
+const FOLLOW_DEAD = 0.25;
+const FOLLOW_DEAD_POSSESSED = 0.12;
 /**
  * Time a frame may spend making marker textures (ms). Markers whose textures
  * are all cached are always shown; the rest wait for a later frame once this
@@ -201,6 +204,10 @@ export class WorldView {
   /** A territory being drawn (center tapped, edge not yet). */
   territoryDraft: TerritoryDraft | null = null;
   cam: Camera = { x: 32, y: 32, zoom: 8 };
+  /** A pointer is down on the map (Follow holds the camera still meanwhile). */
+  private pressing = false;
+  /** Screen pixels the camera may show past each map edge: what floats over the map there (the toolbar). */
+  edgePad = { top: 0, right: 0, bottom: 0, left: 0 };
   /** The first frame with a size picks the starting zoom (about 40 tiles across the shorter side). */
   private zoomFitted = false;
   follow = true;
@@ -540,8 +547,15 @@ export class WorldView {
       const sv = this.state.view;
       const pm = this.predictor.id !== null ? this.markers.get(this.predictor.id) : undefined;
       const v: Point = pm && Math.abs(pm.x - sv.x) + Math.abs(pm.y - sv.y) < 3 ? pm : sv;
-      this.cam.x += (v.x - this.cam.x) * k * 0.5;
-      this.cam.y += (v.y - this.cam.y) * k * 0.5;
+      // A dead zone round the centre (a smaller one for a possessed animal,
+      // which the player steers), and still while a finger is down: taps
+      // land where they were aimed (`followAxis`).
+      if (!this.pressing) {
+        const { width: sw, height: sh } = this.app.screen;
+        const dead = (pm ? FOLLOW_DEAD_POSSESSED : FOLLOW_DEAD) * Math.min(sw, sh) / 2 / this.cam.zoom;
+        this.cam.x = followAxis(this.cam.x, v.x, dead, k * 0.5);
+        this.cam.y = followAxis(this.cam.y, v.y, dead, k * 0.5);
+      }
     }
     const { width, height } = this.app.screen;
     if (!this.zoomFitted && width > 0 && height > 0) {
@@ -550,8 +564,9 @@ export class WorldView {
       this.zoomFitted = true;
       this.cam.zoom = Math.min(18, Math.max(8, Math.min(width, height) / 40));
     }
-    this.cam.x = clampCam(this.cam.x, width / 2 / this.cam.zoom, this.worldW);
-    this.cam.y = clampCam(this.cam.y, height / 2 / this.cam.zoom, this.worldH);
+    const pad = this.edgePad, z = this.cam.zoom;
+    this.cam.x = clampCam(this.cam.x, width / 2 / z, this.worldW, pad.left / z, pad.right / z);
+    this.cam.y = clampCam(this.cam.y, height / 2 / z, this.worldH, pad.top / z, pad.bottom / z);
     this.mapLayer.scale.set(this.cam.zoom);
     this.mapLayer.position.set(width / 2 - this.cam.x * this.cam.zoom, height / 2 - this.cam.y * this.cam.zoom);
     const tl = this.screenToWorld(0, 0), br = this.screenToWorld(width, height);
@@ -837,6 +852,7 @@ export class WorldView {
       }
       if (pointers.size > 2) return;
       cancelPress();
+      this.pressing = true;
       const touch = e.pointerType === 'touch' || e.pointerType === 'pen';
       // The organisms under the finger when it went down: a tap or a long
       // press acts on them even if their markers glide away before it lifts
@@ -874,6 +890,7 @@ export class WorldView {
     });
     const up = (e: PointerEvent, cancelled: boolean) => {
       if (!pointers.delete(e.pointerId)) return;
+      if (pointers.size === 0) this.pressing = false;
       if (pinch) {
         // Lifting one finger of a pinch ends it; the other doesn't start a drag or tap.
         if (pointers.size < 2) pinch = null;

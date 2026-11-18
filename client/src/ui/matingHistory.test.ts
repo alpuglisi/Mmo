@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { OfferEntry } from '../model';
 import type { MatingRecord, OfferView } from '../protocol';
-import { historyRows, offerUpdateText } from './matingHistory';
+import { historyRows, meetText, offerLine, offerUpdateText } from './matingHistory';
 
 const offer = (id: number, status: OfferView['status'], tick: number): OfferView =>
   ({ id, from_player: 1, from_name: 'ann', to_player: 2, to_name: 'bob', mine: 10, partner: 20, status, created_tick: tick } as OfferView);
@@ -31,5 +31,19 @@ describe('mating history', () => {
     expect(offerUpdateText(offer(8, 'declined', 100), undefined, undefined, 1)).toBe('Mating offer 8: declined');
     const rows = historyRows([{ offer: bought, outcome, incoming: false }], []);
     expect(rows[0].line).toContain('bought from listing 4');
+  });
+});
+
+describe('escort and lineage offers', () => {
+  it('says how far and which way the partner is, for either side', () => {
+    const meet = { mine_x: 4, mine_y: 4, partner_x: 60, partner_y: 4, distance: 56 };
+    expect(meetText({ from_player: 1, meet }, 1)).toContain('56 tiles E of yours');
+    expect(meetText({ from_player: 1, meet }, 2)).toContain('56 tiles W of yours');
+    expect(meetText({ from_player: 1, meet: { ...meet, distance: 1 } }, 1)).toBe('The two are meeting now.');
+    expect(meetText({ from_player: 1 }, 1)).toBeNull();
+  });
+  it("names an offer to a lineage as the owner's pick, never #0", () => {
+    const o = { id: 3, mine: 5, partner: 0, from_name: 'ann', to_name: 'bob', status: 'pending' as const, lineage: 2 };
+    expect(offerLine(o)).toBe("#3: ann's #5 × bob's pick · pending");
   });
 });

@@ -60,6 +60,32 @@ pub enum GroupEvent {
     TimedOut { player: PlayerId, group: u8, target: Vec2, median: f32 },
 }
 
+/// How an attack order ended on its own (`World::take_attack_events`). A
+/// release, another possession or a move order ends it silently: the player
+/// did that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttackEnd {
+    /// The target was killed by the attacker or one of its pack (its lineage).
+    Killed,
+    /// The target died of something else.
+    TargetDied,
+    /// The target went to ground in its burrow, out of reach.
+    WentToGround,
+    /// The target got away: farther than 1.5 × `World::attack_range`.
+    Lost,
+    /// The attacker died.
+    AttackerDied,
+}
+
+/// An attack order that ended on its own, for the attacker's owner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttackEvent {
+    pub player: PlayerId,
+    pub attacker: OrgId,
+    pub target: OrgId,
+    pub end: AttackEnd,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum CommandError {
     NotFound(OrgId),
@@ -429,8 +455,8 @@ impl World {
         if q.sheltered {
             return Err(CommandError::Sheltered(target));
         }
-        let led = super::decide::led_pack(&self.config.balance);
-        let limit = super::decide::max_prey_mass(o, self.coop_bonus(o)) * super::decide::pack_scale_at(led, o);
+        let limit = super::decide::max_prey_mass(o, self.coop_bonus(o))
+            * super::decide::led_pack_scale(&self.config.balance, o);
         if q.mass() >= limit {
             return Err(CommandError::TooBig { mass: q.mass(), limit });
         }
@@ -446,6 +472,20 @@ impl World {
         self.organisms[i].order = None;
         self.attack_orders.insert(id, target);
         Ok(())
+    }
+
+    /// Why an attack order on `target` by `id` may be a bad idea, if it is:
+    /// the attacker's lineage has learned that the target's kind is
+    /// poisonous (`World::toxic_lesson`). The order is allowed all the same.
+    pub fn attack_warning(&self, id: OrgId, target: OrgId) -> Option<String> {
+        let (o, q) = (self.organism(id)?, self.organism(target)?);
+        let lesson = self.toxic_lesson(o.lineage, q.lineage);
+        (lesson >= super::toxic::LOOKS_POISONOUS).then(|| {
+            format!(
+                "#{target} looks poisonous to your kind: your animals have been poisoned eating its kind (on their own they pass it up {:.0}% of the time)",
+                100.0 * self.toxic_avoidance(o.lineage, q)
+            )
+        })
     }
 
     /// Days left of the grace a player lineage founded into a running
@@ -666,18 +706,41 @@ impl World {
             return;
         }
         let orders = std::mem::take(&mut self.attack_orders);
-        self.attack_orders = orders
-            .into_iter()
-            .filter(|&(a, t)| {
-                let (Some(&i), Some(&j)) = (self.index.get(&a), self.index.get(&t)) else { return false };
-                let (o, q) = (&self.organisms[i], &self.organisms[j]);
-                o.alive
-                    && o.possessed_by.is_some()
-                    && q.alive
-                    && !q.sheltered
-                    && o.pos.dist(q.pos) <= 1.5 * self.attack_range()
-            })
-            .collect();
+        let range = 1.5 * self.attack_range();
+        for (a, t) in orders {
+            let (Some(&i), Some(&j)) = (self.index.get(&a), self.index.get(&t)) else { continue };
+            let (o, q) = (&self.organisms[i], &self.organisms[j]);
+            let end = if !o.alive {
+                Some(AttackEnd::AttackerDied)
+            } else if o.possessed_by.is_none() {
+                // Released: the player ended it.
+                continue;
+            } else if !q.alive {
+                Some(if q.killer == Some(o.lineage) { AttackEnd::Killed } else { AttackEnd::TargetDied })
+            } else if q.sheltered {
+                Some(AttackEnd::WentToGround)
+            } else if o.pos.dist(q.pos) > range {
+                Some(AttackEnd::Lost)
+            } else {
+                None
+            };
+            match end {
+                None => {
+                    self.attack_orders.insert(a, t);
+                }
+                Some(end) => {
+                    if self.attack_events.len() < GROUP_EVENTS_KEPT {
+                        self.attack_events.push(AttackEvent { player: o.owner, attacker: a, target: t, end });
+                    }
+                }
+            }
+        }
+    }
+
+    /// The attack orders that ended on their own since the last call, oldest
+    /// first (at most `GROUP_EVENTS_KEPT` kept between calls).
+    pub fn take_attack_events(&mut self) -> Vec<AttackEvent> {
+        std::mem::take(&mut self.attack_events)
     }
 
     /// Fraction of a tick's movement one possession sub-step covers.
@@ -1152,7 +1215,8 @@ mod tests {
 
     #[test]
     fn moderately_thirsty_possessed_organism_follows_the_order() {
-        let (mut w, a, target) = ordered(60.0);
+        // Below `decide::POSSESS_DRINK`, where water near would win.
+        let (mut w, a, target) = ordered(50.0);
         let before = w.organism(a).unwrap().pos.dist(target);
         w.step();
         w.step();

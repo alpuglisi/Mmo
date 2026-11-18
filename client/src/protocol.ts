@@ -186,6 +186,9 @@ export interface OfferView {
   expires_tick?: number;
   /** An offer to any animal of this lineage: `partner` is 0 until accepted. */
   lineage?: number;
+  /** An accepted agreement's escort: where its two animals are (8-tile cells) and how far apart; they walk to meet
+   * on their own. */
+  meet?: { mine_x: number; mine_y: number; partner_x: number; partner_y: number; distance: number };
 }
 
 export interface WeatherView {
@@ -450,6 +453,8 @@ export interface StateView {
   escrow?: number;
   /** Your lineage's newcomer grace while it lasts (absent once over): other players can't attack it, and it can't attack theirs. */
   grace?: GraceView | null;
+  /** Lineages your animals have learned are poisonous: theirs "look poisonous to you". */
+  poisonous?: number[];
 }
 
 /** The newcomer grace left: game days, and at least some real minutes, whichever is longer. */
@@ -977,6 +982,8 @@ export interface LineageStats {
   ramp?: { founded_day: number; weight: number; days: number };
   /** Days left of the newcomer grace (others can't order attacks on yours); absent: none. */
   grace_days_left?: number;
+  /** Lineage-wide warnings now: `starving`, `near_cap`, `territory_starving` (absent from older servers). */
+  warnings?: { kind: string; text: string }[];
   /** Egg-laying lineages: their clutches on the ground (absent for live bearers and older servers). */
   eggs?: { clutches: number; eggs: number; brooded: number };
   legacy: LegacyPoint[];
@@ -1185,6 +1192,8 @@ export interface PlayerPlacement {
   value: number;
   /** Players ranked in the category. */
   of: number;
+  /** Won the category's title (one of the season's winners; a tie can be first without one). Absent from older servers. */
+  title?: boolean;
 }
 
 export interface PlayerSeason {
@@ -1241,6 +1250,8 @@ export interface SpeciesLineage {
 export interface SpeciesView {
   id: number;
   name: string;
+  /** Who may name it (`name_species`; absent on older servers). */
+  namer?: PlayerId;
   origin: 'initial' | 'founding' | 'split' | string;
   parent?: number;
   founded_day: number;

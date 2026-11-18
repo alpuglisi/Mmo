@@ -241,7 +241,6 @@ fn an_attack_order_alerts_the_targets_owner() {
         .get(&2)
         .map_or(Vec::new(), |l| l.iter().filter(|x| x.kind == AlertKind::Attack).map(|x| x.text.clone()).collect());
     assert_eq!(told.len(), 1, "{told:?}");
-    assert!(told[0].contains(&format!("#{}", b[0])) && told[0].contains("hunted"), "{told:?}");
     assert!(alerts(&g, AlertKind::Attack).is_empty(), "the attacker isn't alerted");
     assert!(told[0].starts_with(&format!("#{} of your B is being hunted", b[0])), "{told:?}");
     // Repeating the order, or turning on another of bo's animals, doesn't
@@ -441,4 +440,88 @@ fn territories_and_rallies_check_their_water() {
         Err("claim_cooldown".into())
     );
     assert_eq!(g.world.claim_cooldown_ticks(), 120, "2 minutes at 1 s a tick");
+}
+
+/// Possession ends a minute (real time) after the player's last session
+/// closes; coming back within it keeps it. After a restart too.
+#[test]
+fn possession_ends_when_the_player_is_gone() {
+    let (mut g, a) = game();
+    let grace = minutes_to_ticks(POSSESSION_GRACE_MINUTES, g.cfg.tick_ms);
+    run(&mut g, ClientMsg::Possess { organism: a[0] }).unwrap();
+    let possessed = |g: &Game| g.world.organisms.iter().any(|o| o.id == a[0] && o.possessed_by == Some(1));
+    g.disconnect(10);
+    for _ in 0..grace / 2 {
+        tick(&mut g);
+    }
+    assert!(possessed(&g), "within the grace");
+    g.connect(11, 1, "ann");
+    for _ in 0..grace + 2 {
+        tick(&mut g);
+    }
+    assert!(possessed(&g), "came back: kept");
+    g.disconnect(11);
+    for _ in 0..grace + 1 {
+        tick(&mut g);
+    }
+    assert!(!possessed(&g), "gone past the grace: released");
+    // A restart drops every session: the grace runs from the restore.
+    g.connect(12, 1, "ann");
+    g.command(12, 1, Some(1), ClientMsg::Possess { organism: a[0] });
+    let mut r = Game::resume(g.world.clone(), GameConfig::default(), g.saved(), Vec::new());
+    for _ in 0..grace + 1 {
+        r.world.step();
+        r.after_tick();
+    }
+    assert!(!r.world.organisms.iter().any(|o| o.possessed_by == Some(1)));
+}
+
+/// Lineage-wide warnings (playtest 3): a hunger crash, near the hard cap,
+/// animals starving inside a territory; each said once as an alert when it
+/// starts, again after a few days, and listed in the lineage statistics.
+#[test]
+fn lineage_warnings_flag_hunger_the_cap_and_starving_territories() {
+    let (mut g, a) = game();
+    run_days(&mut g, 1);
+    assert!(g.lineage_warnings(1).is_empty(), "{:?}", g.lineage_warnings(1));
+    // A day with many starved: the last record says so.
+    let r = g.history.back_mut().unwrap();
+    let e = r.lineages.iter_mut().find(|e| e.owner == 1).unwrap();
+    e.alive = 40;
+    e.deaths.insert("starved".into(), 6);
+    e.deaths.insert("thirst".into(), 2);
+    let w = g.lineage_warnings(1);
+    assert_eq!(w.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(), ["starving"], "{w:?}");
+    assert!(
+        w[0].text.contains("6 starved and 2 died of thirst") && w[0].text.contains("Litters are still full size"),
+        "{w:?}"
+    );
+    // Near the hard cap.
+    g.world.config.lineage_cap = 3;
+    assert!(g.lineage_warnings(1).iter().any(|w| w.kind == "near_cap" && w.text.starts_with("Near the hard cap: ")));
+    g.world.config.lineage_cap = 1500;
+    // A territory whose holders starve.
+    let at = g.world.organism(a[0]).unwrap().pos;
+    for o in g.world.organisms.iter_mut().filter(|o| o.owner == 1) {
+        o.pos = at;
+        o.needs.hunger = 95.0;
+    }
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: at.x, y: at.y, radius: 4.0 }).unwrap();
+    let w = g.lineage_warnings(1);
+    assert!(w.iter().any(|w| w.kind == "territory_starving" && w.text.contains("Group A (main)")), "{w:?}");
+    assert_eq!(g.lineage_stats(1).warnings, w);
+    // Alerts: once, then again after the repeat interval.
+    let mut out = Outbox::new();
+    g.warning_alerts(10, &mut out);
+    g.warning_alerts(11, &mut out);
+    let need = |g: &Game| alerts(g, AlertKind::Need).iter().filter(|t| t.contains("going hungry")).count();
+    assert_eq!(need(&g), 1);
+    g.warning_alerts(10 + WARNING_REPEAT_DAYS, &mut out);
+    assert_eq!(need(&g), 2);
+}
+
+fn run_days(g: &mut Game, days: u32) {
+    for _ in 0..days * g.world.config.ticks_per_day {
+        tick(g);
+    }
 }

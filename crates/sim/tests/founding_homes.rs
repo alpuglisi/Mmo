@@ -21,6 +21,12 @@ fn homes_hash() -> u64 {
         config.balance.desperate_risk = 0.0;
         // Pack hunts (version 36) change the days the world grows first too.
         config.balance.pack_hunt = 0.0;
+        // Version 37: dry founding sites move homes by design; the others
+        // change the days the world grows first.
+        config.balance.dry_sites = 0.0;
+        config.balance.drink_priority = 0.0;
+        config.balance.toxic_learning = 0.0;
+        config.balance.carnivore_energetics = 0.0;
         // Founded empty: the wild ecosystem, then the sample players.
         let mut w = presets::standard_world(config, 1);
         for o in &w.organisms {

@@ -132,7 +132,7 @@ export function tourSteps({ touch, name }: TourContext): TourStep[] {
       id: 'map',
       title: 'The map and the camera',
       body: touch
-        ? 'Drag to pan and pinch to zoom. Follow keeps the camera on your lineage (or the organism you possess). Migrate sends your adults somewhere: a group command. Legend explains the rings and icons.'
+        ? 'Drag to pan and pinch to zoom. Follow keeps the camera on your lineage (or the organism you possess). Tools holds the group commands: Migrate… sends your adults somewhere. Legend explains the rings and icons.'
         : 'Drag to pan, use the wheel or + and − to zoom. Follow keeps the camera on your lineage (or the organism you possess). Migrate… sends your adults somewhere: a group command. Legend (top right) explains the rings, icons and terrain colours.',
       targets: ['.toolbar', '#stage'],
     },

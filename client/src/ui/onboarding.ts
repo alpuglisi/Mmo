@@ -8,6 +8,8 @@
 // closed. Only the Help dialog is modal (and traps focus) while open.
 
 import './onboarding.css';
+import { FOUNDING_RAMP_TEXT } from '../designWarnings';
+import { SEASON_NOTICE_DAYS } from '../seasonNotice';
 import type { GameModel } from '../model';
 import {
   autoStarts, dueHints, HINT_IDS, HINTS, hintsAfterReset, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
@@ -288,6 +290,11 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
       + 'Bright colours warn predators that have learned to avoid them; toxic but drab prey is not recognised, so it poisons more hunters. Hunting toxic prey is risky.'],
     ['Droughts and catastrophes', () => 'When much of the land dries out a drought notice appears over the map: animals far from lakes and rivers go thirsty. '
       + 'Catastrophes (severe winters, megadroughts, epidemics, flood years) are pinned over the map with the days left.'],
+    ['Founding again: the founding ramp', () => `${FOUNDING_RAMP_TEXT} Your renown, records and titles stay when a lineage dies out or you retire it. `
+      + 'The design screen says how the world looks right now (season, drought, catastrophe) before you found.'],
+    ['Founding before winter: the winter provision', () => 'Winter is the hardest time to start: plants die back and cold animals burn their reserves. '
+      + `A lineage founded within ${SEASON_NOTICE_DAYS} days of winter (or during it) arrives fed, with full fat reserves; the design screen says when this applies. `
+      + 'Fur, fat stores and hibernation help it through (the starting design has all three).'],
     ['Growth and the soft cap', () => 'Breeding slows as your lineage grows: litters shrink toward the soft cap (half size at it) and members get hungrier past it; births stop only at the hard cap. '
       + 'The Lineage tab shows where you stand.'],
   ];

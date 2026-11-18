@@ -62,6 +62,7 @@ mod seasonal;
 mod snapshot;
 mod spatial;
 mod stagger;
+pub mod toxic;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -544,6 +545,13 @@ pub struct World {
     /// change (version 33).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v35::list"))]
     bonus_slots: BTreeMap<PlayerId, u32>,
+    /// Rendezvous of agreed matings, organism → its partner
+    /// (`World::set_rendezvous`): both walk toward each other unless a
+    /// threat or an urgent need comes first. Set by the server for every
+    /// accepted agreement and set again when it restores a world, so not
+    /// saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    rendezvous: BTreeMap<OrgId, OrgId>,
     /// Attack orders of possessed organisms, attacker → target
     /// (`World::possess_attack`; version 36).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]
@@ -558,6 +566,15 @@ pub struct World {
     /// snapshots, whose migrations get a deadline from the restore).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v41"))]
     group_plans: groups::GroupPlans,
+    /// What each lineage has learned about toxic prey: (predator lineage,
+    /// prey lineage) → lesson, 0–1 (`World::toxic_lesson`,
+    /// `Balance::toxic_learning`; version 44).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44::list"))]
+    toxic_lessons: BTreeMap<(u32, u32), f32>,
+    /// Attack orders that ended on their own, for the host
+    /// (`World::take_attack_events`); not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    attack_events: Vec<commands::AttackEvent>,
     /// Each lineage's crowding this tick, indexed like `lineages`: the
     /// litter multiplier and the hunger multiplier
     /// (`Balance::lineage_crowding`; `[1, 1]` when off and for the wild).
@@ -566,6 +583,13 @@ pub struct World {
     #[cfg_attr(feature = "serde", serde(skip))]
     crowding: Vec<[f32; 2]>,
 }
+
+/// Steps from water a founder's tile needs (`Balance::dry_sites`).
+const DRY_WATER_DIST: u16 = 2;
+/// Share of dry ground around a home that is enough for a founding.
+const DRY_HOME_SHARE: f32 = 0.6;
+/// Extra home picks tried for one with enough dry ground.
+const DRY_HOME_TRIES: usize = 8;
 
 /// Cumulative wall-clock seconds per phase of `World::step`. Timing never
 /// feeds back into the simulation.
@@ -658,8 +682,11 @@ impl World {
             slots_used: BTreeMap::new(),
             bonus_slots: BTreeMap::new(),
             attack_orders: BTreeMap::new(),
+            rendezvous: BTreeMap::new(),
             lineage_founded: Vec::new(),
             group_plans: groups::GroupPlans::default(),
+            attack_events: Vec::new(),
+            toxic_lessons: BTreeMap::new(),
             crowding: Vec::new(),
             clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
@@ -973,20 +1000,48 @@ impl World {
         // only adds this lineage's organisms, which it ignores except as a
         // crowd.
         let mut search = None;
+        // Founders land on dry ground (`Balance::dry_sites`): playtest 2's
+        // founders drowned on landing at coastal homes.
+        let dry_sites = self.config.balance.dry_sites > 0.0;
+        // Its own stream for the extra home picks and the placements, so the
+        // founders' genomes are drawn as without the rule.
+        let mut site_rng = rng_for(self.config.seed, stream::FOUNDING, owner as u64 | 1 << 40, self.next_id);
         for k in 0..design.founders {
             if k % group_size == 0 {
                 let s = search.get_or_insert_with(|| HomeSearch::new(self, &probe, lineage));
                 home = self.pick_home(&probe, s, &mut rng);
+                if dry_sites {
+                    // A home with room on dry land for the founding: the
+                    // first of a few picks with enough of it, else the
+                    // driest.
+                    let mut best = (self.dry_share(home, spread), home);
+                    for _ in 0..DRY_HOME_TRIES {
+                        if best.0 >= DRY_HOME_SHARE {
+                            break;
+                        }
+                        let s = search.as_mut().expect("search");
+                        let h = self.pick_home(&probe, s, &mut site_rng);
+                        let d = self.dry_share(h, spread);
+                        if d > best.0 {
+                            best = (d, h);
+                        }
+                    }
+                    home = best.1;
+                }
             }
             let genome = design.founder_genome(owner, &mut rng);
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
             let mut pos = home;
-            for _ in 0..20 {
-                let off = Vec2::new(rng.gen_range(-spread..spread), rng.gen_range(-spread..spread));
+            let tries = if dry_sites { 40 } else { 20 };
+            for _ in 0..tries {
+                let r = if dry_sites { &mut site_rng } else { &mut rng };
+                let off = Vec2::new(r.gen_range(-spread..spread), r.gen_range(-spread..spread));
                 let cand = self.map.clamp(home + off);
                 // Passable (`passable_for`), from the search's region map.
                 let (cx, cy) = self.map.tile_coords(cand);
-                if search.as_ref().is_some_and(|s| s.region[self.map.idx(cx, cy)] != u32::MAX) {
+                if search.as_ref().is_some_and(|s| s.region[self.map.idx(cx, cy)] != u32::MAX)
+                    && (!dry_sites || self.dry_ground(cand))
+                {
                     pos = cand;
                     break;
                 }
@@ -1012,6 +1067,30 @@ impl World {
     /// of at most this many, each at its own home. Above every preset
     /// design's founding (46), so the standard worlds found as before.
     pub const FOUNDING_GROUP: u32 = 48;
+
+    /// Dry ground for a founder or a home (`Balance::dry_sites`): no water
+    /// or ice on the tile, and at least [`DRY_WATER_DIST`] steps from water,
+    /// so a flood or the melt doesn't reach it at once.
+    fn dry_ground(&self, p: Vec2) -> bool {
+        let (x, y) = self.map.tile_coords(p);
+        let i = self.map.idx(x, y);
+        let t = &self.map.tiles[i];
+        t.water_depth == 0.0 && t.ice == 0.0 && self.map.water_dist[i] >= DRY_WATER_DIST
+    }
+
+    /// Share of the tiles within `r` of `p` that are dry ground.
+    fn dry_share(&self, p: Vec2, r: f32) -> f32 {
+        let (cx, cy) = self.map.tile_coords(p);
+        let r = r.ceil() as usize;
+        let (mut dry, mut all) = (0u32, 0u32);
+        for y in cy.saturating_sub(r)..(cy + r + 1).min(self.map.height) {
+            for x in cx.saturating_sub(r)..(cx + r + 1).min(self.map.width) {
+                all += 1;
+                dry += u32::from(self.dry_ground(Map::tile_center(x, y)));
+            }
+        }
+        dry as f32 / all.max(1) as f32
+    }
 
     /// Share of the vegetation still standing within 4 tiles of `p` (1 where
     /// the ground grows nothing), against what it held when the world began

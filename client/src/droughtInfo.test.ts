@@ -12,4 +12,12 @@ describe('the drought notice', () => {
     expect(droughtNotice(0.29, true).on).toBe(false);
     expect(droughtNotice(0.6, false, true).on).toBe(false);
   });
+
+  it('says frozen, not just dry, in winter', () => {
+    const n = droughtNotice(0.72, false, false, 'winter');
+    expect(n.on).toBe(true);
+    expect(n.title).toBe('Dry winter: 72% of the land has no open water');
+    expect(n.advice).toMatch(/frozen/);
+    expect(droughtNotice(0.72, false, false, 'summer').title).toBe('Drought: 72% of the land is dry');
+  });
 });

@@ -331,7 +331,8 @@ async fn directed_mating_consent_round_trip() {
     let u = wait_for(&mut wb, "bob's update", |v| v["type"] == "mating_update").await;
     assert_eq!(u["offer"]["status"], status.as_str());
     if status == "accepted" {
-        assert_eq!(upd["error"]["code"], "too_far");
+        // Not an error: the pair walks to meet, the update says where.
+        assert!(upd["error"].is_null() && upd["offer"]["meet"]["distance"].as_f64().is_some(), "{upd}");
         // Ann withdraws; both hear it. No tick has run since the answer, so
         // the agreement is still open.
         send(&mut wa, json!({"id": 12, "type": "cancel_mating", "request": offer_id})).await;
