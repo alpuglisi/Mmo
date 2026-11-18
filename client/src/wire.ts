@@ -7,7 +7,7 @@
 // FILE IN SYNC), and wire.fixture.json, written by a Rust test, pins the two
 // together (wire.test.ts).
 
-import type { Appearance, ClockView, GroupView, LeaderRow, NearbyOrganism, OfferView, OwnOrganism, StateView, ViewWindow, VisionView, WeatherView } from './protocol';
+import type { Appearance, ClockView, GraceView, GroupView, LeaderRow, NearbyOrganism, OfferView, OwnOrganism, StateView, ViewWindow, VisionView, WeatherView } from './protocol';
 
 /** Binary delta states. */
 export const PROTO_DELTA = 2;
@@ -25,6 +25,8 @@ const GROWTH = 1000;
 
 const MALE = 1;
 const MATURED = 2;
+/** A neighbour's lineage is under its newcomer grace. */
+const PROTECTED = 8;
 const POSSESSED = 4;
 const PREGNANT = 8;
 
@@ -84,6 +86,8 @@ interface Head {
   view: ViewWindow;
   balance: number;
   escrow: number;
+  /** Optional (servers before the newcomer grace view don't send it). */
+  grace?: GraceView | null;
   leaderboard: { day: number | null; breeding_adults: number };
 }
 
@@ -276,6 +280,7 @@ export class DeltaDecoder {
     const head = (this.head ? { ...this.head } : {}) as Record<string, unknown>;
     for (const k of HEAD_KEYS) if (k in meta) head[k] = meta[k];
     for (const k of HEAD_KEYS) if (!(k in head)) throw malformed(`a keyframe lacks ${k}`);
+    if ('grace' in meta) head.grace = meta.grace;
     if (kind === KEYFRAME) this.poisonous = [];
     if (Array.isArray(meta.poisonous)) this.poisonous = meta.poisonous.filter((x): x is number => typeof x === 'number');
     const list = (k: string): unknown[] => {
@@ -357,6 +362,7 @@ export class DeltaDecoder {
       sex: o.flags & MALE ? 'male' : 'female',
       matured: (o.flags & MATURED) !== 0,
       look: this.look(o.look),
+      ...((o.flags & PROTECTED) !== 0 ? { protected: true as const } : {}),
     }));
     return {
       clock: h.clock,
@@ -374,6 +380,7 @@ export class DeltaDecoder {
       offers: [...this.offers].sort(byId).map(([, o]) => o),
       balance: h.balance,
       escrow: h.escrow,
+      ...(h.grace ? { grace: h.grace } : {}),
       ...(this.poisonous.length > 0 ? { poisonous: this.poisonous } : {}),
     };
   }

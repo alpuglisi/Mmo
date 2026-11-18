@@ -51,6 +51,7 @@ fn migration_targets_on_water_move_to_the_shore_or_are_refused() {
     assert_eq!(w.command_migrate_group(1, 0, Vec2::new(-1.0, 3.0)), Err(CommandError::OffMap));
     // A group with no members is refused (the main group always exists).
     assert_eq!(w.command_migrate_group(1, 1, Vec2::new(4.0, 3.0)), Err(CommandError::NoSuchGroup(1)));
+    assert!(!w.group_has_members(1, 3) && w.group_has_members(1, 0));
     // Land is taken as given.
     let land = Vec2::new(4.2, 7.9);
     assert_eq!(w.command_migrate(1, land), Ok(land));

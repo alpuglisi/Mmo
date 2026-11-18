@@ -621,7 +621,7 @@ mod tests {
         // Accepted, the trip carries risk for both.
         let id = *g.offers.keys().next().unwrap();
         g.connect(21, 2, "bob");
-        g.command(21, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.command(21, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         g.disconnect(21);
         assert_eq!(g.offers[&id].status, OfferStatus::Accepted, "apart, the agreement waits");
         let p = g.world.offline_protection();

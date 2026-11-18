@@ -495,6 +495,7 @@ impl Game {
             ClientMsg::BuyListing { mine, .. } | ClientMsg::Bid { mine, .. } => c.touch(*mine),
             // Offers, listings, balances and escrow are read for every
             // state; a mating they run reports its pair itself.
+            ClientMsg::OfferToLineage { mine, .. } => c.touch(*mine),
             ClientMsg::RespondMating { .. }
             | ClientMsg::CompleteMating { .. }
             | ClientMsg::CancelMating { .. }
@@ -510,6 +511,9 @@ impl Game {
             | ClientMsg::RenownShop
             | ClientMsg::BuyMatingSlot
             | ClientMsg::Compatibility
+            | ClientMsg::SetNameplate { .. }
+            | ClientMsg::NameSpecies { .. }
+            | ClientMsg::Nameplates
             | ClientMsg::Resync
             | ClientMsg::WatchSeason { .. } => {}
         }
@@ -613,10 +617,11 @@ impl Game {
             Some(views) => views.iter().map(|v| v.clone().expect("filled")).collect(),
             None => mine.iter().map(|&i| self.own_view(&orgs[i as usize], tpd)).collect(),
         };
-        let nearby: Vec<NearbyOrganism> = match near {
+        let mut nearby: Vec<NearbyOrganism> = match near {
             Some(near) => picked.iter().map(|&i| near.peek(i).clone()).collect(),
             None => picked.iter().map(|&i| NearbyOrganism::from_org(&orgs[i as usize])).collect(),
         };
+        self.mark_protected(&mut nearby);
         let ids = idx.offers.get(&player).map_or(&[][..], Vec::as_slice);
         let offers = ids.iter().map(|&id| self.offer_view(id)).collect();
         let escrow = ids.iter().map(|id| &self.offers[id]).filter(|o| o.from == player).map(|o| o.escrow).sum::<u64>()
@@ -639,6 +644,7 @@ impl Game {
             offers,
             balance: self.balance(player),
             escrow,
+            grace: self.grace_view(player),
             poisonous: self.poisonous_to(player),
         }
     }

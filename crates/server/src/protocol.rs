@@ -62,8 +62,31 @@ pub enum ClientMsg {
     /// and failure chance, and why the pair can't conceive if it can't. Data:
     /// [`MatingPreviewView`]. Nothing changes and no slot is used.
     PreviewMating { mine: OrgId, partner: OrgId },
-    /// The partner organism's owner accepts or declines an offer.
-    RespondMating { request: u64, accept: bool },
+    /// Offer a directed mating of your `mine` with any suitable animal of
+    /// another player's `lineage`: its owner picks one when accepting
+    /// (`respond_mating` with `partner`), or the server picks the nearest
+    /// available one (adult, of the other sex, not pregnant, not promised,
+    /// fertile with `mine`). Spares guessing which of a rival's females are
+    /// free (requests to a pregnant one are refused `partner_unavailable`).
+    /// Otherwise like `request_mating` (price in escrow, the same limits).
+    /// Data: `{offer}`; the offer's `partner` is 0 and `lineage` set until
+    /// accepted.
+    OfferToLineage {
+        mine: OrgId,
+        lineage: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        price: Option<u64>,
+    },
+    /// The partner organism's owner accepts or declines an offer. For an
+    /// offer to the lineage (`offer_to_lineage`), `partner` picks the animal
+    /// (default: the nearest available one; `no_partner_available` if none,
+    /// and the offer stays open).
+    RespondMating {
+        request: u64,
+        accept: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partner: Option<OrgId>,
+    },
     /// Retry an accepted agreement now (it also completes on its own once the
     /// two organisms meet).
     CompleteMating { request: u64 },
@@ -219,6 +242,15 @@ pub enum ClientMsg {
     /// of the soft lineage cap is alive (`reinforce_blocked` in the shop
     /// says why not). Data: `{added: [ids], shop: ShopView}`.
     Reinforce,
+    /// Buy or change your nameplate: a `color` from the shop's palette and a
+    /// `title` (1–24 characters) shown with your name (cosmetic; 500 renown
+    /// the first time, 100 per change). Data: `{nameplate, shop}`.
+    SetNameplate { color: String, title: String },
+    /// Name a species your lineage founded (cosmetic; 300 renown): a
+    /// species whose founder is you, still alive. Data: `{species, name}`.
+    NameSpecies { species: u32, name: String },
+    /// Every player's nameplate. Data: `{nameplates: {player: {color, title}}}`.
+    Nameplates,
     /// Which lineages yours can breed with: the best body-plan fertility
     /// between a sample of your adults and each other lineage's, and the
     /// body-plan gene that keeps you apart. Data: [`CompatibilityView`].
@@ -251,6 +283,7 @@ impl ClientMsg {
             ClientMsg::RequestMating { .. } => "request_mating",
             ClientMsg::PreviewMating { .. } => "preview_mating",
             ClientMsg::RespondMating { .. } => "respond_mating",
+            ClientMsg::OfferToLineage { .. } => "offer_to_lineage",
             ClientMsg::CompleteMating { .. } => "complete_mating",
             ClientMsg::CancelMating { .. } => "cancel_mating",
             ClientMsg::Migrate { .. } => "migrate",
@@ -276,6 +309,9 @@ impl ClientMsg {
             ClientMsg::BuyMatingSlot => "buy_mating_slot",
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
+            ClientMsg::SetNameplate { .. } => "set_nameplate",
+            ClientMsg::NameSpecies { .. } => "name_species",
+            ClientMsg::Nameplates => "nameplates",
             ClientMsg::Resync => "resync",
             ClientMsg::WatchSeason { .. } => "watch_season",
         }
@@ -300,6 +336,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "rally",
     "cancel_rally",
     "split_group",
+    "retire_lineage",
     "merge_groups",
     "set_view",
     "clear_view",
@@ -309,10 +346,23 @@ pub const COMMAND_NAMES: &[&str] = &[
     "create_auction",
     "bid",
     "browse_market",
-    "ledger",
     "mating_prefs",
+    "ledger",
+    "renown_shop",
+    "buy_mating_slot",
+    "reinforce",
+    "compatibility",
     "resync",
     "watch_season",
+    "offer_to_lineage",
+    "retire_lineage",
+    "renown_shop",
+    "buy_mating_slot",
+    "reinforce",
+    "compatibility",
+    "set_nameplate",
+    "name_species",
+    "nameplates",
 ];
 
 /// The known command named `t`, as a static name (for replies to messages
@@ -499,7 +549,8 @@ pub enum AlertKind {
     /// A group order ended on its own: a migration arrived, a group was
     /// left with no members.
     Group,
-    /// Another player ordered an attack on one of your organisms.
+    /// Another player ordered an attack on one of your organisms, or an
+    /// attack you ordered ended (killed, escaped, lost sight, …).
     Attack,
 }
 
@@ -784,13 +835,16 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             TooBig { .. } => "too_big",
             Sheltered(_) => "sheltered",
             NewcomerGrace { .. } => "newcomer_grace",
+            OwnGrace { .. } => "own_grace",
         };
         let info = ErrorInfo::new(code, e.to_string());
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             MostlyWater { share } => info.with_detail(serde_json::json!({ "water_share": share })),
             TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
-            NewcomerGrace { days_left } => info.with_detail(serde_json::json!({ "days_left": days_left })),
+            NewcomerGrace { days_left } | OwnGrace { days_left } => {
+                info.with_detail(serde_json::json!({ "days_left": days_left }))
+            }
             _ => info,
         }
     }
@@ -919,6 +973,15 @@ pub struct OfferView {
     /// Renown held in escrow (the price, from the requester) while open.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub escrow: u64,
+    /// While open: the tick a pending request expires unanswered, or an
+    /// accepted agreement lapses if the two haven't met (wall-clock
+    /// lifetimes, `GameConfig::offer_ticks` and `purchase_deadline_ticks`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_tick: Option<u64>,
+    /// An offer to any animal of this lineage (`offer_to_lineage`): `partner`
+    /// is 0 until its owner accepts and an animal is picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<u32>,
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -939,10 +1002,15 @@ pub struct WeatherView {
     pub catastrophe: Option<CatastropheView>,
 }
 
+/// Every count here (day, year, era) is 0-based, as are the day and era
+/// numbers elsewhere in the API; the game's screens and alerts show them
+/// counted from 1 ("Year 1 · day 1", "Era 1").
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ClockView {
     pub tick: u64,
+    /// Days since the world began (0-based).
     pub day: u64,
+    /// Years since the world began (0-based).
     pub year: u64,
     pub hour: u32,
     pub season: String,
@@ -1151,6 +1219,10 @@ pub struct NearbyOrganism {
     pub matured: bool,
     /// Visible body plan, for the client's sprite.
     pub look: Appearance,
+    /// `Some(true)` when its lineage is a newcomer under its grace (no other
+    /// player's animal may attack it, nor it theirs); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1202,11 +1274,28 @@ pub struct StateView {
     /// Renown of yours held in escrow on open agreements.
     #[serde(default)]
     pub escrow: u64,
+    /// Your lineage's newcomer grace while it lasts: other players' animals
+    /// can't attack it, and it can't attack theirs. Absent once it ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace: Option<GraceView>,
     /// Lineages your animals have learned are poisonous
     /// (`World::looks_poisonous_to`): the client marks theirs "looks
     /// poisonous to you".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub poisonous: Vec<u32>,
+}
+
+/// The newcomer grace left (`StateView::grace`). It lasts a number of game
+/// days and at least a number of real minutes, whichever is longer.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GraceView {
+    /// Game days left, to a tenth.
+    pub days_left: f32,
+    /// The tick it ends on.
+    pub until_tick: u64,
+    /// Real seconds left at the server's clock, rounded up to tens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub real_seconds_left: Option<u64>,
 }
 
 /// World summary for `GET /api/world`.
@@ -1234,10 +1323,19 @@ pub struct WorldSummary {
     /// reserves full: `GameConfig::winter_provision`).
     #[serde(default)]
     pub winter_provision: bool,
-    /// Most living organisms (young included) one player may have: at it,
-    /// births pause (`WorldConfig::lineage_cap`, scaled to the map).
+    /// The lineage cap (`WorldConfig::lineage_cap`, scaled to the map): with
+    /// crowding on, the soft cap where breeding is at half pace; off, the
+    /// most living organisms one player may have.
     #[serde(default)]
     pub lineage_cap: usize,
+    /// No births past this many living members (the soft cap's ceiling;
+    /// equal to `lineage_cap` with crowding off).
+    #[serde(default)]
+    pub lineage_hard_cap: usize,
+    /// Player lineages in their newcomer grace: other players' animals
+    /// can't be ordered to attack them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected: Vec<ProtectedLineage>,
 }
 
 /// One world of `GET /api/worlds`.
@@ -1421,6 +1519,14 @@ pub struct LineageStats {
     /// The soft lineage cap and how crowded the lineage is now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crowding: Option<CrowdingView>,
+    /// How much of the legacy share counts toward the ranked season now
+    /// (the founding ramp, 0..1), and over how many days it ramps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ramp: Option<RampView>,
+    /// Days left of the lineage's newcomer grace (others' animals can't be
+    /// ordered to attack it); absent when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_days_left: Option<f32>,
     /// An egg-laying lineage's clutches waiting to hatch (absent for live
     /// bearers): what "pregnant" means for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1429,6 +1535,26 @@ pub struct LineageStats {
     pub legacy: Vec<LegacyPoint>,
     /// Recent alerts, newest last.
     pub alerts: Vec<AlertView>,
+}
+
+/// The founding ramp (`lineage_stats.ramp`): a new lineage's share counts
+/// toward the ranked season gradually.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RampView {
+    /// The day the lineage was founded.
+    pub founded_day: u64,
+    /// Share of the legacy share counted now, 0..1.
+    pub weight: f64,
+    /// Days from founding to counting in full.
+    pub days: u64,
+}
+
+/// A player lineage in its newcomer grace (`WorldSummary::protected`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ProtectedLineage {
+    pub player: PlayerId,
+    pub lineage: u32,
+    pub days_left: f32,
 }
 
 /// Whose genes make up a legacy share (`lineage_stats.score`). The score
@@ -1450,8 +1576,11 @@ pub struct ScoreBreakdown {
     /// Your alleles in your own lineage (the part of `share` at home).
     pub home_share: f64,
     /// Your alleles outside your lineage: in rivals' animals and the wild.
-    /// Earns the royalty.
     pub exported_share: f64,
+    /// The part of `exported_share` in other players' lineages: what the
+    /// royalty pays for (alleles in the wild came from no trade).
+    #[serde(default)]
+    pub traded_share: f64,
     /// Others' alleles your lineage carries (`head_share - home_share`):
     /// what hybridising cost your share.
     pub foreign_share: f64,
@@ -1461,7 +1590,7 @@ pub struct ScoreBreakdown {
     /// Where your alleles live, largest first; `share` here is of your
     /// alleles (sums to 1).
     pub placed: Vec<GeneHost>,
-    /// Renown a day the royalty pays at this `exported_share`.
+    /// Renown a day the royalty pays at this `traded_share`.
     pub royalty: u64,
 }
 
@@ -1536,8 +1665,23 @@ pub struct ShopView {
     /// Kept (destroyed) from every stud fee or price paid out, percent.
     pub market_fee_percent: u64,
     /// Royalty: renown a day per percentage point of all alleles that are
-    /// yours and live outside your lineage.
+    /// yours and live in other players' lineages.
     pub royalty_per_point: f64,
+    /// Reinforcements bought this ranked season, and the most allowed.
+    #[serde(default)]
+    pub reinforcements_bought: u32,
+    #[serde(default)]
+    pub reinforcements_max: u32,
+    /// Cosmetic sinks: the price of a nameplate now (first or change), its
+    /// palette, your nameplate, and the price of naming a species.
+    #[serde(default)]
+    pub nameplate_price: u64,
+    #[serde(default)]
+    pub nameplate_colors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nameplate: Option<crate::economy::Nameplate>,
+    #[serde(default)]
+    pub species_name_price: u64,
 }
 
 /// `compatibility`: which lineages yours can breed with.
@@ -1888,6 +2032,7 @@ impl NearbyOrganism {
             sex: Cow::Borrowed(sex_name(o.sex)),
             matured: o.matured,
             look: Appearance::of(o),
+            protected: None,
         }
     }
 }
@@ -1895,6 +2040,24 @@ impl NearbyOrganism {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every command the parser knows, read from its own "unknown variant"
+    /// error, has a name in `COMMAND_NAMES` (for `bad_message` replies).
+    #[test]
+    fn every_command_has_a_name() {
+        let err = serde_json::from_str::<ClientMsg>(r#"{"type":"no_such_command"}"#).unwrap_err().to_string();
+        let list = err.split("expected one of").nth(1).expect("a variant list");
+        // "`possess`, `order_move`, … `watch_season` at line 1 column 25"
+        let names: std::collections::BTreeSet<&str> = list.split('`').skip(1).step_by(2).collect();
+        let known: std::collections::BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
+        assert_eq!(names, known, "{err}");
+        // And the web client has a label for each (`client/src/errors.ts`).
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../client/src/errors.ts");
+        let ts = std::fs::read_to_string(path).unwrap();
+        for n in COMMAND_NAMES {
+            assert!(ts.contains(&format!(" {n}: '")), "errors.ts has no label for {n}");
+        }
+    }
 
     #[test]
     fn client_messages_parse() {
@@ -2128,6 +2291,9 @@ pub struct SpeciesLineage {
     pub lineage: u32,
     pub name: String,
     pub owner: PlayerId,
+    /// The owner's player name ("wild" for the wild ecosystem).
+    #[serde(default)]
+    pub owner_name: String,
     /// Estimated breeding adults of this lineage in the species.
     pub adults: f64,
 }
@@ -2286,6 +2452,7 @@ pub struct EraBoard {
 /// `GET /api/eras`: the current era and finished eras' rankings, newest first.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct EraList {
+    /// The era under way (0-based; shown as `era + 1`).
     pub era: u64,
     pub era_days: u64,
     pub first_day: u64,

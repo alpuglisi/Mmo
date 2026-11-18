@@ -82,6 +82,28 @@ pub struct ScoringConfig {
     /// Representative genomes kept per species to match clusters across
     /// detections (farthest-point picks, so every branch is covered).
     pub species_reps: usize,
+    /// Hysteresis (snapshot version 42; 0 or 1 turns each off, as in older
+    /// worlds). A split counts (named, announced, credited) only once its
+    /// cluster has been detected this many times in a row, each time with at
+    /// least `species_min_new` samples, and then has at least
+    /// `species_confirm_adults` estimated adults; until then it is a
+    /// candidate and its members are unclassified. Detections are
+    /// `species_interval_days` apart, so the default 4 is 20 days.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_confirm: u32,
+    /// Estimated adults a candidate needs to be confirmed as a species.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_confirm_adults: f32,
+    /// A species merges into another (goes extinct, merged) only after
+    /// continuing as the same cluster as a larger one this many detections
+    /// in a row; until then it stays alive with no adults of its own.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_merge_confirm: u32,
+    /// A new cluster that matches a species which merged away within this
+    /// many days is that species again (same id and name, no new
+    /// announcement or credit), not a new one. 0: never re-used.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_revive_days: u32,
     /// Era length in years. Each era ends with a final legacy ranking and
     /// niche-dominance awards.
     pub era_years: u32,
@@ -109,6 +131,10 @@ impl Default for ScoringConfig {
             species_min_new: 4,
             species_extinct_after: 2,
             species_reps: 12,
+            species_confirm: 4,
+            species_confirm_adults: 12.0,
+            species_merge_confirm: 4,
+            species_revive_days: 360,
             era_years: 3,
             catastrophes: false,
             catastrophe_chance: 0.4,
@@ -939,15 +965,15 @@ pub struct Balance {
     /// it. 0: no grace.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36"))]
     pub attack_grace: f32,
-    // Playtest 2 fixes (version 42; *Playtest 2: predators, toxins and
-    // drowning* in the README). Off at 0, what snapshots before version 42
-    // read (`serde_util::before_v42`).
+    // Playtest 2 fixes (version 44; *Playtest 2: predators, toxins and
+    // drowning* in the README). Off at 0, what snapshots before version 44
+    // read (`serde_util::before_v44`).
     /// Drinking first when parched: past thirst 0.7 drinking gains up to
     /// `0.6 × drink_priority`, a threat in sight stops holding it back and
     /// fattening stops pulling the animal to graze; possessed animals break
     /// off an order to drink at thirst 60 with water near, and hunters and
     /// ordered animals drink at water they pass. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub drink_priority: f32,
     /// Learned avoidance of toxic prey: each time a predator is poisoned by
     /// its prey, its lineage's lesson about the prey's lineage grows by
@@ -959,20 +985,20 @@ pub struct Balance {
     /// protection), and a lineage that knows a toxin takes less harm biting
     /// it, `1 − 0.7 × lesson` (`world::toxic`). 0: off (only the
     /// bright-prey aversion of a poisoned individual).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub toxic_learning: f32,
     /// Dry ground for sleeping and founding: no dormancy on ice over water
     /// deep enough to drown the sleeper at the melt (a sleeper on such ice
     /// wakes), and founders land only on dry ground away from deep water
     /// (`World::found_lineage_grouped`). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub dry_sites: f32,
     /// Obligate carnivores' energetics: an obligate carnivore's hunger
     /// rises up to `0.3 × carnivore_energetics` slower (none at carnivory
     /// 0.7 or below, all of it at 0.95 and above: big, infrequent meals, a
     /// lean-season economy). Playtest 2's player carnivores needed a fifth
     /// of their weight in prey a day and starved. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub carnivore_energetics: f32,
     /// Player-led pack hunts on big prey: in a hunt a player leads (an
     /// attack order and the pack-mates who join it) the prey mass limit
@@ -980,7 +1006,7 @@ pub struct Balance {
     /// times pack instinct, and up to 8 pack-mates at the prey strike
     /// beside the leader: a full pack takes prey several times one hunter's
     /// weight. 0: off (the wild rule, at most 4 pack-mates).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub led_pack: f32,
 }
 

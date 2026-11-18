@@ -11,10 +11,16 @@ import { traitName } from './traitNames';
 /** Categorical slots (dark surface), in fixed order. */
 export const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9', '#8b949e'];
 
-/** Death causes shown on their own; the rest fold into "other". */
-export const CAUSES = ['eaten', 'starved', 'thirst', 'exposure', 'old_age'] as const;
+/** Death causes shown on their own; the rest fold into "other" (toxins, drowning and attrition were lumped there: playtest 2). */
+export const CAUSES = ['eaten', 'starved', 'thirst', 'exposure', 'toxin', 'drowned', 'attrition', 'old_age'] as const;
 export const CAUSE_COLORS: Record<string, string> = {
   eaten: SERIES[1], starved: SERIES[3], thirst: SERIES[0], exposure: SERIES[5], old_age: SERIES[2], other: SERIES[6],
+  toxin: '#9bbd2e', drowned: '#2fb3c4', attrition: '#b07a52',
+};
+/** A cause in the charts' words. */
+export const CAUSE_LABELS: Record<string, string> = {
+  eaten: 'eaten', starved: 'starved', thirst: 'thirst', exposure: 'cold or heat', toxin: 'poisoned (toxic prey)',
+  drowned: 'drowned', attrition: 'attrition (disease, accidents)', old_age: 'old age', other: 'other',
 };
 
 export type Scale = (v: number) => number;
@@ -115,6 +121,22 @@ export interface DriftRow {
   founding: number;
   drift: number;
   history: (number | null)[];
+}
+
+/** Litter size gene → young per birth (sim `litter_from_gene`, unrounded for a mean). */
+export const MAX_LITTER = 12;
+
+/**
+ * A gene's mean as players read it: litter size as young per birth (the gene
+ * runs 0..1; playtest 2 found "Offspring per birth 0.18" for litters of 3),
+ * other genes as their 0..1 value. `delta` formats a change.
+ */
+export function geneValueText(gene: string, v: number, delta = false): string {
+  if (gene === 'litter_size') {
+    const n = v * (MAX_LITTER - 1);
+    return delta ? `${n >= 0 ? '+' : ''}${n.toFixed(1)} young` : `${(1 + n).toFixed(1)} per birth`;
+  }
+  return delta ? `${v >= 0 ? '+' : ''}${v.toFixed(3)}` : v.toFixed(2);
 }
 
 /** The `n` genes that drifted most from their founding mean (the server sorts them). */
@@ -306,7 +328,7 @@ export function vitalsChart(vitals: DayVitals[]): SVGElement {
       const y0 = down(s.y0) + (s.y0 > 0 ? 1 : 0);
       const h = Math.max(0.5, down(s.y1) - y0);
       root.append(svg('rect', { x, y: y0, width: bw, height: h, fill: CAUSE_COLORS[s.cause], opacity: today ? 0.6 : 1 },
-        title(`Day ${d.day + 1}${today ? ' (so far)' : ''}: ${s.y1 - s.y0} died (${s.cause.replace('_', ' ')})`)));
+        title(`Day ${d.day + 1}${today ? ' (so far)' : ''}: ${s.y1 - s.y0} died (${CAUSE_LABELS[s.cause] ?? s.cause.replace('_', ' ')})`)));
     }
   });
   root.append(svg('line', { x1: L, x2: W - R, y1: zero, y2: zero, stroke: AXIS }));

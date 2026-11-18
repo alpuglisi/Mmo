@@ -323,7 +323,8 @@ async fn commands_market_and_leaderboards_stay_in_their_world() {
         }
     }
     let listed = listed.expect("one of Ann's founders can be listed");
-    // And an auction in main (closing in 10 ticks).
+    // And an auction in main (asked for 10 ticks; it lasts the floor,
+    // `GameConfig::min_auction_ticks`).
     let mut auctioned = None;
     for (k, &id) in ann_ids.iter().enumerate() {
         let msg = json!({"type": "create_auction", "organism": id, "reserve": 1, "ticks": 10});
@@ -360,7 +361,7 @@ async fn commands_market_and_leaderboards_stay_in_their_world() {
     let r = command(&mut bob_isle, 9, json!({"type": "ledger"})).await;
     assert_eq!(r["data"]["balance"].as_u64(), Some(isle_balance), "nothing escrowed on the isle: {r}");
     // The auction closes in main (unsold: no bids) and is recorded there.
-    srv.step_world("main", 12).await;
+    srv.step_world("main", evo_server::game::GameConfig::default().min_auction_ticks as u32 + 2).await;
 
     // Balances and ledgers are per world: Ann has none on the isle.
     let main_ledger = command(&mut ann_main, 40, json!({"type": "ledger"})).await;

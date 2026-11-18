@@ -165,6 +165,7 @@ mod tests {
             offers: Vec::new(),
             balance: 0,
             escrow: 0,
+            grace: None,
             poisonous: Vec::new(),
         }))
     }

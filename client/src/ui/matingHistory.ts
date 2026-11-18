@@ -17,9 +17,10 @@ export interface HistoryRow {
   error: string | null;
 }
 
-export function offerLine(o: Pick<OfferView, 'id' | 'mine' | 'partner' | 'from_name' | 'to_name' | 'price' | 'status'> & { listing?: number }): string {
+export function offerLine(o: Pick<OfferView, 'id' | 'mine' | 'partner' | 'from_name' | 'to_name' | 'price' | 'status'> & { listing?: number; lineage?: number }): string {
   const bought = o.listing !== undefined ? ` · bought from listing ${o.listing}` : '';
-  return `#${o.id}: ${o.from_name}'s #${o.mine} × ${o.to_name}'s #${o.partner}${o.price !== undefined ? ` · price ${o.price}` : ''}${bought} · ${o.status}`;
+  const partner = o.partner === 0 && o.lineage !== undefined ? `${o.to_name}'s pick` : `${o.to_name}'s #${o.partner}`;
+  return `#${o.id}: ${o.from_name}'s #${o.mine} × ${partner}${o.price !== undefined ? ` · price ${o.price}` : ''}${bought} · ${o.status}`;
 }
 
 /**

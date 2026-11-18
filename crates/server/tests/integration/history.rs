@@ -87,9 +87,11 @@ async fn a_long_running_worlds_history_stays_bounded() {
     .manual();
     let srv = start(cfg).await.expect("server starts");
     let addr = srv.addr;
+    let mut tokens = Vec::new();
     for name in ["ann", "bob"] {
         let creds = json!({"name": name, "password": "a long password"});
         let (s, v) = json_req(addr, Method::POST, "/api/register", None, Some(creds)).await;
+        tokens.push(v["token"].as_str().unwrap_or_default().to_string());
         assert_eq!(s, StatusCode::CREATED, "{v}");
         let design = json!({
             "name": format!("{name}'s"),
@@ -119,6 +121,24 @@ async fn a_long_running_worlds_history_stays_bounded() {
     // Day ranges, a capped limit, records without gene means.
     let range = get(addr, &format!("/api/leaderboard/history?from={}&to={}", last_day - 9, last_day - 5)).await;
     assert_eq!(days_of(&range), (last_day - 9..=last_day - 5).collect::<Vec<_>>());
+    // Gene means need a login; without one they are left out. A player
+    // gets every gene of their own lineage, only coarse looks of others'.
+    let (s, _) = json_req(addr, Method::GET, "/api/leaderboard/history?limit=1&genes=true", None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(newest[0]["lineages"].as_array().unwrap().iter().all(|l| l.get("genes").is_none()), "{newest}");
+    let (s, mine) = json_req(addr, Method::GET, "/api/leaderboard/history?limit=1", Some(&tokens[0]), None).await;
+    assert_eq!(s, StatusCode::OK);
+    let lineages = mine[0]["lineages"].as_array().unwrap();
+    let genes = |owner_is_ann: bool| {
+        lineages
+            .iter()
+            .filter(|l| l["name"].as_str().is_some_and(|n| n.starts_with("ann") == owner_is_ann) && l["owner"] != 0)
+            .filter_map(|l| l["genes"].as_object())
+            .map(|g| g.len())
+            .collect::<Vec<_>>()
+    };
+    assert!(genes(true).iter().all(|&n| n > 30) && !genes(true).is_empty(), "{mine}");
+    assert!(genes(false).iter().all(|&n| n <= 3), "{mine}");
     let capped = get(addr, "/api/leaderboard/history?limit=100000&genes=false").await;
     assert_eq!(capped.as_array().unwrap().len(), history::MAX_LIMIT);
     assert!(capped.as_array().unwrap().iter().all(|d| d["lineages"]
