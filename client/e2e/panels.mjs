@@ -207,6 +207,17 @@ async function main() {
     await waitFor('auto-decline off', () => page.evaluate(async () => (await window.evo.socket.send({ type: 'mating_prefs' })).data?.auto_decline === false));
     step(`Mates has request settings: auto-decline saved on the server (${JSON.stringify(prefsOn)}) and turned off again; nobody blocked`);
 
+    // The deaths chart links to Help's "Why are my animals dying?", opened at that topic.
+    await page.click('#tab-genetics');
+    await page.waitForSelector('#why-dying', { timeout: UI_MS });
+    await page.click('#why-dying');
+    await page.waitForSelector('#help-dialog details[open][data-topic="Why are my animals dying?"]', { timeout: UI_MS });
+    const why = await page.textContent('#help-dialog details[open][data-topic="Why are my animals dying?"]');
+    check(['Starved', 'Attrition', 'egg raiders', 'Thirst'].every((w) => why.includes(w)), 'the dying topic names the causes', why);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#help', { state: 'detached', timeout: UI_MS });
+    step('the deaths chart opens Help at "Why are my animals dying?" (starvation, attrition, egg raiders…)');
+
     // Lineage: "Retire this lineage" sits at the top, above the stats and the organism list.
     await page.click('#tab-lineage');
     await page.waitForSelector('#lineage-retire', { state: 'visible', timeout: UI_MS });

@@ -112,7 +112,8 @@ async function main() {
     const page = await context.newPage();
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(`${base}/?tour=off`);
-    await page.fill('#login-name', `refound_${Date.now().toString(36)}`);
+    const login = `refound_${Date.now().toString(36)}`;
+    await page.fill('#login-name', login);
     await page.fill('#login-password', 'a long password');
     await page.click('#register-submit');
     await page.waitForSelector('#design-name', { timeout: UI_MS });
@@ -160,6 +161,9 @@ async function main() {
 
     // Found again.
     await page.fill('#design-name', 'Second try');
+    // A founders count other than the starter's: the next design screen must start from it.
+    const lastFounders = Number(await page.inputValue('#design-founders')) - 2;
+    await page.fill('#design-founders', String(lastFounders));
     await page.click('#design-submit');
     await page.waitForSelector('#world-canvas', { timeout: UI_MS });
     const second = await waitFor('the second lineage', async () => {
@@ -181,13 +185,40 @@ async function main() {
     await page.click('#tab-lineage');
     await page.waitForSelector('#lineage-retire', { state: 'visible', timeout: UI_MS });
     await page.click('#lineage-retire summary');
-    page.once('dialog', (d) => void d.accept());
     await page.click('#retire-lineage');
+    // The app's own dialog (not the browser's confirm), with the server's window.
+    await page.waitForSelector('#retire-confirm', { timeout: UI_MS });
+    const confirmText = await page.textContent('#retire-confirm');
+    check(/within \d+ game days \(about \d+ real minutes?\)/.test(confirmText) && !confirmText.includes('ranked season'), 'the retire dialog names the server\'s window', confirmText);
+    await page.click('#retire-confirm-ok');
     await page.waitForSelector('#lineage-extinct', { state: 'visible', timeout: UI_MS });
     check(await page.locator('#lineage-retire').isHidden(), 'the retire section should hide once retired');
     const retired = await lineageNow(page);
     check(retired && retired.lineage === second.lineage && retired.population === 0, 'retired lineage', retired);
     await page.screenshot({ path: path.join(shots, 'refound-retired.png') });
+
+    // A new browser (nothing saved locally): the design screen still says the
+    // lineage was retired (the server's lineage stats) and starts from the
+    // last design (the server's GET /api/design/last).
+    {
+      const other = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      const p2 = await other.newPage();
+      p2.on('pageerror', (e) => errors.push(e.message));
+      await p2.goto(`${base}/?tour=off`);
+      await p2.fill('#login-name', login);
+      await p2.fill('#login-password', 'a long password');
+      await p2.click('#login-submit');
+      await p2.waitForSelector('#world-canvas', { timeout: UI_MS });
+      await p2.click('#tab-lineage');
+      await p2.click('#lineage-extinct-new');
+      await p2.waitForSelector('#design-name', { timeout: UI_MS });
+      const head2 = await p2.textContent('.topbar');
+      check(head2.includes('You retired your last lineage') && !head2.includes('died out'), 'a new browser should say the lineage was retired', head2);
+      await p2.waitForSelector('#design-prefilled', { timeout: UI_MS });
+      check(await p2.inputValue('#design-founders') === String(lastFounders), 'the new browser should start from the last design', await p2.inputValue('#design-founders'));
+      await other.close();
+      step('a new browser says the lineage was retired and starts from the last design (server-side)');
+    }
     await page.click('#lineage-extinct-new');
     await page.waitForSelector('#design-name', { timeout: UI_MS });
     const header = await page.textContent('.topbar');
