@@ -875,7 +875,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             ClaimCooldown { .. } => "claim_cooldown",
             NoRally(_) => "no_rally",
             MostlyWater { .. } => "mostly_water",
-            Overlaps { .. } => "overlaps",
+            Overlaps => "overlaps",
             BadRadius => "bad_radius",
             OwnTarget(_) => "own_target",
             OutOfSight(_) => "target_out_of_sight",
@@ -889,7 +889,6 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             MostlyWater { share } => info.with_detail(serde_json::json!({ "water_share": share })),
-            Overlaps { owner } => info.with_detail(serde_json::json!({ "owner": owner })),
             TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
             NewcomerGrace { days_left } | OwnGrace { days_left } => {
                 info.with_detail(serde_json::json!({ "days_left": days_left }))

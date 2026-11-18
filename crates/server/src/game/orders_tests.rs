@@ -599,7 +599,7 @@ fn the_claim_wait_is_said_in_minutes_and_days() {
     let out = g.command(10, 1, Some(2), ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 4.0 });
     let ServerMsg::Result { error: Some(e), .. } = &out[0].1 else { panic!("refused") };
     assert_eq!(e.code, "claim_cooldown");
-    assert!(e.message.contains("about 2 min") && e.message.contains("game days"), "{}", e.message);
+    assert!(e.message.contains(" min (") && e.message.contains("game days"), "{}", e.message);
     let detail = e.detail.as_ref().unwrap();
     assert!(detail["ticks_left"].is_number() && detail["minutes_left"].is_number(), "{detail}");
 }
@@ -701,6 +701,9 @@ fn a_migration_that_never_moves_says_so_on_the_group_card() {
     let (mut g, _) = game();
     let home = g.world.group_middle(1, 0).unwrap();
     let far = land_away(&g, home, 25.0);
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+        o.pos = home;
+    }
     run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
     let ends = g.world.migration_plan(1, 0).unwrap().deadline_tick;
     while g.world.migration_order(1, 0).is_some() && g.world.tick() <= ends {
@@ -718,4 +721,88 @@ fn a_migration_that_never_moves_says_so_on_the_group_card() {
     run(&mut g, ClientMsg::Rally { group: 0, x: home.x, y: home.y }).unwrap();
     let v = g.state_for(10).unwrap().groups.into_iter().find(|v| v.id == 0).unwrap();
     assert_eq!(v.last_outcome, None);
+}
+
+/// Playtest 5: group outcomes survive a flood of daily summaries.
+#[test]
+fn group_alerts_outlive_daily_summaries() {
+    let (mut g, _) = game();
+    let mut out = Outbox::new();
+    g.alert(1, AlertKind::Group, "Group A (main) reached its migration target (1, 1)".into(), None, &mut out);
+    for k in 0..(MAX_ALERTS + 20) {
+        g.alert(1, AlertKind::DailySummary, format!("day {k}"), None, &mut out);
+    }
+    assert!(alerts(&g, AlertKind::Group).iter().any(|t| t.contains("reached")), "evicted");
+    assert_eq!(g.alerts(1).len(), MAX_ALERTS);
+}
+
+#[test]
+fn far_claims_and_rallies_share_the_travel_warnings_and_migrate_checks_the_destination() {
+    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let home = g.world.group_middle(1, 0).unwrap();
+    for o in g.world.organisms.iter_mut().filter(|o| o.owner == 1) {
+        o.dormancy = evo_sim::organism::Dormancy::Winter;
+    }
+    let far = land_away(&g, home, 35.0);
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: far.x, y: far.y, radius: 4.0 }).unwrap();
+    assert!(d["warning"].as_str().unwrap().contains("dormant"), "far claim: {d}");
+    let d = run(&mut g, ClientMsg::Rally { group: 0, x: home.x, y: home.y }).unwrap();
+    assert!(d["warning"].as_str().unwrap().contains("dormant"), "rally: {d}");
+    // A destination with no water: said in the migrate reply.
+    for t in &mut g.world.map.tiles {
+        (t.water_depth, t.snow) = (0.0, 0.0);
+    }
+    let d = run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
+    assert!(d["destination"]["drinkable_tiles"].is_number(), "{d}");
+    assert!(d["warning"].as_str().unwrap().contains("At the destination: Little or no drinking water"), "{d}");
+    // A half-tile nudge onto a tile's centre is no news.
+    let p = g.world.map.clamp(home + Vec2::new(0.3, 0.2));
+    let d = run(&mut g, ClientMsg::Migrate { x: p.x, y: p.y, group: None }).unwrap();
+    assert!(d.get("moved").is_none(), "{d}");
+}
+
+#[test]
+fn the_daily_check_covers_homes_outgrown_ground_and_says_less_than_a_day() {
+    assert_eq!(days_text(0.2), "less than a day");
+    assert_eq!(days_text(1.2), "about 1 day");
+    assert_eq!(days_text(6.4), "about 6 days");
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    // A territory a herd has outgrown (food for fewer than it has).
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 3.0 }).unwrap();
+    let f = g.world.food_check(1, 0, home, 3.0).unwrap();
+    let record = g.daily_record();
+    let mut out = Outbox::new();
+    g.daily_group_checks(&record, &mut out);
+    let texts = alerts(&g, AlertKind::Group);
+    if f.supports < f.members && f.standing_days >= BARE_DAYS {
+        assert!(texts.iter().any(|t| t.contains("has outgrown its territory")), "{texts:?}");
+    }
+    // A home ground gone dry is checked too, and a rally elsewhere is no drift.
+    run(&mut g, ClientMsg::AbandonTerritory { group: 0 }).unwrap();
+    let target = land_away(&g, home, 10.0);
+    run(&mut g, ClientMsg::Migrate { x: target.x, y: target.y, group: None }).unwrap();
+    while g.world.migration_order(1, 0).is_some() {
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            o.pos = target;
+        }
+        g.world.step();
+        g.after_tick();
+    }
+    assert!(g.world.settle_circle(1, 0).is_some());
+    for t in &mut g.world.map.tiles {
+        (t.water_depth, t.snow) = (0.0, 0.0);
+    }
+    g.daily_group_checks(&record, &mut out);
+    assert!(alerts(&g, AlertKind::Group).iter().any(|t| t.contains("home ground") && t.contains("no drinking water")));
+    let far = land_away(&g, target, 30.0);
+    g.world.rally_group(1, 0, far).ok();
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+        o.pos = far;
+    }
+    g.daily_group_checks(&record, &mut out);
+    assert!(
+        !alerts(&g, AlertKind::Group).iter().any(|t| t.contains("drifted")),
+        "a rally elsewhere is the player's doing"
+    );
 }

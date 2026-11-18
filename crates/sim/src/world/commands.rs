@@ -72,6 +72,9 @@ pub enum GroupEvent {
         median: f32,
         dormant_share: f32,
         basking_share: f32,
+        /// The share too hungry or thirsty to travel (they stop to eat and
+        /// drink first).
+        needy_share: f32,
         never_moved: bool,
         pending_claim: bool,
     },
@@ -148,10 +151,9 @@ pub enum CommandError {
     MostlyWater {
         share: f32,
     },
-    /// A territory circle overlapping another player's territory.
-    Overlaps {
-        owner: PlayerId,
-    },
+    /// A territory circle overlapping another player's territory (whose,
+    /// isn't said: claims would map others' territories).
+    Overlaps,
     /// A territory radius that is not a positive number.
     BadRadius,
     /// An attack order on one of the player's own organisms.
@@ -210,8 +212,8 @@ impl fmt::Display for CommandError {
                 write!(f, "the group claimed a territory recently; it can claim again in {ticks_left} ticks")
             }
             CommandError::NoRally(g) => write!(f, "group {g} has no rally to cancel"),
-            CommandError::Overlaps { owner } => {
-                write!(f, "that circle overlaps player {owner}'s territory; claim ground of your own")
+            CommandError::Overlaps => {
+                write!(f, "that circle overlaps another player's territory; claim ground of your own")
             }
             CommandError::BadRadius => write!(f, "a territory's radius must be a positive number of tiles"),
             CommandError::MostlyWater { share } => write!(
@@ -888,7 +890,13 @@ impl World {
         let key = (player, group);
         self.migrate_orders.insert(key, target);
         self.group_plans.pending.claims.remove(&key);
-        self.group_plans.pending.start_median.remove(&key);
+        // Where the group's median member starts from: the headway is
+        // measured against it (a far claim's start used to be taken at the
+        // first hourly check, from wherever the group had got to).
+        match self.group_median_dist(player, group, target) {
+            Some(d) => self.group_plans.pending.start_median.insert(key, d),
+            None => self.group_plans.pending.start_median.remove(&key),
+        };
         let deadline = self.tick + self.migration_timeout_ticks(middle.map_or(0.0, |m| m.dist(target)));
         self.group_plans.migrations.insert(key, MigrationPlan::new(self.tick, deadline));
         self.territories.remove(&key);
