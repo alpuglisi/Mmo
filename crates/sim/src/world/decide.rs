@@ -940,7 +940,9 @@ impl World {
                     // (it stops to eat at the stray limit, where `ordered`
                     // turns false): grazing outscored the order from hunger
                     // 0.6, so a herd near its cap never set out.
-                    (0.55 * heed).max(graze_utility + 0.01)
+                    // (Headstrong animals, heed below 1, still stop to graze:
+                    // the lift fades with the square of their heed.)
+                    (0.55 * heed).max((graze_utility + 0.01) * heed.min(1.0).powi(2))
                 } else {
                     0.0
                 },
