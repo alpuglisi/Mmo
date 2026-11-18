@@ -8698,6 +8698,7 @@ around it.
 | `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 11/16 (11), 16/16 (16); 4 | 11/16 (11), 16/16 (16); 2 |
 | `predators --playtest4 --seeds 6 --days 180`: Hunter (Apex Stalkers) at the end, with this round's rules on | | 62, none extinct (4, 2 extinct, with the version 51 tunables off) |
 | workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (450), build, e2e (16 scripts, `E2E_JOBS=2`) | | pass |
+| After merging main's round 6 (v52 heat cause, renumbered to v54): sweep; predlong; Stalkers; tests, clippy, fixtures, client (`vitest` 455), e2e | 11.82 (± 0.15); 11/16, 16/16, 4 prey lost | 11.81 (± 0.21); 11/16 (11), 16/16 (16), 2 prey lost; 62; pass (e2e 14 of 16 under load with studies running, smoke and family passed alone) |
 
 - **Thirst.** Fewer thirst deaths on 3 of 4 seeds. Seed 32 has more
   (446 → 713): animals that once drowned at a lakeshore now live on to go
