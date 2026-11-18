@@ -135,9 +135,16 @@ describe('compatibility and the shop', () => {
   const row = { lineage: 4, lineage_name: 'Foxes', owner: 3, owner_name: 'ann', fertility: 1, compatible: true, limiting: 'carnivory', gap: 0.05 };
   it('says who can breed with whom and why not', () => {
     expect(compatRowText(row)).toBe("ann's Foxes: fully fertile");
-    expect(compatRowText({ ...row, fertility: 0.5, gap: 0.21 })).toBe("ann's Foxes: 50% fertile (diet 0.21 apart)");
+    expect(compatRowText({ ...row, fertility: 0.5, gap: 0.21 })).toBe("ann's Foxes: 50% fertile on average (diet 0.21 apart in the closest pair)");
     expect(compatRowText({ ...row, owner: 0, fertility: 0, compatible: false, gap: 0.45 }))
-      .toBe('wild Foxes: sterile (diet 0.45 apart; 0.30 is sterile)');
+      .toBe('wild Foxes: sterile (diet 0.45 apart even in the closest pair (0.30 is sterile))');
+    // Playtest 3: "sterile (body size 0.22 apart; 0.30 is sterile)" contradicted itself.
+    const mostly = compatRowText({ ...row, fertility: 0.03, compatible: false, gap: 0.22, limiting: 'body_size',
+      fertile_share: 0.2, fertility_low: 0, fertility_high: 0.45, drift_risk: 'high' });
+    expect(mostly).toBe("ann's Foxes: mostly sterile: 20% of pairs can conceive, most pairs 0%–45% (body size 0.22 apart in the closest pair) · drift risk high");
+    expect(mostly).not.toContain('0.30 is sterile');
+    expect(compatRowText({ ...row, limiting: 'morphology', gap: 0.3, compatible: false, fertility: 0, fertile_share: 0 }))
+      .toContain('differs in eye or leg count');
   });
   it('explains the fee and royalty', () => {
     const t = shopText({ balance: 10, slots_left: 6, slots_bought: 0, slot_price: 30, reinforce_size: 10, reinforce_price: 150,

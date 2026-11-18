@@ -901,6 +901,17 @@ impl Game {
         }
         g.offers = saved.offers;
         g.next_offer = saved.next_offer.max(g.offers.keys().max().map_or(1, |k| k + 1));
+        // Accepted agreements walk their pair together again (the world
+        // keeps no rendezvous in its snapshot).
+        let pairs: Vec<(OrgId, OrgId)> = g
+            .offers
+            .values()
+            .filter(|o| o.status == OfferStatus::Accepted && o.partner != 0)
+            .map(|o| (o.mine, o.partner))
+            .collect();
+        for (a, b) in pairs {
+            g.world.set_rendezvous(a, b);
+        }
         g.prev_born = saved.prev_born;
         g.prev_deaths = saved.prev_deaths.into_iter().collect();
         g.alerts = saved.alerts;
@@ -1167,7 +1178,32 @@ impl Game {
     /// the history as extinct, and the dead lineage's group orders go.
     pub fn found(&mut self, player: PlayerId, design: &FounderDesign) -> Result<FoundOk, FoundError> {
         design.validate().map_err(FoundError::Design)?;
+        // Re-founding within a ranked season's length of retiring founds
+        // half the founders ([`Game::refound_founders`]): retiring and
+        // founding again was a free re-roll (fresh, fed founders at a new
+        // spot; playtest 3).
+        if let Some(n) = self.refound_founders(player, design.founders) {
+            if self.lineage_of(player).is_none_or(|_| self.is_extinct(player)) && n < design.founders {
+                let fewer = design.clone().founders(n);
+                let ok = self.found_at_any_price(player, &fewer)?;
+                let text = format!(
+                    "Re-founded within {} days of retiring: {n} of {} founders (half).",
+                    self.cfg.season_days, design.founders
+                );
+                self.alert(player, AlertKind::Milestone, text, None, &mut Outbox::new());
+                return Ok(ok);
+            }
+        }
         self.found_at_any_price(player, design)
+    }
+
+    /// The founders a re-founding gets when `player` retired a lineage
+    /// within the last ranked season's length of simulated days: half of
+    /// `founders` (at least 2). None otherwise (a first founding, after an
+    /// extinction, or long after a retire).
+    pub fn refound_founders(&self, player: PlayerId, founders: u32) -> Option<u32> {
+        let retired = *self.economy.retired_day.get(&player)?;
+        (self.world.day() < retired + self.cfg.season_days.max(1)).then(|| (founders / 2).max(2))
     }
 
     /// [`Game::found`] without the point-budget check, for offline tools
@@ -1259,6 +1295,7 @@ impl Game {
             .collect();
         let before: BTreeMap<PlayerId, usize> = homes.keys().map(|&p| (p, self.world.owner_count(p))).collect();
         let (n, moved) = self.world.retire_player_sparing(player, &homes, RETIRE_TRANSFER_SHARE);
+        self.economy.retired_day.insert(player, self.world.day());
         for (&p, &b) in &before {
             let got = self.world.owner_count(p).saturating_sub(b);
             if got > 0 {
@@ -1745,11 +1782,22 @@ impl Game {
                 .organism(p)
                 .filter(|b| b.owner == o.to)
                 .ok_or_else(|| ErrorInfo::new("not_owned", format!("#{p} isn't one of your living animals")))?;
-            return if suits(b) {
-                Ok(p)
+            if suits(b) {
+                return Ok(p);
+            }
+            // The animal is the accepter's own: say why.
+            let why = if !b.matured {
+                "it isn't grown"
+            } else if b.sex == a.sex {
+                "it is the same sex as theirs"
+            } else if b.sex == Sex::Female && b.pregnancy.is_some() {
+                "it is pregnant"
+            } else if busy(b.id) {
+                "it is promised in another agreement or auction"
             } else {
-                Err(ErrorInfo::new("partner_unavailable", format!("#{p} can't take this mating now")))
+                "the two can't conceive (body plans or genomes too far apart)"
             };
+            return Err(ErrorInfo::new("partner_unavailable", format!("#{p} can't take this mating: {why}")));
         }
         let lineage = o.lineage;
         self.world
@@ -1825,10 +1873,17 @@ impl Game {
             lineage: None,
         };
         self.offers.insert(id, offer);
+        if status == OfferStatus::Accepted {
+            // The pair walks to meet (`World::set_rendezvous`).
+            self.world.set_rendezvous(mine, partner);
+        }
         if let Some(p) = price.filter(|&p| p > 0) {
             let what = match listing {
                 Some(l) => {
                     format!("Stud fee for listing #{l} (#{mine} × {}'s #{partner}) held in escrow", self.name(to))
+                }
+                None if partner == 0 => {
+                    format!("Price of offer #{id} (#{mine} × one of {}'s animals) held in escrow", self.name(to))
                 }
                 None => format!("Price of offer #{id} (#{mine} × {}'s #{partner}) held in escrow", self.name(to)),
             };
@@ -1888,7 +1943,13 @@ impl Game {
         // Another player's female: her pregnancy is hidden state, so a
         // generic refusal (`already_pregnant` told a rival about it).
         if b.sex == Sex::Female && b.pregnancy.is_some() {
-            return Err(ErrorInfo::new("partner_unavailable", format!("#{partner} can't mate now")));
+            return Err(ErrorInfo::new(
+                "partner_unavailable",
+                format!(
+                    "#{partner} can't mate now (pregnant, nursing or not ready: its owner's own business); \
+                     offer to the lineage instead and its owner picks a free animal"
+                ),
+            ));
         }
         if let Some(problem) = incompatible() {
             return Err(problem);
@@ -1953,6 +2014,15 @@ impl Game {
             }
         }
         self.check_listable(player, organism, fee)?;
+        // A dam already promised in an open agreement can't take a buyer
+        // (playtest 3: a promised dam got a fixed listing).
+        let dam = self.world.organism(organism).is_some_and(|o| o.sex == Sex::Female);
+        if dam && self.offers.values().any(|o| o.status.is_open() && (o.mine == organism || o.partner == organism)) {
+            return Err(ErrorInfo::new(
+                "organism_busy",
+                format!("#{organism} is already promised in an open agreement"),
+            ));
+        }
         let tick = self.world.tick();
         let expires = expires_days.map(|d| tick + d as u64 * self.world.config.ticks_per_day as u64);
         let l = self.economy.add_listing(player, organism, fee, tick, expires);
@@ -1983,8 +2053,10 @@ impl Game {
             return Err(ErrorInfo::new(
                 "bad_duration",
                 format!(
-                    "an auction lasts 1 to {} days (days) or 1 to {longest} ticks (ticks), not both",
-                    economy::MAX_AUCTION_DAYS
+                    "an auction lasts 1 to {} days (days) or 1 to {longest} ticks (ticks), not both; \
+                     at least {} real minutes whatever is asked",
+                    economy::MAX_AUCTION_DAYS,
+                    (self.cfg.min_auction_ticks as f64 * self.cfg.tick_ms / 60_000.0).round()
                 ),
             ));
         };
@@ -2269,9 +2341,12 @@ impl Game {
 
     /// A listed dam already promised in an open agreement takes no more
     /// buyers until it closes (a stud may serve several).
+    /// A dam that can't take a buyer now: promised in an open agreement,
+    /// or pregnant (buyers wait until she has given birth).
     fn listing_busy(&self, l: &Listing) -> bool {
-        self.world.organism(l.organism).is_some_and(|o| o.sex == Sex::Female)
-            && self.offers.values().any(|o| o.status.is_open() && (o.partner == l.organism || o.mine == l.organism))
+        self.world.organism(l.organism).is_some_and(|o| o.sex == Sex::Female && o.pregnancy.is_some())
+            || self.world.organism(l.organism).is_some_and(|o| o.sex == Sex::Female)
+                && self.offers.values().any(|o| o.status.is_open() && (o.partner == l.organism || o.mine == l.organism))
     }
 
     /// The compatibility of a buyer's organism with a listed one (none for
@@ -2578,6 +2653,7 @@ impl Game {
             return Err(ErrorInfo::new("offer_closed", format!("offer {request} is {:?}", offer.status)));
         }
         let (mine, partner) = (offer.mine, offer.partner);
+        let offer_lineage_open = partner == 0;
         if !accept {
             self.close(request, OfferStatus::Declined, None, None, out);
             return Ok(None);
@@ -2591,6 +2667,18 @@ impl Game {
         } else {
             partner
         };
+        // The accepter's own female can't take it while pregnant: say so
+        // now (her state is theirs to know) instead of failing later with
+        // "already pregnant".
+        if self.world.organism(partner).is_some_and(|b| b.sex == Sex::Female && b.pregnancy.is_some()) {
+            if offer_lineage_open {
+                self.offers.get_mut(&request).unwrap().partner = 0;
+            }
+            return Err(ErrorInfo::new(
+                "partner_unavailable",
+                format!("your #{partner} is pregnant: it can't take this mating now"),
+            ));
+        }
         self.check_auction_lock(mine)?;
         self.check_auction_lock(partner)?;
         let tick = self.world.tick();
@@ -2602,13 +2690,18 @@ impl Game {
         if let Some(log) = self.request_log.get_mut(&(from, to)) {
             log.retain(|&(_, id)| id != request);
         }
+        // The pair walks to meet (`World::set_rendezvous`).
+        self.world.set_rendezvous(mine, partner);
         self.hold_added(Some(request), None);
         // Try at once; if the organisms are apart, the agreement stands until
         // they meet (checked every tick) or its deadline
         // (`GameConfig::purchase_deadline_ticks`) passes.
         // The responder's answer succeeded either way; the mating's own
         // result goes to both sides as a `mating_update`.
-        Ok(self.execute(request, out).ok().map(|o| serde_json::to_value(o).unwrap()))
+        let outcome = self.execute(request, out).ok();
+        // The offer as it stands (accepted and walking to meet, or completed).
+        let offer = self.offers.contains_key(&request).then(|| self.offer_view(request));
+        Ok(Some(serde_json::json!({ "offer": offer, "outcome": outcome })))
     }
 
     /// Run an accepted agreement. Notifies both sides of the result; a
@@ -2640,12 +2733,15 @@ impl Game {
                 Ok(m)
             }
             Err(err @ CommandError::TooFar { .. }) => {
+                // Not a failure: the agreement stands and the pair walks to
+                // meet (`World::set_rendezvous`); the update carries where
+                // they are (`OfferView::meet`), no error.
                 let info = ErrorInfo::from(&err);
                 let view = self.offer_view(request);
                 for p in [o.from, o.to] {
                     out.push((
                         Target::Player(p),
-                        ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: Some(info.clone()) },
+                        ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: None },
                     ));
                 }
                 Err(info)
@@ -2802,6 +2898,18 @@ impl Game {
         self.close(id, OfferStatus::Expired, None, Some(info), out);
     }
 
+    /// How an offer's partner animal reads in texts: `#id`, or for an offer
+    /// to a lineage not yet accepted "one of their <lineage>".
+    fn partner_text(&self, o: &Offer) -> String {
+        match (o.partner, o.lineage) {
+            (0, Some(l)) => {
+                let name = self.world.lineages.get(l as usize).map_or("animals".to_string(), |x| x.name.clone());
+                format!("one of {}'s {name}", self.name(o.to))
+            }
+            (p, _) => format!("{}'s #{p}", self.name(o.to)),
+        }
+    }
+
     /// Tell the sender a pending request expires soon (once).
     fn warn_expiry(&mut self, id: u64, ticks_left: u64, out: &mut Outbox) {
         let o = self.offers.get_mut(&id).unwrap();
@@ -2809,11 +2917,10 @@ impl Game {
         let o = o.clone();
         let minutes = (ticks_left as f64 * self.cfg.tick_ms / 60_000.0).ceil().max(1.0);
         let text = format!(
-            "Your request #{} (#{} × {}'s #{}) expires in about {minutes:.0} minute{} without an answer.",
+            "Your request #{} (#{} × {}) expires in about {minutes:.0} minute{} without an answer.",
             o.id,
             o.mine,
-            self.name(o.to),
-            o.partner,
+            self.partner_text(&o),
             if minutes == 1.0 { "" } else { "s" }
         );
         self.alert_push(o.from, AlertKind::Market, Some(PushKind::Market), text, Some(o.mine), out);
@@ -2844,6 +2951,9 @@ impl Game {
         let o = self.offers.get_mut(&request).unwrap();
         o.status = status;
         let o = o.clone();
+        if self.world.rendezvous_of(o.mine) == Some(o.partner) {
+            self.world.clear_rendezvous(o.mine);
+        }
         let view = self.offer_view(request);
         let tick = self.world.tick();
         for p in [o.from, o.to] {
@@ -2945,9 +3055,25 @@ impl Game {
             created_tick: o.created_tick,
             listing: o.listing,
             escrow: o.escrow,
-            expires_tick: Some(self.offer_deadline(o)),
+            expires_tick: o.status.is_open().then(|| self.offer_deadline(o)),
             lineage: o.lineage.filter(|_| o.partner == 0),
+            meet: (o.status == OfferStatus::Accepted).then(|| self.meet_view(o)).flatten(),
         }
+    }
+
+    /// Where an accepted agreement's two animals are, coarsely (8-tile
+    /// cells), for both sides' escort: they walk to meet on their own
+    /// (`World::set_rendezvous`), and a player may possess theirs to hurry.
+    fn meet_view(&self, o: &Offer) -> Option<MeetView> {
+        let (a, b) = (self.world.organism(o.mine)?, self.world.organism(o.partner)?);
+        let coarse = |v: f32| (v / 8.0).floor() * 8.0 + 4.0;
+        Some(MeetView {
+            mine_x: coarse(a.pos.x),
+            mine_y: coarse(a.pos.y),
+            partner_x: coarse(b.pos.x),
+            partner_y: coarse(b.pos.y),
+            distance: a.pos.dist(b.pos).round(),
+        })
     }
 
     /// The tick an open offer expires (pending: no answer) or lapses
@@ -4490,6 +4616,13 @@ mod tests {
         g.world.organisms.iter_mut().find(|o| o.id == b).unwrap().pos = pos;
     }
 
+    fn err_message(out: &Outbox) -> String {
+        match &out[0].1 {
+            ServerMsg::Result { error: Some(e), .. } => e.message.clone(),
+            _ => String::new(),
+        }
+    }
+
     fn result(out: &Outbox) -> (bool, Option<String>) {
         match &out[0].1 {
             ServerMsg::Result { ok, error, .. } => (*ok, error.as_ref().map(|e| e.code.clone())),
@@ -4806,9 +4939,12 @@ mod tests {
         let slots = g.world.mating_slots_left(1);
         let out = g.command(20, 2, None, ClientMsg::RespondMating { request: offer.id, accept: true, partner: None });
         assert_eq!(result(&out), (true, None));
-        let too_far =
-            out.iter().any(|(_, m)| matches!(m, ServerMsg::MatingUpdate { error: Some(e), .. } if e.code == "too_far"));
-        assert!(too_far, "{out:?}");
+        // Too far is no error for either side: the update carries where the
+        // pair is, and they walk to meet.
+        let walking = out.iter().any(|(_, m)| {
+            matches!(m, ServerMsg::MatingUpdate { error: None, offer, .. } if offer.meet.is_some_and(|x| x.distance > 1.5))
+        });
+        assert!(walking, "{out:?}");
         assert_eq!(g.state_for(10).unwrap().offers[0].status, OfferStatus::Accepted);
         let out = g.command(10, 1, None, ClientMsg::CompleteMating { request: offer.id });
         assert_eq!(result(&out).1.as_deref(), Some("too_far"));
@@ -5718,6 +5854,86 @@ mod tests {
         assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)).1.as_deref(), Some("insufficient_funds"));
     }
 
+    /// Playtest 3: 0 of 21 cross-player matings completed, the pairs 54–110
+    /// tiles apart. An accepted, paid agreement now brings its two animals
+    /// together on its own (a rendezvous), the dam is held from natural
+    /// mating meanwhile, both sides see where the pair is, and it completes
+    /// and pays.
+    #[test]
+    fn a_paid_mating_between_animals_far_apart_completes() {
+        let (mut g, a, b) = game();
+        let (fa, mb) = (female(&g, &a), male(&g, &b));
+        not_pregnant(&mut g, &[fa]);
+        // Put Bob's stud across the map from Ann's dam, on land.
+        let far = g.world.organisms.iter().filter(|o| o.alive).map(|o| o.pos).max_by(|x, y| {
+            let fpos = g.world.organism(fa).unwrap().pos;
+            x.dist(fpos).total_cmp(&y.dist(fpos))
+        });
+        g.world.organisms.iter_mut().find(|o| o.id == mb).unwrap().pos = far.unwrap();
+        let start = g.world.organism(fa).unwrap().pos.dist(g.world.organism(mb).unwrap().pos);
+        assert!(start > 20.0, "{start}");
+        let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: Some(20) }));
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
+        // Too far is not an error for the accepter: the agreement stands.
+        assert_eq!(result(&out), (true, None));
+        assert_eq!(g.world.rendezvous_of(fa), Some(mb));
+        let meet = g.offer_view(id).meet.expect("escort info");
+        assert!(meet.distance > 20.0);
+        let (bal1, bal2) = (g.balance(1), g.balance(2));
+        let mut done = false;
+        for _ in 0..30 * g.world.config.ticks_per_day {
+            g.world.step();
+            let out = g.after_tick();
+            if out.iter().any(|(_, m)| matches!(m, ServerMsg::MatingUpdate { offer, .. } if offer.id == id && offer.status == OfferStatus::Completed)) {
+                done = true;
+                break;
+            }
+            assert!(g.offers.contains_key(&id), "the agreement ended without the mating");
+            // Held from natural mating while promised.
+            assert!(g
+                .world
+                .organism(fa)
+                .is_none_or(|o| o.pregnancy.is_none() || o.pregnancy.as_ref().unwrap().father_id == mb));
+        }
+        assert!(done, "the pair never met (started {start:.0} tiles apart)");
+        let _ = (bal1, bal2);
+        let t = trades(&mut g);
+        let paid = t.iter().find(|t| t.offer == id).expect("trade recorded");
+        assert_eq!((paid.status.as_str(), paid.settlement.as_deref()), ("completed", Some("paid")));
+        assert!(g.ledger(2, 100).iter().any(|e| e.kind == LedgerKind::Sale && e.delta == 18), "paid less the fee");
+        assert_eq!(g.world.rendezvous_of(fa), None, "the rendezvous ends with the agreement");
+    }
+
+    /// A pregnant dam can't be accepted into an agreement (her owner is
+    /// told why), shows as busy on the market, and a promised dam can't get
+    /// a fixed listing.
+    #[test]
+    fn pregnant_and_promised_dams_are_busy() {
+        let (mut g, a, b) = game();
+        let (ma, fb) = (male(&g, &a), female(&g, &b));
+        not_pregnant(&mut g, &[fb]);
+        let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fb, price: None }));
+        let father = g.world.organism(ma).unwrap().genome.clone();
+        g.world.organisms.iter_mut().find(|o| o.id == fb).unwrap().pregnancy = Some(evo_sim::organism::Pregnancy {
+            father,
+            father_id: 0,
+            father_lineage: 0,
+            fertility: 1.0,
+            due_tick: u64::MAX,
+        });
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
+        assert_eq!(result(&out).1.as_deref(), Some("partner_unavailable"));
+        assert!(err_message(&out).contains("pregnant"));
+        assert_eq!(g.offers[&id].status, OfferStatus::Pending);
+        // Listed while pregnant: busy.
+        // Promised in an open offer: no fixed listing.
+        let out = g.command(20, 2, None, ClientMsg::CreateListing { organism: fb, fee: 5, expires_days: None });
+        assert_eq!(result(&out).1.as_deref(), Some("organism_busy"));
+        g.command(10, 1, None, ClientMsg::CancelMating { request: id });
+        let l = data(&g.command(20, 2, None, ClientMsg::CreateListing { organism: fb, fee: 5, expires_days: None }));
+        assert_eq!(l["listing"]["busy"], true, "a pregnant dam is busy: {l}");
+    }
+
     /// Reinforcements: at most two a ranked season per player, counted
     /// across a retire and re-found (the price doesn't reset either).
     #[test]
@@ -5735,6 +5951,45 @@ mod tests {
         assert_eq!(shop.reinforce_price, economy::reinforce_price(economy::MAX_REINFORCEMENTS_PER_SEASON));
         assert!(shop.reinforce_blocked.unwrap().contains("retired lineages count"));
         assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)).1.as_deref(), Some("limit_reached"));
+    }
+
+    /// The reinforcement cap and price count purchases within a ranked
+    /// season's length (rolling), not since the season began: a season
+    /// boundary doesn't reset them (playtest 3: +40 adults in 2 minutes).
+    #[test]
+    fn reinforcements_count_in_a_rolling_window() {
+        let (mut g, _, _) = game();
+        g.cfg.season_days = 4;
+        let _ = g.post(1, 5000, LedgerKind::Income, "test".into(), None, None);
+        for _ in 0..economy::MAX_REINFORCEMENTS_PER_SEASON {
+            assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)), (true, None));
+        }
+        run_days(&mut g, 2);
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)).1.as_deref(), Some("limit_reached"));
+        let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
+        assert_eq!(shop.reinforce_price, economy::reinforce_price(2), "the price doesn't reset either");
+        run_days(&mut g, 3);
+        let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
+        assert_eq!((shop.reinforce_price, shop.reinforcements_bought), (economy::REINFORCE_BASE_PRICE, 0));
+        // (The lineage may have grown past the size limit; only the window is checked here.)
+    }
+
+    /// Re-founding within a ranked season's length of retiring founds half
+    /// the founders; after an extinction, or later, the full design.
+    #[test]
+    fn refounding_soon_after_retiring_costs_founders() {
+        let (mut g, _, _) = game();
+        g.cfg.season_days = 4;
+        let l = g.lineage_of(1).unwrap();
+        g.retire(1, l).unwrap();
+        let ok = g.found(1, &design("A2").founders(10)).unwrap();
+        assert_eq!(ok.founders.len(), 5);
+        let l = g.lineage_of(1).unwrap();
+        g.retire(1, l).unwrap();
+        run_days(&mut g, 5);
+        let ok = g.found(1, &design("A3").founders(10)).unwrap();
+        assert_eq!(ok.founders.len(), 10, "long after the retire: the full design");
+        assert_eq!(g.refound_founders(2, 10), None, "Bob never retired");
     }
 
     /// Retiring hands animals mostly of a rival's genes to the rival, who is
@@ -7558,7 +7813,7 @@ mod tests {
         assert_eq!(legacy.category, league::Category::Legacy);
         assert_eq!(legacy.rows.len(), 2);
         let market = &r.standings[3];
-        // One sale isn't a stud market (it needs 3 sales to 2 buyers).
+        // One sale isn't a stud market (it needs 2 sales to 2 different buyers).
         assert!(market.rows.is_empty(), "{:?}", market.rows);
         assert!(r.standings[1].rows.iter().all(|p| p.value >= 6.0), "founders count for the lineage board");
         assert!(alerts_in(&out, 1).iter().any(|x| x.text.starts_with("Season 1 has ended: you placed #")));

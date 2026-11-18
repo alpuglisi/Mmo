@@ -1047,7 +1047,7 @@ Client → server:
 | `request_mating` | `mine, partner, price?` | Directed mating. Your own pair runs at once; another player's organism sends them a `mating_request`. A `price` (renown) goes into escrow at once (`insufficient_funds` if you can't cover it) |
 | `preview_mating` | `mine, partner` | Only with a partner in your sight, on the market or in one of your open offers (`out_of_sight` otherwise). What the mating would give now, nothing spent: `data` = `{compatible, fertility, body_plan_fertility, distance_fertility, body_plan_gaps: [{gene, gap}], mismatch, cost, failure_chance, distance, meeting_distance, problem?}` |
 | `offer_to_lineage` | `mine, lineage, price?` | Like `request_mating`, to any suitable animal of another player's living `lineage`: its owner picks one on accepting. `data` = `{offer}` with `partner` 0 and `lineage` set until accepted (`unknown_lineage`, `own_organism`) |
-| `respond_mating` | `request, accept, partner?` | The partner's owner answers; for an offer to the lineage `partner` picks the animal (default: the nearest free one of the other sex, not pregnant, not promised, fertile with `mine`; `no_partner_available` leaves the offer open, `partner_unavailable` for an unsuitable pick) |
+| `respond_mating` | `request, accept, partner?` | The partner's owner answers (`data` = `{offer, outcome}`: the offer as it stands, walking to meet or completed); for an offer to the lineage `partner` picks the animal (default: the nearest free one of the other sex, not pregnant, not promised, fertile with `mine`; `no_partner_available` leaves the offer open, `partner_unavailable` for an unsuitable pick) |
 | `complete_mating` | `request` | Retry an accepted agreement now |
 | `cancel_mating` | `request` | Either side withdraws an open offer |
 | `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for the adults of group `group` (default 0, the main group; `no_such_group` past 3 or for another group without members, and for `clear_migration` unless it still has an order); replaces its territory or rally. `off_map` off the map; a target on deep water, ice or a cliff moves to the nearest land within 8 tiles (`data.moved`, `data.note`) or gives `unreachable`. `data` = `{x, y, group, route?, moved?, note?}`; the order ends when most of the group has arrived (a `group` alert). `clear_migration` without `group` clears every group's |
@@ -1068,7 +1068,7 @@ Client → server:
 | `ledger` | `limit?` | `data` = `{balance, escrow, entries: [{seq, player, tick, day, delta, balance, kind, text, offer?, listing?}]}`, newest first (default 50, at most 100); `kind`: `grant`, `income`, `achievement`, `escrow`, `sale`, `refund`, `royalty`, `purchase` |
 | `renown_shop` | | `data` = `{balance, slots_left, slots_bought, slot_price?, reinforce_size, reinforce_price, reinforce_max_alive, reinforce_blocked?, market_fee_percent, royalty_per_point, reinforcements_bought, reinforcements_max, nameplate_price, nameplate_colors, nameplate?, species_name_price}` (*Why trade* in Economy) |
 | `buy_mating_slot` | | One extra directed-mating slot until the weather season changes: 30 renown, doubling with each bought that season, at most 6 (`limit_reached`, `insufficient_funds`, `no_lineage`); `data` = the shop after |
-| `reinforce` | | 10 adults copied from your lineage's living adults join it on the best-fed ground near them: 150 renown, doubling with each, at most 2 a ranked season per player (retired lineages count: `limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
+| `reinforce` | | 10 young adults copied from your lineage's living adults join it on the best-fed ground near them: 150 renown, doubling with each, at most 2 within a ranked season's length per player (a rolling window; retired lineages count: `limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
 | `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
 | `name_species` | `species, name` | Name a living species your lineage founded (cosmetic, 300 renown; `not_yours`, `species_gone`, `name_taken`, `bad_name`); `data` = `{species, name}` |
 | `nameplates` | | `data` = `{nameplates: {player: {color, title}}}` |
@@ -1635,8 +1635,8 @@ reinforcements could be farmed):
   exported in playtest 2 that is 3–9 a day, a third to a half of income;
   *Competition* shows what it pays a broker.
 - **Fee** at least 1 renown on any paid price (1–9 renown prices paid none).
-- **Titles**: the stud market needs 3 sales to 2 different buyers in the
-  season (one paid offer won it, and paying a rival handed them the
+- **Titles**: the stud market needs 2 sales to 2 different buyers in the
+  season (3 before playtest 3, when no cross-player mating completed) (one paid offer won it, and paying a rival handed them the
   title); a catastrophe counts as survived only for a lineage founded
   before it began, and a survival title every active player ties for goes
   to no one.
@@ -1676,6 +1676,50 @@ playtest 2 most lineages were sterile with each other and royalties were
 1–4 a day. Paying only for alleles in other players' lineages (not the
 wild) took a sixth off it in every arm; the rate is left at 5 so that
 in a typical game it is a real share of income.
+
+**Playtest 3 changes** (`docs/playtest-3.md`: 0 of 21 cross-player matings
+completed; accepted pairs were 54–110 tiles apart and nothing brought them
+together):
+
+- **Rendezvous.** An accepted agreement (an accepted request, a bought
+  listing, a won auction) walks its two animals toward each other
+  (`World::set_rendezvous`; `decide` gives each the action `rally` toward
+  its partner). Each breaks off for a threat or an urgent thirst or
+  hunger as a possessed animal does, and a possessed animal follows its
+  player. The agreement runs the tick they meet (1.5 tiles). The world
+  doesn't save rendezvous: the server sets them again for every accepted
+  agreement when it restores a world, so no snapshot change. Each open
+  offer's `meet` gives both sides where the pair is (8-tile cells) and
+  how far apart; the Mates tab says which way and how far ("possess yours
+  to hurry"). Being too far apart on acceptance is no error any more (the
+  update carries `meet`, no `too_far`). A test founds two players' animals
+  across the map and sees a paid mating complete and pay.
+- **Dams.** Accepting with your own pregnant female is refused with the
+  reason (it used to fail later as "already pregnant"); a pregnant listed
+  dam shows as busy; a dam promised in an open agreement can't get a
+  fixed listing. Promised females were already held from natural mating.
+- **Stud market title**: 2 sales to 2 different buyers in the season.
+- **Offers to a lineage**: the Mates tab lets the accepter pick their own
+  animal (default: the nearest free one). `respond_mating` answers with
+  the offer (and the outcome when it ran at once). A refused pick says
+  why; a rival's `partner_unavailable` stays generic but says what to do
+  (offer to the lineage). Texts name "one of <player>'s <lineage>"
+  instead of "#0".
+- **Market wording**: the compatibility list reads the sampled pairs (the
+  mean, the range most pairs fall in, the share of pairs that can
+  conceive, the drift risk); "sterile … 0.30 is sterile" appears only when
+  even the closest pair is 0.30 apart. "For my adult" says "(none picked:
+  compatibility by lineage only)"; when no listing matches, the list says
+  where your own listings are.
+- **Reinforcements** count in a rolling window of a ranked season's length
+  (cap and price), not since the season began; copies arrive as young
+  adults; the button asks for confirmation and its reason shows beside it.
+- **Re-founding within a ranked season's length of retiring founds half
+  the founders** (`Game::refound_founders`; after an extinction, or later,
+  the full design). The retire dialog says so.
+- Small: `traded_share` no longer reads −0.0; a closed offer has no
+  `expires_tick`; the auction duration error names the 5-minute floor;
+  the royalty doc comments agree (other players' lineages only).
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
