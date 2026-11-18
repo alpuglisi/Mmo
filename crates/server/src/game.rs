@@ -5063,7 +5063,7 @@ mod tests {
         let (mut g, a, _) = game();
         // The urgency rule alone: with `drink_priority` a possessed animal
         // this near water breaks off already at thirst 60.
-        g.world.config.balance.drink_priority = 0.0;
+        g.world.config.balance.possess_drink = 0.0;
         let id = a[0];
         // Start it a few tiles from water, on open ground: too far to drink
         // on its first steps, near enough to reach water within the day.

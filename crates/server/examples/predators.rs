@@ -20,7 +20,7 @@
 //! - **Late** founds the starter on day 40.
 //!
 //! Arms on the same seeds: **old rules** (the version 44 tunables off:
-//! `drink_priority`, `toxic_learning`, `dry_sites`, `carnivore_energetics`,
+//! `possess_drink`, `toxic_learning`, `dry_sites`, `carnivore_energetics`,
 //! `led_pack`), the Hunter's pack hunting on its own; **new rules**, the
 //! same; and **new rules, deliberate**: every `--every` ticks (default 6)
 //! with no order standing, the Hunter possesses a grown, healthy, hungry
@@ -218,8 +218,8 @@ fn run(seed: u64, arm: Arm, a: &Args) -> Outcome {
     let mut g = Game::new(world, GameConfig::default());
     if arm == Arm::Old {
         let b = &mut g.world.config.balance;
-        (b.drink_priority, b.toxic_learning, b.dry_sites, b.carnivore_energetics, b.led_pack) =
-            (0.0, 0.0, 0.0, 0.0, 0.0);
+        (b.drink_priority, b.possess_drink, b.toxic_learning, b.dry_sites, b.carnivore_energetics, b.led_pack) =
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     for (k, n) in NAMES.iter().enumerate() {
         g.set_name(k as PlayerId + 1, n);

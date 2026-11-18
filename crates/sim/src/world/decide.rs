@@ -1121,7 +1121,7 @@ impl World {
         // With water near, it drinks well before it is parched
         // (`Balance::drink_priority`): a possessed animal kept on the move
         // otherwise died of thirst beside a lake.
-        if b.drink_priority > 0.0
+        if b.possess_drink > 0.0
             && n.thirst >= POSSESS_DRINK
             && (self.map.can_drink_at(o.pos) || self.map.find_water(o.pos, POSSESS_WATER_NEAR).is_some())
         {

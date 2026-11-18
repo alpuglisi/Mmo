@@ -438,6 +438,7 @@ fn version_42_snapshots_restore_without_playtest2_balance() {
 fn playtest2_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v44::OLD_VALUE;
     b.drink_priority = old;
+    b.possess_drink = old;
     b.toxic_learning = old;
     b.dry_sites = old;
     b.carnivore_energetics = old;

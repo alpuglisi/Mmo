@@ -7723,19 +7723,28 @@ the order was dropped. A test
 (`an_attack_order_outside_the_territory_is_followed`) shows a territory
 member outside its territory follows an order to the end.
 
-**Drinking first** (`Balance::drink_priority` 1):
-- **Parched animals drink.** Past thirst 0.7, drinking gains up to +0.6
-  utility. A threat in sight stops holding a parched animal back from
-  water (the comment always said so; the code damped drinking for
-  everyone), and fattening for winter stops pulling it to graze. These
-  are playtest 2's parched herbivores that "scavenge" or graze instead of
-  drinking.
-- **Possessed animals drink.** One with water within 8 tiles breaks off
-  its order to drink at thirst 60 (instead of 85). At water, it drinks
-  from thirst 10. Hunters, in a chase or under an attack order, drink at
-  water they pass.
-- **The need alert matches.** It now says when the animal has already
+**Drinking** (`Balance::possess_drink` 1, `Balance::drink_priority` 0):
+- **Possessed animals drink** (`possess_drink`, on). One with water within
+  8 tiles breaks off its order to drink at thirst 60 (instead of 85). At
+  water, it drinks from thirst 10. The need alert says when it has already
   broken off to drink.
+- **Parched animals drink first** (`drink_priority`, off by default). Past
+  thirst 0.7, drinking gains up to +0.6 utility. A threat in sight stops
+  holding a parched animal back from water (the comment always said so;
+  the code damped drinking for everyone), fattening for winter stops
+  pulling it to graze, and hunters in a chase drink at water they pass.
+  These are playtest 2's parched herbivores that "scavenge" or graze
+  instead of drinking. The rule works in its test, but it changes every
+  wild animal's behaviour, and in `predlong` on the six seeds that went
+  wrong (32, 36, 41, 45, 46 and 48):
+  - all rules on, the fox survived 3 of 6 and two prey lineages were lost;
+  - with only `drink_priority` off, the fox survived 5 of 6 and none was
+    lost (5 of 6 and one lost with every new rule off);
+  - turning off any other rule changed nothing measurable, and
+    `led_pack`, which needs attack orders, gave exactly the all-on worlds,
+    as it should.
+
+  So it ships off, for a later round to find which part costs the fox.
 
 **Dry ground** (`Balance::dry_sites` 1):
 - No dormancy on ice over water deep enough to drown the sleeper at the

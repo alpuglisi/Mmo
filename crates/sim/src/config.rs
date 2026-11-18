@@ -999,11 +999,17 @@ pub struct Balance {
     // read (`serde_util::before_v44`).
     /// Drinking first when parched: past thirst 0.7 drinking gains up to
     /// `0.6 × drink_priority`, a threat in sight stops holding it back and
-    /// fattening stops pulling the animal to graze; possessed animals break
-    /// off an order to drink at thirst 60 with water near, and hunters and
-    /// ordered animals drink at water they pass. 0: off.
+    /// fattening stops pulling the animal to graze, and hunters in a chase
+    /// drink at water they pass. Off by default: on, `predlong` lost the fox
+    /// on two more of six seeds (*Playtest 2: predators, toxins and
+    /// drowning* in the README). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub drink_priority: f32,
+    /// Possessed animals drink: one with water within 8 tiles breaks off its
+    /// order to drink at thirst 60 (instead of `possess_urgency`), and one at
+    /// water drinks from thirst 10. Only possessed animals. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub possess_drink: f32,
     /// Learned avoidance of toxic prey: each time a predator is poisoned by
     /// its prey, its lineage's lesson about the prey's lineage grows by
     /// `0.15 × toxic_learning × (1 + 2 × coloration)` (warning colours
@@ -1302,7 +1308,8 @@ impl Default for Balance {
             age_spread: 0.12,
             dormancy_toll: 0.08,
             emergence_lag: 6.0,
-            drink_priority: 1.0,
+            drink_priority: 0.0,
+            possess_drink: 1.0,
             toxic_learning: 1.0,
             dry_sites: 1.0,
             carnivore_energetics: 1.0,
@@ -1312,7 +1319,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 138;
+    pub const FIELD_COUNT: usize = 139;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1456,6 +1463,7 @@ impl Balance {
             ("dormancy_toll", &mut self.dormancy_toll),
             ("emergence_lag", &mut self.emergence_lag),
             ("drink_priority", &mut self.drink_priority),
+            ("possess_drink", &mut self.possess_drink),
             ("toxic_learning", &mut self.toxic_learning),
             ("dry_sites", &mut self.dry_sites),
             ("carnivore_energetics", &mut self.carnivore_energetics),

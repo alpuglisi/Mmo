@@ -314,7 +314,7 @@ impl World {
             // A possessed animal at water drinks from a lower thirst: the
             // player walked it there (`Balance::drink_priority`).
             let o = &self.organisms[i];
-            let at_order = o.possessed_by.is_some() && self.config.balance.drink_priority > 0.0;
+            let at_order = o.possessed_by.is_some() && self.config.balance.possess_drink > 0.0;
             let sip = if at_order { 10.0 } else { 30.0 };
             if o.needs.thirst > sip && intent.action != Action::Drink {
                 self.drink(i);

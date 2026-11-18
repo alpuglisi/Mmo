@@ -475,6 +475,8 @@ fn the_parched_drink_first_and_possessed_animals_break_off_for_water() {
     }
     let i = place(&mut w, PREY, &walker(), Vec2::new(26.5, 10.5));
     grown(&mut w, i);
+    // Off by default (it cost `predlong` the fox on two seeds).
+    w.config.balance.drink_priority = 1.0;
     // Parched and hungry, fattening for winter: it drinks.
     let o = &mut w.organisms[i];
     (o.needs.thirst, o.needs.hunger) = (90.0, 88.0);
@@ -486,6 +488,6 @@ fn the_parched_drink_first_and_possessed_animals_break_off_for_water() {
     w.possess(PREY, id).unwrap();
     w.order_move(PREY, id, Vec2::new(5.5, 10.5)).unwrap();
     assert_eq!(w.decide(i).action, Action::Drink);
-    w.config.balance.drink_priority = 0.0;
+    w.config.balance.possess_drink = 0.0;
     assert_eq!(w.decide(i).action, Action::Ordered, "the old rule: on until 85");
 }
