@@ -5,7 +5,7 @@
 //!
 //! `cargo run --release -p evo-server --example dominance -- [--seeds N]
 //!  [--first-seed N] [--days D] [--size N] [--late-year Y] [--flier-day D]
-//!  [--baseline playtest2]`
+//!  [--baseline playtest2] [--set NAME=V ..] [--new-only]`
 //!
 //! Five players through the server's own rules (`Game`: founding with the
 //! winter provision, the renown shop, seasons) on the standard world with
@@ -62,6 +62,10 @@ struct Args {
     flier_day: u64,
     cold_day: u64,
     playtest2_baseline: bool,
+    /// `--set NAME=V`: balance overrides for the new-rules arm.
+    sets: Vec<(String, f32)>,
+    /// `--new-only`: run only the new-rules arm.
+    new_only: bool,
 }
 
 fn args() -> Args {
@@ -74,6 +78,8 @@ fn args() -> Args {
         flier_day: 150,
         cold_day: 320,
         playtest2_baseline: false,
+        sets: Vec::new(),
+        new_only: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -87,6 +93,12 @@ fn args() -> Args {
             "--flier-day" => a.flier_day = v().parse().expect("--flier-day"),
             "--cold-day" => a.cold_day = v().parse().expect("--cold-day"),
             "--baseline" => a.playtest2_baseline = v() == "playtest2",
+            "--set" => {
+                let kv = v();
+                let (k, x) = kv.split_once('=').expect("--set NAME=V");
+                a.sets.push((k.to_string(), x.parse().expect("--set value")));
+            }
+            "--new-only" => a.new_only = true,
             _ => panic!("unknown argument {k}"),
         }
     }
@@ -244,6 +256,11 @@ fn data(out: &[(evo_server::game::Target, ServerMsg)]) -> Option<serde_json::Val
 fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
     let world = build_world(&WorldSettings { seed, width: a.size, height: a.size, ..Default::default() });
     let mut g = Game::new(world, GameConfig::default());
+    if new_rules {
+        for (k, x) in &a.sets {
+            assert!(g.world.config.balance.set(k, *x), "unknown balance field {k}");
+        }
+    }
     if !new_rules {
         // Default: round 4's rules, before playtest 4's (no winter rest,
         // the version 44 toxic recognition, eggs chilling when the parent
@@ -376,7 +393,8 @@ fn main() {
             d.founders
         );
     }
-    let jobs: Vec<(u64, bool)> = (0..a.seeds).flat_map(|k| [false, true].map(move |n| (a.first_seed + k, n))).collect();
+    let arms: &[bool] = if a.new_only { &[true] } else { &[false, true] };
+    let jobs: Vec<(u64, bool)> = (0..a.seeds).flat_map(|k| arms.iter().map(move |&n| (a.first_seed + k, n))).collect();
     let next = AtomicUsize::new(0);
     let results = Mutex::new(Vec::new());
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(jobs.len()).max(1);
@@ -404,6 +422,9 @@ fn main() {
     let results = results.into_inner().unwrap();
     let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Round 4 rules (playtest 4)" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
+        if a.new_only && !new {
+            continue;
+        }
         let os: Vec<&Outcome> = results.iter().filter(|r| r.1 == new).map(|r| &r.2).collect();
         let n = os.len().max(1) as f64;
         let seasons: u32 = os.iter().map(|o| o.seasons).sum();
