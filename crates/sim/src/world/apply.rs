@@ -1175,8 +1175,14 @@ impl World {
         // discount follows the meat gut (`Traits::meat_efficiency`), so a
         // generalist gets less of it than its carnivory alone would say.
         let diet = 1.0 - bal.carnivore_hunger_discount * o.traits.meat_efficiency(bal.generalist_tax);
-        // An obligate carnivore's lean economy (`Balance::carnivore_energetics`).
-        let diet = diet * (1.0 - OBLIGATE_DISCOUNT * bal.carnivore_energetics * obligacy(o.traits.carnivory));
+        // An obligate carnivore's lean economy (`Balance::carnivore_energetics`),
+        // in hard times only: a fed pack burns as before.
+        let diet = diet
+            * (1.0
+                - OBLIGATE_DISCOUNT
+                    * bal.carnivore_energetics
+                    * obligacy(o.traits.carnivory)
+                    * lean_times(o.needs.hunger));
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
         // Competition in a lineage crowded past its soft cap
@@ -1546,6 +1552,15 @@ impl World {
 /// melt. The water test is `terrain::passable`'s.
 /// Most an obligate carnivore's hunger slows (`Balance::carnivore_energetics`).
 pub(crate) const OBLIGATE_DISCOUNT: f32 = 0.3;
+
+/// How hard the times are for the lean economy (`Balance::carnivore_energetics`):
+/// 0 at hunger 40 or below, 1 at 80 and above.
+pub(crate) fn lean_times(hunger: f32) -> f32 {
+    ((hunger - 40.0) / 40.0).clamp(0.0, 1.0)
+}
+
+/// The lean economy's share in a cohort, which has no hunger of its own.
+pub(crate) const COHORT_LEAN: f32 = 0.5;
 
 /// How obligate a carnivore is: 0 at carnivory 0.7 or below, 1 at 0.95 and
 /// above.

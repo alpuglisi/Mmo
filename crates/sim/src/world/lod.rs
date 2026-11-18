@@ -1159,6 +1159,7 @@ impl World {
                 * (1.0
                     - super::apply::OBLIGATE_DISCOUNT
                         * bal.carnivore_energetics
+                        * super::apply::COHORT_LEAN
                         * super::apply::obligacy(rep.carnivory));
             let mut h = bal.hunger_rate * rep.metabolism * diet * thermo * ACTIVITY;
             // Competition past the soft lineage cap (`Balance::crowding_hunger`).

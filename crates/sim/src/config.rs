@@ -1022,11 +1022,13 @@ pub struct Balance {
     /// (`World::found_lineage_grouped`). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub dry_sites: f32,
-    /// Obligate carnivores' energetics: an obligate carnivore's hunger
-    /// rises up to `0.3 × carnivore_energetics` slower (none at carnivory
-    /// 0.7 or below, all of it at 0.95 and above: big, infrequent meals, a
-    /// lean-season economy). Playtest 2's player carnivores needed a fifth
-    /// of their weight in prey a day and starved. 0: off.
+    /// Obligate carnivores' energetics: a hungry obligate carnivore's
+    /// hunger rises up to `0.3 × carnivore_energetics` slower (none at
+    /// carnivory 0.7 or below, all of it at 0.95 and above; none at hunger
+    /// 40 or below, all of it at 80 and above: a lean economy in hard
+    /// times, so a fed pack burns as before). Playtest 2's player
+    /// carnivores needed a fifth of their weight in prey a day and starved.
+    /// 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub carnivore_energetics: f32,
     /// Player-led pack hunts on big prey: in a hunt a player leads (an
