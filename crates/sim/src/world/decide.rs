@@ -436,6 +436,9 @@ pub(crate) fn pack_instinct(o: &Organism) -> f32 {
 /// How far (steps, 8-neighbor) a thirsty animal looks for a shore spot it
 /// can walk to (`World::reachable_drink_spot`).
 pub(crate) const DRINK_STEPS: usize = 8;
+/// How far (steps) a thirsty animal with no shore it can walk to within
+/// [`DRINK_STEPS`] looks farther (`Balance::drink_reach`).
+pub(crate) const FAR_DRINK_STEPS: usize = 24;
 
 impl World {
     /// How far away a possessed organism can be ordered to attack: the
@@ -803,6 +806,29 @@ impl World {
             }
         }
 
+        // Out of water it would drown in, whatever else (a sleeper woken by
+        // a flood, an animal caught by rising water), and onto a dry bed
+        // before a deep sleep (`Balance::dry_beds`; playtest 5: sleepers on
+        // floodplains and lake ice drowned by the dozen).
+        if cfg.balance.dry_beds > 0.0 && !o.traits.body.can_fly {
+            let drowning = self.map.traverse_at(&o.traits.body, o.pos, false) == Traverse::Blocked;
+            let to_bed = !drowning
+                && threat < 0.3
+                && o.dormancy == crate::organism::Dormancy::Awake
+                && o.pregnancy.is_none()
+                && o.nest.is_none()
+                && !self.dry_bed(o.pos)
+                && self.dormancy_wanted(o).is_some();
+            if drowning || to_bed {
+                if let Some(t) = self.nearest_dry_bed(o) {
+                    intent.action = Action::Wander;
+                    intent.target = Some(t);
+                    intent.sprint = drowning;
+                    return intent;
+                }
+            }
+        }
+
         // --- Utilities -----------------------------------------------------
         let hunger = n.hunger / 100.0;
         let thirst = n.thirst / 100.0;
@@ -889,7 +915,7 @@ impl World {
         // next to a lake).
         let drink_bonus = if cfg.balance.drink_priority > 0.0 && thirst > PARCHED {
             let x = ((thirst - PARCHED) / 0.1).clamp(0.0, 1.0);
-            let near = self.map.can_drink_at(o.pos) || self.map.find_water(o.pos, PARCHED_WATER_NEAR).is_some();
+            let near = self.map.can_drink_at(o.pos) || self.water_near(o, PARCHED_WATER_NEAR);
             if near {
                 PARCHED_BONUS * cfg.balance.drink_priority * x
             } else {
@@ -1022,6 +1048,15 @@ impl World {
                     (self.config.balance.reachable_water > 0.0).then(|| self.reachable_drink_spot(o)).flatten()
                 {
                     intent.target = Some(w);
+                } else if self.config.balance.drink_reach > 0.0 && !o.traits.body.can_fly {
+                    // No shore it can walk to nearby (`Balance::drink_reach`):
+                    // one farther off, else it searches; never a bank it
+                    // can't get down (playtest 5: animals sat "drinking"
+                    // above a drought-shrunk pond until they died).
+                    match self.drink_spot_within(o, FAR_DRINK_STEPS) {
+                        Some(w) => intent.target = Some(w),
+                        None => self.wander(o, &mut intent, &mut rng, 8.0),
+                    }
                 } else if let Some(w) = self.map.find_water(o.pos, 3) {
                     intent.target = Some(w);
                 } else if let Some(w) = self.map.toward_water(o.pos) {
@@ -1159,7 +1194,7 @@ impl World {
         // otherwise died of thirst beside a lake.
         if b.possess_drink > 0.0
             && n.thirst >= POSSESS_DRINK
-            && (self.map.can_drink_at(o.pos) || self.map.find_water(o.pos, POSSESS_WATER_NEAR).is_some())
+            && (self.map.can_drink_at(o.pos) || self.water_near(o, POSSESS_WATER_NEAR))
         {
             return Some(Action::Drink);
         }
@@ -1758,6 +1793,73 @@ impl World {
         }
     }
 
+    /// Whether `o` has water within `tiles`: water it can walk to and drink
+    /// from within that many steps with `Balance::drink_reach` (a flyer:
+    /// any), else any water that near as the crow flies.
+    fn water_near(&self, o: &Organism, tiles: i32) -> bool {
+        if self.config.balance.drink_reach > 0.0 && !o.traits.body.can_fly {
+            self.drink_spot_within(o, tiles.max(1) as usize).is_some()
+        } else {
+            self.map.find_water(o.pos, tiles).is_some()
+        }
+    }
+
+    /// [`World::reachable_drink_spot`] over `steps` steps (any flyer:
+    /// `None`).
+    pub(crate) fn drink_spot_within(&self, o: &Organism, steps: usize) -> Option<Vec2> {
+        if o.traits.body.can_fly {
+            return None;
+        }
+        let side = 2 * steps + 1;
+        let (map, body) = (&self.map, &o.traits.body);
+        let ground = map.ground();
+        let (cx, cy) = map.tile_coords(o.pos);
+        let mut seen = vec![false; side * side];
+        seen[steps * side + steps] = true;
+        let mut frontier: Vec<(usize, usize)> = vec![(cx, cy)];
+        let mut next = Vec::new();
+        for step in 0..=steps {
+            frontier.sort_unstable_by_key(|&(x, y)| (y, x));
+            if step > 0 {
+                if let Some(&(x, y)) =
+                    frontier.iter().find(|&&(x, y)| map.can_drink_at(crate::terrain::Map::tile_center(x, y)))
+                {
+                    return Some(crate::terrain::Map::tile_center(x, y));
+                }
+            }
+            if step == steps {
+                break;
+            }
+            next.clear();
+            for &(x, y) in &frontier {
+                for ny in y.saturating_sub(1)..=(y + 1).min(map.height - 1) {
+                    for nx in x.saturating_sub(1)..=(x + 1).min(map.width - 1) {
+                        let (Some(ry), Some(rx)) = ((ny + steps).checked_sub(cy), (nx + steps).checked_sub(cx)) else {
+                            continue;
+                        };
+                        if ry >= side || rx >= side {
+                            continue;
+                        }
+                        let k = ry * side + rx;
+                        if seen[k] {
+                            continue;
+                        }
+                        seen[k] = true;
+                        let i = map.idx(nx, ny);
+                        if crate::terrain::passable(body, &ground[i], &map.tiles[i]) {
+                            next.push((nx, ny));
+                        }
+                    }
+                }
+            }
+            std::mem::swap(&mut frontier, &mut next);
+            if frontier.is_empty() {
+                break;
+            }
+        }
+        None
+    }
+
     /// The nearest tile within [`DRINK_STEPS`] steps (8-neighbor) that `o`
     /// can walk to (`terrain::passable`: no deep water it can't swim, no
     /// cliff it can't climb) and drink from (`Map::can_drink_at`), by
@@ -1911,6 +2013,61 @@ mod tests {
         w.organisms[k].needs.thirst = 90.0;
         let intent = w.decide(k);
         let t = intent.target.expect("a target");
+        assert!(w.map.tile_coords(t).0 >= 10, "old target {t:?}");
+    }
+
+    /// Playtest 5: animals sat on "drink" above a steep-banked pond until
+    /// they died. The same cliff, the gap 12 steps off: with
+    /// `drink_reach` the thirsty animal heads for the far gap; with no gap
+    /// at all it searches rather than walk into the bank; under the old
+    /// rule it heads for the water behind the cliff.
+    #[test]
+    fn thirsty_animals_look_farther_for_a_shore_they_can_reach() {
+        let world = |gap: bool| {
+            let mut w = World::new(WorldConfig { seed: 3, width: 24, height: 24, ..Default::default() });
+            let terrain = w.map.edit_terrain();
+            for y in 0..24 {
+                for x in 0..24 {
+                    let g = &mut terrain.ground[y * 24 + x];
+                    (g.biome, g.sand, g.veg_density, g.base_water, g.river) =
+                        (crate::terrain::Biome::Grassland, 0.0, 0.1, 0.0, 0.0);
+                    g.slope = if (10..12).contains(&x) && !(gap && y == 14) { 0.8 } else { 0.0 };
+                }
+            }
+            for y in 0..24 {
+                for x in 0..24 {
+                    let t = &mut w.map.tiles[y * 24 + x];
+                    (t.water_depth, t.ice, t.snow, t.mud, t.current) =
+                        (if x >= 12 { 3.0 } else { 0.0 }, 0.0, 0.0, 0.0, 0.0);
+                }
+            }
+            let d =
+                crate::design::FounderDesign::new("t", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+                    .with(Gene::Climbing, 0.0)
+                    .with(Gene::Swimming, 0.0)
+                    .founders(1);
+            let id = w.found_lineage_unchecked(1, &d)[0];
+            let i = w.organism_index(id).unwrap();
+            (w.organisms[i].pos, w.organisms[i].needs.thirst, w.organisms[i].needs.hunger) =
+                (Vec2::new(9.5, 2.5), 95.0, 0.0);
+            w.grid.rebuild(&w.organisms);
+            (w, i)
+        };
+        let (w, i) = world(true);
+        assert!(w.reachable_drink_spot(&w.organisms[i]).is_none(), "the gap is beyond 8 steps");
+        let intent = w.decide(i);
+        assert_eq!(intent.action, Action::Drink);
+        let t = intent.target.expect("a target");
+        let (tx, ty) = w.map.tile_coords(t);
+        assert!(tx < 12 && (13..=15).contains(&ty), "far gap target {t:?}");
+        // No way down at all: it searches, not at the bank.
+        let (w, i) = world(false);
+        let intent = w.decide(i);
+        assert!(intent.target.is_none_or(|t| w.map.tile_coords(t).0 < 10), "{intent:?}");
+        // The old rule: the water behind the cliff.
+        let (mut w, i) = world(true);
+        w.config.balance.drink_reach = 0.0;
+        let t = w.decide(i).target.expect("a target");
         assert!(w.map.tile_coords(t).0 >= 10, "old target {t:?}");
     }
 

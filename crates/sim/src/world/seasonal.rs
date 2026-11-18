@@ -58,6 +58,9 @@ const AROUSAL_THIRST: f32 = 80.0;
 const THIRST_LIMIT: f32 = 50.0;
 /// Thirst below which a winter sleeper beds down (`Balance::winter_toll`).
 const WINTER_THIRST_LIMIT: f32 = 30.0;
+/// Tiles around an animal searched for a dry bed (`World::nearest_dry_bed`)
+/// or dry land out of deep water.
+pub(crate) const BED_SEARCH: i32 = 8;
 /// Plant share of the diet (1 - carnivory) needed to cache or raid caches.
 const CACHE_DIET: f32 = 0.3;
 /// Regional dryness (`Map::dryness_at`) above which an estivator also goes
@@ -342,6 +345,92 @@ impl World {
         1.0 + self.config.balance.timed_conception * female.traits.seasonal.timed_breeding
     }
 
+    /// The deep dormancy `o` would enter now, by its needs, the season and
+    /// the weather where it stands (`seasonal_tick`), whatever its ground.
+    /// Leaves out what depends on the tick's decision (a threat, fleeing)
+    /// and pregnancy or a nest.
+    pub(crate) fn dormancy_wanted(&self, o: &Organism) -> Option<Dormancy> {
+        let bal = &self.config.balance;
+        let s = o.traits.seasonal;
+        if s.winter.is_none() && s.estivation <= 0.0 {
+            return None;
+        }
+        let season = self.season();
+        let temp = self.seasonal_temp(o.pos);
+        // With `winter_toll` a sleeper drinks before bedding down
+        // for the winter (playtest 3: sleepers died of thirst).
+        let thirst_limit = if bal.winter_toll > 0.0 && s.winter.is_some() { WINTER_THIRST_LIMIT } else { THIRST_LIMIT };
+        // A possessed animal may bed down lean (`possessed_sleep`):
+        // its player walked it about instead of letting it fatten.
+        let lean_limit =
+            if bal.possessed_sleep > 0.0 && o.possessed_by.is_some() { AROUSAL_HUNGER } else { LEAN_LIMIT };
+        let fed = (o.fat > 0.0 || o.needs.hunger < lean_limit) && o.needs.thirst < thirst_limit;
+        if !fed {
+            return None;
+        }
+        let cold_season = matches!(season, Season::Autumn | Season::Winter);
+        if s.winter.is_some() && cold_season && temp < bal.dormancy_temp {
+            Some(Dormancy::Winter)
+        } else if s.estivation > 0.0
+            && season == Season::Summer
+            && (temp > bal.estivation_temp || self.map.dryness_at(o.pos) > ESTIVATION_DRYNESS)
+        {
+            Some(Dormancy::Summer)
+        } else {
+            None
+        }
+    }
+
+    /// Whether `p` is ground a deep sleeper may bed down on
+    /// (`Balance::dry_beds`): dry now, no lake or marsh water at normal
+    /// wetness, off every floodplain, so rising water won't reach it.
+    /// Anywhere with the rule off.
+    pub(crate) fn dry_bed(&self, p: Vec2) -> bool {
+        if self.config.balance.dry_beds <= 0.0 {
+            return true;
+        }
+        let (g, t) = (self.map.ground_at(p), self.map.tile_at(p));
+        g.base_water <= 0.0 && g.plain <= 0.0 && t.water_depth <= 0.0
+    }
+
+    /// The nearest dry bed (`dry_bed`) within [`BED_SEARCH`] tiles of `o`
+    /// that it can stand on, if any: a tile center.
+    pub(crate) fn nearest_dry_bed(&self, o: &Organism) -> Option<Vec2> {
+        let (cx, cy) = self.map.tile_coords(o.pos);
+        let (w, h) = (self.map.width as i32, self.map.height as i32);
+        for r in 1..=BED_SEARCH {
+            let mut best: Option<(f32, Vec2)> = None;
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs() != r && dy.abs() != r {
+                        continue;
+                    }
+                    let (x, y) = (cx as i32 + dx, cy as i32 + dy);
+                    if x < 0 || y < 0 || x >= w || y >= h {
+                        continue;
+                    }
+                    let c = crate::terrain::Map::tile_center(x as usize, y as usize);
+                    if !self.dry_bed(c)
+                        || !matches!(
+                            self.map.traverse_at(&o.traits.body, c, false),
+                            crate::terrain::Traverse::Passable { .. }
+                        )
+                    {
+                        continue;
+                    }
+                    let d = c.dist(o.pos);
+                    if best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, c));
+                    }
+                }
+            }
+            if let Some((_, c)) = best {
+                return Some(c);
+            }
+        }
+        None
+    }
+
     /// Enter or leave a dormancy, and let caches spoil. Runs in `apply`
     /// after the action, before needs. Returns a cause of death for a
     /// sleeper that never wakes.
@@ -376,6 +465,12 @@ impl World {
             o.dormancy = Dormancy::Awake;
             return None;
         }
+        // Water reaching a deep sleeper wakes it (`Balance::dry_beds`;
+        // playtest 5: 25 of 115 sleepers drowned in one day of flood).
+        if bal.dry_beds > 0.0 && o.dormancy.is_deep() && self.map.tile_at(pos).water_depth > 0.0 {
+            o.dormancy = Dormancy::Awake;
+            return None;
+        }
         // A brumator awake in winter pays the winter toll as if asleep
         // (`Balance::winter_rest`): out in the cold, not in its den.
         if o.dormancy == Dormancy::Awake
@@ -403,27 +498,16 @@ impl World {
                     && intent.threat < 0.3
                     && intent.action != Action::Flee
                     && !on_thin_ice;
-                // With `winter_toll` a sleeper drinks before bedding down
-                // for the winter (playtest 3: sleepers died of thirst).
-                let thirst_limit =
-                    if bal.winter_toll > 0.0 && s.winter.is_some() { WINTER_THIRST_LIMIT } else { THIRST_LIMIT };
-                // A possessed animal may bed down lean (`possessed_sleep`):
-                // its player walked it about instead of letting it fatten.
-                let lean_limit =
-                    if bal.possessed_sleep > 0.0 && o.possessed_by.is_some() { AROUSAL_HUNGER } else { LEAN_LIMIT };
-                let fed = (o.fat > 0.0 || o.needs.hunger < lean_limit) && o.needs.thirst < thirst_limit;
-                let cold_season = matches!(season, Season::Autumn | Season::Winter);
                 if !free {
                     return None;
                 }
-                if s.winter.is_some() && cold_season && temp < bal.dormancy_temp && fed {
-                    o.dormancy = Dormancy::Winter;
-                } else if s.estivation > 0.0
-                    && season == Season::Summer
-                    && (temp > bal.estivation_temp || dry > ESTIVATION_DRYNESS)
-                    && fed
-                {
-                    o.dormancy = Dormancy::Summer;
+                // A deep sleep only on ground that stays dry
+                // (`Balance::dry_beds`): an animal on wet or flood-prone
+                // ground first walks to a dry bed (`decide`).
+                if let Some(deep) = self.dormancy_wanted(o) {
+                    if self.dry_bed(pos) {
+                        o.dormancy = deep;
+                    }
                 } else if s.torpor > 0.0
                     && !daytime
                     && o.needs.cold > 0.0
@@ -923,6 +1007,64 @@ mod tests {
             with < 0.4 * without,
             "thirst rise over 10 sleeping days: {with} with metabolic water, {without} without"
         );
+    }
+
+    /// Playtest 5: hibernators bedded down on floodplains and lake ice and
+    /// drowned by the dozen when the water rose. With `dry_beds` a sleeper
+    /// first walks off the floodplain and beds down on dry ground, and
+    /// water reaching a sleeper wakes it; under the old rule it sleeps
+    /// where it stands.
+    #[test]
+    fn sleepers_bed_down_on_dry_ground() {
+        let run = |dry_beds: f32| {
+            let mut w = flat_world(0.0, 0.0, 95);
+            w.config.balance.dry_beds = dry_beds;
+            for (k, g) in w.map.edit_terrain().ground.iter_mut().enumerate() {
+                g.plain = if k % 24 < 8 { 1.2 } else { 0.0 };
+            }
+            let hib = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9), 2);
+            w.organisms[hib[0]].pos = Vec2::new(4.5, 10.5);
+            w.organisms[hib[1]].pos = Vec2::new(16.5, 10.5);
+            w.step();
+            let first = w.organisms[hib[0]].dormancy;
+            w.run_days(1);
+            let later = (first, w.organisms[hib[0]].dormancy, w.organisms[hib[0]].pos, hib);
+            (later, w)
+        };
+        let ((first, later, pos, hib), mut w) = run(1.0);
+        assert_eq!(first, Dormancy::Awake, "no sleep on the floodplain");
+        assert_eq!(later, Dormancy::Winter);
+        assert!(pos.x >= 8.0, "slept at {pos:?}");
+        // Water reaching a sleeper wakes it.
+        assert_eq!(w.organisms[hib[1]].dormancy, Dormancy::Winter);
+        let p = w.organisms[hib[1]].pos;
+        w.map.tile_at_mut(p).water_depth = 0.4;
+        w.step();
+        assert_eq!(w.organisms[hib[1]].dormancy, Dormancy::Awake);
+        // The old rule: asleep on the floodplain at once.
+        let ((first, _, _, _), _) = run(0.0);
+        assert_eq!(first, Dormancy::Winter);
+    }
+
+    /// An animal caught in water it would drown in (a sleeper woken by a
+    /// flood) heads for the nearest dry land (`dry_beds`).
+    #[test]
+    fn animals_caught_in_deep_water_head_for_dry_land() {
+        let mut w = flat_world(15.0, 5.0, 40);
+        let a = add(&mut w, &design(Thermo::Warm).with(Gene::Swimming, 0.0), 1)[0];
+        for y in 8..13 {
+            for x in 8..13 {
+                w.map.tiles[y * 24 + x].water_depth = 3.0;
+            }
+        }
+        w.organisms[a].pos = Vec2::new(10.5, 10.5);
+        w.grid.rebuild(&w.organisms);
+        let body = w.organisms[a].traits.body;
+        assert_eq!(w.map.traverse_at(&body, w.organisms[a].pos, false), crate::terrain::Traverse::Blocked);
+        let intent = w.decide(a);
+        let t = intent.target.expect("a way out");
+        assert!(w.map.tile_at(t).water_depth == 0.0 && intent.sprint, "{intent:?}");
+        assert!(t.dist(w.organisms[a].pos) < 4.0, "{t:?}");
     }
 
     /// Playtest 4: a possessed animal kept from fattening by its player

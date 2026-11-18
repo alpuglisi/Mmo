@@ -699,6 +699,21 @@ pub struct Game {
     /// A drought warning is out (`DROUGHT_WARN`); cleared below
     /// `DROUGHT_CLEAR`. Not saved: a restart in a drought warns again.
     drought_warned: bool,
+    /// A flood warning is out (`FLOOD_WARN`); cleared below `FLOOD_CLEAR`.
+    /// Not saved.
+    flood_warned: bool,
+    /// Kills by (prey lineage, hunter lineage) as of the last day boundary,
+    /// for the day's predation (`hunted`). Not saved: after a restart the
+    /// first day counts from the restart.
+    kills_seen: BTreeMap<(u32, u32), u64>,
+    /// `kills_seen` holds a day boundary's counts.
+    kills_ready: bool,
+    /// Each player's animals eaten on the last recorded day, by hunter
+    /// lineage, most first (the "being hunted" warning). Not saved.
+    hunted: BTreeMap<PlayerId, (u64, Vec<(u32, u64)>)>,
+    /// Hunters of the watched deaths not yet announced, in words, per
+    /// player (`announce_deaths`). Not saved.
+    pending_killers: BTreeMap<PlayerId, BTreeMap<OrgId, String>>,
     /// Players who founded since the last tick: told of a drought under way
     /// (they missed its warning). Not saved.
     joined: Vec<PlayerId>,
@@ -994,6 +1009,11 @@ impl Game {
             seen_eras: 0,
             seen_catastrophes: Vec::new(),
             drought_warned: false,
+            flood_warned: false,
+            kills_seen: BTreeMap::new(),
+            kills_ready: false,
+            hunted: BTreeMap::new(),
+            pending_killers: BTreeMap::new(),
             joined: Vec::new(),
             left: BTreeMap::new(),
             possessing: BTreeMap::new(),
@@ -1109,7 +1129,7 @@ impl Game {
         let dist = a.pos.dist(t.pos);
         let reach = evo_sim::world::commands::ORDER_KEPT * self.world.attack_range();
         let message = format!(
-            "#{target} is {dist:.0} tiles from your #{organism} now (orders reach {reach:.0}); it moved since your view updated, so get closer first"
+            "#{target} is {dist:.0} tiles from your #{organism} (orders reach {reach:.0} tiles): get closer first"
         );
         ErrorInfo { message, ..info }.with_detail(serde_json::json!({ "distance": dist, "reach": reach }))
     }
@@ -1530,7 +1550,7 @@ impl Game {
                 ok.reduced = Some(t.reason.clone());
                 let text = format!("Re-founded: {n} of {} founders ({}).", design.founders, t.reason);
                 // Live: delivered with the next tick's messages.
-                let mut out = Outbox::new();
+                let mut out: Outbox = Vec::new();
                 self.alert(player, AlertKind::Milestone, text, None, &mut out);
                 self.pending_out.extend(out);
                 return Ok(ok);
@@ -1763,7 +1783,7 @@ impl Game {
     /// Apply one client command and say what to send back.
     pub fn command(&mut self, conn: ConnId, player: PlayerId, id: Option<u64>, msg: ClientMsg) -> Outbox {
         let name = msg.name();
-        let mut out = Outbox::new();
+        let mut out: Outbox = Vec::new();
         self.note_command(player, &msg);
         let result = self.apply(conn, player, msg, &mut out);
         let reply = match result {
@@ -3827,6 +3847,7 @@ impl Game {
         if legacy_day != self.last_legacy_day {
             self.last_legacy_day = legacy_day;
             let record = self.daily_record();
+            self.count_hunted(record.day);
             self.season_day(&record, &mut out);
             self.refresh_hosts();
             self.pay_income(&record);
@@ -4301,22 +4322,76 @@ impl Game {
             if self.possessing.get(&player) == Some(&id) {
                 self.possessing.remove(&player);
                 // Said at once: the player was steering it (its bar just vanished).
+                let by = (o.death == Some(DeathCause::Predation))
+                    .then(|| o.killer)
+                    .flatten()
+                    .map_or(String::new(), |l| format!(" by {}", self.hunter_words(l)));
                 let text = format!(
-                    "#{id}, the animal you were possessing, {}. Possess another from the map or the Lineage tab.",
+                    "#{id}, the animal you were possessing, {}{by}. Possess another from the map or the Lineage tab.",
                     death_words(why_died(o))
                 );
                 self.alert(player, AlertKind::Death, text, Some(id), out);
                 continue;
+            }
+            if let Some(by) = (o.death == Some(DeathCause::Predation)).then(|| o.killer).flatten() {
+                let words = self.hunter_words(by);
+                self.pending_killers.entry(player).or_default().insert(id, words);
             }
             self.pending_deaths.entry(player).or_default().push((id, watch, why_died(o)));
         }
         if !self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) || self.pending_deaths.is_empty() {
             return;
         }
+        let mut killers = std::mem::take(&mut self.pending_killers);
         for (player, deaths) in std::mem::take(&mut self.pending_deaths) {
             let (text, organism) = death_alert_text(&deaths);
+            // Instinct kills say by whom (playtest 5: "Founder #N was eaten"
+            // never named the hunter).
+            let text = with_hunters(text, &deaths, &killers.remove(&player).unwrap_or_default());
             self.alert(player, AlertKind::Death, text, organism, out);
         }
+    }
+
+    /// Who a hunter of lineage `l` is, in words: "Rulebender's Apex
+    /// Stalkers" for a player's, "a wild Red fox" for a wild one.
+    fn hunter_words(&self, l: u32) -> String {
+        let Some(lin) = self.world.lineages.get(l as usize) else { return "a hunter".into() };
+        if lin.owner == WILD {
+            format!("a wild {}", lin.name)
+        } else {
+            format!("{}'s {}", self.name(lin.owner), lin.name)
+        }
+    }
+
+    /// At a day boundary: each player's animals eaten since the last one,
+    /// by hunter lineage (`hunted`).
+    fn count_hunted(&mut self, day: u64) {
+        let kills = &self.world.counters.kills_by_lineage;
+        // The first day boundary after a start or restart only sets the
+        // baseline (the counts run from the world's beginning).
+        if !self.kills_ready {
+            self.kills_ready = true;
+            self.kills_seen = kills.clone();
+            self.hunted.clear();
+            return;
+        }
+        let mut by_owner: BTreeMap<PlayerId, BTreeMap<u32, u64>> = BTreeMap::new();
+        for (&(prey, hunter), &n) in kills {
+            let new = n.saturating_sub(self.kills_seen.get(&(prey, hunter)).copied().unwrap_or(0));
+            let owner = self.world.lineages.get(prey as usize).map_or(WILD, |l| l.owner);
+            if new > 0 && owner != WILD {
+                *by_owner.entry(owner).or_default().entry(hunter).or_default() += new;
+            }
+        }
+        self.kills_seen = kills.clone();
+        self.hunted = by_owner
+            .into_iter()
+            .map(|(p, m)| {
+                let mut v: Vec<(u32, u64)> = m.into_iter().collect();
+                v.sort_by_key(|&(l, n)| (std::cmp::Reverse(n), l));
+                (p, (day, v))
+            })
+            .collect();
     }
 
     /// Lineage-wide warnings for `player` now (playtest 3, finding 19): a
@@ -4346,13 +4421,63 @@ impl Game {
                          ground can feed."
                     )
                 };
+                // Mostly asleep: groups can't be moved (playtest 5: a 91%
+                // dormant herd was told to move groups).
+                let (mut mine, mut asleep) = (0usize, 0usize);
+                for o in w.organisms.iter().filter(|o| o.alive && o.owner == player) {
+                    mine += 1;
+                    asleep += usize::from(o.dormancy.is_deep());
+                }
+                let advice = if mine > 0 && asleep * 2 >= mine {
+                    format!(
+                        "{:.0}% of your animals are asleep: sleepers can't be moved, and those that starve are the ones out \
+                         of fat or awake. Fatten them on rich ground before the next dormancy (the Food layer shows it) and \
+                         keep the awake ones near food and water.",
+                        100.0 * asleep as f64 / mine as f64
+                    )
+                } else {
+                    "Move groups to better ground (the Food layer shows it), split big herds, keep them near water."
+                        .into()
+                };
                 out.push(LineageWarning {
                     kind: "starving".into(),
                     text: format!(
                         "Your lineage is going hungry: on day {} {starved} starved and {thirst} died of thirst ({:.0}% of it). \
-                         {why} Move groups to better ground (the Food layer shows it), split big herds, keep them near water.",
+                         {why} {advice}",
                         r.day.max(1),
                         100.0 * died as f64 / base as f64
+                    ),
+                });
+            }
+            // Heat (playtest 5: about 45 summer deaths filed as "cold, heat or
+            // winter sleep" with no word on why).
+            let heat = n("exposure");
+            if heat >= HEAT_MIN && season_of(w, r.day) == evo_sim::terrain::Season::Summer {
+                out.push(LineageWarning {
+                    kind: "heat".into(),
+                    text: format!(
+                        "Heat is killing your animals: {heat} died of heat on day {}. Thick fur, fat and big bodies hold heat; \
+                         shade (forest), water, estivation or a lighter coat let them shed it.",
+                        r.day.max(1)
+                    ),
+                });
+            }
+        }
+        // Being hunted (playtest 5: 5–21 eaten a day, and one alert all game).
+        if let Some((day, by)) = self.hunted.get(&player) {
+            let eaten: u64 = by.iter().map(|&(_, n)| n).sum();
+            let alive = w.population_counts().get(lineage as usize).map_or(0, |c| c.alive) as u64;
+            if eaten >= HUNTED_MIN || (eaten >= 2 && eaten * 25 >= alive.max(1)) {
+                let who: Vec<String> =
+                    by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l))).collect();
+                out.push(LineageWarning {
+                    kind: "hunted".into(),
+                    text: format!(
+                        "Your lineage is being hunted: {eaten} of your animals were eaten on day {}, by {}. Animals that keep \
+                         together, watch (vigilance) or outrun hunters lose fewer; so do burrowers, and toxic prey once \
+                         hunters learn. Moving groups away from the hunters' range helps.",
+                        (*day).max(1),
+                        who.join(", ")
                     ),
                 });
             }
@@ -4784,10 +4909,17 @@ impl Game {
             if entry.born > 0 || died > 0 || eggs_lost > 0 {
                 let mut causes: Vec<(&String, &u64)> = entry.deaths.iter().collect();
                 causes.sort_by(|a, b| b.1.cmp(a.1));
-                // The day's counts come from the sim's causes: exposure is cold, heat or a winter sleep.
+                // The day's counts come from the sim's causes: exposure is cold
+                // or heat, told apart by the season (playtest 5: summer heat
+                // deaths read "cold, heat or winter sleep").
+                let season = season_of(&self.world, record.day);
                 let word = |c: &str| {
                     if c == "exposure" {
-                        "cold, heat or winter sleep".to_string()
+                        match season {
+                            evo_sim::terrain::Season::Summer => "heat".to_string(),
+                            evo_sim::terrain::Season::Winter => "cold".to_string(),
+                            _ => "cold or heat".to_string(),
+                        }
                     } else {
                         c.replace('_', " ")
                     }
@@ -4923,6 +5055,38 @@ impl Game {
         if let Some((push, text)) = warn {
             for &p in &players {
                 alerts.push((p, AlertKind::World, push, text.clone()));
+            }
+        }
+        // Floods, like droughts (playtest 5: sleepers drowned with no
+        // warning): rivers over their banks, and who stands where it floods.
+        let flood = self.world.map.flood;
+        let flood_news = if !self.flood_warned && flood >= FLOOD_WARN {
+            self.flood_warned = true;
+            Some(true)
+        } else if self.flood_warned && flood < FLOOD_CLEAR {
+            self.flood_warned = false;
+            Some(false)
+        } else {
+            None
+        };
+        if let Some(rising) = flood_news {
+            for &p in &players {
+                let text = if rising {
+                    let (exposed, asleep) = flood_exposure(&self.world, p);
+                    let mine = if exposed > 0 {
+                        format!(" {exposed} of your animals stand on floodplains or lake margins ({asleep} asleep).")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "Flood: {:.0}% of the rivers are over their banks. Floodplains and lake margins go under; animals \
+                         that can't swim drown there, sleepers most of all.{mine} Move groups to high, dry ground.",
+                        flood * 100.0
+                    )
+                } else {
+                    format!("The flood has eased: {:.0}% of the rivers are over their banks now.", flood * 100.0)
+                };
+                alerts.push((p, AlertKind::World, rising.then_some(PushKind::Catastrophe), text));
             }
         }
         let mut bonuses: Vec<(PlayerId, u64, String)> = Vec::new();
@@ -5632,6 +5796,65 @@ fn attack_result_text(w: &World, attacker: OrgId, target: OrgId) -> Option<Strin
 pub const DROUGHT_WARN: f32 = 0.45;
 /// The warning clears below this share.
 pub const DROUGHT_CLEAR: f32 = 0.3;
+/// Share of river tiles in flood (`Map::flood`) at which players are warned.
+pub const FLOOD_WARN: f32 = 0.25;
+/// The flood warning clears below this share.
+pub const FLOOD_CLEAR: f32 = 0.1;
+/// Animals eaten in a day that raise the "being hunted" warning (fewer do
+/// when they are at least 4% of the lineage).
+pub const HUNTED_MIN: u64 = 5;
+/// Heat deaths in a summer day that raise the heat warning.
+pub const HEAT_MIN: u64 = 3;
+
+/// The season of game day `day` (counted from 0).
+fn season_of(w: &World, day: u64) -> evo_sim::terrain::Season {
+    let year = w.config.days_per_year.max(1);
+    evo_sim::terrain::Season::from_day((day % year as u64) as u32, year)
+}
+
+/// `player`'s living animals on ground that floods (a floodplain, or lake
+/// and marsh water at normal wetness, or wet now), and how many of them
+/// sleep.
+fn flood_exposure(w: &World, player: PlayerId) -> (usize, usize) {
+    let (mut exposed, mut asleep) = (0, 0);
+    for o in w.organisms.iter().filter(|o| o.alive && o.owner == player) {
+        let (g, t) = (w.map.ground_at(o.pos), w.map.tile_at(o.pos));
+        if g.plain > 0.0 || g.base_water > 0.0 || t.water_depth > 0.0 {
+            exposed += 1;
+            asleep += usize::from(o.dormancy.is_deep());
+        }
+    }
+    (exposed, asleep)
+}
+
+/// A death alert with its hunters named: one predation death reads "was
+/// eaten by Rulebender's Apex Stalkers"; several add "Eaten by: …".
+fn with_hunters(text: String, deaths: &[(OrgId, Watch, Why)], killers: &BTreeMap<OrgId, String>) -> String {
+    if killers.is_empty() {
+        return text;
+    }
+    if let [(id, ..)] = deaths {
+        return match killers.get(id) {
+            Some(by) => match text.strip_suffix('.') {
+                Some(t) => format!("{t} by {by}."),
+                None => text,
+            },
+            None => text,
+        };
+    }
+    let mut count: Vec<(&String, usize)> = Vec::new();
+    for d in deaths {
+        if let Some(by) = killers.get(&d.0) {
+            match count.iter_mut().find(|(b, _)| *b == by) {
+                Some(e) => e.1 += 1,
+                None => count.push((by, 1)),
+            }
+        }
+    }
+    count.sort_by_key(|&(b, n)| (std::cmp::Reverse(n), b.clone()));
+    let who: Vec<String> = count.iter().map(|(b, n)| format!("{b} ({n})")).collect();
+    format!("{text} Eaten by: {}.", who.join(", "))
+}
 
 /// The drought warning's text.
 fn drought_text(drought: f32) -> String {
@@ -5842,6 +6065,66 @@ mod tests {
     }
 
     /// Two players on a small world with no wild ecosystem.
+    /// Playtest 5: deaths to instinct hunters never named them; 5–21 of a
+    /// lineage were eaten a day with one alert all game.
+    #[test]
+    fn hunters_are_named_and_a_hunted_lineage_is_warned() {
+        let (mut g, _, _) = game();
+        let (la, lb) = (g.lineage_of(1).unwrap(), g.lineage_of(2).unwrap());
+        // Death notices.
+        let by: BTreeMap<OrgId, String> = [(5, g.hunter_words(lb))].into();
+        let one = with_hunters(
+            "Founder #5 was eaten.".into(),
+            &[(5, Watch::Founder, Why::Of(Some(DeathCause::Predation)))],
+            &by,
+        );
+        assert_eq!(one, "Founder #5 was eaten by bob's B.");
+        let two = [(5, Watch::Founder, Why::Of(Some(DeathCause::Predation))), (6, Watch::Founder, Why::Cold)];
+        let (text, _) = death_alert_text(&two);
+        assert!(with_hunters(text, &two, &by).ends_with("Eaten by: bob's B (1)."));
+        // The day's kills: the first boundary sets the baseline.
+        g.world.counters.kills_by_lineage.insert((la, lb), 40);
+        g.count_hunted(10);
+        assert!(g.lineage_warnings(1).iter().all(|w| w.kind != "hunted"));
+        *g.world.counters.kills_by_lineage.get_mut(&(la, lb)).unwrap() += 6;
+        g.world.counters.kills_by_lineage.insert((la, 0), 1);
+        g.count_hunted(11);
+        let w = g.lineage_warnings(1);
+        let hunted = w.iter().find(|w| w.kind == "hunted").expect("a hunted warning");
+        assert!(
+            hunted.text.contains("7 of your animals were eaten on day 11") && hunted.text.contains("bob's B (6)"),
+            "{}",
+            hunted.text
+        );
+        // A quiet day: no warning.
+        g.count_hunted(12);
+        assert!(g.lineage_warnings(1).iter().all(|w| w.kind != "hunted"));
+    }
+
+    /// Playtest 5: floods had no alert at all (droughts did).
+    #[test]
+    fn floods_are_announced_like_droughts() {
+        let (mut g, _, _) = game();
+        let flood_alerts = |out: &Outbox| {
+            alerts_in(out, 1)
+                .into_iter()
+                .filter(|a| a.text.starts_with("Flood") || a.text.contains("flood has eased"))
+                .count()
+        };
+        g.world.map.flood = 0.5;
+        let mut out: Outbox = Vec::new();
+        g.chronicle_alerts(&mut out);
+        assert_eq!(flood_alerts(&out), 1);
+        assert!(alerts_in(&out, 1).iter().any(|a| a.text.contains("Flood: 50% of the rivers")));
+        let mut out: Outbox = Vec::new();
+        g.chronicle_alerts(&mut out);
+        assert_eq!(flood_alerts(&out), 0, "said once");
+        g.world.map.flood = 0.05;
+        let mut out: Outbox = Vec::new();
+        g.chronicle_alerts(&mut out);
+        assert!(alerts_in(&out, 1).iter().any(|a| a.text.contains("The flood has eased")));
+    }
+
     fn game() -> (Game, Vec<OrgId>, Vec<OrgId>) {
         let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
         let mut g = Game::new(world, GameConfig::default());
@@ -6485,7 +6768,7 @@ mod tests {
     }
 
     fn run_days(g: &mut Game, days: u32) -> Outbox {
-        let mut out = Outbox::new();
+        let mut out: Outbox = Vec::new();
         for _ in 0..days * g.world.config.ticks_per_day {
             g.world.step();
             out.extend(g.after_tick());
@@ -6776,14 +7059,14 @@ mod tests {
     #[test]
     fn droughts_are_announced_once_and_when_they_ease() {
         let (mut g, _, _) = game();
-        let mut out = Outbox::new();
+        let mut out: Outbox = Vec::new();
         g.world.map.drought = 0.5;
         g.chronicle_alerts(&mut out);
         g.chronicle_alerts(&mut out); // still dry: no second warning
         let a = alerts_in(&out, 1);
         assert_eq!(a.iter().filter(|a| a.text.starts_with("Drought: 50% of the land is dry")).count(), 1, "{a:?}");
         assert!(a.iter().all(|a| a.kind == AlertKind::World));
-        let mut out = Outbox::new();
+        let mut out: Outbox = Vec::new();
         g.world.map.drought = 0.35; // between the thresholds: nothing
         g.chronicle_alerts(&mut out);
         g.world.map.drought = 0.2;
@@ -6796,7 +7079,7 @@ mod tests {
         g.chronicle_alerts(&mut Outbox::new());
         g.set_name(3, "cy");
         g.found(3, &design("C")).unwrap();
-        let mut out = Outbox::new();
+        let mut out: Outbox = Vec::new();
         g.tell_joiners(&mut out);
         let a = alerts_in(&out, 3);
         assert!(a.iter().any(|a| a.text.starts_with("Drought: 50%")), "{a:?}");
@@ -6809,7 +7092,7 @@ mod tests {
         g.world.chronicle.catastrophes[id].started = true;
         g.seen_catastrophes.resize(id + 1, (true, false));
         g.world.map.drought = 0.9;
-        let mut out = Outbox::new();
+        let mut out: Outbox = Vec::new();
         g.chronicle_alerts(&mut out);
         assert!(alerts_in(&out, 1).iter().all(|a| !a.text.starts_with("Drought:")), "{:?}", alerts_in(&out, 1));
         assert_eq!(population_change_text(10, 10), "the world's population is where it was at its start");
@@ -8617,7 +8900,7 @@ mod tests {
         // No bid: the lot is the seller's again at the deadline.
         let l = data(&auction(&mut g, ma, 2))["listing"]["id"].as_u64().unwrap();
         auction_records(&mut g);
-        let mut out = Outbox::new();
+        let mut out: Outbox = Vec::new();
         for _ in 0..2 {
             out.extend(tick(&mut g));
         }
@@ -8653,7 +8936,7 @@ mod tests {
         let o = g.world.organisms.iter_mut().find(|o| o.id == mb2).unwrap();
         o.alive = false;
         o.death = Some(DeathCause::Starvation);
-        let mut out = Outbox::new();
+        let mut out: Outbox = Vec::new();
         for _ in 0..3 {
             out.extend(tick(&mut g));
         }
@@ -9158,7 +9441,7 @@ mod tests {
         assert_eq!(result(&out).1, Some("partner_unavailable".into()));
         // An open offer that fails on her pregnancy tells only Bob why.
         let id = g.open_offer(1, 2, ann_male, bob_dam, None, OfferStatus::Pending, None).unwrap();
-        let mut out = Outbox::new();
+        let mut out: Outbox = Vec::new();
         g.close(id, OfferStatus::Failed, None, Some(ErrorInfo::from(&CommandError::AlreadyPregnant)), &mut out);
         let told = |p: PlayerId| {
             out.iter()

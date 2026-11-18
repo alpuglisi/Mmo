@@ -1167,6 +1167,25 @@ pub struct Balance {
     /// stayed awake while their group slept, then starved). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v51"))]
     pub possessed_sleep: f32,
+    // Playtest 5 survival (version 52; *Playtest 5: floods, drinking and
+    // warnings* in the README). Off at 0, what snapshots before version 52
+    // read (`serde_util::before_v52`).
+    /// Sleepers bed down on dry ground: a deep dormancy starts only on a
+    /// tile with no lake or marsh water at normal wetness and off every
+    /// floodplain (`World::dry_bed`); an animal that would sleep elsewhere
+    /// first walks to the nearest such tile; water reaching a sleeper wakes
+    /// it, and any animal in water it would drown in heads for dry land
+    /// (playtest 5: 25 of 115 sleepers drowned in one day of flood). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    pub dry_beds: f32,
+    /// A thirsty animal with no shore it can walk to within 8 steps looks
+    /// for one within 24, else searches, instead of heading for water it
+    /// can't get down to; "water near" for the parched and the possessed
+    /// counts only water it can walk to (playtest 5: animals sat on
+    /// "drink" above a drought-shrunk, steep-banked pond until they died).
+    /// 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    pub drink_reach: f32,
 }
 
 impl Balance {
@@ -1450,12 +1469,14 @@ impl Default for Balance {
             player_packs: 1.0,
             dormant_water: 1.0,
             possessed_sleep: 1.0,
+            dry_beds: 1.0,
+            drink_reach: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 153;
+    pub const FIELD_COUNT: usize = 155;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1618,6 +1639,8 @@ impl Balance {
             ("player_packs", &mut self.player_packs),
             ("dormant_water", &mut self.dormant_water),
             ("possessed_sleep", &mut self.possessed_sleep),
+            ("dry_beds", &mut self.dry_beds),
+            ("drink_reach", &mut self.drink_reach),
         ]
     }
 

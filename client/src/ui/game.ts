@@ -4,6 +4,7 @@
 // ranked seasons (hall of fame) and the world chronicle (species, eras,
 // catastrophes, achievements).
 
+import { NeedBand, bandText } from '../needBand';
 import { commandError } from '../errors';
 import { DEFAULT_TICKS_PER_DAY, gameAndReal, ticksToNextSeason } from './duration';
 import { reconcile, setText } from './reconcile';
@@ -836,6 +837,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   // The calendar, for countdowns (offers expire when the season changes).
   let daysPerYear = 0;
   let ticksPerDay = DEFAULT_TICKS_PER_DAY;
+  // The selected animal's hunger over the last day (it swings with each meal).
+  const hungerBand = new NeedBand();
   const msPerTick = () => view.tickClock.msPerTick;
   const span = (ticks: number) => gameAndReal(ticks, ticksPerDay, msPerTick());
   try {
@@ -1229,6 +1232,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }
     if (own) {
       const n = own.needs;
+      hungerBand.add(own.id, model.state?.clock.tick ?? 0, n.hunger, ticksPerDay);
+      const band = bandText(hungerBand.band(own.id, ticksPerDay));
       inspDetails.replaceChildren(
         h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(OWN_COLOR)}` }), `#${own.id} · yours`, model.player !== null ? plateBadge(model.player) : null),
         dl([
@@ -1241,7 +1246,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           ['Status', [own.possessed && 'possessed', own.pregnant && (laysEggs() ? 'gravid (about to lay)' : 'pregnant')].filter(Boolean).join(', ') || '—'],
         ]),
         h('h4', {}, 'Needs'),
-        dl([['Hunger', meter(n.hunger, 100, 'bad')], ['Thirst', meter(n.thirst, 100, 'bad')], ['Energy', meter(n.energy, 100, 'good')],
+        dl([['Hunger', band ? h('span', {}, meter(n.hunger, 100, 'bad'), h('span', { class: 'muted small', id: 'insp-hunger-band' }, ` ${band}`)) : meter(n.hunger, 100, 'bad')],
+          ['Thirst', meter(n.thirst, 100, 'bad')], ['Energy', meter(n.energy, 100, 'good')],
           ['Threat', meter(n.safety, 100, 'bad')], ['Too cold', meter(n.cold, 20, 'bad', '°')], ['Too hot', meter(n.heat, 20, 'bad', '°')],
           ['Breeding urge', meter(n.breeding, 100, 'neutral')], ['Social', meter(n.social, 100, 'neutral')]]),
       );
