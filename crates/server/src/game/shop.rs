@@ -322,6 +322,11 @@ impl Game {
         if !s.is_alive() || s.merged_into.is_some() {
             return None;
         }
+        // Named once: its namer stays whoever named it (playtest 5: the
+        // namer followed the largest lineage even after naming).
+        if let Some(&by) = self.economy.named_species.get(&s.id) {
+            return Some(by);
+        }
         if s.founder.is_some() {
             return s.founder;
         }

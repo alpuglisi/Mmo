@@ -384,7 +384,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       if (rf) {
         refoundBox.replaceChildren(h('h2', {}, 'Re-founding soon'),
           h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points.`),
-          h('p', { class: 'small' }, `Because ${rf.reason}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minutes).`));
+          h('p', { class: 'small' }, `Because ${rf.reason}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minute${rf.minutes_left === 1 ? '' : 's'}).`));
       }
     }, 600);
   }
@@ -479,8 +479,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     h('header', { class: 'topbar' }, h('strong', { class: 'topbar-title' }, cb.refound ? 'Design a new lineage' : 'Design your founders'),
       h('span', { class: 'muted' }, cb.refound
         ? cb.retired
-          ? 'You retired your last lineage. Your renown, records and titles stay; the new founders start fresh.'
-          : 'Your last lineage died out. Your renown, records and titles stay; the new founders start fresh.'
+          ? 'You retired your last lineage. Your renown, records and titles stay; the new founders start fresh. A newcomer grace isn\'t new each time: founding again soon after your last founding continues that grace, even one that has run out (the founding alert says which).'
+          : 'Your last lineage died out. Your renown, records and titles stay; the new founders start fresh. A newcomer grace isn\'t new each time: founding again soon after your last founding continues that grace, even one that has run out (the founding alert says which).'
         : 'After launch the design changes only through breeding, mutation and selection.'),
       h('span', { class: 'spacer' }),
       cb.onCancel ? h('button', { class: 'secondary', id: 'design-cancel', onclick: cb.onCancel }, 'Back to the map') : null,

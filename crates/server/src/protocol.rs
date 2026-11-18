@@ -2181,7 +2181,7 @@ pub fn death_name(c: evo_sim::organism::DeathCause) -> &'static str {
     match c {
         Starvation => "starved",
         Thirst => "thirst",
-        Exposure => "exposure",
+        Exposure => "cold",
         Predation => "eaten",
         Toxin => "toxin",
         Drowning => "drowned",
@@ -2191,6 +2191,7 @@ pub fn death_name(c: evo_sim::organism::DeathCause) -> &'static str {
         Disease => "disease",
         Journey => "journey",
         WinterSleep => "winter_sleep",
+        Heat => "heat",
     }
 }
 
@@ -2548,6 +2549,10 @@ pub struct SpeciesView {
     pub extinct_day: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_into: Option<u32>,
+    /// The name of the species it merged into (so it reads by name even
+    /// when that one isn't listed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_into_name: Option<String>,
     /// Player credited with the speciation (splits only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub founder: Option<PlayerId>,
@@ -2667,8 +2672,14 @@ pub struct SpeciesList {
 pub struct EraRow {
     pub player: PlayerId,
     pub name: String,
+    /// Share at the era's end (and weighted).
     pub share: f64,
     pub weighted_share: f64,
+    /// The era's mean day score (the ranked season's: mean of raw and
+    /// weighted share, with the founding ramp), which ranks it; absent for
+    /// eras from before it was kept, ranked by the final share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_share: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

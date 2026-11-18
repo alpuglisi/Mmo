@@ -234,7 +234,8 @@ export function renderSeasons(el: HTMLElement, d: SeasonsData, me: PlayerId, on:
   }
   const list = d.list;
   if (list) {
-    const fame = hallOfFame(list.seasons).slice(0, 8);
+    // The server's count over every season (a page dropped the oldest ones); older servers: this page's.
+    const fame = (list.hall_of_fame ?? hallOfFame(list.seasons)).slice(0, 8);
     parts.push(h('h3', {}, 'Hall of fame'));
     if (list.seasons.length === 0) {
       parts.push(h('p', { class: 'muted small', id: 'season-history' }, 'No season has ended yet.'));

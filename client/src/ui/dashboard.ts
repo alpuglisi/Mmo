@@ -22,9 +22,9 @@ function card(title: string, sub: string | null, ...body: (Node | null)[]): HTML
   return h('section', { class: 'chart-card' }, h('h4', {}, title), sub && h('p', { class: 'muted small' }, sub), ...body);
 }
 
-/** What the "cold, heat or winter sleep" bars mean (one count in the sim; the alerts say which). */
-export const EXPOSURE_NOTE = 'Cold, heat or winter sleep: animals that froze, overheated, or never woke from hibernation are counted together here. '
-  + 'The death alerts for your founders and possessed animals say which it was.';
+/** What the older "cold or heat" bars mean (one count before the sim told them apart, snapshot v52). */
+export const EXPOSURE_NOTE = 'Cold or heat (older days): days recorded before cold and heat were counted apart show them together. '
+  + 'Newer days show cold, heat and winter sleep each on their own.';
 
 export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
   if (!s) {
