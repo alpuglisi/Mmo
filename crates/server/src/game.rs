@@ -520,8 +520,13 @@ pub struct FoundOk {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum FoundError {
-    AlreadyFounded { lineage: u32 },
+    AlreadyFounded {
+        lineage: u32,
+    },
     Design(DesignError),
+    /// The lineage name looks like another player's (`names::impersonates`)
+    /// or fails the name filter: why.
+    BadName(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -799,6 +804,11 @@ impl SavedGame {
 }
 
 /// Refuse a price above [`economy::MAX_PRICE`].
+#[cfg(test)]
+pub(crate) fn check_price_for_tests(price: u64) -> Result<(), ErrorInfo> {
+    check_price(price)
+}
+
 fn check_price(price: u64) -> Result<(), ErrorInfo> {
     if price > economy::MAX_PRICE {
         return Err(ErrorInfo::new("bad_price", format!("prices go up to {} renown", economy::MAX_PRICE)));
@@ -957,6 +967,26 @@ impl Game {
             until_tick: self.world.tick() + ticks,
             real_seconds_left: Some(seconds),
         })
+    }
+
+    /// Names chosen before the shared filter (`crate::names`), cleaned on a
+    /// restore: players' lineage names, species names, nameplate titles.
+    /// Bidi overrides, zero-width characters and markup are dropped; a name
+    /// left empty or passing for staff gets a plain one.
+    fn sanitize_names(&mut self) {
+        use crate::names::{sanitize, Kind};
+        let max = crate::design::MAX_NAME_LEN;
+        for (l, lin) in self.world.lineages.iter_mut().enumerate() {
+            if lin.owner != WILD {
+                lin.name = sanitize(&lin.name, max, Kind::Lineage, &format!("Lineage {l}"));
+            }
+        }
+        for s in self.world.chronicle.species.species.iter_mut() {
+            s.name = sanitize(&s.name, max, Kind::Species, &format!("Species {}", s.id));
+        }
+        for plate in self.economy.nameplates.values_mut() {
+            plate.title = sanitize(&plate.title, economy::MAX_TITLE_LEN, Kind::Title, "Breeder");
+        }
     }
 
     /// Players whose current lineage is under its newcomer grace.
@@ -1134,6 +1164,7 @@ impl Game {
         g.offline_resume(saved.offline);
         g.founded = saved.founded;
         g.world.set_grace_waived(saved.grace_waived);
+        g.sanitize_names();
         g.request_log = saved.request_log.into_iter().collect();
         g.attack_alerts = saved.attack_alerts.into_iter().collect();
         g.graced = g.graced_players();
@@ -1373,6 +1404,13 @@ impl Game {
     /// the history as extinct, and the dead lineage's group orders go.
     pub fn found(&mut self, player: PlayerId, design: &FounderDesign) -> Result<FoundOk, FoundError> {
         design.validate().map_err(FoundError::Design)?;
+        // The design's name is the lineage's (and its founding species'):
+        // the shared name filter, and not another player's name.
+        let name = crate::names::check(&design.name, crate::design::MAX_NAME_LEN, crate::names::Kind::Lineage)
+            .map_err(FoundError::BadName)?;
+        if self.impersonates(player, &name, crate::names::Kind::Lineage) {
+            return Err(FoundError::BadName("it looks like another player's name".into()));
+        }
         // Re-founding within a ranked season's length of retiring founds
         // half the founders ([`Game::refound_founders`]): retiring and
         // founding again was a free re-roll (fresh, fed founders at a new
@@ -3092,7 +3130,12 @@ impl Game {
             fertility: p.fertility,
             body_plan_fertility: p.body_plan_fertility,
             distance_fertility: p.distance_fertility,
-            body_plan_gaps: body_plan_gaps(&p),
+            // Exact gene differences only for a partner in plain sight (one
+            // just inside the naming margin got its exact genes: playtest 4).
+            body_plan_gaps: body_plan_gaps(&p)
+                .into_iter()
+                .map(|g| if partner_seen { g } else { BodyPlanGap { gap: (g.gap * 10.0).round() / 10.0, ..g } })
+                .collect(),
             mismatch: p.mismatch,
             cost: p.cost,
             failure_chance: p.failure_chance,
@@ -6921,6 +6964,14 @@ mod tests {
             "b0b",
             "two  spaces",
             "--",
+            "Game Master",
+            "GM",
+            "Mod",
+            "Owner",
+            "Support",
+            "Sysop",
+            "wild",
+            "bob (alt)",
         ] {
             let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: bad.into() });
             assert_eq!(result(&out).1.as_deref(), Some("bad_title"), "{bad:?}");
@@ -6972,8 +7023,31 @@ mod tests {
         assert_eq!(g.world.chronicle.species.get(id).unwrap().name, "Queen's grazers");
     }
 
+    /// Playtest 4: lineage names were unfiltered ("Server Admin" with a
+    /// bidi override, public everywhere and the founding species' name).
+    /// One filter now for every chosen name, and old ones are cleaned.
+    #[test]
+    fn lineage_names_go_through_the_name_filter_and_old_ones_are_cleaned() {
+        let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        g.set_name(1, "Herdmaster4");
+        g.set_name(2, "bob");
+        for bad in ["Server Admin", "rtl\u{202e}nimdA", "<b>Herd</b>", "Herdrnaster4"] {
+            let r = g.found(2, &design(bad));
+            assert!(matches!(r, Err(FoundError::BadName(_))), "{bad:?}: {:?}", r.map(|o| o.lineage));
+        }
+        let ok = g.found(2, &design("Bob's grazers")).unwrap();
+        // A name saved before the filter is cleaned on a restore.
+        g.world.lineages[ok.lineage as usize].name = "Grazers\u{202e} of\u{200b} Admin".into();
+        let r = Game::resume(g.world.clone(), GameConfig::default(), g.saved(), Vec::new());
+        assert_eq!(r.world.lineages[ok.lineage as usize].name, format!("Lineage {}", ok.lineage));
+        g.world.lineages[ok.lineage as usize].name = "Grazers\u{202e} of\u{200b} the north".into();
+        let r = Game::resume(g.world.clone(), GameConfig::default(), g.saved(), Vec::new());
+        assert_eq!(r.world.lineages[ok.lineage as usize].name, "Grazers of the north");
+    }
+
     fn display_text_ok(t: &str) -> bool {
-        shop::display_text(t, crate::design::MAX_NAME_LEN).is_ok()
+        crate::names::check(t, crate::design::MAX_NAME_LEN, crate::names::Kind::Species).is_ok()
     }
 
     /// The species a player's founding started can be named by that player
@@ -8320,6 +8394,8 @@ mod tests {
         assert!(result(&out).0, "{out:?}");
         let p = g.preview_mating(1, dam, stud).unwrap();
         assert_eq!(p.distance % 16.0, 0.0, "{}", p.distance);
+        let tenths = |x: f32| ((x * 10.0).round() - x * 10.0).abs() < 1e-4;
+        assert!(p.body_plan_gaps.iter().all(|g| tenths(g.gap)), "{:?}", p.body_plan_gaps);
         let listing = reply_data(&out)["listing"]["id"].as_u64().unwrap();
         g.command(20, 2, Some(10), ClientMsg::WithdrawListing { listing });
         assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
@@ -8516,11 +8592,17 @@ mod tests {
         let err = g.open_offer(2, 1, fb, ma, Some(g.balance(2) + 1), OfferStatus::Pending, None).unwrap_err();
         assert_eq!(err.code, "insufficient_funds");
         assert_eq!((g.offers.len(), g.balance(2)), (open, start + 18));
-        // Negative or oversized numbers never parse.
-        for bad in [
-            r#"{"type":"request_mating","mine":1,"partner":2,"price":-5}"#,
+        // Negative numbers never parse; oversized prices parse saturated, so
+        // the range check answers `bad_price` (playtest 4).
+        for big in [
             r#"{"type":"request_mating","mine":1,"partner":2,"price":1e30}"#,
             r#"{"type":"request_mating","mine":1,"partner":2,"price":18446744073709551616}"#,
+        ] {
+            let m = serde_json::from_str::<crate::protocol::ClientEnvelope>(big).unwrap();
+            assert!(matches!(m.msg, ClientMsg::RequestMating { price: Some(u64::MAX), .. }), "{big}");
+        }
+        for bad in [
+            r#"{"type":"request_mating","mine":1,"partner":2,"price":-5}"#,
             r#"{"type":"create_listing","organism":1,"fee":-1}"#,
             r#"{"type":"ledger","limit":-1}"#,
         ] {

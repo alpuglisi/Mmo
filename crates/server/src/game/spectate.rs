@@ -12,9 +12,11 @@
 //! - **No genes.** A lineage shows its most common adult [`Appearance`] (the
 //!   coarse classes and buckets every player already sees on the map), not
 //!   gene values.
-//! - **No place for a newcomer.** A player lineage under its newcomer
-//!   grace (`World::lineage_grace_left`) has no cells at all, so nobody can
-//!   find it to wait at its border for the grace to end (playtest 2).
+//! - **No place for players' herds.** A player's lineage has no cells at
+//!   all, only its counts, look and share: first only under its newcomer
+//!   grace (playtest 2: found and camped at its border), then for every
+//!   player lineage (playtest 4: without a login the 16-tile cells were a
+//!   map-wide radar of every herd). The wild species keep theirs.
 //! - **Not live.** The runner answers from a copy taken at most once per
 //!   simulated day (`Runner::spectate`), so a watcher can't follow animals
 //!   tick by tick.
@@ -58,10 +60,9 @@ pub struct SpectateLineage {
     pub look: Option<Appearance>,
     /// Living members per cell: `[cell x, cell y, count]` on cells of
     /// `Spectate::cell` tiles (wild) or `Spectate::player_cell` (players'),
-    /// cells with none left out. None for a lineage under its newcomer
-    /// grace (`hidden`).
+    /// cells with none left out. None for a player's lineage (`hidden`).
     pub cells: Vec<[u32; 3]>,
-    /// Under its newcomer grace: counted, but not placed on the map.
+    /// A player's lineage: counted, but not placed on the map.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
 }
@@ -111,7 +112,7 @@ impl Game {
             .enumerate()
             .map(|(l, lin)| {
                 let wild = lin.owner == WILD;
-                let hidden = !wild && w.lineage_grace_left(l as u32).is_some();
+                let hidden = !wild;
                 let pick = if looks[l].is_empty() { &young[l] } else { &looks[l] };
                 // The most common look; a tie goes to the one whose JSON
                 // sorts first, so the answer doesn't depend on hash order.
@@ -180,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn a_newcomer_under_its_grace_is_not_placed() {
+    fn players_herds_are_not_placed() {
         let world = build_world(&WorldSettings { seed: 3, width: 48, height: 48, wild: false, ..Default::default() });
         let mut g = Game::new(world, GameConfig::default());
         g.world.config.balance.attack_grace = 20.0;
@@ -214,12 +215,14 @@ mod tests {
         .unwrap();
         let s = g.spectate();
         let by = |n: &str| s.lineages.iter().find(|l| l.name == n).unwrap();
-        assert!(!by("Old").hidden && !by("Old").cells.is_empty());
-        let new = by("New");
-        assert!(new.hidden && new.cells.is_empty() && new.alive > 0, "{new:?}");
-        // Placed again once the grace is over.
+        // Neither the newcomer under its grace nor an established player
+        // (playtest 4: the cells were a radar of every herd): counts only.
+        for n in ["Old", "New"] {
+            let l = by(n);
+            assert!(l.hidden && l.cells.is_empty() && l.alive > 0, "{l:?}");
+        }
         g.world.config.balance.attack_grace = 0.0;
         g.world.set_attack_grace_min_ticks(0);
-        assert!(!g.spectate().lineages.iter().find(|l| l.name == "New").unwrap().cells.is_empty());
+        assert!(g.spectate().lineages.iter().find(|l| l.name == "New").unwrap().cells.is_empty());
     }
 }

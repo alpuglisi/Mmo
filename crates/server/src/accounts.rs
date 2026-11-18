@@ -40,6 +40,8 @@ use crate::store::{AccountRecord, SessionRecord, Store};
 #[derive(Debug, PartialEq, Eq)]
 pub enum AuthError {
     BadName,
+    /// A new name that would pass for the server or its staff.
+    ReservedName,
     WeakPassword,
     NameTaken,
     BadCredentials,
@@ -52,7 +54,7 @@ pub enum AuthError {
 impl AuthError {
     pub fn code(&self) -> &'static str {
         match self {
-            AuthError::BadName => "bad_name",
+            AuthError::BadName | AuthError::ReservedName => "bad_name",
             AuthError::WeakPassword => "weak_password",
             AuthError::NameTaken => "name_taken",
             AuthError::BadCredentials => "bad_credentials",
@@ -64,6 +66,7 @@ impl AuthError {
     pub fn message(&self) -> String {
         match self {
             AuthError::BadName => "names are 3 to 24 letters, digits, '_' or '-'".into(),
+            AuthError::ReservedName => "that name looks like a staff or system name".into(),
             AuthError::WeakPassword => {
                 format!("passwords need at least {MIN_PASSWORD} characters and at most {MAX_PASSWORD_BYTES} bytes")
             }
@@ -431,6 +434,10 @@ impl Accounts {
         if !valid_name(name) {
             return Err(AuthError::BadName);
         }
+        // Nor a name passing for staff (existing accounts keep theirs).
+        if crate::names::reserved(name, crate::names::Kind::Account) {
+            return Err(AuthError::ReservedName);
+        }
         if password.chars().count() < MIN_PASSWORD || password.len() > MAX_PASSWORD_BYTES {
             return Err(AuthError::WeakPassword);
         }
@@ -664,6 +671,10 @@ mod tests {
         assert_eq!(s1.player, 1);
         assert_eq!(acc.register("alice", "another one").await.unwrap_err(), AuthError::NameTaken);
         assert_eq!(acc.register("a!", "whatever123").await.unwrap_err(), AuthError::BadName);
+        // New names can't pass for staff.
+        for staff in ["ServerAdmin", "GameMaster", "Mod", "Sys0p"] {
+            assert_eq!(acc.register(staff, "whatever123").await.unwrap_err(), AuthError::ReservedName, "{staff}");
+        }
         assert_eq!(acc.register("bob", "short").await.unwrap_err(), AuthError::WeakPassword);
         let (_, s2) = acc.register("bob", "bob's password").await.unwrap();
         assert_eq!(s2.player, 2);
