@@ -73,7 +73,7 @@ async function register(page, base, name) {
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
   await page.waitForSelector('#design-name', { timeout: UI_MS });
-  await page.fill('#design-name', name.replace(/_/g, ' ')); // (lineage names allow no underscore)
+  await page.fill('#design-name', name);
   await page.click('#design-submit');
   await page.waitForSelector('#world-canvas', { timeout: UI_MS });
   return waitFor(`${name}'s lineage`, () => page.evaluate(() => {

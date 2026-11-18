@@ -319,7 +319,7 @@ export async function runScenario(device, { outDir, backgroundSeconds = 25, name
     });
     step('registered, founder design shown', { server: device.serverOrigin, player: name });
     await shoot('design');
-    await type('#design-name', `${name.replace(/_/g, ' ')} line`); // (lineage names allow no underscore)
+    await type('#design-name', `${name} line`);
     await tap('#design-submit');
 
     // 4. The map and the first state frames.
