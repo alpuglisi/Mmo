@@ -39,9 +39,9 @@ use crate::game::FoundError;
 use crate::limits::{client_key, Bucket, Limiters};
 use crate::metrics::{Metrics, MetricsView, NetStats};
 use crate::protocol::{
-    AchievementList, AlertPrefs, CatastropheList, ChronicleView, ClientEnvelope, ClientMsg, EraList, ErrorInfo,
-    LineageStats, NativeService, PushKind, PushPrefs, SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic, TerrainView,
-    WorldList, WorldListing,
+    AchievementList, AlertPrefs, CatastropheList, ChronicleView, ClientEnvelope, ClientMsg, DesignCompatView, EraList,
+    ErrorInfo, LineageStats, NativeService, PushKind, PushPrefs, SeasonBoard, ServerMsg, SpeciesList, TerrainDynamic,
+    TerrainView, WorldList, WorldListing,
 };
 use crate::runner::{Published, Request, TerrainReply};
 use crate::store::{AlertPrefsRecord, DesignRecord, PushPrefsRecord, Store, WorldStore};
@@ -253,6 +253,7 @@ fn api_router(state: AppState) -> Router {
     // full state for it) too.
     let reads = Router::new()
         .route("/api/lineage", post(found_lineage))
+        .route("/api/design/compatibility", post(design_compatibility))
         .route("/ws", get(ws_upgrade))
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
@@ -498,6 +499,23 @@ async fn found_lineage(
         tracing::error!("could not persist design of player {} in world {}: {e}", session.player, w.id);
     }
     Ok((StatusCode::CREATED, Json(FoundResponse { lineage: ok.lineage, founders: ok.founders, cost: ok.cost })))
+}
+
+/// `POST /api/design/compatibility` (logged in, body: a design): who the
+/// design's founders could breed with now, from samples of individuals on
+/// both sides, with each lineage's fertility range and drift risk
+/// ([`DesignCompatView`]). Read only; nothing is founded.
+async fn design_compatibility(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+    Json(spec): Json<DesignSpec>,
+) -> Result<Json<DesignCompatView>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let design = spec.to_design()?;
+    let (reply, rx) = oneshot::channel();
+    send_request(&w.tx, Request::DesignCompat { player: session.player, design, reply })?;
+    Ok(Json(rx.await.map_err(ApiError::internal)?))
 }
 
 async fn genes() -> Json<design::GeneCatalog> {

@@ -387,6 +387,38 @@ fn predators_off(b: &mut crate::Balance) {
     b.pack_hunt = old;
     b.territory_harass = old;
     b.attack_grace = old;
+    balance38_off(b);
+}
+
+/// The playtest 2 balance tunables as snapshots before version 38 read them.
+fn balance38_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v38::OLD_VALUE;
+    b.egg_hybrid = old;
+    b.age_spread = old;
+    b.dormancy_toll = old;
+    b.emergence_lag = old;
+}
+
+/// Version 36 snapshots (before the playtest 2 balance rules) restore with
+/// those tunables off, and are otherwise the same world.
+#[test]
+fn version_36_snapshots_restore_without_playtest2_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v36();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 36);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.age_spread, crate::serde_util::before_v38::OLD_VALUE);
+    balance38_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v36() == old);
+    // This version keeps them.
+    let mut w = fixture_world();
+    w.config.balance.dormancy_toll = 0.3;
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.dormancy_toll, 0.3);
 }
 
 /// `b` as snapshots before version 34 read it: the playtest 1 ecology

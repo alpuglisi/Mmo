@@ -4926,7 +4926,9 @@ mod tests {
         let stats = g.lineage_stats(2);
         assert!(stats.score.is_some());
         let c = stats.crowding.unwrap();
-        assert_eq!((c.soft_cap, c.hard_cap), (g.world.config.lineage_cap, 2 * g.world.config.lineage_cap));
+        let cap = g.world.config.lineage_cap;
+        let ceiling = (cap as f32 * g.world.config.balance.crowding_ceiling).round() as usize;
+        assert_eq!((c.soft_cap, c.hard_cap), (cap, ceiling));
         assert!(c.litter > 0.99 && c.hunger == 1.0);
     }
 
@@ -5007,6 +5009,29 @@ mod tests {
         assert_eq!((m.listings[0].compatible, m.listings[0].body_plan_fertility), (Some(false), Some(0.0)));
         let m = g.market(3, &MarketQuery { with_own: true, ..Default::default() }).unwrap();
         assert_eq!(m.own.unwrap()[0].compatible, Some(true));
+    }
+
+    /// The design-time check samples the design's founders against each
+    /// lineage's adults: a near design gives a fertility range, a far one
+    /// is sterile with no drift risk, an egg layer next to live bearers is
+    /// partly fertile (`Balance::egg_hybrid`), and players are never wild.
+    #[test]
+    fn design_compatibility_samples_individuals() {
+        let (g, _, _) = game();
+        let same = FounderDesign::new("S", Thermo::Warm, BirthType::Live, 2).founders(6);
+        let v = g.design_compatibility(9, &same);
+        assert_eq!(v.sample, 16);
+        assert!(v.rows.iter().all(|r| !r.wild && r.owner != WILD), "{:?}", v.rows);
+        assert!(v.rows.iter().all(|r| r.compatible && r.fertile_share > 0.9 && r.drift_risk == "high"), "{:?}", v.rows);
+        assert!(v.rows.iter().all(|r| r.fertility_low <= r.fertility_high && r.fertility_high <= r.best_fertility));
+        let eggs = FounderDesign::new("E", Thermo::Warm, BirthType::IncubatedEggs, 2).founders(6);
+        let e = g.design_compatibility(9, &eggs);
+        assert!(e.rows.iter().all(|r| r.limiting == "birth_mode" && r.fertility < 0.6), "{:?}", e.rows);
+        assert!(e.rows.iter().any(|r| r.fertile_share > 0.0), "{:?}", e.rows);
+        let far = FounderDesign::new("F", Thermo::Cold, BirthType::AbandonedEggs, 2).founders(6);
+        let f = g.design_compatibility(9, &far);
+        assert!(f.rows.iter().all(|r| r.fertility == 0.0 && r.drift_risk == "none"), "{:?}", f.rows);
+        assert_eq!((f.fertile_with, f.at_risk), (0, 0));
     }
 
     #[test]

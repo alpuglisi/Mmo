@@ -88,6 +88,13 @@ pub(crate) const DRIVE_DECAY: f32 = 60.0;
 /// Daily breeding-drive gain at a seasonal factor of 1.
 pub(crate) const DRIVE_RATE: f32 = 30.0;
 
+/// Daily death chance of a warm hibernator asleep in winter
+/// (`Balance::dormancy_toll` over a season of `season_days`), rising as its
+/// fat runs out: 1× with full fat (`fat_share` 1), 2× with none.
+pub(crate) fn dormancy_toll_rate(bal: &crate::Balance, season_days: f32, fat_share: f32) -> f32 {
+    bal.dormancy_toll / season_days.max(1.0) * (2.0 - fat_share.clamp(0.0, 1.0))
+}
+
 /// A lineage's shared food cache in one group region (`GroupTrait::SharedCaches`).
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -376,8 +383,30 @@ impl World {
                     // Can't heat itself to wake: never wakes.
                     return Some(DeathCause::Exposure);
                 }
-                if wake || can_rouse(o) {
+                if wake {
+                    // It rebuilds condition before breeding (`emergence_lag`).
+                    let lag = (bal.emergence_lag * self.config.ticks_per_day as f32) as u64;
                     o.dormancy = Dormancy::Awake;
+                    o.breed_ready_tick = o.breed_ready_tick.max(self.tick + lag);
+                    return None;
+                }
+                if can_rouse(o) {
+                    o.dormancy = Dormancy::Awake;
+                    return None;
+                }
+                // Winter sleep's toll (`dormancy_toll`): warm hibernators
+                // only; brumators wake with the weather.
+                if form == WinterForm::Hibernation && bal.dormancy_toll > 0.0 {
+                    let first_winter = !o.matured
+                        || o.age_days(self.config.ticks_per_day) < 4.0 * self.config.days_per_season() as f32;
+                    let rate = dormancy_toll_rate(
+                        &bal,
+                        self.config.days_per_season() as f32,
+                        o.fat / self.fat_capacity(o).max(1e-3),
+                    ) * if first_winter { 2.0 } else { 1.0 };
+                    if rng.gen::<f32>() < rate * dt {
+                        return Some(DeathCause::Exposure);
+                    }
                 }
             }
             Dormancy::Summer => {
@@ -781,6 +810,45 @@ mod tests {
         let hib = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9), 2);
         w.run_days(1);
         assert_eq!(w.organisms[hib[0]].fat, 0.0);
+    }
+
+    /// Winter sleep has a price (`dormancy_toll`, `emergence_lag`): some
+    /// warm sleepers die in their dens, more of those without fat, and those
+    /// that wake in spring wait before breeding.
+    #[test]
+    fn winter_sleep_takes_a_toll_and_delays_breeding() {
+        let deaths = |toll: f32, fat: bool| {
+            let mut w = flat_world(-5.0, 10.0, 100);
+            w.config.balance.dormancy_toll = toll;
+            let hib = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9), 200);
+            for &k in &hib {
+                let cap = w.fat_capacity(&w.organisms[k]);
+                let o = &mut w.organisms[k];
+                (o.dormancy, o.fat, o.needs.hunger, o.needs.thirst) =
+                    (Dormancy::Winter, if fat { cap } else { 0.0 }, 0.0, 0.0);
+            }
+            w.run_days(3);
+            // The dead are compacted away: count the living.
+            hib.len() - w.organisms.iter().filter(|o| o.alive).count()
+        };
+        assert_eq!(deaths(0.0, true), 0);
+        // A toll of 3 a season over 3 days of a season's sleep.
+        let (fed, lean) = (deaths(3.0, true), deaths(3.0, false));
+        assert!(fed > 5 && lean > fed, "fed {fed}, lean {lean}");
+        // Waking in spring: no breeding for `emergence_lag` days.
+        let mut w = flat_world(20.0, 10.0, 1);
+        let hib = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9), 4);
+        for &k in &hib {
+            (w.organisms[k].matured, w.organisms[k].breed_ready_tick) = (true, 0);
+            w.organisms[k].dormancy = Dormancy::Winter;
+        }
+        w.step();
+        let lag = (w.config.balance.emergence_lag * w.config.ticks_per_day as f32) as u64;
+        assert!(lag > 0);
+        assert!(hib
+            .iter()
+            .all(|&k| w.organisms[k].dormancy == Dormancy::Awake
+                && w.organisms[k].breed_ready_tick >= w.tick() + lag - 1));
     }
 
     /// Warm hibernators wake in spring by heating themselves; cold-blooded

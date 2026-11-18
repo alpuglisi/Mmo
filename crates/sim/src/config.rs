@@ -939,6 +939,35 @@ pub struct Balance {
     /// it. 0: no grace.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36"))]
     pub attack_grace: f32,
+    // Competitive balance after playtest 2 (version 38; *Playtest 2:
+    // competitive balance* in the README). Off at 0, what snapshots before
+    // version 38 read (`serde_util::before_v38`).
+    /// How much less birth mode counts in the body-plan gap for fertility
+    /// (`mating::fertility_gap`): the birth-mode difference is weighted by
+    /// `1 − egg_hybrid`. At 0.2, adjacent birth modes (0.35 apart) are 0.28
+    /// apart, so an egg layer is a little fertile with close live bearers
+    /// instead of sterile with all of them (playtest 2: an egg-laying
+    /// lineage was never diluted). Kinship and species keep the full gap.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v38"))]
+    pub egg_hybrid: f32,
+    /// Spread of the age at which animals die of old age, as a standard
+    /// deviation over the lifespan (`old_age_hazard`): the hazard starts
+    /// earlier and rises more slowly, so a boom cohort dies over months
+    /// instead of days. 0: the old rule (from 80% of the lifespan, nearly
+    /// all within a few days of 84%).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v38"))]
+    pub age_spread: f32,
+    /// Chance that a warm-blooded hibernator dies over a whole season of
+    /// winter sleep (den collapse, cold snaps, disease), twice as high for
+    /// one sleeping its first winter and rising as its fat runs out (up to
+    /// twice at none). 0: winter sleep is safe.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v38"))]
+    pub dormancy_toll: f32,
+    /// Days after waking from a winter sleep before a hibernator or
+    /// brumator can breed (it rebuilds condition first), so sleeping
+    /// through winter costs part of the breeding year. 0: none.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v38"))]
+    pub emergence_lag: f32,
 }
 
 impl Balance {
@@ -1191,19 +1220,23 @@ impl Default for Balance {
             switching_power: 4.0,
             desperate_risk: 1.0,
             founding_food: 1.0,
-            lineage_crowding: 4.0,
-            crowding_ceiling: 2.0,
+            lineage_crowding: 6.0,
+            crowding_ceiling: 1.4,
             crowding_juveniles: 0.25,
-            crowding_hunger: 0.3,
+            crowding_hunger: 0.6,
             pack_hunt: 0.25,
             territory_harass: 1.0,
             attack_grace: 20.0,
+            egg_hybrid: 0.2,
+            age_spread: 0.12,
+            dormancy_toll: 0.08,
+            emergence_lag: 6.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 129;
+    pub const FIELD_COUNT: usize = 133;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1342,6 +1375,10 @@ impl Balance {
             ("pack_hunt", &mut self.pack_hunt),
             ("territory_harass", &mut self.territory_harass),
             ("attack_grace", &mut self.attack_grace),
+            ("egg_hybrid", &mut self.egg_hybrid),
+            ("age_spread", &mut self.age_spread),
+            ("dormancy_toll", &mut self.dormancy_toll),
+            ("emergence_lag", &mut self.emergence_lag),
         ]
     }
 
