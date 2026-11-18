@@ -158,20 +158,31 @@ export const HYBRID_CONFIDENCE = `Compared with each species' averages: animals 
   + 'Once founded, the Market tab\'s "Who your lineage can breed with" compares real animals.';
 
 /** A neighbour as the card names it: "Steppe antelope (120 adults, 100% fertile)", "GeneBroker's Broker voles (…)". */
-function neighbourName(n: Neighbour): string {
+function neighbourName(n: Neighbour, measured?: ReadonlyMap<number, number>): string {
   const owner = n.wild ? '' : n.players.length ? `${[...new Set(n.players.map((p) => p.name))].slice(0, 2).join(' and ')}'s ` : '';
-  const odds = n.possible ? 'sterile on average, some pairs fertile' : `${pct(n.fertility)} fertile`;
+  // The server's sampled figure for the species' lineages wins over the estimate (one figure per species).
+  const m = measuredFertility(n.species, measured);
+  const odds = m !== null ? `${pct(m)} fertile, measured`
+    : n.possible ? 'sterile on average, some pairs fertile' : `${pct(n.fertility)} fertile`;
   return `${owner}${n.species.name} (${Math.round(n.species.adults)} adults, ${odds})`;
 }
 
+/** The best measured fertility among a species' lineages, or null if none was measured. */
+export function measuredFertility(s: SpeciesView, measured?: ReadonlyMap<number, number>): number | null {
+  if (!measured) return null;
+  const fs = s.lineages.map((l) => measured.get(l.lineage)).filter((f): f is number => f !== undefined);
+  return fs.length ? Math.max(...fs) : null;
+}
+
 /** The builder's interbreeding warning for a design, from the living species. */
-export function hybridAdvice(d: DesignSpec, species: readonly SpeciesView[], me: PlayerId): HybridAdvice {
+/** `measured`: the server's sampled fertility by lineage (`POST /api/design/compatibility`), when it has answered. */
+export function hybridAdvice(d: DesignSpec, species: readonly SpeciesView[], me: PlayerId, measured?: ReadonlyMap<number, number>): HybridAdvice {
   const near = neighbours(d, species, me);
   const sure = near.filter((n) => !n.possible);
   const wild = sure.filter((n) => n.wild);
   const rivals = sure.filter((n) => !n.wild);
   const maybe = near.filter((n) => n.possible);
-  const list = (ns: Neighbour[]) => ns.slice(0, 3).map(neighbourName).join(', ');
+  const list = (ns: Neighbour[]) => ns.slice(0, 3).map((n) => neighbourName(n, measured)).join(', ');
   const points: string[] = [];
   if (wild.length) {
     const n = wild[0];

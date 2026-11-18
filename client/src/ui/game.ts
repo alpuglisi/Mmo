@@ -20,6 +20,7 @@ import { exposeCards, familyShareBar } from '../share/familyShare';
 import type { AlertPrefs, ClientMsg, CompatibilityView, LineageStats, PlayerId, MatingOutcome, MatingPreviewView, NearbyOrganism, OfferView, OrgId, OwnOrganism, ResultMsg, SeasonBoard, SpeciesView, StateView } from '../protocol';
 import { parseCompatibilityView, WILD } from '../protocol';
 import { createPicker, type PickItem } from './picker';
+import { confirmDialog } from './confirm';
 import { nameplatesKey, parseNameplates, plateBadge, setNameplates } from './nameplates';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, FOOD_BANDS, terrainSummary, type TerrainGrid } from '../world/terrain';
@@ -95,7 +96,7 @@ const RANKED_REFRESH_MS = 30000;
 /** Least time between two fetches of the finished seasons after rollovers. */
 const RANKED_ROLLOVER_MS = 5000;
 /** Rows per category of the season under way. */
-const RANKED_ROWS = 5;
+const RANKED_ROWS = 8;
 /** Finished seasons listed at first; "Older seasons" adds as many again. */
 const RANKED_PAGE = 10;
 const MARKET_REFRESH_MS = 5000;
@@ -146,6 +147,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   };
   /** The genetics dashboard's data (declared up here: the Lineage tab reads it too, possibly before its fetch is set up). */
   let stats: LineageStats | null = null;
+  /** Open Help on a topic (set once onboarding is up). */
+  let helpTopic: ((topic: string) => void) | null = null;
   const inspExtinct = extinctNoticeEl('inspector-extinct', deps.onNewLineage);
   const lineageExtinct = extinctNoticeEl('lineage-extinct', deps.onNewLineage);
   lineageExtinct.hidden = true;
@@ -317,11 +320,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     genetics: h('div', { class: 'panel', id: 'panel-genetics' }),
     family: h('div', { class: 'panel', id: 'panel-family' }),
     lineage: h('div', { class: 'panel', id: 'panel-lineage' }),
-    seasons: h('div', { class: 'panel', id: 'panel-seasons' }),
+    // (Shown as "Ranks": its ids say so too, `tab-ranks` / `panel-ranks`.)
+    seasons: h('div', { class: 'panel', id: 'panel-ranks' }),
     world: h('div', { class: 'panel', id: 'panel-world' }),
   };
   const tabBtns = (Object.keys(tabs) as Tab[]).map((t) =>
-    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t}`, title: TAB_TITLES[t], onclick: () => tabClicked(t) }, TAB_LABELS[t]));
+    h('button', { class: 'tab', 'data-tab': t, id: `tab-${t === 'seasons' ? 'ranks' : t}`, title: TAB_TITLES[t], onclick: () => tabClicked(t) }, TAB_LABELS[t]));
   const alertBadge = h('span', { class: 'badge', id: 'alert-badge', hidden: true });
   tabBtns.find((b) => b.dataset.tab === 'genetics')!.append(alertBadge);
   let seenFeed = 0;
@@ -512,6 +516,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       }
     }
     if (p) {
+      // Possessing from the chooser's pick: the chooser goes (it lay over the bar's buttons, playtest 5).
+      if (lastPossessed !== p.id && !chooser.hidden) hideChooser();
       lastPossessed = p.id;
       clearTimeout(endedTimer);
       possessBar.classList.remove('ended');
@@ -519,6 +525,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!possessBar.classList.contains('ended')) possessBar.hidden = !p;
     // Hint cards move clear of the bar (onboarding.css).
     stageWrap.classList.toggle('possessing', !!p);
+    if (p && possessBar.offsetHeight > 0) stageWrap.style.setProperty('--possess-h', `${possessBar.offsetHeight}px`);
     if (!p) {
       // Possession over: so is attack mode.
       if (mode === 'attack') {
@@ -618,6 +625,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   /** The floating Possess / Release button for the selected own organism. */
   function renderFab(): void {
     const own = model.selected !== null ? model.state?.organisms.find((o) => o.id === model.selected) : undefined;
+    if (fab.hidden === !!own) queueMicrotask(updateEdgePad); // shown or hidden: the room at the bottom edge changes
     fab.hidden = !own;
     if (!own) return;
     const text = own.possessed ? `Release #${own.id}` : `Possess #${own.id}`;
@@ -1323,8 +1331,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   autoDecline.addEventListener('change', () => void sendPrefs({ auto_decline: autoDecline.checked }));
   function blockPlayer(p: number): void {
     const name = model.state?.leaderboard.rows.find((r) => r.player === p)?.name ?? `player ${p}`;
-    if (!window.confirm(`Block ${name}? Their mating requests will be declined automatically. You can unblock them under "Who may send me requests".`)) return;
-    void sendPrefs({ block: p }).then(() => model.toast('info', `${name} blocked: their requests are declined automatically.`));
+    void confirmDialog({ id: 'block-confirm', title: `Block ${name}?`, ok: 'Block', danger: true,
+      body: 'Their mating requests will be declined automatically. You can unblock them under "Who may send me requests".' }).then(async (yes) => {
+      if (!yes) return;
+      await sendPrefs({ block: p });
+      model.toast('info', `${name} blocked: their requests are declined automatically.`);
+    });
   }
   function renderMatePrefs(): void {
     if (!matePrefs) {
@@ -1570,7 +1582,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     model.select(mine);
     view.setFollow(true);
     const p = s.nearby.find((o) => o.id === partner) ?? s.organisms.find((o) => o.id === partner);
-    if (!p) return model.toast('info', `Possessing #${mine}. The partner #${partner} is out of sight: click the map to walk.`);
+    if (!p) return model.toast('info', `Possessing #${mine}. The partner #${partner} is out of sight: ${touchInput() ? 'tap' : 'click'} the map to walk.`);
     view.setMoveTarget({ x: p.x, y: p.y });
     const r = await send({ type: 'order_move', organism: mine, x: p.x, y: p.y });
     if (!r.ok) view.rejectMove();
@@ -1741,7 +1753,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   })();
 
   function renderGenetics(): void {
-    renderDashboard(dashEl, stats);
+    renderDashboard(dashEl, stats, () => helpTopic?.('Why are my animals dying?'));
     renderFeedPanel();
   }
 
@@ -1783,7 +1795,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (lineage === null || lineage === undefined) return;
     const alive = model.state?.population ?? 0;
     // Animals carrying a quarter or more of another player's genes join that player's lineage instead (server RETIRE_TRANSFER_SHARE).
-    if (!window.confirm(`Retire lineage #${lineage}? Its ${animals(alive)} and their eggs leave the world (any carrying at least 25% of another player's genes join that player's lineage instead). This can't be undone, and re-founding within a ranked season's length founds half the founders.`)) return;
+    // The window the server enforces, fetched now (game days, real minutes).
+    const w = await api.world().catch(() => null);
+    const window_ = w?.refound_window_days
+      ? `within ${w.refound_window_days} game days (about ${w.refound_window_minutes} real minute${w.refound_window_minutes === 1 ? '' : 's'})`
+      : 'soon after';
+    const yes = await confirmDialog({
+      id: 'retire-confirm', title: `Retire lineage #${lineage}?`, ok: 'Retire lineage', danger: true,
+      body: [
+        `Its ${animals(alive)} and their eggs leave the world (any carrying at least 25% of another player's genes join that player's lineage instead). This can't be undone.`,
+        `Founding again ${window_} of retiring founds half the founders you design.`,
+      ],
+    });
+    if (!yes) return;
     const r = await send({ type: 'retire_lineage', lineage });
     if (r.ok) {
       const d = r.data as { removed?: number; transferred?: number } | undefined;
@@ -1804,7 +1828,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     endGraceBtn);
   endGraceEl.hidden = true;
   endGraceBtn.addEventListener('click', async () => {
-    if (!window.confirm('End your newcomer grace? Other players\' animals can attack yours from now on. This can\'t be undone.')) return;
+    if (!await confirmDialog({ id: 'end-grace-confirm', title: 'End your newcomer grace?', ok: 'End grace', danger: true,
+      body: 'Other players\' animals can attack yours from now on. This can\'t be undone.' })) return;
     const r = await send({ type: 'end_grace' });
     // The server's alert says it (and toasts): no second toast here.
     if (r.ok) endGraceEl.open = false;
@@ -1944,13 +1969,18 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   /** The lineage lays eggs (its stats count clutches): a carrying female is "gravid", not "pregnant" (playtest 3). */
   function laysEggs(): boolean {
-    return !!(stats && stats.lineage === model.state?.lineage && stats.eggs);
+    if (!stats || stats.lineage !== model.state?.lineage) return false;
+    // By the lineage's birth mode (the mean of its members, as the family
+    // tree reads it: live birth from 2/3), not by whether any egg was laid:
+    // one hybrid clutch made a live-bearing lineage "gravid" (playtest 5).
+    const mode = stats.genes.find((g) => g.gene === 'birth_mode')?.mean;
+    return mode !== undefined ? mode < 2 / 3 : !!stats.eggs;
   }
 
   /** "Pregnant N" for live bearers; clutches and brooding for egg layers (a gravid female is about to lay). */
   function eggStatus(orgs: StateView['organisms']): [string, string | Node] {
     const pregnant = orgs.filter((o) => o.pregnant).length;
-    const e = stats && stats.lineage === model.state?.lineage ? stats.eggs : undefined;
+    const e = laysEggs() ? stats?.eggs : undefined;
     if (!e) return ['Pregnant', String(pregnant)];
     const brooding = orgs.filter((o) => o.action === 'guard').length;
     const parts = [
@@ -2062,6 +2092,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   // First-session onboarding: the guided tour (once per account on this
   // device), one-time hints and the Help dialog. `?tour=off` turns it off.
   const touchInput = () => narrow() || window.matchMedia('(pointer: coarse)').matches;
+  // (Declared above its first use: the dashboard links into Help.)
   const onboarding = createOnboarding({
     model, host: el, hintHost: stageWrap, helpBtn, narrow, touch: touchInput,
     openTab: (t, sheet) => {
@@ -2076,6 +2107,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     disabled: onboardingDisabled(window.location.search),
     returning: deps.returning,
   });
+  helpTopic = (t) => onboarding.openHelp(t);
   cleanups.push(
     onboarding.destroy,
     model.on('state', onboarding.check),

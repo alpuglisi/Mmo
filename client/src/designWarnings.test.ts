@@ -33,4 +33,10 @@ describe('design warnings', () => {
     expect(heavy[0].id).toBe('wings');
     expect(heavy[0].text).toContain('can neither fly nor glide');
   });
+  it('warns that warm-blooded abandoned eggs chill and die', () => {
+    const w = designWarnings({ ...design(), birth: 'abandoned_eggs' } as DesignSpec, null);
+    expect(w.map((x) => [x.id, x.level])).toEqual([['eggs', 'bad']]);
+    expect(w[0].text).toContain('Warm-blooded eggs left unattended chill and die unless the weather is hot');
+    expect(designWarnings({ ...design(), birth: 'abandoned_eggs', thermo: 'cold' } as DesignSpec, null)).toEqual([]);
+  });
 });

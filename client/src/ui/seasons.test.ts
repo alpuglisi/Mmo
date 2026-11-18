@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CurrentSeason, PlayerSeason, RankedSeasonHead, SeasonWinner } from '../protocol';
 import {
-  categoryLabel, formatValue, hallOfFame, myPlaces, myRecord, ordinal, placementText, seasonClock, seasonKey, winnersLine,
+  categoryLabel, cellValue, formatValue, hallOfFame, myPlaces, myRecord, ordinal, placementText, seasonClock, seasonKey, winnersLine,
 } from './seasons';
 
 function head(season: number, winners: SeasonWinner[], extra: Partial<RankedSeasonHead> = {}): RankedSeasonHead {
@@ -24,6 +24,9 @@ describe('formatting', () => {
     expect(formatValue('legacy', 0.1234)).toBe('12.3%');
     expect(formatValue('lineage', 1)).toBe('peak 1 organism');
     expect(formatValue('lineage', 412)).toBe('peak 412 organisms');
+    // In a table the heading names the unit: the number alone.
+    expect(cellValue('lineage', 1987)).toBe('1,987');
+    expect(cellValue('legacy', 0.1234)).toBe('12.3%');
     expect(formatValue('species', 2)).toBe('2 species');
     expect(formatValue('market', 30)).toBe('30 renown');
     expect(formatValue('survival', 1)).toBe('1 catastrophe');

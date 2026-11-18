@@ -12,7 +12,7 @@ import { catastropheBanner, catastropheEffect, catastropheLabel } from './ui/chr
 export const DROUGHT_EXTREME = 0.75;
 
 export interface DesignWarning {
-  id: 'drought' | 'catastrophe' | 'wings';
+  id: 'drought' | 'catastrophe' | 'wings' | 'eggs';
   level: 'warn' | 'bad';
   text: string;
 }
@@ -44,6 +44,15 @@ export function designWarnings(d: DesignSpec, world: Pick<WorldSummary, 'weather
       id: 'catastrophe',
       level: 'bad',
       text: `${catastropheLabel(cat.kind)} under way (${days}). ${effect} New founders land in it too; founding after it ends is safer.`,
+    });
+  }
+  // Warm-blooded eggs need warmth a parent gives: left alone they chill and
+  // die unless the weather is hot (playtest 5: 252 chilled, 0 hatched).
+  if (d.thermo === 'warm' && d.birth === 'abandoned_eggs') {
+    out.push({
+      id: 'eggs',
+      level: 'bad',
+      text: 'Warm-blooded eggs left unattended chill and die unless the weather is hot: this lineage would hardly ever hatch young. Choose incubated eggs (a parent broods them) or live birth, or make it cold-blooded.',
     });
   }
   const wings = geneValue(d, 'wings');

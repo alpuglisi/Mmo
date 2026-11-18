@@ -875,7 +875,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             ClaimCooldown { .. } => "claim_cooldown",
             NoRally(_) => "no_rally",
             MostlyWater { .. } => "mostly_water",
-            Overlaps { .. } => "overlaps",
+            Overlaps => "overlaps",
             BadRadius => "bad_radius",
             OwnTarget(_) => "own_target",
             OutOfSight(_) => "target_out_of_sight",
@@ -889,7 +889,6 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             MostlyWater { share } => info.with_detail(serde_json::json!({ "water_share": share })),
-            Overlaps { owner } => info.with_detail(serde_json::json!({ "owner": owner })),
             TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
             NewcomerGrace { days_left } | OwnGrace { days_left } => {
                 info.with_detail(serde_json::json!({ "days_left": days_left }))
@@ -1417,6 +1416,13 @@ pub struct WorldSummary {
     /// reserves full: `GameConfig::winter_provision`).
     #[serde(default)]
     pub winter_provision: bool,
+    /// Re-founding within this many game days of a lineage's end (about
+    /// `refound_window_minutes` real minutes) founds half the founders
+    /// (`Game::refound_window_days`); 0 from older servers.
+    #[serde(default)]
+    pub refound_window_days: u64,
+    #[serde(default)]
+    pub refound_window_minutes: u64,
     /// The lineage cap (`WorldConfig::lineage_cap`, scaled to the map): with
     /// crowding on, the soft cap where breeding is at half pace; off, the
     /// most living organisms one player may have.
@@ -1629,6 +1635,9 @@ pub struct LineageStats {
     /// bearers): what "pregnant" means for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eggs: Option<EggsView>,
+    /// How the lineage ended once it has: `retired` or `died_out`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<String>,
     /// Lineage-wide warnings now (hunger or thirst crash, near the hard
     /// cap, starving inside territories), most urgent first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
