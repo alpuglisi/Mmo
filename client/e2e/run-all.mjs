@@ -7,7 +7,8 @@
 // software WebGL alone kept three cores busy. With more than one job a
 // script's output is printed in one piece when it finishes. Every script runs
 // even after one fails; the run then fails and lists the failures, with each
-// script's time.
+// script's time and, for each failure, its last 40 output lines (servers' log
+// lines left out), so a flake's cause is in the summary.
 //
 // Usage: node e2e/run-all.mjs [script ...]   (names without .mjs; default all)
 
@@ -21,6 +22,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const ALL = ['terrain', 'smoke', 'mobile', 'android-desktop', 'onboarding', 'vision', 'family', 'refound', 'attack', 'builder', 'context-loss', 'push', 'lobby', 'panels', 'spectate', 'phone'];
 const scripts = process.argv.length > 2 ? process.argv.slice(2) : ALL;
 const cores = os.availableParallelism?.() ?? os.cpus().length;
+/** Output lines of a failed script repeated in the summary. */
+const TAIL_LINES = 40;
 const jobs = Math.max(1, Number.parseInt(process.env.E2E_JOBS ?? '', 10) || Math.min(4, Math.floor(cores / 2)));
 
 function run(name) {
@@ -28,17 +31,27 @@ function run(name) {
     const started = Date.now();
     const child = spawn(process.execPath, [path.join(here, `${name}.mjs`)], { stdio: ['ignore', 'pipe', 'pipe'] });
     const out = [];
-    child.stdout.on('data', (d) => (jobs === 1 ? process.stdout.write(d) : out.push(d)));
-    child.stderr.on('data', (d) => (jobs === 1 ? process.stderr.write(d) : out.push(d)));
+    child.stdout.on('data', (d) => { out.push(d); if (jobs === 1) process.stdout.write(d); });
+    child.stderr.on('data', (d) => { out.push(d); if (jobs === 1) process.stderr.write(d); });
     child.on('close', (code, signal) => {
       const seconds = (Date.now() - started) / 1000;
       if (jobs > 1) {
         process.stdout.write(`\n── e2e/${name}.mjs ──\n`);
         process.stdout.write(Buffer.concat(out));
       }
-      resolve({ name, ok: code === 0, code: code ?? signal, seconds });
+      resolve({ name, ok: code === 0, code: code ?? signal, seconds, tail: code === 0 ? [] : tailOf(Buffer.concat(out).toString()) });
     });
   });
+}
+
+/**
+ * The last lines of a failed script's output, for the summary: its steps
+ * and the error, without the servers' log lines (timestamped tracing),
+ * which would push them out of view.
+ */
+function tailOf(text, n = TAIL_LINES) {
+  const tracing = /^(\x1b\[[0-9;]*m)?\d{4}-\d\d-\d\dT[\d:.]+Z/;
+  return text.split('\n').filter((l) => l.trim() && !tracing.test(l)).slice(-n);
 }
 
 const started = Date.now();
@@ -53,6 +66,12 @@ const wall = (Date.now() - started) / 1000;
 console.log(`\ne2e: ${results.length} scripts, ${jobs} at a time, ${wall.toFixed(0)} s`);
 for (const r of results) console.log(`  ${r.ok ? 'ok  ' : 'FAIL'} ${r.name.padEnd(16)} ${r.seconds.toFixed(0).padStart(4)} s${r.ok ? '' : ` (exit ${r.code})`}`);
 const failed = results.filter((r) => !r.ok);
+// Each failure's last lines again, together at the end (with several jobs a
+// script's output is far up the log): a flake's cause shows in the summary.
+for (const r of failed) {
+  console.log(`\n── ${r.name}: last ${r.tail.length} lines ──`);
+  for (const l of r.tail) console.log(`  ${l}`);
+}
 if (failed.length > 0) {
   console.error(`e2e failed: ${failed.map((r) => r.name).join(', ')}`);
   process.exit(1);
