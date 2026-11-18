@@ -120,7 +120,8 @@ export function myEraRanks(eras: EraList, me: PlayerId): { era: number; rank: nu
 
 const swatch = (p: PlayerId, me: PlayerId) => h('span', { class: 'swatch', style: `background:${cssColor(p === me ? OWN_COLOR : ownerColor(p))}` });
 
-export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, today: number): void {
+/** `onName`: offered on the species `me` may name (a founding of theirs, or a split credited to them). */
+export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, today: number, onName?: (s: SpeciesView) => void): void {
   if (!c) {
     el.replaceChildren(h('p', { class: 'muted' }, 'Loading the world chronicle…'));
     return;
@@ -164,7 +165,10 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
         swatch(s.dominant, me),
         h('strong', {}, s.name),
         h('span', { class: 'muted small' }, ` · ${dietLabel(s.carnivory)} · ${r.status} · ${s.dominant_name} ${pct(s.dominant_share, 0)} of alleles`
-          + `${s.founder_name ? ` · founded by ${s.founder_name}` : ''} · detected on day ${s.founded_day + 1}`));
+          + `${s.founder_name ? ` · founded by ${s.founder_name}` : ''} · detected on day ${s.founded_day + 1}`),
+        onName && r.alive && s.namer === me
+          ? h('button', { class: 'link small name-species', 'data-action': 'name-species', title: 'Give this species a name (costs renown)', onclick: () => onName(s) }, 'Name it…')
+          : null);
     })),
     species.founded.length > 0 ? h('p', { class: 'small' }, 'Species founded: ', species.founded.map((f) => `${f.name} ${f.count}`).join(' · ')) : null,
     h('h3', {}, 'Catastrophes'),

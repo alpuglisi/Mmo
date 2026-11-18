@@ -1239,6 +1239,8 @@ export interface SpeciesLineage {
 export interface SpeciesView {
   id: number;
   name: string;
+  /** Who may name it (`name_species`; absent on older servers). */
+  namer?: PlayerId;
   origin: 'initial' | 'founding' | 'split' | string;
   parent?: number;
   founded_day: number;

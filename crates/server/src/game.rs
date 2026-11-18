@@ -1262,9 +1262,11 @@ impl Game {
         for (&p, &b) in &before {
             let got = self.world.owner_count(p).saturating_sub(b);
             if got > 0 {
+                let (animals, carry) = if got == 1 { ("animal", "carries") } else { ("animals", "carry") };
                 let text = format!(
-                    "{} retired their lineage: {got} of its animals, mostly of your genes, joined yours.",
-                    self.name(player)
+                    "{} retired their lineage: {got} of its {animals}, which {carry} at least {:.0}% of your genes, joined yours.",
+                    self.name(player),
+                    RETIRE_TRANSFER_SHARE * 100.0
                 );
                 self.alert(p, AlertKind::Milestone, text, None, out);
             }
@@ -3757,6 +3759,7 @@ impl Game {
                 merged_into: s.merged_into,
                 founder: s.founder,
                 founder_name: s.founder.map(|p| self.name(p)),
+                namer: self.species_namer(s),
                 dominant: s.dominant,
                 dominant_name: self.name(s.dominant),
                 dominant_share: s.dominant_share,
@@ -4365,7 +4368,8 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
                 .catastrophes
                 .get(*catastrophe as usize)
                 .map_or("a catastrophe", |c| catastrophe_text(c.kind));
-            format!("Survivor: your lineage came through {what}.")
+            // Factual, not a cheer: it can come after heavy losses (playtest 3: after a 70% loss).
+            format!("Survivor: your lineage is still alive after {what}, whatever it lost.")
         }
     }
 }
@@ -5845,6 +5849,30 @@ mod tests {
         assert_eq!(result(&out), (true, None));
         assert_eq!(g.balance(1), before - economy::SPECIES_NAME_PRICE);
         assert_eq!(g.world.chronicle.species.get(id).unwrap().name, "Queen's grazers");
+    }
+
+    /// The species a player's founding started can be named by that player
+    /// (playtest 3: `not_yours` for one's own founding species).
+    #[test]
+    fn a_founding_species_can_be_named_by_its_owner() {
+        let (mut g, _, _) = game();
+        let _ = g.post(1, 1000, LedgerKind::Income, "test".into(), None, None);
+        let _ = g.post(2, 1000, LedgerKind::Income, "test".into(), None, None);
+        run_days(&mut g, 10);
+        let ch = g.chronicle();
+        let own = ch
+            .species
+            .species
+            .iter()
+            .find(|s| s.origin != "split" && s.lineages.first().is_some_and(|l| l.owner == 1))
+            .expect("the species player 1's founding started");
+        assert_eq!(own.namer, Some(1));
+        let id = own.id;
+        let out = g.command(20, 2, None, ClientMsg::NameSpecies { species: id, name: "Not mine".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("not_yours"));
+        let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: "Ann's runners".into() });
+        assert_eq!(result(&out), (true, None));
+        assert_eq!(g.chronicle().species.species.iter().find(|s| s.id == id).unwrap().name, "Ann's runners");
     }
 
     /// An auction lasts at least the wall-clock floor, whatever was asked.

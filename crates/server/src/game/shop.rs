@@ -200,11 +200,14 @@ impl Game {
         let tracker = &self.world.chronicle.species;
         let s =
             tracker.get(species).ok_or_else(|| ErrorInfo::new("unknown_species", format!("no species {species}")))?;
-        if s.founder != Some(player) {
-            return Err(ErrorInfo::new("not_yours", "only a species your lineage founded can be named by you"));
-        }
         if s.extinct_day.is_some() || s.merged_into.is_some() {
             return Err(ErrorInfo::new("species_gone", "that species is extinct or merged into another"));
+        }
+        if self.species_namer(s) != Some(player) {
+            return Err(ErrorInfo::new(
+                "not_yours",
+                "only a species your lineage founded (or split off) can be named by you",
+            ));
         }
         if tracker.species.iter().any(|o| o.id != species && o.name.eq_ignore_ascii_case(&name)) {
             return Err(ErrorInfo::new("name_taken", "another species has that name"));
@@ -215,6 +218,24 @@ impl Game {
         }
         self.economy.named_species.insert(species, player);
         Ok(name)
+    }
+
+    /// Who may name species `s`: the player credited with a split, or for a
+    /// species a founding started (`founding`, or `initial` when players'
+    /// lineages were there at the first detection) the owner of its main
+    /// lineage. Nobody for a wild species or a gone one.
+    pub(crate) fn species_namer(&self, s: &evo_sim::species::Species) -> Option<PlayerId> {
+        if !s.is_alive() || s.merged_into.is_some() {
+            return None;
+        }
+        if s.founder.is_some() {
+            return s.founder;
+        }
+        if s.origin == evo_sim::species::SpeciesOrigin::Split {
+            return None;
+        }
+        let owner = self.world.lineages.get(s.main_lineage()? as usize)?.owner;
+        (owner != evo_sim::WILD).then_some(owner)
     }
 
     /// Every bought nameplate.
