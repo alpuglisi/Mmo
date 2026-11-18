@@ -4,7 +4,7 @@
 // wings a heavy body can't use. Pure, so it is tested.
 
 import { adultMass, flight, geneValue } from './bodyMath';
-import { DROUGHT_CLEAR, DROUGHT_WARN } from './droughtInfo';
+import { DROUGHT_CLEAR } from './droughtInfo';
 import type { DesignSpec, WorldSummary } from './protocol';
 import { catastropheBanner, catastropheEffect, catastropheLabel } from './ui/chronicle';
 
@@ -19,18 +19,28 @@ export interface DesignWarning {
 
 const kg = (x: number) => (x >= 10 ? Math.round(x) : Math.round(x * 10) / 10).toLocaleString('en-US');
 
-export function designWarnings(d: DesignSpec, world: Pick<WorldSummary, 'weather' | 'clock'> | null): DesignWarning[] {
+/** Drought from which founding now is warned as dangerous (a founding was wiped out at 52%). */
+export const DROUGHT_FOUNDING = 0.4;
+
+/** `serverDrought`: the server's own drought-founding warning, shown verbatim when it sends one. */
+export function designWarnings(d: DesignSpec, world: Pick<WorldSummary, 'weather' | 'clock'> | null, serverDrought?: string | null): DesignWarning[] {
   const out: DesignWarning[] = [];
   const drought = world?.weather.drought ?? 0;
-  if (drought >= DROUGHT_CLEAR) {
+  if (serverDrought) {
+    out.push({ id: 'drought', level: 'bad', text: serverText(serverDrought) });
+  } else if (drought >= DROUGHT_CLEAR) {
     const share = Math.round(drought * 100);
     const extreme = drought >= DROUGHT_EXTREME;
+    // From 40% a founding can be wiped out within its grace (playtest 6: 20 founders at 52% all dead in 10 days).
+    const severe = drought >= DROUGHT_FOUNDING;
     out.push({
       id: 'drought',
-      level: extreme || drought >= DROUGHT_WARN ? 'bad' : 'warn',
+      level: severe ? 'bad' : 'warn',
       text: extreme
         ? `Extreme drought: ${share}% of the land is dry. Founders landing away from lakes and rivers can die of thirst within days, and plants are scarce everywhere. Founding after it eases is safer; if you found now, keep them by water (Food layer on the map).`
-        : `Drought: ${share}% of the land is dry. Animals far from lakes and rivers go thirsty and plants thin out, whatever the founding size. Keep the founders near water.`,
+        : severe
+          ? `Drought: ${share}% of the land is dry. A new lineage founded now can die out within days, whatever its size: founders far from lakes and rivers go thirsty and plants are thin. Founding after it eases is safer; if you found now, keep them by water.`
+          : `Drought: ${share}% of the land is dry. Animals far from lakes and rivers go thirsty and plants thin out, whatever the founding size. Keep the founders near water.`,
     });
   }
   const cat = world?.weather.catastrophe;
@@ -70,3 +80,13 @@ export function designWarnings(d: DesignSpec, world: Pick<WorldSummary, 'weather
 
 /** The founding ramp, in a sentence (league.rs: 10% on the first day, 100% after 10). */
 export const FOUNDING_RAMP_TEXT = 'A new lineage\'s legacy counts gradually toward the ranked season: 10% on its first day, rising to 100% after 10 days (the founding ramp), so dying out or retiring and founding again does not pay.';
+
+/**
+ * A server warning as shown: verbatim, but without notes meant for the
+ * developers ("(playtest 5: 252 chilled, none hatched)") and starting with a
+ * capital letter.
+ */
+export function serverText(t: string): string {
+  const clean = t.replace(/\s*\((?:playtest|pt)\s*\d+[^()]*\)/gi, '').replace(/\s{2,}/g, ' ').trim();
+  return clean.charAt(0).toUpperCase() + clean.slice(1);
+}
