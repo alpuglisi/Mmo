@@ -174,6 +174,10 @@ pub(super) fn genes_of(o: &Organism) -> Genes {
     out
 }
 
+/// Most a starving hunter discounts a learned toxin lesson
+/// (`Balance::hungry_hunters`: from hunger 60, to this at 100).
+const HUNGRY_HEED: f32 = 0.6;
+
 /// `mating::body_plan_gap` from [`Genes`] (the same value, bit for bit: the
 /// same differences, folded in the same order, then the morphology's gap).
 fn body_plan_gap(a: &Genes, b: &Genes) -> f32 {
@@ -1427,7 +1431,10 @@ impl World {
                     };
                     // What its lineage has learned of this prey's toxins
                     // (`Balance::toxic_learning`).
-                    let avoid = avoid.max(self.toxic_avoidance(o.lineage, q));
+                    // A hungry hunter heeds the lesson less (`Balance::hungry_hunters`).
+                    let heed = 1.0
+                        - HUNGRY_HEED * cfg.balance.hungry_hunters * ((o.needs.hunger - 60.0) / 40.0).clamp(0.0, 1.0);
+                    let avoid = avoid.max(self.toxic_avoidance(o.lineage, q) * heed);
                     // A lone hunter won't take on a guarding parent it can't beat.
                     let guard = self.guardian(q).0;
                     let my_power = v.my_power;

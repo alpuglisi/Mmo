@@ -1921,6 +1921,16 @@ pub struct DesignCompatView {
     /// (playtest 5: 252 chilled, none hatched); what to do instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egg_warning: Option<String>,
+    /// Set when the land is at least 40% in drought and the design has no
+    /// drought trait (estivation below 0.3): founders without one die of
+    /// thirst in days (playtest 6: 20 founders at 52% all dead in 10 days).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drought_warning: Option<String>,
+    /// Set for an egg-laying carnivore (incubated eggs, carnivory 0.5 or
+    /// more): a hunting parent leaves its clutch (playtest 6: about 10
+    /// eggs lost per hatching).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carnivore_egg_warning: Option<String>,
     /// Set when founding now is a re-founding soon after the player's last
     /// lineage ended: it founds `founders` of the design's (founders cost
     /// double points: as many as fit, at least half), costing

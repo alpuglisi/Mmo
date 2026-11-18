@@ -7,7 +7,7 @@
 //!  [--first-seed N] [--days D] [--size N] [--late-year Y] [--flier-day D]
 //!  [--baseline playtest2] [--set NAME=V ..] [--new-only]`
 //!
-//! Seven players through the server's own rules (`Game`: founding with the
+//! Eight players through the server's own rules (`Game`: founding with the
 //! winter provision, the renown shop, seasons) on the standard world with
 //! its wild species:
 //!
@@ -25,6 +25,9 @@
 //! - **Cold** founds LateComer4's design (playtest 4's winner and
 //!   LateComer5's: cold-blooded, live-bearing, brumating, toxic flier, 62
 //!   founders) on `--cold-day` (default 313, as LateComer5 did).
+//! - **Herd** founds Herdmaster6's warm, egg-incubating, hibernating, toxic,
+//!   bright, very sociable herd (playtest 6's runaway; 50 founders) on
+//!   `--herd-day` (default 28).
 //! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
 //!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
@@ -53,8 +56,9 @@ const EGGS: PlayerId = 4;
 const FLIER: PlayerId = 5;
 const COLD: PlayerId = 6;
 const LOOPHOLE: PlayerId = 7;
-const PLAYERS: u32 = 7;
-const NAMES: [&str; 7] = ["Steady", "Big", "Broker", "Eggs", "Flier", "Cold", "Loophole"];
+const HERD: PlayerId = 8;
+const PLAYERS: u32 = 8;
+const NAMES: [&str; 8] = ["Steady", "Big", "Broker", "Eggs", "Flier", "Cold", "Loophole", "Herd"];
 const SEASON: u64 = 60;
 
 struct Args {
@@ -66,6 +70,7 @@ struct Args {
     flier_day: u64,
     cold_day: u64,
     loophole_day: u64,
+    herd_day: u64,
     playtest2_baseline: bool,
     /// `--set NAME=V`: balance overrides for the new-rules arm.
     sets: Vec<(String, f32)>,
@@ -83,6 +88,7 @@ fn args() -> Args {
         flier_day: 165,
         cold_day: 313,
         loophole_day: 334,
+        herd_day: 28,
         playtest2_baseline: false,
         sets: Vec::new(),
         new_only: false,
@@ -99,6 +105,7 @@ fn args() -> Args {
             "--flier-day" => a.flier_day = v().parse().expect("--flier-day"),
             "--cold-day" => a.cold_day = v().parse().expect("--cold-day"),
             "--loophole-day" => a.loophole_day = v().parse().expect("--loophole-day"),
+            "--herd-day" => a.herd_day = v().parse().expect("--herd-day"),
             "--baseline" => a.playtest2_baseline = v() == "playtest2",
             "--set" => {
                 let kv = v();
@@ -225,6 +232,29 @@ fn cold_flier() -> FounderDesign {
         .founders(62)
 }
 
+/// Herdmaster6's "Rolling Thunder Herd" (`docs/playtest-6-logs/Herdmaster6.md`,
+/// playtest 6's runaway): a small warm, egg-incubating, hibernating, toxic,
+/// bright, very sociable herd of 50, founded on day 28.
+fn herd() -> FounderDesign {
+    use Gene::*;
+    FounderDesign::new("Herd", Thermo::Warm, BirthType::IncubatedEggs, 6)
+        .with(BodySize, 0.3)
+        .with(FatStores, 0.6)
+        .with(Fur, 0.6)
+        .with(Hibernation, 0.55)
+        .with(GroupTolerance, 0.95)
+        .with(Obedience, 0.9)
+        .with(Toxins, 0.6)
+        .with(Coloration, 0.6)
+        .with(Ears, 0.3)
+        .with(Vigilance, 0.4)
+        .with(LegLength, 0.3)
+        .with(ForagingRange, 0.6)
+        .with(Wanderlust, 0.3)
+        .with(Pickiness, 0.3)
+        .founders(50)
+}
+
 /// Rulebender5's "Loophole Fliers" (`docs/playtest-5-logs/Rulebender5.md`):
 /// a small cold-blooded, egg-incubating, brumating, toxic, bright flier,
 /// re-founded at half size (22 of 44 founders) on day 334.
@@ -329,6 +359,9 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         if day == a.loophole_day {
             found(&mut g, LOOPHOLE, loophole(), &mut o);
         }
+        if day == a.herd_day {
+            found(&mut g, HERD, herd(), &mut o);
+        }
         if founded.is_none() && day >= a.late_year * year && g.world.season() == Season::Winter {
             found(&mut g, EGGS, eggrunner(), &mut o);
             founded = Some(day);
@@ -413,7 +446,7 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
 
 fn main() {
     let a = args();
-    for d in [steady(), big(), broker(), eggrunner(), flier(), cold_flier(), loophole()] {
+    for d in [steady(), big(), broker(), eggrunner(), flier(), cold_flier(), loophole(), herd()] {
         let f = fitted(d.clone());
         println!(
             "{}: {:.1} points at today's prices, {} of {} founders fit",
@@ -495,6 +528,9 @@ fn main() {
             .map(|o| [FLIER, COLD, LOOPHOLE].iter().map(|p| o.titles.get(p).copied().unwrap_or(0)).sum::<u32>())
             .sum();
         println!("  cold fliers as a class (Flier + Cold + Loophole): {fliers}/{seasons} titles");
+        let eggers: u32 =
+            os.iter().map(|o| [EGGS, HERD].iter().map(|p| o.titles.get(p).copied().unwrap_or(0)).sum::<u32>()).sum();
+        println!("  warm egg-laying hibernators as a class (Eggs + Herd): {eggers}/{seasons} titles");
         println!(
             "  (* from Eggs' founding on: mean share over those days; legacy titles of the whole seasons after it)"
         );

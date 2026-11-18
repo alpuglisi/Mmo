@@ -515,6 +515,35 @@ fn balance56_off(b: &mut crate::Balance) {
 fn playtest5_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v57::OLD_VALUE;
     (b.dry_beds, b.drink_reach) = (old, old);
+    balance58_off(b);
+}
+
+/// The playtest 6 balance tunables as snapshots before version 58 read
+/// them.
+fn balance58_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v58::OLD_VALUE;
+    (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit) = (old, old, old, old);
+}
+
+/// Version 57 snapshots (before the playtest 6 balance rules) restore with
+/// those tunables off, and are otherwise the same world.
+#[test]
+fn version_57_snapshots_restore_without_playtest6_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v57();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 57);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.toxin_upkeep, crate::serde_util::before_v58::OLD_VALUE);
+    assert!(r.snapshot_v57() == old);
+    balance58_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps them.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.toxin_source, r.config.balance.speciation_credit), (1.0, 1.0));
 }
 
 /// Version 55 snapshots (before the playtest 5 balance rules) restore with

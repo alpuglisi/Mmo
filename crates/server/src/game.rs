@@ -8843,6 +8843,25 @@ mod tests {
         }
     }
 
+    /// The design check warns of a drought from 40% for a design with no
+    /// drought trait, and of an egg-laying carnivore.
+    #[test]
+    fn drought_and_carnivore_eggs_are_warned() {
+        let (mut g, _, _) = game();
+        let plain = FounderDesign::new("P", Thermo::Warm, BirthType::Live, 2).founders(6);
+        g.world.map.drought = 0.35;
+        assert_eq!(g.design_compatibility(9, &plain).drought_warning, None);
+        g.world.map.drought = 0.45;
+        let w = g.design_compatibility(9, &plain).drought_warning.expect("warned");
+        assert!(w.contains("45%") && w.contains("estivation"), "{w}");
+        let ready = plain.clone().with(Gene::Estivation, 0.4);
+        assert_eq!(g.design_compatibility(9, &ready).drought_warning, None);
+        let hunter =
+            FounderDesign::new("H", Thermo::Warm, BirthType::IncubatedEggs, 3).with(Gene::Carnivory, 0.8).founders(6);
+        assert!(g.design_compatibility(9, &hunter).carnivore_egg_warning.is_some());
+        assert_eq!(g.design_compatibility(9, &plain).carnivore_egg_warning, None);
+    }
+
     /// Warm and cold lineages of one plan are partly fertile
     /// (`Balance::thermo_hybrid`, playtest 5: cold blood walled the market
     /// off), the playtest 5 flier with a plain warm grazer too; off, sterile.
@@ -10334,6 +10353,7 @@ mod tests {
         // Owners clustered together, so a player's lineage can bridge to a
         // wild one (`Balance::species_credit` off).
         cfg.balance.species_credit = 0.0;
+        cfg.balance.speciation_credit = 0.0;
         let p = DetectParams::from_config(&cfg);
         let mut t = SpeciesTracker::default();
         let name = |l: u32| format!("L{l}");

@@ -84,6 +84,27 @@ pub const EGG_WARNING: &str = "Warm-blooded eggs need a parent's heat: left alon
      below 24 °C, so abandoned eggs almost never hatch (playtest 5: 252 chilled, none hatched). Choose incubated eggs \
      (a parent broods them) or live birth, or make the design cold-blooded.";
 
+/// Drought share of the land from which the design check warns a design
+/// with no drought trait (`DesignCompatView::drought_warning`).
+pub const DROUGHT_DESIGN_WARN: f32 = 0.4;
+/// Estivation from which a design counts as drought-ready.
+pub const DROUGHT_TRAIT: f32 = 0.3;
+
+/// [`DesignCompatView::drought_warning`]'s text.
+pub fn drought_design_text(drought: f32) -> String {
+    format!(
+        "Drought: {:.0}% of the land is dry. Founders without a drought trait die of thirst within days (playtest 6: \
+         20 founders at 52% all dead in 10 days, inside their grace). Add estivation (0.3 or more) so they sleep \
+         through the dry spell, or wait for the drought to ease.",
+        drought * 100.0
+    )
+}
+
+/// [`DesignCompatView::carnivore_egg_warning`]'s text.
+pub const CARNIVORE_EGG_WARNING: &str = "An egg-laying hunter leaves its clutch to hunt, and unattended eggs chill or \
+     are raided (playtest 6: about 10 eggs lost per hatching). Live birth suits a roaming carnivore; an egg layer \
+     does better with a smaller range and a partner left at the nest.";
+
 /// [`Spread`] over the pairs of `a` × `b` (None when either is empty).
 pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief) -> Option<Spread> {
     let mut fert: Vec<f32> = Vec::with_capacity(a.len() * b.len());
@@ -347,7 +368,9 @@ impl Game {
         if s.founder.is_some() {
             return s.founder;
         }
-        if s.origin == evo_sim::species::SpeciesOrigin::Split {
+        // An uncredited split (`Balance::speciation_credit`: a copy, a young
+        // or small split) is still its own lineage's to name, once.
+        if s.origin == evo_sim::species::SpeciesOrigin::Split && self.world.config.balance.speciation_credit <= 0.0 {
             return None;
         }
         // An initial species that holds a wild lineage is the wild one's:
@@ -576,6 +599,13 @@ impl Game {
                 s * 100.0
             )
         });
+        let drought = self.world.map.drought;
+        let drought_warning = (drought >= DROUGHT_DESIGN_WARN
+            && design.values()[evo_sim::Gene::Estivation.index()] < DROUGHT_TRAIT)
+            .then(|| drought_design_text(drought));
+        let carnivore_egg_warning = (design.birth == evo_sim::BirthType::IncubatedEggs
+            && design.values()[evo_sim::Gene::Carnivory.index()] >= 0.5)
+            .then(|| CARNIVORE_EGG_WARNING.to_string());
         let egg_warning = (design.thermo == evo_sim::Thermo::Warm && design.birth == evo_sim::BirthType::AbandonedEggs)
             .then(|| EGG_WARNING.to_string());
         DesignCompatView {
@@ -587,6 +617,8 @@ impl Game {
             shore_access,
             water_warning,
             egg_warning,
+            drought_warning,
+            carnivore_egg_warning,
             refound: self.refound_terms(player).map(|t| {
                 let n = t.founders(design);
                 crate::protocol::RefoundView {
