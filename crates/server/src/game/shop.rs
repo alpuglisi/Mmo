@@ -81,7 +81,7 @@ pub struct Spread {
 /// [`DesignCompatView::egg_warning`]'s text: warm-blooded eggs left alone
 /// need 24 °C or more (`world::environment::egg_range`).
 pub const EGG_WARNING: &str = "Warm-blooded eggs need a parent's heat: left alone they chill whenever the air is \
-     below 24 °C, so abandoned eggs almost never hatch (playtest 5: 252 chilled, none hatched). Choose incubated eggs \
+     below 24 °C, so abandoned eggs almost never hatch. Choose incubated eggs \
      (a parent broods them) or live birth, or make the design cold-blooded.";
 
 /// Drought share of the land from which the design check warns a design
@@ -93,8 +93,8 @@ pub const DROUGHT_TRAIT: f32 = 0.3;
 /// [`DesignCompatView::drought_warning`]'s text.
 pub fn drought_design_text(drought: f32) -> String {
     format!(
-        "Drought: {:.0}% of the land is dry. Founders without a drought trait die of thirst within days (playtest 6: \
-         20 founders at 52% all dead in 10 days, inside their grace). Add estivation (0.3 or more) so they sleep \
+        "Drought: {:.0}% of the land is dry. Founders without a drought trait die of thirst within days, even \
+         inside their grace. Add estivation (0.3 or more) so they sleep \
          through the dry spell, or wait for the drought to ease.",
         drought * 100.0
     )
@@ -102,7 +102,7 @@ pub fn drought_design_text(drought: f32) -> String {
 
 /// [`DesignCompatView::carnivore_egg_warning`]'s text.
 pub const CARNIVORE_EGG_WARNING: &str = "An egg-laying hunter leaves its clutch to hunt, and unattended eggs chill or \
-     are raided (playtest 6: about 10 eggs lost per hatching). Live birth suits a roaming carnivore; an egg layer \
+     are raided: expect several eggs lost for each one that hatches. Live birth suits a roaming carnivore; an egg layer \
      does better with a smaller range and a partner left at the nest.";
 
 /// [`Spread`] over the pairs of `a` × `b` (None when either is empty).
