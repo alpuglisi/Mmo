@@ -7438,6 +7438,97 @@ new rules off, today's code also loses packs on two seeds, so the losses
 come from elsewhere. The pack rule shows in the lowest antelope counts:
 a pack now takes larger prey.
 
+### Playtest 2: competitive balance
+
+Playtest 2 (`docs/playtest-2.md`) found one strategy dominating: LateComer's
+egg-laying, toxic-but-drab, hibernating burrowing herbivore, founded in
+winter with cheap reinforcements, reached 2,990 animals (the 2× soft-cap
+ceiling) and ~40% share from a late start. Winter decided the board, a boom
+cohort then died of old age together, player herbivores of 29–54 kg
+outgrew every predator, and the builder's interbreeding card ("no one")
+and the "compatible" badge (13 of 17 real pairs sterile) were both wrong.
+Predator learning about toxic prey and predator energetics are session F's
+(`ccr-38539192-boom`); this section is design costs, ceilings and the
+compatibility estimate.
+
+**Sim rules, on by default from snapshot version 38** (37 is another
+change's; renumber at merge), off at 0 for older saves
+(`serde_util::before_v38`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `egg_hybrid` (0.2) | Birth mode counts `1 − egg_hybrid` in the body-plan gap for fertility (`mating::fertility_gap`, `fertility_with`; courting, conception, `preview_mating`, the market): adjacent birth modes (0.35 apart) are 0.28 apart, so an egg layer is ~10% fertile with a close live bearer (and more as founders vary) instead of sterile with all of them. Kinship and species keep the full gap, so species boundaries don't move. |
+| `age_spread` (0.12) | Old age by a hazard rising linearly from an earlier onset at a rate set by the lifespan (`apply::old_age_hazard`, agents and LOD cohorts): ages at death average 85% of the lifespan with a standard deviation of 12% (the old rule: 84%, within a few days). |
+| `dormancy_toll` (0.08) | A warm hibernator asleep in winter dies (exposure) with this chance over a whole season of sleep, twice that in its first year and up to twice again as its fat runs out (`seasonal::dormancy_toll_rate`; LOD cohorts too). |
+| `emergence_lag` (6 days) | A hibernator or brumator waking from winter sleep can't breed for this long. |
+
+**Defaults changed** (stored in snapshots, so running worlds keep theirs):
+the soft cap is steeper and lower, `lineage_crowding` 4 → 6,
+`crowding_ceiling` 2 → 1.4 (the hard ceiling at 1.4× the cap: 2,100 on the
+reference map), `crowding_hunger` 0.3 → 0.6. Litters run at 0.5 of
+normal at the cap, 0.17 at 1.3×, 0.12 at 1.4×.
+
+**Design prices** (`design.rs`, mirrored by the client's `cost.ts` through
+`/api/genes`' new `free_body_size` and `cost_per_larger_body`; fixture
+regenerated): body size is free only from the default (0.3, 1.1 kg) to 0.5
+(3.6 kg), then 40 points per unit (`design::body_size_cost`: 0.75 costs 10,
+0.9 costs 16, 0.95 costs 18); hibernation 8 → 12 and burrowing 6 → 8 per
+unit. The client's starter costs 11.5 points (9.5 before). Every sample
+design still fits (herd grazers 60.0, caribou 63.7, omnivores 39.0);
+LateComer's design costs 99.9 and still fits.
+
+**Compatibility, from individuals.** `compatibility` (and each market
+listing's `compatible`) now compares every pair of 16 of the player's adults
+and 16 of each lineage's (fertility with distance and `egg_hybrid`), and
+reports the mean, the 10th–90th percentile range, the share of fertile pairs,
+the best pair, and a drift risk (`high` once any pair is fertile or the
+closest pair is within 0.05 of the sterile gap, `low` within 0.12; founders
+vary by 0.05 per expressed gene and lineages drift by as much).
+`compatible` means at least half the pairs are fertile, not the best one.
+`POST /api/design/compatibility` runs the same check at design time with 16
+founders as the design would make them, against the current lineages, so
+the builder no longer compares species means. Rows carry `wild` only for
+the wild ecosystem's lineages, and the client's interbreeding card no longer
+calls a species with a player's lineage in it wild (it also weights birth
+mode like the sim). Showing the server's range and drift risk in the builder
+is session D's.
+
+**Scripted replay** (`cargo run --release -p evo-server --example dominance
+-- --seeds 4 --days 840`, `crates/server/examples/dominance.rs`): four
+players through `Game` on the 128² world with its wild species. Steady (the
+starter with senses and legs, 40 founders), Big (a 0.75 hibernating grazer,
+playtest 2's Herdmaster) and Broker (a 0.66 live-bearing grazer, the early
+leader) found on day 0; Eggs founds LateComer's exact design (55 founders)
+on the first day of the second winter (day 210, with the winter provision)
+and buys reinforcements whenever the shop sells them. Old rules: the four
+tunables off, the old soft cap, founded at any price. Seeds 1–4:
+
+| Arm | Eggs final / peak share | Eggs mean share from its founding | Eggs peak alive | Eggs titles | Others' final share (Steady, Big, Broker) | Eggs' worst 60-day fall of adults | Wild alleles in Eggs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Old rules | 23.9% / 29.2% | 13.2% | 2,549 | 17 of 40 | 8.1%, 16.6%, 7.3% | 52% | 0.9% |
+| New rules | 21.4% / 26.5% | 10.7% | 1,927 | 16 of 40 | 5.9%, 10.5%, 8.0% | 37% | 3.4% |
+
+The late design stays viable (alive on every seed, still the largest at the
+end) but no longer runs to the ceiling: its peak is a quarter lower, its
+mean share over its life is level with Broker's (10.7% both), Broker now
+wins 12 of the 40 seasons (none before), and its boom cohort ages out over
+months (the worst fall of its adults 37% instead of 52%). It still takes
+the most titles: what remains is the winter provision and reinforcements
+(5.8 a world; their price resets each season) and toxins, which belong to
+the economy and to session F.
+
+**Checks** (the "before" arm is this code with the four new tunables at 0;
+the soft-cap defaults don't reach the balance tools' lineages):
+
+| Check | Before | After |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.76 (± 0.26) on main | 11.65 (± 0.31); every lineage 12 of 12 but pack hunters 11; burrowing omnivores (hibernators) 93 against 141, the toll and lag's cost |
+| `compare --seed 101 --adaptive` (tunables off vs defaults) | | COMPARE |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack (viable); prey lost | 13/16 (12), 15/16 (15); omnivores on 48 | 15/16 (15), 15/16 (14); omnivores on 48 |
+| `predlong`: lowest prey | antelope 15–39, voles 35–88 | antelope 6 (seed 31), else 23–39; voles 17 (seed 41), else 36–88 |
+| `calibrate tournament --worlds 96 --days 90 --seed0 70001`: top class win share | 26.0% (warm live birth) | TOURNAMENT |
+| `evo-sim genetics` | | GENETICS |
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
