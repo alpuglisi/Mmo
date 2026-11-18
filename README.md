@@ -150,29 +150,39 @@ score).
   with obedience), going back to the order once it is down to 30
   (`ORDER_RESUME`), so a migration no longer pins a group through a
   drought. The order is done, and dropped, once the group's **median
-  member** is within its arrival radius of the target (the rally circle,
-  at least 3 tiles; checked on the hour, `settle_groups`): half the group
-  there, not the first few (playtest 2 saw an arrival with the median
-  member 27 tiles off, from a group of mostly juveniles). The player gets a
-  `group` alert, and the group then **settles** there for 15 days
-  (`SETTLE_DAYS`, `World::settle_circle`): members outside a circle of 1.5×
-  the arrival radius walk back into it (`Action::Rally` at utility
-  0.35 × heed, below a rally's 0.55 and set aside for any pressing need;
-  not a confinement), so a herd no longer drifts straight back. A
-  migration that hasn't gathered by its deadline is **ended** with a
-  `group` alert naming how far half the group still is: `3 days + distance
-  / 3 tiles a day` from the group's middle when ordered, kept between 4
-  and 30 days (`World::migration_timeout_ticks`, `migration_deadline_tick`
-  in the group view); scattered groups used to migrate forever.
-  `World::reroute_migration` moves a standing order's target keeping its
-  age (its deadline never gets earlier), for re-routing a target that
-  floods. A group other than the main one with no members is refused
-  (`no_such_group`). Deadlines and settle circles are saved (snapshot
-  version 41; older saves restore with none, and a standing migration's
-  deadline then runs from the restore). The server plans the route a
-  member near the group's middle would take (`World::migration_route`, at
-  most 32 points) when the order is given and sends it in the group's
-  `route` for the client to draw.
+  member** is within a few tiles of the target (`World::arrival_radius`:
+  3 tiles plus a quarter per √members, at most 8; checked on the hour,
+  `settle_groups`). Half the group there, not the first few: playtest 2
+  saw an arrival with the median 27 tiles off (a group of mostly
+  juveniles), playtest 3 one with a 486-strong herd's median 24–29 tiles
+  off (the arrival radius was the rally circle, up to 24 tiles). The
+  player gets a `group` alert, and the target becomes the group's
+  **home** until its next order (`World::settle_circle`, saved): members
+  outside the circle it would gather in at a rally (at least 1.5× the
+  arrival radius, `World::home_radius`) walk back into it (`Action::Rally`
+  at utility 0.35 × heed, below a rally's 0.55 and set aside for any
+  pressing need; not a confinement). Herds used to walk home when a
+  15-day settle ended; one that drifts anyway (median member more than
+  twice the home radius away, checked daily) gets a `group` alert, once
+  until it is back. A migration **ends** with a `group` alert when its
+  group's median member has got no closer (by a tile) for 5 days
+  (`MIGRATE_STALL_DAYS`): scattered or blocked groups stop, while a long
+  journey that keeps moving no longer fizzles (playtest 3: "half the group
+  is still 109 tiles away"). A hard limit of `5 days + distance / 2 tiles
+  a day`, kept between 6 and 120 days (`World::migration_timeout_ticks`),
+  backs it up; the group view's `migration_deadline_tick` is the hard
+  limit. The alert says when the group was mostly dormant (hibernating or
+  estivating animals can't walk), and a migrate given while 30% or more of
+  the group is dormant warns in its reply. `World::reroute_migration`
+  moves a standing order's target keeping its age (its hard limit never
+  gets earlier), for re-routing a target that floods. A group other than
+  the main one with no members is refused (`no_such_group`). Plans and
+  homes are saved (snapshot version 41, the headway from version 45;
+  older saves restore with none, and a standing migration is measured
+  afresh). The server plans the route a member near the group's middle
+  would take (`World::migration_route`, at most 32 points) when the order
+  is given, sends it in the group's `route` for the client to draw, and
+  warns when it crosses 3 or more tiles of open water.
 - **Emptied groups.** A group whose last member dies loses its migration,
   territory and rally on the next hour (the main group only once the
   player has nothing alive, since its agents may all be cohorts in
@@ -223,18 +233,34 @@ score).
   (`claim_cooldown`; abandoning in between changes nothing), or every 2
   minutes of wall-clock time if longer (`GameConfig::claim_cooldown_min_minutes`,
   `World::set_claim_cooldown_min_ticks`: half a day passes in seconds at a
-  fast tick). Seasonal migration (a gene) still outranks the
-  territory, and danger outranks both as usual.
+  fast tick). The refusal says the wait in minutes and game days. A group
+  split off keeps the cooldown of the group it came from, on purpose: a
+  split must not reset it (split, claim, merge back would dodge it); the
+  message says so. Seasonal migration (a gene) still outranks the
+  territory, and danger outranks both as usual. The toolbar's Clear
+  cancels every order of the picked group (migration, territory, rally).
 - **Water** (playtest 2: territories and rallies killed herds in a
   drought). Thirst takes members out of a territory or rally circle: at
   thirst 60 (±0.1 with obedience, `groups::thirst_breaks_off`) the circle
   stops holding them (no walking back in, no foraging limit) until they
   have drunk down to 30, as a migrant breaks off. A claim or rally whose
-  circle is more than half water the group can't stand in is refused
-  (`mostly_water`, `detail.water_share`); the reply reports the circle's
-  `water_share` and `drinkable_tiles` (drinking water in it or within 4
-  tiles of its edge, `World::water_check`) and carries a `warning` when
-  there are fewer than 3 such tiles or a quarter of it is water.
+  circle is more than half water the group can't **stand** in is refused
+  (`mostly_water`, `detail.water_share`): standing means wading depth at
+  most (`terrain::can_stand`), so a strong swimmer's lake no longer counts
+  as land (playtest 3: an 88% lake claim reported water share 0), and a
+  migrate target in a lake moves ashore. The reply reports the circle's
+  `water_share`, `drinkable_tiles` (drinking water in it or within 4 tiles
+  of its edge, `World::water_check`), `food_supports` (about how many of
+  the group's animals its plants' regrowth feeds in a good season,
+  `World::food_check`; none for meat-eaters) and `distance` from the
+  group, with `warning`s (and a `warnings` list) when there are fewer than
+  3 drinkable tiles, a quarter of it is water, its centre is in water, it
+  feeds fewer animals than the group has, or it is more than 30 tiles from
+  the group. A radius raised to the minimum or cut to the group's limit
+  says so (`note`). Every day the server checks standing territories and
+  alerts the owner once when one has no drinking water left or is grazed
+  bare (standing plants for under 3 days), with the day's thirst or
+  hunger deaths.
 - **Rally** (`rally_group`, `cancel_rally`): gather a group at a point.
   The circle it gathers in has radius `2 + √members`, about π tiles of
   ground per member, up to 24 tiles (the largest territory's cap, reached

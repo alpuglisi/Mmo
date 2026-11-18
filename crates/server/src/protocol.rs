@@ -1150,9 +1150,9 @@ pub struct GroupView {
     /// target by then (absent: no migration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration_deadline_tick: Option<u64>,
-    /// Where the group settles after arriving from a migration: members
-    /// outside the circle drift back into it until `expires_tick` (absent:
-    /// not settling). Not a confinement.
+    /// The home the group keeps where its last migration arrived: members
+    /// outside the circle drift back into it until the group's next order
+    /// (`expires_tick` is then `u64::MAX`; absent: none). Not a confinement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settle: Option<RallyView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -232,8 +232,23 @@ pub struct GameConfig {
 }
 
 /// Fewer drinking-water tiles than this in and around a territory or
-/// rally circle draw a warning in the reply ([`Game::water_warning`]).
+/// rally circle draw a warning in the reply ([`Game::circle_report`]).
 pub const LOW_WATER_TILES: usize = 3;
+/// A territory or rally circle farther than this from its group's middle
+/// draws a warning (playtest 3: a claim 85 tiles off).
+pub const FAR_CIRCLE_TILES: f32 = 30.0;
+/// A territory whose standing plants would feed its group for fewer days
+/// than this is grazed bare (the daily check's alert).
+pub const BARE_DAYS: f32 = 3.0;
+/// A group whose median member is farther than this many home radii from
+/// the home its migration gave it has drifted (an alert).
+pub const DRIFT_FACTOR: f32 = 2.0;
+/// A migration route crossing at least this many tiles of open water draws
+/// a warning.
+pub const ROUTE_WATER_TILES: usize = 3;
+/// A migration given while at least this share of the group is dormant
+/// draws a warning.
+pub const DORMANT_WARN_SHARE: f32 = 0.3;
 
 /// Whether a "species founded" achievement of `player` for `species` on
 /// `day` earns its renown bonus (and a season count), recording it if so.
@@ -600,6 +615,11 @@ pub struct Game {
     /// ramp of the season's legacy score ([`FOUNDING_RAMP_DAYS`]); absent
     /// for lineages founded before it was kept (counted in full).
     founded_day: BTreeMap<PlayerId, u64>,
+    /// Territory conditions already announced by the daily check, by
+    /// (player, group, kind: 0 dry, 1 grazed bare); not saved.
+    territory_alerted: BTreeSet<(PlayerId, u8, u8)>,
+    /// Groups already told they drifted from their home; not saved.
+    drift_alerted: BTreeSet<(PlayerId, u8)>,
     /// Alleles in breeding adults by (host lineage, origin), taken with
     /// each daily record (`World::legacy_hosts`): the royalty and the score
     /// breakdown read it. Not saved; recomputed on a restore.
@@ -799,6 +819,8 @@ impl Game {
             market,
             routes: BTreeMap::new(),
             founded_day: BTreeMap::new(),
+            territory_alerted: BTreeSet::new(),
+            drift_alerted: BTreeSet::new(),
             hosts,
             attack_alerts: BTreeMap::new(),
             #[cfg(test)]
@@ -1362,9 +1384,26 @@ impl Game {
                 let mut data =
                     target_data(asked, to, "that is water or impassable; the group goes to the nearest land");
                 data["group"] = group.into();
+                let mut warnings = Vec::new();
                 if let Some((_, route)) = self.routes.get(&(player, group)) {
                     data["route"] = serde_json::to_value(route).unwrap_or_default();
+                    let way: Vec<Vec2> = route.iter().map(|p| Vec2::new(p[0], p[1])).collect();
+                    let wet = self.world.route_water_tiles(player, group, &way);
+                    if wet >= ROUTE_WATER_TILES {
+                        warnings.push(format!(
+                            "The route crosses about {wet} tiles of open water: weak swimmers will be held up or drown."
+                        ));
+                    }
                 }
+                let dormant = self.world.dormant_share(player, group);
+                if dormant >= DORMANT_WARN_SHARE {
+                    warnings.push(format!(
+                        "{:.0}% of the group is dormant (hibernating or estivating) and won't walk until it wakes; \
+                         the order may run out before then.",
+                        dormant * 100.0
+                    ));
+                }
+                put_warnings(&mut data, warnings);
                 Ok(Some(data))
             }
             ClientMsg::RetireLineage { lineage } => {
@@ -1389,9 +1428,21 @@ impl Game {
             }
             ClientMsg::ClaimTerritory { group, x, y, radius } => {
                 finite(&[x, y, radius])?;
-                let t = self.world.claim_territory(player, group, Vec2::new(x, y), radius).map_err(e)?;
+                let t = match self.world.claim_territory(player, group, Vec2::new(x, y), radius) {
+                    Ok(t) => t,
+                    Err(CommandError::ClaimCooldown { ticks_left }) => return Err(self.cooldown_error(ticks_left)),
+                    Err(err) => return Err(e(err)),
+                };
                 let mut data = serde_json::to_value(TerritoryView::from(t)).unwrap();
-                self.water_warning(player, group, t.center, t.radius, &mut data);
+                if (t.radius - radius).abs() > 0.01 {
+                    data["note"] = if t.radius > radius {
+                        format!("radius raised to the smallest territory, {:.0} tiles", t.radius)
+                    } else {
+                        format!("radius cut to the group's limit, {:.1} tiles (it grows with the adults)", t.radius)
+                    }
+                    .into();
+                }
+                self.circle_report(player, group, t.center, t.radius, &mut data);
                 Ok(Some(data))
             }
             ClientMsg::AbandonTerritory { group } => {
@@ -1402,7 +1453,7 @@ impl Game {
                 finite(&[x, y])?;
                 let r = self.world.rally_group(player, group, Vec2::new(x, y)).map_err(e)?;
                 let mut data = serde_json::to_value(RallyView::from(r)).unwrap();
-                self.water_warning(player, group, r.center, r.radius, &mut data);
+                self.circle_report(player, group, r.center, r.radius, &mut data);
                 Ok(Some(data))
             }
             ClientMsg::CancelRally { group } => {
@@ -3025,6 +3076,7 @@ impl Game {
             self.pay_income(&record);
             self.pay_royalties(record.day);
             self.daily_alerts(&record, &mut out);
+            self.daily_group_checks(&record, &mut out);
             self.chronicle_alerts(&mut out);
             self.history.push_back(record.clone());
             if self.history.len() > HISTORY_DAYS {
@@ -3475,8 +3527,10 @@ impl Game {
             match ev {
                 GroupEvent::Arrived { player, group, target } => {
                     self.routes.remove(&(player, group));
+                    self.drift_alerted.remove(&(player, group));
                     let text = format!(
-                        "{} reached its migration target ({:.0}, {:.0}); the order is done.",
+                        "{} reached its migration target ({:.0}, {:.0}); the order is done, and the group keeps it as \
+                         its home ground until its next order (claim a territory to hold it firmly).",
                         group_name(group),
                         target.x,
                         target.y
@@ -3491,11 +3545,20 @@ impl Game {
                         self.alert(player, AlertKind::Group, text, None, out);
                     }
                 }
-                GroupEvent::TimedOut { player, group, target, median } => {
+                GroupEvent::TimedOut { player, group, target, median, dormant_share } => {
                     self.routes.remove(&(player, group));
+                    let why = if dormant_share >= 0.5 {
+                        format!(
+                            "{:.0}% of the group is dormant (hibernating or estivating) and can't walk; migrate again \
+                             once it wakes",
+                            dormant_share * 100.0
+                        )
+                    } else {
+                        "it stopped getting closer. Rally it, or migrate again to a nearer point".to_string()
+                    };
                     let text = format!(
-                        "{} didn't gather at its migration target ({:.0}, {:.0}) in time (half the group is still \
-                         more than {:.0} tiles away); the order has ended. Rally it, or migrate again to a nearer point.",
+                        "{} didn't gather at its migration target ({:.0}, {:.0}) (half the group is still more than \
+                         {:.0} tiles away); the order has ended: {why}.",
                         group_name(group),
                         target.x,
                         target.y,
@@ -3507,19 +3570,149 @@ impl Game {
         }
     }
 
-    /// Add the water in and around a territory or rally circle to its
-    /// command's reply (`water_share`, `drinkable_tiles`), and a `warning`
-    /// when there is little to drink: a drought then sends the group out
-    /// of the circle to drink, and a dry circle won't hold it.
-    fn water_warning(&self, player: PlayerId, group: u8, center: Vec2, radius: f32, data: &mut serde_json::Value) {
+    /// Add what a territory or rally circle offers to its command's reply
+    /// (`water_share`, `drinkable_tiles`, `food_supports`, `distance` from
+    /// the group), with `warning`s: little to drink, much of it water, its
+    /// centre in water, too little food for the group, or far from it.
+    fn circle_report(&self, player: PlayerId, group: u8, center: Vec2, radius: f32, data: &mut serde_json::Value) {
+        let mut warnings = Vec::new();
         let w = self.world.water_check(player, group, center, radius);
         data["water_share"] = ((w.water_share * 100.0).round() / 100.0).into();
         data["drinkable_tiles"] = w.drinkable.into();
         if w.drinkable < LOW_WATER_TILES {
-            data["warning"] = "Little or no drinking water in or near this circle: the group will leave it to drink, and may die of thirst in a drought.".into();
+            warnings.push(
+                "Little or no drinking water in or near this circle: the group will leave it to drink, and may die \
+                 of thirst in a drought."
+                    .to_string(),
+            );
         } else if w.water_share > 0.25 {
-            data["warning"] =
-                format!("{:.0}% of this circle is water the group can't stand in.", w.water_share * 100.0).into();
+            warnings.push(format!("{:.0}% of this circle is water the group can't stand in.", w.water_share * 100.0));
+        }
+        if self.world.water_check(player, group, center, 0.5).water_share > 0.5 {
+            warnings.push("Its centre is in water.".to_string());
+        }
+        if let Some(f) = self.world.food_check(player, group, center, radius) {
+            data["food_supports"] = f.supports.into();
+            if f.supports < f.members {
+                warnings.push(format!(
+                    "The plants here feed about {} of the group's {} animals in a good season; expect hunger, worse \
+                     in winter or a drought.",
+                    f.supports, f.members
+                ));
+            }
+        }
+        if let Some(m) = self.world.group_middle(player, group) {
+            let d = m.dist(center);
+            data["distance"] = ((d * 10.0).round() / 10.0).into();
+            if d > FAR_CIRCLE_TILES {
+                warnings.push(format!("It is {d:.0} tiles from the group, which has to walk there first."));
+            }
+        }
+        put_warnings(data, warnings);
+    }
+
+    /// `claim_cooldown`, the wait said in minutes of real time and game days.
+    fn cooldown_error(&self, ticks_left: u64) -> ErrorInfo {
+        let minutes = ticks_left as f64 * self.cfg.tick_ms / 60_000.0;
+        let days = ticks_left as f64 / self.world.config.ticks_per_day.max(1) as f64;
+        let wait =
+            if minutes < 1.0 { "under a minute".to_string() } else { format!("about {:.0} min", minutes.ceil()) };
+        ErrorInfo::new(
+            "claim_cooldown",
+            format!(
+                "This group (or the group it was split from) claimed a territory recently; it can claim again in \
+                 {wait} ({days:.1} game days). Abandoning a territory doesn't reset the wait."
+            ),
+        )
+        .with_detail(serde_json::json!({ "ticks_left": ticks_left, "minutes_left": minutes, "days_left": days }))
+    }
+
+    /// Once a day: tell owners when a territory has gone dry or been grazed
+    /// bare (with the day's thirst and hunger deaths), and when a group has
+    /// drifted from the home its last migration gave it. Each is said once,
+    /// and again only after it has recovered.
+    fn daily_group_checks(&mut self, record: &DailyRecord, out: &mut Outbox) {
+        let players: Vec<(PlayerId, u32)> = self.lineage_of.iter().map(|(&p, &l)| (p, l)).collect();
+        for (p, lineage) in players {
+            let deaths = record.lineages.iter().find(|e| e.lineage == lineage).map(|e| e.deaths.clone());
+            let died = |cause: &str| deaths.as_ref().and_then(|d| d.get(cause)).copied().unwrap_or(0);
+            let (thirst, starved) = (died("thirst"), died("starved"));
+            let groups = self.world.groups(p);
+            for g in &groups {
+                let key = (p, g.id);
+                let name = group_name(g.id);
+                let mut texts = Vec::new();
+                match g.territory {
+                    Some(t) if g.members > 0 => {
+                        let (x, y) = (t.center.x, t.center.y);
+                        let dry = self.world.water_check(p, g.id, t.center, t.radius).drinkable == 0;
+                        if self.condition_begins((p, g.id, 0), dry) {
+                            let tail = if thirst > 0 {
+                                format!(" {thirst} of your animals died of thirst yesterday.")
+                            } else {
+                                String::new()
+                            };
+                            texts.push(format!(
+                                "{name}'s territory at ({x:.0}, {y:.0}) has no drinking water left: abandon it or rally \
+                                 the group to water.{tail}"
+                            ));
+                        }
+                        let food = self.world.food_check(p, g.id, t.center, t.radius);
+                        let bare = food.is_some_and(|f| f.standing_days < BARE_DAYS);
+                        if self.condition_begins((p, g.id, 1), bare) {
+                            let days = food.map_or(0.0, |f| f.standing_days);
+                            let tail = if starved > 0 {
+                                format!(" {starved} of your animals starved yesterday.")
+                            } else {
+                                String::new()
+                            };
+                            texts.push(format!(
+                                "{name}'s territory at ({x:.0}, {y:.0}) is grazed bare (food for about {days:.0} days): \
+                                 move the group or claim a larger territory.{tail}"
+                            ));
+                        }
+                    }
+                    _ => {
+                        self.territory_alerted.remove(&(p, g.id, 0));
+                        self.territory_alerted.remove(&(p, g.id, 1));
+                    }
+                }
+                let drifted = g.settle.and_then(|s| {
+                    let m = self.world.group_median_dist(p, g.id, s.center)?;
+                    (m > DRIFT_FACTOR * s.radius).then_some((s, m))
+                });
+                match drifted {
+                    Some((s, m)) => {
+                        if self.drift_alerted.insert(key) {
+                            texts.push(format!(
+                                "{name} has drifted from its home at ({:.0}, {:.0}): half the group is more than {m:.0} \
+                                 tiles away. Migrate or rally it back, or claim a territory to hold it.",
+                                s.center.x, s.center.y
+                            ));
+                        }
+                    }
+                    None => {
+                        self.drift_alerted.remove(&key);
+                    }
+                }
+                for text in texts {
+                    self.alert(p, AlertKind::Group, text, None, out);
+                }
+            }
+            let live: BTreeSet<u8> = groups.iter().map(|g| g.id).collect();
+            self.territory_alerted.retain(|&(q, g, _)| q != p || live.contains(&g));
+            self.drift_alerted.retain(|&(q, g)| q != p || live.contains(&g));
+        }
+    }
+
+    /// Track a daily territory condition: true when it has just begun (say
+    /// it now); a condition that has passed is forgotten.
+    fn condition_begins(&mut self, key: (PlayerId, u8, u8), bad: bool) -> bool {
+        if bad {
+            self.territory_alerted.insert(key)
+        } else {
+            self.territory_alerted.remove(&key);
+            false
         }
     }
 
@@ -4413,6 +4606,15 @@ fn target_data(asked: Vec2, used: Vec2, note: &str) -> serde_json::Value {
         v["note"] = note.into();
     }
     v
+}
+
+/// Put a command's warnings in its reply: `warnings` (a list) and
+/// `warning` (them joined), when there are any.
+fn put_warnings(data: &mut serde_json::Value, warnings: Vec<String>) {
+    if !warnings.is_empty() {
+        data["warning"] = warnings.join(" ").into();
+        data["warnings"] = warnings.into();
+    }
 }
 
 /// How a group is named to its player, as the client names it: "Group A

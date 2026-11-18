@@ -1393,7 +1393,10 @@ fn version_36_snapshots_restore_without_group_plans() {
     use crate::world::groups::{MigrationPlan, Settle};
     let mut w = fixture_world();
     let key = (w.organisms[0].owner, 0u8);
-    w.group_plans.migrations.insert(key, MigrationPlan { issued_tick: 3, deadline_tick: 500 });
+    w.group_plans.migrations.insert(
+        key,
+        MigrationPlan { issued_tick: 3, deadline_tick: 500, best_median: f32::INFINITY, progress_tick: 0 },
+    );
     w.group_plans.settles.insert(key, Settle { center: Vec2::new(5.0, 6.0), radius: 4.0, until_tick: 900 });
     let old = w.snapshot_v36();
     let h = SnapshotHeader::read(&old).unwrap();
@@ -1411,7 +1414,10 @@ fn version_41_snapshots_restore_with_the_old_species_tracker() {
     use crate::world::groups::MigrationPlan;
     let mut w = fixture_world();
     let key = (w.organisms[0].owner, 0u8);
-    w.group_plans.migrations.insert(key, MigrationPlan { issued_tick: 3, deadline_tick: 500 });
+    w.group_plans.migrations.insert(
+        key,
+        MigrationPlan { issued_tick: 3, deadline_tick: 500, best_median: f32::INFINITY, progress_tick: 0 },
+    );
     let old = w.snapshot_v41();
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 41);
@@ -1428,4 +1434,24 @@ fn version_41_snapshots_restore_with_the_old_species_tracker() {
     assert!(r.snapshot_v41() == old);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
+}
+
+/// Version 43 snapshots (before a migration's headway) restore with it
+/// unmeasured, and this version keeps it.
+#[test]
+fn version_43_snapshots_restore_without_migration_headway() {
+    use crate::world::groups::MigrationPlan;
+    let mut w = fixture_world();
+    let key = (w.organisms[0].owner, 0u8);
+    let plan = MigrationPlan { issued_tick: 3, deadline_tick: 500, best_median: 12.5, progress_tick: 40 };
+    w.group_plans.migrations.insert(key, plan);
+    let old = w.snapshot_v43();
+    assert_eq!(SnapshotHeader::read(&old).unwrap().version, 43);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let got = r.group_plans.migrations[&key];
+    assert_eq!((got.issued_tick, got.deadline_tick, got.progress_tick), (3, 500, 0));
+    assert!(got.best_median.is_infinite());
+    assert!(r.snapshot_v43() == old);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans.migrations[&key], plan);
 }

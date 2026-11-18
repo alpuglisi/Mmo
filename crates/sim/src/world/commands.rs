@@ -15,7 +15,7 @@ use crate::organism::{Action, Dormancy, OrgId, Sex};
 use crate::pathfinding::{enter_cost, Outcome};
 use crate::rng::{rng_for, stream};
 use crate::stats::Body;
-use crate::terrain::{passable, traverse, Map, Tile, Weather};
+use crate::terrain::{can_stand, traverse, Map, Tile, Weather};
 
 /// Organisms must physically meet for a directed mating.
 pub const MEETING_DISTANCE: f32 = 1.5;
@@ -54,10 +54,13 @@ pub enum GroupEvent {
     /// The group has no living members left: its migration, territory and
     /// rally are gone.
     Emptied { player: PlayerId, group: u8 },
-    /// The migration passed its deadline (`World::migration_timeout_ticks`)
-    /// without the group gathering at the target: the order is ended.
+    /// The migration stalled (`groups::MIGRATE_STALL_DAYS`) or passed its
+    /// hard limit (`World::migration_timeout_ticks`) without the group
+    /// gathering at the target: the order is ended.
     /// `median` is the median member's distance to the target then.
-    TimedOut { player: PlayerId, group: u8, target: Vec2, median: f32 },
+    /// `dormant_share` is the share of the group that was dormant then
+    /// (hibernating or estivating animals can't walk).
+    TimedOut { player: PlayerId, group: u8, target: Vec2, median: f32, dormant_share: f32 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -738,7 +741,7 @@ impl World {
         let key = (player, group);
         self.migrate_orders.insert(key, target);
         let deadline = self.tick + self.migration_timeout_ticks(middle.map_or(0.0, |m| m.dist(target)));
-        self.group_plans.migrations.insert(key, MigrationPlan { issued_tick: self.tick, deadline_tick: deadline });
+        self.group_plans.migrations.insert(key, MigrationPlan::new(self.tick, deadline));
         self.territories.remove(&key);
         self.rallies.remove(&key);
         self.group_plans.settles.remove(&key);
@@ -758,6 +761,7 @@ impl World {
         let old = self.group_plans.migrations.get(&key).copied();
         let target = self.command_migrate_group(player, group, target)?;
         if let (Some(old), Some(new)) = (old, self.group_plans.migrations.get_mut(&key)) {
+            // The new way starts its headway afresh, from now.
             new.issued_tick = old.issued_tick;
             new.deadline_tick = new.deadline_tick.max(old.deadline_tick);
         }
@@ -867,14 +871,16 @@ impl World {
     }
 
     /// Whether at least half of `bodies` could stand on tile `k` even with
-    /// its ice gone (any tile with no bodies to check).
+    /// its ice gone, without swimming (`terrain::can_stand`: a strong
+    /// swimmer can cross a lake, but a herd can't live in one); any tile
+    /// with no bodies to check.
     pub(super) fn standable_tile(&self, bodies: &[Body], k: usize) -> bool {
         if bodies.is_empty() {
             return true;
         }
         let tile = Tile { ice: 0.0, ..self.map.tiles[k].clone() };
         let g = &self.map.ground()[k];
-        2 * bodies.iter().filter(|b| passable(b, g, &tile)).count() >= bodies.len()
+        2 * bodies.iter().filter(|b| can_stand(b, g, &tile)).count() >= bodies.len()
     }
 
     /// The point nearest `target` (itself if it qualifies) on a tile at
