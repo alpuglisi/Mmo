@@ -101,6 +101,11 @@ describe('painted terrain', () => {
     // Snow coming or going counts in full; colours in 64ths of their range.
     g.snow[2 * 16 + 2] = 250;
     expect(regionDelta(buildFields(g, f), a, 0, 0, 8, 8)).toBe(1);
+    // A shore moving counts four times: it is drawn across a narrow band of wetness.
+    const wet = regionSnapshot(f, 0, 0, 16, 16);
+    const f3 = { ...f, data: f.data.slice() };
+    f3.data[(4 * 16 + 4) * 14 + 6] += 0.02; // K.Wet of tile (4, 4)
+    expect(regionDelta(f3, wet, 0, 0, 16, 16)).toBeCloseTo(0.08, 5);
     // Past the map edge the snapshot clamps, as the painter does.
     const edge = regionSnapshot(f, -1, -1, 4, 4);
     expect(regionDelta(f, edge, -1, -1, 4, 4)).toBe(0);

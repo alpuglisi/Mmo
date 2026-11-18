@@ -94,6 +94,8 @@ interface Chunk {
   held: boolean;
   /** When it started waiting (ms, `performance.now`). */
   heldSince: number;
+  /** Frames in a row it has been on screen far from the terrain (`URGENT`). */
+  staleFrames: number;
 }
 
 export interface TerrainStats {
@@ -113,6 +115,8 @@ export interface TerrainStats {
   /** Visible chunks showing a painting far from the map (`URGENT`), and the largest such distance. */
   stale: number;
   maxStale: number;
+  /** The most frames in a row a chunk on screen has now been far from the terrain (none stays so: `workOrder`). */
+  maxStaleFrames: number;
   /** Paint timings (ms): base (the quick first painting of a new map), slowest frame's painting, total, fields (last). */
   baseMs: number;
   maxFrameMs: number;
@@ -145,7 +149,7 @@ export class TerrainLayer {
   /** Bumped on every terrain update (chunks re-check their tiles once per generation). */
   private gen = 0;
   private light: Rgb = [255, 255, 255];
-  private stats = { baseMs: 0, maxFrameMs: 0, paintMs: 0, fieldsMs: 0, texels: 0, pending: 0, unpainted: 0, stale: 0, maxStale: 0, frames: 0, slowFrames: 0, maxSliceMs: 0 };
+  private stats = { baseMs: 0, maxFrameMs: 0, paintMs: 0, fieldsMs: 0, texels: 0, pending: 0, unpainted: 0, stale: 0, maxStale: 0, maxStaleFrames: 0, frames: 0, slowFrames: 0, maxSliceMs: 0 };
   /** Painting time per frame instead of `paintBudget` (tests: a large one paints everything at once). */
   budgetOverride: number | null = null;
   /** Light the map as at this hour instead of the state's (tests, screenshots, debugging). */
@@ -295,6 +299,13 @@ export class TerrainLayer {
     this.stats.stale = stale;
     this.stats.unpainted = unpainted;
     this.stats.maxStale = maxStale;
+    let maxStaleFrames = 0;
+    for (const c of this.visible) {
+      if (c.tpx !== detail) continue;
+      c.staleFrames = c.shown && c.stale >= URGENT ? c.staleFrames + 1 : 0;
+      maxStaleFrames = Math.max(maxStaleFrames, c.staleFrames);
+    }
+    this.stats.maxStaleFrames = maxStaleFrames;
     // Then the base repaint, a slice at a time.
     while (this.baseRow !== null && budgetLeft()) {
       this.paintBaseSlice();
@@ -317,6 +328,8 @@ export class TerrainLayer {
       }
     }
     if (this.baseRow !== null) pending++;
+    // A repaint waiting to be shown is not on screen yet either.
+    for (const c of this.visible) if (c.held) pending++;
     const ms = performance.now() - start;
     this.stats.paintMs += ms;
     this.stats.maxFrameMs = Math.max(this.stats.maxFrameMs, ms);
@@ -369,7 +382,7 @@ export class TerrainLayer {
       return {
         key, cx, cy, tpx, tw, th, rows: ph, buf, source, texture, sprite, gen: this.gen, row: 0,
         snap: regionSnapshot(f, cx * CHUNK - APRON, cy * CHUNK - APRON, tw + 2 * APRON, th + 2 * APRON), stale: 0, paintedAt: performance.now(), d: 0,
-        shown: false, held: false, heldSince: 0,
+        shown: false, held: false, heldSince: 0, staleFrames: 0,
       };
     });
   }
@@ -400,7 +413,11 @@ export class TerrainLayer {
     this.stats.texels += (to - c.row) * w;
     c.row = to;
     if (to >= c.rows) {
-      c.stale = 0; // (measured again at the next terrain update, against `snap`)
+      // How far the terrain is now from what it started from: not 0 when a
+      // terrain update came in while it was being painted (its last rows are
+      // then of the new terrain, the first of the old: repainted in turn).
+      c.stale = regionDelta(this.fields!, c.snap, c.cx * CHUNK - APRON, c.cy * CHUNK - APRON, c.tw + 2 * APRON, c.th + 2 * APRON);
+      c.gen = this.gen;
       if (c.shown) {
         // A repaint: shown with the others (no patchwork of old and new), or after `HOLD_MAX_MS`.
         if (!c.held) c.heldSince = performance.now();
@@ -435,7 +452,7 @@ export class TerrainLayer {
     return {
       width: f?.width ?? 0, height: f?.height ?? 0, baseTpx: tpx, baseSize: [this.baseTex?.width ?? 0, this.baseTex?.height ?? 0],
       detail: this.detail, chunks: this.chunks.size, shown: [...this.visible].filter((c) => c.sprite.visible).length,
-      pending: this.stats.pending, unpainted: this.stats.unpainted, stale: this.stats.stale, maxStale: this.stats.maxStale, baseMs: this.stats.baseMs, maxFrameMs: this.stats.maxFrameMs, paintMs: this.stats.paintMs,
+      pending: this.stats.pending, unpainted: this.stats.unpainted, stale: this.stats.stale, maxStale: this.stats.maxStale, maxStaleFrames: this.stats.maxStaleFrames, baseMs: this.stats.baseMs, maxFrameMs: this.stats.maxFrameMs, paintMs: this.stats.paintMs,
       fieldsMs: this.stats.fieldsMs, texels: this.stats.texels, frames: this.stats.frames, slowFrames: this.stats.slowFrames, maxSliceMs: this.stats.maxSliceMs,
     };
   }

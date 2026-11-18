@@ -8,18 +8,18 @@
 //  1. a player founds and the page wanders the map in winter, at both detail
 //     levels, so snowy chunks are painted and cached (and many go off screen);
 //  2. once summer has melted the snow, the page goes back over the same
-//     places. At each, what is drawn is compared with a painting made from
-//     scratch of the same terrain, twice: as a player sees it `LOOK_MS`
-//     after looking there, and as soon as it has caught up (`terrainStats`:
-//     every chunk painted, none far from the terrain), which must come
-//     within `CATCH_UP_MS`:
+//     places. On every frame no chunk on screen may stay far from the
+//     terrain for more than `STALE_FRAMES_MAX` frames in a row (before the
+//     fix the chunks round the screen center took every repaint and the rest
+//     kept last season's snow), and at each place, once the map has caught up
+//     (`terrainStats`: every chunk painted, none past `STALE`; within
+//     `CATCH_UP_FRAMES`), what is drawn is compared with a painting made
+//     from scratch of the same terrain:
 //     - no stale snow: no white texel where the fresh painting has none;
 //     - the same picture: almost every texel within a small distance;
 //     - no seams: across chunk borders neighbouring texels differ no more
 //       than they do inside chunks (pixel continuity).
-//     Before the fix the first look failed: the chunks round the screen
-//     center were repainted at every terrain refresh while the rest kept
-//     their old painting;
+//     Bounds are in frames, not seconds: a loaded machine draws fewer;
 //  3. the page is reloaded and the map, painted afresh, must catch up as
 //     fast and pass the same checks.
 //
@@ -53,10 +53,19 @@ const TOUR = [
   { x: 34, y: 96, zoom: 15 },
   { x: 96, y: 96, zoom: 9 },
 ];
-/** The map must catch up with the terrain within this long of arriving somewhere in summer (ms; the terrain refreshes every 4 s). */
-const CATCH_UP_MS = 12000;
-/** A look at the map this long after arriving somewhere (ms). */
-const LOOK_MS = 5000;
+// Bounds count the page's frames, not seconds: painting happens in frames
+// (a share of each, `paintBudget`), and on a loaded machine (the parallel
+// runner) the same seconds bring fewer of them. The proof is the first
+// bound, checked on every frame: no chunk on screen stays far from the
+// terrain (`terrainStats().maxStaleFrames`) for long, as they did when the
+// chunks round the screen center took every repaint. Catching up has a
+// generous ceiling of its own; a wall-clock ceiling stops a page that stalls.
+/** The most frames in a row a chunk on screen may show a painting far from the terrain. */
+const STALE_FRAMES_MAX = 60;
+/** The map must catch up with the terrain within this many frames of arriving somewhere. */
+const CATCH_UP_FRAMES = 300;
+/** The most wall time catching up may take (ms). */
+const CEILING_MS = 120000;
 /** The page's CPU is slowed this many times (a loaded machine: the playtests ran at a load of ~12 on 4 cores). */
 const CPU_SLOWDOWN = Number(process.env.E2E_TERRAIN_CPU ?? 1);
 
@@ -100,9 +109,9 @@ function compareWithFresh(gate) {
   L.update(view, dpt, 12, 1e9);
   L.budgetOverride = null;
   const st = L.terrainStats();
-  // Caught up: every chunk on screen painted, none far from the terrain (a
-  // little drift, below `URGENT`, is repainted in turn and allowed for).
-  if (gate && ((st.unpainted ?? st.pending) > 0 || st.stale > 0)) {
+  // Caught up: every chunk on screen painted, none past `STALE` (the terrain
+  // refreshes every 4 s, so this comes between refreshes).
+  if (gate && (st.pending > 0 || st.stale > 0)) {
     L.lightOverride = keep;
     return { waiting: { pending: st.pending, unpainted: st.unpainted, stale: st.stale, maxStale: st.maxStale, detail: st.detail, frames: st.frames } };
   }
@@ -162,7 +171,7 @@ function compareWithFresh(gate) {
   for (const s of v.terrain.snow) if (s > 25) snowTiles++;
   const n = a.length / 4;
   return {
-    caughtUp: !((st.unpainted ?? st.pending) > 0 || st.stale > 0), day: v.terrain.day, season: v.terrain.season, snowTiles, detail: st.detail, texels: n,
+    caughtUp: !(st.pending > 0 || st.stale > 0), day: v.terrain.day, season: v.terrain.season, snowTiles, detail: st.detail, texels: n,
     far: far / n, mean: sum / n, staleSnow, snowShown, seams: seams(a), seamsFresh: seams(b),
     // Where it differs most: chunk "x,y" and its state, for a failure's message.
     worst: [...offBy].sort((p, q) => q[1] - p[1]).slice(0, 3).map(([key, texels]) => ({ key, texels, chunk: L.chunkInfo?.(key) })),
@@ -241,31 +250,49 @@ async function main() {
 
     // 2. Summer, the snow gone: back over the same places.
     const summer = await waitFor('summer without snow', async () => { const s = await season(); return s.season === 'summer' && s.snow === 0 ? s : null; }, 120000);
-    const checkHere = async (label, look = true) => {
+    // Frames drawn since the page loaded (the capped requestAnimationFrame),
+    // and the longest run of frames a chunk on screen stayed far from the
+    // terrain since the last reset.
+    const countFrames = () => page.evaluate(() => {
+      if (window.__terrainFrames !== undefined) return;
+      window.__terrainFrames = 0;
+      window.__terrainStale = 0;
+      const tick = () => {
+        window.__terrainFrames++;
+        const st = window.evo?.screen()?.view?.terrainStats();
+        if (st) window.__terrainStale = Math.max(window.__terrainStale, st.maxStaleFrames ?? 0);
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    const frames = () => page.evaluate(() => window.__terrainFrames);
+    const staleRun = (reset) => page.evaluate((reset) => {
+      const n = window.__terrainStale;
+      if (reset) window.__terrainStale = 0;
+      return n;
+    }, reset);
+    await countFrames();
+    const checkHere = async (label) => {
       const t0 = Date.now();
-      // What a player sees a few seconds after looking somewhere: no last
-      // season's snow, no patchwork.
-      let seen = null;
-      if (look) {
-        await page.waitForTimeout(LOOK_MS);
-        seen = await page.evaluate(compareWithFresh, false);
-        check(seen.staleSnow === 0, `${label}: stale snow on the map ${LOOK_MS / 1000} s after looking there`, seen);
-        check(seen.far < 0.03, `${label}: the map ${LOOK_MS / 1000} s after looking there differs from a fresh painting of the terrain`, seen);
-        check(seen.seams < 1.6, `${label}: seams at chunk borders ${LOOK_MS / 1000} s after looking there`, seen);
-      }
-      // And soon all caught up.
+      const f0 = await frames();
+      await staleRun(true);
+      // Caught up, then what is drawn against a fresh painting.
       let r;
       for (;;) {
         r = await page.evaluate(compareWithFresh, true);
         if (!r.waiting) break;
-        check(Date.now() - t0 < CATCH_UP_MS, `${label}: the map did not catch up with the terrain in ${CATCH_UP_MS / 1000} s`, r.waiting);
-        await page.waitForTimeout(250);
+        const n = (await frames()) - f0;
+        check(n < CATCH_UP_FRAMES && Date.now() - t0 < CEILING_MS, `${label}: the map did not catch up with the terrain in ${n} frames (${((Date.now() - t0) / 1000).toFixed(1)} s)`, r.waiting);
+        await page.waitForTimeout(100);
       }
       const ms = Date.now() - t0;
+      const n = (await frames()) - f0;
+      const stale = await staleRun(false);
+      check(stale <= STALE_FRAMES_MAX, `${label}: a chunk showed a painting far from the terrain for ${stale} frames in a row`, r);
       check(r.staleSnow === 0, `${label}: stale snow on the map`, r);
       check(r.far < 0.01 && r.mean < 3, `${label}: the map differs from a fresh painting of the terrain`, r);
       check(r.seams < 1.6 && r.seams < r.seamsFresh * 1.35 + 0.1, `${label}: seams at chunk borders`, r);
-      return { ...r, ms };
+      return { ...r, ms, frames: n, stale };
     };
     const results = [];
     for (const [i, p] of TOUR.entries()) {
@@ -275,17 +302,18 @@ async function main() {
     await page.screenshot({ path: path.join(shots, 'terrain-summer.png') });
     const worst = (k) => Math.max(...results.map((r) => r[k]));
     step(`summer (day ${summer.day + 1}): ${results.length} places match a fresh painting (worst: ${(worst('far') * 100).toFixed(2)}% of texels off, `
-      + `seam ratio ${worst('seams').toFixed(2)}, caught up in ≤ ${(worst('ms') / 1000).toFixed(1)} s), no stale snow`);
+      + `seam ratio ${worst('seams').toFixed(2)}, caught up in ≤ ${worst('frames')} frames / ${(worst('ms') / 1000).toFixed(1)} s, `
+      + `no chunk far from the terrain for more than ${worst('stale')} frames), no stale snow`);
 
     // 3. A reload: the first painting is smooth and seamless too.
     await page.reload();
     await page.waitForSelector('#world-canvas');
     await page.waitForFunction(() => window.evo?.screen()?.view?.terrain, null, { timeout: 30000 });
+    await countFrames();
     await goTo(TOUR[1]);
-    // (Everything is painted afresh here: only the catching up is timed.)
-    const after = await checkHere('after a reload', false);
+    const after = await checkHere('after a reload');
     await page.screenshot({ path: path.join(shots, 'terrain-reload.png') });
-    step(`after a reload (${after.season}): matches a fresh painting in ${(after.ms / 1000).toFixed(1)} s, seam ratio ${after.seams.toFixed(2)}`);
+    step(`after a reload (${after.season}): matches a fresh painting in ${after.frames} frames / ${(after.ms / 1000).toFixed(1)} s, seam ratio ${after.seams.toFixed(2)}, longest stale run ${after.stale} frames`);
 
     check(pageErrors.length === 0, 'page errors', pageErrors);
     step('no page errors');

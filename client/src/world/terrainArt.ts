@@ -201,12 +201,17 @@ export function regionSnapshot(f: TerrainFields, x0: number, y0: number, tw: num
   return snap;
 }
 
+/** What a unit change of each field counts for in `regionDelta`. */
+const DELTA_WEIGHT: readonly number[] = Array.from({ length: F }, (_, k) => (k <= K.WB ? 1 / 64 : k === K.Wet || k === K.Chan ? 4 : 1));
+
 /**
  * How far the fields of a rectangle have moved from a snapshot of it
  * (`regionSnapshot`, same rectangle): the largest change of any field of any
- * tile, colours in 64ths of their range and the rest (wetness, snow, ice,
- * texture) as they are, so 1 is a tile that turned from bare ground to full
- * snow, or a colour shift of 64 of 255. Unlike a checksum it measures drift
+ * tile, colours in 64ths of their range, wetness and river channels four
+ * times over (the shore is drawn where the wetness crosses a band of 0.04,
+ * so a little change moves it a long way) and the rest (snow, ice, texture)
+ * as they are: 1 is a tile that turned from bare ground to full snow, a
+ * colour shift of 64 of 255, or a shore moved by about a tile. Unlike a checksum it measures drift
  * from the painting, however slowly it came (a checksum quantized to ignore
  * small changes also misses a slow melt, and flips on a tiny one that crosses
  * a step).
@@ -220,7 +225,7 @@ export function regionDelta(f: TerrainFields, snap: Float32Array, x0: number, y0
       const sx = Math.min(f.width - 1, Math.max(0, x0 + x));
       const o = (sy * f.width + sx) * F, s = (y * tw + x) * F;
       for (let k = 0; k < F; k++) {
-        const c = Math.abs(d[o + k] - snap[s + k]) * (k <= K.WB ? 1 / 64 : 1);
+        const c = Math.abs(d[o + k] - snap[s + k]) * DELTA_WEIGHT[k];
         if (c > worst) worst = c;
       }
     }
