@@ -125,7 +125,10 @@ enum Local {
 fn local_act(o: &Organism, intent: &Intent) -> Local {
     use Action::*;
     let a = intent.action;
-    if intent.target_org.is_some() || matches!(a, Graze | Cache | Scavenge | Hunt | Migrate) {
+    // A possessed animal drinks by its own threshold (`act`,
+    // `Balance::drink_priority`): it takes the full turn.
+    if intent.target_org.is_some() || o.possessed_by.is_some() || matches!(a, Graze | Cache | Scavenge | Hunt | Migrate)
+    {
         return Local::No;
     }
     // Below 30 hunger it eats nothing on the side and raids no cache or

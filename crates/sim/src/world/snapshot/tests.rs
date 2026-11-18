@@ -17,9 +17,10 @@ fn possessed(w: &World) -> Option<&crate::organism::Organism> {
 /// design shrank; seed 23 its second pregnancy when the morphology rules
 /// came on by default; seed 29 its possessed pack hunter or its state when
 /// the carnivore rules and food values did; seed 33 its possessed
-/// organism when the standard fox's carnivory went to 0.6).
+/// organism when the standard fox's carnivory went to 0.6; seed 36 its LOD
+/// cohorts with the playtest 2 fixes, version 44).
 fn busy_world() -> World {
-    let mut config = WorldConfig { seed: 36, width: 96, height: 96, days_per_year: 16, ..Default::default() };
+    let mut config = WorldConfig { seed: 39, width: 96, height: 96, days_per_year: 16, ..Default::default() };
     config.lod.enabled = true;
     // Every tick decides: with staggered decisions the possessed organism
     // walks elsewhere and no region ever leaves focus, so the snapshot
@@ -408,6 +409,7 @@ fn balance43_off(b: &mut crate::Balance) {
     b.age_spread = old;
     b.dormancy_toll = old;
     b.emergence_lag = old;
+    playtest2_off(b);
 }
 
 /// Version 42 snapshots (before the playtest 2 balance rules) restore with
@@ -430,6 +432,17 @@ fn version_42_snapshots_restore_without_playtest2_balance() {
     w.config.balance.dormancy_toll = 0.3;
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.dormancy_toll, 0.3);
+}
+
+/// The playtest 2 tunables as snapshots before version 44 read them.
+fn playtest2_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v44::OLD_VALUE;
+    b.drink_priority = old;
+    b.possess_drink = old;
+    b.toxic_learning = old;
+    b.dry_sites = old;
+    b.carnivore_energetics = old;
+    b.led_pack = old;
 }
 
 /// `b` as snapshots before version 34 read it: the playtest 1 ecology
@@ -1428,4 +1441,30 @@ fn version_41_snapshots_restore_with_the_old_species_tracker() {
     assert!(r.snapshot_v41() == old);
     hysteresis_off(&mut w);
     assert!(r.snapshot() == w.snapshot());
+}
+
+/// Version 43 snapshots (before the playtest 2 fixes) restore with their
+/// tunables off and no toxic lessons, and are otherwise the same world.
+#[test]
+fn version_43_snapshots_restore_without_playtest2_fixes() {
+    let mut w = fixture_world();
+    w.toxic_lessons.insert((1, 0), 0.5);
+    let old = w.snapshot_v43();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 43);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.toxic_learning, crate::serde_util::before_v44::OLD_VALUE);
+    assert!(r.toxic_lessons.is_empty());
+    playtest2_off(&mut w.config.balance);
+    w.toxic_lessons.clear();
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v43() == old);
+    // This version keeps them.
+    let mut w = fixture_world();
+    w.config.balance.toxic_learning = 0.5;
+    w.toxic_lessons.insert((1, 0), 0.5);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.toxic_lesson(1, 0), r.config.balance.toxic_learning), (0.5, 0.5));
 }

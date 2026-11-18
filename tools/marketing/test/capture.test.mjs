@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { boomBust, frameSize, outputs, peakAndLow, sceneItems, sceneStory } from '../capture-manifest.mjs';
+import { boomBust, catastropheStory, frameSize, outputs, peakAndLow, sceneItems, sceneStory } from '../capture-manifest.mjs';
 import { factCorpus, loadManifest, loadStories, mediaForStory } from '../src/stories.mjs';
 
 const VERTICAL = { viewport: { width: 540, height: 960 }, scale: 2, gifWidth: 360 };
@@ -75,4 +75,14 @@ test('boom and bust is told only when the population really fell', () => {
     const facts = Object.values(st.facts).join(' ');
     for (const n of `${st.title} ${st.summary}`.match(/\d+/g)) assert.ok(facts.split(/\D+/).includes(n), `${n} in ${st.summary}`);
   }
+});
+
+test('the staged catastrophe story says it was triggered and follows the numbers', () => {
+  const grew = catastropheStory({ animals: 232, lineages: 5, year: 1, day: 8 }, { animals: 416, lineages: 5 }, 24);
+  assert.equal(grew.title, 'A severe winter, and the world keeps growing');
+  assert.match(grew.summary, /triggered for this capture/);
+  assert.match(grew.summary, /still grew from 232 animals to 416/);
+  const fell = catastropheStory({ animals: 400, lineages: 5, year: 2, day: 3 }, { animals: 150, lineages: 3 }, 30);
+  assert.equal(fell.title, 'A severe winter sweeps the map');
+  assert.match(fell.summary, /from 400 animals to 150, and 2 of 5 lineages died out/);
 });
