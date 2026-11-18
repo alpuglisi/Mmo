@@ -14,6 +14,7 @@ const COMMANDS: Record<string, string> = {
   browse_market: 'Market', ledger: 'Ledger', mating_prefs: 'Mating requests',
   retire_lineage: 'Retire lineage', renown_shop: 'Renown shop', buy_mating_slot: 'Buy mating slot',
   reinforce: 'Reinforcements', compatibility: 'Who can breed', resync: 'Sync', watch_season: 'Season',
+  offer_to_lineage: 'Offer to a lineage', set_nameplate: 'Nameplate', name_species: 'Name species', nameplates: 'Nameplates',
 };
 
 /** Codes whose own wording is replaced (the rest keep the server's message). */

@@ -28,6 +28,14 @@ use crate::protocol::{
     ScoreBreakdown, ShopView,
 };
 
+/// `text` trimmed, if it has 1 to `max` characters and no control
+/// characters.
+fn clean_text(text: &str, max: usize) -> Option<String> {
+    let t = text.trim();
+    let n = t.chars().count();
+    (n >= 1 && n <= max && !t.chars().any(char::is_control)).then(|| t.to_string())
+}
+
 /// Adults of each lineage compared in a compatibility check.
 const SAMPLE: usize = 16;
 
@@ -81,7 +89,76 @@ impl Game {
             reinforce_blocked: self.reinforce_blocked(player).err().map(|e| e.message),
             market_fee_percent: economy::MARKET_FEE_PERCENT,
             royalty_per_point: economy::ROYALTY_PER_POINT,
+            reinforcements_bought: reinforced,
+            reinforcements_max: economy::MAX_REINFORCEMENTS_PER_SEASON,
+            nameplate_price: if self.economy.nameplates.contains_key(&player) {
+                economy::NAMEPLATE_CHANGE_PRICE
+            } else {
+                economy::NAMEPLATE_PRICE
+            },
+            nameplate_colors: economy::NAMEPLATE_COLORS.iter().map(|c| c.to_string()).collect(),
+            nameplate: self.economy.nameplates.get(&player).cloned(),
+            species_name_price: economy::SPECIES_NAME_PRICE,
         }
+    }
+
+    /// `set_nameplate`.
+    pub(super) fn set_nameplate(
+        &mut self,
+        player: PlayerId,
+        color: &str,
+        title: &str,
+    ) -> Result<(economy::Nameplate, ShopView), ErrorInfo> {
+        if !economy::NAMEPLATE_COLORS.contains(&color) {
+            return Err(ErrorInfo::new(
+                "bad_color",
+                format!("the palette is {}", economy::NAMEPLATE_COLORS.join(", ")),
+            ));
+        }
+        let title = clean_text(title, economy::MAX_TITLE_LEN).ok_or_else(|| {
+            ErrorInfo::new("bad_title", format!("a title has 1 to {} characters", economy::MAX_TITLE_LEN))
+        })?;
+        let price = if self.economy.nameplates.contains_key(&player) {
+            economy::NAMEPLATE_CHANGE_PRICE
+        } else {
+            economy::NAMEPLATE_PRICE
+        };
+        self.spend(player, price, format!("Nameplate: {color} \"{title}\""))?;
+        let plate = economy::Nameplate { color: color.to_string(), title };
+        self.economy.nameplates.insert(player, plate.clone());
+        Ok((plate, self.shop_view(player)))
+    }
+
+    /// `name_species`: rename a living species `player` founded.
+    pub(super) fn name_species(&mut self, player: PlayerId, species: u32, name: &str) -> Result<String, ErrorInfo> {
+        let name = clean_text(name, crate::design::MAX_NAME_LEN).ok_or_else(|| {
+            ErrorInfo::new("bad_name", format!("a species name has 1 to {} characters", crate::design::MAX_NAME_LEN))
+        })?;
+        let tracker = &self.world.chronicle.species;
+        let s =
+            tracker.get(species).ok_or_else(|| ErrorInfo::new("unknown_species", format!("no species {species}")))?;
+        if s.founder != Some(player) {
+            return Err(ErrorInfo::new("not_yours", "only a species your lineage founded can be named by you"));
+        }
+        if s.extinct_day.is_some() || s.merged_into.is_some() {
+            return Err(ErrorInfo::new("species_gone", "that species is extinct or merged into another"));
+        }
+        if tracker.species.iter().any(|o| o.id != species && o.name.eq_ignore_ascii_case(&name)) {
+            return Err(ErrorInfo::new("name_taken", "another species has that name"));
+        }
+        self.spend(player, economy::SPECIES_NAME_PRICE, format!("Named species {species} \"{name}\""))?;
+        if let Some(s) = self.world.chronicle.species.species.iter_mut().find(|s| s.id == species) {
+            s.name = name.clone();
+        }
+        self.economy.named_species.insert(species, player);
+        Ok(name)
+    }
+
+    /// Every bought nameplate.
+    pub(super) fn nameplates(&self) -> serde_json::Value {
+        let map: BTreeMap<String, &economy::Nameplate> =
+            self.economy.nameplates.iter().map(|(p, n)| (p.to_string(), n)).collect();
+        serde_json::json!({ "nameplates": map })
     }
 
     /// Most living members a reinforced lineage may have.
@@ -101,6 +178,16 @@ impl Game {
         let Some(lineage) = self.lineage_of(player).filter(|_| !self.is_extinct(player)) else {
             return Err(ErrorInfo::new("no_lineage", "you have no living lineage to reinforce"));
         };
+        let bought = self.reinforcements_this_season(player);
+        if bought >= economy::MAX_REINFORCEMENTS_PER_SEASON {
+            return Err(ErrorInfo::new(
+                "limit_reached",
+                format!(
+                    "at most {} reinforcements a ranked season (retired lineages count)",
+                    economy::MAX_REINFORCEMENTS_PER_SEASON
+                ),
+            ));
+        }
         let alive = self.owner_population(player);
         let max = self.reinforce_max_alive();
         if alive > max {
@@ -220,13 +307,24 @@ impl Game {
     }
 
     /// `player`'s alleles outside their lineage, over all alleles.
-    fn exported_share(&self, player: PlayerId) -> f64 {
+    /// `player`'s alleles living in other players' lineages, over all
+    /// alleles: what the royalty pays for. Alleles in the wild (a design
+    /// that hybridised with a wild species) don't count: they came from
+    /// no trade, and at 5 renown a point they paid every lineage about as
+    /// much as its income (examples/competition.rs).
+    fn traded_share(&self, player: PlayerId) -> f64 {
         let total: f64 = self.hosts.values().sum();
         if total <= 0.0 {
             return 0.0;
         }
         let home = self.lineage_of(player);
-        let out: f64 = self.hosts.iter().filter(|(&(l, p), _)| p == player && Some(l) != home).map(|(_, &n)| n).sum();
+        let owner = |l: u32| self.world.lineages.get(l as usize).map_or(WILD, |x| x.owner);
+        let out: f64 = self
+            .hosts
+            .iter()
+            .filter(|(&(l, p), _)| p == player && Some(l) != home && owner(l) != WILD)
+            .map(|(_, &n)| n)
+            .sum();
         out / total
     }
 
@@ -234,11 +332,11 @@ impl Game {
     pub(super) fn pay_royalties(&mut self, day: u64) {
         let players: Vec<(PlayerId, u32)> = self.lineage_of.iter().map(|(&p, &l)| (p, l)).collect();
         for (p, _) in players {
-            let exported = self.exported_share(p);
+            let exported = self.traded_share(p);
             let pay = economy::royalty(exported, !self.is_extinct(p));
             if pay > 0 {
                 let text = format!(
-                    "Day {} royalty: {:.2}% of all alleles are yours and live outside your lineage",
+                    "Day {} royalty: {:.2}% of all alleles are yours and live in other players' lineages",
                     day + 1,
                     exported * 100.0
                 );
@@ -303,7 +401,8 @@ impl Game {
             foreign_share: (lineage_alleles - home_alleles) / total,
             carried,
             placed,
-            royalty: economy::royalty(exported_share, home.is_some() && !self.is_extinct(player)),
+            traded_share: self.traded_share(player),
+            royalty: economy::royalty(self.traded_share(player), home.is_some() && !self.is_extinct(player)),
         })
     }
 

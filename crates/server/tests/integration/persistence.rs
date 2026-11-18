@@ -408,7 +408,10 @@ fn season(world: &str, n: u32, players: &[u32], ended_unix: u64) -> SeasonRecord
         .map(|&p| evo_server::store::LegacyEntry { player: p, share: 0.1 * f64::from(p), weighted_share: 0.0 })
         .collect();
     t.record_day(&d);
+    // A stud market needs 3 sales to 2 buyers (`league::MARKET_TITLE_SALES`).
     t.add_sale(players[0], 999, 5);
+    t.add_sale(players[0], 998, 3);
+    t.add_sale(players[0], 999, 4);
     t.finish(world, u64::from(n) * 480, ended_unix, |p| format!("p{p}"))
 }
 

@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use evo_server::game::{build_world, Game, GameConfig, WorldSettings};
-use evo_server::protocol::{ClientMsg, ServerMsg};
+use evo_server::protocol::{ClientMsg, LedgerKind, ServerMsg};
 use evo_server::store::DailyRecord;
 use evo_sim::design::{founder_cost, DESIGN_BUDGET};
 use evo_sim::organism::Sex;
@@ -124,6 +124,9 @@ struct Outcome {
     exported: f64,
     reinforced: u32,
     slots_bought: u32,
+    /// Renown from royalties and from income, per player.
+    royalty: BTreeMap<PlayerId, u64>,
+    income: BTreeMap<PlayerId, u64>,
 }
 
 fn data(out: &[(evo_server::game::Target, ServerMsg)]) -> Option<serde_json::Value> {
@@ -157,21 +160,37 @@ fn broker_day(g: &mut Game, trade: bool, o: &mut Outcome, day: u64) {
     }
     let mut k = day as usize;
     for host in [STEADY, LATE] {
-        for f in adults(g, host, Sex::Female).into_iter().take(2) {
+        let Some(lineage) = g.lineage_of(host).filter(|_| !g.is_extinct(host)) else { continue };
+        for _ in 0..2 {
             if g.world.mating_slots_left(BROKER) == 0 || g.balance(BROKER) < PRICE {
                 return;
             }
             let m = males[k % males.len()];
             k += 1;
-            let msg = ClientMsg::RequestMating { mine: m, partner: f, price: Some(PRICE) };
+            // An offer to the lineage: the host picks an animal that is free
+            // (no guessing which females are pregnant).
+            let msg = ClientMsg::OfferToLineage { mine: m, lineage, price: Some(PRICE) };
             let Some(d) = data(&g.command(BROKER as u64, BROKER, None, msg)) else { continue };
             let Some(id) = d["offer"]["id"].as_u64() else { continue };
             // The dam's owner: under the old rules accepting only dilutes
             // their next generation and renown buys nothing.
-            g.command(host as u64, host, None, ClientMsg::RespondMating { request: id, accept: trade });
+            let reply = g.command(
+                host as u64,
+                host,
+                None,
+                ClientMsg::RespondMating { request: id, accept: trade, partner: None },
+            );
             if !trade {
                 continue;
             }
+            if data(&reply).is_none()
+                && !matches!(&reply.first().map(|r| &r.1), Some(ServerMsg::Result { ok: true, .. }))
+            {
+                // Nobody free: withdraw it.
+                g.command(BROKER as u64, BROKER, None, ClientMsg::CancelMating { request: id });
+                continue;
+            }
+            let Some(f) = g.offer_partner(id) else { continue };
             let pos = g.world.organism(m).map(|x| x.pos);
             if let (Some(pos), Some(fo)) = (pos, g.world.organisms.iter_mut().find(|x| x.id == f)) {
                 fo.pos = pos;
@@ -238,6 +257,7 @@ fn run(seed: u64, arm: usize, a: &Args) -> Outcome {
     found(&mut g, BROKER, normal("Broker"), &mut o);
     let tpd = g.world.config.ticks_per_day as u64;
     let mut records = Vec::new();
+    let mut seen: BTreeMap<PlayerId, u64> = BTreeMap::new();
     for day in 0..a.days {
         if day == a.late_day {
             found(&mut g, LATE, swarm("Late", !new_rules), &mut o);
@@ -262,6 +282,19 @@ fn run(seed: u64, arm: usize, a: &Args) -> Outcome {
             }
         }
         for p in 1..=4 {
+            for e in g.ledger(p, 100) {
+                if e.seq <= *seen.get(&p).unwrap_or(&0) {
+                    continue;
+                }
+                match e.kind {
+                    LedgerKind::Royalty => *o.royalty.entry(p).or_default() += e.delta as u64,
+                    LedgerKind::Income => *o.income.entry(p).or_default() += e.delta as u64,
+                    _ => {}
+                }
+            }
+            if let Some(e) = g.ledger(p, 1).first() {
+                seen.insert(p, e.seq);
+            }
             let alive = g.world.owner_count(p);
             let peak = o.peak_alive.entry(p).or_default();
             *peak = (*peak).max(alive);
@@ -334,17 +367,19 @@ fn main() {
         let os: Vec<&Outcome> = results.iter().filter(|r| r.1 == arm).map(|r| &r.2).collect();
         let n = os.len().max(1) as f64;
         println!("\n{title}, {} seeds, {} days:", os.len(), a.days);
-        println!("  player   founders  final share  mean share  peak alive  renown  legacy titles (raw / new rule)");
+        println!("  player   founders  final share  mean share  peak alive  renown  income  royalty  legacy titles (raw / new rule)");
         for p in 1..=4u32 {
             let avg = |f: &dyn Fn(&Outcome) -> f64| os.iter().map(|o| f(o)).sum::<f64>() / n;
             println!(
-                "  {:<8} {:>8.0}  {:>10.1}%  {:>9.1}%  {:>10.0}  {:>6.0}  {:.0} / {:.0}",
+                "  {:<8} {:>8.0}  {:>10.1}%  {:>9.1}%  {:>10.0}  {:>6.0}  {:>6.0}  {:>7.0}  {:.0} / {:.0}",
                 NAMES[p as usize - 1],
                 avg(&|o| o.founders.get(&p).copied().unwrap_or(0) as f64),
                 100.0 * avg(&|o| o.final_share.get(&p).copied().unwrap_or(0.0)),
                 100.0 * avg(&|o| o.mean_share.get(&p).copied().unwrap_or(0.0)),
                 avg(&|o| o.peak_alive.get(&p).copied().unwrap_or(0) as f64),
                 avg(&|o| o.renown.get(&p).copied().unwrap_or(0) as f64),
+                avg(&|o| o.income.get(&p).copied().unwrap_or(0) as f64),
+                avg(&|o| o.royalty.get(&p).copied().unwrap_or(0) as f64),
                 os.iter().map(|o| o.titles_raw.get(&p).copied().unwrap_or(0)).sum::<u32>() as f64,
                 os.iter().map(|o| o.titles_new.get(&p).copied().unwrap_or(0)).sum::<u32>() as f64,
             );

@@ -62,8 +62,31 @@ pub enum ClientMsg {
     /// and failure chance, and why the pair can't conceive if it can't. Data:
     /// [`MatingPreviewView`]. Nothing changes and no slot is used.
     PreviewMating { mine: OrgId, partner: OrgId },
-    /// The partner organism's owner accepts or declines an offer.
-    RespondMating { request: u64, accept: bool },
+    /// Offer a directed mating of your `mine` with any suitable animal of
+    /// another player's `lineage`: its owner picks one when accepting
+    /// (`respond_mating` with `partner`), or the server picks the nearest
+    /// available one (adult, of the other sex, not pregnant, not promised,
+    /// fertile with `mine`). Spares guessing which of a rival's females are
+    /// free (requests to a pregnant one are refused `partner_unavailable`).
+    /// Otherwise like `request_mating` (price in escrow, the same limits).
+    /// Data: `{offer}`; the offer's `partner` is 0 and `lineage` set until
+    /// accepted.
+    OfferToLineage {
+        mine: OrgId,
+        lineage: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        price: Option<u64>,
+    },
+    /// The partner organism's owner accepts or declines an offer. For an
+    /// offer to the lineage (`offer_to_lineage`), `partner` picks the animal
+    /// (default: the nearest available one; `no_partner_available` if none,
+    /// and the offer stays open).
+    RespondMating {
+        request: u64,
+        accept: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partner: Option<OrgId>,
+    },
     /// Retry an accepted agreement now (it also completes on its own once the
     /// two organisms meet).
     CompleteMating { request: u64 },
@@ -219,6 +242,15 @@ pub enum ClientMsg {
     /// of the soft lineage cap is alive (`reinforce_blocked` in the shop
     /// says why not). Data: `{added: [ids], shop: ShopView}`.
     Reinforce,
+    /// Buy or change your nameplate: a `color` from the shop's palette and a
+    /// `title` (1–24 characters) shown with your name (cosmetic; 500 renown
+    /// the first time, 100 per change). Data: `{nameplate, shop}`.
+    SetNameplate { color: String, title: String },
+    /// Name a species your lineage founded (cosmetic; 300 renown): a
+    /// species whose founder is you, still alive. Data: `{species, name}`.
+    NameSpecies { species: u32, name: String },
+    /// Every player's nameplate. Data: `{nameplates: {player: {color, title}}}`.
+    Nameplates,
     /// Which lineages yours can breed with: the best body-plan fertility
     /// between a sample of your adults and each other lineage's, and the
     /// body-plan gene that keeps you apart. Data: [`CompatibilityView`].
@@ -251,6 +283,7 @@ impl ClientMsg {
             ClientMsg::RequestMating { .. } => "request_mating",
             ClientMsg::PreviewMating { .. } => "preview_mating",
             ClientMsg::RespondMating { .. } => "respond_mating",
+            ClientMsg::OfferToLineage { .. } => "offer_to_lineage",
             ClientMsg::CompleteMating { .. } => "complete_mating",
             ClientMsg::CancelMating { .. } => "cancel_mating",
             ClientMsg::Migrate { .. } => "migrate",
@@ -276,6 +309,9 @@ impl ClientMsg {
             ClientMsg::BuyMatingSlot => "buy_mating_slot",
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
+            ClientMsg::SetNameplate { .. } => "set_nameplate",
+            ClientMsg::NameSpecies { .. } => "name_species",
+            ClientMsg::Nameplates => "nameplates",
             ClientMsg::Resync => "resync",
             ClientMsg::WatchSeason { .. } => "watch_season",
         }
@@ -318,6 +354,15 @@ pub const COMMAND_NAMES: &[&str] = &[
     "compatibility",
     "resync",
     "watch_season",
+    "offer_to_lineage",
+    "retire_lineage",
+    "renown_shop",
+    "buy_mating_slot",
+    "reinforce",
+    "compatibility",
+    "set_nameplate",
+    "name_species",
+    "nameplates",
 ];
 
 /// The known command named `t`, as a static name (for replies to messages
@@ -928,6 +973,15 @@ pub struct OfferView {
     /// Renown held in escrow (the price, from the requester) while open.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub escrow: u64,
+    /// While open: the tick a pending request expires unanswered, or an
+    /// accepted agreement lapses if the two haven't met (wall-clock
+    /// lifetimes, `GameConfig::offer_ticks` and `purchase_deadline_ticks`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_tick: Option<u64>,
+    /// An offer to any animal of this lineage (`offer_to_lineage`): `partner`
+    /// is 0 until its owner accepts and an animal is picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<u32>,
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -1517,8 +1571,11 @@ pub struct ScoreBreakdown {
     /// Your alleles in your own lineage (the part of `share` at home).
     pub home_share: f64,
     /// Your alleles outside your lineage: in rivals' animals and the wild.
-    /// Earns the royalty.
     pub exported_share: f64,
+    /// The part of `exported_share` in other players' lineages: what the
+    /// royalty pays for (alleles in the wild came from no trade).
+    #[serde(default)]
+    pub traded_share: f64,
     /// Others' alleles your lineage carries (`head_share - home_share`):
     /// what hybridising cost your share.
     pub foreign_share: f64,
@@ -1528,7 +1585,7 @@ pub struct ScoreBreakdown {
     /// Where your alleles live, largest first; `share` here is of your
     /// alleles (sums to 1).
     pub placed: Vec<GeneHost>,
-    /// Renown a day the royalty pays at this `exported_share`.
+    /// Renown a day the royalty pays at this `traded_share`.
     pub royalty: u64,
 }
 
@@ -1603,8 +1660,23 @@ pub struct ShopView {
     /// Kept (destroyed) from every stud fee or price paid out, percent.
     pub market_fee_percent: u64,
     /// Royalty: renown a day per percentage point of all alleles that are
-    /// yours and live outside your lineage.
+    /// yours and live in other players' lineages.
     pub royalty_per_point: f64,
+    /// Reinforcements bought this ranked season, and the most allowed.
+    #[serde(default)]
+    pub reinforcements_bought: u32,
+    #[serde(default)]
+    pub reinforcements_max: u32,
+    /// Cosmetic sinks: the price of a nameplate now (first or change), its
+    /// palette, your nameplate, and the price of naming a species.
+    #[serde(default)]
+    pub nameplate_price: u64,
+    #[serde(default)]
+    pub nameplate_colors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nameplate: Option<crate::economy::Nameplate>,
+    #[serde(default)]
+    pub species_name_price: u64,
 }
 
 /// `compatibility`: which lineages yours can breed with.

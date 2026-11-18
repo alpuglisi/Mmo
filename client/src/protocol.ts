@@ -26,7 +26,7 @@ export type ClientMsg =
   | { type: 'request_mating'; mine: OrgId; partner: OrgId; price?: number }
   /** What a mating of `mine` with `partner` would give; data: `MatingPreviewView`. */
   | { type: 'preview_mating'; mine: OrgId; partner: OrgId }
-  | { type: 'respond_mating'; request: number; accept: boolean }
+  | { type: 'respond_mating'; request: number; accept: boolean; partner?: OrgId }
   | { type: 'complete_mating'; request: number }
   | { type: 'cancel_mating'; request: number }
   /**
@@ -77,6 +77,14 @@ export type ClientMsg =
   | { type: 'reinforce' }
   /** Which lineages yours can breed with; data: `CompatibilityView`. */
   | { type: 'compatibility' }
+  /** Offer a mating of your `mine` with any suitable animal of another player's lineage (its owner picks); data: `{ offer }`. */
+  | { type: 'offer_to_lineage'; mine: OrgId; lineage: number; price?: number }
+  /** Buy or change your nameplate (cosmetic); data: `{ nameplate, shop }`. */
+  | { type: 'set_nameplate'; color: string; title: string }
+  /** Name a species your lineage founded (cosmetic); data: `{ species, name }`. */
+  | { type: 'name_species'; species: number; name: string }
+  /** Every player's nameplate; data: `{ nameplates: { [player]: { color, title } } }`. */
+  | { type: 'nameplates' }
   /** Protocol 2: the delta states stopped decoding; the next state is a keyframe (no reply). */
   | { type: 'resync' }
   /**
@@ -171,6 +179,11 @@ export interface OfferView {
   listing?: number;
   /** Renown held in escrow (the requester's price) while open. */
   escrow?: number;
+  /** While open: the tick a pending request expires unanswered, or an accepted agreement lapses (servers before
+   * wall-clock lifetimes: absent, offers lapse at the season change). */
+  expires_tick?: number;
+  /** An offer to any animal of this lineage: `partner` is 0 until accepted. */
+  lineage?: number;
 }
 
 export interface WeatherView {
@@ -976,8 +989,10 @@ export interface ScoreBreakdown {
   head_share: number;
   /** Your alleles in your own lineage. */
   home_share: number;
-  /** Your alleles in rivals' animals and the wild (earns the royalty). */
+  /** Your alleles in rivals' animals and the wild. */
   exported_share: number;
+  /** The part in other players' lineages: what the royalty pays for (absent on older servers). */
+  traded_share?: number;
   /** Others' alleles your lineage carries: what hybridising cost. */
   foreign_share: number;
   /** Whose alleles your breeding adults carry; `share` of your lineage's alleles. */
@@ -1015,6 +1030,12 @@ export interface ShopView {
   reinforce_blocked?: string;
   market_fee_percent: number;
   royalty_per_point: number;
+  reinforcements_bought?: number;
+  reinforcements_max?: number;
+  nameplate_price?: number;
+  nameplate_colors?: string[];
+  nameplate?: { color: string; title: string };
+  species_name_price?: number;
 }
 
 /** `compatibility`: which lineages yours can breed with. */
