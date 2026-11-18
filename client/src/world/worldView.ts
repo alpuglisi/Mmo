@@ -781,11 +781,17 @@ export class WorldView {
     return hits.sort((a, b) => Number(b.own) - Number(a.own) || a.d - b.d).map((h) => h.id);
   }
 
+  /** A tap's click as of when the finger went down (`hit`, `near`), for the organisms still on the map; else as of when it lifted. */
+  private tapOn(c: WorldClick, hit: OrgId | null, near: OrgId[]): WorldClick {
+    if (hit === null || !this.markers.has(hit)) return c;
+    return { ...c, organism: hit, candidates: near.filter((id) => this.markers.has(id)) };
+  }
+
   private bindInput(canvas: HTMLCanvasElement): void {
     // Active pointers (mouse, pen or fingers) by id, at their latest position.
     const pointers = new Map<number, { x: number; y: number }>();
     // The single-pointer gesture in progress: a tap, a long press or a drag.
-    let press: { id: number; x: number; y: number; camX: number; camY: number; touch: boolean; dragging: boolean; timer: number | null; done: boolean; hit: OrgId | null; modifier: boolean } | null = null;
+    let press: { id: number; x: number; y: number; camX: number; camY: number; touch: boolean; dragging: boolean; timer: number | null; done: boolean; hit: OrgId | null; near: OrgId[]; modifier: boolean } | null = null;
     // The two-finger gesture in progress: distance and midpoint at the last move.
     let pinch: { d: number; mx: number; my: number } | null = null;
     const local = (e: PointerEvent | WheelEvent) => {
@@ -832,10 +838,11 @@ export class WorldView {
       if (pointers.size > 2) return;
       cancelPress();
       const touch = e.pointerType === 'touch' || e.pointerType === 'pen';
-      // The organism under the finger when it went down: a long press acts on
-      // it even if its marker glides away during the hold.
+      // The organisms under the finger when it went down: a tap or a long
+      // press acts on them even if their markers glide away before it lifts
+      // (animals move every frame; on a slow device a tap spans several).
       const pr = { id: e.pointerId, x: p.x, y: p.y, camX: this.cam.x, camY: this.cam.y, touch, dragging: false, timer: null as number | null, done: false,
-        hit: this.hitTest(p.x, p.y, touch), modifier: e.shiftKey || e.ctrlKey || e.altKey || e.metaKey };
+        hit: this.hitTest(p.x, p.y, touch), near: this.hitAll(p.x, p.y, touch), modifier: e.shiftKey || e.ctrlKey || e.altKey || e.metaKey };
       if (e.button === 0 || touch) pr.timer = window.setTimeout(() => longPress(pr), LONG_PRESS_MS);
       press = pr;
     });
@@ -875,7 +882,7 @@ export class WorldView {
       if (!press || e.pointerId !== press.id) return;
       const pr = press;
       cancelPress();
-      if (!cancelled && !pr.dragging && !pr.done) this.onClick(click(pr.x, pr.y, pr.touch, pr.modifier));
+      if (!cancelled && !pr.dragging && !pr.done) this.onClick(this.tapOn(click(pr.x, pr.y, pr.touch, pr.modifier), pr.hit, pr.near));
     };
     canvas.addEventListener('pointerup', (e) => up(e, false));
     canvas.addEventListener('pointercancel', (e) => {
