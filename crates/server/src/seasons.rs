@@ -123,6 +123,7 @@ mod tests {
                     adults: alive,
                     born: 0,
                     deaths: Default::default(),
+                    eggs_lost: Default::default(),
                     genes: Default::default(),
                     morph: None,
                 })

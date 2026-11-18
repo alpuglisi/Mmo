@@ -27,6 +27,12 @@ fn homes_hash() -> u64 {
         config.balance.drink_priority = 0.0;
         config.balance.toxic_learning = 0.0;
         config.balance.carnivore_energetics = 0.0;
+        // Playtest 3 (version 47): the search judging current conditions
+        // moves homes in grown worlds by design (tests in `world::mod`), and
+        // thirsty animals finding a reachable shore changes the days the
+        // world grows first.
+        config.balance.founding_conditions = 0.0;
+        config.balance.reachable_water = 0.0;
         // Founded empty: the wild ecosystem, then the sample players.
         let mut w = presets::standard_world(config, 1);
         for o in &w.organisms {

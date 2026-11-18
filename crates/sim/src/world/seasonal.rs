@@ -795,6 +795,10 @@ mod tests {
             (g.base_water, g.river) = (0.0, 0.0);
         }
         set_day(&mut w, day);
+        // A uniform world: where founders land doesn't matter, so keep the
+        // plain search (`founding_conditions` would scatter a test's
+        // animals by map edges and season).
+        w.config.balance.founding_conditions = 0.0;
         w
     }
 
@@ -817,6 +821,24 @@ mod tests {
             (o.needs.hunger, o.needs.thirst, o.needs.breeding, o.breed_ready_tick) = (20.0, 0.0, 0.0, u64::MAX);
         }
         idx
+    }
+
+    /// Playtest 3: a winter founding's clutches all chilled (founders laid
+    /// at once, then left the nest to feed). Provisioned egg-layers wait for
+    /// spring to breed; live bearers don't.
+    #[test]
+    fn winter_founded_egg_layers_wait_for_spring() {
+        let mut w = flat_world(-5.0, 10.0, 100);
+        let found = |w: &mut World, birth| {
+            let d = FounderDesign::new("t", Thermo::Warm, birth, 2).with(Gene::BodySize, 0.3).founders(4);
+            let ids = w.found_lineage_unchecked(w.lineages.len() as u32 + 1, &d);
+            w.provision_for_winter(&ids);
+            ids.iter().map(|&id| w.organism(id).unwrap().breed_ready_tick).collect::<Vec<_>>()
+        };
+        let spring = w.config.days_per_year as u64 * w.config.ticks_per_day as u64;
+        assert!(found(&mut w, BirthType::IncubatedEggs).iter().all(|&t| t == spring));
+        assert!(found(&mut w, BirthType::AbandonedEggs).iter().all(|&t| t == spring));
+        assert!(found(&mut w, BirthType::Live).iter().all(|&t| t < spring));
     }
 
     #[test]

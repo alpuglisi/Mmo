@@ -457,7 +457,7 @@ pub struct Map {
 }
 
 /// Annual temperature swing (±) and day/night swing (±), in °C.
-const SEASONAL_AMPLITUDE: f32 = 12.0;
+pub(crate) const SEASONAL_AMPLITUDE: f32 = 12.0;
 const DIURNAL_AMPLITUDE: f32 = 4.0;
 /// Flow accumulation (rain-weighted upstream tiles) that makes a river.
 const RIVER_FLOW: f32 = 60.0;

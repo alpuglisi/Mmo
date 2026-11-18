@@ -137,6 +137,10 @@ pub struct LineageEntry {
     /// Deaths during the day by cause (`death_name`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deaths: BTreeMap<String, u64>,
+    /// Eggs lost during the day by cause (`chilled`, `overheated`,
+    /// `raided`); absent when none were (and in records from before it).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub eggs_lost: BTreeMap<String, u64>,
     /// Mean expressed value of every gene over living members, by wire
     /// name. Player lineages only (the genetics dashboard's drift charts).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

@@ -96,6 +96,8 @@ struct LeanLineage {
     born: u64,
     #[serde(default)]
     deaths: BTreeMap<String, u64>,
+    #[serde(default)]
+    eggs_lost: BTreeMap<String, u64>,
 }
 
 fn parse_record(line: &str, genes: bool) -> StoreResult<DailyRecord> {
@@ -121,6 +123,7 @@ fn parse_record(line: &str, genes: bool) -> StoreResult<DailyRecord> {
                 adults: l.adults,
                 born: l.born,
                 deaths: l.deaths,
+                eggs_lost: l.eggs_lost,
                 genes: BTreeMap::new(),
                 morph: None,
             })
@@ -409,6 +412,7 @@ mod tests {
             adults: alive,
             born: 1,
             deaths: BTreeMap::new(),
+            eggs_lost: Default::default(),
             genes: (0..20).map(|g| (format!("gene_{g}"), 0.25)).collect(),
             morph: None,
         };

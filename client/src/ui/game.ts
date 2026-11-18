@@ -1895,6 +1895,13 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     setText(listMore, orgs.length > shown.length ? `…and ${orgs.length - shown.length} more` : '');
   }
 
+  /** "12 lost (12 chilled)" for the eggs a lineage lost, or null for none. */
+  function eggsLostText(lost: Record<string, number> | undefined): string | null {
+    const entries = Object.entries(lost ?? {}).filter(([, n]) => n > 0);
+    const total = entries.reduce((sum, [, n]) => sum + n, 0);
+    return total > 0 ? `${total} lost (${entries.map(([c, n]) => `${n} ${c}`).join(', ')})` : null;
+  }
+
   /** The lineage lays eggs (its stats count clutches): a carrying female is "gravid", not "pregnant" (playtest 3). */
   function laysEggs(): boolean {
     return !!(stats && stats.lineage === model.state?.lineage && stats.eggs);
@@ -1911,6 +1918,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       e.clutches > 0 ? `${e.brooded} brooded` : null,
       brooding > 0 ? `${brooding} brooding now` : null,
       pregnant > 0 ? `${pregnant} about to lay` : null,
+      eggsLostText(e.lost),
     ].filter(Boolean);
     return ['Eggs', h('span', { id: 'egg-status', title: 'Eggs hatch only while a parent broods them; an unguarded clutch can be lost' }, parts.join(' · '))];
   }
