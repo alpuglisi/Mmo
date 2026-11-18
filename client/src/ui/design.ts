@@ -401,7 +401,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       refoundBox.hidden = !rf;
       if (rf) {
         refoundBox.replaceChildren(h('h2', {}, 'Re-founding soon'),
-          h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points.`),
+          h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points${rf.fee ? ` and ${rf.fee} renown` : ''}.`),
           h('p', { class: 'small' }, `Because ${rf.reason}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minute${rf.minutes_left === 1 ? '' : 's'}).`));
       }
     }, 600);
@@ -484,7 +484,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     try {
       const r = await api.found(cb.token, payload());
       saveLastDesign(cb.player, spec);
-      if (r.reduced && r.requested) window.alert(`Founded ${r.founders.length} of ${r.requested} founders: ${r.reduced}.`);
+      if (r.reduced && r.requested) window.alert(`Founded ${r.founders.length} of ${r.requested} founders${r.refound_fee ? `, for ${r.refound_fee} renown` : ''}: ${r.reduced}.`);
       cb.onFounded(r);
     } catch (e) {
       if (e instanceof ApiError) {

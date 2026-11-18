@@ -556,6 +556,7 @@ impl Game {
             | ClientMsg::BuyMatingSlot
             | ClientMsg::Compatibility
             | ClientMsg::Provision
+            | ClientMsg::Survey
             | ClientMsg::SetNameplate { .. }
             | ClientMsg::NameSpecies { .. }
             | ClientMsg::Nameplates

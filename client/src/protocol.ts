@@ -78,6 +78,7 @@ export type ClientMsg =
   /** Reinforcements for a small lineage (adults copied from its own); data: `{ added: OrgId[], shop: ShopView }`. */
   | { type: 'reinforce' }
   | { type: 'provision' }
+  | { type: 'survey' }
   | { type: 'substitute_mating'; request: number; mine: OrgId }
   /** Which lineages yours can breed with; data: `CompatibilityView`. */
   | { type: 'compatibility' }
@@ -201,6 +202,8 @@ export interface OfferView {
   };
   /** The requester's animal died after acceptance (how): they may send another (`substitute_mating`) before `expires_tick`. */
   lost?: string;
+  /** While `lost`: the sex a substitute must be. */
+  substitute_sex?: Sex;
 }
 
 export interface WeatherView {
@@ -824,6 +827,8 @@ export interface FoundResponse {
   requested?: number;
   /** Why fewer were founded. */
   reduced?: string;
+  /** Renown the re-founding cost (absent or 0 outside the window). */
+  refound_fee?: number;
 }
 
 export interface GeneInfo {
@@ -1088,12 +1093,24 @@ export interface ShopView {
   provision_price?: number;
   /** Adults a provision would feed now (the price is per adult). */
   provision_size?: number;
+  /** The price of a survey now (rival groups near your main group). */
+  survey_price?: number;
   provisions_bought?: number;
   provisions_max?: number;
   provision_blocked?: string;
   /** When the next reinforcement is possible if the window is full: the day and about how many real minutes from now. */
   reinforce_next_day?: number;
   reinforce_next_minutes?: number;
+}
+
+/** A survey's findings (`survey`): rival groups within `radius` of (x, y), in 8-tile cells. */
+export interface SurveyView {
+  price: number;
+  x: number;
+  y: number;
+  radius: number;
+  groups: { player: PlayerId; name: string; x: number; y: number; members: number; territory?: [number, number, number] }[];
+  shop: ShopView;
 }
 
 /** One lineage in a compatibility check (`compatibility`, `POST /api/design/compatibility`). */
@@ -1142,7 +1159,7 @@ export interface DesignCompatView {
   egg_warning?: string;
   /** Founding now is a re-founding soon after your last lineage ended: `founders` of `requested` (founders cost double points: as many as fit, at least half), costing
    * `cost` points, until `until_day` (about `minutes_left` real minutes). */
-  refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string };
+  refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string; fee?: number };
   /** Why founding would refuse the design's name (it looks like another player's); absent when fine. */
   name_warning?: string;
 }

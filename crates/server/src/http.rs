@@ -497,6 +497,9 @@ pub struct FoundResponse {
     /// Why fewer were founded, if they were.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reduced: Option<String>,
+    /// Renown the re-founding cost (0 outside the window).
+    #[serde(default)]
+    pub refound_fee: u64,
     /// Whether the lineage has a newcomer grace, and why (or why not).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace: Option<String>,
@@ -539,6 +542,7 @@ async fn found_lineage(
             cost: ok.cost,
             requested: ok.requested,
             reduced: ok.reduced,
+            refound_fee: ok.refound_fee,
             grace: ok.grace,
         }),
     ))

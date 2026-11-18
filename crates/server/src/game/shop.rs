@@ -168,6 +168,7 @@ impl Game {
             provisions_bought: self.recent_count(self.economy.provision_days.get(&player)),
             provisions_max: economy::MAX_PROVISIONS_PER_SEASON,
             provision_blocked: self.provision_terms(player).err().map(|e| e.message),
+            survey_price: economy::survey_price(self.owner_population(player)),
             reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
             reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
         }
@@ -254,6 +255,50 @@ impl Game {
         days.retain(|&d| d + window > today);
         days.push(today);
         Ok((needy.len(), self.shop_view(player)))
+    }
+
+    /// `survey`: rivals' groups and territories near the player's main
+    /// group, coarsely, for renown scaled by their lineage's size.
+    pub(super) fn survey(&mut self, player: PlayerId) -> Result<crate::protocol::SurveyView, ErrorInfo> {
+        if self.lineage_of(player).is_none() || self.is_extinct(player) {
+            return Err(ErrorInfo::new("no_lineage", "you have no living lineage to survey from"));
+        }
+        let Some(from) = self.world.group_middle(player, 0) else {
+            return Err(ErrorInfo::new("no_lineage", "your main group has no animals to survey from"));
+        };
+        let price = economy::survey_price(self.owner_population(player));
+        let coarse = |v: f32| (v / 8.0).floor() * 8.0 + 4.0;
+        let mut groups = Vec::new();
+        let rivals: Vec<PlayerId> = self.names.keys().copied().filter(|&p| p != player && p != WILD).collect();
+        for p in rivals {
+            for g in self.world.groups(p) {
+                let Some(mid) = self.world.group_middle(p, g.id) else { continue };
+                if mid.dist(from) > economy::SURVEY_RADIUS || g.members == 0 {
+                    continue;
+                }
+                groups.push(crate::protocol::SurveyGroup {
+                    player: p,
+                    name: self.name(p),
+                    x: coarse(mid.x),
+                    y: coarse(mid.y),
+                    members: g.members.div_ceil(10) * 10,
+                    territory: g.territory.map(|t| [t.center.x.round(), t.center.y.round(), t.radius.round()]),
+                });
+            }
+        }
+        self.spend(
+            player,
+            price,
+            format!("Survey: {} rival groups within {} tiles", groups.len(), economy::SURVEY_RADIUS),
+        )?;
+        Ok(crate::protocol::SurveyView {
+            price,
+            x: coarse(from.x),
+            y: coarse(from.y),
+            radius: economy::SURVEY_RADIUS,
+            groups,
+            shop: self.shop_view(player),
+        })
     }
 
     /// `set_nameplate`.
@@ -595,6 +640,7 @@ impl Game {
                     cost: crate::game::RefoundTerms::cost(design, n),
                     until_day: t.until_day,
                     minutes_left: t.minutes_left,
+                    fee: t.fee.min(self.balance(player)),
                     reason: t.reason,
                 }
             }),

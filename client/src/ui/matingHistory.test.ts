@@ -56,6 +56,7 @@ describe('outcomeText', () => {
     const t = outcomeText({ conceived: true, fertility: 0.08, failure_chance: 0, mismatch: 0, cost: 0 } as never);
     expect(t).toBe('Conceived (8% chance to conceive)');
     expect(outcomeText({ conceived: false, fertility: 0.9, failure_chance: 0.16, mismatch: 0.4, cost: 1 } as never))
-      .toBe('Not conceived (90% chance to conceive) · 16% risk the override failed');
+      .toBe('Not conceived (90% chance to conceive; outside their preferences, it also had a 16% chance to fail outright)');
+    expect(outcomeText({ conceived: true, fertility: 0.25, failure_chance: 0.54, mismatch: 0.4, cost: 1 } as never)).toBe('Conceived (25% chance to conceive)');
   });
 });

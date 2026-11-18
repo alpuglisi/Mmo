@@ -1155,6 +1155,7 @@ Client → server:
 | `buy_mating_slot` | | One extra directed-mating slot until the weather season changes: 30 renown, doubling with each bought that season, at most 6 (`limit_reached`, `insufficient_funds`, `no_lineage`); `data` = the shop after |
 | `reinforce` | | 10 young adults copied from your lineage's living adults join it on the best-fed ground near them: 150 renown, doubling with each, at most 2 within a ranked season's length per player (a rolling window; retired lineages count: `limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
 | `provision` | | The hungriest or thirstiest adults of your lineage get 50 off hunger and thirst, priced per adult fed: 20 adults at 2 renown each while at most a fifth of the soft lineage cap is alive, else 20 per fifth of the cap alive (at most 200) at 4 each; at most 3 within a ranked season's length (`limit_reached`, `no_adults`, `no_lineage`, `insufficient_funds`); `data` = `{fed, shop}` |
+| `survey` | | Rival groups and territories within 64 tiles of your main group's middle, in 8-tile cells (members rounded to tens), now: 30 renown plus 1 per 10 of your animals alive; `data` = `{price, x, y, radius, groups: [{player, name, x, y, members, territory?: [x, y, radius]}], shop}` (`no_lineage`, `insufficient_funds`) |
 | `substitute_mating` | `request`, `mine` | The requester of an accepted agreement whose animal died sends another adult of theirs instead, before the deadline (the purchase checks; `not_substitutable` while the first still lives or for anyone else); `data` = `{offer}` |
 | `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
 | `name_species` | `species, name` | Name a living species your lineage founded (cosmetic, 300 renown; `not_yours`, `species_gone`, `name_taken`, `bad_name`); `data` = `{species, name}` |
@@ -1879,6 +1880,35 @@ minutes, every purchase failed when the buyer's animal died):
   lineage reads "one of yours" (not "#0#0"); a purchase's update comes
   once; a listing closed by a retirement says so; a species named with
   its own name is refused (`same_name`) instead of charged.
+
+**Playtest 6 changes** (`docs/playtest-6.md`):
+
+- **Re-founding** within the window founds half the founders (rounded
+  up) whatever the budget, and after a retirement costs a renown fee
+  (`REFOUND_FEE` 100, doubling with each re-founding in the window,
+  `Economy::refound_days`; at most the balance, so a player without
+  renown can still play). `FoundOk`/`POST /api/lineage` report
+  `refound_fee`; the design check's `refound.fee` shows it beforehand;
+  `WorldSummary::refound_rule` words it for the retire dialog.
+- **Market holes**: a buyer's animal possessed or under an order (its
+  own or its group's migration or rally) within a day of dying is not
+  excused, whatever the cause; the hold fee shrinks by the share of the
+  hold the partner's animal slept through while the buyer's was awake
+  (one tick used to forgive it all); the meeting point is fixed at
+  acceptance three quarters of the way to the partner (the seller's
+  side: `World::meeting_point_toward`); a partner killed by the buyer's
+  own lineage pays the seller the price instead of refunding; hold fees
+  pay the market fee; the market title needs 2 different buyers again;
+  no fee below 10 renown; an auction lengthened to the wall-clock floor
+  says so (`note` in the reply).
+- **Survey** (`survey`): a sink that scales with the lineage and buys
+  information, not share.
+- Small: `substitute_mating` names why (not accepted yet, closed) and
+  is checked for unseen ids like other commands; its picker offers only
+  the sex the partner needs (`OfferView::substitute_sex`); the listing
+  form clears its old error on success and starts at 5; a pregnant dam's
+  card says so in its title; outcomes mention the failure risk only for
+  a miss; the provision quote is fetched fresh before confirming.
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
