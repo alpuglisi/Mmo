@@ -8671,6 +8671,75 @@ rest), the toxic frogs' 38–42 (unchanged); fox and pack hunters survive 8 of
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.86 (± 0.16; ≈11.93 before), 11.96 (± 0.04) with `egg_attendance` 0.5 after the merge: every lineage 12 of 12; the cold-blooded marsh newts 197 and toxic frogs 265 (409 and 380) rest in winter |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
+### Playtest 6: drought foundings and newcomers
+
+Playtest 6 (`docs/playtest-6.md` H4 and M13) lost new lineages in two
+ways. First, PocketNomad6's small warm egg layer, founded at 52% drought,
+lost all 20 founders within 10 days, 16 of them to thirst, inside its
+grace. The search already preferred water that lasts a drought, but only
+by 0.7 points over drying shallows at that drought, so food and safety
+could outweigh it. Second, newcomers lost:
+
+- an egg layer founded before winter laid nothing until spring, left grace
+  with no young, and was hunted out by a player's pack;
+- the starter's winter clutches, which still chilled. A clutch conceived
+  late in winter hatched after the year's end, so playtest 5's late-clutch
+  rule let it through.
+
+The starter's hibernation (0.5) sits exactly on
+`stats::STRATEGY_THRESHOLD`. With founder variation, about half its
+founders don't hibernate at all. Those stay awake through winter, starve
+(the playtest's 58 → 24) and lay all winter.
+
+**`Balance::founding_drought` (1)**, on by default from snapshot version 58
+(provisional), off at 0 for older saves (`serde_util::before_v58`):
+
+- **Lasting water in a drought.** From 30% drought
+  (`world::FOUNDING_DROUGHT`), the strict rounds of the home search take
+  only homes with water in reach that lasts a drought: a lake's deep
+  water or a river channel, not shallows or ponds. If no such home is
+  found, the search falls back as before.
+- **Watered founders.** A player's founders start with no thirst. For their
+  first 6 days (`world::FOUNDER_WATER_DAYS`) they lose water more slowly in
+  a drought: from no relief at 15% drought to half the rate from 45%.
+- **No winter clutches.** A warm egg layer lays no clutch that would be
+  incubated in winter:
+  - always, if it sleeps through winter;
+  - if it stays awake, when even a brooded nest where it stands would be
+    colder than its eggs bear at the coldest of winter.
+
+  The wrap-around (a clutch hatching after the year's end) is closed too.
+- **Grace through the first spring.** A small founding (at most 40
+  founders) whose grace already ran to the end of its first winter now
+  keeps it to the end of the spring after, while its first young grow up.
+
+The design check's drought warning text is the balance session's. The
+reinforcement reply's `group` was a count of nearby animals; it is now
+`nearby_count`, and `group` is the id of the group the clones joined.
+
+**Measured** (`examples/droughtfound.rs`). In 6 grown worlds a
+50-founder warm egg-laying herd is founded on day 20, crowding the water
+as Herdmaster6's did. On up to three days after day 120 with 45–80% of
+the land in drought, PocketNomad6's 20-founder design is founded. Of 320
+founders alive after 20 days:
+
+| `founding_drought` | Alive after 10 days | Alive after 20 days | Died of thirst or heat |
+| --- | --- | --- | --- |
+| 0 | 290 | 272 | 23 |
+| 1 | 294 | 287 | 3 |
+
+The worst case, at 75% drought, went from 4 survivors to 18. Predation
+deaths rose from 9 to 23, because the homes by lasting water are fewer
+and sometimes nearer wild predators.
+
+**Starter.** I measured the starter with hibernation 0.6 instead of 0.5,
+so that all its founders sleep (`examples/starter_survival`, founded on
+day 45, 8 seeds, 120 days). Starvation deaths fell from 40 to 28, but the
+median population at the end fell from 119 to 83. A summer founding of
+sleepers lays no clutch that would hatch after midsummer, so it breeds
+little before spring. The starter stays at 0.5. Its awake half now lays
+no winter clutches either, unless its land is warm.
+
 ### Playtest 5: floods, drinking and warnings
 
 Round 6 for `docs/playtest-5.md` findings 4 (H4), 11, 15 and two low items.

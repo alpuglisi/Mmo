@@ -464,19 +464,20 @@ impl Game {
             ids.iter().filter_map(|&id| self.world.organism(id)).map(|o| o.pos).collect();
         let n_landed = landed.len().max(1) as f32;
         let at = landed.iter().fold(evo_sim::math::Vec2::ZERO, |a, &p| a + p) * (1.0 / n_landed);
-        let group = self
+        let nearby = self
             .world
             .organisms
             .iter()
             .filter(|o| o.alive && o.lineage == lineage && !ids.contains(&o.id))
             .filter(|o| o.pos.dist(at) < evo_sim::World::REINFORCE_CLUSTER)
             .count();
-        let site = ReinforceSite { at: [at.x, at.y], group };
+        let group = ids.first().and_then(|&id| self.world.organism(id)).map_or(0, |o| o.group);
+        let site = ReinforceSite { at: [at.x, at.y], nearby_count: nearby, group };
         self.spend(
             player,
             price,
             format!(
-                "Reinforcements: {} adults joined your lineage at ({:.0}, {:.0}), beside {group} of its animals",
+                "Reinforcements: {} adults joined your lineage at ({:.0}, {:.0}), beside {nearby} of its animals",
                 ids.len(),
                 at.x,
                 at.y
@@ -746,10 +747,12 @@ impl Game {
     }
 }
 
-/// Where a purchase's reinforcements landed: their centre, and how many of
-/// the lineage's animals stand within `World::REINFORCE_CLUSTER` tiles of it.
+/// Where a purchase's reinforcements landed: their centre, how many of the
+/// lineage's animals stand within `World::REINFORCE_CLUSTER` tiles of it,
+/// and the group they joined (playtest 6: the reply's `group` was the count).
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub(super) struct ReinforceSite {
     pub at: [f32; 2],
-    pub group: usize,
+    pub nearby_count: usize,
+    pub group: u8,
 }

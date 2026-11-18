@@ -1344,6 +1344,10 @@ mod tests {
     fn game() -> Game {
         let world = build_world(&WorldSettings { seed: 5, width: 96, height: 96, wild: true, ..Default::default() });
         let mut g = Game::new(world, GameConfig::default());
+        // The client fixture's world as recorded: watered founders
+        // (playtest 6, `Balance::founding_drought`) act differently from
+        // the first tick, which changes every frame, not the format.
+        g.world.config.balance.founding_drought = 0.0;
         for p in 1..=6u32 {
             g.set_name(p, &format!("p{p}"));
             let mut d = FounderDesign::new(format!("L{p}"), Thermo::Warm, BirthType::Live, 2).founders(6);
