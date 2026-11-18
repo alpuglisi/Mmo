@@ -190,8 +190,11 @@ async fn terrain_stats_and_seasons() {
     assert!(!stats["legacy"].as_array().unwrap().is_empty());
 
     // Alert preferences: defaults until saved, then normalized and kept.
-    let (s, _) = json_req(addr, Method::GET, "/api/alerts/prefs", None, None).await;
+    let (s, body) = json_req(addr, Method::GET, "/api/alerts/prefs", None, None).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // API clients are told what to do (sessions don't survive an unclean restart).
+    assert!(body["message"].as_str().is_some_and(|m| m.contains("log in again")), "{body}");
+    assert_eq!(body["relogin"], true, "{body}");
     let (s, p) = json_req(addr, Method::GET, "/api/alerts/prefs", Some(&ann), None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(p, serde_json::json!({"hidden": [], "toast": ["death", "need", "world", "market", "group", "attack"]}));

@@ -1614,6 +1614,17 @@ pub fn passable(body: &Body, g: &Ground, tile: &Tile) -> bool {
     !(drowns || cliff)
 }
 
+/// Whether `body` can stand on a tile without swimming: wading depth at
+/// most (ice that holds it counts) and no cliff it can't climb. Stricter
+/// than [`passable`], which lets strong swimmers through deep water.
+pub fn can_stand(body: &Body, g: &Ground, tile: &Tile) -> bool {
+    let height = body.height.max(0.1);
+    let on_ice = tile.water_depth > 0.0 && tile.ice >= ice_needed(body.mass);
+    let deep = !on_ice && tile.water_depth > height * 0.8;
+    let cliff = g.slope > 0.6 && body.climb < 0.4;
+    !(deep || cliff)
+}
+
 /// How `body` crosses a tile (`g` its ground, `tile` its state) in `weather`.
 pub fn traverse(body: &Body, g: &Ground, tile: &Tile, weather: &Weather, flying: bool) -> Traverse {
     if flying {

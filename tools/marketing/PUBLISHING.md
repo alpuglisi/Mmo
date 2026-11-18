@@ -48,7 +48,10 @@ These are design rules of the tool and rules for whoever operates it.
    item whose content changed since approval.
 7. **Claims stay factual.** Copy may only state numbers that appear in the
    story data (checked automatically), names players only if the story marks
-   them `optedIn`, and never invents release dates, prices or platforms.
+   them `optedIn`, never invents release dates, prices or platforms, and
+   avoids claims the current build doesn't support (hunting other players,
+   trading as the core loop, shipped mobile apps, "balanced"; see STYLE.md,
+   also checked automatically). Staged captures say they were staged.
 8. **Credentials never enter the repository.** Secrets come from environment
    variables; `marketing.config.json`, `.env*`, `data/` and `out/` are
    gitignored, and the config loader refuses a `secrets` block in the file.

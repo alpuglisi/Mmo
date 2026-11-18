@@ -40,7 +40,7 @@ export type ClientMsg =
   /** Group `group` (default 0) holds a circle (radius kept within its `max_radius`); data: `TerritoryView`. */
   | { type: 'claim_territory'; group?: number; x: number; y: number; radius: number }
   | { type: 'abandon_territory'; group?: number }
-  /** Group `group` (default 0) gathers at a point and holds near it for a few days (replaces its migration or territory); data: `RallyView`. */
+  /** Group `group` (default 0) gathers at a point and holds near it until the rally lapses, at least 5 real minutes (replaces its migration or territory); data: `RallyView`. */
   | { type: 'rally'; group?: number; x: number; y: number }
   | { type: 'cancel_rally'; group?: number }
   /** Divide a group in two (the named organisms, else the far half across its widest spread); data: `{group, moved, kept}`. */
@@ -184,6 +184,9 @@ export interface OfferView {
   expires_tick?: number;
   /** An offer to any animal of this lineage: `partner` is 0 until accepted. */
   lineage?: number;
+  /** An accepted agreement's escort: where its two animals are (8-tile cells) and how far apart; they walk to meet
+   * on their own. */
+  meet?: { mine_x: number; mine_y: number; partner_x: number; partner_y: number; distance: number };
 }
 
 export interface WeatherView {
@@ -322,7 +325,7 @@ export interface GroupView {
   route?: [number, number][];
   /** Tick at which the migration ends if the group hasn't gathered at the target (absent: no migration). */
   migration_deadline_tick?: number;
-  /** Where the group settles after arriving from a migration: members drift back into the circle until `expires_tick` (not a confinement). */
+  /** The home the group keeps where its last migration arrived: members drift back into the circle until its next order (`expires_tick` is effectively never; not a confinement). */
   settle?: RallyView;
   territory?: TerritoryView;
   rally?: RallyView;
@@ -448,6 +451,8 @@ export interface StateView {
   escrow?: number;
   /** Your lineage's newcomer grace while it lasts (absent once over): other players can't attack it, and it can't attack theirs. */
   grace?: GraceView | null;
+  /** Lineages your animals have learned are poisonous: theirs "look poisonous to you". */
+  poisonous?: number[];
 }
 
 /** The newcomer grace left: game days, and at least some real minutes, whichever is longer. */
@@ -975,6 +980,8 @@ export interface LineageStats {
   ramp?: { founded_day: number; weight: number; days: number };
   /** Days left of the newcomer grace (others can't order attacks on yours); absent: none. */
   grace_days_left?: number;
+  /** Lineage-wide warnings now: `starving`, `near_cap`, `territory_starving` (absent from older servers). */
+  warnings?: { kind: string; text: string }[];
   /** Egg-laying lineages: their clutches on the ground (absent for live bearers and older servers). */
   eggs?: { clutches: number; eggs: number; brooded: number };
   legacy: LegacyPoint[];
@@ -1183,6 +1190,8 @@ export interface PlayerPlacement {
   value: number;
   /** Players ranked in the category. */
   of: number;
+  /** Won the category's title (one of the season's winners; a tie can be first without one). Absent from older servers. */
+  title?: boolean;
 }
 
 export interface PlayerSeason {
@@ -1239,6 +1248,8 @@ export interface SpeciesLineage {
 export interface SpeciesView {
   id: number;
   name: string;
+  /** Who may name it (`name_species`; absent on older servers). */
+  namer?: PlayerId;
   origin: 'initial' | 'founding' | 'split' | string;
   parent?: number;
   founded_day: number;

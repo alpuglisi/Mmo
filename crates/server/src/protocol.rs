@@ -983,6 +983,21 @@ pub struct OfferView {
     /// is 0 until its owner accepts and an animal is picked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage: Option<u32>,
+    /// An accepted agreement's escort: where its two animals are (centres
+    /// of 8-tile cells) and how far apart. They walk to meet on their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meet: Option<MeetView>,
+}
+
+/// `OfferView::meet`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MeetView {
+    pub mine_x: f32,
+    pub mine_y: f32,
+    pub partner_x: f32,
+    pub partner_y: f32,
+    /// Tiles between them, rounded.
+    pub distance: f32,
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -1150,9 +1165,9 @@ pub struct GroupView {
     /// target by then (absent: no migration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration_deadline_tick: Option<u64>,
-    /// Where the group settles after arriving from a migration: members
-    /// outside the circle drift back into it until `expires_tick` (absent:
-    /// not settling). Not a confinement.
+    /// The home the group keeps where its last migration arrived: members
+    /// outside the circle drift back into it until the group's next order
+    /// (`expires_tick` is then `u64::MAX`; absent: none). Not a confinement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settle: Option<RallyView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1279,6 +1294,11 @@ pub struct StateView {
     /// can't attack it, and it can't attack theirs. Absent once it ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace: Option<GraceView>,
+    /// Lineages your animals have learned are poisonous
+    /// (`World::looks_poisonous_to`): the client marks theirs "looks
+    /// poisonous to you".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub poisonous: Vec<u32>,
 }
 
 /// The newcomer grace left (`StateView::grace`). It lasts a number of game
@@ -1527,6 +1547,10 @@ pub struct LineageStats {
     /// bearers): what "pregnant" means for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eggs: Option<EggsView>,
+    /// Lineage-wide warnings now (hunger or thirst crash, near the hard
+    /// cap, starving inside territories), most urgent first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<LineageWarning>,
     /// Legacy share per recorded day, oldest first.
     pub legacy: Vec<LegacyPoint>,
     /// Recent alerts, newest last.
@@ -1543,6 +1567,15 @@ pub struct RampView {
     pub weight: f64,
     /// Days from founding to counting in full.
     pub days: u64,
+}
+
+/// A lineage-wide warning (`lineage_stats.warnings`); the same goes out as
+/// an alert when it starts.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LineageWarning {
+    /// `starving`, `near_cap` or `territory_starving`.
+    pub kind: String,
+    pub text: String,
 }
 
 /// A player lineage in its newcomer grace (`WorldSummary::protected`).
@@ -1792,8 +1825,8 @@ pub enum LedgerKind {
     Sale,
     /// Escrow returned: the agreement ended without a mating.
     Refund,
-    /// Daily breeder's royalty: renown for alleles living outside the
-    /// player's lineage (`economy::royalty`).
+    /// Daily breeder's royalty: renown for alleles living in other
+    /// players' lineages (`economy::royalty`).
     Royalty,
     /// Renown spent in the shop (negative): a mating slot, reinforcements.
     Purchase,
@@ -2353,6 +2386,11 @@ pub struct SpeciesView {
     pub founder: Option<PlayerId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub founder_name: Option<String>,
+    /// Who may name it (`name_species`): the founder of a split, or the
+    /// owner of a founding species' main lineage; none for the initial and
+    /// gone species.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namer: Option<PlayerId>,
     /// Origin tag holding the most alleles in its adults.
     pub dominant: PlayerId,
     pub dominant_name: String,

@@ -1,5 +1,5 @@
 import { PLATFORMS } from '../platforms.mjs';
-import { BRAND } from '../style.mjs';
+import { BRAND, UNSUPPORTED_CLAIMS } from '../style.mjs';
 
 // Copywriting with the Claude API (official SDK, @anthropic-ai/sdk).
 // One request per story returns copy for every requested platform as JSON
@@ -18,6 +18,9 @@ Never use these words or phrases: ${BRAND.banned.join(', ')}.
 
 Facts you may state about the game in general:
 ${BRAND.gameFacts.map((f) => `- ${f}`).join('\n')}
+
+Claims the game does not support today (never make them):
+${UNSUPPORTED_CLAIMS.map(([, why]) => `- ${why}`).join('\n')}
 
 Hard rules:
 - Every claim about the event must come from the STORY DATA in the user message. Do not invent numbers, names, species, dates, player counts, prices, release dates or platforms. If a number is not in the data, do not write a number.

@@ -52,8 +52,10 @@ describe('trait text', () => {
     expect(levelOf(t, 0.66)).toBe('mid');
     expect(levelOf(t, 0.67)).toBe('high');
     expect(caption('muscle', design({ muscle: 0 }))!.text).toBe(t.low);
-    expect(caption('muscle', design({ muscle: 0.5 }))!.text).toBe(t.mid);
-    expect(caption('muscle', design({ muscle: 0.9 }))!.text).toBe(t.high);
+    // Muscle's food upkeep follows the caption (stats.rs metabolism × √mass).
+    expect(caption('muscle', design({ muscle: 0.5 }))!.text).toBe(`${t.mid} · upkeep +44% food a day vs. lean`);
+    expect(caption('muscle', design({ muscle: 0.9 }))!.text).toMatch(new RegExp(`^${t.high.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} · upkeep \\+\\d+% food a day vs\\. lean$`));
+    expect(caption('body_size', design({ body_size: 0.8 }))!.text).toMatch(/upkeep \+\d+% food a day vs\. the default size/);
   });
 
   it('switches at a trait’s own thresholds', () => {
@@ -61,7 +63,7 @@ describe('trait text', () => {
     expect(caption('fangs', design({ fangs: 0.05 }))!.text).toBe('no fangs');
     expect(caption('fangs', design({ fangs: 0.09 }))!.text).toBe('no fangs');
     expect(caption('fangs', design({ fangs: 0.1 }))!.level).toBe('mid');
-    expect(caption('fangs', design({ fangs: 0.3, carnivory: 1 }))!.text).toBe('fangs: real bite · no cost to a pure meat eater');
+    expect(caption('fangs', design({ fangs: 0.3, carnivory: 1 }))!.text).toBe('fangs: real bite · upkeep +3% food a day · no plant-feeding cost to a pure meat eater');
     // Seasonal strategies switch on at 0.5 (stats.rs STRATEGY_THRESHOLD).
     expect(caption('torpor', design({ torpor: 0.49 }))!.level).toBe('low');
     expect(caption('torpor', design({ torpor: 0.5 }))!.level).toBe('mid');
@@ -95,9 +97,9 @@ describe('trait text', () => {
     expect(fangPlantLoss(design({ fangs: 0.8, carnivory: 0 }))).toBeCloseTo(0.4, 6);
     expect(fangPlantLoss(design({ fangs: 0.8, carnivory: 0.5 }))).toBeCloseTo(0.2, 6);
     expect(fangPlantLoss(design({ fangs: 0.09, carnivory: 0 }))).toBe(0);
-    expect(caption('fangs', design({ fangs: 0.8, carnivory: 0 }))!.text).toBe('long fangs: strongest bite · plant feeding −40%');
-    expect(caption('fangs', design({ fangs: 0.3, carnivory: 0.5 }))!.text).toBe('fangs: real bite · plant feeding −8%');
-    expect(caption('fangs', design({ fangs: 1, carnivory: 1 }))!.text).toBe('long fangs: strongest bite · no cost to a pure meat eater');
+    expect(caption('fangs', design({ fangs: 0.8, carnivory: 0 }))!.text).toBe('long fangs: strongest bite · upkeep +8% food a day · plant feeding −40%');
+    expect(caption('fangs', design({ fangs: 0.3, carnivory: 0.5 }))!.text).toBe('fangs: real bite · upkeep +3% food a day · plant feeding −8%');
+    expect(caption('fangs', design({ fangs: 1, carnivory: 1 }))!.text).toBe('long fangs: strongest bite · upkeep +10% food a day · no plant-feeding cost to a pure meat eater');
   });
 
   it('scales over fur cost a warm body warmth (scale_cover 0.5), nothing otherwise', () => {

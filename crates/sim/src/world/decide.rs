@@ -340,6 +340,13 @@ pub(crate) fn max_prey_mass(hunter: &Organism, coop: f32) -> f32 {
     hunter.mass() * (1.5 + 3.0 * coop)
 }
 
+/// Thirst (0–100) at which a possessed animal with water within
+/// [`POSSESS_WATER_NEAR`] tiles breaks off its order to drink
+/// (`Balance::drink_priority`).
+pub(crate) const POSSESS_DRINK: f32 = 60.0;
+/// Tiles within which water counts as near for [`POSSESS_DRINK`].
+pub(crate) const POSSESS_WATER_NEAR: i32 = 8;
+
 /// Most pack-mates a pack hunt counts (`pack_scale`, `World::pack_allies`).
 pub(crate) const PACK_MAX: u16 = 4;
 /// Prey mass limit added per pack-mate around, at full pack instinct
@@ -354,6 +361,20 @@ pub(crate) const PACK_REACH: f32 = 2.5;
 pub(crate) const PACK_JOIN: f32 = 10.0;
 /// Hunger (0–100) above which a pack-mate joins a possessed leader's attack.
 pub(crate) const JOIN_HUNGER: f32 = 30.0;
+/// Most pack-mates a player-led hunt counts (`Balance::led_pack`).
+pub(crate) const LED_PACK_MAX: u16 = 8;
+
+/// How a pack hunter's prey mass limit grows in a hunt a player leads:
+/// [`pack_scale_at`] at [`led_pack`], or with `Balance::led_pack` by that
+/// much per kin nearby, up to [`LED_PACK_MAX`], times pack instinct.
+pub(crate) fn led_pack_scale(b: &crate::Balance, o: &Organism) -> f32 {
+    if b.led_pack > 0.0 && b.pack_hunt > 0.0 {
+        1.0 + b.led_pack * pack_instinct(o) * f32::from(o.kin_nearby.min(LED_PACK_MAX))
+    } else {
+        pack_scale_at(led_pack(b), o)
+    }
+}
+
 /// The least pack strength of a player-led hunt ([`led_pack`]).
 pub(crate) const LED_PACK: f32 = 1.0;
 
@@ -403,8 +424,9 @@ impl World {
     /// Pack-mates hunting the same prey beside hunter `i` as it strikes
     /// prey `j` (`Balance::pack_hunt`): living organisms of its lineage
     /// within [`PACK_REACH`] of the prey whose hunt is aimed at it, at most
-    /// [`PACK_MAX`]. 0 with the rule off.
-    pub(crate) fn pack_allies(&self, i: usize, j: usize) -> u16 {
+    /// [`PACK_MAX`] ([`LED_PACK_MAX`] in a hunt a player leads, `led`, with
+    /// `Balance::led_pack`). 0 with the rule off.
+    pub(crate) fn pack_allies(&self, i: usize, j: usize, led: bool) -> u16 {
         if self.config.balance.pack_hunt <= 0.0 {
             return 0;
         }
@@ -426,7 +448,7 @@ impl World {
                 n += 1;
             }
         });
-        n.min(PACK_MAX)
+        n.min(if led && self.config.balance.led_pack > 0.0 { LED_PACK_MAX } else { PACK_MAX })
     }
 
     pub(crate) fn coop_bonus(&self, o: &Organism) -> f32 {
@@ -739,6 +761,14 @@ impl World {
                 return intent;
             }
         }
+        // An agreed mating's rendezvous (`World::set_rendezvous`): walk to
+        // the partner unless a threat or an urgent need comes first.
+        if let Some(target) = self.rendezvous_target(o, threat) {
+            intent.action = Action::Rally;
+            intent.target = Some(target);
+            intent.sprint = o.needs.energy > 60.0;
+            return intent;
+        }
         if let (Some(_), Some(target)) = (o.possessed_by, o.order) {
             urgent = self.order_override(o, threat);
             if urgent.is_none() && o.pos.dist(target) > super::commands::ORDER_ARRIVAL {
@@ -829,11 +859,18 @@ impl World {
             x * x * (3.0 - 2.0 * x)
         };
         let hide = if can_dig { 1.0 - cfg.balance.desperate_risk * desperate } else { 1.0 };
+        // Drinking first when parched (`Balance::drink_priority`): the
+        // parched drink with a threat in sight, fattening gives way, and
+        // drinking gains on everything else.
+        let thirsty = cfg.balance.drink_priority.clamp(0.0, 1.0) * desperate;
+        let calm_water = calm + (1.0 - calm) * thirsty;
+        let drink_bonus = 0.6 * cfg.balance.drink_priority.max(0.0) * desperate;
+        let fatten = fatten * (1.0 - thirsty);
 
         let mut options: [(Action, f32); 17] = [
             (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless) * tame * hide),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
-            (Action::Drink, thirst.powf(1.5) * 1.3 * calm + if thirst > 0.8 { 0.5 } else { 0.0 }),
+            (Action::Drink, thirst.powf(1.5) * 1.3 * calm_water + if thirst > 0.8 { 0.5 } else { 0.0 } + drink_bonus),
             (Action::Rest, tired * tired * 1.1 * calm),
             (Action::Bask, if o.traits.warm { 0.0 } else { (1.0 - o.activity) * 0.7 }),
             // A threat it has seen puts courting on hold (`courtship_caution`);
@@ -1089,6 +1126,15 @@ impl World {
         if worst >= b.possess_urgency {
             return Some(if n.thirst >= n.hunger { Action::Drink } else { Action::Graze });
         }
+        // With water near, it drinks well before it is parched
+        // (`Balance::drink_priority`): a possessed animal kept on the move
+        // otherwise died of thirst beside a lake.
+        if b.possess_drink > 0.0
+            && n.thirst >= POSSESS_DRINK
+            && (self.map.can_drink_at(o.pos) || self.map.find_water(o.pos, POSSESS_WATER_NEAR).is_some())
+        {
+            return Some(Action::Drink);
+        }
         None
     }
 
@@ -1234,6 +1280,9 @@ impl World {
                     } else {
                         0.0
                     };
+                    // What its lineage has learned of this prey's toxins
+                    // (`Balance::toxic_learning`).
+                    let avoid = avoid.max(self.toxic_avoidance(o.lineage, q));
                     // A lone hunter won't take on a guarding parent it can't beat.
                     let guard = self.guardian(q).0;
                     let my_power = v.my_power;

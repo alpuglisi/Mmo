@@ -996,15 +996,66 @@ pub struct Balance {
     /// through winter costs part of the breeding year. 0: none.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub emergence_lag: f32,
-    // Competitive balance after playtest 3 (version 45; *Playtest 3:
-    // balance* in the README). Off at 0, what snapshots before version 45
-    // read (`serde_util::before_v45`).
+    // Playtest 2 fixes (version 44; *Playtest 2: predators, toxins and
+    // drowning* in the README). Off at 0, what snapshots before version 44
+    // read (`serde_util::before_v44`).
+    /// Drinking first when parched: past thirst 0.7 drinking gains up to
+    /// `0.6 × drink_priority`, a threat in sight stops holding it back and
+    /// fattening stops pulling the animal to graze, and hunters in a chase
+    /// drink at water they pass. Off by default: on, `predlong` lost the fox
+    /// on two more of six seeds (*Playtest 2: predators, toxins and
+    /// drowning* in the README). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub drink_priority: f32,
+    /// Possessed animals drink: one with water within 8 tiles breaks off its
+    /// order to drink at thirst 60 (instead of `possess_urgency`), and one at
+    /// water drinks from thirst 10. Only possessed animals. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub possess_drink: f32,
+    /// Learned avoidance of toxic prey: each time a predator is poisoned by
+    /// its prey, its lineage's lesson about the prey's lineage grows by
+    /// `0.15 × toxic_learning × (1 + 2 × coloration)` (warning colours
+    /// teach about three times faster than a drab coat), up to 1, and fades
+    /// with a 60-day time constant (`World::toxic_lesson`). Hunters pass
+    /// prey up with the lesson's probability as far as they can recognise
+    /// it, `0.3 + 0.7 × coloration` (a drab coat never buys full
+    /// protection), and a lineage that knows a toxin takes less harm biting
+    /// it, `1 − 0.7 × lesson` (`world::toxic`). 0: off (only the
+    /// bright-prey aversion of a poisoned individual).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub toxic_learning: f32,
+    /// Dry ground for sleeping and founding: no dormancy on ice over water
+    /// deep enough to drown the sleeper at the melt (a sleeper on such ice
+    /// wakes), and founders land only on dry ground away from deep water
+    /// (`World::found_lineage_grouped`). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub dry_sites: f32,
+    /// Obligate carnivores' energetics: a hungry obligate carnivore's
+    /// hunger rises up to `0.3 × carnivore_energetics` slower (none at
+    /// carnivory 0.7 or below, all of it at 0.95 and above; none at hunger
+    /// 40 or below, all of it at 80 and above: a lean economy in hard
+    /// times, so a fed pack burns as before). Playtest 2's player
+    /// carnivores needed a fifth of their weight in prey a day and starved.
+    /// 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub carnivore_energetics: f32,
+    /// Player-led pack hunts on big prey: in a hunt a player leads (an
+    /// attack order and the pack-mates who join it) the prey mass limit
+    /// grows by `led_pack` per pack-mate around, up to 8 (`decide::LED_PACK_MAX`),
+    /// times pack instinct, and up to 8 pack-mates at the prey strike
+    /// beside the leader: a full pack takes prey several times one hunter's
+    /// weight. 0: off (the wild rule, at most 4 pack-mates).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub led_pack: f32,
+    // Competitive balance after playtest 3 (version 46; *Playtest 3:
+    // balance* in the README). Off at 0, what snapshots before version 46
+    // read (`serde_util::before_v46`).
     /// How much less an eye-count step counts in the body-plan gap for
     /// fertility (`morph::morph_fertility_gap`): weighted `1 − eye_hybrid`.
     /// At 0.6, 2 → 5 eyes is 0.12 apart (fully fertile) instead of 0.30
     /// (sterile with every two-eyed animal, playtest 3's 3-point isolation).
     /// Leg steps and kinship keep the full gap.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v45"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
     pub eye_hybrid: f32,
     /// The winter toll as documented (`seasonal::dormancy_toll_rate`): on
     /// (1), `dormancy_toll` is the chance of dying over a whole winter's
@@ -1016,12 +1067,12 @@ pub struct Balance {
     /// `DeathCause::WinterSleep`. Off (0): the version 43 toll (a season's
     /// toll per season asleep, 2× first year, 2× with no fat, warm
     /// hibernators only: ~1% a day, 25–30% a winter in playtest 3).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v45"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
     pub winter_toll: f32,
     /// Days over which a warm hibernator's spring waking is spread (each
     /// animal its own day, from its id), so a lineage doesn't wake at once
     /// on the same pasture and starve. 0: all wake on the first spring day.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v45"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
     pub wake_spread: f32,
 }
 
@@ -1286,6 +1337,12 @@ impl Default for Balance {
             age_spread: 0.12,
             dormancy_toll: 0.10,
             emergence_lag: 6.0,
+            drink_priority: 0.0,
+            possess_drink: 1.0,
+            toxic_learning: 1.0,
+            dry_sites: 1.0,
+            carnivore_energetics: 1.0,
+            led_pack: 0.5,
             eye_hybrid: 0.6,
             winter_toll: 1.0,
             wake_spread: 10.0,
@@ -1294,7 +1351,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 136;
+    pub const FIELD_COUNT: usize = 142;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1437,6 +1494,12 @@ impl Balance {
             ("age_spread", &mut self.age_spread),
             ("dormancy_toll", &mut self.dormancy_toll),
             ("emergence_lag", &mut self.emergence_lag),
+            ("drink_priority", &mut self.drink_priority),
+            ("possess_drink", &mut self.possess_drink),
+            ("toxic_learning", &mut self.toxic_learning),
+            ("dry_sites", &mut self.dry_sites),
+            ("carnivore_energetics", &mut self.carnivore_energetics),
+            ("led_pack", &mut self.led_pack),
             ("eye_hybrid", &mut self.eye_hybrid),
             ("winter_toll", &mut self.winter_toll),
             ("wake_spread", &mut self.wake_spread),

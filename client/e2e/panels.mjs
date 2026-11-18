@@ -257,14 +257,17 @@ async function main() {
       const barText = await page.textContent('#possess-bar');
       check(barText.includes(`#${pair.a}`) && barText.includes('Release'), 'possession bar', barText);
       await page.evaluate(() => window.evo.screen().view.setFollow(false));
-      const target = await waitFor('the other animal on screen', () => page.evaluate((id) => {
+      // The other animal (another of ours if that one has gone meanwhile: it only has to be on the map).
+      const target = await waitFor('another animal on screen', () => page.evaluate(({ a, b }) => {
         const v = window.evo.screen().view;
-        const m = v.markers.get(id);
+        const id = v.markers.has(b) ? b : window.evo.model.state.organisms.map((o) => o.id).find((x) => x !== a && v.markers.has(x));
+        const m = id === undefined ? undefined : v.markers.get(id);
         if (!m) return null;
         v.centerOn(m.x, m.y);
         const p = v.worldToScreen(m.x, m.y);
-        return { x: p.x, y: p.y };
-      }, pair.b));
+        return { id, x: p.x, y: p.y };
+      }, pair));
+      pair.b = target.id;
       await page.waitForTimeout(200);
       const box = await page.locator('#world-canvas').boundingBox();
       const selectedBefore = await page.evaluate(() => window.evo.model.selected);

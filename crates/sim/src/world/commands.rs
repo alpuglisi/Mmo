@@ -15,7 +15,7 @@ use crate::organism::{Action, Dormancy, OrgId, Sex};
 use crate::pathfinding::{enter_cost, Outcome};
 use crate::rng::{rng_for, stream};
 use crate::stats::Body;
-use crate::terrain::{passable, traverse, Map, Tile, Weather};
+use crate::terrain::{can_stand, traverse, Map, Tile, Weather};
 
 /// Organisms must physically meet for a directed mating.
 pub const MEETING_DISTANCE: f32 = 1.5;
@@ -54,10 +54,39 @@ pub enum GroupEvent {
     /// The group has no living members left: its migration, territory and
     /// rally are gone.
     Emptied { player: PlayerId, group: u8 },
-    /// The migration passed its deadline (`World::migration_timeout_ticks`)
-    /// without the group gathering at the target: the order is ended.
+    /// The migration stalled (`groups::MIGRATE_STALL_DAYS`) or passed its
+    /// hard limit (`World::migration_timeout_ticks`) without the group
+    /// gathering at the target: the order is ended.
     /// `median` is the median member's distance to the target then.
-    TimedOut { player: PlayerId, group: u8, target: Vec2, median: f32 },
+    /// `dormant_share` is the share of the group that was dormant then
+    /// (hibernating or estivating animals can't walk).
+    TimedOut { player: PlayerId, group: u8, target: Vec2, median: f32, dormant_share: f32 },
+}
+
+/// How an attack order ended on its own (`World::take_attack_events`). A
+/// release, another possession or a move order ends it silently: the player
+/// did that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttackEnd {
+    /// The target was killed by the attacker or one of its pack (its lineage).
+    Killed,
+    /// The target died of something else.
+    TargetDied,
+    /// The target went to ground in its burrow, out of reach.
+    WentToGround,
+    /// The target got away: farther than 1.5 × `World::attack_range`.
+    Lost,
+    /// The attacker died.
+    AttackerDied,
+}
+
+/// An attack order that ended on its own, for the attacker's owner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttackEvent {
+    pub player: PlayerId,
+    pub attacker: OrgId,
+    pub target: OrgId,
+    pub end: AttackEnd,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -429,8 +458,8 @@ impl World {
         if q.sheltered {
             return Err(CommandError::Sheltered(target));
         }
-        let led = super::decide::led_pack(&self.config.balance);
-        let limit = super::decide::max_prey_mass(o, self.coop_bonus(o)) * super::decide::pack_scale_at(led, o);
+        let limit = super::decide::max_prey_mass(o, self.coop_bonus(o))
+            * super::decide::led_pack_scale(&self.config.balance, o);
         if q.mass() >= limit {
             return Err(CommandError::TooBig { mass: q.mass(), limit });
         }
@@ -446,6 +475,20 @@ impl World {
         self.organisms[i].order = None;
         self.attack_orders.insert(id, target);
         Ok(())
+    }
+
+    /// Why an attack order on `target` by `id` may be a bad idea, if it is:
+    /// the attacker's lineage has learned that the target's kind is
+    /// poisonous (`World::toxic_lesson`). The order is allowed all the same.
+    pub fn attack_warning(&self, id: OrgId, target: OrgId) -> Option<String> {
+        let (o, q) = (self.organism(id)?, self.organism(target)?);
+        let lesson = self.toxic_lesson(o.lineage, q.lineage);
+        (lesson >= super::toxic::LOOKS_POISONOUS).then(|| {
+            format!(
+                "#{target} looks poisonous to your kind: your animals have been poisoned eating its kind (on their own they pass it up {:.0}% of the time)",
+                100.0 * self.toxic_avoidance(o.lineage, q)
+            )
+        })
     }
 
     /// Days left of the grace a player lineage founded into a running
@@ -593,8 +636,10 @@ impl World {
             Outcome::Partial => Ok(goal),
             Outcome::None => match nearest {
                 Some(k) => Ok(center(k)),
-                None if tile(from) == tile(goal) => Ok(goal),
-                None => Err(CommandError::Unreachable),
+                // The search never left the start (an organism stranded on a
+                // tile it can't use): no better guess than the target; it
+                // struggles toward it as before.
+                None => Ok(goal),
             },
         }
     }
@@ -627,18 +672,41 @@ impl World {
             return;
         }
         let orders = std::mem::take(&mut self.attack_orders);
-        self.attack_orders = orders
-            .into_iter()
-            .filter(|&(a, t)| {
-                let (Some(&i), Some(&j)) = (self.index.get(&a), self.index.get(&t)) else { return false };
-                let (o, q) = (&self.organisms[i], &self.organisms[j]);
-                o.alive
-                    && o.possessed_by.is_some()
-                    && q.alive
-                    && !q.sheltered
-                    && o.pos.dist(q.pos) <= 1.5 * self.attack_range()
-            })
-            .collect();
+        let range = 1.5 * self.attack_range();
+        for (a, t) in orders {
+            let (Some(&i), Some(&j)) = (self.index.get(&a), self.index.get(&t)) else { continue };
+            let (o, q) = (&self.organisms[i], &self.organisms[j]);
+            let end = if !o.alive {
+                Some(AttackEnd::AttackerDied)
+            } else if o.possessed_by.is_none() {
+                // Released: the player ended it.
+                continue;
+            } else if !q.alive {
+                Some(if q.killer == Some(o.lineage) { AttackEnd::Killed } else { AttackEnd::TargetDied })
+            } else if q.sheltered {
+                Some(AttackEnd::WentToGround)
+            } else if o.pos.dist(q.pos) > range {
+                Some(AttackEnd::Lost)
+            } else {
+                None
+            };
+            match end {
+                None => {
+                    self.attack_orders.insert(a, t);
+                }
+                Some(end) => {
+                    if self.attack_events.len() < GROUP_EVENTS_KEPT {
+                        self.attack_events.push(AttackEvent { player: o.owner, attacker: a, target: t, end });
+                    }
+                }
+            }
+        }
+    }
+
+    /// The attack orders that ended on their own since the last call, oldest
+    /// first (at most `GROUP_EVENTS_KEPT` kept between calls).
+    pub fn take_attack_events(&mut self) -> Vec<AttackEvent> {
+        std::mem::take(&mut self.attack_events)
     }
 
     /// Fraction of a tick's movement one possession sub-step covers.
@@ -741,7 +809,7 @@ impl World {
         let key = (player, group);
         self.migrate_orders.insert(key, target);
         let deadline = self.tick + self.migration_timeout_ticks(middle.map_or(0.0, |m| m.dist(target)));
-        self.group_plans.migrations.insert(key, MigrationPlan { issued_tick: self.tick, deadline_tick: deadline });
+        self.group_plans.migrations.insert(key, MigrationPlan::new(self.tick, deadline));
         self.territories.remove(&key);
         self.rallies.remove(&key);
         self.group_plans.settles.remove(&key);
@@ -761,6 +829,7 @@ impl World {
         let old = self.group_plans.migrations.get(&key).copied();
         let target = self.command_migrate_group(player, group, target)?;
         if let (Some(old), Some(new)) = (old, self.group_plans.migrations.get_mut(&key)) {
+            // The new way starts its headway afresh, from now.
             new.issued_tick = old.issued_tick;
             new.deadline_tick = new.deadline_tick.max(old.deadline_tick);
         }
@@ -870,14 +939,16 @@ impl World {
     }
 
     /// Whether at least half of `bodies` could stand on tile `k` even with
-    /// its ice gone (any tile with no bodies to check).
+    /// its ice gone, without swimming (`terrain::can_stand`: a strong
+    /// swimmer can cross a lake, but a herd can't live in one); any tile
+    /// with no bodies to check.
     pub(super) fn standable_tile(&self, bodies: &[Body], k: usize) -> bool {
         if bodies.is_empty() {
             return true;
         }
         let tile = Tile { ice: 0.0, ..self.map.tiles[k].clone() };
         let g = &self.map.ground()[k];
-        2 * bodies.iter().filter(|b| passable(b, g, &tile)).count() >= bodies.len()
+        2 * bodies.iter().filter(|b| can_stand(b, g, &tile)).count() >= bodies.len()
     }
 
     /// The point nearest `target` (itself if it qualifies) on a tile at
@@ -1113,7 +1184,8 @@ mod tests {
 
     #[test]
     fn moderately_thirsty_possessed_organism_follows_the_order() {
-        let (mut w, a, target) = ordered(60.0);
+        // Below `decide::POSSESS_DRINK`, where water near would win.
+        let (mut w, a, target) = ordered(50.0);
         let before = w.organism(a).unwrap().pos.dist(target);
         w.step();
         w.step();

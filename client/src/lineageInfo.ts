@@ -56,12 +56,15 @@ export function capInfo(population: number, cap: number | undefined, crowding?: 
 
 function softCapInfo(population: number, c: CrowdingView): CapInfo {
   const full = population >= c.hard_cap;
+  const nearHard = !full && population >= CAP_NEAR * c.hard_cap;
   const past = c.count >= c.soft_cap;
   const slowed = c.litter <= LITTER_SLOWED;
   const young = c.juvenile_weight < 1 ? `young count as ${c.juvenile_weight.toFixed(2).replace(/0$/, '')} of an adult` : 'young count in full';
   const hungrier = c.hunger > 1.005 ? `, and they get ${Math.round((c.hunger - 1) * 100)}% hungrier` : '';
   const status = full
     ? 'hard cap reached: births paused'
+    : nearHard
+      ? `near the hard cap: births stop at ${grouped(c.hard_cap)}`
     : past
       ? `past the soft cap: litters ${times(c.litter)}${hungrier ? `, hunger ${times(c.hunger)}` : ''}`
       : slowed ? `breeding slowing: litters ${times(c.litter)}` : null;
@@ -78,7 +81,7 @@ function softCapInfo(population: number, c: CrowdingView): CapInfo {
   return {
     count: `${grouped(c.count)} / ${grouped(c.soft_cap)}`,
     status,
-    level: full ? 'full' : past || slowed ? 'near' : 'ok',
+    level: full ? 'full' : nearHard || past || slowed ? 'near' : 'ok',
     explain,
   };
 }
@@ -117,7 +120,7 @@ export function graceText(daysLeft: number | undefined, ticksPerDay: number, spa
   const left = realSecondsLeft !== undefined
     ? `${daysLeft < 10 ? daysLeft.toFixed(1) : Math.round(daysLeft)} days (${realTime(realSecondsLeft * 1000)})`
     : span(daysLeft * ticksPerDay);
-  return `${left} left: other players can't order attacks on your animals, and yours can't be ordered to attack theirs. Wild predators, and animals hunting on instinct, still can.`;
+  return `${left} left: other players can't order attacks on your animals, and yours can't be ordered to attack theirs. Other players' animals leave yours alone even when hunting on their own; wild predators still hunt them.`;
 }
 
 /** The founding ramp in words: how much of the share counts toward the ranked season now. */

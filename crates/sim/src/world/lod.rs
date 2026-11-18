@@ -1155,6 +1155,12 @@ impl World {
                 0.4 + 0.6 * activity
             };
             let diet = 1.0 - bal.carnivore_hunger_discount * rep.carnivory;
+            let diet = diet
+                * (1.0
+                    - super::apply::OBLIGATE_DISCOUNT
+                        * bal.carnivore_energetics
+                        * super::apply::COHORT_LEAN
+                        * super::apply::obligacy(rep.carnivory));
             let mut h = bal.hunger_rate * rep.metabolism * diet * thermo * ACTIVITY;
             // Competition past the soft lineage cap (`Balance::crowding_hunger`).
             h *= self.lineage_crowding(c.lineage)[1];
@@ -1853,6 +1859,9 @@ mod tests {
         let mut config = WorldConfig { seed: 2, width: 64, height: 64, ..Default::default() };
         config.lod.enabled = true;
         config.lod.migration = 0.0;
+        // Founders where they landed before dry founding sites (version 42):
+        // the representatives are compared across two such worlds.
+        config.balance.dry_sites = 0.0;
         let w = presets::standard_world(config, 1);
         // Pick a region with plenty of tiles every species can use.
         let r = (0..w.lod.regions.len())

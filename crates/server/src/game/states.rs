@@ -645,7 +645,13 @@ impl Game {
             balance: self.balance(player),
             escrow,
             grace: self.grace_view(player),
+            poisonous: self.poisonous_to(player),
         }
+    }
+
+    /// The lineages `player`'s animals have learned are poisonous, in order.
+    fn poisonous_to(&self, player: PlayerId) -> Vec<u32> {
+        (0..self.world.lineages.len() as u32).filter(|&l| self.world.looks_poisonous_to(player, l)).collect()
     }
 
     /// The leaderboard as sent in a state: the whole board when it has at

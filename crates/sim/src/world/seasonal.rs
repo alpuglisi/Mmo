@@ -364,10 +364,20 @@ impl World {
         let can_rouse = |o: &Organism| {
             o.traits.warm && ((o.fat <= 0.0 && o.needs.hunger >= AROUSAL_HUNGER) || o.needs.thirst >= AROUSAL_THIRST)
         };
+        // Never bed down on ice over water that would drown it at the melt,
+        // and a sleeper on such ice wakes and walks off (`Balance::dry_sites`).
+        let on_thin_ice = bal.dry_sites > 0.0 && super::apply::ice_trap(&o.traits.body, self.map.tile_at(pos));
+        if on_thin_ice && o.dormancy != Dormancy::Awake {
+            o.dormancy = Dormancy::Awake;
+            return None;
+        }
         match o.dormancy {
             Dormancy::Awake => {
-                let free =
-                    o.pregnancy.is_none() && o.nest.is_none() && intent.threat < 0.3 && intent.action != Action::Flee;
+                let free = o.pregnancy.is_none()
+                    && o.nest.is_none()
+                    && intent.threat < 0.3
+                    && intent.action != Action::Flee
+                    && !on_thin_ice;
                 // With `winter_toll` a sleeper drinks before bedding down
                 // for the winter (playtest 3: sleepers died of thirst).
                 let thirst_limit =

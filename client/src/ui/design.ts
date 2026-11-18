@@ -11,6 +11,7 @@
 import { api, ApiError } from '../api';
 import { designCost, validateDesign } from '../cost';
 import { seasonNotice } from '../seasonNotice';
+import { designWarnings, FOUNDING_RAMP_TEXT } from '../designWarnings';
 import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign, starterValue } from '../designMorph';
 import { defaultMorphology, sameMorphology, type Morphology } from '../morphology';
 import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
@@ -284,6 +285,9 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const hybridBox = h('section', { class: 'card hybrid-card', id: 'design-hybrid', hidden: !species, 'aria-live': 'polite' });
   // Founding size against the land's food (playtest 1, finding 4).
   const foodBox = h('p', { class: 'small food-hint', id: 'design-food' });
+  // The world the founders land in (drought, catastrophe) and wings a heavy body can't use.
+  const warnBox = h('div', { id: 'design-warnings', class: 'design-warnings', role: 'status' });
+  const rampNote = h('p', { class: 'muted small', id: 'design-ramp' }, FOUNDING_RAMP_TEXT);
   const needName = h('p', { class: 'muted small', id: 'design-need-name' }, nameLink, ' (Basics, at the top) to found it.');
   const serverError = h('p', { class: 'error', id: 'design-server-error', role: 'alert' });
   const submit = h('button', { id: 'design-submit', type: 'button' }, 'Found lineage');
@@ -371,6 +375,12 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     const food = foundingHint(payload(), world);
     foodBox.textContent = food.text;
     foodBox.className = `small food-hint food-${food.level}`;
+    const warns = designWarnings(payload(), world);
+    const wkey = JSON.stringify(warns);
+    if (warnBox.dataset.key !== wkey) {
+      warnBox.dataset.key = wkey;
+      warnBox.replaceChildren(...warns.map((w) => h('p', { class: `small notice design-warning warn-${w.level}`, 'data-warning': w.id }, w.text)));
+    }
     for (const [g, cell] of costCells) {
       const p = c.perGene[g];
       cell.textContent = p ? p.toFixed(1) : '';
@@ -438,7 +448,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         h('section', { class: 'card' }, h('h2', {}, 'Behavior, diet and mate preferences'), h('p', { class: 'muted small' }, 'Free: these are trade-offs.'),
           h('div', { class: 'traits' }, ...free.map(traitRow)))),
       h('aside', { class: 'design-side' }, avatar.el,
-        (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, problem, needName, serverError,
+        (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, warnBox, rampNote, problem, needName, serverError,
           h('div', { class: 'row' }, submit, reset)), budgetCard),
         hybridBox),
       dock));

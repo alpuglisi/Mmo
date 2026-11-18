@@ -48,7 +48,7 @@
 //! The meta JSON holds the other [`StateView`] fields that changed, under
 //! their own names (`clock`, `weather`, `player`, `lineage`, `slots_left`,
 //! `population`, `migration`, `groups` (the whole list when any of it
-//! changed), `view`, `balance`, `escrow`, `grace`), `leaderboard`
+//! changed), `view`, `balance`, `escrow`, `grace`, `poisonous`), `leaderboard`
 //! as `{day, breeding_adults}` with its rows keyed by player (`lb_set`:
 //! new or changed rows, `lb_del`: players gone), offers keyed by id
 //! (`offers_set`, `offers_del`) and the palette additions (`looks`,
@@ -374,6 +374,7 @@ struct Sent {
     balance: Option<u64>,
     escrow: Option<u64>,
     grace: Option<Option<GraceView>>,
+    poisonous: Option<Vec<u32>>,
     lb_head: Option<(Option<u64>, usize)>,
 }
 
@@ -711,6 +712,7 @@ impl DeltaEncoder {
         scalar!(balance);
         scalar!(escrow);
         scalar!(grace);
+        scalar!(poisonous);
         let lb = &s.leaderboard;
         let head = (lb.day, lb.breeding_adults);
         if sent.lb_head != Some(head) {
@@ -890,6 +892,8 @@ struct MetaIn {
     escrow: Option<u64>,
     #[serde(default, deserialize_with = "some")]
     grace: Option<Option<GraceView>>,
+    #[serde(default)]
+    poisonous: Option<Vec<u32>>,
     leaderboard: Option<LbHead>,
     lb_set: Vec<LeaderRow>,
     lb_del: Vec<PlayerId>,
@@ -920,6 +924,7 @@ struct Head {
     balance: u64,
     escrow: u64,
     grace: Option<GraceView>,
+    poisonous: Vec<u32>,
     lb: LbHead,
 }
 
@@ -1021,6 +1026,9 @@ impl DeltaDecoder {
                 if let Some(v) = m.grace {
                     h.grace = v;
                 }
+                if let Some(v) = m.poisonous {
+                    h.poisonous = v;
+                }
                 if let Some(v) = m.leaderboard {
                     h.lb = v;
                 }
@@ -1042,6 +1050,7 @@ impl DeltaDecoder {
                     escrow: m.escrow.ok_or_else(missing)?,
                     // Optional: older servers don't send it.
                     grace: m.grace.flatten(),
+                    poisonous: m.poisonous.unwrap_or_default(),
                     lb: m.leaderboard.ok_or_else(missing)?,
                 }
             }
@@ -1149,6 +1158,7 @@ impl DeltaDecoder {
             balance: h.balance,
             escrow: h.escrow,
             grace: h.grace,
+            poisonous: h.poisonous.clone(),
         })
     }
 }

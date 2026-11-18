@@ -1,6 +1,6 @@
 import { PLATFORMS } from '../platforms.mjs';
 import { counters, URL_RE, HASHTAG_RE, extractHashtags } from '../text.mjs';
-import { BRAND, bannedWordsIn } from '../style.mjs';
+import { BRAND, bannedWordsIn, unsupportedClaimsIn } from '../style.mjs';
 
 const NUM_RE = /(?<![\p{L}\d])\d[\d,]*(?:\.\d+)?%?/gu;
 
@@ -59,6 +59,7 @@ export function validateDraft(draft, { corpus = '', config } = {}) {
   if (tags.length > p.maxHashtags) errors.push(`${tags.length} hashtags > ${p.maxHashtags}`);
   const banned = bannedWordsIn(text);
   if (banned.length) errors.push(`style: banned phrase(s) ${banned.join(', ')}`);
+  for (const why of unsupportedClaimsIn(text)) errors.push(`claims: ${why}`);
   const emoji = (text.match(/\p{Extended_Pictographic}/gu) || []).length;
   if (emoji > 1) warnings.push(`style: ${emoji} emoji (guide says at most one)`);
   if (corpus) {

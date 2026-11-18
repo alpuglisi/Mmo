@@ -27,6 +27,8 @@ Where the design's build order stands:
 What remains is in [Suggested next steps](#suggested-next-steps). Launch
 marketing (drafting, human approval, scheduling and publishing on the
 owner's accounts) lives in [`tools/marketing/`](tools/marketing/PUBLISHING.md).
+Three AI playtests so far; what each found and what changed is summarised in
+[`docs/changelog-playtests.md`](docs/changelog-playtests.md).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
 
@@ -150,29 +152,39 @@ score).
   with obedience), going back to the order once it is down to 30
   (`ORDER_RESUME`), so a migration no longer pins a group through a
   drought. The order is done, and dropped, once the group's **median
-  member** is within its arrival radius of the target (the rally circle,
-  at least 3 tiles; checked on the hour, `settle_groups`): half the group
-  there, not the first few (playtest 2 saw an arrival with the median
-  member 27 tiles off, from a group of mostly juveniles). The player gets a
-  `group` alert, and the group then **settles** there for 15 days
-  (`SETTLE_DAYS`, `World::settle_circle`): members outside a circle of 1.5×
-  the arrival radius walk back into it (`Action::Rally` at utility
-  0.35 × heed, below a rally's 0.55 and set aside for any pressing need;
-  not a confinement), so a herd no longer drifts straight back. A
-  migration that hasn't gathered by its deadline is **ended** with a
-  `group` alert naming how far half the group still is: `3 days + distance
-  / 3 tiles a day` from the group's middle when ordered, kept between 4
-  and 30 days (`World::migration_timeout_ticks`, `migration_deadline_tick`
-  in the group view); scattered groups used to migrate forever.
-  `World::reroute_migration` moves a standing order's target keeping its
-  age (its deadline never gets earlier), for re-routing a target that
-  floods. A group other than the main one with no members is refused
-  (`no_such_group`). Deadlines and settle circles are saved (snapshot
-  version 41; older saves restore with none, and a standing migration's
-  deadline then runs from the restore). The server plans the route a
-  member near the group's middle would take (`World::migration_route`, at
-  most 32 points) when the order is given and sends it in the group's
-  `route` for the client to draw.
+  member** is within a few tiles of the target (`World::arrival_radius`:
+  3 tiles plus a quarter per √members, at most 8; checked on the hour,
+  `settle_groups`). Half the group there, not the first few: playtest 2
+  saw an arrival with the median 27 tiles off (a group of mostly
+  juveniles), playtest 3 one with a 486-strong herd's median 24–29 tiles
+  off (the arrival radius was the rally circle, up to 24 tiles). The
+  player gets a `group` alert, and the target becomes the group's
+  **home** until its next order (`World::settle_circle`, saved): members
+  outside the circle it would gather in at a rally (at least 1.5× the
+  arrival radius, `World::home_radius`) walk back into it (`Action::Rally`
+  at utility 0.35 × heed, below a rally's 0.55 and set aside for any
+  pressing need; not a confinement). Herds used to walk home when a
+  15-day settle ended; one that drifts anyway (median member more than
+  twice the home radius away, checked daily) gets a `group` alert, once
+  until it is back. A migration **ends** with a `group` alert when its
+  group's median member has got no closer (by a tile) for 5 days
+  (`MIGRATE_STALL_DAYS`): scattered or blocked groups stop, while a long
+  journey that keeps moving no longer fizzles (playtest 3: "half the group
+  is still 109 tiles away"). A hard limit of `5 days + distance / 2 tiles
+  a day`, kept between 6 and 120 days (`World::migration_timeout_ticks`),
+  backs it up; the group view's `migration_deadline_tick` is the hard
+  limit. The alert says when the group was mostly dormant (hibernating or
+  estivating animals can't walk), and a migrate given while 30% or more of
+  the group is dormant warns in its reply. `World::reroute_migration`
+  moves a standing order's target keeping its age (its hard limit never
+  gets earlier), for re-routing a target that floods. A group other than
+  the main one with no members is refused (`no_such_group`). Plans and
+  homes are saved (snapshot version 41, the headway from version 45;
+  older saves restore with none, and a standing migration is measured
+  afresh). The server plans the route a member near the group's middle
+  would take (`World::migration_route`, at most 32 points) when the order
+  is given, sends it in the group's `route` for the client to draw, and
+  warns when it crosses 3 or more tiles of open water.
 - **Emptied groups.** A group whose last member dies loses its migration,
   territory and rally on the next hour (the main group only once the
   player has nothing alive, since its agents may all be cohorts in
@@ -223,18 +235,34 @@ score).
   (`claim_cooldown`; abandoning in between changes nothing), or every 2
   minutes of wall-clock time if longer (`GameConfig::claim_cooldown_min_minutes`,
   `World::set_claim_cooldown_min_ticks`: half a day passes in seconds at a
-  fast tick). Seasonal migration (a gene) still outranks the
-  territory, and danger outranks both as usual.
+  fast tick). The refusal says the wait in minutes and game days. A group
+  split off keeps the cooldown of the group it came from, on purpose: a
+  split must not reset it (split, claim, merge back would dodge it); the
+  message says so. Seasonal migration (a gene) still outranks the
+  territory, and danger outranks both as usual. The toolbar's Clear
+  cancels every order of the picked group (migration, territory, rally).
 - **Water** (playtest 2: territories and rallies killed herds in a
   drought). Thirst takes members out of a territory or rally circle: at
   thirst 60 (±0.1 with obedience, `groups::thirst_breaks_off`) the circle
   stops holding them (no walking back in, no foraging limit) until they
   have drunk down to 30, as a migrant breaks off. A claim or rally whose
-  circle is more than half water the group can't stand in is refused
-  (`mostly_water`, `detail.water_share`); the reply reports the circle's
-  `water_share` and `drinkable_tiles` (drinking water in it or within 4
-  tiles of its edge, `World::water_check`) and carries a `warning` when
-  there are fewer than 3 such tiles or a quarter of it is water.
+  circle is more than half water the group can't **stand** in is refused
+  (`mostly_water`, `detail.water_share`): standing means wading depth at
+  most (`terrain::can_stand`), so a strong swimmer's lake no longer counts
+  as land (playtest 3: an 88% lake claim reported water share 0), and a
+  migrate target in a lake moves ashore. The reply reports the circle's
+  `water_share`, `drinkable_tiles` (drinking water in it or within 4 tiles
+  of its edge, `World::water_check`), `food_supports` (about how many of
+  the group's animals its plants' regrowth feeds in a good season,
+  `World::food_check`; none for meat-eaters) and `distance` from the
+  group, with `warning`s (and a `warnings` list) when there are fewer than
+  3 drinkable tiles, a quarter of it is water, its centre is in water, it
+  feeds fewer animals than the group has, or it is more than 30 tiles from
+  the group. A radius raised to the minimum or cut to the group's limit
+  says so (`note`). Every day the server checks standing territories and
+  alerts the owner once when one has no drinking water left or is grazed
+  bare (standing plants for under 3 days), with the day's thirst or
+  hunger deaths.
 - **Rally** (`rally_group`, `cancel_rally`): gather a group at a point.
   The circle it gathers in has radius `2 + √members`, about π tiles of
   ground per member, up to 24 tiles (the largest territory's cap, reached
@@ -653,7 +681,7 @@ smoke test waits on explicit state conditions with generous timeouts rather
 than fixed sleeps, and retries the steps the living world can legitimately
 interrupt (a click landing on an organism that just moved there, a
 possessed organism breaking off its order to drink or flee, a picked mate
-dying, conceiving first or its agreement expiring at a season change), but
+dying, conceiving first or its agreement expiring), but
 never loosens the assertions themselves: the directed mating between two
 same-design players must complete and conceive.
 
@@ -1045,7 +1073,7 @@ Client → server:
 | `request_mating` | `mine, partner, price?` | Directed mating. Your own pair runs at once; another player's organism sends them a `mating_request`. A `price` (renown) goes into escrow at once (`insufficient_funds` if you can't cover it) |
 | `preview_mating` | `mine, partner` | Only with a partner in your sight, on the market or in one of your open offers (`out_of_sight` otherwise). What the mating would give now, nothing spent: `data` = `{compatible, fertility, body_plan_fertility, distance_fertility, body_plan_gaps: [{gene, gap}], mismatch, cost, failure_chance, distance, meeting_distance, problem?}` |
 | `offer_to_lineage` | `mine, lineage, price?` | Like `request_mating`, to any suitable animal of another player's living `lineage`: its owner picks one on accepting. `data` = `{offer}` with `partner` 0 and `lineage` set until accepted (`unknown_lineage`, `own_organism`) |
-| `respond_mating` | `request, accept, partner?` | The partner's owner answers; for an offer to the lineage `partner` picks the animal (default: the nearest free one of the other sex, not pregnant, not promised, fertile with `mine`; `no_partner_available` leaves the offer open, `partner_unavailable` for an unsuitable pick) |
+| `respond_mating` | `request, accept, partner?` | The partner's owner answers (`data` = `{offer, outcome}`: the offer as it stands, walking to meet or completed); for an offer to the lineage `partner` picks the animal (default: the nearest free one of the other sex, not pregnant, not promised, fertile with `mine`; `no_partner_available` leaves the offer open, `partner_unavailable` for an unsuitable pick) |
 | `complete_mating` | `request` | Retry an accepted agreement now |
 | `cancel_mating` | `request` | Either side withdraws an open offer |
 | `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for the adults of group `group` (default 0, the main group; `no_such_group` past 3 or for another group without members, and for `clear_migration` unless it still has an order); replaces its territory or rally. `off_map` off the map; a target on deep water, ice or a cliff moves to the nearest land within 8 tiles (`data.moved`, `data.note`) or gives `unreachable`. `data` = `{x, y, group, route?, moved?, note?}`; the order ends when most of the group has arrived (a `group` alert). `clear_migration` without `group` clears every group's |
@@ -1066,7 +1094,7 @@ Client → server:
 | `ledger` | `limit?` | `data` = `{balance, escrow, entries: [{seq, player, tick, day, delta, balance, kind, text, offer?, listing?}]}`, newest first (default 50, at most 100); `kind`: `grant`, `income`, `achievement`, `escrow`, `sale`, `refund`, `royalty`, `purchase` |
 | `renown_shop` | | `data` = `{balance, slots_left, slots_bought, slot_price?, reinforce_size, reinforce_price, reinforce_max_alive, reinforce_blocked?, market_fee_percent, royalty_per_point, reinforcements_bought, reinforcements_max, nameplate_price, nameplate_colors, nameplate?, species_name_price}` (*Why trade* in Economy) |
 | `buy_mating_slot` | | One extra directed-mating slot until the weather season changes: 30 renown, doubling with each bought that season, at most 6 (`limit_reached`, `insufficient_funds`, `no_lineage`); `data` = the shop after |
-| `reinforce` | | 10 adults copied from your lineage's living adults join it on the best-fed ground near them: 150 renown, doubling with each, at most 2 a ranked season per player (retired lineages count: `limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
+| `reinforce` | | 10 young adults copied from your lineage's living adults join it on the best-fed ground near them: 150 renown, doubling with each, at most 2 within a ranked season's length per player (a rolling window; retired lineages count: `limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
 | `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
 | `name_species` | `species, name` | Name a living species your lineage founded (cosmetic, 300 renown; `not_yours`, `species_gone`, `name_taken`, `bad_name`); `data` = `{species, name}` |
 | `nameplates` | | `data` = `{nameplates: {player: {color, title}}}` |
@@ -1633,8 +1661,8 @@ reinforcements could be farmed):
   exported in playtest 2 that is 3–9 a day, a third to a half of income;
   *Competition* shows what it pays a broker.
 - **Fee** at least 1 renown on any paid price (1–9 renown prices paid none).
-- **Titles**: the stud market needs 3 sales to 2 different buyers in the
-  season (one paid offer won it, and paying a rival handed them the
+- **Titles**: the stud market needs 2 sales to 2 different buyers in the
+  season (3 before playtest 3, when no cross-player mating completed) (one paid offer won it, and paying a rival handed them the
   title); a catastrophe counts as survived only for a lineage founded
   before it began, and a survival title every active player ties for goes
   to no one.
@@ -1674,6 +1702,50 @@ playtest 2 most lineages were sterile with each other and royalties were
 1–4 a day. Paying only for alleles in other players' lineages (not the
 wild) took a sixth off it in every arm; the rate is left at 5 so that
 in a typical game it is a real share of income.
+
+**Playtest 3 changes** (`docs/playtest-3.md`: 0 of 21 cross-player matings
+completed; accepted pairs were 54–110 tiles apart and nothing brought them
+together):
+
+- **Rendezvous.** An accepted agreement (an accepted request, a bought
+  listing, a won auction) walks its two animals toward each other
+  (`World::set_rendezvous`; `decide` gives each the action `rally` toward
+  its partner). Each breaks off for a threat or an urgent thirst or
+  hunger as a possessed animal does, and a possessed animal follows its
+  player. The agreement runs the tick they meet (1.5 tiles). The world
+  doesn't save rendezvous: the server sets them again for every accepted
+  agreement when it restores a world, so no snapshot change. Each open
+  offer's `meet` gives both sides where the pair is (8-tile cells) and
+  how far apart; the Mates tab says which way and how far ("possess yours
+  to hurry"). Being too far apart on acceptance is no error any more (the
+  update carries `meet`, no `too_far`). A test founds two players' animals
+  across the map and sees a paid mating complete and pay.
+- **Dams.** Accepting with your own pregnant female is refused with the
+  reason (it used to fail later as "already pregnant"); a pregnant listed
+  dam shows as busy; a dam promised in an open agreement can't get a
+  fixed listing. Promised females were already held from natural mating.
+- **Stud market title**: 2 sales to 2 different buyers in the season.
+- **Offers to a lineage**: the Mates tab lets the accepter pick their own
+  animal (default: the nearest free one). `respond_mating` answers with
+  the offer (and the outcome when it ran at once). A refused pick says
+  why; a rival's `partner_unavailable` stays generic but says what to do
+  (offer to the lineage). Texts name "one of <player>'s <lineage>"
+  instead of "#0".
+- **Market wording**: the compatibility list reads the sampled pairs (the
+  mean, the range most pairs fall in, the share of pairs that can
+  conceive, the drift risk); "sterile … 0.30 is sterile" appears only when
+  even the closest pair is 0.30 apart. "For my adult" says "(none picked:
+  compatibility by lineage only)"; when no listing matches, the list says
+  where your own listings are.
+- **Reinforcements** count in a rolling window of a ranked season's length
+  (cap and price), not since the season began; copies arrive as young
+  adults; the button asks for confirmation and its reason shows beside it.
+- **Re-founding within a ranked season's length of retiring founds half
+  the founders** (`Game::refound_founders`; after an extinction, or later,
+  the full design). The retire dialog says so.
+- Small: `traded_share` no longer reads −0.0; a closed offer has no
+  `expires_tick`; the auction duration error names the 5-minute floor;
+  the royalty doc comments agree (other players' lineages only).
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
@@ -3191,7 +3263,7 @@ the other, until it completes with fertility above 0.5; it must conceive
 when the cost is 0, since a fertile pair inside both preferences has no
 failure chance; an organism lost to predators or thirst on the way, a
 partner female that conceives before bob accepts (a pending request holds
-nothing) or a season change expiring the agreement means another pair is
+nothing) or the agreement expiring means another pair is
 tried, up to five times), releases the walkers, then buys from the **stud
 marketplace** through both players' Market tabs (the first player lists
 one of her females as a dam (a listed dam is held from breeding and the
@@ -7371,7 +7443,9 @@ reference map, scaled by area) as `x`, its litters are multiplied by
 `1 / (1 + x^4)` (0.94 at half the cap, 0.5 at the cap, 0.17 at 1.5×,
 0.06 at 2×) and its members' hunger by `1 + 0.3 · max(0, x − 1)`. The hard
 safety ceiling is twice the cap, every member counted. So a lineage near
-the cap slows down instead of stopping with hundreds pregnant, food rather
+the cap slows down instead of stopping with hundreds pregnant (the
+ceiling is now 1.4× the cap, 2,100 on the reference map: see *Playtest 2:
+competitive balance*), food rather
 than the cap decides where it settles, and its share can grow past it only
 through its genes living in other lineages. Wild species keep their hard
 caps. `lineage_stats.crowding` shows the numbers; the multipliers are
@@ -7491,9 +7565,12 @@ two-sided: a graced lineage's animals don't hunt other players' animals
 and it can't order attacks on them (`own_grace`), though they hunt wild
 prey. It lasts at least `GameConfig::grace_min_minutes` (30) of real time,
 whichever is longer (`World::set_attack_grace_min_ticks`; 20 days passed
-in 100 s at playtest speed). Re-founding doesn't renew it: it runs from the
-first of the owner's foundings in an unbroken run where each came within
-twice the grace of the one before (`World::grace_start`). The state
+in 100 s at playtest speed). Re-founding isn't meant to renew it: it runs
+from the first of the owner's foundings in an unbroken run where each came
+within twice the grace of the one before (`World::grace_start`).
+**Changing (playtest 3, finding 1):** that window is twice the grace in game
+days only (about 40 days, ~3 real minutes at playtest speed) and ignores the
+30-minute floor, so a later re-founding gets a fresh 30-minute grace. The state
 carries it while it lasts (`grace: {days_left, until_tick, real_seconds_left}`, and `protected` on such neighbours), and the
 spectator view doesn't place a graced lineage on the map. Each
 lineage's founding tick is saved (`World::lineage_founded`). The first
@@ -7672,6 +7749,175 @@ the soft-cap defaults don't reach the balance tools' lineages):
 | `predlong`: lowest prey | antelope 15–39, voles 35–88 | antelope 6 (seed 31), else 23–39; voles 17 (seed 41), else 36–88 |
 | `calibrate tournament --worlds 96 --days 90 --seed0 70001`: top thermoregulation × birth class win share (mean share) | 26.0% (warm live birth) | 27.1% (warm incubated eggs; warm live birth 26.0%, cold abandoned eggs 15.6%); by final share warm incubated 26.0% |
 | `evo-sim genetics` | | 134 checks: 107 strict passed, 0 failed |
+### Playtest 2: predators, toxins and drowning
+
+Remediation round 3 for `docs/playtest-2.md`'s predator, toxin and
+drowning findings (snapshot version 44; every rule below is off at 0, what
+snapshots of version 43 and before read, `serde_util::before_v44`).
+Versions 41 to 43 are main's (migrations, species hysteresis, competitive
+balance); this round's gate went on the next free version when main was
+merged.
+
+**Toxic prey can be learned** (`Balance::toxic_learning` 1,
+`world::toxic`). In playtest 2, a drab, toxic, burrowing egg swarm won
+with about 40% share. It poisoned every predator that bit it, and nothing
+told predators or their players which prey was toxic. Now each predator
+lineage keeps a lesson per prey lineage (`World::toxic_lessons`, saved):
+- **Learning.** Every poisoning raises the lesson by
+  `0.15 × (1 + 2 × coloration)`, so warning colours teach about three
+  times faster than a drab coat. Lessons are capped at 1 and fade with a
+  60-day time constant.
+- **Avoidance.** Hunters pass a prey up with probability
+  lesson × `(0.3 + 0.7 × coloration)`. They can only act on a lesson as
+  far as they recognise the prey, so a drab toxic lineage is still taken
+  most of the time, while a bright one is left alone. The honest signal
+  pays; drab toxins don't buy full protection.
+- **Harm.** A lineage that knows a toxin takes `1 − 0.7 × lesson` of the
+  harm when it bites anyway (it tastes and spits).
+- **Players see it.** Lineages a player's animals have learned are
+  poisonous come in the state (`poisonous`). The inspector says "This
+  animal looks poisonous to you", and an attack order on one goes through
+  with a `warning` in its reply ("on their own they pass it up N% of the
+  time"), toasted in red.
+
+The first version, without the recognisability factor, made toxins
+better than before. Once the pack learned, it left the drab toxic swarm
+alone and ate the other players' herbivores instead: Toxic grew from 916
+to 1,192 animals and took 46% of the six players' animals, against 39%.
+
+**Attack orders end with a reason.** Round 3 D's server alerts tell the
+attacker how an order ended (`Game::announce_attack_results`) and limit
+the victim's alerts. The sim now also records the end itself
+(`World::take_attack_events`: caught by the attacker or its pack, dead of
+something else, gone to ground, more than 12 tiles off, attacker dead; a
+release, another possession or a move order end silently), for hosts that
+want it. A refusal is toasted once, by the client's command handling; it
+used to be toasted twice. The inspector's "Attack with #id" is disabled
+and says "(too far)" beyond 8 tiles, as it already was for a protected
+newcomer. Playtest 2's "territory patrol overrides an attack order" was
+such an order ending silently: the target, a burrower, went to ground and
+the order was dropped. A test
+(`an_attack_order_outside_the_territory_is_followed`) shows a territory
+member outside its territory follows an order to the end.
+
+**Drinking** (`Balance::possess_drink` 1, `Balance::drink_priority` 0):
+- **Possessed animals drink** (`possess_drink`, on). One with water within
+  8 tiles breaks off its order to drink at thirst 60 (instead of 85). At
+  water, it drinks from thirst 10. The need alert says when it has already
+  broken off to drink.
+- **Parched animals drink first** (`drink_priority`, off by default). Past
+  thirst 0.7, drinking gains up to +0.6 utility. A threat in sight stops
+  holding a parched animal back from water (the comment always said so;
+  the code damped drinking for everyone), fattening for winter stops
+  pulling it to graze, and hunters in a chase drink at water they pass.
+  These are playtest 2's parched herbivores that "scavenge" or graze
+  instead of drinking. The rule works in its test, but it changes every
+  wild animal's behaviour, and in `predlong` on the six seeds that went
+  wrong (32, 36, 41, 45, 46 and 48):
+  - all rules on, the fox survived 3 of 6 and two prey lineages were lost;
+  - with only `drink_priority` off, the fox survived 5 of 6 and none was
+    lost (5 of 6 and one lost with every new rule off);
+  - turning off any other rule changed nothing measurable, and
+    `led_pack`, which needs attack orders, gave exactly the all-on worlds,
+    as it should.
+
+  So it ships off, for a later round to find which part costs the fox.
+
+**Dry ground** (`Balance::dry_sites` 1):
+- No dormancy on ice over water deep enough to drown the sleeper at the
+  melt, and a sleeper on such ice wakes and walks off.
+- Founders land on dry ground: no water or ice, and at least 2 steps from
+  water. A home is accepted if at least 60% of the ground within the
+  founding's spread is dry; otherwise up to 8 more homes are tried and
+  the driest kept. These picks and placements use their own random
+  stream, so founders' genomes are drawn as before.
+- Migrations into targets that flood later belong to session A, whose
+  `World::reroute_migration` re-routes them.
+
+**Player predators** (`Balance::carnivore_energetics` 1,
+`Balance::led_pack` 0.5). Playtest 2's obligate carnivores starved. A
+2.9 kg wolf needed about 0.55 kg of prey a day, a fifth of its weight;
+real carnivores manage on 5–10%. The old carnivore hunger discount went
+when meat got its food value.
+- **Lean economy.** A hungry obligate carnivore's hunger now rises up to
+  30% slower: none at carnivory 0.7 or below, all of it at 0.95 and above,
+  and only in hard times (none at hunger 40 or below, all of it at 80). The
+  fox, at 0.6, is untouched; the wild pack hunters, at 0.9–0.95, get most
+  of it.
+- **Led packs take big prey.** In a hunt a player leads (an attack order
+  and the pack-mates who join it), the prey mass limit grows by 0.5 per
+  pack-mate around, up to 8 (`decide::led_pack_scale`), and up to 8
+  pack-mates count in the strike. So a full pack takes prey about 7× one
+  hunter's weight, against 3× before, and the playtest's 29–54 kg herds
+  come within reach of a light pack. Making body size cost points is the
+  balance session's part.
+- **Wolves in `founding wolves`.** Founded in autumn on seeds 7 and 11,
+  playtest 2's design ends the year at 75 and 71 animals, where it ended
+  at 30 and 68 before.
+
+**A six-player world.** `cargo run --release -p evo-server --example
+predators` (`crates/server/examples/predators.rs`, beside `hunt.rs`)
+plays these six players through `Game`:
+- **Steady, Herd and Nomad:** starter herbivores;
+- **Hunter:** playtest 2's Apex Wolves (body 0.4, carnivory 0.92, 42
+  founders);
+- **Toxic:** LateComer's recipe (egg-laying, drab, toxin 0.8, burrowing,
+  hibernating, 60 founders);
+- **Late:** the starter, founded on day 40.
+
+Six seeds, 180 days:
+
+| Player | Old rules (the version 44 tunables off) | New rules | New rules, attack orders |
+| --- | --- | --- | --- |
+| Steady | 245, 13.9% (1 extinct) | 252, 15.9% | 252, 14.7% (1 extinct) |
+| Herd | 659, 24.3% | 197, 14.3% | 84, 11.3% (2 extinct) |
+| **Hunter** | **42, 3.8%** (peak 67) | **110, 11.6%** (peak 126) | **113, 13.6%** (peak 124) |
+| **Toxic** | **767, 37.2%** | **365, 35.2%** | **456, 38.4%** |
+| Nomad | 325, 14.6% | 268, 16.1% | 90, 13.8% |
+| Late | 185, 6.2% | 78, 6.8% | 121, 8.2% |
+| Toxic's animals eaten per world | 54 | 248 | 203 |
+| Hunter's toxin deaths per world | 29 | 24 | 27 |
+| Hunter's lesson about Toxic | 0 | 0.92 | 1.00 |
+
+Final head count and the mean share of the six players' animals, on top of
+the balance session's version 43 rules, with this round's defaults
+(`drink_priority` off). The playtest's carnivore is viable now: about
+2.6× the animals and 3× the share, where before it hung on at 42 animals.
+Toxins are no longer free:
+- **Toxic's predation.** The drab toxic swarm is eaten 4–5× as often.
+- **Toxic's size.** It ends at half its old size.
+- **The Hunter's toxin deaths.** They don't rise with the Hunter's size:
+  a lineage that has learned is harmed 70% less per bite.
+
+The cost lands on the other herbivores, Herd most of all, which now feed a
+real predator. With the pack hunting on its own, no player dies out. With
+attack orders aimed at the heaviest prey, Herd dies out on 2 of 6 seeds.
+Body size costing points (the balance session's version 43) and a grace
+that follows a newcomer's head count are the levers left for the herds.
+
+**Ablation (before the merge with main's version 43).** The first version
+of learned avoidance, without the recognisability factor, made drab toxins
+a free pass. Toxic took 46% against 39%, and the other herbivores were
+eaten instead.
+
+**Checks.**
+
+| Check | Before (the version 42 tunables off) | After |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.65 (± 0.31) | 11.88 (± 0.14); every lineage 12 of 12 |
+| `compare --seed 101 --adaptive` (the version 44 tunables off vs defaults) | | +0.01 (sequential 95% CI −0.16 … +0.18 after 12 seeds: no difference that matters) |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 15/16 (15), 15/16 (14); 1 (omnivores, seed 48) | 14/16 (14), 14/16 (14); 0 |
+| `predlong`, `drink_priority` on (the first default) | | 13/16 (13), 15/16 (15); 3 |
+| `evo-sim genetics` | | 134 checks: 107 strict passed, 0 failed |
+| workspace tests, both clippy runs, client typecheck and `vitest` | | pass |
+
+The "before" column is today's main with the version 44 tunables at 0.
+The fox lost one seed against the baseline (32 and 34 against 45; which
+seeds fail moves with any change to the rules). The pack hunters' viable
+seeds are equal, and no prey lineage was lost. Carnivore energetics act
+only in hard times (hunger 40 to 80, `apply::lean_times`): at all hunger
+levels, `predlong` lost the fox on 3 of 16 seeds as the wild pack grew to
+650–750 animals.
 
 ### Playtest 3: balance
 
@@ -7696,8 +7942,9 @@ its place and what the fixes broke:
 - **The starter was absorbed by the Steppe antelope** (finding 22), 100%
   fertile with it.
 
-**Sim rules, on by default from snapshot version 45** (44 is boom's;
-renumber at merge), off at 0 for older saves (`serde_util::before_v45`):
+**Sim rules, on by default from snapshot version 46** (gated at 45 on its
+branch; renumbered at merge after 44 and 45), off at 0 for older saves
+(`serde_util::before_v46`):
 
 | Tunable (default) | Rule |
 | --- | --- |

@@ -10,7 +10,7 @@
 // returns the caption. They only describe: any combination is allowed.
 
 import {
-  adultMass, buoyancy, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
+  adultMass, buoyancy, foodCostOf, GENE_DEFAULTS, DEGREES_PER_INSULATION, FANG_THRESHOLD, fangPlantLoss, flight, geneValue, iceSlip, scaleWarmthLoss,
 } from '../bodyMath';
 import type { Morphology } from '../morphology';
 import type { DesignSpec } from '../protocol';
@@ -18,6 +18,13 @@ import { traitNameLower } from './traitNames';
 
 /** A design, with its body plan when the editor has one (eye count, leg count, shapes). */
 export type CaptionDesign = DesignSpec & { morphology?: Morphology };
+
+/** " · upkeep +12% food a day vs. none" (nothing under 1%). */
+function foodNote(extra: number, than: string): string {
+  const n = Math.round(extra * 100);
+  if (Math.abs(n) < 1) return '';
+  return ` · upkeep ${n > 0 ? '+' : '−'}${Math.abs(n)}% food a day${than ? ` ${than}` : ''}`;
+}
 
 export type Level = 'low' | 'mid' | 'high';
 
@@ -90,13 +97,14 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     low: 'small: quick, stealthy, matures fast; weak and short-lived',
     mid: 'medium: middling strength, defense, speed and lifespan',
     high: 'large: strong, tough, long-lived; slow, hungry, easy to spot',
-    context: (d, _l, base) => `${base} (adult ≈ ${kg(adultMass(d))})`,
+    context: (d, _l, base) => `${base} (adult ≈ ${kg(adultMass(d))})${foodNote(foodCostOf(d, 'body_size', GENE_DEFAULTS.body_size), 'vs. the default size')}`,
   },
   muscle: {
     what: 'Strength and speed, paid for in food.',
     low: 'lean: eats little, but weaker and slower',
     mid: 'muscled: stronger and faster, eats more',
     high: 'powerful: strongest and fastest; hungry, heavy, floats poorly',
+    context: (d, _l, base) => `${base}${foodNote(foodCostOf(d, 'muscle'), 'vs. lean')}`,
   },
   fat_stores: {
     what: 'Energy reserves, warmth and buoyancy.',
@@ -248,11 +256,12 @@ export const TRAIT_TEXT: Record<string, TraitText> = {
     lo: FANG_THRESHOLD,
     context: (d, level, base) => {
       if (level === 'low') return base;
+      const upkeep = foodNote(foodCostOf(d, 'fangs'), '');
       // stats.rs `Traits::plant_efficiency`: plant food is worth
       // 1 − fang_grazing × fangs × (1 − carnivory) of its value.
-      if (geneValue(d, 'carnivory') >= 1) return `${base} · no cost to a pure meat eater`;
+      if (geneValue(d, 'carnivory') >= 1) return `${base}${upkeep} · no plant-feeding cost to a pure meat eater`;
       const loss = Math.round(fangPlantLoss(d) * 100);
-      return loss < 1 ? `${base} · plant feeding barely affected` : `${base} · plant feeding −${loss}%`;
+      return loss < 1 ? `${base}${upkeep} · plant feeding barely affected` : `${base}${upkeep} · plant feeding −${loss}%`;
     },
   },
   large_eyes: {

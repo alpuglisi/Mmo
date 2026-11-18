@@ -2145,11 +2145,83 @@ pub mod before_v43 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v45")]` on the competitive
-/// balance tunables of playtest 3 (`Balance::eye_hybrid`, `winter_toll`,
-/// `wake_spread`). On a thread holding a
-/// [`before_v45::Guard`] (reading or hashing a snapshot of version 44 or
-/// before) none is written or read: the tunables read as 0 (off).
+/// `#[serde(with = "crate::serde_util::before_v44")]` on the playtest 2
+/// tunables (`Balance::toxic_learning` and the rest), and `before_v44::list`
+/// on the values added with them (`World::toxic_lessons`). On a thread
+/// holding a [`before_v44::Guard`] (reading or hashing a snapshot of version
+/// 43 or before) none is written or read: the tunables read as 0 (off) and
+/// the values as empty.
+pub mod before_v44 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The playtest 2 tunables before version 44: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+
+    /// The same for a value that older versions don't have at all: its
+    /// default when reading them.
+    pub mod list {
+        use super::*;
+
+        pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(T::default())
+            } else {
+                T::deserialize(d)
+            }
+        }
+    }
+}
+
+/// What world snapshot version 45 added: a migration's headway
+/// (`groups::MigrationPlan::best_median`, `progress_tick`). On a thread
+/// holding a [`before_v45::Guard`] (reading or hashing a snapshot of
+/// version 44 or before) neither is written or read: the best reads as
+/// infinite and the tick as 0 (measured afresh at the next check).
 pub mod before_v45 {
     use std::cell::Cell;
 
@@ -2159,7 +2231,79 @@ pub mod before_v45 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The competitive balance tunables before version 45: off.
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    /// An `f32` older versions lack, read as infinity.
+    pub mod infinite {
+        use super::*;
+
+        pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(f32::INFINITY)
+            } else {
+                f32::deserialize(d)
+            }
+        }
+    }
+
+    /// A `u64` older versions lack, read as 0.
+    pub mod zero {
+        use super::*;
+
+        pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(0)
+            } else {
+                u64::deserialize(d)
+            }
+        }
+    }
+}
+
+/// `#[serde(with = "crate::serde_util::before_v46")]` on the competitive
+/// balance tunables of playtest 3 (`Balance::eye_hybrid`, `winter_toll`,
+/// `wake_spread`). On a thread holding a
+/// [`before_v46::Guard`] (reading or hashing a snapshot of version 45 or
+/// before) none is written or read: the tunables read as 0 (off).
+pub mod before_v46 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The competitive balance tunables before version 46: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

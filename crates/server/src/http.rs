@@ -336,8 +336,19 @@ impl ApiError {
         Self { status, code: code.into(), message: message.into(), detail: None }
     }
 
+    /// A request without a known session token. Sessions end on logout,
+    /// when idle or too old, and when the server restarts without a clean
+    /// stop (it saves them only then): the message says to log in again,
+    /// for API clients that don't know (the web client already does).
     fn unauthorized() -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or unknown session token")
+        let mut e = Self::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "missing or unknown session token: please log in again (POST /api/login). Sessions end on logout, \
+             after being idle, and when the server restarts.",
+        );
+        e.detail = Some(serde_json::json!({ "relogin": true }));
+        e
     }
 
     fn busy() -> Self {

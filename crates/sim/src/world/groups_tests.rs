@@ -105,7 +105,7 @@ fn split_groups_follow_separate_orders_and_young_join_their_mothers_group() {
     // Send the halves to opposite sides of the map.
     let (west, east) = (Vec2::new(6.0, start.0.y), Vec2::new(58.0, start.1.y));
     assert_eq!(w.command_migrate_group(HERD, 0, west), Ok(west));
-    w.command_migrate_group(HERD, 1, east).unwrap();
+    let east = w.command_migrate_group(HERD, 1, east).unwrap();
     assert_eq!(w.migration_order(HERD, 1), Some(east));
     assert_eq!(w.command_migrate_group(HERD, MAX_GROUPS, east), Err(CommandError::NoSuchGroup(MAX_GROUPS)));
     let gap0 = start.0.dist(start.1);
