@@ -78,7 +78,8 @@ pub const MAX_AUCTION_DAYS: u32 = 30;
 /// Share of every stud fee or price paid out that is destroyed, percent.
 pub const MARKET_FEE_PERCENT: u64 = 10;
 /// Renown a day per percentage point of all scored alleles that are a
-/// player's and live outside their lineage ([`royalty`]).
+/// player's and live in other players' lineages ([`royalty`]; alleles in
+/// the wild don't pay).
 pub const ROYALTY_PER_POINT: f64 = 5.0;
 /// Price of the first extra mating slot of a weather season; each further
 /// one costs twice the last ([`slot_price`]).

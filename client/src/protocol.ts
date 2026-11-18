@@ -961,8 +961,10 @@ export interface ScoreBreakdown {
   head_share: number;
   /** Your alleles in your own lineage. */
   home_share: number;
-  /** Your alleles in rivals' animals and the wild (earns the royalty). */
+  /** Your alleles in rivals' animals and the wild. */
   exported_share: number;
+  /** The part in other players' lineages: what the royalty pays for (absent on older servers). */
+  traded_share?: number;
   /** Others' alleles your lineage carries: what hybridising cost. */
   foreign_share: number;
   /** Whose alleles your breeding adults carry; `share` of your lineage's alleles. */

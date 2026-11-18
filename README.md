@@ -961,11 +961,12 @@ world's breeding adults:
 | `share` | the legacy share: your alleles wherever they live (`home_share + exported_share`) |
 | `head_share` | your lineage's share of all alleles, whoever's: its head count among breeding adults (`home_share + foreign_share`) |
 | `home_share` | your alleles in your own lineage |
-| `exported_share` | your alleles in rivals' animals and the wild; earns the royalty |
+| `exported_share` | your alleles in rivals' animals and the wild |
+| `traded_share` | the part of `exported_share` in other players' lineages; earns the royalty |
 | `foreign_share` | others' alleles your lineage carries: what hybridising cost your share |
 | `carried` | `[{player, name, share}]`: whose alleles your breeding adults carry, share of your lineage's alleles (0, "wild", is the wild ecosystem: wild alleles carry no species) |
 | `placed` | `[{lineage, lineage_name, owner, owner_name, share}]`: where your alleles live, share of your alleles (a wild species is a lineage with owner 0) |
-| `royalty` | renown a day the royalty pays at this `exported_share` |
+| `royalty` | renown a day the royalty pays at this `traded_share` |
 | `day` | the daily snapshot it is from |
 
 `origins` (older) counts every living member's alleles, hidden recessive
@@ -1508,9 +1509,11 @@ earned in play, so each perk is modest and priced to rise):
 
 - **Breeder's royalty.** Every day, with the income, a player earns
   `round(5 × percentage points of all scored alleles that are theirs and
-  live outside their own lineage)` (`royalty` ledger entries): a stud that
-  sires into rivals' dams, or genes that spread into the wild, pay their
-  breeder renown on top of the legacy share they already count for.
+  live in other players' lineages)` (`royalty` ledger entries;
+  `lineage_stats.score.traded_share`): a stud that sires into rivals' dams
+  pays its breeder renown on top of the legacy share it already counts
+  for. Alleles in the wild (a design that hybridised with a wild species)
+  still score but pay no royalty: they came from no trade.
   Combined with the soft lineage cap (below), this is what a large lineage
   wants: it can't grow its own head count much further, but its genes can
   live in other players' animals.

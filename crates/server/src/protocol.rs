@@ -1488,8 +1488,11 @@ pub struct ScoreBreakdown {
     /// Your alleles in your own lineage (the part of `share` at home).
     pub home_share: f64,
     /// Your alleles outside your lineage: in rivals' animals and the wild.
-    /// Earns the royalty.
     pub exported_share: f64,
+    /// The part of `exported_share` in other players' lineages: what the
+    /// royalty pays for (alleles in the wild came from no trade).
+    #[serde(default)]
+    pub traded_share: f64,
     /// Others' alleles your lineage carries (`head_share - home_share`):
     /// what hybridising cost your share.
     pub foreign_share: f64,
@@ -1499,7 +1502,7 @@ pub struct ScoreBreakdown {
     /// Where your alleles live, largest first; `share` here is of your
     /// alleles (sums to 1).
     pub placed: Vec<GeneHost>,
-    /// Renown a day the royalty pays at this `exported_share`.
+    /// Renown a day the royalty pays at this `traded_share`.
     pub royalty: u64,
 }
 
@@ -1565,7 +1568,7 @@ pub struct ShopView {
     /// Kept (destroyed) from every stud fee or price paid out, percent.
     pub market_fee_percent: u64,
     /// Royalty: renown a day per percentage point of all alleles that are
-    /// yours and live outside your lineage.
+    /// yours and live in other players' lineages.
     pub royalty_per_point: f64,
     /// Reinforcements bought this ranked season, and the most allowed.
     #[serde(default)]

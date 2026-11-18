@@ -131,7 +131,7 @@ export function compatRowText(r: CompatibilityView['rows'][number]): string {
 /** The shop's explanation line. */
 export function shopText(s: ShopView): string {
   return `Renown spent here is gone for good. Sales pay out less a ${s.market_fee_percent}% market fee; `
-    + `alleles of yours living outside your lineage (studs siring into others' dams) earn a royalty of `
+    + `alleles of yours living in other players' lineages (studs siring into their dams) earn a royalty of `
     + `${s.royalty_per_point} renown a day per 1% of all alleles.`;
 }
 
