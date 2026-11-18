@@ -8215,7 +8215,7 @@ slower:
 - a hungry pure carnivore at pack instinct 0.85 is spared 64%; Ridge Packs
   (carnivory 0.6) about 21%;
 - it is full while the owner has up to 60 animals and fades to none at
-  150 (`BAND_SMALL`, `BAND_CROWD`; head counts as each tick starts,
+  100 (`BAND_SMALL`, `BAND_CROWD`; head counts as each tick starts,
   `World::band_size`). A big population competes for its kills rather
   than sharing them.
 - Wild packs keep their own economy.
@@ -8231,7 +8231,8 @@ the end, of 45 founders; sweep centre score, main ≈ 11.93):
 | Larder 0.45 at every hunger | 72 on seed 1 | | 11.62 (± 0.34) |
 | Larder 0.45, from hunger 20, full at 60 | 14 on seed 1 | | 11.88 (± 0.16) |
 | Larder 0.7, from hunger 20, full at 50, at any band size | 69 (peak 79) | 0 | 11.78 (± 0.20) |
-| **The same, fading from 60 animals to none at 150 (default)** | **56 (peak 71)** | **0** | **11.85 (± 0.19)** |
+| The same, fading from 60 animals to none at 150 | 56 (peak 71) | 0 | 11.85 (± 0.19); 11.76 (± 0.27) after the merge |
+| **The same, fading from 60 to none at 100 (default)** | **46 after the merge** | **0** | **11.82 (± 0.15) after the merge** |
 
 - **Led-pack rules on instinct hunts: dropped.** The first version gave a
   player pack's own hunts the attack-order pack rules. Stalkers did worse
@@ -8356,6 +8357,31 @@ display bug. Each kill or meal drops hunger at once, and a carnivore burns
   is under 150 animals, and its prey pays: Steady and Nomad fall. These
   4-seed results swing widely between runs. Under the old rules in the
   same study Steady ended at 7 to 20 depending on the build.
+
+**After merging main's round 5** (load v48, balance v49, perf v50; this
+gate renumbered from 48 to 51). Main's balance changes moved the sweep's
+baseline to 11.96 (± 0.04) with this round's tunables at 0.
+- **The cost is the larder alone.** With only `player_packs` at 0 the
+  sweep is 11.96 (± 0.04); with only `dormant_water` at 0 it stays 11.76.
+- **Which lineage.** Of the sweep's lineages only the sample player "Pack
+  hunters" get a real larder (66% when hungry; Toxic frogs 1.5%, Burrowing
+  omnivores 6%).
+- **The cap.** Fading out by 100 animals instead of 150 recovers part of
+  it: 11.82 (± 0.15), every lineage 12 of 12. Moving the hunger ramp
+  (from 30) or the full share (up to 45 animals) didn't change it
+  (11.82 both).
+- **What's left.** A 0.14 gap to the baseline remains. It is the price of
+  helping player packs at all; `player_packs` 0 removes it.
+
+| Check, after the merge | This round's tunables at 0 | Defaults |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.96 (± 0.04) | 11.82 (± 0.15); every lineage 12 of 12 |
+| `predators --playtest4 --seeds 6 --days 180`: Hunter (Apex Stalkers) at the end; extinct | 6; 3 of 6 | 46 (seeds: 62, 68, 50, 16, 74, 8); 0 (65 with attack orders) |
+| the same: Steady, Herd, Nomad | 426, 1,022, 52 | 124, 652, 58 |
+| `predators` (round 3's designs), new rules on instinct: Hunter (Apex Wolves), share; Steady; Nomad | 179, 17.9%; 14; 135 | 185, 17.9%; 20; 149 |
+| `predlong 6` (seeds 31–38, 41–48): fox, pack hunters survive (viable); prey lost | 11/16 (10), 16/16 (16); 2 (newts, seeds 34 and 36) | 13/16 (12), 16/16 (16); 1 (antelope, seed 46) |
+| workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (449), build | | pass |
+| e2e (16 scripts, `E2E_JOBS=2`, with studies running) | | 14 passed; mobile and vision timed out under load and passed alone |
 
 ### Playtest 4: founders on dry land, reinforcements beside the herd
 

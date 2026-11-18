@@ -1576,10 +1576,11 @@ pub(crate) const LARDER_SPAN: f32 = 30.0;
 /// larder. Above it the share fades, to none at [`BAND_CROWD`]: a big
 /// population competes for its kills rather than sharing them (a strong
 /// pack design took 42% of six players' animals with the larder at every
-/// size).
+/// size; fading out by 150, the sweep's sample pack hunters cost the
+/// coexistence score more than by 100).
 pub(crate) const BAND_SMALL: f32 = 60.0;
 /// Head count at which a player's pack no longer shares as a band.
-pub(crate) const BAND_CROWD: f32 = 150.0;
+pub(crate) const BAND_CROWD: f32 = 100.0;
 
 /// The share of hunger `o` is spared as a player's pack hunter whose
 /// owner has `band` animals: in lean times its band's kills carry it
