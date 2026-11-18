@@ -2,6 +2,7 @@
 // population cap, and which groups are migrating. Pure, so they are tested.
 
 import type { CrowdingView, GroupView } from './protocol';
+import { realTime } from './ui/duration';
 import { groupName } from './groups';
 
 /** Thousands separators: 1500 → "1,500". */
@@ -110,9 +111,13 @@ export function actionText(action: string, needs?: { hunger: number; thirst: num
  * The newcomer grace in words (playtest 2: it was invisible). `span`
  * renders a tick count as game and real time ("3.0 days (≈ 15 s)").
  */
-export function graceText(daysLeft: number | undefined, ticksPerDay: number, span: (ticks: number) => string): string | null {
+export function graceText(daysLeft: number | undefined, ticksPerDay: number, span: (ticks: number) => string, realSecondsLeft?: number): string | null {
   if (daysLeft === undefined || !(daysLeft > 0)) return null;
-  return `${span(daysLeft * ticksPerDay)} left: other players can't order attacks on your animals. Wild predators, and other players' animals hunting on instinct, still can.`;
+  // The server's real time when it sends it (the grace lasts at least some real minutes at a fast clock).
+  const left = realSecondsLeft !== undefined
+    ? `${daysLeft < 10 ? daysLeft.toFixed(1) : Math.round(daysLeft)} days (${realTime(realSecondsLeft * 1000)})`
+    : span(daysLeft * ticksPerDay);
+  return `${left} left: other players can't order attacks on your animals, and yours can't be ordered to attack theirs. Wild predators, and animals hunting on instinct, still can.`;
 }
 
 /** The founding ramp in words: how much of the share counts toward the ranked season now. */

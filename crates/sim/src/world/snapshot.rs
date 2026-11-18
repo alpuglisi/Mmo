@@ -1207,6 +1207,7 @@ impl World {
         let mut w = world?;
         // Lineages from before version 36 count as founded at tick 0.
         w.lineage_founded.resize(w.lineages.len(), 0);
+        w.rebuild_grace_starts();
         if let Some(tiles) = tiles {
             if !w.map.tiles.is_empty() {
                 return Err(decode_err("tiles both inside and apart from the payload"));

@@ -58,6 +58,8 @@ describe('grace and the founding ramp', () => {
     expect(graceText(undefined, 48, span)).toBeNull();
     expect(graceText(0, 48, span)).toBeNull();
     expect(graceText(3.5, 48, span)).toMatch(/^3.5 days left: other players can't order attacks/);
+    // With the server's real time (a fast clock's minimum of real minutes), and two-sided.
+    expect(graceText(250, 48, span, 1500)).toMatch(/^250 days \(≈ 25 min\) left: .*yours can't be ordered to attack theirs/);
   });
   it('explains the ramp and the weighted share', () => {
     expect(rampText(undefined)).toBeNull();

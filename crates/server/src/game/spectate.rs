@@ -12,6 +12,9 @@
 //! - **No genes.** A lineage shows its most common adult [`Appearance`] (the
 //!   coarse classes and buckets every player already sees on the map), not
 //!   gene values.
+//! - **No place for a newcomer.** A player lineage under its newcomer
+//!   grace (`World::lineage_grace_left`) has no cells at all, so nobody can
+//!   find it to wait at its border for the grace to end (playtest 2).
 //! - **Not live.** The runner answers from a copy taken at most once per
 //!   simulated day (`Runner::spectate`), so a watcher can't follow animals
 //!   tick by tick.
@@ -55,8 +58,12 @@ pub struct SpectateLineage {
     pub look: Option<Appearance>,
     /// Living members per cell: `[cell x, cell y, count]` on cells of
     /// `Spectate::cell` tiles (wild) or `Spectate::player_cell` (players'),
-    /// cells with none left out.
+    /// cells with none left out. None for a lineage under its newcomer
+    /// grace (`hidden`).
     pub cells: Vec<[u32; 3]>,
+    /// Under its newcomer grace: counted, but not placed on the map.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 /// `GET /api/spectate`.
@@ -104,6 +111,7 @@ impl Game {
             .enumerate()
             .map(|(l, lin)| {
                 let wild = lin.owner == WILD;
+                let hidden = !wild && w.lineage_grace_left(l as u32).is_some();
                 let pick = if looks[l].is_empty() { &young[l] } else { &looks[l] };
                 // The most common look; a tie goes to the one whose JSON
                 // sorts first, so the answer doesn't depend on hash order.
@@ -125,7 +133,8 @@ impl Game {
                     adults: counts.get(l).map_or(0, |c| c.adults),
                     share: if wild { None } else { snap.map(|s| s.share(lin.owner)) },
                     look,
-                    cells: cells[l].iter().map(|(&(x, y), &c)| [x, y, c]).collect(),
+                    cells: if hidden { Vec::new() } else { cells[l].iter().map(|(&(x, y), &c)| [x, y, c]).collect() },
+                    hidden,
                 }
             })
             .collect();
@@ -168,5 +177,49 @@ mod tests {
         for private in ["\"id\"", "\"x\"", "\"y\"", "\"genes\"", "\"hunger\"", "\"pregnant\"", "\"sex\"", "\"order\""] {
             assert!(!json.contains(private), "{private} in {json}");
         }
+    }
+
+    #[test]
+    fn a_newcomer_under_its_grace_is_not_placed() {
+        let world = build_world(&WorldSettings { seed: 3, width: 48, height: 48, wild: false, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        g.world.config.balance.attack_grace = 20.0;
+        g.set_name(1, "old");
+        g.found(
+            1,
+            &evo_sim::design::FounderDesign::new(
+                "Old",
+                evo_sim::design::Thermo::Warm,
+                evo_sim::design::BirthType::Live,
+                2,
+            )
+            .founders(6),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            g.world.step();
+            g.after_tick();
+        }
+        g.set_name(2, "new");
+        g.found(
+            2,
+            &evo_sim::design::FounderDesign::new(
+                "New",
+                evo_sim::design::Thermo::Warm,
+                evo_sim::design::BirthType::Live,
+                2,
+            )
+            .founders(6),
+        )
+        .unwrap();
+        let s = g.spectate();
+        let by = |n: &str| s.lineages.iter().find(|l| l.name == n).unwrap();
+        assert!(!by("Old").hidden && !by("Old").cells.is_empty());
+        let new = by("New");
+        assert!(new.hidden && new.cells.is_empty() && new.alive > 0, "{new:?}");
+        // Placed again once the grace is over.
+        g.world.config.balance.attack_grace = 0.0;
+        g.world.set_attack_grace_min_ticks(0);
+        assert!(!g.spectate().lineages.iter().find(|l| l.name == "New").unwrap().cells.is_empty());
     }
 }

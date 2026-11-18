@@ -118,6 +118,11 @@ pub enum CommandError {
     NewcomerGrace {
         days_left: f32,
     },
+    /// The attacker's own lineage is under its newcomer grace: while it is
+    /// shielded from other players, it can't attack them either.
+    OwnGrace {
+        days_left: f32,
+    },
 }
 
 impl fmt::Display for CommandError {
@@ -171,6 +176,11 @@ impl fmt::Display for CommandError {
             CommandError::NewcomerGrace { days_left } => write!(
                 f,
                 "that lineage was founded only recently; it can't be attacked for another {:.0} days",
+                days_left.ceil()
+            ),
+            CommandError::OwnGrace { days_left } => write!(
+                f,
+                "your lineage is still under its newcomer grace; it can't attack other players for another {:.0} days",
                 days_left.ceil()
             ),
         }
@@ -421,6 +431,12 @@ impl World {
         if let Some(days_left) = self.attack_grace_left(q) {
             return Err(CommandError::NewcomerGrace { days_left });
         }
+        // Two-sided: a shielded newcomer doesn't attack other players.
+        if q.owner != crate::WILD {
+            if let Some(days_left) = self.attack_grace_left(o) {
+                return Err(CommandError::OwnGrace { days_left });
+            }
+        }
         self.organisms[i].order = None;
         self.attack_orders.insert(id, target);
         Ok(())
@@ -432,37 +448,84 @@ impl World {
     /// (wild predators still hunt it). Lineages founded at tick 0 (the
     /// world's first players) and wild ones have none.
     pub(crate) fn attack_grace_left(&self, q: &crate::organism::Organism) -> Option<f32> {
-        let grace = self.config.balance.attack_grace;
-        if grace <= 0.0 || q.owner == crate::WILD {
+        if q.owner == crate::WILD {
             return None;
         }
-        let founded = *self.lineage_founded.get(q.lineage as usize)?;
-        if founded == 0 {
-            return None;
-        }
-        let tpd = self.config.ticks_per_day.max(1) as f32;
-        let left = grace - (self.tick - founded) as f32 / tpd;
-        (left > 0.0).then_some(left)
+        self.lineage_grace_left(q.lineage)
     }
 
-    /// Days left of lineage `lineage`'s founding grace (`Balance::attack_grace`),
-    /// if it is still in it: other players' animals can't be ordered to
-    /// attack its members. Wild lineages have none.
-    pub fn lineage_grace_left(&self, lineage: u32) -> Option<f32> {
+    /// Days of newcomer grace lineage `l` has left (`World::attack_grace_left`).
+    /// The grace lasts `Balance::attack_grace` days, or
+    /// `World::set_attack_grace_min_ticks` ticks if that is longer (a minimum
+    /// of real time at a fast clock). It runs from the founding of the
+    /// owner's earliest lineage in an unbroken run of foundings, each within
+    /// twice the grace of the one before (`World::grace_start`): re-founding
+    /// doesn't start it over.
+    pub fn lineage_grace_left(&self, l: u32) -> Option<f32> {
         let grace = self.config.balance.attack_grace;
-        let founded = *self.lineage_founded.get(lineage as usize)?;
-        if grace <= 0.0 || founded == 0 || self.lineages.get(lineage as usize).is_none_or(|l| l.owner == crate::WILD) {
+        if grace <= 0.0 {
             return None;
         }
-        let tpd = self.config.ticks_per_day.max(1) as f32;
-        let left = grace - (self.tick - founded) as f32 / tpd;
-        (left > 0.0).then_some(left)
+        let owner = self.lineages.get(l as usize)?.owner;
+        if owner == crate::WILD {
+            return None;
+        }
+        let tpd = self.config.ticks_per_day.max(1) as u64;
+        let length = ((grace * tpd as f32).round() as u64).max(self.grace_min_ticks);
+        let start = match self.grace_starts.get(l as usize) {
+            Some(&t) if self.grace_starts_cooldown == self.grace_cooldown() => t,
+            _ => self.grace_start(l)?,
+        };
+        if start == 0 {
+            return None;
+        }
+        let left = length.saturating_sub(self.tick.saturating_sub(start));
+        (left > 0).then(|| left as f32 / tpd as f32)
     }
 
-    /// Whether hunter `a` is kept off prey `b` by `b`'s founding grace
-    /// (`World::attack_grace_left`): `a` is another player's.
+    /// When lineage `l`'s newcomer grace started (`World::lineage_grace_left`):
+    /// its founding, or that of the owner's earliest lineage in an unbroken
+    /// run of foundings each within twice the grace of the next.
+    pub(crate) fn grace_start(&self, l: u32) -> Option<u64> {
+        let owner = self.lineages.get(l as usize)?.owner;
+        let cooldown = self.grace_cooldown();
+        let mut start = *self.lineage_founded.get(l as usize)?;
+        while let Some(t) = (0..self.lineages.len())
+            .filter(|&k| self.lineages[k].owner == owner)
+            .filter_map(|k| self.lineage_founded.get(k).copied())
+            .filter(|&t| t < start && start - t <= cooldown)
+            .min()
+        {
+            start = t;
+        }
+        Some(start)
+    }
+
+    /// How soon after one founding the owner's next still continues its grace.
+    fn grace_cooldown(&self) -> u64 {
+        let tpd = self.config.ticks_per_day.max(1) as f32;
+        (2.0 * self.config.balance.attack_grace.max(0.0) * tpd).round() as u64
+    }
+
+    /// Recomputes every lineage's grace start (after founding or restoring).
+    pub(crate) fn rebuild_grace_starts(&mut self) {
+        self.grace_starts_cooldown = self.grace_cooldown();
+        self.grace_starts = (0..self.lineages.len() as u32).map(|l| self.grace_start(l).unwrap_or(0)).collect();
+    }
+
+    /// Ticks the newcomer grace lasts at least, whatever `Balance::attack_grace`
+    /// says (the server's minimum of real minutes; not saved).
+    pub fn set_attack_grace_min_ticks(&mut self, ticks: u64) {
+        self.grace_min_ticks = ticks;
+    }
+
+    /// Whether hunter `a` is kept off prey `b` by founding grace
+    /// (`World::attack_grace_left`): `a` is another player's, and either
+    /// `b`'s lineage is graced or (two-sided) `a`'s is and `b` isn't wild.
     pub(crate) fn grace_spares(&self, a: &crate::organism::Organism, b: &crate::organism::Organism) -> bool {
-        a.owner != crate::WILD && a.owner != b.owner && self.attack_grace_left(b).is_some()
+        a.owner != crate::WILD
+            && a.owner != b.owner
+            && (self.attack_grace_left(b).is_some() || (b.owner != crate::WILD && self.attack_grace_left(a).is_some()))
     }
 
     /// The target of a possessed organism's attack order, if it has one.
@@ -852,6 +915,11 @@ impl World {
     }
 
     /// Drop one group's migration order.
+    /// Whether one of the player's living organisms is in `group`.
+    pub fn group_has_members(&self, player: PlayerId, group: u8) -> bool {
+        self.organisms.iter().any(|o| o.alive && o.owner == player && o.group == group)
+    }
+
     pub fn clear_migration_group(&mut self, player: PlayerId, group: u8) {
         self.migrate_orders.remove(&(player, group));
     }

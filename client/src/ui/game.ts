@@ -1150,13 +1150,15 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const o = other!;
     const wild = o.owner === WILD;
     const ownerName = wild ? 'wild' : model.state?.leaderboard.rows.find((r) => r.player === o.owner)?.name ?? `player ${o.owner}`;
-    const graceDays = wild ? undefined : protectedPlayers.get(o.owner);
+    // The neighbour's own flag (session B) or the world's list of protected newcomers.
+    const flagged = (o as { protected?: boolean }).protected === true;
+    const graceDays = wild ? undefined : protectedPlayers.get(o.owner) ?? (flagged ? 0 : undefined);
     inspDetails.replaceChildren(
       h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(ownerColor(o.owner))}` }), `#${o.id} · ${ownerName}`,
         graceDays !== undefined ? h('span', { class: 'pill protected-pill', id: 'insp-protected', title: 'A newcomer\'s lineage: players can\'t order attacks on it yet' }, 'protected newcomer') : null),
       dl([['Action', actionText(o.action)], ['Sex', o.sex], ['Stage', o.matured ? 'adult' : 'juvenile'], ['Lineage', String(o.lineage)],
         ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—'],
-        ...(graceDays !== undefined ? [['Protected', `newcomer grace, ${span(graceDays * ticksPerDay)} left: no attack orders on it`] as [string, string]] : [])]),
+        ...(graceDays !== undefined ? [['Protected', graceDays > 0 ? `newcomer grace, ${span(graceDays * ticksPerDay)} left: no attack orders on it` : 'newcomer grace: no attack orders on it'] as [string, string]] : [])]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
     const hunter = possessed();
@@ -1667,7 +1669,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const adults = orgs.filter((o) => o.matured).length;
     const mine = stats && stats.lineage === s.lineage ? stats : null;
     const crowding = mine?.crowding;
-    const grace = graceText(mine?.grace_days_left, ticksPerDay, span);
+    // The state's grace (session B: days, and real time at the server's clock), else the statistics'.
+    const sg = s.grace as ({ days_left: number; real_seconds_left?: number; minutes_left?: number } | null | undefined);
+    const grace = sg
+      ? graceText(sg.days_left, ticksPerDay, span, sg.real_seconds_left ?? (sg.minutes_left !== undefined ? sg.minutes_left * 60 : undefined))
+      : graceText(mine?.grace_days_left, ticksPerDay, span);
     const ramp = rampText(mine?.ramp);
     const cap = capInfo(s.population, worldCap, crowding);
     // With level of detail on, the dashboard's counts include the cohorts far from players.

@@ -515,6 +515,18 @@ pub struct World {
     /// Offline protection set by the caller; not saved (`world::offline`).
     #[cfg_attr(feature = "serde", serde(skip))]
     offline: offline::OfflineProtection,
+    /// The newcomer grace's minimum length in ticks, set by the caller
+    /// (`World::set_attack_grace_min_ticks`); not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    grace_min_ticks: u64,
+    /// Each lineage's grace start (`World::grace_start`), derived from
+    /// `lineage_founded`; rebuilt on founding and restore, not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    grace_starts: Vec<u64>,
+    /// The cooldown `grace_starts` was computed with; a change of
+    /// `Balance::attack_grace` falls back to computing afresh.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    grace_starts_cooldown: u64,
     /// Wall-clock time spent in each phase of `step` (for `bench`).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub phase_times: PhaseTimes,
@@ -654,6 +666,9 @@ impl World {
             den_cells: IdMap::default(),
             lod,
             offline: Default::default(),
+            grace_min_ticks: 0,
+            grace_starts: Vec::new(),
+            grace_starts_cooldown: 0,
             phase_times: PhaseTimes::default(),
             last_intents: Vec::new(),
             config,
@@ -948,6 +963,7 @@ impl World {
         // Lineages from before version 36 count as founded at tick 0.
         self.lineage_founded.resize(lineage as usize, 0);
         self.lineage_founded.push(self.tick);
+        self.rebuild_grace_starts();
         // What the home search reads of the world, gathered once: founding
         // only adds this lineage's organisms, which it ignores except as a
         // crowd.
