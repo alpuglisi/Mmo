@@ -307,6 +307,10 @@ export interface GroupView {
   migration?: [number, number];
   /** The way the migration should go (around water and thin ice), from the group's middle to the target (absent: none planned). */
   route?: [number, number][];
+  /** Tick at which the migration ends if the group hasn't gathered at the target (absent: no migration). */
+  migration_deadline_tick?: number;
+  /** Where the group settles after arriving from a migration: members drift back into the circle until `expires_tick` (not a confinement). */
+  settle?: RallyView;
   territory?: TerritoryView;
   rally?: RallyView;
   /** Largest territory radius the group could claim now. */

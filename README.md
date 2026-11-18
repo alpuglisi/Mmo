@@ -149,13 +149,30 @@ score).
   break off to drink or eat when a need passes 60 (`MIGRATE_BREAK`, ±0.1
   with obedience), going back to the order once it is down to 30
   (`ORDER_RESUME`), so a migration no longer pins a group through a
-  drought. The order is done, and dropped, once most of the group's
-  adults are within its arrival radius of the target (the rally circle,
-  at least 3 tiles; checked on the hour, `settle_groups`), and the player
-  gets a `group` alert. The server plans the route a member near the
-  group's middle would take (`World::migration_route`, at most 32 points)
-  when the order is given and sends it in the group's `route` for the
-  client to draw.
+  drought. The order is done, and dropped, once the group's **median
+  member** is within its arrival radius of the target (the rally circle,
+  at least 3 tiles; checked on the hour, `settle_groups`): half the group
+  there, not the first few (playtest 2 saw an arrival with the median
+  member 27 tiles off, from a group of mostly juveniles). The player gets a
+  `group` alert, and the group then **settles** there for 15 days
+  (`SETTLE_DAYS`, `World::settle_circle`): members outside a circle of 1.5×
+  the arrival radius walk back into it (`Action::Rally` at utility
+  0.35 × heed, below a rally's 0.55 and set aside for any pressing need;
+  not a confinement), so a herd no longer drifts straight back. A
+  migration that hasn't gathered by its deadline is **ended** with a
+  `group` alert naming how far half the group still is: `3 days + distance
+  / 3 tiles a day` from the group's middle when ordered, kept between 4
+  and 30 days (`World::migration_timeout_ticks`, `migration_deadline_tick`
+  in the group view); scattered groups used to migrate forever.
+  `World::reroute_migration` moves a standing order's target keeping its
+  age (its deadline never gets earlier), for re-routing a target that
+  floods. A group other than the main one with no members is refused
+  (`no_such_group`). Deadlines and settle circles are saved (snapshot
+  version 41; older saves restore with none, and a standing migration's
+  deadline then runs from the restore). The server plans the route a
+  member near the group's middle would take (`World::migration_route`, at
+  most 32 points) when the order is given and sends it in the group's
+  `route` for the client to draw.
 - **Emptied groups.** A group whose last member dies loses its migration,
   territory and rally on the next hour (the main group only once the
   player has nothing alive, since its agents may all be cohorts in
@@ -203,8 +220,21 @@ score).
   until hunger passes 80 at the default obedience (then it forages anywhere, "hungry organisms
   prioritize food over everything except immediate danger"), chasing is
   at a sprint, and a group can claim only once every half day
-  (`claim_cooldown`). Seasonal migration (a gene) still outranks the
-  territory, and danger and thirst outrank both as usual.
+  (`claim_cooldown`; abandoning in between changes nothing), or every 2
+  minutes of wall-clock time if longer (`GameConfig::claim_cooldown_min_minutes`,
+  `World::set_claim_cooldown_min_ticks`: half a day passes in seconds at a
+  fast tick). Seasonal migration (a gene) still outranks the
+  territory, and danger outranks both as usual.
+- **Water** (playtest 2: territories and rallies killed herds in a
+  drought). Thirst takes members out of a territory or rally circle: at
+  thirst 60 (±0.1 with obedience, `groups::thirst_breaks_off`) the circle
+  stops holding them (no walking back in, no foraging limit) until they
+  have drunk down to 30, as a migrant breaks off. A claim or rally whose
+  circle is more than half water the group can't stand in is refused
+  (`mostly_water`, `detail.water_share`); the reply reports the circle's
+  `water_share` and `drinkable_tiles` (drinking water in it or within 4
+  tiles of its edge, `World::water_check`) and carries a `warning` when
+  there are fewer than 3 such tiles or a quarter of it is water.
 - **Rally** (`rally_group`, `cancel_rally`): gather a group at a point.
   The circle it gathers in has radius `2 + √members`, about π tiles of
   ground per member, up to 24 tiles (the largest territory's cap, reached
@@ -997,9 +1027,9 @@ Client → server:
 | `cancel_mating` | `request` | Either side withdraws an open offer |
 | `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for the adults of group `group` (default 0, the main group; `no_such_group` past 3 or for another group without members, and for `clear_migration` unless it still has an order); replaces its territory or rally. `off_map` off the map; a target on deep water, ice or a cliff moves to the nearest land within 8 tiles (`data.moved`, `data.note`) or gives `unreachable`. `data` = `{x, y, group, route?, moved?, note?}`; the order ends when most of the group has arrived (a `group` alert). `clear_migration` without `group` clears every group's |
 | `retire_lineage` | `lineage` | Retire your living lineage (its id) to start over: its animals, cohorts and eggs are removed (not killed, not turned wild), its orders end, and you may found again at once; `data` = `{removed}`. `no_lineage` if it isn't your living lineage |
-| `claim_territory` | `group?, x, y, radius` | Group `group` (default 0) holds the circle around `x, y`: the radius is kept between 3 and the group's `max_radius`; replaces its migration order; `data` = `{x, y, radius, claimed_tick}`. `claim_cooldown` (`detail.ticks_left`) within half a day of the group's last claim; `no_such_group` for a group without members; `bad_coordinates` for a non-finite number |
+| `claim_territory` | `group?, x, y, radius` | Group `group` (default 0) holds the circle around `x, y`: the radius is kept between 3 and the group's `max_radius`; replaces its migration order; `data` = `{x, y, radius, claimed_tick}`. `claim_cooldown` (`detail.ticks_left`) within half a day (at least 2 real minutes) of the group's last claim, abandoned or not; `mostly_water` (`detail.water_share`) over a circle more than half water; `data` also has `water_share`, `drinkable_tiles` and a `warning` when there is little to drink; `no_such_group` for a group without members; `bad_coordinates` for a non-finite number |
 | `abandon_territory` | `group?` | Give the territory up (`no_territory` if none) |
-| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 24) for 3 days; replaces its migration order or territory; `data` = `{x, y, radius, expires_tick}`. Stands at least 5 minutes of wall-clock time. `no_such_group` for a group without members, `off_map` off the map, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
+| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 24) for 3 days; replaces its migration order or territory; `data` = `{x, y, radius, expires_tick, water_share, drinkable_tiles, warning?}`. Members leave it to drink at thirst 60. `mostly_water` over a circle more than half water. Stands at least 5 minutes of wall-clock time. `no_such_group` for a group without members, `off_map` off the map, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
 | `split_group` | `group?, organisms?` | Divide a group (default 0) in two: the named organisms (yours, in that group, at most 2000), else the far half across its widest spread; `data` = `{group, moved, kept}`. `group_limit` at 4 groups, `group_too_small` if a side would be empty, `not_in_group`, `not_owned`, `too_many_organisms` |
 | `merge_groups` | `from, into?` | Every member of `from` joins `into` (default 0); `data` = `{moved}`; `same_group`, `no_such_group` |
 | `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window; only where your animals perceive plus 16 tiles (`VIEW_MARGIN`; 16 around your lineage's center), with the radius narrowed so the whole window fits (`out_of_sight` where it can't); `data` is the window granted |

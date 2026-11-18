@@ -783,6 +783,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             NoTerritory(_) => "no_territory",
             ClaimCooldown { .. } => "claim_cooldown",
             NoRally(_) => "no_rally",
+            MostlyWater { .. } => "mostly_water",
             OwnTarget(_) => "own_target",
             OutOfSight(_) => "target_out_of_sight",
             TooBig { .. } => "too_big",
@@ -793,6 +794,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         let info = ErrorInfo::new(code, e.to_string());
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
+            MostlyWater { share } => info.with_detail(serde_json::json!({ "water_share": share })),
             TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
             NewcomerGrace { days_left } | OwnGrace { days_left } => {
                 info.with_detail(serde_json::json!({ "days_left": days_left }))
@@ -1083,6 +1085,15 @@ pub struct GroupView {
     /// briefly, after a restart, until it is planned).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub route: Vec<[f32; 2]>,
+    /// The tick the migration is ended if the group hasn't gathered at the
+    /// target by then (absent: no migration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration_deadline_tick: Option<u64>,
+    /// Where the group settles after arriving from a migration: members
+    /// outside the circle drift back into it until `expires_tick` (absent:
+    /// not settling). Not a confinement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle: Option<RallyView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub territory: Option<TerritoryView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1115,6 +1126,13 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             adults: g.adults,
             migration: g.migration.map(|p| [p.x, p.y]),
             route: Vec::new(),
+            migration_deadline_tick: g.migration_deadline_tick,
+            settle: g.settle.map(|s| RallyView {
+                x: s.center.x,
+                y: s.center.y,
+                radius: s.radius,
+                expires_tick: s.until_tick,
+            }),
             territory: g.territory.map(TerritoryView::from),
             rally: g.rally.map(RallyView::from),
             max_radius: g.max_radius,

@@ -48,9 +48,9 @@ fn migration_targets_on_water_move_to_the_shore_or_are_refused() {
     assert_eq!(w.migration_order(1, 0), Some(got));
     // Off the map: refused, not clamped.
     assert_eq!(w.command_migrate(1, Vec2::new(99_999.0, -5.0)), Err(CommandError::OffMap));
-    assert_eq!(w.command_migrate_group(1, 1, Vec2::new(-1.0, 3.0)), Err(CommandError::OffMap));
-    // A group with no members doesn't exist (the main group always does).
-    assert_eq!(w.command_migrate_group(1, 3, Vec2::new(4.2, 7.9)), Err(CommandError::NoSuchGroup(3)));
+    assert_eq!(w.command_migrate_group(1, 0, Vec2::new(-1.0, 3.0)), Err(CommandError::OffMap));
+    // A group with no members is refused (the main group always exists).
+    assert_eq!(w.command_migrate_group(1, 1, Vec2::new(4.0, 3.0)), Err(CommandError::NoSuchGroup(1)));
     assert!(!w.group_has_members(1, 3) && w.group_has_members(1, 0));
     // Land is taken as given.
     let land = Vec2::new(4.2, 7.9);
@@ -234,4 +234,188 @@ fn retiring_a_lineage_removes_it_without_counting_deaths() {
     w.step();
     let again = w.found_lineage_unchecked(HERD, &walker());
     assert_eq!(w.owner_count(HERD), again.len());
+}
+
+/// Player `p`'s members of group 0, by index.
+fn herd(w: &World, p: PlayerId) -> Vec<usize> {
+    (0..w.organisms.len())
+        .filter(|&k| w.organisms[k].alive && w.organisms[k].owner == p && w.organisms[k].group == 0)
+        .collect()
+}
+
+/// Run the hourly group check now.
+fn settle_now(w: &mut World) {
+    let tph = w.config.ticks_per_hour();
+    w.tick = w.tick.div_ceil(tph) * tph;
+    w.settle_groups();
+}
+
+#[test]
+fn a_migration_arrives_when_half_the_group_is_there_not_the_first_few() {
+    let mut w = standard();
+    let target = w.command_migrate(HERD, Vec2::new(32.0, 32.0)).unwrap();
+    let members = herd(&w, HERD);
+    let n = members.len();
+    // A few at the target, the rest 27 tiles off: not there yet.
+    for (k, &i) in members.iter().enumerate() {
+        w.organisms[i].pos = if k < n / 4 { target } else { target + Vec2::new(27.0, 0.0) };
+    }
+    settle_now(&mut w);
+    assert_eq!(w.migration_order(HERD, 0), Some(target), "ended with the median member 27 tiles off");
+    assert!(w.take_group_events().is_empty());
+    // Over half there: arrived, and the group settles at the target.
+    for &i in &members[..n / 2 + 1] {
+        w.organisms[i].pos = target;
+    }
+    settle_now(&mut w);
+    assert_eq!(w.migration_order(HERD, 0), None);
+    assert!(w.take_group_events().contains(&GroupEvent::Arrived { player: HERD, group: 0, target }));
+    let s = w.settle_circle(HERD, 0).expect("settles");
+    assert_eq!(s.center, target);
+    assert!(s.radius >= World::arrival_radius(n));
+    assert!(s.until_tick > w.tick);
+}
+
+#[test]
+fn a_migration_that_never_gathers_times_out() {
+    let mut w = standard();
+    let members = herd(&w, HERD);
+    let middle = w.group_middle(HERD, 0).unwrap();
+    let target = w.command_migrate(HERD, Vec2::new(60.0, 4.0)).unwrap();
+    let plan = w.migration_plan(HERD, 0).unwrap();
+    assert_eq!(plan.issued_tick, w.tick);
+    assert_eq!(plan.deadline_tick, w.tick + w.migration_timeout_ticks(middle.dist(target)));
+    let tpd = w.config.ticks_per_day as u64;
+    assert!(w.migration_timeout_ticks(0.0) >= 4 * tpd && w.migration_timeout_ticks(1e6) <= 30 * tpd);
+    // Scattered all over the map: it never arrives, and ends at the deadline.
+    for (k, &i) in members.iter().enumerate() {
+        w.organisms[i].pos = Vec2::new(2.0 + (k % 8) as f32 * 7.0, 10.0 + (k / 8) as f32 * 9.0);
+    }
+    w.tick = plan.deadline_tick - 1;
+    settle_now(&mut w);
+    if w.tick < plan.deadline_tick {
+        assert!(w.migration_order(HERD, 0).is_some());
+    }
+    w.tick = plan.deadline_tick;
+    settle_now(&mut w);
+    assert_eq!(w.migration_order(HERD, 0), None);
+    let events = w.take_group_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(*e, GroupEvent::TimedOut { player: HERD, group: 0, median, .. } if median > 3.0)),
+        "{events:?}"
+    );
+    assert_eq!(w.settle_circle(HERD, 0), None, "no settling after a timeout");
+}
+
+#[test]
+fn a_reroute_keeps_the_orders_age_and_never_shortens_it() {
+    let mut w = standard();
+    w.command_migrate(HERD, Vec2::new(60.0, 60.0)).unwrap();
+    let first = w.migration_plan(HERD, 0).unwrap();
+    w.tick += 10;
+    let to = w.reroute_migration(HERD, 0, Vec2::new(30.0, 30.0)).unwrap();
+    let now = w.migration_plan(HERD, 0).unwrap();
+    assert_eq!(w.migration_order(HERD, 0), Some(to));
+    assert_eq!(now.issued_tick, first.issued_tick);
+    assert!(now.deadline_tick >= first.deadline_tick);
+    assert_eq!(w.reroute_migration(HERD, 2, to), Err(CommandError::NoSuchGroup(2)));
+}
+
+#[test]
+fn an_arrived_group_is_pulled_back_to_where_it_settled() {
+    let mut w = standard();
+    let target = w.command_migrate(HERD, Vec2::new(32.0, 32.0)).unwrap();
+    let members = herd(&w, HERD);
+    for &i in &members {
+        w.organisms[i].pos = target;
+    }
+    settle_now(&mut w);
+    let s = w.settle_circle(HERD, 0).unwrap();
+    // One wanders off, fed and watered: it heads back.
+    let i = members.iter().copied().find(|&i| w.organisms[i].matured).unwrap();
+    let id = w.organisms[i].id;
+    let away = w.map.clamp(target + Vec2::new(s.radius + 8.0, 0.0));
+    let o = &mut w.organisms[i];
+    (o.pos, o.needs.thirst, o.needs.hunger, o.needs.energy, o.needs.breeding) = (away, 0.0, 0.0, 100.0, 0.0);
+    w.step();
+    let o = w.organism(id).unwrap();
+    assert_eq!((o.action, o.target), (Action::Rally, Some(target)));
+    // Parched, it drinks instead.
+    // (Decisions may be staggered over a few ticks.)
+    let mut drank = false;
+    for _ in 0..8 {
+        let i = w.index[&id];
+        let o = &mut w.organisms[i];
+        (o.pos, o.needs.thirst) = (away, 90.0);
+        w.step();
+        drank |= w.organism(id).unwrap().action == Action::Drink;
+    }
+    assert!(drank, "never broke off to drink");
+    // A new order replaces the settling; it lapses on its own after the days.
+    w.rally_group(HERD, 0, target).unwrap();
+    assert_eq!(w.settle_circle(HERD, 0), None);
+}
+
+#[test]
+fn thirst_takes_members_out_of_a_territory_or_rally() {
+    let mut w = standard();
+    let members = herd(&w, HERD);
+    let c = w.organisms[members[0]].pos;
+    w.claim_territory(HERD, 0, c, 6.0).unwrap();
+    let i = members[1];
+    w.organisms[i].needs.hunger = 0.0;
+    w.organisms[i].needs.thirst = 10.0;
+    assert!(w.roam_bound(&w.organisms[i]).is_some());
+    w.organisms[i].needs.thirst = 75.0;
+    assert!(w.roam_bound(&w.organisms[i]).is_none(), "parched: free to go and drink");
+    // Drinking, it keeps at it until thirst is down.
+    w.organisms[i].needs.thirst = 45.0;
+    w.organisms[i].action = Action::Drink;
+    assert!(w.roam_bound(&w.organisms[i]).is_none());
+    w.organisms[i].needs.thirst = 20.0;
+    assert!(w.roam_bound(&w.organisms[i]).is_some());
+    // Outside the circle and parched, it doesn't walk back in.
+    w.organisms[i].pos = w.map.clamp(c + Vec2::new(20.0, 0.0));
+    w.organisms[i].needs.thirst = 80.0;
+    w.step();
+    assert_ne!(w.organisms[i].action, Action::Patrol);
+}
+
+#[test]
+fn claims_and_rallies_over_water_are_refused_and_water_is_reported() {
+    let mut w = lake_world(10, 39);
+    place(&mut w, 1, &walker(), Map::tile_center(3, 10));
+    let lake = Map::tile_center(25, 10);
+    assert!(matches!(w.claim_territory(1, 0, lake, 4.0), Err(CommandError::MostlyWater { share }) if share > 0.9));
+    assert!(matches!(w.rally_group(1, 0, lake), Err(CommandError::MostlyWater { .. })));
+    // On the shore: some water, drinkable within reach, accepted.
+    let shore = Map::tile_center(7, 10);
+    let check = w.water_check(1, 0, shore, 4.0);
+    assert!(check.water_share > 0.0 && check.water_share <= 0.5 && check.drinkable > 0, "{check:?}");
+    assert!(w.claim_territory(1, 0, shore, 4.0).is_ok());
+    // Dry ground far from any water: accepted, but nothing to drink.
+    let mut dry = flat_world(1500.0);
+    place(&mut dry, 1, &walker(), Map::tile_center(20, 12));
+    for t in &mut dry.map.tiles {
+        t.snow = 0.0;
+    }
+    let check = dry.water_check(1, 0, Map::tile_center(20, 12), 5.0);
+    assert_eq!((check.water_share, check.drinkable), (0.0, 0));
+}
+
+#[test]
+fn abandoning_a_territory_does_not_reset_the_claim_cooldown() {
+    let mut w = standard();
+    w.set_claim_cooldown_min_ticks(1000);
+    assert_eq!(w.claim_cooldown_ticks(), 1000);
+    let c = w.organisms[herd(&w, HERD)[0]].pos;
+    w.claim_territory(HERD, 0, c, 5.0).unwrap();
+    w.abandon_territory(HERD, 0).unwrap();
+    w.tick += 50;
+    assert_eq!(w.claim_territory(HERD, 0, c, 5.0), Err(CommandError::ClaimCooldown { ticks_left: 950 }));
+    assert_eq!(w.groups(HERD)[0].claim_ready_tick, 1000);
+    w.tick += 950;
+    assert!(w.claim_territory(HERD, 0, c, 5.0).is_ok());
 }
