@@ -867,10 +867,23 @@ fn founding_says_whether_grace_applies_and_why() {
 }
 
 /// A small founding whose grace would end late in autumn or in its first
-/// winter keeps it to that winter's end; a big one doesn't.
+/// winter keeps it to that winter's end (playtest 5), and with
+/// `Balance::founding_drought` through the spring after it, while its
+/// first young grow up (playtest 6); a big one doesn't.
 #[test]
 fn a_small_foundings_grace_lasts_through_its_first_winter() {
-    let (g, a) = game();
+    let (mut g, a) = game();
+    let w = &mut g.world;
+    let tpd = w.config.ticks_per_day as u64;
+    let dpy = w.config.days_per_year as u64;
+    let l = w.organism(a[0]).unwrap().lineage;
+    let len = w.grace_length();
+    let winter = (3 * dpy).div_ceil(4) * tpd;
+    let start = winter.saturating_sub(len) + tpd;
+    if start + len < dpy * tpd && start < winter {
+        assert_eq!(w.grace_end(l, start), (dpy + dpy / 4) * tpd, "through the spring after");
+    }
+    w.config.balance.founding_drought = 0.0;
     let w = &g.world;
     let tpd = w.config.ticks_per_day as u64;
     let dpy = w.config.days_per_year as u64;

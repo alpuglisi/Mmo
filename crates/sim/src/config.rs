@@ -1247,6 +1247,17 @@ pub struct Balance {
     /// 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v57"))]
     pub drink_reach: f32,
+    /// Playtest 6 founding and newcomers (version 61; *Playtest 6: drought
+    /// foundings and newcomers* in the README; off at 0, what snapshots
+    /// before version 61 read, `serde_util::before_v61`). Playtest 6: a
+    /// small warm design founded at 52% drought lost all 20 founders in
+    /// 10 days. In a drought founders settle only where water that lasts it
+    /// is in reach, and start watered with a few days' thirst resistance;
+    /// warm egg layers that sleep in winter lay no clutch that would be
+    /// incubated in winter; a small founding's grace lasts until its first
+    /// young are grown.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v61"))]
+    pub founding_drought: f32,
 }
 
 impl Balance {
@@ -1538,12 +1549,13 @@ impl Default for Balance {
             species_credit: 1.0,
             dry_beds: 1.0,
             drink_reach: 1.0,
+            founding_drought: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 161;
+    pub const FIELD_COUNT: usize = 162;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1714,6 +1726,7 @@ impl Balance {
             ("species_credit", &mut self.species_credit),
             ("dry_beds", &mut self.dry_beds),
             ("drink_reach", &mut self.drink_reach),
+            ("founding_drought", &mut self.founding_drought),
         ]
     }
 

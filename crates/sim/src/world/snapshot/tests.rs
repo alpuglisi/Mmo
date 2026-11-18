@@ -31,6 +31,10 @@ fn busy_world() -> World {
     config.scoring.catastrophes = true;
     config.scoring.catastrophe_first_year = 0;
     config.scoring.species_interval_days = 1;
+    // In 16-day years every clutch's incubation reaches into a winter, so
+    // the playtest 6 winter-clutch rule would leave no egg layer pregnant
+    // in winter, which the snapshot is meant to hold.
+    config.balance.founding_drought = 0.0;
     let mut w = presets::standard_world(config, 1);
     w.set_focus(1, vec![Vec2::new(30.0, 30.0)]);
     w.schedule_catastrophe(CatastropheKind::Epidemic, 1, Some(4));
@@ -515,6 +519,12 @@ fn balance56_off(b: &mut crate::Balance) {
 fn playtest5_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v57::OLD_VALUE;
     (b.dry_beds, b.drink_reach) = (old, old);
+    founding_drought_off(b);
+}
+
+/// The playtest 6 founding tunable as snapshots before version 61 read it.
+fn founding_drought_off(b: &mut crate::Balance) {
+    b.founding_drought = crate::serde_util::before_v61::OLD_VALUE;
 }
 
 /// Version 55 snapshots (before the playtest 5 balance rules) restore with
@@ -1794,6 +1804,27 @@ fn version_57_snapshots_restore_without_niche_tallies() {
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.chronicle.niche_tally, w.chronicle.niche_tally);
     w.chronicle.niche_tally = Default::default();
+    founding_drought_off(&mut w.config.balance);
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert!(r.snapshot() == w.snapshot());
+}
+
+/// Version 58 snapshots (before the playtest 6 founding rules) restore
+/// with that tunable off, and are otherwise the same world.
+#[test]
+fn version_58_snapshots_restore_without_founding_drought() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v58();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 58);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founding_drought, crate::serde_util::before_v61::OLD_VALUE);
+    assert!(r.snapshot_v58() == old);
+    founding_drought_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founding_drought, 1.0);
 }
