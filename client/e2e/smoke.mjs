@@ -404,8 +404,8 @@ async function main() {
     });
 
     // Directed mating between two players through the panels. Bob founds
-    // the same body plan and preferences as ours, so the pair is fully
-    // fertile and inside both preferences (no override cost, no failure
+    // the same body plan and preferences as ours, so the pair is fertile
+    // (partly: egg-layers of different lineages, see below) and inside both preferences (no override cost, no failure
     // chance): the mating completes and conceives once the two meet. This
     // runs early, while both lineages are young: later on a loaded machine
     // many more world days pass and a lineage can dwindle.
@@ -630,10 +630,13 @@ async function main() {
       }
       if (fin.status !== 'completed' || !fin.outcome) throw new Error(`mating ended ${JSON.stringify(fin)}`);
       const o = fin.outcome;
-      if (!(o.fertility > 0.5)) throw new Error(`same designs not fertile: ${JSON.stringify(o)}`);
+      // The starter lays eggs (balance round 4), and egg-layers of different
+      // lineages are only partly fertile (egg_hybrid), so two players' starter
+      // animals give about 0.25: fertile, not fully.
+      if (!(o.fertility > 0.15)) throw new Error(`same designs not fertile: ${JSON.stringify(o)}`);
       // Inside both preferences there is no override failure chance, so a
-      // fertile pair always conceives.
-      if (o.cost === 0 && !o.conceived) throw new Error(`no conception at no cost: ${JSON.stringify(o)}`);
+      // fully fertile pair always conceives (a partly fertile one may not).
+      if (o.cost === 0 && o.fertility > 0.95 && !o.conceived) throw new Error(`no conception at no cost: ${JSON.stringify(o)}`);
       done = o;
       step(`mating completed: ${o.conceived ? 'conceived' : 'not conceived'} (fertility ${o.fertility.toFixed(2)}, mismatch ${o.mismatch.toFixed(2)}, cost ${o.cost.toFixed(2)})`);
     }
