@@ -7762,8 +7762,9 @@ member outside its territory follows an order to the end.
 2.9 kg wolf needed about 0.55 kg of prey a day, a fifth of its weight;
 real carnivores manage on 5–10%. The old carnivore hunger discount went
 when meat got its food value.
-- **Lean economy.** An obligate carnivore's hunger now rises up to 30%
-  slower: none at carnivory 0.7 or below, all of it at 0.95 and above. The
+- **Lean economy.** A hungry obligate carnivore's hunger now rises up to
+  30% slower: none at carnivory 0.7 or below, all of it at 0.95 and above,
+  and only in hard times (none at hunger 40 or below, all of it at 80). The
   fox, at 0.6, is untouched; the wild pack hunters, at 0.9–0.95, get most
   of it.
 - **Led packs take big prey.** In a hunt a player leads (an attack order
@@ -7791,35 +7792,31 @@ Six seeds, 180 days:
 
 | Player | Old rules (the version 44 tunables off) | New rules | New rules, attack orders |
 | --- | --- | --- | --- |
-| Steady | 245, 13.9% (1 extinct) | 244, 13.3% (1) | 178, 13.2% (1) |
-| Herd | 659, 24.3% | 264, 12.0% (2 extinct) | 328, 13.1% (2) |
-| **Hunter** | **42, 3.8%** (peak 67) | **190, 18.4%** (peak 208) | **212, 16.7%** (peak 218) |
-| **Toxic** | **767, 37.2%** | **373, 34.6%** | **386, 37.6%** |
-| Nomad | 325, 14.6% | 206, 14.5% | 166, 13.9% |
-| Late | 185, 6.2% | 84, 7.2% | 41, 5.4% |
-| Toxic's animals eaten per world | 54 | 330 | 310 |
-| Hunter's toxin deaths per world | 29 | 27 | 28 |
-| Hunter's lesson about Toxic | 0 | 0.99 | 0.97 |
+| Steady | 245, 13.9% (1 extinct) | 252, 15.9% | 252, 14.7% (1 extinct) |
+| Herd | 659, 24.3% | 197, 14.3% | 84, 11.3% (2 extinct) |
+| **Hunter** | **42, 3.8%** (peak 67) | **110, 11.6%** (peak 126) | **113, 13.6%** (peak 124) |
+| **Toxic** | **767, 37.2%** | **365, 35.2%** | **456, 38.4%** |
+| Nomad | 325, 14.6% | 268, 16.1% | 90, 13.8% |
+| Late | 185, 6.2% | 78, 6.8% | 121, 8.2% |
+| Toxic's animals eaten per world | 54 | 248 | 203 |
+| Hunter's toxin deaths per world | 29 | 24 | 27 |
+| Hunter's lesson about Toxic | 0 | 0.92 | 1.00 |
 
 Final head count and the mean share of the six players' animals, on top of
-the balance session's version 43 rules. The playtest's carnivore is viable
-now: about 4× the animals and 4–5× the share, where before it hung on at 42
-animals. Toxins are no longer free:
-- **Toxic's predation.** The drab toxic swarm is eaten six times as often.
-- **Toxic's size.** It ends at half its old size, with a slightly smaller
-  share.
-- **The Hunter's toxin deaths.** They stay where they were, while the
-  Hunter is 4× larger: a lineage that has learned is harmed 70% less per
-  bite.
+the balance session's version 43 rules, with this round's defaults
+(`drink_priority` off). The playtest's carnivore is viable now: about
+2.6× the animals and 3× the share, where before it hung on at 42 animals.
+Toxins are no longer free:
+- **Toxic's predation.** The drab toxic swarm is eaten 4–5× as often.
+- **Toxic's size.** It ends at half its old size.
+- **The Hunter's toxin deaths.** They don't rise with the Hunter's size:
+  a lineage that has learned is harmed 70% less per bite.
 
-The cost lands on the other herbivores, which now feed a real predator:
-- **Herd** loses most and dies out on 2 of 6 seeds (none before).
-- **Late**, the newcomer, ends smaller once its grace is over.
-- **Steady and Nomad** hold their shares.
-
-Making body size cost points (the balance session's version 43) and a
-grace that follows a newcomer's head count are the levers left for the
-herds.
+The cost lands on the other herbivores, Herd most of all, which now feed a
+real predator. With the pack hunting on its own, no player dies out. With
+attack orders aimed at the heaviest prey, Herd dies out on 2 of 6 seeds.
+Body size costing points (the balance session's version 43) and a grace
+that follows a newcomer's head count are the levers left for the herds.
 
 **Ablation (before the merge with main's version 43).** The first version
 of learned avoidance, without the recognisability factor, made drab toxins
@@ -7830,7 +7827,20 @@ eaten instead.
 
 | Check | Before (the version 42 tunables off) | After |
 | --- | --- | --- |
-ACC_ROWS
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.65 (± 0.31) | 11.88 (± 0.14); every lineage 12 of 12 |
+| `compare --seed 101 --adaptive` (the version 44 tunables off vs defaults) | | +0.01 (sequential 95% CI −0.16 … +0.18 after 12 seeds: no difference that matters) |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 15/16 (15), 15/16 (14); 1 (omnivores, seed 48) | 14/16 (14), 14/16 (14); 0 |
+| `predlong`, `drink_priority` on (the first default) | | 13/16 (13), 15/16 (15); 3 |
+| `evo-sim genetics` | | 134 checks: 107 strict passed, 0 failed |
+| workspace tests, both clippy runs, client typecheck and `vitest` | | pass |
+
+The "before" column is today's main with the version 44 tunables at 0.
+The fox lost one seed against the baseline (32 and 34 against 45; which
+seeds fail moves with any change to the rules). The pack hunters' viable
+seeds are equal, and no prey lineage was lost. Carnivore energetics act
+only in hard times (hunger 40 to 80, `apply::lean_times`): at all hunger
+levels, `predlong` lost the fox on 3 of 16 seeds as the wild pack grew to
+650–750 animals.
 
 ## Genetics validation
 
