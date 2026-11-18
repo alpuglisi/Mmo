@@ -41,6 +41,18 @@ fn alerts(g: &Game, kind: AlertKind) -> Vec<String> {
     g.alerts.get(&1).map_or(Vec::new(), |a| a.iter().filter(|x| x.kind == kind).map(|x| x.text.clone()).collect())
 }
 
+/// A dry, flat tile centre at least `min` tiles from `from`.
+fn land_away(g: &Game, from: Vec2, min: f32) -> Vec2 {
+    let m = &g.world.map;
+    (0..m.height)
+        .flat_map(|y| (0..m.width).map(move |x| evo_sim::terrain::Map::tile_center(x, y)))
+        .find(|&p| {
+            let t = m.tile_at(p);
+            p.dist(from) >= min && t.water_depth == 0.0 && t.ice == 0.0 && m.ground_at(p).slope < 0.4
+        })
+        .expect("dry land")
+}
+
 fn tick(g: &mut Game) {
     g.world.step();
     g.after_tick();
@@ -108,14 +120,15 @@ fn migration_and_rally_targets_are_checked() {
         }
     }
     // A rally stands for at least the configured minutes of real time.
+    let home = g.world.organisms.iter().find(|o| o.alive && o.owner == 1).unwrap().pos;
     let now = g.world.tick();
     let r: RallyView =
-        serde_json::from_value(run(&mut g, ClientMsg::Rally { group: 0, x: 20.0, y: 20.0 }).unwrap()).unwrap();
+        serde_json::from_value(run(&mut g, ClientMsg::Rally { group: 0, x: home.x, y: home.y }).unwrap()).unwrap();
     assert!(r.expires_tick - now >= 300, "{r:?}");
     let (mut fast, _) = game_with(GameConfig { tick_ms: 100.0, rally_min_minutes: 5.0, ..Default::default() });
     let now = fast.world.tick();
     let r: RallyView =
-        serde_json::from_value(run(&mut fast, ClientMsg::Rally { group: 0, x: 20.0, y: 20.0 }).unwrap()).unwrap();
+        serde_json::from_value(run(&mut fast, ClientMsg::Rally { group: 0, x: home.x, y: home.y }).unwrap()).unwrap();
     assert_eq!(r.expires_tick - now, 3000.max(fast.world.rally_ticks()), "5 minutes at 100 ms a tick");
     assert!(fast.world.rally_ticks() >= 3000);
 }
@@ -215,7 +228,7 @@ fn an_attack_order_alerts_the_targets_owner() {
         m => panic!("expected newcomer_grace, got {m:?}"),
     }
     g.world.config.balance.attack_grace = 0.0;
-    let d = run(&mut g, msg).unwrap();
+    let d = run(&mut g, msg.clone()).unwrap();
     assert_eq!((d["organism"].as_u64(), d["target"].as_u64()), (Some(a[0]), Some(b[0])));
     assert_eq!(g.world.attack_target(a[0]), Some(b[0]));
     let told: Vec<String> = g
@@ -225,4 +238,114 @@ fn an_attack_order_alerts_the_targets_owner() {
     assert_eq!(told.len(), 1, "{told:?}");
     assert!(told[0].contains(&format!("#{}", b[0])) && told[0].contains("hunted"), "{told:?}");
     assert!(alerts(&g, AlertKind::Attack).is_empty(), "the attacker isn't alerted");
+    // Repeating the order, or turning on another of bo's animals, doesn't
+    // alert bo again within the window; after it, a new order does.
+    let told = |g: &Game| g.alerts.get(&2).map_or(0, |l| l.iter().filter(|x| x.kind == AlertKind::Attack).count());
+    run(&mut g, msg.clone()).unwrap();
+    let j = g.world.organisms.iter().position(|o| o.id == b[1]).unwrap();
+    g.world.organisms[j].pos = at + Vec2::new(0.0, 1.0);
+    (g.world.organisms[j].sheltered, g.world.organisms[j].growth) = (false, 0.3);
+    run(&mut g, ClientMsg::PossessAttack { organism: a[0], target: b[1] }).unwrap();
+    assert_eq!(told(&g), 1);
+    // A 3-tick window (3 s at 1 s a tick), run out with the order released.
+    g.cfg.attack_alert_minutes = 0.05;
+    run(&mut g, ClientMsg::Release { organism: a[0] }).unwrap();
+    for _ in 0..3 {
+        tick(&mut g);
+    }
+    run(&mut g, ClientMsg::Possess { organism: a[0] }).unwrap();
+    run(&mut g, msg).unwrap();
+    assert_eq!(told(&g), 2);
+}
+
+#[test]
+fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
+    // At 100 ms a tick, 20 game days pass in under two minutes; the grace
+    // lasts the configured 30 minutes instead.
+    let (mut g, a) = game_with(GameConfig { tick_ms: 100.0, ..Default::default() });
+    g.world.config.balance.attack_grace = 20.0;
+    assert_eq!(g.grace_view(1), None, "founded at tick 0: no grace");
+    for _ in 0..3 {
+        tick(&mut g);
+    }
+    g.set_name(2, "bo");
+    let b = g.found(2, &design("B")).unwrap().founders;
+    g.connect(20, 2, "bo");
+    let grace = g.grace_view(2).expect("a newcomer has its grace");
+    assert!((29..=30).contains(&grace.minutes_left), "{grace:?}");
+    let tpd = g.world.config.ticks_per_day as f32;
+    assert!(grace.days_left > 20.0 && (grace.days_left - 18_000.0 / tpd).abs() < 0.2, "{grace:?}");
+    let s = g.states().into_iter().find(|(c, _)| *c == Target::Conn(20)).map(|(_, m)| m).unwrap();
+    match s {
+        ServerMsg::State(s) => assert_eq!(s.grace, Some(grace)),
+        m => panic!("expected a state, got {m:?}"),
+    }
+    // Two-sided: bo's graced animals can't attack ann's.
+    let at = g.world.organism(a[0]).unwrap().pos;
+    let i = g.world.organisms.iter().position(|o| o.id == b[0]).unwrap();
+    (g.world.organisms[i].pos, g.world.organisms[i].growth) = (at + Vec2::new(1.0, 0.0), 1.0);
+    let msg = ClientMsg::PossessAttack { organism: b[0], target: a[0] };
+    g.command(20, 2, Some(1), ClientMsg::Possess { organism: b[0] });
+    let out = g.command(20, 2, Some(2), msg);
+    match &out[0].1 {
+        ServerMsg::Result { error: Some(e), .. } => assert_eq!(e.code, "own_grace", "{e:?}"),
+        m => panic!("expected own_grace, got {m:?}"),
+    }
+}
+
+/// Playtest 2: a migration that never gathers ends with an alert; an
+/// arrived group's settle circle is in the state.
+#[test]
+fn a_migration_that_never_gathers_ends_with_an_alert() {
+    let (mut g, a) = game();
+    let home = g.world.organisms.iter().find(|o| o.alive && o.owner == 1).unwrap().pos;
+    let far = land_away(&g, home, 30.0);
+    run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
+    let deadline = g.world.migration_plan(1, 0).unwrap().deadline_tick;
+    let main = |g: &Game| g.state_for(10).unwrap().groups.into_iter().find(|v| v.id == 0).unwrap();
+    assert_eq!(main(&g).migration_deadline_tick, Some(deadline));
+    // Keep the herd scattered far from the target until the deadline.
+    while g.world.tick() <= deadline && g.world.migration_order(1, 0).is_some() {
+        for (k, &id) in a.iter().enumerate() {
+            if let Some(i) = g.world.organisms.iter().position(|o| o.id == id && o.alive) {
+                g.world.organisms[i].pos = g.world.map.clamp(far + Vec2::new(30.0 - 12.0 * k as f32, 25.0));
+            }
+        }
+        tick(&mut g);
+    }
+    assert_eq!(g.world.migration_order(1, 0), None);
+    let texts = alerts(&g, AlertKind::Group);
+    assert!(texts.iter().any(|t| t.contains("didn't gather at its migration target")), "{texts:?}");
+    let v = main(&g);
+    assert!(v.migration.is_none() && v.migration_deadline_tick.is_none() && v.settle.is_none());
+}
+
+#[test]
+fn territories_and_rallies_check_their_water() {
+    let (mut g, _) = game();
+    match deep_water(&g) {
+        Some(sea) => {
+            assert_eq!(
+                run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: sea.x, y: sea.y, radius: 3.0 }),
+                Err("mostly_water".into())
+            );
+            assert_eq!(run(&mut g, ClientMsg::Rally { group: 0, x: sea.x, y: sea.y }), Err("mostly_water".into()));
+        }
+        None => eprintln!("no deep water on this map"),
+    }
+    // A claim on land reports its water.
+    let home = g.world.organisms.iter().find(|o| o.alive && o.owner == 1).unwrap().pos;
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 5.0 }).unwrap();
+    assert!(d["water_share"].is_number() && d["drinkable_tiles"].is_number(), "{d}");
+    if d["drinkable_tiles"].as_u64().unwrap() < LOW_WATER_TILES as u64 {
+        assert!(d["warning"].as_str().unwrap().contains("drinking water"), "{d}");
+    }
+    // Abandoning and claiming again right away waits out the cooldown,
+    // minutes of real time.
+    run(&mut g, ClientMsg::AbandonTerritory { group: 0 }).unwrap();
+    assert_eq!(
+        run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 5.0 }),
+        Err("claim_cooldown".into())
+    );
+    assert_eq!(g.world.claim_cooldown_ticks(), 120, "2 minutes at 1 s a tick");
 }

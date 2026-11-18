@@ -176,7 +176,8 @@ impl Tile {
         q(self.water_depth) | q(self.ice) << 8 | q(self.current) << 16
     }
 
-    fn water_source(&self) -> bool {
+    /// Water an animal can drink here: open water, or snow to melt.
+    pub fn water_source(&self) -> bool {
         self.has_drinkable_water() || self.snow > 0.2
     }
 }

@@ -639,6 +639,7 @@ impl Game {
             offers,
             balance: self.balance(player),
             escrow,
+            grace: self.grace_view(player),
         }
     }
 

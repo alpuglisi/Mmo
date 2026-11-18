@@ -2049,3 +2049,49 @@ pub mod before_v39 {
         }
     }
 }
+
+/// What world snapshot version 41 added: migration deadlines and
+/// post-arrival settle circles (`World::group_plans`). On a thread holding
+/// a [`before_v41::Guard`] (reading or hashing a snapshot of version 36 or
+/// before; 37 to 40 are other changes') the field is written as nothing and
+/// read as empty: standing migrations get their deadline from the restore.
+pub mod before_v41 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(T::default())
+        } else {
+            T::deserialize(d)
+        }
+    }
+}

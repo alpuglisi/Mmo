@@ -713,6 +713,11 @@ export class WorldView {
         g.circle(r.x, r.y, 5 * px).fill({ color: tint, alpha: 0.95 });
         g.circle(r.x, r.y, 5 * px).stroke({ width: 1.5 * px, color: 0xffffff, alpha: 0.9 });
       }
+      const st = grp.settle;
+      if (st) {
+        // Settling after a migration: a faint circle, no flag.
+        g.circle(st.x, st.y, st.radius).stroke({ width: 1 * px, color: groupColor(grp.id), alpha: 0.35 });
+      }
       if (grp.migration) {
         const [mx, my] = grp.migration;
         // The planned way there (around water and thin ice).

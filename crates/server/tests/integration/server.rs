@@ -230,6 +230,20 @@ async fn play_over_websocket() {
     send(&mut wa, json!({"type": "possess", "id": 78})).await;
     let r = wait_for(&mut wa, "missing field", |v| v["type"] == "result" && v["id"] == 78).await;
     assert_eq!((r["error"]["code"].as_str(), r["command"].as_str()), (Some("bad_message"), Some("possess")));
+    // A string id, or text that isn't JSON, still gets a reply (with the id
+    // when it can be read), and the connection carries on.
+    send(&mut wa, json!({"type": "possess", "organism": 1, "id": "79"})).await;
+    let r = wait_for(&mut wa, "string id", |v| v["type"] == "result" && v["id"] == 79).await;
+    assert_eq!(r["error"]["code"], "bad_message");
+    wa.send(Message::Text(r#"{"id": 80, "type": "migrate", "x": 1"#.into())).await.unwrap();
+    let r = wait_for(&mut wa, "invalid JSON", |v| v["type"] == "result" && v["id"] == 80).await;
+    assert_eq!((r["error"]["code"].as_str(), r["command"].as_str()), (Some("bad_message"), Some("migrate")));
+    wa.send(Message::Text("not json at all".into())).await.unwrap();
+    let r = wait_for(&mut wa, "garbage", |v| v["type"] == "result" && v["ok"] == false && v["id"].is_null()).await;
+    assert_eq!(r["error"]["code"], "bad_message");
+    send(&mut wa, json!({"id": 81, "type": "possess", "organism": 999_999})).await;
+    let r = wait_for(&mut wa, "still connected", |v| v["type"] == "result" && v["id"] == 81).await;
+    assert_eq!(r["error"]["code"], "not_found");
 
     // Read-only endpoints.
     let (s, board) = json_req(addr, Method::GET, "/api/leaderboard", None, None).await;

@@ -165,6 +165,7 @@ mod old {
             offers,
             balance: g.balance(player),
             escrow,
+            grace: g.grace_view(player),
         })
     }
 

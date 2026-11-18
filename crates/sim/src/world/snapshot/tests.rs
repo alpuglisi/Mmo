@@ -1353,3 +1353,23 @@ fn version_36_snapshots_restore_with_the_old_species_tracker() {
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.scoring.species_confirm, 3);
 }
+
+/// Version 36 snapshots (before migration deadlines and settle circles)
+/// restore with none, and this version keeps them.
+#[test]
+fn version_36_snapshots_restore_without_group_plans() {
+    use crate::world::groups::{MigrationPlan, Settle};
+    let mut w = fixture_world();
+    let key = (w.organisms[0].owner, 0u8);
+    w.group_plans.migrations.insert(key, MigrationPlan { issued_tick: 3, deadline_tick: 500 });
+    w.group_plans.settles.insert(key, Settle { center: Vec2::new(5.0, 6.0), radius: 4.0, until_tick: 900 });
+    let old = w.snapshot_v36();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 36);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans, Default::default());
+    assert!(r.snapshot_v36() == old);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans, w.group_plans);
+}

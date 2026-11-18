@@ -1,0 +1,25 @@
+/* The searchable organism picker (picker.ts). */
+.field { display: block; margin: 0.5em 0; }
+.field-label { display: block; color: var(--muted); font-size: 0.9em; margin-bottom: 0.25em; }
+.picker { position: relative; min-width: 0; }
+.picker-button {
+  width: 100%; text-align: left; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 36px;
+}
+.picker-button::after { content: '▾'; float: right; color: var(--muted); margin-left: 6px; }
+.picker-button[aria-expanded='true']::after { content: '▴'; }
+.picker-panel { margin-top: 4px; padding: 6px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+.picker-search { width: 100%; box-sizing: border-box; }
+.picker-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.picker-chips .chip { padding: 3px 9px; font-size: 0.82em; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 999px; }
+.picker-chips .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.picker-list { max-height: min(40vh, 280px); overflow-y: auto; display: flex; flex-direction: column; gap: 2px; overscroll-behavior: contain; }
+.picker-row {
+  text-align: left; background: transparent; border: 1px solid transparent; color: var(--text);
+  padding: 7px 8px; min-height: 36px; font-size: 0.9em; white-space: normal;
+}
+.picker-row:hover:not(:disabled) { background: var(--panel-2); }
+.picker-row.chosen { border-color: var(--accent); }
+.picker-row:disabled { color: var(--muted); opacity: 0.7; cursor: not-allowed; }
+.picker-more { margin: 4px 0 0; }
+.picker-more:empty { display: none; }
