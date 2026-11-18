@@ -239,7 +239,8 @@ impl Game {
         let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
         let oldest = days.iter().copied().filter(|&d| d + window > today).min()?;
         let day = oldest + window;
-        let minutes = ((day - today) as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).ceil();
+        let minutes =
+            ((day - today) as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).ceil();
         Some((day, minutes as u64))
     }
 
@@ -251,7 +252,10 @@ impl Game {
         let max = self.reinforce_max_alive();
         let alive = self.owner_population(player);
         if alive > max {
-            return Err(ErrorInfo::new("too_large", format!("provisions are for lineages of at most {max} (yours has {alive})")));
+            return Err(ErrorInfo::new(
+                "too_large",
+                format!("provisions are for lineages of at most {max} (yours has {alive})"),
+            ));
         }
         if self.recent_count(self.economy.provision_days.get(&player)) >= economy::MAX_PROVISIONS_PER_SEASON {
             return Err(ErrorInfo::new(

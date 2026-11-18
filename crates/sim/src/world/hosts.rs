@@ -266,7 +266,8 @@ impl World {
     pub fn meeting_point(&self, a: OrgId, b: OrgId) -> Option<Vec2> {
         let (x, y) = (self.organism(a)?, self.organism(b)?);
         let mid = self.map.clamp((x.pos + y.pos) * 0.5);
-        let dry = |p: Vec2| self.map.tile_at(p).water_depth <= 0.0 && self.passable_for(x, p) && self.passable_for(y, p);
+        let dry =
+            |p: Vec2| self.map.tile_at(p).water_depth <= 0.0 && self.passable_for(x, p) && self.passable_for(y, p);
         if dry(mid) {
             return Some(mid);
         }

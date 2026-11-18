@@ -1129,12 +1129,8 @@ impl Game {
         g.next_offer = saved.next_offer.max(g.offers.keys().max().map_or(1, |k| k + 1));
         // Accepted agreements walk their pair together again (the world
         // keeps no rendezvous in its snapshot).
-        let accepted: Vec<u64> = g
-            .offers
-            .values()
-            .filter(|o| o.status == OfferStatus::Accepted && o.partner != 0)
-            .map(|o| o.id)
-            .collect();
+        let accepted: Vec<u64> =
+            g.offers.values().filter(|o| o.status == OfferStatus::Accepted && o.partner != 0).map(|o| o.id).collect();
         for id in accepted {
             g.start_rendezvous(id);
         }
@@ -1469,7 +1465,9 @@ impl Game {
         // that saw it die out); a lineage that died since that check ended
         // today.
         let (ended, how) = match self.economy.retired_day.get(&player) {
-            Some(&d) if d >= founded => (d, if self.economy.died_out.contains(&player) { "died out" } else { "retired" }),
+            Some(&d) if d >= founded => {
+                (d, if self.economy.died_out.contains(&player) { "died out" } else { "retired" })
+            }
             _ => (today, "died out"),
         };
         let window = self.refound_window_days();
@@ -3336,8 +3334,7 @@ impl Game {
     /// rest is refunded. Says what was forfeit.
     fn forfeit_hold(&mut self, id: u64, why: &str) -> String {
         let o = self.offers[&id].clone();
-        let fee =
-            if o.escrow > 0 { (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN).min(o.escrow) } else { 0 };
+        let fee = if o.escrow > 0 { (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN).min(o.escrow) } else { 0 };
         if fee > 0 {
             self.offers.get_mut(&id).unwrap().escrow -= fee;
             let what = o.listing.map_or(format!("offer #{id}"), |l| format!("listing #{l}"));
@@ -3548,7 +3545,9 @@ impl Game {
     /// Whether `id` is already in an accepted agreement other than `except`
     /// (an animal walks to one meeting at a time).
     fn in_agreement(&self, id: OrgId, except: u64) -> bool {
-        self.offers.values().any(|o| o.id != except && o.status == OfferStatus::Accepted && (o.mine == id || o.partner == id))
+        self.offers
+            .values()
+            .any(|o| o.id != except && o.status == OfferStatus::Accepted && (o.mine == id || o.partner == id))
     }
 
     /// Where an accepted agreement's two animals are, coarsely (8-tile
@@ -6943,8 +6942,10 @@ mod tests {
         // Apart, so the first agreement stays open while they walk.
         let far = g.world.map.clamp(g.world.organism(ma).unwrap().pos + Vec2::new(12.0, 0.0));
         g.world.organisms.iter_mut().find(|o| o.id == fem[0]).unwrap().pos = far;
-        let id1 = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fem[0], price: None }));
-        let id2 = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fem[1], price: None }));
+        let id1 =
+            offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fem[0], price: None }));
+        let id2 =
+            offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fem[1], price: None }));
         g.command(20, 2, None, ClientMsg::RespondMating { request: id1, accept: true, partner: None });
         assert_eq!(g.offers.get(&id1).map(|o| o.status), Some(OfferStatus::Accepted));
         {
@@ -7081,9 +7082,11 @@ mod tests {
         not_pregnant(&mut g, &[fa]);
         let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: 0, expires_days: None });
         assert_eq!(result(&out).1.as_deref(), Some("bad_price"));
-        let out = g.command(10, 1, None, ClientMsg::CreateAuction { organism: fa, reserve: 4, days: Some(2), ticks: None });
+        let out =
+            g.command(10, 1, None, ClientMsg::CreateAuction { organism: fa, reserve: 4, days: Some(2), ticks: None });
         assert_eq!(result(&out).1.as_deref(), Some("bad_price"));
-        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: DAM_MIN_FEE, expires_days: None });
+        let out =
+            g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: DAM_MIN_FEE, expires_days: None });
         assert_eq!(result(&out), (true, None));
         let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 0, expires_days: None });
         assert_eq!(result(&out), (true, None), "a stud may go for free");

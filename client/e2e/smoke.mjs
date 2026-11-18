@@ -918,7 +918,7 @@ async function main() {
     // machine, or the lot died), the round starts over with a new auction.
     // Only if every bid attempt fails on an auction that is still open does
     // ann withdraw it instead (logged as such).
-    const reserve = 3;
+    const reserve = 5; // a dam goes for at least 5 (DAM_MIN_FEE)
     await page.selectOption('#market-list-kind', 'auction');
     if (!(await page.isVisible('#market-auction-days'))) throw new Error('the auction length field is hidden');
     const auctionOpen = async (id) => (await ownListings()).includes(id);
