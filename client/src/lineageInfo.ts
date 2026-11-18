@@ -107,6 +107,8 @@ export function actionText(action: string, needs?: { hunger: number; thirst: num
     if (needs.thirst >= NEED_PRESSING && needs.thirst >= needs.hunger) return 'searching for water (parched)';
     if (needs.hunger >= NEED_PRESSING) return 'searching for food (starving)';
   }
+  // A night's shallow torpor, not a hibernation (the torpor gene, or one inherited from a cross).
+  if (action === 'torpid') return 'torpid (a cold night)';
   return action.replace(/_/g, ' ');
 }
 

@@ -4,7 +4,15 @@
 //! toxins and drowning* in the README)?
 //!
 //! `cargo run --release -p evo-server --example predators -- [--seeds N]
-//!  [--first-seed N] [--days D] [--size N] [--every TICKS]`
+//!  [--first-seed N] [--days D] [--size N] [--every TICKS] [--playtest4]`
+//!
+//! `--playtest4`: playtest 4's predators instead (the pure carnivore
+//! "Apex Stalkers" as the Hunter, the omnivore pack "Ridge Packs" in
+//! Nomad's place), with the old rules being only version 48's tunables off.
+//!
+//! Environment: `BAL=name=value,...` sets tunables in every arm (to gauge
+//! a lever); `PRED_TRACE=1` prints the Hunter's lineage every 5 days to
+//! stderr (head count, hunger, fat, births, deaths, kills by prey).
 //!
 //! Players, on the standard world with its wild species:
 //!
@@ -51,10 +59,15 @@ struct Args {
     days: u64,
     size: usize,
     every: u64,
+    /// Playtest 4's predators (`--playtest4`): the Hunter founds the pure
+    /// carnivore "Apex Stalkers", Nomad's place goes to the omnivore pack
+    /// "Ridge Packs", and the old rules are only this round's tunables off
+    /// (version 48: `player_packs`, `dormant_water`).
+    playtest4: bool,
 }
 
 fn args() -> Args {
-    let mut a = Args { seeds: 4, first_seed: 1, days: 240, size: 128, every: 6 };
+    let mut a = Args { seeds: 4, first_seed: 1, days: 240, size: 128, every: 6, playtest4: false };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         let mut v = || it.next().unwrap_or_else(|| panic!("{k} needs a value"));
@@ -64,6 +77,7 @@ fn args() -> Args {
             "--days" => a.days = v().parse().expect("--days"),
             "--size" => a.size = v().parse().expect("--size"),
             "--every" => a.every = v().parse().expect("--every"),
+            "--playtest4" => a.playtest4 = true,
             _ => panic!("unknown argument {k}"),
         }
     }
@@ -107,6 +121,47 @@ fn wolves(name: &str) -> FounderDesign {
         .founders(42)
 }
 
+/// Playtest 4's pure carnivore, ApexHunter4's "Apex Stalkers" (45 founders).
+fn stalkers(name: &str) -> FounderDesign {
+    use Gene::*;
+    FounderDesign::new(name, Thermo::Warm, BirthType::Live, 3)
+        .with(BodySize, 0.4)
+        .with(Carnivory, 1.0)
+        .with(Fangs, 0.7)
+        .with(Muscle, 0.5)
+        .with(Nose, 0.7)
+        .with(Claws, 0.4)
+        .with(PackInstinct, 0.85)
+        .with(Aggression, 0.8)
+        .with(GroupTolerance, 0.7)
+        .with(FatStores, 0.7)
+        .with(Fur, 0.6)
+        .with(Eyes, 0.4)
+        .with(Ears, 0.3)
+        .with(Camouflage, 0.4)
+        .with(LegLength, 0.3)
+        .with(Caching, 0.4)
+        .with(Swimming, 0.3)
+        .founders(45)
+}
+
+/// Playtest 4's omnivore pack, ApexHunter4's "Ridge Packs" (45 founders).
+fn ridge(name: &str) -> FounderDesign {
+    use Gene::*;
+    FounderDesign::new(name, Thermo::Warm, BirthType::IncubatedEggs, 4)
+        .with(BodySize, 0.7)
+        .with(Carnivory, 0.6)
+        .with(PackInstinct, 0.9)
+        .with(GroupTolerance, 0.85)
+        .with(Aggression, 0.6)
+        .with(Fangs, 0.5)
+        .with(Claws, 0.4)
+        .with(Muscle, 0.5)
+        .with(Fur, 0.6)
+        .with(FatStores, 0.6)
+        .founders(45)
+}
+
 /// LateComer's recipe: egg-laying, drab, toxic, burrowing, hibernating.
 fn toxic(name: &str) -> FounderDesign {
     use Gene::*;
@@ -122,7 +177,7 @@ fn toxic(name: &str) -> FounderDesign {
         .founders(60)
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Arm {
     Old,
     New,
@@ -216,10 +271,21 @@ fn hunter_turn(g: &mut Game, o: &mut Outcome) {
 fn run(seed: u64, arm: Arm, a: &Args) -> Outcome {
     let world = build_world(&WorldSettings { seed, width: a.size, height: a.size, ..Default::default() });
     let mut g = Game::new(world, GameConfig::default());
-    if arm == Arm::Old {
+    if arm == Arm::Old && a.playtest4 {
+        let b = &mut g.world.config.balance;
+        (b.player_packs, b.dormant_water) = (0.0, 0.0);
+    } else if arm == Arm::Old {
         let b = &mut g.world.config.balance;
         (b.drink_priority, b.possess_drink, b.toxic_learning, b.dry_sites, b.carnivore_energetics, b.led_pack) =
             (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    if let Ok(spec) = std::env::var("BAL") {
+        for kv in spec.split(',').filter(|s| !s.is_empty()) {
+            let (k, v) = kv.split_once('=').expect("name=value");
+            let mut fields = g.world.config.balance.fields_mut();
+            let f = fields.iter_mut().find(|(n, _)| *n == k).unwrap_or_else(|| panic!("no tunable {k}"));
+            *f.1 = v.parse().expect("number");
+        }
     }
     for (k, n) in NAMES.iter().enumerate() {
         g.set_name(k as PlayerId + 1, n);
@@ -228,9 +294,11 @@ fn run(seed: u64, arm: Arm, a: &Args) -> Outcome {
     g.found_at_any_price(STEADY, &starter("Steady")).expect("founded");
     let herd = starter("Herd").with(Gene::LegLength, 0.5).with(Gene::Vigilance, 0.6);
     g.found_at_any_price(HERD, &herd).expect("founded");
-    g.found_at_any_price(HUNTER, &wolves("Hunter")).expect("founded");
+    let hunter = if a.playtest4 { stalkers("Hunter") } else { wolves("Hunter") };
+    g.found_at_any_price(HUNTER, &hunter).expect("founded");
     g.found_at_any_price(TOXIC, &toxic("Toxic")).expect("founded");
     let nomad = starter("Nomad").with(Gene::BodySize, 0.35).with(Gene::LegLength, 0.6);
+    let nomad = if a.playtest4 { ridge("Nomad") } else { nomad };
     g.found_at_any_price(NOMAD, &nomad).expect("founded");
     let tpd = g.world.config.ticks_per_day as u64;
     let mut days = 0.0;
@@ -246,6 +314,62 @@ fn run(seed: u64, arm: Arm, a: &Args) -> Outcome {
             g.after_tick();
         }
         let alive: Vec<usize> = (1..=6).map(|p| g.world.owner_count(p)).collect();
+        if std::env::var("PRED_TRACE").is_ok() && day % 5 == 0 {
+            let h: Vec<_> = g.world.organisms.iter().filter(|o| o.alive && o.owner == HUNTER).collect();
+            let n = h.len().max(1) as f32;
+            let kills: u64 = g
+                .world
+                .counters
+                .kills_by_lineage
+                .iter()
+                .filter(|((_, k), _)| g.world.lineages.get(*k as usize).is_some_and(|l| l.owner == HUNTER))
+                .map(|(_, n)| *n)
+                .sum();
+            let mut acts = BTreeMap::<String, u32>::new();
+            for o in &h {
+                *acts.entry(format!("{:?}", o.action)).or_default() += 1;
+            }
+            let hl: Vec<u32> =
+                (0..g.world.lineages.len() as u32).filter(|&l| g.world.lineages[l as usize].owner == HUNTER).collect();
+            let born: u64 = hl.iter().map(|l| g.world.counters.born.get(l).copied().unwrap_or(0)).sum();
+            let jd: u64 = hl.iter().map(|l| g.world.counters.juvenile_deaths.get(l).copied().unwrap_or(0)).sum();
+            let deaths: Vec<String> = g
+                .world
+                .counters
+                .deaths_by_lineage
+                .iter()
+                .filter(|((l, _), _)| hl.contains(l))
+                .map(|((_, c), n)| format!("{c:?}{n}"))
+                .collect();
+            let adults = h.iter().filter(|o| o.matured).count();
+            let fem = h.iter().filter(|o| o.matured && o.sex == evo_sim::organism::Sex::Female).count();
+            let preg = h.iter().filter(|o| o.pregnancy.is_some()).count();
+            if day % 20 == 0 {
+                let mut by: Vec<String> = vec![];
+                for (&(prey, killer), &n) in &g.world.counters.kills_by_lineage {
+                    if !hl.contains(&killer) {
+                        continue;
+                    }
+                    let ms: Vec<f32> = g
+                        .world
+                        .organisms
+                        .iter()
+                        .filter(|o| o.alive && o.lineage == prey && o.matured)
+                        .map(|o| o.mass())
+                        .collect();
+                    let m = ms.iter().sum::<f32>() / ms.len().max(1) as f32;
+                    by.push(format!("L{prey}(own{} m{m:.2} n{}):{n}", g.world.lineages[prey as usize].owner, ms.len()));
+                }
+                let hm: Vec<f32> = h.iter().filter(|o| o.matured).map(|o| o.mass()).collect();
+                eprintln!(
+                    "   hunter adult mass {:.2}; kills by prey: {}",
+                    hm.iter().sum::<f32>() / hm.len().max(1) as f32,
+                    by.join(" ")
+                );
+            }
+            eprintln!("   born {born} juvdeaths {jd} adults {adults} females {fem} pregnant {preg} deaths {deaths:?}");
+            eprintln!("seed {seed} {arm:?} day {day} {:?} hunters {} hunger {:.0} fat {:.1} kin {:.1} kills {kills} wild {} acts {acts:?}", g.world.season(), h.len(), h.iter().map(|o| o.needs.hunger).sum::<f32>()/n, h.iter().map(|o| o.fat).sum::<f32>()/n, h.iter().map(|o| o.kin_nearby as f32).sum::<f32>()/n, g.world.owner_count(WILD));
+        }
         let total = alive.iter().sum::<usize>().max(1) as f64;
         for p in 1..=6u32 {
             let n = alive[p as usize - 1];
@@ -309,6 +433,8 @@ fn main() {
         let os: Vec<&Outcome> = results.iter().filter(|r| r.1 == arm).map(|r| &r.2).collect();
         let n = os.len().max(1) as f64;
         let avg = |f: &dyn Fn(&Outcome) -> f64| os.iter().map(|o| f(o)).sum::<f64>() / n;
+        let title =
+            if a.playtest4 { title.replace("version 44 tunables", "version 48 tunables") } else { title.to_string() };
         println!("\n{title}, {} seeds, {} days:", os.len(), a.days);
         println!("  player   final alive  extinct  mean share  peak alive  killed by Hunter");
         for p in 1..=6u32 {

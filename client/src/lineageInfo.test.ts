@@ -48,6 +48,7 @@ describe('action words', async () => {
   it('says a starving or parched resting animal is searching', () => {
     expect(actionText('rest', { hunger: 100, thirst: 10 })).toBe('searching for food (starving)');
     expect(actionText('rest', { hunger: 90, thirst: 95 })).toBe('searching for water (parched)');
+    expect(actionText('torpid')).toBe('torpid (a cold night)');
     expect(actionText('rest', { hunger: 20, thirst: 10 })).toBe('rest');
     expect(actionText('seek_mate', { hunger: 100, thirst: 0 })).toBe('seek mate');
     expect(actionText('rest')).toBe('rest');

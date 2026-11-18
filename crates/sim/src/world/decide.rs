@@ -388,6 +388,13 @@ pub(crate) fn led_pack_scale(b: &crate::Balance, o: &Organism) -> f32 {
     }
 }
 
+/// Whether `o` is a player's pack hunter whose band shares its kills
+/// (`Balance::player_packs`, `apply::player_pack_larder`): player-owned,
+/// with pack instinct, the rule on. Wild packs keep their own economy.
+pub(crate) fn player_pack(b: &crate::Balance, o: &Organism) -> bool {
+    b.player_packs > 0.0 && o.owner != crate::WILD && pack_instinct(o) > 0.0
+}
+
 /// The least pack strength of a player-led hunt ([`led_pack`]).
 pub(crate) const LED_PACK: f32 = 1.0;
 

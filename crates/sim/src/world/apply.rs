@@ -1181,6 +1181,9 @@ impl World {
                     * bal.carnivore_energetics
                     * obligacy(o.traits.carnivory)
                     * lean_times(o.needs.hunger));
+        // A player's pack shares its kills: in lean times the band's meals
+        // carry a hungry member (`Balance::player_packs`, by the meat gut).
+        let diet = diet * (1.0 - player_pack_larder(&bal, o));
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
         // Competition in a lineage crowded past its soft cap
@@ -1209,6 +1212,10 @@ impl World {
             hunger *= dormant_rate;
             if deep {
                 thirst *= dormant_rate;
+                // Burning fat yields water (`Balance::dormant_water`).
+                if o.fat > 0.0 {
+                    thirst *= 1.0 - DORMANT_WATER * bal.dormant_water.clamp(0.0, 1.0);
+                }
             }
         }
         // Stored fat pays for a dormancy, and for hard times.
@@ -1548,8 +1555,38 @@ impl World {
 /// Ice over water too deep for `body` to stand in or swim if the ice
 /// went: a tile a migrating group keeps off, since it drowns there at the
 /// melt. The water test is `terrain::passable`'s.
+/// How much slower a deep sleeper with fat left gets thirsty
+/// (`Balance::dormant_water`).
+pub(crate) const DORMANT_WATER: f32 = 0.8;
+
 /// Most an obligate carnivore's hunger slows (`Balance::carnivore_energetics`).
 pub(crate) const OBLIGATE_DISCOUNT: f32 = 0.3;
+
+/// Hunger a player's hungry pack carnivore is spared (`Balance::player_packs`)
+/// at full meat diet and pack instinct: its band's kills carry it.
+pub(crate) const PACK_LARDER: f32 = 0.7;
+/// Hunger at which the band's kills start to carry a pack hunter
+/// ([`PACK_LARDER`]); fully from `LARDER_FROM + LARDER_SPAN`.
+pub(crate) const LARDER_FROM: f32 = 20.0;
+/// Hunger over which the larder grows to full.
+pub(crate) const LARDER_SPAN: f32 = 30.0;
+
+/// The share of hunger `o` is spared as a player's pack hunter: in lean
+/// times its band's kills carry it ([`PACK_LARDER`], from hunger
+/// [`LARDER_FROM`] to full at `LARDER_FROM + LARDER_SPAN`), by its meat gut
+/// and pack instinct; a fed one is spared nothing. 0 for wild animals,
+/// loners and with the rule off.
+pub(crate) fn player_pack_larder(bal: &crate::Balance, o: &Organism) -> f32 {
+    if !super::decide::player_pack(bal, o) {
+        return 0.0;
+    }
+    let lean = ((o.needs.hunger - LARDER_FROM) / LARDER_SPAN).clamp(0.0, 1.0);
+    PACK_LARDER
+        * lean
+        * bal.player_packs.clamp(0.0, 1.0)
+        * o.traits.meat_efficiency(bal.generalist_tax)
+        * super::decide::pack_instinct(o)
+}
 
 /// How hard the times are for the lean economy (`Balance::carnivore_energetics`):
 /// 0 at hunger 40 or below, 1 at 80 and above.

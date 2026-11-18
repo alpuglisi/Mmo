@@ -618,6 +618,16 @@ pub struct Game {
     progress: BTreeMap<PlayerId, Progress>,
     /// Organisms whose spell of need was alerted (the day it was), until it eases.
     need_alerted: BTreeMap<OrgId, u64>,
+    /// The tick an alerted need eased below the threshold: the spell ends
+    /// once it stays eased a game day (playtest 4: a hunter's hunger swung
+    /// across the threshold with each small kill, and the alert came every
+    /// few seconds). Not saved.
+    need_eased: BTreeMap<OrgId, u64>,
+    /// Possessed organisms told they bedded down (dormant), until they wake. Not saved.
+    sleep_alerted: BTreeSet<OrgId>,
+    /// Who possessed what as of the last tick: death clears possession in
+    /// the world, so the death notice reads it here. Not saved.
+    possessed_prev: BTreeMap<OrgId, PlayerId>,
     /// Watched organisms' deaths not yet announced: grouped per player into
     /// one alert per game hour (`announce_deaths`). Not saved.
     pending_deaths: BTreeMap<PlayerId, Vec<(OrgId, Watch, Why)>>,
@@ -902,6 +912,9 @@ impl Game {
             watched: BTreeMap::new(),
             progress: BTreeMap::new(),
             need_alerted: BTreeMap::new(),
+            need_eased: BTreeMap::new(),
+            sleep_alerted: BTreeSet::new(),
+            possessed_prev: BTreeMap::new(),
             pending_deaths: BTreeMap::new(),
             founded: BTreeMap::new(),
             focused: BTreeSet::new(),
@@ -988,6 +1001,22 @@ impl Game {
         let minutes = secs.div_ceil(60);
         let message = format!("{} (about {minutes} real minutes)", info.message);
         ErrorInfo { message, ..info }.with_detail(serde_json::json!({ "days_left": days, "real_seconds_left": secs }))
+    }
+
+    /// An attack target out of reach, with how far it is now: the player's
+    /// view lags the world, and in a chase the gap can open between the
+    /// state they saw and the order landing (playtest 4).
+    fn attack_out_of_sight(&self, organism: OrgId, target: OrgId, err: &CommandError) -> ErrorInfo {
+        let info = ErrorInfo::from(err);
+        let (Some(a), Some(t)) = (self.world.organism(organism), self.world.organism(target)) else {
+            return info;
+        };
+        let dist = a.pos.dist(t.pos);
+        let reach = evo_sim::world::commands::ORDER_KEPT * self.world.attack_range();
+        let message = format!(
+            "#{target} is {dist:.0} tiles from your #{organism} now (orders reach {reach:.0}); it moved since your view updated, so get closer first"
+        );
+        ErrorInfo { message, ..info }.with_detail(serde_json::json!({ "distance": dist, "reach": reach }))
     }
 
     /// Real seconds `ticks` take at the server's clock.
@@ -1592,7 +1621,24 @@ impl Game {
     ) -> Result<Option<serde_json::Value>, ErrorInfo> {
         let e = |err: CommandError| ErrorInfo::from(&err);
         match msg {
-            ClientMsg::Possess { organism } => self.world.possess(player, organism).map(|_| None).map_err(e),
+            ClientMsg::Possess { organism } => {
+                // One at a time: say which one possessing this let go.
+                let released: Vec<OrgId> = self
+                    .world
+                    .organisms
+                    .iter()
+                    .filter(|o| o.alive && o.possessed_by == Some(player) && o.id != organism)
+                    .map(|o| o.id)
+                    .collect();
+                self.world.possess(player, organism).map_err(e)?;
+                Ok(released.first().map(|&r| {
+                    serde_json::json!({
+                        "organism": organism,
+                        "released": r,
+                        "notice": format!("Released #{r}: you possess one animal at a time."),
+                    })
+                }))
+            }
             ClientMsg::OrderMove { organism, x, y } => {
                 finite(&[x, y])?;
                 let to = self.world.order_move(player, organism, Vec2::new(x, y)).map_err(e)?;
@@ -1601,7 +1647,10 @@ impl Game {
             ClientMsg::PossessAttack { organism, target } => {
                 // Repeating the standing order changes nothing: no new alert.
                 let repeat = self.world.attack_target(organism) == Some(target);
-                self.world.possess_attack(player, organism, target).map_err(|err| self.grace_error(&err))?;
+                self.world.possess_attack(player, organism, target).map_err(|err| match err {
+                    CommandError::OutOfSight(_) => self.attack_out_of_sight(organism, target, &err),
+                    _ => self.grace_error(&err),
+                })?;
                 self.attack_watch.insert(organism, (player, target));
                 if !repeat {
                     self.alert_attacked(player, organism, target, out);
@@ -3469,6 +3518,8 @@ impl Game {
         self.last_season = self.world.season();
         self.watch_possessed(&mut out);
         self.announce_deaths(&mut out);
+        self.possessed_prev =
+            self.world.organisms.iter().filter(|o| o.alive).filter_map(|o| Some((o.id, o.possessed_by?))).collect();
         self.tell_joiners(&mut out);
         self.release_the_absent();
         self.announce_attack_results(&mut out);
@@ -3655,16 +3706,36 @@ impl Game {
     fn watch_possessed(&mut self, out: &mut Outbox) {
         let day = self.world.day();
         let urgency = self.world.config.balance.possess_urgency;
+        let (tick, tpd) = (self.world.tick(), self.world.config.ticks_per_day as u64);
         let mut needy = Vec::new();
+        let mut sleepers = Vec::new();
         for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
             let Some(p) = o.possessed_by else { continue };
             self.watched.entry(o.id).or_insert((p, Watch::Possessed));
+            // Bedded down with its kind (`Balance::possessed_sleep`): said
+            // once per sleep.
+            if o.dormancy.is_deep() {
+                if self.sleep_alerted.insert(o.id) {
+                    sleepers.push((p, o.id, o.dormancy));
+                }
+                continue;
+            }
+            self.sleep_alerted.remove(&o.id);
             // Once per spell of need (playtest 3: the same alert came on two
-            // days running): again only after it has eased well below.
+            // days running): again only after it has stayed well below for
+            // a game day (playtest 4: hunger swings with each kill).
             let need = o.needs.thirst.max(o.needs.hunger);
             if need < NEED_ALERT - NEED_EASED {
-                self.need_alerted.remove(&o.id);
-            } else if need >= NEED_ALERT && !self.need_alerted.contains_key(&o.id) {
+                if self.need_alerted.contains_key(&o.id) {
+                    let since = *self.need_eased.entry(o.id).or_insert(tick);
+                    if tick >= since + tpd {
+                        self.need_alerted.remove(&o.id);
+                        self.need_eased.remove(&o.id);
+                    }
+                }
+            } else if self.need_alerted.contains_key(&o.id) {
+                self.need_eased.remove(&o.id);
+            } else if need >= NEED_ALERT {
                 // Already broken off to drink or eat (the sim's own rule:
                 // urgency, or water near with `Balance::drink_priority`).
                 let tending = matches!(o.action, evo_sim::organism::Action::Drink | evo_sim::organism::Action::Graze);
@@ -3687,6 +3758,20 @@ impl Game {
             };
             self.alert(p, AlertKind::Need, format!("Possessed #{id} is {what}: {tail}."), Some(id), out);
         }
+        for (p, id, how) in sleepers {
+            let what = if how == evo_sim::organism::Dormancy::Summer {
+                "to sleep out the summer heat"
+            } else {
+                "for the winter"
+            };
+            let text = format!(
+                "Possessed #{id} has bedded down {what} with its kind: it sleeps where it is and takes no orders until it wakes. Release it or possess another."
+            );
+            self.alert(p, AlertKind::Need, text, Some(id), out);
+        }
+        let world = &self.world;
+        self.sleep_alerted.retain(|id| world.organism(*id).is_some_and(|o| o.possessed_by.is_some()));
+        self.need_eased.retain(|id, _| world.organism(*id).is_some_and(|o| o.alive));
         // Forget released organisms that aren't founders (the dead are
         // announced next).
         let world = &self.world;
@@ -3891,6 +3976,10 @@ impl Game {
         for (id, player, watch) in dead {
             self.watched.remove(&id);
             self.need_alerted.remove(&id);
+            // Death clears the possession in the world: who held it as of
+            // the last tick says (playtest 4: "Once-possessed" for an
+            // animal possessed when it died).
+            let held = self.possessed_prev.get(&id) == Some(&player);
             let Some(o) = self.world.organisms.iter().find(|o| o.id == id) else {
                 // Gone without a body: with level of detail on it went into a
                 // statistical cohort far from every player, alive; not a death.
@@ -3901,7 +3990,7 @@ impl Game {
             };
             // Possessed when it died (not merely once: possession ends with the
             // player's sessions, and a released animal is an ordinary one).
-            if o.possessed_by == Some(player) {
+            if o.possessed_by == Some(player) || held {
                 // Said at once: the player was steering it (its bar just vanished).
                 let text = format!(
                     "#{id}, the animal you were possessing, {}. Possess another from the map or the Lineage tab.",
@@ -5122,7 +5211,7 @@ fn attack_result_text(w: &World, attacker: OrgId, target: OrgId) -> Option<Strin
         Some(t) if t.sheltered => {
             Some(format!("Attack over: #{target} went to ground (a burrow or shelter) and escaped your #{attacker}."))
         }
-        Some(t) if a.pos.dist(t.pos) > 1.5 * w.attack_range() => Some(format!(
+        Some(t) if a.pos.dist(t.pos) > evo_sim::world::commands::ORDER_KEPT * w.attack_range() => Some(format!(
             "Attack over: #{target} escaped; your #{attacker} lost sight of it ({:.0} tiles away).",
             a.pos.dist(t.pos)
         )),
@@ -5488,6 +5577,42 @@ mod tests {
         assert!(!g.winter_provision_now());
         let off = g.found(3, &design("Off")).unwrap().founders;
         assert!(off.iter().all(|&id| g.world.organism(id).unwrap().fat == 0.0));
+    }
+
+    /// Playtest 4: possessing a second animal released the first silently;
+    /// a possessed animal that bedded down said nothing; one possessed when
+    /// it died was called "Once-possessed".
+    #[test]
+    fn possession_says_what_it_released_slept_and_died() {
+        let (mut g, a, _) = game();
+        g.command(10, 1, None, ClientMsg::Possess { organism: a[0] });
+        let out = g.command(10, 1, None, ClientMsg::Possess { organism: a[1] });
+        let ServerMsg::Result { ok: true, data: Some(d), .. } = &out[0].1 else { panic!("{:?}", out[0].1) };
+        assert_eq!(d["released"], serde_json::json!(a[0]));
+        assert!(d["notice"].as_str().unwrap().contains(&format!("Released #{}", a[0])));
+        // Bedded down: said once, not every tick of the sleep.
+        // (Set between ticks: in this spring world it would wake at once.)
+        g.world.organisms.iter_mut().find(|o| o.id == a[1]).unwrap().dormancy = evo_sim::organism::Dormancy::Winter;
+        let said = |out: &Outbox| alerts_in(out, 1).iter().filter(|x| x.text.contains("bedded down")).count();
+        let first = g.after_tick();
+        assert_eq!((said(&first), said(&g.after_tick())), (1, 0));
+        // Killed while possessed: the death says so.
+        let i = g.world.organisms.iter().position(|o| o.id == a[1]).unwrap();
+        g.world.organisms[i].health = -1.0;
+        g.world.organisms[i].dormancy = evo_sim::organism::Dormancy::Awake;
+        let mut text = String::new();
+        for _ in 0..g.world.config.ticks_per_hour() + 1 {
+            g.world.step();
+            for x in alerts_in(&g.after_tick(), 1) {
+                if x.kind == AlertKind::Death {
+                    text = x.text;
+                }
+            }
+            if !text.is_empty() {
+                break;
+            }
+        }
+        assert!(text.contains("the animal you were possessing") && !text.contains("Once-possessed"), "{text}");
     }
 
     #[test]
@@ -6013,10 +6138,21 @@ mod tests {
             alerts_in(&g.after_tick(), 1).iter().all(|x| x.kind != AlertKind::Need),
             "a second alert for the same spell"
         );
-        // Eased, then thirsty again: a new spell, a new alert.
+        // Eased a moment (a kill, a sip), then back up: the same spell
+        // (playtest 4: hunger swinging across the threshold alerted every
+        // few seconds).
         set_thirst(&mut g, 20.0);
         g.world.step();
         g.after_tick();
+        set_thirst(&mut g, 80.0);
+        g.world.step();
+        assert!(alerts_in(&g.after_tick(), 1).iter().all(|x| x.kind != AlertKind::Need), "an alert for a brief ease");
+        // Eased for a game day, then thirsty again: a new spell, a new alert.
+        for _ in 0..=g.world.config.ticks_per_day {
+            set_thirst(&mut g, 20.0);
+            g.world.step();
+            g.after_tick();
+        }
         set_thirst(&mut g, 80.0);
         g.world.step();
         assert!(alerts_in(&g.after_tick(), 1).iter().any(|x| x.kind == AlertKind::Need), "no alert for a new spell");

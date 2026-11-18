@@ -2018,6 +2018,17 @@ pub struct MarketView {
     pub own: Option<Vec<ListingView>>,
 }
 
+/// What `o` is doing, as the wire names it: [`action_name`], except that a
+/// night's shallow torpor reads `torpid` rather than `dormant` (playtest 4:
+/// a lineage that bought no hibernation looked as if it hibernated).
+pub fn org_action_name(o: &Organism) -> &'static str {
+    if o.action == Action::Dormant && o.dormancy == evo_sim::organism::Dormancy::Torpor {
+        "torpid"
+    } else {
+        action_name(o.action)
+    }
+}
+
 pub fn action_name(a: Action) -> &'static str {
     match a {
         Action::Idle => "idle",
@@ -2087,7 +2098,7 @@ impl OwnOrganism {
             lineage: o.lineage,
             x: o.pos.x,
             y: o.pos.y,
-            action: Cow::Borrowed(action_name(o.action)),
+            action: Cow::Borrowed(org_action_name(o)),
             sex: Cow::Borrowed(sex_name(o.sex)),
             age_days: o.age_days(ticks_per_day),
             growth: o.growth,
@@ -2125,7 +2136,7 @@ impl NearbyOrganism {
             lineage: o.lineage,
             x: o.pos.x,
             y: o.pos.y,
-            action: Cow::Borrowed(action_name(o.action)),
+            action: Cow::Borrowed(org_action_name(o)),
             sex: Cow::Borrowed(sex_name(o.sex)),
             matured: o.matured,
             look: Appearance::of(o),

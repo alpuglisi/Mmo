@@ -382,7 +382,11 @@ impl World {
                 // for the winter (playtest 3: sleepers died of thirst).
                 let thirst_limit =
                     if bal.winter_toll > 0.0 && s.winter.is_some() { WINTER_THIRST_LIMIT } else { THIRST_LIMIT };
-                let fed = (o.fat > 0.0 || o.needs.hunger < LEAN_LIMIT) && o.needs.thirst < thirst_limit;
+                // A possessed animal may bed down lean (`possessed_sleep`):
+                // its player walked it about instead of letting it fatten.
+                let lean_limit =
+                    if bal.possessed_sleep > 0.0 && o.possessed_by.is_some() { AROUSAL_HUNGER } else { LEAN_LIMIT };
+                let fed = (o.fat > 0.0 || o.needs.hunger < lean_limit) && o.needs.thirst < thirst_limit;
                 let cold_season = matches!(season, Season::Autumn | Season::Winter);
                 if !free {
                     return None;
@@ -867,6 +871,53 @@ mod tests {
         assert_eq!(w.organisms[hib[0]].dormancy, Dormancy::Awake);
         w.step();
         assert_eq!(w.organisms[hib[0]].dormancy, Dormancy::Awake);
+    }
+
+    /// Playtest 4: sleepers woke parched mid-winter and died of thirst by
+    /// the hundred. Burning fat yields water (`dormant_water`): a fat
+    /// sleeper's thirst rises far slower, and it sleeps on.
+    #[test]
+    fn fat_sleepers_dont_wake_parched() {
+        let run = |dormant_water: f32| {
+            let mut w = flat_world(-5.0, 0.0, 95);
+            w.config.balance.dormant_water = dormant_water;
+            let hib = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9).with(Gene::FatStores, 0.8), 3);
+            for &k in &hib {
+                let cap = w.fat_capacity(&w.organisms[k]);
+                w.organisms[k].fat = cap;
+            }
+            w.run_days(1);
+            let start: Vec<f32> = hib.iter().map(|&k| w.organisms[k].needs.thirst).collect();
+            assert!(hib.iter().all(|&k| w.organisms[k].dormancy == Dormancy::Winter));
+            w.run_days(10);
+            hib.iter().zip(&start).map(|(&k, t0)| w.organisms[k].needs.thirst - t0).sum::<f32>() / 3.0
+        };
+        let (with, without) = (run(1.0), run(0.0));
+        assert!(
+            with < 0.4 * without,
+            "thirst rise over 10 sleeping days: {with} with metabolic water, {without} without"
+        );
+    }
+
+    /// Playtest 4: a possessed animal kept from fattening by its player
+    /// stayed awake while its group hibernated, and starved. It beds down
+    /// lean now (`possessed_sleep`); a free one that lean doesn't.
+    #[test]
+    fn possessed_animals_bed_down_lean() {
+        let run = |possessed_sleep: f32| {
+            let mut w = flat_world(0.0, 0.0, 95);
+            w.config.balance.possessed_sleep = possessed_sleep;
+            let hib = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9), 2);
+            for &k in &hib {
+                (w.organisms[k].fat, w.organisms[k].needs.hunger) = (0.0, 70.0);
+            }
+            let (id, owner) = (w.organisms[hib[0]].id, w.organisms[hib[0]].owner);
+            w.possess(owner, id).unwrap();
+            w.step();
+            (w.organisms[hib[0]].dormancy, w.organisms[hib[1]].dormancy)
+        };
+        assert_eq!(run(1.0), (Dormancy::Winter, Dormancy::Awake));
+        assert_eq!(run(0.0), (Dormancy::Awake, Dormancy::Awake));
     }
 
     #[test]

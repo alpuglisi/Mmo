@@ -33,6 +33,11 @@ fn homes_hash() -> u64 {
         // world grows first.
         config.balance.founding_conditions = 0.0;
         config.balance.reachable_water = 0.0;
+        // Playtest 4 (version 48): pack larders and sleepers' metabolic
+        // water change the days the world grows first.
+        config.balance.player_packs = 0.0;
+        config.balance.dormant_water = 0.0;
+        config.balance.possessed_sleep = 0.0;
         // Founded empty: the wild ecosystem, then the sample players.
         let mut w = presets::standard_world(config, 1);
         for o in &w.organisms {

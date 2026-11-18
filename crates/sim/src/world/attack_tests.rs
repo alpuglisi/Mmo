@@ -80,6 +80,10 @@ fn attack_orders_are_refused_with_reasons() {
     let prey = place(&mut w, PREY, &walker(), Vec2::new(12.5, 10.5));
     grown(&mut w, prey);
     let far = place(&mut w, PREY, &walker(), Vec2::new(30.5, 20.5));
+    // Past sight (8) but within the range a standing order is kept (12):
+    // the player's view lags the world (playtest 4).
+    let lagged = place(&mut w, PREY, &walker(), Vec2::new(20.5, 10.5));
+    grown(&mut w, lagged);
     let huge = place(&mut w, PREY, &big(), Vec2::new(11.5, 11.5));
     grown(&mut w, huge);
     let id = |w: &World, i: usize| w.organisms[i].id;
@@ -91,6 +95,8 @@ fn attack_orders_are_refused_with_reasons() {
     assert_eq!(w.possess_attack(HUNTER, aid, id(&w, mine)), Err(CommandError::OwnTarget(id(&w, mine))));
     assert_eq!(w.possess_attack(HUNTER, aid, id(&w, far)), Err(CommandError::OutOfSight(id(&w, far))));
     assert!(matches!(w.possess_attack(HUNTER, aid, id(&w, huge)), Err(CommandError::TooBig { .. })));
+    assert_eq!(w.possess_attack(HUNTER, aid, id(&w, lagged)), Ok(()));
+    w.attack_orders.clear();
     w.organisms[prey].sheltered = true;
     assert_eq!(w.possess_attack(HUNTER, aid, pid), Err(CommandError::Sheltered(pid)));
     w.organisms[prey].sheltered = false;
@@ -559,4 +565,32 @@ fn a_kill_feeds_a_starving_hunter() {
     }
     assert!(caught, "the prey should be caught");
     assert!(least < 30.0, "the kill should feed it: hunger never fell below {least}");
+}
+
+/// Playtest 4: player carnivore bands starved on their own. A hungry
+/// player's pack hunter is carried by its band's kills
+/// (`Balance::player_packs`); wild packs, loners and fed ones aren't.
+#[test]
+fn player_packs_share_their_kills() {
+    let mut w = world();
+    let mine = place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    let wild = place(&mut w, crate::WILD, &hunter(), Vec2::new(20.5, 10.5));
+    let loner = place(&mut w, HUNTER, &hunter().with(Gene::PackInstinct, 0.2), Vec2::new(30.5, 10.5));
+    let b = w.config.balance;
+    for &i in &[mine, wild, loner] {
+        w.organisms[i].needs.hunger = 60.0;
+    }
+    let larder = |w: &World, i: usize| super::apply::player_pack_larder(&b, &w.organisms[i]);
+    assert!(super::decide::player_pack(&b, &w.organisms[mine]));
+    assert!(larder(&w, mine) > 0.15, "{}", larder(&w, mine));
+    assert_eq!((larder(&w, wild), larder(&w, loner)), (0.0, 0.0));
+    assert!(!super::decide::player_pack(&b, &w.organisms[wild]));
+    // In lean times only: a fed pack hunter is spared nothing.
+    w.organisms[mine].needs.hunger = 10.0;
+    assert_eq!(larder(&w, mine), 0.0);
+    w.organisms[mine].needs.hunger = 60.0;
+    let mut off = b;
+    off.player_packs = 0.0;
+    assert!(!super::decide::player_pack(&off, &w.organisms[mine]));
+    assert_eq!(super::apply::player_pack_larder(&off, &w.organisms[mine]), 0.0);
 }

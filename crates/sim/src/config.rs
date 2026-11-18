@@ -1090,6 +1090,29 @@ pub struct Balance {
     /// earlier foundings died (avoided). 0: the old search.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v47"))]
     pub founding_conditions: f32,
+    // Playtest 4 predators and dormancy (version 48; *Playtest 4:
+    // predators, possession and dormancy* in the README). Off at 0, what
+    // snapshots before version 48 read (`serde_util::before_v48`).
+    /// Player packs share their kills: a hungry player-owned pack hunter's
+    /// hunger rises up to `0.7 × meat diet × pack instinct` slower (from
+    /// hunger 20, fully at 50; `apply::player_pack_larder`), so a band
+    /// living on small prey carries its hungry members between kills.
+    /// Wild packs keep their own economy. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    pub player_packs: f32,
+    /// Metabolic water in deep dormancy: while a sleeper has fat left, its
+    /// thirst rises `0.8 × dormant_water` slower (burning fat yields
+    /// water), so hibernators don't wake parched mid-winter by the hundred
+    /// (playtest 4: 35 thirst deaths a day while 314 of 366 slept). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    pub dormant_water: f32,
+    /// A possessed animal beds down with its kind: it may enter a winter
+    /// or summer dormancy lean (hunger below the rousing threshold rather
+    /// than the lean limit), since its player kept it from fattening;
+    /// it rouses to eat like any sleeper (playtest 4: possessed animals
+    /// stayed awake while their group slept, then starved). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    pub possessed_sleep: f32,
 }
 
 impl Balance {
@@ -1364,12 +1387,15 @@ impl Default for Balance {
             wake_spread: 10.0,
             reachable_water: 1.0,
             founding_conditions: 1.0,
+            player_packs: 1.0,
+            dormant_water: 1.0,
+            possessed_sleep: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 144;
+    pub const FIELD_COUNT: usize = 147;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1523,6 +1549,9 @@ impl Balance {
             ("wake_spread", &mut self.wake_spread),
             ("reachable_water", &mut self.reachable_water),
             ("founding_conditions", &mut self.founding_conditions),
+            ("player_packs", &mut self.player_packs),
+            ("dormant_water", &mut self.dormant_water),
+            ("possessed_sleep", &mut self.possessed_sleep),
         ]
     }
 

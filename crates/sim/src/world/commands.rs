@@ -267,6 +267,10 @@ pub struct MatingPreview {
     pub distance: f32,
 }
 
+/// How far past `World::attack_range` an attack order is given and kept,
+/// as a multiple of it.
+pub const ORDER_KEPT: f32 = 1.5;
+
 impl World {
     pub(super) fn live_index(&self, id: OrgId) -> Result<usize, CommandError> {
         self.index.get(&id).copied().filter(|&i| self.organisms[i].alive).ok_or(CommandError::NotFound(id))
@@ -457,7 +461,11 @@ impl World {
         if q.owner == player || j == i {
             return Err(CommandError::OwnTarget(target));
         }
-        if o.pos.dist(q.pos) > self.attack_range() {
+        // As far as a standing order is kept (`World::settle_orders`): the
+        // player's view lags the world by a second or two, and in a chase
+        // a target next to the attacker on screen can be past the sight
+        // range by the time the order lands (playtest 4).
+        if o.pos.dist(q.pos) > ORDER_KEPT * self.attack_range() {
             return Err(CommandError::OutOfSight(target));
         }
         if q.sheltered {
@@ -716,7 +724,7 @@ impl World {
             return;
         }
         let orders = std::mem::take(&mut self.attack_orders);
-        let range = 1.5 * self.attack_range();
+        let range = ORDER_KEPT * self.attack_range();
         for (a, t) in orders {
             let (Some(&i), Some(&j)) = (self.index.get(&a), self.index.get(&t)) else { continue };
             let (o, q) = (&self.organisms[i], &self.organisms[j]);

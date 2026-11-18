@@ -414,6 +414,14 @@ fn founding_fixes_off(w: &mut World) {
     for h in &mut w.lineage_homes {
         *h = None;
     }
+    playtest4_off(&mut w.config.balance);
+}
+
+/// The playtest 4 predator and dormancy tunables as snapshots before
+/// version 48 read them.
+fn playtest4_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v48::OLD_VALUE;
+    (b.player_packs, b.dormant_water, b.possessed_sleep) = (old, old, old);
 }
 
 fn predators_off(b: &mut crate::Balance) {
@@ -1589,4 +1597,25 @@ fn version_46_snapshots_restore_without_the_founding_fixes() {
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.lineage_homes, w.lineage_homes);
     assert_eq!(r.config.balance.founding_conditions, 1.0);
+}
+
+/// Version 47 snapshots (before the playtest 4 predator and dormancy
+/// rules) restore with those tunables off, and are otherwise the same world.
+#[test]
+fn version_47_snapshots_restore_without_playtest4() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v47();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 47);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.player_packs, crate::serde_util::before_v48::OLD_VALUE);
+    assert!(r.snapshot_v47() == old);
+    playtest4_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps them.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.config.balance.dormant_water, r.config.balance.possessed_sleep), (1.0, 1.0));
 }

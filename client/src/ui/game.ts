@@ -620,6 +620,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (r.ok) {
       view.setFollow(true);
       // (No toast: the possession bar says who and how to walk; playtest 3 found the two saying the same.)
+      // But do say when it let another go: one at a time (playtest 4).
+      const notice = (r.data as { notice?: string } | undefined)?.notice;
+      if (notice) model.toast('info', notice);
     }
     return r.ok;
   }
