@@ -367,7 +367,17 @@ impl Game {
         let mut rng = evo_sim::rng::rng_for(self.world.config.seed, 0x00de_5167, player as u64, self.world.tick());
         let founders: Vec<Genome> = (0..SAMPLE).map(|_| design.founder_genome(player, &mut rng)).collect();
         let own: Vec<&Genome> = founders.iter().collect();
-        let rows = self.compat_rows(&own, None);
+        let mut rows = self.compat_rows(&own, None);
+        // Another player's lineage: tenths and no limiting gene. Varying
+        // one gene at a time against exact gaps solved a rival's body plan.
+        for r in rows.iter_mut().filter(|r| r.owner != player && r.owner != WILD) {
+            let tenth = |x: f32| (x * 10.0).round() / 10.0;
+            (r.fertility, r.fertility_low, r.fertility_high) =
+                (tenth(r.fertility), tenth(r.fertility_low), tenth(r.fertility_high));
+            (r.best_fertility, r.fertile_share, r.gap) =
+                (tenth(r.best_fertility), tenth(r.fertile_share), tenth(r.gap));
+            r.limiting = "body_plan".into();
+        }
         let fertile_with = rows.iter().filter(|r| r.fertile_share > 0.0).count();
         let at_risk = rows.iter().filter(|r| r.fertile_share <= 0.0 && r.drift_risk != "none").count();
         DesignCompatView { day: self.world.day(), sample: SAMPLE, fertile_with, at_risk, rows }

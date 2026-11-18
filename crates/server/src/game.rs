@@ -303,8 +303,15 @@ pub const REQUESTS_PER_TARGET: usize = 3;
 pub const MAX_BLOCKED: usize = 200;
 
 /// Tiles a view may reach beyond what the player's animals perceive
-/// ([`Game::view_reach`]): enough for the default view around them.
-pub const VIEW_MARGIN: f32 = 16.0;
+/// ([`Game::view_reach`]). 16 in playtest 3 still listed hundreds of
+/// rivals' animals 3–5 times as far as any of the player's perceived.
+pub const VIEW_MARGIN: f32 = 8.0;
+
+/// Tiles beyond what the player's animals perceive within which they may
+/// still name another animal in a request or a preview
+/// ([`Game::check_partner_visible`]): wider than [`VIEW_MARGIN`] (what
+/// shows), as a herd's members spread.
+pub const NAME_MARGIN: f32 = 16.0;
 
 /// Share of a bought agreement's fee the buyer forfeits to the seller when
 /// it lapses (at least 1 renown when anything was paid).
@@ -1667,6 +1674,7 @@ impl Game {
         if a.owner != player {
             return Err(e(CommandError::NotOwned(mine)));
         }
+        self.check_partner_visible(player, partner)?;
         let b = self.world.organism(partner).ok_or(e(CommandError::NotFound(partner)))?;
         self.check_auction_lock(mine)?;
         self.check_auction_lock(partner)?;
@@ -2734,6 +2742,35 @@ impl Game {
         }
     }
 
+    /// A partner a player may name in a request or a preview: one of
+    /// theirs, one in their sight, one on the market, or one in an open
+    /// offer of theirs. Else `out_of_sight`, also for an id that doesn't
+    /// exist, so neither command tells a rival's animal's existence, owner,
+    /// sex or maturity anywhere on the map.
+    fn check_partner_visible(&self, player: PlayerId, partner: OrgId) -> Result<(), ErrorInfo> {
+        let seen = self
+            .world
+            .organism(partner)
+            .is_some_and(|b| b.owner == player || self.view_reach(player, b.pos) + (NAME_MARGIN - VIEW_MARGIN) >= 0.0);
+        let public = || {
+            self.world.organism(partner).is_some()
+                && (self.economy.listings.values().any(|l| l.organism == partner)
+                    || self.offers.values().any(|o| {
+                        o.status.is_open()
+                            && (o.from == player || o.to == player)
+                            && (o.mine == partner || o.partner == partner)
+                    }))
+        };
+        if seen || public() {
+            return Ok(());
+        }
+        Err(ErrorInfo::new(
+            "out_of_sight",
+            "you can only name an animal you can see, one on the market or one in your offers",
+        )
+        .with_detail(serde_json::json!({ "organism": partner })))
+    }
+
     /// What a request for `mine` × `partner` would give; see
     /// [`ClientMsg::PreviewMating`].
     fn preview_mating(&self, player: PlayerId, mine: OrgId, partner: OrgId) -> Result<MatingPreviewView, ErrorInfo> {
@@ -2744,23 +2781,7 @@ impl Game {
         }
         let partner_seen =
             self.world.organism(partner).is_some_and(|b| b.owner == player || self.in_sight(player, b.pos));
-        // Only a partner the player can see, one on the market, or one in
-        // an offer of theirs: else a preview probed any organism anywhere.
-        let public = || {
-            self.economy.listings.values().any(|l| l.organism == partner)
-                || self.offers.values().any(|o| {
-                    o.status.is_open()
-                        && (o.from == player || o.to == player)
-                        && (o.mine == partner || o.partner == partner)
-                })
-        };
-        if self.world.organism(partner).is_some() && !partner_seen && !public() {
-            return Err(ErrorInfo::new(
-                "out_of_sight",
-                "you can only preview a mating with an animal you can see, one on the market or one in your offers",
-            )
-            .with_detail(serde_json::json!({ "organism": partner })));
-        }
+        self.check_partner_visible(player, partner)?;
         let p = self.world.mating_preview(mine, partner).map_err(e)?;
         Ok(MatingPreviewView {
             mine,
@@ -2932,13 +2953,28 @@ impl Game {
         let o = o.clone();
         let view = self.offer_view(request);
         let tick = self.world.tick();
+        // A pregnancy is told only to the female's owner: the other party
+        // reads a generic `partner_unavailable` (as `request_mating` says).
+        let pregnant_owners: Vec<PlayerId> = [o.mine, o.partner]
+            .iter()
+            .filter_map(|&id| self.world.organism(id))
+            .filter(|x| x.sex == Sex::Female && x.pregnancy.is_some())
+            .map(|x| x.owner)
+            .collect();
+        let error_for = |p: PlayerId| match &error {
+            Some(e) if e.code == "already_pregnant" && !pregnant_owners.contains(&p) => {
+                Some(ErrorInfo::new("partner_unavailable", "the partner can't take this mating now"))
+            }
+            e => e.clone(),
+        };
         for p in [o.from, o.to] {
+            let error = error_for(p);
             out.push((
                 Target::Player(p),
                 ServerMsg::MatingUpdate { offer: view.clone(), outcome, error: error.clone() },
             ));
             let (mine, partner) = if p == o.from { (o.mine, o.partner) } else { (o.partner, o.mine) };
-            let record = MatingRecord { tick, offer: Some(view.clone()), mine, partner, outcome, error: error.clone() };
+            let record = MatingRecord { tick, offer: Some(view.clone()), mine, partner, outcome, error };
             self.log_mating(p, record);
         }
         // Only requests the target declined (or hasn't answered yet) count
@@ -3836,6 +3872,7 @@ impl Game {
         let t = &ch.species;
         let lineage_name = |l: u32| w.lineages.get(l as usize).map(|x| (x.name.clone(), x.owner)).unwrap_or_default();
         let season_days = (w.config.days_per_year / 4).max(1) as u64;
+        let coarse = |dominant: PlayerId, v: f32| if dominant == WILD { v } else { (v * 4.0).round() / 4.0 };
         let mut species: Vec<SpeciesView> = t
             .species
             .iter()
@@ -3864,10 +3901,12 @@ impl Game {
                         SpeciesLineage { lineage: l, name, owner, owner_name, adults }
                     })
                     .collect(),
-                carnivory: s.carnivory,
-                body_size: s.body_size,
-                endothermy: family::rep_mean(s.reps(), Gene::Endothermy),
-                birth_mode: family::rep_mean(s.reps(), Gene::BirthMode),
+                // A player's species: quarters, as the leaderboard history
+                // gives rivals' genes (exact means were a design recipe).
+                carnivory: coarse(s.dominant, s.carnivory),
+                body_size: coarse(s.dominant, s.body_size),
+                endothermy: family::rep_mean(s.reps(), Gene::Endothermy).map(|v| coarse(s.dominant, v)),
+                birth_mode: family::rep_mean(s.reps(), Gene::BirthMode).map(|v| coarse(s.dominant, v)),
                 leg_count: family::rep_count(s.reps(), evo_sim::morph::MorphLocus::LegCount),
                 eye_count: family::rep_count(s.reps(), evo_sim::morph::MorphLocus::EyeCount),
             })
@@ -4567,6 +4606,15 @@ mod tests {
         assert_eq!(death_alert_text(&mixed).0, "2 watched organisms died: 2 of an unrecorded cause (#1, #2).");
     }
 
+    /// Bring `b` within sight of `a` (5 tiles off, not yet met): a request
+    /// or a preview names only an animal in sight.
+    fn in_sight_of(g: &mut Game, a: OrgId, b: OrgId) {
+        let pos = g.world.organism(a).unwrap().pos;
+        let to = g.world.map.clamp(pos + Vec2::new(5.0, 0.0));
+        let to = if to.dist(pos) < 4.0 { g.world.map.clamp(pos - Vec2::new(5.0, 0.0)) } else { to };
+        g.world.organisms.iter_mut().find(|o| o.id == b).unwrap().pos = to;
+    }
+
     fn place_together(g: &mut Game, a: OrgId, b: OrgId) {
         let pos = g.world.organism(a).unwrap().pos;
         g.world.organisms.iter_mut().find(|o| o.id == b).unwrap().pos = pos;
@@ -5239,9 +5287,12 @@ mod tests {
             ))
             .0
         );
+        let home = g.world.organism(stud).unwrap().pos;
+        in_sight_of(&mut g, dam, stud);
         assert!(
             result(&g.command(20, 2, Some(2), ClientMsg::RequestMating { mine: stud, partner: dam, price: None })).0
         );
+        g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = home;
         // Nobody is connected: every region may fold into cohorts.
         run_days(&mut g, 2);
         assert!(g.world.abstract_count() > 0, "the test needs cohorts");
@@ -5400,6 +5451,10 @@ mod tests {
         let mine =
             ch.species.species.iter().find(|s| s.lineages.first().is_some_and(|l| l.owner == 1)).expect("own species");
         assert_eq!((mine.dominant, mine.dominant_name.as_str(), mine.origin.as_str()), (1, "ann", "initial"));
+        // A player's species gives its body-plan genes in quarters only.
+        let quarter = |x: f32| ((x * 4.0).round() - x * 4.0).abs() < 1e-5;
+        let genes = [Some(mine.carnivory), Some(mine.body_size), mine.endothermy, mine.birth_mode];
+        assert!(genes.iter().flatten().all(|&x| quarter(x)), "{genes:?}");
         let ann = ch.achievements.players.iter().find(|p| p.player == 1).unwrap();
         assert_eq!(ann.catastrophes_survived, 1);
         assert!(ann.longevity_days >= 8);
@@ -5423,6 +5478,7 @@ mod tests {
                 .find(|&i| g.world.organism(i).is_some_and(|o| o.matured && o.sex == sex && o.pregnancy.is_none()))
         };
         let (mine, partner) = (pick(g, a, Sex::Male)?, pick(g, b, Sex::Female)?);
+        in_sight_of(g, mine, partner);
         let out = g.command(10, 1, None, ClientMsg::RequestMating { mine, partner, price: Some(25) });
         assert_eq!(result(&out), (true, None));
         let id = out
@@ -5988,11 +6044,24 @@ mod tests {
         let v = g.design_compatibility(9, &same);
         assert_eq!(v.sample, 16);
         assert!(v.rows.iter().all(|r| !r.wild && r.owner != WILD), "{:?}", v.rows);
-        assert!(v.rows.iter().all(|r| r.compatible && r.fertile_share > 0.9 && r.drift_risk == "high"), "{:?}", v.rows);
+        assert!(
+            v.rows.iter().all(|r| r.compatible && r.fertile_share >= 0.9 && r.drift_risk == "high"),
+            "{:?}",
+            v.rows
+        );
         assert!(v.rows.iter().all(|r| r.fertility_low <= r.fertility_high && r.fertility_high <= r.best_fertility));
         let eggs = FounderDesign::new("E", Thermo::Warm, BirthType::IncubatedEggs, 2).founders(6);
         let e = g.design_compatibility(9, &eggs);
-        assert!(e.rows.iter().all(|r| r.limiting == "birth_mode" && r.fertility < 0.6), "{:?}", e.rows);
+        // Other players' lineages: tenths, and no limiting gene (varying one
+        // gene against exact gaps solved their body plans).
+        assert!(e.rows.iter().all(|r| r.limiting == "body_plan" && r.fertility < 0.6), "{:?}", e.rows);
+        let tenths = |x: f32| ((x * 10.0).round() - x * 10.0).abs() < 1e-4;
+        assert!(e.rows.iter().all(|r| tenths(r.gap) && tenths(r.fertility)), "{:?}", e.rows);
+        // One's own lineage is shown exactly.
+        let mine = g.design_compatibility(1, &eggs);
+        let row = |o: PlayerId| mine.rows.iter().find(|r| r.owner == o).unwrap();
+        assert_eq!(row(1).limiting, "birth_mode");
+        assert_eq!(row(2).limiting, "body_plan");
         assert!(e.rows.iter().any(|r| r.fertile_share > 0.0), "{:?}", e.rows);
         let far = FounderDesign::new("F", Thermo::Cold, BirthType::AbandonedEggs, 2).founders(6);
         let f = g.design_compatibility(9, &far);
@@ -6018,6 +6087,7 @@ mod tests {
         g.connect(10, 1, "ann");
         g.connect(20, 2, "bob");
         let (fa, mb) = (female(&g, &a), male(&g, &b));
+        in_sight_of(&mut g, fa, mb);
         let start = g.balance(1);
         let ask = |g: &mut Game| {
             offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: Some(10) }))
@@ -6048,6 +6118,7 @@ mod tests {
         assert_eq!(g.balance(1), start);
         // Free requests take nothing and settle nothing.
         let (ma, fb) = (male(&g, &a), female(&g, &b));
+        in_sight_of(&mut g, ma, fb);
         let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fb, price: Some(0) }));
         assert_eq!(g.offers[&id].escrow, 0);
         g.command(10, 1, None, ClientMsg::CancelMating { request: id });
@@ -7165,8 +7236,30 @@ mod tests {
             }
         }
         assert!(g.world.organism(bob_dam).unwrap().pregnancy.is_some(), "the test needs her pregnant");
+        // Out of sight, Ann can't even name her.
+        let out = g.command(10, 1, Some(4), ClientMsg::RequestMating { mine: ann_male, partner: bob_dam, price: None });
+        assert_eq!(result(&out).1, Some("out_of_sight".into()));
+        let out = g.command(10, 1, Some(4), ClientMsg::RequestMating { mine: ann_male, partner: 999_999, price: None });
+        assert_eq!(result(&out).1, Some("out_of_sight".into()), "nor tell whether an id exists");
+        assert_eq!(g.preview_mating(1, ann_male, 999_999).unwrap_err().code, "out_of_sight");
+        in_sight_of(&mut g, bob_dam, ann_male);
         let out = g.command(10, 1, Some(4), ClientMsg::RequestMating { mine: ann_male, partner: bob_dam, price: None });
         assert_eq!(result(&out).1, Some("partner_unavailable".into()));
+        // An open offer that fails on her pregnancy tells only Bob why.
+        let id = g.open_offer(1, 2, ann_male, bob_dam, None, OfferStatus::Pending, None).unwrap();
+        let mut out = Outbox::new();
+        g.close(id, OfferStatus::Failed, None, Some(ErrorInfo::from(&CommandError::AlreadyPregnant)), &mut out);
+        let told = |p: PlayerId| {
+            out.iter()
+                .find_map(|(t, m)| match (t, m) {
+                    (Target::Player(q), ServerMsg::MatingUpdate { error: Some(e), .. }) if *q == p => {
+                        Some(e.code.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!((told(1).as_str(), told(2).as_str()), ("partner_unavailable", "already_pregnant"));
         let ann_stud_for_bob = male(&g, &a);
         let out = g.command(
             20,
