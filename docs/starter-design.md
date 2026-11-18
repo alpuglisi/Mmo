@@ -15,11 +15,26 @@ ready for its first winter:
 | boldness | 0.5 | 0.3 | free |
 | fur | 0 | 0.6 | 1.8 |
 | fat stores | 0 | 0.6 | 1.2 |
-| hibernation | 0 | 0.5 | 4.0 |
+| hibernation | 0 | 0.5 | 6.0 (12 a unit since playtest 2) |
+| birth | live | incubated eggs | free |
+| young per birth | 2 | 3 | 2.5 |
 
-Everything else stays at the defaults: warm-blooded, live birth, 2 young
-per birth, 20 founders. The whole design costs 9.5 of the 100 points
-(it was 2.5), so 90.5 are left for the player. No balance tunables or
+Everything else stays at the defaults: warm-blooded, 20 founders. The
+whole design costs 14 of the 100 points, so 86 are left for the player.
+
+**Playtest 3: its own species.** As a warm live bearer of 3.6 kg the
+starter was 100% fertile with the wild Steppe antelope (body size 0.55,
+diet 0) and was absorbed into its species. No free change makes it sterile
+with every wild species (the antelope's body sizes have drifted over
+0.55–0.85, the fox sits at diet 0.6, the vole at 0.12), so the starter lays
+incubated eggs: a birth mode apart, it is never kin with any wild species
+and stays its own species, while still about 19% fertile on average with
+the antelope (`Balance::egg_hybrid`; the builder's card says so). With 3
+eggs a clutch it grows close to the live bearer's pace. Twelve seeds of
+`starter_survival` (128² world, founded on day 30, 120 days): live birth,
+2 young, alive 12 of 12, median 169 at the end; incubated eggs, 2 a
+clutch, 12 of 12, median 72; incubated eggs, 3 a clutch (the starter),
+12 of 12, median 123. No balance tunables or
 server gene defaults changed; the client applies the starter
 (`client/src/designMorph.ts` `STARTER_TRAITS`), and "Reset traits" goes
 back to it.

@@ -984,7 +984,7 @@ every field optional with the contract defaults: `{"eye_count": 3,
 0/2/4/6/8, ear shapes `round`/`pointed`/`long`/`fan`, tail shapes
 `thin`/`bushy`/`fin`/`club`/`prehensile`, azimuth 0–180°, snout 0–1). A value
 out of range or an unknown shape is refused as `bad_morph` (`detail.field`).
-Extra structures cost points: 1 per eye beyond two, 2 per leg pair beyond
+Extra structures cost points: 3 per eye beyond two (1 before playtest 3), 2 per leg pair beyond
 two, 2 for a second ear pair; fewer structures, shapes, `eye_azimuth` and
 `snout_length` are free (*Point costs*, *Body plan structures*). `GET
 /api/genes` lists the body plan under `morph` (kind `count`/`enum`/`axis`,
@@ -7673,6 +7673,72 @@ the soft-cap defaults don't reach the balance tools' lineages):
 | `calibrate tournament --worlds 96 --days 90 --seed0 70001`: top thermoregulation × birth class win share (mean share) | 26.0% (warm live birth) | 27.1% (warm incubated eggs; warm live birth 26.0%, cold abandoned eggs 15.6%); by final share warm incubated 26.0% |
 | `evo-sim genetics` | | 134 checks: 107 strict passed, 0 failed |
 
+### Playtest 3: balance
+
+Playtest 3 (`docs/playtest-3.md`) confirmed playtest 2's winner no longer
+dominates (the dormancy toll cost it 25–30% a winter) and found what took
+its place and what the fixes broke:
+
+- **Five eyes bought isolation** (finding 5): each eye step added 0.1 to
+  the body-plan gap, so 2 → 5 eyes was sterile with every two-eyed animal,
+  for 3 points and with 360° vision.
+- **A brumating flier dominated** (finding 8): cold-blooded, brumating,
+  toxic and honestly coloured, 2,100 alive and flat through winters; the
+  toll applied only to warm hibernators and brumation cost 6 points a unit
+  against hibernation's 12.
+- **The toll ran 2–3× its documented rate** (finding 21): sleepers bed
+  down in autumn, and the toll was a season's chance per season asleep,
+  doubled in the first year and again as fat ran out: ~1% a day, 25–30% a
+  winter. Sleepers bedded down thirsty and died of thirst; hibernators all
+  woke on the first spring day onto the same pastures and starved; the
+  winter provision didn't save a winter founding (finding 4); the deaths
+  were reported as "cold or heat".
+- **The starter was absorbed by the Steppe antelope** (finding 22), 100%
+  fertile with it.
+
+**Sim rules, on by default from snapshot version 45** (44 is boom's;
+renumber at merge), off at 0 for older saves (`serde_util::before_v45`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `eye_hybrid` (0.6) | An eye-count step counts `1 − eye_hybrid` in the body-plan gap for fertility (`morph::morph_fertility_gap`, through `mating::Relief`): 2 → 5 eyes is 0.12 apart (fully fertile), not 0.30. Leg steps, kinship and species keep the full gap. |
+| `winter_toll` (1) | `dormancy_toll` (now 0.10) is the chance of dying over a whole winter's sleep: spread over two seasons, 1.5× in the first year and up to 1.5× again with no fat (`seasonal::dormancy_toll_rate`). Brumators pay it too (`seasonal::pays_toll`). Founders (generation 0, within a year of their lineage's founding) sleep their first winter free: the winter provision now holds. A sleeper beds down for the winter only below thirst 30. The deaths are `DeathCause::WinterSleep` ("died in its winter sleep", `winter_sleep` on the wire; a new cause after `journey`). LOD cohorts pay the same rate (no founder exemption there). |
+| `wake_spread` (10 days) | A warm hibernator wakes on its own day of the first 10 of spring (`rng_for(seed, WAKE_STREAM, id, 0)`), not all on the first, so a lineage doesn't flood one pasture at the thaw. |
+
+Old: an adult with full fat sleeping autumn and winter lost ~16%, a
+yearling ~30%. New: ~10% and ~14% (up to ~20% lean), brumators alike; a
+founding's first winter is free.
+
+**Prices**: brumation 6 → 10 points a unit, an extra eye 1 → 3 points (5
+eyes 9). The sample toxic frogs drop from 46 to 42 founders to stay within
+the budget.
+
+**Other fixes**: `preview_mating` and requests name the eye or leg counts
+when they are what makes a pair sterile (the reason was empty); the
+builder's interbreeding card weights eye steps like the sim
+(`EYE_WEIGHT`), so it agrees with the server for 5 eyes; a player may
+name a species most of whose adults are their lineage's even if a wild
+species "founded" it (an egg-laying lineage filed under the Steppe
+antelope); the starter lays 3 incubated eggs (`docs/starter-design.md`:
+its own species, ~19% fertile with the antelope, survives 12 of 12
+seeds); the Hibernation and Brumation texts mention the toll and the 6-day
+breeding lag; the charts name "died in winter sleep"; the budget line
+splits "cold blood" from "body size"; the builder says when wings do
+nothing on a body too heavy to glide.
+
+**Scripted replay** (`dominance`, now with Flier, PocketNomad3's design
+founded on day 150; seeds 1–4, 840 days; round 3 rules = the three new
+tunables off and `dormancy_toll` 0.08):
+
+DOMINANCE
+
+**Checks**:
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | SWEEP |
+| tests, fmt, both clippy, client typecheck/test/build | pass |
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
@@ -7762,6 +7828,7 @@ The costs in `design.rs` are calibrated with `examples/calibrate.rs`
 | 0.7 per founder above 20 up to 50, then each 0.07 dearer than the last; 2.5 per extra offspring | Founders were the best buy at 0.4; litter slightly underpriced at 1.5. The rising price past 50 (`design::founder_cost`) is from playtest 1, not the calibration: see *Founders, the soft cap and the market* |
 | 40 per unit of body size below 0.3, 20 for cold-blooded | Free choices that won out of proportion (below) |
 | 40 per unit of body size above 0.5 (free from 0.3 to 0.5); hibernation 12 | Playtest 2, not the calibration: big bodies outgrew every predator, winter sleep decided the board (hibernation was 8). See *Playtest 2: competitive balance* |
+| Brumation 10; 3 per eye beyond two | Playtest 3: a brumating flier slept through winters for free (brumation was 6), 2 → 5 eyes bought isolation and all-round vision for 3 points (1 an eye). See *Playtest 3: balance* |
 
 Under the new costs the clearest mispricings in the old table are mostly gone
 (per-point coefficients: founders +0.055 → +0.031, leg length +0.049 →

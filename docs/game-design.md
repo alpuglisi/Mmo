@@ -163,6 +163,8 @@ Optional: mismatch penalties are partly genetic, so selection can slowly reduce 
 
 Birth mode is part of the body plan, but counts for less than the other body-plan traits when deciding fertility: an egg layer is a little fertile with a close live bearer (and vice versa) instead of sterile with every one of them, so choosing eggs is not a free wall against hybrid dilution (playtest 2). Kinship and species boundaries still use the full difference.
 
+Eye and leg counts are part of the body plan too, but an extra eye counts for little in fertility: more eyes buy a wider view at 3 points an eye, not a wall against interbreeding (playtest 3: five eyes made a lineage sterile with everyone).
+
 **Body size** is free only in a middle band (from the default up to 3.6 kg). Smaller bodies cost points (more breeders on the same food), and so do bigger ones: a big body outgrows most predators, which its food need alone did not offset (playtest 2: player herbivores of 29–54 kg that no predator could take).
 
 **Interbreeding check.** The builder asks the server which living lineages a design's founders could breed with: founders sampled with their individual variation against sampled adults of each lineage, giving a fertility range (not the best pair), the share of fertile pairs and a drift risk (how close a sterile pairing is to becoming fertile as lineages drift). Player lineages are never labelled wild.
@@ -203,7 +205,7 @@ The map has distinct biomes, changing weather and seasons, so each organism pick
 
 | Strategy | How it works | Benefit | Cost or risk |
 | --- | --- | --- | --- |
-| Hibernation | Dormant through winter on stored fat | Almost no winter food needed; safe from weather | Must fatten in fall; den can be found; no winter breeding; some sleepers die in the den (more of the young and the lean); after waking, days of recovery before breeding; dearer to design |
+| Hibernation | Dormant through winter on stored fat | Almost no winter food needed; safe from weather | Must fatten in fall; den can be found; no winter breeding; about 1 in 10 sleepers die in the den over a winter (more of the young and the lean; brumators too; founders sleep their first winter free); after waking, days of recovery before breeding; wakers spread over the first days of spring; dearer to design |
 | Migration | Travels between seasonal ranges | Always in good conditions | Dangerous journeys; needs navigation and stamina |
 | Year-round active | No seasonal change | Breeds and forages all year; holds territory | Faces winter head-on; needs cold traits or a mild biome |
 | Estivation | Dormant through summer heat or drought | Survives deserts and dry seasons | Loses the summer |
