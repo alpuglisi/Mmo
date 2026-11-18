@@ -411,7 +411,8 @@ fn a_migration_that_never_gathers_ends_with_an_alert() {
     let texts = alerts(&g, AlertKind::Group);
     assert!(texts.iter().any(|t| t.contains("didn't gather at its migration target")), "{texts:?}");
     let v = main(&g);
-    assert!(v.migration.is_none() && v.migration_deadline_tick.is_none() && v.settle.is_none());
+    assert!(v.migration.is_none() && v.migration_deadline_tick.is_none() && v.home.is_none());
+    assert!(v.last_outcome.as_deref().is_some_and(|o| o.contains("ended")), "{:?}", v.last_outcome);
 }
 
 #[test]
@@ -652,4 +653,69 @@ fn the_daily_check_alerts_a_dry_territory_and_a_drifted_herd_once() {
     let drifted: Vec<String> =
         alerts(&g, AlertKind::Group).into_iter().filter(|t| t.contains("has drifted from its home")).collect();
     assert_eq!(drifted.len(), 1, "{drifted:?}");
+}
+
+/// Playtest 4: far claims migrate first, rivals' ground and bad radii are
+/// refused, and orders say what they replace.
+#[test]
+fn far_claims_migrate_first_and_claims_say_what_they_replace() {
+    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let home = g.world.group_middle(1, 0).unwrap();
+    assert_eq!(
+        run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: -2.0 }),
+        Err("bad_radius".into())
+    );
+    assert_eq!(g.world.territory(1, 0), None, "nothing committed");
+    // A far claim: a migration now, the territory on arrival.
+    let far = land_away(&g, home, 35.0);
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: far.x, y: far.y, radius: 4.0 }).unwrap();
+    assert_eq!(d["pending"], true, "{d}");
+    assert!(
+        d["migrating_to"]["x"].is_number()
+            && d["note"].as_str().unwrap().contains("claims the territory when it arrives"),
+        "{d}"
+    );
+    assert_eq!(g.world.territory(1, 0), None);
+    assert!(g.world.migration_order(1, 0).is_some());
+    // A rally says it replaces that migration.
+    let d = run(&mut g, ClientMsg::Rally { group: 0, x: home.x, y: home.y }).unwrap();
+    assert_eq!(d["replaced"], serde_json::json!(["migration"]), "{d}");
+    let d = run(&mut g, ClientMsg::CancelRally { group: 0 }).unwrap();
+    assert!(d["note"].is_string(), "{d}");
+    // Another player's territory can't be claimed over.
+    let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+    let mut two = Game::new(world, GameConfig::default());
+    two.found(1, &design("A")).unwrap();
+    two.found(2, &design("B")).unwrap();
+    two.connect(10, 1, "ann");
+    let theirs = two.world.group_middle(2, 0).unwrap();
+    two.world.claim_territory(2, 0, theirs, 5.0).unwrap();
+    let out =
+        two.command(10, 1, Some(1), ClientMsg::ClaimTerritory { group: 0, x: theirs.x, y: theirs.y, radius: 4.0 });
+    let ServerMsg::Result { error: Some(e), .. } = &out[0].1 else { panic!("refused") };
+    assert_eq!(e.code, "overlaps");
+}
+
+#[test]
+fn a_migration_that_never_moves_says_so_on_the_group_card() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    let far = land_away(&g, home, 25.0);
+    run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
+    let ends = g.world.migration_plan(1, 0).unwrap().deadline_tick;
+    while g.world.migration_order(1, 0).is_some() && g.world.tick() <= ends {
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            o.pos = home;
+            (o.needs.thirst, o.needs.hunger, o.health) = (0.0, 0.0, 100.0);
+        }
+        g.world.step();
+        g.after_tick();
+    }
+    let v = g.state_for(10).unwrap().groups.into_iter().find(|v| v.id == 0).unwrap();
+    assert!(v.last_outcome.as_deref().is_some_and(|o| o.contains("never got going")), "{:?}", v.last_outcome);
+    assert!(alerts(&g, AlertKind::Group).iter().any(|t| t.contains("never got going")));
+    // A new order clears it.
+    run(&mut g, ClientMsg::Rally { group: 0, x: home.x, y: home.y }).unwrap();
+    let v = g.state_for(10).unwrap().groups.into_iter().find(|v| v.id == 0).unwrap();
+    assert_eq!(v.last_outcome, None);
 }

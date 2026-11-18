@@ -162,8 +162,12 @@ pub enum Action {
     Patrol,
     /// Chasing an intruder out of its group's territory.
     Defend,
-    /// Walking to its group's rally point (`World::rally_group`).
+    /// Walking to its group's rally point (`World::rally_group`), or to an
+    /// agreed mating's rendezvous.
     Rally,
+    /// Walking back into the home its group's last migration gave it
+    /// (`World::settle_circle`).
+    Home,
 }
 
 /// Seasonal dormancy state ("Seasons and biomes" in the design doc).
