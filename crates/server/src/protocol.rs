@@ -1527,6 +1527,10 @@ pub struct LineageStats {
     /// bearers): what "pregnant" means for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eggs: Option<EggsView>,
+    /// Lineage-wide warnings now (hunger or thirst crash, near the hard
+    /// cap, starving inside territories), most urgent first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<LineageWarning>,
     /// Legacy share per recorded day, oldest first.
     pub legacy: Vec<LegacyPoint>,
     /// Recent alerts, newest last.
@@ -1543,6 +1547,15 @@ pub struct RampView {
     pub weight: f64,
     /// Days from founding to counting in full.
     pub days: u64,
+}
+
+/// A lineage-wide warning (`lineage_stats.warnings`); the same goes out as
+/// an alert when it starts.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LineageWarning {
+    /// `starving`, `near_cap` or `territory_starving`.
+    pub kind: String,
+    pub text: String,
 }
 
 /// A player lineage in its newcomer grace (`WorldSummary::protected`).

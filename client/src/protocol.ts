@@ -975,6 +975,8 @@ export interface LineageStats {
   ramp?: { founded_day: number; weight: number; days: number };
   /** Days left of the newcomer grace (others can't order attacks on yours); absent: none. */
   grace_days_left?: number;
+  /** Lineage-wide warnings now: `starving`, `near_cap`, `territory_starving` (absent from older servers). */
+  warnings?: { kind: string; text: string }[];
   /** Egg-laying lineages: their clutches on the ground (absent for live bearers and older servers). */
   eggs?: { clutches: number; eggs: number; brooded: number };
   legacy: LegacyPoint[];
@@ -1183,6 +1185,8 @@ export interface PlayerPlacement {
   value: number;
   /** Players ranked in the category. */
   of: number;
+  /** Won the category's title (one of the season's winners; a tie can be first without one). Absent from older servers. */
+  title?: boolean;
 }
 
 export interface PlayerSeason {

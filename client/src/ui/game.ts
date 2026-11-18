@@ -1701,6 +1701,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ...(ramp ? [['Season weight', h('span', { id: 'ramp-weight' }, ramp)] as [string, string | Node]] : []),
     ]));
     if (cap.explain) statsEl.append(h('p', { class: `cap-note small${cap.level === 'ok' ? ' muted' : ''}`, id: 'cap-note' }, cap.explain));
+    // Lineage-wide warnings (hunger crash, near the hard cap, starving territories), as the alerts say them.
+    const warnings = mine?.warnings ?? [];
+    if (warnings.length) {
+      statsEl.append(h('ul', { class: 'lineage-warnings', id: 'lineage-warnings', role: 'status' },
+        ...warnings.map((w) => h('li', { class: `lineage-warning warn-${w.kind}`, 'data-kind': w.kind }, '⚠ ', w.text))));
+    }
     // A founded lineage with nobody left: say so plainly, and where to see why.
     // One element, shown or hidden (rebuilding it each state would eat clicks on its button).
     lineageExtinct.hidden = !(s.lineage !== null && s.population === 0);

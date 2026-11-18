@@ -25,6 +25,8 @@ describe('the population cap row', () => {
     expect(past).toMatchObject({ status: 'past the soft cap: litters ×0.3, hunger ×1.06', level: 'near' });
     expect(past.explain).toMatch(/6% hungrier/);
     expect(capInfo(3000, 1500, c(2600, 0.1, 1.22))).toMatchObject({ status: 'hard cap reached: births paused', level: 'full' });
+    // Within 10% of the hard cap (young count): said before it is reached.
+    expect(capInfo(2750, 1500, c(2300, 0.15, 1.2))).toMatchObject({ status: 'near the hard cap: births stop at 3,000', level: 'near' });
     // Crowding off (soft = hard): the plain cap.
     expect(capInfo(1500, 1500, { ...c(1500, 1), hard_cap: 1500 }).status).toBe('population cap reached: births paused');
     expect(grouped(1500)).toBe('1,500');

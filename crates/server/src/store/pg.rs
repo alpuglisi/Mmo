@@ -956,7 +956,7 @@ impl Store for PgStore {
             "WITH mine AS ( \
                  SELECT s.seq FROM seasons s JOIN season_placements p USING (shard, world_id, season) \
                  WHERE s.shard = $3 AND p.player = $1 GROUP BY s.seq ORDER BY s.seq DESC LIMIT $2) \
-             SELECT s.seq, s.world_id, s.season, s.first_day, s.last_day, s.ended_unix, \
+             SELECT s.seq, s.world_id, s.season, s.first_day, s.last_day, s.ended_unix, s.head::text AS head, \
                     p.category, p.rank, p.value, p.ranked \
              FROM seasons s JOIN season_placements p USING (shard, world_id, season) \
              WHERE s.shard = $3 AND p.player = $1 AND s.seq IN (SELECT seq FROM mine) ORDER BY s.seq DESC",
@@ -967,9 +967,14 @@ impl Store for PgStore {
         .fetch_all(&self.pool)
         .await?;
         let mut out: Vec<(i64, PlayerSeason)> = Vec::new();
+        // The season's winners (its head), for each placement's `title`.
+        let mut winners: Vec<crate::league::Winner> = Vec::new();
         for r in &rows {
             let seq: i64 = r.try_get("seq")?;
             if out.last().is_none_or(|(s, _)| *s != seq) {
+                winners = serde_json::from_str::<SeasonHead>(r.try_get::<&str, _>("head")?)
+                    .map(|h| h.winners)
+                    .unwrap_or_default();
                 out.push((
                     seq,
                     PlayerSeason {
@@ -990,6 +995,7 @@ impl Store for PgStore {
                     rank: get_u64(r, "rank")? as u32,
                     value: r.try_get("value")?,
                     of: get_u64(r, "ranked")? as usize,
+                    title: winners.iter().any(|w| w.category == category && w.player == player),
                 });
             }
         }

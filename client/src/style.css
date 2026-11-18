@@ -603,3 +603,8 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .help-topics { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .help-topic summary { cursor: pointer; }
 .help-topic p { margin: 4px 0 6px 1.2em; }
+
+/* Lineage-wide warnings (Lineage tab). */
+.lineage-warnings { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.lineage-warning { border: 1px solid #d29922; background: color-mix(in srgb, #3a2a0c 80%, transparent); border-radius: 6px; padding: 6px 8px; font-size: 0.9em; }
+.lineage-warning.warn-starving, .lineage-warning.warn-territory_starving { border-color: var(--bad); background: color-mix(in srgb, #3a1515 80%, transparent); }

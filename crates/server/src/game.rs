@@ -318,6 +318,25 @@ pub const REQUEST_WINDOW_MINUTES: f64 = 60.0;
 /// Shortest auction in minutes (`GameConfig::min_auction_ticks`).
 pub const MIN_AUCTION_MINUTES: f64 = 5.0;
 
+/// A lineage is starving (`Game::lineage_warnings`) when this share of it
+/// died of hunger or thirst in a day…
+pub const STARVING_SHARE: f64 = 0.05;
+/// …and at least this many did.
+pub const STARVING_MIN: u64 = 5;
+/// Near the hard cap from this share of it.
+pub const NEAR_CAP_SHARE: f64 = 0.9;
+/// Animals in a territory at this hunger or thirst count as starving there.
+pub const TERRITORY_NEED: f32 = 85.0;
+/// Territories are starving when this share of the animals in them are.
+pub const TERRITORY_STARVING_SHARE: f64 = 0.25;
+/// A warning still in force is said again after this many days.
+pub const WARNING_REPEAT_DAYS: u64 = 3;
+
+/// Real minutes a possession outlives its player's last session (a reload
+/// or a dropped connection keeps it); then the animal is released, so it
+/// doesn't stand possessed and starve while nobody steers it (playtest 3).
+pub const POSSESSION_GRACE_MINUTES: f64 = 1.0;
+
 /// `minutes` of wall-clock time in ticks of `tick_ms` (at least 1).
 pub fn minutes_to_ticks(minutes: f64, tick_ms: f64) -> u64 {
     ((minutes * 60_000.0 / tick_ms.max(1.0)).round() as u64).max(1)
@@ -538,7 +557,7 @@ pub struct Game {
     need_alerted: BTreeMap<OrgId, u64>,
     /// Watched organisms' deaths not yet announced: grouped per player into
     /// one alert per game hour (`announce_deaths`). Not saved.
-    pending_deaths: BTreeMap<PlayerId, Vec<(OrgId, Watch, Option<DeathCause>)>>,
+    pending_deaths: BTreeMap<PlayerId, Vec<(OrgId, Watch, Why)>>,
     /// Each player lineage's founding: the day, the founders and their mean
     /// genes and body plan (the family tree's first stage). Saved.
     founded: BTreeMap<u32, crate::protocol::FamilySample>,
@@ -552,6 +571,17 @@ pub struct Game {
     /// A drought warning is out (`DROUGHT_WARN`); cleared below
     /// `DROUGHT_CLEAR`. Not saved: a restart in a drought warns again.
     drought_warned: bool,
+    /// Players who founded since the last tick: told of a drought under way
+    /// (they missed its warning). Not saved.
+    joined: Vec<PlayerId>,
+    /// Players whose last session closed, and the tick it did: their
+    /// possession ends after [`POSSESSION_GRACE_MINUTES`]. Not saved (a
+    /// restart drops every session; the release then follows the grace).
+    left: BTreeMap<PlayerId, u64>,
+    /// Lineage warnings given (player, kind) and the day: repeated every
+    /// [`WARNING_REPEAT_DAYS`] while they last, forgotten when they end.
+    /// Not saved.
+    warned: BTreeMap<(PlayerId, String), u64>,
     /// Attack orders given (attacker → its player and target), to tell the
     /// player how each ended. Not saved.
     attack_watch: BTreeMap<OrgId, (PlayerId, OrgId)>,
@@ -659,6 +689,9 @@ pub struct SavedGame {
     /// Each player lineage's founding as it happened (absent in older saves:
     /// the family tree then starts at the first recorded day).
     founded: BTreeMap<u32, crate::protocol::FamilySample>,
+    /// Each player's recent finished matings (`Game::mating_history`):
+    /// the Mates tab's history survives a restart (absent in older saves).
+    mating_log: BTreeMap<PlayerId, VecDeque<MatingRecord>>,
     /// The day each player's lineage was founded (the
     /// founding ramp; absent in older saves, which count every lineage in
     /// full).
@@ -783,6 +816,9 @@ impl Game {
             seen_eras: 0,
             seen_catastrophes: Vec::new(),
             drought_warned: false,
+            joined: Vec::new(),
+            left: BTreeMap::new(),
+            warned: BTreeMap::new(),
             attack_watch: BTreeMap::new(),
             economy,
             economy_restored: false,
@@ -863,6 +899,7 @@ impl Game {
             mating_prefs: self.mating_prefs.clone(),
             species_bonus: self.species_bonus.clone(),
             founded: self.founded.clone(),
+            mating_log: self.mating_log.clone(),
             founded_day: self.founded_day.clone(),
         }
     }
@@ -942,6 +979,14 @@ impl Game {
         g.species_bonus = saved.species_bonus;
         g.offline_resume(saved.offline);
         g.founded = saved.founded;
+        g.mating_log = saved.mating_log;
+        // Every session ended with the restart: possessions follow the grace.
+        let now = g.world.tick();
+        for o in g.world.organisms.iter().filter(|o| o.alive) {
+            if let Some(p) = o.possessed_by {
+                g.left.insert(p, now);
+            }
+        }
         g
     }
 
@@ -1200,6 +1245,7 @@ impl Game {
         self.lineage_of.insert(player, lineage);
         self.founded.insert(lineage, self.founding_sample(&founders));
         self.founded_day.insert(player, self.world.day());
+        self.joined.push(player);
         for &id in &founders {
             self.watched.insert(id, (player, Watch::Founder));
         }
@@ -1287,6 +1333,7 @@ impl Game {
         self.set_name(player, name);
         let first = !self.conns.values().any(|c| c.player == player);
         self.conns.insert(conn, Conn { player, view: None });
+        self.left.remove(&player);
         let mut out = vec![(
             Target::Conn(conn),
             ServerMsg::Welcome { player, name: name.into(), lineage: self.lineage_of(player), proto: None },
@@ -1304,6 +1351,7 @@ impl Game {
         if let Some(c) = self.conns.remove(&conn) {
             if !self.conns.values().any(|o| o.player == c.player) {
                 self.offline_logout(c.player);
+                self.left.insert(c.player, self.world.tick());
             }
         }
     }
@@ -2546,7 +2594,9 @@ impl Game {
             if income > 0 {
                 let text = format!(
                     "Day {} income: legacy share {:.1}%, weighted {:.1}%",
-                    record.day + 1,
+                    // The day just ended, counted from 1 (a record is taken
+                    // as the next day starts: `record.day` is that day's index).
+                    record.day.max(1),
                     share * 100.0,
                     weighted * 100.0
                 );
@@ -3009,6 +3059,8 @@ impl Game {
         self.last_season = self.world.season();
         self.watch_possessed(&mut out);
         self.announce_deaths(&mut out);
+        self.tell_joiners(&mut out);
+        self.release_the_absent();
         self.announce_attack_results(&mut out);
         self.announce_group_events(&mut out);
         self.plan_routes();
@@ -3027,6 +3079,7 @@ impl Game {
             self.daily_alerts(&record, &mut out);
             self.chronicle_alerts(&mut out);
             self.history.push_back(record.clone());
+            self.warning_alerts(record.day, &mut out);
             if self.history.len() > HISTORY_DAYS {
                 self.history.pop_front();
             }
@@ -3422,20 +3475,22 @@ impl Game {
                 // Gone without a body: with level of detail on it went into a
                 // statistical cohort far from every player, alive; not a death.
                 if !self.world.config.lod.enabled {
-                    self.pending_deaths.entry(player).or_default().push((id, watch, None));
+                    self.pending_deaths.entry(player).or_default().push((id, watch, Why::Of(None)));
                 }
                 continue;
             };
-            if watch == Watch::Possessed || o.possessed_by == Some(player) {
+            // Possessed when it died (not merely once: possession ends with the
+            // player's sessions, and a released animal is an ordinary one).
+            if o.possessed_by == Some(player) {
                 // Said at once: the player was steering it (its bar just vanished).
                 let text = format!(
                     "#{id}, the animal you were possessing, {}. Possess another from the map or the Lineage tab.",
-                    death_words(o.death)
+                    death_words(why_died(o))
                 );
                 self.alert(player, AlertKind::Death, text, Some(id), out);
                 continue;
             }
-            self.pending_deaths.entry(player).or_default().push((id, watch, o.death));
+            self.pending_deaths.entry(player).or_default().push((id, watch, why_died(o)));
         }
         if !self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) || self.pending_deaths.is_empty() {
             return;
@@ -3443,6 +3498,133 @@ impl Game {
         for (player, deaths) in std::mem::take(&mut self.pending_deaths) {
             let (text, organism) = death_alert_text(&deaths);
             self.alert(player, AlertKind::Death, text, organism, out);
+        }
+    }
+
+    /// Lineage-wide warnings for `player` now (playtest 3, finding 19): a
+    /// hunger or thirst crash in the last recorded day, the lineage near the
+    /// hard cap, animals starving inside the territories they hold.
+    /// Session A's alerts cover each territory running dry; these are the
+    /// lineage's.
+    pub fn lineage_warnings(&self, player: PlayerId) -> Vec<LineageWarning> {
+        let Some(lineage) = self.lineage_of(player) else { return Vec::new() };
+        let mut out = Vec::new();
+        let w = &self.world;
+        if let Some((r, e)) =
+            self.history.back().and_then(|r| r.lineages.iter().find(|e| e.lineage == lineage).map(|e| (r, e)))
+        {
+            let n = |c: &str| e.deaths.get(c).copied().unwrap_or(0);
+            let (starved, thirst) = (n("starved"), n("thirst"));
+            let died = starved + thirst;
+            let base = e.alive as u64 + e.deaths.values().sum::<u64>();
+            if died >= STARVING_MIN && base > 0 && died as f64 >= STARVING_SHARE * base as f64 {
+                let full = self.crowding_view(player).is_none_or(|c| c.litter >= 0.9);
+                let why = if full {
+                    "Litters are still full size, so the population cap isn't the cause: their ground can't feed them."
+                } else {
+                    "The soft cap slows breeding, but the lineage is still more than its ground can feed."
+                };
+                out.push(LineageWarning {
+                    kind: "starving".into(),
+                    text: format!(
+                        "Your lineage is going hungry: on day {} {starved} starved and {thirst} died of thirst ({:.0}% of it). \
+                         {why} Move groups to better ground (the Food layer shows it), split big herds, keep them near water.",
+                        r.day.max(1),
+                        100.0 * died as f64 / base as f64
+                    ),
+                });
+            }
+        }
+        let alive = w.population_counts().get(lineage as usize).map_or(0, |c| c.alive);
+        let hard = w.player_ceiling();
+        if hard > 0 && alive as f64 >= NEAR_CAP_SHARE * hard as f64 {
+            out.push(LineageWarning {
+                kind: "near_cap".into(),
+                text: format!(
+                    "Near the hard cap: {alive} of {hard} living organisms (young count too). At {hard} no more young are born; \
+                     a bigger herd no longer adds to your share, healthy breeding adults do."
+                ),
+            });
+        }
+        // Animals inside the territories their groups hold, and how many of them are starving.
+        let (mut inside, mut starving) = (0usize, 0usize);
+        let mut groups: BTreeSet<u8> = BTreeSet::new();
+        for o in w.organisms.iter().filter(|o| o.alive && o.owner == player) {
+            if w.territory(player, o.group).is_some_and(|t| t.contains(o.pos)) {
+                inside += 1;
+                if o.needs.hunger >= TERRITORY_NEED || o.needs.thirst >= TERRITORY_NEED {
+                    starving += 1;
+                    groups.insert(o.group);
+                }
+            }
+        }
+        if starving >= STARVING_MIN as usize && starving as f64 >= TERRITORY_STARVING_SHARE * inside as f64 {
+            let names: Vec<String> = groups.iter().map(|&g| group_name(g)).collect();
+            out.push(LineageWarning {
+                kind: "territory_starving".into(),
+                text: format!(
+                    "{starving} of the {inside} animals holding territories ({}) are starving or parched: they obey the claim \
+                     and stay inside while the ground runs out. Move them, or abandon the claim.",
+                    names.join(", ")
+                ),
+            });
+        }
+        out
+    }
+
+    /// Say each lineage warning as an alert when it starts, and again every
+    /// [`WARNING_REPEAT_DAYS`] while it lasts.
+    fn warning_alerts(&mut self, day: u64, out: &mut Outbox) {
+        let players: Vec<PlayerId> = self.lineage_of.keys().copied().collect();
+        for p in players {
+            let now = self.lineage_warnings(p);
+            self.warned.retain(|(q, k), _| *q != p || now.iter().any(|w| &w.kind == k));
+            for w in now {
+                let key = (p, w.kind.clone());
+                if self.warned.get(&key).is_some_and(|&d| day < d + WARNING_REPEAT_DAYS) {
+                    continue;
+                }
+                self.warned.insert(key, day);
+                self.alert(p, AlertKind::Need, w.text, None, out);
+            }
+        }
+    }
+
+    /// End the possession of players gone longer than the grace
+    /// ([`POSSESSION_GRACE_MINUTES`]): the animal returns to its instincts.
+    fn release_the_absent(&mut self) {
+        if self.left.is_empty() {
+            return;
+        }
+        let grace = minutes_to_ticks(POSSESSION_GRACE_MINUTES, self.cfg.tick_ms);
+        let now = self.world.tick();
+        let gone: Vec<PlayerId> =
+            self.left.iter().filter(|&(_, &t)| now.saturating_sub(t) >= grace).map(|(&p, _)| p).collect();
+        for p in gone {
+            self.left.remove(&p);
+            let held: Vec<OrgId> =
+                self.world.organisms.iter().filter(|o| o.alive && o.possessed_by == Some(p)).map(|o| o.id).collect();
+            for id in held {
+                let _ = self.world.release(p, id);
+            }
+        }
+    }
+
+    /// Tell players who just founded about a drought or catastrophe under
+    /// way, whose warnings went out before they joined.
+    fn tell_joiners(&mut self, out: &mut Outbox) {
+        if self.joined.is_empty() {
+            return;
+        }
+        let drought = self.drought_warned.then(|| drought_text(self.world.map.drought));
+        let catastrophe =
+            self.world.chronicle.active_catastrophe().map(|c| {
+                format!("Catastrophe under way: {} (through about day {}).", catastrophe_text(c.kind), c.end_day)
+            });
+        for p in std::mem::take(&mut self.joined) {
+            for text in drought.iter().chain(catastrophe.iter()) {
+                self.alert(p, AlertKind::World, text.clone(), None, out);
+            }
         }
     }
 
@@ -3562,10 +3744,20 @@ impl Game {
             if entry.born > 0 || died > 0 {
                 let mut causes: Vec<(&String, &u64)> = entry.deaths.iter().collect();
                 causes.sort_by(|a, b| b.1.cmp(a.1));
-                let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{n} {}", c.replace('_', " "))).collect();
+                // The day's counts come from the sim's causes: exposure is cold, heat or a winter sleep.
+                let word = |c: &str| {
+                    if c == "exposure" {
+                        "cold, heat or winter sleep".to_string()
+                    } else {
+                        c.replace('_', " ")
+                    }
+                };
+                let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{n} {}", word(c))).collect();
                 let text = format!(
                     "Day {}: {} born, {} died{} · {} alive",
-                    record.day + 1,
+                    // The day the births and deaths happened (the one just
+                    // ended), counted from 1, as the vitals chart labels it.
+                    record.day.max(1),
                     entry.born,
                     died,
                     if causes.is_empty() { String::new() } else { format!(" ({})", causes.join(", ")) },
@@ -3650,7 +3842,12 @@ impl Game {
         }
         // Droughts: a warning when much of the land dries out, and when it eases.
         let drought = self.world.map.drought;
-        let warn = if !self.drought_warned && drought >= DROUGHT_WARN {
+        // A megadrought has its own catastrophe alert: no second one for it
+        // (a drought still on after it ends is warned of then).
+        let megadrought = ch.active_catastrophe().is_some_and(|c| c.kind == CatastropheKind::Megadrought);
+        let warn = if megadrought {
+            None
+        } else if !self.drought_warned && drought >= DROUGHT_WARN {
             self.drought_warned = true;
             Some((Some(PushKind::Catastrophe), drought_text(drought)))
         } else if self.drought_warned && drought < DROUGHT_CLEAR {
@@ -4034,7 +4231,12 @@ impl Game {
                 legacy.push(LegacyPoint { day: r.day, share: e.share, weighted_share: e.weighted_share, alive });
             }
             let Some(e) = lineage.and_then(|l| r.lineages.iter().find(|e| e.lineage == l)) else { continue };
-            vitals.push(DayVitals { day: r.day, births: e.born, deaths: e.deaths.clone() });
+            // A record is taken as the next day starts: its births and deaths
+            // happened the day before (the chart and the daily summary agree).
+            // The world's first record (day 0) covers no day.
+            if r.day > 0 {
+                vitals.push(DayVitals { day: r.day - 1, births: e.born, deaths: e.deaths.clone() });
+            }
             if !e.genes.is_empty() {
                 history_days.push(r.day);
                 for (k, &g) in Gene::ALL.iter().enumerate() {
@@ -4045,10 +4247,9 @@ impl Game {
         if let Some(l) = lineage {
             let (born, mut deaths) = self.vitals_since_boundary();
             let (births, deaths) = (born.get(&l).copied().unwrap_or(0), deaths.remove(&l).unwrap_or_default());
-            // Today so far, unless the last record already carries today's
-            // day (a record is labelled with the legacy day, which is today
-            // right at the day boundary): then the two are one day, added
-            // up, not the same day twice.
+            // Today so far: since the last day boundary, so the day it began
+            // (the clock can show the next day for a tick before the record).
+            let day = self.world.latest_legacy().map_or(day, |l| l.day);
             match vitals.last_mut().filter(|v| v.day >= day) {
                 Some(v) => {
                     v.births += births;
@@ -4105,6 +4306,7 @@ impl Game {
                 days: FOUNDING_RAMP_DAYS,
             }),
             grace_days_left: lineage.and_then(|l| self.world.lineage_grace_left(l)),
+            warnings: self.lineage_warnings(player),
             eggs: lineage.and_then(|l| self.eggs_view(l)),
             legacy,
             alerts: self.alerts(player),
@@ -4202,55 +4404,84 @@ pub fn catastrophe_view(c: &Catastrophe) -> CatastropheView {
     }
 }
 
+/// Why an organism died, as alerts tell it: the sim's cause, with exposure
+/// split into cold, heat and a winter sleep it never woke from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Why {
+    Of(Option<DeathCause>),
+    Cold,
+    Heat,
+    WinterSleep,
+}
+
+/// Why `o` died: exposure told apart by the state it died in (dormant, or
+/// further from its comfort range on the cold or the hot side).
+fn why_died(o: &Organism) -> Why {
+    match o.death {
+        Some(DeathCause::Exposure) if o.dormancy != evo_sim::organism::Dormancy::Awake => Why::WinterSleep,
+        Some(DeathCause::Exposure) if o.needs.heat > o.needs.cold => Why::Heat,
+        Some(DeathCause::Exposure) => Why::Cold,
+        cause => Why::Of(cause),
+    }
+}
+
 /// How a death is told: "was eaten", "starved", "died of thirst", …
-fn death_words(cause: Option<DeathCause>) -> &'static str {
-    match cause {
-        Some(DeathCause::Predation) => "was eaten",
-        Some(DeathCause::OldAge) => "died of old age",
-        Some(DeathCause::Starvation) => "starved",
-        Some(DeathCause::Thirst) => "died of thirst",
-        Some(DeathCause::Exposure) => "died of cold or heat",
-        Some(DeathCause::Toxin) => "was poisoned",
-        Some(DeathCause::Drowning) => "drowned",
-        Some(DeathCause::Attrition) => "died of exhaustion",
-        Some(DeathCause::Recessive) => "died of an inherited defect",
-        Some(DeathCause::Disease) => "died of disease",
-        Some(DeathCause::Journey) => "died on a journey",
-        None => "died",
+fn death_words(why: Why) -> &'static str {
+    match why {
+        Why::Cold => "died of cold",
+        Why::Heat => "died of heat",
+        Why::WinterSleep => "died in its winter sleep",
+        Why::Of(Some(DeathCause::Predation)) => "was eaten",
+        Why::Of(Some(DeathCause::OldAge)) => "died of old age",
+        Why::Of(Some(DeathCause::Starvation)) => "starved",
+        Why::Of(Some(DeathCause::Thirst)) => "died of thirst",
+        Why::Of(Some(DeathCause::Exposure)) => "died of cold or heat",
+        Why::Of(Some(DeathCause::Toxin)) => "was poisoned",
+        Why::Of(Some(DeathCause::Drowning)) => "drowned",
+        Why::Of(Some(DeathCause::Attrition)) => "died of exhaustion",
+        Why::Of(Some(DeathCause::Recessive)) => "died of an inherited defect",
+        Why::Of(Some(DeathCause::Disease)) => "died of disease",
+        Why::Of(Some(DeathCause::Journey)) => "died on a journey",
+        Why::Of(None) => "died",
     }
 }
 
 /// A cause as a count's noun phrase: "3 eaten", "2 of thirst".
-fn death_count_words(cause: Option<DeathCause>, n: usize) -> String {
-    let what = match cause {
-        Some(DeathCause::Predation) => "eaten",
-        Some(DeathCause::OldAge) => "of old age",
-        Some(DeathCause::Starvation) => "starved",
-        Some(DeathCause::Thirst) => "of thirst",
-        Some(DeathCause::Exposure) => "of cold or heat",
-        Some(DeathCause::Toxin) => "poisoned",
-        Some(DeathCause::Drowning) => "drowned",
-        Some(DeathCause::Attrition) => "of exhaustion",
-        Some(DeathCause::Recessive) => "of an inherited defect",
-        Some(DeathCause::Disease) => "of disease",
-        Some(DeathCause::Journey) => "on a journey",
-        None => "of an unrecorded cause",
+fn death_count_words(why: Why, n: usize) -> String {
+    let what = match why {
+        Why::Cold => "of cold",
+        Why::Heat => "of heat",
+        Why::WinterSleep => "in their winter sleep",
+        Why::Of(Some(DeathCause::Predation)) => "eaten",
+        Why::Of(Some(DeathCause::OldAge)) => "of old age",
+        Why::Of(Some(DeathCause::Starvation)) => "starved",
+        Why::Of(Some(DeathCause::Thirst)) => "of thirst",
+        Why::Of(Some(DeathCause::Exposure)) => "of cold or heat",
+        Why::Of(Some(DeathCause::Toxin)) => "poisoned",
+        Why::Of(Some(DeathCause::Drowning)) => "drowned",
+        Why::Of(Some(DeathCause::Attrition)) => "of exhaustion",
+        Why::Of(Some(DeathCause::Recessive)) => "of an inherited defect",
+        Why::Of(Some(DeathCause::Disease)) => "of disease",
+        Why::Of(Some(DeathCause::Journey)) => "on a journey",
+        Why::Of(None) => "of an unrecorded cause",
     };
     format!("{n} {what}")
 }
 
 /// One alert for a player's deaths in the last hour, and the organism it
 /// is about when there is just one.
-fn death_alert_text(deaths: &[(OrgId, Watch, Option<DeathCause>)]) -> (String, Option<OrgId>) {
+fn death_alert_text(deaths: &[(OrgId, Watch, Why)]) -> (String, Option<OrgId>) {
     let role = |w: Watch| match w {
         Watch::Founder => "Founder",
-        Watch::Possessed => "Possessed",
+        // Watched since it was possessed; possessed no more when it died
+        // (that death is told at once: `announce_deaths`).
+        Watch::Possessed => "Once-possessed",
     };
     if let [(id, watch, cause)] = deaths {
         return (format!("{} #{id} {}.", role(*watch), death_words(*cause)), Some(*id));
     }
     let founders = deaths.iter().all(|d| d.1 == Watch::Founder);
-    let mut by_cause: Vec<(Option<DeathCause>, usize)> = Vec::new();
+    let mut by_cause: Vec<(Why, usize)> = Vec::new();
     for d in deaths {
         match by_cause.iter_mut().find(|(c, _)| *c == d.2) {
             Some(e) => e.1 += 1,
@@ -4272,7 +4503,10 @@ fn attack_result_text(w: &World, attacker: OrgId, target: OrgId) -> Option<Strin
     let a = find(attacker);
     let t = find(target);
     if let Some(a) = a.filter(|a| !a.alive) {
-        return Some(format!("Attack over: your #{attacker} {} before it reached #{target}.", death_words(a.death)));
+        return Some(format!(
+            "Attack over: your #{attacker} {} before it reached #{target}.",
+            death_words(why_died(a))
+        ));
     }
     let Some(a) = a else {
         return Some(format!("Attack over: #{attacker} is gone."));
@@ -4283,7 +4517,7 @@ fn attack_result_text(w: &World, attacker: OrgId, target: OrgId) -> Option<Strin
             Some(DeathCause::Predation) if a.pos.dist(t.pos) <= 3.0 => {
                 format!("Attack over: your #{attacker} killed #{target}.")
             }
-            cause => format!("Attack over: #{target} {} before your #{attacker} could kill it.", death_words(cause)),
+            _ => format!("Attack over: #{target} {} before your #{attacker} could kill it.", death_words(why_died(t))),
         }),
         Some(t) if t.sheltered => {
             Some(format!("Attack over: #{target} went to ground (a burrow or shelter) and escaped your #{attacker}."))
@@ -4460,18 +4694,23 @@ mod tests {
 
     #[test]
     fn death_alerts_name_the_cause_and_group() {
-        let (t, id) = death_alert_text(&[(5, Watch::Founder, Some(DeathCause::Starvation))]);
+        let (t, id) = death_alert_text(&[(5, Watch::Founder, Why::Of(Some(DeathCause::Starvation)))]);
         assert_eq!((t.as_str(), id), ("Founder #5 starved.", Some(5)));
         let many = [
-            (1, Watch::Founder, Some(DeathCause::Predation)),
-            (2, Watch::Founder, Some(DeathCause::Thirst)),
-            (3, Watch::Founder, Some(DeathCause::Predation)),
+            (1, Watch::Founder, Why::Of(Some(DeathCause::Predation))),
+            (2, Watch::Founder, Why::Of(Some(DeathCause::Thirst))),
+            (3, Watch::Founder, Why::Of(Some(DeathCause::Predation))),
         ];
         let (t, id) = death_alert_text(&many);
         assert_eq!(t, "3 founders died: 2 eaten, 1 of thirst (#1, #2, #3).");
         assert_eq!(id, None);
-        let mixed = [(1, Watch::Founder, None), (2, Watch::Possessed, None)];
+        let mixed = [(1, Watch::Founder, Why::Of(None)), (2, Watch::Possessed, Why::Of(None))];
         assert_eq!(death_alert_text(&mixed).0, "2 watched organisms died: 2 of an unrecorded cause (#1, #2).");
+        // Exposure says which; a once-possessed animal isn't "possessed".
+        assert_eq!(death_alert_text(&[(7, Watch::Possessed, Why::Heat)]).0, "Once-possessed #7 died of heat.");
+        let three =
+            [(1, Watch::Founder, Why::Cold), (2, Watch::Founder, Why::Cold), (3, Watch::Founder, Why::WinterSleep)];
+        assert_eq!(death_alert_text(&three).0, "3 founders died: 2 of cold, 1 in their winter sleep (#1, #2, #3).");
     }
 
     fn place_together(g: &mut Game, a: OrgId, b: OrgId) {
@@ -4857,6 +5096,9 @@ mod tests {
         assert!(declined(&h2[0]));
         assert_eq!((h1[0].mine, h1[0].partner), (fa2, mb));
         assert_eq!((h2[0].mine, h2[0].partner), (mb, fa2));
+        // It survives a restart from the saved game.
+        let r = Game::resume(g.world.clone(), GameConfig::default(), g.saved(), Vec::new());
+        assert_eq!((r.mating_history(1), r.mating_history(2)), (g.mating_history(1), g.mating_history(2)));
     }
 
     #[test]
@@ -4996,11 +5238,12 @@ mod tests {
         run_days(&mut g, 3);
         let s = g.lineage_stats(1);
         assert_eq!(s.history_days.len(), 3);
-        assert_eq!(s.vitals.len(), 4, "three recorded days and today");
+        // The world's first record covers no day: days 1 and 2 (from 1) and today.
+        assert_eq!(s.vitals.len(), 3, "two recorded days and today");
         // Each day once, in order, today last.
         let days = |s: &LineageStats| s.vitals.iter().map(|v| v.day).collect::<Vec<_>>();
         assert!(s.vitals.windows(2).all(|w| w[0].day < w[1].day), "{:?}", days(&s));
-        assert_eq!(s.vitals.last().unwrap().day, g.world.day());
+        assert_eq!(s.vitals.last().unwrap().day, g.world.latest_legacy().unwrap().day);
         // A record carrying today's day (as at the boundary) isn't repeated
         // by today's entry.
         let mut r = g.history.back().unwrap().clone();
@@ -5241,6 +5484,27 @@ mod tests {
         let a = alerts_in(&out, 2);
         assert_eq!(a.len(), 1, "{a:?}");
         assert!(a[0].text.starts_with("The drought has eased: 20%"), "{a:?}");
+        // A player who founds during a drought is told of it.
+        g.world.map.drought = 0.5;
+        g.chronicle_alerts(&mut Outbox::new());
+        g.set_name(3, "cy");
+        g.found(3, &design("C")).unwrap();
+        let mut out = Outbox::new();
+        g.tell_joiners(&mut out);
+        let a = alerts_in(&out, 3);
+        assert!(a.iter().any(|a| a.text.starts_with("Drought: 50%")), "{a:?}");
+        g.tell_joiners(&mut out); // once
+        assert_eq!(alerts_in(&out, 3).len(), a.len());
+        // During a megadrought only its catastrophe alert goes out.
+        g.world.map.drought = 0.1;
+        g.chronicle_alerts(&mut Outbox::new()); // eased
+        let id = g.world.schedule_catastrophe(CatastropheKind::Megadrought, 0, Some(100)) as usize;
+        g.world.chronicle.catastrophes[id].started = true;
+        g.seen_catastrophes.resize(id + 1, (true, false));
+        g.world.map.drought = 0.9;
+        let mut out = Outbox::new();
+        g.chronicle_alerts(&mut out);
+        assert!(alerts_in(&out, 1).iter().all(|a| !a.text.starts_with("Drought:")), "{:?}", alerts_in(&out, 1));
         assert_eq!(population_change_text(10, 10), "the world's population is where it was at its start");
         assert_eq!(population_change_text(10, 13), "3 more organisms in the world than at its start");
     }
@@ -7116,8 +7380,8 @@ mod tests {
     }
 
     /// One day convention: `day` fields count from 0, player-facing text
-    /// from 1, and a ledger entry's text names the day of its `day` field
-    /// (the client shows that field + 1 beside it).
+    /// from 1. Income is paid as a day starts, for the day just ended, so its
+    /// text names that day (the client shows the paying day, `day` + 1).
     #[test]
     fn ledger_texts_name_their_entry_day() {
         let (mut g, _, _) = game();
@@ -7125,7 +7389,8 @@ mod tests {
         let incomes: Vec<LedgerEntry> = g.ledger(1, 50).into_iter().filter(|e| e.kind == LedgerKind::Income).collect();
         assert!(!incomes.is_empty());
         for e in incomes {
-            assert!(e.text.starts_with(&format!("Day {} income", e.day + 1)), "{} vs day {}", e.text, e.day);
+            // Paid as day `e.day` (from 0) starts, for the day just ended: day `e.day` counted from 1.
+            assert!(e.text.starts_with(&format!("Day {} income", e.day.max(1))), "{} vs day {}", e.text, e.day);
         }
     }
 

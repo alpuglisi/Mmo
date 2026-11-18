@@ -256,4 +256,31 @@ mod tests {
         other[..8].copy_from_slice(b"EVOSAVX\0");
         assert!(matches!(decode_game(&other), Err(DecodeError::BadHeader)));
     }
+
+    /// A restart from a saved game keeps the Genes tab's history: the
+    /// births and deaths per day come back from the stored daily records.
+    #[test]
+    fn a_restart_keeps_the_vitals_history() {
+        use crate::game::PersistEvent;
+        use evo_sim::design::{BirthType, FounderDesign, Thermo};
+        let world = build_world(&WorldSettings { seed: 5, width: 48, height: 48, wild: false, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        g.set_name(1, "ann");
+        g.found(1, &FounderDesign::new("A", Thermo::Warm, BirthType::Live, 2).founders(8)).unwrap();
+        let mut stored = Vec::new();
+        for _ in 0..4 * g.world.config.ticks_per_day {
+            g.world.step();
+            let _ = g.after_tick();
+            stored.extend(g.take_persist().into_iter().filter_map(|e| match e {
+                PersistEvent::Daily(r) => Some(r),
+                _ => None,
+            }));
+        }
+        let before = g.lineage_stats(1).vitals;
+        assert!(before.len() >= 3, "{before:?}");
+        let bytes = encode(&g);
+        let (world, saved) = decode(&bytes, Some(g.world.map.terrain().clone())).unwrap();
+        let r = Game::resume(world, GameConfig::default(), saved, stored);
+        assert_eq!(r.lineage_stats(1).vitals, before);
+    }
 }

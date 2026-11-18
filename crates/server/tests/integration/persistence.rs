@@ -867,7 +867,7 @@ async fn restart_continues_the_saved_world(backend: Backend) {
 
     // First run: two players found lineages; the world runs past two days
     // (a saved game each day), then a graceful stop saves it once more.
-    let (lineage, ids_before, tick_before) = {
+    let (lineage, ids_before, tick_before, vitals_before) = {
         let srv = start(cfg.clone()).await.unwrap();
         let client = reqwest_like::Client::new(srv.addr);
         let mut tokens = Vec::new();
@@ -889,9 +889,10 @@ async fn restart_continues_the_saved_world(backend: Backend) {
         }
         let ids = own_ids(&mut ws).await;
         let (tick, _) = world_clock(&client).await;
+        let vitals = client.get_json_as("/api/lineage/stats", Some(&tokens[0])).await["vitals"].clone();
         drop(ws);
         srv.shutdown().await;
-        (lineage, ids, tick)
+        (lineage, ids, tick, vitals)
     };
     assert!(!ids_before.is_empty());
 
@@ -926,6 +927,15 @@ async fn restart_continues_the_saved_world(backend: Backend) {
     let ids_after = own_ids(&mut ws).await;
     drop(ws);
     assert_eq!(lineage_after, lineage);
+    // The Genes tab's births and deaths per day come back with it (from the
+    // stored daily records), not just the days since the restart.
+    let vitals = client.get_json_as("/api/lineage/stats", Some(&token)).await["vitals"].clone();
+    let days =
+        |v: &serde_json::Value| v.as_array().unwrap().iter().map(|d| d["day"].as_u64().unwrap()).collect::<Vec<_>>();
+    let before = days(&vitals_before);
+    let after = days(&vitals);
+    assert!(before.len() >= 2, "{vitals_before}");
+    assert!(before[..before.len() - 1].iter().all(|d| after.contains(d)), "before {before:?}, after {after:?}");
     let saved_ids: std::collections::BTreeSet<u64> =
         saved_world.organisms.iter().filter(|o| o.alive && o.lineage as u64 == lineage).map(|o| o.id).collect();
     assert!(ids_after.iter().any(|id| saved_ids.contains(id)), "none of {ids_after:?} in the saved world");
@@ -1709,7 +1719,14 @@ mod reqwest_like {
         }
 
         pub async fn get_json(&self, path: &str) -> serde_json::Value {
-            let req = hyper::Request::get(format!("http://{}{path}", self.addr));
+            self.get_json_as(path, None).await
+        }
+
+        pub async fn get_json_as(&self, path: &str, token: Option<&str>) -> serde_json::Value {
+            let mut req = hyper::Request::get(format!("http://{}{path}", self.addr));
+            if let Some(t) = token {
+                req = req.header("authorization", format!("Bearer {t}"));
+            }
             let res = self.inner.request(req.body(Full::new(Bytes::new())).unwrap()).await.unwrap();
             let bytes = res.into_body().collect().await.unwrap().to_bytes();
             serde_json::from_slice(&bytes).unwrap()

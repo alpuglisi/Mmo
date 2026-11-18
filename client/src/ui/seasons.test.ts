@@ -95,5 +95,12 @@ describe('hall of fame', () => {
       ],
     });
     expect(myRecord([])).toEqual({ seasons: 0, crowns: 0, titles: 0, best: [] });
+    // A tied first place the rules awarded nobody (survival) is no title, as in the hall of fame.
+    const tied = [{ world_id: '', season: 8, first_day: 0, last_day: 59, ended_unix: 0, placements: [
+      { category: 'survival' as const, rank: 1, value: 1, of: 6, title: false },
+      { category: 'legacy' as const, rank: 1, value: 0.2, of: 6, title: true },
+    ] }];
+    expect(myRecord(tied)).toMatchObject({ titles: 1, crowns: 1 });
+    expect(placementText(tied[0].placements[0])).toBe('1st of 6 (tied, no title) · ' + formatValue('survival', 1));
   });
 });
