@@ -759,8 +759,23 @@ impl Game {
     pub(crate) fn grace_view(&self, player: PlayerId) -> Option<GraceView> {
         let days = self.world.lineage_grace_left(self.lineage_of(player)?)?;
         let tpd = self.world.config.ticks_per_day.max(1) as f64;
-        let minutes = days as f64 * tpd * self.cfg.tick_ms / 60_000.0;
-        Some(GraceView { days_left: (days * 10.0).ceil() / 10.0, minutes_left: minutes.ceil() as u32 })
+        let ticks = (days as f64 * tpd).round() as u64;
+        let seconds = (ticks as f64 * self.cfg.tick_ms / 1000.0 / 10.0).ceil() as u64 * 10;
+        Some(GraceView {
+            days_left: (days * 10.0).ceil() / 10.0,
+            until_tick: self.world.tick() + ticks,
+            real_seconds_left: Some(seconds),
+        })
+    }
+
+    /// Mark the neighbours whose lineage is under its newcomer grace
+    /// (`NearbyOrganism::protected`).
+    pub(crate) fn mark_protected(&self, nearby: &mut [NearbyOrganism]) {
+        for n in nearby {
+            if n.owner != WILD && self.world.lineage_grace_left(n.lineage).is_some() {
+                n.protected = Some(true);
+            }
+        }
     }
 
     /// The game-side state to save with a world snapshot.
@@ -6678,7 +6693,11 @@ mod tests {
             groups: g.group_views_for(player, &g.world.groups(player)),
             view,
             organisms: own,
-            nearby: nearby.into_iter().map(|(_, n)| n).collect(),
+            nearby: {
+                let mut v: Vec<NearbyOrganism> = nearby.into_iter().map(|(_, n)| n).collect();
+                g.mark_protected(&mut v);
+                v
+            },
             leaderboard: g.leaderboard(),
             offers,
             balance: g.balance(player),

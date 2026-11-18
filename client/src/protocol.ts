@@ -337,6 +337,8 @@ export interface NearbyOrganism {
   matured: boolean;
   /** Visible body plan, for the sprite (absent from older servers). */
   look?: Appearance;
+  /** Its lineage is a newcomer under its grace: no other player's animal may attack it, nor it theirs. */
+  protected?: true;
 }
 
 /** `appearance::Appearance`: coarse visible body-plan classes of an adult. */
@@ -439,8 +441,10 @@ export interface StateView {
 export interface GraceView {
   /** Game days left, to a tenth. */
   days_left: number;
-  /** Real minutes left at the server's clock, rounded up. */
-  minutes_left: number;
+  /** The tick it ends on. */
+  until_tick: number;
+  /** Real seconds left at the server's clock, rounded up to tens. */
+  real_seconds_left?: number;
 }
 
 export interface WelcomeMsg {

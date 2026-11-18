@@ -151,6 +151,9 @@ const NEAR_LOOK: u32 = 1 << 5;
 const MALE: u8 = 1;
 const MATURED: u8 = 2;
 const POSSESSED: u8 = 4;
+/// A neighbour's lineage is under its newcomer grace (neighbour flags only;
+/// the same bit is `PREGNANT` in own organisms' flags).
+const PROTECTED: u8 = 8;
 const PREGNANT: u8 = 8;
 
 /// An own organism as the client holds it (quantized; palette indices).
@@ -779,6 +782,9 @@ impl DeltaEncoder {
         if o.matured {
             flags |= MATURED;
         }
+        if o.protected == Some(true) {
+            flags |= PROTECTED;
+        }
         NearQ {
             owner: o.owner,
             lineage: o.lineage,
@@ -1120,6 +1126,7 @@ impl DeltaDecoder {
                     sex: sex_of(o.flags),
                     matured: o.flags & MATURED != 0,
                     look: self.look(o.look)?,
+                    protected: (o.flags & PROTECTED != 0).then_some(true),
                 })
             })
             .collect::<Result<_, DecodeError>>()?;
@@ -1376,6 +1383,25 @@ mod tests {
         }
         let _ = id;
         (meta, gone, r.v().unwrap())
+    }
+
+    /// The newcomer grace and protected neighbours survive the round trip,
+    /// and a delta clears them.
+    #[test]
+    fn grace_and_protected_neighbours_round_trip() {
+        let mut g = game();
+        let (_, mut s) = states(g.states()).into_iter().find(|(_, s)| !s.nearby.is_empty()).expect("neighbours");
+        s.grace = Some(GraceView { days_left: 12.5, until_tick: 9_000, real_seconds_left: Some(1_230) });
+        for n in s.nearby.iter_mut().step_by(2) {
+            n.protected = Some(true);
+        }
+        let (mut e, mut d) = (DeltaEncoder::new(), DeltaDecoder::new());
+        assert_eq!(d.apply(&e.encode(&s, true)).unwrap(), canonical(&s));
+        s.grace = None;
+        for n in &mut s.nearby {
+            n.protected = None;
+        }
+        assert_eq!(d.apply(&e.encode(&s, false)).unwrap(), canonical(&s));
     }
 
     /// Ticks and sub-steps of a live game, with states dropped at random
