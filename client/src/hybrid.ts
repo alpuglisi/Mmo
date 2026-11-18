@@ -139,10 +139,51 @@ export function neighbours(d: DesignSpec, species: readonly SpeciesView[], me: P
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 
-/** What to change, in words: "diet (carnivory)", "body size", … */
-const BY_WORDS: Record<GapPart, string> = {
-  thermoregulation: 'thermoregulation', birth: 'birth mode', 'body size': 'body size', diet: 'diet', legs: 'leg count', eyes: 'eye count',
-};
+/** The gap that makes two kinds sterile, variation allowed for. */
+const SAFE_GAP = GAP_STERILE + GAP_MARGIN;
+
+/**
+ * Changes that alone would make the design sterile with `n` (the gap is the
+ * largest single difference, so one is enough), each one the editor can make:
+ * diet or body size within 0..1, or another birth type. Thermoregulation,
+ * legs and eyes never reach the sterile gap alone, so they are not offered
+ * (playtest 6: "move birth mode 0.09 further", "move thermoregulation further"
+ * at the extreme).
+ */
+export function sterileOptions(d: DesignSpec, s: SpeciesView): string[] {
+  const sp = speciesPlan(s);
+  if (!sp) return [];
+  const out: string[] = [];
+  const axis = (label: string, gene: string, theirs: number) => {
+    const up = theirs + SAFE_GAP;
+    const down = theirs - SAFE_GAP;
+    const mine = geneValue(d, gene);
+    if (Math.abs(mine - theirs) >= SAFE_GAP) return;
+    const opts: string[] = [];
+    if (up <= 1) opts.push(`raise ${label} to ${up.toFixed(2)} or more`);
+    if (down >= 0) opts.push(`lower ${label} to ${down.toFixed(2)} or less`);
+    // The nearer direction first.
+    if (opts.length === 2 && mine < theirs) opts.reverse();
+    if (opts.length) out.push(opts.join(' or '));
+  };
+  axis('diet (carnivory)', 'carnivory', sp.carnivory);
+  axis('body size', 'body_size', sp.body_size);
+  const births: [DesignSpec['birth'], string, number][] = [['live', 'live birth', 0.85], ['incubated_eggs', 'incubated eggs', 0.5], ['abandoned_eggs', 'abandoned eggs', 0.15]];
+  for (const [b, label, mode] of births) {
+    if (b !== d.birth && BIRTH_WEIGHT * Math.abs(mode - sp.birth_mode) >= SAFE_GAP) out.push(`choose ${label}`);
+  }
+  return out;
+}
+
+/** "To keep your genes your own, one of these is enough: …" for the nearest wild neighbour. */
+function moveAdvice(d: DesignSpec, n: Neighbour): string {
+  const opts = sterileOptions(d, n.species);
+  const why = `(a gap of ${GAP_STERILE.toFixed(2)} in diet, body size or birth mode makes two kinds sterile; ${GAP_MARGIN.toFixed(2)} more allows for variation)`;
+  return opts.length
+    ? `To keep your genes your own from ${n.species.name}, one of these is enough: ${opts.join('; ')} ${why}.`
+    : `No single change of diet, body size or birth type moves this design out of ${n.species.name}'s range; change several (thermoregulation, legs and eyes help only a little) or found far from where it lives.`;
+}
+
 
 export interface HybridAdvice {
   level: 'ok' | 'warn';
@@ -185,12 +226,13 @@ export function hybridAdvice(d: DesignSpec, species: readonly SpeciesView[], me:
   const wild = sure.filter((n) => n.wild);
   const rivals = sure.filter((n) => !n.wild);
   const maybe = near.filter((n) => n.possible);
-  const list = (ns: Neighbour[]) => ns.slice(0, 3).map((n) => neighbourName(n, measured)).join(', ');
+  // Named up to three, then "and N more" (the header said "4 wild species" over a list of 3).
+  const list = (ns: Neighbour[]) => ns.slice(0, 3).map((n) => neighbourName(n, measured)).join(', ') + (ns.length > 3 ? ` and ${ns.length - 3} more` : '');
   const points: string[] = [];
   if (wild.length) {
     const n = wild[0];
     points.push(`Your design sits inside the interbreeding range of ${wild.length === 1 ? 'a wild species' : `${wild.length} wild species`}: ${list(wild)}. Where they meet, your animals mate with them, and the mixed young carry wild genes, which count for the wild ecosystem, not for you: your legacy share can end up far below your head count.`);
-    points.push(`To keep your genes your own, move ${BY_WORDS[n.by]} at least ${n.toSterile.toFixed(2)} further from ${n.species.name} (a gap of ${GAP_STERILE.toFixed(2)} in thermoregulation, birth mode, body size or diet makes two kinds sterile; the extra ${GAP_MARGIN.toFixed(2)} allows for variation).`);
+    points.push(moveAdvice(d, n));
   }
   if (rivals.length) {
     const mixed = rivals.filter((n) => n.wildShare > 0.5);
