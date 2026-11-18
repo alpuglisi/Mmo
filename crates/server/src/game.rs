@@ -1549,6 +1549,19 @@ impl Game {
         self.cfg.season_days.max(real).max(1)
     }
 
+    /// How `player`'s lineage ended, once it has: `retired` or `died_out`
+    /// (the design screen words a re-founding by it, in any browser).
+    pub fn lineage_ended(&self, player: PlayerId) -> Option<String> {
+        if !self.lineage_of.contains_key(&player) || !self.is_extinct(player) {
+            return None;
+        }
+        let founded = self.founded_day.get(&player).copied().unwrap_or(0);
+        Some(match self.economy.retired_day.get(&player) {
+            Some(&d) if d >= founded && !self.economy.died_out.contains(&player) => "retired".into(),
+            _ => "died_out".into(),
+        })
+    }
+
     /// The terms of `player`'s next founding if it would be a re-founding
     /// within [`Game::refound_window_days`] of their last lineage ending
     /// (retired, or died out), else None (a first founding, or long after).
@@ -5489,6 +5502,7 @@ impl Game {
             grace_days_left: lineage.and_then(|l| self.world.lineage_grace_left(l)),
             warnings: self.lineage_warnings(player),
             eggs: lineage.and_then(|l| self.eggs_view(l)),
+            ended: self.lineage_ended(player),
             legacy,
             alerts: self.alerts(player),
         }
@@ -5556,6 +5570,12 @@ impl Game {
             days_per_year: self.world.config.days_per_year,
             ticks_per_day: self.world.config.ticks_per_day,
             winter_provision: self.winter_provision_now(),
+            refound_window_days: self.refound_window_days(),
+            refound_window_minutes: (self.refound_window_days() as f64
+                * self.world.config.ticks_per_day as f64
+                * self.cfg.tick_ms
+                / 60_000.0)
+                .round() as u64,
             lineage_cap: self.world.config.lineage_cap,
             lineage_hard_cap: self.world.player_ceiling(),
             protected: self
@@ -6117,7 +6137,10 @@ mod tests {
         assert_eq!(g.owner_population(1), 0);
         assert!(g.is_extinct(1));
         assert!(!g.is_extinct(2), "bob is untouched");
+        assert_eq!(g.lineage_stats(1).ended.as_deref(), Some("died_out"));
+        assert_eq!(g.lineage_stats(2).ended, None);
         let ok = g.found(1, &design("Second try")).expect("refound after extinction");
+        assert_eq!(g.lineage_stats(1).ended, None, "a living lineage has not ended");
         assert_ne!(ok.lineage, first);
         assert_eq!(g.lineage_of(1), Some(ok.lineage));
         assert!(!ok.founders.is_empty());
@@ -7689,6 +7712,7 @@ mod tests {
         assert_eq!((d["removed"].as_u64(), d["transferred"].as_u64()), (Some(a.len() as u64 - 2), Some(2)));
         assert_eq!(g.world.owner_count(2), before + 2);
         assert_eq!(g.world.owner_count(1), 0);
+        assert_eq!(g.lineage_stats(1).ended.as_deref(), Some("retired"));
         let bl = g.lineage_of(2).unwrap();
         assert!(a[..2].iter().all(|&id| g.world.organism(id).is_some_and(|o| o.owner == 2 && o.lineage == bl)));
         assert!(alerts_in(&out, 2).iter().any(|x| x.text.contains("joined yours")));
