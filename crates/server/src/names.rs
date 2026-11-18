@@ -13,7 +13,7 @@
 //! when a world is loaded ([`sanitize`]).
 
 /// Punctuation a name may use besides letters, digits and single spaces.
-pub const PUNCTUATION: &str = ".,'!?-:+#()";
+pub const PUNCTUATION: &str = ".,'!?-:+#()_";
 
 /// Folded fragments a name may not contain anywhere: they would pass for
 /// the server or its staff.

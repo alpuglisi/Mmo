@@ -8174,6 +8174,74 @@ branch, renumbered at merge after 45 and 46), off at 0 for older saves
 | Founders alive 20 days after founding into grown worlds (`examples/foundsurvival.rs`: 8 seeds × days 45, 100, 160, 220 × three playtest designs) | 2,810 of 3,488 (81%) | 2,946 of 3,488 (84%): day 45 793 → 783, day 100 765 → 832, day 160 616 → 621, day 220 636 → 710; 9 cases much better (≥ 1.4×), 4 much worse (≤ 0.7×) |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (on main with boom's round 4) | 11.93 (± 0.14), tunables at 0 | 11.93 (± 0.11) |
 
+### Playtest 4: balance
+
+Playtest 4 (`docs/playtest-4.md`, findings 1, 4, 6, 13, 18, 23 here) still
+had a cold-blooded, brumating, toxic flier on top (LateComer4: founded on
+day 320, hard cap and first place in 23 wall minutes). Brumators woke to
+bask on mild winter days and kept breeding (370 → 571 and 1,211 → 1,895
+over two winters, no deaths but old age): the toll only applied asleep.
+Toxic prey kept player predators unplayable (after learning, 65% of hunters
+still ate known toxic prey and died); every starter lineage was filed under
+the Steppe antelope (and the leader renamed it for everyone); incubated
+clutches chilled more than they hatched; the legacy share of two capped
+lineages swung 7–13 points within 60 days.
+
+**Sim rules, on by default from snapshot version 49** (provisional;
+renumber at merge), off at 0 for older saves (`serde_util::before_v49`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `winter_rest` (1) | In winter a cold-blooded animal's breeding drive drains (`World::breeding_drive_rate`), awake or asleep, and LOD cohorts of cold-blooded lineages conceive nothing in winter; a brumator awake in winter pays the winter toll as if asleep (`DeathCause::Exposure`). |
+| `toxic_avoidance` (1) | A learned toxin lesson is acted on at `0.7 + 0.3 × coloration` (drab 70%, bright 88–100%; it was `0.3 + 0.7 × coloration`), each poisoning teaches twice as much, and the pass-up is rolled once per hunter, prey lineage and day instead of at every decision. That per-decision roll was the root cause: a hunter passing a known toxic prey up 70% of the time still ate it within a few ticks. |
+| `egg_attendance` (1) | A clutch whose brooding parent is alive within 12 tiles but off the nest (eating, drinking) chills at a fifth of the rate of one whose parent is far or dead (`environment::EGG_ATTEND_RANGE`). |
+| `player_species` (1) | In species detection (`species::led_by_player`), a cluster most of whose adults are one player lineage's is split from its wild-owned members, and an initial wild species never continues as such a cluster: the player lineage keeps (or founds, with the credit) a species of its own, while a minority player lineage stays in the mixed species. |
+| `raised_cap` (4) | The weighted legacy share counts each adult's offspring raised up to 4 (agents and LOD cohorts). The lifetime count let an old, prolific cohort dominate the weighted share, and its die-off swung it. |
+
+**Server and client**: `species_namer` refuses an initial species that
+holds a wild lineage (nobody renames the Steppe antelope); the builder's
+interbreeding card adds the server's sampled numbers (`POST
+/api/design/compatibility`, the same check as the market), so its estimate
+no longer disagrees with the market's, and the check runs before a name is
+typed; the egg-loss reason says the parent strayed too far or died, and the
+Eggs line says "now" for current clutches and "since founding" for losses;
+the winter notice recommends brumation (not hibernation) for a cold-blooded
+design, says cold-blooded animals don't breed in winter, and mentions the
+founders' free first winter. Cold blood's total sterility with warm lineages
+is kept (and its 20-point price): the over-winter breeding was the runaway's
+engine, and partial thermo isolation would also make the wild newts and
+frogs hybridise with warm species.
+
+**Scripted replay** (`dominance`, now with Cold, LateComer4's exact design
+founded on day 320; seeds 1–4, 840 days; round 4 rules = the five new
+tunables off):
+
+| Player | Round 4: final / peak share, titles* | New rules: final / peak share, titles* |
+| --- | --- | --- |
+| Steady | 2.9% / 11.6%, 0 | 2.5% / 12.0%, 0 |
+| Big (warm hibernator) | 7.3% / 14.9%, 5 | 7.1% / 15.4%, 7 |
+| Broker | 5.5% / 15.6%, 11 | 5.1% / 15.5%, 8 |
+| Eggs (playtest 2's egg-laying hibernator) | 12.8% / 17.1%, 4 | 19.3% / 27.8%, 17 |
+| Flier (PocketNomad3, cold brumator) | 26.1% / 29.0%, 17 (at the 2,100 cap) | 15.5% / 17.1%, 6 (extinct on 1 of 4) |
+| Cold (LateComer4, cold brumator) | 13.9% / 15.8%, 3 | 18.6% / 22.6%, 2 |
+
+(* legacy titles of the 40 whole seasons after day 210.) The brumating
+fliers no longer run away: playtest 3's falls from 26% to 16% and from 17
+titles to 6, and LateComer4's, founded late, ends viable and large (1,704
+alive) but takes 2 titles and averages 7.7% from day 210. The cost of
+winter rest falls on cold-blooded designs as intended. **Not settled**:
+the warm, egg-laying hibernator now leads (17 titles, at the cap by the
+end): attended eggs (`egg_attendance`) remove most of its egg losses.
+`egg_attendance` 0.5 (attended clutches at 60% of the chill rate) is the
+first lever to try; it wasn't measured here.
+
+**Checks**:
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.86 (± 0.16; ≈11.93 before): every lineage 12 of 12; the cold-blooded marsh newts 197 and toxic frogs 265 (409 and 380) rest in winter |
+| tests, fmt, both clippy, client typecheck/test/build | pass |
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

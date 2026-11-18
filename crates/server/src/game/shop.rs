@@ -328,6 +328,13 @@ impl Game {
         if s.origin == evo_sim::species::SpeciesOrigin::Split {
             return None;
         }
+        // An initial species that holds a wild lineage is the wild one's:
+        // nobody renames it for everyone (playtest 4: the leading player
+        // renamed the Steppe antelope).
+        let wild_lineage = |l: u32| self.world.lineages.get(l as usize).is_some_and(|x| x.owner == evo_sim::WILD);
+        if s.origin == evo_sim::species::SpeciesOrigin::Initial && s.lineages.iter().any(|&(l, _)| wild_lineage(l)) {
+            return None;
+        }
         let owner = self.world.lineages.get(s.main_lineage()? as usize)?.owner;
         (owner != evo_sim::WILD).then_some(owner)
     }

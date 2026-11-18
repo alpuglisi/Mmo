@@ -87,7 +87,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
 
   const thermoRadios = (['warm', 'cold'] as ThermoSpec[]).map((t) => {
     const r = h('input', { type: 'radio', name: 'thermo', value: t, checked: t === spec.thermo });
-    r.addEventListener('change', () => { spec.thermo = t; update(); });
+    r.addEventListener('change', () => { spec.thermo = t; showSeason(); update(); });
     return h('label', { class: 'choice' }, r, t === 'warm' ? 'Warm-blooded' : 'Cold-blooded',
       h('small', {}, t === 'warm' ? 'Active in the cold, eats more.' : 'Cheap to run, needs warmth to move.'));
   });
