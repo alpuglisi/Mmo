@@ -1168,7 +1168,7 @@ pub struct Balance {
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v51"))]
     pub possessed_sleep: f32,
     // Playtest 5 balance (version 52; off at 0, what snapshots before
-    // version 52 read, `serde_util::before_v52`). Playtest 5: cold-blooded,
+    // version 52 read, `serde_util::before_v53`). Playtest 5: cold-blooded,
     // brumating, toxic, bright fliers took the hard cap from 10 founders
     // with 3 deaths in 180 days, sterile with every warm lineage.
     /// How much less a warm/cold difference counts in the fertility gap
@@ -1177,26 +1177,26 @@ pub struct Balance {
     /// 0.7: about a third as fertile as kin) instead of a sterile 0.8. The
     /// other body-plan genes still count in full, so a cold frog (abandoned
     /// eggs) and a warm live-bearer stay sterile. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v53"))]
     pub thermo_hybrid: f32,
     /// Flight is muscle work, warm-blooded or not: a flier on the move burns
     /// `hunger_rate × 0.45 × wings × mass term × flight_upkeep` more food
     /// (the mass term 1 at 4 kg, `(mass / 4)^0.3`) and loses
     /// `thirst_rate × 0.35 × wings` more water, more in the heat; neither
     /// scales with a cold-blooded body's low metabolism. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v53"))]
     pub flight_upkeep: f32,
     /// The most a predator lineage's learned avoidance of a toxic prey
     /// lineage reaches (`World::toxic_avoidance`): an honest signal is not
     /// immunity, and hunters still try a bright toxic prey some days.
     /// 0: uncapped (a fully learned, bright prey was never taken).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v53"))]
     pub avoid_cap: f32,
     /// A cold-blooded body overheats sooner: past 32 °C body temperature it
     /// slows (activity falls to 0.15 by 44 °C), loses water faster (+5% a
     /// degree) and takes heat harm from 34 °C instead of 46 °C, so a hot
     /// drought is no longer free for an ectotherm. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v53"))]
     pub cold_heat: f32,
     /// Species credit by owner (`DetectParams::owner_species`): the
     /// species tracker clusters each owner's animals apart (the wild
@@ -1207,7 +1207,7 @@ pub struct Balance {
     /// filed inside a wild species; and a player lineage no longer bridges
     /// two wild species into one (playtest 5: the wild Red fox inside the
     /// Meadow vole species). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v53"))]
     pub species_credit: f32,
 }
 

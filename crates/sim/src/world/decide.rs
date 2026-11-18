@@ -898,9 +898,10 @@ impl World {
         } else {
             0.0
         };
+        let graze_utility = hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten;
         let mut options: [(Action, f32); 18] = [
             (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless) * tame * hide),
-            (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
+            (Action::Graze, graze_utility),
             (Action::Drink, thirst.powf(1.5) * 1.3 * calm + if thirst > 0.8 { 0.5 } else { 0.0 } + drink_bonus),
             (Action::Rest, tired * tired * 1.1 * calm),
             (Action::Bask, if o.traits.warm { 0.0 } else { (1.0 - o.activity) * 0.7 }),
@@ -935,7 +936,13 @@ impl World {
                 if season_dest.is_some() {
                     0.6
                 } else if ordered {
-                    0.55 * heed
+                    // Under orders a migrant walks on past ordinary hunger
+                    // (it stops to eat at the stray limit, where `ordered`
+                    // turns false): grazing outscored the order from hunger
+                    // 0.6, so a herd near its cap never set out.
+                    // (Headstrong animals, heed below 1, still stop to graze:
+                    // the lift fades with the square of their heed.)
+                    (0.55 * heed).max((graze_utility + 0.01) * heed.min(1.0).powi(2))
                 } else {
                     0.0
                 },
@@ -1844,11 +1851,15 @@ impl World {
 /// [`ORDER_RESUME`](super::commands::ORDER_RESUME).
 fn migrant_breaks_off(o: &Organism, hunger: f32, thirst: f32) -> bool {
     use super::commands::ORDER_RESUME;
-    let limit = super::groups::need_limit(o);
+    use super::groups::{need_limit, stray_hunger, MIGRANT_EAT_RESUME};
     let resume = ORDER_RESUME / 100.0;
+    // Thirst at the need limit, hunger only at the stray limit: a herd
+    // near its lineage's cap is always somewhat hungry, and breaking off to
+    // graze at 60 (and grazing on down to 30) kept big groups from ever
+    // setting out (playtest 5: 60-70 tile migrations "did nothing").
     let drinking = o.action == Action::Drink && thirst > resume;
-    let eating = matches!(o.action, Action::Graze | Action::Hunt | Action::Scavenge) && hunger > resume;
-    hunger.max(thirst) >= limit || drinking || eating
+    let eating = matches!(o.action, Action::Graze | Action::Hunt | Action::Scavenge) && hunger > MIGRANT_EAT_RESUME;
+    thirst >= need_limit(o) || hunger >= stray_hunger(o) || drinking || eating
 }
 
 #[cfg(test)]

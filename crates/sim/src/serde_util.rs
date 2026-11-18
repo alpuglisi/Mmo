@@ -2602,12 +2602,12 @@ pub mod before_v51 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v52")]` on the playtest 5
+/// `#[serde(with = "crate::serde_util::before_v53")]` on the playtest 5
 /// balance tunables (`Balance::thermo_hybrid`, `flight_upkeep`,
 /// `avoid_cap`, `cold_heat`, `species_credit`). On a thread holding a
-/// [`before_v52::Guard`] (reading or hashing a snapshot of version 51 or
+/// [`before_v53::Guard`] (reading or hashing a snapshot of version 52 or
 /// before) none is written or read: they read as 0 (off).
-pub mod before_v52 {
+pub mod before_v53 {
     use std::cell::Cell;
 
     use super::*;
@@ -2616,7 +2616,7 @@ pub mod before_v52 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The tunable before version 52: off.
+    /// The tunable before version 53: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

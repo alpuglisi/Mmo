@@ -496,29 +496,29 @@ fn balance49_off(b: &mut crate::Balance) {
 fn playtest4_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v51::OLD_VALUE;
     (b.player_packs, b.dormant_water, b.possessed_sleep) = (old, old, old);
-    balance52_off(b);
+    balance53_off(b);
 }
 
-/// The playtest 5 balance tunables as snapshots before version 52 read
+/// The playtest 5 balance tunables as snapshots before version 53 read
 /// them.
-fn balance52_off(b: &mut crate::Balance) {
-    let old = crate::serde_util::before_v52::OLD_VALUE;
+fn balance53_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v53::OLD_VALUE;
     (b.thermo_hybrid, b.flight_upkeep, b.avoid_cap, b.cold_heat, b.species_credit) = (old, old, old, old, old);
 }
 
-/// Version 51 snapshots (before the playtest 5 balance rules) restore with
+/// Version 52 snapshots (before the playtest 5 balance rules) restore with
 /// those tunables off, and are otherwise the same world.
 #[test]
-fn version_51_snapshots_restore_without_playtest5_balance() {
+fn version_52_snapshots_restore_without_playtest5_balance() {
     let mut w = fixture_world();
-    let old = w.snapshot_v51();
+    let old = w.snapshot_v52();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 51);
+    assert_eq!(h.version, 52);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.thermo_hybrid, crate::serde_util::before_v52::OLD_VALUE);
-    assert!(r.snapshot_v51() == old);
-    balance52_off(&mut w.config.balance);
+    assert_eq!(r.config.balance.thermo_hybrid, crate::serde_util::before_v53::OLD_VALUE);
+    assert!(r.snapshot_v52() == old);
+    balance53_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
     // This version keeps them.

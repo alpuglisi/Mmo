@@ -307,7 +307,7 @@ async fn directed_mating_consent_round_trip() {
     let (mine, partner) = (pick(&sa, "female"), pick(&sb, "male"));
     // A request names only an animal in sight or on the market: Bob lists
     // his male (the lineages may be founded far apart).
-    send(&mut wb, json!({"id": 9, "type": "create_listing", "organism": partner, "fee": 0})).await;
+    send(&mut wb, json!({"id": 9, "type": "create_listing", "organism": partner, "fee": 5})).await;
     let r = wait_for(&mut wb, "listing", |v| v["type"] == "result" && v["id"] == 9).await;
     assert_eq!(r["ok"], true, "{r}");
 

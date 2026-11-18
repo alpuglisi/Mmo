@@ -23,6 +23,8 @@ pub enum Sex {
 pub enum DeathCause {
     Starvation,
     Thirst,
+    /// Cold: too far below the comfort range (and, in snapshots before
+    /// version 52, heat too: `Heat` split off).
     Exposure,
     Predation,
     Toxin,
@@ -39,10 +41,13 @@ pub enum DeathCause {
     /// Died in winter sleep (hibernation or brumation:
     /// `Balance::dormancy_toll`).
     WinterSleep,
+    /// Heat: too far above the comfort range (version 52; counted as
+    /// `Exposure` before).
+    Heat,
 }
 
 impl DeathCause {
-    pub const ALL: [DeathCause; 12] = [
+    pub const ALL: [DeathCause; 13] = [
         DeathCause::Starvation,
         DeathCause::Thirst,
         DeathCause::Exposure,
@@ -55,13 +60,14 @@ impl DeathCause {
         DeathCause::Disease,
         DeathCause::Journey,
         DeathCause::WinterSleep,
+        DeathCause::Heat,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             DeathCause::Starvation => "starved",
             DeathCause::Thirst => "thirst",
-            DeathCause::Exposure => "exposure",
+            DeathCause::Exposure => "cold",
             DeathCause::Predation => "eaten",
             DeathCause::Toxin => "toxin",
             DeathCause::Drowning => "drowned",
@@ -71,6 +77,7 @@ impl DeathCause {
             DeathCause::Disease => "disease",
             DeathCause::Journey => "journey",
             DeathCause::WinterSleep => "winter sleep",
+            DeathCause::Heat => "heat",
         }
     }
 }

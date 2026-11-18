@@ -51,6 +51,22 @@ use crate::protocol::*;
 
 /// Side of a [`StateIndex`] grid cell, in tiles.
 const STATE_CELL: f32 = 16.0;
+/// A foreign organism this close to one of the player's own is sent before
+/// farther ones when a view holds more than `max_nearby` (playtest 5: a
+/// 2,000-strong swarm beside the player's animals went unseen, the cap
+/// filled from the view's center). At most `STATE_CELL`: the index finds
+/// them in the neighbouring cells.
+pub(super) const OWN_NEAR: f32 = 12.0;
+
+/// The order neighbors are cut to `max_nearby` in, given (distance from the
+/// view's center, organism index) in organism order and whether each is
+/// within [`OWN_NEAR`] of the player's own: those near first, then nearest
+/// the center, ties in organism order.
+pub(super) fn nearby_order(out: &mut Vec<(f32, u32)>, near: &[bool]) {
+    let mut keyed: Vec<(bool, f32, u32)> = out.iter().zip(near).map(|(&(d, i), &n)| (!n, d, i)).collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+    *out = keyed.into_iter().map(|(_, d, i)| (d, i)).collect();
+}
 /// `Slot::cell` of an organism that isn't indexed (dead).
 const NO_CELL: u32 = u32::MAX;
 /// Fewer connections than this are built on the world thread alone.
@@ -242,9 +258,11 @@ impl StateIndex {
     }
 
     /// The foreign organisms (not `player`'s) inside the window, as
-    /// (distance from its center, organism index): the nearest
-    /// `max_nearby`, in organism order unless there were more (then nearest
-    /// first, ties in organism order), as a scan of the world gives them.
+    /// (distance from its center, organism index): in organism order unless
+    /// there were more than `max_nearby`; then those within [`OWN_NEAR`] of
+    /// one of the player's own first, each group nearest the center first
+    /// (ties in organism order), as a scan of the world gives them
+    /// ([`nearby_order`]).
     fn nearby(&self, v: &ViewWindow, player: PlayerId, max_nearby: usize) -> Vec<(f32, u32)> {
         if !(v.x.is_finite() && v.y.is_finite() && v.radius.is_finite()) {
             return Vec::new();
@@ -268,7 +286,32 @@ impl StateIndex {
         }
         out.sort_unstable_by_key(|&(_, i)| i);
         if out.len() > max_nearby {
-            out.sort_by(|a, b| a.0.total_cmp(&b.0));
+            // The player's own animals near the window, by index cell.
+            let reach = v.radius + OWN_NEAR;
+            let mut own: HashMap<u32, Vec<Vec2>> = HashMap::new();
+            for &i in self.by_owner.get(&player).map_or(&[][..], Vec::as_slice) {
+                let s = &self.slots[i as usize];
+                if s.cell != NO_CELL && (s.pos.x - v.x).abs() <= reach && (s.pos.y - v.y).abs() <= reach {
+                    own.entry(s.cell).or_default().push(s.pos);
+                }
+            }
+            let near_own = |p: Vec2| {
+                let cx = ((p.x / STATE_CELL).floor().max(0.0) as i64).min(self.cols as i64 - 1);
+                let cy = ((p.y / STATE_CELL).floor().max(0.0) as i64).min(self.rows as i64 - 1);
+                (cy - 1..=cy + 1).any(|y| {
+                    (cx - 1..=cx + 1).any(|x| {
+                        x >= 0
+                            && y >= 0
+                            && (x as usize) < self.cols
+                            && (y as usize) < self.rows
+                            && own
+                                .get(&((y as usize * self.cols + x as usize) as u32))
+                                .is_some_and(|l| l.iter().any(|q| q.dist(p) <= OWN_NEAR))
+                    })
+                })
+            };
+            let near: Vec<bool> = out.iter().map(|&(_, i)| near_own(self.slots[i as usize].pos)).collect();
+            nearby_order(&mut out, &near);
             out.truncate(max_nearby);
         }
         out
@@ -499,6 +542,7 @@ impl Game {
             ClientMsg::RespondMating { .. }
             | ClientMsg::CompleteMating { .. }
             | ClientMsg::CancelMating { .. }
+            | ClientMsg::SubstituteMating { .. }
             | ClientMsg::WithdrawListing { .. } => {}
             // New organisms: `Game::reinforce` invalidates the whole cache.
             ClientMsg::Reinforce => {}

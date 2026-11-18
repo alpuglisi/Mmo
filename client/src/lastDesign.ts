@@ -4,8 +4,8 @@
 // lineage gets a new name. Only known genes and valid values come back.
 
 import { newEditorDesign, type EditorDesign } from './designMorph';
-import { clampMorphology } from './morphology';
-import type { GeneCatalog, PlayerId } from './protocol';
+import { clampMorphology, morphologyFromTraits } from './morphology';
+import type { DesignSpec, GeneCatalog, PlayerId } from './protocol';
 
 const key = (player: PlayerId | undefined) => `evo.lastDesign.${player ?? 'anon'}`;
 
@@ -49,4 +49,18 @@ export function loadLastDesign(player: PlayerId | undefined, cat: GeneCatalog): 
   } catch {
     return null;
   }
+}
+
+/**
+ * The design the server stored for the player's last founding (`GET
+ * /api/design/last`: changed traits only, the body plan as `morph`), for a
+ * browser that has none saved.
+ */
+export function fromServerDesign(d: DesignSpec | null | undefined, cat: GeneCatalog): EditorDesign | null {
+  if (!d || typeof d !== 'object') return null;
+  // Omitted genes are at their default (not the starter's value).
+  const traits: Record<string, number> = Object.fromEntries(cat.genes.map((g) => [g.name, g.default]));
+  for (const [k, v] of Object.entries(d.traits ?? {})) if (k in traits) traits[k] = v;
+  const morph = { ...morphologyFromTraits(traits), ...((d as { morph?: object }).morph ?? {}) };
+  return restoreDesign({ ...d, traits, morphology: morph }, cat);
 }

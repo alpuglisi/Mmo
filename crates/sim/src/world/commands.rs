@@ -72,6 +72,9 @@ pub enum GroupEvent {
         median: f32,
         dormant_share: f32,
         basking_share: f32,
+        /// The share too hungry or thirsty to travel (they stop to eat and
+        /// drink first).
+        needy_share: f32,
         never_moved: bool,
         pending_claim: bool,
     },
@@ -148,10 +151,9 @@ pub enum CommandError {
     MostlyWater {
         share: f32,
     },
-    /// A territory circle overlapping another player's territory.
-    Overlaps {
-        owner: PlayerId,
-    },
+    /// A territory circle overlapping another player's territory (whose,
+    /// isn't said: claims would map others' territories).
+    Overlaps,
     /// A territory radius that is not a positive number.
     BadRadius,
     /// An attack order on one of the player's own organisms.
@@ -210,8 +212,8 @@ impl fmt::Display for CommandError {
                 write!(f, "the group claimed a territory recently; it can claim again in {ticks_left} ticks")
             }
             CommandError::NoRally(g) => write!(f, "group {g} has no rally to cancel"),
-            CommandError::Overlaps { owner } => {
-                write!(f, "that circle overlaps player {owner}'s territory; claim ground of your own")
+            CommandError::Overlaps => {
+                write!(f, "that circle overlaps another player's territory; claim ground of your own")
             }
             CommandError::BadRadius => write!(f, "a territory's radius must be a positive number of tiles"),
             CommandError::MostlyWater { share } => write!(
@@ -297,6 +299,11 @@ pub struct MatingPreview {
 /// How far past `World::attack_range` an attack order is given and kept,
 /// as a multiple of it.
 pub const ORDER_KEPT: f32 = 1.5;
+
+/// Foundings of at most this many founders keep their grace through their
+/// first winter when it would end late in autumn or during it
+/// (`World::grace_end`).
+pub const GRACE_WINTER_FOUNDERS: u32 = 40;
 
 impl World {
     pub(super) fn live_index(&self, id: OrgId) -> Result<usize, CommandError> {
@@ -572,8 +579,40 @@ impl World {
         if start == 0 || self.grace_waived.get(&owner).is_some_and(|&t| t >= start) {
             return None;
         }
-        let left = self.grace_length().saturating_sub(self.tick.saturating_sub(start));
+        let left = self.grace_end(l, start).saturating_sub(self.tick);
         (left > 0).then_some(left)
+    }
+
+    /// The tick lineage `l`'s grace (started at `start`) ends:
+    /// [`World::grace_length`] after it, or, for a small founding (at most
+    /// [`GRACE_WINTER_FOUNDERS`] founders) whose grace would end late in
+    /// autumn or in its first winter, at that winter's end: a small early
+    /// founding isn't left to predators exactly as its first winter starts
+    /// (playtest 5).
+    pub fn grace_end(&self, l: u32, start: u64) -> u64 {
+        let end = start + self.grace_length();
+        let small = self.lineages.get(l as usize).is_some_and(|x| x.founders <= GRACE_WINTER_FOUNDERS);
+        if !small {
+            return end;
+        }
+        let tpd = self.config.ticks_per_day.max(1) as u64;
+        let dpy = self.config.days_per_year.max(4) as u64;
+        let day = end / tpd;
+        let year = day - day % dpy;
+        // Winter is the year's last quarter (`Season::from_day`); late autumn the third before it.
+        let winter = year + (3 * dpy).div_ceil(4);
+        let late_autumn = winter.saturating_sub(dpy / 12);
+        if (late_autumn..year + dpy).contains(&day) && start / tpd < winter {
+            (year + dpy) * tpd
+        } else {
+            end
+        }
+    }
+
+    /// When lineage `l`'s grace started (its founding, or an earlier
+    /// lineage's whose grace it continues: [`World::lineage_grace_left`]).
+    pub fn lineage_grace_start(&self, l: u32) -> Option<u64> {
+        self.grace_start(l)
     }
 
     /// How long a newcomer grace lasts in ticks: `Balance::attack_grace`
@@ -888,7 +927,13 @@ impl World {
         let key = (player, group);
         self.migrate_orders.insert(key, target);
         self.group_plans.pending.claims.remove(&key);
-        self.group_plans.pending.start_median.remove(&key);
+        // Where the group's median member starts from: the headway is
+        // measured against it (a far claim's start used to be taken at the
+        // first hourly check, from wherever the group had got to).
+        match self.group_median_dist(player, group, target) {
+            Some(d) => self.group_plans.pending.start_median.insert(key, d),
+            None => self.group_plans.pending.start_median.remove(&key),
+        };
         let deadline = self.tick + self.migration_timeout_ticks(middle.map_or(0.0, |m| m.dist(target)));
         self.group_plans.migrations.insert(key, MigrationPlan::new(self.tick, deadline));
         self.territories.remove(&key);

@@ -49,8 +49,15 @@ use crate::webpush::service::SubscribeError;
 use crate::webpush::PushService;
 use crate::wire::{DeltaEncoder, KEYFRAME_EVERY, PROTO_DELTA, PROTO_JSON, PROTO_MAX};
 
-/// Largest WebSocket message (and frame) a client may send.
+/// Largest WebSocket message a client may send as a command: a longer one
+/// is answered `too_large` (with its id when it can be read) and dropped,
+/// and the connection stays open.
 pub const MAX_CLIENT_MESSAGE: usize = 16 * 1024;
+/// Largest message (and frame) the socket reads at all: past it the
+/// connection closes. Well above [`MAX_CLIENT_MESSAGE`], so an oversized
+/// command gets a reply rather than a silent close (playtest 5: 49 KB
+/// closed the socket with code 1000 and dropped a queued reply).
+pub const MAX_WS_READ: usize = 256 * 1024;
 /// Per-connection queue of outgoing messages.
 const CONN_QUEUE: usize = 256;
 /// Largest HTTP request body (credentials, a founder design).
@@ -113,11 +120,12 @@ impl std::str::FromStr for WsCompression {
 }
 
 /// The game WebSocket's options: client messages bounded by
-/// [`MAX_CLIENT_MESSAGE`] (frames and whole messages, compressed or not),
+/// [`MAX_WS_READ`] (frames and whole messages, compressed or not; commands
+/// by [`MAX_CLIENT_MESSAGE`]),
 /// and compression as configured. Messages under 64 bytes go out plain
 /// (deflate's framing would make them longer).
 pub fn ws_options(compression: WsCompression) -> yawc::Options {
-    let base = yawc::Options::default().with_limits(MAX_CLIENT_MESSAGE, MAX_CLIENT_MESSAGE).with_utf8();
+    let base = yawc::Options::default().with_limits(MAX_WS_READ, MAX_WS_READ).with_utf8();
     match compression {
         WsCompression::Off => base.without_compression(),
         WsCompression::Message => base
@@ -254,6 +262,7 @@ fn api_router(state: AppState) -> Router {
     let reads = Router::new()
         .route("/api/lineage", post(found_lineage))
         .route("/api/design/compatibility", post(design_compatibility))
+        .route("/api/design/last", get(last_design))
         .route("/ws", get(ws_upgrade))
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
@@ -488,6 +497,9 @@ pub struct FoundResponse {
     /// Why fewer were founded, if they were.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reduced: Option<String>,
+    /// Whether the lineage has a newcomer grace, and why (or why not).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace: Option<String>,
 }
 
 async fn found_lineage(
@@ -527,6 +539,7 @@ async fn found_lineage(
             cost: ok.cost,
             requested: ok.requested,
             reduced: ok.reduced,
+            grace: ok.grace,
         }),
     ))
 }
@@ -537,7 +550,15 @@ async fn found_lineage(
 fn design_body(
     body: Result<Json<DesignSpec>, axum::extract::rejection::JsonRejection>,
 ) -> Result<DesignSpec, ApiError> {
-    body.map(|Json(spec)| spec).map_err(|_| {
+    body.map(|Json(spec)| spec).map_err(|e| {
+        // Over the body limit: say that, not that the design is malformed.
+        if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            return ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "too_large",
+                format!("that design is too large: a request body goes up to {} KB", MAX_BODY / 1024),
+            );
+        }
         ApiError::new(
             StatusCode::BAD_REQUEST,
             "bad_design",
@@ -798,6 +819,22 @@ async fn family_tree(
 /// The caller's recent finished matings, newest first (closed offers with
 /// their outcome or error, and matings within their own lineage). Kept in
 /// memory: a reload of the page keeps it, a server restart does not.
+/// `GET /api/design/last`: the design of the caller's last founding in this
+/// world, as founded (the designer starts from it when the browser has none
+/// saved); 404 `no_design` before a first founding.
+async fn last_design(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let designs = w.store.load_designs().await.map_err(ApiError::internal)?;
+    let d = designs.into_iter().find(|d| d.player == session.player).ok_or_else(|| {
+        ApiError::new(StatusCode::NOT_FOUND, "no_design", "you have not founded a lineage in this world")
+    })?;
+    Ok(Json(serde_json::json!({ "design": d.design, "founded_day": d.founded_day })))
+}
+
 async fn mating_history(
     State(app): State<AppState>,
     World(w): World,
@@ -1324,6 +1361,26 @@ async fn client_session(
             }
         };
         let Some(frame) = frame else { break };
+        // Too long for a command: say so (rate-limited like any message).
+        if frame.opcode() == OpCode::Text && frame.payload().len() > MAX_CLIENT_MESSAGE {
+            let (id, command) = malformed_id(&frame.payload()[..frame.payload().len().min(512)]);
+            let err = match bucket.take(rate, Instant::now()) {
+                Ok(()) => ErrorInfo::new(
+                    "too_large",
+                    format!(
+                        "that message is {} KB; commands go up to {} KB",
+                        frame.payload().len() / 1024,
+                        MAX_CLIENT_MESSAGE / 1024
+                    ),
+                ),
+                Err(wait) => ErrorInfo::new(
+                    "rate_limited",
+                    format!("too many commands; retry in {} ms", wait.as_millis().max(1)),
+                ),
+            };
+            local(ServerMsg::err(id, command, err));
+            continue;
+        }
         match frame.opcode() {
             OpCode::Text => match serde_json::from_slice::<ClientEnvelope>(frame.payload()) {
                 Ok(env) => {
@@ -1374,6 +1431,10 @@ async fn client_session(
                     // listed every command name) stays on the server.
                     let (id, command) = malformed_id(frame.payload());
                     let err = match bucket.take(rate, Instant::now()) {
+                        // JSON has no NaN or Infinity: a client sent a bad number.
+                        Ok(()) if non_finite_number(frame.payload()) => {
+                            ErrorInfo::new("bad_coordinates", "numbers must be finite (no NaN or Infinity)")
+                        }
                         Ok(()) => ErrorInfo::new(
                             "bad_message",
                             "the server didn't understand that command (unknown, or a field is missing or wrong)",
@@ -1427,6 +1488,32 @@ pub fn malformed_id(text: &[u8]) -> (Option<u64>, &'static str) {
     });
     let kind = after("type").and_then(|r| r.strip_prefix('"')).and_then(|r| r.split('"').next());
     (id, command(kind))
+}
+
+/// Whether a message that didn't parse has a bare `NaN` or `Infinity` where
+/// a number goes (outside strings), as JavaScript's `JSON.stringify` never
+/// writes but hand-made messages do.
+fn non_finite_number(text: &[u8]) -> bool {
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, &b) in text.iter().enumerate() {
+        if in_string {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'N' if text[i..].starts_with(b"NaN") => return true,
+            b'I' if text[i..].starts_with(b"Infinity") => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The world thread's chronicle (species, eras, catastrophes, achievements).
@@ -1487,7 +1574,19 @@ async fn seasons_list(
     let offset = q.offset.unwrap_or(0);
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let (seasons, total) = w.store.list_seasons(offset, limit).await.map_err(ApiError::internal)?;
-    Ok(Json(crate::league::SeasonList { total, offset, seasons }))
+    // The hall of fame counts every finished season, page by page.
+    let mut heads = Vec::with_capacity(total);
+    let mut at = 0;
+    while at < total {
+        let (page, _) = w.store.list_seasons(at, 100).await.map_err(ApiError::internal)?;
+        if page.is_empty() {
+            break;
+        }
+        at += page.len();
+        heads.extend(page);
+    }
+    let hall_of_fame = crate::league::hall_of_fame(&heads);
+    Ok(Json(crate::league::SeasonList { total, offset, seasons, hall_of_fame }))
 }
 
 /// `GET /api/seasons/current?offset=0&limit=10&player=N`: the ranked season
@@ -1551,7 +1650,15 @@ async fn season_player(
 
 #[cfg(test)]
 mod tests {
-    use super::{history_limit, malformed_id, public_genes};
+    use super::{history_limit, malformed_id, non_finite_number, public_genes};
+
+    #[test]
+    fn bare_nan_and_infinity_are_spotted_outside_strings() {
+        assert!(non_finite_number(br#"{"type":"set_view","x":NaN,"y":1,"radius":5}"#));
+        assert!(non_finite_number(br#"{"type":"order_move","x":-Infinity}"#));
+        assert!(!non_finite_number(br#"{"type":"set_nameplate","title":"NaN \" Infinity"}"#));
+        assert!(!non_finite_number(br#"{"type":"set_view","x":1}"#));
+    }
 
     #[test]
     fn the_history_limit_is_capped_tighter_without_a_login() {

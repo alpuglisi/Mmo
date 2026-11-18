@@ -139,7 +139,13 @@ mod old {
             .map(|i| (orgs[i as usize].pos.dist(center), i))
             .collect();
         if nearby.len() > g.cfg.max_nearby {
-            nearby.sort_by(|a, b| a.0.total_cmp(&b.0));
+            // Those near one of the player's own first (by brute force here), then nearest the center.
+            let own: Vec<Vec2> = orgs.iter().filter(|o| o.alive && o.owner == player).map(|o| o.pos).collect();
+            let near: Vec<bool> = nearby
+                .iter()
+                .map(|&(_, i)| own.iter().any(|q| q.dist(orgs[i as usize].pos) <= super::super::OWN_NEAR))
+                .collect();
+            super::super::nearby_order(&mut nearby, &near);
             nearby.truncate(g.cfg.max_nearby);
         }
         let mut nearby: Vec<NearbyOrganism> =
@@ -457,4 +463,18 @@ fn cached_substep_states_match_the_old_build() {
         }
         assert!(sub_states > 200 && ok > 200 && matings > 0, "{sub_states} {ok} {matings}");
     }
+}
+
+#[test]
+fn neighbors_near_your_own_come_first_when_the_view_is_full() {
+    // (distance from the view's center, organism index), in organism order.
+    let mut out = vec![(1.0, 0), (9.0, 1), (2.0, 2), (30.0, 3), (5.0, 4)];
+    // Organisms 1 and 3 stand beside the player's own animals, far from the center.
+    nearby_order(&mut out, &[false, true, false, true, false]);
+    assert_eq!(out.iter().map(|&(_, i)| i).collect::<Vec<_>>(), vec![1, 3, 0, 2, 4]);
+    // Ties keep organism order.
+    let mut tie = vec![(4.0, 7), (4.0, 2)];
+    tie.sort_unstable_by_key(|&(_, i)| i);
+    nearby_order(&mut tie, &[false, false]);
+    assert_eq!(tie, vec![(4.0, 2), (4.0, 7)]);
 }

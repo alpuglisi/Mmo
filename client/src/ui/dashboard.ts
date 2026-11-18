@@ -22,11 +22,12 @@ function card(title: string, sub: string | null, ...body: (Node | null)[]): HTML
   return h('section', { class: 'chart-card' }, h('h4', {}, title), sub && h('p', { class: 'muted small' }, sub), ...body);
 }
 
-/** What the "cold, heat or winter sleep" bars mean (one count in the sim; the alerts say which). */
-export const EXPOSURE_NOTE = 'Cold, heat or winter sleep: animals that froze, overheated, or never woke from hibernation are counted together here. '
-  + 'The death alerts for your founders and possessed animals say which it was.';
+/** What the older "cold or heat" bars mean (one count before the sim told them apart, snapshot v52). */
+export const EXPOSURE_NOTE = 'Cold or heat (older days): days recorded before cold and heat were counted apart show them together. '
+  + 'Newer days show cold, heat and winter sleep each on their own.';
 
-export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
+/** `onWhyDying`: opens Help on "Why are my animals dying?" (linked from the deaths chart). */
+export function renderDashboard(el: HTMLElement, s: LineageStats | null, onWhyDying?: () => void): void {
   if (!s) {
     el.replaceChildren(h('p', { class: 'muted' }, 'Loading lineage statistics…'));
     return;
@@ -73,7 +74,8 @@ export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
     card('Births and deaths', `Last ${s.vitals.length} days (the last bar is today so far): ${births} born, ${deaths} died.`,
       legend([[SERIES[2], 'born'], ...st.causes.map((c) => [CAUSE_COLORS[c], CAUSE_LABELS[c] ?? c.replace('_', ' ')] as [string, string])]), vitalsChart(s.vitals),
       // The sim counts these together; the death alerts tell them apart.
-      st.causes.includes('exposure') ? h('p', { class: 'muted small', id: 'exposure-note' }, EXPOSURE_NOTE) : null),
+      st.causes.includes('exposure') ? h('p', { class: 'muted small', id: 'exposure-note' }, EXPOSURE_NOTE) : null,
+      onWhyDying ? h('p', { class: 'small' }, h('button', { type: 'button', class: 'link', id: 'why-dying', onclick: onWhyDying }, 'Why are my animals dying? What each cause means and what helps')) : null),
     card('Legacy share', latest ? `Now ${pct(latest.share, 2)} of breeding alleles (weighted ${pct(latest.weighted_share, 2)}).` : 'Recorded at the end of each day.',
       legend([[SERIES[0], 'share'], [SERIES[2], 'weighted by offspring raised']]), legacyChart(s.legacy)),
     card('Gene drift', noMembers ? 'No data: none of your organisms are alive to measure.' : recorded > 0 ? `Largest changes of the lineage mean since founding (${recorded} recorded days); dashed: founding value.` : 'Drift shows after the first recorded day.',
