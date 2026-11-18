@@ -424,7 +424,7 @@ impl Game {
     }
 
     /// `reinforce`: the new members' ids and the shop after.
-    pub(super) fn reinforce(&mut self, player: PlayerId) -> Result<(Vec<u64>, ShopView), ErrorInfo> {
+    pub(super) fn reinforce(&mut self, player: PlayerId) -> Result<(Vec<u64>, ShopView, ReinforceSite), ErrorInfo> {
         let lineage = self.reinforce_blocked(player)?;
         let n = self.reinforcements_this_season(player);
         let price = economy::reinforce_price(n);
@@ -437,7 +437,29 @@ impl Game {
         if ids.is_empty() {
             return Err(ErrorInfo::new("lineage_full", "no room for reinforcements"));
         }
-        self.spend(player, price, format!("Reinforcements: {} adults joined your lineage", ids.len()))?;
+        // Where they landed, and how many of the lineage stand around them.
+        let landed: Vec<evo_sim::math::Vec2> =
+            ids.iter().filter_map(|&id| self.world.organism(id)).map(|o| o.pos).collect();
+        let n_landed = landed.len().max(1) as f32;
+        let at = landed.iter().fold(evo_sim::math::Vec2::ZERO, |a, &p| a + p) * (1.0 / n_landed);
+        let group = self
+            .world
+            .organisms
+            .iter()
+            .filter(|o| o.alive && o.lineage == lineage && !ids.contains(&o.id))
+            .filter(|o| o.pos.dist(at) < evo_sim::World::REINFORCE_CLUSTER)
+            .count();
+        let site = ReinforceSite { at: [at.x, at.y], group };
+        self.spend(
+            player,
+            price,
+            format!(
+                "Reinforcements: {} adults joined your lineage at ({:.0}, {:.0}), beside {group} of its animals",
+                ids.len(),
+                at.x,
+                at.y
+            ),
+        )?;
         let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
         let days = self.economy.reinforce_days.entry(player).or_default();
         days.retain(|&d| d + window > today);
@@ -445,7 +467,7 @@ impl Game {
         let _ = n;
         // New organisms: the next state build indexes the world again.
         self.state_cache.invalidate();
-        Ok((ids, self.shop_view(player)))
+        Ok((ids, self.shop_view(player), site))
     }
 
     /// One row per other lineage with living adults: `own` against a
@@ -694,4 +716,12 @@ impl Game {
             hunger,
         })
     }
+}
+
+/// Where a purchase's reinforcements landed: their centre, and how many of
+/// the lineage's animals stand within `World::REINFORCE_CLUSTER` tiles of it.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub(super) struct ReinforceSite {
+    pub at: [f32; 2],
+    pub group: usize,
 }

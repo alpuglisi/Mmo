@@ -2081,8 +2081,8 @@ impl Game {
             ClientMsg::RenownShop => Ok(Some(serde_json::to_value(self.shop_view(player)).unwrap())),
             ClientMsg::BuyMatingSlot => Ok(Some(serde_json::to_value(self.buy_mating_slot(player)?).unwrap())),
             ClientMsg::Reinforce => {
-                let (ids, shop) = self.reinforce(player)?;
-                Ok(Some(serde_json::json!({ "added": ids, "shop": shop })))
+                let (ids, shop, site) = self.reinforce(player)?;
+                Ok(Some(serde_json::json!({ "added": ids, "shop": shop, "at": site.at, "group": site.group })))
             }
             ClientMsg::Compatibility => Ok(Some(serde_json::to_value(self.compatibility(player)).unwrap())),
             ClientMsg::Provision => {
@@ -7132,6 +7132,9 @@ mod tests {
         let d = data(&out);
         assert_eq!(d["added"].as_array().unwrap().len(), economy::REINFORCE_SIZE as usize);
         assert_eq!(d["shop"]["reinforce_price"], 300);
+        // The reply says where they landed, beside how many of the lineage.
+        assert!(d["at"][0].as_f64().is_some() && d["at"][1].as_f64().is_some(), "{d}");
+        assert!(d["group"].as_u64().is_some_and(|n| n > 0), "{d}");
         assert_eq!(alive(&g), n + economy::REINFORCE_SIZE as usize);
         let lineage = g.lineage_of(1).unwrap();
         assert!(g.world.organisms.iter().filter(|o| o.owner == 1).all(|o| o.lineage == lineage));

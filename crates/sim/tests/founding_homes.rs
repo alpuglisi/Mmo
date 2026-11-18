@@ -32,6 +32,9 @@ fn homes_hash() -> u64 {
         // thirsty animals finding a reachable shore changes the days the
         // world grows first.
         config.balance.founding_conditions = 0.0;
+        // Playtest 4 (version 50): settling on dry land moves homes by design
+        // (`tests/founding_safety.rs`).
+        config.balance.founding_safety = 0.0;
         config.balance.reachable_water = 0.0;
         // Founded empty: the wild ecosystem, then the sample players.
         let mut w = presets::standard_world(config, 1);

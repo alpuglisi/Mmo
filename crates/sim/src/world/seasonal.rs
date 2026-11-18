@@ -824,6 +824,7 @@ mod tests {
         // plain search (`founding_conditions` would scatter a test's
         // animals by map edges and season).
         w.config.balance.founding_conditions = 0.0;
+        w.config.balance.founding_safety = 0.0;
         w
     }
 

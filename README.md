@@ -8174,6 +8174,86 @@ branch, renumbered at merge after 45 and 46), off at 0 for older saves
 | Founders alive 20 days after founding into grown worlds (`examples/foundsurvival.rs`: 8 seeds × days 45, 100, 160, 220 × three playtest designs) | 2,810 of 3,488 (81%) | 2,946 of 3,488 (84%): day 45 793 → 783, day 100 765 → 832, day 160 616 → 621, day 220 636 → 710; 9 cases much better (≥ 1.4×), 4 much worse (≤ 0.7×) |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (on main with boom's round 4) | 11.93 (± 0.14), tunables at 0 | 11.93 (± 0.11) |
 
+### Playtest 4: founders on dry land, reinforcements beside the herd
+
+Playtest 4 (`docs/playtest-4.md` H3 and M17) still lost foundings to where
+they landed:
+
+- founders on lake ice that melted ten days later (13 of 18 standing in
+  deep water);
+- a re-founding in a drought put on a dried lake bed that refilled (10 → 2);
+- a flier set down mid-lake;
+- 4 of 50 drowned on day 1;
+- a water-ringed corner and the tundra rim (21 of 27 starved);
+- a dry mountain corner.
+
+Several of those designs swam 0.3. That is above the 0.25 at which still
+deep water counts as walkable, so lakes were valid spots for them.
+
+Reinforcements landed beside a random member among predators (8 of 10
+eaten in 5 days), with no word on where.
+
+**`Balance::founding_safety` (1)**, on by default from snapshot version 50
+(gated at 48 on its branch, renumbered at merge after 48 and 49), off at 0
+for older saves (`serde_util::before_v50`). In a
+running world:
+
+- **Dry land only.** Founders settle only on dry land: walkable, no water
+  or ice on the tile, no lake bed or river channel under it
+  (`Ground::base_water`, `Ground::river`), and away from water. So neither
+  the thaw nor the end of a drought puts them in deep water, whatever they
+  can swim.
+- **Room around the home.** A home needs at least half of the ground within
+  the founders' scatter to be dry land.
+- **No home near an edge.** A home must be at least 6 tiles from an edge. In
+  every season, homes within 12 tiles of an edge or 16 of a corner are
+  marked down; the cold season's penalty comes on top.
+- **Food for 20 days.** The plants within 8 tiles that the design can reach
+  must cover what the founders will eat in their first 20 days (the hunger
+  rate, converted to plants as grazing converts them). A shortfall counts
+  against the spot for plant eaters.
+- **Fallback.** If no sampled spot qualifies, the search falls back to the
+  old rules rather than placing nobody.
+- **Reinforcements.** They land beside the lineage's largest group: the adult
+  with the most of the lineage's adults within 8 tiles, landing within 3
+  tiles of it. The reply, the ledger and the toast say where ("at (x, y),
+  beside N of your animals").
+
+**Regression test** (`crates/sim/tests/founding_safety.rs`). It rebuilds the
+playtest's world (seed 29, 128×128, the wild ecosystem scaled to the map as
+the server builds it, catastrophes on) and founds:
+
+- Rulebender4's 0.3-swimmer voles on day 40;
+- PocketNomad4's 0.3-swimmer burrower and 0.5-swimmer flier in the worst
+  drought of days 120–220;
+- ApexHunter4's 18-strong pack in winter (day 230), and the flier again;
+- GeneBroker4's 27 founders on day 361.
+
+It checks that every founder stands on dry land with no lake bed or river
+under it, the founders are centred at least 4 tiles from the edge, nobody
+drowns in the first 3 days, and at least 70% are alive after 10 days. With
+the tunable on, all 135 founders were alive after 10 days. With it off,
+the first case fails at once: a founder on a lake bed.
+
+**Founder survival** (`examples/foundsurvival.rs`): founders alive 20 days
+after founding into grown worlds, over 8 seeds and three playtest designs.
+The founding days are spring, late autumn, summer, each world's worst
+drought between days 120 and 220 (a re-founding in a drought), the next
+autumn, and late winter. The three searches are the old one, with
+`founding_conditions` (playtest 3), and with `founding_safety` too:
+
+| Founded | Old | Playtest 3 | Playtest 4 |
+| --- | --- | --- | --- |
+| day 45 (spring) | 768 / 872 | 773 | 766 |
+| day 100 (late autumn) | 757 | 835 | 864 |
+| day 160 (summer) | 591 | 575 | 736 |
+| worst drought, days 120–220 | 493 | 592 | 645 |
+| day 220 (autumn) | 627 | 695 | 780 |
+| day 230 (late winter) | 719 | 800 | 850 |
+| all | 3,955 / 5,232 (76%) | 4,270 (82%) | 4,641 (89%) |
+
+`sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`: 11.93
+(± 0.11), the same as before. A new world's founding is unchanged.
 ### Playtest 4: balance
 
 Playtest 4 (`docs/playtest-4.md`, findings 1, 4, 6, 13, 18, 23 here) still
