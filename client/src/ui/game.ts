@@ -1895,11 +1895,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     setText(listMore, orgs.length > shown.length ? `…and ${orgs.length - shown.length} more` : '');
   }
 
-  /** "12 lost (12 chilled)" for the eggs a lineage lost, or null for none. */
+  /** "12 lost since founding (12 chilled)" for the eggs a lineage lost, or null for none. */
   function eggsLostText(lost: Record<string, number> | undefined): string | null {
     const entries = Object.entries(lost ?? {}).filter(([, n]) => n > 0);
     const total = entries.reduce((sum, [, n]) => sum + n, 0);
-    return total > 0 ? `${total} lost (${entries.map(([c, n]) => `${n} ${c}`).join(', ')})` : null;
+    return total > 0 ? `${total} lost since founding (${entries.map(([c, n]) => `${n} ${c}`).join(', ')})` : null;
   }
 
   /** The lineage lays eggs (its stats count clutches): a carrying female is "gravid", not "pregnant" (playtest 3). */
@@ -1914,13 +1914,13 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!e) return ['Pregnant', String(pregnant)];
     const brooding = orgs.filter((o) => o.action === 'guard').length;
     const parts = [
-      e.clutches === 0 ? 'no clutch now' : `${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
+      e.clutches === 0 ? 'no clutch now' : `now ${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
       e.clutches > 0 ? `${e.brooded} brooded` : null,
       brooding > 0 ? `${brooding} brooding now` : null,
       pregnant > 0 ? `${pregnant} about to lay` : null,
       eggsLostText(e.lost),
     ].filter(Boolean);
-    return ['Eggs', h('span', { id: 'egg-status', title: 'Eggs hatch only while a parent broods them; an unguarded clutch can be lost' }, parts.join(' · '))];
+    return ['Eggs', h('span', { id: 'egg-status', title: 'Now: the clutches being incubated. Lost: every egg since founding. Eggs stay warm while a parent broods them or stays near; a clutch whose parent wanders far or dies chills, and an unguarded one can be raided' }, parts.join(' · '))];
   }
 
   function renderGroups(s: StateView): void {

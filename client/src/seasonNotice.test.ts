@@ -16,4 +16,10 @@ describe('season notice', () => {
     expect(seasonNotice({ days_to_winter: 1, winter_provision: false })).not.toContain('start fed');
     expect(seasonNotice({ days_to_winter: 0, winter_provision: true })).toContain('It is winter now.');
   });
+  it('advises brumation for a cold-blooded design and mentions the free first winter', () => {
+    const t = seasonNotice({ days_to_winter: 5, winter_provision: true }, 'cold')!;
+    expect(t).toContain('Brumation');
+    expect(t).toContain('first winter free');
+    expect(seasonNotice({ days_to_winter: 5, winter_provision: true })).toContain('hibernation');
+  });
 });

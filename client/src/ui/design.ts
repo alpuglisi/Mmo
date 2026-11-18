@@ -73,7 +73,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   // The season notice: kept current while the player designs (it said "winter in 2 days" during winter).
   const seasonEl = h('p', { class: 'notice season-notice', id: 'design-season', role: 'note' });
   const showSeason = () => {
-    const t = seasonNotice(world);
+    const t = seasonNotice(world, spec.thermo);
     seasonEl.hidden = !t;
     if (t && seasonEl.textContent !== t) seasonEl.textContent = t;
   };
@@ -85,7 +85,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
 
   const thermoRadios = (['warm', 'cold'] as ThermoSpec[]).map((t) => {
     const r = h('input', { type: 'radio', name: 'thermo', value: t, checked: t === spec.thermo });
-    r.addEventListener('change', () => { spec.thermo = t; update(); });
+    r.addEventListener('change', () => { spec.thermo = t; showSeason(); update(); });
     return h('label', { class: 'choice' }, r, t === 'warm' ? 'Warm-blooded' : 'Cold-blooded',
       h('small', {}, t === 'warm' ? 'Active in the cold, eats more.' : 'Cheap to run, needs warmth to move.'));
   });

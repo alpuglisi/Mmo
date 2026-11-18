@@ -7,11 +7,18 @@ import type { WorldSummary } from './protocol';
 export const SEASON_NOTICE_DAYS = 30;
 
 /** The notice's text, or null when winter is far off (or the server doesn't say). */
-export function seasonNotice(w: Pick<WorldSummary, 'days_to_winter' | 'winter_provision'> | null | undefined): string | null {
+export function seasonNotice(
+  w: Pick<WorldSummary, 'days_to_winter' | 'winter_provision'> | null | undefined,
+  thermo: 'warm' | 'cold' = 'warm',
+): string | null {
   const days = w?.days_to_winter;
   if (days === undefined || days > SEASON_NOTICE_DAYS) return null;
   const when = days === 0 ? 'It is winter now.' : `Winter starts in ${days} ${days === 1 ? 'day' : 'days'}.`;
-  const help = 'Fur, fat stores and hibernation help a new lineage through it (the starting design has all three).';
+  // A cold-blooded body can't heat itself awake from hibernation: brumation is its winter sleep (playtest 4).
+  const help = thermo === 'cold'
+    ? 'Brumation (a cold-blooded winter sleep), shelter and fat stores help a cold-blooded lineage through it; hibernation does not suit a cold body, and cold-blooded animals do not breed in winter.'
+    : 'Fur, fat stores and hibernation help a new lineage through it (the starting design has all three).';
   const provision = w?.winter_provision ? ' Founders arriving now start fed, with full fat reserves.' : '';
-  return `${when} ${help}${provision}`;
+  const free = ' Founders sleep their first winter free of the winter-sleep toll.';
+  return `${when} ${help}${provision}${free}`;
 }

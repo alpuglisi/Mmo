@@ -1608,6 +1608,11 @@ impl World {
                 };
                 let cycle = gestation + rep.recovery + lactation + cfg.mate_search_days / breed_factor.max(0.05);
                 let mut lambda = a[0] as f32 * rep.litter * condition * fed.min(breed_s) * suppression / cycle;
+                // Winter rest (`Balance::winter_rest`): no cold-blooded births
+                // conceived in winter.
+                if bal.winter_rest > 0.0 && !rep.warm() && season == Season::Winter {
+                    lambda = 0.0;
+                }
                 // The soft lineage cap (`Balance::lineage_crowding`).
                 lambda *= self.lineage_crowding(lineage)[0];
                 // Litters follow condition, one litter at a time per breeding

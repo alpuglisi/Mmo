@@ -411,6 +411,7 @@ fn hysteresis_off(w: &mut World) {
 fn founding_fixes_off(w: &mut World) {
     let old = crate::serde_util::before_v47::OLD_VALUE;
     (w.config.balance.reachable_water, w.config.balance.founding_conditions) = (old, old);
+    balance48_off(&mut w.config.balance);
     for h in &mut w.lineage_homes {
         *h = None;
     }
@@ -475,6 +476,37 @@ fn balance46_off(b: &mut crate::Balance) {
     b.eye_hybrid = old;
     b.winter_toll = old;
     b.wake_spread = old;
+    balance48_off(b);
+}
+
+/// The playtest 4 balance tunables as snapshots before version 48 read them.
+fn balance48_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v48::OLD_VALUE;
+    b.winter_rest = old;
+    b.toxic_avoidance = old;
+    b.egg_attendance = old;
+    b.player_species = old;
+}
+
+/// Version 47 snapshots (before the playtest 4 balance rules) restore with
+/// those tunables off, and are otherwise the same world.
+#[test]
+fn version_47_snapshots_restore_without_playtest4_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v47();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 47);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.winter_rest, crate::serde_util::before_v48::OLD_VALUE);
+    balance48_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v47() == old);
+    let mut w = fixture_world();
+    w.config.balance.egg_attendance = 0.5;
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.egg_attendance, 0.5);
 }
 
 /// Version 45 snapshots (before the playtest 3 balance rules) restore with

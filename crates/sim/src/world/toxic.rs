@@ -32,6 +32,15 @@ pub const RECOGNIZE_DRAB: f32 = 0.3;
 /// How much of a poisoning a lineage that knows the toxin is spared
 /// (`World::toxin_harm`): it tastes and spits rather than eats.
 pub const TOLERANCE: f32 = 0.7;
+/// With `Balance::toxic_avoidance` (playtest 4): the drabbest prey's
+/// recognisability, so a learned lesson is acted on at
+/// `RECOGNIZE_DRAB_STRONG + (1 − RECOGNIZE_DRAB_STRONG) × coloration` (drab
+/// 70%, bright at 0.6 coloration 88%, fully bright 100%), and each
+/// poisoning teaches twice as much, so two to four bites make the lesson.
+/// Before, 65% of hunters still ate prey their lineage knew was toxic and
+/// died of it.
+pub const RECOGNIZE_DRAB_STRONG: f32 = 0.7;
+
 /// A lesson this strong reads as "looks poisonous" to a player.
 pub const LOOKS_POISONOUS: f32 = 0.3;
 /// Lessons below this are forgotten.
@@ -56,7 +65,8 @@ impl World {
             return 0.0;
         }
         let c = q.pheno[crate::Gene::Coloration].clamp(0.0, 1.0);
-        lesson * (RECOGNIZE_DRAB + (1.0 - RECOGNIZE_DRAB) * c)
+        let drab = if self.config.balance.toxic_avoidance > 0.0 { RECOGNIZE_DRAB_STRONG } else { RECOGNIZE_DRAB };
+        lesson * (drab + (1.0 - drab) * c)
     }
 
     /// Share of a poisoning a hunter of lineage `predator` takes from prey
@@ -81,7 +91,8 @@ impl World {
         if k <= 0.0 || predator == prey {
             return;
         }
-        let step = k * LESSON_STEP * (1.0 + COLOR_TEACHES * coloration.clamp(0.0, 1.0));
+        let fast = if self.config.balance.toxic_avoidance > 0.0 { 2.0 } else { 1.0 };
+        let step = fast * k * LESSON_STEP * (1.0 + COLOR_TEACHES * coloration.clamp(0.0, 1.0));
         let v = self.toxic_lessons.entry((predator, prey)).or_default();
         *v = (*v + step).min(1.0);
     }

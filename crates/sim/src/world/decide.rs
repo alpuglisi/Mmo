@@ -1325,6 +1325,18 @@ impl World {
                     let guard = self.guardian(q).0;
                     let my_power = v.my_power;
                     let roll = (splitmix64(v.salt ^ q.id) >> 40) as f32 / (1u64 << 24) as f32;
+                    // With `Balance::toxic_avoidance` the pass-up is decided
+                    // once per hunter, prey lineage and day, not at every
+                    // decision: rolled afresh each tick, a hunter that
+                    // passes a known toxic prey up 70% of the time still ate
+                    // it within a few ticks (playtest 4: 65% did).
+                    let day_of = self.tick / cfg.ticks_per_day.max(1) as u64;
+                    let roll = if cfg.balance.toxic_avoidance > 0.0 && avoid > 0.0 {
+                        (splitmix64(o.id ^ splitmix64((q.lineage as u64) ^ (day_of << 20) ^ 0x70c1_c0de)) >> 40) as f32
+                            / (1u64 << 24) as f32
+                    } else {
+                        roll
+                    };
                     // Search image: prey of another kind than its last kill
                     // is overlooked some of the time (the same prey all day),
                     // unless the hunter is starving and takes what it finds.

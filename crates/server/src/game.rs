@@ -334,7 +334,7 @@ fn egg_losses(now: &evo_sim::world::EggCounts, before: &evo_sim::world::EggCount
 /// An egg loss cause in a sentence.
 fn egg_loss_why(cause: &str) -> &'static str {
     match cause {
-        "chilled" => "chilled: no parent was warming them",
+        "chilled" => "chilled: their parent strayed too far from the nest or died, or the nest was too cold",
         "overheated" => "overheated",
         _ => "eaten by egg raiders",
     }
@@ -5417,7 +5417,7 @@ mod tests {
             .find(|x| x.kind == AlertKind::DailySummary)
             .expect("a day with lost eggs is summarised");
         assert!(
-            summary.text.contains("6 eggs lost (5 chilled: no parent was warming them, 1 eaten by egg raiders)"),
+            summary.text.contains("6 eggs lost (5 chilled: their parent strayed too far from the nest or died, or the nest was too cold, 1 eaten by egg raiders)"),
             "{}",
             summary.text
         );
