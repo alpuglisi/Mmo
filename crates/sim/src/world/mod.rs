@@ -629,6 +629,12 @@ pub struct World {
     /// saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     crowding: Vec<[f32; 2]>,
+    /// Each player's living animals as the tick starts, for the pack
+    /// larder (`apply::player_pack_larder`): the same in the sequential
+    /// and parallel apply, whatever dies mid-tick. Recomputed before every
+    /// tick, so not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    bands: BTreeMap<PlayerId, usize>,
 }
 
 /// Steps from water a founder's tile needs (`Balance::dry_sites`).
@@ -736,6 +742,7 @@ impl World {
             attack_events: Vec::new(),
             toxic_lessons: BTreeMap::new(),
             crowding: Vec::new(),
+            bands: BTreeMap::new(),
             clutch_at: IdMap::default(),
             path_scratch: PathScratch::default(),
             season_offset: Map::seasonal_offset(0, config.days_per_year),
@@ -880,6 +887,12 @@ impl World {
         }
         self.clear_group_orders(player);
         removed
+    }
+
+    /// `owner`'s living animals as this tick started (the pack larder's
+    /// band size).
+    pub(crate) fn band_size(&self, owner: PlayerId) -> usize {
+        self.bands.get(&owner).copied().unwrap_or(0)
     }
 
     pub fn owner_count(&self, owner: PlayerId) -> usize {
@@ -1588,6 +1601,9 @@ impl World {
         // Lineage crowding from the organisms as the tick starts (the same
         // after a restore, which keeps no cache).
         self.refresh_crowding();
+        if self.config.balance.player_packs > 0.0 {
+            self.bands.clone_from(&self.owner_counts);
+        }
         if self.config.lod.enabled && self.tick.is_multiple_of(self.config.ticks_per_hour()) {
             self.lod_update();
         }

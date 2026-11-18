@@ -1183,7 +1183,7 @@ impl World {
                     * lean_times(o.needs.hunger));
         // A player's pack shares its kills: in lean times the band's meals
         // carry a hungry member (`Balance::player_packs`, by the meat gut).
-        let diet = diet * (1.0 - player_pack_larder(&bal, o));
+        let diet = diet * (1.0 - player_pack_larder(&bal, o, self.band_size(o.owner)));
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
         // Competition in a lineage crowded past its soft cap
@@ -1570,19 +1570,30 @@ pub(crate) const PACK_LARDER: f32 = 0.7;
 pub(crate) const LARDER_FROM: f32 = 20.0;
 /// Hunger over which the larder grows to full.
 pub(crate) const LARDER_SPAN: f32 = 30.0;
+/// A player's band up to this many animals shares every kill: the full
+/// larder. Above it the share fades, to none at [`BAND_CROWD`]: a big
+/// population competes for its kills rather than sharing them (a strong
+/// pack design took 42% of six players' animals with the larder at every
+/// size).
+pub(crate) const BAND_SMALL: f32 = 60.0;
+/// Head count at which a player's pack no longer shares as a band.
+pub(crate) const BAND_CROWD: f32 = 150.0;
 
-/// The share of hunger `o` is spared as a player's pack hunter: in lean
-/// times its band's kills carry it ([`PACK_LARDER`], from hunger
-/// [`LARDER_FROM`] to full at `LARDER_FROM + LARDER_SPAN`), by its meat gut
-/// and pack instinct; a fed one is spared nothing. 0 for wild animals,
-/// loners and with the rule off.
-pub(crate) fn player_pack_larder(bal: &crate::Balance, o: &Organism) -> f32 {
+/// The share of hunger `o` is spared as a player's pack hunter whose
+/// owner has `band` animals: in lean times its band's kills carry it
+/// ([`PACK_LARDER`], from hunger [`LARDER_FROM`] to full at
+/// `LARDER_FROM + LARDER_SPAN`), by its meat gut and pack instinct, while
+/// the band is small ([`BAND_SMALL`] to [`BAND_CROWD`]). A fed one is
+/// spared nothing; 0 for wild animals, loners and with the rule off.
+pub(crate) fn player_pack_larder(bal: &crate::Balance, o: &Organism, band: usize) -> f32 {
     if !super::decide::player_pack(bal, o) {
         return 0.0;
     }
     let lean = ((o.needs.hunger - LARDER_FROM) / LARDER_SPAN).clamp(0.0, 1.0);
+    let small = ((BAND_CROWD - band as f32) / (BAND_CROWD - BAND_SMALL)).clamp(0.0, 1.0);
     PACK_LARDER
         * lean
+        * small
         * bal.player_packs.clamp(0.0, 1.0)
         * o.traits.meat_efficiency(bal.generalist_tax)
         * super::decide::pack_instinct(o)

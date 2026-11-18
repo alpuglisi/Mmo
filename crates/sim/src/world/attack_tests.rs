@@ -580,7 +580,7 @@ fn player_packs_share_their_kills() {
     for &i in &[mine, wild, loner] {
         w.organisms[i].needs.hunger = 60.0;
     }
-    let larder = |w: &World, i: usize| super::apply::player_pack_larder(&b, &w.organisms[i]);
+    let larder = |w: &World, i: usize| super::apply::player_pack_larder(&b, &w.organisms[i], 10);
     assert!(super::decide::player_pack(&b, &w.organisms[mine]));
     assert!(larder(&w, mine) > 0.15, "{}", larder(&w, mine));
     assert_eq!((larder(&w, wild), larder(&w, loner)), (0.0, 0.0));
@@ -592,5 +592,8 @@ fn player_packs_share_their_kills() {
     let mut off = b;
     off.player_packs = 0.0;
     assert!(!super::decide::player_pack(&off, &w.organisms[mine]));
-    assert_eq!(super::apply::player_pack_larder(&off, &w.organisms[mine]), 0.0);
+    assert_eq!(super::apply::player_pack_larder(&off, &w.organisms[mine], 10), 0.0);
+    // A big population competes for its kills rather than sharing them.
+    assert_eq!(super::apply::player_pack_larder(&b, &w.organisms[mine], 400), 0.0);
+    assert!(super::apply::player_pack_larder(&b, &w.organisms[mine], 100) < larder(&w, mine));
 }

@@ -1096,8 +1096,10 @@ pub struct Balance {
     /// Player packs share their kills: a hungry player-owned pack hunter's
     /// hunger rises up to `0.7 × meat diet × pack instinct` slower (from
     /// hunger 20, fully at 50; `apply::player_pack_larder`), so a band
-    /// living on small prey carries its hungry members between kills.
-    /// Wild packs keep their own economy. 0: off.
+    /// living on small prey carries its hungry members between kills. In
+    /// full up to 60 animals of the owner's, none from 150: a big
+    /// population competes for its kills. Wild packs keep their own
+    /// economy. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
     pub player_packs: f32,
     /// Metabolic water in deep dormancy: while a sleeper has fat left, its
