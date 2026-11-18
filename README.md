@@ -1598,6 +1598,29 @@ reinforcements could be farmed):
   title shown with the name; 500 renown, 100 per change) and naming a
   species your lineage founded (300).
 
+*Competition* re-run with these rules (6 seeds, 360 days; the broker now
+offers to the hosts' lineages, so the hosts pick free females; columns:
+final share, legacy titles by the new rule, renown left, income and
+royalty earned over the run):
+
+| Arm | Swarm | Steady (host) | Broker | Trades a world |
+| --- | --- | --- | --- | --- |
+| Old rules | 15.8%, 31, 10,093 left | 11.6%, 2 | 12.7%, 3 | 0 |
+| New rules, dams still declined | 11.5%, 19 | 13.3%, 7; income 3,757, royalty 3,055 | 14.1%, 10; royalty 3,533 | 0 |
+| New rules | 10.8%, 14 | **15.2%, 15**; income 4,334, royalty 3,986; 9,460 left | 13.8%, 7; royalty **4,424**; 504 left | 96 |
+
+Trading pays the host clearly (+1.9 points of share, twice the titles,
++2,500 renown) and the broker in renown (+25% royalty), though the broker
+spends nearly everything it earns (fees, 41 extra slots a world) and ends
+level on share. The per-target limit no longer caps trade (96 trades a
+world; 20 when accepted requests still counted). The royalty is now about
+as large as income in this scenario even without trades, because the
+four same-body-plan lineages interbreed in mixed herds on their own; in
+playtest 2 most lineages were sterile with each other and royalties were
+1–4 a day. Paying only for alleles in other players' lineages (not the
+wild) took a sixth off it in every arm; the rate is left at 5 so that
+in a typical game it is a real share of income.
+
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
 
