@@ -10,7 +10,8 @@ export interface ConfirmOptions {
   title: string;
   body: string | string[];
   ok: string;
-  cancel?: string;
+  /** Its label; false for a notice with one button. */
+  cancel?: string | false;
   /** The confirming button in the danger style. */
   danger?: boolean;
   /** Id prefix for tests (`<id>-ok`, `<id>-cancel`). */
@@ -21,7 +22,7 @@ export function confirmDialog(o: ConfirmOptions): Promise<boolean> {
   return new Promise((resolve) => {
     const id = o.id ?? 'confirm';
     const ok = h('button', { type: 'button', id: `${id}-ok`, class: o.danger ? 'danger' : '' }, o.ok) as HTMLButtonElement;
-    const cancel = h('button', { type: 'button', id: `${id}-cancel`, class: 'secondary' }, o.cancel ?? 'Cancel') as HTMLButtonElement;
+    const cancel = h('button', { type: 'button', id: `${id}-cancel`, class: 'secondary', hidden: o.cancel === false }, o.cancel || 'Cancel') as HTMLButtonElement;
     const body = (Array.isArray(o.body) ? o.body : [o.body]).map((t) => h('p', { class: 'small' }, t));
     const dialog = h('div', { class: 'card help-card confirm-card', id, role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': `${id}-title` },
       h('h2', { id: `${id}-title` }, o.title), ...body, h('div', { class: 'row wrap confirm-actions' }, cancel, ok));
@@ -41,7 +42,7 @@ export function confirmDialog(o: ConfirmOptions): Promise<boolean> {
       } else if (e.key === 'Tab') {
         // Keep focus on the two buttons.
         e.preventDefault();
-        (document.activeElement === ok ? cancel : ok).focus();
+        (document.activeElement === ok && o.cancel !== false ? cancel : ok).focus();
       }
     };
     ok.addEventListener('click', () => done(true));
@@ -49,6 +50,6 @@ export function confirmDialog(o: ConfirmOptions): Promise<boolean> {
     backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) done(false); });
     window.addEventListener('keydown', onKey, true);
     document.body.append(backdrop);
-    cancel.focus({ preventScroll: true });
+    (o.cancel === false ? ok : cancel).focus({ preventScroll: true });
   });
 }

@@ -546,6 +546,8 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .catastrophe-alert .cat-effect { overflow-wrap: anywhere; }
 .catastrophe-alert.folded .cat-effect { display: none; }
 .catastrophe-alert .cat-fold { padding: 2px 8px; font-size: 0.85em; flex-shrink: 0; }
+.extinct-alert { align-items: center; }
+.extinct-alert .new-lineage { flex-shrink: 0; }
 .drought-alert { background: color-mix(in srgb, #3a2a0c 92%, transparent); border-color: #d29922; }
 .drought-alert .cat-icon { color: #e3b341; }
 .drought-alert .cat-title { color: #f2cc60; }

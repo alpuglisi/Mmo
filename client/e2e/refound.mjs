@@ -85,6 +85,21 @@ const api = (page, method, url, body) => page.evaluate(async ([method, url, body
   return { status: res.status, json };
 }, [method, url, body]);
 
+/** Found the design on screen; a re-founding with fewer founders says so in the app's dialog first. */
+async function found(page) {
+  await page.click('#design-submit');
+  const which = await waitFor('the map or the reduced-founding notice', async () => {
+    if (await page.$('#founded-reduced-ok')) return 'reduced';
+    if (await page.$('#world-canvas')) return 'map';
+    return null;
+  });
+  if (which === 'reduced') {
+    step(`re-founding notice: "${(await page.textContent('#founded-reduced')).replace(/\s+/g, ' ').slice(0, 90)}…"`);
+    await page.click('#founded-reduced-ok');
+  }
+  await page.waitForSelector('#world-canvas', { timeout: UI_MS });
+}
+
 const lineageNow = (page) => page.evaluate(() => {
   const s = window.evo.model.state;
   return s ? { lineage: s.lineage, population: s.population, balance: s.balance ?? null } : null;
@@ -122,8 +137,7 @@ async function main() {
     check(/winter/i.test(season) && season.includes('Fur, fat stores and hibernation') && season.includes('start fed'), 'season notice', season);
     step(`the design screen warns about winter: "${season}"`);
     await page.fill('#design-name', 'First try');
-    await page.click('#design-submit');
-    await page.waitForSelector('#world-canvas', { timeout: UI_MS });
+    await found(page);
     const first = await waitFor('the first lineage', async () => {
       const s = await lineageNow(page);
       return s && s.lineage !== null && s.population > 0 ? s : null;
@@ -138,6 +152,11 @@ async function main() {
     // The lineage dies out.
     const wiped = await api(page, 'POST', '/api/e2e/wipe-out');
     check(wiped.status === 200 && wiped.json.killed > 0, 'wipe-out hook', wiped);
+    // Said over the map whichever tab is open (playtest 6: only the Lineage tab said so).
+    await page.waitForSelector('#extinct-alert', { state: 'visible', timeout: UI_MS });
+    const banner = await page.textContent('#extinct-alert');
+    check(banner.includes('Your lineage died out') && banner.includes('Start a new lineage'), 'died-out banner over the map', banner);
+    step('the map says the lineage died out, with "Start a new lineage"');
     await page.click('#tab-lineage');
     await page.waitForSelector('#lineage-extinct', { state: 'visible', timeout: UI_MS });
     const notice = await page.textContent('#lineage-extinct');
@@ -153,6 +172,12 @@ async function main() {
     check((await page.textContent('.topbar')).includes('Design a new lineage'), 'the design screen should say it is a new lineage');
     await page.click('#design-cancel');
     await page.waitForSelector('#world-canvas', { timeout: UI_MS });
+    // The banner's button opens it too.
+    await page.waitForSelector('#extinct-alert-new', { state: 'visible', timeout: UI_MS });
+    await page.click('#extinct-alert-new');
+    await page.waitForSelector('#design-name', { timeout: UI_MS });
+    await page.click('#design-cancel');
+    await page.waitForSelector('#world-canvas', { timeout: UI_MS });
     await page.click('#tab-lineage');
     await page.click('#lineage-extinct-new');
     await page.waitForSelector('#design-name', { timeout: UI_MS });
@@ -164,8 +189,7 @@ async function main() {
     // A founders count other than the starter's: the next design screen must start from it.
     const lastFounders = Number(await page.inputValue('#design-founders')) - 2;
     await page.fill('#design-founders', String(lastFounders));
-    await page.click('#design-submit');
-    await page.waitForSelector('#world-canvas', { timeout: UI_MS });
+    await found(page);
     const second = await waitFor('the second lineage', async () => {
       const s = await lineageNow(page);
       return s && s.lineage !== null && s.lineage !== first.lineage && s.population > 0 ? s : null;
@@ -233,9 +257,16 @@ async function main() {
     await page.check('input[name="birth"][value="incubated_eggs"]');
     await waitFor('the egg warning to go', async () => (await page.locator('#design-warnings [data-warning="eggs"]').count()) === 0);
     step(`warm-blooded abandoned eggs show the server's warning: "${eggWarn.slice(0, 80)}…"`);
+    // A name the server refuses: the reason shows under the field and Found is disabled until it changes.
+    await page.fill('#design-name', 'Server Admin');
+    await page.waitForSelector('#design-name-warning:not([hidden])', { timeout: UI_MS });
+    const nameWarn = await page.textContent('#design-name-warning');
+    check(await page.isDisabled('#design-submit'), 'Found should be disabled for a refused name', nameWarn);
+    check(!/bad_name|playtest/.test(nameWarn), 'the name warning reads as words', nameWarn);
     await page.fill('#design-name', 'Third try');
-    await page.click('#design-submit');
-    await page.waitForSelector('#world-canvas', { timeout: UI_MS });
+    await page.waitForSelector('#design-name-warning', { state: 'hidden', timeout: UI_MS });
+    step(`a refused name is explained inline with Found disabled: "${nameWarn}"`);
+    await found(page);
     const fresh = await waitFor('the third lineage', async () => {
       const s = await lineageNow(page);
       return s && s.lineage !== null && s.lineage !== second.lineage && s.population > 0 ? s : null;
