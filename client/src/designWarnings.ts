@@ -12,7 +12,7 @@ import { catastropheBanner, catastropheEffect, catastropheLabel } from './ui/chr
 export const DROUGHT_EXTREME = 0.75;
 
 export interface DesignWarning {
-  id: 'drought' | 'catastrophe' | 'wings' | 'eggs';
+  id: 'drought' | 'catastrophe' | 'wings' | 'eggs' | 'carnivore_eggs';
   level: 'warn' | 'bad';
   text: string;
 }

@@ -352,6 +352,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   let nameWarned = '';
   /** The server's egg warning (`egg_warning`) for the design it last checked. */
   let serverEggs: { design: string; text: string } | null = null;
+  /** The server's carnivore egg warning (`carnivore_egg_warning`) for the design it last checked. */
+  let serverCarnEggs: string | null = null;
   function renderHybrid(): void {
     if (!species) return;
     const p = payload();
@@ -420,6 +422,12 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         update();
       } else if (r && serverEggs) {
         serverEggs.design = JSON.stringify({ ...p, name: '' });
+      }
+      // Incubated eggs on a hunter (balance's carnivore_egg_warning), verbatim.
+      const carn = r?.carnivore_egg_warning ? serverText(r.carnivore_egg_warning) : null;
+      if (r && carn !== serverCarnEggs) {
+        serverCarnEggs = carn;
+        update();
       }
       const warning = r?.water_warning;
       waterBox.hidden = !warning;
@@ -490,6 +498,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     foodBox.className = `small food-hint food-${food.level}`;
     const warns = designWarnings(payload(), world, serverCompat?.view.drought_warning).filter((w) => !(w.id === 'eggs' && serverEggs));
     if (serverEggs) warns.unshift({ id: 'eggs', level: 'bad', text: serverEggs.text });
+    if (serverCarnEggs) warns.push({ id: 'carnivore_eggs', level: 'warn', text: serverCarnEggs });
     const wkey = JSON.stringify(warns);
     if (warnBox.dataset.key !== wkey) {
       warnBox.dataset.key = wkey;
