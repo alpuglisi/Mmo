@@ -939,7 +939,7 @@ impl World {
         if !accept_f || mm > 1.5 {
             return;
         }
-        let fert = mating::fertility_with(&female.genome, &male.genome, self.config.balance.egg_hybrid)
+        let fert = mating::fertility_with(&female.genome, &male.genome, mating::Relief::of(&self.config.balance))
             * self.disease_fertility(f, m)
             * self.conception_boost(female);
         self.mating_contact(f, m);

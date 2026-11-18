@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use evo_sim::genome::Genome;
-use evo_sim::mating::{fertility_gap, fertility_with, plan_weights, BODY_PLAN_GENES, BODY_PLAN_STERILE};
+use evo_sim::mating::{fertility_gap, fertility_with, plan_weights, Relief, BODY_PLAN_GENES, BODY_PLAN_STERILE};
 use evo_sim::{PlayerId, WILD};
 
 use super::Game;
@@ -86,13 +86,13 @@ pub struct Spread {
 }
 
 /// [`Spread`] over the pairs of `a` × `b` (None when either is empty).
-pub fn spread(a: &[&Genome], b: &[&Genome], egg_hybrid: f32) -> Option<Spread> {
+pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief) -> Option<Spread> {
     let mut fert: Vec<f32> = Vec::with_capacity(a.len() * b.len());
     let mut closest: Option<(f32, &Genome, &Genome)> = None;
     for &x in a {
         for &y in b {
-            let gap = fertility_gap(x, y, egg_hybrid);
-            fert.push(fertility_with(x, y, egg_hybrid));
+            let gap = fertility_gap(x, y, relief);
+            fert.push(fertility_with(x, y, relief));
             if closest.is_none_or(|(g, _, _)| gap < g) {
                 closest = Some((gap, x, y));
             }
@@ -103,7 +103,7 @@ pub fn spread(a: &[&Genome], b: &[&Genome], egg_hybrid: f32) -> Option<Spread> {
     let n = fert.len();
     let at = |q: f64| fert[((q * (n - 1) as f64).round() as usize).min(n - 1)];
     let fertile = fert.iter().filter(|&&f| f > 0.0).count();
-    let weights = plan_weights(egg_hybrid);
+    let weights = plan_weights(relief.egg);
     let (gene, gene_gap) = BODY_PLAN_GENES
         .iter()
         .zip(weights)
@@ -200,8 +200,18 @@ impl Game {
         let tracker = &self.world.chronicle.species;
         let s =
             tracker.get(species).ok_or_else(|| ErrorInfo::new("unknown_species", format!("no species {species}")))?;
-        if s.founder != Some(player) {
-            return Err(ErrorInfo::new("not_yours", "only a species your lineage founded can be named by you"));
+        // Founded it, or its lineage holds most of the species' adults: a
+        // player lineage filed under a wild species it outnumbers (playtest
+        // 3: an egg-laying lineage inside the Steppe antelope) is still the
+        // player's species to name.
+        let mine = self.lineage_of(player);
+        let total: f64 = s.lineages.iter().map(|&(_, n)| n).sum();
+        let held = s.lineages.iter().filter(|&&(l, _)| Some(l) == mine).map(|&(_, n)| n).sum::<f64>();
+        if s.founder != Some(player) && !(total > 0.0 && held * 2.0 > total) {
+            return Err(ErrorInfo::new(
+                "not_yours",
+                "only a species your lineage founded, or one most of whose adults are your lineage's, can be named by you",
+            ));
         }
         if s.extinct_day.is_some() || s.merged_into.is_some() {
             return Err(ErrorInfo::new("species_gone", "that species is extinct or merged into another"));
@@ -317,12 +327,12 @@ impl Game {
     /// One row per other lineage with living adults: `own` against a
     /// sample of its adults, most fertile first.
     fn compat_rows(&self, own: &[&Genome], skip: Option<u32>) -> Vec<CompatibilityRow> {
-        let egg_hybrid = self.world.config.balance.egg_hybrid;
+        let relief = Relief::of(&self.world.config.balance);
         let mut rows: Vec<CompatibilityRow> = (0..self.world.lineages.len() as u32)
             .filter(|&l| Some(l) != skip)
             .filter_map(|l| {
                 let theirs = sample_of(self, l);
-                let s = spread(own, &theirs, egg_hybrid)?;
+                let s = spread(own, &theirs, relief)?;
                 let lin = &self.world.lineages[l as usize];
                 Some(CompatibilityRow {
                     lineage: l,
@@ -382,10 +392,10 @@ impl Game {
         if own.is_empty() {
             return;
         }
-        let egg_hybrid = self.world.config.balance.egg_hybrid;
+        let relief = Relief::of(&self.world.config.balance);
         for v in views {
             let Some(o) = self.world.organism(v.organism) else { continue };
-            if let Some(s) = spread(&own, &[&*o.genome], egg_hybrid) {
+            if let Some(s) = spread(&own, &[&*o.genome], relief) {
                 v.compatible = Some(compatible(&s));
                 v.body_plan_fertility = Some(s.mean);
             }

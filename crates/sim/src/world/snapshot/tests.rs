@@ -408,6 +408,36 @@ fn balance43_off(b: &mut crate::Balance) {
     b.age_spread = old;
     b.dormancy_toll = old;
     b.emergence_lag = old;
+    balance45_off(b);
+}
+
+/// The playtest 3 balance tunables as snapshots before version 45 read them.
+fn balance45_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v45::OLD_VALUE;
+    b.eye_hybrid = old;
+    b.winter_toll = old;
+    b.wake_spread = old;
+}
+
+/// Version 43 snapshots (before the playtest 3 balance rules) restore with
+/// those tunables off, and are otherwise the same world.
+#[test]
+fn version_43_snapshots_restore_without_playtest3_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v43();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 43);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.winter_toll, crate::serde_util::before_v45::OLD_VALUE);
+    balance45_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v43() == old);
+    let mut w = fixture_world();
+    w.config.balance.wake_spread = 3.0;
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.wake_spread, 3.0);
 }
 
 /// Version 42 snapshots (before the playtest 2 balance rules) restore with

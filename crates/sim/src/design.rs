@@ -66,7 +66,9 @@ pub const COST_PER_LARGER_BODY: f32 = 40.0;
 /// need is worth more than its cold-weather sluggishness.
 pub const COST_COLD_BLOODED: f32 = 20.0;
 /// Points per eye beyond two (a midline eye, or each eye of an extra pair).
-pub const COST_PER_EXTRA_EYE: f32 = 1.0;
+/// 1 before playtest 3, where 2 → 5 eyes bought all-round vision and (then)
+/// full reproductive isolation for 3 points.
+pub const COST_PER_EXTRA_EYE: f32 = 3.0;
 /// Points per pair of legs beyond two pairs.
 pub const COST_PER_EXTRA_LEG_PAIR: f32 = 2.0;
 /// Points for a second pair of ears.
@@ -218,7 +220,9 @@ pub fn trait_cost(g: Gene) -> f32 {
         // Seasonal strategies.
         // 8 before playtest 2, where winter sleep decided the board.
         Hibernation => 12.0,
-        Brumation => 6.0,
+        // 6 before playtest 3, where a brumating flier slept through winters
+        // for free and dominated.
+        Brumation => 10.0,
         Migration => 8.0,
         Estivation => 6.0,
         Caching => 5.0,
