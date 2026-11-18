@@ -322,7 +322,8 @@ async fn websocket_tokens_connections_and_frames_are_bounded() {
     // A command over the message limit gets a `too_large` reply (with its id
     // when it can be read) and the connection carries on (playtest 5: 49 KB
     // closed it silently).
-    let long = format!(r#"{{"id":8,"type":"set_view","pad":"{}"}}"#, "x".repeat(MAX_CLIENT_MESSAGE * 3));
+    // (The id last, after the long field: playtest 6 found it missing then.)
+    let long = format!(r#"{{"type":"set_view","pad":"{}","id":8}}"#, "x".repeat(MAX_CLIENT_MESSAGE * 3));
     ws.send(Message::Text(long)).await.unwrap();
     ws.send(Message::Text(json!({"type": "ledger", "id": 9}).to_string())).await.unwrap();
     let (mut big, mut after) = (false, false);

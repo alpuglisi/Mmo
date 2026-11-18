@@ -48,8 +48,9 @@ pub struct DesignSpec {
     pub thermo: ThermoSpec,
     pub birth: BirthSpec,
     pub litter_size: u32,
-    /// Trait values in [0, 1] that differ from the defaults.
-    #[serde(default)]
+    /// Trait values in [0, 1] that differ from the defaults. A key given
+    /// twice is refused (the later one silently won: playtest 6).
+    #[serde(default, deserialize_with = "unique_keys")]
     pub traits: BTreeMap<String, f32>,
     #[serde(default = "default_founders")]
     pub founders: u32,
@@ -200,6 +201,27 @@ pub fn parse_gene(name: &str) -> Option<Gene> {
         .iter()
         .copied()
         .find(|&g| gene_key(g) == norm || format!("{g:?}").to_ascii_lowercase() == norm.replace('_', ""))
+}
+
+/// A JSON object of trait values, refusing a key given twice.
+fn unique_keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, f32>, D::Error> {
+    struct V;
+    impl<'de> serde::de::Visitor<'de> for V {
+        type Value = BTreeMap<String, f32>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an object of trait values")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, mut m: M) -> Result<Self::Value, M::Error> {
+            let mut out = BTreeMap::new();
+            while let Some((k, v)) = m.next_entry::<String, f32>()? {
+                if out.insert(k.clone(), v).is_some() {
+                    return Err(serde::de::Error::custom(format!("duplicate trait key {k:?}")));
+                }
+            }
+            Ok(out)
+        }
+    }
+    d.deserialize_map(V)
 }
 
 impl DesignSpec {
@@ -604,6 +626,10 @@ mod tests {
         let e = spec(&[("fur", 0.5), ("FUR ", 0.9)]).to_design().unwrap_err();
         assert_eq!((e.code(), e.message()), ("duplicate_gene", "fur is given twice (under two spellings)".to_string()));
         assert!(spec(&[("FUR", 0.5)]).to_design().is_ok());
+        // A literal duplicate key doesn't parse (the later one won silently).
+        let dup = r#"{"name":"N","thermo":"warm","birth":"live","litter_size":2,"founders":12,"traits":{"fur":0.5,"fur":0.9}}"#;
+        let e = serde_json::from_str::<DesignSpec>(dup).unwrap_err().to_string();
+        assert!(e.contains("duplicate trait key \"fur\""), "{e}");
     }
 
     #[test]

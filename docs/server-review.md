@@ -144,3 +144,26 @@ From `docs/playtest-5.md` (M5, M12 in part, and the input checks in `Rulebender5
 | Gene keys were normalised silently ("fur " and "FUR" overwrote each other). | Two keys naming one gene: `duplicate_gene`. | `gene_names_parse` |
 | A juvenile got `same_sex` before `not_mature`. | Maturity first in `preview_mating` and in requests within one's lineage (cross-player checks already did). | `maturity_is_checked_before_sex` |
 | M12: the small-lineage offline shield seemed to start on disconnect. | Already delayed since round 4: no spell (and so no shield of any kind) starts before `offline_idle_ticks` (10 real minutes) without a connection. The test now checks the world's protection itself during the idle time. | `short_absences_are_not_away` |
+
+## Round 7: playtest 6 (names, leaks, offline)
+
+From `docs/playtest-6.md` (M5, M12, M15) and `Rulebender6.md`. Each has a test. No snapshot or sim change.
+
+| Finding | Fix | Test |
+| --- | --- | --- |
+| A dotted or run-together staff word next to another word passed ("Head G.M.", "Real G.M.", "GMBob", "ClaudeBot", "OwnerBob", "Operator", "Moderater", "Gamemastr", "Root user"). | `names::words`: runs of single letters are joined ("G.M." reads "gm") and CamelCase words are split into their parts ("GMBob": "gm", "bob"); the reserved words gained gms, owners, operator(s); "moderater", "gamemastr", "rootuser" are refused anywhere. | `names::tests` |
+| "Wild herd" passed as a species name. | A lineage or species name may not start with "Wild"/"Wilds" (it would read as a wild species); a title may not use the word at all; "Wildebeest", "Rewilded" pass. | `names::tests` |
+| A lineage could take a wild species' name ("Meadow vole"). | `Game::wild_name` (a wild lineage's or wild-dominated species' name, folded, plural either way) refuses lineage names at founding, species names and titles; the design check's `name_warning` says so first. | `wild_species_names_are_refused` |
+| Account names used a weaker check. | New accounts go through `names::check` like every other name. | accounts `register_login_and_sessions` |
+| "Roots" was refused (root + plural). | No plural `s` for plain words among the whole forms (root, help). | `names::tests` |
+| Saved offenders ("Head G.M." title, "Wild herd" species). | Cleaned on load by the existing `Game::sanitize_names`, now with the stricter check. | — |
+| `/api/species` showed every player species' body plan (coarse). | Another player's species shows no thermoregulation, birth mode, leg or eye count; the caller's own (logged in) and the wild keep theirs; diet and size stay in quarters for the labels. | `rivals_species_show_no_body_plan` |
+| The WS `compatibility` command gave rivals' numbers exactly, with the limiting gene. | Same coarsening as the HTTP check (`coarsen_rivals`). | `compatibility_shows_the_diet_split` |
+| Error replies gave gene gaps to 17 digits. | `incompatible_body_plans` gaps in tenths (detail and message). | `different_body_plans_are_refused_at_request_time_with_the_genes` |
+| `too_big` gave a rival's exact mass. | About: whole kg under 10, then 5 kg, then 10 kg steps (`protocol::coarse_kg`). | `a_too_big_target_gives_its_mass_roughly` |
+| M12: home-range protection lasted 12 real hours, thousands of game days at a fast tick. | All offline protection (core cap, home range, fade) is also capped in game days: `GameConfig::offline_max_days`, 60 by default (the grace's cap). Note that at the default 1 s tick 12 hours are ~900 game days, so the cap shortens it there too (60 days ≈ 48 minutes); raise it if the owner prefers. | `offline_protection_is_capped_in_game_days_and_dated_from_the_leaving` |
+| The home range started ~20 minutes after leaving, the Lineage tab says 10. | The spell is dated from the leaving (it still starts only after the idle wait), so the onset counts from then. The home-range note mentions the game-day cap. | same |
+| `too_large` had no id when the id came after the long field. | The whole message is scanned. | integration `security.rs` |
+| A literal duplicate JSON key in a design was accepted. | Refused: `duplicate_gene` ("fur is given twice"). | `gene_names_parse` |
+| A `"NaN"` string value gave `bad_message`. | `bad_coordinates`, like a bare NaN. | `bare_nan_and_infinity_are_spotted_outside_strings` |
+| `substitute_mating` told a living rival animal from a dead one. | Its `mine` (and `respond_mating`'s `partner`) go through `Game::hide_unseen`. | — |

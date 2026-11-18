@@ -551,6 +551,11 @@ fn design_body(
     body: Result<Json<DesignSpec>, axum::extract::rejection::JsonRejection>,
 ) -> Result<DesignSpec, ApiError> {
     body.map(|Json(spec)| spec).map_err(|e| {
+        // A trait given twice: say which.
+        if let Some(k) = e.body_text().split("duplicate trait key ").nth(1) {
+            let key = k.split('"').nth(1).unwrap_or_default().to_string();
+            return ApiError::new(StatusCode::BAD_REQUEST, "duplicate_gene", format!("{key} is given twice"));
+        }
         // Over the body limit: say that, not that the design is malformed.
         if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
             return ApiError::new(
@@ -1363,7 +1368,9 @@ async fn client_session(
         let Some(frame) = frame else { break };
         // Too long for a command: say so (rate-limited like any message).
         if frame.opcode() == OpCode::Text && frame.payload().len() > MAX_CLIENT_MESSAGE {
-            let (id, command) = malformed_id(&frame.payload()[..frame.payload().len().min(512)]);
+            // The whole message is read for its id (it may come last, after
+            // the long field: playtest 6).
+            let (id, command) = malformed_id(frame.payload());
             let err = match bucket.take(rate, Instant::now()) {
                 Ok(()) => ErrorInfo::new(
                     "too_large",
@@ -1507,6 +1514,12 @@ fn non_finite_number(text: &[u8]) -> bool {
             continue;
         }
         match b {
+            // A quoted "NaN" or "Infinity" as a value (after a colon) too.
+            b'"' if value_after_colon(text, i)
+                && [&b"\"NaN\""[..], b"\"Infinity\"", b"\"-Infinity\""].iter().any(|t| text[i..].starts_with(t)) =>
+            {
+                return true
+            }
             b'"' => in_string = true,
             b'N' if text[i..].starts_with(b"NaN") => return true,
             b'I' if text[i..].starts_with(b"Infinity") => return true,
@@ -1514,6 +1527,12 @@ fn non_finite_number(text: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// Whether the byte at `i` starts a value: the last non-space byte before it
+/// is a colon.
+fn value_after_colon(text: &[u8], i: usize) -> bool {
+    text[..i].iter().rev().find(|b| !b.is_ascii_whitespace()) == Some(&b':')
 }
 
 /// The world thread's chronicle (species, eras, catastrophes, achievements).
@@ -1534,8 +1553,25 @@ async fn spectate(World(w): World) -> Result<Json<crate::game::Spectate>, ApiErr
 
 /// `GET /api/species`: every detected species (living first, by size), with
 /// parents (the species tree), founders and dominant allele owners.
-async fn species(World(w): World) -> Result<Json<SpeciesList>, ApiError> {
-    Ok(Json(chronicle(&w).await?.species))
+async fn species(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+) -> Result<Json<SpeciesList>, ApiError> {
+    let me = bearer(&headers).and_then(|t| app.accounts.session(t)).map(|s| s.player);
+    let mut list = chronicle(&w).await?.species;
+    hide_rival_body_plans(&mut list, me);
+    Ok(Json(list))
+}
+
+/// Another player's species shows no body plan (thermoregulation, birth
+/// mode, leg and eye counts): with the diet and size it was a recipe for
+/// their design (playtest 6). The caller's own species (logged in) and the
+/// wild ones keep theirs. Diet and size stay, in quarters, for the labels.
+fn hide_rival_body_plans(list: &mut SpeciesList, me: Option<PlayerId>) {
+    for s in list.species.iter_mut().filter(|s| s.dominant != evo_sim::WILD && Some(s.dominant) != me) {
+        (s.endothermy, s.birth_mode, s.leg_count, s.eye_count) = (None, None, None, None);
+    }
 }
 
 /// `GET /api/eras`: the era clock and every finished era's final ranking.
@@ -1650,7 +1686,34 @@ async fn season_player(
 
 #[cfg(test)]
 mod tests {
-    use super::{history_limit, malformed_id, non_finite_number, public_genes};
+    use super::{hide_rival_body_plans, history_limit, malformed_id, non_finite_number, public_genes};
+
+    #[test]
+    fn rivals_species_show_no_body_plan() {
+        let sp = |dominant| {
+            crate::protocol::SpeciesView {
+            dominant,
+            endothermy: Some(1.0),
+            birth_mode: Some(0.5),
+            leg_count: Some(4),
+            eye_count: Some(2),
+            ..serde_json::from_value(serde_json::json!({
+                "id": 1, "name": "x", "origin": "founding", "founded_day": 0, "dominant": 0, "dominant_name": "x",
+                "dominant_share": 1.0, "adults": 1.0, "peak_adults": 1.0, "lineages": [], "carnivory": 0.25, "body_size": 0.5
+            }))
+            .unwrap()
+        }
+        };
+        let mut list: crate::protocol::SpeciesList = serde_json::from_value(serde_json::json!({
+            "day": 0, "samples": 0, "alive": 0, "species": [], "founded": []
+        }))
+        .unwrap();
+        list.species = vec![sp(0), sp(1), sp(2)];
+        hide_rival_body_plans(&mut list, Some(1));
+        let plan = |i: usize| list.species[i].endothermy.is_some() && list.species[i].leg_count.is_some();
+        assert!(plan(0) && plan(1) && !plan(2), "wild and own keep theirs; a rival's is hidden");
+        assert_eq!(list.species[2].carnivory, 0.25, "the diet stays (coarse)");
+    }
 
     #[test]
     fn bare_nan_and_infinity_are_spotted_outside_strings() {
@@ -1658,6 +1721,11 @@ mod tests {
         assert!(non_finite_number(br#"{"type":"order_move","x":-Infinity}"#));
         assert!(!non_finite_number(br#"{"type":"set_nameplate","title":"NaN \" Infinity"}"#));
         assert!(!non_finite_number(br#"{"type":"set_view","x":1}"#));
+        // A quoted NaN as a value (playtest 6: a "NaN" radius).
+        assert!(non_finite_number(br#"{"type":"claim_territory","x":1,"y":1,"radius": "NaN"}"#));
+        // (Only messages that failed to parse are scanned: a title "NaN" in a
+        // valid command never gets here.)
+        assert!(!non_finite_number(br#"{"type":"set_nameplate","title":"a NaN b"}"#));
     }
 
     #[test]

@@ -29,6 +29,19 @@ use crate::protocol::{
     ListingView, ScoreBreakdown, ShopView,
 };
 
+/// Another player's lineage in a compatibility check: tenths and no
+/// limiting gene. Varying one gene at a time against exact gaps solved a
+/// rival's body plan (playtest 4).
+fn coarsen_rivals(rows: &mut [CompatibilityRow], player: PlayerId) {
+    for r in rows.iter_mut().filter(|r| r.owner != player && r.owner != WILD) {
+        let tenth = |x: f32| (x * 10.0).round() / 10.0;
+        (r.fertility, r.fertility_low, r.fertility_high) =
+            (tenth(r.fertility), tenth(r.fertility_low), tenth(r.fertility_high));
+        (r.best_fertility, r.fertile_share, r.gap) = (tenth(r.best_fertility), tenth(r.fertile_share), tenth(r.gap));
+        r.limiting = "body_plan".into();
+    }
+}
+
 /// Adults of each lineage compared in a compatibility check.
 const SAMPLE: usize = 16;
 
@@ -273,6 +286,9 @@ impl Game {
             .map_err(|why| ErrorInfo::new("bad_title", format!("that title can't be used: {why}")))?;
         // Nor another player's name, or one inside it (it shows beside the
         // owner's: "Herdmaster4 (alt)").
+        if self.wild_name(&title) {
+            return Err(ErrorInfo::new("bad_title", "that title can't be used: it is a wild species' name"));
+        }
         if self.impersonates(player, &title, names::Kind::Title) {
             return Err(ErrorInfo::new("bad_title", "that title can't be used: it looks like another player's name"));
         }
@@ -291,6 +307,9 @@ impl Game {
     pub(super) fn name_species(&mut self, player: PlayerId, species: u32, name: &str) -> Result<String, ErrorInfo> {
         let name = names::check(name, crate::design::MAX_NAME_LEN, names::Kind::Species)
             .map_err(|why| ErrorInfo::new("bad_name", format!("that species name can't be used: {why}")))?;
+        if self.wild_name(&name) {
+            return Err(ErrorInfo::new("bad_name", "that species name can't be used: it is a wild species' name"));
+        }
         if self.impersonates(player, &name, names::Kind::Species) {
             return Err(ErrorInfo::new("bad_name", "a species name can't look like another player's name"));
         }
@@ -329,6 +348,22 @@ impl Game {
     /// Whether `text` looks like another player's name (`names::impersonates`).
     pub(crate) fn impersonates(&self, player: PlayerId, text: &str, kind: names::Kind) -> bool {
         names::impersonates(text, self.names.iter().filter(|(&p, _)| p != player).map(|(_, n)| n.as_str()), kind)
+    }
+
+    /// Whether `text` is a wild species' name (a wild lineage's, or a species
+    /// the wild dominates), folded, a plural `s` either way: a player's
+    /// lineage "Meadow vole" would found a second species of that name
+    /// (playtest 6).
+    pub(crate) fn wild_name(&self, text: &str) -> bool {
+        let key = |s: &str| {
+            let f = names::fold(s);
+            f.strip_suffix('s').map(str::to_string).unwrap_or(f)
+        };
+        let k = key(text);
+        let wild_lineages = self.world.lineages.iter().filter(|l| l.owner == WILD).map(|l| l.name.as_str());
+        let wild_species =
+            (self.world.chronicle.species.species.iter()).filter(|s| s.dominant == WILD).map(|s| s.name.as_str());
+        wild_lineages.chain(wild_species).any(|n| key(n) == k)
     }
 
     /// Who may name species `s`: the player credited with a split, or for a
@@ -534,7 +569,11 @@ impl Game {
         if own.is_empty() {
             return CompatibilityView { lineage: None, rows: Vec::new() };
         }
-        CompatibilityView { lineage: Some(mine), rows: self.compat_rows(&own, Some(mine)) }
+        let mut rows = self.compat_rows(&own, Some(mine));
+        // Like the design check: the `compatibility` command gave rivals'
+        // numbers exactly, with the limiting gene (playtest 6).
+        coarsen_rivals(&mut rows, player);
+        CompatibilityView { lineage: Some(mine), rows }
     }
 
     /// The design-time check (`POST /api/design/compatibility`): founders
@@ -546,16 +585,7 @@ impl Game {
         let founders: Vec<Genome> = (0..SAMPLE).map(|_| design.founder_genome(player, &mut rng)).collect();
         let own: Vec<&Genome> = founders.iter().collect();
         let mut rows = self.compat_rows(&own, None);
-        // Another player's lineage: tenths and no limiting gene. Varying
-        // one gene at a time against exact gaps solved a rival's body plan.
-        for r in rows.iter_mut().filter(|r| r.owner != player && r.owner != WILD) {
-            let tenth = |x: f32| (x * 10.0).round() / 10.0;
-            (r.fertility, r.fertility_low, r.fertility_high) =
-                (tenth(r.fertility), tenth(r.fertility_low), tenth(r.fertility_high));
-            (r.best_fertility, r.fertile_share, r.gap) =
-                (tenth(r.best_fertility), tenth(r.fertile_share), tenth(r.gap));
-            r.limiting = "body_plan".into();
-        }
+        coarsen_rivals(&mut rows, player);
         let fertile_with = rows.iter().filter(|r| r.fertile_share > 0.0).count();
         let at_risk = rows.iter().filter(|r| r.fertile_share <= 0.0 && r.drift_risk != "none").count();
         // Shores the founders can drink from (steep banks stop non-climbers).
@@ -598,9 +628,13 @@ impl Game {
                     reason: t.reason,
                 }
             }),
-            name_warning: self
-                .impersonates(player, &design.name, names::Kind::Lineage)
-                .then(|| "that lineage name looks like another player's name: founding would refuse it".to_string()),
+            name_warning: if self.impersonates(player, &design.name, names::Kind::Lineage) {
+                Some("that lineage name looks like another player's name: founding would refuse it".to_string())
+            } else if self.wild_name(&design.name) {
+                Some("that lineage name is a wild species' name: founding would refuse it".to_string())
+            } else {
+                None
+            },
         }
     }
 
