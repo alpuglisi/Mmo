@@ -388,8 +388,12 @@ pub const MIN_AUCTION_MINUTES: f64 = 5.0;
 pub const STARVING_SHARE: f64 = 0.05;
 /// …and at least this many did.
 pub const STARVING_MIN: u64 = 5;
-/// Near the hard cap from this share of it.
+/// Near the hard cap from this share of it (alerted once per approach)…
 pub const NEAR_CAP_SHARE: f64 = 0.9;
+/// …and alerted again only after dropping below this share.
+pub const NEAR_CAP_REARM: f64 = 0.85;
+/// Litters at or above this multiplier are "full size" in the wording.
+pub const FULL_LITTER: f32 = 0.98;
 /// Animals in a territory at this hunger or thirst count as starving there.
 pub const TERRITORY_NEED: f32 = 85.0;
 /// Territories are starving when this share of the animals in them are.
@@ -652,6 +656,10 @@ pub struct Game {
     /// possession ends after [`POSSESSION_GRACE_MINUTES`]. Not saved (a
     /// restart drops every session; the release then follows the grace).
     left: BTreeMap<PlayerId, u64>,
+    /// The animal each player possesses, as last seen alive and possessed:
+    /// the sim clears `possessed_by` as an animal dies, so this says whether
+    /// it died possessed. Not saved (possession ends with the sessions).
+    possessing: BTreeMap<PlayerId, OrgId>,
     /// Lineage warnings given (player, kind) and the day: repeated every
     /// [`WARNING_REPEAT_DAYS`] while they last, forgotten when they end.
     /// Not saved.
@@ -932,6 +940,7 @@ impl Game {
             drought_warned: false,
             joined: Vec::new(),
             left: BTreeMap::new(),
+            possessing: BTreeMap::new(),
             warned: BTreeMap::new(),
             attack_watch: BTreeMap::new(),
             economy,
@@ -1321,7 +1330,23 @@ impl Game {
         offer: Option<u64>,
         listing: Option<u64>,
     ) -> Result<LedgerEntry, Insufficient> {
-        let (tick, day) = (self.world.tick(), self.world.day());
+        self.post_on(player, delta, kind, text, offer, listing, self.world.day())
+    }
+
+    /// [`Game::post`] dated `day` (from 0): daily income and royalties are
+    /// paid as a day starts, for the day just ended, and are dated so.
+    #[allow(clippy::too_many_arguments)]
+    fn post_on(
+        &mut self,
+        player: PlayerId,
+        delta: i64,
+        kind: LedgerKind,
+        text: String,
+        offer: Option<u64>,
+        listing: Option<u64>,
+        day: u64,
+    ) -> Result<LedgerEntry, Insufficient> {
+        let tick = self.world.tick();
         let entry = self.economy.post(player, delta, kind, text, offer, listing, tick, day)?;
         self.persist.push(PersistEvent::Ledger(LedgerRecord { world_id: self.world_id.clone(), entry: entry.clone() }));
         self.persist.push(PersistEvent::Balance(BalanceRecord { player, balance: entry.balance, day }));
@@ -1642,7 +1667,11 @@ impl Game {
     ) -> Result<Option<serde_json::Value>, ErrorInfo> {
         let e = |err: CommandError| ErrorInfo::from(&err);
         match msg {
-            ClientMsg::Possess { organism } => self.world.possess(player, organism).map(|_| None).map_err(e),
+            ClientMsg::Possess { organism } => {
+                self.world.possess(player, organism).map_err(e)?;
+                self.possessing.insert(player, organism);
+                Ok(None)
+            }
             ClientMsg::OrderMove { organism, x, y } => {
                 finite(&[x, y])?;
                 let to = self.world.order_move(player, organism, Vec2::new(x, y)).map_err(e)?;
@@ -3012,7 +3041,8 @@ impl Game {
                     share * 100.0,
                     weighted * 100.0
                 );
-                let _ = self.post(p, income as i64, LedgerKind::Income, text, None, None);
+                let for_day = record.day.saturating_sub(1);
+                let _ = self.post_on(p, income as i64, LedgerKind::Income, text, None, None, for_day);
             }
         }
     }
@@ -3729,7 +3759,22 @@ impl Game {
         if let Some(p) = push {
             self.notice(player, p, text.clone(), organism);
         }
-        let alert = AlertView { tick: self.world.tick(), day: self.world.day(), kind, text, organism };
+        self.alert_on(player, kind, text, organism, self.world.day(), out);
+    }
+
+    /// An alert stamped with `day` (from 0) rather than today: a daily
+    /// summary, taken as the next day starts, is about the day just ended,
+    /// and the feed shows that day beside its "Day N" text.
+    fn alert_on(
+        &mut self,
+        player: PlayerId,
+        kind: AlertKind,
+        text: String,
+        organism: Option<OrgId>,
+        day: u64,
+        out: &mut Outbox,
+    ) {
+        let alert = AlertView { tick: self.world.tick(), day, kind, text, organism };
         let list = self.alerts.entry(player).or_default();
         list.push_back(alert.clone());
         if list.len() > MAX_ALERTS {
@@ -3978,6 +4023,10 @@ impl Game {
     /// ("5 founders died: 3 eaten, 2 starved (#12, #14, …).") rather than one
     /// alert each.
     fn announce_deaths(&mut self, out: &mut Outbox) {
+        // Possessions that ended with the animal alive (released, another
+        // possessed, retired) are forgotten; a dead one's waits for its alert.
+        let w = &self.world;
+        self.possessing.retain(|&p, id| w.organism(*id).is_none_or(|o| o.possessed_by == Some(p)));
         let dead: Vec<(OrgId, PlayerId, Watch)> = self
             .watched
             .iter()
@@ -3997,7 +4046,9 @@ impl Game {
             };
             // Possessed when it died (not merely once: possession ends with the
             // player's sessions, and a released animal is an ordinary one).
-            if o.possessed_by == Some(player) {
+            // The sim clears `possessed_by` as it kills: `possessing` remembers.
+            if self.possessing.get(&player) == Some(&id) {
+                self.possessing.remove(&player);
                 // Said at once: the player was steering it (its bar just vanished).
                 let text = format!(
                     "#{id}, the animal you were possessing, {}. Possess another from the map or the Lineage tab.",
@@ -4034,11 +4085,15 @@ impl Game {
             let died = starved + thirst;
             let base = e.alive as u64 + e.deaths.values().sum::<u64>();
             if died >= STARVING_MIN && base > 0 && died as f64 >= STARVING_SHARE * base as f64 {
-                let full = self.crowding_view(player).is_none_or(|c| c.litter >= 0.9);
-                let why = if full {
+                let litter = self.crowding_view(player).map_or(1.0, |c| c.litter);
+                let why = if litter >= FULL_LITTER {
                     "Litters are still full size, so the population cap isn't the cause: their ground can't feed them."
+                        .to_string()
                 } else {
-                    "The soft cap slows breeding, but the lineage is still more than its ground can feed."
+                    format!(
+                        "The soft cap has litters at ×{litter:.2} of full size, yet the lineage is still more than its \
+                         ground can feed."
+                    )
                 };
                 out.push(LineageWarning {
                     kind: "starving".into(),
@@ -4094,10 +4149,17 @@ impl Game {
         let players: Vec<PlayerId> = self.lineage_of.keys().copied().collect();
         for p in players {
             let now = self.lineage_warnings(p);
-            self.warned.retain(|(q, k), _| *q != p || now.iter().any(|w| &w.kind == k));
+            // Near the cap is said once per approach: forgotten only below the re-arm share.
+            let near_cap_armed = self.lineage_of(p).is_some_and(|l| {
+                let alive = self.world.population_counts().get(l as usize).map_or(0, |c| c.alive);
+                alive as f64 >= NEAR_CAP_REARM * self.world.player_ceiling() as f64
+            });
+            self.warned
+                .retain(|(q, k), _| *q != p || now.iter().any(|w| &w.kind == k) || (k == "near_cap" && near_cap_armed));
             for w in now {
                 let key = (p, w.kind.clone());
-                if self.warned.get(&key).is_some_and(|&d| day < d + WARNING_REPEAT_DAYS) {
+                let repeat = w.kind != "near_cap";
+                if self.warned.get(&key).is_some_and(|&d| !repeat || day < d + WARNING_REPEAT_DAYS) {
                     continue;
                 }
                 self.warned.insert(key, day);
@@ -4506,7 +4568,8 @@ impl Game {
                     if causes.is_empty() { String::new() } else { format!(" ({})", causes.join(", ")) },
                     entry.alive
                 );
-                self.alert(p, AlertKind::DailySummary, text, None, out);
+                // Stamped with the day it is about (the feed shows "day N" beside "Day N: …").
+                self.alert_on(p, AlertKind::DailySummary, text, None, record.day.saturating_sub(1), out);
             }
             let alive = entry.alive;
             let share = record.legacy.iter().find(|e| e.player == p).map_or(0.0, |e| e.share);
@@ -4632,7 +4695,7 @@ impl Game {
                         _ => true,
                     };
                     if paid {
-                        self.season.add_survival(a.player);
+                        self.season.add_survival(a.player, catastrophe);
                     }
                 }
                 _ => {}
@@ -4699,6 +4762,7 @@ impl Game {
                 founder: s.founder,
                 founder_name: s.founder.map(|p| self.name(p)),
                 namer: self.species_namer(s),
+                named: self.economy.named_species.contains_key(&s.id),
                 dominant: s.dominant,
                 dominant_name: self.name(s.dominant),
                 dominant_share: s.dominant_share,
@@ -5360,9 +5424,10 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
         }
         AchievementKind::NicheDominance { era, niche, share } => {
             let (axis, what) = niche.split_once(':').unwrap_or(("niche", niche));
-            let label = if axis == "diet" { format!("{what}s") } else { format!("the {what}") };
+            // "among herbivores" for a diet, "in the forest" for a biome.
+            let label = if axis == "diet" { format!("among {what}s") } else { format!("in the {what}") };
             format!(
-                "Niche dominance: era {} ended with {:.0}% of breeding alleles among {label} yours.",
+                "Niche dominance: when era {} ended, {:.0}% of the breeding alleles {label} were yours.",
                 era + 1,
                 share * 100.0
             )
@@ -7219,6 +7284,11 @@ mod tests {
         assert_eq!(result(&out), (true, None));
         assert_eq!(g.balance(1), before - economy::SPECIES_NAME_PRICE);
         assert_eq!(g.world.chronicle.species.get(id).unwrap().name, "Queen's grazers");
+        // Named once: shown as named, and not named (or charged) again.
+        assert!(g.chronicle().species.species.iter().any(|v| v.id == id && v.named));
+        let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: "Queen's herd".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("already_named"));
+        assert_eq!(g.balance(1), before - economy::SPECIES_NAME_PRICE);
     }
 
     /// Playtest 4: lineage names were unfiltered ("Server Admin" with a
@@ -8728,8 +8798,8 @@ mod tests {
         let incomes: Vec<LedgerEntry> = g.ledger(1, 50).into_iter().filter(|e| e.kind == LedgerKind::Income).collect();
         assert!(!incomes.is_empty());
         for e in incomes {
-            // Paid as day `e.day` (from 0) starts, for the day just ended: day `e.day` counted from 1.
-            assert!(e.text.starts_with(&format!("Day {} income", e.day.max(1))), "{} vs day {}", e.text, e.day);
+            // Dated the day it is for (paid as the next one starts): the text names the entry's day.
+            assert!(e.text.starts_with(&format!("Day {} income", e.day + 1)), "{} vs day {}", e.text, e.day);
         }
     }
 
