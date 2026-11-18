@@ -189,11 +189,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   zoomInBtn.addEventListener('click', () => view.zoomBy(1.4));
   zoomOutBtn.addEventListener('click', () => view.zoomBy(1 / 1.4));
   const migrateBtn = tool('migrate', 'migrate', 'Migrate…', 'Click the map to send your adults there (the group picked in the group menu, or all)');
-  const clearMigBtn = tool('clear-migration', 'clear', 'Clear', 'Cancel the migration (the group picked in the group menu, or all)');
+  const clearMigBtn = tool('clear-migration', 'clear', 'Clear', 'Cancel the orders: migration, territory and rally (the group picked in the group menu, or all)');
   // Group commands: pick a group, claim ground for it, split it.
   const groupSelect = h('select', { class: 'tool group-select', id: 'group-select', title: 'Which of your groups the group commands act on', 'aria-label': 'Group' });
   const territoryBtn = tool('territory', 'territory', 'Territory…', 'Claim a territory for the group: tap its center, then its edge');
-  const rallyBtn = tool('rally', 'rally', 'Rally…', 'Gather the group at a point: tap where; it holds there for a few days');
+  const rallyBtn = tool('rally', 'rally', 'Rally…', 'Gather the group at a point: tap where; it holds there until the rally lapses (at least 5 minutes; the group card shows when)');
   const splitBtn = tool('split-group', 'split', 'Split', 'Split the group in two (the far half across its widest spread)');
   const pinBtn = tool('pin-view', 'pin', 'Pin view', 'Pin the server view window (what you can see of others) to the camera center');
   const pinLabel = pinBtn.querySelector('.tool-label')!;
@@ -628,7 +628,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   followBtn.classList.add('active');
   followBtn.addEventListener('click', () => view.setFollow(!view.follow));
   migrateBtn.addEventListener('click', () => setMode(mode === 'migrate' ? 'select' : 'migrate'));
-  clearMigBtn.addEventListener('click', () => void send(clearMigrationMsg(groupChoice)));
+  clearMigBtn.addEventListener('click', async () => {
+    // Every standing order of the picked group (or all): the migration,
+    // a territory and a rally.
+    const groups = groupsOf(model.state).filter((g) => groupChoice === 'all' || g.id === groupChoice);
+    const done: string[] = [];
+    if (groups.some((g) => g.migration)) done.push('migration');
+    await send(clearMigrationMsg(groupChoice));
+    for (const g of groups) {
+      if (g.territory && (await send({ type: 'abandon_territory', group: g.id })).ok) done.push(`${groupName(g.id)}'s territory`);
+      if (g.rally && (await send({ type: 'cancel_rally', group: g.id })).ok) done.push(`${groupName(g.id)}'s rally`);
+    }
+    model.toast('info', done.length > 0 ? `Cleared: ${done.join(', ')}` : 'No orders to clear');
+  });
   let pinned = false;
   pinBtn.addEventListener('click', async () => {
     const r = pinned ? await send({ type: 'clear_view' }) : await send({ type: 'set_view', x: view.cam.x, y: view.cam.y, radius: 24 });
@@ -651,10 +663,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const rs = await Promise.all(msgs.map((m) => send(m)));
       // The server echoes the target it used: on land, possibly moved off water.
       const r = rs.find((x) => x.ok) ?? rs[0];
-      const t: { x: number; y: number; note?: string } = (r?.data as { x: number; y: number; note?: string } | undefined) ?? c;
+      const t: { x: number; y: number; note?: string; warning?: string } = (r?.data as { x: number; y: number; note?: string; warning?: string } | undefined) ?? c;
       const who = groupChoice === 'all' ? 'Adults' : `${groupName(groupChoice)} adults`;
       if (r?.ok) {
         model.toast('info', `${who} migrating toward (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? `: ${t.note}` : ''}`);
+        if (t.warning) model.toast('error', `Migrate: ${t.warning}`);
       } else if (r?.error) {
         model.toast('error', `Migrate: ${r.error.message}`);
       }
@@ -683,8 +696,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       setMode('select');
       const r = await send(step.claim);
       if (r.ok) {
-        const t = r.data as { x: number; y: number; radius: number; warning?: string };
-        model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})`);
+        const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string };
+        model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}`);
         if (t.warning) model.toast('error', `Territory: ${t.warning}`);
       }
       return;
@@ -1899,10 +1912,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         home && h('p', { class: 'muted small home-range' }, home),
         h('div', { class: 'row wrap group-actions' },
           h('button', { class: 'secondary small', 'data-action': 'pick', onclick: () => setGroupChoice(g.id) }, groupChoice === g.id ? 'Picked' : 'Pick'),
-          h('button', { class: 'secondary small', 'data-action': 'territory', title: wait > 0 ? 'Claimed recently: wait a little' : `Radius up to ${g.max_radius.toFixed(1)} tiles`,
+          h('button', { class: 'secondary small', 'data-action': 'territory', title: wait > 0 ? `Claimed recently: it can claim again in ${span(wait)}` : `Radius up to ${g.max_radius.toFixed(1)} tiles`,
             disabled: wait > 0 || g.members === 0, onclick: () => { setGroupChoice(g.id); setMode('territory'); if (narrow()) setSheet(false); } }, 'Claim territory…'),
-          g.territory && h('button', { class: 'secondary small', 'data-action': 'abandon', onclick: () => void send({ type: 'abandon_territory', group: g.id }) }, 'Abandon territory'),
-          h('button', { class: 'secondary small', 'data-action': 'rally', title: 'Gather the group at a point you tap; it holds there for a few days',
+          g.territory && h('button', { class: 'secondary small', 'data-action': 'abandon', onclick: async () => {
+            const r = await send({ type: 'abandon_territory', group: g.id });
+            if (r.ok) model.toast('info', `${groupName(g.id)} gave up its territory (it can claim again once the claim wait is over)`);
+            else if (r.error) model.toast('error', `Abandon: ${r.error.message}`);
+          } }, 'Abandon territory'),
+          h('button', { class: 'secondary small', 'data-action': 'rally', title: 'Gather the group at a point you tap; it holds there until the rally lapses (at least 5 minutes; the group card shows when)',
             disabled: g.members === 0, onclick: () => { setGroupChoice(g.id); setMode('rally'); if (narrow()) setSheet(false); } }, 'Rally…'),
           g.rally && h('button', { class: 'secondary small', 'data-action': 'cancel-rally', title: `Lapses on its own in ${span(rallyLeft(g, tick))}`,
             onclick: () => void send({ type: 'cancel_rally', group: g.id }) }, 'Cancel rally'),

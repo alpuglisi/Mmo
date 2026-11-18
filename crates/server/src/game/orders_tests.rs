@@ -482,3 +482,117 @@ fn run_days(g: &mut Game, days: u32) {
         tick(g);
     }
 }
+
+/// Playtest 3: a migrate while most of the group sleeps warns, and its
+/// timeout blames the dormancy.
+#[test]
+fn a_migration_of_a_dormant_group_warns_and_says_why_it_ended() {
+    let (mut g, _) = game();
+    let ids: Vec<usize> = (0..g.world.organisms.len()).filter(|&i| g.world.organisms[i].owner == 1).collect();
+    for &i in &ids {
+        g.world.organisms[i].dormancy = evo_sim::organism::Dormancy::Summer;
+    }
+    let home = g.world.organisms[ids[0]].pos;
+    let far = land_away(&g, home, 25.0);
+    let d = run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
+    assert!(d["warning"].as_str().unwrap().contains("dormant"), "{d}");
+    // They sleep through it: the order ends, and the alert says why.
+    let deadline = g.world.migration_plan(1, 0).unwrap().ends_tick(g.world.config.ticks_per_day);
+    while g.world.tick() <= deadline + g.world.config.ticks_per_hour() && g.world.migration_order(1, 0).is_some() {
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            o.dormancy = evo_sim::organism::Dormancy::Summer;
+            o.pos = home;
+            (o.needs.thirst, o.needs.hunger, o.health) = (0.0, 0.0, 100.0);
+        }
+        g.world.step();
+        g.after_tick();
+    }
+    assert_eq!(g.world.migration_order(1, 0), None, "alive: {}", g.world.owner_count(1));
+    let texts = alerts(&g, AlertKind::Group);
+    assert!(texts.iter().any(|t| t.contains("is dormant") && t.contains("once it wakes")), "{texts:?}");
+}
+
+#[test]
+fn claims_say_what_changed_and_warn_when_far_or_short_of_food() {
+    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let home = g.world.group_middle(1, 0).unwrap();
+    // A radius below the minimum is raised, and says so.
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 0.5 }).unwrap();
+    assert!(d["note"].as_str().unwrap().contains("raised"), "{d}");
+    assert!(d["food_supports"].is_number() && d["distance"].is_number(), "{d}");
+    // Far from the group: a warning.
+    run(&mut g, ClientMsg::AbandonTerritory { group: 0 }).unwrap();
+    let ticks = g.world.claim_cooldown_ticks();
+    for _ in 0..ticks {
+        g.world.step();
+    }
+    let far = land_away(&g, home, 45.0);
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: far.x, y: far.y, radius: 3.0 }).unwrap();
+    let warnings: Vec<String> = serde_json::from_value(d["warnings"].clone()).unwrap();
+    assert!(warnings.iter().any(|w| w.contains("tiles from the group")), "{d}");
+}
+
+#[test]
+fn the_claim_wait_is_said_in_minutes_and_days() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 4.0 }).unwrap();
+    run(&mut g, ClientMsg::AbandonTerritory { group: 0 }).unwrap();
+    let out = g.command(10, 1, Some(2), ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 4.0 });
+    let ServerMsg::Result { error: Some(e), .. } = &out[0].1 else { panic!("refused") };
+    assert_eq!(e.code, "claim_cooldown");
+    assert!(e.message.contains("about 2 min") && e.message.contains("game days"), "{}", e.message);
+    let detail = e.detail.as_ref().unwrap();
+    assert!(detail["ticks_left"].is_number() && detail["minutes_left"].is_number(), "{detail}");
+}
+
+#[test]
+fn the_daily_check_alerts_a_dry_territory_and_a_drifted_herd_once() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 4.0 }).unwrap();
+    // The land dries out: no water anywhere.
+    let dry = |g: &mut Game| {
+        for t in &mut g.world.map.tiles {
+            t.water_depth = 0.0;
+            t.snow = 0.0;
+        }
+    };
+    dry(&mut g);
+    let mut record = g.daily_record();
+    if let Some(e) = record.lineages.iter_mut().find(|e| Some(e.lineage) == g.lineage_of(1)) {
+        e.deaths.insert("thirst".into(), 7);
+    }
+    let mut out = Outbox::new();
+    g.daily_group_checks(&record, &mut out);
+    g.daily_group_checks(&record, &mut out);
+    let texts = alerts(&g, AlertKind::Group);
+    let dry_alerts: Vec<&String> = texts.iter().filter(|t| t.contains("no drinking water left")).collect();
+    assert_eq!(dry_alerts.len(), 1, "once: {texts:?}");
+    assert!(dry_alerts[0].contains("7 of your animals died of thirst"), "{}", dry_alerts[0]);
+    // A herd that drifted from the home its migration gave it.
+    run(&mut g, ClientMsg::AbandonTerritory { group: 0 }).unwrap();
+    let target = land_away(&g, home, 10.0);
+    run(&mut g, ClientMsg::Migrate { x: target.x, y: target.y, group: None }).unwrap();
+    let ids: Vec<usize> = (0..g.world.organisms.len()).filter(|&i| g.world.organisms[i].owner == 1).collect();
+    for &i in &ids {
+        g.world.organisms[i].pos = target;
+    }
+    while g.world.migration_order(1, 0).is_some() {
+        g.world.step();
+        g.after_tick();
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            o.pos = target;
+        }
+    }
+    let s = g.world.settle_circle(1, 0).expect("home");
+    let away = g.world.map.clamp(target + Vec2::new(3.0 * s.radius, 0.0));
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+        o.pos = away;
+    }
+    g.daily_group_checks(&record, &mut out);
+    g.daily_group_checks(&record, &mut out);
+    let drifted: Vec<String> =
+        alerts(&g, AlertKind::Group).into_iter().filter(|t| t.contains("has drifted from its home")).collect();
+    assert_eq!(drifted.len(), 1, "{drifted:?}");
+}

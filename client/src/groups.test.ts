@@ -75,7 +75,7 @@ describe('groups', () => {
   it('describes orders, claim cooldowns and when a split is possible', () => {
     expect(groupOrders(g(0))).toBe('roaming freely');
     expect(groupOrders(g(0, { migration: [4.2, 9.8] }))).toBe('migrating toward 4, 10');
-    expect(groupOrders(g(0, { settle: { x: 12.4, y: 7.6, radius: 9, expires_tick: 900 } }))).toBe('settling near 12, 8 after its migration');
+    expect(groupOrders(g(0, { settle: { x: 12.4, y: 7.6, radius: 9, expires_tick: 900 } }))).toBe('at home near 12, 8, where its migration arrived');
     expect(groupOrders(g(0, { territory: { x: 20, y: 30, radius: 6, claimed_tick: 3 } }))).toBe('holding a territory (radius 6.0) at 20, 30');
     const rally = { x: 7.4, y: 8.6, radius: 5, expires_tick: 100 };
     expect(groupOrders(g(0, { rally }))).toBe('rallying at 7, 9');

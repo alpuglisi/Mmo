@@ -40,7 +40,7 @@ export type ClientMsg =
   /** Group `group` (default 0) holds a circle (radius kept within its `max_radius`); data: `TerritoryView`. */
   | { type: 'claim_territory'; group?: number; x: number; y: number; radius: number }
   | { type: 'abandon_territory'; group?: number }
-  /** Group `group` (default 0) gathers at a point and holds near it for a few days (replaces its migration or territory); data: `RallyView`. */
+  /** Group `group` (default 0) gathers at a point and holds near it until the rally lapses, at least 5 real minutes (replaces its migration or territory); data: `RallyView`. */
   | { type: 'rally'; group?: number; x: number; y: number }
   | { type: 'cancel_rally'; group?: number }
   /** Divide a group in two (the named organisms, else the far half across its widest spread); data: `{group, moved, kept}`. */
@@ -325,7 +325,7 @@ export interface GroupView {
   route?: [number, number][];
   /** Tick at which the migration ends if the group hasn't gathered at the target (absent: no migration). */
   migration_deadline_tick?: number;
-  /** Where the group settles after arriving from a migration: members drift back into the circle until `expires_tick` (not a confinement). */
+  /** The home the group keeps where its last migration arrived: members drift back into the circle until its next order (`expires_tick` is effectively never; not a confinement). */
   settle?: RallyView;
   territory?: TerritoryView;
   rally?: RallyView;
