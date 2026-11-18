@@ -672,6 +672,29 @@ impl Genome {
         (sum + crate::morph::morph_terms(&self.morph.key(), &other.morph.key()).0) / DISTANCE_GENES
     }
 
+    /// Re-tag every allele of origin `from` as `to` (gene, load and
+    /// morphology loci): the animals a retiring lineage hands to a rival
+    /// carry no legacy (or royalty) of the retiree's any more.
+    pub fn retag_origin(&mut self, from: PlayerId, to: PlayerId) {
+        let fix = |o: &mut PlayerId| {
+            if *o == from {
+                *o = to;
+            }
+        };
+        for locus in self.loci.iter_mut().chain(self.load.iter_mut()) {
+            fix(&mut locus.a.origin);
+            fix(&mut locus.b.origin);
+        }
+        for p in self.morph.discrete.iter_mut() {
+            fix(&mut p.a.origin);
+            fix(&mut p.b.origin);
+        }
+        for p in self.morph.continuous.iter_mut() {
+            fix(&mut p.a.origin);
+            fix(&mut p.b.origin);
+        }
+    }
+
     /// Add `weight` per allele to each allele's origin, load loci included:
     /// a harmful recessive planted in a rival lineage still counts for the
     /// player it is tagged with. The morphology loci are not counted (see

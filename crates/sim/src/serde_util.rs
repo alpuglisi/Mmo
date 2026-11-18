@@ -2216,3 +2216,75 @@ pub mod before_v44 {
         }
     }
 }
+
+/// What world snapshot version 45 added: a migration's headway
+/// (`groups::MigrationPlan::best_median`, `progress_tick`). On a thread
+/// holding a [`before_v45::Guard`] (reading or hashing a snapshot of
+/// version 44 or before) neither is written or read: the best reads as
+/// infinite and the tick as 0 (measured afresh at the next check).
+pub mod before_v45 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    /// An `f32` older versions lack, read as infinity.
+    pub mod infinite {
+        use super::*;
+
+        pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(f32::INFINITY)
+            } else {
+                f32::deserialize(d)
+            }
+        }
+    }
+
+    /// A `u64` older versions lack, read as 0.
+    pub mod zero {
+        use super::*;
+
+        pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(0)
+            } else {
+                u64::deserialize(d)
+            }
+        }
+    }
+}

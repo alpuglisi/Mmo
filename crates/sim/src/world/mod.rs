@@ -528,6 +528,10 @@ pub struct World {
     /// `Balance::attack_grace` falls back to computing afresh.
     #[cfg_attr(feature = "serde", serde(skip))]
     grace_starts_cooldown: u64,
+    /// When each player ended their newcomer grace (`World::end_grace`);
+    /// saved by the host, not in the snapshot.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    grace_waived: std::collections::BTreeMap<PlayerId, u64>,
     /// Wall-clock time spent in each phase of `step` (for `bench`).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub phase_times: PhaseTimes,
@@ -541,6 +545,13 @@ pub struct World {
     /// change (version 33).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v35::list"))]
     bonus_slots: BTreeMap<PlayerId, u32>,
+    /// Rendezvous of agreed matings, organism → its partner
+    /// (`World::set_rendezvous`): both walk toward each other unless a
+    /// threat or an urgent need comes first. Set by the server for every
+    /// accepted agreement and set again when it restores a world, so not
+    /// saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    rendezvous: BTreeMap<OrgId, OrgId>,
     /// Attack orders of possessed organisms, attacker → target
     /// (`World::possess_attack`; version 36).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]
@@ -671,6 +682,7 @@ impl World {
             slots_used: BTreeMap::new(),
             bonus_slots: BTreeMap::new(),
             attack_orders: BTreeMap::new(),
+            rendezvous: BTreeMap::new(),
             lineage_founded: Vec::new(),
             group_plans: groups::GroupPlans::default(),
             attack_events: Vec::new(),
@@ -688,6 +700,7 @@ impl World {
             grace_min_ticks: 0,
             grace_starts: Vec::new(),
             grace_starts_cooldown: 0,
+            grace_waived: Default::default(),
             phase_times: PhaseTimes::default(),
             last_intents: Vec::new(),
             config,

@@ -19,7 +19,7 @@ export const CAUSE_COLORS: Record<string, string> = {
 };
 /** A cause in the charts' words. */
 export const CAUSE_LABELS: Record<string, string> = {
-  eaten: 'eaten', starved: 'starved', thirst: 'thirst', exposure: 'cold or heat', toxin: 'poisoned (toxic prey)',
+  eaten: 'eaten', starved: 'starved', thirst: 'thirst', exposure: 'cold, heat or winter sleep', toxin: 'poisoned (toxic prey)',
   drowned: 'drowned', attrition: 'attrition (disease, accidents)', old_age: 'old age', other: 'other',
 };
 

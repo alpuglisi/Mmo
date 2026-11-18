@@ -102,3 +102,36 @@ export function buoyancy(d: Traits): number {
   const v = (g: string) => geneValue(d, g);
   return Math.max(0, Math.min(1, 0.4 + 0.5 * v('fat_stores') - 0.5 * v('armor_plates') - 0.2 * v('muscle')));
 }
+
+// --- food upkeep (stats.rs `derive` metabolism, world/apply.rs hunger, organism.rs `food_per_hunger`)
+
+/** Running cost of organs: the share stats.rs adds to the metabolism. */
+export function organUpkeep(d: Traits): number {
+  const v = (g: string) => geneValue(d, g);
+  const fangs = v('fangs') < FANG_THRESHOLD ? 0 : v('fangs');
+  return 0.1 * (v('large_eyes') + v('large_ears') + v('keen_nose'))
+    + 0.15 * v('muscle')
+    + 0.1 * (v('toxins') + v('armor_plates') + v('claws') + fangs)
+    + 0.2 * v('wings')
+    + 0.05 * v('fur');
+}
+
+/** stats.rs `metabolism`: muscle, blood and organ upkeep. */
+export function metabolism(d: Pick<DesignSpec, 'traits' | 'thermo'>): number {
+  return (0.6 + 0.3 * geneValue(d, 'muscle')) * (d.thermo === 'cold' ? 0.35 : 1) * (1 + organUpkeep(d));
+}
+
+/**
+ * Food eaten a day, in relative units: hunger rises with the metabolism ×
+ * mass^−¼ (`Balance::size_burn`) and a hunger point takes mass^¾ of food,
+ * so a day's food goes with metabolism × √mass.
+ */
+export function dailyFood(d: Pick<DesignSpec, 'traits' | 'thermo'>): number {
+  return metabolism(d) * Math.sqrt(adultMass(d));
+}
+
+/** How much more food a day `gene` at its value costs than at `base` (0.25 = +25%). */
+export function foodCostOf(d: Pick<DesignSpec, 'traits' | 'thermo'>, gene: string, base = 0): number {
+  const without = { ...d, traits: { ...d.traits, [gene]: base } };
+  return dailyFood(d) / dailyFood(without) - 1;
+}

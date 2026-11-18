@@ -279,7 +279,7 @@ fn an_attack_order_alerts_the_targets_owner() {
 #[test]
 fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
     // At 100 ms a tick, 20 game days pass in under two minutes; the grace
-    // lasts the configured 30 minutes instead.
+    // lasts the configured 30 minutes instead, but at most 60 game days.
     let (mut g, a) = game_with(GameConfig { tick_ms: 100.0, ..Default::default() });
     g.world.config.balance.attack_grace = 20.0;
     assert_eq!(g.grace_view(1), None, "founded at tick 0: no grace");
@@ -290,12 +290,13 @@ fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
     let b = g.found(2, &design("B")).unwrap().founders;
     g.connect(20, 2, "bo");
     let grace = g.grace_view(2).expect("a newcomer has its grace");
+    let tpd = g.world.config.ticks_per_day as u64;
+    let length = 18_000.min(60 * tpd).max(20 * tpd);
+    assert_eq!(g.world.grace_length(), length);
+    assert_eq!(grace.until_tick - g.world.tick(), length, "{grace:?}");
     let secs = grace.real_seconds_left.unwrap();
-    assert!((1750..=1800).contains(&secs) && secs % 10 == 0, "{grace:?}");
-    // 30 minutes at 100 ms a tick, less the 3 ticks since bo founded.
-    assert!((17_990..=18_000).contains(&(grace.until_tick - g.world.tick())), "{grace:?}");
-    let tpd = g.world.config.ticks_per_day as f32;
-    assert!(grace.days_left > 20.0 && (grace.days_left - 18_000.0 / tpd).abs() < 0.2, "{grace:?}");
+    assert_eq!(secs, (length / 10).div_ceil(10) * 10, "{grace:?}");
+    assert!((grace.days_left - length as f32 / tpd as f32).abs() < 0.11, "{grace:?}");
     let s = g.states().into_iter().find(|(c, _)| *c == Target::Conn(20)).map(|(_, m)| m).unwrap();
     match s {
         ServerMsg::State(s) => assert_eq!(s.grace, Some(grace)),
@@ -321,9 +322,51 @@ fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
     g.command(20, 2, Some(1), ClientMsg::Possess { organism: b[0] });
     let out = g.command(20, 2, Some(2), msg);
     match &out[0].1 {
-        ServerMsg::Result { error: Some(e), .. } => assert_eq!(e.code, "own_grace", "{e:?}"),
+        ServerMsg::Result { error: Some(e), .. } => {
+            assert_eq!(e.code, "own_grace", "{e:?}");
+            // In real time too.
+            let d = e.detail.as_ref().unwrap();
+            assert!(
+                d["real_seconds_left"].as_u64().is_some_and(|s| s > 0) && e.message.contains("real minutes"),
+                "{e:?}"
+            );
+        }
         m => panic!("expected own_grace, got {m:?}"),
     }
+    // Bo ends the grace (a predator's owner wants to hunt): told so, and
+    // the attack goes through; a second time there is nothing to end.
+    let out = g.command(20, 2, Some(3), ClientMsg::EndGrace);
+    assert!(matches!(&out[0].1, ServerMsg::Result { ok: true, .. }), "{out:?}");
+    assert!(out.iter().any(|(_, m)| matches!(m, ServerMsg::Alert { alert } if alert.text.contains("grace has ended"))));
+    assert_eq!(g.grace_view(2), None);
+    let out = g.command(20, 2, Some(4), ClientMsg::EndGrace);
+    assert!(matches!(&out[0].1, ServerMsg::Result { error: Some(e), .. } if e.code == "no_grace"), "{out:?}");
+    let out = g.command(20, 2, Some(5), ClientMsg::PossessAttack { organism: b[0], target: a[0] });
+    assert!(matches!(&out[0].1, ServerMsg::Result { ok: true, .. }), "{out:?}");
+    // The choice survives a restart.
+    let r = Game::resume(g.world.clone(), GameConfig { tick_ms: 100.0, ..Default::default() }, g.saved(), Vec::new());
+    assert_eq!(r.grace_view(2), None);
+}
+
+#[test]
+fn a_grace_running_out_is_announced() {
+    let (mut g, _) = game();
+    g.world.config.balance.attack_grace = 0.05;
+    g.cfg.grace_min_minutes = 0.0;
+    g.world.set_attack_grace_min_ticks(0);
+    tick(&mut g);
+    g.set_name(2, "bo");
+    g.found(2, &design("B")).unwrap();
+    g.connect(20, 2, "bo");
+    tick(&mut g);
+    assert!(g.grace_view(2).is_some());
+    let told =
+        |g: &Game| g.alerts.get(&2).map_or(0, |l| l.iter().filter(|x| x.text.contains("grace has ended")).count());
+    for _ in 0..(g.world.grace_length() + 2) {
+        tick(&mut g);
+    }
+    assert_eq!(g.grace_view(2), None);
+    assert_eq!(told(&g), 1);
 }
 
 /// The animal a player possesses dies: they hear of it at once, with the cause.
@@ -397,4 +440,202 @@ fn territories_and_rallies_check_their_water() {
         Err("claim_cooldown".into())
     );
     assert_eq!(g.world.claim_cooldown_ticks(), 120, "2 minutes at 1 s a tick");
+}
+
+/// Possession ends a minute (real time) after the player's last session
+/// closes; coming back within it keeps it. After a restart too.
+#[test]
+fn possession_ends_when_the_player_is_gone() {
+    let (mut g, a) = game();
+    let grace = minutes_to_ticks(POSSESSION_GRACE_MINUTES, g.cfg.tick_ms);
+    run(&mut g, ClientMsg::Possess { organism: a[0] }).unwrap();
+    let possessed = |g: &Game| g.world.organisms.iter().any(|o| o.id == a[0] && o.possessed_by == Some(1));
+    g.disconnect(10);
+    for _ in 0..grace / 2 {
+        tick(&mut g);
+    }
+    assert!(possessed(&g), "within the grace");
+    g.connect(11, 1, "ann");
+    for _ in 0..grace + 2 {
+        tick(&mut g);
+    }
+    assert!(possessed(&g), "came back: kept");
+    g.disconnect(11);
+    for _ in 0..grace + 1 {
+        tick(&mut g);
+    }
+    assert!(!possessed(&g), "gone past the grace: released");
+    // A restart drops every session: the grace runs from the restore.
+    g.connect(12, 1, "ann");
+    g.command(12, 1, Some(1), ClientMsg::Possess { organism: a[0] });
+    let mut r = Game::resume(g.world.clone(), GameConfig::default(), g.saved(), Vec::new());
+    for _ in 0..grace + 1 {
+        r.world.step();
+        r.after_tick();
+    }
+    assert!(!r.world.organisms.iter().any(|o| o.possessed_by == Some(1)));
+}
+
+/// Lineage-wide warnings (playtest 3): a hunger crash, near the hard cap,
+/// animals starving inside a territory; each said once as an alert when it
+/// starts, again after a few days, and listed in the lineage statistics.
+#[test]
+fn lineage_warnings_flag_hunger_the_cap_and_starving_territories() {
+    let (mut g, a) = game();
+    run_days(&mut g, 1);
+    assert!(g.lineage_warnings(1).is_empty(), "{:?}", g.lineage_warnings(1));
+    // A day with many starved: the last record says so.
+    let r = g.history.back_mut().unwrap();
+    let e = r.lineages.iter_mut().find(|e| e.owner == 1).unwrap();
+    e.alive = 40;
+    e.deaths.insert("starved".into(), 6);
+    e.deaths.insert("thirst".into(), 2);
+    let w = g.lineage_warnings(1);
+    assert_eq!(w.iter().map(|w| w.kind.as_str()).collect::<Vec<_>>(), ["starving"], "{w:?}");
+    assert!(
+        w[0].text.contains("6 starved and 2 died of thirst") && w[0].text.contains("Litters are still full size"),
+        "{w:?}"
+    );
+    // Near the hard cap.
+    g.world.config.lineage_cap = 3;
+    assert!(g.lineage_warnings(1).iter().any(|w| w.kind == "near_cap" && w.text.starts_with("Near the hard cap: ")));
+    g.world.config.lineage_cap = 1500;
+    // A territory whose holders starve.
+    let at = g.world.organism(a[0]).unwrap().pos;
+    for o in g.world.organisms.iter_mut().filter(|o| o.owner == 1) {
+        o.pos = at;
+        o.needs.hunger = 95.0;
+    }
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: at.x, y: at.y, radius: 4.0 }).unwrap();
+    let w = g.lineage_warnings(1);
+    assert!(w.iter().any(|w| w.kind == "territory_starving" && w.text.contains("Group A (main)")), "{w:?}");
+    assert_eq!(g.lineage_stats(1).warnings, w);
+    // Alerts: once, then again after the repeat interval.
+    let mut out = Outbox::new();
+    g.warning_alerts(10, &mut out);
+    g.warning_alerts(11, &mut out);
+    let need = |g: &Game| alerts(g, AlertKind::Need).iter().filter(|t| t.contains("going hungry")).count();
+    assert_eq!(need(&g), 1);
+    g.warning_alerts(10 + WARNING_REPEAT_DAYS, &mut out);
+    assert_eq!(need(&g), 2);
+}
+
+fn run_days(g: &mut Game, days: u32) {
+    for _ in 0..days * g.world.config.ticks_per_day {
+        tick(g);
+    }
+}
+
+/// Playtest 3: a migrate while most of the group sleeps warns, and its
+/// timeout blames the dormancy.
+#[test]
+fn a_migration_of_a_dormant_group_warns_and_says_why_it_ended() {
+    let (mut g, _) = game();
+    let ids: Vec<usize> = (0..g.world.organisms.len()).filter(|&i| g.world.organisms[i].owner == 1).collect();
+    for &i in &ids {
+        g.world.organisms[i].dormancy = evo_sim::organism::Dormancy::Summer;
+    }
+    let home = g.world.organisms[ids[0]].pos;
+    let far = land_away(&g, home, 25.0);
+    let d = run(&mut g, ClientMsg::Migrate { x: far.x, y: far.y, group: None }).unwrap();
+    assert!(d["warning"].as_str().unwrap().contains("dormant"), "{d}");
+    // They sleep through it: the order ends, and the alert says why.
+    let deadline = g.world.migration_plan(1, 0).unwrap().ends_tick(g.world.config.ticks_per_day);
+    while g.world.tick() <= deadline + g.world.config.ticks_per_hour() && g.world.migration_order(1, 0).is_some() {
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            o.dormancy = evo_sim::organism::Dormancy::Summer;
+            o.pos = home;
+            (o.needs.thirst, o.needs.hunger, o.health) = (0.0, 0.0, 100.0);
+        }
+        g.world.step();
+        g.after_tick();
+    }
+    assert_eq!(g.world.migration_order(1, 0), None, "alive: {}", g.world.owner_count(1));
+    let texts = alerts(&g, AlertKind::Group);
+    assert!(texts.iter().any(|t| t.contains("is dormant") && t.contains("once it wakes")), "{texts:?}");
+}
+
+#[test]
+fn claims_say_what_changed_and_warn_when_far_or_short_of_food() {
+    let (mut g, _) = game_with(GameConfig { claim_cooldown_min_minutes: 0.0, ..Default::default() });
+    let home = g.world.group_middle(1, 0).unwrap();
+    // A radius below the minimum is raised, and says so.
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 0.5 }).unwrap();
+    assert!(d["note"].as_str().unwrap().contains("raised"), "{d}");
+    assert!(d["food_supports"].is_number() && d["distance"].is_number(), "{d}");
+    // Far from the group: a warning.
+    run(&mut g, ClientMsg::AbandonTerritory { group: 0 }).unwrap();
+    let ticks = g.world.claim_cooldown_ticks();
+    for _ in 0..ticks {
+        g.world.step();
+    }
+    let far = land_away(&g, home, 45.0);
+    let d = run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: far.x, y: far.y, radius: 3.0 }).unwrap();
+    let warnings: Vec<String> = serde_json::from_value(d["warnings"].clone()).unwrap();
+    assert!(warnings.iter().any(|w| w.contains("tiles from the group")), "{d}");
+}
+
+#[test]
+fn the_claim_wait_is_said_in_minutes_and_days() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 4.0 }).unwrap();
+    run(&mut g, ClientMsg::AbandonTerritory { group: 0 }).unwrap();
+    let out = g.command(10, 1, Some(2), ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 4.0 });
+    let ServerMsg::Result { error: Some(e), .. } = &out[0].1 else { panic!("refused") };
+    assert_eq!(e.code, "claim_cooldown");
+    assert!(e.message.contains("about 2 min") && e.message.contains("game days"), "{}", e.message);
+    let detail = e.detail.as_ref().unwrap();
+    assert!(detail["ticks_left"].is_number() && detail["minutes_left"].is_number(), "{detail}");
+}
+
+#[test]
+fn the_daily_check_alerts_a_dry_territory_and_a_drifted_herd_once() {
+    let (mut g, _) = game();
+    let home = g.world.group_middle(1, 0).unwrap();
+    run(&mut g, ClientMsg::ClaimTerritory { group: 0, x: home.x, y: home.y, radius: 4.0 }).unwrap();
+    // The land dries out: no water anywhere.
+    let dry = |g: &mut Game| {
+        for t in &mut g.world.map.tiles {
+            t.water_depth = 0.0;
+            t.snow = 0.0;
+        }
+    };
+    dry(&mut g);
+    let mut record = g.daily_record();
+    if let Some(e) = record.lineages.iter_mut().find(|e| Some(e.lineage) == g.lineage_of(1)) {
+        e.deaths.insert("thirst".into(), 7);
+    }
+    let mut out = Outbox::new();
+    g.daily_group_checks(&record, &mut out);
+    g.daily_group_checks(&record, &mut out);
+    let texts = alerts(&g, AlertKind::Group);
+    let dry_alerts: Vec<&String> = texts.iter().filter(|t| t.contains("no drinking water left")).collect();
+    assert_eq!(dry_alerts.len(), 1, "once: {texts:?}");
+    assert!(dry_alerts[0].contains("7 of your animals died of thirst"), "{}", dry_alerts[0]);
+    // A herd that drifted from the home its migration gave it.
+    run(&mut g, ClientMsg::AbandonTerritory { group: 0 }).unwrap();
+    let target = land_away(&g, home, 10.0);
+    run(&mut g, ClientMsg::Migrate { x: target.x, y: target.y, group: None }).unwrap();
+    let ids: Vec<usize> = (0..g.world.organisms.len()).filter(|&i| g.world.organisms[i].owner == 1).collect();
+    for &i in &ids {
+        g.world.organisms[i].pos = target;
+    }
+    while g.world.migration_order(1, 0).is_some() {
+        g.world.step();
+        g.after_tick();
+        for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+            o.pos = target;
+        }
+    }
+    let s = g.world.settle_circle(1, 0).expect("home");
+    let away = g.world.map.clamp(target + Vec2::new(3.0 * s.radius, 0.0));
+    for o in g.world.organisms.iter_mut().filter(|o| o.alive && o.owner == 1) {
+        o.pos = away;
+    }
+    g.daily_group_checks(&record, &mut out);
+    g.daily_group_checks(&record, &mut out);
+    let drifted: Vec<String> =
+        alerts(&g, AlertKind::Group).into_iter().filter(|t| t.contains("has drifted from its home")).collect();
+    assert_eq!(drifted.len(), 1, "{drifted:?}");
 }
