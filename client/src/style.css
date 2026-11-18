@@ -307,10 +307,11 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 .possess-bar button { flex-shrink: 0; }
 button.danger { background: #b62324; color: #fff; }
 /* A tap on overlapping animals: chips to pick another. */
-.pick-chooser { position: absolute; left: 50%; transform: translateX(-50%); bottom: 92px; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+.pick-chooser { position: absolute; left: 50%; transform: translateX(-50%); bottom: 92px; z-index: 3; display: flex; flex-wrap: nowrap; overflow-x: auto; overscroll-behavior: contain; align-items: center; gap: 6px;
   max-width: calc(100% - 20px); padding: 6px 8px; border-radius: 10px; background: rgba(13, 17, 23, 0.92); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); }
 .pick-chooser[hidden] { display: none; }
-.pick-chooser .chip { padding: 0.35em 0.7em; border-radius: 999px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); min-height: 36px; }
+.pick-chooser .chip { padding: 0.35em 0.7em; border-radius: 999px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); min-height: 36px; white-space: nowrap; flex-shrink: 0; }
+.pick-chooser > span { flex-shrink: 0; }
 .pick-chooser .chip.active { border-color: var(--accent); }
 .fab, .fab[hidden] { display: none; }
 
@@ -388,8 +389,9 @@ button.danger { background: #b62324; color: #fff; }
     background: rgba(13, 17, 23, 0.92); border-radius: 12px; padding: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); z-index: 4;
     -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
   .toolbar.more-open .tools-menu { display: flex; }
-  /* Open, the menu sits above the bottom sheet (z-index 5) and scrolls rather than running under the tab bar. */
-  .toolbar.more-open { z-index: 6; }
+  /* Open, the menu sits above the bottom sheet (z-index 5) and the map notices (6), and scrolls rather than
+     running under the tab bar: a drought notice must not hide Migrate (playtest 3). */
+  .toolbar.more-open { z-index: 7; }
   .tools-menu { max-height: calc(100dvh - 48px - 60px - var(--tabbar-h, 50px) - env(safe-area-inset-bottom)); overflow-y: auto; }
   .tools-menu .tool-group { flex-direction: column; background: none; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
   .tools-menu .tool-group + .tool-group { border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 6px; }
@@ -402,7 +404,9 @@ button.danger { background: #b62324; color: #fff; }
   .fab { display: block; bottom: 48px; }
   .possess-bar { left: 8px; right: 8px; transform: none; max-width: none; bottom: 100px; flex-wrap: wrap; font-size: 12px; }
   .possess-bar button { min-height: 40px; }
-  .pick-chooser { left: 8px; right: 8px; transform: none; max-width: none; bottom: 160px; }
+  /* One row (scrolling sideways), small, just over the floating button: as little of the map as it can. */
+  .pick-chooser { left: 8px; right: 8px; transform: none; max-width: none; width: fit-content; margin: 0 auto; bottom: 104px; padding: 4px 6px; gap: 4px; }
+  .pick-chooser .chip { min-height: 34px; padding: 0.2em 0.6em; font-size: 13px; }
   .fab[hidden] { display: none; }
   .legends { width: auto; left: 8px; right: 8px; top: 56px; bottom: auto; }
   .stage-wrap.show-legend .toasts { display: none; } /* the open legend takes their place */
@@ -603,3 +607,22 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .help-topics { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .help-topic summary { cursor: pointer; }
 .help-topic p { margin: 4px 0 6px 1.2em; }
+
+/* Bought nameplates (ui/nameplates.ts): the title in the bought colour, after the name. */
+.nameplate {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 0.78em; line-height: 1.5;
+  border: 1px solid currentColor; vertical-align: baseline; max-width: 14em; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; unicode-bidi: isolate; direction: ltr;
+}
+.plate-amber { color: #f0b429; }
+.plate-crimson { color: #f85149; }
+.plate-emerald { color: #3fb950; }
+.plate-azure { color: #58a6ff; }
+.plate-violet { color: #bc8cff; }
+.plate-ivory { color: #e6edf3; }
+.plate-jet { color: #c9d1d9; background: #010409; }
+.plate-copper { color: #db8b5a; }
+.design-warnings:empty { display: none; }
+.design-warning { margin: 6px 0; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); }
+.design-warning.warn-warn { border-color: #d29922; color: #e3b341; }
+.design-warning.warn-bad { border-color: #f85149; color: #ff7b72; }

@@ -206,9 +206,13 @@ export function originExplain(origins: readonly AlleleOrigin[], me: PlayerId): {
   const own = origins.filter((o) => o.player === me).reduce((n, o) => n + o.share, 0) / total;
   const wild = origins.filter((o) => o.player === 0).reduce((n, o) => n + o.share, 0) / total;
   const rival = Math.max(0, 1 - own - wild);
+  // One decimal, as the share beside it: "Only 100%" next to 99.7% read as a contradiction.
+  const one = (x: number) => `${(Math.floor(x * 1000) / 10).toFixed(1)}%`;
   const headline = own >= 0.9995
     ? 'All of your animals\' genes are yours'
-    : `Only ${pct(own)} of your animals' genes are yours`;
+    : own >= 0.99
+      ? `Nearly all (${one(own)}) of your animals' genes are yours`
+      : `Only ${pct(own)} of your animals' genes are yours`;
   const points: string[] = [
     'Your legacy share counts genes (alleles), not heads: each of your animals scores only for the share of its genes that came from your founders or mutated in your lineage.',
   ];

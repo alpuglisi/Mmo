@@ -190,6 +190,8 @@ async function main() {
     await page.screenshot({ path: path.join(shots, 'refound-retired.png') });
     await page.click('#lineage-extinct-new');
     await page.waitForSelector('#design-name', { timeout: UI_MS });
+    const header = await page.textContent('.topbar');
+    check(header.includes('You retired your last lineage') && !header.includes('died out'), 'the design screen should say the lineage was retired', header);
     await page.fill('#design-name', 'Third try');
     await page.click('#design-submit');
     await page.waitForSelector('#world-canvas', { timeout: UI_MS });

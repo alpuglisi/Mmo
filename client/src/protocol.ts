@@ -184,6 +184,9 @@ export interface OfferView {
   expires_tick?: number;
   /** An offer to any animal of this lineage: `partner` is 0 until accepted. */
   lineage?: number;
+  /** An accepted agreement's escort: where its two animals are (8-tile cells) and how far apart; they walk to meet
+   * on their own. */
+  meet?: { mine_x: number; mine_y: number; partner_x: number; partner_y: number; distance: number };
 }
 
 export interface WeatherView {
@@ -1241,6 +1244,8 @@ export interface SpeciesLineage {
 export interface SpeciesView {
   id: number;
   name: string;
+  /** Who may name it (`name_species`; absent on older servers). */
+  namer?: PlayerId;
   origin: 'initial' | 'founding' | 'split' | string;
   parent?: number;
   founded_day: number;
