@@ -252,6 +252,9 @@ pub const LOW_WATER_TILES: usize = 3;
 /// A circle whose standing plants would feed its group for fewer days than
 /// this draws a warning.
 pub const STANDING_WARN_DAYS: f32 = 10.0;
+/// A migration expected to take at least this many days warns when the
+/// land along it can't feed the group, and always at twice it.
+pub const JOURNEY_WARN_DAYS: f32 = 7.0;
 /// A territory or rally circle farther than this from its group's middle
 /// draws a warning (playtest 3: a claim 85 tiles off).
 pub const FAR_CIRCLE_TILES: f32 = 30.0;
@@ -2000,13 +2003,25 @@ impl Game {
                     data["route"] = serde_json::to_value(route).unwrap_or_default();
                 }
                 let mut warnings = self.travel_warnings(player, group, true);
-                // What waits at the destination: the home circle it will keep.
+                // What waits at the destination, rated for the ground a group
+                // its size spreads over there (the rally circle), not the small
+                // home circle: a big herd grazes far wider.
                 let members = self.world.groups(player).iter().find(|g| g.id == group).map_or(0, |g| g.members);
                 let mut dest = serde_json::json!({});
-                let there = self.circle_report(player, group, to, World::home_radius(members), &mut dest);
+                let there = self.circle_report_at(player, group, to, World::rally_radius(members), &mut dest, false);
                 warnings.extend(there.into_iter().map(|w| format!("At the destination: {w}")));
                 dest.as_object_mut().map(|o| o.remove("distance"));
                 data["destination"] = dest;
+                if let Some((_, way)) = self.routes.get(&(player, group)) {
+                    let way: Vec<Vec2> = way.iter().map(|p| Vec2::new(p[0], p[1])).collect();
+                    if let Some(j) = self.world.journey_check(player, group, &way) {
+                        data["journey"] = serde_json::json!({
+                            "tiles": (j.tiles * 10.0).round() / 10.0,
+                            "days": (j.days * 10.0).round() / 10.0,
+                            "food_share": (j.food_share * 100.0).round() / 100.0,
+                        });
+                    }
+                }
                 put_warnings(&mut data, warnings);
                 self.brood_report(player, group, &mut data);
                 note_replaced(&mut data, &before, "migration");
@@ -5128,10 +5143,11 @@ impl Game {
                     basking_share,
                     needy_share,
                     never_moved,
+                    gained,
                     pending_claim,
                 } => {
                     self.routes.remove(&(player, group));
-                    let (why, short) = timeout_reason(dormant_share, basking_share, needy_share, never_moved);
+                    let (why, short) = timeout_reason(dormant_share, basking_share, needy_share, never_moved, gained);
                     let claim = if pending_claim { " The territory it was to claim there is dropped too." } else { "" };
                     let text = format!(
                         "{} didn't gather at its migration target ({:.0}, {:.0}) (half the group is still more than \
@@ -5162,6 +5178,21 @@ impl Game {
         center: Vec2,
         radius: f32,
         data: &mut serde_json::Value,
+    ) -> Vec<String> {
+        self.circle_report_at(player, group, center, radius, data, true)
+    }
+
+    /// [`Game::circle_report`]; `far` says whether to warn that the circle
+    /// is far from the group (not for a migration's destination, whose
+    /// distance the journey warning covers).
+    fn circle_report_at(
+        &self,
+        player: PlayerId,
+        group: u8,
+        center: Vec2,
+        radius: f32,
+        data: &mut serde_json::Value,
+        far: bool,
     ) -> Vec<String> {
         let mut warnings = Vec::new();
         let w = self.world.water_check(player, group, center, radius);
@@ -5218,7 +5249,7 @@ impl Game {
         if let Some(m) = self.world.group_middle(player, group) {
             let d = m.dist(center);
             data["distance"] = ((d * 10.0).round() / 10.0).into();
-            if d > FAR_CIRCLE_TILES {
+            if far && d > FAR_CIRCLE_TILES {
                 warnings.push(format!("It is {d:.0} tiles from the group, which has to walk there first."));
             }
         }
@@ -5238,6 +5269,28 @@ impl Game {
                     warnings.push(format!(
                         "The route crosses about {wet} tiles of open water: weak swimmers will be held up or drown."
                     ));
+                }
+                // The walk itself (playtest 6: 1,000 animals sent 75 tiles
+                // crawled 2-3 tiles a day and starved on the way).
+                if let Some(j) = self.world.journey_check(player, group, &way) {
+                    let pace = World::group_pace(j.members);
+                    let starve = j.food_share < 1.0;
+                    if j.days >= JOURNEY_WARN_DAYS && (starve || j.days >= 2.0 * JOURNEY_WARN_DAYS) {
+                        let food = if starve {
+                            format!(
+                                "the land along the way holds about {:.0}% of the food the group needs for it; expect \
+                                 heavy losses. ",
+                                j.food_share * 100.0
+                            )
+                        } else {
+                            String::new()
+                        };
+                        warnings.push(format!(
+                            "About {:.0} days on the way: a group of {} covers about {pace:.1} tiles a day, and this is \
+                             {:.0} tiles. {food}Split the group or migrate in stages.",
+                            j.days, j.members, j.tiles
+                        ));
+                    }
                 }
             }
         }
@@ -5286,7 +5339,8 @@ impl Game {
         ErrorInfo::new(
             "claim_cooldown",
             format!(
-                "This group (or the group it was split from) claimed a territory recently; it can claim again in \
+                "This group (or the group it was split from) claimed or tried to claim a territory recently; it can \
+                 claim again in \
                  {wait} ({days:.1} game days). Abandoning a territory cuts the wait to a quarter, not to nothing."
             ),
         )
@@ -5325,8 +5379,9 @@ impl Game {
                         } else {
                             "migrate the group to better ground"
                         };
-                        let dry = self.world.water_check(p, g.id, center, radius).drinkable == 0;
-                        if self.condition_begins((p, g.id, 0), dry) {
+                        let drink = self.world.water_check(p, g.id, center, radius).drinkable;
+                        let dry = drink == 0;
+                        if self.condition_begins((p, g.id, 0), dry, drink >= LOW_WATER_TILES) {
                             let tail = if thirst > 0 {
                                 format!(" {thirst} of your animals died of thirst yesterday.")
                             } else {
@@ -5338,7 +5393,10 @@ impl Game {
                         }
                         let food = self.world.food_check(p, g.id, center, radius);
                         let bare = food.is_some_and(|f| f.standing_days < BARE_DAYS);
-                        if self.condition_begins((p, g.id, 1), bare) {
+                        // Said again only once it has really recovered (playtest 6:
+                        // the alert repeated every few days for one territory).
+                        let regrown = food.is_none_or(|f| f.standing_days >= 2.0 * BARE_DAYS);
+                        if self.condition_begins((p, g.id, 1), bare, regrown) {
                             let days = days_text(food.map_or(0.0, |f| f.standing_days));
                             let tail = if starved > 0 {
                                 format!(" {starved} of your animals starved yesterday.")
@@ -5353,7 +5411,7 @@ impl Game {
                         // before anyone starves (playtest 5: claimed at 475, held
                         // 1,941, 55% starved in 10 days).
                         let outgrown = !bare && food.is_some_and(|f| f.supports < f.members);
-                        if self.condition_begins((p, g.id, 2), outgrown) {
+                        if self.condition_begins((p, g.id, 2), outgrown, !outgrown) {
                             let f = food.expect("checked");
                             texts.push(format!(
                                 "{name} has outgrown its {what} at ({x:.0}, {y:.0}): it feeds about {} of the group's {} \
@@ -5363,7 +5421,7 @@ impl Game {
                         }
                         let prey = self.world.prey_check(p, g.id, center, radius);
                         let short = prey.is_some_and(|q| q.prey * 2 < q.members);
-                        if self.condition_begins((p, g.id, 3), short) {
+                        if self.condition_begins((p, g.id, 3), short, !short) {
                             let q = prey.expect("checked");
                             texts.push(format!(
                                 "Only {} prey animals in or near {name}'s {what} at ({x:.0}, {y:.0}) for {} hunters: \
@@ -5413,11 +5471,13 @@ impl Game {
 
     /// Track a daily territory condition: true when it has just begun (say
     /// it now); a condition that has passed is forgotten.
-    fn condition_begins(&mut self, key: (PlayerId, u8, u8), bad: bool) -> bool {
+    fn condition_begins(&mut self, key: (PlayerId, u8, u8), bad: bool, recovered: bool) -> bool {
         if bad {
             self.territory_alerted.insert(key)
         } else {
-            self.territory_alerted.remove(&key);
+            if recovered {
+                self.territory_alerted.remove(&key);
+            }
             false
         }
     }
@@ -5441,9 +5501,10 @@ impl Game {
         let s = if brooding == 1 { "" } else { "s" };
         data["brooding_note"] = if self.world.config.balance.brood_care > 0.0 {
             format!(
-                "{brooding} brooding parent{s} stay{} on {} nest{s} until the eggs hatch, then follow.",
+                "{brooding} brooding parent{s} stay{} on {} nest{s} until the eggs hatch, then follow{}.",
                 if brooding == 1 { "s" } else { "" },
-                if brooding == 1 { "its" } else { "their" }
+                if brooding == 1 { "its" } else { "their" },
+                if brooding == 1 { "s" } else { "" }
             )
         } else {
             format!("{brooding} clutch{} will be left behind and may chill.", if brooding == 1 { "" } else { "es" })
@@ -6637,23 +6698,24 @@ fn timeout_reason(
     basking_share: f32,
     needy_share: f32,
     never_moved: bool,
-) -> (String, &'static str) {
+    gained: f32,
+) -> (String, String) {
     if dormant_share >= 0.5 {
         (
             format!(
                 "{:.0}% of the group is dormant (hibernating or estivating) and can't walk; migrate again once it wakes",
                 dormant_share * 100.0
             ),
-            "dormant",
+            "dormant".to_string(),
         )
     } else if basking_share >= 0.5 {
         (
             format!(
-                "{:.0}% of the group was basking or resting (cold-blooded animals warm up before they travel); \
-                 migrate again in warmer weather, or to a nearer point",
+                "{:.0}% of the group was basking (cold-blooded animals warm up before they travel); migrate again in \
+                 warmer weather, or to a nearer point",
                 basking_share * 100.0
             ),
-            "too cold to travel",
+            "too cold to travel".to_string(),
         )
     } else if needy_share >= 0.5 {
         (
@@ -6662,17 +6724,23 @@ fn timeout_reason(
                  migrate to a nearer point with food and water, or once it is fed",
                 needy_share * 100.0
             ),
-            "too hungry or thirsty to travel",
+            "too hungry or thirsty to travel".to_string(),
         )
     } else if never_moved {
         (
             "it never got going: the way may be blocked (water it can't cross, cliffs) or the group too busy with \
              hunger and thirst. Try a nearer point on its side of the water"
                 .to_string(),
-            "never got going",
+            "never got going".to_string(),
         )
     } else {
-        ("it stopped getting closer. Rally it, or migrate again to a nearer point".to_string(), "stalled")
+        (
+            format!(
+                "it got about {gained:.0} tiles closer, then stopped getting closer. Rally it, or migrate again to a \
+                 nearer point"
+            ),
+            format!("stalled after {gained:.0} tiles"),
+        )
     }
 }
 
@@ -10797,6 +10865,7 @@ mod tests {
             escrow: g.escrow(player),
             grace: g.grace_view(player),
             poisonous: (0..g.world.lineages.len() as u32).filter(|&l| g.world.looks_poisonous_to(player, l)).collect(),
+            territories: g.rival_territories(player, view),
         }
     }
 

@@ -1417,6 +1417,19 @@ pub struct StateView {
     /// poisonous to you".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub poisonous: Vec<u32>,
+    /// Other players' territories reaching into the view window, as
+    /// outlines (claimed ground is public: a claim over one is refused, so
+    /// players need to see them). Absent: none in view.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub territories: Vec<TerritoryOutline>,
+}
+
+/// Another player's territory as the map shows it (`StateView::territories`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TerritoryOutline {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
 }
 
 /// The newcomer grace left (`StateView::grace`). It lasts a number of game

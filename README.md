@@ -201,8 +201,20 @@ score).
   a stuck order alive. A migrate, far claim or rally given while 30% or
   more of the group is dormant warns in its reply, migrate and far claims
   warn of open water on the route (not for fliers), and migrate checks the
-  destination like a claim (`destination`: its home circle's water,
-  food, drought; warnings start "At the destination:"). A target moved by
+  destination like a claim, rated for the ground a group its size spreads
+  over there (the rally circle, not the small home circle) and without the
+  "far from the group" warning (`destination`: water, food, drought;
+  warnings start "At the destination:"). Migrate and far claims also
+  estimate the **journey** (`journey`: tiles, days, food share;
+  `World::journey_check`): days at the pace a group of its size keeps
+  (`World::group_pace`: 12 / (1 + members / 150)^0.7 tiles a day, fitted
+  to the playtests: about 10 for a few dozen, 6 for 300, 3 for 1,000, since
+  big herds stop to eat and drink and wait on each other), and the plants
+  standing within 3 tiles of the route against the group's need for those
+  days. A walk of 7 days or more whose land can't feed the group, or of 14
+  days or more, warns ("About N days on the way ... expect heavy losses.
+  Split the group or migrate in stages"): playtest 6 sent 1,000 animals 75
+  tiles, and the walk at 2–3 tiles a day killed 60% of them. A target moved by
   under a tile (onto a tile's centre) carries no `moved` note. Migrate, claim and
   rally replies say which standing orders they replace (`replaced`, and
   the `note`). `World::reroute_migration`
@@ -266,10 +278,12 @@ score).
   minutes of wall-clock time if longer (`GameConfig::claim_cooldown_min_minutes`,
   `World::set_claim_cooldown_min_ticks`: half a day passes in seconds at a
   fast tick). The refusal says the wait in minutes and game days. The
-  wait is waived while the group's territory has no drinking water left or
-  is grazed bare (standing plants for under 3 days,
-  `World::territory_failing`): a big herd strips a territory faster than
-  the wait (playtest 4: ~15 days against ~25), so it may move at once.
+  wait is waived while the group's territory has no drinking water left,
+  is grazed bare (standing plants for under 3 days) or has been outgrown
+  (it feeds fewer than the group has; the outgrown alert says to claim more
+  ground) (`World::territory_failing`): a big herd strips a territory
+  faster than the wait (playtest 4: ~15 days against ~25), so it may move
+  at once.
   Abandoning a territory cuts the wait left to a quarter of a full one, so
   a regretted claim can be replaced soon (not at once). A group
   split off keeps the cooldown of the group it came from, on purpose: a
@@ -287,8 +301,11 @@ score).
   most (`terrain::can_stand`), so a strong swimmer's lake no longer counts
   as land (playtest 3: an 88% lake claim reported water share 0), and a
   migrate target in a lake moves ashore. The reply reports the circle's
-  `water_share`, `drinkable_tiles` (drinking water in it or within 4 tiles
-  of its edge, `World::water_check`), `food_supports` and `standing_days`
+  `water_share`, `drinkable_tiles` (drinking spots in it or within 4 tiles
+  of its edge: tiles the group can stand on beside water or snow,
+  `World::water_check`; playtest 6 counted 758 "drinkable" tiles of sea
+  behind a steep coast while the herd walked 15–20 tiles to a river, so
+  water no member can get to no longer counts), `food_supports` and `standing_days`
   (`World::food_check`: what the circle feeds at this season's regrowth,
   by the terrain's own logistic rule at today's plants, warmth, snow cover
   and dryness, plus the plants standing now spread over 30 days, against
@@ -307,9 +324,13 @@ score).
   (snapshot version 48 keeps it waiting; a timeout drops it): a far claim
   used to become a territory, and the home range, with nobody in it. A
   circle overlapping another player's territory is refused (`overlaps`,
-  not saying whose), and the refusal starts the claim cooldown, as an
-  accepted far claim does at once: far claims were a free radar of rivals'
-  territories (playtest 5),
+  not saying whose), checked at the radius the claim would get (cut to the
+  group's limit first: a typed radius of 300 found any rival territory on
+  the map). A refused claim costs a short wait, a quarter of the cooldown,
+  and an accepted far claim starts the cooldown at once. Other players'
+  territories are public: the state carries those reaching into the view
+  window (`territories`: outlines, no owner) and the map draws them as grey
+  circles, so a refusal tells nobody anything new,
   and a radius that isn't a positive number (`bad_radius`): a negative one
   used to commit a 3-tile territory and its cooldown. A radius raised to the minimum or cut to the group's limit
   says so (`note`). Every day the server checks each group's held ground
@@ -1139,7 +1160,7 @@ Client → server:
 | `retire_lineage` | `lineage` | Retire your living lineage (its id) to start over: its animals, cohorts and eggs are removed (not killed, not turned wild), its orders end, and you may found again at once; `data` = `{removed}`. `no_lineage` if it isn't your living lineage |
 | `claim_territory` | `group?, x, y, radius` | Group `group` (default 0) holds the circle around `x, y`: the radius is kept between 3 and the group's `max_radius`; replaces its migration order; `data` = `{x, y, radius, claimed_tick}`. `claim_cooldown` (`detail.ticks_left`) within half a day (at least 2 real minutes) of the group's last claim, abandoned or not; `mostly_water` (`detail.water_share`) over a circle more than half water; `data` also has `water_share`, `drinkable_tiles` and a `warning` when there is little to drink; `no_such_group` for a group without members; `bad_coordinates` for a non-finite number |
 | `abandon_territory` | `group?` | Give the territory up (`no_territory` if none) |
-| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 24) for 3 days; replaces its migration order or territory; `data` = `{x, y, radius, expires_tick, water_share, drinkable_tiles, warning?}`. Members leave it to drink at thirst 60. `mostly_water` over a circle more than half water. Stands at least 5 minutes of wall-clock time. `no_such_group` for a group without members, `off_map` off the map, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
+| `rally` / `cancel_rally` | `group?, x, y` / `group?` | Group `group` (default 0) gathers at `x, y` and holds within `2 + √members` tiles (at most 24) for 3 game days or 5 minutes of wall-clock time, whichever is longer (62 game days at the playtests' clock); replaces its migration order or territory; `data` = `{x, y, radius, expires_tick, water_share, drinkable_tiles, warning?}`. Members leave it to drink at thirst 60. `mostly_water` over a circle more than half water. `no_such_group` for a group without members, `off_map` off the map, `bad_coordinates` for a non-finite number; cancelling with none standing gives `no_rally` |
 | `split_group` | `group?, organisms?` | Divide a group (default 0) in two: the named organisms (yours, in that group, at most 2000), else the far half across its widest spread; `data` = `{group, moved, kept}`. `group_limit` at 4 groups, `group_too_small` if a side would be empty, `not_in_group`, `not_owned`, `too_many_organisms` |
 | `merge_groups` | `from, into?` | Every member of `from` joins `into` (default 0); `data` = `{moved}`; `same_group`, `no_such_group` |
 | `set_view` / `clear_view` | `x, y, radius` / – | Pin or release the view window; only where your animals perceive plus 8 tiles (`VIEW_MARGIN`; 8 around your lineage's center), with the radius narrowed so the whole window fits (`out_of_sight` where it can't); `data` is the window granted |

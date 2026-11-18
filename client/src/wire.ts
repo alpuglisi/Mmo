@@ -238,6 +238,8 @@ export class DeltaDecoder {
   private lb = new Map<number, LeaderRow>();
   /** `poisonous` (optional: absent from older servers' frames). */
   private poisonous: number[] = [];
+  /** `territories` (optional: absent from older servers' frames). */
+  private territories: { x: number; y: number; radius: number }[] = [];
   private offers = new Map<number, OfferView>();
   private looks: Appearance[] = [];
   private actions: string[] = [];
@@ -284,6 +286,11 @@ export class DeltaDecoder {
     if ('grace' in meta) head.grace = meta.grace;
     if (kind === KEYFRAME) this.poisonous = [];
     if (Array.isArray(meta.poisonous)) this.poisonous = meta.poisonous.filter((x): x is number => typeof x === 'number');
+    if (kind === KEYFRAME) this.territories = [];
+    if (Array.isArray(meta.territories)) {
+      this.territories = meta.territories.filter((t): t is { x: number; y: number; radius: number } =>
+        isObj(t) && typeof t.x === 'number' && typeof t.y === 'number' && typeof t.radius === 'number');
+    }
     const list = (k: string): unknown[] => {
       const v = meta[k];
       if (v === undefined) return [];
@@ -384,6 +391,7 @@ export class DeltaDecoder {
       escrow: h.escrow,
       ...(h.grace ? { grace: h.grace } : {}),
       ...(this.poisonous.length > 0 ? { poisonous: this.poisonous } : {}),
+      ...(this.territories.length > 0 ? { territories: this.territories } : {}),
     };
   }
 }

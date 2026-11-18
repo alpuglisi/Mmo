@@ -473,6 +473,8 @@ export interface StateView {
   grace?: GraceView | null;
   /** Lineages your animals have learned are poisonous: theirs "look poisonous to you". */
   poisonous?: number[];
+  /** Other players' territories reaching into your view (public ground: a claim over one is refused). */
+  territories?: { x: number; y: number; radius: number }[];
 }
 
 /** The newcomer grace left: game days, and at least some real minutes, whichever is longer. */

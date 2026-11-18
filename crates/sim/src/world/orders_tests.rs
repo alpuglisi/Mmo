@@ -589,11 +589,15 @@ fn claims_refuse_bad_radii_and_rivals_ground_and_skip_the_wait_when_bare() {
     assert_eq!(w.claim_territory(HERD, 0, theirs + Vec2::new(3.0, 0.0), 5.0), Err(CommandError::Overlaps));
     // A held territory grazed bare can be moved at once, cooldown or not.
     w.set_claim_cooldown_min_ticks(10_000);
-    let t = w.claim_territory(HERD, 0, mine, 4.0).unwrap();
+    // (Full size, so it isn't outgrown, which also waives the wait.)
+    let t = w.claim_territory(HERD, 0, mine, 100.0).unwrap();
+    let f = w.food_check(HERD, 0, t.center, t.radius).unwrap();
+    assert!(f.supports >= f.members && f.standing_days >= 3.0, "{f:?}");
     assert!(matches!(w.claim_territory(HERD, 0, mine, 4.0), Err(CommandError::ClaimCooldown { .. })));
     let (cx, cy) = w.map.tile_coords(t.center);
-    for y in cy.saturating_sub(6)..=(cy + 6).min(63) {
-        for x in cx.saturating_sub(6)..=(cx + 6).min(63) {
+    let span = t.radius.ceil() as usize + 1;
+    for y in cy.saturating_sub(span)..=(cy + span).min(63) {
+        for x in cx.saturating_sub(span)..=(cx + span).min(63) {
             let k = w.map.idx(x, y);
             w.map.tiles[k].veg = 0.0;
         }
@@ -796,4 +800,146 @@ fn a_long_migration_arrives() {
         "{events:?} (start {:.0} tiles off)",
         start.dist(target)
     );
+}
+
+/// Calibration: a herd held in a territory eats about what the food check
+/// says it needs (plants gone from the circle plus its regrowth, against
+/// the check's daily need), so its `standing_days` and `supports` mean what
+/// they say (playtest 6: estimates still optimistic).
+#[test]
+fn the_food_checks_need_matches_what_a_held_herd_eats() {
+    let mut w = standard();
+    let c = w.group_middle(HERD, 0).unwrap();
+    let t = w.claim_territory(HERD, 0, c, 6.0).unwrap();
+    let standing = |w: &World| -> f32 {
+        let mut s = 0.0;
+        for k in 0..w.map.tiles.len() {
+            let p = Map::tile_center(k % w.map.width, k / w.map.width);
+            if p.dist(t.center) <= t.radius {
+                s += w.map.tiles[k].veg;
+            }
+        }
+        s
+    };
+    let days = 4;
+    let start = standing(&w);
+    let mut regrown = 0.0;
+    let mut predicted = 0.0;
+    for _ in 0..days {
+        let f = w.food_check(HERD, 0, t.center, t.radius).unwrap();
+        let (_, need) = w.plant_need(HERD, 0).unwrap();
+        predicted += need;
+        // Today's regrowth: supports × per-animal need, less the standing share.
+        regrown +=
+            (f.supports as f32 + 0.5) * need / f.members as f32 - standing(&w) / super::groups::FOOD_HORIZON_DAYS;
+        w.run_days(1);
+    }
+    let eaten = start - standing(&w) + regrown.max(0.0);
+    let ratio = eaten / predicted;
+    eprintln!("eaten {eaten:.0}, predicted need {predicted:.0}: ratio {ratio:.2}");
+    assert!((0.6..=1.4).contains(&ratio), "the need is off by {ratio:.2}x");
+}
+
+/// Calibration: the regrowth the food check counts on is what a grazed
+/// circle actually grows back.
+#[test]
+fn the_food_checks_regrowth_matches_a_grazed_circle() {
+    let mut w = standard();
+    let c = w.group_middle(HERD, 0).unwrap();
+    // Nobody eats here: the herd stands far off. Grazed to a fifth.
+    let far = w.map.clamp(c + Vec2::new(30.0, 30.0));
+    for o in w.organisms.iter_mut().filter(|o| o.alive) {
+        if o.pos.dist(c) < 12.0 {
+            o.pos = far;
+        }
+    }
+    let r = 6.0;
+    let inside: Vec<usize> =
+        (0..w.map.tiles.len()).filter(|&k| Map::tile_center(k % w.map.width, k / w.map.width).dist(c) <= r).collect();
+    let max: Vec<f32> = inside.iter().map(|&k| w.map.ground()[k].veg_max).collect();
+    for (n, &k) in inside.iter().enumerate() {
+        w.map.tiles[k].veg = 0.2 * max[n];
+    }
+    let sum = |w: &World| inside.iter().map(|&k| w.map.tiles[k].veg).sum::<f32>();
+    let before = sum(&w);
+    let predicted = w.food_check(HERD, 0, c, r).unwrap().regrowth;
+    w.run_days(1);
+    let grown = sum(&w) - before;
+    let ratio = grown / predicted.max(1e-3);
+    eprintln!("grown {grown:.1} in a day, predicted {predicted:.1}: ratio {ratio:.2}");
+    assert!((0.6..=1.4).contains(&ratio), "regrowth off by {ratio:.2}x");
+}
+
+#[test]
+fn claims_check_overlap_at_the_radius_they_would_get_and_refusals_cost_a_short_wait() {
+    let mut w = standard();
+    w.set_claim_cooldown_min_ticks(1000);
+    w.tick = 5000;
+    let theirs = w.group_middle(1, 0).unwrap();
+    w.claim_territory(1, 0, theirs, 4.0).unwrap();
+    // A huge typed radius near my own herd, far from theirs: no overlap
+    // (it is cut to the group's limit before the check).
+    let mine = w.group_middle(HERD, 0).unwrap();
+    if mine.dist(theirs) > 4.0 + super::groups::TERRITORY_MAX_RADIUS + 1.0 {
+        assert!(w.claim_or_migrate(HERD, 0, mine, 300.0).is_ok());
+    }
+    // A refused overlap costs a quarter of the cooldown, not the whole.
+    let mut w2 = standard();
+    w2.set_claim_cooldown_min_ticks(1000);
+    w2.tick = 5000;
+    let theirs = w2.group_middle(1, 0).unwrap();
+    w2.claim_territory(1, 0, theirs, 4.0).unwrap();
+    assert_eq!(w2.claim_or_migrate(HERD, 0, theirs, 4.0), Err(CommandError::Overlaps));
+    assert_eq!(w2.groups(HERD)[0].claim_ready_tick, 5250);
+}
+
+#[test]
+fn an_outgrown_territory_can_be_moved_at_once() {
+    let mut w = standard();
+    w.set_claim_cooldown_min_ticks(10_000);
+    let c = w.group_middle(HERD, 0).unwrap();
+    // A tiny territory for the whole herd: it feeds fewer than it holds.
+    let t = w.claim_territory(HERD, 0, c, 3.0).unwrap();
+    let f = w.food_check(HERD, 0, c, 3.0).unwrap();
+    assert!(f.supports < f.members, "{f:?}");
+    assert!(w.territory_failing(HERD, 0, &t));
+    assert!(w.claim_territory(HERD, 0, c, 8.0).is_ok(), "outgrown: no wait");
+}
+
+#[test]
+fn water_behind_a_cliff_is_not_drinking_water() {
+    // A lake ringed by cliffs: plenty of water, nowhere to drink it.
+    let mut w = lake_world(20, 39);
+    place(&mut w, 1, &walker(), Map::tile_center(10, 10));
+    let open = w.water_check(1, 0, Map::tile_center(17, 10), 4.0).drinkable;
+    assert!(open > 0);
+    for y in 0..H {
+        set(&mut w, 19, y, "cliff");
+    }
+    let walled = w.water_check(1, 0, Map::tile_center(17, 10), 4.0).drinkable;
+    assert_eq!(walled, 0, "the shore is a cliff");
+}
+
+#[test]
+fn a_split_skips_animals_that_died() {
+    let mut w = standard();
+    let ids: Vec<_> = herd(&w, HERD).iter().map(|&i| w.organisms[i].id).collect();
+    let dead = ids[0];
+    let k = w.index[&dead];
+    w.kill(k, DeathCause::Predation);
+    let out = w.split_group(HERD, 0, Some(&[dead, ids[1], ids[2]])).unwrap();
+    assert_eq!(out.moved, 2);
+}
+
+#[test]
+fn a_journey_check_paces_big_groups_slower() {
+    assert!(World::group_pace(40) > 9.0 && World::group_pace(40) < 12.0);
+    assert!((World::group_pace(1000) - 3.0).abs() < 1.0, "{}", World::group_pace(1000));
+    let w = standard();
+    let c = w.group_middle(HERD, 0).unwrap();
+    let route = [c, w.map.clamp(c + Vec2::new(30.0, 0.0))];
+    let j = w.journey_check(HERD, 0, &route).unwrap();
+    assert!((j.tiles - route[0].dist(route[1])).abs() < 1e-3);
+    assert!((j.days - j.tiles / World::group_pace(j.members)).abs() < 1e-3);
+    assert!(j.food_share > 0.0);
 }
