@@ -270,14 +270,46 @@ async function main() {
       pair.b = target.id;
       await page.waitForTimeout(200);
       const box = await page.locator('#world-canvas').boundingBox();
-      const selectedBefore = await page.evaluate(() => window.evo.model.selected);
-      await page.evaluate(() => { window.__results = window.__results.filter((r) => r.type !== 'order_move'); });
-      await page.mouse.click(box.x + target.x, box.y + target.y);
-      const outcome = await waitFor('a walk order (or the end of the possession)', () => page.evaluate((a) => {
-        if (window.__results.some((r) => r.type === 'order_move')) return 'walked';
-        const alive = window.evo.model.state.organisms.some((o) => o.id === a && o.possessed);
-        return alive ? null : 'ended';
-      }, pair.a));
+      // What the map made of each press: a tap, or (when the page stalls past
+      // the long-press time between the press and the release, on a loaded
+      // machine) a long press, which selects rather than walks: then again.
+      await page.evaluate(() => {
+        const v = window.evo.screen().view;
+        if (v.__logged) return;
+        v.__logged = true;
+        const [tap, hold] = [v.onClick, v.onLongPress];
+        v.onClick = (c) => { window.__presses.push({ kind: 'tap', organism: c.organism }); return tap(c); };
+        v.onLongPress = (c) => { window.__presses.push({ kind: 'long', organism: c.organism }); return hold(c); };
+      });
+      let outcome = null;
+      let selectedBefore = null;
+      for (let click = 0; click < 3 && !outcome; click++) {
+        // (The target re-centred: a long press may have selected it and moved nothing, but be safe.)
+        const at = await page.evaluate((id) => {
+          const v = window.evo.screen().view;
+          const m = v.markers.get(id);
+          if (m) v.centerOn(m.x, m.y);
+          return m ? v.worldToScreen(m.x, m.y) : null;
+        }, pair.b);
+        if (!at) break;
+        await page.waitForTimeout(200);
+        selectedBefore = await page.evaluate(() => window.evo.model.selected);
+        await page.evaluate(() => { window.__results = window.__results.filter((r) => r.type !== 'order_move'); window.__presses = []; });
+        await page.mouse.click(box.x + at.x, box.y + at.y);
+        outcome = await waitFor('a walk order (or the end of the possession)', () => page.evaluate((a) => {
+          if (window.__results.some((r) => r.type === 'order_move')) return 'walked';
+          const alive = window.evo.model.state.organisms.some((o) => o.id === a && o.possessed);
+          return alive ? null : 'ended';
+        }, pair.a), 8000).catch(() => null);
+        if (!outcome) {
+          const presses = await page.evaluate(() => window.__presses);
+          const tapped = presses.find((x) => x.kind === 'tap');
+          // A tap that reached the map and did not walk is the bug this checks (unless it was on the possessed animal itself).
+          check(!tapped || tapped.organism === pair.a, 'a tap while possessing should walk', { presses, a: pair.a, b: pair.b });
+          step(`the click came through as ${presses.length ? JSON.stringify(presses) : 'nothing'} (a stalled page): clicking again`);
+        }
+      }
+      check(outcome, 'a walk order never came', { a: pair.a, b: pair.b });
       if (outcome === 'walked') {
         const selectedAfter = await page.evaluate(() => window.evo.model.selected);
         check(selectedAfter === selectedBefore, 'a click while possessing should walk, not select', { selectedBefore, selectedAfter, b: pair.b });
