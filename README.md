@@ -8197,6 +8197,26 @@ drowns in the first 3 days, and at least 70% are alive after 10 days. With
 the tunable on, all 135 founders were alive after 10 days. With it off,
 the first case fails at once: a founder on a lake bed.
 
+**Founder survival** (`examples/foundsurvival.rs`): founders alive 20 days
+after founding into grown worlds, over 8 seeds and three playtest designs.
+The founding days are spring, late autumn, summer, each world's worst
+drought between days 120 and 220 (a re-founding in a drought), the next
+autumn, and late winter. The three searches are the old one, with
+`founding_conditions` (playtest 3), and with `founding_safety` too:
+
+| Founded | Old | Playtest 3 | Playtest 4 |
+| --- | --- | --- | --- |
+| day 45 (spring) | 768 / 872 | 773 | 766 |
+| day 100 (late autumn) | 757 | 835 | 864 |
+| day 160 (summer) | 591 | 575 | 736 |
+| worst drought, days 120–220 | 493 | 592 | 645 |
+| day 220 (autumn) | 627 | 695 | 780 |
+| day 230 (late winter) | 719 | 800 | 850 |
+| all | 3,955 / 5,232 (76%) | 4,270 (82%) | 4,641 (89%) |
+
+`sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`: 11.93
+(± 0.11), the same as before. A new world's founding is unchanged.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
