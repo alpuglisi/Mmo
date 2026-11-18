@@ -1,7 +1,8 @@
 // End-to-end: the attack order while possessing (`possess_attack`). Starts
 // its own evo-server (fast, in memory, with the wild ecosystem).
 //
-// A player founds the starting design and possesses one of its adults; the
+// A player founds the starting design as a meat eater (carnivory 0.9: plant
+// eaters take no attack orders) and possesses one of its adults; the
 // possession bar has an Attack button that switches to attack mode (the hint
 // says so; a plain tap would walk); a tap on one of their own animals in
 // attack mode is refused in the interface and stays in attack mode; a tap on
@@ -67,13 +68,21 @@ function check(cond, msg, detail) {
   if (!cond) throw new Error(`${msg}${detail === undefined ? '' : `: ${JSON.stringify(detail)}`}`);
 }
 
-async function register(page, base, name) {
+async function register(page, base, name, carnivory) {
   await page.goto(`${base}/?tour=off`);
   await page.fill('#login-name', name);
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
   await page.waitForSelector('#design-name', { timeout: UI_MS });
   await page.fill('#design-name', name);
+  // Only meat eaters take attack orders (playtest 6): the attacker founds a hunter.
+  if (carnivory !== undefined) {
+    await page.$eval('input[data-gene="carnivory"]', (el, v) => {
+      el.value = String(v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, carnivory);
+  }
   await page.click('#design-submit');
   await page.waitForSelector('#world-canvas', { timeout: UI_MS });
   return waitFor(`${name}'s lineage`, () => page.evaluate(() => {
@@ -194,7 +203,7 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
     page.on('pageerror', (e) => errors.push(e.message));
-    const lineage = await register(page, base, `hunter_${Date.now().toString(36)}`);
+    const lineage = await register(page, base, `hunter_${Date.now().toString(36)}`, 0.9);
     step(`founded lineage #${lineage}`);
 
     // Possess one, and attack mode from the possession bar.
@@ -250,7 +259,8 @@ async function main() {
 
     // A wild animal in sight: walk toward the nearest wild one first if none.
     let ordered = null;
-    for (let round = 0; round < 8 && !ordered; round++) {
+    // (A meat eater's founding may land away from the wild herds: walk on.)
+    for (let round = 0; round < 24 && !ordered; round++) {
       me = await ensurePossessed(page, 'looking for prey');
       const p = await possessedNow(page);
       if (!p) continue;
@@ -302,6 +312,11 @@ async function main() {
         check(label.includes(`Attack with #${p.id}`), 'the inspector attack button', label);
         if (await page.locator('#btn-attack').isDisabled()) {
           // Out of reach (more than 8 tiles): the button says so instead of a pointless click.
+          // Down its burrow: also said, and another is picked.
+          if (label.includes('in its burrow')) {
+            step(`the inspector of wild #${pick} offers "${label}", disabled: it is in its burrow`);
+            continue;
+          }
           check(label.includes('too far'), 'a disabled attack button should say why', label);
           step(`the inspector of wild #${pick} offers "${label}", disabled: it is out of reach`);
           // Walk up to it (both ways: it was only sent along x), until within reach or a while has passed.

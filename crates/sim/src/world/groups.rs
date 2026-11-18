@@ -1054,9 +1054,7 @@ impl World {
             );
             sample.get_or_insert(o);
         }
-        let Some(hunter) = sample.filter(|_| members > 0 && carnivory / members as f32 > 0.6) else {
-            return None;
-        };
+        let hunter = sample.filter(|_| members > 0 && carnivory / members as f32 > 0.6)?;
         let reach = radius + PREY_REACH;
         let (mut prey, mut mass) = (0usize, 0.0f32);
         for q in self.organisms.iter().filter(|q| q.alive && q.owner != player && q.pos.dist(center) <= reach) {

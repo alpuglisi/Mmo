@@ -1637,19 +1637,11 @@ pub(crate) const BAND_CROWD: f32 = 100.0;
 /// carries it, and no further (playtest 6: a pack capped near 100 by the
 /// band rule couldn't compete; playtest 3: a larder at any size let a
 /// strong pack overshoot).
-pub(crate) const PREY_FULL: f32 = 20.0;
-/// Prey per hunter at which the larder is gone ([`PREY_FULL`]).
-pub(crate) const PREY_NONE: f32 = 8.0;
-
-/// `(PREY_FULL, PREY_NONE)`, overridable for studies with `EVO_PREY_FULL`
-/// and `EVO_PREY_NONE` (temporary).
-pub(crate) fn prey_per_hunter() -> (f32, f32) {
-    static K: std::sync::OnceLock<(f32, f32)> = std::sync::OnceLock::new();
-    *K.get_or_init(|| {
-        let v = |n: &str, d: f32| std::env::var(n).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
-        (v("EVO_PREY_FULL", PREY_FULL), v("EVO_PREY_NONE", PREY_NONE))
-    })
-}
+pub(crate) const PREY_FULL: f32 = 40.0;
+/// Prey per hunter at which the larder is gone ([`PREY_FULL`]). At 20 and 8
+/// a strong pack overshot (ApexHunter2's wolves took 33% of six players'
+/// animals).
+pub(crate) const PREY_NONE: f32 = 20.0;
 
 /// The share of hunger `o` is spared as a player's pack hunter whose
 /// owner has `room` for it (0–1, `World::refresh_pack_room`: by the prey

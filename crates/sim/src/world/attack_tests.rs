@@ -685,3 +685,31 @@ fn the_prey_check_counts_only_prey_the_pack_can_take() {
     // Six small walkers can't carry three hunters for good.
     assert!(all.feeds < all.members, "{all:?}");
 }
+
+/// Playtest 6: the pack larder faded between 60 and 100 of the player's
+/// animals whatever the world. With `prey_larder` it follows the prey per
+/// hunter: full from `PREY_FULL`, gone at `PREY_NONE`; the band rule
+/// without it.
+#[test]
+fn the_pack_larder_follows_the_prey_there_is() {
+    let mut w = world();
+    for k in 0..2 {
+        place(&mut w, HUNTER, &hunter(), Vec2::new(10.5 + k as f32, 10.5));
+    }
+    let room = |w: &mut World, prey: usize| {
+        let have = w.organisms.iter().filter(|o| o.alive && o.owner == PREY).count();
+        for k in have..prey {
+            place(w, PREY, &walker(), Vec2::new(2.5 + (k % 20) as f32, 2.5 + (k / 20) as f32));
+        }
+        w.refresh_pack_room();
+        w.pack_room(HUNTER)
+    };
+    // 2 hunters: 30 prey is 15 each (none), 60 is 30 (half), 80 is 40 (full).
+    assert_eq!(room(&mut w, 30), 0.0);
+    assert!((room(&mut w, 60) - 0.5).abs() < 1e-4);
+    assert_eq!(room(&mut w, 80), 1.0);
+    // The band rule: a band of 2 is small.
+    w.config.balance.prey_larder = 0.0;
+    w.refresh_pack_room();
+    assert_eq!(w.pack_room(HUNTER), 1.0);
+}

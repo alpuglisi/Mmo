@@ -954,7 +954,7 @@ impl World {
                 *hunters.entry(o.owner).or_default() += 1;
             }
         }
-        let (full, none) = apply::prey_per_hunter();
+        let (full, none) = (apply::PREY_FULL, apply::PREY_NONE);
         for (p, h) in hunters {
             let prey = grazers - grazers_of.get(&p).copied().unwrap_or(0);
             let per = prey as f32 / h.max(1) as f32;

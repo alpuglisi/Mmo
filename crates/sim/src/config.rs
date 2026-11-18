@@ -1251,8 +1251,8 @@ pub struct Balance {
     // warnings* in the README). Off at 0, what snapshots before version 58
     // read (`serde_util::before_v58`).
     /// The pack larder (`Balance::player_packs`) scales with the prey
-    /// there is: full from 20 plant eaters (not the player's) per pack
-    /// hunter of the player's, gone at 8 (`World::refresh_pack_room`),
+    /// there is: full from 40 plant eaters (not the player's) per pack
+    /// hunter of the player's, gone at 20 (`World::refresh_pack_room`),
     /// instead of fading between 60 and 100 animals of the player's
     /// (playtest 6: a well-played pack plateaued near 100 while herds held
     /// the cap). 0: the band rule.
