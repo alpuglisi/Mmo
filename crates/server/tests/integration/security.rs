@@ -319,8 +319,25 @@ async fn websocket_tokens_connections_and_frames_are_bounded() {
             ok |= v["id"] == 7 && v["ok"] == true;
         }
     }
-    // A frame over the message limit closes that connection only.
-    let big = "x".repeat(MAX_CLIENT_MESSAGE * 4);
+    // A command over the message limit gets a `too_large` reply (with its id
+    // when it can be read) and the connection carries on (playtest 5: 49 KB
+    // closed it silently).
+    let long = format!(r#"{{"id":8,"type":"set_view","pad":"{}"}}"#, "x".repeat(MAX_CLIENT_MESSAGE * 3));
+    ws.send(Message::Text(long)).await.unwrap();
+    ws.send(Message::Text(json!({"type": "ledger", "id": 9}).to_string())).await.unwrap();
+    let (mut big, mut after) = (false, false);
+    while !(big && after) {
+        let Some(Ok(Message::Text(t))) = tokio::time::timeout(Duration::from_secs(10), ws.next()).await.unwrap() else {
+            panic!("socket closed")
+        };
+        let v: Value = serde_json::from_str(&t).unwrap();
+        if v["type"] == "result" {
+            big |= v["id"] == 8 && v["error"]["code"] == "too_large" && v["command"] == "set_view";
+            after |= v["id"] == 9 && v["ok"] == true;
+        }
+    }
+    // A frame over the read limit closes that connection only.
+    let big = "x".repeat(evo_server::http::MAX_WS_READ * 2);
     let _ = ws.send(Message::Text(big)).await;
     let ended = tokio::time::timeout(Duration::from_secs(10), async {
         loop {

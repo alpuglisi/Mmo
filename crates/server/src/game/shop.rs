@@ -578,6 +578,9 @@ impl Game {
                     reason: t.reason,
                 }
             }),
+            name_warning: self
+                .impersonates(player, &design.name, names::Kind::Lineage)
+                .then(|| "that lineage name looks like another player's name: founding would refuse it".to_string()),
         }
     }
 

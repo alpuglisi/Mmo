@@ -1134,6 +1134,8 @@ export interface DesignCompatView {
   /** Founding now is a re-founding soon after your last lineage ended: `founders` of `requested` (half), costing
    * `cost` points, until `until_day` (about `minutes_left` real minutes). */
   refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string };
+  /** Why founding would refuse the design's name (it looks like another player's); absent when fine. */
+  name_warning?: string;
 }
 
 export interface SeasonRow {
