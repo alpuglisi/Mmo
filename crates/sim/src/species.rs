@@ -34,6 +34,28 @@
 //! not detected for `species_extinct_after` detections in a row is extinct
 //! (dated to its last detection).
 //!
+//! **Hysteresis** (snapshot version 39; `ScoringConfig::species_confirm`,
+//! `species_confirm_adults`, `species_merge_confirm`, `species_revive_days`).
+//! A population near the species threshold drifts back and forth across it,
+//! and without hysteresis every crossing was a new numbered species ("L0
+//! (2)" … "(7)"), announced and credited each time. Now:
+//!
+//! - A would-be split is a [`Candidate`] until it has been detected
+//!   `species_confirm` times in a row (each time with `species_min_new`
+//!   samples), and then has `species_confirm_adults` adults. Only then is it
+//!   a species (dated to its first detection) and announced and credited, once.
+//!   Its members are unclassified meanwhile.
+//! - A merge must hold `species_merge_confirm` detections in a row. Until
+//!   then the merging species stays alive with no adults of its own (they
+//!   count in the species it is merging into), and recovers if it splits off
+//!   again.
+//! - A would-be split that matches a species which merged away within
+//!   `species_revive_days` is that species again (its id, name and credit),
+//!   with no announcement.
+//!
+//! Foundings and the first detection's species count at once. Settings of
+//! 0 (worlds from before version 39) give the old tracker exactly.
+//!
 //! **Credit ("species founded").** A split is credited to the player whose
 //! origin-tagged alleles hold the plurality among the new species' sampled
 //! adults at detection: the same measure as the legacy score, so the genes
@@ -342,6 +364,25 @@ pub struct Species {
     pub missed: u32,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v14::reps"))]
     reps: Vec<Expr>,
+    /// Detections in a row it has continued as the same cluster as a larger
+    /// species (a merge in waiting, `ScoringConfig::species_merge_confirm`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v39::list"))]
+    pub merging: u32,
+}
+
+/// A cluster that would be a new species (a split) if it holds: detected
+/// `hits` times in a row so far (`ScoringConfig::species_confirm`).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Candidate {
+    pub first_day: u64,
+    pub hits: u32,
+    /// The species it splits from, at its first detection.
+    pub parent: Option<u32>,
+    /// Estimated adults at the last detection.
+    pub adults: f64,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v14::reps"))]
+    reps: Vec<Expr>,
 }
 
 impl Species {
@@ -391,6 +432,9 @@ pub struct SpeciesTracker {
     /// Samples taken at the last detection, and clusters left unclassified.
     pub last_samples: usize,
     pub unclassified: usize,
+    /// Splits waiting to be confirmed (`ScoringConfig::species_confirm`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v39::list"))]
+    pub candidates: Vec<Candidate>,
 }
 
 /// Summary of one cluster's samples.
@@ -463,6 +507,12 @@ pub struct DetectParams {
     pub min_new: usize,
     pub extinct_after: u32,
     pub reps: usize,
+    /// Hysteresis (`ScoringConfig::species_confirm` and the rest; 0 or 1:
+    /// off).
+    pub confirm: u32,
+    pub confirm_adults: f64,
+    pub merge_confirm: u32,
+    pub revive_days: u64,
 }
 
 impl DetectParams {
@@ -472,6 +522,10 @@ impl DetectParams {
             min_new: cfg.scoring.species_min_new.max(1),
             extinct_after: cfg.scoring.species_extinct_after,
             reps: cfg.scoring.species_reps.max(1),
+            confirm: cfg.scoring.species_confirm,
+            confirm_adults: cfg.scoring.species_confirm_adults as f64,
+            merge_confirm: cfg.scoring.species_merge_confirm,
+            revive_days: cfg.scoring.species_revive_days as u64,
         }
     }
 }
@@ -523,6 +577,11 @@ impl SpeciesTracker {
             .collect();
 
         let mut events = Vec::new();
+        // Candidates matched this detection, those confirmed, and merged
+        // species brought back.
+        let mut hit = vec![false; self.candidates.len()];
+        let mut promoted: Vec<usize> = Vec::new();
+        let mut revived: Vec<usize> = Vec::new();
         let mut assigned: Vec<Option<u32>> = vec![None; clusters.len()];
         let mut seen = vec![false; live.len()];
         for (c, members) in clusters.iter().enumerate() {
@@ -537,6 +596,14 @@ impl SpeciesTracker {
                     seen[k] = true;
                     let gone = live[k] as u32;
                     let s = &mut self.species[live[k]];
+                    // A merge must hold: until then it stays alive, its
+                    // members counted in the species it is merging into.
+                    s.merging += 1;
+                    if s.merging < p.merge_confirm {
+                        s.clear_counts();
+                        s.missed = 0;
+                        continue;
+                    }
                     s.extinct_day = Some(day);
                     s.merged_into = Some(id);
                     // Its members are counted in the species it merged into
@@ -567,11 +634,96 @@ impl SpeciesTracker {
                 let main = sum.lineages.first().map(|l| l.0)?;
                 live.iter().find(|&&s| self.species[s].main_lineage() == Some(main)).map(|&s| s as u32)
             });
-            let origin = match (first, parent) {
+            let mut origin = match (first, parent) {
                 (true, _) => SpeciesOrigin::Initial,
                 (false, Some(_)) => SpeciesOrigin::Split,
                 (false, None) => SpeciesOrigin::Founding,
             };
+            let mut founded_day = day;
+            let mut parent = parent;
+            if origin == SpeciesOrigin::Split && p.confirm >= 2 {
+                // A species that merged away lately, detected again: the same
+                // species (no announcement, no credit), not a new one.
+                if p.revive_days > 0 {
+                    let revive = (0..self.species.len())
+                        .filter(|&s| {
+                            let o = &self.species[s];
+                            o.merged_into.is_some()
+                                && o.extinct_day.is_some_and(|d| d + p.revive_days >= day)
+                                && !revived.contains(&s)
+                        })
+                        .map(|s| {
+                            let reps = &self.species[s].reps;
+                            let n = members
+                                .iter()
+                                .filter(|&&m| reps.iter().any(|r| p.rule.linked(&samples[m].expr, r)))
+                                .count();
+                            (s, n)
+                        })
+                        .filter(|&(_, n)| n > 0)
+                        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)));
+                    if let Some((s, _)) = revive {
+                        revived.push(s);
+                        let sp = &mut self.species[s];
+                        sp.extinct_day = None;
+                        sp.merged_into = None;
+                        sp.merging = 0;
+                        let id = s as u32;
+                        self.update(id, day, &sum, samples, members, p.reps);
+                        assigned[c] = Some(id);
+                        continue;
+                    }
+                }
+                // Otherwise a candidate until it has held `confirm` detections.
+                let matched = (0..self.candidates.len())
+                    .filter(|&k| !hit[k])
+                    .map(|k| {
+                        let reps = &self.candidates[k].reps;
+                        let n = members
+                            .iter()
+                            .filter(|&&m| reps.iter().any(|r| p.rule.linked(&samples[m].expr, r)))
+                            .count();
+                        (k, n)
+                    })
+                    .filter(|&(_, n)| n > 0)
+                    .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)));
+                let k = match matched {
+                    Some((k, _)) => {
+                        let cand = &mut self.candidates[k];
+                        cand.hits += 1;
+                        cand.adults = sum.adults;
+                        cand.reps = pick_reps(samples, members, p.reps);
+                        k
+                    }
+                    None => {
+                        self.candidates.push(Candidate {
+                            first_day: day,
+                            hits: 1,
+                            parent,
+                            adults: sum.adults,
+                            reps: pick_reps(samples, members, p.reps),
+                        });
+                        hit.push(false);
+                        self.candidates.len() - 1
+                    }
+                };
+                hit[k] = true;
+                let cand = &self.candidates[k];
+                if cand.hits < p.confirm || cand.adults < p.confirm_adults {
+                    self.unclassified += 1;
+                    continue;
+                }
+                // Confirmed: a species since its first detection, split from
+                // its first parent if that one still lives.
+                founded_day = cand.first_day;
+                if let Some(first_parent) = cand.parent {
+                    if self.species.get(first_parent as usize).is_some_and(|s| s.is_alive()) {
+                        parent = Some(first_parent);
+                    }
+                }
+                promoted.push(k);
+                origin = SpeciesOrigin::Split;
+            }
             let founder = (origin == SpeciesOrigin::Split && sum.dominant != WILD).then_some(sum.dominant);
             if let Some(f) = founder {
                 *self.founded.entry(f).or_default() += 1;
@@ -586,7 +738,7 @@ impl SpeciesTracker {
                 name,
                 origin,
                 parent: if origin == SpeciesOrigin::Split { parent } else { None },
-                founded_day: day,
+                founded_day,
                 extinct_day: None,
                 merged_into: None,
                 founder,
@@ -600,6 +752,7 @@ impl SpeciesTracker {
                 last_seen: day,
                 missed: 0,
                 reps: Vec::new(),
+                merging: 0,
             });
             self.update(id, day, &sum, samples, members, p.reps);
             assigned[c] = Some(id);
@@ -610,6 +763,14 @@ impl SpeciesTracker {
                 founder,
             });
         }
+        // Candidates must hold in a row: drop those not seen this time, and
+        // the confirmed ones.
+        let mut k = 0;
+        self.candidates.retain(|_| {
+            let keep = hit[k] && !promoted.contains(&k);
+            k += 1;
+            keep
+        });
         // Old species found nowhere.
         for (k, &s) in live.iter().enumerate() {
             if seen[k] {
@@ -637,6 +798,7 @@ impl SpeciesTracker {
         s.body_size = sum.body_size;
         s.last_seen = day;
         s.missed = 0;
+        s.merging = 0;
         s.reps = pick_reps(samples, members, reps);
     }
 }
@@ -659,10 +821,114 @@ mod tests {
         LinkRule::from_config(&crate::WorldConfig::default())
     }
 
+    /// The tracker without hysteresis (as before snapshot version 39).
     fn params() -> DetectParams {
         let mut cfg = crate::WorldConfig::default();
         cfg.scoring.species_extinct_after = 1;
+        cfg.scoring.species_confirm = 0;
+        cfg.scoring.species_merge_confirm = 0;
+        cfg.scoring.species_revive_days = 0;
         DetectParams::from_config(&cfg)
+    }
+
+    /// With hysteresis: splits hold 3 detections, merges 3, re-use within 100 days.
+    fn hysteresis() -> DetectParams {
+        let mut cfg = crate::WorldConfig::default();
+        cfg.scoring.species_extinct_after = 1;
+        cfg.scoring.species_confirm = 3;
+        cfg.scoring.species_confirm_adults = 5.0;
+        cfg.scoring.species_merge_confirm = 3;
+        cfg.scoring.species_revive_days = 100;
+        DetectParams::from_config(&cfg)
+    }
+
+    /// Herbivores, and a far group joined to them (`bridged`) by
+    /// intermediates or not: one species or two. Fresh individuals each day.
+    fn flapping_day(day: u64, bridged: bool) -> Vec<Sample> {
+        let mut v = group(&base(), 20, 0, 1, 100 + day);
+        if bridged {
+            v.extend(group(&base().with(Gene::BodySize, 0.42), 10, 0, 2, 200 + day));
+            v.extend(group(&base().with(Gene::BodySize, 0.54), 10, 0, 2, 400 + day));
+        }
+        v.extend(group(&base().with(Gene::BodySize, 0.66), 10, 0, 2, 300 + day));
+        v
+    }
+
+    fn appeared(ev: &[SpeciesEvent]) -> Vec<u32> {
+        ev.iter()
+            .filter_map(|e| if let SpeciesEvent::Appeared { species, .. } = e { Some(*species) } else { None })
+            .collect()
+    }
+
+    #[test]
+    fn flapping_days_are_one_or_two_clusters() {
+        for day in (0..200).step_by(5) {
+            let n = |b| cluster(&flapping_day(day, b), &rule()).iter().filter(|c| c.len() >= 4).count();
+            assert_eq!((n(true), n(false)), (1, 2), "day {day}");
+        }
+    }
+
+    #[test]
+    fn flapping_without_hysteresis_makes_numbered_copies() {
+        let p = params();
+        let mut t = SpeciesTracker::default();
+        t.detect(0, &flapping_day(0, true), &p, |l| format!("L{l}"));
+        let mut new = 0;
+        for k in 1..=8u64 {
+            new += appeared(&t.detect(5 * k, &flapping_day(5 * k, k % 2 == 0), &p, |l| format!("L{l}"))).len();
+        }
+        assert_eq!(new, 4, "a new species every other detection");
+        assert!(t.species.iter().any(|s| s.name == "L0 (5)"));
+    }
+
+    #[test]
+    fn hysteresis_counts_a_split_once_and_reuses_a_merged_identity() {
+        let p = hysteresis();
+        let name = |l: u32| format!("L{l}");
+        let mut t = SpeciesTracker::default();
+        t.detect(0, &flapping_day(0, true), &p, name);
+        let mut day = 0;
+        let mut step = |t: &mut SpeciesTracker, bridged: bool| {
+            day += 5;
+            t.detect(day, &flapping_day(day, bridged), &p, name)
+        };
+        // Flapping: a split never holds 3 detections, so nothing counts.
+        for k in 0..8 {
+            assert!(appeared(&step(&mut t, k % 2 == 1)).is_empty());
+            assert!(t.founded.is_empty());
+        }
+        assert_eq!(t.species.len(), 1);
+        // A split that holds: one species, dated to its first detection,
+        // credited once.
+        assert!(step(&mut t, false).is_empty()); // day 45
+        assert!(step(&mut t, false).is_empty());
+        let ev = step(&mut t, false);
+        let new = appeared(&ev);
+        assert_eq!(new.len(), 1, "{ev:?}");
+        let id = new[0];
+        assert_eq!(t.species[id as usize].founded_day, 45);
+        assert_eq!(t.species[id as usize].parent, Some(0));
+        assert_eq!(t.founded.get(&2), Some(&1));
+        // Bridged again briefly: not a merge yet, no events, still alive
+        // (with its adults counted in the species it is merging into).
+        assert!(step(&mut t, true).is_empty());
+        assert!(step(&mut t, true).is_empty());
+        assert!(t.species[id as usize].is_alive());
+        assert_eq!(t.species[id as usize].adults, 0.0);
+        assert!(step(&mut t, false).is_empty());
+        assert!(t.species[id as usize].adults > 0.0);
+        // A merge that holds.
+        step(&mut t, true);
+        step(&mut t, true);
+        let ev = step(&mut t, true);
+        assert_eq!(ev, vec![SpeciesEvent::Extinct { species: id, merged_into: Some(0) }]);
+        // Split off again: the same species, revived silently.
+        let ev = step(&mut t, false);
+        assert!(ev.is_empty(), "{ev:?}");
+        assert!(t.species[id as usize].is_alive());
+        assert_eq!(t.species.len(), 2);
+        assert_eq!(t.founded.get(&2), Some(&1));
+        assert!(t.candidates.is_empty());
     }
 
     fn base() -> FounderDesign {

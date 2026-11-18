@@ -493,6 +493,26 @@ exactly as before (detection draws no random numbers and changes nothing).
   samples; a species missed by 2 detections in a row is extinct (dated to
   its last detection). Names come from the main founding lineage ("Meadow
   vole", then "Meadow vole (2)").
+- **Hysteresis (snapshot version 39).** A population near the threshold
+  drifts back and forth across it. Without hysteresis every crossing was a
+  new numbered species: playtest 2 saw "Steppe antelope (2)" to "(7)", each
+  one announced, counted and credited. Now:
+  - A would-be split is a *candidate* until it has held 4 detections in a
+    row (20 days, `species_confirm`) with at least 12 adults
+    (`species_confirm_adults`). Then it becomes a species dated to its first
+    detection, announced and credited once. Its members are unclassified
+    until then.
+  - A merge must also hold 4 detections (`species_merge_confirm`). Until
+    then the merging species stays alive with no adults of its own.
+  - A split that matches a species which merged away within 360 days
+    (`species_revive_days`) is that species again, with the same id and
+    name and no new announcement.
+
+  The server lists only species with adults, or extinct ones that lived
+  past a season. In older worlds it gives no bonus, alert or count for a
+  re-detected species. Worlds from before version 39 keep the old tracker
+  (the settings read as 0). `evo-sim genetics --long` compares both trackers
+  on the same samples ("speciation" checks).
 - **Species founded (credit rule).** A split is credited to the player whose
   origin-tagged alleles hold the plurality among the new species' sampled
   adults: the legacy measure, so the genes that make up the new species earn

@@ -222,15 +222,40 @@ fn species_bonus_due(
     let Some(lineage) = t.get(species).and_then(|s| s.main_lineage()) else {
         return false;
     };
-    let redetected = t.species.iter().any(|o| {
-        o.id != species && o.founder == Some(player) && o.merged_into.is_some() && o.main_lineage() == Some(lineage)
-    });
     let cooling = paid.get(&lineage).is_some_and(|&d| day < d + dpy);
-    if redetected || cooling {
+    if species_redetected(t, species, player) || cooling {
         return false;
     }
     paid.insert(lineage, day);
     true
+}
+
+/// Whether `species`, credited to `player`, is a re-detection: an earlier
+/// species of that player from the same lineage merged back, and this one
+/// is it drifting across the threshold again, not a speciation. Worlds from
+/// snapshot version 39 re-use the merged species' identity instead (and
+/// confirm splits first), so this only catches older worlds' records; such
+/// achievements earn nothing and raise no alert, and the counts skip them.
+fn species_redetected(t: &evo_sim::species::SpeciesTracker, species: u32, player: PlayerId) -> bool {
+    let Some(lineage) = t.get(species).and_then(|s| s.main_lineage()) else {
+        return false;
+    };
+    t.species.iter().any(|o| {
+        o.id < species && o.founder == Some(player) && o.merged_into.is_some() && o.main_lineage() == Some(lineage)
+    })
+}
+
+/// Whether a species belongs in the species list: alive with adults, or
+/// extinct after a real life. Left out: living species with no adults of
+/// their own (merging into another, or missed by the last sample) and
+/// species that merged back within a season of appearing (the numbered
+/// copies of a species flapping across the threshold in older worlds).
+fn species_listed(s: &evo_sim::species::Species, season_days: u64) -> bool {
+    match (s.extinct_day, s.merged_into) {
+        (None, _) => s.adults > 0.0,
+        (Some(d), Some(_)) => d.saturating_sub(s.founded_day) >= season_days,
+        (Some(_), None) => s.peak_adults > 0.0,
+    }
 }
 
 /// Most mating requests one player may send another within
@@ -3105,6 +3130,10 @@ impl Game {
             let mut paid = true;
             match a.kind {
                 AchievementKind::SpeciesFounded { species } => {
+                    if species_redetected(&ch.species, species, a.player) {
+                        // No speciation: no bonus, count or alert.
+                        continue;
+                    }
                     paid = species_bonus_due(&ch.species, &mut self.species_bonus, species, a.player, a.day, dpy);
                     if paid {
                         self.season.add_species(a.player);
@@ -3159,9 +3188,11 @@ impl Game {
         let ch = &w.chronicle;
         let t = &ch.species;
         let lineage_name = |l: u32| w.lineages.get(l as usize).map(|x| (x.name.clone(), x.owner)).unwrap_or_default();
+        let season_days = (w.config.days_per_year / 4).max(1) as u64;
         let mut species: Vec<SpeciesView> = t
             .species
             .iter()
+            .filter(|s| species_listed(s, season_days))
             .map(|s| SpeciesView {
                 id: s.id,
                 name: s.name.clone(),
@@ -3262,7 +3293,11 @@ impl Game {
                 e.longevity_days = e.longevity_days.max(life.days(day));
             }
         }
-        for a in &ch.achievements {
+        let real = |a: &&evo_sim::chronicle::Achievement| match a.kind {
+            AchievementKind::SpeciesFounded { species } => !species_redetected(t, species, a.player),
+            _ => true,
+        };
+        for a in ch.achievements.iter().filter(real) {
             let e = tallies.entry(a.player).or_insert_with(|| new(a.player));
             match a.kind {
                 AchievementKind::SpeciesFounded { .. } => e.species_founded += 1,
@@ -3282,6 +3317,7 @@ impl Game {
             .achievements
             .iter()
             .rev()
+            .filter(real)
             .take(200)
             .map(|a| AchievementView {
                 day: a.day,
@@ -3296,7 +3332,7 @@ impl Game {
                 day,
                 detected_day: t.last_detection,
                 samples: t.last_samples,
-                alive: t.alive().count(),
+                alive: species.iter().filter(|s| s.extinct_day.is_none()).count(),
                 species,
                 founded: t
                     .founded
@@ -6121,6 +6157,11 @@ mod tests {
         };
         let mut cfg = evo_sim::WorldConfig::default();
         cfg.scoring.species_extinct_after = 1;
+        // The tracker of worlds before snapshot version 39 (no hysteresis):
+        // what this guards against.
+        cfg.scoring.species_confirm = 0;
+        cfg.scoring.species_merge_confirm = 0;
+        cfg.scoring.species_revive_days = 0;
         let p = DetectParams::from_config(&cfg);
         let mut t = SpeciesTracker::default();
         let name = |l: u32| format!("L{l}");
@@ -6153,6 +6194,12 @@ mod tests {
         let again = founded(t.detect(500, &apart(30), &p, name)).expect("detected again");
         assert_ne!(again, first);
         assert!(!species_bonus_due(&t, &mut paid, again, 1, 500, 120), "a re-detection doesn't pay");
+        // ...nor raise an alert or count; the first one does, and the
+        // flicker copy is left out of the species list.
+        assert!(species_redetected(&t, again, 1) && !species_redetected(&t, first, 1));
+        assert!(!species_listed(&t.species[first as usize], 30), "merged back within a season");
+        assert!(species_listed(&t.species[again as usize], 30));
+        assert!(species_listed(&t.species[0], 30));
         // The cooldown alone: a different species id of the lineage, within a year.
         let mut paid = BTreeMap::new();
         assert!(species_bonus_due(&t, &mut paid, first, 1, 5, 120));

@@ -146,6 +146,36 @@ pub struct WorldResult {
     founders_h: Vec<f64>,
     #[serde(with = "crate::jobs::nan")]
     seconds: f64,
+    #[serde(default)]
+    species: SpeciesStats,
+}
+
+/// Species detection with and without hysteresis (snapshot version 39) on
+/// the same samples: two shadow trackers fed `World::species_samples` after
+/// each of the world's detections, plus the world's own tracker.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct SpeciesStats {
+    /// Without hysteresis: splits, splits that merged back within a season
+    /// (flaps), splits that lasted two seasons or more (or to the end).
+    pub old: [u32; 3],
+    /// The same with this build's settings.
+    pub new: [u32; 3],
+    /// The world's own tracker (this build's settings).
+    pub world: [u32; 3],
+    /// Names of the world's split species.
+    pub names: Vec<String>,
+}
+
+/// [splits, flaps, lasting] of a tracker at `end`.
+fn split_stats(t: &evo_sim::species::SpeciesTracker, end: u64, season: u64) -> [u32; 3] {
+    let mut out = [0; 3];
+    for s in t.species.iter().filter(|s| s.origin == evo_sim::species::SpeciesOrigin::Split) {
+        let lived = s.extinct_day.unwrap_or(end).saturating_sub(s.founded_day);
+        out[0] += 1;
+        out[1] += (s.merged_into.is_some() && lived < season) as u32;
+        out[2] += (lived >= 2 * season || (s.is_alive() && lived >= season)) as u32;
+    }
+    out
 }
 
 pub struct EcoResults {
@@ -309,10 +339,30 @@ pub fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
     let mut pairs = Vec::new();
     let mut births = Births::default();
     let mut invalid_sampled = 0u64;
+    // Shadow species trackers: without hysteresis, and with this build's.
+    let new_params = evo_sim::species::DetectParams::from_config(&w.config);
+    let old_params = evo_sim::species::DetectParams {
+        confirm: 0,
+        confirm_adults: 0.0,
+        merge_confirm: 0,
+        revive_days: 0,
+        ..new_params
+    };
+    let mut shadows = [evo_sim::species::SpeciesTracker::default(), evo_sim::species::SpeciesTracker::default()];
+    let mut last_detection = None;
     for day in 0..=days {
         if day > 0 {
             for _ in 0..tpd {
                 w.step();
+            }
+            let detected = w.chronicle.species.last_detection;
+            if detected != last_detection {
+                last_detection = detected;
+                let samples = w.species_samples();
+                let name_of = |l: u32| names.get(l as usize).cloned().unwrap_or_default();
+                let d = detected.unwrap_or(day);
+                shadows[0].detect(d, &samples, &old_params, name_of);
+                shadows[1].detect(d, &samples, &new_params, name_of);
             }
             // The day's newborns against their parents.
             let index: HashMap<OrgId, usize> = w.organisms.iter().enumerate().map(|(i, o)| (o.id, i)).collect();
@@ -478,7 +528,31 @@ pub fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
             );
         }
     }
-    WorldResult { rows, pairs, births, invalid_sampled, names, founders_h, seconds: started.elapsed().as_secs_f64() }
+    let season = (w.config.days_per_year / 4).max(1) as u64;
+    let end = w.day();
+    let species = SpeciesStats {
+        old: split_stats(&shadows[0], end, season),
+        new: split_stats(&shadows[1], end, season),
+        world: split_stats(&w.chronicle.species, end, season),
+        names: w
+            .chronicle
+            .species
+            .species
+            .iter()
+            .filter(|s| s.origin == evo_sim::species::SpeciesOrigin::Split)
+            .map(|s| s.name.clone())
+            .collect(),
+    };
+    WorldResult {
+        rows,
+        pairs,
+        births,
+        invalid_sampled,
+        names,
+        founders_h,
+        seconds: started.elapsed().as_secs_f64(),
+        species,
+    }
 }
 
 /// Mutation–drift balance (infinite alleles), 4Nμ/(1+4Nμ).
@@ -794,6 +868,57 @@ pub fn summarize(opts: &EcoOpts, worlds: Vec<WorldResult>) -> EcoResults {
         Verdict::soft(flow_total == 0 || flow_closer * 2 > flow_total),
         format!("Pairs with at least {HYBRID_FLOW} hybrid offspring: hybrids carry alleles both ways, so the two gene pools converge instead of diverging (migration–drift: F_ST ≈ 1/(1 + 4Nm))."),
     ));
+    // --- species detection (hysteresis, snapshot version 39)
+    let sum = |f: fn(&SpeciesStats) -> [u32; 3]| {
+        worlds.iter().fold([0u32; 3], |a, w| {
+            let x = f(&w.species);
+            [a[0] + x[0], a[1] + x[1], a[2] + x[2]]
+        })
+    };
+    let (old, new, own) = (sum(|s| s.old), sum(|s| s.new), sum(|s| s.world));
+    checks.push(eco(
+        "speciation",
+        "species flapping: splits that merge back within a season (with hysteresis)".into(),
+        "0".into(),
+        format!("{} (world trackers), {} (shadow); {} without hysteresis", own[1], new[1], old[1]),
+        if own[1] + new[1] == 0 { Verdict::Pass } else { Verdict::Fail },
+        "A split counts only after holding several detections and a merge only after holding too, so a population drifting back and forth across the species threshold is one species, not a numbered copy per crossing.".into(),
+    ));
+    checks.push(eco(
+        "speciation",
+        "lasting splits still detected".into(),
+        format!("≥ {} (lasting splits without hysteresis, less one per world)", old[2]),
+        format!("{} splits", new[0]),
+        if new[0] + worlds.len() as u32 >= old[2] { Verdict::SoftPass } else { Verdict::SoftFail },
+        "Speciation that holds (two seasons or more, or alive at the end) is still recorded; only the flicker is dropped.".into(),
+    ));
+    checks.push(eco(
+        "speciation",
+        "fewer species events than without hysteresis".into(),
+        format!("≤ {} splits", old[0]),
+        format!("{} splits", new[0]),
+        if new[0] <= old[0] { Verdict::SoftPass } else { Verdict::SoftFail },
+        "Shadow trackers on the same samples (`World::species_samples` after each detection).".into(),
+    ));
+    let mut st = String::from(
+        "| world | splits (old) | flaps (old) | lasting (old) | splits (new) | flaps (new) | lasting (new) | world's species split off |\n|---|---|---|---|---|---|---|---|\n",
+    );
+    for w in &worlds {
+        let s = &w.species;
+        let _ = writeln!(
+            st,
+            "| {} | {} | {} | {} | {} | {} | {} | {} |",
+            w.rows.first().map_or(0, |r| r.world),
+            s.old[0],
+            s.old[1],
+            s.old[2],
+            s.new[0],
+            s.new[1],
+            s.new[2],
+            if s.names.is_empty() { "-".to_string() } else { s.names.join(", ") }
+        );
+    }
+    sections.push(("Ecology: species detection with and without hysteresis".into(), st));
     let mut times = String::new();
     for w in &worlds {
         let _ = writeln!(
