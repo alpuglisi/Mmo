@@ -1140,6 +1140,10 @@ export interface DesignCompatView {
   water_warning?: string;
   /** Set for a warm-blooded design that abandons its eggs (they chill below 24 °C and almost never hatch): what to do instead. */
   egg_warning?: string;
+  /** Incubated eggs on a meat eater (carnivory ≥ 0.5): a roaming hunter leaves its clutch (shown verbatim). */
+  carnivore_egg_warning?: string;
+  /** Balance's drought-founding warning, when the server sends one (shown verbatim). */
+  drought_warning?: string;
   /** Founding now is a re-founding soon after your last lineage ended: `founders` of `requested` (founders cost double points: as many as fit, at least half), costing
    * `cost` points, until `until_day` (about `minutes_left` real minutes). */
   refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string };
@@ -1282,6 +1286,9 @@ export interface CatastropheView {
   start_day: number;
   /** Planned first day after it while active; the day it ended once over. */
   end_day: number;
+  /** First and last days counted from 1, as alerts and screens show them (absent on older servers). */
+  first_day?: number;
+  last_day?: number;
   active: boolean;
   population_before: number;
   population_after?: number;

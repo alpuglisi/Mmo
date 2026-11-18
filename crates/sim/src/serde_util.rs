@@ -2747,10 +2747,10 @@ pub mod before_v57 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v58")]` on the playtest 6
-/// founding tunable (`Balance::founding_drought`). On a thread
-/// holding a [`before_v58::Guard`] (reading or hashing a snapshot of
-/// version 57 or before) it is neither written nor read: it reads as 0 (off).
+/// `#[serde(with = "crate::serde_util::before_v58")]` on the era's daily
+/// niche tallies (`Chronicle::niche_tally`). On a thread holding a
+/// [`before_v58::Guard`] (reading or hashing a snapshot of version 57 or
+/// before) it is neither written nor read: it reads as empty.
 pub mod before_v58 {
     use std::cell::Cell;
 
@@ -2760,7 +2760,52 @@ pub mod before_v58 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The tunable before version 58: off.
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(T::default())
+        } else {
+            T::deserialize(d)
+        }
+    }
+}
+
+/// `#[serde(with = "crate::serde_util::before_v61")]` on the playtest 6
+/// founding tunable (`Balance::founding_drought`). On a thread holding a
+/// [`before_v61::Guard`] (reading or hashing a snapshot of version 60 or
+/// before) it is neither written nor read: it reads as 0 (off).
+pub mod before_v61 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The tunable before version 61: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

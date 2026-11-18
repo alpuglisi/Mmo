@@ -52,7 +52,9 @@ describe('the builder’s interbreeding check', () => {
     expect(a.level).toBe('warn');
     expect(a.headline).toBe('Interbreeds with Steppe antelope and 1 more');
     expect(a.points[0]).toMatch(/wild genes, which count for the wild ecosystem/);
-    expect(a.points[1]).toMatch(/move (diet|body size|thermoregulation) at least 0\.\d\d further from Steppe antelope/);
+    // Only changes that get there alone: diet within 0..1, body size, another birth type.
+    expect(a.points[1]).toMatch(/^To keep your genes your own from Steppe antelope, one of these is enough: raise diet \(carnivory\) to 0\.43 or more; .*body size/);
+    expect(a.points[1]).not.toMatch(/thermoregulation further|birth mode 0\./);
     // A player's species is the player's, named by them, never "wild".
     expect(a.points.some((p) => p.includes("GeneBroker's Broker voles"))).toBe(true);
     expect(a.points[0]).not.toMatch(/Broker voles/);
@@ -113,6 +115,14 @@ describe('the founding-size hint', () => {
     weather: { drought, flood: 0, mean_wind: 0, storm: false } as unknown as WorldSummary['weather'],
     width: 96, height: 96, organisms: 500, agents: 500, lineages: 4, lineage_cap: 1500,
   });
+  it('warns at fewer founders when the land offers less food', () => {
+    expect(foundingHint(design({}, { founders: 40 }), world('spring', 0)).level).toBe('ok');
+    // Summer and a drought: 60 × 0.75 × 0.6 = 27 founders.
+    const dry = foundingHint(design({}, { founders: 40 }), world('summer', 0.4));
+    expect(dry.level).toBe('warn');
+    expect(dry.text).toMatch(/around \d+ founders spread out and grow into the land now/i);
+  });
+
   it('warns about big foundings, more so in summer drought', () => {
     expect(foundingHint(design(), world('spring', 0)).level).toBe('ok');
     expect(foundingHint(design(), world('spring', 0)).text).toMatch(/population cap of 1,500/);
@@ -127,5 +137,20 @@ describe('the founding-size hint', () => {
     expect(heavy.text).toMatch(/big animals/);
     // The soft cap, not "births stop at 1,500".
     expect(foundingHint(design(), { ...world('spring', 0), lineage_hard_cap: 3000 }).text).toMatch(/past 1,500, where breeding slows to half pace; births stop at 3,000/);
+  });
+});
+
+describe('sterile options', () => {
+  it('offers only changes that reach the sterile gap alone, within the editor\'s range', async () => {
+    const { sterileOptions } = await import('./hybrid');
+    const wild = sp(1, 'W', { carnivory: 0.05, body_size: 0.32, birth_mode: 0.85, endothermy: 0.9 });
+    const o = sterileOptions(design(), wild);
+    expect(o[0]).toBe('raise diet (carnivory) to 0.43 or more');
+    expect(o.some((x) => x.startsWith('raise body size to 0.70'))).toBe(true);
+    expect(o).toContain('choose abandoned eggs');
+    expect(o).not.toContain('choose incubated eggs');
+    // Already far enough in birth: no birth advice; no thermoregulation ever.
+    expect(sterileOptions(design({}, { birth: 'abandoned_eggs' }), wild).some((x) => x.includes('birth') || x.includes('eggs'))).toBe(false);
+    expect(o.join(' ')).not.toMatch(/thermo/);
   });
 });

@@ -522,9 +522,9 @@ fn playtest5_off(b: &mut crate::Balance) {
     founding_drought_off(b);
 }
 
-/// The playtest 6 founding tunable as snapshots before version 58 read it.
+/// The playtest 6 founding tunable as snapshots before version 61 read it.
 fn founding_drought_off(b: &mut crate::Balance) {
-    b.founding_drought = crate::serde_util::before_v58::OLD_VALUE;
+    b.founding_drought = crate::serde_util::before_v61::OLD_VALUE;
 }
 
 /// Version 55 snapshots (before the playtest 5 balance rules) restore with
@@ -613,6 +613,9 @@ fn fixture_world() -> World {
     for _ in 0..7 {
         w.step();
     }
+    // Snapshots before version 58 hold no niche tallies: start with none so
+    // the older layouts restore to the same world.
+    w.chronicle.niche_tally = Default::default();
     w
 }
 
@@ -1785,18 +1788,39 @@ fn version_56_snapshots_restore_without_playtest5_survival() {
     assert_eq!((r.config.balance.dry_beds, r.config.balance.drink_reach), (1.0, 1.0));
 }
 
-/// Version 57 snapshots (before the playtest 6 founding rules) restore
-/// with that tunable off, and are otherwise the same world.
+/// Version 57 snapshots (before the era's niche tallies) restore with none,
+/// and are otherwise the same world; this version keeps them.
 #[test]
-fn version_57_snapshots_restore_without_founding_drought() {
+fn version_57_snapshots_restore_without_niche_tallies() {
     let mut w = fixture_world();
+    w.run_days(2);
+    assert!(w.chronicle.niche_tally.days > 0);
     let old = w.snapshot_v57();
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 57);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.chronicle.niche_tally, Default::default());
+    assert!(r.snapshot_v57() == old);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.chronicle.niche_tally, w.chronicle.niche_tally);
+    w.chronicle.niche_tally = Default::default();
+    founding_drought_off(&mut w.config.balance);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert!(r.snapshot() == w.snapshot());
+}
+
+/// Version 58 snapshots (before the playtest 6 founding rules) restore
+/// with that tunable off, and are otherwise the same world.
+#[test]
+fn version_58_snapshots_restore_without_founding_drought() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v58();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 58);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.founding_drought, crate::serde_util::before_v58::OLD_VALUE);
-    assert!(r.snapshot_v57() == old);
+    assert_eq!(r.config.balance.founding_drought, crate::serde_util::before_v61::OLD_VALUE);
+    assert!(r.snapshot_v58() == old);
     founding_drought_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());

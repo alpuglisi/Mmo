@@ -27,7 +27,7 @@ Where the design's build order stands:
 What remains is in [Suggested next steps](#suggested-next-steps). Launch
 marketing (drafting, human approval, scheduling and publishing on the
 owner's accounts) lives in [`tools/marketing/`](tools/marketing/PUBLISHING.md).
-Five AI playtests so far; what each found and what changed is summarised in
+Six AI playtests so far; what each found and what changed is summarised in
 [`docs/changelog-playtests.md`](docs/changelog-playtests.md).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
@@ -8691,8 +8691,9 @@ The starter's hibernation (0.5) sits exactly on
 founders don't hibernate at all. Those stay awake through winter, starve
 (the playtest's 58 → 24) and lay all winter.
 
-**`Balance::founding_drought` (1)**, on by default from snapshot version 58
-(provisional), off at 0 for older saves (`serde_util::before_v58`):
+**`Balance::founding_drought` (1)**, on by default from snapshot version 61
+(58 on its branch, 61 as assigned), off at 0 for older saves
+(`serde_util::before_v61`):
 
 - **Lasting water in a drought.** From 30% drought
   (`world::FOUNDING_DROUGHT`), the strict rounds of the home search take

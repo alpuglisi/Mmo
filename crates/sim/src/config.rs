@@ -1247,16 +1247,16 @@ pub struct Balance {
     /// 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v57"))]
     pub drink_reach: f32,
-    /// Playtest 6 founding and newcomers (version 58; *Playtest 6: drought
+    /// Playtest 6 founding and newcomers (version 61; *Playtest 6: drought
     /// foundings and newcomers* in the README; off at 0, what snapshots
-    /// before version 58 read, `serde_util::before_v58`). Playtest 6: a
+    /// before version 61 read, `serde_util::before_v61`). Playtest 6: a
     /// small warm design founded at 52% drought lost all 20 founders in
     /// 10 days. In a drought founders settle only where water that lasts it
     /// is in reach, and start watered with a few days' thirst resistance;
     /// warm egg layers that sleep in winter lay no clutch that would be
     /// incubated in winter; a small founding's grace lasts until its first
     /// young are grown.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v58"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v61"))]
     pub founding_drought: f32,
 }
 

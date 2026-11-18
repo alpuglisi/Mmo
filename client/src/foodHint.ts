@@ -29,6 +29,19 @@ export function easyFounders(d: DesignSpec): number {
   return Math.max(5, Math.min(FOUNDERS_EASY, Math.floor(BIOMASS_EASY / Math.max(each, 0.1))));
 }
 
+/**
+ * How much less food the land offers now: summer and winter thin the plants,
+ * a drought more so (playtest 6: the warning only at 70 founders whatever
+ * the weather). 1 in a mild spring or autumn.
+ */
+export function foodScale(world: WorldSummary | null): number {
+  const season = world?.clock.season;
+  const drought = world?.weather.drought ?? 0;
+  const s = season === 'summer' || season === 'winter' ? 0.75 : 1;
+  const dry = drought >= 0.6 ? 0.4 : drought >= 0.3 ? 0.6 : 1;
+  return s * dry;
+}
+
 export function foundingHint(d: DesignSpec, world: WorldSummary | null): FoodHint {
   const n = Math.max(0, Math.floor(d.founders));
   const each = adultMass(d);
@@ -38,8 +51,10 @@ export function foundingHint(d: DesignSpec, world: WorldSummary | null): FoodHin
   const summer = world?.clock.season === 'summer';
   const soft = world?.lineage_cap;
   const hard = world?.lineage_hard_cap;
-  const heads = n >= FOUNDERS_WARN;
-  const heavy = mass >= BIOMASS_WARN;
+  // The thresholds shrink with the food the land offers now.
+  const scale = foodScale(world);
+  const heads = n >= Math.round(FOUNDERS_WARN * scale);
+  const heavy = mass >= BIOMASS_WARN * scale;
   const food = hunter ? 'prey' : 'plants';
   if (!heads && !heavy) {
     const grow = !soft ? ''
@@ -51,15 +66,16 @@ export function foundingHint(d: DesignSpec, world: WorldSummary | null): FoodHin
       text: `${n} founders, about ${kg(mass)} kg of animals, start together in one spot. The map's Food layer shows where ${hunter ? 'grazing herds (and so prey)' : 'plants'} grow.${grow}`,
     };
   }
-  const when = [summer ? 'it is summer' : '', dry ? 'there is a drought' : ''].filter(Boolean).join(' and ');
-  const easy = easyFounders(d);
+  const winter = world?.clock.season === 'winter';
+  const when = [summer ? 'it is summer' : '', winter ? 'it is winter' : '', dry ? 'there is a drought' : ''].filter(Boolean).join(' and ');
+  const easy = Math.max(5, Math.round(easyFounders(d) * scale));
   // The advice follows what made it large: heads, or the weight of big animals.
   const why = heavy && !heads
     ? `These are big animals (about ${kg(each)} kg each): ${n} of them weigh about ${kg(mass)} kg and`
     : `${n} founders (about ${kg(mass)} kg of animals)`;
   const advice = heavy && easy < FOUNDERS_EASY
-    ? `At this body size around ${easy} founders (about ${kg(easy * each)} kg) spread out and grow into the land`
-    : `Around ${FOUNDERS_EASY} founders spread out and grow into the land`;
+    ? `At this body size around ${easy} founders (about ${kg(easy * each)} kg) spread out and grow into the land${scale < 1 ? ' now' : ''}`
+    : `Around ${easy} founders spread out and grow into the land${scale < 1 ? ' now' : ''}`;
   return {
     level: 'warn',
     text: `${why} land together and eat the ${food} around them within days: large foundings tend to lose most of their founders to hunger in the first weeks${when ? `, worse now that ${when}` : ''}. `
