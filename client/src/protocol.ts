@@ -834,6 +834,10 @@ export interface WorldSummary {
   winter_provision?: boolean;
   /** Most living organisms, young included, one player may have; at it births pause (absent from older servers). */
   lineage_cap?: number;
+  /** No births past this many living members (with crowding, a multiple of `lineage_cap`, which is then the soft cap). */
+  lineage_hard_cap?: number;
+  /** Player lineages in their newcomer grace (others can't order attacks on them). */
+  protected?: { player: PlayerId; lineage: number; days_left: number }[];
   /** Days in a year (four equal seasons); absent from older servers. */
   days_per_year?: number;
   /** Ticks in a game day; absent from older servers. */
@@ -954,6 +958,10 @@ export interface LineageStats {
   score?: ScoreBreakdown;
   /** The soft lineage cap and how crowded the lineage is (absent on older servers). */
   crowding?: CrowdingView;
+  /** The founding ramp: how much of the share counts toward the ranked season now (absent from older servers). */
+  ramp?: { founded_day: number; weight: number; days: number };
+  /** Days left of the newcomer grace (others can't order attacks on yours); absent: none. */
+  grace_days_left?: number;
   /** Egg-laying lineages: their clutches on the ground (absent for live bearers and older servers). */
   eggs?: { clutches: number; eggs: number; brooded: number };
   legacy: LegacyPoint[];
@@ -1202,6 +1210,8 @@ export interface SpeciesLineage {
   lineage: number;
   name: string;
   owner: PlayerId;
+  /** The owner's player name (absent from older servers). */
+  owner_name?: string;
   adults: number;
 }
 

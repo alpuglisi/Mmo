@@ -167,7 +167,7 @@ impl fmt::Display for CommandError {
                 let kg = |x: f32| if x < 10.0 { format!("{x:.1}") } else { format!("{x:.0}") };
                 write!(
                     f,
-                    "that animal ({} kg) is too big to take on; this one can tackle up to {} kg (more with pack-mates around)",
+                    "that animal ({} kg) is too big to take on; this one can tackle up to {} kg, counting the pack-mates around it now",
                     kg(*mass),
                     kg(*limit)
                 )

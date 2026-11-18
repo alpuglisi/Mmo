@@ -12,10 +12,12 @@ import { historyRows, offerLine } from './matingHistory';
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
 import { buildFamilyTree, type FamilyModel } from '../familyTree';
-import { actionText, capInfo, grouped, migrationText } from '../lineageInfo';
+import { actionText, capInfo, graceText, grouped, LEGACY_EXPLAIN, migrationText, rampText } from '../lineageInfo';
+import { droughtNotice } from '../droughtInfo';
+import { markRetired, wasRetired } from '../retired';
 import { renderFamilyTree } from './familyTree';
 import { exposeCards, familyShareBar } from '../share/familyShare';
-import type { AlertPrefs, ClientMsg, CompatibilityView, LineageStats, MatingOutcome, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
+import type { AlertPrefs, ClientMsg, CompatibilityView, LineageStats, PlayerId, MatingOutcome, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
 import { parseCompatibilityView, WILD } from '../protocol';
 import { createPicker, type PickItem } from './picker';
 import { WorldView } from '../world/worldView';
@@ -65,13 +67,15 @@ const LOCAL_CODES = new Set(['not_connected', 'timeout', 'disconnected', 'closed
  */
 function extinctNoticeEl(id: string, onNewLineage: (() => void) | undefined): HTMLElement {
   return h('div', { class: 'notice bad', id, role: 'status' },
-    h('p', {}, h('strong', {}, 'Your lineage has died out.'), ' None of your organisms are alive. The Genes tab charts what killed them.'),
+    h('p', { class: 'extinct-text' }, h('strong', {}, 'Your lineage has died out.'), ' None of your organisms are alive. The Genes tab charts what killed them.'),
     onNewLineage ? h('p', {}, h('button', { type: 'button', class: 'new-lineage', id: `${id}-new`, onclick: onNewLineage }, 'Start a new lineage'),
       h('span', { class: 'muted small' }, ' Your renown, records and titles stay.')) : null);
 }
 /** The dynamic terrain layers change every simulated hour. */
 const TERRAIN_REFRESH_MS = 4000;
 const STATS_REFRESH_MS = 5000;
+/** How often the list of protected newcomers (`/api/world`) is re-read. */
+const PROTECTED_REFRESH_MS = 30000;
 const SEASONS_REFRESH_MS = 15000;
 const CHRONICLE_REFRESH_MS = 10000;
 /**
@@ -125,6 +129,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const cleanups: (() => void)[] = [];
   /** Living organisms one player may have (`/api/world`), for the Lineage tab's cap row. */
   let worldCap: number | undefined;
+  /** Players whose lineage is a protected newcomer, with the days left (`/api/world`). */
+  const protectedPlayers = new Map<PlayerId, number>();
+  const setProtected = (list: { player: PlayerId; days_left: number }[] | undefined) => {
+    protectedPlayers.clear();
+    for (const p of list ?? []) protectedPlayers.set(p.player, p.days_left);
+  };
   /** The genetics dashboard's data (declared up here: the Lineage tab reads it too, possibly before its fetch is set up). */
   let stats: LineageStats | null = null;
   const inspExtinct = extinctNoticeEl('inspector-extinct', deps.onNewLineage);
@@ -250,7 +260,20 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     catFold.setAttribute('aria-expanded', String(!folded));
   });
   let catSeen: number | null = null;
-  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, catAlert, hint, legends, fab, possessBar, chooser, toasts);
+  // A drought (much of the land dry): the same kind of notice, in amber, under it.
+  const droughtTitle = h('strong', { class: 'cat-title' });
+  const droughtAdvice = h('span', { class: 'cat-effect' });
+  const droughtFold = h('button', { class: 'secondary cat-fold', type: 'button', 'aria-expanded': 'true', title: 'Fold or unfold the drought notice' }, 'Less');
+  const droughtAlert = h('div', { class: 'catastrophe-alert drought-alert', id: 'drought-alert', role: 'status', hidden: true },
+    h('span', { class: 'cat-icon', 'aria-hidden': 'true' }, '☀'), h('div', { class: 'cat-text' }, droughtTitle, droughtAdvice), droughtFold);
+  droughtFold.addEventListener('click', () => {
+    const folded = droughtAlert.classList.toggle('folded');
+    droughtFold.textContent = folded ? 'More' : 'Less';
+    droughtFold.setAttribute('aria-expanded', String(!folded));
+  });
+  let droughtOn = false;
+  const notices = h('div', { class: 'map-notices', id: 'map-notices' }, catAlert, droughtAlert);
+  const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, notices, hint, legends, fab, possessBar, chooser, toasts);
   // The legend is collapsible: hidden by default (it covers part of the map;
   // the tour points to its button), the choice remembered on this device.
   function setLegend(on: boolean, remember: boolean): void {
@@ -436,9 +459,34 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     renderPossessBar();
   }
 
+  // The animal last possessed: when it dies the bar says so for a while
+  // instead of vanishing silently (playtest 2).
+  let lastPossessed: OrgId | null = null;
+  let endedTimer: ReturnType<typeof setTimeout> | undefined;
   function renderPossessBar(): void {
     const p = possessed();
-    possessBar.hidden = !p;
+    if (!p && lastPossessed !== null) {
+      const gone = lastPossessed;
+      lastPossessed = null;
+      // Still among yours: released (by you, or a new possession). Gone: it died.
+      if (model.state && !model.state.organisms.some((o) => o.id === gone)) {
+        clearTimeout(endedTimer);
+        possessBar.classList.add('ended');
+        delete possessBar.dataset.org;
+        setText(possessText, `#${gone} died while you were possessing it (the alert says how). Possess another to carry on.`);
+        possessBar.hidden = false;
+        endedTimer = setTimeout(() => {
+          possessBar.classList.remove('ended');
+          if (!possessed()) possessBar.hidden = true;
+        }, 8000);
+      }
+    }
+    if (p) {
+      lastPossessed = p.id;
+      clearTimeout(endedTimer);
+      possessBar.classList.remove('ended');
+    }
+    if (!possessBar.classList.contains('ended')) possessBar.hidden = !p;
     // Hint cards move clear of the bar (onboarding.css).
     stageWrap.classList.toggle('possessing', !!p);
     if (!p) {
@@ -461,12 +509,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   possessAttack.addEventListener('click', () => setMode(mode === 'attack' ? 'select' : 'attack'));
   /** Send the possessed organism `p` after `target`; the server says why not. */
   async function attackWith(p: OwnOrganism, target: OrgId): Promise<boolean> {
+    // A refusal is toasted by the model (every failed result is), once.
     const r = await send({ type: 'possess_attack', organism: p.id, target });
     if (r.ok) {
       model.toast('info', `#${p.id} is hunting #${target}; hungry pack-mates nearby join in`);
       model.select(target);
-    } else if (r.error) {
-      model.toast('error', `Attack: ${r.error.message}`);
     }
     return r.ok;
   }
@@ -578,8 +625,6 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         const t = r.data as { x: number; y: number; radius: number; warning?: string };
         model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles`);
         if (t.warning) model.toast('error', `Rally: ${t.warning}`);
-      } else if (r.error) {
-        model.toast('error', `Rally: ${r.error.message}`);
       }
       return;
     }
@@ -597,8 +642,6 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         const t = r.data as { x: number; y: number; radius: number; warning?: string };
         model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})`);
         if (t.warning) model.toast('error', `Territory: ${t.warning}`);
-      } else if (r.error) {
-        model.toast('error', `Territory: ${r.error.message}`);
       }
       return;
     }
@@ -718,6 +761,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   try {
     const w = await api.world();
     worldCap = w.lineage_cap;
+    setProtected(w.protected);
     if (w.days_per_year) daysPerYear = w.days_per_year;
     if (w.ticks_per_day) ticksPerDay = w.ticks_per_day;
     view.setWorldSize(w.width, w.height);
@@ -733,6 +777,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   const terrainTimer = setInterval(() => void refreshTerrain(), TERRAIN_REFRESH_MS);
   cleanups.push(() => clearInterval(terrainTimer));
+  // Protected newcomers (players' lineages in their grace), for the inspector: re-read now and then.
+  const protectedTimer = setInterval(() => {
+    void api.world().then((w) => setProtected(w.protected)).catch(() => {});
+  }, PROTECTED_REFRESH_MS);
+  cleanups.push(() => clearInterval(protectedTimer));
 
   // Genetics dashboard: fetched while its tab is open (and once now, for the feed).
   // Finished matings from the server (survive a reload; include matings
@@ -752,6 +801,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       stats = await api.lineageStats(deps.token);
       model.addFeed(stats.alerts.map(alertEntry));
       if (tab === 'genetics') renderGenetics();
+      if (tab === 'lineage') renderLineage();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) deps.onUnauthorized();
     }
@@ -965,11 +1015,22 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     } else if (catSeen !== null && catSeen !== -1) {
       catSeen = -1;
     }
-    // Toasts start below the notice, not under it.
-    stageWrap.style.setProperty('--cat-h', cat ? `${catAlert.offsetHeight + 8}px` : '0px');
+    const dn = droughtNotice(w.drought, droughtOn, cat?.kind === 'megadrought');
+    if (dn.on !== droughtOn) {
+      droughtOn = dn.on;
+      droughtAlert.hidden = !dn.on;
+      droughtAlert.classList.remove('folded');
+      droughtFold.textContent = 'Less';
+    }
+    if (dn.on) {
+      if (droughtTitle.textContent !== dn.title) droughtTitle.textContent = dn.title;
+      if (droughtAdvice.textContent !== dn.advice) droughtAdvice.textContent = dn.advice;
+    }
+    // Toasts start below the notices, not under them.
+    stageWrap.style.setProperty('--cat-h', cat || dn.on ? `${notices.offsetHeight + 8}px` : '0px');
     const bal = balanceText(s.balance, s.escrow);
     if (balanceEl.title !== bal) {
-      // Phones show the number alone (the CSS drops the word).
+      // The number, then the word (a separate span, so the text can be styled apart).
       balanceEl.replaceChildren(String(s.balance ?? 0), h('span', { class: 'pill-word' }, bal.slice(String(s.balance ?? 0).length)));
       balanceEl.title = bal;
       balanceEl.setAttribute('aria-label', bal);
@@ -1089,15 +1150,20 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const o = other!;
     const wild = o.owner === WILD;
     const ownerName = wild ? 'wild' : model.state?.leaderboard.rows.find((r) => r.player === o.owner)?.name ?? `player ${o.owner}`;
+    // The neighbour's own flag (session B) or the world's list of protected newcomers.
+    const flagged = o.protected === true;
+    const graceDays = wild ? undefined : protectedPlayers.get(o.owner) ?? (flagged ? 0 : undefined);
     inspDetails.replaceChildren(
-      h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(ownerColor(o.owner))}` }), `#${o.id} · ${ownerName}`),
+      h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(ownerColor(o.owner))}` }), `#${o.id} · ${ownerName}`,
+        graceDays !== undefined ? h('span', { class: 'pill protected-pill', id: 'insp-protected', title: 'A newcomer\'s lineage: players can\'t order attacks on it yet' }, 'protected newcomer') : null),
       dl([['Action', actionText(o.action)], ['Sex', o.sex], ['Stage', o.matured ? 'adult' : 'juvenile'], ['Lineage', String(o.lineage)],
-        ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—']]),
+        ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—'],
+        ...(graceDays !== undefined ? [['Protected', graceDays > 0 ? `newcomer grace, ${span(graceDays * ticksPerDay)} left: no attack orders on it` : 'newcomer grace: no attack orders on it'] as [string, string]] : [])]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
     const hunter = possessed();
-    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}`, () => [
-      !!hunter && h('button', { id: 'btn-attack', class: 'danger', onclick: () => void attackWith(hunter, o.id) }, `Attack with #${hunter.id}`),
+    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${graceDays !== undefined}`, () => [
+      !!hunter && h('button', { id: 'btn-attack', class: 'danger', disabled: graceDays !== undefined, title: graceDays !== undefined ? 'A protected newcomer: it can\'t be attacked on orders until its grace ends' : '', onclick: () => void attackWith(hunter, o.id) }, `Attack with #${hunter.id}`),
       wild ? h('p', { class: 'muted small' }, 'Wild organisms have no owner to consent to a mating.')
         : h('button', { id: 'btn-ask-mating', onclick: () => { matingForm.setPartner(o.id); showTab('matings'); } }, 'Request mating…'),
       h('button', { class: 'secondary', onclick: () => { view.setFollow(false); view.centerOn(o.x, o.y); } }, 'Center'),
@@ -1557,31 +1623,39 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const r = await send({ type: 'retire_lineage', lineage });
     if (r.ok) {
       const n = (r.data as { removed?: number } | undefined)?.removed ?? 0;
+      markRetired(lineage);
       model.toast('info', `Lineage #${lineage} retired: ${n} animals left the world. You can found a new lineage.`);
       retireEl.open = false;
-    } else if (r.error) {
-      model.toast('error', `Retire: ${r.error.message}`);
     }
   });
   append(tabs.lineage, [lineageExtinct, retireEl, statsEl,
     h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
-    h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter of the world\'s year (the Ranks tab has the ranked seasons, a competition of several weeks)' }, 'By time of year'), seasonsEl,
+    h('h3', {}, 'Legacy leaderboard'), h('p', { class: 'muted small', id: 'legacy-explain' }, LEGACY_EXPLAIN), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter of the world\'s year (the Ranks tab has the ranked seasons, a competition of several weeks)' }, 'By time of year'), seasonsEl,
     h('h3', {}, 'My organisms'), listEl, listMore]);
 
   function renderSeasons(): void {
     const list = seasons;
-    keyed(seasonsEl, JSON.stringify(list), () => {
+    const clock = model.state?.clock;
+    // "(now)" from the clock (the server's flag lagged a season: playtest 2).
+    const isNow = (b: SeasonBoard) => (clock ? b.year === clock.year && b.season === clock.season : b.current);
+    keyed(seasonsEl, JSON.stringify([list, clock?.year, clock?.season, clock?.day]), () => {
       if (!list) return [h('p', { class: 'muted small' }, 'Loading…')];
       if (list.length === 0) return [h('p', { class: 'muted small' }, 'The first season standings come with the first daily record.')];
-      return list.map((b) => h('details', { class: 'season', open: b.current || undefined },
-        h('summary', {}, `Year ${b.year + 1} ${b.season}${b.current ? ' (now)' : ''} · days ${b.first_day + 1}–${b.last_day + 1}`),
-        h('table', { class: 'board' },
-          h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Player'), h('th', { title: 'Mean legacy share over the recorded days' }, 'Mean'),
-            h('th', {}, 'Final'), h('th', {}, 'Peak'), h('th', { title: 'Most organisms alive on a recorded day' }, 'Peak alive'))),
-          h('tbody', {}, ...b.rows.slice(0, 8).map((r, k) => h('tr', { class: r.player === model.player ? 'me' : '' },
-            h('td', {}, String(k + 1)),
-            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), h('span', { class: 'who', title: r.name }, r.name)),
-            h('td', {}, pct(r.mean_share)), h('td', {}, pct(r.final_share)), h('td', {}, pct(r.peak_share)), h('td', {}, String(r.peak_alive))))))));
+      return list.map((b) => {
+        const now = isNow(b);
+        const last = now && clock ? Math.max(b.last_day, clock.day) : b.last_day;
+        // Players are ranked among players: the wild row has no number.
+        let rank = 0;
+        return h('details', { class: 'season', open: now || undefined },
+          h('summary', {}, `Year ${b.year + 1} ${b.season}${now ? ' (now)' : ''} · days ${b.first_day + 1}–${last + 1}${now ? ' so far' : ''}`),
+          h('div', { class: 'table-scroll' }, h('table', { class: 'board' },
+            h('thead', {}, h('tr', {}, h('th', { title: 'Rank among players' }, '#'), h('th', {}, 'Player'), h('th', { title: 'Mean legacy share over the recorded days' }, 'Mean'),
+              h('th', {}, 'Final'), h('th', {}, 'Peak'), h('th', { title: 'Most organisms alive on a recorded day' }, 'Peak alive'))),
+            h('tbody', {}, ...b.rows.slice(0, 8).map((r) => h('tr', { class: r.player === model.player ? 'me' : '' },
+              h('td', {}, r.player === WILD ? '—' : String(++rank)),
+              h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), h('span', { class: 'who', title: r.name }, r.name)),
+              h('td', {}, pct(r.mean_share)), h('td', {}, pct(r.final_share)), h('td', {}, pct(r.peak_share)), h('td', {}, String(r.peak_alive))))))));
+      });
     });
   }
 
@@ -1593,7 +1667,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }
     const orgs = s.organisms;
     const adults = orgs.filter((o) => o.matured).length;
-    const cap = capInfo(s.population, worldCap);
+    const mine = stats && stats.lineage === s.lineage ? stats : null;
+    const crowding = mine?.crowding;
+    // The state's grace (session B: days, and real time at the server's clock), else the statistics'.
+    const grace = s.grace
+      ? graceText(s.grace.days_left, ticksPerDay, span, s.grace.real_seconds_left)
+      : graceText(mine?.grace_days_left, ticksPerDay, span);
+    const ramp = rampText(mine?.ramp);
+    const cap = capInfo(s.population, worldCap, crowding);
     // With level of detail on, the dashboard's counts include the cohorts far from players.
     const fresh = stats && stats.lineage === s.lineage && stats.alive === s.population;
     const adultsAll = fresh ? stats!.adults : adults;
@@ -1601,7 +1682,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const maxGen = orgs.reduce((m, o) => Math.max(m, o.generation), 0);
     statsEl.replaceChildren(dl([
       ['Lineage', s.lineage === null ? 'not founded' : `#${s.lineage}`],
-      ['Alive', h('span', {}, h('strong', { id: 'lineage-size' }, cap.count),
+      ['Alive', h('span', {}, crowding ? h('span', { id: 'alive-count' }, `${grouped(s.population)} · crowding `) : null, h('strong', { id: 'lineage-size', title: crowding ? 'Crowding count (adults, young weighted) / soft cap' : 'Living organisms / cap' }, cap.count),
         cap.status ? h('span', { class: `cap-status cap-${cap.level}`, id: 'cap-status' }, ` — ${cap.status}`) : null,
         s.population > orgs.length
           ? h('span', { class: 'muted small', title: 'Level of detail: members far from any player run as statistical cohorts and are not drawn' }, ` · ${orgs.length} on the map`)
@@ -1611,11 +1692,18 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ['Newest generation', String(maxGen)],
       ['Mating slots left', h('span', { id: 'slots-left' }, String(s.slots_left))],
       ['Migration', migrationText(s.migration, s.groups)],
+      ...(grace ? [['Newcomer grace', h('span', { id: 'grace-left' }, grace)] as [string, string | Node]] : []),
+      ...(ramp ? [['Season weight', h('span', { id: 'ramp-weight' }, ramp)] as [string, string | Node]] : []),
     ]));
     if (cap.explain) statsEl.append(h('p', { class: `cap-note small${cap.level === 'ok' ? ' muted' : ''}`, id: 'cap-note' }, cap.explain));
     // A founded lineage with nobody left: say so plainly, and where to see why.
     // One element, shown or hidden (rebuilding it each state would eat clicks on its button).
     lineageExtinct.hidden = !(s.lineage !== null && s.population === 0);
+    if (!lineageExtinct.hidden && wasRetired(s.lineage) && !lineageExtinct.dataset.retired) {
+      // Retired, not dead: say so (and no "what killed them").
+      lineageExtinct.dataset.retired = '1';
+      lineageExtinct.querySelector('.extinct-text')?.replaceChildren(h('strong', {}, `You retired lineage #${s.lineage}.`), ' Its animals have left the world.');
+    }
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
     renderGroups(s);
     const lb = s.leaderboard;

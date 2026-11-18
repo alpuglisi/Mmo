@@ -505,7 +505,8 @@ pub enum AlertKind {
     /// A group order ended on its own: a migration arrived, a group was
     /// left with no members.
     Group,
-    /// Another player ordered an attack on one of your organisms.
+    /// Another player ordered an attack on one of your organisms, or an
+    /// attack you ordered ended (killed, escaped, lost sight, …).
     Attack,
 }
 
@@ -948,10 +949,15 @@ pub struct WeatherView {
     pub catastrophe: Option<CatastropheView>,
 }
 
+/// Every count here (day, year, era) is 0-based, as are the day and era
+/// numbers elsewhere in the API; the game's screens and alerts show them
+/// counted from 1 ("Year 1 · day 1", "Era 1").
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ClockView {
     pub tick: u64,
+    /// Days since the world began (0-based).
     pub day: u64,
+    /// Years since the world began (0-based).
     pub year: u64,
     pub hour: u32,
     pub season: String,
@@ -1259,10 +1265,19 @@ pub struct WorldSummary {
     /// reserves full: `GameConfig::winter_provision`).
     #[serde(default)]
     pub winter_provision: bool,
-    /// Most living organisms (young included) one player may have: at it,
-    /// births pause (`WorldConfig::lineage_cap`, scaled to the map).
+    /// The lineage cap (`WorldConfig::lineage_cap`, scaled to the map): with
+    /// crowding on, the soft cap where breeding is at half pace; off, the
+    /// most living organisms one player may have.
     #[serde(default)]
     pub lineage_cap: usize,
+    /// No births past this many living members (the soft cap's ceiling;
+    /// equal to `lineage_cap` with crowding off).
+    #[serde(default)]
+    pub lineage_hard_cap: usize,
+    /// Player lineages in their newcomer grace: other players' animals
+    /// can't be ordered to attack them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected: Vec<ProtectedLineage>,
 }
 
 /// One world of `GET /api/worlds`.
@@ -1446,6 +1461,14 @@ pub struct LineageStats {
     /// The soft lineage cap and how crowded the lineage is now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crowding: Option<CrowdingView>,
+    /// How much of the legacy share counts toward the ranked season now
+    /// (the founding ramp, 0..1), and over how many days it ramps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ramp: Option<RampView>,
+    /// Days left of the lineage's newcomer grace (others' animals can't be
+    /// ordered to attack it); absent when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_days_left: Option<f32>,
     /// An egg-laying lineage's clutches waiting to hatch (absent for live
     /// bearers): what "pregnant" means for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1454,6 +1477,26 @@ pub struct LineageStats {
     pub legacy: Vec<LegacyPoint>,
     /// Recent alerts, newest last.
     pub alerts: Vec<AlertView>,
+}
+
+/// The founding ramp (`lineage_stats.ramp`): a new lineage's share counts
+/// toward the ranked season gradually.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RampView {
+    /// The day the lineage was founded.
+    pub founded_day: u64,
+    /// Share of the legacy share counted now, 0..1.
+    pub weight: f64,
+    /// Days from founding to counting in full.
+    pub days: u64,
+}
+
+/// A player lineage in its newcomer grace (`WorldSummary::protected`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ProtectedLineage {
+    pub player: PlayerId,
+    pub lineage: u32,
+    pub days_left: f32,
 }
 
 /// Whose genes make up a legacy share (`lineage_stats.score`). The score
@@ -2211,6 +2254,9 @@ pub struct SpeciesLineage {
     pub lineage: u32,
     pub name: String,
     pub owner: PlayerId,
+    /// The owner's player name ("wild" for the wild ecosystem).
+    #[serde(default)]
+    pub owner_name: String,
     /// Estimated breeding adults of this lineage in the species.
     pub adults: f64,
 }
@@ -2369,6 +2415,7 @@ pub struct EraBoard {
 /// `GET /api/eras`: the current era and finished eras' rankings, newest first.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct EraList {
+    /// The era under way (0-based; shown as `era + 1`).
     pub era: u64,
     pub era_days: u64,
     pub first_day: u64,
