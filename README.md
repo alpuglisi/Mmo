@@ -7730,7 +7730,21 @@ nothing on a body too heavy to glide.
 founded on day 150; seeds 1–4, 840 days; round 3 rules = the three new
 tunables off and `dormancy_toll` 0.08):
 
-DOMINANCE
+| Arm | Flier final / peak share, mean*, peak alive, titles* | Eggs final / peak share, titles* | Steady, Big, Broker final share | Eggs' wild alleles, worst 60-day fall |
+| --- | --- | --- | --- | --- |
+| Round 3 rules | 29.2% / 33.3%, 14.7%, 2,100, 21 of 40 | 13.6% / 19.5%, 5 | 4.1%, 6.8%, 6.1% | 3.6%, 46% |
+| New rules | 24.4% / 28.5%, 12.7%, 2,002, 17 of 40 | 16.5% / 19.6%, 7 | 5.0%, 9.7%, 6.1% | 7.8%, 39% |
+
+(* from Eggs' founding on day 210.) Every player survives every seed in
+both arms. The flier is weaker (final share down a sixth, no longer at the
+hard cap, four titles fewer; Big takes 11 titles instead of 3) but still
+the strongest design: it is sterile with every warm-blooded lineage
+(thermoregulation, 0.8 apart, a choice that costs 20 points), so its genes
+never dilute while the warm herbivores' interbreed, and flight and honest
+toxins keep it from predators. Not settled here: predators learning
+warning colours and the upkeep of flight are session F's (predator
+energetics); a further step on this side would be a higher toll for
+cold-blooded sleepers or a price on flight.
 
 **Checks**:
 
