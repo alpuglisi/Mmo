@@ -246,6 +246,10 @@ pub const REQUESTS_PER_TARGET: usize = 3;
 /// Most players one player may block.
 pub const MAX_BLOCKED: usize = 200;
 
+/// Tiles a view may reach beyond what the player's animals perceive
+/// ([`Game::view_reach`]): enough for the default view around them.
+pub const VIEW_MARGIN: f32 = 16.0;
+
 /// Share of a bought agreement's fee the buyer forfeits to the seller when
 /// it lapses (at least 1 renown when anything was paid).
 pub const LAPSE_FEE_PERCENT: u64 = 10;
@@ -1256,11 +1260,13 @@ impl Game {
                 finite(&[x, y, radius])?;
                 let p = self.world.map.clamp(Vec2::new(x, y));
                 // Only where the player has organisms (or their lineage's
-                // center): a view anywhere scouted every player's animals.
-                if !self.in_sight(player, p) {
+                // center), and no wider than they perceive there plus a
+                // margin: a view anywhere scouted every player's animals.
+                let reach = self.view_reach(player, p);
+                if reach < 1.0 {
                     return Err(ErrorInfo::new("out_of_sight", "you can only look where your organisms are"));
                 }
-                let radius = radius.clamp(1.0, self.cfg.max_view_radius);
+                let radius = radius.clamp(1.0, self.cfg.max_view_radius.min(reach));
                 let view = ViewWindow { x: p.x, y: p.y, radius };
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.view = Some(view);
@@ -2338,9 +2344,26 @@ impl Game {
         if a.owner != player {
             return Err(e(CommandError::NotOwned(mine)));
         }
-        let p = self.world.mating_preview(mine, partner).map_err(e)?;
         let partner_seen =
             self.world.organism(partner).is_some_and(|b| b.owner == player || self.in_sight(player, b.pos));
+        // Only a partner the player can see, one on the market, or one in
+        // an offer of theirs: else a preview probed any organism anywhere.
+        let public = || {
+            self.economy.listings.values().any(|l| l.organism == partner)
+                || self.offers.values().any(|o| {
+                    o.status.is_open()
+                        && (o.from == player || o.to == player)
+                        && (o.mine == partner || o.partner == partner)
+                })
+        };
+        if self.world.organism(partner).is_some() && !partner_seen && !public() {
+            return Err(ErrorInfo::new(
+                "out_of_sight",
+                "you can only preview a mating with an animal you can see, one on the market or one in your offers",
+            )
+            .with_detail(serde_json::json!({ "organism": partner })));
+        }
+        let p = self.world.mating_preview(mine, partner).map_err(e)?;
         Ok(MatingPreviewView {
             mine,
             partner,
@@ -2878,10 +2901,32 @@ impl Game {
     /// radius of one of their living organisms, or of their lineage's center
     /// (the default view, which also finds a lineage living as cohorts).
     pub fn in_sight(&self, player: PlayerId, p: Vec2) -> bool {
-        let r = self.cfg.max_view_radius;
-        let near = |q: Vec2| (q.x - p.x).abs() <= r && (q.y - p.y).abs() <= r;
-        self.world.organisms.iter().any(|o| o.alive && o.owner == player && near(o.pos))
-            || (self.lineage_of(player).is_some() && near(self.lineage_center(player)))
+        self.view_reach(player, p) >= 0.0
+    }
+
+    /// How far around `p` the player may look: the most, over their living
+    /// organisms, of that organism's sight plus [`VIEW_MARGIN`] less its
+    /// distance to `p` (along the farther axis), or [`VIEW_MARGIN`] less the
+    /// distance from their lineage's center. Negative where they can't see.
+    /// A view's window must fit in it, so a lineage spread over the map
+    /// can't map most of it with a few wide views.
+    pub fn view_reach(&self, player: PlayerId, p: Vec2) -> f32 {
+        let cheb = |q: Vec2| (q.x - p.x).abs().max((q.y - p.y).abs());
+        let mut best = f32::NEG_INFINITY;
+        for o in self.world.organisms.iter().filter(|o| o.alive && o.owner == player) {
+            best = best.max(self.sight(o) + VIEW_MARGIN - cheb(o.pos));
+        }
+        if self.lineage_of(player).is_some() {
+            best = best.max(VIEW_MARGIN - cheb(self.lineage_center(player)));
+        }
+        best
+    }
+
+    /// How far an organism perceives, as the sim's `decide` reckons it
+    /// unalarmed (`Balance::perception_range`, capped at `max_perception`).
+    fn sight(&self, o: &evo_sim::organism::Organism) -> f32 {
+        let c = &self.world.config;
+        (2.0 + c.balance.perception_range * o.traits.stats.perception).min(c.max_perception)
     }
 
     /// The map image (`GET /api/map.png`) as `player` may see it: the
@@ -2889,10 +2934,11 @@ impl Game {
     /// ([`Game::in_sight`]), at `scale` pixels per tile.
     pub fn map_rgb(&self, player: PlayerId, scale: usize) -> (usize, usize, Vec<u8>) {
         let (w, h) = (self.world.map.width, self.world.map.height);
-        // Tiles in sight: each own organism's square of view.
-        let r = self.cfg.max_view_radius.ceil() as i64;
+        // Tiles in sight: each own organism's square of view
+        // ([`Game::view_reach`]).
         let mut seen = vec![false; w * h];
-        let mut mark = |p: Vec2| {
+        let mut mark = |p: Vec2, r: f32| {
+            let r = r.max(0.0).floor() as i64;
             let (cx, cy) = (p.x as i64, p.y as i64);
             for y in (cy - r).max(0)..=(cy + r).min(h as i64 - 1) {
                 for x in (cx - r).max(0)..=(cx + r).min(w as i64 - 1) {
@@ -2900,14 +2946,20 @@ impl Game {
                 }
             }
         };
-        let mut tiles: BTreeSet<(i64, i64)> = BTreeSet::new();
+        // The widest sight per tile (organisms crowd a few tiles).
+        let mut tiles: BTreeMap<(i64, i64), (Vec2, f32)> = BTreeMap::new();
         for o in self.world.organisms.iter().filter(|o| o.alive && o.owner == player) {
-            if tiles.insert((o.pos.x as i64, o.pos.y as i64)) {
-                mark(o.pos);
+            let r = self.sight(o) + VIEW_MARGIN;
+            let e = tiles.entry((o.pos.x as i64, o.pos.y as i64)).or_insert((o.pos, r));
+            if r > e.1 {
+                *e = (o.pos, r);
             }
         }
+        for (p, r) in tiles.into_values() {
+            mark(p, r);
+        }
         if self.lineage_of(player).is_some() {
-            mark(self.lineage_center(player));
+            mark(self.lineage_center(player), VIEW_MARGIN);
         }
         let visible = |o: &evo_sim::organism::Organism| {
             o.owner == player || {
@@ -6133,6 +6185,18 @@ mod tests {
         assert_eq!(result(&far).1, Some("out_of_sight".into()));
         let near = g.command(10, 1, Some(2), ClientMsg::SetView { x: 10.0, y: 10.0, radius: 16.0 });
         assert!(result(&near).0, "{near:?}");
+        // And no wider than Ann's animals perceive plus the margin: a wide
+        // view is narrowed, one beyond reach refused (32 tiles away was fine
+        // before, with a 32-tile radius on top).
+        let sight =
+            (g.world.organisms.iter().filter(|o| o.alive && o.owner == 1)).map(|o| g.sight(o)).fold(0.0, f32::max);
+        assert!(sight < 10.0, "{sight}");
+        let wide = g.command(10, 1, Some(2), ClientMsg::SetView { x: 10.0, y: 10.0, radius: 32.0 });
+        let r = reply_data(&wide)["radius"].as_f64().unwrap() as f32;
+        assert!(r + 5.5 <= sight + VIEW_MARGIN + 1e-3 && r >= 1.0, "radius {r}, sight {sight}");
+        let edge = g.command(10, 1, Some(2), ClientMsg::SetView { x: 4.5 + 30.0, y: 4.5, radius: 32.0 });
+        assert_eq!(result(&edge).1, Some("out_of_sight".into()));
+        assert!(!g.in_sight(1, Vec2::new(4.5 + sight + VIEW_MARGIN + 1.0, 4.5)));
         // A listing gives the 16-tile region, not the live position.
         let dam = female(&g, &a);
         let i = g.world.organism_index(dam).unwrap();
@@ -6140,10 +6204,22 @@ mod tests {
         let out = g.command(10, 1, Some(3), ClientMsg::CreateListing { organism: dam, fee: 0, expires_days: None });
         let l = &reply_data(&out)["listing"];
         assert_eq!((l["x"].as_f64(), l["y"].as_f64()), (Some(8.0), Some(8.0)));
-        // A preview's distance to a hidden partner is rounded up to 16 tiles.
+        // A preview needs the partner in sight, on the market or in an
+        // offer; the distance to one out of sight is rounded up to 16 tiles.
         let stud = male(&g, &b);
+        assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
+        let out = g.command(20, 2, Some(9), ClientMsg::CreateListing { organism: stud, fee: 0, expires_days: None });
+        assert!(result(&out).0, "{out:?}");
         let p = g.preview_mating(1, dam, stud).unwrap();
         assert_eq!(p.distance % 16.0, 0.0, "{}", p.distance);
+        let listing = reply_data(&out)["listing"]["id"].as_u64().unwrap();
+        g.command(20, 2, Some(10), ClientMsg::WithdrawListing { listing });
+        assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
+        // Once in sight, exact.
+        let i = g.world.organism_index(stud).unwrap();
+        g.world.organisms[i].pos = Vec2::new(6.5, 6.5);
+        assert!(g.preview_mating(1, dam, stud).is_ok());
+        g.world.organisms[i].pos = Vec2::new(59.5, 59.5);
         // A rival's pregnant female: a generic refusal; one's own: the reason.
         let bob_dam = female(&g, &b);
         let ann_male = male(&g, &a);

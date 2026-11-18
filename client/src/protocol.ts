@@ -1472,6 +1472,8 @@ export interface SpectateLineage {
   look?: Appearance;
   /** `[cell x, cell y, count]` on `Spectate.cell`-tile cells (wild) or `player_cell` (players'). */
   cells: [number, number, number][];
+  /** Under its newcomer grace: counted, but not placed on the map (no cells). */
+  hidden?: boolean;
 }
 
 export interface Spectate {

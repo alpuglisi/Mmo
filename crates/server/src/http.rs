@@ -606,16 +606,44 @@ struct HistoryQuery {
 /// first: the newest `limit` (30 by default, at most
 /// [`crate::history::MAX_LIMIT`]) in the day range.
 async fn leaderboard_history(
+    State(app): State<AppState>,
     World(w): World,
+    headers: HeaderMap,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<Vec<crate::store::DailyRecord>>, ApiError> {
+    // Gene means are a design recipe: they need a login, and give the full
+    // set only for the caller's own lineages (`public_genes` for others).
+    let session = bearer(&headers).and_then(|t| app.accounts.session(t));
+    let genes = q.genes.unwrap_or(session.is_some());
+    let Some(player) = session.map(|s| s.player).or(if genes { None } else { Some(evo_sim::WILD) }) else {
+        return Err(ApiError::unauthorized());
+    };
     let query = crate::history::DailyQuery {
         from_day: q.from,
         to_day: q.to,
         limit: q.limit.unwrap_or(30).clamp(1, crate::history::MAX_LIMIT),
-        genes: q.genes.unwrap_or(true),
+        genes,
     };
-    Ok(Json(w.store.daily_range(&query).await.map_err(ApiError::internal)?))
+    let mut records = w.store.daily_range(&query).await.map_err(ApiError::internal)?;
+    for l in records.iter_mut().flat_map(|r| r.lineages.iter_mut()) {
+        if l.owner != player {
+            public_genes(&mut l.genes);
+        }
+    }
+    Ok(Json(records))
+}
+
+/// Genes anyone can judge by looking at the animals, the only ones
+/// `/api/leaderboard/history` gives of other players' lineages.
+const PUBLIC_GENES: &[&str] = &["body_size", "leg_length", "fur"];
+
+/// Another player's gene means as `/api/leaderboard/history` gives them:
+/// only [`PUBLIC_GENES`], rounded to quarters.
+fn public_genes(genes: &mut std::collections::BTreeMap<String, f32>) {
+    genes.retain(|name, _| PUBLIC_GENES.contains(&name.as_str()));
+    for v in genes.values_mut() {
+        *v = (*v * 4.0).round() / 4.0;
+    }
 }
 
 #[derive(Deserialize)]
@@ -1439,7 +1467,20 @@ async fn season_player(
 
 #[cfg(test)]
 mod tests {
-    use super::malformed_id;
+    use super::{malformed_id, public_genes};
+
+    #[test]
+    fn rivals_gene_means_are_coarse_looks_only() {
+        let mut g: std::collections::BTreeMap<String, f32> =
+            [("body_size", 0.61), ("birth_mode", 1.0), ("toxins", 0.21), ("fur", 0.13)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+        public_genes(&mut g);
+        let want: std::collections::BTreeMap<String, f32> =
+            [("body_size".to_string(), 0.5), ("fur".to_string(), 0.25)].into_iter().collect();
+        assert_eq!(g, want);
+    }
 
     #[test]
     fn a_malformed_message_gets_its_id_when_it_can_be_read() {
