@@ -699,6 +699,10 @@ export class WorldView {
     g.stroke({ width: 1.75 * px, color: MARK.view, alpha: 0.7, cap: 'round', join: 'round' });
     // Each group's territory (a tinted disc, the picked group's outline
     // bolder) and migration target (a cross in a ring; pink for a lone group).
+    // Other players' territories: public ground, a grey outline.
+    for (const t of s.territories ?? []) {
+      g.circle(t.x, t.y, t.radius).stroke({ width: 1.5 * px, color: 0x9aa4ad, alpha: 0.7 });
+    }
     const groups = drawnGroups(s);
     for (const grp of groups) {
       const color = groups.length > 1 ? groupColor(grp.id) : 0xf778ba;

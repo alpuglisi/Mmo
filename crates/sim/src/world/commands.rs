@@ -76,6 +76,8 @@ pub enum GroupEvent {
         /// drink first).
         needy_share: f32,
         never_moved: bool,
+        /// Tiles the median member got closer than it started.
+        gained: f32,
         pending_claim: bool,
     },
     /// A far territory claim's migration arrived and the territory was
@@ -213,7 +215,11 @@ impl fmt::Display for CommandError {
             }
             CommandError::NoRally(g) => write!(f, "group {g} has no rally to cancel"),
             CommandError::Overlaps => {
-                write!(f, "that circle overlaps another player's territory; claim ground of your own")
+                write!(
+                    f,
+                    "that circle overlaps another player's territory (territories show on the map); claim ground of \
+                     your own (the attempt costs a short wait)"
+                )
             }
             CommandError::BadRadius => write!(f, "a territory's radius must be a positive number of tiles"),
             CommandError::MostlyWater { share } => write!(

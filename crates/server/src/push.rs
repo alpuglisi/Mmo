@@ -167,6 +167,7 @@ mod tests {
             escrow: 0,
             grace: None,
             poisonous: Vec::new(),
+            territories: Vec::new(),
         }))
     }
 
