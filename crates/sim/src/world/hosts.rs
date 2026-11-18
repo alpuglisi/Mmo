@@ -73,8 +73,8 @@ impl World {
         out
     }
 
-    /// Reinforcements: up to `n` adults join `lineage` near one of its
-    /// living adults (agents only), each a copy of a living adult's genome,
+    /// Reinforcements: up to `n` adults join `lineage` on the best-fed
+    /// ground near its living adults (agents only), each a copy of a living adult's genome,
     /// so every allele and its owner tag is the lineage's own (a hybrid's
     /// foreign alleles included): kin arriving from elsewhere, not new
     /// founders. Sexes alternate; ages are adult and mixed, as founders'.
@@ -92,8 +92,47 @@ impl World {
             return Vec::new();
         }
         let mut rng = rng_for(self.config.seed, stream::FOUNDING, (1 << 40) | lineage as u64, self.next_id);
-        let anchor = &self.organisms[adults[rng.gen_range(0..adults.len())]];
-        let (home, group, owner) = (anchor.pos, anchor.group, anchor.owner);
+        // Land on good ground near the lineage: from up to 8 of its adults
+        // (the best fed first), the spot within 6 tiles with the most food
+        // the copies can reach (playtest 2: they landed on a starving
+        // member's grazed-out tile).
+        let mut picks: Vec<usize> = (0..adults.len().min(8)).map(|_| adults[rng.gen_range(0..adults.len())]).collect();
+        picks.sort_by(|&a, &b| self.organisms[a].needs.hunger.total_cmp(&self.organisms[b].needs.hunger));
+        picks.dedup();
+        let probe = &self.organisms[picks[0]];
+        let (group, owner) = (probe.group, probe.owner);
+        let body = probe.traits.body;
+        let canopy = self.config.balance.canopy_share;
+        let food = |w: &World, p: Vec2| -> f32 {
+            let mut f = 0.0;
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let q = w.map.clamp(p + Vec2::new(dx as f32, dy as f32));
+                    f += w.map.tile_at(q).reachable_veg(w.map.ground_at(q), &body, canopy);
+                }
+            }
+            f
+        };
+        let mut home = probe.pos;
+        let mut best = f32::MIN;
+        for &a in &picks {
+            let base = self.organisms[a].pos;
+            for k in 0..12 {
+                let cand = if k == 0 {
+                    base
+                } else {
+                    self.map.clamp(base + Vec2::new(rng.gen_range(-6.0..6.0), rng.gen_range(-6.0..6.0)))
+                };
+                if !self.passable_for(probe, cand) {
+                    continue;
+                }
+                let score = food(self, cand);
+                if score > best {
+                    best = score;
+                    home = cand;
+                }
+            }
+        }
         let tpd = self.config.ticks_per_day as f32;
         let mut ids = Vec::with_capacity(n);
         for k in 0..n {
@@ -120,6 +159,56 @@ impl World {
             ids.push(self.insert(o));
         }
         ids
+    }
+
+    /// Retire `player`'s animals ([`World::retire_player`]), but first hand
+    /// each agent whose alleles are at least `min_share` another player's
+    /// (the most of any other player, who has a living lineage in `homes`)
+    /// to that player: it joins their lineage (`homes[p]`) and main group.
+    /// Retiring used to delete rivals' alleles living in the lineage, the
+    /// very alleles the royalty pays for. Cohort members and eggs are
+    /// removed as before. Returns (removed, transferred).
+    pub fn retire_player_sparing(
+        &mut self,
+        player: PlayerId,
+        homes: &BTreeMap<PlayerId, u32>,
+        min_share: f64,
+    ) -> (usize, usize) {
+        let morph = self.config.balance.morph_in_legacy();
+        let mut counts = Vec::new();
+        let mut moves: Vec<(usize, PlayerId, u32)> = Vec::new();
+        for (k, o) in self.organisms.iter().enumerate() {
+            if !o.alive || o.owner != player {
+                continue;
+            }
+            o.genome.count_origins_with(&mut counts, morph);
+            let total: u32 = counts.iter().map(|c| c.1).sum();
+            let best = counts
+                .iter()
+                .filter(|&&(p, _)| p != player && p != crate::WILD && homes.contains_key(&p))
+                .max_by_key(|&&(p, n)| (n, std::cmp::Reverse(p)));
+            if let Some(&(p, n)) = best {
+                if total > 0 && n as f64 >= min_share * total as f64 {
+                    moves.push((k, p, homes[&p]));
+                }
+            }
+        }
+        for &(k, p, lineage) in &moves {
+            let o = &mut self.organisms[k];
+            let old = o.lineage;
+            o.owner = p;
+            o.lineage = lineage;
+            o.group = 0;
+            o.possessed_by = None;
+            o.order = None;
+            if let Some(c) = self.owner_counts.get_mut(&player) {
+                *c = c.saturating_sub(1);
+            }
+            *self.owner_counts.entry(p).or_default() += 1;
+            self.count_lineage(old, -1);
+            self.count_lineage(lineage, 1);
+        }
+        (self.retire_player(player), moves.len())
     }
 
     fn today_f64(&self) -> f64 {
@@ -155,6 +244,30 @@ mod tests {
         assert!(snap.total_alleles > 0.0);
         // Every host is a lineage, and a player's alleles live mostly at home.
         assert!(hosts.keys().all(|&(l, _)| (l as usize) < w.lineages.len()));
+    }
+
+    /// Retiring hands animals mostly of a rival's genes to that rival.
+    #[test]
+    fn retiring_spares_rivals_alleles() {
+        let mut w = presets::standard_world(WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() }, 1);
+        let l1 = w.lineages.iter().position(|l| l.owner == 1).unwrap() as u32;
+        let l2 = w.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+        let rival = w.organisms.iter().find(|o| o.owner == 2).unwrap().genome.clone();
+        let ids: Vec<u64> = w.organisms.iter().filter(|o| o.alive && o.owner == 1).map(|o| o.id).take(3).collect();
+        for &id in &ids {
+            w.organisms.iter_mut().find(|o| o.id == id).unwrap().genome = rival.clone();
+        }
+        let n1 = w.organisms.iter().filter(|o| o.alive && o.owner == 1).count();
+        let n2 = w.owner_count(2);
+        let (removed, moved) = w.retire_player_sparing(1, &BTreeMap::from([(2, l2)]), 0.25);
+        assert_eq!((removed, moved), (n1 - 3, 3));
+        assert_eq!(w.owner_count(1), 0);
+        assert_eq!(w.owner_count(2), n2 + 3);
+        for id in ids {
+            let o = w.organism(id).unwrap();
+            assert_eq!((o.owner, o.lineage), (2, l2));
+        }
+        assert!(w.organisms.iter().all(|o| !o.alive || o.lineage != l1));
     }
 
     #[test]

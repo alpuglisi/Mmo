@@ -927,6 +927,7 @@ square MP4s and GIFs, with a manifest of titles, captions and hashtags. See
 | `POST /api/login` `{name, password}` | | `{token, player, name}`; `401 bad_credentials` |
 | `POST /api/logout` | Bearer | End the session |
 | `GET /api/worlds` | | The hosted worlds, the default first: `{default, worlds: [{id, name, width, height, day, year, season, population, lineages, players_online}]}` |
+| `POST /api/design/compatibility` (design) | Bearer | The builder's interbreeding check, nothing founded: 16 founders as the design would make them (founder variation included) against 16 adults of each living lineage (yours too). `200 {day, sample, fertile_with, at_risk, rows}`, rows as `compatibility`'s; `400` for a design that doesn't validate |
 | `POST /api/lineage` (design) | Bearer | Found your lineage (one per player per world). `201 {lineage, founders: [ids], cost}`; `400` with `over_budget {cost, budget}`, `value_out_of_range {gene}`, `reserved_gene`, `litter_size`, `no_founders`, `unknown_gene`, `bad_name`; `409 already_founded` |
 | `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices, and the morphology parameters (`morph`: name, kind, values or range, default, cost) |
 | `GET /api/world` | | Clock, season, weather, map size, organism and lineage counts |
@@ -1011,11 +1012,12 @@ world's breeding adults:
 | `share` | the legacy share: your alleles wherever they live (`home_share + exported_share`) |
 | `head_share` | your lineage's share of all alleles, whoever's: its head count among breeding adults (`home_share + foreign_share`) |
 | `home_share` | your alleles in your own lineage |
-| `exported_share` | your alleles in rivals' animals and the wild; earns the royalty |
+| `exported_share` | your alleles in rivals' animals and the wild |
+| `traded_share` | the part of `exported_share` in other players' lineages; earns the royalty |
 | `foreign_share` | others' alleles your lineage carries: what hybridising cost your share |
 | `carried` | `[{player, name, share}]`: whose alleles your breeding adults carry, share of your lineage's alleles (0, "wild", is the wild ecosystem: wild alleles carry no species) |
 | `placed` | `[{lineage, lineage_name, owner, owner_name, share}]`: where your alleles live, share of your alleles (a wild species is a lineage with owner 0) |
-| `royalty` | renown a day the royalty pays at this `exported_share` |
+| `royalty` | renown a day the royalty pays at this `traded_share` |
 | `day` | the daily snapshot it is from |
 
 `origins` (older) counts every living member's alleles, hidden recessive
@@ -1042,7 +1044,8 @@ Client → server:
 | `release` | `organism` | Back to genetic behavior (`not_possessed` if it isn't) |
 | `request_mating` | `mine, partner, price?` | Directed mating. Your own pair runs at once; another player's organism sends them a `mating_request`. A `price` (renown) goes into escrow at once (`insufficient_funds` if you can't cover it) |
 | `preview_mating` | `mine, partner` | Only with a partner in your sight, on the market or in one of your open offers (`out_of_sight` otherwise). What the mating would give now, nothing spent: `data` = `{compatible, fertility, body_plan_fertility, distance_fertility, body_plan_gaps: [{gene, gap}], mismatch, cost, failure_chance, distance, meeting_distance, problem?}` |
-| `respond_mating` | `request, accept` | The partner's owner answers |
+| `offer_to_lineage` | `mine, lineage, price?` | Like `request_mating`, to any suitable animal of another player's living `lineage`: its owner picks one on accepting. `data` = `{offer}` with `partner` 0 and `lineage` set until accepted (`unknown_lineage`, `own_organism`) |
+| `respond_mating` | `request, accept, partner?` | The partner's owner answers; for an offer to the lineage `partner` picks the animal (default: the nearest free one of the other sex, not pregnant, not promised, fertile with `mine`; `no_partner_available` leaves the offer open, `partner_unavailable` for an unsuitable pick) |
 | `complete_mating` | `request` | Retry an accepted agreement now |
 | `cancel_mating` | `request` | Either side withdraws an open offer |
 | `migrate` / `clear_migration` | `x, y, group?` / `group?` | Group command for the adults of group `group` (default 0, the main group; `no_such_group` past 3 or for another group without members, and for `clear_migration` unless it still has an order); replaces its territory or rally. `off_map` off the map; a target on deep water, ice or a cliff moves to the nearest land within 8 tiles (`data.moved`, `data.note`) or gives `unreachable`. `data` = `{x, y, group, route?, moved?, note?}`; the order ends when most of the group has arrived (a `group` alert). `clear_migration` without `group` clears every group's |
@@ -1061,10 +1064,13 @@ Client → server:
 | `browse_market` | `mine?, limit?, cursor?, sort?, kind?, role?, max_price?, lineage?, species?, compatible?, hide_own?, with_own?` | One page: `data` = `{balance, escrow, slots_left, total, next_cursor?, own?, listings: [{id, owner, owner_name, organism, role (stud/dam), sex, fee, created_tick, expires_tick?, sales, busy, pregnant, lineage, lineage_name, generation, mother?, father?, offspring_raised, age_days, health, x, y, traits: [{gene, value}], preview?, compatible?, body_plan_fertility?, kind (fixed/auction), auction?: {reserve, deadline_tick, high_bid?, high_bidder?, bids, min_bid}}]}`. `limit` default 20, at most 50; `next_cursor` (absent on the last page) goes back as `cursor` for the next page in the same order and filters; `total` counts the matches. `sort`: `newest` (default), `price_asc`, `price_desc` (price: the fee, or an auction's highest bid, its reserve before any), `ending` (deadline or expiry, none last), `fertility` (with `mine`: compatible first by expected fertility). Filters: `kind` `fixed`/`auction`, `role` `stud`/`dam`, `max_price`, `lineage`, `species` (its lineages, `GET /api/species`), `compatible` (with `mine`), `hide_own`; `with_own` adds `own`, all your listings. `preview` is `preview_mating` of your `mine` with the listed organism; `compatible` and `body_plan_fertility` say whether your lineage can breed with it at all (best body-plan fertility of 16 of your adults with it; absent with no living adult). `bad_cursor` for a cursor the server didn't make |
 | `mating_prefs` | `block?, unblock?, auto_decline?` | Who may send you mating requests: block or unblock a player, or decline every request (listings and auctions are unaffected). `data` = `{blocked, auto_decline}`; no fields just reads them. Blocking the wild (0) or a player who doesn't exist: `no_such_player`. Saved with the game |
 | `ledger` | `limit?` | `data` = `{balance, escrow, entries: [{seq, player, tick, day, delta, balance, kind, text, offer?, listing?}]}`, newest first (default 50, at most 100); `kind`: `grant`, `income`, `achievement`, `escrow`, `sale`, `refund`, `royalty`, `purchase` |
-| `renown_shop` | | `data` = `{balance, slots_left, slots_bought, slot_price?, reinforce_size, reinforce_price, reinforce_max_alive, reinforce_blocked?, market_fee_percent, royalty_per_point}` (*Why trade* in Economy) |
+| `renown_shop` | | `data` = `{balance, slots_left, slots_bought, slot_price?, reinforce_size, reinforce_price, reinforce_max_alive, reinforce_blocked?, market_fee_percent, royalty_per_point, reinforcements_bought, reinforcements_max, nameplate_price, nameplate_colors, nameplate?, species_name_price}` (*Why trade* in Economy) |
 | `buy_mating_slot` | | One extra directed-mating slot until the weather season changes: 30 renown, doubling with each bought that season, at most 6 (`limit_reached`, `insufficient_funds`, `no_lineage`); `data` = the shop after |
-| `reinforce` | | 10 adults copied from your lineage's living adults join it: 150 renown, doubling per ranked season, only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
-| `compatibility` | | Which lineages yours can breed with: `data` = `{lineage?, rows: [{lineage, lineage_name, owner, owner_name, fertility, compatible, limiting, gap}]}`, most fertile first; `limiting` is the body-plan gene of the widest gap (`carnivory`, `endothermy`, `birth_mode`, `body_size`, `morphology`), sterile at 0.30 |
+| `reinforce` | | 10 adults copied from your lineage's living adults join it on the best-fed ground near them: 150 renown, doubling with each, at most 2 a ranked season per player (retired lineages count: `limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
+| `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
+| `name_species` | `species, name` | Name a living species your lineage founded (cosmetic, 300 renown; `not_yours`, `species_gone`, `name_taken`, `bad_name`); `data` = `{species, name}` |
+| `nameplates` | | `data` = `{nameplates: {player: {color, title}}}` |
+| `compatibility` | | Which lineages yours can breed with: `data` = `{lineage?, rows: [{lineage, lineage_name, owner, owner_name, wild, fertility, fertility_low, fertility_high, best_fertility, fertile_share, compatible, drift_risk, limiting, gap}]}`, most fertile first, from every pair of 16 of your adults and 16 of theirs: `fertility` the mean pair, `fertility_low`/`fertility_high` the 10th/90th percentile, `fertile_share` the share of fertile pairs, `compatible` at least half fertile, `drift_risk` `none`/`low`/`high` (any fertile pair, or the closest pair within 0.05 of the sterile gap: high; within 0.12: low); `wild` only for the wild ecosystem's lineages; `limiting` is the body-plan gene of the closest pair's widest gap (`carnivory`, `endothermy`, `birth_mode`, `body_size`, `morphology`), sterile at 0.30 |
 | `resync` | – | Protocol 2 only: the next state is a keyframe (no `result`; see below) |
 | `watch_season` | `on`, `limit?` | `on: true`: a `season` message at once (after the `result`) and then one whenever the ranked season's standings change, at most one a second (rows `0..limit` per category, default 5, at most 200, plus yours); `on: false` stops them. A new connection starts unwatched. Answered between ticks, never queued behind world changes |
 
@@ -1215,8 +1221,16 @@ escorting a possessed organism to the meeting is the trip the design
 describes. Outcomes: `completed` (with mismatch, override cost, failure
 chance, fertility, conceived), `declined`, `cancelled`, `failed` (`died`:
 an organism died first, with the cause; or the rules refused it) or
-`expired` (season change, when slots reset). The requester's seasonal slot
-is spent.
+`expired` (no answer within 10 minutes of wall-clock time, or an accepted
+agreement whose two didn't meet within 30 minutes: it lapses, the requester
+forfeits 10% of the price, at least 1 renown, or a slot when free; both
+scaled by the tick, `GameConfig::offer_ticks` and
+`purchase_deadline_ticks`). Offers used to all expire at the next
+weather-season change (2.4 minutes into a season at a 100 ms tick), which
+also kept the 30-minute purchase deadline from ever firing. Each open
+offer carries `expires_tick`; the sender is warned 2 minutes before a
+request expires, and hears (with a push) when the mating runs. The
+requester's seasonal slot is spent.
 
 ### Offline protection
 
@@ -1472,7 +1486,9 @@ marketplace for trading genetics", on a minimal economy (`economy.rs`,
   front) the escrow is paid to the partner's owner, less the 10% market
   fee (see *Why trade* below); every other ending
   (`declined`, `cancelled` by either side, `failed`, e.g. an organism eaten
-  on the way, `expired` at the season change) refunds it. Trades are stored
+  on the way, `expired`: unanswered in 10 minutes, or the two never met
+  within 30) refunds it (a lapsed agreement less a 10% forfeit to the
+  partner's owner). Trades are stored
   with the listing and the settlement (`paid` or `refunded`).
 - **Ledger.** Every balance change is an entry (`grant`, `income`,
   `achievement`, `escrow` (negative), `sale`, `refund`, `royalty`,
@@ -1543,15 +1559,17 @@ nothing. The economy now gives both sides a reason (`economy.rs`,
 earned in play, so each perk is modest and priced to rise):
 
 - **Breeder's royalty.** Every day, with the income, a player earns
-  `round(2 × percentage points of all scored alleles that are theirs and
-  live outside their own lineage)` (`royalty` ledger entries): a stud that
-  sires into rivals' dams, or genes that spread into the wild, pay their
-  breeder renown on top of the legacy share they already count for.
+  `round(5 × percentage points of all scored alleles that are theirs and
+  live in other players' lineages)` (`royalty` ledger entries;
+  `lineage_stats.score.traded_share`): a stud that sires into rivals' dams
+  pays its breeder renown on top of the legacy share it already counts
+  for. Alleles in the wild (a design that hybridised with a wild species)
+  still score but pay no royalty: they came from no trade.
   Combined with the soft lineage cap (below), this is what a large lineage
   wants: it can't grow its own head count much further, but its genes can
   live in other players' animals.
 - **Market fee.** 10% of every stud fee or price paid out is destroyed
-  (`economy::market_fee`, rounded down; the payer pays the full price, the
+  (`economy::market_fee`, rounded down, at least 1 renown; the payer pays the full price, the
   seller gets the rest; the sale's ledger text says so). Offers saved
   before the fee pay out in full (`Offer::fee` is 0 in them).
 - **The renown shop** (`renown_shop`, `buy_mating_slot`, `reinforce`;
@@ -1572,10 +1590,13 @@ earned in play, so each perk is modest and priced to rise):
 - **Who can breed with whom.** A body-plan gap of 0.30 or more in diet,
   warm/cold blood, birth mode or body size (or an eye or leg count step) is
   sterile (`mating::BODY_PLAN_STERILE`), which splits the market by diet.
-  `compatibility` lists every other lineage with living adults, the best
-  body-plan fertility between a sample of 16 of the player's adults and
-  theirs, and the gene that keeps them apart; every `browse_market` listing
-  carries `compatible` and `body_plan_fertility` for the viewer's lineage;
+  `compatibility` lists every other lineage with living adults, the
+  fertility over every pair of a sample of 16 of the player's adults and
+  16 of theirs (mean, 10th–90th percentile range, share of fertile pairs,
+  drift risk; before playtest 2 the best pair, which overstated it), and
+  the gene that keeps them apart; every `browse_market` listing carries
+  `compatible` (at least half of the player's sampled adults fertile with
+  it) and `body_plan_fertility` (their mean) for the viewer's lineage;
   the Market tab shows both ("Who your lineage can breed with", a
   "sterile with your lineage" line on listings, and `buy_listing`'s reason
   in the client).
@@ -1589,6 +1610,70 @@ earned in play, so each perk is modest and priced to rise):
   of the 10-day founding ramp (`FOUNDING_RAMP_DAYS`, aimed at re-founding
   for a fresh spike): the ramp scales both shares while a lineage is
   younger than 10 days, the weighted half then waits for its young.
+
+**Playtest 2 changes** (`docs/playtest-2.md`: trades happened, but most
+offers lapsed unseen, royalties were 1–4 a day against 10–17 income, the
+leaders had nothing to spend 6,700–9,800 renown on, and titles and
+reinforcements could be farmed):
+
+- **Lifetimes in wall-clock minutes** (scaled by the tick, as the rally
+  fix did): a pending request 10 minutes (the sender warned 2 minutes
+  before), an accepted agreement 30 minutes to meet (then it lapses with
+  the 10% forfeit, so a bought dam is no longer held for nothing), an
+  auction at least 5 minutes. Nothing expires at a weather-season change.
+- **Request limit** (3 per target): its window is 60 wall-clock minutes,
+  and only requests still unanswered or declined count (accepted,
+  completed, expired, cancelled and failed ones are dropped), so it guards
+  against spam without capping trade (in *Competition* it had held a
+  broker to ~20 trades a world).
+- **Offers to a lineage** (`offer_to_lineage`): the owner, or the server,
+  picks a free animal, instead of the sender guessing which rival females
+  are pregnant (playtest 2: 15 of 15 requests refused `partner_unavailable`).
+- **Royalty** 5 renown per percentage point (was 2): at the 0.5–1.75%
+  exported in playtest 2 that is 3–9 a day, a third to a half of income;
+  *Competition* shows what it pays a broker.
+- **Fee** at least 1 renown on any paid price (1–9 renown prices paid none).
+- **Titles**: the stud market needs 3 sales to 2 different buyers in the
+  season (one paid offer won it, and paying a rival handed them the
+  title); a catastrophe counts as survived only for a lineage founded
+  before it began, and a survival title every active player ties for goes
+  to no one.
+- **Reinforcements**: at most 2 per player a ranked season, retired
+  lineages included (playtest 2: retire, re-found and chain five for +50
+  adults); they land on the best-fed ground near the lineage, not on a
+  starving member's tile.
+- **Retiring spares rivals' alleles**: an animal at least a quarter of
+  whose alleles are one other player's (the most of any one, who has a
+  living lineage) joins that player's lineage instead of leaving the world
+  (`World::retire_player_sparing`; they are told). Exported alleles of a
+  retired lineage that live in other lineages keep scoring and paying
+  royalty for their breeder, as before: genes count wherever they live.
+- **Sinks for leaders, cosmetic only**: a nameplate (palette color and a
+  title shown with the name; 500 renown, 100 per change) and naming a
+  species your lineage founded (300).
+
+*Competition* re-run with these rules (6 seeds, 360 days; the broker now
+offers to the hosts' lineages, so the hosts pick free females; columns:
+final share, legacy titles by the new rule, renown left, income and
+royalty earned over the run):
+
+| Arm | Swarm | Steady (host) | Broker | Trades a world |
+| --- | --- | --- | --- | --- |
+| Old rules | 15.8%, 31, 10,093 left | 11.6%, 2 | 12.7%, 3 | 0 |
+| New rules, dams still declined | 11.5%, 19 | 13.3%, 7; income 3,757, royalty 3,055 | 14.1%, 10; royalty 3,533 | 0 |
+| New rules | 10.8%, 14 | **15.2%, 15**; income 4,334, royalty 3,986; 9,460 left | 13.8%, 7; royalty **4,424**; 504 left | 96 |
+
+Trading pays the host clearly (+1.9 points of share, twice the titles,
++2,500 renown) and the broker in renown (+25% royalty), though the broker
+spends nearly everything it earns (fees, 41 extra slots a world) and ends
+level on share. The per-target limit no longer caps trade (96 trades a
+world; 20 when accepted requests still counted). The royalty is now about
+as large as income in this scenario even without trades, because the
+four same-body-plan lineages interbreed in mixed herds on their own; in
+playtest 2 most lineages were sterile with each other and royalties were
+1–4 a day. Paying only for alleles in other players' lineages (not the
+wild) took a sixth off it in every arm; the rate is left at 5 so that
+in a typical game it is a real share of income.
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
@@ -7497,6 +7582,97 @@ new rules off, today's code also loses packs on two seeds, so the losses
 come from elsewhere. The pack rule shows in the lowest antelope counts:
 a pack now takes larger prey.
 
+### Playtest 2: competitive balance
+
+Playtest 2 (`docs/playtest-2.md`) found one strategy dominating: LateComer's
+egg-laying, toxic-but-drab, hibernating burrowing herbivore, founded in
+winter with cheap reinforcements, reached 2,990 animals (the 2× soft-cap
+ceiling) and ~40% share from a late start. Winter decided the board, a boom
+cohort then died of old age together, player herbivores of 29–54 kg
+outgrew every predator, and the builder's interbreeding card ("no one")
+and the "compatible" badge (13 of 17 real pairs sterile) were both wrong.
+Predator learning about toxic prey and predator energetics are session F's
+(`ccr-38539192-boom`); this section is design costs, ceilings and the
+compatibility estimate.
+
+**Sim rules, on by default from snapshot version 43** (gated at 38 on
+its branch, renumbered at merge after 41 and 42), off at 0 for older saves
+(`serde_util::before_v43`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `egg_hybrid` (0.2) | Birth mode counts `1 − egg_hybrid` in the body-plan gap for fertility (`mating::fertility_gap`, `fertility_with`; courting, conception, `preview_mating`, the market): adjacent birth modes (0.35 apart) are 0.28 apart, so an egg layer is ~10% fertile with a close live bearer (and more as founders vary) instead of sterile with all of them. Kinship and species keep the full gap, so species boundaries don't move. |
+| `age_spread` (0.12) | Old age by a hazard rising linearly from an earlier onset at a rate set by the lifespan (`apply::old_age_hazard`, agents and LOD cohorts): ages at death average 85% of the lifespan with a standard deviation of 12% (the old rule: 84%, within a few days). |
+| `dormancy_toll` (0.08) | A warm hibernator asleep in winter dies (exposure) with this chance over a whole season of sleep, twice that in its first year and up to twice again as its fat runs out (`seasonal::dormancy_toll_rate`; LOD cohorts too). |
+| `emergence_lag` (6 days) | A hibernator or brumator waking from winter sleep can't breed for this long. |
+
+**Defaults changed** (stored in snapshots, so running worlds keep theirs):
+the soft cap is steeper and lower, `lineage_crowding` 4 → 6,
+`crowding_ceiling` 2 → 1.4 (the hard ceiling at 1.4× the cap: 2,100 on the
+reference map), `crowding_hunger` 0.3 → 0.6. Litters run at 0.5 of
+normal at the cap, 0.17 at 1.3×, 0.12 at 1.4×.
+
+**Design prices** (`design.rs`, mirrored by the client's `cost.ts` through
+`/api/genes`' new `free_body_size` and `cost_per_larger_body`; fixture
+regenerated): body size is free only from the default (0.3, 1.1 kg) to 0.5
+(3.6 kg), then 40 points per unit (`design::body_size_cost`: 0.75 costs 10,
+0.9 costs 16, 0.95 costs 18); hibernation 8 → 12 and burrowing 6 → 8 per
+unit. The client's starter costs 11.5 points (9.5 before). Every sample
+design still fits (herd grazers 60.0, caribou 63.7, omnivores 39.0);
+LateComer's design costs 99.9 and still fits.
+
+**Compatibility, from individuals.** `compatibility` (and each market
+listing's `compatible`) now compares every pair of 16 of the player's adults
+and 16 of each lineage's (fertility with distance and `egg_hybrid`), and
+reports the mean, the 10th–90th percentile range, the share of fertile pairs,
+the best pair, and a drift risk (`high` once any pair is fertile or the
+closest pair is within 0.05 of the sterile gap, `low` within 0.12; founders
+vary by 0.05 per expressed gene and lineages drift by as much).
+`compatible` means at least half the pairs are fertile, not the best one.
+`POST /api/design/compatibility` runs the same check at design time with 16
+founders as the design would make them, against the current lineages, so
+the builder no longer compares species means. Rows carry `wild` only for
+the wild ecosystem's lineages, and the client's interbreeding card no longer
+calls a species with a player's lineage in it wild (it also weights birth
+mode like the sim). Showing the server's range and drift risk in the builder
+is session D's.
+
+**Scripted replay** (`cargo run --release -p evo-server --example dominance
+-- --seeds 4 --days 840`, `crates/server/examples/dominance.rs`): four
+players through `Game` on the 128² world with its wild species. Steady (the
+starter with senses and legs, 40 founders), Big (a 0.75 hibernating grazer,
+playtest 2's Herdmaster) and Broker (a 0.66 live-bearing grazer, the early
+leader) found on day 0; Eggs founds LateComer's exact design (55 founders)
+on the first day of the second winter (day 210, with the winter provision)
+and buys reinforcements whenever the shop sells them. Old rules: the four
+tunables off, the old soft cap, founded at any price. Seeds 1–4:
+
+| Arm | Eggs final / peak share | Eggs mean share from its founding | Eggs peak alive | Eggs titles | Others' final share (Steady, Big, Broker) | Eggs' worst 60-day fall of adults | Wild alleles in Eggs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Old rules | 23.9% / 29.2% | 13.2% | 2,549 | 17 of 40 | 8.1%, 16.6%, 7.3% | 52% | 0.9% |
+| New rules | 21.4% / 26.5% | 10.7% | 1,927 | 16 of 40 | 5.9%, 10.5%, 8.0% | 37% | 3.4% |
+
+The late design stays viable (alive on every seed, still the largest at the
+end) but no longer runs to the ceiling: its peak is a quarter lower, its
+mean share over its life is level with Broker's (10.7% both), Broker now
+wins 12 of the 40 seasons (none before), and its boom cohort ages out over
+months (the worst fall of its adults 37% instead of 52%). It still takes
+the most titles: what remains is the winter provision and reinforcements
+(5.8 a world; their price resets each season) and toxins, which belong to
+the economy and to session F.
+
+**Checks** (the "before" arm is this code with the four new tunables at 0;
+the soft-cap defaults don't reach the balance tools' lineages):
+
+| Check | Before | After |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.76 (± 0.26) on main | 11.65 (± 0.31); every lineage 12 of 12 but pack hunters 11; burrowing omnivores (hibernators) 93 against 141, the toll and lag's cost |
+| `compare --seed 101 --adaptive` (tunables off vs defaults) | | off 11.67, on 11.72: off − on −0.05 (sequential 95% CI −0.18 … +0.08 after 12 seeds: no difference that matters); with the rules on, burrowing omnivores 55 ± 13 fewer and red foxes 25 ± 18 fewer |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack (viable); prey lost | 13/16 (12), 15/16 (15); omnivores on 48 | 15/16 (15), 15/16 (14); omnivores on 48 |
+| `predlong`: lowest prey | antelope 15–39, voles 35–88 | antelope 6 (seed 31), else 23–39; voles 17 (seed 41), else 36–88 |
+| `calibrate tournament --worlds 96 --days 90 --seed0 70001`: top thermoregulation × birth class win share (mean share) | 26.0% (warm live birth) | 27.1% (warm incubated eggs; warm live birth 26.0%, cold abandoned eggs 15.6%); by final share warm incubated 26.0% |
+| `evo-sim genetics` | | 134 checks: 107 strict passed, 0 failed |
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
@@ -7580,11 +7756,12 @@ The costs in `design.rs` are calibrated with `examples/calibrate.rs`
 | Points per unit above default | |
 | --- | --- |
 | Leg length 25, wings 24, toxins 18, hooves 16 | Valuable in every design, or a threshold ability (flight, warning coloration) |
-| Muscle 7, fangs 7, claws 6, foot width 6, swimming 6, burrowing 6 | Valuable in one niche |
+| Muscle 7, fangs 7, claws 6, foot width 6, swimming 6, burrowing 8 | Valuable in one niche (burrowing 6 before playtest 2) |
 | Camouflage 5, climbing 5, coloration 5, vocal 5, tail 4, scales 4, nose 4, eyes 4, ears 4, fur 3 | Small or mixed effects |
-| Armor 2, fat stores 2, body size 0 | Cost more fitness than they bring; bigger bodies already mean fewer breeders |
+| Armor 2, fat stores 2 | Cost more fitness than they bring |
 | 0.7 per founder above 20 up to 50, then each 0.07 dearer than the last; 2.5 per extra offspring | Founders were the best buy at 0.4; litter slightly underpriced at 1.5. The rising price past 50 (`design::founder_cost`) is from playtest 1, not the calibration: see *Founders, the soft cap and the market* |
 | 40 per unit of body size below 0.3, 20 for cold-blooded | Free choices that won out of proportion (below) |
+| 40 per unit of body size above 0.5 (free from 0.3 to 0.5); hibernation 12 | Playtest 2, not the calibration: big bodies outgrew every predator, winter sleep decided the board (hibernation was 8). See *Playtest 2: competitive balance* |
 
 Under the new costs the clearest mispricings in the old table are mostly gone
 (per-point coefficients: founders +0.055 → +0.031, leg length +0.049 →

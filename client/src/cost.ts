@@ -9,7 +9,7 @@ export interface CostBreakdown {
   traits: number;
   litter: number;
   founders: number;
-  /** Cold blood and a body smaller than the default. */
+  /** Cold blood, and a body smaller than the default or above the free size. */
   body: number;
   /** Extra structures of the body plan (eyes, leg pairs, ear pairs). */
   morph: number;
@@ -77,8 +77,13 @@ export function designCost(d: DesignSpec, cat: GeneCatalog): CostBreakdown {
   const litter = Math.max(0, Math.floor(d.litter_size) - 1) * cat.cost_per_extra_offspring;
   const founders = founderCost(d.founders, cat);
   const sizeGene = cat.genes.find((g) => g.name === 'body_size');
-  const smaller = sizeGene ? Math.max(0, sizeGene.default - (d.traits.body_size ?? sizeGene.default)) : 0;
-  const body = (d.thermo === 'cold' ? cat.cost_cold_blooded ?? 0 : 0) + smaller * (cat.cost_per_smaller_body ?? 0);
+  const size = sizeGene ? d.traits.body_size ?? sizeGene.default : 0;
+  const smaller = sizeGene ? Math.max(0, sizeGene.default - size) : 0;
+  const larger = sizeGene ? Math.max(0, size - (cat.free_body_size ?? Infinity)) : 0;
+  const body =
+    (d.thermo === 'cold' ? cat.cost_cold_blooded ?? 0 : 0) +
+    smaller * (cat.cost_per_smaller_body ?? 0) +
+    larger * (cat.cost_per_larger_body ?? 0);
   const perMorph = morphCost(d.morph, cat);
   const morph = Object.values(perMorph).reduce((a, b) => a + b, 0);
   return { traits, litter, founders, body, morph, total: traits + litter + founders + body + morph, perGene, perMorph };

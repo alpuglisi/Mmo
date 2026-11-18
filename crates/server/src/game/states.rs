@@ -495,6 +495,7 @@ impl Game {
             ClientMsg::BuyListing { mine, .. } | ClientMsg::Bid { mine, .. } => c.touch(*mine),
             // Offers, listings, balances and escrow are read for every
             // state; a mating they run reports its pair itself.
+            ClientMsg::OfferToLineage { mine, .. } => c.touch(*mine),
             ClientMsg::RespondMating { .. }
             | ClientMsg::CompleteMating { .. }
             | ClientMsg::CancelMating { .. }
@@ -510,6 +511,9 @@ impl Game {
             | ClientMsg::RenownShop
             | ClientMsg::BuyMatingSlot
             | ClientMsg::Compatibility
+            | ClientMsg::SetNameplate { .. }
+            | ClientMsg::NameSpecies { .. }
+            | ClientMsg::Nameplates
             | ClientMsg::Resync
             | ClientMsg::WatchSeason { .. } => {}
         }

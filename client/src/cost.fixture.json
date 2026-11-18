@@ -5,9 +5,11 @@
     "cost_cold_blooded": 20.0,
     "cost_per_extra_founder": 0.699999988079071,
     "cost_per_extra_offspring": 2.5,
+    "cost_per_larger_body": 40.0,
     "cost_per_smaller_body": 40.0,
     "flat_founders": 50,
     "founder_cost_step": 0.07000000029802322,
+    "free_body_size": 0.5,
     "genes": [
       {
         "cost": 0.0,
@@ -65,7 +67,7 @@
         "name": "climbing"
       },
       {
-        "cost": 6.0,
+        "cost": 8.0,
         "default": 0.0,
         "name": "burrowing"
       },
@@ -185,7 +187,7 @@
         "name": "body_size_tolerance"
       },
       {
-        "cost": 8.0,
+        "cost": 12.0,
         "default": 0.0,
         "name": "hibernation"
       },
@@ -498,6 +500,21 @@
         "thermo": "warm",
         "traits": {
           "wings": 0.4000000059604645
+        }
+      }
+    },
+    {
+      "cost": 31.4,
+      "spec": {
+        "birth": "live",
+        "founders": 20,
+        "litter_size": 3,
+        "name": "Big hibernating burrower",
+        "thermo": "warm",
+        "traits": {
+          "body_size": 0.8999999761581421,
+          "burrowing": 0.4000000059604645,
+          "hibernation": 0.6000000238418579
         }
       }
     },

@@ -5,7 +5,7 @@ import { setPref, shows, toasts } from '../alertPrefs';
 import type { FeedEntry } from '../model';
 import { ALERT_KINDS, type AlertKind, type AlertPrefs, type LineageStats, type OrgId } from '../protocol';
 import {
-  CAUSE_COLORS, SERIES, driftRows, geneHistogram, geneSparkline, legacyChart, originBar, originRows, pyramidChart, spreadBar, stackVitals, vitalsChart,
+  CAUSE_COLORS, CAUSE_LABELS, SERIES, driftRows, geneValueText, geneHistogram, geneSparkline, legacyChart, originBar, originRows, pyramidChart, spreadBar, stackVitals, vitalsChart,
 } from './charts';
 import { h, pct } from './dom';
 import { traitName } from './traitNames';
@@ -67,21 +67,21 @@ export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
     card('Population by age', 'Females left, males right; oldest at the top.',
       legend([[SERIES[0], 'female'], [SERIES[1], 'male']]), pyramidChart(s.age_bands)),
     card('Births and deaths', `Last ${s.vitals.length} days (the last bar is today so far): ${births} born, ${deaths} died.`,
-      legend([[SERIES[2], 'born'], ...st.causes.map((c) => [CAUSE_COLORS[c], c.replace('_', ' ')] as [string, string])]), vitalsChart(s.vitals)),
+      legend([[SERIES[2], 'born'], ...st.causes.map((c) => [CAUSE_COLORS[c], CAUSE_LABELS[c] ?? c.replace('_', ' ')] as [string, string])]), vitalsChart(s.vitals)),
     card('Legacy share', latest ? `Now ${pct(latest.share, 2)} of breeding alleles (weighted ${pct(latest.weighted_share, 2)}).` : 'Recorded at the end of each day.',
       legend([[SERIES[0], 'share'], [SERIES[2], 'weighted by offspring raised']]), legacyChart(s.legacy)),
     card('Gene drift', noMembers ? 'No data: none of your organisms are alive to measure.' : recorded > 0 ? `Largest changes of the lineage mean since founding (${recorded} recorded days); dashed: founding value.` : 'Drift shows after the first recorded day.',
       noMembers ? null : h('div', { class: 'drift-list', id: 'drift-list' }, ...drift.map((d) => h('div', { class: 'drift-row' },
         h('span', { class: 'gene-name' }, d.label),
         geneSparkline(d),
-        h('span', { class: 'small' }, `${d.mean.toFixed(2)} (${d.drift >= 0 ? '+' : ''}${d.drift.toFixed(3)})`))))),
+        h('span', { class: 'small' }, `${geneValueText(d.gene, d.mean)} (${geneValueText(d.gene, d.drift, true)})`))))),
     noMembers ? null : h('details', { class: 'chart-card', id: 'all-genes', open: tableOpen },
       h('summary', {}, `All genes: distributions (${all.length})`),
       h('p', { class: 'muted small' }, 'Members per tenth of the 0 … 1 range; dashed: founding mean.'),
       h('table', { class: 'gene-table', id: 'gene-table' },
         h('thead', {}, h('tr', {}, h('th', {}, 'Gene'), h('th', {}, 'Mean'), h('th', { title: 'Standard deviation over living members' }, 'SD'), h('th', {}, '0 … 1'))),
         h('tbody', {}, ...all.map((g) => h('tr', {},
-          h('td', {}, traitName(g.gene)), h('td', {}, g.mean.toFixed(2)), h('td', {}, g.sd.toFixed(3)),
+          h('td', {}, traitName(g.gene)), h('td', {}, geneValueText(g.gene, g.mean)), h('td', {}, g.sd.toFixed(3)),
           h('td', {}, g.bins && g.bins.length > 0 ? geneHistogram(traitName(g.gene), g.bins, g.founding_mean) : spreadBar(g.mean, g.sd, g.founding_mean))))))),
   ] as (Node | null)[]).filter((x): x is Node => x !== null));
 }

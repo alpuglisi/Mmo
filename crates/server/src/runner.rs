@@ -62,6 +62,13 @@ pub enum Request {
         design: FounderDesign,
         reply: oneshot::Sender<Result<FoundOk, FoundError>>,
     },
+    /// `POST /api/design/compatibility`: a design's founders against each
+    /// living lineage (`Game::design_compatibility`; read only).
+    DesignCompat {
+        player: PlayerId,
+        design: FounderDesign,
+        reply: oneshot::Sender<crate::protocol::DesignCompatView>,
+    },
     Connect {
         conn: ConnId,
         player: PlayerId,
@@ -500,6 +507,9 @@ impl Runner {
                 self.remove_conn(conn);
                 self.season_watchers.remove(&conn);
                 self.game.disconnect(conn);
+            }
+            Request::DesignCompat { player, design, reply } => {
+                let _ = reply.send(self.game.design_compatibility(player, &design));
             }
             Request::Snapshot { scale, player, reply } => {
                 let _ = reply.send(self.game.map_rgb(player, scale));

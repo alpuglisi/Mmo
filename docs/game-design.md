@@ -37,7 +37,10 @@ Example: 10,000 breeding adults × 50 genes × 2 alleles = 1,000,000 alleles. 80
 **Why trade** (playtest 1 had zero trades: accepting a rival's stud only dilutes you). Renown, earned only in play, now pays and buys things:
 
 - **Breeder's royalty:** renown a day for a player's alleles living outside their own lineage, so siring into rivals' dams pays the breeder beyond the share it already counts for.
-- **Renown shop (sinks):** extra directed-mating slots for the season (rising price), and reinforcements for a small lineage (adults copied from its own; only below a fifth of the soft cap, rising price): a large lineage spreads its genes by paying others' dams, a small one earns renown by hosting them and spends it on catching up.
+- **Renown shop (sinks):** extra directed-mating slots for the season (rising price), and reinforcements for a small lineage (adults copied from its own; only below a fifth of the soft cap, rising price, at most two a ranked season per player, retired lineages included): a large lineage spreads its genes by paying others' dams, a small one earns renown by hosting them and spends it on catching up. Leaders get cosmetic sinks only: a nameplate, naming a species their lineage founded.
+- **Offers live in real time:** a request waits 10 minutes for an answer and an accepted agreement 30 minutes for the meeting (then the requester forfeits a tenth), not until the next weather season. An offer can go to a whole lineage, whose owner picks a free animal.
+- **Retiring** a lineage hands animals mostly of another player's genes to that player instead of deleting them.
+- **Titles need substance:** the stud market needs several sales to different buyers; a survival title nobody failed goes to no one.
 - **Market fee:** 10% of every payout is destroyed.
 - **Compatibility shown:** body plans 0.30 apart (diet, warmth, birth mode, size) are sterile; the market lists which lineages can breed with yours.
 
@@ -158,6 +161,12 @@ Optional: mismatch penalties are partly genetic, so selection can slowly reduce 
 | Mobility | Parent keeps moving | Tied to nest until hatching |
 | Fits with | Migration, warm-blooded | Cold-blooded, colonies |
 
+Birth mode is part of the body plan, but counts for less than the other body-plan traits when deciding fertility: an egg layer is a little fertile with a close live bearer (and vice versa) instead of sterile with every one of them, so choosing eggs is not a free wall against hybrid dilution (playtest 2). Kinship and species boundaries still use the full difference.
+
+**Body size** is free only in a middle band (from the default up to 3.6 kg). Smaller bodies cost points (more breeders on the same food), and so do bigger ones: a big body outgrows most predators, which its food need alone did not offset (playtest 2: player herbivores of 29–54 kg that no predator could take).
+
+**Interbreeding check.** The builder asks the server which living lineages a design's founders could breed with: founders sampled with their individual variation against sampled adults of each lineage, giving a fertility range (not the best pair), the share of fertile pairs and a drift risk (how close a sterile pairing is to becoming fertile as lineages drift). Player lineages are never labelled wild.
+
 **3. Offspring per birth.** Few (1–2): larger, high survival, long care, slow growth. Many (8+): fragile, most die young, fast recovery and more variation. Food cost, recovery time and care per young scale with the number. Only offspring that reach breeding age add to the legacy score.
 
 **4. Physical traits**
@@ -194,7 +203,7 @@ The map has distinct biomes, changing weather and seasons, so each organism pick
 
 | Strategy | How it works | Benefit | Cost or risk |
 | --- | --- | --- | --- |
-| Hibernation | Dormant through winter on stored fat | Almost no winter food needed; safe from weather | Must fatten in fall; den can be found; no winter breeding |
+| Hibernation | Dormant through winter on stored fat | Almost no winter food needed; safe from weather | Must fatten in fall; den can be found; no winter breeding; some sleepers die in the den (more of the young and the lean); after waking, days of recovery before breeding; dearer to design |
 | Migration | Travels between seasonal ranges | Always in good conditions | Dangerous journeys; needs navigation and stamina |
 | Year-round active | No seasonal change | Breeds and forages all year; holds territory | Faces winter head-on; needs cold traits or a mild biome |
 | Estivation | Dormant through summer heat or drought | Survives deserts and dry seasons | Loses the summer |
@@ -281,6 +290,8 @@ Needs turn genes into behavior: traits set how fast needs rise, behavior genes s
 
 **Breeding season.** High breeding drive lowers perception and threat response and raises risk-taking, making the season dangerous. Showy displays attract mates and predators alike; sentry genes and short timed-breeding windows offset the risk.
 
+**Ageing.** Old age kills over a spread of ages (about 85% of the lifespan on average, give or take an eighth), so a cohort born in one boom does not die out in the same week.
+
 **Other modifiers.** Pregnant and nursing parents need more food; egg-carrying parents are slower. Injury and disease may be added as needs that reduce other stats until healed.
 
 ## Technology
@@ -321,7 +332,7 @@ Server load scales with organism count: players × organisms per lineage, plus a
 - **Slow world clock:** about 1 tick per second or slower; possessed organisms tick faster. (Implemented as movement sub-steps: a possessed organism following a move order moves in quarter-tick steps between world ticks and new orders apply at the next sub-step; decisions and needs stay on the world clock. See README, Server.)
 - **Level of detail:** full agents near active players; distant populations run as statistical models (birth, death, gene frequencies) and switch back to agents when a player arrives.
 - **Slow environment updates:** weather, vegetation regrowth and snow depth update per simulated hour, chunk by chunk.
-- **Population limits:** food-based carrying capacity, plus a soft cap per player lineage: as a lineage's adults (juveniles count a quarter) approach the cap its litters shrink (half at the cap) and past it its members get hungrier, up to a hard safety ceiling at twice the cap. Food, not the cap, is the real limiter, and a lineage at the cap grows its share by spreading its genes into others (README, *Soft lineage cap*). Wild species keep hard caps.
+- **Population limits:** food-based carrying capacity, plus a soft cap per player lineage: as a lineage's adults (juveniles count a quarter) approach the cap its litters shrink (half at the cap) and past it its members get hungrier (steeply: a sixth of the litters at 1.3×), up to a hard safety ceiling at 1.4 times the cap. Food, not the cap, is the real limiter, and a lineage at the cap grows its share by spreading its genes into others (README, *Soft lineage cap*). Wild species keep hard caps.
 - **Parallel regions:** map split into chunks updated across all cores.
 - **More worlds, not bigger ones:** scale by adding independent worlds (shards), each with its own ecosystem, seasons and leaderboard.
 

@@ -62,8 +62,31 @@ pub enum ClientMsg {
     /// and failure chance, and why the pair can't conceive if it can't. Data:
     /// [`MatingPreviewView`]. Nothing changes and no slot is used.
     PreviewMating { mine: OrgId, partner: OrgId },
-    /// The partner organism's owner accepts or declines an offer.
-    RespondMating { request: u64, accept: bool },
+    /// Offer a directed mating of your `mine` with any suitable animal of
+    /// another player's `lineage`: its owner picks one when accepting
+    /// (`respond_mating` with `partner`), or the server picks the nearest
+    /// available one (adult, of the other sex, not pregnant, not promised,
+    /// fertile with `mine`). Spares guessing which of a rival's females are
+    /// free (requests to a pregnant one are refused `partner_unavailable`).
+    /// Otherwise like `request_mating` (price in escrow, the same limits).
+    /// Data: `{offer}`; the offer's `partner` is 0 and `lineage` set until
+    /// accepted.
+    OfferToLineage {
+        mine: OrgId,
+        lineage: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        price: Option<u64>,
+    },
+    /// The partner organism's owner accepts or declines an offer. For an
+    /// offer to the lineage (`offer_to_lineage`), `partner` picks the animal
+    /// (default: the nearest available one; `no_partner_available` if none,
+    /// and the offer stays open).
+    RespondMating {
+        request: u64,
+        accept: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partner: Option<OrgId>,
+    },
     /// Retry an accepted agreement now (it also completes on its own once the
     /// two organisms meet).
     CompleteMating { request: u64 },
@@ -219,9 +242,19 @@ pub enum ClientMsg {
     /// of the soft lineage cap is alive (`reinforce_blocked` in the shop
     /// says why not). Data: `{added: [ids], shop: ShopView}`.
     Reinforce,
-    /// Which lineages yours can breed with: the best body-plan fertility
-    /// between a sample of your adults and each other lineage's, and the
-    /// body-plan gene that keeps you apart. Data: [`CompatibilityView`].
+    /// Buy or change your nameplate: a `color` from the shop's palette and a
+    /// `title` (1–24 characters) shown with your name (cosmetic; 500 renown
+    /// the first time, 100 per change). Data: `{nameplate, shop}`.
+    SetNameplate { color: String, title: String },
+    /// Name a species your lineage founded (cosmetic; 300 renown): a
+    /// species whose founder is you, still alive. Data: `{species, name}`.
+    NameSpecies { species: u32, name: String },
+    /// Every player's nameplate. Data: `{nameplates: {player: {color, title}}}`.
+    Nameplates,
+    /// Which lineages yours can breed with: the fertility over every pair
+    /// of a sample of your adults and each other lineage's (mean, range,
+    /// share fertile), the drift risk, and the body-plan gene that keeps
+    /// you apart. Data: [`CompatibilityView`].
     Compatibility,
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
@@ -251,6 +284,7 @@ impl ClientMsg {
             ClientMsg::RequestMating { .. } => "request_mating",
             ClientMsg::PreviewMating { .. } => "preview_mating",
             ClientMsg::RespondMating { .. } => "respond_mating",
+            ClientMsg::OfferToLineage { .. } => "offer_to_lineage",
             ClientMsg::CompleteMating { .. } => "complete_mating",
             ClientMsg::CancelMating { .. } => "cancel_mating",
             ClientMsg::Migrate { .. } => "migrate",
@@ -276,6 +310,9 @@ impl ClientMsg {
             ClientMsg::BuyMatingSlot => "buy_mating_slot",
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
+            ClientMsg::SetNameplate { .. } => "set_nameplate",
+            ClientMsg::NameSpecies { .. } => "name_species",
+            ClientMsg::Nameplates => "nameplates",
             ClientMsg::Resync => "resync",
             ClientMsg::WatchSeason { .. } => "watch_season",
         }
@@ -318,6 +355,15 @@ pub const COMMAND_NAMES: &[&str] = &[
     "compatibility",
     "resync",
     "watch_season",
+    "offer_to_lineage",
+    "retire_lineage",
+    "renown_shop",
+    "buy_mating_slot",
+    "reinforce",
+    "compatibility",
+    "set_nameplate",
+    "name_species",
+    "nameplates",
 ];
 
 /// The known command named `t`, as a static name (for replies to messages
@@ -504,7 +550,8 @@ pub enum AlertKind {
     /// A group order ended on its own: a migration arrived, a group was
     /// left with no members.
     Group,
-    /// Another player ordered an attack on one of your organisms.
+    /// Another player ordered an attack on one of your organisms, or an
+    /// attack you ordered ended (killed, escaped, lost sight, …).
     Attack,
 }
 
@@ -927,6 +974,15 @@ pub struct OfferView {
     /// Renown held in escrow (the price, from the requester) while open.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub escrow: u64,
+    /// While open: the tick a pending request expires unanswered, or an
+    /// accepted agreement lapses if the two haven't met (wall-clock
+    /// lifetimes, `GameConfig::offer_ticks` and `purchase_deadline_ticks`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_tick: Option<u64>,
+    /// An offer to any animal of this lineage (`offer_to_lineage`): `partner`
+    /// is 0 until its owner accepts and an animal is picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<u32>,
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -947,10 +1003,15 @@ pub struct WeatherView {
     pub catastrophe: Option<CatastropheView>,
 }
 
+/// Every count here (day, year, era) is 0-based, as are the day and era
+/// numbers elsewhere in the API; the game's screens and alerts show them
+/// counted from 1 ("Year 1 · day 1", "Era 1").
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ClockView {
     pub tick: u64,
+    /// Days since the world began (0-based).
     pub day: u64,
+    /// Years since the world began (0-based).
     pub year: u64,
     pub hour: u32,
     pub season: String,
@@ -1258,10 +1319,19 @@ pub struct WorldSummary {
     /// reserves full: `GameConfig::winter_provision`).
     #[serde(default)]
     pub winter_provision: bool,
-    /// Most living organisms (young included) one player may have: at it,
-    /// births pause (`WorldConfig::lineage_cap`, scaled to the map).
+    /// The lineage cap (`WorldConfig::lineage_cap`, scaled to the map): with
+    /// crowding on, the soft cap where breeding is at half pace; off, the
+    /// most living organisms one player may have.
     #[serde(default)]
     pub lineage_cap: usize,
+    /// No births past this many living members (the soft cap's ceiling;
+    /// equal to `lineage_cap` with crowding off).
+    #[serde(default)]
+    pub lineage_hard_cap: usize,
+    /// Player lineages in their newcomer grace: other players' animals
+    /// can't be ordered to attack them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected: Vec<ProtectedLineage>,
 }
 
 /// One world of `GET /api/worlds`.
@@ -1445,6 +1515,14 @@ pub struct LineageStats {
     /// The soft lineage cap and how crowded the lineage is now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crowding: Option<CrowdingView>,
+    /// How much of the legacy share counts toward the ranked season now
+    /// (the founding ramp, 0..1), and over how many days it ramps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ramp: Option<RampView>,
+    /// Days left of the lineage's newcomer grace (others' animals can't be
+    /// ordered to attack it); absent when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_days_left: Option<f32>,
     /// An egg-laying lineage's clutches waiting to hatch (absent for live
     /// bearers): what "pregnant" means for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1453,6 +1531,26 @@ pub struct LineageStats {
     pub legacy: Vec<LegacyPoint>,
     /// Recent alerts, newest last.
     pub alerts: Vec<AlertView>,
+}
+
+/// The founding ramp (`lineage_stats.ramp`): a new lineage's share counts
+/// toward the ranked season gradually.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RampView {
+    /// The day the lineage was founded.
+    pub founded_day: u64,
+    /// Share of the legacy share counted now, 0..1.
+    pub weight: f64,
+    /// Days from founding to counting in full.
+    pub days: u64,
+}
+
+/// A player lineage in its newcomer grace (`WorldSummary::protected`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ProtectedLineage {
+    pub player: PlayerId,
+    pub lineage: u32,
+    pub days_left: f32,
 }
 
 /// Whose genes make up a legacy share (`lineage_stats.score`). The score
@@ -1474,8 +1572,11 @@ pub struct ScoreBreakdown {
     /// Your alleles in your own lineage (the part of `share` at home).
     pub home_share: f64,
     /// Your alleles outside your lineage: in rivals' animals and the wild.
-    /// Earns the royalty.
     pub exported_share: f64,
+    /// The part of `exported_share` in other players' lineages: what the
+    /// royalty pays for (alleles in the wild came from no trade).
+    #[serde(default)]
+    pub traded_share: f64,
     /// Others' alleles your lineage carries (`head_share - home_share`):
     /// what hybridising cost your share.
     pub foreign_share: f64,
@@ -1485,7 +1586,7 @@ pub struct ScoreBreakdown {
     /// Where your alleles live, largest first; `share` here is of your
     /// alleles (sums to 1).
     pub placed: Vec<GeneHost>,
-    /// Renown a day the royalty pays at this `exported_share`.
+    /// Renown a day the royalty pays at this `traded_share`.
     pub royalty: u64,
 }
 
@@ -1560,8 +1661,23 @@ pub struct ShopView {
     /// Kept (destroyed) from every stud fee or price paid out, percent.
     pub market_fee_percent: u64,
     /// Royalty: renown a day per percentage point of all alleles that are
-    /// yours and live outside your lineage.
+    /// yours and live in other players' lineages.
     pub royalty_per_point: f64,
+    /// Reinforcements bought this ranked season, and the most allowed.
+    #[serde(default)]
+    pub reinforcements_bought: u32,
+    #[serde(default)]
+    pub reinforcements_max: u32,
+    /// Cosmetic sinks: the price of a nameplate now (first or change), its
+    /// palette, your nameplate, and the price of naming a species.
+    #[serde(default)]
+    pub nameplate_price: u64,
+    #[serde(default)]
+    pub nameplate_colors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nameplate: Option<crate::economy::Nameplate>,
+    #[serde(default)]
+    pub species_name_price: u64,
 }
 
 /// `compatibility`: which lineages yours can breed with.
@@ -1581,16 +1697,55 @@ pub struct CompatibilityRow {
     /// 0: the wild ecosystem.
     pub owner: PlayerId,
     pub owner_name: String,
-    /// Best body-plan fertility between a sample of your adults and theirs,
-    /// 0 (sterile) to 1. A mating's fertility is also limited by the
-    /// whole-genome distance (`preview_mating`).
+    /// Whether the lineage is the wild ecosystem's (owner 0). A player's
+    /// lineage is never wild, whatever species it has joined.
+    #[serde(default)]
+    pub wild: bool,
+    /// Mean fertility over every pair of a sample of your adults (or a
+    /// design's founders) and theirs, 0 (sterile) to 1: body plan
+    /// (`Balance::egg_hybrid` included) and whole-genome distance. Before
+    /// playtest 2 this was the best pair's body-plan fertility.
     pub fertility: f32,
+    /// The 10th and 90th percentile pair: what to expect from a random
+    /// mating.
+    #[serde(default)]
+    pub fertility_low: f32,
+    #[serde(default)]
+    pub fertility_high: f32,
+    /// The best pair.
+    #[serde(default)]
+    pub best_fertility: f32,
+    /// Share of the pairs with any fertility.
+    #[serde(default)]
+    pub fertile_share: f32,
+    /// At least half the pairs fertile.
     pub compatible: bool,
-    /// The body-plan gene with the widest gap in the best pair (`carnivory`,
-    /// `endothermy`, `birth_mode`, `body_size`, or `morphology` for eye or
-    /// leg counts), and the gap; sterile at 0.30.
+    /// `none`, `low` or `high`: how likely drift is to make the two (more)
+    /// fertile: `high` when any pair is fertile or the closest pair is
+    /// within 0.05 of the sterile gap, `low` within 0.12.
+    #[serde(default)]
+    pub drift_risk: String,
+    /// The body-plan gene with the widest gap in the closest pair
+    /// (`carnivory`, `endothermy`, `birth_mode`, `body_size`, or
+    /// `morphology` for eye or leg counts), and the gap; sterile at 0.30.
     pub limiting: String,
     pub gap: f32,
+}
+
+/// `POST /api/design/compatibility`: a design's founders (as founding would
+/// make them, founder variation included) against each living lineage.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DesignCompatView {
+    /// The world day the check ran on (species move: check again later).
+    pub day: u64,
+    /// Individuals sampled on each side.
+    pub sample: usize,
+    /// Lineages with any fertile pair.
+    pub fertile_with: usize,
+    /// Lineages sterile now but at drift risk (`low` or `high`).
+    pub at_risk: usize,
+    /// Every lineage with living adults, most fertile first.
+    pub rows: Vec<CompatibilityRow>,
 }
 
 /// One player's standing over a season of the history.
@@ -2171,6 +2326,9 @@ pub struct SpeciesLineage {
     pub lineage: u32,
     pub name: String,
     pub owner: PlayerId,
+    /// The owner's player name ("wild" for the wild ecosystem).
+    #[serde(default)]
+    pub owner_name: String,
     /// Estimated breeding adults of this lineage in the species.
     pub adults: f64,
 }
@@ -2329,6 +2487,7 @@ pub struct EraBoard {
 /// `GET /api/eras`: the current era and finished eras' rankings, newest first.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct EraList {
+    /// The era under way (0-based; shown as `era + 1`).
     pub era: u64,
     pub era_days: u64,
     pub first_day: u64,

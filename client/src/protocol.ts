@@ -26,7 +26,7 @@ export type ClientMsg =
   | { type: 'request_mating'; mine: OrgId; partner: OrgId; price?: number }
   /** What a mating of `mine` with `partner` would give; data: `MatingPreviewView`. */
   | { type: 'preview_mating'; mine: OrgId; partner: OrgId }
-  | { type: 'respond_mating'; request: number; accept: boolean }
+  | { type: 'respond_mating'; request: number; accept: boolean; partner?: OrgId }
   | { type: 'complete_mating'; request: number }
   | { type: 'cancel_mating'; request: number }
   /**
@@ -77,6 +77,14 @@ export type ClientMsg =
   | { type: 'reinforce' }
   /** Which lineages yours can breed with; data: `CompatibilityView`. */
   | { type: 'compatibility' }
+  /** Offer a mating of your `mine` with any suitable animal of another player's lineage (its owner picks); data: `{ offer }`. */
+  | { type: 'offer_to_lineage'; mine: OrgId; lineage: number; price?: number }
+  /** Buy or change your nameplate (cosmetic); data: `{ nameplate, shop }`. */
+  | { type: 'set_nameplate'; color: string; title: string }
+  /** Name a species your lineage founded (cosmetic); data: `{ species, name }`. */
+  | { type: 'name_species'; species: number; name: string }
+  /** Every player's nameplate; data: `{ nameplates: { [player]: { color, title } } }`. */
+  | { type: 'nameplates' }
   /** Protocol 2: the delta states stopped decoding; the next state is a keyframe (no reply). */
   | { type: 'resync' }
   /**
@@ -171,6 +179,11 @@ export interface OfferView {
   listing?: number;
   /** Renown held in escrow (the requester's price) while open. */
   escrow?: number;
+  /** While open: the tick a pending request expires unanswered, or an accepted agreement lapses (servers before
+   * wall-clock lifetimes: absent, offers lapse at the season change). */
+  expires_tick?: number;
+  /** An offer to any animal of this lineage: `partner` is 0 until accepted. */
+  lineage?: number;
 }
 
 export interface WeatherView {
@@ -808,6 +821,10 @@ export interface GeneCatalog {
   cost_cold_blooded?: number;
   /** Points per unit of `body_size` below its default (absent on older servers: 0). */
   cost_per_smaller_body?: number;
+  /** Body size up to which a bigger body is free (absent on older servers: no price). */
+  free_body_size?: number;
+  /** Points per unit of `body_size` above `free_body_size` (absent on older servers: 0). */
+  cost_per_larger_body?: number;
   max_litter: number;
   genes: GeneInfo[];
   /** The body plan's parameters, on servers that accept `DesignSpec.morph`. */
@@ -830,6 +847,10 @@ export interface WorldSummary {
   winter_provision?: boolean;
   /** Most living organisms, young included, one player may have; at it births pause (absent from older servers). */
   lineage_cap?: number;
+  /** No births past this many living members (with crowding, a multiple of `lineage_cap`, which is then the soft cap). */
+  lineage_hard_cap?: number;
+  /** Player lineages in their newcomer grace (others can't order attacks on them). */
+  protected?: { player: PlayerId; lineage: number; days_left: number }[];
   /** Days in a year (four equal seasons); absent from older servers. */
   days_per_year?: number;
   /** Ticks in a game day; absent from older servers. */
@@ -950,6 +971,10 @@ export interface LineageStats {
   score?: ScoreBreakdown;
   /** The soft lineage cap and how crowded the lineage is (absent on older servers). */
   crowding?: CrowdingView;
+  /** The founding ramp: how much of the share counts toward the ranked season now (absent from older servers). */
+  ramp?: { founded_day: number; weight: number; days: number };
+  /** Days left of the newcomer grace (others can't order attacks on yours); absent: none. */
+  grace_days_left?: number;
   /** Egg-laying lineages: their clutches on the ground (absent for live bearers and older servers). */
   eggs?: { clutches: number; eggs: number; brooded: number };
   legacy: LegacyPoint[];
@@ -968,8 +993,10 @@ export interface ScoreBreakdown {
   head_share: number;
   /** Your alleles in your own lineage. */
   home_share: number;
-  /** Your alleles in rivals' animals and the wild (earns the royalty). */
+  /** Your alleles in rivals' animals and the wild. */
   exported_share: number;
+  /** The part in other players' lineages: what the royalty pays for (absent on older servers). */
+  traded_share?: number;
   /** Others' alleles your lineage carries: what hybridising cost. */
   foreign_share: number;
   /** Whose alleles your breeding adults carry; `share` of your lineage's alleles. */
@@ -1007,22 +1034,52 @@ export interface ShopView {
   reinforce_blocked?: string;
   market_fee_percent: number;
   royalty_per_point: number;
+  reinforcements_bought?: number;
+  reinforcements_max?: number;
+  nameplate_price?: number;
+  nameplate_colors?: string[];
+  nameplate?: { color: string; title: string };
+  species_name_price?: number;
+}
+
+/** One lineage in a compatibility check (`compatibility`, `POST /api/design/compatibility`). */
+export interface CompatibilityRow {
+  lineage: number;
+  lineage_name: string;
+  owner: PlayerId;
+  owner_name: string;
+  /** The wild ecosystem's lineage (owner 0); a player's lineage never is. Absent on older servers. */
+  wild?: boolean;
+  /** Mean fertility over every pair of sampled individuals (the best pair's on older servers). */
+  fertility: number;
+  /** 10th and 90th percentile pair (absent on older servers). */
+  fertility_low?: number;
+  fertility_high?: number;
+  best_fertility?: number;
+  /** Share of sampled pairs with any fertility. */
+  fertile_share?: number;
+  /** At least half the pairs fertile (any fertile pair on older servers). */
+  compatible: boolean;
+  /** `none`, `low` or `high`: how likely drift is to make the two (more) fertile. */
+  drift_risk?: 'none' | 'low' | 'high';
+  /** `carnivory`, `endothermy`, `birth_mode`, `body_size` or `morphology`. */
+  limiting: string;
+  gap: number;
 }
 
 /** `compatibility`: which lineages yours can breed with. */
 export interface CompatibilityView {
   lineage?: number;
-  rows: {
-    lineage: number;
-    lineage_name: string;
-    owner: PlayerId;
-    owner_name: string;
-    fertility: number;
-    compatible: boolean;
-    /** `carnivory`, `endothermy`, `birth_mode`, `body_size` or `morphology`. */
-    limiting: string;
-    gap: number;
-  }[];
+  rows: CompatibilityRow[];
+}
+
+/** `POST /api/design/compatibility`: a design's founders against each living lineage. */
+export interface DesignCompatView {
+  day: number;
+  sample: number;
+  fertile_with: number;
+  at_risk: number;
+  rows: CompatibilityRow[];
 }
 
 export interface SeasonRow {
@@ -1174,6 +1231,8 @@ export interface SpeciesLineage {
   lineage: number;
   name: string;
   owner: PlayerId;
+  /** The owner's player name (absent from older servers). */
+  owner_name?: string;
   adults: number;
 }
 

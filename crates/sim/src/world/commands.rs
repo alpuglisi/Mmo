@@ -167,7 +167,7 @@ impl fmt::Display for CommandError {
                 let kg = |x: f32| if x < 10.0 { format!("{x:.1}") } else { format!("{x:.0}") };
                 write!(
                     f,
-                    "that animal ({} kg) is too big to take on; this one can tackle up to {} kg (more with pack-mates around)",
+                    "that animal ({} kg) is too big to take on; this one can tackle up to {} kg, counting the pack-mates around it now",
                     kg(*mass),
                     kg(*limit)
                 )
@@ -326,7 +326,8 @@ impl World {
             mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
         let cost = mating::override_cost(mismatch, self.config.override_k);
         let failure_chance = mating::override_failure_chance(cost);
-        let fertility = mating::fertility(&female.genome, &male.genome) * self.disease_fertility(f, m);
+        let fertility = mating::fertility_with(&female.genome, &male.genome, self.config.balance.egg_hybrid)
+            * self.disease_fertility(f, m);
         (mismatch, cost, failure_chance, fertility)
     }
 
@@ -342,9 +343,11 @@ impl World {
         let (f, m) = if oa.sex == Sex::Female { (ia, ib) } else { (ib, ia) };
         let (mismatch, cost, failure_chance, fertility) = self.directed_terms(f, m);
         let (ga, gb) = (&oa.genome, &ob.genome);
+        let egg_hybrid = self.config.balance.egg_hybrid;
         let body_plan_gaps = mating::BODY_PLAN_GENES
             .iter()
-            .map(|&g| (g, (ga.expr(g) - gb.expr(g)).abs()))
+            .zip(mating::plan_weights(egg_hybrid))
+            .map(|(&g, w)| (g, (ga.expr(g) - gb.expr(g)).abs() * w))
             .filter(|&(_, gap)| gap > mating::BODY_PLAN_FULL)
             .collect();
         Ok(MatingPreview {
@@ -352,7 +355,7 @@ impl World {
             cost,
             failure_chance,
             fertility,
-            body_plan_fertility: mating::body_plan_fertility(ga, gb),
+            body_plan_fertility: mating::fertility_from_gap(mating::fertility_gap(ga, gb, egg_hybrid)),
             distance_fertility: mating::distance_fertility(ga.distance(gb)),
             body_plan_gaps,
             distance: oa.pos.dist(ob.pos),
