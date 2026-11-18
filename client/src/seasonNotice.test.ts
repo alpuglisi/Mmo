@@ -16,4 +16,11 @@ describe('season notice', () => {
     expect(seasonNotice({ days_to_winter: 1, winter_provision: false })).not.toContain('start fed');
     expect(seasonNotice({ days_to_winter: 0, winter_provision: true })).toContain('It is winter now.');
   });
+  it('recommends brumation to a cold-blooded design, and says founders sleep their first winter free', () => {
+    const cold = seasonNotice({ days_to_winter: 5, winter_provision: true }, 'cold')!;
+    expect(cold).toContain('Brumation and fat stores');
+    expect(cold).not.toContain('Fur, fat stores and hibernation');
+    expect(cold).toContain('first winter free');
+    expect(seasonNotice({ days_to_winter: 5, winter_provision: false })).toContain('first winter free');
+  });
 });

@@ -27,7 +27,7 @@ Where the design's build order stands:
 What remains is in [Suggested next steps](#suggested-next-steps). Launch
 marketing (drafting, human approval, scheduling and publishing on the
 owner's accounts) lives in [`tools/marketing/`](tools/marketing/PUBLISHING.md).
-Three AI playtests so far; what each found and what changed is summarised in
+Four AI playtests so far; what each found and what changed is summarised in
 [`docs/changelog-playtests.md`](docs/changelog-playtests.md).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)

@@ -34,13 +34,16 @@ export function designWarnings(d: DesignSpec, world: Pick<WorldSummary, 'weather
     });
   }
   const cat = world?.weather.catastrophe;
-  const banner = catastropheBanner(cat, world?.clock.day ?? 0);
-  if (cat && banner) {
+  const today = world?.clock.day ?? 0;
+  const left = cat ? cat.end_day - today : 0;
+  // Only while it lasts: `end_day` is the first day after it (playtest 4: "1 days left" after it ended).
+  if (cat && cat.active && left > 0 && catastropheBanner(cat, today)) {
     const effect = catastropheEffect(cat.kind);
+    const days = left === 1 ? 'its last day' : `${left} days left`;
     out.push({
       id: 'catastrophe',
       level: 'bad',
-      text: `${catastropheLabel(cat.kind)} under way (${Math.max(0, cat.end_day - (world?.clock.day ?? 0))} days left). ${effect} New founders land in it too; founding after it ends is safer.`,
+      text: `${catastropheLabel(cat.kind)} under way (${days}). ${effect} New founders land in it too; founding after it ends is safer.`,
     });
   }
   const wings = geneValue(d, 'wings');
