@@ -1094,9 +1094,11 @@ pub struct Balance {
     pub toxic_avoidance: f32,
     /// Eggs keep warm while their brooding parent is alive but off the
     /// nest: an attended clutch (its guardian alive, within 12 tiles) chills
-    /// at `1 − 0.8 × egg_attendance` of the rate of a lost one. Playtest 4:
-    /// incubated clutches chilled more than they hatched (351 chilled vs 304
-    /// born) because parents left to eat and drink. 0: off.
+    /// at `1 − 0.8 × egg_attendance` of the rate of a lost one (0.6 at the
+    /// default 0.5; at 1 the egg-laying hibernator took 17 of 40 titles in
+    /// the dominance replay). Playtest 4: incubated clutches chilled more
+    /// than they hatched (351 chilled vs 304 born) because parents left to
+    /// eat and drink. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
     pub egg_attendance: f32,
     /// Player species identity: a cluster most of whose adults belong to
@@ -1414,7 +1416,7 @@ impl Default for Balance {
             wake_spread: 10.0,
             winter_rest: 1.0,
             toxic_avoidance: 1.0,
-            egg_attendance: 1.0,
+            egg_attendance: 0.5,
             player_species: 1.0,
             raised_cap: 4.0,
             reachable_water: 1.0,
