@@ -411,7 +411,7 @@ fn hysteresis_off(w: &mut World) {
 fn founding_fixes_off(w: &mut World) {
     let old = crate::serde_util::before_v47::OLD_VALUE;
     (w.config.balance.reachable_water, w.config.balance.founding_conditions) = (old, old);
-    w.config.balance.founding_safety = crate::serde_util::before_v48::OLD_VALUE;
+    w.config.balance.founding_safety = crate::serde_util::before_v49::OLD_VALUE;
     for h in &mut w.lineage_homes {
         *h = None;
     }
@@ -1592,16 +1592,33 @@ fn version_46_snapshots_restore_without_the_founding_fixes() {
     assert_eq!(r.config.balance.founding_conditions, 1.0);
 }
 
+/// Version 47 snapshots (before pending territory claims) restore with
+/// none, and this version keeps them.
 #[test]
-fn version_47_snapshots_restore_without_founding_safety() {
+fn version_47_snapshots_restore_without_pending_claims() {
     let mut w = fixture_world();
+    let key = (w.organisms[0].owner, 0u8);
+    w.group_plans.pending.claims.insert(key, (Vec2::new(5.0, 6.0), 4.0));
+    w.group_plans.pending.start_median.insert(key, 22.0);
     let old = w.snapshot_v47();
+    assert_eq!(SnapshotHeader::read(&old).unwrap().version, 47);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans.pending, Default::default());
+    assert!(r.snapshot_v47() == old);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans.pending, w.group_plans.pending);
+}
+
+#[test]
+fn version_48_snapshots_restore_without_founding_safety() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v48();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 47);
+    assert_eq!(h.version, 48);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.founding_safety, 0.0);
-    assert!(r.snapshot_v47() == old);
+    assert!(r.snapshot_v48() == old);
     w.config.balance.founding_safety = 0.0;
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());

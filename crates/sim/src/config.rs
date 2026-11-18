@@ -1090,8 +1090,8 @@ pub struct Balance {
     /// earlier foundings died (avoided). 0: the old search.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v47"))]
     pub founding_conditions: f32,
-    /// Playtest 4 founding safety (version 48; off at 0, what snapshots
-    /// before version 48 read, `serde_util::before_v48`). In a running
+    /// Playtest 4 founding safety (version 49; off at 0, what snapshots
+    /// before version 49 read, `serde_util::before_v49`). In a running
     /// world, founders settle only on dry land: no water or ice on the tile
     /// and no lake bed or river channel under it (`Ground::base_water`,
     /// `Ground::river`), so neither the thaw nor the end of a drought puts
@@ -1100,7 +1100,7 @@ pub struct Balance {
     /// founders will eat in their first 20 days, and map edges and corners
     /// in every season (more so in the cold one). Reinforcements land beside
     /// the lineage's largest group, not a random member.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
     pub founding_safety: f32,
 }
 
