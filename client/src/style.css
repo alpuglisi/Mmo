@@ -101,7 +101,9 @@ legend { color: var(--muted); font-size: 0.9em; padding: 0 0.3em; }
 /* ------------------------------------------------ design editor */
 .design-body { flex: 1; overflow: auto; display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
 .design-main { flex: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.design-side { position: sticky; top: 0; width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; }
+.design-side { position: sticky; top: 0; width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px;
+  /* No taller than the screen (the budget and interbreeding cards grew): it scrolls on its own and the preview stays in view. */
+  max-height: calc(100dvh - 90px); overflow-y: auto; overscroll-behavior: contain; }
 /* Founder preview (ui/avatarView.ts): above the Budget card. */
 .avatar-card { padding-bottom: 10px; }
 .avatar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -495,7 +497,12 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .server-box label { margin-top: 0.4em; }
 
 /* ------------------------------------------------ ranked seasons */
-.standings { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; }
+.standings { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr)); gap: 4px 16px; }
+/* Each category's table stays in its cell: long names shorten, numbers never run into the next column. */
+.standing { min-width: 0; }
+.standing table.board { width: 100%; }
+.standing td.num { text-align: right; white-space: nowrap; padding-left: 8px; }
+.standing td .who { display: inline-block; max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .standing h4 { margin: 6px 0 2px; font-size: 0.85em; font-weight: 500; color: var(--muted); }
 .standing .board td.rank { width: 2em; color: var(--muted); }
 .standing .board td.num { text-align: right; white-space: nowrap; }
@@ -516,8 +523,10 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .vision-swatch.depth { background: radial-gradient(circle, color-mix(in srgb, var(--vision-depth) 70%, white) 1.2px, transparent 1.5px) 0 0 / 5px 5px, color-mix(in srgb, var(--vision-depth) 48%, var(--panel)); border-color: var(--vision-depth); }
 .vision-swatch.blind { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--vision-blind) 60%, transparent) 0 1.3px, color-mix(in srgb, var(--vision-blind) 20%, transparent) 1.3px 4.2px); border-color: var(--vision-blind); }
 
-/* A catastrophe under way: pinned over the map under the toolbar, never truncated (it wraps). */
-.catastrophe-alert { position: absolute; z-index: 6; left: 50%; transform: translateX(-50%); top: 52px; width: min(640px, calc(100% - 16px)); display: flex; gap: 8px; align-items: flex-start;
+/* A catastrophe or drought under way: pinned over the map under the toolbar, never truncated (they wrap). */
+.map-notices { position: absolute; z-index: 6; left: 50%; transform: translateX(-50%); top: 52px; width: min(640px, calc(100% - 16px)); display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+.map-notices > * { pointer-events: auto; }
+.catastrophe-alert { display: flex; gap: 8px; align-items: flex-start;
   background: color-mix(in srgb, #3a1515 92%, transparent); border: 1px solid var(--bad); border-radius: 8px; padding: 8px 10px; color: var(--text); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4); font-size: 0.92em; }
 .catastrophe-alert[hidden] { display: none; }
 .catastrophe-alert .cat-icon { color: var(--bad); font-size: 1.2em; line-height: 1.2; }
@@ -527,9 +536,13 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .catastrophe-alert .cat-effect { overflow-wrap: anywhere; }
 .catastrophe-alert.folded .cat-effect { display: none; }
 .catastrophe-alert .cat-fold { padding: 2px 8px; font-size: 0.85em; flex-shrink: 0; }
+.drought-alert { background: color-mix(in srgb, #3a2a0c 92%, transparent); border-color: #d29922; }
+.drought-alert .cat-icon { color: #e3b341; }
+.drought-alert .cat-title { color: #f2cc60; }
 @media (max-width: 760px) {
   /* Phones: under the toolbar row, full width; the top bar pill is dropped (the date keeps the room). */
-  .catastrophe-alert { top: 56px; font-size: 13px; }
+  .map-notices { top: 56px; }
+  .catastrophe-alert { font-size: 13px; }
   .topbar .catastrophe-pill { display: none; }
 }
 
@@ -539,8 +552,8 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
   /* The date never gives way: the pills beside it shrink (one line each) instead. */
   #clock { text-overflow: clip; flex: 0 0 auto; }
   .topbar .pill { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
-  /* Renown as its number (the title and label say the rest); a live connection as a green dot. */
-  .balance-pill .pill-word { display: none; }
+  /* A live connection as a green dot (the room goes to "N renown": a bare number puzzled newcomers). */
+  .topbar .balance-pill { flex-shrink: 0; padding: 2px 8px; }
   .topbar .pill.conn-open { font-size: 0; width: 12px; height: 12px; padding: 0; border-radius: 50%; background: var(--good, #3fb950); flex: 0 0 auto; }
   #clock .clock-long { display: none; }
   #clock .clock-short { display: inline; }
@@ -574,3 +587,19 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 @media (max-width: 1440px) {
   #food-toggle .tool-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
+
+/* The possession bar after the possessed animal died: the message only. */
+.possess-bar.ended button { display: none; }
+.possess-bar.ended { border-color: var(--bad); }
+
+/* A rival animal in its lineage's newcomer grace (inspector). */
+.protected-pill { margin-left: 8px; color: #79c0ff; border-color: #1f6feb; font-weight: 400; }
+
+/* Wide tables scroll sideways inside their panel rather than spilling past its edge. */
+.table-scroll { max-width: 100%; overflow-x: auto; }
+
+/* Help: the topics fold; the dialog scrolls on short screens. */
+.help-card { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.help-topics { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.help-topic summary { cursor: pointer; }
+.help-topic p { margin: 4px 0 6px 1.2em; }

@@ -389,7 +389,7 @@ impl World {
     /// How far away a possessed organism can be ordered to attack: the
     /// farthest any organism perceives (`WorldConfig::max_perception`),
     /// what the player sees around it (`World::possess_attack`).
-    pub(crate) fn attack_range(&self) -> f32 {
+    pub fn attack_range(&self) -> f32 {
         self.config.max_perception
     }
 

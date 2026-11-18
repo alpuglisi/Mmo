@@ -500,6 +500,12 @@ pub struct Game {
     seen_achievements: usize,
     seen_eras: usize,
     seen_catastrophes: Vec<(bool, bool)>,
+    /// A drought warning is out (`DROUGHT_WARN`); cleared below
+    /// `DROUGHT_CLEAR`. Not saved: a restart in a drought warns again.
+    drought_warned: bool,
+    /// Attack orders given (attacker → its player and target), to tell the
+    /// player how each ended. Not saved.
+    attack_watch: BTreeMap<OrgId, (PlayerId, OrgId)>,
     /// Renown balances, ledger and marketplace listings.
     economy: Economy,
     /// Whether the economy came from a saved game or the store (else it
@@ -727,6 +733,8 @@ impl Game {
             seen_achievements: 0,
             seen_eras: 0,
             seen_catastrophes: Vec::new(),
+            drought_warned: false,
+            attack_watch: BTreeMap::new(),
             economy,
             economy_restored: false,
             season,
@@ -1249,6 +1257,7 @@ impl Game {
                 // Repeating the standing order changes nothing: no new alert.
                 let repeat = self.world.attack_target(organism) == Some(target);
                 self.world.possess_attack(player, organism, target).map_err(e)?;
+                self.attack_watch.insert(organism, (player, target));
                 if !repeat {
                     self.alert_attacked(player, organism, target, out);
                 }
@@ -2697,6 +2706,7 @@ impl Game {
         }
         self.watch_possessed(&mut out);
         self.announce_deaths(&mut out);
+        self.announce_attack_results(&mut out);
         self.announce_group_events(&mut out);
         self.plan_routes();
         self.offline_after_tick();
@@ -2830,7 +2840,7 @@ impl Game {
         }
         self.attack_alerts.retain(|_, t| now.saturating_sub(*t) < window);
         self.attack_alerts.insert(key, now);
-        let text = format!("A {theirs} of yours (#{target}) is being hunted by a player's {mine} (#{attacker})");
+        let text = format!("#{target} of your {theirs} is being hunted by a player's {mine} (#{attacker}).");
         self.alert(owner, AlertKind::Attack, text, Some(target), out);
     }
 
@@ -3113,6 +3123,15 @@ impl Game {
                 }
                 continue;
             };
+            if watch == Watch::Possessed || o.possessed_by == Some(player) {
+                // Said at once: the player was steering it (its bar just vanished).
+                let text = format!(
+                    "#{id}, the animal you were possessing, {}. Possess another from the map or the Lineage tab.",
+                    death_words(o.death)
+                );
+                self.alert(player, AlertKind::Death, text, Some(id), out);
+                continue;
+            }
             self.pending_deaths.entry(player).or_default().push((id, watch, o.death));
         }
         if !self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) || self.pending_deaths.is_empty() {
@@ -3121,6 +3140,27 @@ impl Game {
         for (player, deaths) in std::mem::take(&mut self.pending_deaths) {
             let (text, organism) = death_alert_text(&deaths);
             self.alert(player, AlertKind::Death, text, organism, out);
+        }
+    }
+
+    /// Tell players how their attack orders ended: the target killed, dead
+    /// of something else, gone to ground or out of sight, or the attacker
+    /// dead. Orders the player replaced or released end silently.
+    fn announce_attack_results(&mut self, out: &mut Outbox) {
+        if self.attack_watch.is_empty() {
+            return;
+        }
+        let ended: Vec<(OrgId, PlayerId, OrgId)> = self
+            .attack_watch
+            .iter()
+            .filter(|&(&a, &(_, t))| self.world.attack_target(a) != Some(t))
+            .map(|(&a, &(p, t))| (a, p, t))
+            .collect();
+        for (a, p, t) in ended {
+            self.attack_watch.remove(&a);
+            if let Some(text) = attack_result_text(&self.world, a, t) {
+                self.alert(p, AlertKind::Attack, text, Some(a), out);
+            }
         }
     }
 
@@ -3233,7 +3273,14 @@ impl Game {
             let alive = entry.alive;
             let share = record.legacy.iter().find(|e| e.player == p).map_or(0.0, |e| e.share);
             let generation = max_gen.get(&lineage).copied().unwrap_or(0);
+            // The first record after a founding sets the baseline: the founders
+            // alone are no milestone (playtest 2: "reached 50" on founding day).
+            let fresh = self.founded_day.get(&p).is_some_and(|&f| record.day <= f + 1);
             let prog = self.progress.entry(p).or_default();
+            if fresh {
+                prog.population = prog.population.max(alive);
+                prog.share = prog.share.max(share);
+            }
             let mut texts = Vec::new();
             if let Some(&m) = POPULATION_MILESTONES.iter().rev().find(|&&m| alive >= m && prog.population < m) {
                 texts.push((AlertKind::Milestone, format!("Your lineage reached {m} living organisms.")));
@@ -3287,18 +3334,31 @@ impl Game {
             }
             if c.ended && !seen.1 {
                 seen.1 = true;
-                let lost = c.population_before.saturating_sub(c.population_after.unwrap_or(0));
+                let change = population_change_text(c.population_before, c.population_after.unwrap_or(0));
                 for &p in &players {
                     alerts.push((
                         p,
                         AlertKind::World,
                         None,
-                        format!(
-                            "{} is over: {lost} fewer organisms in the world than at its start.",
-                            catastrophe_name(c.kind)
-                        ),
+                        format!("{} is over: {change}.", catastrophe_name(c.kind)),
                     ));
                 }
+            }
+        }
+        // Droughts: a warning when much of the land dries out, and when it eases.
+        let drought = self.world.map.drought;
+        let warn = if !self.drought_warned && drought >= DROUGHT_WARN {
+            self.drought_warned = true;
+            Some((Some(PushKind::Catastrophe), drought_text(drought)))
+        } else if self.drought_warned && drought < DROUGHT_CLEAR {
+            self.drought_warned = false;
+            Some((None, format!("The drought has eased: {:.0}% of the land is dry now.", drought * 100.0)))
+        } else {
+            None
+        };
+        if let Some((push, text)) = warn {
+            for &p in &players {
+                alerts.push((p, AlertKind::World, push, text.clone()));
             }
         }
         let mut bonuses: Vec<(PlayerId, u64, String)> = Vec::new();
@@ -3391,7 +3451,8 @@ impl Game {
                     .iter()
                     .map(|&(l, adults)| {
                         let (name, owner) = lineage_name(l);
-                        SpeciesLineage { lineage: l, name, owner, adults }
+                        let owner_name = self.name(owner);
+                        SpeciesLineage { lineage: l, name, owner, owner_name, adults }
                     })
                     .collect(),
                 carnivory: s.carnivory,
@@ -3722,6 +3783,12 @@ impl Game {
             origins,
             score: self.score_breakdown(player),
             crowding: self.crowding_view(player),
+            ramp: self.founded_day.get(&player).map(|&f| crate::protocol::RampView {
+                founded_day: f,
+                weight: founding_ramp(Some(f), day),
+                days: FOUNDING_RAMP_DAYS,
+            }),
+            grace_days_left: lineage.and_then(|l| self.world.lineage_grace_left(l)),
             eggs: lineage.and_then(|l| self.eggs_view(l)),
             legacy,
             alerts: self.alerts(player),
@@ -3791,6 +3858,15 @@ impl Game {
             ticks_per_day: self.world.config.ticks_per_day,
             winter_provision: self.winter_provision_now(),
             lineage_cap: self.world.config.lineage_cap,
+            lineage_hard_cap: self.world.player_ceiling(),
+            protected: self
+                .lineage_of
+                .iter()
+                .filter_map(|(&player, &lineage)| {
+                    let days_left = self.world.lineage_grace_left(lineage)?;
+                    Some(crate::protocol::ProtectedLineage { player, lineage, days_left })
+                })
+                .collect(),
         }
     }
 }
@@ -3871,6 +3947,62 @@ fn death_alert_text(deaths: &[(OrgId, Watch, Option<DeathCause>)]) -> (String, O
     let more = if deaths.len() > 6 { ", …" } else { "" };
     let who = if founders { "founders" } else { "watched organisms" };
     (format!("{} {who} died: {} ({}{more}).", deaths.len(), causes.join(", "), ids.join(", ")), None)
+}
+
+/// How an attack order of `attacker` on `target` ended, in words, or None
+/// when the player ended it (released, or gave another order).
+fn attack_result_text(w: &World, attacker: OrgId, target: OrgId) -> Option<String> {
+    let find = |id: OrgId| w.organisms.iter().find(|o| o.id == id);
+    let a = find(attacker);
+    let t = find(target);
+    if let Some(a) = a.filter(|a| !a.alive) {
+        return Some(format!("Attack over: your #{attacker} {} before it reached #{target}.", death_words(a.death)));
+    }
+    let Some(a) = a else {
+        return Some(format!("Attack over: #{attacker} is gone."));
+    };
+    a.possessed_by?; // released: the player ended it
+    match t {
+        Some(t) if !t.alive => Some(match t.death {
+            Some(DeathCause::Predation) if a.pos.dist(t.pos) <= 3.0 => {
+                format!("Attack over: your #{attacker} killed #{target}.")
+            }
+            cause => format!("Attack over: #{target} {} before your #{attacker} could kill it.", death_words(cause)),
+        }),
+        Some(t) if t.sheltered => {
+            Some(format!("Attack over: #{target} went to ground (a burrow or shelter) and escaped your #{attacker}."))
+        }
+        Some(t) if a.pos.dist(t.pos) > 1.5 * w.attack_range() => Some(format!(
+            "Attack over: #{target} escaped; your #{attacker} lost sight of it ({:.0} tiles away).",
+            a.pos.dist(t.pos)
+        )),
+        Some(_) => None, // another order replaced it
+        None => Some(format!("Attack over: your #{attacker} lost track of #{target} (it died or left the area).")),
+    }
+}
+
+/// A drought warning from this share of land in drought (the playtests'
+/// thirst die-offs began around 47%; an ordinary summer is about 35%).
+pub const DROUGHT_WARN: f32 = 0.45;
+/// The warning clears below this share.
+pub const DROUGHT_CLEAR: f32 = 0.3;
+
+/// The drought warning's text.
+fn drought_text(drought: f32) -> String {
+    format!(
+        "Drought: {:.0}% of the land is dry. Animals far from lakes and rivers go thirsty and plants thin out; \
+         keep herds near water (territories and rallies away from water are risky).",
+        drought * 100.0
+    )
+}
+
+/// How the world's population changed over a catastrophe, in words.
+fn population_change_text(before: usize, after: usize) -> String {
+    match after.cmp(&before) {
+        std::cmp::Ordering::Less => format!("{} fewer organisms in the world than at its start", before - after),
+        std::cmp::Ordering::Equal => "the world's population is where it was at its start".to_string(),
+        std::cmp::Ordering::Greater => format!("{} more organisms in the world than at its start", after - before),
+    }
 }
 
 /// The catastrophe's name to start a sentence ("The severe winter").
@@ -4756,6 +4888,28 @@ mod tests {
         let stats = g.lineage_stats(1);
         assert_eq!(stats.alive, stats.agents);
         assert_eq!(g.summary().organisms, g.summary().agents);
+    }
+
+    #[test]
+    fn droughts_are_announced_once_and_when_they_ease() {
+        let (mut g, _, _) = game();
+        let mut out = Outbox::new();
+        g.world.map.drought = 0.5;
+        g.chronicle_alerts(&mut out);
+        g.chronicle_alerts(&mut out); // still dry: no second warning
+        let a = alerts_in(&out, 1);
+        assert_eq!(a.iter().filter(|a| a.text.starts_with("Drought: 50% of the land is dry")).count(), 1, "{a:?}");
+        assert!(a.iter().all(|a| a.kind == AlertKind::World));
+        let mut out = Outbox::new();
+        g.world.map.drought = 0.35; // between the thresholds: nothing
+        g.chronicle_alerts(&mut out);
+        g.world.map.drought = 0.2;
+        g.chronicle_alerts(&mut out);
+        let a = alerts_in(&out, 2);
+        assert_eq!(a.len(), 1, "{a:?}");
+        assert!(a[0].text.starts_with("The drought has eased: 20%"), "{a:?}");
+        assert_eq!(population_change_text(10, 10), "the world's population is where it was at its start");
+        assert_eq!(population_change_text(10, 13), "3 more organisms in the world than at its start");
     }
 
     #[test]

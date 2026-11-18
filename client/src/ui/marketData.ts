@@ -119,6 +119,9 @@ const BODY_PLAN_WORDS: Record<string, string> = {
   carnivory: 'diet', endothermy: 'warm/cold blood', birth_mode: 'birth mode', body_size: 'body size', morphology: 'eye or leg count',
 };
 
+/** How sure the "who can breed with you" list is (it samples animals; matings vary). */
+export const COMPAT_CONFIDENCE = 'From the best pair in a sample of adults on each side: animals vary, so a given mating can be less fertile, and whole-genome distance lowers it further. A mating preview gives a pair\'s exact odds.';
+
 /** One line of the "who can breed with you" list. */
 export function compatRowText(r: CompatibilityView['rows'][number]): string {
   const who = r.owner === 0 ? `wild ${r.lineage_name}` : `${r.owner_name}'s ${r.lineage_name}`;
