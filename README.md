@@ -7997,7 +7997,7 @@ cold-blooded sleepers or a price on flight.
 
 | Check | Result |
 | --- | --- |
-| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.92 (± 0.06; 11.65 after round 3): every lineage 12 of 12, burrowing omnivores 128 (93 under the round 3 toll) |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.92 (± 0.06; 11.65 after round 3), 11.87 (± 0.13) merged with round 4's other changes: every lineage 12 of 12, burrowing omnivores 128–169 (93 under the round 3 toll) |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
 ## Genetics validation
