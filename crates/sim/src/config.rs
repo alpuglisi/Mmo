@@ -1167,16 +1167,77 @@ pub struct Balance {
     /// stayed awake while their group slept, then starved). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v51"))]
     pub possessed_sleep: f32,
-    // Playtest 5 survival (version 54; *Playtest 5: floods, drinking and
-    // warnings* in the README). Off at 0, what snapshots before version 54
-    // read (`serde_util::before_v54`).
+    /// Playtest 5 eggs and young (version 55; off at 0, what snapshots
+    /// before version 55 read, `serde_util::before_v55`):
+    /// - a brooding parent (one with a clutch on its nest) stays with the
+    ///   clutch instead of following its group's migration, territory or
+    ///   rally, and heads back to it once a flight is over (playtest 5:
+    ///   20–66 eggs chilled a day on the march, 0–6 settled);
+    /// - young follow a migration with their group (they were left behind
+    ///   with the predators);
+    /// - an egg layer that sleeps through winter conceives no clutch that
+    ///   would hatch after autumn begins (the year's last clutches were
+    ///   abandoned as the herd bedded down);
+    /// - reinforcements are a generation after the adults they copy, not
+    ///   generation 0 (which gave copies of founders the founders' free
+    ///   first winter).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v55"))]
+    pub brood_care: f32,
+    // Playtest 5 balance (version 52; off at 0, what snapshots before
+    // version 52 read, `serde_util::before_v56`). Playtest 5: cold-blooded,
+    // brumating, toxic, bright fliers took the hard cap from 10 founders
+    // with 3 deaths in 180 days, sterile with every warm lineage.
+    /// How much less a warm/cold difference counts in the fertility gap
+    /// than for kinship (`mating::Relief::thermo`): warm × cold, 0.8 apart
+    /// in expressed endothermy, counts `0.8 × (1 − thermo_hybrid)` (0.24 at
+    /// 0.7: about a third as fertile as kin) instead of a sterile 0.8. The
+    /// other body-plan genes still count in full, so a cold frog (abandoned
+    /// eggs) and a warm live-bearer stay sterile. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v56"))]
+    pub thermo_hybrid: f32,
+    /// Flight is muscle work, warm-blooded or not: a flier on the move burns
+    /// `hunger_rate × 0.45 × wings × mass term × flight_upkeep` more food
+    /// (the mass term 1 at 4 kg, `(mass / 4)^0.3`) and loses
+    /// `thirst_rate × 0.35 × wings × flight_upkeep` more water, more in the
+    /// heat; neither scales with a cold-blooded body's low metabolism. In
+    /// the dominance replay, 1 drove the playtest 5 fliers from 20 of 40
+    /// titles to none (Cold to 503 at its peak) and 0.5 left them 6; 0.25
+    /// gives them 9 with no design above 12. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v56"))]
+    pub flight_upkeep: f32,
+    /// The most a predator lineage's learned avoidance of a toxic prey
+    /// lineage reaches (`World::toxic_avoidance`): an honest signal is not
+    /// immunity, and hunters still try a bright toxic prey some days.
+    /// 0: uncapped (a fully learned, bright prey was never taken).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v56"))]
+    pub avoid_cap: f32,
+    /// A cold-blooded body overheats sooner: past 32 °C body temperature it
+    /// slows (activity falls to 0.15 by 44 °C), loses water faster (+5% a
+    /// degree) and takes heat harm from 34 °C instead of 46 °C, so a hot
+    /// drought is no longer free for an ectotherm. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v56"))]
+    pub cold_heat: f32,
+    /// Species credit by owner (`DetectParams::owner_species`): the
+    /// species tracker clusters each owner's animals apart (the wild
+    /// ecosystem's together), and a species continues only as a cluster of
+    /// its main lineage's owner. A player's copy of a rival's design is its
+    /// own species (split credit to its player) instead of swelling the
+    /// rival's and taking its dominance; a small player lineage is no longer
+    /// filed inside a wild species; and a player lineage no longer bridges
+    /// two wild species into one (playtest 5: the wild Red fox inside the
+    /// Meadow vole species). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v56"))]
+    pub species_credit: f32,
+    // Playtest 5 survival (version 57; *Playtest 5: floods, drinking and
+    // warnings* in the README). Off at 0, what snapshots before version 57
+    // read (`serde_util::before_v57`).
     /// Sleepers bed down on dry ground: a deep dormancy starts only on a
     /// tile with no lake or marsh water at normal wetness and off every
     /// floodplain (`World::dry_bed`); an animal that would sleep elsewhere
     /// first walks to the nearest such tile; water reaching a sleeper wakes
     /// it, and any animal in water it would drown in heads for dry land
     /// (playtest 5: 25 of 115 sleepers drowned in one day of flood). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v54"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v57"))]
     pub dry_beds: f32,
     /// A thirsty animal with no shore it can walk to within 8 steps looks
     /// for one within 24, else searches, instead of heading for water it
@@ -1184,7 +1245,7 @@ pub struct Balance {
     /// counts only water it can walk to (playtest 5: animals sat on
     /// "drink" above a drought-shrunk, steep-banked pond until they died).
     /// 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v54"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v57"))]
     pub drink_reach: f32,
 }
 
@@ -1469,6 +1530,12 @@ impl Default for Balance {
             player_packs: 1.0,
             dormant_water: 1.0,
             possessed_sleep: 1.0,
+            brood_care: 1.0,
+            thermo_hybrid: 0.7,
+            flight_upkeep: 0.25,
+            avoid_cap: 0.85,
+            cold_heat: 1.0,
+            species_credit: 1.0,
             dry_beds: 1.0,
             drink_reach: 1.0,
         }
@@ -1476,7 +1543,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 155;
+    pub const FIELD_COUNT: usize = 161;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1639,6 +1706,12 @@ impl Balance {
             ("player_packs", &mut self.player_packs),
             ("dormant_water", &mut self.dormant_water),
             ("possessed_sleep", &mut self.possessed_sleep),
+            ("brood_care", &mut self.brood_care),
+            ("thermo_hybrid", &mut self.thermo_hybrid),
+            ("flight_upkeep", &mut self.flight_upkeep),
+            ("avoid_cap", &mut self.avoid_cap),
+            ("cold_heat", &mut self.cold_heat),
+            ("species_credit", &mut self.species_credit),
             ("dry_beds", &mut self.dry_beds),
             ("drink_reach", &mut self.drink_reach),
         ]

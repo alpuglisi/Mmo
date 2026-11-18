@@ -2602,11 +2602,11 @@ pub mod before_v51 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v54")]` on the playtest 5
-/// survival tunables (`Balance::dry_beds`, `drink_reach`). On a thread
-/// holding a [`before_v54::Guard`] (reading or hashing a snapshot of
-/// version 53 or before) none is written or read: they read as 0 (off).
-pub mod before_v54 {
+/// `#[serde(with = "crate::serde_util::before_v55")]` on the playtest 5
+/// eggs-and-young tunable (`Balance::brood_care`). On a thread holding a
+/// [`before_v55::Guard`] (reading or hashing a snapshot of version 54 or
+/// before) it is neither written nor read: it reads as 0, the old rules.
+pub mod before_v55 {
     use std::cell::Cell;
 
     use super::*;
@@ -2615,7 +2615,104 @@ pub mod before_v54 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The tunable before version 54: off.
+    /// The tunable before version 55: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// `#[serde(with = "crate::serde_util::before_v56")]` on the playtest 5
+/// balance tunables (`Balance::thermo_hybrid`, `flight_upkeep`,
+/// `avoid_cap`, `cold_heat`, `species_credit`). On a thread holding a
+/// [`before_v56::Guard`] (reading or hashing a snapshot of version 55 or
+/// before) none is written or read: they read as 0 (off).
+pub mod before_v56 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The tunable before version 56: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+}
+
+/// `#[serde(with = "crate::serde_util::before_v57")]` on the playtest 5
+/// survival tunables (`Balance::dry_beds`, `drink_reach`). On a thread
+/// holding a [`before_v57::Guard`] (reading or hashing a snapshot of
+/// version 56 or before) none is written or read: they read as 0 (off).
+pub mod before_v57 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The tunable before version 57: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

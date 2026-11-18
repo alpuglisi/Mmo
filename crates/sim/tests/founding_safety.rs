@@ -21,9 +21,13 @@ use evo_sim::organism::DeathCause;
 use evo_sim::{presets, Gene, World, WorldConfig};
 
 fn playtest_world() -> World {
+    playtest_world_seed(29)
+}
+
+fn playtest_world_seed(seed: u64) -> World {
     let (size, reference) = (128usize, presets::REFERENCE_SIZE);
     let area = (size * size) as f32 / (reference * reference) as f32;
-    let mut config = WorldConfig { seed: 29, width: size, height: size, ..Default::default() };
+    let mut config = WorldConfig { seed, width: size, height: size, ..Default::default() };
     config.wild_cap = ((config.wild_cap as f32 * area) as usize).max(50);
     config.lineage_cap = ((config.lineage_cap as f32 * area.max(0.5)) as usize).max(50);
     config.scoring.catastrophes = true;
@@ -159,4 +163,38 @@ fn playtest4_foundings_land_on_dry_ground() {
     results.push(check(&w, 105, &brokers, "day 361 brokers"));
     let (alive, all) = results.iter().fold((0, 0), |a, r| (a.0 + r.0, a.1 + r.1));
     assert!(alive * 10 >= all * 7, "{alive} of {all} founders alive after 10 days");
+}
+
+/// Playtest 5: the starter design, founded on day 30 in a drought on the
+/// playtest's world (seed 37), lost 2 of 20 to drowning on day 47 on its
+/// lakeshore. Founders land on dry land and none drowns in its first 30
+/// days.
+#[test]
+fn playtest5_starter_keeps_off_the_lake() {
+    let mut w = playtest_world_seed(37);
+    while w.day() < 30 {
+        w.run_days(1);
+    }
+    let starter = FounderDesign::new("Pocket Grazers", Thermo::Warm, BirthType::IncubatedEggs, 3)
+        .with(Gene::BodySize, 0.5)
+        .with(Gene::GroupTolerance, 0.9)
+        .with(Gene::Boldness, 0.3)
+        .with(Gene::Fur, 0.6)
+        .with(Gene::FatStores, 0.6)
+        .with(Gene::Hibernation, 0.5)
+        .founders(20);
+    let mut c = w.clone();
+    let ids = c.found_lineage_unchecked(106, &starter);
+    let lineage = c.lineages.len() as u32 - 1;
+    for day in 0..30 {
+        c.run_days(1);
+        let drowned = c.counters.deaths_by_lineage.get(&(lineage, DeathCause::Drowning)).copied().unwrap_or(0);
+        if drowned > 0 {
+            let at: Vec<_> =
+                c.organisms.iter().filter(|o| o.lineage == lineage && !o.alive).map(|o| (o.pos, o.death)).collect();
+            panic!("starter: {drowned} drowned by day {} (drought {:.2}); dead: {at:?}", day + 1, c.map.drought);
+        }
+    }
+    let alive = ids.iter().filter(|&&id| c.organism(id).is_some()).count();
+    eprintln!("starter: {alive}/20 founders alive after 30 days, drought {:.2}", c.map.drought);
 }

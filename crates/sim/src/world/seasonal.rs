@@ -316,7 +316,21 @@ impl World {
     /// May this organism mate now, as far as its season goes? Timed breeders
     /// only in the window; everyone else year-round.
     pub(crate) fn may_conceive(&self, o: &Organism) -> bool {
-        o.traits.seasonal.timed_breeding <= 0.0 || self.in_breeding_window()
+        (o.traits.seasonal.timed_breeding <= 0.0 || self.in_breeding_window()) && !self.clutch_too_late(o)
+    }
+
+    /// Whether a clutch conceived now would hatch in autumn or winter for
+    /// an egg layer that sleeps through winter (`Balance::brood_care`): it
+    /// would be laid as the herd fattens and beds down, and abandoned
+    /// (playtest 5: the year's last clutches all chilled).
+    fn clutch_too_late(&self, o: &Organism) -> bool {
+        if self.config.balance.brood_care <= 0.0 || !o.traits.birth.lays_eggs() || o.traits.seasonal.winter.is_none() {
+            return false;
+        }
+        let dpy = self.config.days_per_year.max(4) as f32;
+        let develop = o.traits.gestation(self.config.balance.cold_gestation) + o.traits.incubation_days;
+        let hatch = self.day_of_year() as f32 + develop;
+        (dpy / 2.0..dpy).contains(&hatch)
     }
 
     /// Daily change of breeding drive from the season: `DRIVE_RATE` times
@@ -1384,6 +1398,27 @@ mod tests {
         pair(&mut w, 1);
         w.run_days(1);
         assert!(timed.iter().any(|&k| w.organisms[k].pregnancy.is_some()), "no conception in the window");
+    }
+
+    /// Playtest 5: a hibernator's last clutches of the year chilled when the
+    /// parents bedded down on them. A winter-sleeping egg layer conceives
+    /// no clutch that would hatch in the second half of the year.
+    #[test]
+    fn winter_sleeping_egg_layers_lay_no_late_clutches() {
+        let mut w = flat_world(15.0, 40.0, 1);
+        let eggs = FounderDesign::new("t", Thermo::Warm, BirthType::IncubatedEggs, 2).with(Gene::BodySize, 0.3);
+        let sleeper = add(&mut w, &eggs.clone().with(Gene::Hibernation, 0.9), 1)[0];
+        let awake = add(&mut w, &eggs, 1)[0];
+        let live = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9), 1)[0];
+        let o = |w: &World, k: usize| w.organisms[k].clone();
+        assert!(o(&w, sleeper).traits.seasonal.winter.is_some());
+        assert!(w.may_conceive(&o(&w, sleeper)), "spring clutches hatch in time");
+        let midsummer = w.config.days_per_year / 2 - 1;
+        set_day(&mut w, midsummer);
+        assert!(!w.may_conceive(&o(&w, sleeper)), "a midsummer clutch would hatch too late");
+        assert!(w.may_conceive(&o(&w, awake)) && w.may_conceive(&o(&w, live)));
+        w.config.balance.brood_care = 0.0;
+        assert!(w.may_conceive(&o(&w, sleeper)));
     }
 
     #[test]

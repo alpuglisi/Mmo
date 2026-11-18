@@ -410,9 +410,11 @@ mod tests {
         assert_eq!(t.last_detection, Some(0));
         let first: Vec<(u32, String)> = t.species.iter().map(|s| (s.id, s.name.clone())).collect();
         // Antelope and herd grazers are one kind (as fox and pack hunters
-        // can be, through founders that are kin across the two designs);
-        // the other designs are kinds of their own.
-        assert!((5..w.lineages.len()).contains(&first.len()), "{first:?}");
+        // can be, through founders that are kin across the two designs),
+        // but the grazers and the pack hunters are players' lineages: their
+        // own species (`Balance::species_credit`); the other designs are
+        // kinds of their own.
+        assert!((5..=w.lineages.len()).contains(&first.len()), "{first:?}");
         for name in ["Meadow vole", "Marsh newt", "Toxic frogs", "Burrowing omnivores"] {
             assert!(first.iter().any(|f| f.1 == name), "{name}: {first:?}");
         }

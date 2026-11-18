@@ -18,7 +18,7 @@ use crate::math::Vec2;
 use crate::mating;
 use crate::organism::{Action, OrgId, Organism, Sex};
 use crate::rng::{rng_for, splitmix64, stream, SimRng};
-use crate::terrain::{traverse, Traverse, Weather};
+use crate::terrain::{traverse, Map, Traverse, Weather};
 
 /// How close a mother must be to her young to defend it.
 const GUARD_REACH: f32 = 2.5;
@@ -440,6 +440,14 @@ pub(crate) const DRINK_STEPS: usize = 8;
 /// [`DRINK_STEPS`] looks farther (`Balance::drink_reach`).
 pub(crate) const FAR_DRINK_STEPS: usize = 24;
 
+/// Tiles from its nest at which a brooding parent's pull back to it is at
+/// its strongest (`Balance::brood_care`): the clutch chills unattended.
+const BROOD_RETURN: f32 = 6.0;
+
+/// How far (tiles) an animal caught on deep water looks for dry ground
+/// (`World::escape_from_water`).
+const ESCAPE_TILES: i32 = 5;
+
 impl World {
     /// How far away a possessed organism can be ordered to attack: the
     /// farthest any organism perceives (`WorldConfig::max_perception`),
@@ -572,6 +580,32 @@ impl World {
         (guard.0.max(rs), guard.1.max(power))
     }
 
+    /// The nearest tile centre within `ESCAPE_TILES` the organism can stand
+    /// on, when it is awake on one it can't (deep water, thin ice) and
+    /// `Balance::brood_care` is on. Flyers lift off instead.
+    fn escape_from_water(&self, o: &Organism) -> Option<Vec2> {
+        if self.config.balance.brood_care <= 0.0 || o.traits.body.can_fly || self.passable_for(o, o.pos) {
+            return None;
+        }
+        let (cx, cy) = self.map.tile_coords(o.pos);
+        let (w, h) = (self.map.width as i32, self.map.height as i32);
+        let mut best: Option<(f32, Vec2)> = None;
+        for dy in -ESCAPE_TILES..=ESCAPE_TILES {
+            for dx in -ESCAPE_TILES..=ESCAPE_TILES {
+                let (x, y) = (cx as i32 + dx, cy as i32 + dy);
+                if !(0..w).contains(&x) || !(0..h).contains(&y) {
+                    continue;
+                }
+                let p = Map::tile_center(x as usize, y as usize);
+                let d = p.dist(o.pos);
+                if best.is_none_or(|(bd, _)| d < bd) && self.passable_for(o, p) {
+                    best = Some((d, p));
+                }
+            }
+        }
+        best.map(|(_, p)| p)
+    }
+
     /// What the herd adds to a young member's defense (`herd_guard`): where
     /// herd defense holds and kin are around, the adults close ranks around
     /// the calves, sub-adults and orphans among them, as a parent would
@@ -619,6 +653,19 @@ impl World {
         // Hibernating, brumating or estivating: no perception, no choices.
         if o.dormancy.is_deep() {
             return Intent { action: Action::Dormant, kin_nearby: o.kin_nearby, ..Intent::idle() };
+        }
+        // Caught by rising water (`Balance::brood_care`): playtest 5's
+        // starter drowned on its lakeshore, struggling on toward whatever it
+        // had been doing. An animal awake on water too deep for it makes
+        // for the nearest dry tile first.
+        if let Some(dry) = self.escape_from_water(o) {
+            return Intent {
+                action: Action::Flee,
+                target: Some(dry),
+                sprint: true,
+                kin_nearby: o.kin_nearby,
+                ..Intent::idle()
+            };
         }
         let mut rng = rng_for(self.config.seed, stream::DECIDE, self.tick, o.id);
         let p = &o.pheno;
@@ -807,7 +854,8 @@ impl World {
         }
 
         // Out of water it would drown in, whatever else (a sleeper woken by
-        // a flood, an animal caught by rising water), and onto a dry bed
+        // a flood, an animal caught by rising water; beyond the reach of
+        // `escape_from_water` above, out to `BED_SEARCH`), and onto a dry bed
         // before a deep sleep (`Balance::dry_beds`; playtest 5: sleepers on
         // floodplains and lake ice drowned by the dozen).
         if cfg.balance.dry_beds > 0.0 && !o.traits.body.can_fly {
@@ -859,7 +907,16 @@ impl World {
         // pressing, and goes back to the order once it is down again
         // (`commands::MIGRATE_BREAK`), so a migration doesn't pin a group
         // through a drought.
-        let ordered = o.matured
+        // A brooding parent stays with its clutch (`Balance::brood_care`):
+        // no group pull takes it off the nest, and weaned young walk with
+        // the migration instead of being left behind. Dependent young
+        // (`juvenile_care`) keep following their mothers, who migrate:
+        // taking the order themselves they outran them and died on the
+        // journey (`examples/eggcare.rs`).
+        let brood_care = cfg.balance.brood_care > 0.0;
+        let brooding = brood_care && o.nest.is_some();
+        let ordered = (o.matured || (brood_care && !juvenile_care))
+            && !brooding
             && !self.migrate_orders.is_empty()
             && self.migrate_orders.contains_key(&(o.owner, o.group))
             && !migrant_breaks_off(o, hunger, thirst);
@@ -981,13 +1038,21 @@ impl World {
                     _ => 0.0,
                 },
             ),
-            (Action::Guard, if o.nest.is_some() { 0.6 } else { 0.0 }),
+            (
+                Action::Guard,
+                match o.nest {
+                    // A brooder far from its nest (after a flight) hurries back.
+                    Some(n) if brooding => 0.6 + 0.6 * (o.pos.dist(n) / BROOD_RETURN).min(1.0),
+                    Some(_) => 0.6,
+                    None => 0.0,
+                },
+            ),
             (Action::Sentry, watch),
             (Action::Idle, 0.0),
-            (Action::Patrol, if outside && rally.is_none() { RETURN_UTILITY * heed } else { 0.0 }),
+            (Action::Patrol, if outside && rally.is_none() && !brooding { RETURN_UTILITY * heed } else { 0.0 }),
             (Action::Defend, defend),
-            (Action::Rally, if outside && rally.is_some() { RALLY_UTILITY * heed } else { 0.0 }),
-            (Action::Home, if home.is_some() { super::groups::SETTLE_UTILITY * heed } else { 0.0 }),
+            (Action::Rally, if outside && rally.is_some() && !brooding { RALLY_UTILITY * heed } else { 0.0 }),
+            (Action::Home, if home.is_some() && !brooding { super::groups::SETTLE_UTILITY * heed } else { 0.0 }),
         ];
         // Aggressive organisms hunt a little before they're hungry.
         if hunter && prey.is_some() {
@@ -1434,7 +1499,7 @@ impl World {
                 if relief.is_none() {
                     gap
                 } else {
-                    fertility_gap(&v.genes, genes, &mating::plan_weights(relief.egg), relief.eye_weight())
+                    fertility_gap(&v.genes, genes, &mating::plan_weights(relief), relief.eye_weight())
                 }
             }) > 0.0
             // A female in a taken breeding territory isn't courted either
@@ -2080,6 +2145,42 @@ mod tests {
         w.config.balance.drink_reach = 0.0;
         let t = w.decide(i).target.expect("a target");
         assert!(w.map.tile_coords(t).0 >= 10, "old target {t:?}");
+    }
+
+    /// Playtest 5 (M10): a migration order pulled brooding parents off
+    /// their nests (the eggs chilled) and left the young behind. Under
+    /// `Balance::brood_care` the brooder stays on its clutch and a
+    /// juvenile goes with the group.
+    #[test]
+    fn brooders_keep_their_nests_and_the_young_follow_a_migration() {
+        let mut w = presets::standard_world(WorldConfig { seed: 7, width: 64, height: 64, ..Default::default() }, 1);
+        w.step();
+        let herd: Vec<usize> =
+            (0..w.organisms.len()).filter(|&k| w.organisms[k].alive && w.organisms[k].owner == 2).collect();
+        let (brooder, young) = (herd[0], herd[1]);
+        w.command_migrate_group(2, 0, Vec2::new(60.0, 60.0)).unwrap();
+        for &k in &[brooder, young] {
+            let o = &mut w.organisms[k];
+            (o.needs.hunger, o.needs.thirst, o.needs.energy, o.needs.breeding) = (5.0, 5.0, 100.0, 0.0);
+        }
+        let nest = w.organisms[brooder].pos;
+        w.organisms[brooder].nest = Some(nest);
+        let o = &mut w.organisms[young];
+        (o.matured, o.growth) = (false, 0.8);
+        let act = |w: &World, k: usize| w.decide(k).action;
+        assert_eq!(act(&w, brooder), Action::Guard);
+        assert_eq!(act(&w, young), Action::Migrate);
+        // Wandered off, it heads back to the nest.
+        w.organisms[brooder].pos = w.map.clamp(nest + Vec2::new(4.0, 0.0));
+        let intent = w.decide(brooder);
+        assert_eq!((intent.action, intent.target), (Action::Guard, Some(nest)));
+        // A dependent youngster follows its mother rather than the order.
+        w.organisms[young].growth = 0.3;
+        assert_ne!(act(&w, young), Action::Migrate);
+        w.organisms[young].growth = 0.8;
+        // The old rule: the young stay behind.
+        w.config.balance.brood_care = 0.0;
+        assert_ne!(act(&w, young), Action::Migrate);
     }
 
     #[test]

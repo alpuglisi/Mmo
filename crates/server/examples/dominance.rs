@@ -7,7 +7,7 @@
 //!  [--first-seed N] [--days D] [--size N] [--late-year Y] [--flier-day D]
 //!  [--baseline playtest2] [--set NAME=V ..] [--new-only]`
 //!
-//! Five players through the server's own rules (`Game`: founding with the
+//! Seven players through the server's own rules (`Game`: founding with the
 //! winter provision, the renown shop, seasons) on the standard world with
 //! its wild species:
 //!
@@ -20,17 +20,19 @@
 //! - **Eggs** founds LateComer's design on the first day of winter of year
 //!   `--late-year` (default 1, the second year), and buys reinforcements
 //!   whenever the shop sells them, as LateComer did.
-//! - **Flier** founds PocketNomad3's design (playtest 3's winner) on
-//!   `--flier-day` (default 150).
-//! - **Cold** founds LateComer4's design (playtest 4's winner: cold-blooded,
-//!   live-bearing, brumating, toxic flier, 62 founders) on `--cold-day`
-//!   (default 320, as LateComer4 did).
+//! - **Flier** founds PocketNomad5's re-founded flier (playtest 5's
+//!   leader; 10 founders) on `--flier-day` (default 165).
+//! - **Cold** founds LateComer4's design (playtest 4's winner and
+//!   LateComer5's: cold-blooded, live-bearing, brumating, toxic flier, 62
+//!   founders) on `--cold-day` (default 313, as LateComer5 did).
+//! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
+//!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
-//! Two arms on the same seeds. **Round 4 rules**: playtest 4's rules (the
-//! version 48 tunables off: `winter_rest`, `toxic_avoidance`,
-//! `egg_attendance`, `player_species`, `raised_cap`), or with `--baseline
-//! playtest2` playtest 2's (the version 43, 46 and 48 rules off, the old
-//! soft cap), each founded at any price. **New rules**:
+//! Two arms on the same seeds. **Playtest 5 rules**: the version 56
+//! tunables off (`thermo_hybrid`, `flight_upkeep`, `avoid_cap`,
+//! `cold_heat`, `species_credit`), or with `--baseline playtest2` playtest
+//! 2's (the version 43 to 56 rules off, the old soft cap), each founded at
+//! any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
 //! founders.
 
@@ -50,7 +52,9 @@ const BROKER: PlayerId = 3;
 const EGGS: PlayerId = 4;
 const FLIER: PlayerId = 5;
 const COLD: PlayerId = 6;
-const NAMES: [&str; 6] = ["Steady", "Big", "Broker", "Eggs", "Flier", "Cold"];
+const LOOPHOLE: PlayerId = 7;
+const PLAYERS: u32 = 7;
+const NAMES: [&str; 7] = ["Steady", "Big", "Broker", "Eggs", "Flier", "Cold", "Loophole"];
 const SEASON: u64 = 60;
 
 struct Args {
@@ -61,6 +65,7 @@ struct Args {
     late_year: u64,
     flier_day: u64,
     cold_day: u64,
+    loophole_day: u64,
     playtest2_baseline: bool,
     /// `--set NAME=V`: balance overrides for the new-rules arm.
     sets: Vec<(String, f32)>,
@@ -75,8 +80,9 @@ fn args() -> Args {
         days: 840,
         size: 128,
         late_year: 1,
-        flier_day: 150,
-        cold_day: 320,
+        flier_day: 165,
+        cold_day: 313,
+        loophole_day: 334,
         playtest2_baseline: false,
         sets: Vec::new(),
         new_only: false,
@@ -92,6 +98,7 @@ fn args() -> Args {
             "--late-year" => a.late_year = v().parse().expect("--late-year"),
             "--flier-day" => a.flier_day = v().parse().expect("--flier-day"),
             "--cold-day" => a.cold_day = v().parse().expect("--cold-day"),
+            "--loophole-day" => a.loophole_day = v().parse().expect("--loophole-day"),
             "--baseline" => a.playtest2_baseline = v() == "playtest2",
             "--set" => {
                 let kv = v();
@@ -188,21 +195,20 @@ fn broker() -> FounderDesign {
         .founders(40)
 }
 
-/// PocketNomad3's winner (`docs/playtest-3-logs/PocketNomad3.md`): a
-/// cold-blooded, brumating, toxic, honestly coloured 4 kg flier with four
-/// eyes.
+/// PocketNomad5's re-founded flier (`docs/playtest-5-logs/PocketNomad5.md`;
+/// playtest 3's PocketNomad3 design was the same class): cold-blooded,
+/// live-bearing, brumating, very toxic and bright, scaled, 3 kg; founded
+/// as a re-found (10 of its 20 founders).
 fn flier() -> FounderDesign {
-    use evo_sim::design::{HornForm, MorphDesign};
     use Gene::*;
-    FounderDesign::new("Flier", Thermo::Cold, BirthType::IncubatedEggs, 3)
-        .with(BodySize, 0.5)
+    FounderDesign::new("Flier", Thermo::Cold, BirthType::Live, 3)
+        .with(BodySize, 0.45)
         .with(Wings, 0.8)
-        .with(Swimming, 0.5)
-        .with(Toxins, 0.6)
-        .with(Coloration, 0.6)
-        .with(Brumation, 0.7)
-        .with_morph(MorphDesign { eye_count: 4, horn_size: 0.4, horn_form: HornForm::Curved, ..MorphDesign::default() })
-        .founders(20)
+        .with(Toxins, 0.8)
+        .with(Coloration, 0.8)
+        .with(Brumation, 0.6)
+        .with(Scales, 0.4)
+        .founders(10)
 }
 
 /// LateComer4's winner (`docs/playtest-4-logs/LateComer4.md`): a
@@ -217,6 +223,20 @@ fn cold_flier() -> FounderDesign {
         .with(Coloration, 0.6)
         .with(Brumation, 0.7)
         .founders(62)
+}
+
+/// Rulebender5's "Loophole Fliers" (`docs/playtest-5-logs/Rulebender5.md`):
+/// a small cold-blooded, egg-incubating, brumating, toxic, bright flier,
+/// re-founded at half size (22 of 44 founders) on day 334.
+fn loophole() -> FounderDesign {
+    use Gene::*;
+    FounderDesign::new("Loophole", Thermo::Cold, BirthType::IncubatedEggs, 3)
+        .with(BodySize, 0.25)
+        .with(Wings, 0.8)
+        .with(Toxins, 0.6)
+        .with(Coloration, 0.6)
+        .with(Brumation, 0.5)
+        .founders(22)
 }
 
 /// `d` with as many of its founders as fit today's prices.
@@ -244,6 +264,8 @@ struct Outcome {
     eggs_wild: f64,
     eggs_crash: f64,
     founded_day: u64,
+    /// Players whose lineage reached 95% of the hard cap.
+    capped: BTreeMap<PlayerId, bool>,
 }
 
 fn data(out: &[(evo_server::game::Target, ServerMsg)]) -> Option<serde_json::Value> {
@@ -262,13 +284,14 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
     }
     if !new_rules {
-        // Default: round 4's rules, before playtest 4's (no winter rest,
-        // the version 44 toxic recognition, eggs chilling when the parent
-        // is off the nest, no player species, the weighted share uncapped).
+        // Default: playtest 5's rules (the version 56 tunables off: cold
+        // blood sterile with warm, no flight upkeep, uncapped learned
+        // avoidance, no cold-blooded heat limit, species by cluster).
         let b = &mut g.world.config.balance;
-        (b.winter_rest, b.toxic_avoidance, b.egg_attendance, b.player_species, b.raised_cap) =
-            (0.0, 0.0, 0.0, 0.0, 0.0);
+        (b.thermo_hybrid, b.flight_upkeep, b.avoid_cap, b.cold_heat, b.species_credit) = (0.0, 0.0, 0.0, 0.0, 0.0);
         if a.playtest2_baseline {
+            (b.winter_rest, b.toxic_avoidance, b.egg_attendance, b.player_species, b.raised_cap) =
+                (0.0, 0.0, 0.0, 0.0, 0.0);
             (b.eye_hybrid, b.winter_toll, b.wake_spread, b.dormancy_toll) = (0.0, 0.0, 0.0, 0.08);
             // `--baseline playtest2`: the rules of playtest 2.
             (b.egg_hybrid, b.age_spread, b.dormancy_toll, b.emergence_lag) = (0.0, 0.0, 0.0, 0.0);
@@ -303,6 +326,9 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         if day == a.cold_day {
             found(&mut g, COLD, cold_flier(), &mut o);
         }
+        if day == a.loophole_day {
+            found(&mut g, LOOPHOLE, loophole(), &mut o);
+        }
         if founded.is_none() && day >= a.late_year * year && g.world.season() == Season::Winter {
             found(&mut g, EGGS, eggrunner(), &mut o);
             founded = Some(day);
@@ -327,12 +353,16 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
                 records.push(r);
             }
         }
-        for p in 1..=6 {
+        for p in 1..=PLAYERS {
             let alive = g.world.owner_count(p);
             let peak = o.peak_alive.entry(p).or_default();
             *peak = (*peak).max(alive);
             o.final_alive.insert(p, alive);
         }
+    }
+    let ceiling = g.world.player_ceiling();
+    for (&p, &peak) in &o.peak_alive {
+        o.capped.insert(p, peak as f64 >= 0.95 * ceiling as f64);
     }
     let start = founded.unwrap_or(a.days);
     o.founded_day = start;
@@ -383,7 +413,7 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
 
 fn main() {
     let a = args();
-    for d in [steady(), big(), broker(), eggrunner(), flier(), cold_flier()] {
+    for d in [steady(), big(), broker(), eggrunner(), flier(), cold_flier(), loophole()] {
         let f = fitted(d.clone());
         println!(
             "{}: {:.1} points at today's prices, {} of {} founders fit",
@@ -420,7 +450,7 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Round 4 rules (playtest 4)" };
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 5 rules" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
         if a.new_only && !new {
             continue;
@@ -435,12 +465,12 @@ fn main() {
             os.iter().map(|o| o.founded_day as f64).sum::<f64>() / n
         );
         println!(
-            "  player   founders  final share  peak share  mean share*  peak alive  final alive  extinct  titles*"
+            "  player   founders  final share  peak share  mean share*  peak alive  final alive  extinct  capped  titles*"
         );
-        for p in 1..=6u32 {
+        for p in 1..=PLAYERS {
             let avg = |f: &dyn Fn(&Outcome) -> f64| os.iter().map(|o| f(o)).sum::<f64>() / n;
             println!(
-                "  {:<8} {:>8.0}  {:>10.1}%  {:>9.1}%  {:>10.1}%  {:>10.0}  {:>11.0}  {:>7}  {}/{}",
+                "  {:<8} {:>8.0}  {:>10.1}%  {:>9.1}%  {:>10.1}%  {:>10.0}  {:>11.0}  {:>7}  {:>6}  {}/{}",
                 NAMES[p as usize - 1],
                 avg(&|o| o.founders.get(&p).copied().unwrap_or(0) as f64),
                 100.0 * avg(&|o| o.final_share.get(&p).copied().unwrap_or(0.0)),
@@ -449,6 +479,7 @@ fn main() {
                 avg(&|o| o.peak_alive.get(&p).copied().unwrap_or(0) as f64),
                 avg(&|o| o.final_alive.get(&p).copied().unwrap_or(0) as f64),
                 os.iter().filter(|o| o.final_alive.get(&p).copied().unwrap_or(0) == 0).count(),
+                os.iter().filter(|o| o.capped.get(&p).copied().unwrap_or(false)).count(),
                 os.iter().map(|o| o.titles.get(&p).copied().unwrap_or(0)).sum::<u32>(),
                 seasons,
             );
@@ -459,6 +490,11 @@ fn main() {
             100.0 * os.iter().map(|o| o.eggs_wild).sum::<f64>() / n,
             100.0 * os.iter().map(|o| o.eggs_crash).sum::<f64>() / n,
         );
+        let fliers: u32 = os
+            .iter()
+            .map(|o| [FLIER, COLD, LOOPHOLE].iter().map(|p| o.titles.get(p).copied().unwrap_or(0)).sum::<u32>())
+            .sum();
+        println!("  cold fliers as a class (Flier + Cold + Loophole): {fliers}/{seasons} titles");
         println!(
             "  (* from Eggs' founding on: mean share over those days; legacy titles of the whole seasons after it)"
         );

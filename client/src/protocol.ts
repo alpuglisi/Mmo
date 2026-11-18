@@ -1136,7 +1136,9 @@ export interface DesignCompatView {
   shore_access?: number;
   /** Set when the founders can reach less than half the shores. */
   water_warning?: string;
-  /** Founding now is a re-founding soon after your last lineage ended: `founders` of `requested` (half), costing
+  /** Set for a warm-blooded design that abandons its eggs (they chill below 24 °C and almost never hatch): what to do instead. */
+  egg_warning?: string;
+  /** Founding now is a re-founding soon after your last lineage ended: `founders` of `requested` (founders cost double points: as many as fit, at least half), costing
    * `cost` points, until `until_day` (about `minutes_left` real minutes). */
   refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string };
   /** Why founding would refuse the design's name (it looks like another player's); absent when fine. */

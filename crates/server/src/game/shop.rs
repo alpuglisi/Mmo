@@ -78,6 +78,12 @@ pub struct Spread {
     pub drift_risk: &'static str,
 }
 
+/// [`DesignCompatView::egg_warning`]'s text: warm-blooded eggs left alone
+/// need 24 °C or more (`world::environment::egg_range`).
+pub const EGG_WARNING: &str = "Warm-blooded eggs need a parent's heat: left alone they chill whenever the air is \
+     below 24 °C, so abandoned eggs almost never hatch (playtest 5: 252 chilled, none hatched). Choose incubated eggs \
+     (a parent broods them) or live birth, or make the design cold-blooded.";
+
 /// [`Spread`] over the pairs of `a` × `b` (None when either is empty).
 pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief) -> Option<Spread> {
     let mut fert: Vec<f32> = Vec::with_capacity(a.len() * b.len());
@@ -96,7 +102,7 @@ pub fn spread(a: &[&Genome], b: &[&Genome], relief: Relief) -> Option<Spread> {
     let n = fert.len();
     let at = |q: f64| fert[((q * (n - 1) as f64).round() as usize).min(n - 1)];
     let fertile = fert.iter().filter(|&&f| f > 0.0).count();
-    let weights = plan_weights(relief.egg);
+    let weights = plan_weights(relief);
     let (gene, gene_gap) = BODY_PLAN_GENES
         .iter()
         .zip(weights)
@@ -570,6 +576,8 @@ impl Game {
                 s * 100.0
             )
         });
+        let egg_warning = (design.thermo == evo_sim::Thermo::Warm && design.birth == evo_sim::BirthType::AbandonedEggs)
+            .then(|| EGG_WARNING.to_string());
         DesignCompatView {
             day: self.world.day(),
             sample: SAMPLE,
@@ -578,12 +586,13 @@ impl Game {
             rows,
             shore_access,
             water_warning,
+            egg_warning,
             refound: self.refound_terms(player).map(|t| {
-                let n = t.founders(design.founders);
+                let n = t.founders(design);
                 crate::protocol::RefoundView {
                     founders: n,
                     requested: design.founders,
-                    cost: design.clone().founders(n).point_cost(),
+                    cost: crate::game::RefoundTerms::cost(design, n),
                     until_day: t.until_day,
                     minutes_left: t.minutes_left,
                     reason: t.reason,

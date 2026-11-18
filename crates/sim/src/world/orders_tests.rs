@@ -686,6 +686,35 @@ fn a_herd_stays_where_it_migrated_to() {
     assert!(middle.dist(target) < middle.dist(start), "walked back toward the start");
 }
 
+/// Playtest 5: the starter drowned on its lakeshore. An animal awake on
+/// water too deep for it heads for the nearest dry tile (with
+/// `Balance::brood_care`) and gets out alive.
+#[test]
+fn an_animal_caught_on_deep_water_makes_for_the_shore() {
+    let mut w = lake_world(20, 39);
+    let i = place(&mut w, 1, &walker(), Map::tile_center(21, 10));
+    let id = w.organisms[i].id;
+    w.step();
+    w.organisms[i].pos = Map::tile_center(21, 10);
+    assert!(is_lake(&w, w.organisms[i].pos));
+    let intent = w.decide(i);
+    assert_eq!(intent.action, Action::Flee);
+    let t = intent.target.unwrap();
+    assert!(!is_lake(&w, t) && w.map.tile_coords(t).0 == 19, "{t:?}");
+    for _ in 0..w.config.ticks_per_hour() {
+        w.step();
+    }
+    let o = w.organism(id).expect("it got out alive");
+    assert!(!is_lake(&w, o.pos), "{:?}", o.pos);
+    // The old rule: no escape is chosen.
+    let mut w = lake_world(20, 39);
+    w.config.balance.brood_care = 0.0;
+    let i = place(&mut w, 1, &walker(), Map::tile_center(21, 10));
+    w.step();
+    w.organisms[i].pos = Map::tile_center(21, 10);
+    assert_ne!(w.decide(i).action, Action::Flee);
+}
+
 #[test]
 fn a_somewhat_hungry_migrant_keeps_walking_and_a_starving_one_stops() {
     let mut w = standard();
