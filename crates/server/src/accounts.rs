@@ -434,8 +434,9 @@ impl Accounts {
         if !valid_name(name) {
             return Err(AuthError::BadName);
         }
-        // Nor a name passing for staff (existing accounts keep theirs).
-        if crate::names::reserved(name, crate::names::Kind::Account) {
+        // Nor a name passing for staff: the same strict check as every other
+        // chosen name (existing accounts keep theirs).
+        if crate::names::check(name, 24, crate::names::Kind::Account).is_err() {
             return Err(AuthError::ReservedName);
         }
         if password.chars().count() < MIN_PASSWORD || password.len() > MAX_PASSWORD_BYTES {
@@ -672,7 +673,7 @@ mod tests {
         assert_eq!(acc.register("alice", "another one").await.unwrap_err(), AuthError::NameTaken);
         assert_eq!(acc.register("a!", "whatever123").await.unwrap_err(), AuthError::BadName);
         // New names can't pass for staff.
-        for staff in ["ServerAdmin", "GameMaster", "Mod", "Sys0p"] {
+        for staff in ["ServerAdmin", "GameMaster", "Mod", "Sys0p", "GMBob", "Root_user", "Operator", "G_M_herd"] {
             assert_eq!(acc.register(staff, "whatever123").await.unwrap_err(), AuthError::ReservedName, "{staff}");
         }
         assert_eq!(acc.register("bob", "short").await.unwrap_err(), AuthError::WeakPassword);

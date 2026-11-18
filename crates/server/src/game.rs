@@ -240,6 +240,10 @@ pub struct GameConfig {
     /// player making short connections was "away" all the time, protected
     /// while giving orders, and told "While you were away…" each time.
     pub offline_idle_ticks: u64,
+    /// Longest any offline protection lasts in game days (the surviving
+    /// core's cap, the home range's full strength and its fade): 12 real
+    /// hours were thousands of game days at a fast tick (playtest 6).
+    pub offline_max_days: f64,
 }
 
 /// Fewer drinking-water tiles than this in and around a territory or
@@ -407,6 +411,11 @@ pub const REQUEST_WINDOW_MINUTES: f64 = 60.0;
 /// offline protection starts (`GameConfig::offline_idle_ticks`): a player
 /// giving orders over short connections is playing, not away.
 pub const OFFLINE_IDLE_MINUTES: f64 = 10.0;
+
+/// [`GameConfig::offline_max_days`] by default: about 12 real hours at the
+/// normal 1 s tick (48 ticks a day), so normal play keeps a night's
+/// protection, and about 75 real minutes at the 100 ms playtest speed.
+pub const OFFLINE_MAX_DAYS: f64 = 900.0;
 /// Shortest auction in minutes (`GameConfig::min_auction_ticks`).
 pub const MIN_AUCTION_MINUTES: f64 = 5.0;
 
@@ -478,6 +487,7 @@ impl Default for GameConfig {
             attack_alert_minutes: 5.0,
             claim_cooldown_min_minutes: 2.0,
             offline_idle_ticks: 600,
+            offline_max_days: OFFLINE_MAX_DAYS,
         }
     }
 }
@@ -979,7 +989,10 @@ fn named_organisms(msg: &ClientMsg) -> Vec<OrgId> {
         | ClientMsg::PreviewMating { mine, .. }
         | ClientMsg::OfferToLineage { mine, .. }
         | ClientMsg::BuyListing { mine, .. }
-        | ClientMsg::Bid { mine, .. } => vec![*mine],
+        | ClientMsg::Bid { mine, .. }
+        | ClientMsg::SubstituteMating { mine, .. } => vec![*mine],
+        // The partner chosen when accepting an offer to the lineage.
+        ClientMsg::RespondMating { partner: Some(p), .. } => vec![*p],
         _ => Vec::new(),
     }
 }
@@ -1135,6 +1148,15 @@ impl Game {
         g.world.set_claim_cooldown_min_ticks(claim);
         let cap = (g.cfg.grace_max_days * g.world.config.ticks_per_day as f64).round() as u64;
         g.world.set_attack_grace_min_ticks(minutes(g.cfg.grace_min_minutes).min(cap));
+        // Offline protection: real hours, but at most so many game days.
+        if g.cfg.offline_max_days > 0.0 {
+            let days = |d: f64| (d * g.world.config.ticks_per_day as f64).round() as u64;
+            let cap = days(g.cfg.offline_max_days);
+            let c = &mut g.cfg;
+            c.offline_protection_ticks = c.offline_protection_ticks.min(cap);
+            c.home_range_ticks = c.home_range_ticks.min(cap);
+            c.home_range_fade_ticks = c.home_range_fade_ticks.min(2 * cap);
+        }
         g
     }
 
@@ -1625,6 +1647,9 @@ impl Game {
         if self.impersonates(player, &name, crate::names::Kind::Lineage) {
             return Err(FoundError::BadName("it looks like another player's name".into()));
         }
+        if self.wild_name(&name) {
+            return Err(FoundError::BadName("it is a wild species' name".into()));
+        }
         // Re-founding soon after the player's last lineage ended (retired or
         // died out) prices founders double ([`Game::refound_terms`]):
         // ending a lineage and founding again was a free re-roll (fresh, fed
@@ -1881,10 +1906,11 @@ impl Game {
     /// `offline_idle_ticks`.
     fn start_idle_spells(&mut self) {
         let (tick, idle) = (self.world.tick(), self.cfg.offline_idle_ticks);
-        let due: Vec<PlayerId> = self.leaving.iter().filter(|&(_, &t)| tick >= t + idle).map(|(&p, _)| p).collect();
-        for p in due {
+        let due: Vec<(PlayerId, u64)> =
+            self.leaving.iter().filter(|&(_, &t)| tick >= t + idle).map(|(&p, &t)| (p, t)).collect();
+        for (p, left) in due {
             self.leaving.remove(&p);
-            self.offline_logout(p);
+            self.offline_logout_at(p, left);
         }
     }
 
@@ -6564,12 +6590,15 @@ fn body_plan_gaps(p: &MatingPreview) -> Vec<BodyPlanGap> {
 /// genes) or too distant genomes.
 fn incompatibility(p: &MatingPreview) -> Option<ErrorInfo> {
     if p.body_plan_fertility <= 0.0 {
-        let gaps = body_plan_gaps(p);
+        // In tenths: error replies gave a rival's gene gaps to 17 digits
+        // (playtest 6), a recipe for their design.
+        let gaps: Vec<BodyPlanGap> =
+            body_plan_gaps(p).into_iter().map(|g| BodyPlanGap { gap: (g.gap * 10.0).round() / 10.0, ..g }).collect();
         let sterile: Vec<String> = p
             .body_plan_gaps
             .iter()
             .filter(|&&(_, gap)| gap >= evo_sim::mating::BODY_PLAN_STERILE)
-            .map(|&(g, gap)| format!("{} ({gap:.2} apart)", g.display_name_lower()))
+            .map(|&(g, gap)| format!("{} ({gap:.1} apart)", g.display_name_lower()))
             .collect();
         // No gene past the sterile gap: the eye or leg counts are
         // (`morph::morph_fertility_gap`), which the gene list doesn't show.
@@ -7964,7 +7993,13 @@ mod tests {
         // Warm × cold alone is partly fertile (`Balance::thermo_hybrid`):
         // the abandoned eggs make the pair sterile.
         assert!(err.message.contains("birth mode") && !err.message.contains("warm"), "{}", err.message);
-        assert_eq!(err.detail.unwrap()["genes"][0]["gene"], "endothermy");
+        let detail = err.detail.unwrap();
+        assert_eq!(detail["genes"][0]["gene"], "endothermy");
+        // Gaps in tenths, not to 17 digits (playtest 6).
+        for g in detail["genes"].as_array().unwrap() {
+            let x = g["gap"].as_f64().unwrap();
+            assert!(((x * 10.0).round() - x * 10.0).abs() < 1e-4, "{g}");
+        }
         assert_eq!(out.len(), 1, "the other player is not asked");
         assert_eq!(g.world.mating_slots_left(1), g.world.config.mating_slots_per_season);
     }
@@ -8746,6 +8781,26 @@ mod tests {
         assert_eq!(r.world.lineages[ok.lineage as usize].name, "Grazers of the north");
     }
 
+    /// A wild species' name ("Meadow vole") can't be a lineage's, a
+    /// species' or a title (playtest 6: a lineage would found a second
+    /// species of that name); the design check warns first.
+    #[test]
+    fn wild_species_names_are_refused() {
+        let world = build_world(&WorldSettings { seed: 3, width: 48, height: 48, wild: true, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        g.set_name(1, "ann");
+        let wild = g.world.lineages.iter().find(|l| l.owner == WILD).unwrap().name.clone();
+        let singular = wild.strip_suffix('s').unwrap_or(&wild).to_string();
+        for n in [wild.clone(), singular.clone(), wild.to_uppercase()] {
+            assert!(matches!(g.found(1, &design(&n)), Err(FoundError::BadName(_))), "{n}");
+        }
+        assert!(g.design_compatibility(1, &design(&singular)).name_warning.is_some());
+        let _ = g.post(1, 1000, LedgerKind::Income, "test".into(), None, None);
+        let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: singular.clone() });
+        assert_eq!(result(&out).1.as_deref(), Some("bad_title"));
+        assert!(g.found(1, &design("Grazers of the north")).is_ok());
+    }
+
     /// A juvenile reads `not_mature`, not `same_sex` (playtest 5), in a
     /// preview and in a request within one's own lineage.
     #[test]
@@ -8842,7 +8897,11 @@ mod tests {
         assert_eq!(v.rows.len(), 2);
         assert!(v.rows[0].compatible && v.rows[0].owner == 2 && v.rows[0].fertility == 1.0);
         let cat = &v.rows[1];
-        assert!(!cat.compatible && cat.owner == 3 && cat.limiting == "carnivory" && cat.gap > 0.6, "{cat:?}");
+        // A rival's row: tenths, no limiting gene (playtest 6: exact here,
+        // coarse over HTTP).
+        assert!(!cat.compatible && cat.owner == 3 && cat.limiting == "body_plan" && cat.gap > 0.6, "{cat:?}");
+        let tenths = |x: f32| ((x * 10.0).round() - x * 10.0).abs() < 1e-4;
+        assert!(v.rows.iter().all(|r| tenths(r.gap) && tenths(r.fertility)), "{:?}", v.rows);
         // On listings: Cat's stud is sterile with Ann's lineage, Bob's isn't.
         let _ = a;
         let mc = male(&g, &c);

@@ -324,6 +324,18 @@ fn opt_price<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::E
     price_of(&v).map(Some).ok_or_else(|| serde::de::Error::custom("a price is a whole number of renown"))
 }
 
+/// A rival animal's mass as an error may give it: whole kilograms under
+/// 10, then to 5 kg under 100, then to 10 kg.
+pub fn coarse_kg(x: f32) -> f32 {
+    if x < 10.0 {
+        x.round().max(1.0)
+    } else if x < 100.0 {
+        (x / 5.0).round() * 5.0
+    } else {
+        (x / 10.0).round() * 10.0
+    }
+}
+
 impl ClientMsg {
     pub fn name(&self) -> &'static str {
         match self {
@@ -896,7 +908,20 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             MostlyWater { share } => info.with_detail(serde_json::json!({ "water_share": share })),
-            TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
+            // The target's mass only roughly (playtest 6: a rival's exact
+            // mass to 15 digits); the attacker's own limit as it is.
+            TooBig { mass, limit } => {
+                let mass = coarse_kg(*mass);
+                let kg = |x: f32| if x < 10.0 { format!("{x:.1}") } else { format!("{x:.0}") };
+                ErrorInfo::new(
+                    code,
+                    format!(
+                        "that animal (about {mass:.0} kg) is too big to take on; this one can tackle up to {} kg, counting the pack-mates around it now",
+                        kg(*limit)
+                    ),
+                )
+                .with_detail(serde_json::json!({ "mass": mass, "limit": limit }))
+            }
             NewcomerGrace { days_left } | OwnGrace { days_left } => {
                 info.with_detail(serde_json::json!({ "days_left": days_left }))
             }
@@ -2318,6 +2343,18 @@ mod tests {
     /// A price past `u64::MAX` (JavaScript's `2 ** 64`) parses, saturated,
     /// so the range check answers `bad_price`; a fraction or a negative
     /// doesn't parse.
+    #[test]
+    fn a_too_big_target_gives_its_mass_roughly() {
+        let e = ErrorInfo::from(&evo_sim::world::commands::CommandError::TooBig { mass: 5.402_76, limit: 2.9 });
+        assert_eq!(e.detail.as_ref().unwrap()["mass"].as_f64(), Some(5.0));
+        assert!(
+            e.message.contains("about 5 kg") && e.message.contains("2.9 kg") && !e.message.contains("5.4"),
+            "{}",
+            e.message
+        );
+        assert_eq!((coarse_kg(47.3), coarse_kg(312.0)), (45.0, 310.0));
+    }
+
     #[test]
     fn huge_prices_reach_the_range_check() {
         let m: ClientEnvelope =

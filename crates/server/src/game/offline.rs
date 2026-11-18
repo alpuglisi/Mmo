@@ -206,8 +206,16 @@ impl Game {
     /// `player`'s last connection closed: start their spell (an existing
     /// one, from before a restart, keeps its clock and home range).
     pub(super) fn offline_logout(&mut self, player: PlayerId) {
+        self.offline_logout_at(player, self.world.tick());
+    }
+
+    /// [`Game::offline_logout`] for a player who left at tick `left` (the
+    /// spell starts after the idle wait, `GameConfig::offline_idle_ticks`,
+    /// but is dated from the leaving, so the home range's onset counts from
+    /// it: 10 minutes after leaving, as the Lineage tab says, not 20).
+    pub(super) fn offline_logout_at(&mut self, player: PlayerId, left: u64) {
         if self.lineage_of.contains_key(&player) && (self.cfg.offline_protection_ticks > 0 || self.home_ranges_on()) {
-            let start = self.world.tick();
+            let start = left.min(self.world.tick());
             let home = self.home_claim(player);
             let credit = self.protection_used(player, start);
             self.offline.spells.entry(player).or_insert(Spell { start, home, credit, ..Spell::default() });
@@ -508,6 +516,37 @@ mod tests {
         }
         assert!(g.offline.spells().contains_key(&2), "gone past the idle time: away");
         assert!(protected(&g).contains(&lb), "and shielded from then on");
+    }
+
+    /// Offline protection lasts real hours but at most
+    /// `GameConfig::offline_max_days` game days (playtest 6: thousands of
+    /// days at a fast tick), and the home range starts its onset from the
+    /// leaving, not from the end of the idle wait.
+    #[test]
+    fn offline_protection_is_capped_in_game_days_and_dated_from_the_leaving() {
+        let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+        let tpd = world.config.ticks_per_day as u64;
+        let cfg = GameConfig {
+            offline_protection_ticks: 1_000_000,
+            home_range_ticks: 1_000_000,
+            home_range_fade_ticks: 1_000_000,
+            offline_max_days: 30.0,
+            ..GameConfig::default()
+        };
+        let mut g = Game::new(world, cfg);
+        assert_eq!((g.cfg.offline_protection_ticks, g.cfg.home_range_ticks), (30 * tpd, 30 * tpd));
+        assert_eq!(g.cfg.home_range_fade_ticks, 60 * tpd);
+        // Dated from the leaving.
+        let design = FounderDesign::new("A", Thermo::Warm, BirthType::Live, 2).founders(6);
+        g.found(1, &design).unwrap();
+        g.connect(10, 1, "ann");
+        g.cfg.offline_idle_ticks = 4;
+        let left = g.world.tick();
+        g.disconnect(10);
+        for _ in 0..6 {
+            tick(&mut g);
+        }
+        assert_eq!(g.offline.spells()[&1].start, left);
     }
 
     #[test]
