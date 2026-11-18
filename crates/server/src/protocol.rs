@@ -1428,6 +1428,13 @@ pub struct WorldSummary {
     /// reserves full: `GameConfig::winter_provision`).
     #[serde(default)]
     pub winter_provision: bool,
+    /// Re-founding within this many game days of a lineage's end (about
+    /// `refound_window_minutes` real minutes) founds half the founders
+    /// (`Game::refound_window_days`); 0 from older servers.
+    #[serde(default)]
+    pub refound_window_days: u64,
+    #[serde(default)]
+    pub refound_window_minutes: u64,
     /// The lineage cap (`WorldConfig::lineage_cap`, scaled to the map): with
     /// crowding on, the soft cap where breeding is at half pace; off, the
     /// most living organisms one player may have.
@@ -1640,6 +1647,9 @@ pub struct LineageStats {
     /// bearers): what "pregnant" means for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eggs: Option<EggsView>,
+    /// How the lineage ended once it has: `retired` or `died_out`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<String>,
     /// Lineage-wide warnings now (hunger or thirst crash, near the hard
     /// cap, starving inside territories), most urgent first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

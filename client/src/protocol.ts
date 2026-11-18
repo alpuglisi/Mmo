@@ -872,6 +872,9 @@ export interface WorldSummary {
   days_to_winter?: number;
   /** A lineage founded now starts fed with full fat reserves (winter provision). */
   winter_provision?: boolean;
+  /** Re-founding within this many game days of a lineage's end (about `refound_window_minutes` real minutes) founds half the founders. */
+  refound_window_days?: number;
+  refound_window_minutes?: number;
   /** Most living organisms, young included, one player may have; at it births pause (absent from older servers). */
   lineage_cap?: number;
   /** No births past this many living members (with crowding, a multiple of `lineage_cap`, which is then the soft cap). */
@@ -1014,6 +1017,8 @@ export interface LineageStats {
     /** Eggs lost since founding by cause: chilled (no parent warming them), overheated, raided (absent: none). */
     lost?: Record<string, number>;
   };
+  /** How the lineage ended once it has (absent while it lives, and on older servers). */
+  ended?: 'retired' | 'died_out';
   legacy: LegacyPoint[];
   alerts: AlertView[];
 }
