@@ -489,6 +489,9 @@ pub struct FoundResponse {
     /// Why fewer were founded, if they were.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reduced: Option<String>,
+    /// Whether the lineage has a newcomer grace, and why (or why not).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace: Option<String>,
 }
 
 async fn found_lineage(
@@ -528,6 +531,7 @@ async fn found_lineage(
             cost: ok.cost,
             requested: ok.requested,
             reduced: ok.reduced,
+            grace: ok.grace,
         }),
     ))
 }
@@ -1504,7 +1508,19 @@ async fn seasons_list(
     let offset = q.offset.unwrap_or(0);
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let (seasons, total) = w.store.list_seasons(offset, limit).await.map_err(ApiError::internal)?;
-    Ok(Json(crate::league::SeasonList { total, offset, seasons }))
+    // The hall of fame counts every finished season, page by page.
+    let mut heads = Vec::with_capacity(total);
+    let mut at = 0;
+    while at < total {
+        let (page, _) = w.store.list_seasons(at, 100).await.map_err(ApiError::internal)?;
+        if page.is_empty() {
+            break;
+        }
+        at += page.len();
+        heads.extend(page);
+    }
+    let hall_of_fame = crate::league::hall_of_fame(&heads);
+    Ok(Json(crate::league::SeasonList { total, offset, seasons, hall_of_fame }))
 }
 
 /// `GET /api/seasons/current?offset=0&limit=10&player=N`: the ranked season

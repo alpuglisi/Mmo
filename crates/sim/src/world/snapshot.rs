@@ -189,6 +189,8 @@
 //! Version 51 adds the playtest 4 predator and dormancy tunables
 //! (`Balance::player_packs`, `dormant_water`, `possessed_sleep`); versions
 //! 10 to 50 read them as 0 (off, `serde_util::before_v51`).
+//! Version 52 adds the `DeathCause::Heat` variant (appended: older
+//! snapshots decode as before, their heat deaths counted as `Exposure`).
 //!
 //! A terrain blob ([`Terrain::encode`]): magic `EVOTERR\0`, format version
 //! ([`TERRAIN_VERSION`], u32), flags (u32, bit 0 LZ4), content hash, width,
@@ -209,7 +211,7 @@ use crate::terrain::{Terrain, Tile};
 
 /// Bump on any change to the serialized state (a field added, removed,
 /// reordered or retyped in any type the world holds).
-pub const SNAPSHOT_VERSION: u32 = 51;
+pub const SNAPSHOT_VERSION: u32 = 52;
 /// The oldest format version that still restores: version 11's state with
 /// the tiles inside the payload, and both without `Balance::cold_gestation`
 /// (nor, with version 12, `Balance::nest_predation`).

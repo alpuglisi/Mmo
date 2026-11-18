@@ -89,7 +89,7 @@ export function speciesTree(list: SpeciesView[]): SpeciesRow[] {
 }
 
 function speciesStatus(s: SpeciesView, byId: Map<number, SpeciesView>): string {
-  if (s.merged_into !== undefined) return `merged into ${byId.get(s.merged_into)?.name ?? `#${s.merged_into}`}`;
+  if (s.merged_into !== undefined) return `merged into ${byId.get(s.merged_into)?.name ?? s.merged_into_name ?? 'another species'}`;
   if (s.extinct_day !== undefined) return `extinct day ${s.extinct_day + 1}`;
   return `~${Math.round(s.adults)} adults`;
 }
@@ -121,6 +121,9 @@ export function myEraRanks(eras: EraList, me: PlayerId): { era: number; rank: nu
 const swatch = (p: PlayerId, me: PlayerId) => h('span', { class: 'swatch', style: `background:${cssColor(p === me ? OWN_COLOR : ownerColor(p))}` });
 
 /** `onName`: offered on the species `me` may name (a founding of theirs, or a split credited to them). */
+/** The era was ranked by its mean (servers from playtest 5 on), not the final snapshot. */
+const byMean = (e: { rows: { mean_share?: number }[] }) => e.rows.some((r) => r.mean_share !== undefined);
+
 export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, today: number, onName?: (s: SpeciesView) => void): void {
   if (!c) {
     el.replaceChildren(h('p', { class: 'muted' }, 'Loading the world chronicle…'));
@@ -146,10 +149,13 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
           h('summary', {}, `Era ${e.era + 1} · days ${e.first_day + 1}–${e.last_day + 1}${mine?.rank ? ` · you #${mine.rank}` : ''}`
             + `${e.catastrophes.length ? ` · ${e.catastrophes.length} catastrophe${e.catastrophes.length === 1 ? '' : 's'}` : ''}`),
           h('table', { class: 'board' },
-            h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Player'), h('th', {}, 'Final share'), h('th', { title: 'Weighted by offspring raised to adulthood' }, 'Weighted'))),
+            h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Player'),
+              byMean(e) ? h('th', { title: 'Mean over the era\'s days of the raw and weighted share, with the founding ramp: what ranks the era' }, 'Era mean') : null,
+              h('th', {}, 'Final share'), h('th', { title: 'Weighted by offspring raised to adulthood' }, 'Weighted'))),
             // Players are ranked among players (as "you #N" says); the wild ecosystem's row has no rank.
             h('tbody', {}, ...e.rows.slice(0, 8).map((r) => h('tr', { class: r.player === me ? 'me' : '' },
-              h('td', {}, r.player === 0 ? '—' : String(e.rows.filter((x) => x.player !== 0).indexOf(r) + 1)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name)), h('td', {}, pct(r.share)), h('td', {}, pct(r.weighted_share)))))),
+              h('td', {}, r.player === 0 ? '—' : String(e.rows.filter((x) => x.player !== 0).indexOf(r) + 1)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name)),
+              byMean(e) ? h('td', {}, pct(r.mean_share ?? 0)) : null, h('td', {}, pct(r.share)), h('td', {}, pct(r.weighted_share)))))),
           e.niches.length > 0 && h('p', { class: 'muted small' }, 'Niche leaders: ',
             e.niches.map((n) => `${nicheLabel(n.niche)} ${n.name} ${pct(n.share, 0)}`).join(' · ')));
       })),

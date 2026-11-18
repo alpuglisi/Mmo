@@ -1200,6 +1200,8 @@ export interface RankedSeasonList {
   total: number;
   offset: number;
   seasons: RankedSeasonHead[];
+  /** Titles and crowns per player over every finished season (absent from older servers: count from the page). */
+  hall_of_fame?: { player: PlayerId; name: string; crowns: number; titles: number }[];
 }
 
 export interface StandingPage {
@@ -1304,6 +1306,8 @@ export interface SpeciesView {
   founded_day: number;
   extinct_day?: number;
   merged_into?: number;
+  /** The name of the species it merged into. */
+  merged_into_name?: string;
   /** Player credited with the speciation (splits only). */
   founder?: PlayerId;
   founder_name?: string;
@@ -1395,8 +1399,11 @@ export interface SpeciesList {
 export interface EraRow {
   player: PlayerId;
   name: string;
+  /** Share at the era's end (and weighted). */
   share: number;
   weighted_share: number;
+  /** The era's mean day score, which ranks it (absent for older eras, ranked by the final share). */
+  mean_share?: number;
 }
 
 export interface NicheView {

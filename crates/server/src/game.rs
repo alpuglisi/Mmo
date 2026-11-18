@@ -23,6 +23,7 @@ use crate::design::gene_key;
 use crate::economy::{self, Bid, Economy, Insufficient, Listing};
 use crate::league::{self, CurrentSeason, SeasonRecord, SeasonTracker};
 use crate::protocol::*;
+mod eras;
 mod family;
 mod market;
 mod offline;
@@ -542,6 +543,8 @@ pub struct FoundOk {
     pub requested: u32,
     /// Why fewer were founded, if they were.
     pub reduced: Option<String>,
+    /// Whether the new lineage has a newcomer grace, and why (or why not).
+    pub grace: Option<String>,
 }
 
 /// A re-founding soon after the player's last lineage ended
@@ -695,6 +698,11 @@ pub struct Game {
     /// catastrophe whether its start and end were.
     seen_achievements: usize,
     seen_eras: usize,
+    /// Era standings by mean share (`eras::EraScores`).
+    /// Survival credits given (player, catastrophe): once each, in the
+    /// season the catastrophe mostly fell in (`credit_survival`).
+    survival_credited: BTreeSet<(PlayerId, u32)>,
+    era_scores: eras::EraScores,
     seen_catastrophes: Vec<(bool, bool)>,
     /// A drought warning is out (`DROUGHT_WARN`); cleared below
     /// `DROUGHT_CLEAR`. Not saved: a restart in a drought warns again.
@@ -702,6 +710,9 @@ pub struct Game {
     /// Players who founded since the last tick: told of a drought under way
     /// (they missed its warning). Not saved.
     joined: Vec<PlayerId>,
+    /// Alerts for players who just founded (their grace explained), sent
+    /// with the next tick's alerts. Not saved.
+    founding_notes: Vec<(PlayerId, String)>,
     /// Players whose last session closed, and the tick it did: their
     /// possession ends after [`POSSESSION_GRACE_MINUTES`]. Not saved (a
     /// restart drops every session; the release then follows the grace).
@@ -834,6 +845,10 @@ pub struct SavedGame {
     focused: BTreeSet<PlayerId>,
     seen_achievements: usize,
     seen_eras: usize,
+    /// Era standings by mean share (absent in older saves).
+    /// Survival credits given (absent in older saves).
+    survival_credited: BTreeSet<(PlayerId, u32)>,
+    era_scores: eras::EraScores,
     seen_catastrophes: Vec<(bool, bool)>,
     /// Version 2 on.
     economy: Option<Economy>,
@@ -992,9 +1007,12 @@ impl Game {
             focused: BTreeSet::new(),
             seen_achievements: 0,
             seen_eras: 0,
+            era_scores: eras::EraScores::default(),
+            survival_credited: BTreeSet::new(),
             seen_catastrophes: Vec::new(),
             drought_warned: false,
             joined: Vec::new(),
+            founding_notes: Vec::new(),
             left: BTreeMap::new(),
             possessing: BTreeMap::new(),
             warned: BTreeMap::new(),
@@ -1094,7 +1112,7 @@ impl Game {
         };
         let secs = self.real_seconds((days as f64 * self.world.config.ticks_per_day as f64).round() as u64);
         let minutes = secs.div_ceil(60);
-        let message = format!("{} (about {minutes} real minutes)", info.message);
+        let message = format!("{} (about {minutes} real minute{})", info.message, if minutes == 1 { "" } else { "s" });
         ErrorInfo { message, ..info }.with_detail(serde_json::json!({ "days_left": days, "real_seconds_left": secs }))
     }
 
@@ -1150,6 +1168,8 @@ impl Game {
             focused: self.focused.clone(),
             seen_achievements: self.seen_achievements,
             seen_eras: self.seen_eras,
+            era_scores: self.era_scores.clone(),
+            survival_credited: self.survival_credited.clone(),
             seen_catastrophes: self.seen_catastrophes.clone(),
             economy: Some(self.economy.clone()),
             season: Some(self.season.clone()),
@@ -1221,6 +1241,8 @@ impl Game {
         g.focused = saved.focused;
         g.seen_achievements = saved.seen_achievements;
         g.seen_eras = saved.seen_eras;
+        g.era_scores = saved.era_scores;
+        g.survival_credited = saved.survival_credited;
         g.seen_catastrophes = saved.seen_catastrophes;
         match saved.economy {
             Some(e) if saved.version >= 2 => {
@@ -1645,7 +1667,11 @@ impl Game {
             self.graced.insert(player);
         }
         let requested = design.founders;
-        Ok(FoundOk { lineage, founders, cost: design.point_cost(), requested, reduced: None })
+        let grace = self.grace_at_founding(player, lineage);
+        if let Some(text) = &grace {
+            self.founding_notes.push((player, text.clone()));
+        }
+        Ok(FoundOk { lineage, founders, cost: design.point_cost(), requested, reduced: None, grace })
     }
 
     /// The partner organism of an open offer (0 for an offer to a lineage
@@ -3837,7 +3863,12 @@ impl Game {
         if legacy_day != self.last_legacy_day {
             self.last_legacy_day = legacy_day;
             let record = self.daily_record();
+            // Before a rollover: a catastrophe ending at the boundary counts
+            // for the season it fell in, not the next one.
+            self.credit_survival(record.day);
             self.season_day(&record, &mut out);
+            let ramped = self.ramped(&record);
+            self.era_scores.add(&ramped, self.world.config.era_days());
             self.refresh_hosts();
             self.pay_income(&record);
             self.pay_royalties(record.day);
@@ -3883,6 +3914,47 @@ impl Game {
             self.last_season_record = Some(finished);
         }
         self.season.record_day(&self.ramped(record));
+    }
+
+    /// Credit the ranked season with survived catastrophes (playtest 5,
+    /// M12), before the season can roll over: each survivor's credit from
+    /// the sim's achievements (only a lineage founded before it began), and
+    /// at a rollover, a catastrophe still under way that mostly fell in the
+    /// ending season is credited there to the players alive through it so
+    /// far (its later achievement doesn't credit the next season again).
+    fn credit_survival(&mut self, record_day: u64) {
+        let ch = &self.world.chronicle;
+        let founded_before = |p: PlayerId, start: u64| self.founded_day.get(&p).is_none_or(|&f| f < start);
+        let mut credits: Vec<(PlayerId, u32)> = Vec::new();
+        for a in &ch.achievements[self.seen_achievements.min(ch.achievements.len())..] {
+            if let AchievementKind::SurvivedCatastrophe { catastrophe } = a.kind {
+                let start = ch.catastrophes.iter().find(|c| c.id == catastrophe).map_or(0, |c| c.start_day);
+                if a.player != WILD && founded_before(a.player, start) {
+                    credits.push((a.player, catastrophe));
+                }
+            }
+        }
+        if self.season.is_over_by(record_day) {
+            if let Some(c) = ch.active_catastrophe() {
+                let (s0, s1) = (self.season.first_day, self.season.end_day);
+                let total = c.end_day.saturating_sub(c.start_day).max(1);
+                let inside = c.end_day.min(s1).saturating_sub(c.start_day.max(s0));
+                if 2 * inside > total {
+                    let counts = self.world.population_counts();
+                    for (&p, &l) in &self.lineage_of {
+                        let alive = counts.get(l as usize).is_some_and(|x| x.alive > 0);
+                        if alive && founded_before(p, c.start_day) {
+                            credits.push((p, c.id));
+                        }
+                    }
+                }
+            }
+        }
+        for (p, id) in credits {
+            if self.survival_credited.insert((p, id)) {
+                self.season.add_survival(p, id);
+            }
+        }
     }
 
     /// `record` with each player's legacy shares scaled by their lineage's
@@ -4459,6 +4531,60 @@ impl Game {
         }
     }
 
+    /// Whether `player`'s new lineage `lineage` has a newcomer grace, and why
+    /// (playtest 5: a re-founding inherited an expired grace unexplained).
+    /// The rule: a grace runs from the owner's first founding in an unbroken
+    /// run of foundings each soon after the last, so founding again soon
+    /// continues the old grace (even one already over) rather than starting
+    /// a new one. None on worlds without a grace.
+    fn grace_at_founding(&self, player: PlayerId, lineage: u32) -> Option<String> {
+        let w = &self.world;
+        if w.config.balance.attack_grace <= 0.0 {
+            return None;
+        }
+        let tpd = w.config.ticks_per_day.max(1) as f64;
+        let founded = w.tick();
+        let start = w.lineage_grace_start(lineage)?;
+        let soon = (2.0 * w.grace_length() as f64 / tpd).round();
+        let days = |t: u64| t as f64 / tpd;
+        let real = |t: u64| {
+            let min = t as f64 * self.cfg.tick_ms / 60_000.0;
+            if min < 1.5 {
+                "about a minute".to_string()
+            } else {
+                format!("about {min:.0} minutes")
+            }
+        };
+        let text = match w.lineage_grace_ticks(lineage) {
+            Some(left) if start >= founded => format!(
+                "Newcomer grace: {:.0} days ({} of real time). Other players can't order attacks on your animals, \
+                 nor yours on theirs, until it ends.",
+                days(left),
+                real(left)
+            ),
+            Some(left) => format!(
+                "Newcomer grace: {:.1} days left ({}). It continues the grace of your earlier lineage (from day {}): \
+                 founding again within {soon:.0} days of your last founding carries a grace on instead of starting a new one.",
+                days(left),
+                real(left),
+                start / w.config.ticks_per_day.max(1) as u64 + 1
+            ),
+            None if start == 0 => return None,
+            None if w.grace_waived().get(&player).is_some_and(|&t| t >= start) => {
+                "No newcomer grace: you ended it, and founding again soon doesn't bring it back. Other players' animals \
+                 can attack yours from now on."
+                    .to_string()
+            }
+            None => format!(
+                "No newcomer grace: it continues the grace of your earlier lineage (from day {}), which has run out. \
+                 Founding again within {soon:.0} days of your last founding carries a grace on rather than starting \
+                 a fresh one; other players' animals can attack yours now.",
+                start / w.config.ticks_per_day.max(1) as u64 + 1
+            ),
+        };
+        Some(text)
+    }
+
     /// Tell players who just founded about a drought or catastrophe under
     /// way, whose warnings went out before they joined.
     fn tell_joiners(&mut self, out: &mut Outbox) {
@@ -4470,6 +4596,9 @@ impl Game {
             self.world.chronicle.active_catastrophe().map(|c| {
                 format!("Catastrophe under way: {} (through about day {}).", catastrophe_text(c.kind), c.end_day)
             });
+        for (p, text) in std::mem::take(&mut self.founding_notes) {
+            self.alert(p, AlertKind::Attack, text, None, out);
+        }
         for p in std::mem::take(&mut self.joined) {
             for text in drought.iter().chain(catastrophe.iter()) {
                 self.alert(p, AlertKind::World, text.clone(), None, out);
@@ -4884,10 +5013,11 @@ impl Game {
             if entry.born > 0 || died > 0 || eggs_lost > 0 {
                 let mut causes: Vec<(&String, &u64)> = entry.deaths.iter().collect();
                 causes.sort_by(|a, b| b.1.cmp(a.1));
-                // The day's counts come from the sim's causes: exposure is cold, heat or a winter sleep.
+                // The day's counts come from the sim's causes ("exposure" only
+                // in records from before cold and heat were told apart).
                 let word = |c: &str| {
                     if c == "exposure" {
-                        "cold, heat or winter sleep".to_string()
+                        "cold or heat".to_string()
                     } else {
                         c.replace('_', " ")
                     }
@@ -4987,7 +5117,8 @@ impl Game {
                         p,
                         AlertKind::World,
                         Some(PushKind::Catastrophe),
-                        format!("Catastrophe: {what} has begun (through about day {}).", c.end_day),
+                        // The same days the World tab lists (counted from 1).
+                        format!("Catastrophe: {what} has begun (days {}–{}).", c.start_day + 1, c.end_day),
                     ));
                 }
             }
@@ -5052,9 +5183,7 @@ impl Game {
                         (Some(s), Some(f)) => f < s,
                         _ => true,
                     };
-                    if paid {
-                        self.season.add_survival(a.player, catastrophe);
-                    }
+                    // The season's credit was given before the rollover (`credit_survival`).
                 }
                 _ => {}
             }
@@ -5065,17 +5194,29 @@ impl Game {
             alerts.push((a.player, AlertKind::Achievement, push, text));
         }
         self.seen_achievements = ch.achievements.len();
-        for e in &ch.eras[self.seen_eras.min(ch.eras.len())..] {
+        let closed: Vec<(u64, Vec<EraRowData>)> = ch.eras[self.seen_eras.min(ch.eras.len())..]
+            .iter()
+            .map(|e| (e.era, e.ranking.iter().map(|r| (r.player, r.share, r.weighted_share)).collect()))
+            .collect();
+        for (era, ranking) in closed {
+            let means = self.era_scores.close(era).cloned();
+            let order = era_order(&ranking, means.as_ref());
             for &p in &players {
-                let rank = e.ranking.iter().filter(|r| r.player != WILD).position(|r| r.player == p);
-                let text = match rank {
-                    Some(r) => format!(
-                        "Era {} has ended: you finished #{} with {:.1}% of breeding alleles.",
-                        e.era + 1,
+                let rank = order.iter().filter(|r| r.0 != WILD).position(|r| r.0 == p);
+                let last = ranking.iter().find(|x| x.0 == p).map_or(0.0, |x| x.1 * 100.0);
+                let text = match (rank, &means) {
+                    (Some(r), Some(m)) => format!(
+                        "Era {} has ended: you finished #{} with a mean {:.1}% of breeding alleles over the era ({last:.1}% at its end).",
+                        era + 1,
                         r + 1,
-                        e.ranking.iter().find(|x| x.player == p).map_or(0.0, |x| x.share * 100.0)
+                        m.get(&p).copied().unwrap_or(0.0) * 100.0
                     ),
-                    None => format!("Era {} has ended; your alleles were not among the breeding adults.", e.era + 1),
+                    (Some(r), None) => format!(
+                        "Era {} has ended: you finished #{} with {last:.1}% of breeding alleles.",
+                        era + 1,
+                        r + 1
+                    ),
+                    (None, _) => format!("Era {} has ended; your alleles were not among the breeding adults.", era + 1),
                 };
                 alerts.push((p, AlertKind::World, Some(PushKind::Season), text));
             }
@@ -5117,6 +5258,7 @@ impl Game {
                 founded_day: s.founded_day,
                 extinct_day: s.extinct_day,
                 merged_into: s.merged_into,
+                merged_into_name: s.merged_into.and_then(|m| ch.species.get(m)).map(|m| m.name.clone()),
                 founder: s.founder,
                 founder_name: s.founder.map(|p| self.name(p)),
                 namer: self.species_namer(s),
@@ -5172,16 +5314,21 @@ impl Game {
                     breeding_adults: e.breeding_adults,
                     species_alive: e.species_alive,
                     catastrophes: e.catastrophes.clone(),
-                    rows: e
-                        .ranking
-                        .iter()
-                        .map(|r| EraRow {
-                            player: r.player,
-                            name: self.name(r.player),
-                            share: r.share,
-                            weighted_share: r.weighted_share,
-                        })
-                        .collect(),
+                    rows: {
+                        let ranking: Vec<(PlayerId, f64, f64)> =
+                            e.ranking.iter().map(|r| (r.player, r.share, r.weighted_share)).collect();
+                        let means = self.era_scores.means(e.era);
+                        era_order(&ranking, means)
+                            .into_iter()
+                            .map(|(player, share, weighted_share)| EraRow {
+                                player,
+                                name: self.name(player),
+                                share,
+                                weighted_share,
+                                mean_share: means.map(|m| m.get(&player).copied().unwrap_or(0.0)),
+                            })
+                            .collect()
+                    },
                     niches: e
                         .niches
                         .iter()
@@ -5620,8 +5767,10 @@ enum Why {
 fn why_died(o: &Organism) -> Why {
     match o.death {
         Some(DeathCause::Exposure) if o.dormancy != evo_sim::organism::Dormancy::Awake => Why::WinterSleep,
+        // Snapshots before version 52 counted heat as exposure: told apart by its needs.
         Some(DeathCause::Exposure) if o.needs.heat > o.needs.cold => Why::Heat,
         Some(DeathCause::Exposure) => Why::Cold,
+        Some(DeathCause::Heat) => Why::Heat,
         cause => Why::Of(cause),
     }
 }
@@ -5639,11 +5788,12 @@ fn death_words(why: Why) -> &'static str {
         Why::Of(Some(DeathCause::Exposure)) => "died of cold or heat",
         Why::Of(Some(DeathCause::Toxin)) => "was poisoned",
         Why::Of(Some(DeathCause::Drowning)) => "drowned",
-        Why::Of(Some(DeathCause::Attrition)) => "died of exhaustion",
+        Why::Of(Some(DeathCause::Attrition)) => "died of attrition (illness or an accident)",
         Why::Of(Some(DeathCause::Recessive)) => "died of an inherited defect",
         Why::Of(Some(DeathCause::Disease)) => "died of disease",
         Why::Of(Some(DeathCause::Journey)) => "died on a journey",
         Why::Of(Some(DeathCause::WinterSleep)) => "died in its winter sleep",
+        Why::Of(Some(DeathCause::Heat)) => "died of heat",
         Why::Of(None) => "died",
     }
 }
@@ -5661,11 +5811,12 @@ fn death_count_words(why: Why, n: usize) -> String {
         Why::Of(Some(DeathCause::Exposure)) => "of cold or heat",
         Why::Of(Some(DeathCause::Toxin)) => "poisoned",
         Why::Of(Some(DeathCause::Drowning)) => "drowned",
-        Why::Of(Some(DeathCause::Attrition)) => "of exhaustion",
+        Why::Of(Some(DeathCause::Attrition)) => "of attrition",
         Why::Of(Some(DeathCause::Recessive)) => "of an inherited defect",
         Why::Of(Some(DeathCause::Disease)) => "of disease",
         Why::Of(Some(DeathCause::Journey)) => "on a journey",
         Why::Of(Some(DeathCause::WinterSleep)) => "in their winter sleep",
+        Why::Of(Some(DeathCause::Heat)) => "of heat",
         Why::Of(None) => "of an unrecorded cause",
     };
     format!("{n} {what}")
@@ -5697,6 +5848,27 @@ fn death_alert_text(deaths: &[(OrgId, Watch, Why)]) -> (String, Option<OrgId>) {
     let more = if deaths.len() > 6 { ", …" } else { "" };
     let who = if founders { "founders" } else { "watched organisms" };
     (format!("{} {who} died: {} ({}{more}).", deaths.len(), causes.join(", "), ids.join(", ")), None)
+}
+
+/// One era row: player, final share, final weighted share.
+type EraRowData = (PlayerId, f64, f64);
+
+/// An era's standings, best first: by mean day score when the era was
+/// scored day by day (`eras::EraScores`), else by the final share (older
+/// eras). Each row: player, final share, final weighted share.
+fn era_order(ranking: &[EraRowData], means: Option<&BTreeMap<PlayerId, f64>>) -> Vec<EraRowData> {
+    let mut rows = ranking.to_vec();
+    if let Some(m) = means {
+        // Players with a mean but no alleles at the end still rank (they held a share for the era).
+        for &p in m.keys() {
+            if !rows.iter().any(|r| r.0 == p) {
+                rows.push((p, 0.0, 0.0));
+            }
+        }
+        let mean = |p: PlayerId| m.get(&p).copied().unwrap_or(0.0);
+        rows.sort_by(|a, b| mean(b.0).total_cmp(&mean(a.0)).then(b.1.total_cmp(&a.1)).then(a.0.cmp(&b.0)));
+    }
+    rows
 }
 
 /// How an attack order of `attacker` on `target` ended, in words, or None
