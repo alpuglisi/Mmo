@@ -6,7 +6,7 @@ use std::fmt;
 
 use rand::Rng;
 
-use super::groups::MAX_GROUPS;
+use super::groups::{MigrationPlan, MAX_GROUPS};
 use super::World;
 use crate::genome::{Gene, PlayerId};
 use crate::math::Vec2;
@@ -54,6 +54,10 @@ pub enum GroupEvent {
     /// The group has no living members left: its migration, territory and
     /// rally are gone.
     Emptied { player: PlayerId, group: u8 },
+    /// The migration passed its deadline (`World::migration_timeout_ticks`)
+    /// without the group gathering at the target: the order is ended.
+    /// `median` is the median member's distance to the target then.
+    TimedOut { player: PlayerId, group: u8, target: Vec2, median: f32 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +97,11 @@ pub enum CommandError {
     },
     /// The group is answering no rally.
     NoRally(u8),
+    /// A territory or rally circle mostly over water the group can't stand
+    /// in (`groups::MAX_WATER_SHARE`); `share` is that water's share.
+    MostlyWater {
+        share: f32,
+    },
     /// An attack order on one of the player's own organisms.
     OwnTarget(OrgId),
     /// The target is farther than the possessed organism can see.
@@ -142,6 +151,11 @@ impl fmt::Display for CommandError {
                 write!(f, "the group claimed a territory recently; it can claim again in {ticks_left} ticks")
             }
             CommandError::NoRally(g) => write!(f, "group {g} has no rally to cancel"),
+            CommandError::MostlyWater { share } => write!(
+                f,
+                "{:.0}% of that circle is water the group can't stand in; choose ground with some land",
+                share * 100.0
+            ),
             CommandError::OwnTarget(id) => write!(f, "organism {id} is yours; you can't attack your own animals"),
             CommandError::OutOfSight(id) => write!(f, "organism {id} is out of sight; get closer first"),
             CommandError::TooBig { mass, limit } => {
@@ -633,12 +647,40 @@ impl World {
         if group >= MAX_GROUPS {
             return Err(CommandError::NoSuchGroup(group));
         }
+        // The main group always exists; another only while it has members.
+        let middle = self.group_middle(player, group);
+        if group != 0 && middle.is_none() {
+            return Err(CommandError::NoSuchGroup(group));
+        }
         let target = self.on_map(target)?;
         let bodies = self.group_bodies(player, group);
         let target = self.standable_near(&bodies, target, MIGRATE_SNAP_RADIUS).ok_or(CommandError::Unreachable)?;
-        self.migrate_orders.insert((player, group), target);
-        self.territories.remove(&(player, group));
-        self.rallies.remove(&(player, group));
+        let key = (player, group);
+        self.migrate_orders.insert(key, target);
+        let deadline = self.tick + self.migration_timeout_ticks(middle.map_or(0.0, |m| m.dist(target)));
+        self.group_plans.migrations.insert(key, MigrationPlan { issued_tick: self.tick, deadline_tick: deadline });
+        self.territories.remove(&key);
+        self.rallies.remove(&key);
+        self.group_plans.settles.remove(&key);
+        Ok(target)
+    }
+
+    /// Move a standing migration's target (a re-route, e.g. when the target
+    /// floods), keeping when it was issued and pushing its deadline out to
+    /// fit the new way from where the group is now (never earlier than it
+    /// was). The target is checked as a new order's is; `NoSuchGroup` if the
+    /// group has no migration. The target used.
+    pub fn reroute_migration(&mut self, player: PlayerId, group: u8, target: Vec2) -> Result<Vec2, CommandError> {
+        let key = (player, group);
+        if !self.migrate_orders.contains_key(&key) {
+            return Err(CommandError::NoSuchGroup(group));
+        }
+        let old = self.group_plans.migrations.get(&key).copied();
+        let target = self.command_migrate_group(player, group, target)?;
+        if let (Some(old), Some(new)) = (old, self.group_plans.migrations.get_mut(&key)) {
+            new.issued_tick = old.issued_tick;
+            new.deadline_tick = new.deadline_tick.max(old.deadline_tick);
+        }
         Ok(target)
     }
 
@@ -730,7 +772,7 @@ impl World {
     /// Bodies of up to 64 members of a group (adults first), or of the
     /// player's organisms if the group has none: whose footing a target is
     /// checked against.
-    fn group_bodies(&self, player: PlayerId, group: u8) -> Vec<Body> {
+    pub(super) fn group_bodies(&self, player: PlayerId, group: u8) -> Vec<Body> {
         const SAMPLE: usize = 64;
         let mine = || self.organisms.iter().filter(move |o| o.alive && o.owner == player);
         let mut bodies: Vec<Body> =
@@ -744,6 +786,17 @@ impl World {
         bodies
     }
 
+    /// Whether at least half of `bodies` could stand on tile `k` even with
+    /// its ice gone (any tile with no bodies to check).
+    pub(super) fn standable_tile(&self, bodies: &[Body], k: usize) -> bool {
+        if bodies.is_empty() {
+            return true;
+        }
+        let tile = Tile { ice: 0.0, ..self.map.tiles[k].clone() };
+        let g = &self.map.ground()[k];
+        2 * bodies.iter().filter(|b| passable(b, g, &tile)).count() >= bodies.len()
+    }
+
     /// The point nearest `target` (itself if it qualifies) on a tile at
     /// least half of `bodies` could stand on even with its ice gone, within
     /// `radius` tiles; any target with no bodies to check.
@@ -752,12 +805,7 @@ impl World {
             return Some(target);
         }
         let (w, h) = (self.map.width as i32, self.map.height as i32);
-        let ok = |x: i32, y: i32| {
-            let k = self.map.idx(x as usize, y as usize);
-            let tile = Tile { ice: 0.0, ..self.map.tiles[k].clone() };
-            let g = &self.map.ground()[k];
-            2 * bodies.iter().filter(|b| passable(b, g, &tile)).count() >= bodies.len()
-        };
+        let ok = |x: i32, y: i32| self.standable_tile(bodies, self.map.idx(x as usize, y as usize));
         let (tx, ty) = self.map.tile_coords(target);
         let (tx, ty) = (tx as i32, ty as i32);
         if ok(tx, ty) {
