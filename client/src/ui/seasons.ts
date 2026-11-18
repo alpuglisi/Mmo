@@ -11,12 +11,13 @@ import type {
 } from '../protocol';
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
 import { h, pct } from './dom';
+import { nameWithPlate, plateBadge } from './nameplates';
 
 export const CATEGORIES: SeasonCategory[] = ['legacy', 'lineage', 'species', 'market', 'survival'];
 
 const LABELS: Record<SeasonCategory, string> = {
   legacy: 'Legacy',
-  lineage: 'Largest lineage',
+  lineage: 'Largest lineage (peak)',
   species: 'Species founded',
   market: 'Stud market',
   survival: 'Survival',
@@ -24,7 +25,7 @@ const LABELS: Record<SeasonCategory, string> = {
 
 const HINTS: Record<SeasonCategory, string> = {
   legacy: 'Mean share of breeding alleles over the season (a missing day counts as 0)',
-  lineage: 'Most living members on a recorded day',
+  lineage: 'The most living members on any recorded day of the season (a peak, not the size now); lineages that both reach the population cap tie',
   species: 'Speciation events credited to your alleles',
   market: 'Renown earned from stud fees',
   survival: 'Catastrophes your lineage lived through',
@@ -39,7 +40,7 @@ export function formatValue(c: SeasonCategory | string, v: number): string {
   const n = Math.round(v);
   switch (c) {
     case 'legacy': return pct(v);
-    case 'lineage': return `${n} organism${n === 1 ? '' : 's'}`;
+    case 'lineage': return `peak ${n.toLocaleString('en-US')} organism${n === 1 ? '' : 's'}`;
     case 'species': return `${n} species`;
     case 'market': return `${n} renown`;
     case 'survival': return `${n} catastrophe${n === 1 ? '' : 's'}`;
@@ -81,7 +82,7 @@ export function winnersLine(head: RankedSeasonHead): string {
   for (const c of CATEGORIES) {
     const w = head.winners.filter((x) => x.category === c);
     if (w.length === 0) continue;
-    parts.push(`${categoryLabel(c)}: ${w.map((x) => x.name).join(' & ')} (${formatValue(c, w[0].value)})`);
+    parts.push(`${categoryLabel(c)}: ${w.map((x) => nameWithPlate(x.name, x.player)).join(' & ')} (${formatValue(c, w[0].value)})`);
   }
   return parts.join(' · ');
 }
@@ -172,7 +173,7 @@ function standingTables(standings: StandingPage[], me: PlayerId, idPrefix: strin
       ? h('p', { class: 'muted small' }, 'Nobody yet.')
       : h('table', { class: 'board', id: `${idPrefix}-${s.category}` },
         h('tbody', {}, ...s.rows.map((r) => h('tr', { class: r.player === me ? 'me' : '' },
-          h('td', { class: 'rank' }, String(r.rank)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name)), h('td', { class: 'num' }, formatValue(s.category, r.value)))))))));
+          h('td', { class: 'rank' }, String(r.rank)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name), plateBadge(r.player)), h('td', { class: 'num' }, formatValue(s.category, r.value)))))))));
 }
 
 /** The legacy category in words (`league.rs`: each day the mean of raw and weighted share, scaled by the founding ramp). */
@@ -239,7 +240,7 @@ export function renderSeasons(el: HTMLElement, d: SeasonsData, me: PlayerId, on:
       parts.push(h('p', { class: 'muted small', id: 'season-history' }, 'No season has ended yet.'));
     } else {
       parts.push(
-        h('p', { class: 'muted small', id: 'season-fame' }, 'Most titles: ', fame.map((f) => `${f.name} ${f.crowns}♛ ${f.titles}`).join(' · ')),
+        h('p', { class: 'muted small', id: 'season-fame' }, 'Most titles: ', fame.map((f) => `${nameWithPlate(f.name, f.player)} ${f.crowns}♛ ${f.titles}`).join(' · ')),
         h('div', { id: 'season-history' }, ...list.seasons.map((s) => {
           const key = seasonKey(s);
           const detail = d.details.get(key);

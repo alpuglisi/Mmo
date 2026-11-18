@@ -1279,6 +1279,11 @@ pub struct StateView {
     /// can't attack it, and it can't attack theirs. Absent once it ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace: Option<GraceView>,
+    /// Lineages your animals have learned are poisonous
+    /// (`World::looks_poisonous_to`): the client marks theirs "looks
+    /// poisonous to you".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub poisonous: Vec<u32>,
 }
 
 /// The newcomer grace left (`StateView::grace`). It lasts a number of game
@@ -2365,6 +2370,11 @@ pub struct SpeciesView {
     pub founder: Option<PlayerId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub founder_name: Option<String>,
+    /// Who may name it (`name_species`): the founder of a split, or the
+    /// owner of a founding species' main lineage; none for the initial and
+    /// gone species.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namer: Option<PlayerId>,
     /// Origin tag holding the most alleles in its adults.
     pub dominant: PlayerId,
     pub dominant_name: String,

@@ -120,7 +120,7 @@ export function graceText(daysLeft: number | undefined, ticksPerDay: number, spa
   const left = realSecondsLeft !== undefined
     ? `${daysLeft < 10 ? daysLeft.toFixed(1) : Math.round(daysLeft)} days (${realTime(realSecondsLeft * 1000)})`
     : span(daysLeft * ticksPerDay);
-  return `${left} left: other players can't order attacks on your animals, and yours can't be ordered to attack theirs. Wild predators, and animals hunting on instinct, still can.`;
+  return `${left} left: other players can't order attacks on your animals, and yours can't be ordered to attack theirs. Other players' animals leave yours alone even when hunting on their own; wild predators still hunt them.`;
 }
 
 /** The founding ramp in words: how much of the share counts toward the ranked season now. */

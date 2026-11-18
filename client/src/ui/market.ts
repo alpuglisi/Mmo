@@ -29,6 +29,8 @@ export interface MarketDeps {
   msPerTick?: () => number;
   /** The camera's centre, for "nearest first" in the organism pickers. */
   cam?: () => { x: number; y: number };
+  /** The player's nameplate changed (refetch everyone's). */
+  onNameplate?: () => void;
 }
 
 export interface MarketPanel {
@@ -37,6 +39,8 @@ export interface MarketPanel {
   refresh: () => Promise<void>;
   /** Re-render from the latest state (cheap; called on state pushes). */
   render: () => void;
+  /** A price from the renown shop, once loaded. */
+  shopPrice: (key: 'species_name_price' | 'nameplate_price') => number | undefined;
 }
 
 const TICKS_PER_DAY = 48;
@@ -401,7 +405,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (r.ok) {
       const d = r.data as { shop?: unknown } | undefined;
       shop = parseShopView(d?.shop) ?? shop;
-      model.toast('info', 'Nameplate set (cosmetic).');
+      model.toast('info', 'Nameplate set: it shows next to your name in Ranks, the hall of fame, the leaderboard and on your animals.');
+      deps.onNameplate?.();
       render();
     }
   });
@@ -542,5 +547,5 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   }
 
   render();
-  return { el, refresh, render };
+  return { el, refresh, render, shopPrice: (key) => shop?.[key] };
 }

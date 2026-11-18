@@ -1308,9 +1308,11 @@ impl Game {
         for (&p, &b) in &before {
             let got = self.world.owner_count(p).saturating_sub(b);
             if got > 0 {
+                let (animals, carry) = if got == 1 { ("animal", "carries") } else { ("animals", "carry") };
                 let text = format!(
-                    "{} retired their lineage: {got} of its animals, mostly of your genes, joined yours.",
-                    self.name(player)
+                    "{} retired their lineage: {got} of its {animals}, which {carry} at least {:.0}% of your genes, joined yours.",
+                    self.name(player),
+                    RETIRE_TRANSFER_SHARE * 100.0
                 );
                 self.alert(p, AlertKind::Milestone, text, None, out);
             }
@@ -1397,7 +1399,11 @@ impl Game {
                 if !repeat {
                     self.alert_attacked(player, organism, target, out);
                 }
-                Ok(Some(serde_json::json!({ "organism": organism, "target": target })))
+                let mut data = serde_json::json!({ "organism": organism, "target": target });
+                if let Some(w) = self.world.attack_warning(organism, target) {
+                    data["warning"] = w.into();
+                }
+                Ok(Some(data))
             }
             ClientMsg::Release { organism } => self.world.release(player, organism).map(|_| None).map_err(e),
             ClientMsg::Migrate { x, y, group } => {
@@ -3185,7 +3191,7 @@ impl Game {
         if t.owner == WILD || t.owner == player {
             return;
         }
-        let kind = |l: u32| w.lineages.get(l as usize).map_or("an animal", |x| x.name.as_str()).to_string();
+        let kind = |l: u32| w.lineages.get(l as usize).map_or("animals", |x| x.name.as_str()).to_string();
         let (owner, theirs, mine) = (t.owner, kind(t.lineage), kind(a.lineage));
         // One alert per attacker lineage and victim in a while.
         let window = (self.cfg.attack_alert_minutes * 60_000.0 / self.cfg.tick_ms.max(1.0)).round() as u64;
@@ -3248,17 +3254,20 @@ impl Game {
             self.watched.entry(o.id).or_insert((p, Watch::Possessed));
             let need = o.needs.thirst.max(o.needs.hunger);
             if need >= NEED_ALERT && self.need_alerted.get(&o.id) != Some(&day) {
-                needy.push((p, o.id, o.needs.thirst, o.needs.hunger, o.order.is_some()));
+                // Already broken off to drink or eat (the sim's own rule:
+                // urgency, or water near with `Balance::drink_priority`).
+                let tending = matches!(o.action, evo_sim::organism::Action::Drink | evo_sim::organism::Action::Graze);
+                needy.push((p, o.id, o.needs.thirst, o.needs.hunger, o.order.is_some(), tending));
             }
         }
-        for (p, id, thirst, hunger, walking) in needy {
+        for (p, id, thirst, hunger, walking, tending) in needy {
             self.need_alerted.insert(id, day);
             let (what, act) = if thirst >= hunger {
                 (format!("parched (thirst {thirst:.0})"), "drink")
             } else {
                 (format!("starving (hunger {hunger:.0})"), "eat")
             };
-            let tail = if walking && thirst.max(hunger) >= urgency {
+            let tail = if walking && (tending || thirst.max(hunger) >= urgency) {
                 format!("it has broken off your order to {act} and goes back to it afterwards")
             } else if walking {
                 format!("it keeps to your order until the need reaches {urgency:.0}, then stops to {act}; walk it to water or food, or release it")
@@ -3954,6 +3963,7 @@ impl Game {
                 merged_into: s.merged_into,
                 founder: s.founder,
                 founder_name: s.founder.map(|p| self.name(p)),
+                namer: self.species_namer(s),
                 dominant: s.dominant,
                 dominant_name: self.name(s.dominant),
                 dominant_share: s.dominant_share,
@@ -4599,7 +4609,8 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
                 .catastrophes
                 .get(*catastrophe as usize)
                 .map_or("a catastrophe", |c| catastrophe_text(c.kind));
-            format!("Survivor: your lineage came through {what}.")
+            // Factual, not a cheer: it can come after heavy losses (playtest 3: after a 70% loss).
+            format!("Survivor: your lineage is still alive after {what}, whatever it lost.")
         }
     }
 }
@@ -5297,6 +5308,9 @@ mod tests {
     #[test]
     fn possessed_needs_raise_an_alert_and_the_sim_lets_severe_ones_win() {
         let (mut g, a, _) = game();
+        // The urgency rule alone: with `drink_priority` a possessed animal
+        // this near water breaks off already at thirst 60.
+        g.world.config.balance.possess_drink = 0.0;
         let id = a[0];
         // Start it a few tiles from water, on open ground: too far to drink
         // on its first steps, near enough to reach water within the day.
@@ -6109,6 +6123,30 @@ mod tests {
         assert_eq!(result(&out), (true, None));
         assert_eq!(g.balance(1), before - economy::SPECIES_NAME_PRICE);
         assert_eq!(g.world.chronicle.species.get(id).unwrap().name, "Queen's grazers");
+    }
+
+    /// The species a player's founding started can be named by that player
+    /// (playtest 3: `not_yours` for one's own founding species).
+    #[test]
+    fn a_founding_species_can_be_named_by_its_owner() {
+        let (mut g, _, _) = game();
+        let _ = g.post(1, 1000, LedgerKind::Income, "test".into(), None, None);
+        let _ = g.post(2, 1000, LedgerKind::Income, "test".into(), None, None);
+        run_days(&mut g, 10);
+        let ch = g.chronicle();
+        let own = ch
+            .species
+            .species
+            .iter()
+            .find(|s| s.origin != "split" && s.lineages.first().is_some_and(|l| l.owner == 1))
+            .expect("the species player 1's founding started");
+        assert_eq!(own.namer, Some(1));
+        let id = own.id;
+        let out = g.command(20, 2, None, ClientMsg::NameSpecies { species: id, name: "Not mine".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("not_yours"));
+        let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: "Ann's runners".into() });
+        assert_eq!(result(&out), (true, None));
+        assert_eq!(g.chronicle().species.species.iter().find(|s| s.id == id).unwrap().name, "Ann's runners");
     }
 
     /// An auction lasts at least the wall-clock floor, whatever was asked.
@@ -7649,6 +7687,7 @@ mod tests {
             balance: g.balance(player),
             escrow: g.escrow(player),
             grace: g.grace_view(player),
+            poisonous: (0..g.world.lineages.len() as u32).filter(|&l| g.world.looks_poisonous_to(player, l)).collect(),
         }
     }
 
@@ -7656,7 +7695,10 @@ mod tests {
     /// connection, some views pinned (one at the map's edge, one off it),
     /// one possessed organism and an offer.
     fn crowded(cfg: GameConfig) -> Game {
-        let world = build_world(&WorldSettings { seed: 3, width: 96, height: 96, wild: true, ..Default::default() });
+        // Seed 4: one where player 6's view in the middle of the map holds
+        // foreign organisms (seed 3 lost them with dry founding sites,
+        // version 44).
+        let world = build_world(&WorldSettings { seed: 4, width: 96, height: 96, wild: true, ..Default::default() });
         let mut g = Game::new(world, cfg);
         for p in 1..=12u32 {
             g.set_name(p, &format!("p{p}"));

@@ -22,8 +22,8 @@ describe('formatting', () => {
 
   it('formats each category with its unit', () => {
     expect(formatValue('legacy', 0.1234)).toBe('12.3%');
-    expect(formatValue('lineage', 1)).toBe('1 organism');
-    expect(formatValue('lineage', 412)).toBe('412 organisms');
+    expect(formatValue('lineage', 1)).toBe('peak 1 organism');
+    expect(formatValue('lineage', 412)).toBe('peak 412 organisms');
     expect(formatValue('species', 2)).toBe('2 species');
     expect(formatValue('market', 30)).toBe('30 renown');
     expect(formatValue('survival', 1)).toBe('1 catastrophe');
@@ -102,5 +102,18 @@ describe('hall of fame', () => {
     ] }];
     expect(myRecord(tied)).toMatchObject({ titles: 1, crowns: 1 });
     expect(placementText(tied[0].placements[0])).toBe('1st of 6 (tied, no title) · ' + formatValue('survival', 1));
+  });
+});
+
+describe('nameplates', () => {
+  it('shows a bought title next to the name, as text', async () => {
+    const { parseNameplates, setNameplates, nameWithPlate } = await import('./nameplates');
+    const m = parseNameplates({ nameplates: { 1: { color: 'amber', title: '<b>Herd queen</b>' }, x: { color: 'jet', title: 'bad' }, 2: { color: 'jet', title: ' ' } } });
+    expect([...m!.keys()]).toEqual([1]);
+    setNameplates(m!);
+    expect(nameWithPlate('ann', 1)).toBe('ann «<b>Herd queen</b>»');
+    expect(nameWithPlate('bob', 2)).toBe('bob');
+    expect(formatValue('lineage', 2100)).toBe('peak 2,100 organisms');
+    setNameplates(new Map());
   });
 });

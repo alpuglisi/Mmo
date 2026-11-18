@@ -17,9 +17,10 @@ import { droughtNotice } from '../droughtInfo';
 import { markRetired, wasRetired } from '../retired';
 import { renderFamilyTree } from './familyTree';
 import { exposeCards, familyShareBar } from '../share/familyShare';
-import type { AlertPrefs, ClientMsg, CompatibilityView, LineageStats, PlayerId, MatingOutcome, MatingPreviewView, NearbyOrganism, OfferView, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
+import type { AlertPrefs, ClientMsg, CompatibilityView, LineageStats, PlayerId, MatingOutcome, MatingPreviewView, NearbyOrganism, OfferView, OrgId, OwnOrganism, ResultMsg, SeasonBoard, SpeciesView, StateView } from '../protocol';
 import { parseCompatibilityView, WILD } from '../protocol';
 import { createPicker, type PickItem } from './picker';
+import { nameplatesKey, parseNameplates, plateBadge, setNameplates } from './nameplates';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, FOOD_BANDS, terrainSummary, type TerrainGrid } from '../world/terrain';
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
@@ -60,6 +61,8 @@ export interface GameDeps {
 }
 
 const LOCAL_CODES = new Set(['not_connected', 'timeout', 'disconnected', 'closed']);
+/** How far an attack order reaches (the server's `World::attack_range`, tiles). */
+const ATTACK_RANGE = 8;
 
 /**
  * Every organism of the player's lineage has died: say so, point to what
@@ -78,6 +81,8 @@ const STATS_REFRESH_MS = 5000;
 const PROTECTED_REFRESH_MS = 30000;
 const SEASONS_REFRESH_MS = 15000;
 const CHRONICLE_REFRESH_MS = 10000;
+/** Bought nameplates change rarely. */
+const NAMEPLATES_REFRESH_MS = 60000;
 /**
  * The seasons tab's fallback refresh. The standings under way are pushed over the socket while the tab is open
  * (`watch_season`); finished seasons only change at a rollover, which a push shows.
@@ -511,8 +516,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   async function attackWith(p: OwnOrganism, target: OrgId): Promise<boolean> {
     // A refusal is toasted by the model (every failed result is), once.
     const r = await send({ type: 'possess_attack', organism: p.id, target });
+    // A refusal is toasted once, by the model, like every failed command.
     if (r.ok) {
-      model.toast('info', `#${p.id} is hunting #${target}; hungry pack-mates nearby join in`);
+      const warning = (r.data as { warning?: string } | undefined)?.warning;
+      model.toast(warning ? 'error' : 'info', `#${p.id} is hunting #${target}; hungry pack-mates nearby join in${warning ? `. ${warning}` : ''}`);
       model.select(target);
     }
     return r.ok;
@@ -936,11 +943,38 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     try {
       const [species, eras, catastrophes, achievements] = await Promise.all([api.species(), api.eras(), api.catastrophes(), api.achievements()]);
       chronicle = { species, eras, catastrophes, achievements };
-      if (tab === 'world') renderWorld(tabs.world, chronicle, model.player, model.state?.clock.day ?? species.day);
+      if (tab === 'world') renderWorld(tabs.world, chronicle, model.player, model.state?.clock.day ?? species.day, nameSpecies);
     } catch {
       /* next time */
     }
   }
+  /** Name a species of yours (`name_species`, a renown cosmetic). */
+  async function nameSpecies(sp: SpeciesView): Promise<void> {
+    const price = market.shopPrice('species_name_price');
+    const name = window.prompt(`A name for "${sp.name}" (1 to 40 characters${price ? `; costs ${price} renown` : ''}):`, sp.name);
+    if (name === null || name.trim() === '' || name.trim() === sp.name) return;
+    const r = await send({ type: 'name_species', species: sp.id, name: name.trim() });
+    if (r.ok) {
+      model.toast('info', `Species ${sp.id} is now called "${String(r.data ?? name.trim())}".`);
+      void refreshChronicle();
+    } else if (r.error) {
+      model.toast('error', `Name species: ${r.error.message}`);
+    }
+  }
+  // Bought nameplates: shown next to names (Ranks, hall of fame, leaderboard, a rival's inspector).
+  async function refreshNameplates(): Promise<void> {
+    const before = nameplatesKey();
+    const r = await send({ type: 'nameplates' });
+    const m = r.ok ? parseNameplates(r.data) : null;
+    if (!m) return;
+    setNameplates(m);
+    if (nameplatesKey() !== before) {
+      if (tab === 'seasons') drawRanked(true);
+      renderPanels(true);
+    }
+  }
+  const platesTimer = setInterval(() => void refreshNameplates(), NAMEPLATES_REFRESH_MS);
+  cleanups.push(() => clearInterval(platesTimer));
   const chronicleTimer = setInterval(() => {
     if (tab === 'world') void refreshChronicle();
   }, CHRONICLE_REFRESH_MS);
@@ -1122,7 +1156,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (own) {
       const n = own.needs;
       inspDetails.replaceChildren(
-        h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(OWN_COLOR)}` }), `#${own.id} · yours`),
+        h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(OWN_COLOR)}` }), `#${own.id} · yours`, model.player !== null ? plateBadge(model.player) : null),
         dl([
           ['Action', actionText(own.action, own.needs)], ['Sex', own.sex], ['Age', `${own.age_days.toFixed(1)} days`],
           ['Stage', own.matured ? 'adult' : `juvenile (growth ${pct(own.growth, 0)})`],
@@ -1154,16 +1188,28 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const flagged = o.protected === true;
     const graceDays = wild ? undefined : protectedPlayers.get(o.owner) ?? (flagged ? 0 : undefined);
     inspDetails.replaceChildren(
-      h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(ownerColor(o.owner))}` }), `#${o.id} · ${ownerName}`,
+      h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(ownerColor(o.owner))}` }), `#${o.id} · ${ownerName}`, wild ? null : plateBadge(o.owner),
         graceDays !== undefined ? h('span', { class: 'pill protected-pill', id: 'insp-protected', title: 'A newcomer\'s lineage: players can\'t order attacks on it yet' }, 'protected newcomer') : null),
       dl([['Action', actionText(o.action)], ['Sex', o.sex], ['Stage', o.matured ? 'adult' : 'juvenile'], ['Lineage', String(o.lineage)],
         ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—'],
         ...(graceDays !== undefined ? [['Protected', graceDays > 0 ? `newcomer grace, ${span(graceDays * ticksPerDay)} left: no attack orders on it` : 'newcomer grace: no attack orders on it'] as [string, string]] : [])]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
+    const poisonous = (model.state?.poisonous ?? []).includes(o.lineage);
     const hunter = possessed();
-    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${graceDays !== undefined}`, () => [
-      !!hunter && h('button', { id: 'btn-attack', class: 'danger', disabled: graceDays !== undefined, title: graceDays !== undefined ? 'A protected newcomer: it can\'t be attacked on orders until its grace ends' : '', onclick: () => void attackWith(hunter, o.id) }, `Attack with #${hunter.id}`),
+    // Orders reach 8 tiles (the server's `target_out_of_sight` beyond that).
+    const reach = hunter ? Math.hypot(hunter.x - o.x, hunter.y - o.y) <= ATTACK_RANGE : false;
+    const guarded = graceDays !== undefined;
+    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${reach}:${poisonous}:${guarded}`, () => [
+      poisonous && h('p', { class: 'notice bad small', id: 'insp-poisonous' }, hunter
+        ? 'This animal looks poisonous to you: your kind has been poisoned eating its kind.'
+        : 'This animal looks poisonous: your kind has been poisoned eating its kind.'),
+      !!hunter && h('button', {
+        id: 'btn-attack', class: 'danger', disabled: guarded || !reach,
+        title: guarded ? 'A protected newcomer: it can\'t be attacked on orders until its grace ends'
+          : reach ? '' : `#${hunter.id} is too far away: get within ${ATTACK_RANGE} tiles`,
+        onclick: () => void attackWith(hunter, o.id),
+      }, guarded || reach ? `Attack with #${hunter.id}` : `Attack with #${hunter.id} (too far)`),
       wild ? h('p', { class: 'muted small' }, 'Wild organisms have no owner to consent to a mating.')
         : h('button', { id: 'btn-ask-mating', onclick: () => { matingForm.setPartner(o.id); showTab('matings'); } }, 'Request mating…'),
       h('button', { class: 'secondary', onclick: () => { view.setFollow(false); view.centerOn(o.x, o.y); } }, 'Center'),
@@ -1531,6 +1577,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     send,
     msPerTick,
     cam: () => view.cam,
+    onNameplate: () => void refreshNameplates(),
     onOrganism: (id, x, y) => {
       model.select(id);
       view.setFollow(false);
@@ -1624,12 +1671,16 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   retireBtn.addEventListener('click', async () => {
     const lineage = model.state?.lineage;
     if (lineage === null || lineage === undefined) return;
-    if (!window.confirm(`Retire lineage #${lineage}? All ${model.state?.population ?? 0} of its animals leave the world. This can't be undone.`)) return;
+    const alive = model.state?.population ?? 0;
+    // Animals carrying a quarter or more of another player's genes join that player's lineage instead (server RETIRE_TRANSFER_SHARE).
+    if (!window.confirm(`Retire lineage #${lineage}? Its ${animals(alive)} and their eggs leave the world (any carrying at least 25% of another player's genes join that player's lineage instead). This can't be undone.`)) return;
     const r = await send({ type: 'retire_lineage', lineage });
     if (r.ok) {
-      const n = (r.data as { removed?: number } | undefined)?.removed ?? 0;
+      const d = r.data as { removed?: number; transferred?: number } | undefined;
+      const n = d?.removed ?? 0;
+      const moved = d?.transferred ?? 0;
       markRetired(lineage);
-      model.toast('info', `Lineage #${lineage} retired: ${n} animals left the world. You can found a new lineage.`);
+      model.toast('info', `Lineage #${lineage} retired: ${animals(n)} left the world${moved > 0 ? ` and ${animals(moved)} joined other players' lineages` : ''}. You can found a new lineage.`);
       retireEl.open = false;
     }
   });
@@ -1718,13 +1769,13 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
     renderGroups(s);
     const lb = s.leaderboard;
-    keyed(boardEl, JSON.stringify(lb), () => lb.rows.length === 0
+    keyed(boardEl, JSON.stringify(lb) + nameplatesKey(), () => lb.rows.length === 0
       ? [h('p', { class: 'muted small' }, lb.day === null ? 'The first legacy snapshot comes at the end of day 1.' : 'No breeding adults.')]
       : [h('p', { class: 'muted small' }, `Day ${(lb.day ?? 0) + 1} snapshot · ${lb.breeding_adults} breeding adults`),
         h('table', { class: 'board' },
           h('thead', {}, h('tr', {}, h('th', {}, 'Player'), h('th', {}, 'Share'), h('th', { title: 'Weighted by offspring raised to adulthood' }, 'Weighted'), h('th', {}, 'Alive'))),
           h('tbody', {}, ...lb.rows.map((r) => h('tr', { class: r.player === model.player ? 'me' : '' },
-            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), h('span', { class: 'who', title: r.name }, r.name)),
+            h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), h('span', { class: 'who', title: r.name }, r.name), plateBadge(r.player)),
             h('td', {}, h('span', { class: 'share-bar', style: `--w:${(r.share * 100).toFixed(1)}%` }, pct(r.share))),
             h('td', {}, pct(r.weighted_share)), h('td', {}, String(r.alive))))))]);
     const shown = [...orgs].sort((a, b) => Number(b.possessed) - Number(a.possessed) || Number(b.matured) - Number(a.matured) || a.id - b.id).slice(0, 60);
@@ -1752,7 +1803,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!e) return ['Pregnant', String(pregnant)];
     const brooding = orgs.filter((o) => o.action === 'guard').length;
     const parts = [
-      e.clutches === 0 ? 'no clutch yet' : `${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
+      e.clutches === 0 ? 'no clutch now' : `${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
       e.clutches > 0 ? `${e.brooded} brooded` : null,
       brooding > 0 ? `${brooding} brooding now` : null,
       pregnant > 0 ? `${pregnant} about to lay` : null,
@@ -1842,6 +1893,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   renderConn();
   updateHint();
   ready = true;
+  void refreshNameplates();
   el.classList.remove('starting');
   // The tab the player picked while the screen was loading, else Lineage.
   showTab(tab);
@@ -1902,6 +1954,11 @@ function saveShowVision(on: boolean): void {
   } catch {
     /* private mode: not remembered */
   }
+}
+
+/** "1 animal", "2,100 animals". */
+function animals(n: number): string {
+  return `${n.toLocaleString('en-US')} animal${n === 1 ? '' : 's'}`;
 }
 
 function dl(rows: [string, Node | string][]): HTMLElement {
