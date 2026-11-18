@@ -117,6 +117,8 @@ async function main() {
     const context = await browser.newContext({ ...chromiumDevice(devices, 'iPhone 13') });
     const page = await context.newPage();
     page.on('pageerror', (e) => errors.push(e.message));
+    // The app has its own dialogs: a browser alert/confirm/prompt is a bug (playtest 6).
+    page.on('dialog', (d) => { errors.push(`native ${d.type()} dialog: ${d.message()}`); void d.dismiss(); });
     await page.goto(`${base}/?tour=off`);
     await page.fill('#login-name', 'pocket_phone');
     await page.fill('#login-password', 'a long password');
@@ -139,7 +141,17 @@ async function main() {
     for (const g of ['body_size', 'armor_plates', 'wings']) if (g in genes) await setGene(g, genes[g]);
     check(wingWarnings === 1, `a too-heavy body's wings should be warned about once, not ${wingWarnings} times`);
     step('the builder previews compatibility before a name is typed, and warns once about useless wings');
+    // A reserved name is refused as it is typed, Found disabled (playtest 6: only at founding, as "bad_name: …").
+    await page.fill('#design-name', 'G.M. Admin');
+    const refused = await waitFor('the name refused inline', () => page.evaluate(() => {
+      const w = document.querySelector('#design-name-warning');
+      const p = (w && !w.hidden ? w.textContent : '') || (document.querySelector('#design-problem')?.textContent ?? '');
+      return p && document.querySelector('#design-submit').disabled ? p : null;
+    }), 8000);
+    check(!/bad_name/.test(refused), 'the refusal in words, not its code', refused);
+    step(`a reserved name is refused as it is typed ("${refused}"), Found disabled`);
     await page.fill('#design-name', 'Pocket herd');
+    await waitFor('Found enabled again', () => page.evaluate(() => !document.querySelector('#design-submit').disabled), 8000);
     await page.tap('#design-submit');
     await page.waitForSelector('#world-canvas', { timeout: UI_MS });
     await waitFor('the lineage', () => page.evaluate(() => (window.evo.model.state?.organisms.length ?? 0) > 1));
@@ -400,6 +412,7 @@ async function main() {
     await page.waitForTimeout(500);
     const said = await page.evaluate(() => ({ bar: document.querySelector('#possess-bar').textContent, toasts: document.querySelector('#toasts')?.textContent ?? '' }));
     check(said.bar.includes(`#${own}`), 'the bar names the possessed animal', said);
+    check(await page.locator('#fab-possess').isHidden(), 'one Release while possessing (the bar\'s), not a second floating one');
     check(!/Possessing #/.test(said.toasts), 'no toast repeating the bar', said);
     await page.screenshot({ path: path.join(shots, 'phone-possessing.png') });
     // The chooser while possessing (a long press in a herd selects and offers
@@ -450,6 +463,21 @@ async function main() {
     await waitFor('Split disabled', () => page.evaluate(() => document.querySelector('#split-group').disabled));
     const title = await page.getAttribute('#split-group', 'title');
     step(`Split is disabled at four groups ("${title}")`);
+
+    // 7b. A pinned view says so, and the button knows it after a reload.
+    await page.tap('#tools-more');
+    await page.tap('#pin-view');
+    await waitFor('the view pinned', () => page.evaluate(() => window.evo.model.state?.view.pinned === true));
+    await waitFor('the pinned hint', () => page.evaluate(() => /view is pinned/.test(document.querySelector('#hint')?.textContent ?? '')));
+    check(await page.evaluate(() => document.querySelector('#pin-view').classList.contains('active')), 'the button shows Unpin view');
+    // Pinned from elsewhere (an API call on this connection): the button follows the state.
+    await page.tap('#tools-more');
+    await page.tap('#pin-view');
+    await waitFor('unpinned', () => page.evaluate(() => !window.evo.model.state?.view.pinned && !document.querySelector('#pin-view').classList.contains('active')));
+    await page.evaluate(() => window.evo.socket.send({ type: 'set_view', x: window.evo.model.state.view.x, y: window.evo.model.state.view.y, radius: 20 }));
+    await waitFor('the button pinned by the state', () => page.evaluate(() => document.querySelector('#pin-view').classList.contains('active')));
+    await page.evaluate(() => window.evo.socket.send({ type: 'clear_view' }));
+    step('a pinned view says so (hint, Unpin view), also when pinned by an API call');
 
     // 8. A returning player in a new browser profile (no local progress): no
     // first-session tour (it came back in every new browser, playtest 4).

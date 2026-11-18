@@ -1123,6 +1123,11 @@ pub struct ViewWindow {
     pub y: f32,
     /// Half the side of the square window, in tiles.
     pub radius: f32,
+    /// Pinned with `set_view` (it stays there, not on the lineage, until
+    /// `clear_view`); absent when it follows the lineage. Playtest 6: a
+    /// pinned view looked like an empty world with nothing saying why.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
