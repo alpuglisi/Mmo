@@ -7464,6 +7464,126 @@ new rules off, today's code also loses packs on two seeds, so the losses
 come from elsewhere. The pack rule shows in the lowest antelope counts:
 a pack now takes larger prey.
 
+### Playtest 2: predators, toxins and drowning
+
+Remediation round 3 for `docs/playtest-2.md`'s predator, toxin and
+drowning findings (snapshot version 42; every rule below is off at 0, what
+snapshots of version 41 and before read, `serde_util::before_v42`).
+Session A's version 41 is main's migration work; this round's gate went on
+the next free version when main was merged.
+
+**Toxic prey can be learned** (`Balance::toxic_learning` 1,
+`world::toxic`). In playtest 2, a drab, toxic, burrowing egg swarm won
+with about 40% share. It poisoned every predator that bit it, and nothing
+told predators or their players which prey was toxic. Now each predator
+lineage keeps a lesson per prey lineage (`World::toxic_lessons`, saved):
+- **Learning.** Every poisoning raises the lesson by
+  `0.15 × (1 + 2 × coloration)`, so warning colours teach about three
+  times faster than a drab coat. Lessons are capped at 1 and fade with a
+  60-day time constant.
+- **Avoidance.** Hunters pass a prey up with probability
+  lesson × `(0.3 + 0.7 × coloration)`. They can only act on a lesson as
+  far as they recognise the prey, so a drab toxic lineage is still taken
+  most of the time, while a bright one is left alone. The honest signal
+  pays; drab toxins don't buy full protection.
+- **Harm.** A lineage that knows a toxin takes `1 − 0.7 × lesson` of the
+  harm when it bites anyway (it tastes and spits).
+- **Players see it.** Lineages a player's animals have learned are
+  poisonous come in the state (`poisonous`). The inspector says "This
+  animal looks poisonous to you", and an attack order on one goes through
+  with a `warning` in its reply ("on their own they pass it up N% of the
+  time"), toasted in red.
+
+The first version, without the recognisability factor, made toxins
+better than before. Once the pack learned, it left the drab toxic swarm
+alone and ate the other players' herbivores instead: Toxic grew from 916
+to 1,192 animals and took 46% of the six players' animals, against 39%.
+
+**Attack orders say how they end** (`World::take_attack_events`). An
+order that ends on its own alerts its owner (an `attack` alert):
+- the target was caught (by the attacker or its pack);
+- the target died of something else;
+- the target went to ground in its burrow;
+- the target got away (more than 12 tiles off);
+- the attacker died.
+
+A release, another possession or a move order ends an order silently,
+since the player did that. Victims get at most one alert a day per
+attacking player, worded "Ann is hunting your animals: …" (it used to
+read "A Egg Herd of yours…"). A refusal is toasted once, by the client's
+command handling; it used to be toasted twice. The inspector's
+"Attack with #id" is disabled and says "(too far)" beyond 8 tiles.
+Playtest 2's "territory patrol overrides an attack order" was such an
+order ending silently: the target, a burrower, went to ground and the
+order was dropped. A test (`an_attack_order_outside_the_territory_is_followed`)
+shows a territory member outside its territory follows an order to the
+end.
+
+**Drinking first** (`Balance::drink_priority` 1):
+- **Parched animals drink.** Past thirst 0.7, drinking gains up to +0.6
+  utility. A threat in sight stops holding a parched animal back from
+  water (the comment always said so; the code damped drinking for
+  everyone), and fattening for winter stops pulling it to graze. These
+  are playtest 2's parched herbivores that "scavenge" or graze instead of
+  drinking.
+- **Possessed animals drink.** One with water within 8 tiles breaks off
+  its order to drink at thirst 60 (instead of 85). At water, it drinks
+  from thirst 10. Hunters, in a chase or under an attack order, drink at
+  water they pass.
+- **The need alert matches.** It now says when the animal has already
+  broken off to drink.
+
+**Dry ground** (`Balance::dry_sites` 1):
+- No dormancy on ice over water deep enough to drown the sleeper at the
+  melt, and a sleeper on such ice wakes and walks off.
+- Founders land on dry ground: no water or ice, and at least 2 steps from
+  water. A home is accepted if at least 60% of the ground within the
+  founding's spread is dry; otherwise up to 8 more homes are tried and
+  the driest kept. These picks and placements use their own random
+  stream, so founders' genomes are drawn as before.
+- Migrations into targets that flood later belong to session A, whose
+  `World::reroute_migration` re-routes them.
+
+**Player predators** (`Balance::carnivore_energetics` 1,
+`Balance::led_pack` 0.5). Playtest 2's obligate carnivores starved. A
+2.9 kg wolf needed about 0.55 kg of prey a day, a fifth of its weight;
+real carnivores manage on 5–10%. The old carnivore hunger discount went
+when meat got its food value.
+- **Lean economy.** An obligate carnivore's hunger now rises up to 30%
+  slower: none at carnivory 0.7 or below, all of it at 0.95 and above. The
+  fox, at 0.6, is untouched; the wild pack hunters, at 0.9–0.95, get most
+  of it.
+- **Led packs take big prey.** In a hunt a player leads (an attack order
+  and the pack-mates who join it), the prey mass limit grows by 0.5 per
+  pack-mate around, up to 8 (`decide::led_pack_scale`), and up to 8
+  pack-mates count in the strike. So a full pack takes prey about 7× one
+  hunter's weight, against 3× before, and the playtest's 29–54 kg herds
+  come within reach of a light pack. Making body size cost points is the
+  balance session's part.
+- **Wolves in `founding wolves`.** Founded in autumn on seeds 7 and 11,
+  playtest 2's design ends the year at 75 and 71 animals, where it ended
+  at 30 and 68 before.
+
+**A six-player world.** `cargo run --release -p evo-server --example
+predators` (`crates/server/examples/predators.rs`, beside `hunt.rs`)
+plays these six players through `Game`:
+- **Steady, Herd and Nomad:** starter herbivores;
+- **Hunter:** playtest 2's Apex Wolves (body 0.4, carnivory 0.92, 42
+  founders);
+- **Toxic:** LateComer's recipe (egg-laying, drab, toxin 0.8, burrowing,
+  hibernating, 60 founders);
+- **Late:** the starter, founded on day 40.
+
+Six seeds, 180 days:
+
+PRED_TABLE
+
+**Checks.**
+
+| Check | Before (the version 42 tunables off) | After |
+| --- | --- | --- |
+ACC_ROWS
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
