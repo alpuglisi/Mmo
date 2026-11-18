@@ -8099,7 +8099,7 @@ branch, renumbered at merge after 45 and 46), off at 0 for older saves
 
 | Check | Before | After |
 | --- | --- | --- |
-| Founders alive 20 days after founding into grown worlds (`examples/foundsurvival.rs`: 8 seeds × days 45, 100, 160, 220 × three playtest designs) | 2,775 of 3,488 (80%) | 2,877 of 3,488 (82%): better in every season (day 45: 807 → 813; day 100: 784 → 806; day 160: 631 → 673; day 220: 553 → 585), 8 cases much better, 2 worse |
+| Founders alive 20 days after founding into grown worlds (`examples/foundsurvival.rs`: 8 seeds × days 45, 100, 160, 220 × three playtest designs) | 2,810 of 3,488 (81%) | 2,946 of 3,488 (84%): day 45 793 → 783, day 100 765 → 832, day 160 616 → 621, day 220 636 → 710; 9 cases much better (≥ 1.4×), 4 much worse (≤ 0.7×) |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (on main with boom's round 4) | 11.93 (± 0.14), tunables at 0 | 11.93 (± 0.11) |
 
 ## Genetics validation
