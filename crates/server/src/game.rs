@@ -1857,6 +1857,7 @@ impl Game {
                     ));
                 }
                 put_warnings(&mut data, warnings);
+                self.brood_report(player, group, &mut data);
                 note_replaced(&mut data, &before, "migration");
                 Ok(Some(data))
             }
@@ -1928,6 +1929,7 @@ impl Game {
                         data
                     }
                 };
+                self.brood_report(player, group, &mut data);
                 note_replaced(&mut data, &before, "territory");
                 Ok(Some(data))
             }
@@ -1947,6 +1949,7 @@ impl Game {
                 self.order_given(player, group);
                 let mut data = serde_json::to_value(RallyView::from(r)).unwrap();
                 self.circle_report(player, group, r.center, r.radius, &mut data);
+                self.brood_report(player, group, &mut data);
                 note_replaced(&mut data, &before, "rally");
                 Ok(Some(data))
             }
@@ -4743,6 +4746,35 @@ impl Game {
         }
     }
 
+    /// What a group order does to the group's clutches (playtest 5: orders
+    /// pulled brooding parents off their nests with no word, 20–66 eggs
+    /// chilled a day). `brooding`: members sitting on a clutch. With
+    /// `Balance::brood_care` they stay on their nests until the eggs hatch
+    /// and then follow; without it the clutches are left to chill.
+    fn brood_report(&self, player: PlayerId, group: u8, data: &mut serde_json::Value) {
+        let brooding = self
+            .world
+            .organisms
+            .iter()
+            .filter(|o| o.alive && o.owner == player && o.group == group && o.nest.is_some())
+            .count();
+        if brooding == 0 {
+            return;
+        }
+        data["brooding"] = brooding.into();
+        let s = if brooding == 1 { "" } else { "s" };
+        data["brooding_note"] = if self.world.config.balance.brood_care > 0.0 {
+            format!(
+                "{brooding} brooding parent{s} stay{} on {} nest{s} until the eggs hatch, then follow.",
+                if brooding == 1 { "s" } else { "" },
+                if brooding == 1 { "its" } else { "their" }
+            )
+        } else {
+            format!("{brooding} clutch{} will be left behind and may chill.", if brooding == 1 { "" } else { "es" })
+        }
+        .into();
+    }
+
     /// Plan the route of one group's migration order for clients.
     fn plan_route(&mut self, player: PlayerId, group: u8) {
         let Some(target) = self.world.migration_order(player, group) else {
@@ -6158,6 +6190,26 @@ mod tests {
             ServerMsg::Result { ok: true, data: Some(d), .. } => d.clone(),
             m => panic!("expected data, got {m:?}"),
         }
+    }
+
+    /// Playtest 5 (M10): a migration's reply says what becomes of the
+    /// group's brooding parents.
+    #[test]
+    fn migrate_reply_tells_of_the_brooding_parents() {
+        let (mut g, a, _) = game();
+        let out = g.command(10, 1, None, ClientMsg::Migrate { x: 50.0, y: 50.0, group: Some(0) });
+        assert!(reply_data(&out).get("brooding_note").is_none());
+        for &id in &a[..2] {
+            let k = g.world.organism_index(id).unwrap();
+            g.world.organisms[k].nest = Some(g.world.organisms[k].pos);
+        }
+        let out = g.command(10, 1, None, ClientMsg::Migrate { x: 40.0, y: 40.0, group: Some(0) });
+        let d = reply_data(&out);
+        assert_eq!(d["brooding"].as_u64(), Some(2));
+        assert!(d["brooding_note"].as_str().unwrap().starts_with("2 brooding parents stay"), "{d}");
+        g.world.config.balance.brood_care = 0.0;
+        let out = g.command(10, 1, None, ClientMsg::Migrate { x: 45.0, y: 45.0, group: Some(0) });
+        assert_eq!(reply_data(&out)["brooding_note"].as_str(), Some("2 clutches will be left behind and may chill."));
     }
 
     /// Split, per-group orders, territory and merge through the protocol,

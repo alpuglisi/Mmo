@@ -1167,6 +1167,22 @@ pub struct Balance {
     /// stayed awake while their group slept, then starved). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v51"))]
     pub possessed_sleep: f32,
+    /// Playtest 5 eggs and young (version 52; off at 0, what snapshots
+    /// before version 52 read, `serde_util::before_v52`):
+    /// - a brooding parent (one with a clutch on its nest) stays with the
+    ///   clutch instead of following its group's migration, territory or
+    ///   rally, and heads back to it once a flight is over (playtest 5:
+    ///   20–66 eggs chilled a day on the march, 0–6 settled);
+    /// - young follow a migration with their group (they were left behind
+    ///   with the predators);
+    /// - an egg layer that sleeps through winter conceives no clutch that
+    ///   would hatch after autumn begins (the year's last clutches were
+    ///   abandoned as the herd bedded down);
+    /// - reinforcements are a generation after the adults they copy, not
+    ///   generation 0 (which gave copies of founders the founders' free
+    ///   first winter).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    pub brood_care: f32,
 }
 
 impl Balance {
@@ -1450,12 +1466,13 @@ impl Default for Balance {
             player_packs: 1.0,
             dormant_water: 1.0,
             possessed_sleep: 1.0,
+            brood_care: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 153;
+    pub const FIELD_COUNT: usize = 154;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1618,6 +1635,7 @@ impl Balance {
             ("player_packs", &mut self.player_packs),
             ("dormant_water", &mut self.dormant_water),
             ("possessed_sleep", &mut self.possessed_sleep),
+            ("brood_care", &mut self.brood_care),
         ]
     }
 

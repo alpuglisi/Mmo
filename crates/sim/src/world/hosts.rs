@@ -172,7 +172,9 @@ impl World {
         for k in 0..n {
             let src = &self.organisms[adults[rng.gen_range(0..adults.len())]];
             let genome = src.genome.clone();
-            let generation = src.generation;
+            // A generation after the adult it copies (`Balance::brood_care`):
+            // a copy of a founder isn't a founder (no founders' free winter).
+            let generation = src.generation + u32::from(self.config.balance.brood_care > 0.0);
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
             let mut o = Organism::new(0, owner, genome, sex, home);
             for _ in 0..20 {
@@ -533,6 +535,28 @@ mod tests {
     /// Playtest 4: reinforcements landed beside a lone member among
     /// predators and 8 of 10 were eaten. They land beside the lineage's
     /// largest group (`Balance::founding_safety`).
+    /// Playtest 5: clones kept generation 0 (a founder's free first winter).
+    /// They are young adults a generation after the adult they copy.
+    #[test]
+    fn reinforcements_are_young_adults_of_the_next_generation() {
+        let mut w = presets::standard_world(WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() }, 1);
+        w.run_days(1);
+        let l = w.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+        let tpd = w.config.ticks_per_day as f32;
+        for brood_care in [1.0, 0.0] {
+            let mut c = w.clone();
+            c.config.balance.brood_care = brood_care;
+            let ids = c.reinforce_lineage(l, 4);
+            assert_eq!(ids.len(), 4);
+            for id in ids {
+                let o = c.organism(id).unwrap();
+                assert_eq!(o.generation, u32::from(brood_care > 0.0), "founders' copies");
+                let age = o.age_ticks as f32 / tpd;
+                assert!(o.matured && age <= o.traits.maturity_days + 0.06 * o.traits.lifespan_days, "{age}");
+            }
+        }
+    }
+
     #[test]
     fn reinforcements_land_beside_the_largest_group() {
         let mut w = presets::standard_world(WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() }, 1);

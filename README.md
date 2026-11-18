@@ -8463,6 +8463,66 @@ autumn, and late winter. The three searches are the old one, with
 
 `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`: 11.93
 (± 0.11), the same as before. A new world's founding is unchanged.
+### Playtest 5: eggs and young
+
+Playtest 5 (`docs/playtest-5.md` M10 and its egg items) lost the warm
+egg-laying hibernator's eggs and young to its own orders:
+
+- a migrate, claim or rally order pulled brooding parents more than 12
+  tiles off their nests. The migration's pull (0.55 × obedience heed)
+  outranked guarding the nest (0.6), so the clutches chilled;
+- the young were left behind: only adults took group orders;
+- the year's last clutches chilled when their parents bedded down for
+  winter on them;
+- the starter drowned 2 founders on its lakeshore, struggling on toward its
+  old target when the water rose under it;
+- reinforcement clones kept generation 0 (a founder's free first winter).
+
+**`Balance::brood_care` (1)**, on by default from snapshot version 52
+(provisional), off at 0 for older saves (`serde_util::before_v52`):
+
+- **Brooders stay.** A parent on a nest takes no migrate, patrol, rally or
+  home order. Its pull back to the nest grows with its distance from it, up
+  to 1.2 at 6 tiles. Once the eggs hatch it follows the order again.
+- **The order says so.** The reply to a migrate, claim or rally order counts
+  the group's brooding parents (`brooding`) and says what becomes of them
+  (`brooding_note`, shown as a toast). With the tunable on, the note says
+  they stay on their nests until the eggs hatch. With it off, it says
+  "N clutches will be left behind and may chill".
+- **The young follow.** Juveniles take their group's migration order
+  alongside their mothers.
+- **No late clutches.** A winter-sleeping egg layer conceives no clutch that
+  would hatch in the second half of the year (gestation plus incubation
+  after today).
+- **Out of the water.** An awake non-flyer on a tile too deep for it makes
+  for the nearest tile it can stand on, within 5 tiles, before anything
+  else. Sleeping animals are another item.
+- **Clones.** Reinforcements are a generation after the adult they copy.
+  They were already young adults.
+
+**Measured** (`examples/eggcare.rs`). The warm incubated-egg hibernator (50
+founders, obedience 0.85) is founded into grown 96×96 worlds and ordered
+to migrate to a random point every 15 days for 240 days:
+
+| Seed | `brood_care` | Laid | Hatched | Chilled | Raided | Alive |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0 | 381 | 47 | 330 | 4 | 42 |
+| 1 | 1 | 230 | 196 | 21 | 12 | 29 |
+| 2 | 0 | 294 | 72 | 185 | 35 | 8 |
+| 2 | 1 | 172 | 72 | 49 | 51 | 5 |
+
+Chilled eggs fell from 2.1× the hatched count to 0.26×, so
+`egg_attendance` needs no retuning. Fewer clutches are laid (no late
+ones), and more are raided: the brooders now stay behind on their nests
+while the herd moves on. Fewer animals are alive at the end of the 240 days
+under this constant-migration stress test.
+
+**Starter.** `crates/sim/tests/founding_safety.rs` rebuilds the playtest's
+world (seed 37) and founds the starter design on day 30. All 20 founders
+are alive after 30 days with no drowning; the playtest's drowning didn't
+reproduce there. The case stays as a regression test, and the escape from
+the water covers what happened.
+
 ### Playtest 4: balance
 
 Playtest 4 (`docs/playtest-4.md`, findings 1, 4, 6, 13, 18, 23 here) still
