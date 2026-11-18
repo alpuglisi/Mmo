@@ -17,13 +17,12 @@ import { defaultMorphology, sameMorphology, type Morphology } from '../morpholog
 import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
 import { hybridAdvice } from '../hybrid';
 import { foundingHint } from '../foodHint';
-import { adultMass, flight, geneValue } from '../bodyMath';
 import { avatarView } from './avatarView';
 import { createBodyBuilder, type BodyBuilder, type BuilderChange } from './builder/builder';
 import type { BuilderPreset } from './builder/presets';
 import { h } from './dom';
 import { readMode, writeMode, type EditorMode } from './editorMode';
-import { caption, kg, TRAIT_TEXT, type Level } from './traitText';
+import { caption, TRAIT_TEXT, type Level } from './traitText';
 import { traitEnds, traitName } from './traitNames';
 import { visionReadoutView } from './visionReadout';
 
@@ -342,7 +341,11 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     clearTimeout(waterTimer);
     waterTimer = setTimeout(async () => {
       const seq = ++waterSeq;
-      const r = await api.designCompatibility(cb.token, payload()).catch(() => null);
+      // A preview needs no name, but the server checks the design whole: a
+      // placeholder until one is typed (playtest 4: an empty name was refused,
+      // so the water warning could not show on a fresh page).
+      const p = payload();
+      const r = await api.designCompatibility(cb.token, { ...p, name: p.name.trim() || 'Preview' }).catch(() => null);
       if (seq !== waterSeq) return;
       const warning = r?.water_warning;
       waterBox.hidden = !warning;
@@ -381,13 +384,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     unspent.textContent = left > cat.budget / 2
       ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore ready for its first winter: raise the traits that suit the world, or try a preset in Builder mode.`
       : left > 0.05 ? `${left.toFixed(1)} points left to spend.` : left >= -1e-3 ? 'Every point spent.' : '';
-    // Wings a heavy body can't use cost points and do nothing: say so.
-    const wings = geneValue(spec, 'wings');
-    if (wings > 0.25 && !flight(spec).glide) {
-      unspent.textContent += ` Wings do nothing on a ${kg(adultMass(spec))} body: too heavy to fly or glide, so their points are wasted.`;
-    } else if (wings > 0.5 && !flight(spec).fly) {
-      unspent.textContent += ` At ${kg(adultMass(spec))} the body is too heavy to fly: its wings only glide.`;
-    }
+    // (Wings a heavy body can't use: the warnings above say so, once; playtest 4 saw it twice.)
     renderHybrid();
     checkWater();
     const food = foundingHint(payload(), world);
