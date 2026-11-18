@@ -8102,6 +8102,189 @@ branch, renumbered at merge after 45 and 46), off at 0 for older saves
 | Founders alive 20 days after founding into grown worlds (`examples/foundsurvival.rs`: 8 seeds × days 45, 100, 160, 220 × three playtest designs) | 2,810 of 3,488 (81%) | 2,946 of 3,488 (84%): day 45 793 → 783, day 100 765 → 832, day 160 616 → 621, day 220 636 → 710; 9 cases much better (≥ 1.4×), 4 much worse (≤ 0.7×) |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (on main with boom's round 4) | 11.93 (± 0.14), tunables at 0 | 11.93 (± 0.11) |
 
+### Playtest 4: predators, possession and dormancy
+
+Round 5 for `docs/playtest-4.md` findings H4, H7, M16, M19 and two low
+items. Snapshot version 48 (provisional; main is at 47). Every sim rule
+below is off at 0, which is what snapshots of version 47 and before read
+(`serde_util::before_v48`).
+
+**H4: player carnivore bands starve on instinct** (`Balance::player_packs`
+1). In playtest 4, four of five predator lineages starved out; a pure
+carnivore went from 45 to 9 in 40 days with 100+ prey in view. The study
+(`examples/predators.rs --playtest4`) founds ApexHunter4's two designs
+among six players:
+- "Apex Stalkers", the pure carnivore, as the Hunter;
+- "Ridge Packs", the omnivore pack, in Nomad's place.
+
+What the probes found:
+- The band kills plenty (about 10 kills a day across 20 animals) but
+  mostly voles of mass 0.33–0.4. At the Stalkers' mass (about 2.6, with
+  metabolism 1.04) a vole is about 24 hunger points, against a burn of
+  40–57 a day. The wild fox (mass 0.8, metabolism 0.87) lives on the same
+  voles, because one vole is a full meal for it.
+- A full fat reserve (about 80) was gone in 10 days. The deficit is
+  structural, not a slow start: founders given full fat starved just the
+  same.
+- Females starved first (23 → 2 by day 50): gestation of a litter of 3 on
+  top of the deficit.
+- The big wild herbivores (mass about 5, worth about 450 hunger points)
+  outrun them (speed 0.81 against 0.43). The slow player herds were 12 to
+  38 tiles away, beyond the 8-tile sight.
+- Possession wasn't the cause either (below, under M16).
+
+The rule (`apply::player_pack_larder`): a player's pack hunter
+(player-owned, pack instinct above 0.3) is carried by its band's kills in
+lean times. Its hunger rises up to `0.7 × meat diet × pack instinct`
+slower:
+- the share ramps in from hunger 20 and is full at 50 (`PACK_LARDER`,
+  `LARDER_FROM`, `LARDER_SPAN`);
+- a fed one is spared nothing;
+- a hungry pure carnivore at pack instinct 0.85 is spared 64%; Ridge Packs
+  (carnivory 0.6) about 21%;
+- it is full while the owner has up to 60 animals and fades to none at
+  150 (`BAND_SMALL`, `BAND_CROWD`; head counts as each tick starts,
+  `World::band_size`). A big population competes for its kills rather
+  than sharing them.
+- Wild packs keep their own economy.
+
+How it was chosen (6 seeds, 180 days; the Stalkers' mean head count at
+the end, of 45 founders; sweep centre score, main ≈ 11.93):
+
+| Variant | Stalkers left | Extinct (of 6) | Sweep |
+| --- | --- | --- | --- |
+| Old rules | 6 | 3 | 11.91 (± 0.14), this round's other rules on |
+| Led-pack rules on instinct hunts (the first version: prey mass limit and strike as in an attack order) | 2 | 5 | 11.71 (± 0.22) |
+| Larder 0.41 at every hunger (with the led-pack rules) | 58 | 0 | |
+| Larder 0.45 at every hunger | 72 on seed 1 | | 11.62 (± 0.34) |
+| Larder 0.45, from hunger 20, full at 60 | 14 on seed 1 | | 11.88 (± 0.16) |
+| Larder 0.7, from hunger 20, full at 50, at any band size | 69 (peak 79) | 0 | 11.78 (± 0.20) |
+| **The same, fading from 60 animals to none at 150 (default)** | **56 (peak 71)** | **0** | **11.85 (± 0.19)** |
+
+- **Led-pack rules on instinct hunts: dropped.** The first version gave a
+  player pack's own hunts the attack-order pack rules. Stalkers did worse
+  with it (2 left), and the sweep's sample player "Pack hunters" took the
+  herd grazers (380 → 102 mean alive).
+- **A larder at every hunger: dropped.** It lowered the sweep to 11.62.
+  The sweep's player pack hunters are usually fed, and the lean gate
+  leaves them alone.
+- **A larder at any band size: capped.** The round 3 study's stronger
+  design, ApexHunter2's "Apex Wolves", took over with it: 572 animals and
+  42% of the six players' animals, against 306 and 22% under the old
+  rules. Steady died out on 3 of 4 seeds and Toxic fell from 476 to 179.
+  Any hunger discount raises a predator's equilibrium numbers, and a
+  strong pack lives at that hungry equilibrium. Capping by band size
+  keeps the help for a struggling band.
+- **Other levers, tried for every carnivore:** 1.5× meat per kill left 25
+  Stalkers; `carnivore_hunger_discount` 0.3 left 32. Both would also
+  change the wild predators the sweep balances.
+
+The study with the default (`predators --playtest4 --seeds 6 --days 180`;
+final head count, extinct seeds, the Hunter's kills of each player):
+
+| Player | Old rules (the version 48 tunables off) | New, on instinct | New, with attack orders every 6 ticks |
+| --- | --- | --- | --- |
+| Steady | 401 | 143 (140 killed by Hunter) | 187 |
+| Herd | 998 | 626 (106) | 593 |
+| Hunter (Apex Stalkers) | 6, 3 extinct | 56, 0 extinct (peak 71) | 61 |
+| Toxic | 919 | 723 | 755 |
+| Nomad (Ridge Packs) | 48 | 50 | 35 |
+| Late | 182 | 160 | 146 |
+
+- **The band now holds its own on instinct alone:** 45 → 71 at its peak
+  and about 56 at the end on every seed, where the old rules lost it on
+  half the seeds. Attack orders no longer decide whether it lives (61
+  with them).
+- **The herbivores pay for it:** Steady loses about two thirds of its
+  head count, 140 of them to the Hunter. Toxic's share is unchanged at
+  about 45%; toxin avoidance is Balance's.
+- **What's left:** starvation is still the Stalkers' main cause of death
+  (42 a world), mostly in the first month, before the band's numbers
+  settle. Ridge Packs, the omnivore, is about where it was (48 → 50): its
+  meat gut is partial, so the larder gives it little. Its decline from 45
+  is slower than the old pure carnivore's.
+
+**H7: sleepers die of thirst** (`Balance::dormant_water` 1). In
+Rulebender4's winter, 593 animals fell to 366, with up to 35 thirst
+deaths a day while 314 of the 366 slept. The cause: in deep dormancy,
+thirst rises at `dormant_rate`, about 2.7 a day for a hibernator. Over a
+30-day winter a sleeper reaches the rousing threshold (thirst 80) and
+wakes parched, in snow, often far from open water. Burning fat yields
+water: while a deep sleeper has fat left, its thirst now rises
+`1 − 0.8 × dormant_water` as fast (`apply::DORMANT_WATER`), about 0.5 a
+day. A full winter then costs about 16 thirst. A lean sleeper is
+unchanged. Test: `fat_sleepers_dont_wake_parched` (10 sleeping days:
+under 40% of the old rise).
+
+**M16: possession and sleep.**
+- **What the probe found.** Possession itself doesn't stop dormancy. A
+  possessed hibernator beds down like the rest, and the same animal
+  unpossessed starved at the same pace. A lean animal can't bed down
+  (fat gone and hunger at 60 or more, `seasonal::LEAN_LIMIT`). Possessed
+  animals are the lean ones, because their players walk them about in
+  autumn instead of letting them fatten.
+- **The fix** (`Balance::possessed_sleep` 1). A possessed animal may bed
+  down lean, up to the rousing hunger (90). It wakes to eat like any
+  sleeper (`can_rouse`).
+- **Bedding down is said once:** "Possessed #id has bedded down for the
+  winter with its kind: it sleeps where it is and takes no orders until
+  it wakes. Release it or possess another." Again only after it wakes.
+- **Need alerts, once per spell.** The alert repeated every few seconds
+  because the hunger of a hunter living on voles swings across the
+  threshold with each kill: about 24 points down, then back up within
+  half a day. A spell now ends only once the need has stayed below 60 for
+  a whole game day (`Game::need_eased`).
+- **Possessing a second animal says it released the first.** The
+  `possess` reply carries `released` and `notice` ("Released #id: you
+  possess one animal at a time."), which the client toasts.
+
+**M19: attack orders refused as out of sight.** The sim refuses only by
+distance (beyond `attack_range`, 8 tiles). The refusals of targets 0.4 to
+2.7 tiles away came from the player's view lagging the world. A state
+can be 2 s old, about 20 ticks, and in a chase both animals run, so the
+gap could open past 8 tiles by the time the order landed.
+- Orders are now accepted out to the range a standing order is kept
+  (`commands::ORDER_KEPT` × `attack_range`, 12 tiles).
+- The refusal now says where the target is: "#id is N tiles from your #id
+  now (orders reach 12); it moved since your view updated", with
+  `distance` and `reach` in its detail.
+- The client's Attack button still enables only within 8 tiles of the
+  last state.
+
+The hunger swings (14 → 41 → 87 → 55 within a day) are real, not a
+display bug. Each kill or meal drops hunger at once, and a carnivore burns
+40–57 a day. M16's alert fix was the visible harm.
+
+**Low:**
+- **"Once-possessed" for an animal possessed when it died.** The sim's
+  `kill` clears possession, so the server's death notice no longer knew.
+  It now reads who held the animal as of the last tick
+  (`Game::possessed_prev`).
+- **Carnivores shown dormant with no dormancy genes.** Dormancy needs a
+  dormancy gene expressed at 0.5 or more (`stats::STRATEGY_THRESHOLD`), so
+  those animals carried one, most likely from a cross with a wild
+  lineage. A night's shallow torpor now reads `torpid` on the wire
+  (`protocol::org_action_name`), shown as "torpid (a cold night)", rather
+  than `dormant` like a hibernation.
+
+**Checks:**
+
+| Check | Before (this round's tunables at 0) | After |
+| --- | --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` (main ≈ 11.93) | 11.91 (± 0.14) with the pack larder off | 11.85 (± 0.19); every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 13/16 (12), 16/16 (16); 0 | 15/16 (12), 16/16 (16); 1 (antelope, seed 35) |
+| `predators --playtest4 --seeds 6 --days 180`: Hunter (Apex Stalkers) alive at the end, extinct seeds | 6, 3 of 6 | 56, 0 of 6 |
+| `predators` (round 3's designs, 4 seeds, 240 days), new rules on instinct: Hunter (Apex Wolves) alive and share; Steady; Nomad | 162, 13.8%; 123; 124 | 148, 18.2%; 13 (1 extinct); 37 |
+| workspace tests, `--features serde` snapshot tests, both clippy runs, fixtures, client typecheck, `vitest`, build, e2e (16 scripts) | | pass |
+
+- **predlong.** These worlds are wild only, so the larder and possessed
+  sleep never apply; the difference is the sleepers' metabolic water.
+  Which seeds fail moves with any change to the rules.
+- **The round 3 study.** A strong pack design gains some share while it
+  is under 150 animals, and its prey pays: Steady and Nomad fall. These
+  4-seed results swing widely between runs. Under the old rules in the
+  same study Steady ended at 7 to 20 depending on the build.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
