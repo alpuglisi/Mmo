@@ -28,11 +28,11 @@
 //! - **Loophole** founds Rulebender5's small egg-incubating cold flier as a
 //!   half-size re-found (22 founders) on `--loophole-day` (default 334).
 //!
-//! Two arms on the same seeds. **Round 4 rules**: playtest 4's rules (the
-//! version 48 tunables off: `winter_rest`, `toxic_avoidance`,
-//! `egg_attendance`, `player_species`, `raised_cap`), or with `--baseline
-//! playtest2` playtest 2's (the version 43, 46 and 48 rules off, the old
-//! soft cap), each founded at any price. **New rules**:
+//! Two arms on the same seeds. **Playtest 5 rules**: the version 53
+//! tunables off (`thermo_hybrid`, `flight_upkeep`, `avoid_cap`,
+//! `cold_heat`, `species_credit`), or with `--baseline playtest2` playtest
+//! 2's (the version 43 to 53 rules off, the old soft cap), each founded at
+//! any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
 //! founders.
 
@@ -284,13 +284,14 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         }
     }
     if !new_rules {
-        // Default: round 4's rules, before playtest 4's (no winter rest,
-        // the version 44 toxic recognition, eggs chilling when the parent
-        // is off the nest, no player species, the weighted share uncapped).
+        // Default: playtest 5's rules (the version 53 tunables off: cold
+        // blood sterile with warm, no flight upkeep, uncapped learned
+        // avoidance, no cold-blooded heat limit, species by cluster).
         let b = &mut g.world.config.balance;
-        (b.winter_rest, b.toxic_avoidance, b.egg_attendance, b.player_species, b.raised_cap) =
-            (0.0, 0.0, 0.0, 0.0, 0.0);
+        (b.thermo_hybrid, b.flight_upkeep, b.avoid_cap, b.cold_heat, b.species_credit) = (0.0, 0.0, 0.0, 0.0, 0.0);
         if a.playtest2_baseline {
+            (b.winter_rest, b.toxic_avoidance, b.egg_attendance, b.player_species, b.raised_cap) =
+                (0.0, 0.0, 0.0, 0.0, 0.0);
             (b.eye_hybrid, b.winter_toll, b.wake_spread, b.dormancy_toll) = (0.0, 0.0, 0.0, 0.08);
             // `--baseline playtest2`: the rules of playtest 2.
             (b.egg_hybrid, b.age_spread, b.dormancy_toll, b.emergence_lag) = (0.0, 0.0, 0.0, 0.0);
@@ -449,7 +450,7 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Round 4 rules (playtest 4)" };
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Playtest 5 rules" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
         if a.new_only && !new {
             continue;

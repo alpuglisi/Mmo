@@ -1182,8 +1182,11 @@ pub struct Balance {
     /// Flight is muscle work, warm-blooded or not: a flier on the move burns
     /// `hunger_rate × 0.45 × wings × mass term × flight_upkeep` more food
     /// (the mass term 1 at 4 kg, `(mass / 4)^0.3`) and loses
-    /// `thirst_rate × 0.35 × wings` more water, more in the heat; neither
-    /// scales with a cold-blooded body's low metabolism. 0: off.
+    /// `thirst_rate × 0.35 × wings × flight_upkeep` more water, more in the
+    /// heat; neither scales with a cold-blooded body's low metabolism. In
+    /// the dominance replay, 1 drove the playtest 5 fliers from 20 of 40
+    /// titles to none (Cold to 503 at its peak) and 0.5 left them 6; 0.25
+    /// gives them 9 with no design above 12. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v53"))]
     pub flight_upkeep: f32,
     /// The most a predator lineage's learned avoidance of a toxic prey
@@ -1493,7 +1496,7 @@ impl Default for Balance {
             dormant_water: 1.0,
             possessed_sleep: 1.0,
             thermo_hybrid: 0.7,
-            flight_upkeep: 1.0,
+            flight_upkeep: 0.25,
             avoid_cap: 0.85,
             cold_heat: 1.0,
             species_credit: 1.0,

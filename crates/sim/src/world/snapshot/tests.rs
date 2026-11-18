@@ -524,7 +524,7 @@ fn version_52_snapshots_restore_without_playtest5_balance() {
     // This version keeps them.
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
-    assert_eq!((r.config.balance.flight_upkeep, r.config.balance.cold_heat), (1.0, 1.0));
+    assert_eq!((r.config.balance.flight_upkeep, r.config.balance.cold_heat), (0.25, 1.0));
 }
 
 /// Version 48 snapshots (before the playtest 4 balance rules) restore with
