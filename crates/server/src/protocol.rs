@@ -1165,6 +1165,10 @@ pub struct NearbyOrganism {
     pub matured: bool,
     /// Visible body plan, for the client's sprite.
     pub look: Appearance,
+    /// `Some(true)` when its lineage is a newcomer under its grace (no other
+    /// player's animal may attack it, nor it theirs); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1228,8 +1232,11 @@ pub struct StateView {
 pub struct GraceView {
     /// Game days left, to a tenth.
     pub days_left: f32,
-    /// Real minutes left at the server's clock, rounded up.
-    pub minutes_left: u32,
+    /// The tick it ends on.
+    pub until_tick: u64,
+    /// Real seconds left at the server's clock, rounded up to tens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub real_seconds_left: Option<u64>,
 }
 
 /// World summary for `GET /api/world`.
@@ -1948,6 +1955,7 @@ impl NearbyOrganism {
             sex: Cow::Borrowed(sex_name(o.sex)),
             matured: o.matured,
             look: Appearance::of(o),
+            protected: None,
         }
     }
 }

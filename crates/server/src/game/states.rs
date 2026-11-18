@@ -613,10 +613,11 @@ impl Game {
             Some(views) => views.iter().map(|v| v.clone().expect("filled")).collect(),
             None => mine.iter().map(|&i| self.own_view(&orgs[i as usize], tpd)).collect(),
         };
-        let nearby: Vec<NearbyOrganism> = match near {
+        let mut nearby: Vec<NearbyOrganism> = match near {
             Some(near) => picked.iter().map(|&i| near.peek(i).clone()).collect(),
             None => picked.iter().map(|&i| NearbyOrganism::from_org(&orgs[i as usize])).collect(),
         };
+        self.mark_protected(&mut nearby);
         let ids = idx.offers.get(&player).map_or(&[][..], Vec::as_slice);
         let offers = ids.iter().map(|&id| self.offer_view(id)).collect();
         let escrow = ids.iter().map(|id| &self.offers[id]).filter(|o| o.from == player).map(|o| o.escrow).sum::<u64>()

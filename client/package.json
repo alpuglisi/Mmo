@@ -13,6 +13,7 @@
     "e2e": "node e2e/run-all.mjs",
     "e2e:vision": "node e2e/vision.mjs",
     "e2e:spectate": "node e2e/spectate.mjs",
+    "e2e:terrain": "node e2e/terrain.mjs",
     "e2e:builder": "node e2e/builder.mjs",
     "e2e:family": "node e2e/family.mjs",
     "e2e:android-desktop": "node e2e/android-desktop.mjs",

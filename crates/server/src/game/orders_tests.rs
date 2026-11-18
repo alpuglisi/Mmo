@@ -291,7 +291,10 @@ fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
     let b = g.found(2, &design("B")).unwrap().founders;
     g.connect(20, 2, "bo");
     let grace = g.grace_view(2).expect("a newcomer has its grace");
-    assert!((29..=30).contains(&grace.minutes_left), "{grace:?}");
+    let secs = grace.real_seconds_left.unwrap();
+    assert!((1750..=1800).contains(&secs) && secs % 10 == 0, "{grace:?}");
+    // 30 minutes at 100 ms a tick, less the 3 ticks since bo founded.
+    assert!((17_990..=18_000).contains(&(grace.until_tick - g.world.tick())), "{grace:?}");
     let tpd = g.world.config.ticks_per_day as f32;
     assert!(grace.days_left > 20.0 && (grace.days_left - 18_000.0 / tpd).abs() < 0.2, "{grace:?}");
     let s = g.states().into_iter().find(|(c, _)| *c == Target::Conn(20)).map(|(_, m)| m).unwrap();
@@ -299,6 +302,18 @@ fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
         ServerMsg::State(s) => assert_eq!(s.grace, Some(grace)),
         m => panic!("expected a state, got {m:?}"),
     }
+    // Ann sees bo's animals marked as protected newcomers; bo sees ann's
+    // unmarked (no grace).
+    let at = g.world.organism(a[0]).unwrap().pos;
+    for &id in &b {
+        let i = g.world.organisms.iter().position(|o| o.id == id).unwrap();
+        g.world.organisms[i].pos = at + Vec2::new(1.0, 1.0);
+    }
+    let ann = g.state_for(10).unwrap();
+    let theirs: Vec<_> = ann.nearby.iter().filter(|n| n.owner == 2).collect();
+    assert!(!theirs.is_empty() && theirs.iter().all(|n| n.protected == Some(true)), "{theirs:?}");
+    let bo = g.state_for(20).unwrap();
+    assert!(bo.nearby.iter().filter(|n| n.owner == 1).all(|n| n.protected.is_none()));
     // Two-sided: bo's graced animals can't attack ann's.
     let at = g.world.organism(a[0]).unwrap().pos;
     let i = g.world.organisms.iter().position(|o| o.id == b[0]).unwrap();
