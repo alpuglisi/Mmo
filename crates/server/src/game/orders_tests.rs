@@ -377,6 +377,8 @@ fn a_possessed_animals_death_is_told_at_once() {
     let i = g.world.organisms.iter().position(|o| o.id == a[0]).unwrap();
     g.world.organisms[i].alive = false;
     g.world.organisms[i].death = Some(DeathCause::Thirst);
+    // As the sim's kill does: no longer possessed once dead.
+    g.world.organisms[i].possessed_by = None;
     g.after_tick();
     let told = alerts(&g, AlertKind::Death);
     assert!(
@@ -518,6 +520,18 @@ fn lineage_warnings_flag_hunger_the_cap_and_starving_territories() {
     assert_eq!(need(&g), 1);
     g.warning_alerts(10 + WARNING_REPEAT_DAYS, &mut out);
     assert_eq!(need(&g), 2);
+    // Near the cap: once per approach, not every few days; again after dropping below the re-arm share.
+    let near = |g: &Game| alerts(g, AlertKind::Need).iter().filter(|t| t.starts_with("Near the hard cap")).count();
+    g.world.config.lineage_cap = 3;
+    for d in 20..40 {
+        g.warning_alerts(d, &mut out);
+    }
+    assert_eq!(near(&g), 1);
+    g.world.config.lineage_cap = 1500;
+    g.warning_alerts(41, &mut out);
+    g.world.config.lineage_cap = 3;
+    g.warning_alerts(42, &mut out);
+    assert_eq!(near(&g), 2);
 }
 
 fn run_days(g: &mut Game, days: u32) {

@@ -2421,6 +2421,10 @@ pub struct SpeciesView {
     /// gone species.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namer: Option<PlayerId>,
+    /// A player has named it (`name_species`): the name is theirs, not one
+    /// taken from a lineage, and it isn't offered for naming again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
     /// Origin tag holding the most alleles in its adults.
     pub dominant: PlayerId,
     pub dominant_name: String,

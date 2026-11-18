@@ -1777,10 +1777,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   endGraceBtn.addEventListener('click', async () => {
     if (!window.confirm('End your newcomer grace? Other players\' animals can attack yours from now on. This can\'t be undone.')) return;
     const r = await send({ type: 'end_grace' });
-    if (r.ok) {
-      model.toast('info', 'Your newcomer grace has ended: your animals may hunt other players\' now, and be hunted.');
-      endGraceEl.open = false;
-    }
+    // The server's alert says it (and toasts): no second toast here.
+    if (r.ok) endGraceEl.open = false;
   });
   append(tabs.lineage, [lineageExtinct, retireEl, endGraceEl, statsEl,
     h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
@@ -1834,7 +1832,17 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const adultsAll = fresh ? stats!.adults : adults;
     const youngAll = fresh ? stats!.juveniles : orgs.length - adults;
     const maxGen = orgs.reduce((m, o) => Math.max(m, o.generation), 0);
-    statsEl.replaceChildren(dl([
+    const gone = s.lineage !== null && s.population === 0;
+    if (gone) {
+      // Nobody left (died out or retired): none of the living lineage's rows,
+      // crowding or group orders apply (they lingered from the last statistics).
+      statsEl.replaceChildren(dl([
+        ['Lineage', `#${s.lineage}`],
+        ['Alive', h('strong', { id: 'lineage-size' }, '0')],
+      ]));
+      keyed(groupsEl, 'no-lineage', () => [h('p', { class: 'muted small' }, 'No groups: your lineage has no living animals.')]);
+    }
+    if (!gone) statsEl.replaceChildren(dl([
       ['Lineage', s.lineage === null ? 'not founded' : `#${s.lineage}`],
       ['Alive', h('span', {}, crowding ? h('span', { id: 'alive-count' }, `${grouped(s.population)} · crowding `) : null, h('strong', { id: 'lineage-size', title: crowding ? 'Crowding count (adults, young weighted) / soft cap' : 'Living organisms / cap' }, cap.count),
         cap.status ? h('span', { class: `cap-status cap-${cap.level}`, id: 'cap-status' }, ` — ${cap.status}`) : null,
@@ -1849,9 +1857,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ...(grace ? [['Newcomer grace', h('span', { id: 'grace-left' }, grace)] as [string, string | Node]] : []),
       ...(ramp ? [['Season weight', h('span', { id: 'ramp-weight' }, ramp)] as [string, string | Node]] : []),
     ]));
-    if (cap.explain) statsEl.append(h('p', { class: `cap-note small${cap.level === 'ok' ? ' muted' : ''}`, id: 'cap-note' }, cap.explain));
+    if (cap.explain && !gone) statsEl.append(h('p', { class: `cap-note small${cap.level === 'ok' ? ' muted' : ''}`, id: 'cap-note' }, cap.explain));
     // Lineage-wide warnings (hunger crash, near the hard cap, starving territories), as the alerts say them.
-    const warnings = mine?.warnings ?? [];
+    const warnings = gone ? [] : mine?.warnings ?? [];
     if (warnings.length) {
       statsEl.append(h('ul', { class: 'lineage-warnings', id: 'lineage-warnings', role: 'status' },
         ...warnings.map((w) => h('li', { class: `lineage-warning warn-${w.kind}`, 'data-kind': w.kind }, '⚠ ', w.text))));
@@ -1866,7 +1874,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
     endGraceEl.hidden = !s.grace;
-    renderGroups(s);
+    if (!gone) renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb) + nameplatesKey(), () => lb.rows.length === 0
       ? [h('p', { class: 'muted small' }, lb.day === null ? 'The first legacy snapshot comes at the end of day 1.' : 'No breeding adults.')]
@@ -1877,7 +1885,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
             h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), h('span', { class: 'who', title: r.name }, r.name), plateBadge(r.player)),
             h('td', {}, h('span', { class: 'share-bar', style: `--w:${(r.share * 100).toFixed(1)}%` }, pct(r.share))),
             h('td', {}, pct(r.weighted_share)), h('td', {}, String(r.alive))))))]);
-    const shown = [...orgs].sort((a, b) => Number(b.possessed) - Number(a.possessed) || Number(b.matured) - Number(a.matured) || a.id - b.id).slice(0, 60);
+    // Possessed first, then pregnant or gravid ones (so the Eggs line's "about to lay" are all listed), then adults.
+    const shown = [...orgs].sort((a, b) => Number(b.possessed) - Number(a.possessed) || Number(b.pregnant) - Number(a.pregnant)
+      || Number(b.matured) - Number(a.matured) || a.id - b.id).slice(0, 60);
     // One button per organism, kept and updated in place (no row moves under a click).
     reconcile(listEl, shown, (o) => String(o.id), (o) => {
       const id = o.id;
@@ -1899,7 +1909,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   function eggsLostText(lost: Record<string, number> | undefined): string | null {
     const entries = Object.entries(lost ?? {}).filter(([, n]) => n > 0);
     const total = entries.reduce((sum, [, n]) => sum + n, 0);
-    return total > 0 ? `${total} lost (${entries.map(([c, n]) => `${n} ${c}`).join(', ')})` : null;
+    // A lifetime count, beside the clutches now: said so (it read as more lost than there are eggs).
+    return total > 0 ? `${total} lost since founding (${entries.map(([c, n]) => `${n} ${c}`).join(', ')})` : null;
   }
 
   /** The lineage lays eggs (its stats count clutches): a carrying female is "gravid", not "pregnant" (playtest 3). */

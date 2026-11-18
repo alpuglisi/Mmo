@@ -271,6 +271,10 @@ impl Game {
                 "only a species your lineage founded (or split off) can be named by you",
             ));
         }
+        // Named once: the name stands (the World tab no longer offers it).
+        if let Some(&by) = self.economy.named_species.get(&species) {
+            return Err(ErrorInfo::new("already_named", format!("{} has already named this species", self.name(by))));
+        }
         // Look-alikes count as taken, as for player names.
         if tracker.species.iter().any(|o| o.id != species && fold(&o.name) == fold(&name)) {
             return Err(ErrorInfo::new("name_taken", "another species has that name"));
@@ -563,10 +567,11 @@ impl Game {
             if pay > 0 {
                 let text = format!(
                     "Day {} royalty: {:.2}% of all alleles are yours and live in other players' lineages",
-                    day + 1,
+                    // The day just ended, counted from 1, as income names it.
+                    day.max(1),
                     exported * 100.0
                 );
-                let _ = self.post(p, pay as i64, LedgerKind::Royalty, text, None, None);
+                let _ = self.post_on(p, pay as i64, LedgerKind::Royalty, text, None, None, day.saturating_sub(1));
             }
         }
     }
