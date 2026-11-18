@@ -126,3 +126,21 @@ From `docs/playtest-4.md`. Each has a test. No snapshot change.
 | Low: a `u64::MAX` fee (JavaScript `2 ** 64`) gave a generic `bad_message`. | Price fields (`fee`, `reserve`, `amount`, `price`) take any whole number, saturating past `u64::MAX`, so the range check answers `bad_price`. | `huge_prices_reach_the_range_check` |
 | Low: a NaN in a design gave the JSON parser's text. | `bad_design` with a plain description of the body. | integration `server.rs` |
 | Low: `preview_mating` gave exact body-plan gaps for a partner just inside the naming margin. | Gaps are given in tenths unless the partner is in plain sight. | `rivals_hidden_state_and_positions_do_not_leak` |
+
+## Round 6: playtest 5 (names, inputs, fairness)
+
+From `docs/playtest-5.md` (M5, M12 in part, and the input checks in `Rulebender5.md`). Each has a test. No snapshot change.
+
+| Finding | Fix | Test |
+| --- | --- | --- |
+| "wild" passed lineage and species names (the largest species was named "wild"); "G.M." passed because reserved words were checked per word. | `names::reserved` also reads the whole name run together (spaces and punctuation dropped, a leading "the", trailing digits and a team word such as "team"/"crew"/"s" taken off) against whole forms: gm, mod, dev, owner, support, help(desk), claude, wild, root, admin, op(s). "gamemod" and "anthropic" are refused anywhere, "claude" as a word. "Wild horses", "Root voles", "Helpful herd" still pass. Names saved before (a species called "wild") are renamed on load by `sanitize`. | `names::tests` |
+| A rival's name minus its digit ("Herdmaster" against "Herdmaster5") passed. | `names::impersonates` also compares with trailing digits dropped (at least 4 characters). | `names::tests` |
+| The designer couldn't warn of a look-alike name before Found. | `/api/design/compatibility` gives `name_warning`. | `design_compatibility_samples_individuals` |
+| A 49 KB WS message closed the socket silently and dropped a queued reply. | The socket reads up to 256 KB (`MAX_WS_READ`); a command over 16 KB is answered `too_large` (with its id and command when readable) and the connection carries on. Past 256 KB the connection closes as before. | integration `security.rs` |
+| A 1.5 MB design body read as a malformed design. | 413 `too_large` ("a request body goes up to 64 KB"). | — (the body limit is axum's; the mapping is in `design_body`) |
+| A bare `NaN` in a WS command gave a generic `bad_message`. | `bad_coordinates` ("numbers must be finite"), spotted outside strings (`non_finite_number`). | `bare_nan_and_infinity_are_spotted_outside_strings` |
+| `set_view` with a radius ≤ 0 pinned a 1-tile view. | Refused, `bad_coordinates`. | `rivals_hidden_state_and_positions_do_not_leak` |
+| possess/split (and other own-animal commands) answered `not_owned` for a living rival animal anywhere: an alive/dead oracle. | `not_owned` for a rival animal out of the player's naming reach reads as `not_found` (`Game::hide_unseen`), like a dead or unknown id. | same |
+| Gene keys were normalised silently ("fur " and "FUR" overwrote each other). | Two keys naming one gene: `duplicate_gene`. | `gene_names_parse` |
+| A juvenile got `same_sex` before `not_mature`. | Maturity first in `preview_mating` and in requests within one's lineage (cross-player checks already did). | `maturity_is_checked_before_sex` |
+| M12: the small-lineage offline shield seemed to start on disconnect. | Already delayed since round 4: no spell (and so no shield of any kind) starts before `offline_idle_ticks` (10 real minutes) without a connection. The test now checks the world's protection itself during the idle time. | `short_absences_are_not_away` |

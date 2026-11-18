@@ -888,6 +888,26 @@ fn check_price(price: u64) -> Result<(), ErrorInfo> {
     Ok(())
 }
 
+/// The organisms a command names as the player's own (possess, orders,
+/// splits, matings' `mine`, listings), for [`Game::hide_unseen`].
+fn named_organisms(msg: &ClientMsg) -> Vec<OrgId> {
+    match msg {
+        ClientMsg::Possess { organism }
+        | ClientMsg::OrderMove { organism, .. }
+        | ClientMsg::PossessAttack { organism, .. }
+        | ClientMsg::Release { organism }
+        | ClientMsg::CreateListing { organism, .. }
+        | ClientMsg::CreateAuction { organism, .. } => vec![*organism],
+        ClientMsg::SplitGroup { organisms, .. } => organisms.clone().unwrap_or_default(),
+        ClientMsg::RequestMating { mine, .. }
+        | ClientMsg::PreviewMating { mine, .. }
+        | ClientMsg::OfferToLineage { mine, .. }
+        | ClientMsg::BuyListing { mine, .. }
+        | ClientMsg::Bid { mine, .. } => vec![*mine],
+        _ => Vec::new(),
+    }
+}
+
 /// How a fresh-start refund names the offer of a discarded world (the
 /// trailing comma keeps offer #1 of a world from matching #10, or a world id
 /// from matching a longer one).
@@ -1765,7 +1785,8 @@ impl Game {
         let name = msg.name();
         let mut out = Outbox::new();
         self.note_command(player, &msg);
-        let result = self.apply(conn, player, msg, &mut out);
+        let named = named_organisms(&msg);
+        let result = self.apply(conn, player, msg, &mut out).map_err(|e| self.hide_unseen(player, e, &named));
         let reply = match result {
             Ok(data) => ServerMsg::ok(id, name, data),
             Err(e) => ServerMsg::err(id, name, e),
@@ -1973,6 +1994,10 @@ impl Game {
             }
             ClientMsg::SetView { x, y, radius } => {
                 finite(&[x, y, radius])?;
+                // A radius of 0 or less pinned a 1-tile view (playtest 5).
+                if radius <= 0.0 {
+                    return Err(ErrorInfo::new("bad_coordinates", "a view radius must be positive"));
+                }
                 let p = self.world.map.clamp(Vec2::new(x, y));
                 // Only where the player has organisms (or their lineage's
                 // center), and no wider than they perceive there plus a
@@ -2177,6 +2202,12 @@ impl Game {
         self.check_auction_lock(mine)?;
         self.check_auction_lock(partner)?;
         if b.owner == player {
+            // Maturity first, then sex and compatibility (playtest 5).
+            for o in [a, b] {
+                if !o.matured {
+                    return Err(e(CommandError::NotMature(o.id)));
+                }
+            }
             // Within the player's own organisms: no consent needed (and no
             // price). A pair that can't conceive would only use up a slot.
             if let Some(problem) = self.world.mating_preview(mine, partner).ok().as_ref().and_then(incompatibility) {
@@ -3341,6 +3372,24 @@ impl Game {
         }
     }
 
+    /// `not_owned` for a rival's animal the player can't see reads as
+    /// `not_found`, like an id that doesn't exist (playtest 5: possess and
+    /// split told living rival ids from dead ones anywhere on the map).
+    fn hide_unseen(&self, player: PlayerId, e: ErrorInfo, named: &[OrgId]) -> ErrorInfo {
+        if e.code != "not_owned" {
+            return e;
+        }
+        let hidden = named.iter().copied().find(|&id| {
+            self.world.organism(id).is_some_and(|o| {
+                o.owner != player && self.view_reach(player, o.pos) + (NAME_MARGIN - VIEW_MARGIN) < 0.0
+            })
+        });
+        match hidden {
+            Some(id) => ErrorInfo::from(&CommandError::NotFound(id)),
+            None => e,
+        }
+    }
+
     /// A partner a player may name in a request or a preview: one of
     /// theirs, one in their sight, one on the market, or one in an open
     /// offer of theirs. Else `out_of_sight`, also for an id that doesn't
@@ -3381,6 +3430,12 @@ impl Game {
         let partner_seen =
             self.world.organism(partner).is_some_and(|b| b.owner == player || self.in_sight(player, b.pos));
         self.check_partner_visible(player, partner)?;
+        // Maturity before sex (a juvenile read `same_sex`: playtest 5).
+        for id in [mine, partner] {
+            if self.world.organism(id).is_some_and(|o| !o.matured) {
+                return Err(e(CommandError::NotMature(id)));
+            }
+        }
         let p = self.world.mating_preview(mine, partner).map_err(e)?;
         Ok(MatingPreviewView {
             mine,
@@ -7761,6 +7816,23 @@ mod tests {
         assert_eq!(r.world.lineages[ok.lineage as usize].name, "Grazers of the north");
     }
 
+    /// A juvenile reads `not_mature`, not `same_sex` (playtest 5), in a
+    /// preview and in a request within one's own lineage.
+    #[test]
+    fn maturity_is_checked_before_sex() {
+        let (mut g, a, _) = game();
+        let (m1, m2) = {
+            let males: Vec<OrgId> =
+                a.iter().copied().filter(|&id| g.world.organism(id).unwrap().sex == Sex::Male).collect();
+            (males[0], males[1])
+        };
+        let i = g.world.organism_index(m2).unwrap();
+        (g.world.organisms[i].matured, g.world.organisms[i].growth) = (false, 0.3);
+        assert_eq!(g.preview_mating(1, m1, m2).unwrap_err().code, "not_mature");
+        let out = g.command(10, 1, Some(1), ClientMsg::RequestMating { mine: m1, partner: m2, price: None });
+        assert_eq!(result(&out).1.as_deref(), Some("not_mature"));
+    }
+
     fn display_text_ok(t: &str) -> bool {
         crate::names::check(t, crate::design::MAX_NAME_LEN, crate::names::Kind::Species).is_ok()
     }
@@ -7857,6 +7929,10 @@ mod tests {
         let same = FounderDesign::new("S", Thermo::Warm, BirthType::Live, 2).founders(6);
         let v = g.design_compatibility(9, &same);
         assert_eq!(v.sample, 16);
+        assert_eq!(v.name_warning, None);
+        // A name like a rival's ("B0b" for bob) is flagged before Found.
+        let alike = FounderDesign::new("B0b", Thermo::Warm, BirthType::Live, 2).founders(6);
+        assert!(g.design_compatibility(1, &alike).name_warning.is_some());
         assert!(v.rows.iter().all(|r| !r.wild && r.owner != WILD), "{:?}", v.rows);
         assert!(
             v.rows.iter().all(|r| r.compatible && r.fertile_share >= 0.9 && r.drift_risk == "high"),
@@ -9100,6 +9176,27 @@ mod tests {
         assert_eq!(result(&far).1, Some("out_of_sight".into()));
         let near = g.command(10, 1, Some(2), ClientMsg::SetView { x: 10.0, y: 10.0, radius: 16.0 });
         assert!(result(&near).0, "{near:?}");
+        for r in [0.0, -5.0] {
+            let bad = g.command(10, 1, Some(2), ClientMsg::SetView { x: 10.0, y: 10.0, radius: r });
+            assert_eq!(result(&bad).1, Some("bad_coordinates".into()), "radius {r}");
+        }
+        // A rival's animal out of sight reads as not found (not "not yours"),
+        // as an id that doesn't exist: no alive/dead oracle from afar.
+        let far = b[0];
+        assert_eq!(
+            result(&g.command(10, 1, Some(2), ClientMsg::Possess { organism: far })).1,
+            Some("not_found".into())
+        );
+        let split = ClientMsg::SplitGroup { group: 0, organisms: Some(vec![far]) };
+        assert_eq!(result(&g.command(10, 1, Some(2), split)).1, Some("not_found".into()));
+        let i = g.world.organism_index(far).unwrap();
+        let back = g.world.organisms[i].pos;
+        g.world.organisms[i].pos = Vec2::new(6.5, 4.5);
+        assert_eq!(
+            result(&g.command(10, 1, Some(2), ClientMsg::Possess { organism: far })).1,
+            Some("not_owned".into())
+        );
+        g.world.organisms[i].pos = back;
         // And no wider than Ann's animals perceive plus the margin: a wide
         // view is narrowed, one beyond reach refused (32 tiles away was fine
         // before, with a 32-tile radius on top).
@@ -9289,9 +9386,11 @@ mod tests {
         }
         let out = g.command(10, 1, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         assert_eq!(code(&out).as_deref(), Some("unknown_offer"));
-        // Nor use someone else's organism as "mine".
+        // Nor use someone else's organism as "mine" (out of sight it reads
+        // as not found, as an unknown id would: `Game::hide_unseen`).
         let out = g.command(30, 3, None, ClientMsg::RequestMating { mine: fa, partner: c[0], price: None });
-        assert_eq!(code(&out).as_deref(), Some("not_owned"));
+        let seen = g.view_reach(3, g.world.organism(fa).unwrap().pos) + (NAME_MARGIN - VIEW_MARGIN) >= 0.0;
+        assert_eq!(code(&out).as_deref(), Some(if seen { "not_owned" } else { "not_found" }));
         // Cancel, then cancel or complete again: refunded exactly once.
         g.command(10, 1, None, ClientMsg::CancelMating { request: id });
         assert_eq!(g.balance(1), start);
@@ -9345,7 +9444,8 @@ mod tests {
         // Listings: only the owner lists or withdraws; a listed dam takes one
         // buyer at a time; one's own listing can't be bought.
         let out = g.command(30, 3, None, ClientMsg::CreateListing { organism: fb, fee: 5, expires_days: None });
-        assert_eq!(code(&out).as_deref(), Some("not_owned"));
+        let seen = g.view_reach(3, g.world.organism(fb).unwrap().pos) + (NAME_MARGIN - VIEW_MARGIN) >= 0.0;
+        assert_eq!(code(&out).as_deref(), Some(if seen { "not_owned" } else { "not_found" }));
         let l = data(&g.command(20, 2, None, ClientMsg::CreateListing { organism: fb, fee: 5, expires_days: None }))
             ["listing"]["id"]
             .as_u64()
@@ -9355,7 +9455,11 @@ mod tests {
         let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: l, mine: mb });
         assert_eq!(code(&out).as_deref(), Some("own_listing"));
         let out = g.command(30, 3, None, ClientMsg::BuyListing { listing: l, mine: ma });
-        assert_eq!(code(&out).as_deref(), Some("not_owned"), "buying with someone else's organism");
+        // (Out of sight it reads as not found: `Game::hide_unseen`.)
+        assert!(
+            matches!(code(&out).as_deref(), Some("not_owned" | "not_found")),
+            "buying with someone else's organism"
+        );
         let (b1, b3) = (g.balance(1), g.balance(3));
         let first = g.command(10, 1, None, ClientMsg::BuyListing { listing: l, mine: ma });
         assert!(result(&first).0, "{first:?}");

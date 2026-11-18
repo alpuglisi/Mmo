@@ -138,6 +138,8 @@ impl MorphSpec {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpecError {
     UnknownGene(String),
+    /// Two trait keys name the same gene (its wire name).
+    DuplicateGene(String),
     /// The lineage name fails `names::check` (the reason).
     BadName(String),
     /// An unknown shape name in `morph` (the field).
@@ -149,6 +151,7 @@ impl SpecError {
     pub fn code(&self) -> &'static str {
         match self {
             SpecError::UnknownGene(_) => "unknown_gene",
+            SpecError::DuplicateGene(_) => "duplicate_gene",
             SpecError::BadName(_) => "bad_name",
             SpecError::BadMorph(_) | SpecError::Design(DesignError::Morphology(_)) => "bad_morph",
             SpecError::Design(DesignError::OverBudget { .. }) => "over_budget",
@@ -162,6 +165,7 @@ impl SpecError {
     pub fn message(&self) -> String {
         match self {
             SpecError::UnknownGene(g) => format!("unknown gene {g:?}"),
+            SpecError::DuplicateGene(g) => format!("{g} is given twice (under two spellings)"),
             SpecError::BadName(why) => format!("that lineage name can't be used: {why}"),
             SpecError::BadMorph(field) => format!("unknown {}", field.replace('_', " ")),
             SpecError::Design(e) => e.to_string(),
@@ -218,8 +222,14 @@ impl DesignSpec {
         if let Some(m) = &self.morph {
             d = d.with_morph(m.to_morph()?);
         }
+        // Two keys naming one gene ("fur" and "FUR " both read as fur) are
+        // refused: the later one silently won (playtest 5).
+        let mut seen = std::collections::BTreeSet::new();
         for (k, &v) in &self.traits {
             let g = parse_gene(k).ok_or_else(|| SpecError::UnknownGene(k.clone()))?;
+            if !seen.insert(g) {
+                return Err(SpecError::DuplicateGene(gene_key(g)));
+            }
             d = d.with(g, v);
         }
         d.validate().map_err(SpecError::Design)?;
@@ -590,6 +600,10 @@ mod tests {
         assert_eq!(parse_gene("armor plates"), Some(Gene::Armor));
         assert_eq!(parse_gene("wings"), Some(Gene::Wings));
         assert_eq!(parse_gene("laser_eyes"), None);
+        // Two spellings of one gene are refused, not silently merged.
+        let e = spec(&[("fur", 0.5), ("FUR ", 0.9)]).to_design().unwrap_err();
+        assert_eq!((e.code(), e.message()), ("duplicate_gene", "fur is given twice (under two spellings)".to_string()));
+        assert!(spec(&[("FUR", 0.5)]).to_design().is_ok());
     }
 
     #[test]

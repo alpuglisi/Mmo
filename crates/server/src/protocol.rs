@@ -1895,6 +1895,10 @@ pub struct DesignCompatView {
     /// `cost` points; `reason` says why and until when.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refound: Option<RefoundView>,
+    /// Why founding would refuse the design's name (it looks like another
+    /// player's), so the designer can warn before Found; absent when fine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_warning: Option<String>,
 }
 
 /// `DesignCompatView::refound`.
