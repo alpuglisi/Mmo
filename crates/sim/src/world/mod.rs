@@ -593,7 +593,7 @@ pub struct World {
     /// accepted agreement and set again when it restores a world, so not
     /// saved.
     #[cfg_attr(feature = "serde", serde(skip))]
-    rendezvous: BTreeMap<OrgId, OrgId>,
+    rendezvous: BTreeMap<OrgId, (OrgId, Vec2)>,
     /// Attack orders of possessed organisms, attacker → target
     /// (`World::possess_attack`; version 36).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]

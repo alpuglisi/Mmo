@@ -86,7 +86,7 @@ async function register(page, base, name) {
   await page.fill('#login-password', 'a long password');
   await page.click('#register-submit');
   await page.waitForSelector('#design-name', { timeout: 45000 });
-  await page.fill('#design-name', `${name} line`);
+  await page.fill('#design-name', `${name.replace(/_/g, ' ')} line`); // (lineage names allow no underscore)
   await page.click('#design-submit');
   await page.waitForSelector('#world-canvas', { timeout: 45000 });
   await waitFor('own organisms', () => page.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));

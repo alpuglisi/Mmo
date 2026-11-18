@@ -271,6 +271,11 @@ pub enum ClientMsg {
     /// share fertile), the drift risk, and the body-plan gene that keeps
     /// you apart. Data: [`CompatibilityView`].
     Compatibility,
+    /// A provision for a small lineage (40 renown): its 20 hungriest or
+    /// thirstiest adults get 50 off hunger and thirst. Only while at most a
+    /// fifth of the soft lineage cap is alive, at most 3 within a ranked
+    /// season's length. Data: `{fed, shop}`.
+    Provision,
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
     /// `result`), never by the world.
@@ -350,6 +355,7 @@ impl ClientMsg {
             ClientMsg::BuyMatingSlot => "buy_mating_slot",
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
+            ClientMsg::Provision => "provision",
             ClientMsg::SetNameplate { .. } => "set_nameplate",
             ClientMsg::NameSpecies { .. } => "name_species",
             ClientMsg::Nameplates => "nameplates",
@@ -400,6 +406,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "set_nameplate",
     "name_species",
     "nameplates",
+    "provision",
     "end_grace",
 ];
 
@@ -1039,6 +1046,20 @@ pub struct MeetView {
     pub partner_y: f32,
     /// Tiles between them, rounded.
     pub distance: f32,
+    /// Their meeting point (dry land near their midpoint, fixed at
+    /// acceptance; 8-tile cell centre).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meet_x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meet_y: Option<f32>,
+    /// Both are asleep (hibernating, brumating or estivating): the meeting
+    /// resumes when they wake, and the deadline waits.
+    #[serde(default)]
+    pub asleep: bool,
+    /// One of them is possessed: the other walks only to the meeting point
+    /// and waits there.
+    #[serde(default)]
+    pub possessed: bool,
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -1777,6 +1798,22 @@ pub struct ShopView {
     pub nameplate: Option<crate::economy::Nameplate>,
     #[serde(default)]
     pub species_name_price: u64,
+    /// The provision (a sink for small lineages): price, provisions within
+    /// the rolling window and the most allowed, and why not now.
+    #[serde(default)]
+    pub provision_price: u64,
+    #[serde(default)]
+    pub provisions_bought: u32,
+    #[serde(default)]
+    pub provisions_max: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provision_blocked: Option<String>,
+    /// When the next reinforcement is possible if the window is full: the
+    /// simulated day and about how many real minutes from now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reinforce_next_day: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reinforce_next_minutes: Option<u64>,
 }
 
 /// `compatibility`: which lineages yours can breed with.
@@ -1853,6 +1890,26 @@ pub struct DesignCompatView {
     /// Set when the design can reach less than half the shores: what to do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub water_warning: Option<String>,
+    /// Set when founding now is a re-founding soon after the player's last
+    /// lineage ended: it founds `founders` of the design's (half), costing
+    /// `cost` points; `reason` says why and until when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refound: Option<RefoundView>,
+}
+
+/// `DesignCompatView::refound`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RefoundView {
+    /// Founders the design would get now (of `requested`).
+    pub founders: u32,
+    pub requested: u32,
+    /// Points the founding costs with them.
+    pub cost: f32,
+    /// The first simulated day a founding gets the full design again, and
+    /// about how many wall-clock minutes until then.
+    pub until_day: u64,
+    pub minutes_left: u64,
+    pub reason: String,
 }
 
 /// One player's standing over a season of the history.

@@ -96,7 +96,7 @@ export function traitSummary(traits: TraitView[], max = 4): string {
 
 /** The listing's compatibility with the buyer's chosen organism, if previewed. */
 export function listingCompat(l: ListingView): CompatSummary | null {
-  return l.preview ? compatSummary(l.preview) : null;
+  return l.preview ? compatSummary(l.preview, { listed: true }) : null;
 }
 
 /** Why the player can't buy a listing right now, or null if they can. */

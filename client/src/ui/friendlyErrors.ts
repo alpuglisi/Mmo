@@ -24,8 +24,10 @@ export function friendlyError(e: Pick<ErrorInfo, 'code' | 'message'>): string {
       return 'No directed-mating slots left this season; they come back when the next season starts.';
     case 'not_owned':
       return 'That organism is not one of yours.';
-    case 'not_found':
     case 'died':
+      // The server says how ("organism 12 drowned before the mating"): keep it.
+      return e.message ? `${capital(e.message.replace(/^organism (\d+)/, '#$1'))}.` : 'That organism is no longer alive.';
+    case 'not_found':
       return 'That organism is no longer alive (or out of sight).';
     case 'no_consent':
       return 'The other player has not agreed yet.';
