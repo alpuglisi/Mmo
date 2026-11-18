@@ -26,7 +26,7 @@ const LABELS: Record<SeasonCategory, string> = {
 const HINTS: Record<SeasonCategory, string> = {
   legacy: 'Mean share of breeding alleles over the season (a missing day counts as 0)',
   lineage: 'The most living members on any recorded day of the season (a peak, not the size now); lineages that both reach the population cap tie',
-  species: 'Species that split off from your lineage (speciation) this season. A founding\'s own species doesn\'t count: a new one forms when part of your lineage drifts apart enough to breed only with its own kind.',
+  species: 'Species that split off from your lineage (speciation) this season. A founding\'s own species doesn\'t count: a new one forms when part of your lineage (at least a season old) drifts apart enough to breed only with its own kind. The title needs at least two players with one.',
   market: 'Renown earned from stud fees',
   survival: 'Catastrophes your lineage lived through',
 };

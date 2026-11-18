@@ -38,6 +38,8 @@ pub const MARKET_TITLE_BUYERS: usize = 2;
 pub const DEFAULT_SEASON_DAYS: u64 = 60;
 /// Rows per category returned when a request names no limit.
 pub const DEFAULT_ROWS: usize = 10;
+/// Fewest players with a counted speciation for the species title.
+pub const SPECIES_TITLE_RIVALS: usize = 2;
 /// Most rows per category in one response.
 pub const MAX_ROWS: usize = 200;
 
@@ -61,7 +63,10 @@ pub enum Category {
     Legacy,
     /// Most living members the player's lineage had on a recorded day.
     Lineage,
-    /// Species founded (credited speciation events) during the season.
+    /// Species founded (credited speciation events: a split off an existing
+    /// species by a lineage at least a season old) during the season. Its
+    /// title needs at least [`SPECIES_TITLE_RIVALS`] players with one: a
+    /// lone split won it unopposed.
     Species,
     /// Renown earned from stud fees (escrow paid out) during the season.
     /// Ranked only with at least [`MARKET_TITLE_SALES`] sales to at least
@@ -543,7 +548,8 @@ impl SeasonTracker {
                 // A survival title that every active player shares says
                 // nothing: no winner.
                 let firsts = s.rows.iter().take_while(|r| r.rank == 1).count();
-                !(s.category == Category::Survival && active > 1 && firsts >= active)
+                let lone_species = s.category == Category::Species && s.rows.len() < SPECIES_TITLE_RIVALS;
+                !(s.category == Category::Survival && active > 1 && firsts >= active) && !lone_species
             })
             .flat_map(|s| {
                 s.rows.iter().take_while(|r| r.rank == 1).map(|r| Winner {
@@ -846,6 +852,7 @@ mod tests {
             vec![(2, 60.0), (1, 50.0), (3, 5.0)]
         );
         assert_eq!(r.standings[2].rows.len(), 1, "the wild founds nothing");
+        // A lone speciation is ranked but wins no title (no rival).
         // A tie shares the place.
         let market = &r.standings[3];
         assert_eq!(market.rows.iter().map(|r| r.rank).collect::<Vec<_>>(), vec![1, 1]);
@@ -855,7 +862,6 @@ mod tests {
             vec![
                 (Category::Legacy, 1),
                 (Category::Lineage, 2),
-                (Category::Species, 2),
                 (Category::Market, 1),
                 (Category::Market, 2),
                 (Category::Survival, 1)
@@ -873,6 +879,24 @@ mod tests {
         let survival = &r.standings[4];
         assert_eq!(survival.rows.iter().map(|r| (r.player, r.value)).collect::<Vec<_>>(), vec![(1, 1.0)]);
         assert!(r.player_season(9).is_none());
+    }
+
+    /// The species title needs two players with a speciation; then the
+    /// most wins.
+    #[test]
+    fn the_species_title_needs_a_rival() {
+        let name = |p: PlayerId| format!("p{p}");
+        let mut t = SeasonTracker::new(1, 0, 3);
+        t.record_day(&day(0, &[(1, 0.5), (2, 0.5)], &[(1, 4), (2, 4)]));
+        t.add_species(1);
+        t.add_species(1);
+        let r = t.finish("w", 144, 1000, name);
+        assert!(!r.head.winners.iter().any(|w| w.category == Category::Species));
+        t.add_species(2);
+        let r = t.finish("w", 144, 1000, name);
+        let w: Vec<PlayerId> =
+            r.head.winners.iter().filter(|w| w.category == Category::Species).map(|w| w.player).collect();
+        assert_eq!(w, vec![1]);
     }
 
     /// Every score change bumps the generation (what the standings cache

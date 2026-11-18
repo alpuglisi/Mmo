@@ -111,6 +111,10 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   litter.addEventListener('input', () => { spec.litter_size = Number(litter.value); update(); });
   const founders = h('input', { id: 'design-founders', type: 'number', min: 2, max: 400, step: 1, value: spec.founders });
   founders.addEventListener('input', () => { spec.founders = Number(founders.value); update(); });
+  const graceHint = h('p', { class: 'muted small', id: 'design-grace-winter' });
+  const showGraceHint = (): void => {
+    graceHint.textContent = graceWinterText(spec.founders);
+  };
 
   // --- traits
   const costCells = new Map<string, HTMLElement>();
@@ -455,6 +459,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
 
   /** Redraw from the design; `full` (default) also recomputes costs, captions and validation. */
   function update(full = true): void {
+    showGraceHint();
     avatar.update(spec, spec.morphology);
     readout.update(spec.morphology);
     if (!full) return;
@@ -585,7 +590,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
             h('label', {}, `Offspring per birth (1–${cat.max_litter}, ${cat.cost_per_extra_offspring} pts each above 1)`, litter),
             h('label', {}, cat.flat_founders !== undefined && cat.founder_cost_step
               ? `Founders (${cat.base_founders} included, ${cat.cost_per_extra_founder} pts each up to ${cat.flat_founders}, then each ${cat.founder_cost_step} pts dearer than the last)`
-              : `Founders (${cat.base_founders} included, ${cat.cost_per_extra_founder} pts each extra)`, founders))),
+              : `Founders (${cat.base_founders} included, ${cat.cost_per_extra_founder} pts each extra)`, founders)),
+          graceHint),
         h('section', { class: 'card design-traits' },
           h('div', { class: 'design-traits-head' }, h('h2', {}, 'Traits'), modeSwitch),
           modeHint, presetNote, builderHost,
@@ -616,4 +622,15 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     update();
   }, DESIGN_WORLD_REFRESH_MS);
   return page;
+}
+
+/** Most founders a founding may have for its newcomer grace to last through its first winter (the server's `GRACE_WINTER_FOUNDERS`). */
+export const GRACE_WINTER_FOUNDERS = 40;
+
+/** The designer's line on the first-winter grace rule for `founders`. */
+export function graceWinterText(founders: number): string {
+  const rule = `Newcomer grace: a founding of ${GRACE_WINTER_FOUNDERS} or fewer founders whose grace would end in late autumn or winter keeps it until that winter ends.`;
+  return founders <= GRACE_WINTER_FOUNDERS
+    ? `${rule} These ${founders} qualify.`
+    : `${rule} ${founders} founders don't: their grace ends on time even at winter's start.`;
 }

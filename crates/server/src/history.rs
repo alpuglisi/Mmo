@@ -37,8 +37,10 @@ pub const GENE_STRIDE: u64 = 8;
 /// Past the window, days divisible by this (doubled for each doubling of
 /// the age past the window) are kept.
 pub const ARCHIVE_STRIDE: u64 = 8;
-/// The most records one history read returns.
-pub const MAX_LIMIT: usize = WINDOW_DAYS as usize;
+/// The most records one history read returns: the window and the thinned
+/// archive past it (~46 records per doubling of the age past a year), so a
+/// logged-in read gives a world's whole stored history.
+pub const MAX_LIMIT: usize = 1024;
 
 /// What of a record its age keeps, from most to least.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
