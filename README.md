@@ -1154,7 +1154,8 @@ Client → server:
 | `renown_shop` | | `data` = `{balance, slots_left, slots_bought, slot_price?, reinforce_size, reinforce_price, reinforce_max_alive, reinforce_blocked?, market_fee_percent, royalty_per_point, reinforcements_bought, reinforcements_max, nameplate_price, nameplate_colors, nameplate?, species_name_price, provision_price, provisions_bought, provisions_max, provision_blocked?, reinforce_next_day?, reinforce_next_minutes?}` (*Why trade* in Economy) |
 | `buy_mating_slot` | | One extra directed-mating slot until the weather season changes: 30 renown, doubling with each bought that season, at most 6 (`limit_reached`, `insufficient_funds`, `no_lineage`); `data` = the shop after |
 | `reinforce` | | 10 young adults copied from your lineage's living adults join it on the best-fed ground near them: 150 renown, doubling with each, at most 2 within a ranked season's length per player (a rolling window; retired lineages count: `limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
-| `provision` | | The 20 hungriest or thirstiest adults of your lineage get 50 off hunger and thirst: 40 renown, at most 3 within a ranked season's length (`limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`); `data` = `{fed, shop}` |
+| `provision` | | The hungriest or thirstiest adults of your lineage get 50 off hunger and thirst, priced per adult fed: 20 adults at 2 renown each while at most a fifth of the soft lineage cap is alive, else 20 per fifth of the cap alive (at most 200) at 4 each; at most 3 within a ranked season's length (`limit_reached`, `no_adults`, `no_lineage`, `insufficient_funds`); `data` = `{fed, shop}` |
+| `substitute_mating` | `request`, `mine` | The requester of an accepted agreement whose animal died sends another adult of theirs instead, before the deadline (the purchase checks; `not_substitutable` while the first still lives or for anyone else); `data` = `{offer}` |
 | `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
 | `name_species` | `species, name` | Name a living species your lineage founded (cosmetic, 300 renown; `not_yours`, `species_gone`, `name_taken`, `bad_name`); `data` = `{species, name}` |
 | `nameplates` | | `data` = `{nameplates: {player: {color, title}}}` |
@@ -1658,8 +1659,8 @@ earned in play, so each perk is modest and priced to rise):
   wants: it can't grow its own head count much further, but its genes can
   live in other players' animals.
 - **Market fee.** 10% of every stud fee or price paid out is destroyed
-  (`economy::market_fee`, rounded down, at least 1 renown from a price of
-  2 or more, none from 1; the payer pays the full price, the
+  (`economy::market_fee`, rounded to the nearest renown: 1–4 pay none,
+  5–14 pay 1, 15–24 pay 2; the payer pays the full price, the
   seller gets the rest; the sale's ledger text says so). Offers saved
   before the fee pay out in full (`Offer::fee` is 0 in them).
 - **The renown shop** (`renown_shop`, `buy_mating_slot`, `reinforce`,
@@ -1846,6 +1847,36 @@ together):
   confirmation; mating outcomes keep the server's cause ("drowned"); the
   client's tick-length estimate is the median of recent intervals, so a
   reload no longer skews real-time estimates.
+
+**Playtest 5 changes** (`docs/playtest-5.md`: 0 completed sales in ~50
+minutes, every purchase failed when the buyer's animal died):
+
+- **A buyer's animal dying** no longer fails the agreement with a full
+  refund (a free 30-day dam-lock): the offer stays accepted with
+  `lost` (how it died), the partner stops walking, and the buyer may send
+  another adult with `substitute_mating` before the deadline. If none
+  comes it lapses with the hold fee, unless the loss was outside the
+  buyer's control (eaten, disease, a harmful recessive, attrition, the
+  winter-sleep toll, a migration): then nothing is forfeit.
+- **Every listing** (stud or dam, fixed or auction) is at least 5 renown
+  (`LISTING_MIN_FEE`; a 1-renown purchase locked a stud), cancelling any
+  accepted agreement as the buyer forfeits the hold fee, and only accepted
+  agreements make a listing busy (a free pending request blocked a dam
+  for 10 minutes).
+- **Sleep**: the deadline waits while either animal sleeps (at most 30
+  game days in all); the partner's animal sleeping while the buyer's is
+  awake excuses a lapse.
+- **Provisions scale** (M13): priced per adult fed, 2 renown each for a
+  small lineage, 4 each for a larger one, which provisions 20 adults per
+  fifth of the soft cap alive (at most 200): a sink for leaders' renown
+  that feeds a small share of them.
+- **Fee** rounded to the nearest renown (a 2-renown sale lost half).
+- Small: sterile listings hide Buy and Bid and say why (with the sampled
+  fertility); outcomes read "Conceived (8% chance to conceive)", with an
+  override's failure risk only when there was one; a request to a
+  lineage reads "one of yours" (not "#0#0"); a purchase's update comes
+  once; a listing closed by a retirement says so; a species named with
+  its own name is refused (`same_name`) instead of charged.
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.

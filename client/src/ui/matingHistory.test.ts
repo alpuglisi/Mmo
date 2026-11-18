@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { OfferEntry } from '../model';
 import type { MatingRecord, OfferView } from '../protocol';
-import { historyRows, meetText, offerLine, offerUpdateText } from './matingHistory';
+import { historyRows, meetText, offerLine, offerUpdateText, outcomeText } from './matingHistory';
 
 const offer = (id: number, status: OfferView['status'], tick: number): OfferView =>
   ({ id, from_player: 1, from_name: 'ann', to_player: 2, to_name: 'bob', mine: 10, partner: 20, status, created_tick: tick } as OfferView);
@@ -40,7 +40,7 @@ describe('escort and lineage offers', () => {
     expect(meetText({ from_player: 1, meet }, 1)).toContain('56 tiles E of yours');
     expect(meetText({ from_player: 1, meet }, 2)).toContain('56 tiles W of yours');
     expect(meetText({ from_player: 1, meet: { ...meet, distance: 1 } }, 1)).toBe('The two are meeting now.');
-    expect(meetText({ from_player: 1, meet: { ...meet, asleep: true } }, 1)).toContain('Both are asleep');
+    expect(meetText({ from_player: 1, meet: { ...meet, asleep: true } }, 1)).toContain('One of them is asleep');
     expect(meetText({ from_player: 1, meet: { ...meet, meet_x: 32, meet_y: 4, possessed: true } }, 1))
       .toContain('meet near 32, 4 (E of yours). One is possessed');
     expect(meetText({ from_player: 1 }, 1)).toBeNull();
@@ -48,5 +48,14 @@ describe('escort and lineage offers', () => {
   it("names an offer to a lineage as the owner's pick, never #0", () => {
     const o = { id: 3, mine: 5, partner: 0, from_name: 'ann', to_name: 'bob', status: 'pending' as const, lineage: 2 };
     expect(offerLine(o)).toBe("#3: ann's #5 × bob's pick · pending");
+  });
+});
+
+describe('outcomeText', () => {
+  it('reads fertility as the chance to conceive and shows an override risk only when there was one', () => {
+    const t = outcomeText({ conceived: true, fertility: 0.08, failure_chance: 0, mismatch: 0, cost: 0 } as never);
+    expect(t).toBe('Conceived (8% chance to conceive)');
+    expect(outcomeText({ conceived: false, fertility: 0.9, failure_chance: 0.16, mismatch: 0.4, cost: 1 } as never))
+      .toBe('Not conceived (90% chance to conceive) · 16% risk the override failed');
   });
 });

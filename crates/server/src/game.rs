@@ -376,7 +376,7 @@ pub const LAPSE_FEE_MIN: u64 = 5;
 pub const HOLD_MAX_DAYS: u64 = 30;
 /// Least fee (or auction reserve) for listing a dam: buying one holds her
 /// from breeding, so a free listing gave rivals a free dam-lock.
-pub const DAM_MIN_FEE: u64 = 5;
+pub const LISTING_MIN_FEE: u64 = 5;
 /// Minutes an accepted agreement waits for the two to meet
 /// (`GameConfig::purchase_deadline_ticks`).
 pub const PURCHASE_DEADLINE_MINUTES: f64 = 30.0;
@@ -619,6 +619,24 @@ struct Offer {
     /// fixed at acceptance; absent in older saves: computed again).
     #[serde(default)]
     meet: Option<(f32, f32)>,
+    /// The requester's animal died after acceptance: how (until they pick
+    /// a substitute with `substitute_mating`, within the deadline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lost: Option<String>,
+    /// That loss was outside the requester's control (eaten, disease, a
+    /// harmful recessive, attrition, the winter-sleep toll, a migration):
+    /// a lapse or cancel then forfeits nothing.
+    #[serde(default)]
+    excused: bool,
+    /// The partner's animal slept while the requester's was awake: a lapse
+    /// forfeits nothing (the requester mustn't pay for the other side's
+    /// sleep).
+    #[serde(default)]
+    partner_slept: bool,
+    /// Ticks the deadline has waited for a sleeper (at most
+    /// [`HOLD_MAX_DAYS`] of them).
+    #[serde(default)]
+    paused: u64,
 }
 
 struct Conn {
@@ -2075,6 +2093,7 @@ impl Game {
                     Ok(o) => Ok(Some(serde_json::to_value(o).unwrap())),
                 }
             }
+            ClientMsg::SubstituteMating { request, mine } => self.substitute_mating(player, request, mine, out),
             ClientMsg::CancelMating { request } => {
                 let offer = self.offer_for(request, player)?;
                 if !offer.status.is_open() {
@@ -2085,10 +2104,7 @@ impl Game {
                 // buying a rival's dam and cancelling before the deadline
                 // locked her for free). The partner's owner backing out
                 // costs the requester nothing.
-                let held = offer.status == OfferStatus::Accepted
-                    && offer.from == player
-                    && offer.to != player
-                    && self.world.organism(offer.partner).is_some_and(|x| x.sex == Sex::Female);
+                let held = offer.status == OfferStatus::Accepted && offer.from == player && offer.to != player;
                 let info = held.then(|| {
                     let forfeit = self.forfeit_hold(request, "the buyer cancelled");
                     ErrorInfo::new("cancelled", format!("the agreement was cancelled after acceptance; {forfeit}"))
@@ -2484,6 +2500,10 @@ impl Game {
             warned: false,
             lineage: None,
             meet: None,
+            lost: None,
+            excused: false,
+            partner_slept: false,
+            paused: 0,
         };
         self.offers.insert(id, offer);
         if status == OfferStatus::Accepted {
@@ -2577,16 +2597,17 @@ impl Game {
         Ok(to)
     }
 
-    /// A dam's listing (fee, or auction reserve) is at least
-    /// [`DAM_MIN_FEE`]: buying her holds her from breeding.
-    fn check_dam_price(&self, organism: OrgId, price: u64) -> Result<(), ErrorInfo> {
-        let dam = self.world.organism(organism).is_some_and(|o| o.sex == Sex::Female);
-        if dam && price < DAM_MIN_FEE {
+    /// A listing (fee, or auction reserve) is at least [`LISTING_MIN_FEE`]:
+    /// buying holds the animal (a dam from breeding, a stud from other
+    /// buyers) until the two meet. (Playtest 5: a 1-renown stud purchase
+    /// locked the stud.)
+    fn check_listing_price(&self, price: u64) -> Result<(), ErrorInfo> {
+        if price < LISTING_MIN_FEE {
             return Err(ErrorInfo::new(
                 "bad_price",
-                format!("a dam is listed for at least {DAM_MIN_FEE} renown (a buyer holds her from breeding until they meet)"),
+                format!("a listing is at least {LISTING_MIN_FEE} renown (a buyer holds the animal until the two meet)"),
             )
-            .with_detail(serde_json::json!({ "min": DAM_MIN_FEE })));
+            .with_detail(serde_json::json!({ "min": LISTING_MIN_FEE })));
         }
         Ok(())
     }
@@ -2641,7 +2662,7 @@ impl Game {
             }
         }
         self.check_listable(player, organism, fee)?;
-        self.check_dam_price(organism, fee)?;
+        self.check_listing_price(fee)?;
         // A dam already promised in an open agreement can't take a buyer
         // (playtest 3: a promised dam got a fixed listing).
         let dam = self.world.organism(organism).is_some_and(|o| o.sex == Sex::Female);
@@ -2692,7 +2713,7 @@ impl Game {
         // (a 1-tick auction closed before anyone could bid).
         let duration = duration.max(self.cfg.min_auction_ticks);
         self.check_listable(player, organism, reserve)?;
-        self.check_dam_price(organism, reserve)?;
+        self.check_listing_price(reserve)?;
         // The winner's agreement must be able to run: a pregnant dam can't
         // be auctioned (the auction's hold keeps a listed dam from
         // conceiving meanwhile).
@@ -2856,10 +2877,9 @@ impl Game {
             b.mine
         );
         self.alert(l.owner, AlertKind::Market, text, Some(l.organism), out);
-        for p in [b.bidder, l.owner] {
-            out.push((Target::Player(p), ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: None }));
-        }
-        let _ = self.execute(id, out);
+        // `execute` tells both sides (apart: the agreement's update; else
+        // the outcome), once (playtest 5: every purchase update came twice).
+        let _ = (view, self.execute(id, out));
     }
 
     /// Whether an auction's winning bid can still become an agreement.
@@ -2968,22 +2988,20 @@ impl Game {
             l.fee
         );
         self.alert(to, AlertKind::Market, text, Some(l.organism), out);
-        for p in [player, to] {
-            out.push((Target::Player(p), ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: None }));
-        }
         // Try at once; apart, the agreement waits for the two to meet.
+        // `execute` sends both sides the update, once.
         let _ = self.execute(id, out);
         Ok(Some(serde_json::json!({ "offer": view })))
     }
 
-    /// A listed dam already promised in an open agreement takes no more
-    /// buyers until it closes (a stud may serve several).
-    /// A dam that can't take a buyer now: promised in an open agreement,
-    /// or pregnant (buyers wait until she has given birth).
+    /// A listed animal that can't take a buyer now: in an accepted
+    /// agreement (walking to its meeting), or a pregnant dam (buyers wait
+    /// until she has given birth). A pending request naming it doesn't
+    /// count (playtest 5: a free request blocked a listed dam for its 10
+    /// minutes).
     fn listing_busy(&self, l: &Listing) -> bool {
         self.world.organism(l.organism).is_some_and(|o| o.sex == Sex::Female && o.pregnancy.is_some())
-            || self.world.organism(l.organism).is_some_and(|o| o.sex == Sex::Female)
-                && self.offers.values().any(|o| o.status.is_open() && (o.partner == l.organism || o.mine == l.organism))
+            || self.in_agreement(l.organism, 0)
     }
 
     /// The compatibility of a buyer's organism with a listed one (none for
@@ -3224,19 +3242,16 @@ impl Game {
             }
             if let Some(a) = &l.auction {
                 if let Some(b) = &a.high {
-                    let text =
-                        format!("Refund: auction #{id} ended ({organism} is no longer alive), {} back", b.amount);
+                    let why = self.why_unlisted(organism);
+                    let text = format!("Refund: auction #{id} ended ({organism} {why}), {} back", b.amount);
                     let _ = self.post(b.bidder, b.amount as i64, LedgerKind::Refund, text, None, Some(id));
-                    let text = format!(
-                        "Auction #{id} ended: #{organism} is no longer alive; your {} renown is refunded.",
-                        b.amount
-                    );
+                    let text = format!("Auction #{id} ended: #{organism} {why}; your {} renown is refunded.", b.amount);
                     self.alert(b.bidder, AlertKind::Market, text, Some(organism), out);
                 }
                 self.record_auction(&l, "ended", None);
             }
             let text = if dead {
-                format!("Listing #{id} closed: #{organism} is no longer alive.")
+                format!("Listing #{id} closed: #{organism} {}.", self.why_unlisted(organism))
             } else {
                 format!("Listing #{id} of #{organism} expired.")
             };
@@ -3366,6 +3381,18 @@ impl Game {
         let gone = [o.mine, o.partner].into_iter().find(|&id| self.world.organism(id).is_none());
         let result = if let Some(id) = gone {
             let info = self.gone(id);
+            // The requester's animal died after acceptance: the agreement
+            // waits for another (`buyer_lost`), it doesn't fail refunded.
+            if o.status == OfferStatus::Accepted && id == o.mine && self.world.organism(o.partner).is_some() {
+                return Err(ErrorInfo::new(
+                    "lost",
+                    format!(
+                        "#{} {}: send another animal (`substitute_mating`) or cancel",
+                        o.mine,
+                        o.lost.as_deref().unwrap_or("died")
+                    ),
+                ));
+            }
             self.close(request, OfferStatus::Failed, None, Some(info.clone()), out);
             return Err(info);
         } else if partner_ok {
@@ -3576,20 +3603,33 @@ impl Game {
     fn lapse(&mut self, id: u64, out: &mut Outbox) {
         let o = self.offers[&id].clone();
         let forfeit = self.forfeit_hold(id, "the buyer never came");
-        let info = ErrorInfo::new(
-            "lapsed",
-            format!("#{} never came to #{} within the deadline: the agreement lapsed; {forfeit}", o.mine, o.partner),
-        );
+        let what = match &o.lost {
+            Some(how) => format!("#{} {how} and no other animal came to #{} within the deadline", o.mine, o.partner),
+            None => format!("#{} never came to #{} within the deadline", o.mine, o.partner),
+        };
+        let info = ErrorInfo::new("lapsed", format!("{what}: the agreement lapsed; {forfeit}"));
         self.close(id, OfferStatus::Expired, None, Some(info), out);
     }
 
     /// What the requester of accepted agreement `id` pays for having held
     /// the partner's dam and not mating: [`LAPSE_FEE_PERCENT`] of the
-    /// escrowed price (at least 1) to the partner's owner, or a mating slot
+    /// escrowed price (at least [`LAPSE_FEE_MIN`], at most all of it) to the
+    /// partner's owner, or a mating slot
     /// when nothing was paid. Taken from the escrow before it closes, so the
     /// rest is refunded. Says what was forfeit.
     fn forfeit_hold(&mut self, id: u64, why: &str) -> String {
         let o = self.offers[&id].clone();
+        if o.excused {
+            return format!(
+                "nothing is forfeit: #{} was lost through no fault of {} ({})",
+                o.mine,
+                self.name(o.from),
+                o.lost.as_deref().unwrap_or("died")
+            );
+        }
+        if o.partner_slept {
+            return format!("nothing is forfeit: {}'s #{} slept through part of it", self.name(o.to), o.partner);
+        }
         let fee = if o.escrow > 0 { (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN).min(o.escrow) } else { 0 };
         if fee > 0 {
             self.offers.get_mut(&id).unwrap().escrow -= fee;
@@ -3630,6 +3670,19 @@ impl Game {
             if minutes == 1.0 { "" } else { "s" }
         );
         self.alert_push(o.from, AlertKind::Market, Some(PushKind::Market), text, Some(o.mine), out);
+    }
+
+    /// Why listed organism `id` left its owner's hands: joined another
+    /// player's lineage, died (how), or left the world with a retired
+    /// lineage (playtest 5: retired animals read "no longer alive").
+    fn why_unlisted(&self, id: OrgId) -> String {
+        if let Some(o) = self.world.organism(id) {
+            return format!("joined {}'s lineage", self.name(o.owner));
+        }
+        if self.world.organisms.iter().any(|o| o.id == id && !o.alive) {
+            return self.gone(id).message.replace(&format!("organism {id} "), "").replace(" before the mating", "");
+        }
+        "left the world with its retired lineage".to_string()
     }
 
     /// Error for an offer's organism that is no longer alive: how it died
@@ -3779,7 +3832,119 @@ impl Game {
             expires_tick: o.status.is_open().then(|| self.offer_deadline(o)),
             lineage: o.lineage.filter(|_| o.partner == 0),
             meet: (o.status == OfferStatus::Accepted).then(|| self.meet_view(o)).flatten(),
+            lost: o.lost.clone().filter(|_| o.status == OfferStatus::Accepted),
         }
+    }
+
+    /// Accepted agreement `id`'s requester animal is dead: the first time,
+    /// say how and that another may be sent; at the deadline it lapses
+    /// (forfeiting the hold fee unless the loss was outside the
+    /// requester's control). Playtest 5: every purchase failed with a full
+    /// refund when the buyer's animal died, which also held a dam for free.
+    fn buyer_lost(&mut self, id: u64, due: bool, out: &mut Outbox) {
+        let o = self.offers[&id].clone();
+        if o.lost.is_none() {
+            let cause = self.world.organisms.iter().find(|x| x.id == o.mine && !x.alive).and_then(|x| x.death);
+            let how = self
+                .gone(o.mine)
+                .message
+                .replace(&format!("organism {} ", o.mine), "")
+                .replace(" before the mating", "");
+            let excused = matches!(
+                cause,
+                Some(
+                    DeathCause::Predation
+                        | DeathCause::Disease
+                        | DeathCause::Recessive
+                        | DeathCause::Attrition
+                        | DeathCause::WinterSleep
+                        | DeathCause::Journey
+                )
+            );
+            let x = self.offers.get_mut(&id).unwrap();
+            x.lost = Some(how.clone());
+            x.excused = excused;
+            x.meet = None;
+            self.world.clear_rendezvous(o.partner);
+            let minutes =
+                (self.offer_deadline(&o).saturating_sub(self.world.tick()) as f64 * self.cfg.tick_ms / 60_000.0).ceil();
+            let fee = if excused {
+                "nothing is forfeit if none comes"
+            } else {
+                "else the hold fee is forfeit at the deadline"
+            };
+            let text = format!(
+                "Your #{} {how} on the way to {}: send another animal for agreement #{id} within about {minutes:.0} minutes, or cancel ({fee}).",
+                o.mine,
+                self.partner_text(&o)
+            );
+            self.alert_push(o.from, AlertKind::Market, Some(PushKind::Market), text, None, out);
+            let text = format!(
+                "{}'s #{} {how} on the way to your #{}: they may send another animal before the deadline.",
+                self.name(o.from),
+                o.mine,
+                o.partner
+            );
+            self.alert(o.to, AlertKind::Market, text, Some(o.partner), out);
+            let view = self.offer_view(id);
+            for p in [o.from, o.to] {
+                out.push((
+                    Target::Player(p),
+                    ServerMsg::MatingUpdate { offer: view.clone(), outcome: None, error: None },
+                ));
+            }
+        }
+        if due {
+            self.lapse(id, out);
+        }
+    }
+
+    /// `substitute_mating`: the requester of an accepted agreement whose
+    /// animal died sends `mine` instead (the same checks as a purchase).
+    fn substitute_mating(
+        &mut self,
+        player: PlayerId,
+        request: u64,
+        mine: OrgId,
+        out: &mut Outbox,
+    ) -> Result<Option<serde_json::Value>, ErrorInfo> {
+        let o = self.offer_for(request, player)?;
+        if o.from != player || o.status != OfferStatus::Accepted {
+            return Err(ErrorInfo::new(
+                "not_substitutable",
+                "only the requester of an accepted agreement can send another animal",
+            ));
+        }
+        if self.world.organism(o.mine).is_some() {
+            return Err(ErrorInfo::new(
+                "not_substitutable",
+                format!("#{} is still alive: it is the one going", o.mine),
+            ));
+        }
+        match self.check_cross_pair(player, mine, o.partner) {
+            Ok(_) => {}
+            Err(e) if e.code == "too_many_offers" => {}
+            Err(e) => return Err(e),
+        }
+        self.check_auction_lock(mine)?;
+        if self.offers.values().any(|x| x.id != request && x.status.is_open() && (x.mine == mine || x.partner == mine))
+        {
+            return Err(ErrorInfo::new("organism_busy", format!("#{mine} is already promised in an open agreement")));
+        }
+        let x = self.offers.get_mut(&request).unwrap();
+        let old = x.mine;
+        x.mine = mine;
+        x.lost = None;
+        x.excused = false;
+        x.meet = None;
+        self.start_rendezvous(request);
+        self.sync_focus();
+        let o = self.offers[&request].clone();
+        let text = format!("{} sends #{mine} instead of #{old} to your #{}.", self.name(player), o.partner);
+        self.alert(o.to, AlertKind::Market, text, Some(o.partner), out);
+        let view = self.offer_view(request);
+        let _ = self.execute(request, out);
+        Ok(Some(serde_json::json!({ "offer": view })))
     }
 
     /// Walk an accepted agreement's pair to its meeting point, fixing the
@@ -3821,7 +3986,7 @@ impl Game {
             distance: a.pos.dist(b.pos).round(),
             meet_x: o.meet.map(|m| coarse(m.0)),
             meet_y: o.meet.map(|m| coarse(m.1)),
-            asleep: asleep(a) && asleep(b),
+            asleep: asleep(a) || asleep(b),
             possessed: a.possessed_by.is_some() || b.possessed_by.is_some(),
         })
     }
@@ -3847,14 +4012,24 @@ impl Game {
         for id in open {
             let o = &self.offers[&id];
             let (accepted, mine, partner) = (o.status == OfferStatus::Accepted, o.mine, o.partner);
-            // Both asleep (hibernating, brumating, estivating): the meeting
-            // waits for them, and so does its deadline.
+            // Either asleep (hibernating, brumating, estivating): the
+            // meeting waits, and so does its deadline (for at most
+            // `HOLD_MAX_DAYS`). The partner sleeping while the requester's
+            // animal is awake excuses a lapse.
             let asleep = |id: OrgId| {
                 self.world.organism(id).is_some_and(|x| matches!(x.dormancy, Dormancy::Winter | Dormancy::Summer))
             };
-            if accepted && asleep(mine) && asleep(partner) {
+            let (sa, sb) = (asleep(mine), asleep(partner));
+            let pause_cap = HOLD_MAX_DAYS * self.world.config.ticks_per_day as u64;
+            if accepted && (sa || sb) {
                 let o = self.offers.get_mut(&id).unwrap();
-                o.accepted_tick = Some(o.accepted_tick.unwrap_or(o.created_tick).saturating_add(1));
+                if o.paused < pause_cap {
+                    o.paused += 1;
+                    o.accepted_tick = Some(o.accepted_tick.unwrap_or(o.created_tick).saturating_add(1));
+                }
+                if sb && !sa {
+                    o.partner_slept = true;
+                }
             }
             let o = &self.offers[&id];
             let deadline = self.offer_deadline(o);
@@ -3884,6 +4059,9 @@ impl Game {
                 }
                 (Some(_), Some(_)) if warn => self.warn_expiry(id, deadline - tick, &mut out),
                 (Some(_), Some(_)) => {}
+                // The requester's animal died on the way: they may send
+                // another within the deadline (`substitute_mating`).
+                (None, Some(_)) if accepted => self.buyer_lost(id, due, &mut out),
                 _ if open_lineage && self.world.organism(mine).is_some() => {
                     let info = ErrorInfo::new("lineage_gone", "the lineage has no living animals left");
                     self.close(id, OfferStatus::Failed, None, Some(info), &mut out);
@@ -7805,8 +7983,9 @@ mod tests {
         // (The lineage may have grown past the size limit; only the window is checked here.)
     }
 
-    /// A provision feeds and waters a small lineage's neediest adults for
-    /// 40 renown, at most 3 within a season's length, never a large one.
+    /// A provision feeds and waters a lineage's neediest adults, priced per
+    /// adult fed (more for a large lineage), at most 3 within a season's
+    /// length.
     #[test]
     fn a_provision_feeds_a_small_lineage() {
         let (mut g, _, _) = game();
@@ -7821,7 +8000,7 @@ mod tests {
         let d = data(&g.command(10, 1, None, ClientMsg::Provision));
         let fed = d["fed"].as_u64().unwrap() as usize;
         assert!(fed > 0 && fed <= economy::PROVISION_SIZE);
-        assert_eq!(g.balance(1), before - economy::PROVISION_PRICE);
+        assert_eq!(g.balance(1), before - economy::PROVISION_PER_ANIMAL * fed as u64, "priced per adult fed");
         let full = g.world.organisms.iter().filter(|o| o.lineage == l && o.needs.hunger <= 30.0 + 1e-3).count();
         assert_eq!(full, fed, "the fed are 50 less hungry");
         assert!(g.world.organisms.iter().filter(|o| o.lineage == l).all(|o| o.needs.thirst <= 70.0));
@@ -7832,14 +8011,20 @@ mod tests {
         let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
         assert_eq!((shop.provisions_bought, shop.provisions_max), (3, 3));
         assert!(shop.provision_blocked.is_some());
-        // A large lineage can't buy one.
+        // A large lineage pays more per adult, and feeds more of them.
         g.economy.provision_days.clear();
         g.world.config.lineage_cap = 5;
-        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Provision)).1.as_deref(), Some("too_large"));
+        let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
+        let before = g.balance(1);
+        let d = data(&g.command(10, 1, None, ClientMsg::Provision));
+        let fed = d["fed"].as_u64().unwrap();
+        assert_eq!(fed as usize, shop.provision_size);
+        assert_eq!(g.balance(1), before - economy::PROVISION_PER_ANIMAL_LARGE * fed);
+        assert_eq!(shop.provision_price, economy::PROVISION_PER_ANIMAL_LARGE * fed);
     }
 
-    /// A dam is listed or auctioned for at least [`DAM_MIN_FEE`] (a free
-    /// listing held her for nothing), a stud for anything; a hold lasts at
+    /// Any animal is listed or auctioned for at least [`LISTING_MIN_FEE`] (a
+    /// free listing held it for nothing); a hold lasts at
     /// most [`HOLD_MAX_DAYS`] simulated days, whatever the clock.
     #[test]
     fn dam_listings_have_a_floor_and_holds_a_cap() {
@@ -7852,10 +8037,10 @@ mod tests {
             g.command(10, 1, None, ClientMsg::CreateAuction { organism: fa, reserve: 4, days: Some(2), ticks: None });
         assert_eq!(result(&out).1.as_deref(), Some("bad_price"));
         let out =
-            g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: DAM_MIN_FEE, expires_days: None });
+            g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: LISTING_MIN_FEE, expires_days: None });
         assert_eq!(result(&out), (true, None));
-        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 0, expires_days: None });
-        assert_eq!(result(&out), (true, None), "a stud may go for free");
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 1, expires_days: None });
+        assert_eq!(result(&out).1.as_deref(), Some("bad_price"), "a stud too (playtest 5: a 1-renown stud-lock)");
         g.cfg.purchase_deadline_ticks = u64::MAX / 4;
         let o = Offer {
             id: 1,
@@ -7873,6 +8058,10 @@ mod tests {
             warned: false,
             lineage: None,
             meet: None,
+            lost: None,
+            excused: false,
+            partner_slept: false,
+            paused: 0,
         };
         let tpd = g.world.config.ticks_per_day as u64;
         assert_eq!(g.offer_deadline(&o), 100 + HOLD_MAX_DAYS * tpd);
@@ -8091,6 +8280,11 @@ mod tests {
             let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: look_alike });
             assert_eq!(result(&out).1.as_deref(), Some("name_taken"));
         }
+        // Its own name again is refused, not charged.
+        let own = g.world.chronicle.species.get(id).unwrap().name.clone();
+        let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: own });
+        assert_eq!(result(&out).1.as_deref(), Some("same_name"));
+        assert_eq!(g.balance(1), before);
         let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: "Queen's grazers".into() });
         assert_eq!(result(&out), (true, None));
         assert_eq!(g.balance(1), before - economy::SPECIES_NAME_PRICE);
@@ -8197,7 +8391,7 @@ mod tests {
         let (mut g, a, _) = game();
         let ma = male(&g, &a);
         let out =
-            g.command(10, 1, None, ClientMsg::CreateAuction { organism: ma, reserve: 1, days: None, ticks: Some(1) });
+            g.command(10, 1, None, ClientMsg::CreateAuction { organism: ma, reserve: 5, days: None, ticks: Some(1) });
         let l = &data(&out)["listing"];
         let deadline = l["expires_tick"].as_u64().unwrap();
         assert_eq!(deadline - g.world.tick(), g.cfg.min_auction_ticks);
@@ -8437,7 +8631,7 @@ mod tests {
         assert_eq!(listing.expires_tick, Some(g.world.tick() + 30 * g.world.config.ticks_per_day as u64));
         assert_eq!(listing.traits.len(), LISTING_TRAITS.len());
         assert!(listing.traits.iter().any(|t| t.gene == "body_size"));
-        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 1, expires_days: None });
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 5, expires_days: None });
         assert_eq!(result(&out).1.as_deref(), Some("already_listed"));
         // Bob browses with his female: compatibility is shown; Ann sees no preview of her own.
         let out = g.command(20, 2, None, ClientMsg::BrowseMarket(MarketQuery { mine: Some(fb), ..Default::default() }));
@@ -8474,14 +8668,14 @@ mod tests {
         assert_eq!(g.economy.listings[&listing.id].sales, 1);
         // The buyer's female waits for the stud (the listing is consent).
         assert!(g.world.organism(fb).unwrap().breed_ready_tick > g.world.tick());
-        // A stud may serve several buyers: the listing stays open (but the
-        // same buyer's organism can't be promised twice).
+        // The listing stays open, but the stud walks to one meeting at a
+        // time: busy until this one is done.
         let m: MarketView =
             serde_json::from_value(data(&g.command(20, 2, None, ClientMsg::BrowseMarket(MarketQuery::default()))))
                 .unwrap();
-        assert!(!m.listings[0].busy);
+        assert!(m.listings[0].busy);
         let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: listing.id, mine: fb });
-        assert_eq!(result(&out).1.as_deref(), Some("organism_busy"));
+        assert_eq!(result(&out).1.as_deref(), Some("listing_busy"));
         assert_eq!(g.balance(2), start - 12);
         // They meet: the mating runs on the buyer's slot and Ann is paid.
         place_together(&mut g, ma, fb);
@@ -8561,14 +8755,14 @@ mod tests {
             o.death = Some(DeathCause::Predation);
             let out = g.after_tick();
             assert!(!g.economy.listings.contains_key(&l));
-            assert!(alerts_in(&out, 1).iter().any(|x| x.text.contains("no longer alive")));
+            assert!(alerts_in(&out, 1).iter().any(|x| x.text.contains("was eaten")));
         }
         // Too many listings.
         let ids: Vec<OrgId> =
             g.world.organisms.iter().filter(|o| o.alive && o.owner == 1 && o.matured).map(|o| o.id).collect();
         let mut refused = None;
         for id in ids {
-            let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: id, fee: 1, expires_days: None });
+            let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: id, fee: 5, expires_days: None });
             if let (false, Some(code)) = result(&out) {
                 if code != "already_listed" {
                     refused = Some(code);
@@ -8749,7 +8943,7 @@ mod tests {
         let organism = g.economy.listings[&gone].organism;
         let out = g.command(owner as u64 * 10, owner, None, ClientMsg::WithdrawListing { listing: gone });
         assert_eq!(result(&out), (true, None));
-        let relisted = ClientMsg::CreateListing { organism, fee: 1, expires_days: None };
+        let relisted = ClientMsg::CreateListing { organism, fee: 5, expires_days: None };
         assert_eq!(result(&g.command(owner as u64 * 10, owner, None, relisted)), (true, None));
         let second = browse(
             &mut g,
@@ -8870,7 +9064,7 @@ mod tests {
         }
         assert_eq!(result(&create(&mut g, economy::MAX_PRICE + 1, None, Some(5))).1.as_deref(), Some("bad_price"));
         let out =
-            g.command(20, 2, None, ClientMsg::CreateAuction { organism: ma, reserve: 1, days: None, ticks: None });
+            g.command(20, 2, None, ClientMsg::CreateAuction { organism: ma, reserve: 5, days: None, ticks: None });
         assert_eq!(result(&out).1.as_deref(), Some("not_owned"));
         let out = create(&mut g, 10, None, Some(6));
         let l: ListingView = serde_json::from_value(data(&out)["listing"].clone()).unwrap();
@@ -9063,7 +9257,7 @@ mod tests {
             10,
             1,
             None,
-            ClientMsg::CreateAuction { organism: ma, reserve: 4, days: None, ticks: Some(3) },
+            ClientMsg::CreateAuction { organism: ma, reserve: 5, days: None, ticks: Some(3) },
         ))["listing"]["id"]
             .as_u64()
             .unwrap();
@@ -9077,7 +9271,7 @@ mod tests {
         assert_eq!((r.balance(2), r.escrow(2)), (g.balance(2), 6));
         assert_eq!(r.ledger(2, 1)[0].delta, -6);
         let a = r.economy.listings[&l].auction.clone().unwrap();
-        assert_eq!((a.reserve, a.bids, a.high.map(|b| (b.bidder, b.amount, b.mine))), (4, 1, Some((2, 6, fb))));
+        assert_eq!((a.reserve, a.bids, a.high.map(|b| (b.bidder, b.amount, b.mine))), (5, 1, Some((2, 6, fb))));
         // It settles in the restored game.
         r.connect(10, 1, "ann");
         r.connect(20, 2, "bob");
@@ -9265,9 +9459,9 @@ mod tests {
     /// the season ended.)
     #[test]
     fn a_bought_listing_lapses_when_the_buyer_never_comes() {
-        // A dam is listed for at least [`DAM_MIN_FEE`]; the hold fee is a
+        // A dam is listed for at least [`LISTING_MIN_FEE`]; the hold fee is a
         // quarter of it, at least [`LAPSE_FEE_MIN`] (so all of a cheap one).
-        for fee in [20u64, DAM_MIN_FEE] {
+        for fee in [20u64, LISTING_MIN_FEE] {
             let (mut g, a, b) = game();
             g.cfg.purchase_deadline_ticks = 5;
             let (dam, stud) = (female(&g, &a), male(&g, &b));
@@ -9310,6 +9504,122 @@ mod tests {
                     || g.world.organism(dam).unwrap().pregnancy.is_some()
             );
         }
+    }
+
+    /// A buyer whose animal dies on the way may send another before the
+    /// deadline; if none comes, the hold fee is forfeit unless the loss was
+    /// outside their control (eaten). Playtest 5: the buyer's animal dying
+    /// refunded everything, a free dam-lock, and failed every purchase.
+    #[test]
+    fn a_buyer_whose_animal_dies_may_send_another_or_pays_the_hold() {
+        for (cause, excused) in [(DeathCause::Thirst, false), (DeathCause::Predation, true)] {
+            let (mut g, a, b) = game();
+            g.cfg.purchase_deadline_ticks = 30;
+            let dam = female(&g, &a);
+            let studs: Vec<OrgId> =
+                b.iter().copied().filter(|&i| g.world.organism(i).unwrap().sex == Sex::Male).take(2).collect();
+            not_pregnant(&mut g, &[dam]);
+            let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: dam, fee: 20, expires_days: None });
+            let listing = data(&out)["listing"]["id"].as_u64().unwrap();
+            g.economy.balances.insert(2, 100);
+            // Far apart: they mustn't meet in the test.
+            g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(4.0, 4.0);
+            for &s in &studs {
+                g.world.organisms.iter_mut().find(|o| o.id == s).unwrap().pos = Vec2::new(60.0, 60.0);
+            }
+            let out = g.command(20, 2, None, ClientMsg::BuyListing { listing, mine: studs[0] });
+            assert!(result(&out).0, "{out:?}");
+            let id = *g.offers.keys().next().unwrap();
+            let die = |g: &mut Game, s: OrgId| {
+                let o = g.world.organisms.iter_mut().find(|o| o.id == s).unwrap();
+                o.alive = false;
+                o.death = Some(cause);
+            };
+            die(&mut g, studs[0]);
+            g.world.step();
+            let out = g.after_tick();
+            assert!(g.offers.contains_key(&id), "the agreement waits for another animal");
+            assert!(g.offers[&id].lost.is_some());
+            assert!(alerts_in(&out, 2).iter().any(|x| x.text.contains("send another animal")), "{out:?}");
+            assert!(g.offer_view(id).lost.is_some());
+            // Bob sends his second male.
+            let out = g.command(20, 2, None, ClientMsg::SubstituteMating { request: id, mine: studs[1] });
+            assert!(result(&out).0, "{out:?}");
+            assert_eq!((g.offers[&id].mine, g.offers[&id].lost.as_deref()), (studs[1], None));
+            let out = g.command(20, 2, None, ClientMsg::SubstituteMating { request: id, mine: studs[1] });
+            assert_eq!(result(&out).1.as_deref(), Some("not_substitutable"), "only for a lost animal");
+            // It dies too, and nobody else comes: the agreement lapses.
+            die(&mut g, studs[1]);
+            for _ in 0..40 {
+                g.world.step();
+                g.after_tick();
+            }
+            assert!(!g.offers.contains_key(&id));
+            let entry = |p: PlayerId, kind: LedgerKind| {
+                g.ledger(p, 50).into_iter().find(|e| e.kind == kind && e.offer == Some(id)).map(|e| e.delta)
+            };
+            if excused {
+                assert_eq!(
+                    (entry(1, LedgerKind::Sale), entry(2, LedgerKind::Refund)),
+                    (None, Some(20)),
+                    "eaten: no fault"
+                );
+            } else {
+                assert_eq!(
+                    (entry(1, LedgerKind::Sale), entry(2, LedgerKind::Refund)),
+                    (Some(5), Some(15)),
+                    "{cause:?}"
+                );
+            }
+        }
+    }
+
+    /// A pending request naming a listed animal doesn't make it busy (a
+    /// free request blocked a listed dam for its 10 minutes); the deadline
+    /// waits while either animal sleeps, and a lapse doesn't charge the
+    /// buyer for the seller's animal sleeping.
+    #[test]
+    fn pending_requests_dont_block_listings_and_one_sleeper_pauses_the_deadline() {
+        let (mut g, a, b) = game();
+        let (dam, stud) = (female(&g, &a), male(&g, &b));
+        not_pregnant(&mut g, &[dam]);
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: dam, fee: 20, expires_days: None });
+        let listing = data(&out)["listing"]["id"].as_u64().unwrap();
+        in_sight_of(&mut g, stud, dam);
+        let out = g.command(20, 2, None, ClientMsg::RequestMating { mine: stud, partner: dam, price: Some(0) });
+        assert!(result(&out).0, "{out:?}");
+        let l = g.economy.listings[&listing].clone();
+        assert!(!g.listing_busy(&l), "a pending request holds nothing");
+        for id in g.offers.keys().copied().collect::<Vec<_>>() {
+            g.command(20, 2, None, ClientMsg::CancelMating { request: id });
+        }
+        // A purchase, the seller's dam asleep and the buyer's stud awake.
+        g.cfg.purchase_deadline_ticks = 5;
+        g.economy.balances.insert(2, 100);
+        g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(4.0, 4.0);
+        g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = Vec2::new(60.0, 60.0);
+        let out = g.command(20, 2, None, ClientMsg::BuyListing { listing, mine: stud });
+        assert!(result(&out).0, "{out:?}");
+        let id = *g.offers.keys().next().unwrap();
+        let before = g.offer_deadline(&g.offers[&id]);
+        for _ in 0..3 {
+            g.world.step();
+            g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().dormancy = Dormancy::Winter;
+            g.after_tick();
+        }
+        assert!(g.offer_deadline(&g.offers[&id]) >= before + 3, "the deadline waited");
+        assert!(g.offers[&id].partner_slept);
+        g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().dormancy = Dormancy::Awake;
+        for _ in 0..12 {
+            g.world.organisms.iter_mut().find(|o| o.id == dam).unwrap().pos = Vec2::new(4.0, 4.0);
+            g.world.organisms.iter_mut().find(|o| o.id == stud).unwrap().pos = Vec2::new(60.0, 60.0);
+            g.world.step();
+            g.after_tick();
+        }
+        assert!(!g.offers.contains_key(&id), "it lapsed");
+        let refund =
+            g.ledger(2, 50).into_iter().find(|e| e.kind == LedgerKind::Refund && e.offer == Some(id)).map(|e| e.delta);
+        assert_eq!(refund, Some(20), "the buyer pays nothing for the seller's dam sleeping");
     }
 
     /// Cancelling a bought dam before the deadline isn't a free hold: the
@@ -9529,7 +9839,7 @@ mod tests {
         // offer; the distance to one out of sight is rounded up to 16 tiles.
         let stud = male(&g, &b);
         assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
-        let out = g.command(20, 2, Some(9), ClientMsg::CreateListing { organism: stud, fee: 0, expires_days: None });
+        let out = g.command(20, 2, Some(9), ClientMsg::CreateListing { organism: stud, fee: 5, expires_days: None });
         assert!(result(&out).0, "{out:?}");
         let p = g.preview_mating(1, dam, stud).unwrap();
         assert_eq!(p.distance % 16.0, 0.0, "{}", p.distance);

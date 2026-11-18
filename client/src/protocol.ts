@@ -78,6 +78,7 @@ export type ClientMsg =
   /** Reinforcements for a small lineage (adults copied from its own); data: `{ added: OrgId[], shop: ShopView }`. */
   | { type: 'reinforce' }
   | { type: 'provision' }
+  | { type: 'substitute_mating'; request: number; mine: OrgId }
   /** Which lineages yours can breed with; data: `CompatibilityView`. */
   | { type: 'compatibility' }
   /** Offer a mating of your `mine` with any suitable animal of another player's lineage (its owner picks); data: `{ offer }`. */
@@ -198,6 +199,8 @@ export interface OfferView {
     /** One is possessed: the other only walks to the meeting point and waits. */
     possessed?: boolean;
   };
+  /** The requester's animal died after acceptance (how): they may send another (`substitute_mating`) before `expires_tick`. */
+  lost?: string;
 }
 
 export interface WeatherView {
@@ -1081,6 +1084,8 @@ export interface ShopView {
   species_name_price?: number;
   /** A provision (a sink for small lineages): its price, provisions within the rolling window and the most allowed, and why not now. */
   provision_price?: number;
+  /** Adults a provision would feed now (the price is per adult). */
+  provision_size?: number;
   provisions_bought?: number;
   provisions_max?: number;
   provision_blocked?: string;

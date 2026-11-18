@@ -271,10 +271,15 @@ pub enum ClientMsg {
     /// share fertile), the drift risk, and the body-plan gene that keeps
     /// you apart. Data: [`CompatibilityView`].
     Compatibility,
-    /// A provision for a small lineage (40 renown): its 20 hungriest or
-    /// thirstiest adults get 50 off hunger and thirst. Only while at most a
-    /// fifth of the soft lineage cap is alive, at most 3 within a ranked
-    /// season's length. Data: `{fed, shop}`.
+    /// The requester of an accepted agreement whose animal died sends
+    /// `mine` instead, within the deadline (the same checks as buying).
+    /// Data: `{offer}`.
+    SubstituteMating { request: u64, mine: OrgId },
+    /// A provision: the lineage's hungriest or thirstiest adults get 50 off
+    /// hunger and thirst, 2 renown each (20 adults) while at most a fifth of
+    /// the soft lineage cap is alive, else 4 each (20 per fifth of the cap
+    /// alive, at most 200); at most 3 within a ranked season's length.
+    /// Data: `{fed, shop}`.
     Provision,
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
@@ -356,6 +361,7 @@ impl ClientMsg {
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
             ClientMsg::Provision => "provision",
+            ClientMsg::SubstituteMating { .. } => "substitute_mating",
             ClientMsg::SetNameplate { .. } => "set_nameplate",
             ClientMsg::NameSpecies { .. } => "name_species",
             ClientMsg::Nameplates => "nameplates",
@@ -407,6 +413,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "name_species",
     "nameplates",
     "provision",
+    "substitute_mating",
     "end_grace",
 ];
 
@@ -1034,6 +1041,10 @@ pub struct OfferView {
     /// of 8-tile cells) and how far apart. They walk to meet on their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meet: Option<MeetView>,
+    /// The requester's animal died after acceptance (how): they may send
+    /// another with `substitute_mating` before `expires_tick`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost: Option<String>,
 }
 
 /// `OfferView::meet`.
@@ -1811,6 +1822,9 @@ pub struct ShopView {
     /// the rolling window and the most allowed, and why not now.
     #[serde(default)]
     pub provision_price: u64,
+    /// Adults a provision would feed now (the price is per adult).
+    #[serde(default)]
+    pub provision_size: usize,
     #[serde(default)]
     pub provisions_bought: u32,
     #[serde(default)]

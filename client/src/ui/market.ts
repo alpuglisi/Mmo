@@ -301,7 +301,13 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       compatEl2.dataset.level = c.level;
     }
     const sterile = card.querySelector<HTMLElement>('.sterile');
-    if (sterile) sterile.hidden = l.compatible !== false;
+    if (sterile) {
+      sterile.hidden = l.compatible !== false;
+      const f = l.body_plan_fertility;
+      setText(sterile, `Sterile with your lineage: body plans too different${f !== undefined ? ` (mean fertility ${Math.round(f * 100)}% over sampled pairs; warm and cold blood, diet, birth mode or size apart)` : ''}.`);
+    }
+    // A sterile listing offers no Buy or Bid at all, only the reason.
+    for (const b of card.querySelectorAll<HTMLElement>('.buy, .bid, .bid-amount')) b.hidden = l.compatible === false;
     let problem: string | null = null;
     if (isOwn) {
       const btn = card.querySelector<HTMLButtonElement>('.withdraw')!;
@@ -404,7 +410,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const provNote = h('span', { class: 'muted small' });
   provBtn.addEventListener('click', async () => {
     const s = shop;
-    if (s && !window.confirm(`Buy a provision for ${s.provision_price} renown? Your lineage's 20 hungriest or thirstiest adults get 50 off their hunger and thirst, once.`)) return;
+    if (s && !window.confirm(`Buy a provision for ${s.provision_price} renown? Your lineage's ${s.provision_size ?? 20} hungriest or thirstiest adults get 50 off their hunger and thirst, once.`)) return;
     const r = await deps.send({ type: 'provision' });
     if (r.ok) {
       const d = r.data as { fed?: number; shop?: unknown } | undefined;
@@ -468,9 +474,10 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     provRow.hidden = s.provision_price === undefined;
     if (s.provision_price !== undefined) {
       provBtn.disabled = s.provision_blocked !== undefined || s.balance < s.provision_price;
-      provBtn.title = s.provision_blocked ?? 'The 20 neediest adults get 50 off hunger and thirst';
-      setText(provBtn, `Provision (20 adults fed): ${s.provision_price} renown`);
-      setText(provNote, s.provision_blocked ?? `For lineages of at most ${s.reinforce_max_alive}; at most ${s.provisions_max ?? '?'} a ranked season (${s.provisions_bought ?? 0} bought).`);
+      const n = s.provision_size ?? 20;
+      provBtn.title = s.provision_blocked ?? `The ${n} neediest adults get 50 off hunger and thirst`;
+      setText(provBtn, `Provision (${n} adults fed): ${s.provision_price} renown`);
+      setText(provNote, s.provision_blocked ?? `Priced per adult fed (twice as much above ${s.reinforce_max_alive} alive); at most ${s.provisions_max ?? '?'} a ranked season (${s.provisions_bought ?? 0} bought).`);
     }
     renderNameplate(s);
   }

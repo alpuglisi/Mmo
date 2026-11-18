@@ -1672,6 +1672,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         h('div', { class: 'row' },
           accepted && h('button', { onclick: () => void send({ type: 'complete_mating', request: e.offer.id }) }, 'Complete now'),
           accepted && h('button', { class: 'secondary', title: 'Possess your organism and walk it to the partner (if the partner is in sight)', onclick: () => void escort(mineId, e.offer.from_player === me ? e.offer.partner : e.offer.mine) }, `Escort #${mineId}`),
+          accepted && e.offer.from_player === me && h('select', { class: 'sub-pick', hidden: true, 'aria-label': 'Send another animal' }),
+          accepted && e.offer.from_player === me && h('button', { class: 'sub-send', hidden: true, onclick: async () => {
+            const pick = document.querySelector<HTMLSelectElement>(`[data-offer="${e.offer.id}"] .sub-pick`);
+            const mine = Number(pick?.value);
+            if (!mine) return;
+            const r = await send({ type: 'substitute_mating', request: e.offer.id, mine });
+            if (r.error && !LOCAL_CODES.has(r.error.code)) model.toast('error', friendlyError(r.error));
+          } }, 'Send this one instead'),
           h('button', { class: 'secondary', onclick: () => void send({ type: 'cancel_mating', request: e.offer.id }) }, 'Cancel')));
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
@@ -1679,7 +1687,28 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const note = row.querySelector<HTMLElement>('.offer-note');
       if (note) {
         const mineId = e.offer.from_player === me ? e.offer.mine : e.offer.partner;
-        setText(note, `Agreed${e.error ? ` (${friendlyError(e.error)})` : ''}: escort #${mineId} to the partner; it completes when they meet.`);
+        const lost = e.offer.lost;
+        setText(note, lost && e.offer.from_player === me
+          ? `Your #${e.offer.mine} ${lost}: send another adult before the deadline, or cancel.`
+          : lost ? `Their #${e.offer.mine} ${lost}: they may send another before the deadline.`
+            : `Agreed${e.error ? ` (${friendlyError(e.error)})` : ''}: escort #${mineId} to the partner; it completes when they meet.`);
+      }
+      const subPick = row.querySelector<HTMLSelectElement>('.sub-pick');
+      const subSend = row.querySelector<HTMLElement>('.sub-send');
+      if (subPick && subSend) {
+        const show = !!e.offer.lost;
+        subPick.hidden = !show;
+        subSend.hidden = !show;
+        if (show && document.activeElement !== subPick) {
+          const adults = (s?.organisms ?? []).filter((o) => o.matured && !o.pregnant).slice(0, 200);
+          const key = adults.map((o) => o.id).join(',');
+          if (subPick.dataset.key !== key) {
+            const keep = subPick.value;
+            subPick.dataset.key = key;
+            subPick.replaceChildren(...adults.map((o) => h('option', { value: o.id }, `#${o.id} ${o.sex} · gen ${o.generation}`)));
+            if ([...subPick.options].some((x) => x.value === keep)) subPick.value = keep;
+          }
+        }
       }
     });
     const done = historyRows(closed, model.matingLog);
