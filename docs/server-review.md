@@ -38,7 +38,7 @@ The coordinator decided on four items this review first only reported. Each now 
 | Severity | Finding | Why not fixed |
 | --- | --- | --- |
 | Info | A seller can directed-mate their own listed dam (directed matings ignore breeding holds). A buyer's pending agreement then fails and is refunded. | The seller's own loss. |
-| Info | `command_migrate_group` accepts a group id with no members, and the order waits for that id. | Harmless: a split clears the new group's orders. |
+| Info | ~~`command_migrate_group` accepts a group id with no members.~~ | Fixed in round 3: `no_such_group`. |
 
 ## Checked and found sound
 
@@ -71,3 +71,23 @@ These come from `docs/playtest-1.md` (findings 11, 12, 18, 20, 22 and 27, and th
 | Ledger day labels: mixed 0- and 1-based numbering. | Convention, now in the README: `day` fields count from 0, player-facing text from 1, and the client shows `day + 1`. The server texts already followed it, and a test now guards it (the playtest compared the raw 0-based field with the 1-based text). | `ledger_texts_name_their_entry_day` |
 
 Explained, not changed: "founded by X" with "Y 100% of alleles" on an extinct species. The founder is the player credited when the species split off, and the share is its composition at its last detection. A species can continue through a cluster that is by then another player's animals, so the two can differ without either being wrong. Labelling the two fields clearly is client display work (session D).
+
+## Remediation round 3: leaks, newcomer grace, alert spam, validation
+
+From `docs/playtest-2.md` (findings 7, 12, 13 and 14, and the smaller items on `mating_prefs` and `COMMAND_NAMES`). Each has a test. The standard sweep is unchanged: 11.76 before and after on the merged base. The world's first players (founded at tick 0) never have a grace, and the sweep founds every lineage then.
+
+| Finding | Fix | Test |
+| --- | --- | --- |
+| `/api/leaderboard/history?genes=true` gave every lineage's full mean genome without a login (a design recipe). | Gene means need a login: `genes=true` without one is 401, and the default is genes only with a login. A player gets every gene of their own lineages; of other players' lineages only `body_size`, `leg_length` and `fur`, rounded to quarters (what their animals show anyway). | `rivals_gene_means_are_coarse_looks_only` (unit); integration `a_long_running_worlds_history_stays_bounded` (ignored, long) |
+| `set_view` (32-tile reach plus a 32-tile radius) still mapped most of the world for a spread-out lineage. | The whole window must fit within one of the player's animals' sight plus `VIEW_MARGIN` (16 tiles; 16 around the lineage's center): `Game::view_reach`. A wider request is narrowed (the reply's `data` is the window granted), and one where nothing fits is `out_of_sight`. Sight is the sim's unalarmed perception radius (2.7 to 7 tiles). `map.png` marks the same squares. | `rivals_hidden_state_and_positions_do_not_leak` |
+| `/api/spectate` located every lineage, newcomers included, for camping during their grace. | A player lineage under its grace has no cells (`hidden: true`): it is counted, but not placed. Others stay at 16-tile cells. | `a_newcomer_under_its_grace_is_not_placed` |
+| `preview_mating` answered for any organism anywhere (a probe for distance and existence). | Only for a partner in the player's sight (`Game::in_sight`, the same reach), on the market, or in one of their open offers; otherwise `out_of_sight`. A partner out of sight still gets a distance rounded up to 16 tiles. | same as `set_view` |
+| Newcomer grace was one-sided: a graced lineage could still attack others. | Two-sided: `World::grace_spares` also spares other players' animals from a graced hunter (wild prey stays fair game), and `possess_attack` refuses a graced attacker with `own_grace` (`detail.days_left`). | `the_grace_is_two_sided_lasts_in_real_time_and_survives_refounding` (sim); `the_newcomer_grace_is_in_the_state_and_lasts_real_minutes` (server) |
+| The grace restarted on every re-founding. | It runs from the first founding in an unbroken run of the owner's foundings, each within twice the grace of the one before (`World::grace_start`). This is derived from the saved `lineage_founded` ticks, so the snapshot format is unchanged. The starts are cached (not saved) and rebuilt on founding and on restore. | same (sim), including a snapshot round trip |
+| 20 game days passed in 100 s at playtest speed. | At least `GameConfig::grace_min_minutes` (30) of real time, set by the game from `tick_ms` (`World::set_attack_grace_min_ticks`, not saved). | same (server) |
+| The grace was invisible. | `StateView::grace` = `{days_left, until_tick, real_seconds_left}` while it lasts (a protocol 2 meta field), and `NearbyOrganism::protected` on a graced lineage's animals (a neighbour flag bit in protocol 2): the names session D asked for. The client indicator is session D's. | same (server); wire fixture regenerated |
+| Victims got one alert per attack order, with no limit. | At most one alert per (attacker lineage, victim) every `GameConfig::attack_alert_minutes` (5) of real time, and repeating a standing order alerts nobody. | `an_attack_order_alerts_the_targets_owner` (extended) |
+| `COMMAND_NAMES` lacked the newer commands. | Added `retire_lineage`, `renown_shop`, `buy_mating_slot`, `reinforce` and `compatibility` (`possess_attack` and `mating_prefs` were already there), and labels for them in `client/src/errors.ts`. A test reads the parser's own list of variants and checks both. | `every_command_has_a_name` |
+| `mating_prefs` accepted player 0 and players who don't exist. | `no_such_player` (`detail.player`). | `mating_requests_can_be_blocked_declined_and_are_limited_per_target` |
+| `migrate` accepted a group without members (and `clear_migration` too). | `no_such_group` for any group but the main one without members. `clear_migration` still clears an order that outlived its group. | `orders_tests` (sim), `group_commands_split_claim_and_merge` (server) |
+| A string `id` or text that isn't valid JSON lost its request id. | Best effort: a numeric string id counts, and text that isn't JSON is scanned for `"id": <number>` and `"type"`. Such messages always got a `bad_message` reply, and the connection carries on; the test now pins that down. | `a_malformed_message_gets_its_id_when_it_can_be_read` (unit); integration `server.rs` |

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { B, decodeTerrain, type TerrainGrid } from './terrain';
-import { baseTpxFor, buildFields, detailFor, paintRegion, regionHash, upsample } from './terrainArt';
+import { baseTpxFor, buildFields, detailFor, paintRegion, regionDelta, regionSnapshot, upsample } from './terrainArt';
 import { lightAt, LIGHT } from './palette';
 import type { TerrainView } from '../protocol';
 
@@ -84,15 +84,27 @@ describe('painted terrain', () => {
     expect(at(autumn)[0]).toBeGreaterThan(at(plain)[0] + 15);
   });
 
-  it('notices when a region changes', () => {
+  it('measures how far a region moved from the painting, however slowly', () => {
     const g = grid();
     const f = buildFields(g);
-    const h0 = regionHash(f, 0, 0, 8, 8), h1 = regionHash(f, 8, 8, 8, 8);
-    g.snow[2 * 16 + 2] = 250;
+    const a = regionSnapshot(f, 0, 0, 8, 8), b = regionSnapshot(f, 8, 8, 8, 8);
+    expect(regionDelta(f, a, 0, 0, 8, 8)).toBe(0);
+    // A slow melt: each step small, the sum large (a quantized checksum missed it).
+    for (let s = 0; s < 6; s++) {
+      g.snow[2 * 16 + 2] = 20 + s * 8;
+      buildFields(g, f);
+    }
     const f2 = buildFields(g, f);
     expect(f2.data).toBe(f.data); // reused in place
-    expect(regionHash(f2, 0, 0, 8, 8)).not.toBe(h0);
-    expect(regionHash(f2, 8, 8, 8, 8)).toBe(h1);
+    expect(regionDelta(f2, a, 0, 0, 8, 8)).toBeCloseTo(60 / 200, 5);
+    expect(regionDelta(f2, b, 8, 8, 8, 8)).toBe(0);
+    // Snow coming or going counts in full; colours in 64ths of their range.
+    g.snow[2 * 16 + 2] = 250;
+    expect(regionDelta(buildFields(g, f), a, 0, 0, 8, 8)).toBe(1);
+    // Past the map edge the snapshot clamps, as the painter does.
+    const edge = regionSnapshot(f, -1, -1, 4, 4);
+    expect(regionDelta(f, edge, -1, -1, 4, 4)).toBe(0);
+    expect([...edge.slice(0, 14)]).toEqual([...edge.slice(14 * 5, 14 * 6)]);
   });
 
   it('picks detail levels and base sizes', () => {

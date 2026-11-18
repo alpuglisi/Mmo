@@ -64,6 +64,37 @@ async function waitFor(what, fn, timeoutMs = 45000) {
 }
 
 const started = Date.now();
+/**
+ * Choose organism `id` (null: the first pickable one) in a searchable picker
+ * (picker.ts) the way a player does: open it, search the id, click the row.
+ * False if it isn't offered within `timeoutMs`.
+ */
+async function choosePick(p, sel, id, timeoutMs) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    const done = await p.evaluate(({ sel, id }) => {
+      const root = document.querySelector(sel);
+      if (!root) return false;
+      const panel = root.querySelector('.picker-panel');
+      if (panel.hidden) root.querySelector('.picker-button').click();
+      const search = root.querySelector('.picker-search');
+      const q = id === null ? '' : String(id);
+      if (search.value !== q) {
+        search.value = q;
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      const row = [...root.querySelectorAll('.picker-row')].find((b) => !b.disabled && (id === null ? /^#\d+ /.test(b.textContent) : b.textContent.startsWith(`#${id} `)));
+      if (!row) return false;
+      row.click();
+      return root.value === String(id ?? root.value) && root.value !== '';
+    }, { sel, id });
+    if (done) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  await p.evaluate((sel) => { const r = document.querySelector(sel); if (r && !r.querySelector('.picker-panel').hidden) r.querySelector('.picker-button').click(); }, sel);
+  return false;
+}
+
 function step(msg) {
   console.log(`  ✓ ${msg} [${((Date.now() - started) / 1000).toFixed(0)} s]`);
 }
@@ -455,8 +486,7 @@ async function main() {
           // with one of her own before the request lands.
           const sent = await page.evaluate(({ males, females, late }) => {
             const sel = document.querySelector('#mating-mine');
-            const listed = new Set([...sel.options].map((o) => o.value));
-            const mine = window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant && !o.possessed && listed.has(String(o.id)));
+            const mine = window.evo.model.state.organisms.filter((o) => o.matured && !o.pregnant && !o.possessed);
             // (A female's breeding urge, and whether she is seeking a mate or courting now.)
             const score = (f, m, urge) => Math.hypot(f.x - m.x, f.y - m.y) + urge / 20 + (/court|mat/.test(f.action) ? 5 : 0);
             let best = null;
@@ -666,7 +696,7 @@ async function main() {
       if (listingId !== null) await page.evaluate((listing) => window.evo.socket.send({ type: 'withdraw_listing', listing }), listingId);
       await page.evaluate(() => { window.__results = []; });
       await page.click('#market-refresh');
-      if (!(await page.selectOption('#market-list-organism', String(cand.dam), { timeout: 10000 }).then(() => true, () => false))) continue;
+      if (!(await choosePick(page, '#market-list-organism', cand.dam, 10000))) continue;
       await page.fill('#market-fee', String(fee));
       await page.click('#market-list-submit');
       const listed = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
@@ -680,7 +710,7 @@ async function main() {
       listingId = listed.data.listing.id;
       await page.waitForSelector(`#my-listings .listing[data-listing="${listingId}"]`, { timeout: 20000 });
       // Bob picks his male; the listing shows with its compatibility.
-      if (!(await bob.selectOption('#market-mine', String(cand.buyer), { timeout: 10000 }).then(() => true, () => false))) continue;
+      if (!(await choosePick(bob, '#market-mine', cand.buyer, 10000))) continue;
       await bob.click('#market-refresh');
       const card = `#market-listings .listing[data-listing="${listingId}"]`;
       const compat = await waitFor('listing with compatibility', () => bob.evaluate((card) => document.querySelector(`${card} .compat`)?.textContent ?? null, card), 20000).catch(() => null);
@@ -811,7 +841,7 @@ async function main() {
       await page.evaluate(() => { window.__results = []; });
       await page.click('#market-refresh');
       await page.selectOption('#market-list-kind', 'fixed');
-      await page.selectOption('#market-list-organism', { index: 0 });
+      await choosePick(page, '#market-list-organism', null, 10000);
       await page.click('#market-list-submit');
       const relisted = await waitFor('create_listing result', () => page.evaluate(() => window.__results.find((r) => r.type === 'create_listing')));
       if (!relisted.ok && !['not_found', 'not_mature', 'already_listed'].includes(relisted.error?.code)) throw new Error(`create_listing failed: ${JSON.stringify(relisted.error)}`);
@@ -890,9 +920,9 @@ async function main() {
         const since = Date.now();
         const lot = await waitFor('an adult of ann\'s to auction', () => page.evaluate(({ tried, males }) => {
           const sel = document.querySelector('#market-list-organism');
-          const options = new Set([...sel.options].map((o) => o.value));
+          const listed = new Set([...document.querySelectorAll('#my-listings .listing')].map((c) => c.dataset.organism));
           const open = window.evo.model.state.organisms
-            .filter((o) => o.matured && !o.possessed && options.has(String(o.id)) && (o.sex === 'female' ? !o.pregnant : males))
+            .filter((o) => o.matured && !o.possessed && !listed.has(String(o.id)) && (o.sex === 'female' ? !o.pregnant : males))
             .sort((a, b) => (a.sex === 'female' ? 0 : 1) - (b.sex === 'female' ? 0 : 1) || b.health - a.health)
             .map((o) => String(o.id));
           const pick = open.find((id) => !tried.includes(id)) ?? open[0];
@@ -986,7 +1016,7 @@ async function main() {
         const cand = cands.find((id) => !triedBidders.includes(id)) ?? cands[0];
         triedBidders.push(cand);
         bid = null;
-        if (!(await bob.selectOption('#market-mine', String(cand), { timeout: 15000 }).then(() => true, () => false))) {
+        if (!(await choosePick(bob, '#market-mine', cand, 15000))) {
           bidLog.push(`round ${round} attempt ${attempt}: #${cand} not in bob's list`);
           continue;
         }
@@ -999,7 +1029,7 @@ async function main() {
             if (sel?.value !== String(id)) {
               // Still one of bob's adults (the options were rebuilt under
               // the pick): pick it again and keep waiting.
-              if ([...sel.options].some((x) => x.value === String(id))) {
+              if (window.evo.model.state?.organisms.some((x) => x.id === id && x.matured)) {
                 sel.value = String(id);
                 sel.dispatchEvent(new Event('change', { bubbles: true }));
                 return null;

@@ -2,23 +2,48 @@
 // texture of the whole map at a few texels per tile, always there, and over
 // it detail chunks (16×16 tiles at 8 or 16 texels per tile, by how many
 // device pixels a tile covers) for the part on screen. Chunks are painted
-// a few rows at a time within a per-frame budget, nearest the screen center
-// first, kept in a bounded LRU cache, and repainted only when their tiles
-// change. Until a chunk is ready the base shows through, so zooming in
-// sharpens progressively instead of hitching.
+// a few rows at a time within a per-frame budget (`paintBudget`) and kept in
+// a bounded LRU cache. Until a chunk is ready the base shows through, so
+// zooming in sharpens progressively instead of hitching.
+//
+// Repaints (playtests 1 and 2, #15: stale snow blocks, seams and a blocky
+// patchwork after long sessions): every chunk keeps a copy of the fields it
+// was painted from, and how far the map has moved on from it
+// (`regionDelta`) decides whether and how soon it is repainted
+// (`workOrder`): chunks never painted first, then big changes (snow coming
+// or going, floods), then the oldest paintings. The budget grows with the
+// frame time, so a slow machine still catches up with a fast clock instead
+// of repainting the chunks round the screen center forever while the rest
+// keep last season's snow.
 //
 // The light of the hour (palette.ts `lightAt`) tints the whole layer, eased.
 
 import { BufferImageSource, Container, Rectangle, Sprite, Texture } from 'pixi.js';
-import { baseTpxFor, buildFields, detailFor, paintRegion, regionHash, upsample, type TerrainFields } from './terrainArt';
+import { baseTpxFor, buildFields, detailFor, paintRegion, regionDelta, regionSnapshot, upsample, type TerrainFields } from './terrainArt';
 import type { TerrainGrid } from './terrain';
 import { TextureCache } from './textureCache';
 import { lightAt, toHex, type Rgb } from './palette';
 
 /** Tiles per chunk side. */
 export const CHUNK = 16;
-/** Painting time per frame (ms) for chunks and base repaints; at least one slice is painted per frame. */
+/** Painting time per frame (ms) for chunks and base repaints at 60 fps and faster; at least one slice is painted per frame. */
 export const TERRAIN_BUDGET_MS = 3;
+/** The most painting time per frame (ms), on slow frames. */
+export const TERRAIN_BUDGET_MAX_MS = 32;
+/**
+ * Painting time for a frame that took `dtMs`: a fifth of the frame, within
+ * [`TERRAIN_BUDGET_MS`, `TERRAIN_BUDGET_MAX_MS`]. A fixed 3 ms is 180 ms of
+ * painting a second at 60 fps but 36 at 12 (software WebGL, a loaded
+ * machine), too little to repaint a screen of chunks between two terrain
+ * refreshes of a fast world.
+ */
+export function paintBudget(dtMs: number): number {
+  return Math.min(TERRAIN_BUDGET_MAX_MS, Math.max(TERRAIN_BUDGET_MS, (Number.isFinite(dtMs) ? dtMs : 0) * 0.2));
+}
+/** A chunk whose fields moved this far from its painting (`regionDelta`) is repainted when its turn comes. */
+export const STALE = 0.03;
+/** One whose fields moved this far (snow came or went, a flood) is repainted before the merely old ones. */
+export const URGENT = 0.12;
 /** Texels of chunk painted per slice (a slice is whole rows). */
 const SLICE_TEXELS = 4096;
 /** GPU and CPU memory the chunks may hold (bytes, RGBA). */
@@ -52,9 +77,15 @@ interface Chunk {
   source: BufferImageSource;
   texture: Texture;
   sprite: Sprite;
-  /** Fields checksum the chunk was (or is being) painted from, and the terrain generation it was checked at. */
-  hash: number;
+  /** The fields it was (or is being) painted from (`regionSnapshot`, apron included). */
+  snap: Float32Array;
+  /** How far the fields moved from `snap` (`regionDelta`), and the terrain generation it was measured at. */
+  stale: number;
   gen: number;
+  /** When its painting started (ms, `performance.now`). */
+  paintedAt: number;
+  /** Distance of its center from the screen center (tiles, this frame). */
+  d: number;
   /** Next texel row to paint; `rows` when done. */
   row: number;
   /** Shown at least once (its texture holds a whole painting). */
@@ -73,10 +104,15 @@ export interface TerrainStats {
   baseSize: [number, number];
   /** Current detail level (texels per tile, 0: base only). */
   detail: number;
-  /** Chunks cached, shown this frame, waiting to be painted. */
+  /** Chunks cached, shown this frame, waiting to be painted (or repainted). */
   chunks: number;
   shown: number;
   pending: number;
+  /** Visible chunks not painted yet (the base or the other detail level shows there). */
+  unpainted: number;
+  /** Visible chunks showing a painting far from the map (`URGENT`), and the largest such distance. */
+  stale: number;
+  maxStale: number;
   /** Paint timings (ms): base (the quick first painting of a new map), slowest frame's painting, total, fields (last). */
   baseMs: number;
   maxFrameMs: number;
@@ -109,7 +145,9 @@ export class TerrainLayer {
   /** Bumped on every terrain update (chunks re-check their tiles once per generation). */
   private gen = 0;
   private light: Rgb = [255, 255, 255];
-  private stats = { baseMs: 0, maxFrameMs: 0, paintMs: 0, fieldsMs: 0, texels: 0, pending: 0, frames: 0, slowFrames: 0, maxSliceMs: 0 };
+  private stats = { baseMs: 0, maxFrameMs: 0, paintMs: 0, fieldsMs: 0, texels: 0, pending: 0, unpainted: 0, stale: 0, maxStale: 0, frames: 0, slowFrames: 0, maxSliceMs: 0 };
+  /** Painting time per frame instead of `paintBudget` (tests: a large one paints everything at once). */
+  budgetOverride: number | null = null;
   /** Light the map as at this hour instead of the state's (tests, screenshots, debugging). */
   lightOverride: number | null = null;
   /** The grid painted (for tests and debugging). */
@@ -193,6 +231,7 @@ export class TerrainLayer {
     const f = this.fields;
     if (!f) return;
     const start = performance.now();
+    const budget = this.budgetOverride ?? paintBudget(dtMs);
     const detail = detailFor(devicePxPerTile, this.baseTpx);
     this.detail = detail;
     for (const c of this.visible) c.sprite.visible = false;
@@ -215,30 +254,47 @@ export class TerrainLayer {
       this.paintBaseSlice();
       painted = true;
     }
-    const budgetLeft = () => !painted || performance.now() - start < TERRAIN_BUDGET_MS;
-    for (const { cx, cy } of want) {
-      // Making a chunk (buffer, texture, checksum) counts against the budget too.
+    const budgetLeft = () => !painted || performance.now() - start < budget;
+    const work: Chunk[] = [];
+    for (const { cx, cy, d } of want) {
+      // Making a chunk (buffer, texture, snapshot) counts against the budget too.
       const fresh = !this.chunks.has(`${detail}:${cx}:${cy}`);
       if (fresh && !budgetLeft()) { pending++; this.standIn(cx, cy, detail); continue; }
       const c = this.chunk(cx, cy, detail);
       if (fresh) painted = true;
+      c.d = d;
       this.visible.add(c);
-      if (c.row >= c.rows) {
-        // Painted: repaint if its tiles changed (keep showing the old one meanwhile).
-        if (c.gen !== this.gen) {
-          c.gen = this.gen;
-          const h = chunkHash(f, c.cx, c.cy, c.tw, c.th);
-          if (h !== c.hash) { c.hash = h; c.row = 0; }
-        }
+      // How far the map moved from its painting (once per terrain update).
+      if (c.gen !== this.gen) {
+        c.gen = this.gen;
+        c.stale = regionDelta(f, c.snap, c.cx * CHUNK - APRON, c.cy * CHUNK - APRON, c.tw + 2 * APRON, c.th + 2 * APRON);
       }
+      if (c.row < c.rows || c.stale >= STALE) work.push(c);
+    }
+    // Paint in order of need (`workOrder`): a repaint keeps showing the old painting meanwhile.
+    for (const c of workOrder(work)) {
+      if (!budgetLeft()) break;
+      if (c.row >= c.rows) this.startPaint(c);
       while (c.row < c.rows && budgetLeft()) {
         this.paintSlice(c);
         painted = true;
       }
-      if (c.row < c.rows) pending++;
-      c.sprite.visible = c.shown;
-      if (!c.shown) this.standIn(cx, cy, detail);
     }
+    // Show what is painted (this frame's first paintings too), the other detail level's painting or the base elsewhere.
+    for (const c of [...this.visible]) {
+      if (c.tpx !== detail) continue;
+      c.sprite.visible = c.shown;
+      if (!c.shown) this.standIn(c.cx, c.cy, detail);
+    }
+    let stale = 0, maxStale = 0, unpainted = pending;
+    for (const c of work) {
+      if (!c.shown) unpainted++;
+      if (c.row < c.rows || c.stale >= STALE) pending++;
+      if (c.shown && c.stale >= URGENT) { stale++; maxStale = Math.max(maxStale, c.stale); }
+    }
+    this.stats.stale = stale;
+    this.stats.unpainted = unpainted;
+    this.stats.maxStale = maxStale;
     // Then the base repaint, a slice at a time.
     while (this.baseRow !== null && budgetLeft()) {
       this.paintBaseSlice();
@@ -255,7 +311,7 @@ export class TerrainLayer {
     }
     if (!repainting || overdue) {
       for (const c of this.visible) {
-        if (!c.held) continue;
+        if (!c.held || c.row < c.rows) continue;
         c.held = false;
         c.source.update();
       }
@@ -265,8 +321,17 @@ export class TerrainLayer {
     this.stats.paintMs += ms;
     this.stats.maxFrameMs = Math.max(this.stats.maxFrameMs, ms);
     if (painted) this.stats.frames++;
-    if (ms > 2 * TERRAIN_BUDGET_MS) this.stats.slowFrames++;
+    if (ms > 2 * budget) this.stats.slowFrames++;
     this.stats.pending = pending;
+  }
+
+  /** Start (re)painting a chunk from the fields as they are now. */
+  private startPaint(c: Chunk): void {
+    regionSnapshot(this.fields!, c.cx * CHUNK - APRON, c.cy * CHUNK - APRON, c.tw + 2 * APRON, c.th + 2 * APRON, c.snap);
+    // (`stale` stays that of the painting on screen until the new one is done.)
+    c.gen = this.gen;
+    c.row = 0;
+    c.paintedAt = performance.now();
   }
 
   /** Until the chunk at `detail` is painted, show the same chunk at the other detail level if it is cached. */
@@ -276,6 +341,12 @@ export class TerrainLayer {
     if (!this.chunks.has(key)) return;
     const o = this.chunks.get(key, () => { throw new Error('unreachable'); });
     if (!o.shown) return;
+    // Not a painting of another season: the base is better than that.
+    if (o.gen !== this.gen) {
+      o.gen = this.gen;
+      o.stale = regionDelta(this.fields!, o.snap, o.cx * CHUNK - APRON, o.cy * CHUNK - APRON, o.tw + 2 * APRON, o.th + 2 * APRON);
+    }
+    if (o.stale >= URGENT) return;
     o.sprite.visible = true;
     this.visible.add(o);
   }
@@ -296,7 +367,8 @@ export class TerrainLayer {
       sprite.visible = false;
       this.chunkLayer.addChild(sprite);
       return {
-        key, cx, cy, tpx, tw, th, rows: ph, buf, source, texture, sprite, hash: chunkHash(f, cx, cy, tw, th), gen: this.gen, row: 0,
+        key, cx, cy, tpx, tw, th, rows: ph, buf, source, texture, sprite, gen: this.gen, row: 0,
+        snap: regionSnapshot(f, cx * CHUNK - APRON, cy * CHUNK - APRON, tw + 2 * APRON, th + 2 * APRON), stale: 0, paintedAt: performance.now(), d: 0,
         shown: false, held: false, heldSince: 0,
       };
     });
@@ -328,6 +400,7 @@ export class TerrainLayer {
     this.stats.texels += (to - c.row) * w;
     c.row = to;
     if (to >= c.rows) {
+      c.stale = 0; // (measured again at the next terrain update, against `snap`)
       if (c.shown) {
         // A repaint: shown with the others (no patchwork of old and new), or after `HOLD_MAX_MS`.
         if (!c.held) c.heldSince = performance.now();
@@ -337,6 +410,18 @@ export class TerrainLayer {
         c.shown = true;
       }
     }
+  }
+
+  /** The state of the chunks at `"cx,cy"` (both detail levels; tests and debugging). */
+  chunkInfo(at: string): object[] {
+    const out: object[] = [];
+    for (const tpx of [8, 16]) {
+      const key = `${tpx}:${at.replace(",", ":")}`;
+      if (!this.chunks.has(key)) continue;
+      const c = this.chunks.get(key, () => { throw new Error('unreachable'); });
+      out.push({ tpx, row: c.row, rows: c.rows, shown: c.shown, held: c.held, stale: +c.stale.toFixed(3), gen: c.gen === this.gen, visible: c.sprite.visible, ageMs: Math.round(performance.now() - c.paintedAt) });
+    }
+    return out;
   }
 
   /** The base painting, RGBA (for tests and debugging). */
@@ -350,7 +435,7 @@ export class TerrainLayer {
     return {
       width: f?.width ?? 0, height: f?.height ?? 0, baseTpx: tpx, baseSize: [this.baseTex?.width ?? 0, this.baseTex?.height ?? 0],
       detail: this.detail, chunks: this.chunks.size, shown: [...this.visible].filter((c) => c.sprite.visible).length,
-      pending: this.stats.pending, baseMs: this.stats.baseMs, maxFrameMs: this.stats.maxFrameMs, paintMs: this.stats.paintMs,
+      pending: this.stats.pending, unpainted: this.stats.unpainted, stale: this.stats.stale, maxStale: this.stats.maxStale, baseMs: this.stats.baseMs, maxFrameMs: this.stats.maxFrameMs, paintMs: this.stats.paintMs,
       fieldsMs: this.stats.fieldsMs, texels: this.stats.texels, frames: this.stats.frames, slowFrames: this.stats.slowFrames, maxSliceMs: this.stats.maxSliceMs,
     };
   }
@@ -362,7 +447,44 @@ export class TerrainLayer {
   }
 }
 
-/** A chunk's tiles and its apron: what its painting depends on. */
-function chunkHash(f: TerrainFields, cx: number, cy: number, tw: number, th: number): number {
-  return regionHash(f, cx * CHUNK - APRON, cy * CHUNK - APRON, tw + 2 * APRON, th + 2 * APRON);
+/** What `workOrder` ranks a chunk by. */
+export interface ChunkWork {
+  /** Texel rows painted so far, of `rows`. */
+  row: number;
+  rows: number;
+  /** Shown at least once. */
+  shown: boolean;
+  /** How far the map moved from its painting (`regionDelta`). */
+  stale: number;
+  /** When its painting started (ms). */
+  paintedAt: number;
+  /** Distance from the screen center (tiles). */
+  d: number;
+}
+
+function rank(c: ChunkWork): number {
+  if (!c.shown) return c.row > 0 ? 0 : 1; // never painted: the base shows there (finish one first)
+  if (c.row < c.rows) return 0; // finish a repaint that was started
+  if (c.stale >= URGENT) return 2; // last season's snow, an old flood
+  if (c.stale >= STALE) return 3;
+  return 4;
+}
+
+/**
+ * The chunks to paint, most needed first: one already being painted, then
+ * those never painted (nearest the center first), then those far from the
+ * map (most changed first), then the merely out of date (oldest painting
+ * first, so none waits forever while the ones round the center change again
+ * and again). Chunks close enough to the map are left out.
+ */
+export function workOrder<T extends ChunkWork>(chunks: readonly T[]): T[] {
+  return chunks
+    .filter((c) => rank(c) < 4)
+    .sort((a, b) => {
+      const ra = rank(a), rb = rank(b);
+      if (ra !== rb) return ra - rb;
+      if (ra === 2 && a.stale !== b.stale) return b.stale - a.stale;
+      if (ra === 3 && a.paintedAt !== b.paintedAt) return a.paintedAt - b.paintedAt;
+      return a.d - b.d;
+    });
 }

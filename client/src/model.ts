@@ -10,6 +10,7 @@ import {
 } from './protocol';
 import type { ConnState } from './socket';
 import { friendlyError } from './ui/friendlyErrors';
+import { offerUpdateText } from './ui/matingHistory';
 
 /** Commands whose errors the matings form shows itself. */
 const FORM_WORDED = new Set(['preview_mating', 'request_mating']);
@@ -228,8 +229,7 @@ export class GameModel {
           incoming: prev?.incoming ?? m.offer.to_player === this.player,
         });
         this.trimClosed();
-        const what = m.outcome ? (m.outcome.conceived ? 'completed, conceived' : 'completed, no conception') : m.offer.status;
-        const text = `Mating offer ${m.offer.id}: ${what}${m.error ? ` (${m.error.message})` : ''}`;
+        const text = offerUpdateText(m.offer, m.outcome, m.error, this.player);
         this.toast(m.error && m.offer.status !== 'accepted' ? 'error' : 'info', text);
         this.addFeed([{ kind: 'offer', text, tick: this.tick() }]);
         this.emit('offers');

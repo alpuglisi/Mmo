@@ -17,9 +17,29 @@ export interface HistoryRow {
   error: string | null;
 }
 
-export function offerLine(o: Pick<OfferView, 'id' | 'mine' | 'partner' | 'from_name' | 'to_name' | 'price' | 'status'> & { lineage?: number }): string {
+export function offerLine(o: Pick<OfferView, 'id' | 'mine' | 'partner' | 'from_name' | 'to_name' | 'price' | 'status'> & { listing?: number; lineage?: number }): string {
+  const bought = o.listing !== undefined ? ` · bought from listing ${o.listing}` : '';
   const partner = o.partner === 0 && o.lineage !== undefined ? `${o.to_name}'s pick` : `${o.to_name}'s #${o.partner}`;
-  return `#${o.id}: ${o.from_name}'s #${o.mine} × ${partner}${o.price !== undefined ? ` · price ${o.price}` : ''} · ${o.status}`;
+  return `#${o.id}: ${o.from_name}'s #${o.mine} × ${partner}${o.price !== undefined ? ` · price ${o.price}` : ''}${bought} · ${o.status}`;
+}
+
+/**
+ * The toast for a `mating_update`. A mating bought on the market says so to
+ * both sides ("The mating you bought…", "…bought from you"), so a buyer
+ * learns it completed without watching the Mates tab.
+ */
+export function offerUpdateText(o: OfferView, outcome: MatingOutcome | undefined, error: { message: string } | undefined, me: number | null): string {
+  const why = error ? ` (${error.message})` : '';
+  if (o.listing !== undefined) {
+    const buyer = o.from_player === me;
+    const pair = buyer ? `your #${o.mine} × ${o.to_name}'s #${o.partner}` : `${o.from_name}'s #${o.mine} × your #${o.partner}`;
+    const head = buyer ? `The mating you bought (${pair})` : `The mating ${o.from_name} bought (${pair})`;
+    if (outcome) return `${head} happened: ${outcome.conceived ? 'conceived' : 'not conceived'}.${why}`;
+    if (o.status === 'failed' || o.status === 'expired' || o.status === 'cancelled') return `${head} did not happen: ${o.status}${buyer && o.price ? ', your renown is refunded' : ''}.${why}`;
+    return `${head}: ${o.status}.${why}`;
+  }
+  const what = outcome ? (outcome.conceived ? 'completed, conceived' : 'completed, no conception') : o.status;
+  return `Mating offer ${o.id}: ${what}${why}`;
 }
 
 export function outcomeText(o: MatingOutcome | undefined): string | null {

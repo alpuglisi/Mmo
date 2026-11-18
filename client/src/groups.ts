@@ -134,6 +134,7 @@ export function groupOrders(g: GroupView): string {
     return `holding a territory (radius ${t.radius.toFixed(1)}) at ${t.x.toFixed(0)}, ${t.y.toFixed(0)}`;
   }
   if (g.migration) return `migrating toward ${g.migration[0].toFixed(0)}, ${g.migration[1].toFixed(0)}`;
+  if (g.settle) return `settling near ${g.settle.x.toFixed(0)}, ${g.settle.y.toFixed(0)} after its migration`;
   return 'roaming freely';
 }
 
