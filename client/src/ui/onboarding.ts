@@ -33,6 +33,13 @@ export interface OnboardingDeps {
   selectOwn: () => void;
   /** `?tour=off`: no tour and no hints (Help still replays the tour). */
   disabled: boolean;
+  /**
+   * The player came back to a lineage they already had (not straight from
+   * founding): they have been through the first session, if not in this
+   * browser, so the tour does not start by itself (Help replays it). The
+   * playtests saw it again in every new browser profile.
+   */
+  returning?: boolean;
   store?: KeyValueStore | null;
 }
 
@@ -50,6 +57,10 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   const key = progressKey(model.player, model.name);
   let progress: Progress = loadProgress(key, deps.store);
   const save = () => saveProgress(key, progress, deps.store);
+  if (deps.returning && progress.tour === 'new') {
+    progress = { ...progress, tour: 'skipped' };
+    save();
+  }
 
   // ---------------------------------------------------------------- tour
   let steps: TourStep[] = [];

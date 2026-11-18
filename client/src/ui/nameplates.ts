@@ -49,7 +49,9 @@ export function plateBadge(p: PlayerId): HTMLElement | null {
   if (!n) return null;
   const color = COLORS.has(n.color) ? n.color : 'ivory';
   const el = h('span', { class: `nameplate plate-${color}`, 'data-player': p, title: `Nameplate: ${n.title}` });
-  el.textContent = n.title;
+  // Hidden separators, so the text beside a name reads "ann «Herd queen»"
+  // (copied, read aloud, or in textContent) and not "annHerd queen" (playtest 4).
+  el.append(h('span', { class: 'plate-sep' }, ' «'), n.title, h('span', { class: 'plate-sep' }, '»'));
   return el;
 }
 
