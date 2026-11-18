@@ -1,4 +1,4 @@
-//! Learned avoidance of toxic prey (`Balance::toxic_learning`, version 37;
+//! Learned avoidance of toxic prey (`Balance::toxic_learning`, version 42;
 //! *Playtest 2: predators, toxins and drowning* in the README).
 //!
 //! Playtest 2's winning strategy was a drab, toxic, burrowing egg swarm:

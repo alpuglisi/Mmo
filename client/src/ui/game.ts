@@ -15,8 +15,9 @@ import { buildFamilyTree, type FamilyModel } from '../familyTree';
 import { actionText, capInfo, grouped, migrationText } from '../lineageInfo';
 import { renderFamilyTree } from './familyTree';
 import { exposeCards, familyShareBar } from '../share/familyShare';
-import type { AlertPrefs, ClientMsg, LineageStats, MatingOutcome, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
-import { WILD } from '../protocol';
+import type { AlertPrefs, ClientMsg, CompatibilityView, LineageStats, MatingOutcome, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
+import { parseCompatibilityView, WILD } from '../protocol';
+import { createPicker, type PickItem } from './picker';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, FOOD_BANDS, terrainSummary, type TerrainGrid } from '../world/terrain';
 import { cssColor, ownerColor, OWN_COLOR } from '../world/colors';
@@ -322,7 +323,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     for (const b of tabBtns) b.classList.toggle('active', b.dataset.tab === t);
     for (const [k, p] of Object.entries(tabs)) p.hidden = k !== t;
     if (!ready) return;
-    if (t === 'genetics') void refreshStats();
+    if (t === 'genetics' || t === 'lineage') void refreshStats();
     if (t === 'lineage') void refreshSeasons();
     if (t === 'world') void refreshChronicle();
     if (t === 'family') void refreshFamily();
@@ -440,6 +441,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   function renderPossessBar(): void {
     const p = possessed();
     possessBar.hidden = !p;
+    // Hint cards move clear of the bar (onboarding.css).
+    stageWrap.classList.toggle('possessing', !!p);
     if (!p) {
       // Possession over: so is attack mode.
       if (mode === 'attack') {
@@ -574,8 +577,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (id === null) return;
       const r = await send(rallyMsg(id, c.x, c.y));
       if (r.ok) {
-        const t = r.data as { x: number; y: number; radius: number };
+        const t = r.data as { x: number; y: number; radius: number; warning?: string };
         model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles`);
+        if (t.warning) model.toast('error', `Rally: ${t.warning}`);
       } else if (r.error) {
         model.toast('error', `Rally: ${r.error.message}`);
       }
@@ -592,8 +596,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       setMode('select');
       const r = await send(step.claim);
       if (r.ok) {
-        const t = r.data as { x: number; y: number; radius: number };
+        const t = r.data as { x: number; y: number; radius: number; warning?: string };
         model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})`);
+        if (t.warning) model.toast('error', `Territory: ${t.warning}`);
       } else if (r.error) {
         model.toast('error', `Territory: ${r.error.message}`);
       }
@@ -755,7 +760,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   }
   void refreshStats();
   const statsTimer = setInterval(() => {
-    if (tab === 'genetics') void refreshStats();
+    if (tab === 'genetics' || tab === 'lineage') void refreshStats();
   }, STATS_REFRESH_MS);
   cleanups.push(() => clearInterval(statsTimer));
 
@@ -1116,22 +1121,79 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const incomingEl = h('div', { id: 'incoming' });
   const openEl = h('div', { id: 'open-offers' });
   const closedEl = h('div', { id: 'closed-offers' });
+  // Who may send me requests (server `mating_prefs`): decline all, or block players.
+  let matePrefs: { blocked: number[]; auto_decline: boolean } | null = null;
+  const autoDecline = h('input', { type: 'checkbox', id: 'mating-auto-decline' }) as HTMLInputElement;
+  const blockedEl = h('div', { id: 'mating-blocked', class: 'blocked-list' });
+  const matePrefsEl = h('details', { id: 'mating-prefs', class: 'mating-prefs' },
+    h('summary', {}, 'Who may send me requests'),
+    h('label', { class: 'check' }, autoDecline, 'Decline every request automatically'),
+    h('p', { class: 'muted small' }, 'Listings and auctions are not affected: a listing is your consent. Blocked players\' requests are declined at once; they are not told why.'),
+    h('h4', {}, 'Blocked players'), blockedEl);
+  async function sendPrefs(msg: { block?: number; unblock?: number; auto_decline?: boolean }): Promise<void> {
+    const r = await send({ type: 'mating_prefs', ...msg });
+    if (r.ok) {
+      const d = r.data as { blocked?: number[]; auto_decline?: boolean } | undefined;
+      if (d && Array.isArray(d.blocked)) matePrefs = { blocked: d.blocked, auto_decline: !!d.auto_decline };
+    } else if (r.error) {
+      model.toast('error', `Request settings: ${r.error.message}`);
+    }
+    renderMatePrefs();
+  }
+  autoDecline.addEventListener('change', () => void sendPrefs({ auto_decline: autoDecline.checked }));
+  function blockPlayer(p: number): void {
+    const name = model.state?.leaderboard.rows.find((r) => r.player === p)?.name ?? `player ${p}`;
+    if (!window.confirm(`Block ${name}? Their mating requests will be declined automatically. You can unblock them under "Who may send me requests".`)) return;
+    void sendPrefs({ block: p }).then(() => model.toast('info', `${name} blocked: their requests are declined automatically.`));
+  }
+  function renderMatePrefs(): void {
+    if (!matePrefs) {
+      setText(blockedEl, 'Loading…');
+      return;
+    }
+    autoDecline.checked = matePrefs.auto_decline;
+    const names = (p: number) => model.state?.leaderboard.rows.find((r) => r.player === p)?.name ?? `player ${p}`;
+    if (matePrefs.blocked.length === 0) {
+      blockedEl.replaceChildren(h('p', { class: 'muted small' }, 'Nobody. Block a player from one of their requests.'));
+      return;
+    }
+    if (blockedEl.querySelector('p.muted')) blockedEl.replaceChildren();
+    reconcile(blockedEl, matePrefs.blocked, (p) => String(p), (p) => h('div', { class: 'row blocked-row', 'data-player': p },
+      h('span', { class: 'who' }), h('button', { class: 'secondary small unblock', onclick: () => void sendPrefs({ unblock: p }) }, 'Unblock')),
+    (row, p) => setText(row.querySelector('.who')!, names(p)));
+  }
+  matePrefsEl.addEventListener('toggle', () => { if (matePrefsEl.open && !matePrefs) void sendPrefs({}); });
+
   append(tabs.matings, [
     h('h3', {}, 'Request a directed mating'), matingForm.el,
-    h('h3', {}, 'Incoming requests'), incomingEl,
+    h('h3', {}, 'Incoming requests'), incomingEl, matePrefsEl,
     h('h3', {}, 'My open offers'), openEl,
     h('h3', {}, 'Recent outcomes'), closedEl,
   ]);
 
   function buildMatingForm() {
-    const mine = h('select', { id: 'mating-mine' }) as HTMLSelectElement;
+    // Searchable pickers, not <select>s: a lineage of thousands made "My
+    // adult" unusable (above all on a phone). Nearest first, filters for sex,
+    // free and not pregnant, search by id.
+    const mineP = createPicker({ id: 'mating-mine', label: 'My adult', placeholder: 'Search your adults: id or words', filters: ['sex', 'free', 'notPregnant'], noneLabel: 'Choose one of your adults…' });
+    const mine = mineP.el;
     // The partner: picked from a list (yours and other players' visible
-    // adults, nearest first); typing an id stays possible on a desktop.
-    const partnerPick = h('select', { id: 'mating-partner-pick' }) as HTMLSelectElement;
+    // adults, nearest first); typing an id stays possible.
+    const partnerP = createPicker({ id: 'mating-partner-pick', label: 'Partner', placeholder: 'Search partners: id, owner or words', filters: ['free', 'notPregnant'], noneLabel: 'Choose a partner…' });
+    const partnerPick = partnerP.el;
     const partner = h('input', { id: 'mating-partner', type: 'number', min: 1, placeholder: 'or type an id' }) as HTMLInputElement;
     const price = h('input', { id: 'mating-price', type: 'number', min: 0, placeholder: 'optional' }) as HTMLInputElement;
     const submit = h('button', { id: 'mating-submit' }, 'Send request');
+    // The pair must meet: possess "My adult" and walk it to the partner (the
+    // control the "too far apart" message points to).
+    const walk = h('button', { id: 'mating-walk', class: 'secondary', type: 'button', title: 'Possess your adult and walk it to the partner\'s last seen position', disabled: true }, 'Walk to the partner') as HTMLButtonElement;
+    walk.addEventListener('click', () => {
+      const m = Number(mine.value);
+      const p = Number(partner.value);
+      if (m && p) void escort(m, p);
+    });
     const slots = h('p', { class: 'muted small' });
+    const partnerNote = h('p', { class: 'muted small', id: 'mating-partner-note' });
     // Compatibility of the chosen pair (server `preview_mating`), refreshed
     // when the pair changes and every few seconds (distance, condition).
     const compat = h('p', { id: 'mating-compat', class: 'small compat' });
@@ -1139,8 +1201,40 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     let previewSeq = 0;
     let previewAt = 0;
     let previewTimer: ReturnType<typeof setTimeout> | undefined;
+    // Which lineages can breed with yours (server `compatibility`): others'
+    // animals of a sterile lineage are listed but marked and not pickable.
+    let breeds: CompatibilityView | null = null;
+    let breedsAt = 0;
+    let breedsLoading = false;
+    async function loadBreeds(): Promise<void> {
+      if (breedsLoading) return;
+      breedsLoading = true;
+      breedsAt = Date.now();
+      try {
+        const r = await send({ type: 'compatibility' });
+        if (r.ok) breeds = parseCompatibilityView(r.data) ?? breeds;
+      } finally {
+        breedsLoading = false;
+      }
+      if (model.state) refresh(model.state);
+    }
+    const sterileWith = (lineage: number): boolean => {
+      if (lineage === model.state?.lineage) return false;
+      const row = breeds?.rows.find((r) => r.lineage === lineage);
+      return !!row && !row.compatible;
+    };
     const ownById = (id: number) => model.state?.organisms.find((o) => o.id === id);
     const ownerName = (p: number) => model.state?.leaderboard.rows.find((r) => r.player === p)?.name ?? `player ${p}`;
+    /** Own organisms promised in an open or agreed offer: not free now. */
+    const promised = (): Set<number> => {
+      const ids = new Set<number>();
+      for (const e of model.offers.values()) {
+        if (e.offer.status !== 'pending' && e.offer.status !== 'accepted') continue;
+        ids.add(e.offer.mine);
+        ids.add(e.offer.partner);
+      }
+      return ids;
+    };
     function pairContext(m: number, p: number): PairContext {
       const a = ownById(m);
       const b = ownById(p);
@@ -1174,13 +1268,20 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       clearTimeout(previewTimer);
       previewTimer = setTimeout(() => void updateCompat(), 250);
     };
-    mine.addEventListener('change', () => { picked = true; schedulePreview(); });
+    // A new "My adult": the partner list (other sex, distances from it) is
+    // rebuilt at once, not at the next state.
+    mine.addEventListener('change', () => {
+      picked = true;
+      if (model.state) refresh(model.state);
+      schedulePreview();
+    });
     partner.addEventListener('input', () => {
-      partnerPick.value = [...partnerPick.options].some((o) => o.value === partner.value) ? partner.value : '';
+      partnerP.set(partner.value === '' ? null : Number(partner.value));
       schedulePreview();
     });
     partnerPick.addEventListener('change', () => {
-      if (partnerPick.value) partner.value = partnerPick.value;
+      partner.value = partnerPick.value;
+      walk.disabled = !mine.value || partner.value === '';
       schedulePreview();
     });
     submit.addEventListener('click', async () => {
@@ -1206,15 +1307,22 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       }
     });
     function refresh(s: StateView): void {
-      const adults = s.organisms.filter((o) => o.matured).sort((a, b) => a.id - b.id);
-      // Options are updated in place, so an open list stays open and the choice stays put.
-      reconcile(mine, adults, (o) => String(o.id), (o) => h('option', { value: o.id }) as HTMLOptionElement,
-        (opt, o) => setText(opt, `#${o.id} ${o.sex}${o.pregnant ? ' (pregnant)' : ''} · gen ${o.generation}`));
+      if (s.lineage !== null && !breedsLoading && Date.now() - breedsAt > 60_000) void loadBreeds();
+      const adults = s.organisms.filter((o) => o.matured);
+      const busy = promised();
+      const center = view.cam;
+      const camDist = (o: { x: number; y: number }) => Math.hypot(o.x - center.x, o.y - center.y);
+      mineP.setItems(adults.map((o): PickItem => ({
+        id: o.id,
+        label: `#${o.id} ${o.sex} · gen ${o.generation}`,
+        detail: [o.pregnant && 'pregnant', busy.has(o.id) && 'promised', o.possessed && 'possessed'].filter(Boolean).join(', ') || undefined,
+        sex: o.sex, pregnant: o.pregnant, free: !busy.has(o.id) && !o.pregnant, distance: camDist(o),
+      })));
       if (!picked) {
-        // Nothing chosen yet: not a pregnant female (she can't conceive).
-        const first = adults.find((o) => !o.pregnant) ?? adults[0];
+        // Nothing chosen yet: the nearest free adult (a pregnant female can't conceive).
+        const first = [...adults].sort((a, b) => Number(a.pregnant) - Number(b.pregnant) || camDist(a) - camDist(b))[0];
         if (first && mine.value !== String(first.id)) {
-          mine.value = String(first.id);
+          mineP.set(first.id);
           schedulePreview();
         }
       }
@@ -1224,41 +1332,47 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const dist = (o: { x: number; y: number }) => Math.hypot(o.x - here.x, o.y - here.y);
       // Every own adult of the other sex, wherever it is (the lineage is all
       // known); a pregnant female is listed but can't be picked. Other
-      // players' animals: those the server sends (in or near the view).
-      const ownPartners = adults.filter((o) => o.id !== me?.id && opposite(o.sex))
-        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} (yours)${o.pregnant ? ' · pregnant' : ''} · ${dist(o).toFixed(0)} tiles`, d: dist(o), off: o.pregnant }));
-      const others = (s.nearby ?? []).filter((o) => o.matured && o.owner !== WILD && o.owner !== model.player && opposite(o.sex))
-        .map((o) => ({ id: o.id, label: `#${o.id} ${o.sex} · ${ownerName(o.owner)} · ${dist(o).toFixed(0)} tiles`, d: dist(o), off: false }));
-      const open = [...ownPartners, ...others].filter((c) => !c.off).length;
-      const first = open > 0 ? 'Choose a partner…'
-        : ownPartners.length > 0 ? 'No partner free now (pregnant)'
-          : 'No partner: none of yours of the other sex, none of other players\' in view';
-      const choices = [{ id: 0, label: first, d: -1, off: false },
-        // Pickable first (nearest first), then the pregnant ones.
-        ...[...ownPartners, ...others].sort((a, b) => Number(a.off) - Number(b.off) || a.d - b.d).slice(0, 40)];
-      if (document.activeElement !== partnerPick) {
-        reconcile(partnerPick, choices, (c) => String(c.id), (c) => h('option', { value: c.id || '' }) as HTMLOptionElement,
-          (opt, c) => {
-            setText(opt, c.label);
-            opt.disabled = c.off;
-          });
-        partnerPick.value = [...partnerPick.options].some((o) => o.value === partner.value) ? partner.value : '';
-      }
+      // players' animals: those the server sends (in or near the view);
+      // those of a lineage that can't breed with yours are marked.
+      const ownPartners = adults.filter((o) => o.id !== me?.id && opposite(o.sex)).map((o): PickItem => ({
+        id: o.id, label: `#${o.id} ${o.sex} (yours)`,
+        detail: [o.pregnant && 'pregnant', busy.has(o.id) && 'promised', `${dist(o).toFixed(0)} tiles`].filter(Boolean).join(' · '),
+        sex: o.sex, pregnant: o.pregnant, free: !busy.has(o.id) && !o.pregnant, disabled: o.pregnant, distance: dist(o),
+      }));
+      const others = (s.nearby ?? []).filter((o) => o.matured && o.owner !== WILD && o.owner !== model.player && opposite(o.sex)).map((o): PickItem => {
+        const sterile = sterileWith(o.lineage);
+        return {
+          id: o.id, label: `#${o.id} ${o.sex} · ${ownerName(o.owner)}`,
+          detail: [sterile && 'sterile with yours', `${dist(o).toFixed(0)} tiles`].filter(Boolean).join(' · '),
+          sex: o.sex, free: !sterile, disabled: sterile, distance: dist(o),
+        };
+      });
+      const all = [...ownPartners, ...others];
+      partnerP.setItems(all);
+      const open = all.filter((c) => !c.disabled).length;
+      const sterile = others.filter((c) => c.disabled).length;
+      setText(partnerNote, open > 0
+        ? `${open} possible partner${open === 1 ? '' : 's'}${sterile ? ` · ${sterile} of other players' can't breed with yours` : ''}.`
+        : ownPartners.length > 0 ? 'No partner free now: yours of the other sex are pregnant.'
+          : sterile > 0 ? 'No partner: the other players\' animals in view can\'t breed with yours.'
+            : 'No partner: none of yours of the other sex, none of other players\' in view.');
+      walk.disabled = !me || partner.value === '' || Number(partner.value) === me.id;
       if (Date.now() - previewAt > 3000 && partner.value !== '') void updateCompat();
       slots.textContent = `${s.slots_left} directed-mating slot${s.slots_left === 1 ? '' : 's'} left this season.`;
     }
     const el = h('div', { class: 'form' },
-      h('label', {}, 'My adult', mine),
-      h('label', {}, 'Partner', partnerPick),
+      h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'My adult'), mine),
+      h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Partner'), partnerPick),
+      partnerNote,
       h('div', { class: 'row' }, h('label', { class: 'partner-id' }, 'Partner id', partner), h('label', {}, 'Price', price)),
       compat,
-      h('div', { class: 'row' }, submit), slots,
+      h('div', { class: 'row' }, submit, walk), slots,
       h('p', { class: 'muted small' }, `Pick a partner from the list, or on the map ("Request mating…"). Within your own lineage the pair mates at once when within ${MEETING_TILES} tiles; another player must agree, then the two must meet.`));
     return {
       el,
       refresh,
-      setMine: (id: OrgId) => { picked = true; mine.value = String(id); schedulePreview(); },
-      setPartner: (id: OrgId) => { partner.value = String(id); partnerPick.value = [...partnerPick.options].some((o) => o.value === String(id)) ? String(id) : ''; schedulePreview(); },
+      setMine: (id: OrgId) => { picked = true; mineP.set(id); if (model.state) refresh(model.state); schedulePreview(); },
+      setPartner: (id: OrgId) => { partner.value = String(id); partnerP.set(id); schedulePreview(); },
     };
   }
 
@@ -1310,7 +1424,13 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       return h('div', { class: 'offer', 'data-offer': id }, h('span', { class: 'offer-line' }), h('small', { class: 'muted offer-time' }),
         h('div', { class: 'row' },
           h('button', { class: 'accept', onclick: () => void send({ type: 'respond_mating', request: id, accept: true }) }, 'Accept'),
-          h('button', { class: 'secondary decline', onclick: () => void send({ type: 'respond_mating', request: id, accept: false }) }, 'Decline')));
+          h('button', { class: 'secondary decline', onclick: () => void send({ type: 'respond_mating', request: id, accept: false }) }, 'Decline'),
+          h('button', { class: 'secondary block', title: 'Decline this and every later request from this player', onclick: () => {
+            const from = model.offers.get(id)?.offer.from_player;
+            if (from === undefined) return;
+            void send({ type: 'respond_mating', request: id, accept: false });
+            blockPlayer(from);
+          } }, 'Block player')));
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
       setText(row.querySelector('.offer-time')!, offerTime());
@@ -1351,6 +1471,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     model,
     send,
     msPerTick,
+    cam: () => view.cam,
     onOrganism: (id, x, y) => {
       model.select(id);
       view.setFollow(false);
@@ -1454,10 +1575,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       model.toast('error', `Retire: ${r.error.message}`);
     }
   });
-  append(tabs.lineage, [lineageExtinct, statsEl,
+  append(tabs.lineage, [lineageExtinct, retireEl, statsEl,
     h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
     h('h3', {}, 'Legacy leaderboard'), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter of the world\'s year (the Ranks tab has the ranked seasons, a competition of several weeks)' }, 'By time of year'), seasonsEl,
-    h('h3', {}, 'My organisms'), listEl, listMore, retireEl]);
+    h('h3', {}, 'My organisms'), listEl, listMore]);
 
   function renderSeasons(): void {
     const list = seasons;
@@ -1498,7 +1619,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           ? h('span', { class: 'muted small', title: 'Level of detail: members far from any player run as statistical cohorts and are not drawn' }, ` · ${orgs.length} on the map`)
           : null)],
       ['Adults / young', h('span', { id: 'adults-young', title: 'Young count toward the population cap too' }, `${grouped(adultsAll)} adults / ${grouped(youngAll)} young`)],
-      ['Pregnant', String(orgs.filter((o) => o.pregnant).length)],
+      eggStatus(orgs),
       ['Newest generation', String(maxGen)],
       ['Mating slots left', h('span', { id: 'slots-left' }, String(s.slots_left))],
       ['Migration', migrationText(s.migration, s.groups)],
@@ -1535,6 +1656,21 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       setText(btn, `#${o.id} ${o.sex === 'female' ? 'F' : 'M'}${o.matured ? '' : ' juv'}${o.pregnant ? ' preg' : ''} · ${actionText(o.action, o.needs)}`);
     });
     setText(listMore, orgs.length > shown.length ? `…and ${orgs.length - shown.length} more` : '');
+  }
+
+  /** "Pregnant N" for live bearers; clutches and brooding for egg layers (a gravid female is about to lay). */
+  function eggStatus(orgs: StateView['organisms']): [string, string | Node] {
+    const pregnant = orgs.filter((o) => o.pregnant).length;
+    const e = stats && stats.lineage === model.state?.lineage ? stats.eggs : undefined;
+    if (!e) return ['Pregnant', String(pregnant)];
+    const brooding = orgs.filter((o) => o.action === 'guard').length;
+    const parts = [
+      e.clutches === 0 ? 'no clutch yet' : `${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
+      e.clutches > 0 ? `${e.brooded} brooded` : null,
+      brooding > 0 ? `${brooding} brooding now` : null,
+      pregnant > 0 ? `${pregnant} about to lay` : null,
+    ].filter(Boolean);
+    return ['Eggs', h('span', { id: 'egg-status', title: 'Eggs hatch only while a parent broods them; an unguarded clutch can be lost' }, parts.join(' · '))];
   }
 
   function renderGroups(s: StateView): void {

@@ -1843,6 +1843,9 @@ mod tests {
         let mut config = WorldConfig { seed: 2, width: 64, height: 64, ..Default::default() };
         config.lod.enabled = true;
         config.lod.migration = 0.0;
+        // Founders where they landed before dry founding sites (version 42):
+        // the representatives are compared across two such worlds.
+        config.balance.dry_sites = 0.0;
         let w = presets::standard_world(config, 1);
         // Pick a region with plenty of tiles every species can use.
         let r = (0..w.lod.regions.len())

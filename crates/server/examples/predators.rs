@@ -19,7 +19,7 @@
 //!   founders);
 //! - **Late** founds the starter on day 40.
 //!
-//! Arms on the same seeds: **old rules** (the version 37 tunables off:
+//! Arms on the same seeds: **old rules** (the version 42 tunables off:
 //! `drink_priority`, `toxic_learning`, `dry_sites`, `carnivore_energetics`,
 //! `led_pack`), the Hunter's pack hunting on its own; **new rules**, the
 //! same; and **new rules, deliberate**: every `--every` ticks (default 6)
@@ -130,7 +130,7 @@ enum Arm {
 }
 
 const ARMS: [(Arm, &str); 3] = [
-    (Arm::Old, "Old rules (the version 37 tunables off), the pack hunts on its own"),
+    (Arm::Old, "Old rules (the version 42 tunables off), the pack hunts on its own"),
     (Arm::New, "New rules, the pack hunts on its own"),
     (Arm::Deliberate, "New rules, deliberate hunting (attack orders)"),
 ];

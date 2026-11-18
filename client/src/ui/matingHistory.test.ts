@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { OfferEntry } from '../model';
 import type { MatingRecord, OfferView } from '../protocol';
-import { historyRows } from './matingHistory';
+import { historyRows, offerUpdateText } from './matingHistory';
 
 const offer = (id: number, status: OfferView['status'], tick: number): OfferView =>
   ({ id, from_player: 1, from_name: 'ann', to_player: 2, to_name: 'bob', mine: 10, partner: 20, status, created_tick: tick } as OfferView);
@@ -21,5 +21,15 @@ describe('mating history', () => {
     expect(rows[0].outcome).toContain('Conceived');
     expect(rows[2].error).toContain('already pregnant');
     expect(rows[2].error).not.toContain('already_pregnant');
+  });
+
+  it('tells the buyer and the seller when a bought mating completes or fails', () => {
+    const bought = { ...offer(7, 'completed', 100), listing: 4, price: 30 };
+    expect(offerUpdateText(bought, outcome, undefined, 1)).toBe("The mating you bought (your #10 × bob's #20) happened: conceived.");
+    expect(offerUpdateText(bought, outcome, undefined, 2)).toBe("The mating ann bought (ann's #10 × your #20) happened: conceived.");
+    expect(offerUpdateText({ ...bought, status: 'failed' }, undefined, { message: 'died' }, 1)).toContain('did not happen: failed, your renown is refunded. (died)');
+    expect(offerUpdateText(offer(8, 'declined', 100), undefined, undefined, 1)).toBe('Mating offer 8: declined');
+    const rows = historyRows([{ offer: bought, outcome, incoming: false }], []);
+    expect(rows[0].line).toContain('bought from listing 4');
   });
 });

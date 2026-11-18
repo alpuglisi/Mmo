@@ -939,15 +939,15 @@ pub struct Balance {
     /// it. 0: no grace.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36"))]
     pub attack_grace: f32,
-    // Playtest 2 fixes (version 37; *Playtest 2: predators, toxins and
-    // drowning* in the README). Off at 0, what snapshots before version 37
-    // read (`serde_util::before_v37`).
+    // Playtest 2 fixes (version 42; *Playtest 2: predators, toxins and
+    // drowning* in the README). Off at 0, what snapshots before version 42
+    // read (`serde_util::before_v42`).
     /// Drinking first when parched: past thirst 0.7 drinking gains up to
     /// `0.6 × drink_priority`, a threat in sight stops holding it back and
     /// fattening stops pulling the animal to graze; possessed animals break
     /// off an order to drink at thirst 60 with water near, and hunters and
     /// ordered animals drink at water they pass. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42"))]
     pub drink_priority: f32,
     /// Learned avoidance of toxic prey: each time a predator is poisoned by
     /// its prey, its lineage's lesson about the prey's lineage grows by
@@ -959,20 +959,20 @@ pub struct Balance {
     /// protection), and a lineage that knows a toxin takes less harm biting
     /// it, `1 − 0.7 × lesson` (`world::toxic`). 0: off (only the
     /// bright-prey aversion of a poisoned individual).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42"))]
     pub toxic_learning: f32,
     /// Dry ground for sleeping and founding: no dormancy on ice over water
     /// deep enough to drown the sleeper at the melt (a sleeper on such ice
     /// wakes), and founders land only on dry ground away from deep water
     /// (`World::found_lineage_grouped`). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42"))]
     pub dry_sites: f32,
     /// Obligate carnivores' energetics: an obligate carnivore's hunger
     /// rises up to `0.3 × carnivore_energetics` slower (none at carnivory
     /// 0.7 or below, all of it at 0.95 and above: big, infrequent meals, a
     /// lean-season economy). Playtest 2's player carnivores needed a fifth
     /// of their weight in prey a day and starved. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42"))]
     pub carnivore_energetics: f32,
     /// Player-led pack hunts on big prey: in a hunt a player leads (an
     /// attack order and the pack-mates who join it) the prey mass limit
@@ -980,7 +980,7 @@ pub struct Balance {
     /// times pack instinct, and up to 8 pack-mates at the prey strike
     /// beside the leader: a full pack takes prey several times one hunter's
     /// weight. 0: off (the wild rule, at most 4 pack-mates).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42"))]
     pub led_pack: f32,
 }
 

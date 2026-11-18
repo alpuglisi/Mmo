@@ -485,6 +485,10 @@ pub struct World {
     /// set by the host; not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
     rally_min_ticks: u64,
+    /// Floor on the claim cooldown in ticks
+    /// (`World::set_claim_cooldown_min_ticks`), set by the host; not saved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    claim_cooldown_min_ticks: u64,
     /// Group orders that ended on their own, for the host
     /// (`World::take_group_events`); not saved.
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -534,10 +538,15 @@ pub struct World {
     /// whose lineages count as founded at tick 0).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]
     lineage_founded: Vec<u64>,
+    /// Migration deadlines and post-arrival settle circles by (player,
+    /// group) (`groups::GroupPlans`; version 41: empty from older
+    /// snapshots, whose migrations get a deadline from the restore).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v41"))]
+    group_plans: groups::GroupPlans,
     /// What each lineage has learned about toxic prey: (predator lineage,
     /// prey lineage) → lesson, 0–1 (`World::toxic_lesson`,
-    /// `Balance::toxic_learning`; version 37).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37::list"))]
+    /// `Balance::toxic_learning`; version 42).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
     toxic_lessons: BTreeMap<(u32, u32), f32>,
     /// Attack orders that ended on their own, for the host
     /// (`World::take_attack_events`); not saved.
@@ -645,11 +654,13 @@ impl World {
             territory_claims: BTreeMap::new(),
             rallies: BTreeMap::new(),
             rally_min_ticks: 0,
+            claim_cooldown_min_ticks: 0,
             group_events: Vec::new(),
             slots_used: BTreeMap::new(),
             bonus_slots: BTreeMap::new(),
             attack_orders: BTreeMap::new(),
             lineage_founded: Vec::new(),
+            group_plans: groups::GroupPlans::default(),
             attack_events: Vec::new(),
             toxic_lessons: BTreeMap::new(),
             crowding: Vec::new(),
@@ -749,6 +760,8 @@ impl World {
         self.territories.retain(|&(p, _), _| p != player);
         self.territory_claims.retain(|&(p, _), _| p != player);
         self.rallies.retain(|&(p, _), _| p != player);
+        self.group_plans.migrations.retain(|&(p, _), _| p != player);
+        self.group_plans.settles.retain(|&(p, _), _| p != player);
     }
 
     /// Retire a player's lineage: every organism they own (agents and
@@ -961,6 +974,9 @@ impl World {
         // Founders land on dry ground (`Balance::dry_sites`): playtest 2's
         // founders drowned on landing at coastal homes.
         let dry_sites = self.config.balance.dry_sites > 0.0;
+        // Its own stream for the extra home picks and the placements, so the
+        // founders' genomes are drawn as without the rule.
+        let mut site_rng = rng_for(self.config.seed, stream::FOUNDING, owner as u64 | 1 << 40, self.next_id);
         for k in 0..design.founders {
             if k % group_size == 0 {
                 let s = search.get_or_insert_with(|| HomeSearch::new(self, &probe, lineage));
@@ -975,7 +991,7 @@ impl World {
                             break;
                         }
                         let s = search.as_mut().expect("search");
-                        let h = self.pick_home(&probe, s, &mut rng);
+                        let h = self.pick_home(&probe, s, &mut site_rng);
                         let d = self.dry_share(h, spread);
                         if d > best.0 {
                             best = (d, h);
@@ -989,7 +1005,8 @@ impl World {
             let mut pos = home;
             let tries = if dry_sites { 40 } else { 20 };
             for _ in 0..tries {
-                let off = Vec2::new(rng.gen_range(-spread..spread), rng.gen_range(-spread..spread));
+                let r = if dry_sites { &mut site_rng } else { &mut rng };
+                let off = Vec2::new(r.gen_range(-spread..spread), r.gen_range(-spread..spread));
                 let cand = self.map.clamp(home + off);
                 // Passable (`passable_for`), from the search's region map.
                 let (cx, cy) = self.map.tile_coords(cand);

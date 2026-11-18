@@ -809,6 +809,14 @@ impl World {
         let territory = self.territory_of(o).map(|t| (t.center, t.radius));
         let outside = self.roam_bound(o).is_some_and(|(c, r)| o.pos.dist(c) > r);
         let rally = if territory.is_none() { self.rally_of(o).map(|r| r.center) } else { None };
+        // A group that just arrived from a migration settles there: a weak
+        // pull back into the settle circle, set aside for any pressing need.
+        let home = match (territory, rally, self.settle_of(o)) {
+            (None, None, Some(s)) if o.pos.dist(s.center) > s.radius && !migrant_breaks_off(o, hunger, thirst) => {
+                Some(s.center)
+            }
+            _ => None,
+        };
         let defend = match intruder {
             Some(_) if o.matured && territory.is_some() => {
                 DEFEND_UTILITY * (0.3 + 0.7 * p[Gene::Aggression].max(boldness)) * (1.0 - hunger) * heed
@@ -899,7 +907,16 @@ impl World {
             (Action::Idle, 0.0),
             (Action::Patrol, if outside && rally.is_none() { RETURN_UTILITY * heed } else { 0.0 }),
             (Action::Defend, defend),
-            (Action::Rally, if outside && rally.is_some() { RALLY_UTILITY * heed } else { 0.0 }),
+            (
+                Action::Rally,
+                if outside && rally.is_some() {
+                    RALLY_UTILITY * heed
+                } else if home.is_some() {
+                    super::groups::SETTLE_UTILITY * heed
+                } else {
+                    0.0
+                },
+            ),
         ];
         // Aggressive organisms hunt a little before they're hungry.
         if hunter && prey.is_some() {
@@ -1007,7 +1024,7 @@ impl World {
                     intent.target = Some(self.map.clamp(c + (o.pos - c).norm() * (0.6 * r)));
                 }
             }
-            Action::Rally => intent.target = rally,
+            Action::Rally => intent.target = rally.or(home),
             Action::Defend => {
                 if let Some((_, j)) = intruder {
                     intent.target = Some(self.organisms[j].pos);
@@ -1700,8 +1717,8 @@ impl World {
 /// or one it is already eating or drinking for until it is down to
 /// [`ORDER_RESUME`](super::commands::ORDER_RESUME).
 fn migrant_breaks_off(o: &Organism, hunger: f32, thirst: f32) -> bool {
-    use super::commands::{MIGRATE_BREAK, MIGRATE_BREAK_OBEDIENCE, ORDER_RESUME};
-    let limit = MIGRATE_BREAK + MIGRATE_BREAK_OBEDIENCE * (o.pheno[Gene::Obedience] - 0.5);
+    use super::commands::ORDER_RESUME;
+    let limit = super::groups::need_limit(o);
     let resume = ORDER_RESUME / 100.0;
     let drinking = o.action == Action::Drink && thirst > resume;
     let eating = matches!(o.action, Action::Graze | Action::Hunt | Action::Scavenge) && hunger > resume;

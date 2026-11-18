@@ -307,6 +307,10 @@ export interface GroupView {
   migration?: [number, number];
   /** The way the migration should go (around water and thin ice), from the group's middle to the target (absent: none planned). */
   route?: [number, number][];
+  /** Tick at which the migration ends if the group hasn't gathered at the target (absent: no migration). */
+  migration_deadline_tick?: number;
+  /** Where the group settles after arriving from a migration: members drift back into the circle until `expires_tick` (not a confinement). */
+  settle?: RallyView;
   territory?: TerritoryView;
   rally?: RallyView;
   /** Largest territory radius the group could claim now. */
@@ -934,6 +938,8 @@ export interface LineageStats {
   score?: ScoreBreakdown;
   /** The soft lineage cap and how crowded the lineage is (absent on older servers). */
   crowding?: CrowdingView;
+  /** Egg-laying lineages: their clutches on the ground (absent for live bearers and older servers). */
+  eggs?: { clutches: number; eggs: number; brooded: number };
   legacy: LegacyPoint[];
   alerts: AlertView[];
 }
