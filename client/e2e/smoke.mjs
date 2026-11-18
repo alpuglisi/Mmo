@@ -204,6 +204,10 @@ async function main() {
     const avatarBox = await page.locator('.avatar-card').boundingBox();
     if (!(avatarBox.y < budgetBox.y && avatarBox.x >= sideBox.x - 1)) throw new Error(`avatar not above the budget: ${JSON.stringify({ avatarBox, budgetBox })}`);
     const saved = await page.$$eval('input[data-gene]', (els) => els.map((el) => [el.dataset.gene, el.value]));
+    // The design's thermoregulation and birth, restored with the sliders (the
+    // second player founds the starting design: both must stay one body plan).
+    const savedThermo = await page.$eval('input[name="thermo"]:checked', (el) => el.value);
+    const savedBirth = await page.$eval('input[name="birth"]:checked', (el) => el.value);
     await setTrait('wings', 0);
     const noWings = await avatar();
     await setTrait('wings', 0.6);
@@ -234,8 +238,8 @@ async function main() {
     }
     if (labels.size !== 3) throw new Error(`contrasting designs gave the same avatar description: ${[...labels].join(' | ')}`);
     // Back to the design whose cost was checked.
-    await page.check('input[name="thermo"][value="warm"]');
-    await page.check('input[name="birth"][value="live"]');
+    await page.check(`input[name="thermo"][value="${savedThermo}"]`);
+    await page.check(`input[name="birth"][value="${savedBirth}"]`);
     for (const [g, v] of saved) await setTrait(g, Number(v));
     if ((await page.textContent('#budget-total')) !== after) throw new Error(`design not restored: ${await page.textContent('#budget-total')} vs ${after}`);
     step(`avatar preview: described image above the budget, sticky, redraws (wings 0 → 0.6); ${labels.size} avatar screenshots`);

@@ -6971,6 +6971,40 @@ mod tests {
         assert_eq!((f.fertile_with, f.at_risk), (0, 0));
     }
 
+    /// Two foundings of one design are always mutually fertile: founder
+    /// variation never opens a sterile gap within a design, the client's
+    /// egg-laying starter included (every pair of 16 founders × 16 adults).
+    #[test]
+    fn two_foundings_of_one_design_are_mutually_fertile() {
+        use evo_sim::presets;
+        let starter = FounderDesign::new("Starter", Thermo::Warm, BirthType::IncubatedEggs, 3)
+            .with(Gene::BodySize, 0.5)
+            .with(Gene::GroupTolerance, 0.9)
+            .with(Gene::Boldness, 0.3)
+            .with(Gene::Fur, 0.6)
+            .with(Gene::FatStores, 0.6)
+            .with(Gene::Hibernation, 0.5)
+            .founders(20);
+        let smoke = starter.clone().with(Gene::BodySize, 0.45).with(Gene::Fur, 0.4).with(Gene::Nose, 0.3);
+        let mut designs = vec![starter, smoke, presets::migrant_design()];
+        designs.extend(presets::player_designs());
+        for (k, d) in designs.iter().enumerate() {
+            for seed in [3, 11] {
+                let world =
+                    build_world(&WorldSettings { seed, width: 64, height: 64, wild: false, ..Default::default() });
+                let mut g = Game::new(world, GameConfig::default());
+                let first = g.found_at_any_price(1, d).unwrap().lineage;
+                let v = g.design_compatibility(2, d);
+                let row = v.rows.iter().find(|r| r.lineage == first).expect("the first founding");
+                assert!(
+                    row.fertile_share >= 1.0 && row.compatible && row.fertility > 0.5,
+                    "design {k} ({}), seed {seed}: {row:?}",
+                    d.name
+                );
+            }
+        }
+    }
+
     #[test]
     fn escrow_is_refunded_on_decline_cancel_death_and_expiry() {
         let world = build_world(&WorldSettings {
