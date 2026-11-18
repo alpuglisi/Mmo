@@ -242,6 +242,21 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   }
 
   // ---------------------------------------------------------------- help
+  /** Topics of the Help dialog's "How the world works" (playtest 2: attacks, grace, territory and toxins were explained nowhere). */
+  const HELP_TOPICS: [string, (tap: string) => string][] = [
+    ['Attacks', (tap) => `Possess one of yours, press Attack in its bar, then ${tap.toLowerCase()} another player's or a wild animal in sight. It chases and strikes; hungry pack-mates nearby join in. `
+      + 'You hear how it ended: killed, escaped, out of sight, gone to ground. It can only take animals up to a weight that grows with the pack around it; the owner of the target is told.'],
+    ['Newcomer grace', () => 'A newly founded lineage is protected for its first days: other players cannot order attacks on it (wild predators, and animals hunting on instinct, still can). '
+      + 'The Lineage tab shows your grace left; a rival animal in grace shows "protected newcomer" in the inspector.'],
+    ['Territories and rallies', () => 'The Territory tool (in Tools on phones) makes a group hold an area: it patrols it and stays inside. Rally gathers a group at a point for a while. '
+      + 'Pick places with water: a territory or rally away from water can kill a herd in a drought.'],
+    ['Toxins and colours', () => 'A toxic animal poisons whoever bites it, whether or not the attack succeeds; predators that eat it can die (the Genes tab counts "poisoned" deaths). '
+      + 'Bright colours warn predators that have learned to avoid them; toxic but drab prey is not recognised, so it poisons more hunters. Hunting toxic prey is risky.'],
+    ['Droughts and catastrophes', () => 'When much of the land dries out a drought notice appears over the map: animals far from lakes and rivers go thirsty. '
+      + 'Catastrophes (severe winters, megadroughts, epidemics, flood years) are pinned over the map with the days left.'],
+    ['Growth and the soft cap', () => 'Breeding slows as your lineage grows: litters shrink toward the soft cap (half size at it) and members get hungrier past it; births stop only at the hard cap. '
+      + 'The Lineage tab shows where you stand.'],
+  ];
   let helpEls: { backdrop: HTMLElement; dialog: HTMLElement } | null = null;
 
   function openHelp(): void {
@@ -258,6 +273,9 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
         h('li', {}, `${tap} an organism to inspect it; yours have a yellow ellipse at their feet.`),
         h('li', {}, touch ? 'Long-press one of yours (or press Possess) to control it, then tap the map to walk.' : 'Hold the mouse on one of yours (or press Possess) to control it, then click the map to walk.'),
         h('li', {}, 'Mates and Market pair your adults with others; Ranks shows the ranked seasons; alerts badge the Genes tab.')),
+      h('h3', {}, 'How the world works'),
+      h('div', { class: 'help-topics', id: 'help-topics' }, ...HELP_TOPICS.map(([title, body]) =>
+        h('details', { class: 'help-topic' }, h('summary', {}, title), h('p', { class: 'small' }, body(tap))))),
       h('div', { class: 'row wrap' }, replay, tips, close));
     const backdrop = h('div', { class: 'help-backdrop', id: 'help' }, dialog);
     backdrop.addEventListener('mousedown', (e) => {

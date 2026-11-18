@@ -36,19 +36,37 @@ describe('the builder’s interbreeding check', () => {
     expect(near.map((n) => n.species.name)).toEqual(['Steppe antelope', 'Broker voles']);
     const a = hybridAdvice(design(), species, 3);
     expect(a.level).toBe('warn');
-    expect(a.headline).toBe('Interbreeds with Steppe antelope');
+    expect(a.headline).toBe('Interbreeds with Steppe antelope and 1 more');
     expect(a.points[0]).toMatch(/wild genes, which count for the wild ecosystem/);
     expect(a.points[1]).toMatch(/move (diet|body size|thermoregulation) at least 0\.\d\d further from Steppe antelope/);
-    expect(a.points.some((p) => p.includes('Voles'))).toBe(true);
-    expect(a.market).toMatch(/you could breed with Voles/);
+    // A player's species is the player's, named by them, never "wild".
+    expect(a.points.some((p) => p.includes("GeneBroker's Broker voles"))).toBe(true);
+    expect(a.points[0]).not.toMatch(/Broker voles/);
+    expect(a.market).toMatch(/you could breed with GeneBroker/);
+    expect(a.confidence).toMatch(/averages: animals vary/);
   });
 
   it('says a distant design keeps its genes, and who it can never breed with', () => {
     const a = hybridAdvice(design({ carnivory: 0.5 }), species, 3);
     expect(a.level).toBe('ok');
-    expect(a.market).toMatch(/no other player's lineage is within breeding range/);
+    expect(a.market).toMatch(/no other player's species is within breeding range of this design's averages/);
+    // Never a flat "no one": a species just past the sterile gap reads as possible.
+    expect(a.points.join(' ')).toMatch(/Marsh foxes \(120 adults, sterile on average, some pairs fertile\)/);
     // Older servers (no thermoregulation or birth in the list): nothing to say.
     expect(neighbours(design(), species.map((s) => ({ ...s, endothermy: undefined })), 3)).toEqual([]);
+  });
+});
+
+describe('species that are mostly wild genes', () => {
+  it('stay a player\'s species, with the wild share said', () => {
+    const species = [sp(9, 'Broker voles', { dominant: 0, dominant_name: 'wild', dominant_share: 0.59,
+      lineages: [{ lineage: 9, name: 'Voles', owner: 7, owner_name: 'GeneBroker2', adults: 900 }, { lineage: 1, name: 'Steppe antelope', owner: 0, adults: 200 }] })];
+    const a = hybridAdvice(design(), species, 3);
+    expect(a.level).toBe('warn');
+    expect(a.headline).toBe("Interbreeds with GeneBroker2's Broker voles");
+    expect(a.points.join(' ')).not.toMatch(/wild species/);
+    expect(a.points.join(' ')).toMatch(/mostly wild genes by now \(59%\)/);
+    expect(a.market).toMatch(/breed with GeneBroker2/);
   });
 });
 
@@ -79,5 +97,13 @@ describe('the founding-size hint', () => {
     const big = foundingHint(design({}, { founders: 120 }), world('summer', 0.5));
     expect(big.level).toBe('warn');
     expect(big.text).toMatch(/120 founders .* worse now that it is summer and there is a drought/);
+    // Heavy animals: the advice is a smaller head count, never more than the founding.
+    const heavy = foundingHint(design({ body_size: 1 }), world('spring', 0));
+    expect(heavy.level).toBe('warn');
+    const m = heavy.text.match(/around (\d+) founders/);
+    expect(m && Number(m[1])).toBeLessThan(20);
+    expect(heavy.text).toMatch(/big animals/);
+    // The soft cap, not "births stop at 1,500".
+    expect(foundingHint(design(), { ...world('spring', 0), lineage_hard_cap: 3000 }).text).toMatch(/past 1,500, where breeding slows to half pace; births stop at 3,000/);
   });
 });

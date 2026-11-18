@@ -37,6 +37,8 @@ export interface DesignCallbacks {
    * offers a way back to the map (`onCancel`).
    */
   refound?: boolean;
+  /** The last lineage was retired by the player, not killed off (the screen words it so). */
+  retired?: boolean;
   onCancel?: () => void;
 }
 
@@ -60,10 +62,20 @@ export async function designScreen(cb: DesignCallbacks): Promise<HTMLElement> {
   return buildEditor(cat, cb, await world, await species);
 }
 
+/** How often the editor re-reads the world (season notice, founding hint, species): a game day is seconds. */
+export const DESIGN_WORLD_REFRESH_MS = 10000;
+
 export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldSummary | null = null, species: SpeciesList | null = null): HTMLElement {
   // The one design both modes edit: traits plus the whole body plan.
   const spec = newEditorDesign(cat);
-  const seasonText = seasonNotice(world);
+  // The season notice: kept current while the player designs (it said "winter in 2 days" during winter).
+  const seasonEl = h('p', { class: 'notice season-notice', id: 'design-season', role: 'note' });
+  const showSeason = () => {
+    const t = seasonNotice(world);
+    seasonEl.hidden = !t;
+    if (t && seasonEl.textContent !== t) seasonEl.textContent = t;
+  };
+  showSeason();
 
   // --- basics
   const name = h('input', { id: 'design-name', maxlength: 40, placeholder: 'e.g. Marsh striders', value: '' });
@@ -312,7 +324,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       h('h2', {}, 'Interbreeding'),
       h('p', { class: 'hybrid-headline' }, a.level === 'warn' ? '⚠ ' : '', a.headline),
       h('ul', { class: 'small hybrid-points' }, ...a.points.map((t) => h('li', {}, t))),
-      h('p', { class: 'small muted hybrid-market', id: 'design-hybrid-market' }, a.market));
+      h('p', { class: 'small muted hybrid-market', id: 'design-hybrid-market' }, a.market),
+      h('p', { class: 'small muted hybrid-confidence', id: 'design-hybrid-confidence' }, a.confidence));
   }
 
   /** Redraw from the design; `full` (default) also recomputes costs, captions and validation. */
@@ -382,14 +395,16 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const page = h('div', { class: 'screen design' },
     h('header', { class: 'topbar' }, h('strong', { class: 'topbar-title' }, cb.refound ? 'Design a new lineage' : 'Design your founders'),
       h('span', { class: 'muted' }, cb.refound
-        ? 'Your last lineage died out. Your renown, records and titles stay; the new founders start fresh.'
+        ? cb.retired
+          ? 'You retired your last lineage. Your renown, records and titles stay; the new founders start fresh.'
+          : 'Your last lineage died out. Your renown, records and titles stay; the new founders start fresh.'
         : 'After launch the design changes only through breeding, mutation and selection.'),
       h('span', { class: 'spacer' }),
       cb.onCancel ? h('button', { class: 'secondary', id: 'design-cancel', onclick: cb.onCancel }, 'Back to the map') : null,
       h('button', { class: 'secondary', onclick: cb.onLogout }, 'Log out')),
     h('div', { class: 'design-body' },
       h('div', { class: 'design-main' },
-        seasonText ? h('p', { class: 'notice season-notice', id: 'design-season', role: 'note' }, seasonText) : null,
+        seasonEl,
         h('section', { class: 'card' }, h('h2', {}, 'Basics'),
           h('label', {}, 'Lineage name', name),
           h('fieldset', {}, h('legend', {}, 'Thermoregulation'), ...thermoRadios),
@@ -413,5 +428,19 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       dock));
   setMode(mode, false);
   update();
+  // Re-read the world and the species while the editor is open; stop once it is gone.
+  let attached = false;
+  const refresh = setInterval(async () => {
+    if (!page.isConnected) {
+      if (attached) clearInterval(refresh);
+      return;
+    }
+    attached = true;
+    const [w, sp] = await Promise.all([api.world().catch(() => null), species ? api.species().catch(() => null) : Promise.resolve(null)]);
+    if (w) world = w;
+    if (sp) species = sp;
+    showSeason();
+    update();
+  }, DESIGN_WORLD_REFRESH_MS);
   return page;
 }

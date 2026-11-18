@@ -148,7 +148,7 @@ impl fmt::Display for CommandError {
                 let kg = |x: f32| if x < 10.0 { format!("{x:.1}") } else { format!("{x:.0}") };
                 write!(
                     f,
-                    "that animal ({} kg) is too big to take on; this one can tackle up to {} kg (more with pack-mates around)",
+                    "that animal ({} kg) is too big to take on; this one can tackle up to {} kg, counting the pack-mates around it now",
                     kg(*mass),
                     kg(*limit)
                 )
@@ -424,6 +424,20 @@ impl World {
         }
         let founded = *self.lineage_founded.get(q.lineage as usize)?;
         if founded == 0 {
+            return None;
+        }
+        let tpd = self.config.ticks_per_day.max(1) as f32;
+        let left = grace - (self.tick - founded) as f32 / tpd;
+        (left > 0.0).then_some(left)
+    }
+
+    /// Days left of lineage `lineage`'s founding grace (`Balance::attack_grace`),
+    /// if it is still in it: other players' animals can't be ordered to
+    /// attack its members. Wild lineages have none.
+    pub fn lineage_grace_left(&self, lineage: u32) -> Option<f32> {
+        let grace = self.config.balance.attack_grace;
+        let founded = *self.lineage_founded.get(lineage as usize)?;
+        if grace <= 0.0 || founded == 0 || self.lineages.get(lineage as usize).is_none_or(|l| l.owner == crate::WILD) {
             return None;
         }
         let tpd = self.config.ticks_per_day.max(1) as f32;

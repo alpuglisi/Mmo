@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GeneStat } from '../protocol';
-import { SERIES, driftRows, histogramBars, legacySeries, linearScale, linePath, niceMax, originRows, pyramidRows, stackVitals } from './charts';
+import { geneValueText, SERIES, driftRows, histogramBars, legacySeries, linearScale, linePath, niceMax, originRows, pyramidRows, stackVitals } from './charts';
 import { alertEntry, mergeFeed, MAX_FEED, type FeedEntry } from '../model';
 
 describe('chart data prep', () => {
@@ -37,6 +37,11 @@ describe('chart data prep', () => {
     expect(st.days[1].segments).toEqual([]);
     expect(st.causes).toEqual(['eaten', 'thirst', 'old_age', 'other']);
     expect(stackVitals([]).maxDeaths).toBe(0);
+  });
+
+  it('keeps toxin, drowning and attrition out of "other"', () => {
+    const st = stackVitals([{ day: 0, births: 0, deaths: { toxin: 4, drowned: 2, attrition: 1, disease: 1 } }]);
+    expect(st.causes).toEqual(['toxin', 'drowned', 'attrition', 'other']);
   });
 
   it('orders the age pyramid oldest first', () => {
@@ -104,5 +109,13 @@ describe('gene distributions and allele origins', () => {
     expect(rows[4].share).toBeCloseTo(0.05);
     expect(originRows([o(1, 1)], 1)).toHaveLength(1);
     expect(originRows([], 1)).toEqual([]);
+  });
+});
+
+describe('gene values as players read them', () => {
+  it('shows litter size as young per birth', () => {
+    expect(geneValueText('litter_size', 2 / 11)).toBe('3.0 per birth');
+    expect(geneValueText('litter_size', -0.5 / 11, true)).toBe('-0.5 young');
+    expect(geneValueText('speed', 0.5)).toBe('0.50');
   });
 });

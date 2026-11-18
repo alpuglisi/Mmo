@@ -171,11 +171,19 @@ function standingTables(standings: StandingPage[], me: PlayerId, idPrefix: strin
           h('td', { class: 'rank' }, String(r.rank)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name)), h('td', { class: 'num' }, formatValue(s.category, r.value)))))))));
 }
 
+/** The legacy category in words (`league.rs`: each day the mean of raw and weighted share, scaled by the founding ramp). */
+export const LEGACY_SCORE_EXPLAIN = 'Each day counts the mean of your share (your alleles among all living breeding adults) and your weighted share '
+  + '(the same, with each adult counted by how many of its young reached adulthood). The crown goes to the best average over the season\'s days. '
+  + 'A new lineage counts gradually: 10% on its first day after founding, rising to 100% after 10 days (the founding ramp), so dying out and founding again does not pay.';
+
 function currentParts(cur: CurrentSeason, me: PlayerId): Node[] {
   const mine = myPlaces(cur.standings, me).filter((p) => p.place);
   return [
     h('h3', {}, `Season ${cur.season}`),
     h('p', { class: 'muted small', id: 'season-clock' }, `${seasonClock(cur)}. At the end the standings are final and the winners join the hall of fame.`),
+    h('details', { class: 'small', id: 'season-legacy-explain' },
+      h('summary', {}, 'How the legacy crown is scored'),
+      h('p', { class: 'muted' }, LEGACY_SCORE_EXPLAIN)),
     h('p', { class: 'small', id: 'season-mine' }, mine.length === 0
       ? 'You are not ranked yet this season.'
       : `You: ${mine.map((p) => `${categoryLabel(p.category)} ${ordinal(p.place!.rank)} of ${p.place!.of}`).join(' · ')}`),
@@ -190,7 +198,10 @@ function currentParts(cur: CurrentSeason, me: PlayerId): Node[] {
 export function renderCurrentSeason(el: HTMLElement, cur: CurrentSeason, me: PlayerId): boolean {
   const part = el.querySelector('#season-now');
   if (!part) return false;
+  // Keep the explanation as the player left it (pushes redraw this part often).
+  const wasOpen = part.querySelector<HTMLDetailsElement>('#season-legacy-explain')?.open ?? false;
   part.replaceChildren(...currentParts(cur, me));
+  if (wasOpen) part.querySelector<HTMLDetailsElement>('#season-legacy-explain')!.open = true;
   return true;
 }
 
@@ -200,6 +211,7 @@ export function renderSeasons(el: HTMLElement, d: SeasonsData, me: PlayerId, on:
     return;
   }
   const open = new Set([...el.querySelectorAll<HTMLDetailsElement>('details[data-key]')].filter((x) => x.open).map((x) => x.dataset.key));
+  const explainOpen = el.querySelector<HTMLDetailsElement>('#season-legacy-explain')?.open ?? false;
   const parts: (Node | null)[] = [];
   const cur = d.current;
   if (cur) parts.push(h('div', { id: 'season-now' }, ...currentParts(cur, me)));
@@ -244,4 +256,6 @@ export function renderSeasons(el: HTMLElement, d: SeasonsData, me: PlayerId, on:
     }
   }
   el.replaceChildren(...parts.filter((p): p is Node => p !== null));
+  const explain = el.querySelector<HTMLDetailsElement>('#season-legacy-explain');
+  if (explain && explainOpen) explain.open = true;
 }

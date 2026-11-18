@@ -15,7 +15,7 @@ import { h, pct } from './dom';
 import { traitName } from './traitNames';
 import './market.css';
 import {
-  auctionText, expiryText, balanceText, bidProblem, buyProblem, compatRowText, DEFAULT_FILTER, shopText, expiresIn, ledgerRows, ledgerTotals, listingCompat,
+  auctionText, expiryText, balanceText, bidProblem, buyProblem, COMPAT_CONFIDENCE, compatRowText, DEFAULT_FILTER, shopText, expiresIn, ledgerRows, ledgerTotals, listingCompat,
   marketQuery, mergePages, ownAdults, pageText, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
 } from './marketData';
 
@@ -397,7 +397,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
       h('ul', { class: 'small compat-list' },
         ...fertile.map((r) => h('li', { 'data-lineage': r.lineage, class: 'good' }, compatRowText(r))),
         ...sterile.slice(0, 6).map((r) => h('li', { 'data-lineage': r.lineage, class: 'muted' }, compatRowText(r)))),
-      ...(fertile.length === 0 ? [h('p', { class: 'small' }, 'No lineage can breed with yours right now.')] : []));
+      h('p', { class: 'muted small compat-confidence', id: 'market-compat-note' }, COMPAT_CONFIDENCE),
+      ...(fertile.length === 0 ? [h('p', { class: 'small' }, 'None of the sampled pairs can breed with yours right now (animals vary, so a rare pair may still conceive).')] : []));
   }
 
   function render(): void {

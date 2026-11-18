@@ -1,6 +1,7 @@
 // Entry point: login → (design editor if the player has no lineage) → play.
 // One GameSocket lives from login to logout; screens come and go.
 
+import { wasRetired } from './retired';
 import './style.css';
 import { api, setApiBase, setWorld, wsUrl } from './api';
 import { initialOrigin } from './serverOrigin';
@@ -116,6 +117,7 @@ async function showDesign(r: Running, refound = false): Promise<void> {
     onUnauthorized: sessionExpired,
     onLogout: logout,
     refound,
+    retired: refound && wasRetired(r.model.state?.lineage),
     onCancel: refound ? () => void showGame(r) : undefined,
   });
   if (running === r) mount(el);

@@ -207,6 +207,11 @@ fn an_attack_order_alerts_the_targets_owner() {
     assert_eq!(run(&mut g, ClientMsg::PossessAttack { organism: a[0], target: a[1] }), Err("own_target".into()));
     // A newcomer's grace, with the days left.
     g.world.config.balance.attack_grace = 1e6;
+    // Shown: bo's lineage is listed as protected, and bo's stats give the days left.
+    let protected = g.summary().protected;
+    assert!(protected.iter().any(|p| p.player == 2 && p.days_left > 1.0), "{protected:?}");
+    assert!(g.lineage_stats(2).grace_days_left.is_some_and(|d| d > 1.0));
+    assert!(g.lineage_stats(2).ramp.is_some_and(|r| r.days == FOUNDING_RAMP_DAYS && r.weight < 1.0));
     let out = g.command(10, 1, Some(2), msg.clone());
     match &out[0].1 {
         ServerMsg::Result { error: Some(e), .. } if e.code == "newcomer_grace" => {
@@ -225,4 +230,33 @@ fn an_attack_order_alerts_the_targets_owner() {
     assert_eq!(told.len(), 1, "{told:?}");
     assert!(told[0].contains(&format!("#{}", b[0])) && told[0].contains("hunted"), "{told:?}");
     assert!(alerts(&g, AlertKind::Attack).is_empty(), "the attacker isn't alerted");
+    assert!(told[0].starts_with(&format!("#{} of your B is being hunted", b[0])), "{told:?}");
+    // The target gets away: the attacker's player is told how it ended.
+    g.world.organisms[i].pos = at + Vec2::new(40.0, 0.0);
+    tick(&mut g);
+    let ended = alerts(&g, AlertKind::Attack);
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert!(ended[0].contains("escaped") && ended[0].contains("lost sight"), "{ended:?}");
+    // A released attacker's order ends silently.
+    g.world.organisms[i].pos = at + Vec2::new(1.0, 0.0);
+    run(&mut g, ClientMsg::PossessAttack { organism: a[0], target: b[0] }).unwrap();
+    run(&mut g, ClientMsg::Release { organism: a[0] }).unwrap();
+    tick(&mut g);
+    assert_eq!(alerts(&g, AlertKind::Attack).len(), 1);
+}
+
+/// The animal a player possesses dies: they hear of it at once, with the cause.
+#[test]
+fn a_possessed_animals_death_is_told_at_once() {
+    let (mut g, a) = game();
+    run(&mut g, ClientMsg::Possess { organism: a[0] }).unwrap();
+    let i = g.world.organisms.iter().position(|o| o.id == a[0]).unwrap();
+    g.world.organisms[i].alive = false;
+    g.world.organisms[i].death = Some(DeathCause::Thirst);
+    g.after_tick();
+    let told = alerts(&g, AlertKind::Death);
+    assert!(
+        told.iter().any(|t| t.starts_with(&format!("#{}, the animal you were possessing, died of thirst", a[0]))),
+        "{told:?}"
+    );
 }
