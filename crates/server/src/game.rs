@@ -9638,7 +9638,10 @@ mod tests {
             .map(|o| (o.pos.dist(center), NearbyOrganism::from_org(o)))
             .collect();
         if nearby.len() > g.cfg.max_nearby {
-            nearby.sort_by(|a, b| a.0.total_cmp(&b.0));
+            // Those within OWN_NEAR of one of the player's own first, then nearest the center.
+            let own: Vec<Vec2> = alive().filter(|o| o.owner == player).map(|o| o.pos).collect();
+            let near = |n: &NearbyOrganism| own.iter().any(|q| q.dist(Vec2::new(n.x, n.y)) <= states::OWN_NEAR);
+            nearby.sort_by(|a, b| near(&b.1).cmp(&near(&a.1)).then(a.0.total_cmp(&b.0)));
             nearby.truncate(g.cfg.max_nearby);
         }
         let offers = (g.offers.values())

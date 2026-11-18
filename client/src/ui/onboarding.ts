@@ -12,7 +12,7 @@ import { FOUNDING_RAMP_TEXT } from '../designWarnings';
 import { FREE_FIRST_WINTER, SEASON_NOTICE_DAYS } from '../seasonNotice';
 import type { GameModel } from '../model';
 import {
-  autoStarts, dueHints, HINT_IDS, HINTS, hintsAfterReset, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
+  autoStarts, DEATH_HINT_AFTER_DAYS, dueHints, HINT_IDS, HINTS, hintsAfterReset, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
   CARD_MARGIN, type HintId, type KeyValueStore, type Progress, type TourEvent, type TourStep, type TourTab,
 } from '../onboarding';
 import { h } from './dom';
@@ -59,7 +59,9 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   let progress: Progress = loadProgress(key, deps.store);
   const save = () => saveProgress(key, progress, deps.store);
   if (deps.returning && progress.tour === 'new') {
-    progress = { ...progress, tour: 'skipped' };
+    // Back in a new browser: they have played, so the tips have been seen
+    // too (they recurred in every new browser profile, playtest 5).
+    progress = { ...progress, tour: 'skipped', hints: [...new Set([...progress.hints, ...HINT_IDS])] };
     save();
   }
 
@@ -204,13 +206,17 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   /** After a tip went away on its own, the next waits this long (the player is busy). */
   const HINT_PAUSE_MS = 45_000;
   let pauseUntil = 0;
+  /** The day the game opened on this lineage (deaths before it, or just after, bring no tip). */
+  let startDay: number | null = null;
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
 
   function check(): void {
     if (deps.disabled || tourEls || helpEls) return;
     if (Date.now() < pauseUntil) return;
     if (progress.tour === 'new' || progress.tour === 'active') return;
-    const input = { player: model.player, organisms: model.state?.organisms ?? [], feed: model.feed, offers: model.offers.values() };
+    if (startDay === null && model.state) startDay = model.state.clock.day;
+    if (startDay === null) return;
+    const input = { player: model.player, organisms: model.state?.organisms ?? [], feed: model.feed, offers: model.offers.values(), deathsFrom: startDay + DEATH_HINT_AFTER_DAYS };
     for (const id of dueHints(input, [...progress.hints, ...queue])) queue.push(id);
     if (!hintEl && queue.length > 0) showHint(queue.shift()!);
   }
@@ -277,6 +283,8 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   function hideHint(): void {
     clearTimeout(hideTimer);
     if (!hintEl) return;
+    // (The screen-reader copy goes too: it stayed in the page for minutes, playtest 5.)
+    live.textContent = '';
     const hadFocus = hintEl.contains(document.activeElement);
     hintEl.remove();
     hintEl = null;

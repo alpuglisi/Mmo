@@ -299,9 +299,9 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   // server has finished two (two-day seasons) rather than wait on its timer,
   // the newest one begun after the founding, so it has standings.
   await waitFor('two finished ranked seasons on the server', async () => (await (await fetch(`${base}/api/seasons`)).json()).total >= 2, 20000);
-  await page.tap('#tab-seasons');
+  await page.tap('#tab-ranks');
   const fits = () => page.evaluate(() => {
-    const p = document.querySelector('#panel-seasons');
+    const p = document.querySelector('#panel-ranks');
     if (getComputedStyle(p).display === 'none' || !document.querySelector('#season-clock')) return null;
     const tabs = [...document.querySelectorAll('#tabbar .tab')].map((t) => t.getBoundingClientRect().right);
     return {
@@ -327,7 +327,7 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   if (overflow(opened)) throw new Error(`${tag}: season standings overflow ${JSON.stringify(opened)} (viewport ${vw.width})`);
   await page.waitForTimeout(300);
   await shot(page, `${tag}-sheet-seasons.png`);
-  await page.tap('#tab-seasons');
+  await page.tap('#tab-ranks');
   await waitFor('sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')), 15000);
   step(`${tag}: seasons tab fits (${seasons.finished} finished seasons, standings open without sideways scroll)`);
 
