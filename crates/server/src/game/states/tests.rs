@@ -125,7 +125,7 @@ mod old {
         let view = c.view.unwrap_or_else(|| {
             let possessed = mine.iter().map(|&i| &orgs[i as usize]).find(|o| o.possessed_by == Some(player));
             let center = possessed.map(|o| o.pos).unwrap_or_else(|| g.lineage_center_of(player, mine));
-            ViewWindow { x: center.x, y: center.y, radius: g.cfg.default_view_radius }
+            ViewWindow { x: center.x, y: center.y, radius: g.cfg.default_view_radius, pinned: false }
         });
         let center = Vec2::new(view.x, view.y);
         let mut cand = idx.in_window(&view);

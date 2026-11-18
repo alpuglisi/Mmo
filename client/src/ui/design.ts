@@ -21,6 +21,13 @@ import { foundingHint } from '../foodHint';
 import { avatarView } from './avatarView';
 import { createBodyBuilder, type BodyBuilder, type BuilderChange } from './builder/builder';
 import type { BuilderPreset } from './builder/presets';
+import { noticeDialog } from './confirm';
+
+/** A server message as a sentence: capital first, a full stop, no trailing code. */
+const friendlyText = (m: string): string => {
+  const t = m.replace(/\s*\([a-z_]+\)\s*$/, '').trim();
+  return t ? `${t[0].toUpperCase()}${t.slice(1)}${/[.!?]$/.test(t) ? '' : '.'}` : "That didn't work.";
+};
 import { h } from './dom';
 import { readMode, writeMode, type EditorMode } from './editorMode';
 import { caption, TRAIT_TEXT, type Level } from './traitText';
@@ -370,14 +377,26 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   let waterTimer: ReturnType<typeof setTimeout> | undefined;
   let waterSeq = 0;
   /** Ask the server (a moment after the last change) whether the founders can reach most water. */
+  /** The server refused this name in a preview: shown under the form, Found disabled. */
+  let nameRefused: { name: string; text: string } | null = null;
   function checkWater(): void {
     clearTimeout(waterTimer);
     waterTimer = setTimeout(async () => {
       const seq = ++waterSeq;
       // Before a name is typed the server would refuse the design (400 bad_name): check it under a placeholder.
       const p = payload();
-      const r = await api.designCompatibility(cb.token, { ...p, name: p.name.trim() || 'Unnamed design' }).catch(() => null);
+      let refusedName: string | null = null;
+      const r = await api.designCompatibility(cb.token, { ...p, name: p.name.trim() || 'Unnamed design' }).catch((e) => {
+        // The name refused (a reserved or look-alike name): said here at once, not only when founding (playtest 6).
+        if (e instanceof ApiError && e.code === 'bad_name') refusedName = friendlyText(e.message);
+        return null;
+      });
       if (seq !== waterSeq) return;
+      const nameNow = p.name.trim() && refusedName ? { name: p.name.trim(), text: refusedName } : null;
+      if (JSON.stringify(nameNow) !== JSON.stringify(nameRefused)) {
+        nameRefused = nameNow;
+        update();
+      }
       if (r) {
         serverCompat = { design: JSON.stringify({ ...p, name: '' }), view: r };
         hybridKey = '';
@@ -472,9 +491,11 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       for (const [l, row] of levelRows.get(g)!) row.classList.toggle('current', l === c.level);
     }
     const p = validateDesign(payload(), cat);
-    problem.textContent = p && !(p.code === 'bad_name' && spec.name === '') ? p.message : '';
+    // The server's refusal of this very name (from the preview), when the client's own checks pass.
+    const refused = !p && nameRefused && nameRefused.name === spec.name.trim() ? nameRefused.text : null;
+    problem.textContent = p && !(p.code === 'bad_name' && spec.name === '') ? p.message : refused ?? '';
     needName.hidden = spec.name.trim() !== '';
-    submit.disabled = p !== null;
+    submit.disabled = p !== null || refused !== null;
     serverError.textContent = '';
   }
 
@@ -484,7 +505,12 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     try {
       const r = await api.found(cb.token, payload());
       saveLastDesign(cb.player, spec);
-      if (r.reduced && r.requested) window.alert(`Founded ${r.founders.length} of ${r.requested} founders: ${r.reduced}.`);
+      // Fewer founders than asked: said in the app's own dialog, over the map (not `alert()`, playtest 6).
+      if (r.reduced && r.requested) {
+        // (All of them can fit at the re-founding price: then it is the price that the notice is about.)
+        const title = r.founders.length < r.requested ? `Founded ${r.founders.length} of ${r.requested} founders` : 'Founded at the re-founding price';
+        void noticeDialog({ id: 'founded-notice', title, body: `${r.reduced[0].toUpperCase()}${r.reduced.slice(1)}.` });
+      }
       cb.onFounded(r);
     } catch (e) {
       if (e instanceof ApiError) {
@@ -492,7 +518,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         // A first founding that raced another tab: the lineage exists, go play. Founding again: say why not.
         if (e.code === 'already_founded' && !cb.refound) return cb.onFounded(null);
         const extra = e.code === 'over_budget' && e.body ? ` (server: ${Number(e.body.cost).toFixed(1)} of ${e.body.budget})` : '';
-        serverError.textContent = `${e.code}: ${e.message}${extra}`;
+        // In words, not "bad_name: …" (playtest 6).
+        serverError.textContent = `${friendlyText(e.message)}${extra}`;
       } else {
         serverError.textContent = String(e);
       }

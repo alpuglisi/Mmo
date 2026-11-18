@@ -52,3 +52,81 @@ export function confirmDialog(o: ConfirmOptions): Promise<boolean> {
     cancel.focus({ preventScroll: true });
   });
 }
+
+/** A notice with one button (instead of `alert()`): resolves once it is closed. */
+export function noticeDialog(o: { title: string; body: string | string[]; ok?: string; id?: string }): Promise<void> {
+  return new Promise((resolve) => {
+    const id = o.id ?? 'notice';
+    const ok = h('button', { type: 'button', id: `${id}-ok` }, o.ok ?? 'OK') as HTMLButtonElement;
+    const body = (Array.isArray(o.body) ? o.body : [o.body]).map((t) => h('p', { class: 'small' }, t));
+    const dialog = h('div', { class: 'card help-card confirm-card', id, role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': `${id}-title` },
+      h('h2', { id: `${id}-title` }, o.title), ...body, h('div', { class: 'row wrap confirm-actions' }, ok));
+    const backdrop = h('div', { class: 'help-backdrop confirm-backdrop' }, dialog);
+    const before = document.activeElement as HTMLElement | null;
+    const done = () => {
+      window.removeEventListener('keydown', onKey, true);
+      backdrop.remove();
+      before?.focus?.({ preventScroll: true });
+      resolve();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        done();
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        ok.focus();
+      }
+    };
+    ok.addEventListener('click', done);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) done(); });
+    window.addEventListener('keydown', onKey, true);
+    document.body.append(backdrop);
+    ok.focus({ preventScroll: true });
+  });
+}
+
+/** Ask for a line of text (instead of `prompt()`): the text, or null when cancelled. */
+export function textDialog(o: { title: string; body?: string; value?: string; maxLength?: number; ok: string; id?: string }): Promise<string | null> {
+  return new Promise((resolve) => {
+    const id = o.id ?? 'text';
+    const input = h('input', { type: 'text', id: `${id}-input`, maxlength: o.maxLength ?? 80, 'aria-labelledby': `${id}-title` }) as HTMLInputElement;
+    input.value = o.value ?? '';
+    const ok = h('button', { type: 'button', id: `${id}-ok` }, o.ok) as HTMLButtonElement;
+    const cancel = h('button', { type: 'button', id: `${id}-cancel`, class: 'secondary' }, 'Cancel') as HTMLButtonElement;
+    const dialog = h('div', { class: 'card help-card confirm-card', id, role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': `${id}-title` },
+      h('h2', { id: `${id}-title` }, o.title), o.body ? h('p', { class: 'small' }, o.body) : null, input,
+      h('div', { class: 'row wrap confirm-actions' }, cancel, ok));
+    const backdrop = h('div', { class: 'help-backdrop confirm-backdrop' }, dialog);
+    const before = document.activeElement as HTMLElement | null;
+    const focusables = [input, cancel, ok];
+    const done = (v: string | null) => {
+      window.removeEventListener('keydown', onKey, true);
+      backdrop.remove();
+      before?.focus?.({ preventScroll: true });
+      resolve(v);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        done(null);
+      } else if (e.key === 'Enter' && document.activeElement === input) {
+        e.preventDefault();
+        done(input.value);
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        const i = focusables.indexOf(document.activeElement as HTMLInputElement & HTMLButtonElement);
+        focusables[(i + (e.shiftKey ? focusables.length - 1 : 1)) % focusables.length].focus();
+      }
+    };
+    ok.addEventListener('click', () => done(input.value));
+    cancel.addEventListener('click', () => done(null));
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) done(null); });
+    window.addEventListener('keydown', onKey, true);
+    document.body.append(backdrop);
+    input.focus({ preventScroll: true });
+    input.select();
+  });
+}

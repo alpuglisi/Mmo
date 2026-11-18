@@ -2103,7 +2103,7 @@ impl Game {
                     return Err(ErrorInfo::new("out_of_sight", "you can only look where your organisms are"));
                 }
                 let radius = radius.clamp(1.0, self.cfg.max_view_radius.min(reach));
-                let view = ViewWindow { x: p.x, y: p.y, radius };
+                let view = ViewWindow { x: p.x, y: p.y, radius, pinned: true };
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.view = Some(view);
                 }
@@ -4632,7 +4632,7 @@ impl Game {
                 .iter()
                 .find(|o| o.alive && o.possessed_by == Some(c.player) && o.owner == c.player);
             let center = possessed.map(|o| o.pos).unwrap_or_else(|| self.lineage_center(c.player));
-            ViewWindow { x: center.x, y: center.y, radius: self.cfg.default_view_radius }
+            ViewWindow { x: center.x, y: center.y, radius: self.cfg.default_view_radius, pinned: false }
         })
     }
 
@@ -10205,6 +10205,11 @@ mod tests {
         assert_eq!(result(&far).1, Some("out_of_sight".into()));
         let near = g.command(10, 1, Some(2), ClientMsg::SetView { x: 10.0, y: 10.0, radius: 16.0 });
         assert!(result(&near).0, "{near:?}");
+        // The state says the view is pinned (it stays there until clear_view), and not once cleared.
+        assert!(g.state_for(10).unwrap().view.pinned);
+        g.command(10, 1, Some(3), ClientMsg::ClearView);
+        assert!(!g.state_for(10).unwrap().view.pinned);
+        g.command(10, 1, Some(4), ClientMsg::SetView { x: 10.0, y: 10.0, radius: 16.0 });
         for r in [0.0, -5.0] {
             let bad = g.command(10, 1, Some(2), ClientMsg::SetView { x: 10.0, y: 10.0, radius: r });
             assert_eq!(result(&bad).1, Some("bad_coordinates".into()), "radius {r}");

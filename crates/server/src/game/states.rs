@@ -636,7 +636,7 @@ impl Game {
             // order), else on the lineage.
             let possessed = mine.iter().map(|&i| &orgs[i as usize]).find(|o| o.possessed_by == Some(player));
             let center = possessed.map(|o| o.pos).unwrap_or_else(|| self.lineage_center_of(player, mine));
-            ViewWindow { x: center.x, y: center.y, radius: self.cfg.default_view_radius }
+            ViewWindow { x: center.x, y: center.y, radius: self.cfg.default_view_radius, pinned: false }
         });
         let picked = idx.nearby(&view, player, self.cfg.max_nearby).into_iter().map(|(_, i)| i).collect();
         (view, picked)

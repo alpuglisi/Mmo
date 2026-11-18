@@ -111,6 +111,7 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
     page.on('pageerror', (e) => errors.push(e.message));
+    page.on('dialog', (d) => { errors.push(`native ${d.type()} dialog: ${d.message()}`); void d.dismiss(); });
     await page.goto(`${base}/?tour=off`);
     const login = `refound_${Date.now().toString(36)}`;
     await page.fill('#login-name', login);
@@ -166,6 +167,16 @@ async function main() {
     await page.fill('#design-founders', String(lastFounders));
     await page.click('#design-submit');
     await page.waitForSelector('#world-canvas', { timeout: UI_MS });
+    // A quick re-found brings fewer founders: the app's own notice says so (not a browser alert), and OK closes it.
+    const foundedNotice = await page.waitForSelector("#founded-notice", { timeout: 3000 }).then(() => page.textContent('#founded-notice')).catch(() => null);
+    if (foundedNotice !== null) {
+      if (!/Founded \d+ of \d+ founders|Founded at the re-founding price/.test(foundedNotice)) throw new Error(`founding notice: ${foundedNotice}`);
+      const m = /Founded (\d+) of (\d+) founders/.exec(foundedNotice);
+      if (m && Number(m[1]) >= Number(m[2])) throw new Error(`"${m[0]}" for all of them: ${foundedNotice}`);
+      await page.click('#founded-notice-ok');
+      await page.waitForSelector('#founded-notice', { state: 'detached', timeout: UI_MS });
+      step(`the founding notice says so in the app's own dialog: "${foundedNotice.replace(/\s+/g, ' ').trim().slice(0, 120)}"`);
+    }
     const second = await waitFor('the second lineage', async () => {
       const s = await lineageNow(page);
       return s && s.lineage !== null && s.lineage !== first.lineage && s.population > 0 ? s : null;

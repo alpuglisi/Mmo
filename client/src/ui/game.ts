@@ -21,7 +21,7 @@ import { exposeCards, familyShareBar } from '../share/familyShare';
 import type { AlertPrefs, ClientMsg, CompatibilityView, LineageStats, PlayerId, MatingOutcome, MatingPreviewView, NearbyOrganism, OfferView, OrgId, OwnOrganism, ResultMsg, SeasonBoard, SpeciesView, StateView } from '../protocol';
 import { parseCompatibilityView, WILD } from '../protocol';
 import { createPicker, type PickItem } from './picker';
-import { confirmDialog } from './confirm';
+import { confirmDialog, textDialog } from './confirm';
 import { nameplatesKey, parseNameplates, plateBadge, setNameplates } from './nameplates';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, FOOD_BANDS, terrainSummary, type TerrainGrid } from '../world/terrain';
@@ -237,7 +237,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     item(swatch('foot', `--c:${cssColor(ownerColor(1))}`), 'other players'),
     item(swatch('foot faint', `--c:${cssColor(ownerColor(WILD))}`), 'wild'),
     item(swatch('foot double', '--c:#ff7b72'), 'possessed'),
-    item(swatch('pip', '--c:#7ee787'), 'pregnant'),
+    item(swatch('pip', '--c:#7ee787'), 'pregnant / gravid', 'Carrying young: pregnant, or gravid (eggs coming) in an egg layer'),
     item(swatch('foot', '--c:#ffffff'), 'selected'),
     h('span', { class: 'key-item wide', title: 'Body size, diet (muzzle, snout or fangs), warm or cold-blooded build, fur/scales/armor, colors, wings or fins; juveniles are drawn smaller' }, 'smaller = juvenile'),
     h('span', { class: 'key-item wide muted' }, '! fleeing · ⌖ hunting · z resting · ♥ courting (yours)'),
@@ -485,6 +485,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       : mode === 'attack' && p
       ? `${tap} the animal #${p.id} should attack: another player's or a wild one in sight${touch ? '' : ' (Esc cancels)'}.`
       : p ? `Possessing #${p.id}: ${tap.toLowerCase()} the map to walk there.`
+      : model.state?.view.pinned ? `The view is pinned at (${model.state.view.x.toFixed(0)}, ${model.state.view.y.toFixed(0)}): other animals show only there. Unpin view (map tools) to follow your lineage again.`
       : touch ? 'Tap an organism to inspect it, long-press yours to possess. Drag to pan, pinch to zoom.'
       : 'Click an organism to inspect it (hold to possess yours). Drag to pan, wheel to zoom.';
     // The possession bar says it all while possessing.
@@ -625,7 +626,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   /** The floating Possess / Release button for the selected own organism. */
   function renderFab(): void {
-    const own = model.selected !== null ? model.state?.organisms.find((o) => o.id === model.selected) : undefined;
+    const sel = model.selected !== null ? model.state?.organisms.find((o) => o.id === model.selected) : undefined;
+    // A possessed animal's Release is on the possession bar: not a second one here (playtest 6).
+    const own = sel && !sel.possessed ? sel : undefined;
     if (fab.hidden === !!own) queueMicrotask(updateEdgePad); // shown or hidden: the room at the bottom edge changes
     fab.hidden = !own;
     if (!own) return;
@@ -671,13 +674,18 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     model.toast('info', done.length > 0 ? `Cleared: ${done.join(', ')}` : 'No orders to clear');
   });
   let pinned = false;
+  /** The lineage the screen shows (undefined before the first state). */
+  let shownLineage: number | null | undefined;
+  /** The button as the server has it (the state's `view.pinned`): a view pinned by an API call or before a reload shows too (playtest 6). */
+  function setPinned(on: boolean): void {
+    if (on === pinned && pinBtn.classList.contains('active') === on) return;
+    pinned = on;
+    pinLabel.textContent = pinned ? 'Unpin view' : 'Pin view';
+    pinBtn.classList.toggle('active', pinned);
+  }
   pinBtn.addEventListener('click', async () => {
     const r = pinned ? await send({ type: 'clear_view' }) : await send({ type: 'set_view', x: view.cam.x, y: view.cam.y, radius: 24 });
-    if (r.ok) {
-      pinned = !pinned;
-      pinLabel.textContent = pinned ? 'Unpin view' : 'Pin view';
-      pinBtn.classList.toggle('active', pinned);
-    }
+    if (r.ok) setPinned(!pinned);
   });
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape') setMode('select');
@@ -1043,15 +1051,15 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   /** Name a species of yours (`name_species`, a renown cosmetic). */
   async function nameSpecies(sp: SpeciesView): Promise<void> {
     const price = market.shopPrice('species_name_price');
-    const name = window.prompt(`A name for "${sp.name}" (1 to 40 characters${price ? `; costs ${price} renown` : ''}):`, sp.name);
+    const name = await textDialog({ id: 'species-name', title: `A name for "${sp.name}"`, value: sp.name, maxLength: 40, ok: price ? `Name it (${price} renown)` : 'Name it',
+      body: `1 to 40 characters${price ? `; costs ${price} renown` : ''}.` });
     if (name === null || name.trim() === '' || name.trim() === sp.name) return;
     const r = await send({ type: 'name_species', species: sp.id, name: name.trim() });
     if (r.ok) {
       model.toast('info', `Species ${sp.id} is now called "${String(r.data ?? name.trim())}".`);
       void refreshChronicle();
-    } else if (r.error) {
-      model.toast('error', `Name species: ${r.error.message}`);
     }
+    // (A refusal is toasted once, by the model, in friendly words: playtest 6 saw it twice.)
   }
   // Bought nameplates: shown next to names (Ranks, hall of fame, leaderboard, a rival's inspector).
   async function refreshNameplates(): Promise<void> {
@@ -1714,7 +1722,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         subPick.hidden = !show;
         subSend.hidden = !show;
         if (show && document.activeElement !== subPick) {
-          const adults = (s?.organisms ?? []).filter((o) => o.matured && !o.pregnant).slice(0, 200);
+          // Only the partner's opposite sex (playtest 6 listed females to stand in for a dam's mate),
+          // when the partner is in sight to tell; the server refuses a same-sex pair anyway.
+          const partnerSex = s?.nearby.find((o) => o.id === e.offer.partner)?.sex;
+          const adults = (s?.organisms ?? []).filter((o) => o.matured && !o.pregnant && (!partnerSex || o.sex !== partnerSex)).slice(0, 200);
           const key = adults.map((o) => o.id).join(',');
           if (subPick.dataset.key !== key) {
             const keep = subPick.value;
@@ -2104,6 +2115,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
 
   cleanups.push(
     model.on('state', () => {
+      setPinned(!!model.state?.view.pinned);
+      // A new lineage (after a retire): nothing of the old one stays on
+      // screen, neither its animal in the inspector nor its group cards'
+      // last orders (playtest 6).
+      const lin = model.state?.lineage ?? null;
+      if (lin !== shownLineage) {
+        if (shownLineage !== undefined) {
+          if (model.selected !== null && !model.state?.organisms.some((o) => o.id === model.selected) && !model.state?.nearby.some((o) => o.id === model.selected)) model.select(null);
+          keys.delete(groupsEl);
+          groupMenuKey = '';
+        }
+        shownLineage = lin;
+      }
       showState();
       renderGroupMenu();
       updateHint();

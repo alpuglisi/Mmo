@@ -499,12 +499,22 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
     }
     v.setFollow(false);
     if (best) v.centerOn(best.x, best.y);
+    window.__claimAt = best;
   });
   await page.waitForTimeout(200);
   await page.tap('#tools-more');
   await page.tap('#territory');
   const c = await box(page, '#world-canvas');
   const zoom = await page.evaluate(() => window.evo.screen().view.cam.zoom);
+  // The chosen dry spot where it is drawn (the camera may stop short of
+  // centring it at the map's edge), not the screen's centre.
+  const at = await page.evaluate(() => {
+    const v = window.evo.screen().view;
+    const b = window.__claimAt;
+    return b ? v.worldToScreen(b.x, b.y) : null;
+  }) ?? { x: c.width / 2, y: c.height / 2 };
+  c.x += at.x - c.width / 2;
+  c.y += at.y - c.height / 2;
   await page.touchscreen.tap(c.x + c.width / 2, c.y + c.height / 2);
   await waitFor('territory draft', () => page.evaluate(() => window.evo.screen().view.overlayInfo().draft !== null), 15000);
   // The edge tap. Under heavy load (the parallel runner) a quick tap now and

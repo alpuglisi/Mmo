@@ -232,6 +232,8 @@ export interface ViewWindow {
   y: number;
   /** Half the side of the square window, in tiles. */
   radius: number;
+  /** Pinned with `set_view` (stays there until `clear_view`); absent when it follows the lineage. */
+  pinned?: boolean;
 }
 
 export interface NeedsView {

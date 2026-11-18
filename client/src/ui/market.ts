@@ -12,6 +12,7 @@ import { createPicker, type PickItem } from './picker';
 import type { GameModel } from '../model';
 import type { ClientMsg, CompatibilityView, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg, ShopView } from '../protocol';
 import { parseCompatibilityView, parseLedgerView, parseMarketView, parseShopView } from '../protocol';
+import { confirmDialog } from './confirm';
 import { h, pct } from './dom';
 import { traitName } from './traitNames';
 import './market.css';
@@ -395,7 +396,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   });
   reinBtn.addEventListener('click', async () => {
     const s = shop;
-    if (s && !window.confirm(`Buy reinforcements for ${s.reinforce_price} renown? ${s.reinforce_size} young adults copied from your own join your lineage. The price doubles with each purchase, at most ${s.reinforcements_max ?? 2} within a ranked season's length.`)) return;
+    if (s && !(await confirmDialog({ id: 'reinforce-confirm', title: `Buy reinforcements for ${s.reinforce_price} renown?`, ok: 'Buy',
+      body: `${s.reinforce_size} young adults copied from your own join your lineage. The price doubles with each purchase, at most ${s.reinforcements_max ?? 2} within a ranked season's length.` }))) return;
     const r = await deps.send({ type: 'reinforce' });
     if (r.ok) {
       const d = r.data as { added?: unknown[]; shop?: unknown; at?: [number, number]; group?: number } | undefined;
@@ -410,7 +412,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const provNote = h('span', { class: 'muted small' });
   provBtn.addEventListener('click', async () => {
     const s = shop;
-    if (s && !window.confirm(`Buy a provision for ${s.provision_price} renown? Your lineage's ${s.provision_size ?? 20} hungriest or thirstiest adults get 50 off their hunger and thirst, once.`)) return;
+    if (s && !(await confirmDialog({ id: 'provision-confirm', title: `Buy a provision for ${s.provision_price} renown?`, ok: 'Buy',
+      body: `Your lineage's ${s.provision_size ?? 20} hungriest or thirstiest adults get 50 off their hunger and thirst, once.` }))) return;
     const r = await deps.send({ type: 'provision' });
     if (r.ok) {
       const d = r.data as { fed?: number; shop?: unknown } | undefined;
@@ -428,7 +431,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   plateBtn.addEventListener('click', async () => {
     const s = shop;
     const title = plateTitle.value.trim();
-    if (s && !window.confirm(`${s.nameplate ? 'Change' : 'Buy'} your nameplate for ${s.nameplate_price ?? '?'} renown? ${plateColor.value}${title ? `, "${title}"` : ', no title'}: it is cosmetic, shown with your name.`)) return;
+    if (s && !(await confirmDialog({ id: 'nameplate-confirm', title: `${s.nameplate ? 'Change' : 'Buy'} your nameplate for ${s.nameplate_price ?? '?'} renown?`, ok: s.nameplate ? 'Change' : 'Buy',
+      body: `${plateColor.value}${title ? `, "${title}"` : ', no title'}: it is cosmetic, shown with your name.` }))) return;
     const r = await deps.send({ type: 'set_nameplate', color: plateColor.value, title: plateTitle.value });
     if (r.ok) {
       const d = r.data as { shop?: unknown } | undefined;
