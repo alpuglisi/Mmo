@@ -216,6 +216,12 @@ async function main() {
       // Camera travel in frames that began with the herd's centre well inside
       // the dead zone (none is allowed there), and in all frames (for the record).
       let inside = 0, travel = 0, framesInside = 0;
+      // Start with the camera on the herd's centre (a herd on the move, to
+      // water say, can keep it at the zone's edge, where following is right).
+      const c0 = window.evo.model.state.view;
+      v.cam.x = c0.x;
+      v.cam.y = c0.y;
+      await new Promise((r) => requestAnimationFrame(r));
       const t0 = performance.now();
       while (performance.now() - t0 < 4000) {
         const s = window.evo.model.state.view;

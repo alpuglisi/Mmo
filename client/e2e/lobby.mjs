@@ -44,7 +44,8 @@ function freePort() {
   });
 }
 
-async function waitFor(what, fn, timeoutMs = 30000) {
+// (60 s: three servers and a lobby start at once, and on a loaded machine with other scripts beside it.)
+async function waitFor(what, fn, timeoutMs = 60000) {
   const end = Date.now() + timeoutMs;
   let last;
   while (Date.now() < end) {
