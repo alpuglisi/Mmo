@@ -272,6 +272,13 @@ async function main() {
         const said = await waitFor('an answer', () => attackAnswer(page, pick), 8000);
         inspected = { pick, label, said };
       } catch (e) {
+        // The wild animal can die or wander out of sight before the
+        // inspector shows it (the hunt above may have caught it): pick again.
+        const gone = await page.evaluate((id) => !window.evo.model.state.nearby.some((o) => o.id === id), pick);
+        if (gone) {
+          step(`wild #${pick} went out of sight during the inspector step: retrying`);
+          continue;
+        }
         if (await possessedNow(page)) throw e;
         step('possession ended during the inspector step: retrying');
       }

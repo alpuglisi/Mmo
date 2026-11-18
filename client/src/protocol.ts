@@ -936,6 +936,8 @@ export interface LineageStats {
   score?: ScoreBreakdown;
   /** The soft lineage cap and how crowded the lineage is (absent on older servers). */
   crowding?: CrowdingView;
+  /** Egg-laying lineages: their clutches on the ground (absent for live bearers and older servers). */
+  eggs?: { clutches: number; eggs: number; brooded: number };
   legacy: LegacyPoint[];
   alerts: AlertView[];
 }
