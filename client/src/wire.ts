@@ -7,7 +7,7 @@
 // FILE IN SYNC), and wire.fixture.json, written by a Rust test, pins the two
 // together (wire.test.ts).
 
-import type { Appearance, ClockView, GroupView, LeaderRow, NearbyOrganism, OfferView, OwnOrganism, StateView, ViewWindow, VisionView, WeatherView } from './protocol';
+import type { Appearance, ClockView, GraceView, GroupView, LeaderRow, NearbyOrganism, OfferView, OwnOrganism, StateView, ViewWindow, VisionView, WeatherView } from './protocol';
 
 /** Binary delta states. */
 export const PROTO_DELTA = 2;
@@ -84,6 +84,8 @@ interface Head {
   view: ViewWindow;
   balance: number;
   escrow: number;
+  /** Optional (servers before the newcomer grace view don't send it). */
+  grace?: GraceView | null;
   leaderboard: { day: number | null; breeding_adults: number };
 }
 
@@ -274,6 +276,7 @@ export class DeltaDecoder {
     const head = (this.head ? { ...this.head } : {}) as Record<string, unknown>;
     for (const k of HEAD_KEYS) if (k in meta) head[k] = meta[k];
     for (const k of HEAD_KEYS) if (!(k in head)) throw malformed(`a keyframe lacks ${k}`);
+    if ('grace' in meta) head.grace = meta.grace;
     const list = (k: string): unknown[] => {
       const v = meta[k];
       if (v === undefined) return [];
@@ -370,6 +373,7 @@ export class DeltaDecoder {
       offers: [...this.offers].sort(byId).map(([, o]) => o),
       balance: h.balance,
       escrow: h.escrow,
+      ...(h.grace ? { grace: h.grace } : {}),
     };
   }
 }

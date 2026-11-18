@@ -203,6 +203,13 @@ pub struct GameConfig {
     /// Shortest a rally stands, in minutes of wall-clock time (at
     /// `tick_ms`): the sim's `RALLY_DAYS` pass in seconds at a fast tick.
     pub rally_min_minutes: f64,
+    /// Shortest the newcomer grace lasts, in minutes of wall-clock time (at
+    /// `tick_ms`): `Balance::attack_grace` days pass in under two minutes at
+    /// a fast tick.
+    pub grace_min_minutes: f64,
+    /// A player hears at most once in this many minutes of wall-clock time
+    /// that one attacker lineage is hunting their animals.
+    pub attack_alert_minutes: f64,
 }
 
 /// Whether a "species founded" achievement of `player` for `species` on
@@ -278,6 +285,8 @@ impl Default for GameConfig {
             purchase_deadline_ticks: 30 * 60,
             request_window_ticks: 3600,
             rally_min_minutes: 5.0,
+            grace_min_minutes: 30.0,
+            attack_alert_minutes: 5.0,
         }
     }
 }
@@ -502,6 +511,9 @@ pub struct Game {
     /// each daily record (`World::legacy_hosts`): the royalty and the score
     /// breakdown read it. Not saved; recomputed on a restore.
     hosts: evo_sim::world::HostTally,
+    /// Tick of the last attack alert by (attacker lineage, victim): at most
+    /// one per [`GameConfig::attack_alert_minutes`]. Not saved.
+    attack_alerts: BTreeMap<(u32, PlayerId), u64>,
     /// Tests: take the plain, slower paths these shortcuts replace (full
     /// hold scans, a fresh index per new connection) to compare against.
     #[cfg(test)]
@@ -693,12 +705,23 @@ impl Game {
             routes: BTreeMap::new(),
             founded_day: BTreeMap::new(),
             hosts,
+            attack_alerts: BTreeMap::new(),
             #[cfg(test)]
             reference: false,
         };
         let floor = (g.cfg.rally_min_minutes * 60_000.0 / g.cfg.tick_ms.max(1.0)).round() as u64;
         g.world.set_rally_min_ticks(floor);
+        let grace = (g.cfg.grace_min_minutes * 60_000.0 / g.cfg.tick_ms.max(1.0)).round() as u64;
+        g.world.set_attack_grace_min_ticks(grace);
         g
+    }
+
+    /// The player's newcomer grace left (`StateView::grace`), if any.
+    pub(crate) fn grace_view(&self, player: PlayerId) -> Option<GraceView> {
+        let days = self.world.lineage_grace_left(self.lineage_of(player)?)?;
+        let tpd = self.world.config.ticks_per_day.max(1) as f64;
+        let minutes = days as f64 * tpd * self.cfg.tick_ms / 60_000.0;
+        Some(GraceView { days_left: (days * 10.0).ceil() / 10.0, minutes_left: minutes.ceil() as u32 })
     }
 
     /// The game-side state to save with a world snapshot.
@@ -1153,8 +1176,12 @@ impl Game {
                 Ok(Some(target_data(Vec2::new(x, y), to, "it can't get there; it goes as near as it can")))
             }
             ClientMsg::PossessAttack { organism, target } => {
+                // Repeating the standing order changes nothing: no new alert.
+                let repeat = self.world.attack_target(organism) == Some(target);
                 self.world.possess_attack(player, organism, target).map_err(e)?;
-                self.alert_attacked(player, organism, target, out);
+                if !repeat {
+                    self.alert_attacked(player, organism, target, out);
+                }
                 Ok(Some(serde_json::json!({ "organism": organism, "target": target })))
             }
             ClientMsg::Release { organism } => self.world.release(player, organism).map(|_| None).map_err(e),
@@ -1180,7 +1207,15 @@ impl Game {
             ClientMsg::ClearMigration { group } => {
                 match group {
                     None => self.world.clear_migration(player),
-                    Some(g) if g < MAX_GROUPS => self.world.clear_migration_group(player, g),
+                    // A group that exists, or one whose order outlived it.
+                    Some(g)
+                        if g < MAX_GROUPS
+                            && (g == 0
+                                || self.world.group_has_members(player, g)
+                                || self.world.migration_order(player, g).is_some()) =>
+                    {
+                        self.world.clear_migration_group(player, g)
+                    }
                     Some(g) => return Err(e(CommandError::NoSuchGroup(g))),
                 }
                 Ok(None)
@@ -1288,6 +1323,15 @@ impl Game {
             ClientMsg::Bid { listing, amount, mine } => self.bid(player, listing, amount, mine, out),
             ClientMsg::BrowseMarket(q) => Ok(Some(serde_json::to_value(self.market(player, &q)?).unwrap())),
             ClientMsg::MatingPrefs { block, unblock, auto_decline } => {
+                // Only a real player can be blocked: not the wild (0), not a
+                // made-up id.
+                if let Some(p) = block {
+                    let known = self.names.contains_key(&p) || self.world.lineages.iter().any(|l| l.owner == p);
+                    if p == WILD || !known {
+                        return Err(ErrorInfo::new("no_such_player", format!("there is no player {p}"))
+                            .with_detail(serde_json::json!({ "player": p })));
+                    }
+                }
                 let prefs = self.mating_prefs.entry(player).or_default();
                 if let Some(p) = unblock {
                     prefs.blocked.retain(|&b| b != p);
@@ -2684,6 +2728,15 @@ impl Game {
         }
         let kind = |l: u32| w.lineages.get(l as usize).map_or("an animal", |x| x.name.as_str()).to_string();
         let (owner, theirs, mine) = (t.owner, kind(t.lineage), kind(a.lineage));
+        // One alert per attacker lineage and victim in a while.
+        let window = (self.cfg.attack_alert_minutes * 60_000.0 / self.cfg.tick_ms.max(1.0)).round() as u64;
+        let now = w.tick();
+        let key = (a.lineage, owner);
+        if self.attack_alerts.get(&key).is_some_and(|&t| now.saturating_sub(t) < window) {
+            return;
+        }
+        self.attack_alerts.retain(|_, t| now.saturating_sub(*t) < window);
+        self.attack_alerts.insert(key, now);
         let text = format!("A {theirs} of yours (#{target}) is being hunted by a player's {mine} (#{attacker})");
         self.alert(owner, AlertKind::Attack, text, Some(target), out);
     }
@@ -4035,6 +4088,10 @@ mod tests {
         let far = ClientMsg::Migrate { x: 1.0, y: 1.0, group: Some(9) };
         assert_eq!(code(&mut g, 10, 1, far).as_deref(), Some("no_such_group"));
         assert_eq!(code(&mut g, 10, 1, ClientMsg::ClearMigration { group: Some(9) }).as_deref(), Some("no_such_group"));
+        // Group ids in range but without members don't exist either.
+        let empty = ClientMsg::Migrate { x: 20.0, y: 20.0, group: Some(5) };
+        assert_eq!(code(&mut g, 10, 1, empty).as_deref(), Some("no_such_group"));
+        assert_eq!(code(&mut g, 10, 1, ClientMsg::ClearMigration { group: Some(5) }).as_deref(), Some("no_such_group"));
         assert_eq!(g.world.territory(1, 1).map(|t| (t.center.x, t.center.y)), Some((20.0, 22.0)));
         // Bob can't touch ann's groups: his own group 1 doesn't exist.
         assert_eq!(code(&mut g, 20, 2, ClientMsg::AbandonTerritory { group: 1 }).as_deref(), Some("no_territory"));
@@ -6012,6 +6069,13 @@ mod tests {
             g.command(10, 1, Some(1), ClientMsg::MatingPrefs { block: Some(2), unblock: None, auto_decline: None });
         assert_eq!(reply_data(&out)["blocked"], serde_json::json!([2]));
         assert_eq!(code(&ask(&mut g, 2)), Some("requests_refused".into()));
+        // Not the wild, nor a player who doesn't exist.
+        for p in [WILD, 999] {
+            let out =
+                g.command(10, 1, Some(1), ClientMsg::MatingPrefs { block: Some(p), unblock: None, auto_decline: None });
+            assert_eq!(code(&out), Some("no_such_player".into()), "{p}");
+        }
+        assert_eq!(g.mating_prefs[&1].blocked, vec![2]);
         g.command(10, 1, Some(3), ClientMsg::MatingPrefs { block: None, unblock: Some(2), auto_decline: Some(true) });
         assert_eq!(code(&ask(&mut g, 4)), Some("requests_refused".into()), "auto-decline");
         let out =
@@ -6427,6 +6491,7 @@ mod tests {
             offers,
             balance: g.balance(player),
             escrow: g.escrow(player),
+            grace: g.grace_view(player),
         }
     }
 

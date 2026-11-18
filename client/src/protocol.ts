@@ -427,6 +427,16 @@ export interface StateView {
   balance?: number;
   /** Renown of yours held in escrow on open agreements. */
   escrow?: number;
+  /** Your lineage's newcomer grace while it lasts (absent once over): other players can't attack it, and it can't attack theirs. */
+  grace?: GraceView | null;
+}
+
+/** The newcomer grace left: game days, and at least some real minutes, whichever is longer. */
+export interface GraceView {
+  /** Game days left, to a tenth. */
+  days_left: number;
+  /** Real minutes left at the server's clock, rounded up. */
+  minutes_left: number;
 }
 
 export interface WelcomeMsg {

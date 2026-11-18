@@ -49,6 +49,9 @@ fn migration_targets_on_water_move_to_the_shore_or_are_refused() {
     // Off the map: refused, not clamped.
     assert_eq!(w.command_migrate(1, Vec2::new(99_999.0, -5.0)), Err(CommandError::OffMap));
     assert_eq!(w.command_migrate_group(1, 1, Vec2::new(-1.0, 3.0)), Err(CommandError::OffMap));
+    // A group with no members doesn't exist (the main group always does).
+    assert_eq!(w.command_migrate_group(1, 3, Vec2::new(4.2, 7.9)), Err(CommandError::NoSuchGroup(3)));
+    assert!(!w.group_has_members(1, 3) && w.group_has_members(1, 0));
     // Land is taken as given.
     let land = Vec2::new(4.2, 7.9);
     assert_eq!(w.command_migrate(1, land), Ok(land));

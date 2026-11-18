@@ -1290,11 +1290,31 @@ async fn client_session(
 /// The request id and command name of a message that didn't parse as a
 /// command, if it is JSON with them: `id` a number, `type` one of the known
 /// command names ("message" otherwise, never the client's text).
+///
+/// Best effort: an id sent as a numeric string (`"id": "12"`) counts, and
+/// text that isn't valid JSON is scanned for an `"id": <number>` and a
+/// `"type": "<name>"`, so a truncated or mangled request still gets its
+/// reply matched.
 pub fn malformed_id(text: &[u8]) -> (Option<u64>, &'static str) {
-    let v: serde_json::Value = serde_json::from_slice(text).unwrap_or_default();
-    let id = v.get("id").and_then(serde_json::Value::as_u64);
-    let command = v.get("type").and_then(|t| t.as_str()).and_then(crate::protocol::command_name).unwrap_or("message");
-    (id, command)
+    let command = |t: Option<&str>| t.and_then(crate::protocol::command_name).unwrap_or("message");
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(text) {
+        let id = v.get("id").and_then(|i| i.as_u64().or_else(|| i.as_str().and_then(|s| s.trim().parse().ok())));
+        return (id, command(v.get("type").and_then(|t| t.as_str())));
+    }
+    let text = String::from_utf8_lossy(text);
+    // The value after `"key"` and a colon, as far as `stop` allows.
+    let after = |key: &str| -> Option<&str> {
+        let at = text.find(&format!("\"{key}\""))? + key.len() + 2;
+        let rest = text[at..].trim_start().strip_prefix(':')?.trim_start();
+        Some(rest)
+    };
+    let id = after("id").and_then(|r| {
+        let r = r.strip_prefix('"').unwrap_or(r);
+        let digits: String = r.chars().take_while(char::is_ascii_digit).take(20).collect();
+        digits.parse().ok()
+    });
+    let kind = after("type").and_then(|r| r.strip_prefix('"')).and_then(|r| r.split('"').next());
+    (id, command(kind))
 }
 
 /// The world thread's chronicle (species, eras, catastrophes, achievements).
@@ -1415,4 +1435,24 @@ async fn season_player(
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let seasons = w.store.player_seasons(player, limit).await.map_err(ApiError::internal)?;
     Ok(Json(crate::league::PlayerHistory { player, seasons }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::malformed_id;
+
+    #[test]
+    fn a_malformed_message_gets_its_id_when_it_can_be_read() {
+        assert_eq!(malformed_id(br#"{"type":"possess","id":7}"#), (Some(7), "possess"));
+        // A numeric string id counts; any other string doesn't.
+        assert_eq!(malformed_id(br#"{"type":"possess","id":"12"}"#), (Some(12), "possess"));
+        assert_eq!(malformed_id(br#"{"type":"possess","id":"abc"}"#), (None, "possess"));
+        // Not JSON at all: scanned.
+        assert_eq!(malformed_id(br#"{"id": 80, "type": "migrate", "x": "#), (Some(80), "migrate"));
+        assert_eq!(malformed_id(br#"{"type":"bid","id":"9"#), (Some(9), "bid"));
+        assert_eq!(malformed_id(b"\xff\xfe garbage"), (None, "message"));
+        assert_eq!(malformed_id(br#"{"type":"fly_to_the_moon","id":3,"#), (Some(3), "message"));
+        // Ids too long for a u64 are dropped, not wrapped.
+        assert_eq!(malformed_id(br#"{"id":99999999999999999999999,"#).0, None);
+    }
 }

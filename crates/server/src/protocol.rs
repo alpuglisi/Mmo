@@ -300,6 +300,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "rally",
     "cancel_rally",
     "split_group",
+    "retire_lineage",
     "merge_groups",
     "set_view",
     "clear_view",
@@ -309,8 +310,12 @@ pub const COMMAND_NAMES: &[&str] = &[
     "create_auction",
     "bid",
     "browse_market",
-    "ledger",
     "mating_prefs",
+    "ledger",
+    "renown_shop",
+    "buy_mating_slot",
+    "reinforce",
+    "compatibility",
     "resync",
     "watch_season",
 ];
@@ -783,12 +788,15 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             TooBig { .. } => "too_big",
             Sheltered(_) => "sheltered",
             NewcomerGrace { .. } => "newcomer_grace",
+            OwnGrace { .. } => "own_grace",
         };
         let info = ErrorInfo::new(code, e.to_string());
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
-            NewcomerGrace { days_left } => info.with_detail(serde_json::json!({ "days_left": days_left })),
+            NewcomerGrace { days_left } | OwnGrace { days_left } => {
+                info.with_detail(serde_json::json!({ "days_left": days_left }))
+            }
             _ => info,
         }
     }
@@ -1184,6 +1192,20 @@ pub struct StateView {
     /// Renown of yours held in escrow on open agreements.
     #[serde(default)]
     pub escrow: u64,
+    /// Your lineage's newcomer grace while it lasts: other players' animals
+    /// can't attack it, and it can't attack theirs. Absent once it ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace: Option<GraceView>,
+}
+
+/// The newcomer grace left (`StateView::grace`). It lasts a number of game
+/// days and at least a number of real minutes, whichever is longer.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GraceView {
+    /// Game days left, to a tenth.
+    pub days_left: f32,
+    /// Real minutes left at the server's clock, rounded up.
+    pub minutes_left: u32,
 }
 
 /// World summary for `GET /api/world`.
@@ -1859,6 +1881,24 @@ impl NearbyOrganism {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every command the parser knows, read from its own "unknown variant"
+    /// error, has a name in `COMMAND_NAMES` (for `bad_message` replies).
+    #[test]
+    fn every_command_has_a_name() {
+        let err = serde_json::from_str::<ClientMsg>(r#"{"type":"no_such_command"}"#).unwrap_err().to_string();
+        let list = err.split("expected one of").nth(1).expect("a variant list");
+        // "`possess`, `order_move`, … `watch_season` at line 1 column 25"
+        let names: std::collections::BTreeSet<&str> = list.split('`').skip(1).step_by(2).collect();
+        let known: std::collections::BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
+        assert_eq!(names, known, "{err}");
+        // And the web client has a label for each (`client/src/errors.ts`).
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../client/src/errors.ts");
+        let ts = std::fs::read_to_string(path).unwrap();
+        for n in COMMAND_NAMES {
+            assert!(ts.contains(&format!(" {n}: '")), "errors.ts has no label for {n}");
+        }
+    }
 
     #[test]
     fn client_messages_parse() {
