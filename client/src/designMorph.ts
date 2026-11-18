@@ -102,8 +102,8 @@ export function designPayload(d: EditorDesign, cat: GeneCatalog): DesignSpec {
 /**
  * The starting design's departures from the gene defaults: a sturdy, social,
  * cautious herbivore ready for its first winter. A bigger body, a close herd
- * and less boldness are free; fur, fat stores and hibernation cost 7 points,
- * which leaves over 90 of the 100 for the player. Measured with the server's
+ * and less boldness are free; fur, fat stores and hibernation cost 9 points,
+ * which leaves 91 of the 100 for the player (body size up to 0.5 is free). Measured with the server's
  * founding path (`cargo run --release -p evo-server --example
  * starter_survival`): docs/starter-design.md.
  */

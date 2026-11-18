@@ -273,10 +273,20 @@ pub struct GeneCatalog {
     pub cost_cold_blooded: f32,
     /// Points per unit of `body_size` below its default.
     pub cost_per_smaller_body: f32,
+    /// Body size up to which a bigger body is free (`design::FREE_BODY_SIZE`).
+    #[serde(default = "default_free_body_size")]
+    pub free_body_size: f32,
+    /// Points per unit of `body_size` above `free_body_size`.
+    #[serde(default)]
+    pub cost_per_larger_body: f32,
     pub max_litter: u32,
     pub genes: Vec<GeneInfo>,
     /// The morphology parameters a design's `morph` object sets.
     pub morph: Vec<MorphInfo>,
+}
+
+fn default_free_body_size() -> f32 {
+    1.0
 }
 
 /// One row of `GET /api/genes`' `morph` section.
@@ -356,6 +366,8 @@ pub fn catalog() -> GeneCatalog {
         cost_per_extra_offspring: design::COST_PER_EXTRA_OFFSPRING,
         cost_cold_blooded: design::COST_COLD_BLOODED,
         cost_per_smaller_body: design::COST_PER_SMALLER_BODY,
+        free_body_size: design::FREE_BODY_SIZE,
+        cost_per_larger_body: design::COST_PER_LARGER_BODY,
         max_litter: design::MAX_LITTER,
         genes: Gene::ALL
             .iter()
@@ -475,6 +487,7 @@ mod tests {
         );
         assert_eq!(c.cost_cold_blooded, design::COST_COLD_BLOODED);
         assert_eq!(c.cost_per_smaller_body, design::COST_PER_SMALLER_BODY);
+        assert_eq!((c.free_body_size, c.cost_per_larger_body), (design::FREE_BODY_SIZE, design::COST_PER_LARGER_BODY));
     }
 
     /// `client/src/cost.fixture.json`: the catalog and the server's cost of a
@@ -520,6 +533,14 @@ mod tests {
             &[("wings", 0.4)],
             2,
             morph(json!({"horn_size": 0.6, "horn_form": "branched", "pattern": "stripes", "wing_aspect": 0.2})),
+        );
+        // A big body past the free size (`design::body_size_cost`).
+        add(
+            "Big hibernating burrower",
+            ThermoSpec::Warm,
+            &[("body_size", 0.9), ("hibernation", 0.6), ("burrowing", 0.4)],
+            3,
+            None,
         );
         // Founders past the flat price (`design::founder_cost`).
         let mut big = spec(&[("fur", 0.3)]);

@@ -821,6 +821,10 @@ export interface GeneCatalog {
   cost_cold_blooded?: number;
   /** Points per unit of `body_size` below its default (absent on older servers: 0). */
   cost_per_smaller_body?: number;
+  /** Body size up to which a bigger body is free (absent on older servers: no price). */
+  free_body_size?: number;
+  /** Points per unit of `body_size` above `free_body_size` (absent on older servers: 0). */
+  cost_per_larger_body?: number;
   max_litter: number;
   genes: GeneInfo[];
   /** The body plan's parameters, on servers that accept `DesignSpec.morph`. */
@@ -1038,20 +1042,44 @@ export interface ShopView {
   species_name_price?: number;
 }
 
+/** One lineage in a compatibility check (`compatibility`, `POST /api/design/compatibility`). */
+export interface CompatibilityRow {
+  lineage: number;
+  lineage_name: string;
+  owner: PlayerId;
+  owner_name: string;
+  /** The wild ecosystem's lineage (owner 0); a player's lineage never is. Absent on older servers. */
+  wild?: boolean;
+  /** Mean fertility over every pair of sampled individuals (the best pair's on older servers). */
+  fertility: number;
+  /** 10th and 90th percentile pair (absent on older servers). */
+  fertility_low?: number;
+  fertility_high?: number;
+  best_fertility?: number;
+  /** Share of sampled pairs with any fertility. */
+  fertile_share?: number;
+  /** At least half the pairs fertile (any fertile pair on older servers). */
+  compatible: boolean;
+  /** `none`, `low` or `high`: how likely drift is to make the two (more) fertile. */
+  drift_risk?: 'none' | 'low' | 'high';
+  /** `carnivory`, `endothermy`, `birth_mode`, `body_size` or `morphology`. */
+  limiting: string;
+  gap: number;
+}
+
 /** `compatibility`: which lineages yours can breed with. */
 export interface CompatibilityView {
   lineage?: number;
-  rows: {
-    lineage: number;
-    lineage_name: string;
-    owner: PlayerId;
-    owner_name: string;
-    fertility: number;
-    compatible: boolean;
-    /** `carnivory`, `endothermy`, `birth_mode`, `body_size` or `morphology`. */
-    limiting: string;
-    gap: number;
-  }[];
+  rows: CompatibilityRow[];
+}
+
+/** `POST /api/design/compatibility`: a design's founders against each living lineage. */
+export interface DesignCompatView {
+  day: number;
+  sample: number;
+  fertile_with: number;
+  at_risk: number;
+  rows: CompatibilityRow[];
 }
 
 export interface SeasonRow {

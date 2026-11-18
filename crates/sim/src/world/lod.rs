@@ -1501,6 +1501,15 @@ impl World {
                 0.0
             };
             let attrition = bal.adult_mortality * rep.pace;
+            // Winter sleep's toll on warm hibernators (`Balance::dormancy_toll`).
+            let toll = if x.dormant
+                && matches!(rep.probe.traits.seasonal.winter, Some((crate::stats::WinterForm::Hibernation, _)))
+            {
+                let cap = bal.fat_capacity * (1.0 + rep.fat_stores);
+                super::seasonal::dormancy_toll_rate(&bal, self.config.days_per_season() as f32, c.fat / cap.max(1e-3))
+            } else {
+                0.0
+            };
 
             // Deaths by bucket and sex.
             let mat = rep.maturity as f64;
@@ -1516,17 +1525,16 @@ impl World {
                     let frac = age as f32 / rep.lifespan;
                     if frac > 1.3 {
                         50.0
-                    } else if frac > 0.8 {
-                        4.0 * (frac - 0.8)
                     } else {
-                        0.0
+                        super::apply::old_age_hazard(frac, rep.lifespan, bal.age_spread)
                     }
                 } else {
                     0.0
                 };
-                let causes: [(f32, DeathCause); 6] = [
+                let causes: [(f32, DeathCause); 7] = [
                     (old, DeathCause::OldAge),
                     (if adult { attrition } else { cfg.juvenile_mortality }, DeathCause::Attrition),
+                    (if adult { toll } else { 2.0 * toll }, DeathCause::Exposure),
                     (if adult { 0.0 } else { larval }, DeathCause::Attrition),
                     (starve, DeathCause::Starvation),
                     (thirst, DeathCause::Thirst),
