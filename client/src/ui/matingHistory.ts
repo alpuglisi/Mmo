@@ -17,8 +17,9 @@ export interface HistoryRow {
   error: string | null;
 }
 
-export function offerLine(o: Pick<OfferView, 'id' | 'mine' | 'partner' | 'from_name' | 'to_name' | 'price' | 'status'>): string {
-  return `#${o.id}: ${o.from_name}'s #${o.mine} × ${o.to_name}'s #${o.partner}${o.price !== undefined ? ` · price ${o.price}` : ''} · ${o.status}`;
+export function offerLine(o: Pick<OfferView, 'id' | 'mine' | 'partner' | 'from_name' | 'to_name' | 'price' | 'status'> & { lineage?: number }): string {
+  const partner = o.partner === 0 && o.lineage !== undefined ? `${o.to_name}'s pick` : `${o.to_name}'s #${o.partner}`;
+  return `#${o.id}: ${o.from_name}'s #${o.mine} × ${partner}${o.price !== undefined ? ` · price ${o.price}` : ''} · ${o.status}`;
 }
 
 export function outcomeText(o: MatingOutcome | undefined): string | null {

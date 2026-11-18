@@ -15,7 +15,7 @@ import { buildFamilyTree, type FamilyModel } from '../familyTree';
 import { actionText, capInfo, grouped, migrationText } from '../lineageInfo';
 import { renderFamilyTree } from './familyTree';
 import { exposeCards, familyShareBar } from '../share/familyShare';
-import type { AlertPrefs, ClientMsg, LineageStats, MatingOutcome, MatingPreviewView, NearbyOrganism, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
+import type { AlertPrefs, ClientMsg, LineageStats, MatingOutcome, MatingPreviewView, NearbyOrganism, OfferView, OrgId, OwnOrganism, ResultMsg, SeasonBoard, StateView } from '../protocol';
 import { WILD } from '../protocol';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, FOOD_BANDS, terrainSummary, type TerrainGrid } from '../world/terrain';
@@ -1269,9 +1269,14 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (r.ok) model.toast('info', `#${mine} is walking to #${partner}.`);
   }
 
-  /** When open offers lapse: at the next change of season (game and real time). */
-  function offerTime(): string {
+  /** When an open offer lapses: its own deadline (pending: unanswered; accepted: the two never met), or on older
+   * servers at the next change of season (game and real time). */
+  function offerTime(o?: OfferView): string {
     const tick = model.state?.clock.tick;
+    if (tick !== undefined && o?.expires_tick !== undefined) {
+      const left = Math.max(0, o.expires_tick - tick);
+      return o.status === 'accepted' ? `Lapses if they haven't met in ${span(left)}.` : `Expires unanswered in ${span(left)}.`;
+    }
     if (tick === undefined || !daysPerYear) return 'Open offers lapse when the season changes.';
     return `Lapses when the season changes, in ${span(ticksToNextSeason(tick, ticksPerDay, daysPerYear))}.`;
   }
@@ -1301,7 +1306,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           h('button', { class: 'secondary decline', onclick: () => void send({ type: 'respond_mating', request: id, accept: false }) }, 'Decline')));
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
-      setText(row.querySelector('.offer-time')!, offerTime());
+      setText(row.querySelector('.offer-time')!, offerTime(e.offer));
     });
     const opn = [...open].sort((a, b) => a.offer.id - b.offer.id);
     none(openEl, 'None.', opn.length === 0);
@@ -1316,7 +1321,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           h('button', { class: 'secondary', onclick: () => void send({ type: 'cancel_mating', request: e.offer.id }) }, 'Cancel')));
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
-      setText(row.querySelector('.offer-time')!, offerTime());
+      setText(row.querySelector('.offer-time')!, offerTime(e.offer));
       const note = row.querySelector<HTMLElement>('.offer-note');
       if (note) {
         const mineId = e.offer.from_player === me ? e.offer.mine : e.offer.partner;

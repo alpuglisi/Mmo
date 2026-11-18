@@ -192,14 +192,29 @@ pub struct GameConfig {
     /// `--no-winter-provision`. Only new foundings change; a restored world
     /// runs as before until someone founds.
     pub winter_provision: bool,
-    /// Ticks a bought listing or won auction waits for the buyer's organism
-    /// to meet the lot before it lapses: the dam is freed and the buyer
-    /// forfeits [`LAPSE_FEE_PERCENT`] of the fee (or a mating slot when
-    /// nothing was paid). 30 minutes at the default 1 s tick.
+    /// Ticks an accepted agreement (a bought listing, a won auction, an
+    /// accepted request) waits for the requester's organism to meet the
+    /// partner before it lapses: the dam is freed and the requester
+    /// forfeits [`LAPSE_FEE_PERCENT`] of the price (or a mating slot when
+    /// nothing was paid). [`PURCHASE_DEADLINE_MINUTES`] of wall-clock time
+    /// (30 minutes at the default 1 s tick; `main.rs` scales it by the tick).
     pub purchase_deadline_ticks: u64,
+    /// Ticks a pending request waits for an answer before it expires
+    /// (refunded): [`OFFER_MINUTES`] of wall-clock time. Offers used to all
+    /// expire at the next weather-season change (2.4 minutes into a season
+    /// at a 100 ms tick), accepted agreements too.
+    pub offer_ticks: u64,
+    /// The sender is warned this many ticks before a pending request
+    /// expires ([`OFFER_WARN_MINUTES`]).
+    pub offer_warn_ticks: u64,
     /// The window of the per-target request limit ([`REQUESTS_PER_TARGET`]):
-    /// an hour at the default 1 s tick.
+    /// [`REQUEST_WINDOW_MINUTES`] of wall-clock time (an hour at the default
+    /// 1 s tick). Only requests still unanswered or declined count:
+    /// accepted, expired, cancelled and failed ones don't.
     pub request_window_ticks: u64,
+    /// Shortest auction, in ticks: [`MIN_AUCTION_MINUTES`] of wall-clock
+    /// time (a 1-tick auction closed before anyone could bid).
+    pub min_auction_ticks: u64,
     /// Shortest a rally stands, in minutes of wall-clock time (at
     /// `tick_ms`): the sim's `RALLY_DAYS` pass in seconds at a fast tick.
     pub rally_min_minutes: f64,
@@ -233,6 +248,11 @@ fn species_bonus_due(
     true
 }
 
+/// Share of an animal's alleles that must be one other player's for a
+/// retiring lineage to hand it to them (`Game::retire_sparing`): a quarter,
+/// a grandchild of that player's stud.
+pub const RETIRE_TRANSFER_SHARE: f64 = 0.25;
+
 /// Most mating requests one player may send another within
 /// `GameConfig::request_window_ticks` (refused with `too_many_requests`).
 pub const REQUESTS_PER_TARGET: usize = 3;
@@ -242,9 +262,22 @@ pub const MAX_BLOCKED: usize = 200;
 /// Share of a bought agreement's fee the buyer forfeits to the seller when
 /// it lapses (at least 1 renown when anything was paid).
 pub const LAPSE_FEE_PERCENT: u64 = 10;
-/// Minutes a bought agreement waits for the two to meet
+/// Minutes an accepted agreement waits for the two to meet
 /// (`GameConfig::purchase_deadline_ticks`).
 pub const PURCHASE_DEADLINE_MINUTES: f64 = 30.0;
+/// Minutes a pending request waits for an answer (`GameConfig::offer_ticks`).
+pub const OFFER_MINUTES: f64 = 10.0;
+/// Minutes before a pending request expires that its sender is warned.
+pub const OFFER_WARN_MINUTES: f64 = 2.0;
+/// Minutes of the per-target request window (`GameConfig::request_window_ticks`).
+pub const REQUEST_WINDOW_MINUTES: f64 = 60.0;
+/// Shortest auction in minutes (`GameConfig::min_auction_ticks`).
+pub const MIN_AUCTION_MINUTES: f64 = 5.0;
+
+/// `minutes` of wall-clock time in ticks of `tick_ms` (at least 1).
+pub fn minutes_to_ticks(minutes: f64, tick_ms: f64) -> u64 {
+    ((minutes * 60_000.0 / tick_ms.max(1.0)).round() as u64).max(1)
+}
 
 /// Days over which a new lineage's legacy share comes to count in full
 /// toward the ranked season's legacy score: on day `d` after its founding,
@@ -276,7 +309,10 @@ impl Default for GameConfig {
             tick_ms: 1000.0,
             winter_provision: true,
             purchase_deadline_ticks: 30 * 60,
+            offer_ticks: 10 * 60,
+            offer_warn_ticks: 2 * 60,
             request_window_ticks: 3600,
+            min_auction_ticks: 5 * 60,
             rally_min_minutes: 5.0,
         }
     }
@@ -382,6 +418,19 @@ struct Offer {
     /// when the escrow was taken; 0 for offers saved before the fee).
     #[serde(default)]
     fee: u64,
+    /// When it was accepted (a purchase: when bought). Its meeting deadline
+    /// counts from here ([`GameConfig::purchase_deadline_ticks`]); absent in
+    /// offers saved before the deadline counted from acceptance (then from
+    /// `created_tick`).
+    #[serde(default)]
+    accepted_tick: Option<u64>,
+    /// The sender was warned that this pending offer is about to expire.
+    #[serde(default)]
+    warned: bool,
+    /// An offer to any animal of this lineage (`offer_to_lineage`):
+    /// `partner` is 0 until accepted.
+    #[serde(default)]
+    lineage: Option<u32>,
 }
 
 struct Conn {
@@ -472,7 +521,7 @@ pub struct Game {
     species_bonus: BTreeMap<u32, u64>,
     /// Ticks of each player's recent requests to each other player, for the
     /// per-target limit ([`REQUESTS_PER_TARGET`]); not saved.
-    request_log: BTreeMap<(PlayerId, PlayerId), VecDeque<u64>>,
+    request_log: BTreeMap<(PlayerId, PlayerId), VecDeque<(u64, u64)>>,
     /// Name changes ([`Game::set_name`]), for [`Game::live_season_key`].
     names_changed: u64,
     /// The players whose name changed, with the `names_changed` count after
@@ -1060,6 +1109,13 @@ impl Game {
         Ok(FoundOk { lineage, founders, cost: design.point_cost() })
     }
 
+    /// The partner organism of an open offer (0 for an offer to a lineage
+    /// not yet accepted), for tools that escort it.
+    #[doc(hidden)]
+    pub fn offer_partner(&self, id: u64) -> Option<OrgId> {
+        self.offers.get(&id).map(|o| o.partner).filter(|&p| p != 0)
+    }
+
     /// Retire the player's living lineage (`lineage` must name it, so a
     /// late click can't retire the next one): every animal, cohort and egg
     /// leaves the world at once (removed, not killed and not turned wild:
@@ -1069,6 +1125,21 @@ impl Game {
     /// offers and listings of the removed animals close on the next tick as
     /// for any animal gone. The number removed.
     pub fn retire(&mut self, player: PlayerId, lineage: u32) -> Result<usize, ErrorInfo> {
+        self.retire_sparing(player, lineage, &mut Outbox::new()).map(|r| r.0)
+    }
+
+    /// [`Game::retire`], telling who received animals: an animal whose
+    /// alleles are at least [`RETIRE_TRANSFER_SHARE`] another player's (the
+    /// most of any one, who has a living lineage) joins that player's
+    /// lineage instead of leaving the world (`World::retire_player_sparing`),
+    /// so retiring no longer deletes rivals' alleles. Returns (removed,
+    /// transferred).
+    fn retire_sparing(
+        &mut self,
+        player: PlayerId,
+        lineage: u32,
+        out: &mut Outbox,
+    ) -> Result<(usize, usize), ErrorInfo> {
         let current = self.lineage_of(player);
         if current != Some(lineage) || self.is_extinct(player) {
             return Err(ErrorInfo::new(
@@ -1079,7 +1150,24 @@ impl Game {
                 },
             ));
         }
-        let n = self.world.retire_player(player);
+        let homes: BTreeMap<PlayerId, u32> = self
+            .lineage_of
+            .iter()
+            .filter(|&(&p, _)| p != player && !self.is_extinct(p))
+            .map(|(&p, &l)| (p, l))
+            .collect();
+        let before: BTreeMap<PlayerId, usize> = homes.keys().map(|&p| (p, self.world.owner_count(p))).collect();
+        let (n, moved) = self.world.retire_player_sparing(player, &homes, RETIRE_TRANSFER_SHARE);
+        for (&p, &b) in &before {
+            let got = self.world.owner_count(p).saturating_sub(b);
+            if got > 0 {
+                let text = format!(
+                    "{} retired their lineage: {got} of its animals, mostly of your genes, joined yours.",
+                    self.name(player)
+                );
+                self.alert(p, AlertKind::Milestone, text, None, out);
+            }
+        }
         // Not deaths: no alerts for founders or the possessed.
         self.watched.retain(|_, (p, _)| *p != player);
         self.routes.retain(|&(p, _), _| p != player);
@@ -1091,7 +1179,7 @@ impl Game {
         self.state_cache.invalidate();
         self.market.validated = None;
         self.held_tick = None;
-        Ok(n)
+        Ok((n, moved))
     }
 
     pub fn connect(&mut self, conn: ConnId, player: PlayerId, name: &str) -> Outbox {
@@ -1174,8 +1262,8 @@ impl Game {
                 Ok(Some(data))
             }
             ClientMsg::RetireLineage { lineage } => {
-                let n = self.retire(player, lineage)?;
-                Ok(Some(serde_json::json!({ "removed": n })))
+                let (n, moved) = self.retire_sparing(player, lineage, out)?;
+                Ok(Some(serde_json::json!({ "removed": n, "transferred": moved })))
             }
             ClientMsg::ClearMigration { group } => {
                 match group {
@@ -1242,7 +1330,12 @@ impl Game {
             ClientMsg::PreviewMating { mine, partner } => {
                 Ok(Some(serde_json::to_value(self.preview_mating(player, mine, partner)?).unwrap()))
             }
-            ClientMsg::RespondMating { request, accept } => self.respond_mating(player, request, accept, out),
+            ClientMsg::RespondMating { request, accept, partner } => {
+                self.respond_mating(player, request, accept, partner, out)
+            }
+            ClientMsg::OfferToLineage { mine, lineage, price } => {
+                self.offer_to_lineage(player, mine, lineage, price, out)
+            }
             ClientMsg::CompleteMating { request } => {
                 let offer = self.offer_for(request, player)?;
                 if offer.status != OfferStatus::Accepted {
@@ -1322,6 +1415,15 @@ impl Game {
                 Ok(Some(serde_json::json!({ "added": ids, "shop": shop })))
             }
             ClientMsg::Compatibility => Ok(Some(serde_json::to_value(self.compatibility(player)).unwrap())),
+            ClientMsg::SetNameplate { color, title } => {
+                let (plate, shop) = self.set_nameplate(player, &color, &title)?;
+                Ok(Some(serde_json::json!({ "nameplate": plate, "shop": shop })))
+            }
+            ClientMsg::NameSpecies { species, name } => {
+                let name = self.name_species(player, species, &name)?;
+                Ok(Some(serde_json::json!({ "species": species, "name": name })))
+            }
+            ClientMsg::Nameplates => Ok(Some(self.nameplates())),
             // The connection answers it (`http.rs`); nothing to do here.
             // Answered by the world thread (`crate::runner`) before it gets here.
             ClientMsg::Resync | ClientMsg::WatchSeason { .. } => Ok(None),
@@ -1381,7 +1483,7 @@ impl Game {
             self.check_funds(player, p)?;
         }
         let id = self.open_offer(player, to, mine, partner, price, OfferStatus::Pending, None)?;
-        self.request_log.entry((player, to)).or_default().push_back(self.world.tick());
+        self.request_log.entry((player, to)).or_default().push_back((self.world.tick(), id));
         // Holds the requester's own female; the partner's waits for her
         // owner's acceptance (see `hold_consented_females`).
         self.hold_added(Some(id), None);
@@ -1405,11 +1507,11 @@ impl Game {
         }
         let (tick, window) = (self.world.tick(), self.cfg.request_window_ticks);
         let log = self.request_log.entry((from, to)).or_default();
-        while log.front().is_some_and(|&t| t + window <= tick) {
+        while log.front().is_some_and(|&(t, _)| t + window <= tick) {
             log.pop_front();
         }
         if log.len() >= REQUESTS_PER_TARGET {
-            let wait = log.front().map_or(0, |&t| t + window - tick);
+            let wait = log.front().map_or(0, |&(t, _)| t + window - tick);
             return Err(ErrorInfo::new(
                 "too_many_requests",
                 format!("you have sent {} {REQUESTS_PER_TARGET} requests recently; try again later", self.name(to)),
@@ -1417,6 +1519,116 @@ impl Game {
             .with_detail(serde_json::json!({ "ticks_left": wait })));
         }
         Ok(())
+    }
+
+    /// `offer_to_lineage`: a request to any suitable animal of `lineage`
+    /// (another player's living lineage), picked when its owner accepts.
+    fn offer_to_lineage(
+        &mut self,
+        player: PlayerId,
+        mine: OrgId,
+        lineage: u32,
+        price: Option<u64>,
+        out: &mut Outbox,
+    ) -> Result<Option<serde_json::Value>, ErrorInfo> {
+        let e = |err: CommandError| ErrorInfo::from(&err);
+        if let Some(p) = price {
+            check_price(p)?;
+        }
+        let a = self.world.organism(mine).ok_or(e(CommandError::NotFound(mine)))?;
+        if a.owner != player {
+            return Err(e(CommandError::NotOwned(mine)));
+        }
+        if !a.matured {
+            return Err(e(CommandError::NotMature(mine)));
+        }
+        if a.sex == Sex::Female && a.pregnancy.is_some() {
+            return Err(e(CommandError::AlreadyPregnant));
+        }
+        let to = match self.world.lineages.get(lineage as usize) {
+            Some(l) if l.owner != WILD && l.owner != player && self.lineage_of(l.owner) == Some(lineage) => l.owner,
+            Some(l) if l.owner == player => {
+                return Err(ErrorInfo::new("own_organism", "that is your own lineage: no consent or fee needed"))
+            }
+            _ => {
+                return Err(ErrorInfo::new(
+                    "unknown_lineage",
+                    format!("lineage {lineage} isn't another player's living lineage"),
+                ))
+            }
+        };
+        self.check_auction_lock(mine)?;
+        if self.world.mating_slots_left(player) == 0 {
+            return Err(e(CommandError::NoSlotsLeft));
+        }
+        let open = self.offers.values().filter(|o| o.from == player && o.status.is_open()).count();
+        if open >= self.cfg.max_open_offers {
+            return Err(ErrorInfo::new("too_many_offers", format!("at most {} open offers", self.cfg.max_open_offers)));
+        }
+        self.check_request_allowed(player, to)?;
+        let price = price.filter(|&p| p > 0);
+        if let Some(p) = price {
+            self.check_funds(player, p)?;
+        }
+        let id = self.open_offer(player, to, mine, 0, price, OfferStatus::Pending, None)?;
+        self.offers.get_mut(&id).unwrap().lineage = Some(lineage);
+        self.request_log.entry((player, to)).or_default().push_back((self.world.tick(), id));
+        self.hold_added(Some(id), None);
+        let view = self.offer_view(id);
+        let price = view.price.map_or(String::new(), |p| format!(" for {p} renown"));
+        let name = self.world.lineages[lineage as usize].name.clone();
+        let text =
+            format!("{} asks to mate their #{mine} with one of your {name}{price}: you pick which.", view.from_name);
+        self.notice(to, PushKind::Mating, text, None);
+        out.push((Target::Player(to), ServerMsg::MatingRequest { offer: view.clone() }));
+        Ok(Some(serde_json::json!({ "offer": view })))
+    }
+
+    /// The partner for an offer to the lineage being accepted: `pick` if it
+    /// is suitable, else the nearest suitable animal of the lineage to the
+    /// sender's organism (adult, other sex, not pregnant, not promised or
+    /// auctioned, fertile with it).
+    fn pick_partner(&self, request: u64, pick: Option<OrgId>) -> Result<OrgId, ErrorInfo> {
+        let o = &self.offers[&request];
+        let a = self.world.organism(o.mine).ok_or_else(|| self.gone(o.mine))?;
+        let busy = |id: OrgId| {
+            self.offers.values().any(|x| x.id != o.id && x.status.is_open() && (x.mine == id || x.partner == id))
+                || self.check_auction_lock(id).is_err()
+        };
+        let suits = |b: &Organism| {
+            b.alive
+                && b.owner == o.to
+                && b.matured
+                && b.sex != a.sex
+                && !(b.sex == Sex::Female && b.pregnancy.is_some())
+                && !busy(b.id)
+                && self.world.mating_preview(o.mine, b.id).ok().as_ref().and_then(incompatibility).is_none()
+        };
+        if let Some(p) = pick {
+            let b = self
+                .world
+                .organism(p)
+                .filter(|b| b.owner == o.to)
+                .ok_or_else(|| ErrorInfo::new("not_owned", format!("#{p} isn't one of your living animals")))?;
+            return if suits(b) {
+                Ok(p)
+            } else {
+                Err(ErrorInfo::new("partner_unavailable", format!("#{p} can't take this mating now")))
+            };
+        }
+        let lineage = o.lineage;
+        self.world
+            .organisms
+            .iter()
+            .filter(|b| lineage.is_none_or(|l| b.lineage == l) && suits(b))
+            .min_by(|x, y| x.pos.dist(a.pos).total_cmp(&y.pos.dist(a.pos)).then(x.id.cmp(&y.id)))
+            .map(|b| b.id)
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    "no_partner_available",
+                    "none of your animals can take this mating now (the offer stays open)",
+                )
+            })
     }
 
     /// Refuse a promise or agreement for a dam in an open auction: she is
@@ -1473,6 +1685,9 @@ impl Game {
             listing,
             escrow: 0,
             fee: 0,
+            accepted_tick: (status == OfferStatus::Accepted).then(|| self.world.tick()),
+            warned: false,
+            lineage: None,
         };
         self.offers.insert(id, offer);
         if let Some(p) = price.filter(|&p| p > 0) {
@@ -1638,6 +1853,9 @@ impl Game {
                 ),
             ));
         };
+        // At least `min_auction_ticks` of wall-clock time, whatever was asked
+        // (a 1-tick auction closed before anyone could bid).
+        let duration = duration.max(self.cfg.min_auction_ticks);
         self.check_listable(player, organism, reserve)?;
         // The winner's agreement must be able to run: a pregnant dam can't
         // be auctioned (the auction's hold keeps a listed dam from
@@ -2213,6 +2431,7 @@ impl Game {
         player: PlayerId,
         request: u64,
         accept: bool,
+        pick: Option<OrgId>,
         out: &mut Outbox,
     ) -> Result<Option<serde_json::Value>, ErrorInfo> {
         let offer = self
@@ -2228,12 +2447,30 @@ impl Game {
             self.close(request, OfferStatus::Declined, None, None, out);
             return Ok(None);
         }
+        // An offer to the lineage: the owner's pick, or the nearest
+        // available animal.
+        let partner = if partner == 0 {
+            let p = self.pick_partner(request, pick)?;
+            self.offers.get_mut(&request).unwrap().partner = p;
+            p
+        } else {
+            partner
+        };
         self.check_auction_lock(mine)?;
         self.check_auction_lock(partner)?;
-        self.offers.get_mut(&request).unwrap().status = OfferStatus::Accepted;
+        let tick = self.world.tick();
+        let o = self.offers.get_mut(&request).unwrap();
+        o.status = OfferStatus::Accepted;
+        o.accepted_tick = Some(tick);
+        let (from, to) = (o.from, o.to);
+        // An accepted request is no spam (`check_request_allowed`).
+        if let Some(log) = self.request_log.get_mut(&(from, to)) {
+            log.retain(|&(_, id)| id != request);
+        }
         self.hold_added(Some(request), None);
         // Try at once; if the organisms are apart, the agreement stands until
-        // they meet (checked every tick) or the season ends.
+        // they meet (checked every tick) or its deadline
+        // (`GameConfig::purchase_deadline_ticks`) passes.
         // The responder's answer succeeded either way; the mating's own
         // result goes to both sides as a `mating_update`.
         Ok(self.execute(request, out).ok().map(|o| serde_json::to_value(o).unwrap()))
@@ -2413,6 +2650,23 @@ impl Game {
         self.close(id, OfferStatus::Expired, None, Some(info), out);
     }
 
+    /// Tell the sender a pending request expires soon (once).
+    fn warn_expiry(&mut self, id: u64, ticks_left: u64, out: &mut Outbox) {
+        let o = self.offers.get_mut(&id).unwrap();
+        o.warned = true;
+        let o = o.clone();
+        let minutes = (ticks_left as f64 * self.cfg.tick_ms / 60_000.0).ceil().max(1.0);
+        let text = format!(
+            "Your request #{} (#{} × {}'s #{}) expires in about {minutes:.0} minute{} without an answer.",
+            o.id,
+            o.mine,
+            self.name(o.to),
+            o.partner,
+            if minutes == 1.0 { "" } else { "s" }
+        );
+        self.alert_push(o.from, AlertKind::Market, Some(PushKind::Market), text, Some(o.mine), out);
+    }
+
     /// Error for an offer's organism that is no longer alive: how it died
     /// when the world still has the record.
     fn gone(&self, id: OrgId) -> ErrorInfo {
@@ -2449,7 +2703,28 @@ impl Game {
             let record = MatingRecord { tick, offer: Some(view.clone()), mine, partner, outcome, error: error.clone() };
             self.log_mating(p, record);
         }
+        // Only requests the target declined (or hasn't answered yet) count
+        // against the sender's per-target limit (`check_request_allowed`):
+        // accepted, completed, expired, cancelled or failed ones don't, so
+        // the limiter guards against spam without capping trade.
+        if status != OfferStatus::Declined {
+            if let Some(log) = self.request_log.get_mut(&(o.from, o.to)) {
+                log.retain(|&(_, id)| id != o.id);
+            }
+        }
         let settlement = self.settle(&o, status, out);
+        if status == OfferStatus::Completed && o.from != o.to {
+            // The buyer hears the mating ran (a push: they may have left
+            // the escort to the game).
+            let how = match outcome {
+                Some(m) if m.conceived => "conceived",
+                Some(_) => "did not conceive",
+                None => "ran",
+            };
+            let paid = if o.escrow > 0 { format!("; {} renown paid from escrow", o.escrow) } else { String::new() };
+            let text = format!("Mating done: your #{} with {}'s #{} {how}{paid}.", o.mine, self.name(o.to), o.partner);
+            self.alert_push(o.from, AlertKind::Market, Some(PushKind::Mating), text, Some(o.mine), out);
+        }
         self.persist.push(PersistEvent::Trade(TradeRecord {
             offer: o.id,
             from_player: o.from,
@@ -2490,10 +2765,8 @@ impl Game {
                 self.season.add_sale(o.to, o.from, net);
             }
             self.alert(o.to, AlertKind::Market, format!("{text}."), Some(o.partner), out);
-            let paid =
-                format!("Paid {amount} renown to {to} from escrow: the mating of #{} with #{} ran.", o.mine, o.partner);
-            // The payer asked for it: no push.
-            self.alert_push(o.from, AlertKind::Market, None, paid, Some(o.mine), out);
+            // The payer hears it with the outcome (`Game::close`).
+            let _ = to;
             Some("paid")
         } else {
             let how = serde_json::to_value(status).unwrap().as_str().unwrap_or_default().to_string();
@@ -2520,6 +2793,18 @@ impl Game {
             created_tick: o.created_tick,
             listing: o.listing,
             escrow: o.escrow,
+            expires_tick: Some(self.offer_deadline(o)),
+            lineage: o.lineage.filter(|_| o.partner == 0),
+        }
+    }
+
+    /// The tick an open offer expires (pending: no answer) or lapses
+    /// (accepted: the two never met).
+    fn offer_deadline(&self, o: &Offer) -> u64 {
+        if o.status == OfferStatus::Accepted {
+            o.accepted_tick.unwrap_or(o.created_tick).saturating_add(self.cfg.purchase_deadline_ticks)
+        } else {
+            o.created_tick.saturating_add(self.cfg.offer_ticks)
         }
     }
 
@@ -2528,18 +2813,41 @@ impl Game {
     pub fn after_tick(&mut self) -> Outbox {
         let mut out = Outbox::new();
         let open: Vec<u64> = self.offers.values().filter(|o| o.status.is_open()).map(|o| o.id).collect();
+        let tick = self.world.tick();
         for id in open {
             let o = &self.offers[&id];
             let (accepted, mine, partner) = (o.status == OfferStatus::Accepted, o.mine, o.partner);
-            let lapsed = accepted
-                && o.listing.is_some()
-                && self.world.tick() >= o.created_tick.saturating_add(self.cfg.purchase_deadline_ticks);
-            match (self.world.organism(mine), self.world.organism(partner)) {
+            let deadline = self.offer_deadline(o);
+            let due = tick >= deadline;
+            let warn = !accepted && !o.warned && tick.saturating_add(self.cfg.offer_warn_ticks) >= deadline;
+            // An offer to the lineage has no partner yet: only its sender's
+            // organism must live (and the lineage).
+            let open_lineage = !accepted && partner == 0;
+            let partner_alive = if open_lineage {
+                o.lineage.is_some_and(|l| self.world.organisms.iter().any(|x| x.alive && x.lineage == l))
+            } else {
+                self.world.organism(partner).is_some()
+            };
+            let (pa, pb) = (self.world.organism(mine), if open_lineage { None } else { self.world.organism(partner) });
+            match (pa, pb.or(if partner_alive && open_lineage { pa } else { None })) {
                 (Some(a), Some(b)) if accepted && a.pos.dist(b.pos) <= MEETING_DISTANCE => {
                     let _ = self.execute(id, &mut out);
                 }
-                (Some(_), Some(_)) if lapsed => self.lapse(id, &mut out),
+                (Some(_), Some(_)) if accepted && due => self.lapse(id, &mut out),
+                (Some(_), Some(_)) if due => {
+                    let minutes = self.cfg.offer_ticks as f64 * self.cfg.tick_ms / 60_000.0;
+                    let info = ErrorInfo::new(
+                        "expired",
+                        format!("no answer within {minutes:.0} minutes: the request expired"),
+                    );
+                    self.close(id, OfferStatus::Expired, None, Some(info), &mut out);
+                }
+                (Some(_), Some(_)) if warn => self.warn_expiry(id, deadline - tick, &mut out),
                 (Some(_), Some(_)) => {}
+                _ if open_lineage && self.world.organism(mine).is_some() => {
+                    let info = ErrorInfo::new("lineage_gone", "the lineage has no living animals left");
+                    self.close(id, OfferStatus::Failed, None, Some(info), &mut out);
+                }
                 _ => {
                     // A pending offer fails too: there is nothing left to accept.
                     let missing = if self.world.organism(mine).is_none() { mine } else { partner };
@@ -2550,14 +2858,9 @@ impl Game {
         }
         self.hold_consented_females();
         self.maintain_listings(&mut out);
-        let season = self.world.season();
-        if season != self.last_season {
-            self.last_season = season;
-            let open: Vec<u64> = self.offers.keys().copied().collect();
-            for id in open {
-                self.close(id, OfferStatus::Expired, None, None, &mut out);
-            }
-        }
+        // Offers no longer expire at a weather-season change (they have
+        // wall-clock lifetimes); the season is still tracked for alerts.
+        self.last_season = self.world.season();
         self.watch_possessed(&mut out);
         self.announce_deaths(&mut out);
         self.announce_group_events(&mut out);
@@ -3111,7 +3414,20 @@ impl Game {
                     }
                     push = Some(PushKind::Species);
                 }
-                AchievementKind::SurvivedCatastrophe { .. } => self.season.add_survival(a.player),
+                AchievementKind::SurvivedCatastrophe { catastrophe } => {
+                    // Only a lineage founded before the catastrophe began
+                    // survived it: re-founding during one used to earn the
+                    // bonus and the season's survival count.
+                    let start = ch.catastrophes.iter().find(|c| c.id == catastrophe).map(|c| c.start_day);
+                    let founded = self.founded_day.get(&a.player).copied();
+                    paid = match (start, founded) {
+                        (Some(s), Some(f)) => f < s,
+                        _ => true,
+                    };
+                    if paid {
+                        self.season.add_survival(a.player);
+                    }
+                }
                 _ => {}
             }
             let bonus = economy::achievement_bonus(a.kind.label());
@@ -4113,10 +4429,10 @@ mod tests {
         assert_eq!(offer.price, Some(30));
         assert_eq!(offer.status, OfferStatus::Pending);
         // Only the partner owner can answer.
-        let out = g.command(10, 1, None, ClientMsg::RespondMating { request: offer.id, accept: true });
+        let out = g.command(10, 1, None, ClientMsg::RespondMating { request: offer.id, accept: true, partner: None });
         assert_eq!(result(&out).1.as_deref(), Some("unknown_offer"));
         let slots = g.world.mating_slots_left(1);
-        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: offer.id, accept: true });
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: offer.id, accept: true, partner: None });
         assert_eq!(result(&out), (true, None));
         let too_far =
             out.iter().any(|(_, m)| matches!(m, ServerMsg::MatingUpdate { error: Some(e), .. } if e.code == "too_far"));
@@ -4171,7 +4487,7 @@ mod tests {
             ServerMsg::MatingRequest { offer } => offer.id,
             m => panic!("{m:?}"),
         };
-        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false });
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false, partner: None });
         let (h1, h2) = (g.mating_history(1), g.mating_history(2));
         assert_eq!(h1.len(), 2, "newest first, the own-lineage mating after");
         let declined =
@@ -4193,11 +4509,11 @@ mod tests {
             ServerMsg::MatingRequest { offer } => offer.id,
             m => panic!("{m:?}"),
         };
-        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false });
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false, partner: None });
         assert_eq!(result(&out), (true, None));
         assert!(out.iter().any(|(t, m)| *t == Target::Player(1)
             && matches!(m, ServerMsg::MatingUpdate { offer, .. } if offer.status == OfferStatus::Declined)));
-        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         assert_eq!(result(&out).1.as_deref(), Some("unknown_offer"));
         // Cancel by the requester.
         let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: None });
@@ -4213,7 +4529,7 @@ mod tests {
             ServerMsg::MatingRequest { offer } => offer.id,
             m => panic!("{m:?}"),
         };
-        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         assert!(
             out.iter().any(
                 |(_, m)| matches!(m, ServerMsg::MatingUpdate { offer, .. } if offer.status == OfferStatus::Completed)
@@ -4251,22 +4567,39 @@ mod tests {
         let wild = g.world.organisms.iter().find(|o| o.owner == WILD).unwrap().id;
         let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: a[0], partner: wild, price: None });
         assert_eq!(result(&out).1.as_deref(), Some("no_consent"));
-        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: a[0], partner: b[1], price: None });
+        let partner =
+            *b.iter().find(|&&x| g.world.organism(x).unwrap().sex != g.world.organism(a[0]).unwrap().sex).unwrap();
+        let out = g.command(10, 1, None, ClientMsg::RequestMating { mine: a[0], partner, price: None });
         assert_eq!(result(&out), (true, None));
+        let id = offer_id(&out);
+        // A weather-season change no longer expires it (offers have
+        // wall-clock lifetimes: 10 minutes pending, 30 accepted).
         let season = g.world.season();
-        let days = g.world.config.days_per_year / 4 + 1;
-        let mut expired = false;
-        for _ in 0..days * g.world.config.ticks_per_day {
+        let mut ticks = 0;
+        while g.world.season() == season {
+            g.world.step();
+            g.after_tick();
+            ticks += 1;
+            assert!(ticks < 3 * g.world.config.ticks_per_day, "no season change");
+        }
+        assert!(g.offers.contains_key(&id), "a season change expired the offer");
+        let view = g.offer_view(id);
+        assert_eq!(view.expires_tick, Some(g.offers[&id].created_tick + g.cfg.offer_ticks));
+        // Unanswered past its lifetime: the sender is warned, then it expires.
+        g.cfg.offer_ticks = g.world.tick() - g.offers[&id].created_tick + 5;
+        g.cfg.offer_warn_ticks = 3;
+        let (mut warned, mut expired) = (false, false);
+        for _ in 0..8 {
             g.world.step();
             let out = g.after_tick();
-            expired |= out.iter().any(
-                |(_, m)| matches!(m, ServerMsg::MatingUpdate { offer, .. } if offer.status == OfferStatus::Expired),
-            );
-            if g.world.season() != season {
-                break;
-            }
+            warned |= alerts_in(&out, 1).iter().any(|x| x.text.contains("expires in about"));
+            expired |= out.iter().any(|(_, m)| {
+                matches!(m, ServerMsg::MatingUpdate { offer, error: Some(e), .. }
+                    if offer.status == OfferStatus::Expired && e.code == "expired")
+            });
         }
-        assert!(expired);
+        assert!(warned && expired, "warned {warned} expired {expired}");
+        assert!(!g.offers.contains_key(&id));
         let daily = g.take_persist().into_iter().filter(|e| matches!(e, PersistEvent::Daily(_))).count();
         assert!(daily >= 1);
         assert!(g.leaderboard().rows.iter().any(|r| r.player == WILD));
@@ -4631,7 +4964,7 @@ mod tests {
                 .collect()
         };
         let mut log = Vec::new();
-        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         log.extend(updates(&out));
         // Accepted: she must not conceive with one of her own while the
         // agreement waits for the two to meet.
@@ -4759,7 +5092,7 @@ mod tests {
         assert_eq!(ready(&g), 0, "a pending, unanswered offer doesn't hold the partner");
         assert!(g.world.organism(fb).unwrap().can_breed(g.world.tick()) || !g.world.organism(fb).unwrap().matured);
         // Bob accepts while the two are apart: from now on she waits for Ann's male.
-        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         assert_eq!(result(&out), (true, None));
         assert_eq!(g.offers[&id].status, OfferStatus::Accepted);
         assert!(ready(&g) > g.world.tick(), "held from the moment of acceptance");
@@ -4864,7 +5197,7 @@ mod tests {
         assert_eq!((g.balance(1), g.escrow(1)), (start - 30, 30));
         assert_eq!(g.state_for(10).unwrap().escrow, 30);
         assert_eq!(g.state_for(10).unwrap().offers[0].escrow, 30);
-        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         assert_eq!(g.escrow(1), 30, "still held while they are apart");
         place_together(&mut g, fa, mb);
         let out = g.after_tick();
@@ -4876,11 +5209,13 @@ mod tests {
         let bob_alert = alerts_in(&out, 2).into_iter().find(|x| x.kind == AlertKind::Market).expect("sale alert");
         assert!(bob_alert.text.starts_with("Sale: 27 renown from ann"), "{}", bob_alert.text);
         assert!(bob_alert.text.contains("less a 3 renown market fee"), "{}", bob_alert.text);
-        assert!(alerts_in(&out, 1).iter().any(|x| x.kind == AlertKind::Market && x.text.starts_with("Paid 30")));
-        // The sale is news to the seller; the buyer's payment is not.
+        let ann_alert = alerts_in(&out, 1).into_iter().find(|x| x.text.starts_with("Mating done")).expect("buyer told");
+        assert!(ann_alert.text.contains("30 renown paid from escrow"), "{}", ann_alert.text);
+        // The sale is news to the seller, and the mating's outcome to the
+        // buyer (who may have left the escort to the game).
         let notices = g.take_notices();
         assert!(notices.iter().any(|n| n.player == 2 && n.kind == PushKind::Market && n.text == bob_alert.text));
-        assert!(notices.iter().all(|n| n.player != 1), "{notices:?}");
+        assert!(notices.iter().any(|n| n.player == 1 && n.kind == PushKind::Mating && n.text == ann_alert.text));
         assert_eq!(ledger_kinds(&g, 1), vec![LedgerKind::Grant, LedgerKind::Escrow]);
         assert_eq!(ledger_kinds(&g, 2), vec![LedgerKind::Grant, LedgerKind::Sale]);
         let t = trades(&mut g);
@@ -4984,6 +5319,161 @@ mod tests {
         assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)).1.as_deref(), Some("insufficient_funds"));
     }
 
+    /// Reinforcements: at most two a ranked season per player, counted
+    /// across a retire and re-found (the price doesn't reset either).
+    #[test]
+    fn reinforcements_are_capped_per_season_across_a_refound() {
+        let (mut g, _, _) = game();
+        let _ = g.post(1, 5000, LedgerKind::Income, "test".into(), None, None);
+        for _ in 0..economy::MAX_REINFORCEMENTS_PER_SEASON {
+            assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)), (true, None));
+        }
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)).1.as_deref(), Some("limit_reached"));
+        let l = g.lineage_of(1).unwrap();
+        g.retire(1, l).unwrap();
+        g.found(1, &design("A2")).unwrap();
+        let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
+        assert_eq!(shop.reinforce_price, economy::reinforce_price(economy::MAX_REINFORCEMENTS_PER_SEASON));
+        assert!(shop.reinforce_blocked.unwrap().contains("retired lineages count"));
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)).1.as_deref(), Some("limit_reached"));
+    }
+
+    /// Retiring hands animals mostly of a rival's genes to the rival, who is
+    /// told; the rest leave the world.
+    #[test]
+    fn retiring_hands_rivals_their_animals() {
+        let (mut g, a, b) = game();
+        let bob = g.world.organism(b[0]).unwrap().genome.clone();
+        for &id in &a[..2] {
+            g.world.organisms.iter_mut().find(|o| o.id == id).unwrap().genome = bob.clone();
+        }
+        let before = g.world.owner_count(2);
+        let l = g.lineage_of(1).unwrap();
+        let out = g.command(10, 1, None, ClientMsg::RetireLineage { lineage: l });
+        let d = data(&out);
+        assert_eq!((d["removed"].as_u64(), d["transferred"].as_u64()), (Some(a.len() as u64 - 2), Some(2)));
+        assert_eq!(g.world.owner_count(2), before + 2);
+        assert_eq!(g.world.owner_count(1), 0);
+        let bl = g.lineage_of(2).unwrap();
+        assert!(a[..2].iter().all(|&id| g.world.organism(id).is_some_and(|o| o.owner == 2 && o.lineage == bl)));
+        assert!(alerts_in(&out, 2).iter().any(|x| x.text.contains("joined yours")));
+    }
+
+    /// An offer to a lineage: the owner picks a free animal, or the server
+    /// the nearest one; a pregnant female is never picked.
+    #[test]
+    fn offers_to_a_lineage_let_the_owner_pick_a_free_animal() {
+        let (mut g, a, b) = game();
+        let mine = male(&g, &a);
+        let bl = g.lineage_of(2).unwrap();
+        let females: Vec<OrgId> =
+            b.iter().copied().filter(|&x| g.world.organism(x).unwrap().sex == Sex::Female).collect();
+        not_pregnant(&mut g, &females);
+        // The first female is pregnant (and nearest): she isn't picked.
+        let pos = g.world.organism(mine).unwrap().pos;
+        let preg = females[0];
+        let fa = g.world.organism(a[0]).unwrap().genome.clone();
+        {
+            let o = g.world.organisms.iter_mut().find(|o| o.id == preg).unwrap();
+            o.pos = pos;
+            o.pregnancy = Some(evo_sim::organism::Pregnancy {
+                father: fa,
+                father_id: 0,
+                father_lineage: 0,
+                fertility: 1.0,
+                due_tick: u64::MAX,
+            });
+        }
+        let out = g.command(10, 1, None, ClientMsg::OfferToLineage { mine, lineage: bl, price: Some(10) });
+        let id = offer_id(&out);
+        let view = &data(&out)["offer"];
+        assert_eq!((view["partner"].as_u64(), view["lineage"].as_u64()), (Some(0), Some(bl as u64)));
+        assert_eq!(g.escrow(1), 10);
+        // Picking the pregnant one is refused; the offer stays open.
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: Some(preg) });
+        assert_eq!(result(&out).1.as_deref(), Some("partner_unavailable"));
+        assert_eq!(g.offers[&id].status, OfferStatus::Pending);
+        // It survives ticks while pending (no partner yet).
+        g.world.step();
+        g.after_tick();
+        assert!(g.offers.contains_key(&id));
+        // Accepting without a pick: the nearest free female.
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
+        let picked = g.offers.get(&id).map(|o| o.partner);
+        let partner = picked.unwrap_or_else(|| *females.iter().find(|&&f| f != preg).unwrap());
+        assert!(picked.is_none_or(|p| p != preg && p != 0 && females.contains(&p)), "{picked:?}");
+        let _ = partner;
+        // Not to your own lineage, nor a wild one.
+        let al = g.lineage_of(1).unwrap();
+        let out = g.command(10, 1, None, ClientMsg::OfferToLineage { mine, lineage: al, price: None });
+        assert_eq!(result(&out).1.as_deref(), Some("own_organism"));
+        // With nobody free, accepting says so and the offer stays.
+        let (mut g, a, b) = game();
+        let mine = male(&g, &a);
+        let bl = g.lineage_of(2).unwrap();
+        let id = offer_id(&g.command(10, 1, None, ClientMsg::OfferToLineage { mine, lineage: bl, price: None }));
+        let fa = g.world.organism(a[0]).unwrap().genome.clone();
+        for o in g.world.organisms.iter_mut().filter(|o| b.contains(&o.id) && o.sex == Sex::Female) {
+            o.pregnancy = Some(evo_sim::organism::Pregnancy {
+                father: fa.clone(),
+                father_id: 0,
+                father_lineage: 0,
+                fertility: 1.0,
+                due_tick: u64::MAX,
+            });
+        }
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
+        assert_eq!(result(&out).1.as_deref(), Some("no_partner_available"));
+        assert_eq!(g.offers[&id].status, OfferStatus::Pending);
+    }
+
+    /// Cosmetic sinks: a nameplate (500, then 100 a change) and naming a
+    /// species your lineage founded (300).
+    #[test]
+    fn nameplates_and_species_names_are_cosmetic_sinks() {
+        let (mut g, _, _) = game();
+        let _ = g.post(1, 1000, LedgerKind::Income, "test".into(), None, None);
+        let start = g.balance(1);
+        let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "plaid".into(), title: "x".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("bad_color"));
+        let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: " ".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("bad_title"));
+        g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: "Herd queen".into() });
+        assert_eq!(g.balance(1), start - economy::NAMEPLATE_PRICE);
+        g.command(10, 1, None, ClientMsg::SetNameplate { color: "jet".into(), title: "Herd king".into() });
+        assert_eq!(g.balance(1), start - economy::NAMEPLATE_PRICE - economy::NAMEPLATE_CHANGE_PRICE);
+        let d = data(&g.command(20, 2, None, ClientMsg::Nameplates));
+        assert_eq!(d["nameplates"]["1"]["title"], "Herd king");
+        // A species Ann founded (made by hand here): she can name it, Bob can't.
+        run_days(&mut g, 10);
+        let id = g.world.chronicle.species.species.len() as u32;
+        let mut sp = g.world.chronicle.species.species.first().cloned().expect("a species");
+        sp.id = id;
+        sp.founder = Some(1);
+        sp.extinct_day = None;
+        sp.merged_into = None;
+        g.world.chronicle.species.species.push(sp);
+        let out = g.command(20, 2, None, ClientMsg::NameSpecies { species: id, name: "Bobs".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("not_yours"));
+        let before = g.balance(1);
+        let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: "Queen's grazers".into() });
+        assert_eq!(result(&out), (true, None));
+        assert_eq!(g.balance(1), before - economy::SPECIES_NAME_PRICE);
+        assert_eq!(g.world.chronicle.species.get(id).unwrap().name, "Queen's grazers");
+    }
+
+    /// An auction lasts at least the wall-clock floor, whatever was asked.
+    #[test]
+    fn auctions_last_at_least_the_floor() {
+        let (mut g, a, _) = game();
+        let ma = male(&g, &a);
+        let out =
+            g.command(10, 1, None, ClientMsg::CreateAuction { organism: ma, reserve: 1, days: None, ticks: Some(1) });
+        let l = &data(&out)["listing"];
+        let deadline = l["expires_tick"].as_u64().unwrap();
+        assert_eq!(deadline - g.world.tick(), g.cfg.min_auction_ticks);
+    }
+
     /// Which lineages can breed with whom: same body plans are fertile, a
     /// diet 0.30 apart is sterile, in the list and on every listing.
     #[test]
@@ -5034,7 +5524,7 @@ mod tests {
         // Declined.
         let id = ask(&mut g);
         assert_eq!(g.balance(1), start - 10);
-        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false });
+        let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false, partner: None });
         assert_eq!(g.balance(1), start);
         assert!(alerts_in(&out, 1)
             .iter()
@@ -5044,12 +5534,12 @@ mod tests {
         g.command(10, 1, None, ClientMsg::CancelMating { request: id });
         assert_eq!(g.balance(1), start);
         let id = ask(&mut g);
-        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         g.command(20, 2, None, ClientMsg::CancelMating { request: id });
         assert_eq!((g.balance(1), g.balance(2)), (start, start), "bob is paid nothing");
         // Died on the way.
         let id = ask(&mut g);
-        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         let o = g.world.organisms.iter_mut().find(|o| o.id == mb).unwrap();
         o.alive = false;
         o.death = Some(DeathCause::Predation);
@@ -5060,17 +5550,15 @@ mod tests {
         let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fb, price: Some(0) }));
         assert_eq!(g.offers[&id].escrow, 0);
         g.command(10, 1, None, ClientMsg::CancelMating { request: id });
-        // Expired at the season change.
+        // An accepted agreement whose two never meet lapses at its
+        // deadline (the requester forfeits 10%, at least 1 renown).
         let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fb, price: Some(10) }));
-        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         assert_eq!(g.balance(1), start - 10);
-        let season = g.world.season();
-        let mut ticks = 0;
-        while g.world.season() == season {
+        g.cfg.purchase_deadline_ticks = 3;
+        for _ in 0..4 {
             g.world.step();
             g.after_tick();
-            ticks += 1;
-            assert!(ticks < 10 * g.world.config.ticks_per_day, "no season change");
         }
         assert!(!g.offers.contains_key(&id));
         assert_eq!(g.escrow(1), 0);
@@ -5078,7 +5566,7 @@ mod tests {
         assert_eq!(refunds, 5);
         let income: u64 =
             g.ledger(1, 100).iter().filter(|e| e.kind == LedgerKind::Income).map(|e| e.delta as u64).sum();
-        assert_eq!(g.balance(1), start + income, "every hold came back");
+        assert_eq!(g.balance(1), start + income - 1, "every hold came back but the lapse fee");
         let t = trades(&mut g);
         let settled: Vec<_> = t.iter().map(|t| (t.status.as_str(), t.settlement.as_deref())).collect();
         assert_eq!(
@@ -5536,6 +6024,8 @@ mod tests {
     #[test]
     fn auction_bids_are_escrowed_outbid_bidders_refunded_and_the_winner_settles() {
         let (mut g, a, b) = game();
+        // Auctions of a few ticks (the server's floor is minutes).
+        g.cfg.min_auction_ticks = 1;
         let c = g.found(3, &design("C")).unwrap().founders;
         g.connect(30, 3, "cat");
         let (ma, fb, fc) = (male(&g, &a), female(&g, &b), female(&g, &c));
@@ -5673,6 +6163,8 @@ mod tests {
     #[test]
     fn auctions_without_a_bid_return_to_the_seller_and_deaths_refund_the_bid() {
         let (mut g, a, b) = game();
+        // Auctions of a few ticks (the server's floor is minutes).
+        g.cfg.min_auction_ticks = 1;
         let (ma, fa, fb, mb) = (male(&g, &a), female(&g, &a), female(&g, &b), male(&g, &b));
         not_pregnant(&mut g, &[fa, fb]);
         let auction = |g: &mut Game, organism, ticks| {
@@ -5734,6 +6226,8 @@ mod tests {
     #[test]
     fn saved_games_keep_open_auctions_and_their_escrowed_bids() {
         let (mut g, a, b) = game();
+        // Auctions of a few ticks (the server's floor is minutes).
+        g.cfg.min_auction_ticks = 1;
         let (ma, fb) = (male(&g, &a), female(&g, &b));
         not_pregnant(&mut g, &[fb]);
         let l = data(&g.command(
@@ -5869,7 +6363,7 @@ mod tests {
         place_together(&mut r, ma, fb);
         r.after_tick();
         assert!(!r.offers.contains_key(&id));
-        assert_eq!(r.balance(1), economy::FOUNDING_GRANT + 7);
+        assert_eq!(r.balance(1), economy::FOUNDING_GRANT + 6, "less the market fee (at least 1)");
         // A layout-1 saved game (no version, no economy, offers without
         // escrow): the economy is left for the server to seed from the store.
         let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -6017,12 +6511,20 @@ mod tests {
         let out =
             g.command(10, 1, Some(5), ClientMsg::MatingPrefs { block: None, unblock: None, auto_decline: Some(false) });
         assert_eq!(reply_data(&out), serde_json::json!({ "blocked": [], "auto_decline": false }));
-        // Three requests, cancelled each time; the fourth is refused.
+        // Three open requests; the fourth is refused.
         for k in 0..REQUESTS_PER_TARGET as u64 {
             assert_eq!(code(&ask(&mut g, 10 + k)), None, "request {k}");
-            cancel_all(&mut g);
         }
         assert_eq!(code(&ask(&mut g, 20)), Some("too_many_requests".into()));
+        // Requests that came to nothing (cancelled, expired) or were accepted
+        // don't count: trading isn't capped by the limiter.
+        cancel_all(&mut g);
+        assert_eq!(code(&ask(&mut g, 19)), None);
+        cancel_all(&mut g);
+        for k in 0..REQUESTS_PER_TARGET as u64 {
+            assert_eq!(code(&ask(&mut g, 30 + k)), None, "request {k}");
+        }
+        assert_eq!(code(&ask(&mut g, 33)), Some("too_many_requests".into()));
         // The window passes.
         g.cfg.request_window_ticks = 1;
         g.world.step();
@@ -6190,13 +6692,13 @@ mod tests {
         // A stranger can't answer, complete or cancel it; the requester can't
         // accept it for the partner's owner.
         for msg in [
-            ClientMsg::RespondMating { request: id, accept: true },
+            ClientMsg::RespondMating { request: id, accept: true, partner: None },
             ClientMsg::CompleteMating { request: id },
             ClientMsg::CancelMating { request: id },
         ] {
             assert_eq!(code(&g.command(30, 3, None, msg)).as_deref(), Some("unknown_offer"));
         }
-        let out = g.command(10, 1, None, ClientMsg::RespondMating { request: id, accept: true });
+        let out = g.command(10, 1, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         assert_eq!(code(&out).as_deref(), Some("unknown_offer"));
         // Nor use someone else's organism as "mine".
         let out = g.command(30, 3, None, ClientMsg::RequestMating { mine: fa, partner: c[0], price: None });
@@ -6207,17 +6709,17 @@ mod tests {
         for msg in [ClientMsg::CancelMating { request: id }, ClientMsg::CompleteMating { request: id }] {
             assert_eq!(code(&g.command(10, 1, None, msg)).as_deref(), Some("unknown_offer"));
         }
-        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         assert_eq!((g.balance(1), g.balance(2)), (start, start));
         assert_eq!(ledger_kinds(&g, 1), vec![LedgerKind::Grant, LedgerKind::Escrow, LedgerKind::Refund]);
         // Completed (paid), then cancelled or declined: nothing moves again.
         let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: fa, partner: mb, price: Some(20) }));
-        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         place_together(&mut g, fa, mb);
         g.command(10, 1, None, ClientMsg::CompleteMating { request: id });
         assert_eq!((g.balance(1), g.balance(2)), (start - 20, start + 18));
         g.command(20, 2, None, ClientMsg::CancelMating { request: id });
-        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false });
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: false, partner: None });
         g.after_tick();
         assert_eq!((g.balance(1), g.balance(2)), (start - 20, start + 18));
 
@@ -6347,7 +6849,7 @@ mod tests {
             !g.world.organism(fa).unwrap().can_breed(g.world.tick()),
             "the requester's own female is held while pending"
         );
-        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true });
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id, accept: true, partner: None });
         g.world.step();
         g.after_tick();
         let tick = g.world.tick();
@@ -6559,7 +7061,8 @@ mod tests {
         assert_eq!(legacy.category, league::Category::Legacy);
         assert_eq!(legacy.rows.len(), 2);
         let market = &r.standings[3];
-        assert_eq!(market.rows.iter().map(|p| (p.player, p.value)).collect::<Vec<_>>(), vec![(1, 7.0)]);
+        // One sale isn't a stud market (it needs 3 sales to 2 buyers).
+        assert!(market.rows.is_empty(), "{:?}", market.rows);
         assert!(r.standings[1].rows.iter().all(|p| p.value >= 6.0), "founders count for the lineage board");
         assert!(alerts_in(&out, 1).iter().any(|x| x.text.starts_with("Season 1 has ended: you placed #")));
         let notices = g.take_notices();

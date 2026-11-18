@@ -166,17 +166,17 @@ describe('market helpers', () => {
 describe('ledger', () => {
   const e = (seq: number, delta: number, kind: string, balance: number): LedgerEntry =>
     ({ seq, player: 1, tick: seq * 10, day: seq, delta, balance, kind, text: `entry ${seq}` });
-  const entries = [e(1, 50, 'grant', 50), e(2, 4, 'income', 54), e(3, -25, 'escrow', 29), e(4, 25, 'refund', 54), e(5, 12, 'sale', 66), e(6, 40, 'achievement', 106)];
+  const entries = [e(1, 50, 'grant', 50), e(2, 4, 'income', 54), e(3, -25, 'escrow', 29), e(4, 25, 'refund', 54), e(5, 12, 'sale', 66), e(6, 40, 'achievement', 106), e(7, 6, 'royalty', 112), e(8, -30, 'purchase', 82)];
 
   it('formats rows newest first with signed amounts', () => {
     const rows = ledgerRows(entries);
-    expect(rows.map((r) => r.seq)).toEqual([6, 5, 4, 3, 2, 1]);
-    expect(rows[3]).toMatchObject({ amount: '−25', positive: false, kind: 'escrow', balance: 29 });
-    expect(rows[0]).toMatchObject({ amount: '+40', kind: 'bonus' });
+    expect(rows.map((r) => r.seq)).toEqual([8, 7, 6, 5, 4, 3, 2, 1]);
+    expect(rows[5]).toMatchObject({ amount: '−25', positive: false, kind: 'escrow', balance: 29 });
+    expect(rows[2]).toMatchObject({ amount: '+40', kind: 'bonus' });
   });
 
   it('totals earnings, escrow, sales and refunds', () => {
-    expect(ledgerTotals(entries)).toEqual({ earned: 94, spent: 25, sold: 12, refunded: 25 });
+    expect(ledgerTotals(entries)).toEqual({ earned: 100, spent: 25, sold: 12, refunded: 25, royalties: 6, shop: 30 });
   });
 });
 

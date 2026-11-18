@@ -137,6 +137,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   // --- renown shop and who can breed with whom
   const shopEl = h('div', { id: 'market-shop' });
   const compatEl = h('div', { id: 'market-compat' });
+  const offerPrice = h('input', { id: 'market-offer-price', type: 'number', min: 0, step: 1, value: 20 });
 
   const el = h('div', { class: 'market' },
     balanceEl,
@@ -334,7 +335,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (ledgerEl.dataset.key === key) return;
     ledgerEl.dataset.key = key;
     ledgerEl.replaceChildren(
-      h('p', { class: 'muted small' }, `Recent: earned ${t.earned}, paid into escrow ${t.spent}, sales ${t.sold}, refunds ${t.refunded}.`),
+      h('p', { class: 'muted small' }, `Recent: earned ${t.earned} (royalties ${t.royalties}), paid into escrow ${t.spent}, sales ${t.sold}, refunds ${t.refunded}, spent in the shop ${t.shop}.`),
       rows.length === 0 ? h('p', { class: 'muted small' }, 'No entries yet.')
         : h('table', { class: 'board ledger' },
           h('thead', {}, h('tr', {}, h('th', {}, 'Day'), h('th', {}, ''), h('th', {}, 'Renown'), h('th', {}, 'What'), h('th', {}, 'Balance'))),
@@ -375,11 +376,26 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
         render();
       }
     });
+    const colorSel = h('select', { id: 'shop-nameplate-color' }, ...(s.nameplate_colors ?? []).map((c) => h('option', { value: c, selected: s.nameplate?.color === c }, c)));
+    const titleIn = h('input', { id: 'shop-nameplate-title', maxlength: 24, placeholder: 'Title', value: s.nameplate?.title ?? '' });
+    const plateBtn = h('button', { id: 'shop-nameplate', class: 'secondary', disabled: s.nameplate_price === undefined || s.balance < (s.nameplate_price ?? 0) },
+      `${s.nameplate ? 'Change' : 'Buy'} nameplate: ${s.nameplate_price ?? '?'} renown`);
+    plateBtn.addEventListener('click', async () => {
+      const r = await deps.send({ type: 'set_nameplate', color: colorSel.value, title: titleIn.value });
+      if (r.ok) {
+        const d = r.data as { shop?: unknown } | undefined;
+        shop = parseShopView(d?.shop) ?? shop;
+        model.toast('info', 'Nameplate set (cosmetic).');
+        render();
+      }
+    });
     shopEl.replaceChildren(
       h('p', { class: 'muted small' }, shopText(s)),
       h('div', { class: 'row' }, slotBtn, h('span', { class: 'muted small' }, `${s.slots_bought} bought this season; the price doubles with each.`)),
       h('div', { class: 'row' }, reinBtn, h('span', { class: 'muted small' },
-        blocked ?? `For lineages of at most ${s.reinforce_max_alive}; the price doubles with each in a ranked season.`)));
+        blocked ?? `For lineages of at most ${s.reinforce_max_alive}; the price doubles with each, at most ${s.reinforcements_max ?? '?'} a ranked season (${s.reinforcements_bought ?? 0} bought).`)),
+      ...(s.nameplate_colors ? [h('div', { class: 'row' }, colorSel, titleIn, plateBtn,
+        h('span', { class: 'muted small' }, `Cosmetic: shown with your name.${s.species_name_price ? ` Naming a species your lineage founded costs ${s.species_name_price}.` : ''}`))] : []));
   }
 
   function renderCompat(): void {
@@ -392,10 +408,22 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     }
     const fertile = compat.rows.filter((r) => r.compatible);
     const sterile = compat.rows.filter((r) => !r.compatible);
+    const offerBtn = (r: CompatibilityView['rows'][number]) => {
+      const b = h('button', { class: 'secondary offer-lineage', title: "Offer a mating with one of their animals: the owner picks one that's free" }, 'Offer a mating');
+      b.addEventListener('click', async () => {
+        const mine = Number(mineSel.value);
+        if (!mine) return model.toast('error', 'Pick one of your adults under "For my adult" first.');
+        const price = Math.max(0, Math.floor(Number(offerPrice.value) || 0));
+        const res = await deps.send({ type: 'offer_to_lineage', mine, lineage: r.lineage, ...(price > 0 ? { price } : {}) });
+        if (res.ok) model.toast('info', `Offered #${mine} to ${r.owner_name}'s ${r.lineage_name}${price ? ` for ${price} renown` : ''}: they pick the partner.`);
+      });
+      return b;
+    };
     compatEl.replaceChildren(
-      h('p', { class: 'muted small' }, 'Lineages whose diet, warmth, birth mode or size differ by 0.30 or more from yours are sterile with it: only the fertile ones are worth trading with.'),
+      h('p', { class: 'muted small' }, 'Lineages whose diet, warmth, birth mode or size differ by 0.30 or more from yours are sterile with it: only the fertile ones are worth trading with. "Offer a mating" lets the owner pick one of their animals that is free (no guessing which females are pregnant).'),
+      h('label', {}, 'Price for an offer (renown)', offerPrice),
       h('ul', { class: 'small compat-list' },
-        ...fertile.map((r) => h('li', { 'data-lineage': r.lineage, class: 'good' }, compatRowText(r))),
+        ...fertile.map((r) => h('li', { 'data-lineage': r.lineage, class: 'good' }, compatRowText(r), r.owner !== 0 ? offerBtn(r) : '')),
         ...sterile.slice(0, 6).map((r) => h('li', { 'data-lineage': r.lineage, class: 'muted' }, compatRowText(r)))),
       ...(fertile.length === 0 ? [h('p', { class: 'small' }, 'No lineage can breed with yours right now.')] : []));
   }

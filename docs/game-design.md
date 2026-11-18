@@ -37,7 +37,10 @@ Example: 10,000 breeding adults × 50 genes × 2 alleles = 1,000,000 alleles. 80
 **Why trade** (playtest 1 had zero trades: accepting a rival's stud only dilutes you). Renown, earned only in play, now pays and buys things:
 
 - **Breeder's royalty:** renown a day for a player's alleles living outside their own lineage, so siring into rivals' dams pays the breeder beyond the share it already counts for.
-- **Renown shop (sinks):** extra directed-mating slots for the season (rising price), and reinforcements for a small lineage (adults copied from its own; only below a fifth of the soft cap, rising price): a large lineage spreads its genes by paying others' dams, a small one earns renown by hosting them and spends it on catching up.
+- **Renown shop (sinks):** extra directed-mating slots for the season (rising price), and reinforcements for a small lineage (adults copied from its own; only below a fifth of the soft cap, rising price, at most two a ranked season per player, retired lineages included): a large lineage spreads its genes by paying others' dams, a small one earns renown by hosting them and spends it on catching up. Leaders get cosmetic sinks only: a nameplate, naming a species their lineage founded.
+- **Offers live in real time:** a request waits 10 minutes for an answer and an accepted agreement 30 minutes for the meeting (then the requester forfeits a tenth), not until the next weather season. An offer can go to a whole lineage, whose owner picks a free animal.
+- **Retiring** a lineage hands animals mostly of another player's genes to that player instead of deleting them.
+- **Titles need substance:** the stud market needs several sales to different buyers; a survival title nobody failed goes to no one.
 - **Market fee:** 10% of every payout is destroyed.
 - **Compatibility shown:** body plans 0.30 apart (diet, warmth, birth mode, size) are sterile; the market lists which lineages can breed with yours.
 

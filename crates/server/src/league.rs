@@ -28,6 +28,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::DailyRecord;
 
+/// Sales a player needs in a season to be ranked in the stud market.
+pub const MARKET_TITLE_SALES: u32 = 3;
+/// Different buyers those sales need.
+pub const MARKET_TITLE_BUYERS: usize = 2;
+
 /// Default length of a ranked season, in simulated days (half a default
 /// 120-day year; an era is 3 years).
 pub const DEFAULT_SEASON_DAYS: u64 = 60;
@@ -59,9 +64,14 @@ pub enum Category {
     /// Species founded (credited speciation events) during the season.
     Species,
     /// Renown earned from stud fees (escrow paid out) during the season.
+    /// Ranked only with at least [`MARKET_TITLE_SALES`] sales to at least
+    /// [`MARKET_TITLE_BUYERS`] different buyers (one paid offer used to win
+    /// it, and paying a rival handed them the title).
     Market,
-    /// Catastrophes survived (a lineage alive at the start and the end)
-    /// during the season.
+    /// Catastrophes survived (a lineage founded before it began and alive
+    /// at its end) during the season. Its title goes to no one when every
+    /// player with a lineage this season ties for first (a survival title
+    /// used to go to all six players).
     Survival,
 }
 
@@ -427,7 +437,15 @@ impl SeasonTracker {
                         .collect(),
                     Category::Lineage => count(&self.peak_alive),
                     Category::Species => count(&self.species),
-                    Category::Market => count(&self.sales),
+                    Category::Market => count(&self.sales)
+                        .into_iter()
+                        .filter(|(p, _, _)| {
+                            let buyers = self.sale_counts.get(p);
+                            let sales: u32 = buyers.map_or(0, |b| b.values().sum());
+                            let distinct = buyers.map_or(0, |b| b.len());
+                            sales >= MARKET_TITLE_SALES && distinct >= MARKET_TITLE_BUYERS
+                        })
+                        .collect(),
                     Category::Survival => count(&self.survived),
                 };
                 Standing { category, rows: rank(values, &name_of) }
@@ -444,8 +462,16 @@ impl SeasonTracker {
         name_of: impl Fn(PlayerId) -> String,
     ) -> SeasonRecord {
         let standings = self.standings(name_of);
+        // Players with a lineage this season (a recorded day with members).
+        let active = self.peak_alive.len();
         let winners: Vec<Winner> = standings
             .iter()
+            .filter(|s| {
+                // A survival title that every active player shares says
+                // nothing: no winner.
+                let firsts = s.rows.iter().take_while(|r| r.rank == 1).count();
+                !(s.category == Category::Survival && active > 1 && firsts >= active)
+            })
             .flat_map(|s| {
                 s.rows.iter().take_while(|r| r.rank == 1).map(|r| Winner {
                     category: s.category,
@@ -720,8 +746,13 @@ mod tests {
         t.record_day(&day(2, &[(1, 0.125), (2, 0.25), (3, 0.625)], &[(1, 45), (2, 10), (3, 5)]));
         t.add_species(2);
         t.add_species(WILD);
-        t.add_sale(1, 9, 30);
-        t.add_sale(2, 9, 30);
+        // Three sales to two buyers each (the stud market's threshold),
+        // crediting 20 + 6 + 8/2 = 30.
+        for p in [1, 2] {
+            t.add_sale(p, 9, 20);
+            t.add_sale(p, 8, 6);
+            t.add_sale(p, 9, 8);
+        }
         t.add_survival(3);
         let r = t.finish("w", 144, 1000, name);
         assert_eq!(r.head.days, 3);
@@ -799,6 +830,23 @@ mod tests {
     /// The market standing gives diminishing returns per buyer: full credit
     /// for the first sale to a buyer, half for the next, and so on; another
     /// buyer starts again at full; a sale to oneself counts nothing.
+    /// A survival title every active player shares goes to no one.
+    #[test]
+    fn a_survival_title_for_everyone_goes_to_no_one() {
+        let mut t = SeasonTracker::new(1, 0, 3);
+        t.record_day(&day(0, &[(1, 0.2), (2, 0.1)], &[(1, 50), (2, 30)]));
+        t.add_survival(1);
+        t.add_survival(2);
+        let r = t.clone().finish("w", 1, 1, name);
+        assert!(r.head.winners.iter().all(|w| w.category != Category::Survival));
+        assert_eq!(r.standings[4].rows.len(), 2, "still ranked");
+        t.add_survival(1);
+        let r = t.finish("w", 1, 1, name);
+        let s: Vec<PlayerId> =
+            r.head.winners.iter().filter(|w| w.category == Category::Survival).map(|w| w.player).collect();
+        assert_eq!(s, vec![1]);
+    }
+
     #[test]
     fn repeated_sales_to_one_buyer_count_less() {
         let mut t = SeasonTracker::new(1, 0, 3);
@@ -816,7 +864,11 @@ mod tests {
         // A new season starts the counts over.
         let mut n = t.next(3, 3);
         n.add_sale(1, 2, 80);
-        assert_eq!(market(&n), Some(80.0));
+        assert_eq!(market(&n), None, "one sale isn't a stud market");
+        n.add_sale(1, 3, 10);
+        assert_eq!(market(&n), None, "two sales neither");
+        n.add_sale(1, 3, 10);
+        assert_eq!(market(&n), Some(95.0));
         let restored: SeasonTracker = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
         assert_eq!(restored, t);
     }

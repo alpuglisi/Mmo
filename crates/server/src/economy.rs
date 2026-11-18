@@ -79,7 +79,7 @@ pub const MAX_AUCTION_DAYS: u32 = 30;
 pub const MARKET_FEE_PERCENT: u64 = 10;
 /// Renown a day per percentage point of all scored alleles that are a
 /// player's and live outside their lineage ([`royalty`]).
-pub const ROYALTY_PER_POINT: f64 = 2.0;
+pub const ROYALTY_PER_POINT: f64 = 5.0;
 /// Price of the first extra mating slot of a weather season; each further
 /// one costs twice the last ([`slot_price`]).
 pub const SLOT_BASE_PRICE: u64 = 30;
@@ -90,14 +90,35 @@ pub const REINFORCE_SIZE: u32 = 10;
 /// Price of a ranked season's first reinforcement; each further one costs
 /// twice the last ([`reinforce_price`]).
 pub const REINFORCE_BASE_PRICE: u64 = 150;
+/// Renown for a first nameplate (a cosmetic sink for leaders).
+pub const NAMEPLATE_PRICE: u64 = 500;
+/// Renown to change a nameplate afterwards.
+pub const NAMEPLATE_CHANGE_PRICE: u64 = 100;
+/// Longest nameplate title, in characters.
+pub const MAX_TITLE_LEN: usize = 24;
+/// The nameplate palette.
+pub const NAMEPLATE_COLORS: [&str; 8] = ["amber", "crimson", "emerald", "azure", "violet", "ivory", "jet", "copper"];
+/// Renown to name a species your lineage founded (cosmetic: the name shows
+/// in the species list, the chronicle and the family tree).
+pub const SPECIES_NAME_PRICE: u64 = 300;
+
+/// Most reinforcements one player may buy in a ranked season, whatever
+/// lineages they had in it: retiring and re-founding neither resets the
+/// price nor the count (playtest 2: 4,650 hoarded renown bought +50 adults
+/// right after a re-found).
+pub const MAX_REINFORCEMENTS_PER_SEASON: u32 = 2;
 /// A lineage may be reinforced only while at most this share of the soft
 /// lineage cap (`WorldConfig::lineage_cap`) is alive.
 pub const REINFORCE_MAX_SHARE: f64 = 0.2;
 
-/// The market fee kept from a payout of `amount` (rounded down, so tiny
-/// prices pay none).
+/// The market fee kept from a payout of `amount`: rounded down, but at
+/// least 1 renown on any paid price (splitting a purchase into 1–9 renown
+/// prices used to dodge it).
 pub fn market_fee(amount: u64) -> u64 {
-    amount * MARKET_FEE_PERCENT / 100
+    if amount == 0 {
+        return 0;
+    }
+    (amount * MARKET_FEE_PERCENT / 100).max(1)
 }
 
 /// Renown a day from alleles living outside the player's own lineage:
@@ -226,6 +247,18 @@ pub struct Economy {
     /// Reinforcements bought per player: (ranked season, how many in it).
     /// Absent from older saves (none bought).
     pub reinforcements: BTreeMap<PlayerId, (u32, u32)>,
+    /// Bought nameplates (`set_nameplate`): a color from [`NAMEPLATE_COLORS`]
+    /// and a short title shown with the player's name. Cosmetic only.
+    pub nameplates: BTreeMap<PlayerId, Nameplate>,
+    /// Species named by a player (`name_species`): species id → player.
+    pub named_species: BTreeMap<u32, PlayerId>,
+}
+
+/// A player's bought nameplate: cosmetic only.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Nameplate {
+    pub color: String,
+    pub title: String,
 }
 
 /// Not enough renown for a payment.
@@ -366,9 +399,9 @@ mod tests {
 
     #[test]
     fn shop_prices_rise_and_fees_and_royalties_round() {
-        assert_eq!(market_fee(9), 0);
+        assert_eq!((market_fee(0), market_fee(1), market_fee(9)), (0, 1, 1));
         assert_eq!(market_fee(40), 4);
-        assert_eq!(royalty(0.025, true), 5);
+        assert_eq!(royalty(0.025, true), 13);
         assert_eq!(royalty(0.5, false), 0);
         assert_eq!(slot_price(0), Some(30));
         assert_eq!(slot_price(2), Some(120));

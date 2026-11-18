@@ -224,10 +224,12 @@ export function ledgerRows(entries: LedgerEntry[]): LedgerRow[] {
 }
 
 /** Income, spending and sales over the given entries (for the ledger summary). */
-export function ledgerTotals(entries: LedgerEntry[]): { earned: number; spent: number; sold: number; refunded: number } {
-  const t = { earned: 0, spent: 0, sold: 0, refunded: 0 };
+export function ledgerTotals(entries: LedgerEntry[]): { earned: number; spent: number; sold: number; refunded: number; royalties: number; shop: number } {
+  const t = { earned: 0, spent: 0, sold: 0, refunded: 0, royalties: 0, shop: 0 };
   for (const e of entries) {
     if (e.kind === 'income' || e.kind === 'grant' || e.kind === 'achievement') t.earned += e.delta;
+    else if (e.kind === 'royalty') { t.earned += e.delta; t.royalties += e.delta; }
+    else if (e.kind === 'purchase') t.shop -= e.delta;
     else if (e.kind === 'escrow') t.spent -= e.delta;
     else if (e.kind === 'sale') t.sold += e.delta;
     else if (e.kind === 'refund') t.refunded += e.delta;
