@@ -236,35 +236,71 @@ async function main() {
     step(`Market: Reinforcements, Buy slot and the pickers stay attached over 7 s of refreshes; the list picker offers ${listRows} adults`);
 
     // Possession: the bar with Release; a click on another animal walks there instead of selecting it.
+    // Possession ends on its own when the possessed animal dies (the bar then
+    // says so and hides Release): that is the world, not the interface, and
+    // on a loaded machine more of it passes during the step. The test then
+    // checks the bar's notice and starts over with another animal, rather
+    // than waiting on a hidden button.
     await recordResults(page);
-    const pair = await page.evaluate(() => {
-      const own = window.evo.model.state.organisms.filter((o) => o.matured);
-      return { a: own[0].id, b: own[1].id };
-    });
-    await page.evaluate((id) => window.evo.socket.send({ type: 'possess', organism: id }), pair.a);
-    await page.waitForSelector('#possess-bar:not([hidden])', { timeout: UI_MS });
-    const barText = await page.textContent('#possess-bar');
-    check(barText.includes(`#${pair.a}`) && barText.includes('Release'), 'possession bar', barText);
-    await page.evaluate(() => window.evo.screen().view.setFollow(false));
-    const target = await waitFor('the other animal on screen', () => page.evaluate((id) => {
-      const v = window.evo.screen().view;
-      const m = v.markers.get(id);
-      if (!m) return null;
-      v.centerOn(m.x, m.y);
-      const p = v.worldToScreen(m.x, m.y);
-      return { x: p.x, y: p.y };
-    }, pair.b));
-    await page.waitForTimeout(200);
-    const box = await page.locator('#world-canvas').boundingBox();
-    const selectedBefore = await page.evaluate(() => window.evo.model.selected);
-    await page.mouse.click(box.x + target.x, box.y + target.y);
-    await waitFor('a walk order', () => page.evaluate(() => window.__results.some((r) => r.type === 'order_move')));
-    const selectedAfter = await page.evaluate(() => window.evo.model.selected);
-    check(selectedAfter === selectedBefore, 'a click while possessing should walk, not select', { selectedBefore, selectedAfter, b: pair.b });
-    await page.screenshot({ path: path.join(shots, 'panels-possess-bar.png') });
-    await page.click('#possess-release');
-    await page.waitForSelector('#possess-bar', { state: 'hidden', timeout: UI_MS });
-    step(`possessing #${pair.a}: the bar shows Release; a click on #${pair.b} walked there; Release from the bar`);
+    let walked = null;
+    for (let attempt = 0; attempt < 3 && !walked; attempt++) {
+      const pair = await page.evaluate(() => {
+        // The least thirsty grown animal possessed, another to click on.
+        const own = window.evo.model.state.organisms.filter((o) => o.matured)
+          .sort((a, b) => a.needs.thirst - b.needs.thirst || b.health - a.health);
+        return own.length >= 2 ? { a: own[0].id, b: own[1].id } : null;
+      });
+      check(pair, 'two grown animals to possess and click on');
+      const r = await page.evaluate((id) => window.evo.socket.send({ type: 'possess', organism: id }), pair.a);
+      check(r.ok, 'possess', r);
+      await page.waitForSelector('#possess-bar:not([hidden]):not(.ended)', { timeout: UI_MS });
+      const barText = await page.textContent('#possess-bar');
+      check(barText.includes(`#${pair.a}`) && barText.includes('Release'), 'possession bar', barText);
+      await page.evaluate(() => window.evo.screen().view.setFollow(false));
+      const target = await waitFor('the other animal on screen', () => page.evaluate((id) => {
+        const v = window.evo.screen().view;
+        const m = v.markers.get(id);
+        if (!m) return null;
+        v.centerOn(m.x, m.y);
+        const p = v.worldToScreen(m.x, m.y);
+        return { x: p.x, y: p.y };
+      }, pair.b));
+      await page.waitForTimeout(200);
+      const box = await page.locator('#world-canvas').boundingBox();
+      const selectedBefore = await page.evaluate(() => window.evo.model.selected);
+      await page.evaluate(() => { window.__results = window.__results.filter((r) => r.type !== 'order_move'); });
+      await page.mouse.click(box.x + target.x, box.y + target.y);
+      const outcome = await waitFor('a walk order (or the end of the possession)', () => page.evaluate((a) => {
+        if (window.__results.some((r) => r.type === 'order_move')) return 'walked';
+        const alive = window.evo.model.state.organisms.some((o) => o.id === a && o.possessed);
+        return alive ? null : 'ended';
+      }, pair.a));
+      if (outcome === 'walked') {
+        const selectedAfter = await page.evaluate(() => window.evo.model.selected);
+        check(selectedAfter === selectedBefore, 'a click while possessing should walk, not select', { selectedBefore, selectedAfter, b: pair.b });
+        await page.screenshot({ path: path.join(shots, 'panels-possess-bar.png') });
+        // Release while it still lives (it may die in between: then the bar says so).
+        let released = false;
+        try {
+          await page.click('#possess-release', { timeout: 5000 });
+          released = true;
+        } catch (e) {
+          if (!(await page.locator('#possess-bar.ended').isVisible())) throw e;
+        }
+        if (released) {
+          await page.waitForSelector('#possess-bar', { state: 'hidden', timeout: UI_MS });
+          walked = pair;
+          break;
+        }
+      }
+      // It died while possessed: the bar says so, without Release.
+      const ended = await page.waitForSelector('#possess-bar.ended:not([hidden])', { timeout: UI_MS }).then(() => page.textContent('#possess-bar'));
+      check(/died while you were possessing it/.test(ended), 'the bar should say the possessed animal died', ended);
+      check(!(await page.locator('#possess-release').isVisible()), 'no Release for a dead animal');
+      step(`#${pair.a} died while possessed (the bar said so): again with another animal`);
+    }
+    check(walked, 'possession, a walk and Release never went through');
+    step(`possessing #${walked.a}: the bar shows Release; a click on #${walked.b} walked there; Release from the bar`);
 
     check(errors.length === 0, 'page errors', errors);
     await context.close();
