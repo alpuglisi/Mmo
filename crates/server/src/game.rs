@@ -15,7 +15,7 @@ use evo_sim::organism::{DeathCause, Dormancy, Organism, Sex};
 use evo_sim::presets::{self, REFERENCE_SIZE};
 use evo_sim::terrain::Season;
 use evo_sim::world::commands::{CommandError, DirectedMating, MatingPreview, MEETING_DISTANCE};
-use evo_sim::world::groups::MAX_GROUPS;
+use evo_sim::world::groups::{ClaimOutcome, FAR_CLAIM_TILES, MAX_GROUPS};
 use evo_sim::{FounderDesign, Gene, PlayerId, World, WorldConfig, WILD};
 use serde::{Deserialize, Serialize};
 
@@ -244,6 +244,9 @@ pub struct GameConfig {
 /// Fewer drinking-water tiles than this in and around a territory or
 /// rally circle draw a warning in the reply ([`Game::circle_report`]).
 pub const LOW_WATER_TILES: usize = 3;
+/// A circle whose standing plants would feed its group for fewer days than
+/// this draws a warning.
+pub const STANDING_WARN_DAYS: f32 = 10.0;
 /// A territory or rally circle farther than this from its group's middle
 /// draws a warning (playtest 3: a claim 85 tiles off).
 pub const FAR_CIRCLE_TILES: f32 = 30.0;
@@ -744,6 +747,11 @@ pub struct Game {
     territory_alerted: BTreeSet<(PlayerId, u8, u8)>,
     /// Groups already told they drifted from their home; not saved.
     drift_alerted: BTreeSet<(PlayerId, u8)>,
+    /// How each group's last order ended on its own (arrived, stalled,
+    /// claimed on arrival), shown on its card until its next order: alerts
+    /// scroll away (playtest 4: a migration "silently did nothing"). Not
+    /// saved.
+    outcomes: BTreeMap<(PlayerId, u8), String>,
     /// Alleles in breeding adults by (host lineage, origin), taken with
     /// each daily record (`World::legacy_hosts`): the royalty and the score
     /// breakdown read it. Not saved; recomputed on a restore.
@@ -980,6 +988,7 @@ impl Game {
             founded_day: BTreeMap::new(),
             territory_alerted: BTreeSet::new(),
             drift_alerted: BTreeSet::new(),
+            outcomes: BTreeMap::new(),
             hosts,
             pending_out,
             attack_alerts: BTreeMap::new(),
@@ -1712,7 +1721,9 @@ impl Game {
                 // No group: the main group, like a rally or a territory.
                 let group = group.unwrap_or(0);
                 let asked = Vec2::new(x, y);
+                let before = self.orders_of(player, group);
                 let to = self.world.command_migrate_group(player, group, asked).map_err(e)?;
+                self.order_given(player, group);
                 self.plan_route(player, group);
                 let mut data =
                     target_data(asked, to, "that is water or impassable; the group goes to the nearest land");
@@ -1737,6 +1748,7 @@ impl Game {
                     ));
                 }
                 put_warnings(&mut data, warnings);
+                note_replaced(&mut data, &before, "migration");
                 Ok(Some(data))
             }
             ClientMsg::EndGrace => {
@@ -1766,37 +1778,75 @@ impl Game {
             }
             ClientMsg::ClaimTerritory { group, x, y, radius } => {
                 finite(&[x, y, radius])?;
-                let t = match self.world.claim_territory(player, group, Vec2::new(x, y), radius) {
-                    Ok(t) => t,
+                let before = self.orders_of(player, group);
+                let outcome = match self.world.claim_or_migrate(player, group, Vec2::new(x, y), radius) {
+                    Ok(o) => o,
                     Err(CommandError::ClaimCooldown { ticks_left }) => return Err(self.cooldown_error(ticks_left)),
                     Err(err) => return Err(e(err)),
                 };
-                let mut data = serde_json::to_value(TerritoryView::from(t)).unwrap();
-                if (t.radius - radius).abs() > 0.01 {
-                    data["note"] = if t.radius > radius {
-                        format!("radius raised to the smallest territory, {:.0} tiles", t.radius)
-                    } else {
-                        format!("radius cut to the group's limit, {:.1} tiles (it grows with the adults)", t.radius)
+                self.order_given(player, group);
+                let mut data = match outcome {
+                    ClaimOutcome::Claimed(t) => {
+                        let mut data = serde_json::to_value(TerritoryView::from(t)).unwrap();
+                        if (t.radius - radius).abs() > 0.01 {
+                            data["note"] = if t.radius > radius {
+                                format!("radius raised to the smallest territory, {:.0} tiles", t.radius)
+                            } else {
+                                format!(
+                                    "radius cut to the group's limit, {:.1} tiles (it grows with the adults)",
+                                    t.radius
+                                )
+                            }
+                            .into();
+                        }
+                        self.circle_report(player, group, t.center, t.radius, &mut data);
+                        data
                     }
-                    .into();
-                }
-                self.circle_report(player, group, t.center, t.radius, &mut data);
+                    ClaimOutcome::Migrating { target, radius } => {
+                        self.plan_route(player, group);
+                        let mut data = serde_json::json!({
+                            "x": x, "y": y, "radius": radius, "pending": true,
+                            "migrating_to": { "x": target.x, "y": target.y },
+                            "note": format!(
+                                "the circle is more than {FAR_CLAIM_TILES:.0} tiles from the group: it migrates there \
+                                 first and claims the territory when it arrives"
+                            ),
+                        });
+                        if let Some((_, route)) = self.routes.get(&(player, group)) {
+                            data["route"] = serde_json::to_value(route).unwrap_or_default();
+                        }
+                        self.circle_report(player, group, Vec2::new(x, y), radius.max(3.0), &mut data);
+                        data
+                    }
+                };
+                note_replaced(&mut data, &before, "territory");
                 Ok(Some(data))
             }
             ClientMsg::AbandonTerritory { group } => {
-                self.world.abandon_territory(player, group).map_err(e)?;
-                Ok(None)
+                let t = self.world.abandon_territory(player, group).map_err(e)?;
+                self.territory_alerted.retain(|&(p, g, _)| (p, g) != (player, group));
+                let mut data = serde_json::to_value(TerritoryView::from(t)).unwrap();
+                if self.world.settle_circle(player, group).is_some() {
+                    data["note"] = "the group goes back to its home ground".into();
+                }
+                Ok(Some(data))
             }
             ClientMsg::Rally { group, x, y } => {
                 finite(&[x, y])?;
+                let before = self.orders_of(player, group);
                 let r = self.world.rally_group(player, group, Vec2::new(x, y)).map_err(e)?;
+                self.order_given(player, group);
                 let mut data = serde_json::to_value(RallyView::from(r)).unwrap();
                 self.circle_report(player, group, r.center, r.radius, &mut data);
+                note_replaced(&mut data, &before, "rally");
                 Ok(Some(data))
             }
             ClientMsg::CancelRally { group } => {
                 self.world.cancel_rally(player, group).map_err(e)?;
-                Ok(None)
+                let back = self.world.settle_circle(player, group).is_some();
+                Ok(Some(serde_json::json!({
+                    "note": if back { "the group goes back to its home ground" } else { "the group roams freely" }
+                })))
             }
             ClientMsg::SplitGroup { group, organisms } => {
                 if organisms.as_ref().is_some_and(|o| o.len() > MAX_SPLIT_ORGANISMS) {
@@ -4263,34 +4313,56 @@ impl Game {
                         target.x,
                         target.y
                     );
+                    self.outcomes.insert((player, group), format!("reached ({:.0}, {:.0})", target.x, target.y));
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::ClaimedOnArrival { player, group, territory: t } => {
+                    self.routes.remove(&(player, group));
+                    self.drift_alerted.remove(&(player, group));
+                    let text = format!(
+                        "{} arrived and now holds its territory of radius {:.1} at ({:.0}, {:.0}).",
+                        group_name(group),
+                        t.radius,
+                        t.center.x,
+                        t.center.y
+                    );
+                    self.outcomes
+                        .insert((player, group), format!("arrived and claimed ({:.0}, {:.0})", t.center.x, t.center.y));
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
                 GroupEvent::Emptied { player, group } => {
                     self.routes.remove(&(player, group));
+                    self.outcomes.remove(&(player, group));
                     if group != 0 {
                         let text =
                             format!("{} has no members left; its orders and territory are gone.", group_name(group));
                         self.alert(player, AlertKind::Group, text, None, out);
                     }
                 }
-                GroupEvent::TimedOut { player, group, target, median, dormant_share } => {
+                GroupEvent::TimedOut {
+                    player,
+                    group,
+                    target,
+                    median,
+                    dormant_share,
+                    basking_share,
+                    never_moved,
+                    pending_claim,
+                } => {
                     self.routes.remove(&(player, group));
-                    let why = if dormant_share >= 0.5 {
-                        format!(
-                            "{:.0}% of the group is dormant (hibernating or estivating) and can't walk; migrate again \
-                             once it wakes",
-                            dormant_share * 100.0
-                        )
-                    } else {
-                        "it stopped getting closer. Rally it, or migrate again to a nearer point".to_string()
-                    };
+                    let (why, short) = timeout_reason(dormant_share, basking_share, never_moved);
+                    let claim = if pending_claim { " The territory it was to claim there is dropped too." } else { "" };
                     let text = format!(
                         "{} didn't gather at its migration target ({:.0}, {:.0}) (half the group is still more than \
-                         {:.0} tiles away); the order has ended: {why}.",
+                         {:.0} tiles away); the order has ended: {why}.{claim}",
                         group_name(group),
                         target.x,
                         target.y,
                         median
+                    );
+                    self.outcomes.insert(
+                        (player, group),
+                        format!("migration to ({:.0}, {:.0}) ended: {short}", target.x, target.y),
                     );
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
@@ -4307,7 +4379,20 @@ impl Game {
         let w = self.world.water_check(player, group, center, radius);
         data["water_share"] = ((w.water_share * 100.0).round() / 100.0).into();
         data["drinkable_tiles"] = w.drinkable.into();
-        if w.drinkable < LOW_WATER_TILES {
+        // In a drought what water there is dries up: ask for more of it, in
+        // proportion to the group (playtest 4: 12 tiles passed in a 0.83
+        // drought for hundreds of animals).
+        let members = self.world.groups(player).iter().find(|g| g.id == group).map_or(0, |g| g.members);
+        let dryness = self.world.map.dryness_at(center);
+        data["dryness"] = ((dryness * 100.0).round() / 100.0).into();
+        let wanted = if dryness > 0.5 { (members / 8).max(LOW_WATER_TILES) } else { LOW_WATER_TILES };
+        if w.drinkable < wanted && w.drinkable >= LOW_WATER_TILES {
+            warnings.push(format!(
+                "Only {} tiles of drinking water for {members} animals in a drought ({:.0}% dry here): it may not last.",
+                w.drinkable,
+                dryness * 100.0
+            ));
+        } else if w.drinkable < LOW_WATER_TILES {
             warnings.push(
                 "Little or no drinking water in or near this circle: the group will leave it to drink, and may die \
                  of thirst in a drought."
@@ -4321,12 +4406,25 @@ impl Game {
         }
         if let Some(f) = self.world.food_check(player, group, center, radius) {
             data["food_supports"] = f.supports.into();
+            data["standing_days"] = ((f.standing_days * 10.0).round() / 10.0).into();
             if f.supports < f.members {
                 warnings.push(format!(
-                    "The plants here feed about {} of the group's {} animals in a good season; expect hunger, worse \
-                     in winter or a drought.",
+                    "At this season's growth the plants here feed about {} of the group's {} animals; expect hunger.",
                     f.supports, f.members
                 ));
+            }
+            if f.standing_days < STANDING_WARN_DAYS {
+                warnings.push(format!(
+                    "The plants standing here would feed the whole group for about {:.0} days.",
+                    f.standing_days
+                ));
+            }
+        }
+        if let Some(p) = self.world.prey_check(player, group, center, radius) {
+            data["prey_nearby"] = p.prey.into();
+            if p.prey * 2 < p.members {
+                warnings
+                    .push(format!("Only {} prey animals in or near this circle for {} hunters.", p.prey, p.members));
             }
         }
         if let Some(m) = self.world.group_middle(player, group) {
@@ -4337,6 +4435,26 @@ impl Game {
             }
         }
         put_warnings(data, warnings);
+    }
+
+    /// A group's standing orders, by name: what a new order replaces.
+    fn orders_of(&self, player: PlayerId, group: u8) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        if self.world.migration_order(player, group).is_some() {
+            v.push("migration");
+        }
+        if self.world.territory(player, group).is_some() {
+            v.push("territory");
+        }
+        if self.world.rally(player, group).is_some() {
+            v.push("rally");
+        }
+        v
+    }
+
+    /// A new order for a group: the last order's outcome is no longer news.
+    fn order_given(&mut self, player: PlayerId, group: u8) {
+        self.outcomes.remove(&(player, group));
     }
 
     /// `claim_cooldown`, the wait said in minutes of real time and game days.
@@ -5451,6 +5569,55 @@ fn target_data(asked: Vec2, used: Vec2, note: &str) -> serde_json::Value {
     v
 }
 
+/// Why a migration ended without arriving, from the group's state then:
+/// the alert's sentence and a short form for the group's card.
+fn timeout_reason(dormant_share: f32, basking_share: f32, never_moved: bool) -> (String, &'static str) {
+    if dormant_share >= 0.5 {
+        (
+            format!(
+                "{:.0}% of the group is dormant (hibernating or estivating) and can't walk; migrate again once it wakes",
+                dormant_share * 100.0
+            ),
+            "dormant",
+        )
+    } else if basking_share >= 0.5 {
+        (
+            format!(
+                "{:.0}% of the group was basking or resting (cold-blooded animals warm up before they travel); \
+                 migrate again in warmer weather, or to a nearer point",
+                basking_share * 100.0
+            ),
+            "too cold to travel",
+        )
+    } else if never_moved {
+        (
+            "it never got going: the way may be blocked (water it can't cross, cliffs) or the group too busy with \
+             hunger and thirst. Try a nearer point on its side of the water"
+                .to_string(),
+            "never got going",
+        )
+    } else {
+        ("it stopped getting closer. Rally it, or migrate again to a nearer point".to_string(), "stalled")
+    }
+}
+
+/// Say in a command's reply which of the group's standing orders it
+/// replaced (`replaced`, and a sentence in `note`): a rally or claim used
+/// to cancel a migration without a word.
+fn note_replaced(data: &mut serde_json::Value, before: &[&'static str], new: &str) {
+    let _ = new;
+    let gone: Vec<&str> = before.to_vec();
+    if gone.is_empty() {
+        return;
+    }
+    data["replaced"] = gone.clone().into();
+    let text = format!("this replaces the group's {}", gone.join(" and "));
+    data["note"] = match data["note"].as_str() {
+        Some(n) => format!("{n}; {text}").into(),
+        None => text.into(),
+    };
+}
+
 /// Put a command's warnings in its reply: `warnings` (a list) and
 /// `warning` (them joined), when there are any.
 fn put_warnings(data: &mut serde_json::Value, warnings: Vec<String>) {
@@ -5787,9 +5954,11 @@ mod tests {
         let d = reply_data(&out);
         assert_eq!((d["group"].as_u64(), d["moved"].as_u64()), (Some(1), Some(a.len() as u64 / 2)));
         // Group 1 holds a territory; the main group migrates.
-        let out = g.command(10, 1, None, ClientMsg::ClaimTerritory { group: 1, x: 20.0, y: 22.0, radius: 500.0 });
+        // (Near the group: a claim farther than FAR_CLAIM_TILES migrates first.)
+        let (cx, cy) = g.world.group_middle(1, 1).map(|m| (m.x.round(), m.y.round())).unwrap();
+        let out = g.command(10, 1, None, ClientMsg::ClaimTerritory { group: 1, x: cx, y: cy, radius: 500.0 });
         let t: TerritoryView = serde_json::from_value(reply_data(&out)).unwrap();
-        assert_eq!((t.x, t.y), (20.0, 22.0));
+        assert_eq!((t.x, t.y), (cx, cy));
         let out = g.command(10, 1, None, ClientMsg::Migrate { x: 50.0, y: 50.0, group: Some(0) });
         assert_eq!(result(&out), (true, None));
         let s = g.state_for(10).unwrap();
@@ -5832,7 +6001,7 @@ mod tests {
         let empty = ClientMsg::Migrate { x: 20.0, y: 20.0, group: Some(5) };
         assert_eq!(code(&mut g, 10, 1, empty).as_deref(), Some("no_such_group"));
         assert_eq!(code(&mut g, 10, 1, ClientMsg::ClearMigration { group: Some(5) }).as_deref(), Some("no_such_group"));
-        assert_eq!(g.world.territory(1, 1).map(|t| (t.center.x, t.center.y)), Some((20.0, 22.0)));
+        assert_eq!(g.world.territory(1, 1).map(|t| (t.center.x, t.center.y)), Some((cx, cy)));
         // Bob can't touch ann's groups: his own group 1 doesn't exist.
         assert_eq!(code(&mut g, 20, 2, ClientMsg::AbandonTerritory { group: 1 }).as_deref(), Some("no_territory"));
         assert_eq!(code(&mut g, 20, 2, ClientMsg::MergeGroups { from: 1, into: 0 }).as_deref(), Some("no_such_group"));

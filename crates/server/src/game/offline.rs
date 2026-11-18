@@ -158,6 +158,7 @@ impl Game {
             if let Some((_, route)) = self.routes.get(&(player, v.id)) {
                 v.route.clone_from(route);
             }
+            v.last_outcome = self.outcomes.get(&(player, v.id)).cloned();
         }
         let left = self.protection_left(player, self.world.tick());
         let minutes = (left as f64 * self.cfg.tick_ms / 60_000.0).floor() as u32;

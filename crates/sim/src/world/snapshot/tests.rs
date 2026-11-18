@@ -1590,3 +1590,20 @@ fn version_46_snapshots_restore_without_the_founding_fixes() {
     assert_eq!(r.lineage_homes, w.lineage_homes);
     assert_eq!(r.config.balance.founding_conditions, 1.0);
 }
+
+/// Version 47 snapshots (before pending territory claims) restore with
+/// none, and this version keeps them.
+#[test]
+fn version_47_snapshots_restore_without_pending_claims() {
+    let mut w = fixture_world();
+    let key = (w.organisms[0].owner, 0u8);
+    w.group_plans.pending.claims.insert(key, (Vec2::new(5.0, 6.0), 4.0));
+    w.group_plans.pending.start_median.insert(key, 22.0);
+    let old = w.snapshot_v47();
+    assert_eq!(SnapshotHeader::read(&old).unwrap().version, 47);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans.pending, Default::default());
+    assert!(r.snapshot_v47() == old);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans.pending, w.group_plans.pending);
+}

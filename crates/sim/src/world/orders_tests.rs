@@ -393,7 +393,7 @@ fn an_arrived_group_is_pulled_back_to_where_it_settled() {
     (o.pos, o.needs.thirst, o.needs.hunger, o.needs.energy, o.needs.breeding) = (away, 0.0, 0.0, 100.0, 0.0);
     w.step();
     let o = w.organism(id).unwrap();
-    assert_eq!((o.action, o.target), (Action::Rally, Some(target)));
+    assert_eq!((o.action, o.target), (Action::Home, Some(target)));
     // Parched, it drinks instead.
     // (Decisions may be staggered over a few ticks.)
     let mut drank = false;
@@ -405,8 +405,14 @@ fn an_arrived_group_is_pulled_back_to_where_it_settled() {
         drank |= w.organism(id).unwrap().action == Action::Drink;
     }
     assert!(drank, "never broke off to drink");
-    // A new order replaces the settling; it lapses on its own after the days.
+    // A rally holds the group elsewhere for a while, and the home stays for
+    // afterwards (cancelling the rally sends the group back home); a new
+    // migration replaces it.
     w.rally_group(HERD, 0, target).unwrap();
+    assert_eq!(w.settle_circle(HERD, 0), Some(s));
+    w.cancel_rally(HERD, 0).unwrap();
+    assert_eq!(w.settle_circle(HERD, 0), Some(s));
+    w.command_migrate(HERD, Vec2::new(10.0, 10.0)).unwrap();
     assert_eq!(w.settle_circle(HERD, 0), None);
 }
 
@@ -506,4 +512,169 @@ fn a_food_check_weighs_a_circles_regrowth_against_the_group() {
     assert!(big.standing_days > small.standing_days);
     // A group with no members has nothing to weigh.
     assert_eq!(w.food_check(HERD, 3, c, 5.0), None);
+}
+
+#[test]
+fn the_home_after_a_migration_is_small_and_bounds_foraging() {
+    // Playtest 4: a 738-strong herd's home circle was the rally circle (24
+    // tiles), which held the place it came from; it walked back.
+    assert!(World::home_radius(738) <= 12.0);
+    assert!(World::home_radius(10) < World::home_radius(738));
+    let mut w = standard();
+    let target = w.command_migrate(HERD, Vec2::new(32.0, 32.0)).unwrap();
+    let members = herd(&w, HERD);
+    for &i in &members {
+        w.organisms[i].pos = target;
+    }
+    settle_now(&mut w);
+    let s = w.settle_circle(HERD, 0).unwrap();
+    assert_eq!((s.center, s.radius), (target, World::home_radius(members.len())));
+    // Fed, it forages near home; hungry, anywhere.
+    let i = members[0];
+    w.organisms[i].needs.hunger = 10.0;
+    w.organisms[i].needs.thirst = 10.0;
+    assert_eq!(w.forage_bound(&w.organisms[i]), Some((target, 2.0 * s.radius)));
+    w.organisms[i].needs.hunger = 70.0;
+    assert_eq!(w.forage_bound(&w.organisms[i]), None);
+}
+
+#[test]
+fn a_far_claim_migrates_first_and_claims_on_arrival() {
+    use super::groups::{ClaimOutcome, FAR_CLAIM_TILES};
+    let mut w = standard();
+    let members = herd(&w, HERD);
+    let middle = w.group_middle(HERD, 0).unwrap();
+    let far = (0..64 * 64)
+        .map(|k| Map::tile_center(k % 64, k / 64))
+        .find(|&p| p.dist(middle) > FAR_CLAIM_TILES + 2.0 && w.water_check(HERD, 0, p, 4.0).water_share == 0.0)
+        .expect("dry ground far off");
+    let out = w.claim_or_migrate(HERD, 0, far, 4.0).unwrap();
+    let ClaimOutcome::Migrating { target, radius } = out else { panic!("{out:?}") };
+    assert_eq!(radius, 4.0);
+    assert_eq!(w.territory(HERD, 0), None, "no territory with nobody in it");
+    assert_eq!(w.migration_order(HERD, 0), Some(target));
+    for &i in &members {
+        w.organisms[i].pos = target;
+    }
+    settle_now(&mut w);
+    let t = w.territory(HERD, 0).expect("claimed on arrival");
+    assert_eq!((t.center, t.radius), (far, 4.0));
+    assert!(w
+        .take_group_events()
+        .iter()
+        .any(|e| matches!(e, GroupEvent::ClaimedOnArrival { player: HERD, group: 0, .. })));
+    // Near: claimed at once.
+    let mut w = standard();
+    let c = w.group_middle(HERD, 0).unwrap();
+    assert!(matches!(w.claim_or_migrate(HERD, 0, c, 4.0), Ok(ClaimOutcome::Claimed(_))));
+}
+
+#[test]
+fn claims_refuse_bad_radii_and_rivals_ground_and_skip_the_wait_when_bare() {
+    let mut w = standard();
+    let mine = w.group_middle(HERD, 0).unwrap();
+    for r in [0.0, -3.0, f32::NAN] {
+        assert_eq!(w.claim_territory(HERD, 0, mine, r), Err(CommandError::BadRadius), "{r}");
+    }
+    // Player 1's territory: player 2 can't claim over it.
+    let theirs = w.group_middle(1, 0).unwrap();
+    w.claim_territory(1, 0, theirs, 5.0).unwrap();
+    assert_eq!(w.claim_territory(HERD, 0, theirs + Vec2::new(3.0, 0.0), 5.0), Err(CommandError::Overlaps { owner: 1 }));
+    // A held territory grazed bare can be moved at once, cooldown or not.
+    w.set_claim_cooldown_min_ticks(10_000);
+    let t = w.claim_territory(HERD, 0, mine, 4.0).unwrap();
+    assert!(matches!(w.claim_territory(HERD, 0, mine, 4.0), Err(CommandError::ClaimCooldown { .. })));
+    let (cx, cy) = w.map.tile_coords(t.center);
+    for y in cy.saturating_sub(6)..=(cy + 6).min(63) {
+        for x in cx.saturating_sub(6)..=(cx + 6).min(63) {
+            let k = w.map.idx(x, y);
+            w.map.tiles[k].veg = 0.0;
+        }
+    }
+    assert!(w.territory_failing(HERD, 0, &t));
+    assert!(w.claim_territory(HERD, 0, mine + Vec2::new(1.0, 0.0), 4.0).is_ok());
+}
+
+#[test]
+fn the_food_check_counts_this_seasons_regrowth_and_whats_standing() {
+    let mut w = standard();
+    let c = w.group_middle(HERD, 0).unwrap();
+    let now = w.food_check(HERD, 0, c, 8.0).unwrap();
+    // Bare and snowed under: hardly anything.
+    for t in &mut w.map.tiles {
+        t.veg = 0.0;
+        t.snow = 1.0;
+    }
+    let bare = w.food_check(HERD, 0, c, 8.0).unwrap();
+    assert_eq!(bare.supports, 0, "{bare:?}");
+    assert_eq!(bare.standing_days, 0.0);
+    assert!(now.supports > bare.supports);
+    // Meat-eaters get a prey count instead.
+    assert_eq!(w.prey_check(HERD, 0, c, 8.0), None);
+}
+
+#[test]
+fn a_stalled_migration_says_whether_it_ever_got_going() {
+    use super::groups::MIGRATE_STALL_DAYS;
+    let mut w = standard();
+    let members = herd(&w, HERD);
+    w.command_migrate(HERD, Vec2::new(60.0, 4.0)).unwrap();
+    let fixed: Vec<Vec2> = members.iter().map(|&i| w.organisms[i].pos).collect();
+    let stall = (MIGRATE_STALL_DAYS * w.config.ticks_per_day as f32) as u64;
+    let start = w.tick;
+    while w.migration_order(HERD, 0).is_some() && w.tick < start + 3 * stall {
+        for (k, &i) in members.iter().enumerate() {
+            w.organisms[i].pos = fixed[k];
+            w.organisms[i].action = Action::Bask;
+        }
+        w.tick += w.config.ticks_per_hour();
+        settle_now(&mut w);
+    }
+    let events = w.take_group_events();
+    assert!(
+        events.iter().any(
+            |e| matches!(*e, GroupEvent::TimedOut { never_moved: true, basking_share, .. } if basking_share > 0.9)
+        ),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn fliers_get_no_open_water_count_on_their_route() {
+    let mut w = lake_world(10, 39);
+    let flier = walker().with(crate::genome::Gene::Wings, 0.9).with(crate::genome::Gene::BodySize, 0.1);
+    let i = place(&mut w, 1, &flier, Map::tile_center(3, 10));
+    assert!(w.organisms[i].traits.body.can_fly, "a flier");
+    let route = [Map::tile_center(3, 10), Map::tile_center(20, 10)];
+    assert_eq!(w.route_water_tiles(1, 0, &route), 0);
+}
+
+#[test]
+fn a_herd_stays_where_it_migrated_to() {
+    let mut w = standard();
+    let start = w.group_middle(HERD, 0).unwrap();
+    let to = (0..64 * 64)
+        .map(|k| Map::tile_center(k % 64, k / 64))
+        .filter(|&p| (16.0..22.0).contains(&p.dist(start)))
+        .find(|&p| w.water_check(HERD, 0, p, 6.0).water_share == 0.0 && w.water_check(HERD, 0, p, 10.0).drinkable > 0)
+        .expect("dry ground with water near, 16-22 tiles off");
+    let target = w.command_migrate(HERD, to).unwrap();
+    let tpd = w.config.ticks_per_day;
+    for _ in 0..15 * tpd {
+        w.step();
+        if w.migration_order(HERD, 0).is_none() {
+            break;
+        }
+    }
+    let home = w.settle_circle(HERD, 0).expect("arrived");
+    w.run_days(10);
+    let median = w.group_median_dist(HERD, 0, target).unwrap();
+    let middle = w.group_middle(HERD, 0).unwrap();
+    eprintln!(
+        "10 days on: median {median:.1}, middle {:.1} from the target, {:.1} from the start",
+        middle.dist(target),
+        middle.dist(start)
+    );
+    assert!(median <= 2.0 * home.radius + 2.0, "drifted: median {median:.1} vs home {:.1}", home.radius);
+    assert!(middle.dist(target) < middle.dist(start), "walked back toward the start");
 }

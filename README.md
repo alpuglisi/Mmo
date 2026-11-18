@@ -159,23 +159,39 @@ score).
   juveniles), playtest 3 one with a 486-strong herd's median 24–29 tiles
   off (the arrival radius was the rally circle, up to 24 tiles). The
   player gets a `group` alert, and the target becomes the group's
-  **home** until its next order (`World::settle_circle`, saved): members
-  outside the circle it would gather in at a rally (at least 1.5× the
-  arrival radius, `World::home_radius`) walk back into it (`Action::Rally`
+  **home** until its next migration (`World::settle_circle`, saved): a
+  small circle on the target, 1.5× the arrival radius (at most 12 tiles,
+  `World::home_radius`). Members outside it walk back in (`Action::Home`
   at utility 0.35 × heed, below a rally's 0.55 and set aside for any
-  pressing need; not a confinement). Herds used to walk home when a
-  15-day settle ended; one that drifts anyway (median member more than
-  twice the home radius away, checked daily) gets a `group` alert, once
-  until it is back. A migration **ends** with a `group` alert when its
+  pressing need), and while fed and watered (below the 60 need limit)
+  they wander and look for food only within twice its radius
+  (`World::forage_bound`), so remembered pastures don't lead them back.
+  Playtest 4 found the home circle, then the rally circle (up to 24 tiles),
+  holding the place a big herd had come from: a 738-strong group's median
+  went from 8.9 to 22.9 tiles in 3 days, its centre 16 tiles back toward
+  the start. A rally or territory holds the group elsewhere for a while
+  and keeps the home: cancelling the rally or abandoning the territory
+  sends the group back there. A group that drifts anyway (median member
+  more than twice the home radius away, checked daily) gets a `group`
+  alert, once until it is back. A migration **ends** with a `group` alert when its
   group's median member has got no closer (by a tile) for 5 days
   (`MIGRATE_STALL_DAYS`): scattered or blocked groups stop, while a long
   journey that keeps moving no longer fizzles (playtest 3: "half the group
   is still 109 tiles away"). A hard limit of `5 days + distance / 2 tiles
   a day`, kept between 6 and 120 days (`World::migration_timeout_ticks`),
   backs it up; the group view's `migration_deadline_tick` is the hard
-  limit. The alert says when the group was mostly dormant (hibernating or
-  estivating animals can't walk), and a migrate given while 30% or more of
-  the group is dormant warns in its reply. `World::reroute_migration`
+  limit. The alert says why it ended: most of the group dormant
+  (hibernating or estivating animals can't walk), most of it basking or
+  resting (cold-blooded animals warm up before they travel), or the group
+  never got closer than it started (a way blocked by water or cliffs); else
+  it stalled. Every migration ends with an alert (reached, claimed on
+  arrival, or ended with its reason), and the group view keeps the latest
+  as `last_outcome` until the group's next order, since alerts scroll away
+  (playtest 4: "a 70-tile migration silently did nothing"). A migrate given
+  while 30% or more of the group is dormant warns in its reply, and the
+  open-water warning on its route leaves fliers out. Migrate, claim and
+  rally replies say which standing orders they replace (`replaced`, and
+  the `note`). `World::reroute_migration`
   moves a standing order's target keeping its age (its hard limit never
   gets earlier), for re-routing a target that floods. A group other than
   the main one with no members is refused (`no_such_group`). Plans and
@@ -235,7 +251,11 @@ score).
   (`claim_cooldown`; abandoning in between changes nothing), or every 2
   minutes of wall-clock time if longer (`GameConfig::claim_cooldown_min_minutes`,
   `World::set_claim_cooldown_min_ticks`: half a day passes in seconds at a
-  fast tick). The refusal says the wait in minutes and game days. A group
+  fast tick). The refusal says the wait in minutes and game days. The
+  wait is waived while the group's territory has no drinking water left or
+  is grazed bare (standing plants for under 3 days,
+  `World::territory_failing`): a big herd strips a territory faster than
+  the wait (playtest 4: ~15 days against ~25), so it may move at once. A group
   split off keeps the cooldown of the group it came from, on purpose: a
   split must not reset it (split, claim, merge back would dodge it); the
   message says so. Seasonal migration (a gene) still outranks the
@@ -252,13 +272,27 @@ score).
   as land (playtest 3: an 88% lake claim reported water share 0), and a
   migrate target in a lake moves ashore. The reply reports the circle's
   `water_share`, `drinkable_tiles` (drinking water in it or within 4 tiles
-  of its edge, `World::water_check`), `food_supports` (about how many of
-  the group's animals its plants' regrowth feeds in a good season,
-  `World::food_check`; none for meat-eaters) and `distance` from the
-  group, with `warning`s (and a `warnings` list) when there are fewer than
-  3 drinkable tiles, a quarter of it is water, its centre is in water, it
-  feeds fewer animals than the group has, or it is more than 30 tiles from
-  the group. A radius raised to the minimum or cut to the group's limit
+  of its edge, `World::water_check`), `food_supports` and `standing_days`
+  (`World::food_check`: what the circle feeds at this season's regrowth,
+  by the terrain's own logistic rule at today's plants, warmth, snow cover
+  and dryness, plus the plants standing now spread over 30 days, against
+  the group's daily need with a 1.3 margin; playtest 4 found the old peak-
+  regrowth measure 2–3× too hopeful), `prey_nearby` for meat-eaters
+  (`World::prey_check`: other lineages' animals within 8 tiles of the
+  circle), `dryness` and `distance` from the group, with `warning`s (and a
+  `warnings` list) when there are fewer than 3 drinkable tiles (in a
+  drought, fewer than one per 8 animals), a quarter of it is water, its
+  centre is in water, it feeds fewer animals than the group has, its
+  standing plants last under 10 days, it has fewer prey than half the
+  hunters, or it is more than 30 tiles from the group. A claim more than
+  30 tiles from the group (`FAR_CLAIM_TILES`) is a migration first
+  (`World::claim_or_migrate`): the reply says `pending` and
+  `migrating_to`, and the territory is claimed when the group arrives
+  (snapshot version 48 keeps it waiting; a timeout drops it): a far claim
+  used to become a territory, and the home range, with nobody in it. A
+  circle overlapping another player's territory is refused (`overlaps`),
+  and a radius that isn't a positive number (`bad_radius`): a negative one
+  used to commit a 3-tile territory and its cooldown. A radius raised to the minimum or cut to the group's limit
   says so (`note`). Every day the server checks standing territories and
   alerts the owner once when one has no drinking water left or is grazed
   bare (standing plants for under 3 days), with the day's thirst or
@@ -1784,8 +1818,7 @@ together):
   needs 2 sales to any buyer (winnable in a 5-minute season); the
   provision is a sink for small lineages.
 - Small: listing cards say buying is the agreement; the nameplate asks for
-  confirmation; a settled home's `expires_tick` is absent (not
-  `u64::MAX`); mating outcomes keep the server's cause ("drowned"); the
+  confirmation; mating outcomes keep the server's cause ("drowned"); the
   client's tick-length estimate is the median of recent intervals, so a
   reload no longer skews real-time estimates.
 

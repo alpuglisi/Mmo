@@ -246,7 +246,7 @@ export type Sex = 'female' | 'male';
 
 export type ActionName =
   | 'idle' | 'graze' | 'hunt' | 'scavenge' | 'drink' | 'rest' | 'bask' | 'flee' | 'seek_mate'
-  | 'group' | 'wander' | 'migrate' | 'follow_parent' | 'guard' | 'ordered' | 'dormant' | 'cache' | 'sentry' | 'patrol' | 'defend' | 'rally';
+  | 'group' | 'wander' | 'migrate' | 'follow_parent' | 'guard' | 'ordered' | 'dormant' | 'cache' | 'sentry' | 'patrol' | 'defend' | 'rally' | 'home';
 
 /** One of the player's own organisms: full detail. */
 export interface OwnOrganism {
@@ -321,8 +321,8 @@ export interface RallyView {
   y: number;
   /** Members farther than this walk to the point; inside it they hold. */
   radius: number;
-  /** Tick at which the order lapses (absent: never, as a settled home). */
-  expires_tick?: number;
+  /** Tick at which the order lapses. */
+  expires_tick: number;
 }
 
 /** One of the player's groups. */
@@ -336,8 +336,10 @@ export interface GroupView {
   route?: [number, number][];
   /** Tick at which the migration ends if the group hasn't gathered at the target (absent: no migration). */
   migration_deadline_tick?: number;
-  /** The home the group keeps where its last migration arrived: members drift back into the circle until its next order (no `expires_tick`; not a confinement). */
-  settle?: RallyView;
+  /** The home ground the group keeps where its last migration arrived, until its next migration: members walk back into it and forage near it; a rally or territory holds the group elsewhere meanwhile, then it goes back home. */
+  home?: { x: number; y: number; radius: number };
+  /** How the group's last order ended on its own ("reached (40, 46)", "migration to (60, 4) ended: never got going"…), until its next order. */
+  last_outcome?: string;
   territory?: TerritoryView;
   rally?: RallyView;
   /** Largest territory radius the group could claim now. */
