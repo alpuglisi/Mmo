@@ -1233,9 +1233,14 @@ impl World {
         let moving: Vec<usize> = match members {
             Some(ids) => {
                 let mut idx = Vec::with_capacity(ids.len());
+                let mut missing = None;
                 for &id in ids {
-                    // An animal that died since the list was made is skipped.
-                    let Ok(i) = self.live_index(id) else { continue };
+                    // An animal that died since the list was made is skipped
+                    // (only a list with nobody alive in it is refused).
+                    let Ok(i) = self.live_index(id) else {
+                        missing.get_or_insert(id);
+                        continue;
+                    };
                     let o = &self.organisms[i];
                     if o.owner != player {
                         return Err(CommandError::NotOwned(id));
@@ -1244,6 +1249,9 @@ impl World {
                         return Err(CommandError::NotInGroup(id));
                     }
                     idx.push(i);
+                }
+                if let (true, Some(id)) = (idx.is_empty(), missing) {
+                    return Err(CommandError::NotFound(id));
                 }
                 idx.sort_unstable();
                 idx.dedup();
