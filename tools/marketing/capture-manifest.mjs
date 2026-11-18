@@ -113,3 +113,18 @@ export function boomBust(name, days, counts, daysPerYear) {
     facts,
   };
 }
+
+/** Story text for the staged severe-winter scene, framed by what happened. */
+export function catastropheStory(start, end, days) {
+  const fell = end.animals < start.animals;
+  const lost = start.lineages - end.lineages;
+  const title = fell ? 'A severe winter sweeps the map' : 'A severe winter, and the world keeps growing';
+  const outcome = fell
+    ? `the world went from ${start.animals} animals to ${end.animals}${lost > 0 ? `, and ${lost} of ${start.lineages} lineages died out` : ''}`
+    : `the world still grew from ${start.animals} animals to ${end.animals}`;
+  return {
+    title,
+    summary: `In a test world, a severe winter (triggered for this capture) began in year ${start.year}; over the next ${days} game days ${outcome}.`,
+    facts: { catastrophe: 'severe winter', staged: 'triggered for the capture', year: start.year, start_day: start.day, days, animals_before: start.animals, animals_after: end.animals, lineages_before: start.lineages, lineages_after: end.lineages },
+  };
+}
