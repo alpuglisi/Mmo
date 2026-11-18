@@ -163,7 +163,7 @@ export function homeRangeGroup(groups: GroupView[]): GroupView | null {
 export function homeRangeNote(g: GroupView): string {
   if (!g.home_range || !g.territory) return '';
   const note = 'Home range: when you log off, members inside this territory are hunted less ' +
-    '(from 10 minutes after you leave, fading after 12 hours or 60 game days, whichever is shorter). Hunger and thirst still bite.';
+    '(from 10 minutes after you leave, fading after 12 hours, sooner at a fast game clock). Hunger and thirst still bite.';
   const left = protectionLeft(g);
   return left ? `${note} ${left}` : note;
 }

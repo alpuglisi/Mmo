@@ -412,9 +412,10 @@ pub const REQUEST_WINDOW_MINUTES: f64 = 60.0;
 /// giving orders over short connections is playing, not away.
 pub const OFFLINE_IDLE_MINUTES: f64 = 10.0;
 
-/// [`GameConfig::offline_max_days`] by default: as long as the newcomer
-/// grace's cap.
-pub const OFFLINE_MAX_DAYS: f64 = 60.0;
+/// [`GameConfig::offline_max_days`] by default: about 12 real hours at the
+/// normal 1 s tick (48 ticks a day), so normal play keeps a night's
+/// protection, and about 75 real minutes at the 100 ms playtest speed.
+pub const OFFLINE_MAX_DAYS: f64 = 900.0;
 /// Shortest auction in minutes (`GameConfig::min_auction_ticks`).
 pub const MIN_AUCTION_MINUTES: f64 = 5.0;
 
