@@ -58,6 +58,8 @@ export interface GameDeps {
   world?: string;
   /** Open the design screen for a new lineage (offered once the player's lineage has died out). */
   onNewLineage?: () => void;
+  /** Logged in to a lineage they already had (not straight from founding): no first-session tour. */
+  returning?: boolean;
 }
 
 const LOCAL_CODES = new Set(['not_connected', 'timeout', 'disconnected', 'closed']);
@@ -262,7 +264,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const catAlert = h('div', { class: 'catastrophe-alert', id: 'catastrophe-alert', role: 'alert', hidden: true },
     h('span', { class: 'cat-icon', 'aria-hidden': 'true' }, '⚠'), h('div', { class: 'cat-text' }, h('div', {}, catTitle, ' ', catLeft), catEffect), catFold);
   // Folded or not, remembered on this device (playtest 3: unfolded again at every load, 90 px of a phone's map).
-  function foldable(alert: HTMLElement, fold: HTMLElement, key: string): void {
+  function foldable(alert: HTMLElement, fold: HTMLElement, key: string): (folded: boolean, remember: boolean) => void {
     const set = (folded: boolean, remember: boolean) => {
       alert.classList.toggle('folded', folded);
       fold.textContent = folded ? 'More' : 'Less';
@@ -275,6 +277,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     try { stored = localStorage.getItem(key); } catch { /* storage may be blocked */ }
     set(stored === 'folded', false);
     fold.addEventListener('click', () => set(!alert.classList.contains('folded'), true));
+    return set;
   }
   foldable(catAlert, catFold, 'evo.notice.catastrophe');
   let catSeen: number | null = null;
@@ -284,7 +287,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   const droughtFold = h('button', { class: 'secondary cat-fold', type: 'button', 'aria-expanded': 'true', title: 'Fold or unfold the drought notice' }, 'Less');
   const droughtAlert = h('div', { class: 'catastrophe-alert drought-alert', id: 'drought-alert', role: 'status', hidden: true },
     h('span', { class: 'cat-icon', 'aria-hidden': 'true' }, '☀'), h('div', { class: 'cat-text' }, droughtTitle, droughtAdvice), droughtFold);
-  foldable(droughtAlert, droughtFold, 'evo.notice.drought');
+  const foldDrought = foldable(droughtAlert, droughtFold, 'evo.notice.drought');
+  /** Both notices up: the drought one starts folded (two expanded covered a third of a phone's map, playtest 4). */
+  let bothNotices = false;
   let droughtOn = false;
   const notices = h('div', { class: 'map-notices', id: 'map-notices' }, catAlert, droughtAlert);
   const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, notices, hint, legends, fab, possessBar, chooser, toasts);
@@ -481,6 +486,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     hint.hidden = !!p && mode === 'select';
     renderFab();
     renderPossessBar();
+    updateEdgePad();
   }
 
   // The animal last possessed: when it dies the bar says so for a while
@@ -559,6 +565,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   function hideChooser(): void {
     clearTimeout(chooserTimer);
     chooser.hidden = true;
+    stageWrap.classList.remove('choosing');
   }
   // Any touch of the map (a tap, a press, a drag, a pinch, the wheel) puts the chooser away.
   for (const ev of ['pointerdown', 'wheel'] as const) stage.addEventListener(ev, () => { if (!chooser.hidden) hideChooser(); }, { capture: true, passive: true });
@@ -579,6 +586,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       }, label(id))),
       h('button', { type: 'button', class: 'chip close', 'aria-label': 'Close', onclick: hideChooser }, '×'));
     chooser.hidden = false;
+    stageWrap.classList.add('choosing');
     clearTimeout(chooserTimer);
     chooserTimer = setTimeout(hideChooser, CHOOSER_MS);
   }
@@ -589,11 +597,20 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
    * from under them and can be tapped (playtest 3).
    */
   function updateEdgePad(): void {
-    const top = stageWrap.getBoundingClientRect().top;
+    const wrap = stageWrap.getBoundingClientRect();
     let bottom = toolbar.getBoundingClientRect().bottom;
     if (!notices.hidden && (!catAlert.hidden || !droughtAlert.hidden)) bottom = Math.max(bottom, notices.getBoundingClientRect().bottom);
-    const pad = Math.max(0, Math.round(bottom - top + 6));
-    if (view.edgePad.top !== pad) view.edgePad = { ...view.edgePad, top: pad };
+    const top = Math.max(0, Math.round(bottom - wrap.top + 6));
+    // And past the bottom edge by what floats there: the hint line, the
+    // floating Possess button, the possession bar (playtest 4: a herd at the
+    // bottom edge sat under them).
+    let low = wrap.bottom;
+    for (const el of [hint, fab, possessBar]) {
+      const r = el.getBoundingClientRect();
+      if (r.height > 0 && r.top < wrap.bottom) low = Math.min(low, r.top);
+    }
+    const bottomPad = Math.max(0, Math.round(wrap.bottom - low + 6));
+    if (view.edgePad.top !== top || view.edgePad.bottom !== bottomPad) view.edgePad = { ...view.edgePad, top, bottom: bottomPad };
   }
   window.addEventListener('resize', updateEdgePad);
   cleanups.push(() => window.removeEventListener('resize', updateEdgePad));
@@ -682,8 +699,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (id === null) return;
       const r = await send(rallyMsg(id, c.x, c.y));
       if (r.ok) {
-        const t = r.data as { x: number; y: number; radius: number; warning?: string };
-        model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles`);
+        const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string };
+        model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles${t.note ? ` (${t.note})` : ''}`);
         if (t.warning) model.toast('error', `Rally: ${t.warning}`);
       }
       return;
@@ -699,8 +716,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       setMode('select');
       const r = await send(step.claim);
       if (r.ok) {
-        const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string };
-        model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}`);
+        const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string; pending?: boolean };
+        if (t.pending) model.toast('info', `${groupName(g.id)} is migrating to (${t.x.toFixed(0)}, ${t.y.toFixed(0)}): ${t.note ?? 'it claims the territory when it arrives'}`);
+        else model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}`);
         if (t.warning) model.toast('error', `Territory: ${t.warning}`);
       }
       return;
@@ -1108,6 +1126,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       droughtOn = dn.on;
       droughtAlert.hidden = !dn.on;
     }
+    const both = !!cat && dn.on;
+    if (both && !bothNotices) foldDrought(true, false);
+    bothNotices = both;
     if (dn.on) {
       if (droughtTitle.textContent !== dn.title) droughtTitle.textContent = dn.title;
       if (droughtAdvice.textContent !== dn.advice) droughtAdvice.textContent = dn.advice;
@@ -1254,7 +1275,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const reach = hunter ? Math.hypot(hunter.x - o.x, hunter.y - o.y) <= ATTACK_RANGE : false;
     const guarded = graceDays !== undefined;
     const burrowed = o.burrowed === true;
-    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${reach}:${poisonous}:${guarded}:${burrowed}`, () => [
+    // A rival lineage known not to breed with yours (playtest 4: "Request mating…" was offered anyway).
+    const sterile = !wild && matingForm.sterileWith(o.lineage);
+    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${reach}:${poisonous}:${guarded}:${burrowed}:${sterile}`, () => [
       burrowed && h('p', { class: 'muted small', id: 'insp-burrowed' }, 'Down in its burrow: it can\'t be attacked on orders until it comes out, and hunters mostly can\'t reach it.'),
       poisonous && h('p', { class: 'notice bad small', id: 'insp-poisonous' }, hunter
         ? 'This animal looks poisonous to you: your kind has been poisoned eating its kind.'
@@ -1267,6 +1290,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         onclick: () => void attackWith(hunter, o.id),
       }, burrowed ? `Attack with #${hunter.id} (in its burrow)` : guarded || reach ? `Attack with #${hunter.id}` : `Attack with #${hunter.id} (too far)`),
       wild ? h('p', { class: 'muted small' }, 'Wild organisms have no owner to consent to a mating.')
+        : sterile ? h('p', { class: 'muted small', id: 'insp-sterile' }, 'Its lineage can\'t breed with yours (body plans too far apart): no mating to ask for.')
         : h('button', { id: 'btn-ask-mating', onclick: () => { matingForm.setPartner(o.id); showTab('matings'); } }, 'Request mating…'),
       h('button', { class: 'secondary', onclick: () => { view.setFollow(false); view.centerOn(o.x, o.y); } }, 'Center'),
     ]);
@@ -1529,6 +1553,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       refresh,
       setMine: (id: OrgId) => { picked = true; mineP.set(id); if (model.state) refresh(model.state); schedulePreview(); },
       setPartner: (id: OrgId) => { partner.value = String(id); partnerP.set(id); schedulePreview(); },
+      /** Whether that lineage is known not to breed with yours (false while unknown). */
+      sterileWith,
     };
   }
 
@@ -1780,10 +1806,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   endGraceBtn.addEventListener('click', async () => {
     if (!window.confirm('End your newcomer grace? Other players\' animals can attack yours from now on. This can\'t be undone.')) return;
     const r = await send({ type: 'end_grace' });
-    if (r.ok) {
-      model.toast('info', 'Your newcomer grace has ended: your animals may hunt other players\' now, and be hunted.');
-      endGraceEl.open = false;
-    }
+    // The server's alert says it (and toasts): no second toast here.
+    if (r.ok) endGraceEl.open = false;
   });
   append(tabs.lineage, [lineageExtinct, retireEl, endGraceEl, statsEl,
     h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
@@ -1837,7 +1861,17 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const adultsAll = fresh ? stats!.adults : adults;
     const youngAll = fresh ? stats!.juveniles : orgs.length - adults;
     const maxGen = orgs.reduce((m, o) => Math.max(m, o.generation), 0);
-    statsEl.replaceChildren(dl([
+    const gone = s.lineage !== null && s.population === 0;
+    if (gone) {
+      // Nobody left (died out or retired): none of the living lineage's rows,
+      // crowding or group orders apply (they lingered from the last statistics).
+      statsEl.replaceChildren(dl([
+        ['Lineage', `#${s.lineage}`],
+        ['Alive', h('strong', { id: 'lineage-size' }, '0')],
+      ]));
+      keyed(groupsEl, 'no-lineage', () => [h('p', { class: 'muted small' }, 'No groups: your lineage has no living animals.')]);
+    }
+    if (!gone) statsEl.replaceChildren(dl([
       ['Lineage', s.lineage === null ? 'not founded' : `#${s.lineage}`],
       ['Alive', h('span', {}, crowding ? h('span', { id: 'alive-count' }, `${grouped(s.population)} · crowding `) : null, h('strong', { id: 'lineage-size', title: crowding ? 'Crowding count (adults, young weighted) / soft cap' : 'Living organisms / cap' }, cap.count),
         cap.status ? h('span', { class: `cap-status cap-${cap.level}`, id: 'cap-status' }, ` — ${cap.status}`) : null,
@@ -1852,9 +1886,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       ...(grace ? [['Newcomer grace', h('span', { id: 'grace-left' }, grace)] as [string, string | Node]] : []),
       ...(ramp ? [['Season weight', h('span', { id: 'ramp-weight' }, ramp)] as [string, string | Node]] : []),
     ]));
-    if (cap.explain) statsEl.append(h('p', { class: `cap-note small${cap.level === 'ok' ? ' muted' : ''}`, id: 'cap-note' }, cap.explain));
+    if (cap.explain && !gone) statsEl.append(h('p', { class: `cap-note small${cap.level === 'ok' ? ' muted' : ''}`, id: 'cap-note' }, cap.explain));
     // Lineage-wide warnings (hunger crash, near the hard cap, starving territories), as the alerts say them.
-    const warnings = mine?.warnings ?? [];
+    const warnings = gone ? [] : mine?.warnings ?? [];
     if (warnings.length) {
       statsEl.append(h('ul', { class: 'lineage-warnings', id: 'lineage-warnings', role: 'status' },
         ...warnings.map((w) => h('li', { class: `lineage-warning warn-${w.kind}`, 'data-kind': w.kind }, '⚠ ', w.text))));
@@ -1869,7 +1903,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     }
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
     endGraceEl.hidden = !s.grace;
-    renderGroups(s);
+    if (!gone) renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb) + nameplatesKey(), () => lb.rows.length === 0
       ? [h('p', { class: 'muted small' }, lb.day === null ? 'The first legacy snapshot comes at the end of day 1.' : 'No breeding adults.')]
@@ -1880,7 +1914,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
             h('td', {}, h('span', { class: 'swatch', style: `background:${cssColor(r.player === model.player ? OWN_COLOR : ownerColor(r.player))}` }), h('span', { class: 'who', title: r.name }, r.name), plateBadge(r.player)),
             h('td', {}, h('span', { class: 'share-bar', style: `--w:${(r.share * 100).toFixed(1)}%` }, pct(r.share))),
             h('td', {}, pct(r.weighted_share)), h('td', {}, String(r.alive))))))]);
-    const shown = [...orgs].sort((a, b) => Number(b.possessed) - Number(a.possessed) || Number(b.matured) - Number(a.matured) || a.id - b.id).slice(0, 60);
+    // Possessed first, then pregnant or gravid ones (so the Eggs line's "about to lay" are all listed), then adults.
+    const shown = [...orgs].sort((a, b) => Number(b.possessed) - Number(a.possessed) || Number(b.pregnant) - Number(a.pregnant)
+      || Number(b.matured) - Number(a.matured) || a.id - b.id).slice(0, 60);
     // One button per organism, kept and updated in place (no row moves under a click).
     reconcile(listEl, shown, (o) => String(o.id), (o) => {
       const id = o.id;
@@ -1898,11 +1934,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     setText(listMore, orgs.length > shown.length ? `…and ${orgs.length - shown.length} more` : '');
   }
 
-  /** "12 lost (12 chilled)" for the eggs a lineage lost, or null for none. */
+  /** "12 lost since founding (12 chilled)" for the eggs a lineage lost, or null for none. */
   function eggsLostText(lost: Record<string, number> | undefined): string | null {
     const entries = Object.entries(lost ?? {}).filter(([, n]) => n > 0);
     const total = entries.reduce((sum, [, n]) => sum + n, 0);
-    return total > 0 ? `${total} lost (${entries.map(([c, n]) => `${n} ${c}`).join(', ')})` : null;
+    // A lifetime count, beside the clutches now: said so (it read as more lost than there are eggs).
+    return total > 0 ? `${total} lost since founding (${entries.map(([c, n]) => `${n} ${c}`).join(', ')})` : null;
   }
 
   /** The lineage lays eggs (its stats count clutches): a carrying female is "gravid", not "pregnant" (playtest 3). */
@@ -1917,13 +1954,13 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (!e) return ['Pregnant', String(pregnant)];
     const brooding = orgs.filter((o) => o.action === 'guard').length;
     const parts = [
-      e.clutches === 0 ? 'no clutch now' : `${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
+      e.clutches === 0 ? 'no clutch now' : `now ${e.clutches} clutch${e.clutches === 1 ? '' : 'es'} (${e.eggs} egg${e.eggs === 1 ? '' : 's'})`,
       e.clutches > 0 ? `${e.brooded} brooded` : null,
       brooding > 0 ? `${brooding} brooding now` : null,
       pregnant > 0 ? `${pregnant} about to lay` : null,
       eggsLostText(e.lost),
     ].filter(Boolean);
-    return ['Eggs', h('span', { id: 'egg-status', title: 'Eggs hatch only while a parent broods them; an unguarded clutch can be lost' }, parts.join(' · '))];
+    return ['Eggs', h('span', { id: 'egg-status', title: 'Now: the clutches being incubated. Lost: every egg since founding. Eggs stay warm while a parent broods them or stays near; a clutch whose parent wanders far or dies chills, and an unguarded one can be raided' }, parts.join(' · '))];
   }
 
   function renderGroups(s: StateView): void {
@@ -1954,7 +1991,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           h('button', { class: 'secondary small', 'data-action': 'rally', title: 'Gather the group at a point you tap; it holds there until the rally lapses (at least 5 minutes; the group card shows when)',
             disabled: g.members === 0, onclick: () => { setGroupChoice(g.id); setMode('rally'); if (narrow()) setSheet(false); } }, 'Rally…'),
           g.rally && h('button', { class: 'secondary small', 'data-action': 'cancel-rally', title: `Lapses on its own in ${span(rallyLeft(g, tick))}`,
-            onclick: () => void send({ type: 'cancel_rally', group: g.id }) }, 'Cancel rally'),
+            onclick: async () => {
+              const r = await send({ type: 'cancel_rally', group: g.id });
+              const note = (r.data as { note?: string } | undefined)?.note;
+              if (r.ok) model.toast('info', `${groupName(g.id)}'s rally cancelled${note ? `: ${note}` : ''}`);
+            } }, 'Cancel rally'),
           canSplit(g, groups) && h('button', { class: 'secondary small', 'data-action': 'split', onclick: () => void splitGroup(g.id) }, 'Split'),
           g.id !== 0 && h('button', { class: 'secondary small', 'data-action': 'merge', onclick: () => void send({ type: 'merge_groups', from: g.id, into: 0 }) }, 'Merge into A'),
           (g.territory || g.rally) && h('button', { class: 'secondary small', 'data-action': 'center', onclick: () => {
@@ -1967,7 +2008,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const el = groupsEl.querySelector(`.group-card[data-group="${g.id}"] .group-summary`);
       const heed = groupObedience(g);
       const lapse = g.rally ? ` (lapses in ${span(rallyLeft(g, tick))})` : '';
-      const text = `${g.members} (${g.adults} adults) · ${groupOrders(g)}${lapse}${heed ? ` · ${heed}` : ''}`;
+      const outcome = g.last_outcome ? ` · last order: ${g.last_outcome}` : '';
+      const text = `${g.members} (${g.adults} adults) · ${groupOrders(g)}${lapse}${heed ? ` · ${heed}` : ''}${outcome}`;
       if (el && el.textContent !== text) el.textContent = text;
     }
   }
@@ -2032,6 +2074,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       model.select((orgs.find((o) => o.matured) ?? orgs[0]).id);
     },
     disabled: onboardingDisabled(window.location.search),
+    returning: deps.returning,
   });
   cleanups.push(
     onboarding.destroy,

@@ -138,7 +138,8 @@ impl MorphSpec {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpecError {
     UnknownGene(String),
-    BadName,
+    /// The lineage name fails `names::check` (the reason).
+    BadName(String),
     /// An unknown shape name in `morph` (the field).
     BadMorph(&'static str),
     Design(DesignError),
@@ -148,7 +149,7 @@ impl SpecError {
     pub fn code(&self) -> &'static str {
         match self {
             SpecError::UnknownGene(_) => "unknown_gene",
-            SpecError::BadName => "bad_name",
+            SpecError::BadName(_) => "bad_name",
             SpecError::BadMorph(_) | SpecError::Design(DesignError::Morphology(_)) => "bad_morph",
             SpecError::Design(DesignError::OverBudget { .. }) => "over_budget",
             SpecError::Design(DesignError::ValueOutOfRange(_)) => "value_out_of_range",
@@ -161,7 +162,7 @@ impl SpecError {
     pub fn message(&self) -> String {
         match self {
             SpecError::UnknownGene(g) => format!("unknown gene {g:?}"),
-            SpecError::BadName => format!("a lineage name needs 1 to {MAX_NAME_LEN} characters"),
+            SpecError::BadName(why) => format!("that lineage name can't be used: {why}"),
             SpecError::BadMorph(field) => format!("unknown {}", field.replace('_', " ")),
             SpecError::Design(e) => e.to_string(),
         }
@@ -200,10 +201,10 @@ pub fn parse_gene(name: &str) -> Option<Gene> {
 impl DesignSpec {
     /// Convert to the sim's design and check it against the point budget.
     pub fn to_design(&self) -> Result<FounderDesign, SpecError> {
-        let name = self.name.trim();
-        if name.is_empty() || name.chars().count() > MAX_NAME_LEN || name.chars().any(char::is_control) {
-            return Err(SpecError::BadName);
-        }
+        // The one name filter every player-chosen name goes through
+        // (playtest 4: "Server Admin" with a bidi override was a lineage).
+        let name =
+            &crate::names::check(&self.name, MAX_NAME_LEN, crate::names::Kind::Lineage).map_err(SpecError::BadName)?;
         let thermo = match self.thermo {
             ThermoSpec::Warm => Thermo::Warm,
             ThermoSpec::Cold => Thermo::Cold,

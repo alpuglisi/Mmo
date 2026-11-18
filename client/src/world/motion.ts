@@ -51,18 +51,21 @@ const PROBE = 0.25;
 /**
  * Milliseconds per world tick, measured from `clock.tick` against arrival
  * times (the protocol doesn't state the tick length; `--fast` and manual
- * clocks differ). Starts at the default 1 s.
+ * clocks differ). Starts at the default 1 s. The median of the recent
+ * intervals: states that arrive late while a reloaded page is still busy
+ * loading don't skew it (playtest 4: "≈ 43 min" for 30 after a reload).
  */
 export class TickClock {
   msPerTick = 1000;
   private tick = -1;
   private at = 0;
-  private samples = 0;
+  private recent: number[] = [];
 
   observe(tick: number, now: number): void {
     if (this.tick < 0 || tick < this.tick) {
       this.tick = tick;
       this.at = now;
+      this.recent = [];
       return;
     }
     if (tick === this.tick) return;
@@ -70,13 +73,16 @@ export class TickClock {
     this.tick = tick;
     this.at = now;
     if (!(per > 0)) return;
-    const clamped = Math.min(5000, Math.max(5, per));
-    // The first samples settle it quickly, later ones smooth out jitter.
-    const a = this.samples < 3 ? 0.6 : 0.25;
-    this.msPerTick += (clamped - this.msPerTick) * a;
-    this.samples++;
+    this.recent.push(Math.min(5000, Math.max(5, per)));
+    if (this.recent.length > TICK_SAMPLES) this.recent.shift();
+    const sorted = [...this.recent].sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    this.msPerTick = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
   }
 }
+
+/** Intervals the tick length is the median of. */
+const TICK_SAMPLES = 21;
 
 /**
  * Is the tile under (x, y) plainly open ground that any body can cross:

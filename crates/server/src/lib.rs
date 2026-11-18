@@ -55,6 +55,7 @@ pub mod http;
 pub mod league;
 pub mod limits;
 pub mod metrics;
+pub mod names;
 pub mod protocol;
 pub mod push;
 pub mod runner;

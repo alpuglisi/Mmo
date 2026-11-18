@@ -217,9 +217,11 @@ impl World {
         let frac = if intent.action == Action::Ordered { self.substep_frac() } else { 1.0 };
         // Under a player's migration order, it keeps off ice that would
         // drown it if it melted (a frozen lake looks like a short cut).
-        let wary = intent.action == Action::Migrate
+        // So does an animal walking to an agreed mating (`set_rendezvous`).
+        let wary = (intent.action == Action::Migrate
             && !self.migrate_orders.is_empty()
-            && self.migrate_orders.contains_key(&(o.owner, o.group));
+            && self.migrate_orders.contains_key(&(o.owner, o.group)))
+            || (intent.action == Action::Rally && self.in_rendezvous(o));
         match intent.target {
             Some(target) => self.step_toward(o, chase.unwrap_or(target), intent.sprint, frac, wary, scratch, paths),
             None => 0.0,
@@ -2191,6 +2193,29 @@ mod tests {
                 None => assert!(!sitting && thirst == 0.0),
             }
         }
+    }
+
+    /// Attended eggs (`Balance::egg_attendance`): a clutch whose brooding
+    /// parent is off the nest but near chills a fifth as fast as one whose
+    /// parent is far away.
+    #[test]
+    fn attended_eggs_chill_slower() {
+        let chill = |away: f32, attendance: f32| {
+            let (mut w, i) = layer(7, BirthType::IncubatedEggs);
+            w.config.balance.egg_attendance = attendance;
+            let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+            w.give_birth(i, &mut rng);
+            let id = w.organisms[i].id;
+            let k = w.clutches.iter().position(|c| c.guardian == Some(id)).expect("a guarded clutch");
+            let pos = w.clutches[k].pos;
+            w.clutches[k].hatch_tick = u64::MAX;
+            set_climate(&mut w, pos, 5.0);
+            w.organisms[i].pos = pos + Vec2::new(away, 0.0);
+            w.update_clutches(&mut rng);
+            w.clutches.iter().find(|c| c.guardian == Some(id)).map_or(f32::MAX, |c| c.chill)
+        };
+        let (near, far, off) = (chill(5.0, 1.0), chill(30.0, 1.0), chill(5.0, 0.0));
+        assert!(near > 0.0 && (near - 0.2 * far).abs() < 1e-4 && (off - far).abs() < 1e-6, "{near} {far} {off}");
     }
 
     /// A warm-blooded brooder lifts her eggs by at most `brood_warmth`

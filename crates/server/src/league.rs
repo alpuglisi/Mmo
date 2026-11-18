@@ -21,7 +21,7 @@
 //! groups the daily history by those); "season" in the `/api/seasons` routes
 //! always means a ranked season.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use evo_sim::{PlayerId, WILD};
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ use crate::store::DailyRecord;
 /// Sales a player needs in a season to be ranked in the stud market.
 pub const MARKET_TITLE_SALES: u32 = 2;
 /// Different buyers those sales need.
-pub const MARKET_TITLE_BUYERS: usize = 2;
+pub const MARKET_TITLE_BUYERS: usize = 1;
 
 /// Default length of a ranked season, in simulated days (half a default
 /// 120-day year; an era is 3 years).
@@ -65,8 +65,9 @@ pub enum Category {
     Species,
     /// Renown earned from stud fees (escrow paid out) during the season.
     /// Ranked only with at least [`MARKET_TITLE_SALES`] sales to at least
-    /// [`MARKET_TITLE_BUYERS`] different buyers (one paid offer used to win
-    /// it, and paying a rival handed them the title).
+    /// [`MARKET_TITLE_BUYERS`] buyer, so two sales win it in a short season
+    /// (one paid offer used to win it, and paying a rival handed them the
+    /// title).
     Market,
     /// Catastrophes survived (a lineage founded before it began and alive
     /// at its end) during the season. Its title goes to no one when every
@@ -310,6 +311,13 @@ pub struct SeasonTracker {
     /// same buyer counts half the one before (`add_sale`).
     sale_counts: BTreeMap<PlayerId, BTreeMap<PlayerId, u32>>,
     survived: BTreeMap<PlayerId, u64>,
+    /// Catastrophes each player was credited with surviving: one credit per
+    /// catastrophe, however many lineages saw it end (absent in older saves).
+    survived_ids: BTreeSet<(PlayerId, u32)>,
+    /// Recorded days on which each player had living animals: survival is
+    /// ranked only for players alive on at least half the season's days
+    /// (playtest 4: a title for a player with no animals for 55 of 60 days).
+    alive_days: BTreeMap<PlayerId, u32>,
     /// The legacy category counts the mean of the raw and weighted share
     /// (`Category::Legacy`); false in trackers saved before that rule,
     /// which finish their season on the raw share.
@@ -394,7 +402,16 @@ impl SeasonTracker {
         for (p, n) in alive {
             let peak = self.peak_alive.entry(p).or_default();
             *peak = (*peak).max(n);
+            if n > 0 {
+                *self.alive_days.entry(p).or_default() += 1;
+            }
         }
+    }
+
+    /// Whether `player` had living animals on at least half the season's
+    /// recorded days (the survival category's entry rule).
+    fn alive_most_days(&self, player: PlayerId) -> bool {
+        2 * self.alive_days.get(&player).copied().unwrap_or(0) >= self.days.max(1)
     }
 
     pub fn add_species(&mut self, player: PlayerId) {
@@ -422,8 +439,9 @@ impl SeasonTracker {
         }
     }
 
-    pub fn add_survival(&mut self, player: PlayerId) {
-        if player != WILD {
+    /// Credit `player` with surviving `catastrophe` (once per catastrophe).
+    pub fn add_survival(&mut self, player: PlayerId, catastrophe: u32) {
+        if player != WILD && self.survived_ids.insert((player, catastrophe)) {
             *self.survived.entry(player).or_default() += 1;
             self.generation.bump();
         }
@@ -453,7 +471,11 @@ impl SeasonTracker {
                             sales >= MARKET_TITLE_SALES && distinct >= MARKET_TITLE_BUYERS
                         })
                         .collect(),
-                    Category::Survival => count(&self.survived),
+                    // Only players alive most of the season: a catastrophe
+                    // survived and then an empty lineage earns nothing.
+                    Category::Survival => {
+                        count(&self.survived).into_iter().filter(|(p, _, _)| self.alive_most_days(*p)).collect()
+                    }
                 };
                 Standing { category, rows: rank(values, &name_of) }
             })
@@ -469,8 +491,9 @@ impl SeasonTracker {
         name_of: impl Fn(PlayerId) -> String,
     ) -> SeasonRecord {
         let standings = self.standings(name_of);
-        // Players with a lineage this season (a recorded day with members).
-        let active = self.peak_alive.len();
+        // Players with a lineage most of this season (who could be ranked
+        // for survival): a title all of them share says nothing.
+        let active = self.peak_alive.keys().filter(|&&p| self.alive_most_days(p)).count();
         let winners: Vec<Winner> = standings
             .iter()
             .filter(|s| {
@@ -761,7 +784,11 @@ mod tests {
             t.add_sale(p, 8, 6);
             t.add_sale(p, 9, 8);
         }
-        t.add_survival(3);
+        // Player 1 survived a catastrophe (credited once however often it's
+        // reported); player 3, alive on one day of three, is not ranked for it.
+        t.add_survival(1, 0);
+        t.add_survival(1, 0);
+        t.add_survival(3, 0);
         let r = t.finish("w", 144, 1000, name);
         assert_eq!(r.head.days, 3);
         assert_eq!((r.head.first_day, r.head.last_day, r.head.length), (0, 2, 3));
@@ -788,7 +815,7 @@ mod tests {
                 (Category::Species, 2),
                 (Category::Market, 1),
                 (Category::Market, 2),
-                (Category::Survival, 3)
+                (Category::Survival, 1)
             ]
         );
         assert_eq!(r.head.players, 3);
@@ -798,8 +825,10 @@ mod tests {
         let mine = r.player_season(3).unwrap();
         assert_eq!(
             mine.placements.iter().map(|p| (p.category, p.rank, p.of)).collect::<Vec<_>>(),
-            vec![(Category::Legacy, 2, 3), (Category::Lineage, 3, 3), (Category::Survival, 1, 1)]
+            vec![(Category::Legacy, 2, 3), (Category::Lineage, 3, 3)]
         );
+        let survival = &r.standings[4];
+        assert_eq!(survival.rows.iter().map(|r| (r.player, r.value)).collect::<Vec<_>>(), vec![(1, 1.0)]);
         assert!(r.player_season(9).is_none());
     }
 
@@ -826,8 +855,10 @@ mod tests {
         changed(&t, true);
         t.add_sale(2, 9, 0);
         changed(&t, false);
-        t.add_survival(3);
+        t.add_survival(3, 0);
         changed(&t, true);
+        t.add_survival(3, 0);
+        changed(&t, false);
         let n = t.next(3, 3);
         changed(&n, true);
         let restored: SeasonTracker = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
@@ -843,8 +874,8 @@ mod tests {
     fn a_survival_title_for_everyone_goes_to_no_one() {
         let mut t = SeasonTracker::new(1, 0, 3);
         t.record_day(&day(0, &[(1, 0.2), (2, 0.1)], &[(1, 50), (2, 30)]));
-        t.add_survival(1);
-        t.add_survival(2);
+        t.add_survival(1, 0);
+        t.add_survival(2, 0);
         let r = t.clone().finish("w", 1, 1, name);
         assert!(r.head.winners.iter().all(|w| w.category != Category::Survival));
         assert_eq!(r.standings[4].rows.len(), 2, "still ranked");
@@ -853,7 +884,7 @@ mod tests {
         let surv = mine.placements.iter().find(|p| p.category == Category::Survival).unwrap();
         assert_eq!((surv.rank, surv.title), (1, false));
         assert!(mine.placements.iter().any(|p| p.category == Category::Legacy && p.title));
-        t.add_survival(1);
+        t.add_survival(1, 1);
         let r = t.finish("w", 1, 1, name);
         let s: Vec<PlayerId> =
             r.head.winners.iter().filter(|w| w.category == Category::Survival).map(|w| w.player).collect();
@@ -879,9 +910,9 @@ mod tests {
         n.add_sale(1, 2, 80);
         assert_eq!(market(&n), None, "one sale isn't a stud market");
         n.add_sale(1, 2, 10);
-        assert_eq!(market(&n), None, "two sales to one buyer neither");
-        n.add_sale(1, 3, 10);
-        assert_eq!(market(&n), Some(95.0));
+        // Two sales (even to one buyer, at diminishing credit) make a stud
+        // market: a 60-day season is minutes long at a fast clock.
+        assert_eq!(market(&n), Some(85.0));
         let restored: SeasonTracker = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
         assert_eq!(restored, t);
     }
@@ -973,5 +1004,25 @@ mod tests {
         assert_eq!((heads[0].season, total), (2, 2));
         b.head.season = 3;
         assert_eq!(player_history(&[a, b], 1, 10).len(), 1);
+    }
+
+    /// Survival needs living animals most of the season: a player alive for
+    /// a few days of it (a catastrophe survived, then nothing) isn't ranked.
+    #[test]
+    fn survival_needs_animals_most_of_the_season() {
+        let mut t = SeasonTracker::new(1, 0, 4);
+        for d in 0..4 {
+            // Player 2 has animals on day 0 only.
+            let alive: Vec<(PlayerId, usize)> = if d == 0 { vec![(1, 20), (2, 5)] } else { vec![(1, 20), (2, 0)] };
+            t.record_day(&day(d, &[(1, 0.3), (2, 0.01)], &alive));
+        }
+        t.add_survival(1, 7);
+        t.add_survival(2, 7);
+        let r = t.finish("w", 1, 1, name);
+        let s: Vec<PlayerId> = r.standings[4].rows.iter().map(|r| r.player).collect();
+        assert_eq!(s, vec![1]);
+        let w: Vec<PlayerId> =
+            r.head.winners.iter().filter(|w| w.category == Category::Survival).map(|w| w.player).collect();
+        assert_eq!(w, vec![1], "the only player alive most of the season wins it alone");
     }
 }

@@ -54,7 +54,7 @@ pub enum ClientMsg {
     RequestMating {
         mine: OrgId,
         partner: OrgId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "opt_price")]
         price: Option<u64>,
     },
     /// What a directed mating of your `mine` with `partner` would give (any
@@ -74,7 +74,7 @@ pub enum ClientMsg {
     OfferToLineage {
         mine: OrgId,
         lineage: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "opt_price")]
         price: Option<u64>,
     },
     /// The partner organism's owner accepts or declines an offer. For an
@@ -181,6 +181,7 @@ pub enum ClientMsg {
     /// ([`ListingView`]).
     CreateListing {
         organism: OrgId,
+        #[serde(deserialize_with = "price")]
         fee: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_days: Option<u32>,
@@ -199,6 +200,7 @@ pub enum ClientMsg {
     /// Data: `{listing}` ([`ListingView`]).
     CreateAuction {
         organism: OrgId,
+        #[serde(deserialize_with = "price")]
         reserve: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         days: Option<u32>,
@@ -208,7 +210,12 @@ pub enum ClientMsg {
     /// Bid `amount` renown on an auction for your adult `mine`. The amount
     /// is held in escrow (raising your own highest bid holds only the
     /// difference); you are refunded at once when outbid. Data: `{listing}`.
-    Bid { listing: u64, amount: u64, mine: OrgId },
+    Bid {
+        listing: u64,
+        #[serde(deserialize_with = "price")]
+        amount: u64,
+        mine: OrgId,
+    },
     /// One page of the open listings, each with the compatibility of your
     /// `mine` with the listed organism if given. Data: [`MarketView`]. With
     /// no fields: the newest [`MARKET_PAGE`] listings of every kind.
@@ -264,6 +271,11 @@ pub enum ClientMsg {
     /// share fertile), the drift risk, and the body-plan gene that keeps
     /// you apart. Data: [`CompatibilityView`].
     Compatibility,
+    /// A provision for a small lineage (40 renown): its 20 hungriest or
+    /// thirstiest adults get 50 off hunger and thirst. Only while at most a
+    /// fifth of the soft lineage cap is alive, at most 3 within a ranked
+    /// season's length. Data: `{fed, shop}`.
+    Provision,
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
     /// `result`), never by the world.
@@ -280,6 +292,31 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<usize>,
     },
+}
+
+/// A price in renown as a client may send it: a whole number, however
+/// large (a number past `u64::MAX`, such as JavaScript's `2 ** 64`, is
+/// taken as `u64::MAX`), so the command's own range check answers
+/// (`bad_price`) instead of a generic `bad_message` (playtest 4).
+fn price_of(v: &serde_json::Value) -> Option<u64> {
+    if let Some(n) = v.as_u64() {
+        return Some(n);
+    }
+    let f = v.as_f64()?;
+    (f.is_finite() && f >= 0.0 && f.fract() == 0.0).then_some(if f >= u64::MAX as f64 { u64::MAX } else { f as u64 })
+}
+
+fn price<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    price_of(&v).ok_or_else(|| serde::de::Error::custom("a price is a whole number of renown"))
+}
+
+fn opt_price<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    price_of(&v).map(Some).ok_or_else(|| serde::de::Error::custom("a price is a whole number of renown"))
 }
 
 impl ClientMsg {
@@ -318,6 +355,7 @@ impl ClientMsg {
             ClientMsg::BuyMatingSlot => "buy_mating_slot",
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
+            ClientMsg::Provision => "provision",
             ClientMsg::SetNameplate { .. } => "set_nameplate",
             ClientMsg::NameSpecies { .. } => "name_species",
             ClientMsg::Nameplates => "nameplates",
@@ -368,6 +406,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "set_nameplate",
     "name_species",
     "nameplates",
+    "provision",
     "end_grace",
 ];
 
@@ -836,6 +875,8 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             ClaimCooldown { .. } => "claim_cooldown",
             NoRally(_) => "no_rally",
             MostlyWater { .. } => "mostly_water",
+            Overlaps { .. } => "overlaps",
+            BadRadius => "bad_radius",
             OwnTarget(_) => "own_target",
             OutOfSight(_) => "target_out_of_sight",
             TooBig { .. } => "too_big",
@@ -848,6 +889,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             MostlyWater { share } => info.with_detail(serde_json::json!({ "water_share": share })),
+            Overlaps { owner } => info.with_detail(serde_json::json!({ "owner": owner })),
             TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
             NewcomerGrace { days_left } | OwnGrace { days_left } => {
                 info.with_detail(serde_json::json!({ "days_left": days_left }))
@@ -1004,6 +1046,20 @@ pub struct MeetView {
     pub partner_y: f32,
     /// Tiles between them, rounded.
     pub distance: f32,
+    /// Their meeting point (dry land near their midpoint, fixed at
+    /// acceptance; 8-tile cell centre).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meet_x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meet_y: Option<f32>,
+    /// Both are asleep (hibernating, brumating or estivating): the meeting
+    /// resumes when they wake, and the deadline waits.
+    #[serde(default)]
+    pub asleep: bool,
+    /// One of them is possessed: the other walks only to the meeting point
+    /// and waits there.
+    #[serde(default)]
+    pub possessed: bool,
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -1150,6 +1206,14 @@ pub struct MatingPrefs {
     pub auto_decline: bool,
 }
 
+/// A group's home ground after a migration (`GroupView::home`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HomeView {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+}
+
 /// One of the player's groups (`World::groups`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GroupView {
@@ -1171,11 +1235,18 @@ pub struct GroupView {
     /// target by then (absent: no migration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration_deadline_tick: Option<u64>,
-    /// The home the group keeps where its last migration arrived: members
-    /// outside the circle drift back into it until the group's next order
-    /// (`expires_tick` is then `u64::MAX`; absent: none). Not a confinement.
+    /// The home the group keeps where its last migration arrived, until its
+    /// next migration: members outside the circle walk back into it (the
+    /// `home` action) and forage near it while fed and watered. A rally or
+    /// territory holds the group elsewhere meanwhile; when it ends the group
+    /// goes back home. Absent: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settle: Option<RallyView>,
+    pub home: Option<HomeView>,
+    /// How the group's last order ended on its own ("reached (40, 46)",
+    /// "migration to (60, 4) ended: never got going"...), until its next
+    /// order. Absent: nothing to tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub territory: Option<TerritoryView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1209,12 +1280,8 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             migration: g.migration.map(|p| [p.x, p.y]),
             route: Vec::new(),
             migration_deadline_tick: g.migration_deadline_tick,
-            settle: g.settle.map(|s| RallyView {
-                x: s.center.x,
-                y: s.center.y,
-                radius: s.radius,
-                expires_tick: s.until_tick,
-            }),
+            home: g.settle.map(|s| HomeView { x: s.center.x, y: s.center.y, radius: s.radius }),
+            last_outcome: None,
             territory: g.territory.map(TerritoryView::from),
             rally: g.rally.map(RallyView::from),
             max_radius: g.max_radius,
@@ -1731,6 +1798,22 @@ pub struct ShopView {
     pub nameplate: Option<crate::economy::Nameplate>,
     #[serde(default)]
     pub species_name_price: u64,
+    /// The provision (a sink for small lineages): price, provisions within
+    /// the rolling window and the most allowed, and why not now.
+    #[serde(default)]
+    pub provision_price: u64,
+    #[serde(default)]
+    pub provisions_bought: u32,
+    #[serde(default)]
+    pub provisions_max: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provision_blocked: Option<String>,
+    /// When the next reinforcement is possible if the window is full: the
+    /// simulated day and about how many real minutes from now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reinforce_next_day: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reinforce_next_minutes: Option<u64>,
 }
 
 /// `compatibility`: which lineages yours can breed with.
@@ -1807,6 +1890,26 @@ pub struct DesignCompatView {
     /// Set when the design can reach less than half the shores: what to do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub water_warning: Option<String>,
+    /// Set when founding now is a re-founding soon after the player's last
+    /// lineage ended: it founds `founders` of the design's (half), costing
+    /// `cost` points; `reason` says why and until when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refound: Option<RefoundView>,
+}
+
+/// `DesignCompatView::refound`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RefoundView {
+    /// Founders the design would get now (of `requested`).
+    pub founders: u32,
+    pub requested: u32,
+    /// Points the founding costs with them.
+    pub cost: f32,
+    /// The first simulated day a founding gets the full design again, and
+    /// about how many wall-clock minutes until then.
+    pub until_day: u64,
+    pub minutes_left: u64,
+    pub reason: String,
 }
 
 /// One player's standing over a season of the history.
@@ -2052,6 +2155,7 @@ pub fn action_name(a: Action) -> &'static str {
         Action::Patrol => "patrol",
         Action::Defend => "defend",
         Action::Rally => "rally",
+        Action::Home => "home",
     }
 }
 
@@ -2167,6 +2271,28 @@ mod tests {
         for n in COMMAND_NAMES {
             assert!(ts.contains(&format!(" {n}: '")), "errors.ts has no label for {n}");
         }
+    }
+
+    /// A price past `u64::MAX` (JavaScript's `2 ** 64`) parses, saturated,
+    /// so the range check answers `bad_price`; a fraction or a negative
+    /// doesn't parse.
+    #[test]
+    fn huge_prices_reach_the_range_check() {
+        let m: ClientEnvelope =
+            serde_json::from_str(r#"{"type":"create_listing","organism":1,"fee":18446744073709552000}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::CreateListing { organism: 1, fee: u64::MAX, expires_days: None });
+        let m: ClientEnvelope =
+            serde_json::from_str(r#"{"type":"request_mating","mine":1,"partner":2,"price":1e30}"#).unwrap();
+        assert!(matches!(m.msg, ClientMsg::RequestMating { price: Some(u64::MAX), .. }));
+        let m: ClientEnvelope = serde_json::from_str(r#"{"type":"request_mating","mine":1,"partner":2}"#).unwrap();
+        assert!(matches!(m.msg, ClientMsg::RequestMating { price: None, .. }));
+        for bad in [
+            r#"{"type":"bid","listing":1,"amount":2.5,"mine":3}"#,
+            r#"{"type":"bid","listing":1,"amount":-1,"mine":3}"#,
+        ] {
+            assert!(serde_json::from_str::<ClientEnvelope>(bad).is_err(), "{bad}");
+        }
+        assert_eq!(crate::game::check_price_for_tests(u64::MAX).unwrap_err().code, "bad_price");
     }
 
     #[test]
@@ -2432,6 +2558,10 @@ pub struct SpeciesView {
     /// gone species.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namer: Option<PlayerId>,
+    /// A player has named it (`name_species`): the name is theirs, not one
+    /// taken from a lineage, and it isn't offered for naming again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
     /// Origin tag holding the most alleles in its adults.
     pub dominant: PlayerId,
     pub dominant_name: String,

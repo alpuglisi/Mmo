@@ -898,7 +898,7 @@ impl World {
         } else {
             0.0
         };
-        let mut options: [(Action, f32); 17] = [
+        let mut options: [(Action, f32); 18] = [
             (Action::Flee, threat * (1.3 - boldness) * flee_weight * (1.0 - reckless) * tame * hide),
             (Action::Graze, hunger.powf(1.5) * 1.2 + if hunger > 0.8 { 0.4 } else { 0.0 } + 0.4 * fatten),
             (Action::Drink, thirst.powf(1.5) * 1.3 * calm + if thirst > 0.8 { 0.5 } else { 0.0 } + drink_bonus),
@@ -953,16 +953,8 @@ impl World {
             (Action::Idle, 0.0),
             (Action::Patrol, if outside && rally.is_none() { RETURN_UTILITY * heed } else { 0.0 }),
             (Action::Defend, defend),
-            (
-                Action::Rally,
-                if outside && rally.is_some() {
-                    RALLY_UTILITY * heed
-                } else if home.is_some() {
-                    super::groups::SETTLE_UTILITY * heed
-                } else {
-                    0.0
-                },
-            ),
+            (Action::Rally, if outside && rally.is_some() { RALLY_UTILITY * heed } else { 0.0 }),
+            (Action::Home, if home.is_some() { super::groups::SETTLE_UTILITY * heed } else { 0.0 }),
         ];
         // Aggressive organisms hunt a little before they're hungry.
         if hunter && prey.is_some() {
@@ -1074,7 +1066,8 @@ impl World {
                     intent.target = Some(self.map.clamp(c + (o.pos - c).norm() * (0.6 * r)));
                 }
             }
-            Action::Rally => intent.target = rally.or(home),
+            Action::Rally => intent.target = rally,
+            Action::Home => intent.target = home,
             Action::Defend => {
                 if let Some((_, j)) = intruder {
                     intent.target = Some(self.organisms[j].pos);
@@ -1332,6 +1325,18 @@ impl World {
                     let guard = self.guardian(q).0;
                     let my_power = v.my_power;
                     let roll = (splitmix64(v.salt ^ q.id) >> 40) as f32 / (1u64 << 24) as f32;
+                    // With `Balance::toxic_avoidance` the pass-up is decided
+                    // once per hunter, prey lineage and day, not at every
+                    // decision: rolled afresh each tick, a hunter that
+                    // passes a known toxic prey up 70% of the time still ate
+                    // it within a few ticks (playtest 4: 65% did).
+                    let day_of = self.tick / cfg.ticks_per_day.max(1) as u64;
+                    let roll = if cfg.balance.toxic_avoidance > 0.0 && avoid > 0.0 {
+                        (splitmix64(o.id ^ splitmix64((q.lineage as u64) ^ (day_of << 20) ^ 0x70c1_c0de)) >> 40) as f32
+                            / (1u64 << 24) as f32
+                    } else {
+                        roll
+                    };
                     // Search image: prey of another kind than its last kill
                     // is overlooked some of the time (the same prey all day),
                     // unless the hunter is starving and takes what it finds.
@@ -1464,7 +1469,7 @@ impl World {
         // the pace.
         let bugs_eff =
             if o.traits.carnivory < 0.2 { 0.0 } else { 0.5 * o.traits.insect_efficiency() * bal.meat_value() };
-        let bound = self.roam_bound(o);
+        let bound = self.forage_bound(o);
         let here = self.map.tile_at(o.pos);
         let k_here = {
             let (x, y) = self.map.tile_coords(o.pos);
@@ -1629,7 +1634,7 @@ impl World {
         }
         let r = (bal.carcass_scent * super::apply::meat_reliance(o) * (0.5 + o.pheno[Gene::Nose])).round() as i64;
         let (x0, y0) = self.map.tile_coords(o.pos);
-        let bound = self.roam_bound(o);
+        let bound = self.forage_bound(o);
         let mut best: Option<(f32, Vec2)> = None;
         for y in (y0 as i64 - r).max(0)..=(y0 as i64 + r).min(self.map.height as i64 - 1) {
             for x in (x0 as i64 - r).max(0)..=(x0 as i64 + r).min(self.map.width as i64 - 1) {
@@ -1667,7 +1672,7 @@ impl World {
         value: impl Fn(&crate::terrain::Ground, &crate::terrain::Tile, usize) -> f32,
     ) -> Option<Vec2> {
         let (x0, y0) = self.map.tile_coords(o.pos);
-        let bound = self.roam_bound(o);
+        let bound = self.forage_bound(o);
         let mut best: Option<(f32, Vec2)> = None;
         for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
             let (x, y) = (x0 as i64 + dx, y0 as i64 + dy);
@@ -1708,7 +1713,7 @@ impl World {
         let wide = self.config.balance.pasture_search;
         let rings = if wide > 0.0 { 24 } else { 16 };
         // A territory holder only takes food inside its territory.
-        let bound = self.roam_bound(o);
+        let bound = self.forage_bound(o);
         for k in 0..rings {
             if (k == 8 || k == 16) && best.is_some() {
                 break;
@@ -1812,7 +1817,7 @@ impl World {
         // organism against the shore forever (starving next to the water).
         let usable = |t: Vec2| matches!(self.map.traverse_at(&o.traits.body, t, false), Traverse::Passable { .. });
         // A territory holder roams inside its territory.
-        let bound = self.roam_bound(o);
+        let bound = self.forage_bound(o);
         if let Some(t) = o.wander_target {
             if o.pos.dist(t) > 0.5 && usable(t) && self.confine(t, bound) == t {
                 intent.target = Some(t);

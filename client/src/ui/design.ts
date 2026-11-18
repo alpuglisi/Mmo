@@ -12,18 +12,18 @@ import { api, ApiError } from '../api';
 import { designCost, validateDesign } from '../cost';
 import { seasonNotice } from '../seasonNotice';
 import { designWarnings, FOUNDING_RAMP_TEXT } from '../designWarnings';
+import { loadLastDesign, saveLastDesign } from '../lastDesign';
 import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign, starterValue } from '../designMorph';
 import { defaultMorphology, sameMorphology, type Morphology } from '../morphology';
-import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
+import type { BirthSpec, DesignCompatView, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
 import { hybridAdvice } from '../hybrid';
 import { foundingHint } from '../foodHint';
-import { adultMass, flight, geneValue } from '../bodyMath';
 import { avatarView } from './avatarView';
 import { createBodyBuilder, type BodyBuilder, type BuilderChange } from './builder/builder';
 import type { BuilderPreset } from './builder/presets';
 import { h } from './dom';
 import { readMode, writeMode, type EditorMode } from './editorMode';
-import { caption, kg, TRAIT_TEXT, type Level } from './traitText';
+import { caption, TRAIT_TEXT, type Level } from './traitText';
 import { traitEnds, traitName } from './traitNames';
 import { visionReadoutView } from './visionReadout';
 
@@ -69,11 +69,13 @@ export const DESIGN_WORLD_REFRESH_MS = 10000;
 
 export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldSummary | null = null, species: SpeciesList | null = null): HTMLElement {
   // The one design both modes edit: traits plus the whole body plan.
-  const spec = newEditorDesign(cat);
+  // Founding again: start from the design founded last (in this browser).
+  const last = cb.refound ? loadLastDesign(cb.player, cat) : null;
+  const spec = last ?? newEditorDesign(cat);
   // The season notice: kept current while the player designs (it said "winter in 2 days" during winter).
   const seasonEl = h('p', { class: 'notice season-notice', id: 'design-season', role: 'note' });
   const showSeason = () => {
-    const t = seasonNotice(world);
+    const t = seasonNotice(world, spec.thermo);
     seasonEl.hidden = !t;
     if (t && seasonEl.textContent !== t) seasonEl.textContent = t;
   };
@@ -85,7 +87,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
 
   const thermoRadios = (['warm', 'cold'] as ThermoSpec[]).map((t) => {
     const r = h('input', { type: 'radio', name: 'thermo', value: t, checked: t === spec.thermo });
-    r.addEventListener('change', () => { spec.thermo = t; update(); });
+    r.addEventListener('change', () => { spec.thermo = t; showSeason(); update(); });
     return h('label', { class: 'choice' }, r, t === 'warm' ? 'Warm-blooded' : 'Cold-blooded',
       h('small', {}, t === 'warm' ? 'Active in the cold, eats more.' : 'Cheap to run, needs warmth to move.'));
   });
@@ -285,6 +287,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const hybridBox = h('section', { class: 'card hybrid-card', id: 'design-hybrid', hidden: !species, 'aria-live': 'polite' });
   // Steep banks: the server's check of how much of today's shore these founders can drink from.
   const waterBox = h('section', { class: 'card hybrid-card hybrid-warn', id: 'design-water', hidden: true, 'aria-live': 'polite' });
+  // A re-founding soon after the last lineage ended founds half the founders.
+  const refoundBox = h('section', { class: 'card hybrid-card hybrid-warn', id: 'design-refound', hidden: true, 'aria-live': 'polite' });
   // Founding size against the land's food (playtest 1, finding 4).
   const foodBox = h('p', { class: 'small food-hint', id: 'design-food' });
   // The world the founders land in (drought, catastrophe) and wings a heavy body can't use.
@@ -319,20 +323,41 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   }
 
   let hybridKey = '';
+  // The server's sampled check of this design (`POST /api/design/compatibility`):
+  // when present its fertility figures are the ones shown, since the
+  // client's estimate from species averages can disagree (playtest 4).
+  let serverCompat: { design: string; view: DesignCompatView } | null = null;
   function renderHybrid(): void {
     if (!species) return;
     const p = payload();
     const a = hybridAdvice(p, species.species, cb.player ?? -1);
-    const key = JSON.stringify(a);
+    const measured = serverCompat && serverCompat.design === JSON.stringify({ ...p, name: '' }) ? serverCompat.view : null;
+    const rows = measured ? serverFertility(measured) : null;
+    const key = JSON.stringify([a, rows]);
     if (key === hybridKey) return;
     hybridKey = key;
-    hybridBox.className = `card hybrid-card hybrid-${a.level}`;
-    hybridBox.replaceChildren(
+    const level = rows && rows.some((r) => r.fertility >= 0.5) ? 'warn' : a.level;
+    hybridBox.className = `card hybrid-card hybrid-${level}`;
+    hybridBox.replaceChildren(...([
       h('h2', {}, 'Interbreeding'),
       h('p', { class: 'hybrid-headline' }, a.level === 'warn' ? '⚠ ' : '', a.headline),
+      rows ? h('div', { class: 'small hybrid-measured', id: 'design-hybrid-measured' },
+        h('strong', {}, `Measured by the server (day ${measured!.day + 1}, ${measured!.sample} sampled animals): `),
+        rows.length === 0
+          ? 'no species in the world would be fertile with these founders.'
+          : rows.map((r) => `${r.name} ${Math.round(r.fertility * 100)}% fertile`).join(' · ') + '.') : null,
       h('ul', { class: 'small hybrid-points' }, ...a.points.map((t) => h('li', {}, t))),
       h('p', { class: 'small muted hybrid-market', id: 'design-hybrid-market' }, a.market),
-      h('p', { class: 'small muted hybrid-confidence', id: 'design-hybrid-confidence' }, a.confidence));
+      h('p', { class: 'small muted hybrid-confidence', id: 'design-hybrid-confidence' },
+        rows ? 'The measured figures come from pairing sampled animals and are the ones that count; the advice above estimates from species averages.' : a.confidence),
+    ] as (HTMLElement | null)[]).filter((x): x is HTMLElement => x !== null));
+  }
+  /** The server's rows with any fertility, most fertile first. */
+  function serverFertility(v: DesignCompatView): { name: string; fertility: number }[] {
+    return v.rows.filter((r) => r.fertility >= 0.01)
+      .sort((a, b) => b.fertility - a.fertility)
+      .slice(0, 5)
+      .map((r) => ({ name: `${r.lineage_name} (${r.wild ? 'wild' : r.owner_name})`, fertility: r.fertility }));
   }
 
   let waterTimer: ReturnType<typeof setTimeout> | undefined;
@@ -342,11 +367,25 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     clearTimeout(waterTimer);
     waterTimer = setTimeout(async () => {
       const seq = ++waterSeq;
-      const r = await api.designCompatibility(cb.token, payload()).catch(() => null);
+      // Before a name is typed the server would refuse the design (400 bad_name): check it under a placeholder.
+      const p = payload();
+      const r = await api.designCompatibility(cb.token, { ...p, name: p.name.trim() || 'Unnamed design' }).catch(() => null);
       if (seq !== waterSeq) return;
+      if (r) {
+        serverCompat = { design: JSON.stringify({ ...p, name: '' }), view: r };
+        hybridKey = '';
+        renderHybrid();
+      }
       const warning = r?.water_warning;
       waterBox.hidden = !warning;
       if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', warning));
+      const rf = r?.refound;
+      refoundBox.hidden = !rf;
+      if (rf) {
+        refoundBox.replaceChildren(h('h2', {}, 'Re-founding soon'),
+          h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points.`),
+          h('p', { class: 'small' }, `Because ${rf.reason}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minutes).`));
+      }
     }, 600);
   }
 
@@ -365,6 +404,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     if (!full) return;
     // The builder wears the design's covering and colours (sliders change them).
     builder?.setDesign(spec);
+    // Its advice follows the thermoregulation (brumation for cold blood).
+    showSeason();
     const c = designCost(payload(), cat);
     total.textContent = `${c.total.toFixed(1)} / ${cat.budget} points`;
     dockTotal.textContent = `${c.total.toFixed(1)} / ${cat.budget} points · founding with points left is fine`;
@@ -379,15 +420,11 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
     const left = cat.budget - c.total;
     unspent.textContent = left > cat.budget / 2
-      ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore ready for its first winter: raise the traits that suit the world, or try a preset in Builder mode.`
+      ? `${left.toFixed(1)} points still unspent. ${(spec.traits.carnivory ?? 0) < 0.34
+        ? 'A plant eater like the starting design needs little: raise the traits that suit the world, or try a preset in Builder mode.'
+        : 'A hunter needs speed, strength or bite to catch prey: raise the traits that suit it, or try a preset in Builder mode.'}`
       : left > 0.05 ? `${left.toFixed(1)} points left to spend.` : left >= -1e-3 ? 'Every point spent.' : '';
-    // Wings a heavy body can't use cost points and do nothing: say so.
-    const wings = geneValue(spec, 'wings');
-    if (wings > 0.25 && !flight(spec).glide) {
-      unspent.textContent += ` Wings do nothing on a ${kg(adultMass(spec))} body: too heavy to fly or glide, so their points are wasted.`;
-    } else if (wings > 0.5 && !flight(spec).fly) {
-      unspent.textContent += ` At ${kg(adultMass(spec))} the body is too heavy to fly: its wings only glide.`;
-    }
+    // (Wings a heavy body can't use: one warning, in #design-warnings.)
     renderHybrid();
     checkWater();
     const food = foundingHint(payload(), world);
@@ -421,6 +458,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     serverError.textContent = '';
     try {
       const r = await api.found(cb.token, payload());
+      saveLastDesign(cb.player, spec);
+      if (r.reduced && r.requested) window.alert(`Founded ${r.founders.length} of ${r.requested} founders: ${r.reduced}.`);
       cb.onFounded(r);
     } catch (e) {
       if (e instanceof ApiError) {
@@ -450,6 +489,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       h('div', { class: 'design-main' },
         seasonEl,
         h('section', { class: 'card' }, h('h2', {}, 'Basics'),
+          last ? h('p', { class: 'muted small', id: 'design-prefilled' }, 'Starts from the design you founded last: change what you like, or Reset for the starting design.') : null,
           h('label', {}, 'Lineage name', name),
           h('fieldset', {}, h('legend', {}, 'Thermoregulation'), ...thermoRadios),
           h('fieldset', {}, h('legend', {}, 'Birth type'), ...birthRadios),
@@ -469,7 +509,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, warnBox, rampNote, problem, needName, serverError,
           h('div', { class: 'row' }, submit, reset)), budgetCard),
         hybridBox,
-        waterBox),
+        waterBox, refoundBox),
       dock));
   setMode(mode, false);
   update();

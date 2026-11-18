@@ -24,6 +24,8 @@ export interface CapInfo {
 export const CAP_NEAR = 0.9;
 /** Litters at or below this multiplier read as slowed. */
 export const LITTER_SLOWED = 0.9;
+/** Litters at or above this multiplier are "full size" (the server's `FULL_LITTER`). */
+export const FULL_LITTER = 0.98;
 
 const times = (x: number) => `×${x.toFixed(x >= 0.95 ? 2 : 1)}`;
 
@@ -75,7 +77,7 @@ function softCapInfo(population: number, c: CrowdingView): CapInfo {
       ? 'You are at it: no young are born until some of yours die. A bigger number no longer raises your share; healthier breeding adults and their genes do.'
       : past
         ? `Now: litters are ${times(c.litter)} their size${hungrier}.`
-        : slowed
+        : c.litter < FULL_LITTER
           ? `Now: litters are ${times(c.litter)} their size.`
           : 'Now: litters are full size.');
   return {

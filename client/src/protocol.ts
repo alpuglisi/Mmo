@@ -77,6 +77,7 @@ export type ClientMsg =
   | { type: 'buy_mating_slot' }
   /** Reinforcements for a small lineage (adults copied from its own); data: `{ added: OrgId[], shop: ShopView }`. */
   | { type: 'reinforce' }
+  | { type: 'provision' }
   /** Which lineages yours can breed with; data: `CompatibilityView`. */
   | { type: 'compatibility' }
   /** Offer a mating of your `mine` with any suitable animal of another player's lineage (its owner picks); data: `{ offer }`. */
@@ -188,7 +189,15 @@ export interface OfferView {
   lineage?: number;
   /** An accepted agreement's escort: where its two animals are (8-tile cells) and how far apart; they walk to meet
    * on their own. */
-  meet?: { mine_x: number; mine_y: number; partner_x: number; partner_y: number; distance: number };
+  meet?: {
+    mine_x: number; mine_y: number; partner_x: number; partner_y: number; distance: number;
+    /** The meeting point (dry land near the midpoint, fixed at acceptance). */
+    meet_x?: number; meet_y?: number;
+    /** Both asleep: the meeting (and its deadline) waits until they wake. */
+    asleep?: boolean;
+    /** One is possessed: the other only walks to the meeting point and waits. */
+    possessed?: boolean;
+  };
 }
 
 export interface WeatherView {
@@ -237,7 +246,7 @@ export type Sex = 'female' | 'male';
 
 export type ActionName =
   | 'idle' | 'graze' | 'hunt' | 'scavenge' | 'drink' | 'rest' | 'bask' | 'flee' | 'seek_mate'
-  | 'group' | 'wander' | 'migrate' | 'follow_parent' | 'guard' | 'ordered' | 'dormant' | 'cache' | 'sentry' | 'patrol' | 'defend' | 'rally';
+  | 'group' | 'wander' | 'migrate' | 'follow_parent' | 'guard' | 'ordered' | 'dormant' | 'cache' | 'sentry' | 'patrol' | 'defend' | 'rally' | 'home';
 
 /** One of the player's own organisms: full detail. */
 export interface OwnOrganism {
@@ -327,8 +336,10 @@ export interface GroupView {
   route?: [number, number][];
   /** Tick at which the migration ends if the group hasn't gathered at the target (absent: no migration). */
   migration_deadline_tick?: number;
-  /** The home the group keeps where its last migration arrived: members drift back into the circle until its next order (`expires_tick` is effectively never; not a confinement). */
-  settle?: RallyView;
+  /** The home ground the group keeps where its last migration arrived, until its next migration: members walk back into it and forage near it; a rally or territory holds the group elsewhere meanwhile, then it goes back home. */
+  home?: { x: number; y: number; radius: number };
+  /** How the group's last order ended on its own ("reached (40, 46)", "migration to (60, 4) ended: never got going"…), until its next order. */
+  last_outcome?: string;
   territory?: TerritoryView;
   rally?: RallyView;
   /** Largest territory radius the group could claim now. */
@@ -806,6 +817,10 @@ export interface FoundResponse {
   lineage: number;
   founders: OrgId[];
   cost: number;
+  /** Founders the design asked for (more than `founders` on a re-founding soon after a lineage ended). */
+  requested?: number;
+  /** Why fewer were founded. */
+  reduced?: string;
 }
 
 export interface GeneInfo {
@@ -1059,6 +1074,14 @@ export interface ShopView {
   nameplate_colors?: string[];
   nameplate?: { color: string; title: string };
   species_name_price?: number;
+  /** A provision (a sink for small lineages): its price, provisions within the rolling window and the most allowed, and why not now. */
+  provision_price?: number;
+  provisions_bought?: number;
+  provisions_max?: number;
+  provision_blocked?: string;
+  /** When the next reinforcement is possible if the window is full: the day and about how many real minutes from now. */
+  reinforce_next_day?: number;
+  reinforce_next_minutes?: number;
 }
 
 /** One lineage in a compatibility check (`compatibility`, `POST /api/design/compatibility`). */
@@ -1103,6 +1126,9 @@ export interface DesignCompatView {
   shore_access?: number;
   /** Set when the founders can reach less than half the shores. */
   water_warning?: string;
+  /** Founding now is a re-founding soon after your last lineage ended: `founders` of `requested` (half), costing
+   * `cost` points, until `until_day` (about `minutes_left` real minutes). */
+  refound?: { founders: number; requested: number; cost: number; until_day: number; minutes_left: number; reason: string };
 }
 
 export interface SeasonRow {
@@ -1266,6 +1292,8 @@ export interface SpeciesView {
   name: string;
   /** Who may name it (`name_species`; absent on older servers). */
   namer?: PlayerId;
+  /** A player has named it: not offered for naming again. */
+  named?: boolean;
   origin: 'initial' | 'founding' | 'split' | string;
   parent?: number;
   founded_day: number;

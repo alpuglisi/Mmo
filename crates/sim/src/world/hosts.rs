@@ -16,6 +16,10 @@ use crate::rng::{rng_for, stream};
 /// How close a rendezvous brings the pair (inside the server's meeting
 /// distance, 1.5 tiles, so the agreement runs).
 pub const RENDEZVOUS_NEAR: f32 = 1.0;
+/// Within this of the meeting point an animal counts as there.
+pub const MEET_AT: f32 = 2.0;
+/// How far from the midpoint a dry meeting point is searched for.
+pub const MEET_SEARCH: i32 = 12;
 
 /// Alleles in breeding adults by (host lineage, origin player), counted as
 /// the legacy score counts them (`LegacySnapshot`: the same adults, loci and
@@ -84,6 +88,10 @@ impl World {
     /// founders. Sexes alternate; ages are adult and mixed, as founders'.
     /// They join the anchor's group. Returns the new organisms' ids (none
     /// if the lineage has no living adult agent, or its hard cap is full).
+    /// The lineage's adults within this many tiles of an adult make its
+    /// group for placing reinforcements (`Balance::founding_safety`).
+    pub const REINFORCE_CLUSTER: f32 = 8.0;
+
     pub fn reinforce_lineage(&mut self, lineage: u32, n: u32) -> Vec<OrgId> {
         let adults: Vec<usize> = (0..self.organisms.len())
             .filter(|&i| {
@@ -103,6 +111,28 @@ impl World {
         let mut picks: Vec<usize> = (0..adults.len().min(8)).map(|_| adults[rng.gen_range(0..adults.len())]).collect();
         picks.sort_by(|&a, &b| self.organisms[a].needs.hunger.total_cmp(&self.organisms[b].needs.hunger));
         picks.dedup();
+        // With `Balance::founding_safety`: beside the lineage's largest group
+        // (the adult with the most of the lineage's adults within
+        // `REINFORCE_CLUSTER` tiles), not a random member: playtest 4's
+        // reinforcements landed among predators, 8 of 10 eaten in 5 days.
+        let (mut range, mut tries) = (6.0, 12);
+        if self.config.balance.founding_safety > 0.0 {
+            let step = (adults.len() / 64).max(1);
+            let anchor = (0..adults.len())
+                .step_by(step)
+                .map(|k| {
+                    let p = self.organisms[adults[k]].pos;
+                    let near =
+                        adults.iter().filter(|&&j| self.organisms[j].pos.dist(p) < Self::REINFORCE_CLUSTER).count();
+                    (near, k)
+                })
+                .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))
+                .map(|(_, k)| adults[k]);
+            if let Some(a) = anchor {
+                picks = vec![a];
+                (range, tries) = (3.0, 24);
+            }
+        }
         let probe = &self.organisms[picks[0]];
         let (group, owner) = (probe.group, probe.owner);
         let body = probe.traits.body;
@@ -121,11 +151,11 @@ impl World {
         let mut best = f32::MIN;
         for &a in &picks {
             let base = self.organisms[a].pos;
-            for k in 0..12 {
+            for k in 0..tries {
                 let cand = if k == 0 {
                     base
                 } else {
-                    self.map.clamp(base + Vec2::new(rng.gen_range(-6.0..6.0), rng.gen_range(-6.0..6.0)))
+                    self.map.clamp(base + Vec2::new(rng.gen_range(-range..range), rng.gen_range(-range..range)))
                 };
                 if !self.passable_for(probe, cand) {
                     continue;
@@ -207,9 +237,11 @@ impl World {
             let old = o.lineage;
             o.owner = p;
             o.lineage = lineage;
-            // The retiree's alleles in it become the receiver's: no
-            // royalty or legacy for the retiree from a gift.
-            std::sync::Arc::make_mut(&mut o.genome).retag_origin(player, p);
+            // The retiree's alleles in it become nobody's (the wild's): no
+            // royalty or legacy for the retiree from it, and none gifted to
+            // the receiver either (playtest 4: re-tagged as the receiver's,
+            // colluding players handed each other legacy share).
+            std::sync::Arc::make_mut(&mut o.genome).retag_origin(player, crate::WILD);
             o.group = 0;
             o.possessed_by = None;
             o.order = None;
@@ -223,15 +255,18 @@ impl World {
         (self.retire_player(player), moves.len())
     }
 
-    /// An agreed mating's rendezvous: `a` and `b` walk toward each other
-    /// (each to where the other is now) until they meet, breaking off for
-    /// a threat or an urgent thirst or hunger as a possessed animal does
-    /// (`Balance::possess_danger`, `possess_urgency`). A possessed animal
-    /// follows its player instead. Replaces either's earlier rendezvous.
-    pub fn set_rendezvous(&mut self, a: OrgId, b: OrgId) {
+    /// An agreed mating's rendezvous: `a` and `b` walk to `meet` (a
+    /// meeting point, [`World::meeting_point`]) and, once both are there,
+    /// to each other, breaking off for a threat or an urgent thirst or
+    /// hunger as a possessed animal does (`Balance::possess_danger`,
+    /// `possess_urgency`). They keep off ice that could break, as migrants
+    /// do. While either is possessed the other goes only to the meeting
+    /// point and waits there: it never follows (a buyer can't lure a
+    /// rival's animal anywhere). Replaces either's earlier rendezvous.
+    pub fn set_rendezvous(&mut self, a: OrgId, b: OrgId, meet: Vec2) {
         for (x, y) in [(a, b), (b, a)] {
-            if let Some(old) = self.rendezvous.insert(x, y) {
-                if old != y && self.rendezvous.get(&old) == Some(&x) {
+            if let Some((old, _)) = self.rendezvous.insert(x, (y, meet)) {
+                if old != y && self.rendezvous.get(&old).is_some_and(|r| r.0 == x) {
                     self.rendezvous.remove(&old);
                 }
             }
@@ -240,8 +275,8 @@ impl World {
 
     /// End `a`'s rendezvous (and its partner's).
     pub fn clear_rendezvous(&mut self, a: OrgId) {
-        if let Some(b) = self.rendezvous.remove(&a) {
-            if self.rendezvous.get(&b) == Some(&a) {
+        if let Some((b, _)) = self.rendezvous.remove(&a) {
+            if self.rendezvous.get(&b).is_some_and(|r| r.0 == a) {
                 self.rendezvous.remove(&b);
             }
         }
@@ -249,22 +284,72 @@ impl World {
 
     /// `a`'s rendezvous partner, if any.
     pub fn rendezvous_of(&self, a: OrgId) -> Option<OrgId> {
-        self.rendezvous.get(&a).copied()
+        self.rendezvous.get(&a).map(|r| r.0)
+    }
+
+    /// Where `a` and `b` should meet: the dry tile nearest the midpoint
+    /// between them (within [`MEET_SEARCH`] tiles; the midpoint itself if
+    /// there is none) that `a`'s body can stand on, so the walk doesn't end
+    /// in a lake.
+    pub fn meeting_point(&self, a: OrgId, b: OrgId) -> Option<Vec2> {
+        let (x, y) = (self.organism(a)?, self.organism(b)?);
+        let mid = self.map.clamp((x.pos + y.pos) * 0.5);
+        let dry =
+            |p: Vec2| self.map.tile_at(p).water_depth <= 0.0 && self.passable_for(x, p) && self.passable_for(y, p);
+        if dry(mid) {
+            return Some(mid);
+        }
+        let mut best: Option<(f32, Vec2)> = None;
+        for r in 1..=MEET_SEARCH {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs() != r && dy.abs() != r {
+                        continue;
+                    }
+                    let p = self.map.clamp(mid + Vec2::new(dx as f32, dy as f32));
+                    if dry(p) {
+                        let d = p.dist(mid);
+                        if best.is_none_or(|(bd, _)| d < bd) {
+                            best = Some((d, p));
+                        }
+                    }
+                }
+            }
+            if best.is_some() {
+                break;
+            }
+        }
+        Some(best.map_or(mid, |b| b.1))
+    }
+
+    /// Whether `o` walks for a rendezvous (and so keeps off breakable ice).
+    pub(super) fn in_rendezvous(&self, o: &Organism) -> bool {
+        !self.rendezvous.is_empty() && self.rendezvous.contains_key(&o.id)
     }
 
     /// Where `o` walks for its rendezvous now, if it has one and nothing
-    /// comes first (`decide`): its living partner's position, while they
-    /// are farther apart than [`RENDEZVOUS_NEAR`].
+    /// comes first (`decide`): the meeting point until it is there; then its
+    /// partner, once the partner is there too and not possessed. None while
+    /// they are within [`RENDEZVOUS_NEAR`] (the agreement runs).
     pub(super) fn rendezvous_target(&self, o: &Organism, threat: f32) -> Option<Vec2> {
         if self.rendezvous.is_empty() || o.possessed_by.is_some() || !o.matured {
             return None;
         }
-        let partner = *self.rendezvous.get(&o.id)?;
+        let &(partner, meet) = self.rendezvous.get(&o.id)?;
         let q = self.index.get(&partner).map(|&k| &self.organisms[k]).filter(|q| q.alive)?;
         if o.pos.dist(q.pos) <= RENDEZVOUS_NEAR || self.order_override(o, threat).is_some() {
             return None;
         }
-        Some(q.pos)
+        if o.pos.dist(meet) > MEET_AT {
+            return Some(meet);
+        }
+        // At the meeting point: close in only on a partner that is there too
+        // and walking on its own; otherwise wait here.
+        if q.possessed_by.is_none() && q.pos.dist(meet) <= 2.0 * MEET_AT || q.pos.dist(o.pos) <= 2.0 * MEET_AT {
+            Some(q.pos)
+        } else {
+            Some(meet)
+        }
     }
 
     fn today_f64(&self) -> f64 {
@@ -357,6 +442,10 @@ mod tests {
         let o = w.organism(ids[0]).unwrap();
         assert_eq!(o.owner, 2);
         assert_eq!(share(&o.genome, 1), 0.0, "none of the retiree's alleles left in it");
+        // They went to the wild, not to the receiver: its share of the
+        // animal is what it bred in, no more.
+        assert_eq!(share(&o.genome, 2), share(&mostly_rival, 2));
+        assert!((share(&o.genome, crate::WILD) - share(&mostly_rival, 1)).abs() < 1e-9);
         assert!(w.organism(ids[1]).is_none());
     }
 
@@ -379,7 +468,9 @@ mod tests {
         w.organisms[ib].pos = far;
         let start = w.organism(a).unwrap().pos.dist(w.organism(b).unwrap().pos);
         assert!(start > 10.0, "{start}");
-        w.set_rendezvous(a, b);
+        let meet = w.meeting_point(a, b).unwrap();
+        assert_eq!(w.map.tile_at(meet).water_depth, 0.0, "a dry meeting point");
+        w.set_rendezvous(a, b, meet);
         assert_eq!((w.rendezvous_of(a), w.rendezvous_of(b)), (Some(b), Some(a)));
         let mut met = None;
         for t in 0..20 * w.config.ticks_per_day {
@@ -393,6 +484,30 @@ mod tests {
         assert!(met.is_some(), "they never met (started {start:.0} apart)");
         w.clear_rendezvous(b);
         assert_eq!((w.rendezvous_of(a), w.rendezvous_of(b)), (None, None));
+    }
+
+    /// A possessed partner isn't followed: the other walks only to the
+    /// meeting point and waits there.
+    #[test]
+    fn a_possessed_partner_is_not_followed() {
+        let mut w = presets::standard_world(WorldConfig { seed: 8, width: 64, height: 64, ..Default::default() }, 1);
+        let a = w.organisms.iter().find(|o| o.owner == 1 && o.matured).unwrap().id;
+        let b = w.organisms.iter().find(|o| o.owner == 2 && o.matured).unwrap().id;
+        let meet = w.meeting_point(a, b).unwrap();
+        w.set_rendezvous(a, b, meet);
+        w.possess(2, b).unwrap();
+        // Lead b far away: a must stay near the meeting point.
+        let ib = w.organism_index(b).unwrap();
+        let away = w.map.clamp(meet + Vec2::new(25.0, 25.0));
+        for _ in 0..6 * w.config.ticks_per_day {
+            w.organisms[ib].pos = away;
+            w.step();
+        }
+        let pa = w.organism(a).unwrap().pos;
+        assert!(pa.dist(meet) < pa.dist(away), "a followed the possessed partner: at {pa:?}, meet {meet:?}");
+        // Near it (breaks to eat or drink allowed), never at the possessed one.
+        assert!(pa.dist(meet) <= 10.0, "a waits near the meeting point: {:.1} away", pa.dist(meet));
+        assert!(pa.dist(away) > 20.0, "a followed: {:.1} from the possessed partner", pa.dist(away));
     }
 
     #[test]
@@ -413,5 +528,41 @@ mod tests {
         }
         // A lineage without adults gets none.
         assert!(w.reinforce_lineage(999, 3).is_empty());
+    }
+
+    /// Playtest 4: reinforcements landed beside a lone member among
+    /// predators and 8 of 10 were eaten. They land beside the lineage's
+    /// largest group (`Balance::founding_safety`).
+    #[test]
+    fn reinforcements_land_beside_the_largest_group() {
+        let mut w = presets::standard_world(WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() }, 1);
+        w.run_days(1);
+        let l = w.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+        let members: Vec<usize> =
+            (0..w.organisms.len()).filter(|&i| w.organisms[i].alive && w.organisms[i].lineage == l).collect();
+        assert!(members.len() >= 6);
+        // All but a few stand at one spot; the rest are spread far off.
+        let herd = w.organisms[members[0]].pos;
+        let walkable = |w: &World, p: Vec2| w.passable_for(&w.organisms[members[0]], p);
+        for (k, &i) in members.iter().enumerate() {
+            let p = if k < members.len() - 3 {
+                herd + Vec2::new((k % 3) as f32 * 0.3, (k / 3) as f32 * 0.3)
+            } else {
+                Vec2::new((10 + 20 * (k % 3)) as f32, 60.0)
+            };
+            if walkable(&w, p) {
+                w.organisms[i].pos = w.map.clamp(p);
+            }
+        }
+        for _ in 0..4 {
+            let mut c = w.clone();
+            let ids = c.reinforce_lineage(l, 6);
+            assert_eq!(ids.len(), 6);
+            for id in ids {
+                let d = c.organism(id).unwrap().pos.dist(herd);
+                assert!(d < 8.0, "{d:.1} tiles from the herd");
+            }
+            w.next_id += 7;
+        }
     }
 }

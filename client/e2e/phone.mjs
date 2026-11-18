@@ -17,7 +17,12 @@
 //     notice's fold is remembered over a reload (before the Follow checks a
 //     megadrought would send the herd walking to water);
 //  6. possessing says so once (the bar), not again in a toast;
-//  7. Split is disabled at the four-group limit.
+//  7. Split is disabled at the four-group limit;
+//  8. a returning player in a new browser is not shown the tour.
+// Also (playtest 4): the builder previews compatibility before a name is
+// typed and warns about useless wings once; the camera goes past the
+// bottom edge too; the chooser fits the screen with its × in reach and no tip
+// card over it; with two notices the second starts folded.
 //
 // Screenshots: e2e/out/phone-*.png. No uncaught page errors.
 //
@@ -116,7 +121,24 @@ async function main() {
     await page.fill('#login-name', 'pocket_phone');
     await page.fill('#login-password', 'a long password');
     await page.tap('#register-submit');
+    // 0. The builder: its compatibility preview works before a name is typed
+    // (the water warning depends on it), and a too-heavy body's wings are
+    // warned about once.
+    const preview = await page.waitForResponse((res) => new URL(res.url()).pathname === '/api/design/compatibility', { timeout: UI_MS });
+    check(preview.ok(), `the builder's preview before a name is typed: ${preview.status()}`, await preview.text());
     await page.waitForSelector('#design-name', { timeout: UI_MS });
+    check((await page.inputValue('#design-name')) === '', 'no name typed yet');
+    const genes = await page.$$eval('input[data-gene]', (els) => Object.fromEntries(els.map((el) => [el.dataset.gene, el.value])));
+    const setGene = (g, v) => page.$eval(`input[data-gene="${g}"]`, (el, v) => { el.value = String(v); el.dispatchEvent(new Event('input')); }, v);
+    for (const [g, v] of [['body_size', 1], ['armor_plates', 1], ['wings', 0.8]]) if (g in genes) await setGene(g, v);
+    const wingWarnings = await waitFor('the wings warning', () => page.evaluate(() => {
+      // (The warning sentence; the wings slider's own caption says "too heavy to fly" beside it, which is its label.)
+      const n = (document.querySelector('.design-body')?.innerText ?? '').match(/Wings do nothing/gi)?.length ?? 0;
+      return n > 0 ? n : null;
+    }), 5000).catch(() => 0);
+    for (const g of ['body_size', 'armor_plates', 'wings']) if (g in genes) await setGene(g, genes[g]);
+    check(wingWarnings === 1, `a too-heavy body's wings should be warned about once, not ${wingWarnings} times`);
+    step('the builder previews compatibility before a name is typed, and warns once about useless wings');
     await page.fill('#design-name', 'Pocket herd');
     await page.tap('#design-submit');
     await page.waitForSelector('#world-canvas', { timeout: UI_MS });
@@ -146,6 +168,23 @@ async function main() {
     });
     check(edge.mapTop >= edge.over, 'the map\'s top edge should come out from under the toolbar and notice', edge);
     step(`the camera goes past the top edge by ${edge.pad} px: the map starts at y ${edge.mapTop.toFixed(0)}, under the toolbar and notice (y ${edge.over.toFixed(0)})`);
+    // And past the bottom edge by the hint line and the floating button (with an animal selected, so the button shows).
+    const low = await page.evaluate(async () => {
+      const v = window.evo.screen().view;
+      const own = window.evo.model.state.organisms[0];
+      window.evo.model.select(own.id);
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      v.cam.y = 10000;
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const canvas = document.querySelector('#world-canvas').getBoundingClientRect();
+      const tops = ['#hint', '#fab-possess', '#possess-bar'].map((q) => document.querySelector(q).getBoundingClientRect()).filter((r) => r.height > 0).map((r) => r.top);
+      const under = Math.min(...tops);
+      const mapBottom = canvas.top + v.worldToScreen(0, v.terrain.height).y;
+      window.evo.model.select(null);
+      return { mapBottom, under, pad: v.edgePad.bottom, fab: tops.length };
+    });
+    check(low.fab >= 2 && low.mapBottom <= low.under, 'the map\'s bottom edge should come out from above the hint line and the floating button', low);
+    step(`and past the bottom edge by ${low.pad} px: the map ends at y ${low.mapBottom.toFixed(0)}, above the hint and Possess button (y ${low.under.toFixed(0)})`);
 
     // 3. A tap in a herd: the animal under the finger, and a compact chooser.
     await recordTaps(page);
@@ -154,7 +193,7 @@ async function main() {
       const at = await page.evaluate(() => {
         const v = window.evo.screen().view;
         v.setFollow(false);
-        v.cam.zoom = 10;
+        v.cam.zoom = 6; // zoomed out: a crowd under the fingertip, so the chooser has more chips than fit a phone
         const s = window.evo.model.state;
         const own = s.organisms[0];
         v.centerOn(own.x, own.y);
@@ -163,7 +202,7 @@ async function main() {
         for (const id of ids) {
           const p = v.markerScreenPos(id);
           if (!p || p.y < 120 || p.y > window.innerHeight - 260) continue;
-          if (v.hitTest(p.x, p.y, true) === id && v.hitAll(p.x, p.y, true).length > 1) return { id, ...p };
+          if (v.hitTest(p.x, p.y, true) === id && v.hitAll(p.x, p.y, true).length >= 5) return { id, ...p };
         }
         return null;
       });
@@ -171,7 +210,7 @@ async function main() {
       await page.evaluate(() => { window.__taps = []; });
       await page.touchscreen.tap(canvasBox.x + at.x, canvasBox.y + at.y);
       const tap = await waitFor('the tap', () => page.evaluate(() => window.__taps[0]), 3000).catch(() => null);
-      return tap && tap.organism !== null && tap.candidates.length > 1 ? { at, tap } : null;
+      return tap && tap.organism !== null && tap.candidates.length >= 5 ? { at, tap } : null;
     });
     const picked = await page.evaluate(() => window.evo.model.selected);
     check(picked === herdTap.tap.organism, 'the tap should select the animal under the finger', { picked, tap: herdTap.tap });
@@ -180,8 +219,20 @@ async function main() {
       const c = document.querySelector('#pick-chooser');
       const b = c.getBoundingClientRect();
       const chips = [...c.querySelectorAll('.chip[data-org]')];
-      return { height: b.height, width: b.width, first: Number(chips[0]?.dataset.org), rows: new Set(chips.map((x) => Math.round(x.getBoundingClientRect().top))).size };
+      const x = c.querySelector('.chip.close').getBoundingClientRect();
+      // The tip card, if one is up, clear of it.
+      const tip = document.querySelector('.hint-card');
+      const t = tip ? tip.getBoundingClientRect() : null;
+      return {
+        height: b.height, width: b.width, left: b.left, right: b.right, vw: window.innerWidth, scrolls: c.scrollWidth > c.clientWidth,
+        close: { left: x.left, right: x.right }, chips: chips.length, first: Number(chips[0]?.dataset.org),
+        rows: new Set(chips.map((x) => Math.round(x.getBoundingClientRect().top))).size,
+        tipOver: !!t && t.height > 0 && !(t.bottom <= b.top || t.top >= b.bottom),
+      };
     });
+    check(chooser.left >= 0 && chooser.right <= chooser.vw, 'the chooser should fit the screen', chooser);
+    check(chooser.close.left >= chooser.left && chooser.close.right <= Math.min(chooser.right, chooser.vw) + 0.5, 'its × should be in reach', chooser);
+    check(!chooser.tipOver, 'no tip card over the chooser', chooser);
     check(chooser.rows === 1 && chooser.height <= 52, 'the chooser should be one compact row', chooser);
     check(chooser.first === picked, 'the chooser lists the tapped animal first', { chooser, picked });
     await page.screenshot({ path: path.join(shots, 'phone-chooser.png') });
@@ -194,7 +245,7 @@ async function main() {
       c.dispatchEvent(new PointerEvent('pointerup', at));
     });
     await page.waitForSelector('#pick-chooser', { state: 'hidden', timeout: 3000 });
-    step(`a tap in a herd selects #${picked} (under the finger, of ${herdTap.tap.candidates.length} in reach); the chooser is one ${chooser.height.toFixed(0)} px row, listing it first, gone at the next touch`);
+    step(`a tap in a herd selects #${picked} (under the finger, of ${herdTap.tap.candidates.length} in reach); the chooser is one ${chooser.height.toFixed(0)} px row, ${chooser.width.toFixed(0)} px wide on a ${chooser.vw} px screen${chooser.scrolls ? ' (scrolling, × pinned)' : ''}, listing it first, gone at the next touch`);
 
     // 4. Follow on: taps on (moving) animals land on them. Real frames for this.
     await page.evaluate(() => window.__e2eFrameCap?.(0));
@@ -287,7 +338,7 @@ async function main() {
 
     // 5. A catastrophe notice, expanded, under the open Tools menu.
     await page.evaluate(() => { try { localStorage.removeItem('evo.notice.catastrophe'); } catch { /* blocked */ } });
-    const r = await fetch(`${base}/api/e2e/catastrophe`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'megadrought', days: 60 }) });
+    const r = await fetch(`${base}/api/e2e/catastrophe`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'severe_winter', days: 60 }) });
     check(r.ok, 'the test hook started a catastrophe', await r.text());
     await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS });
     // Its text in place (the notice has its full height).
@@ -318,6 +369,19 @@ async function main() {
     await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS });
     check(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded')), 'the fold should be remembered over a reload');
     step('the notice\'s fold is remembered over a reload');
+    // A drought notice as well as the catastrophe one: the second starts folded.
+    await page.evaluate(() => { try { localStorage.removeItem('evo.notice.drought'); } catch { /* blocked */ } });
+    const both = await waitFor('a drought notice beside the catastrophe', () => page.evaluate(() => {
+      const m = window.evo.model;
+      if (!m.state) return null;
+      // (The world's drought can't be ordered: the state is given one, as a server push would.)
+      m.state = { ...m.state, weather: { ...m.state.weather, drought: 0.6 } };
+      m.emit('state');
+      const d = document.querySelector('#drought-alert');
+      return d && !d.hidden ? { folded: d.classList.contains('folded'), cat: !document.querySelector('#catastrophe-alert').hidden } : null;
+    }));
+    check(both.cat && both.folded, 'with two notices the drought one should start folded', both);
+    step('with a catastrophe and a drought notice at once, the drought one starts folded');
     await waitFor('the lineage again', () => page.evaluate(() => (window.evo.model.state?.organisms.length ?? 0) > 1));
 
     // 6. Possessing says so once.
@@ -350,6 +414,22 @@ async function main() {
     await waitFor('Split disabled', () => page.evaluate(() => document.querySelector('#split-group').disabled));
     const title = await page.getAttribute('#split-group', 'title');
     step(`Split is disabled at four groups ("${title}")`);
+
+    // 8. A returning player in a new browser profile (no local progress): no
+    // first-session tour (it came back in every new browser, playtest 4).
+    const other = await browser.newContext({ ...chromiumDevice(devices, 'iPhone 13') });
+    const again = await other.newPage();
+    again.on('pageerror', (e) => errors.push(`second browser: ${e.message}`));
+    await again.goto(`${base}/`); // (no ?tour=off)
+    await again.fill('#login-name', 'pocket_phone');
+    await again.fill('#login-password', 'a long password');
+    await again.tap('#login-submit');
+    await again.waitForSelector('#world-canvas', { timeout: UI_MS });
+    await waitFor('the game ready', () => again.evaluate(() => (window.evo?.model.state?.organisms.length ?? 0) > 0));
+    await again.waitForTimeout(1500);
+    check(!(await again.locator('#tour-title').isVisible().catch(() => false)), 'the tour should not start for a returning player');
+    await other.close();
+    step('a returning player in a new browser is not shown the first-session tour');
 
     check(errors.length === 0, 'page errors', errors);
     step('no page errors');

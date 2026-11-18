@@ -11,11 +11,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use evo_sim::chronicle::{AchievementKind, Catastrophe, CatastropheKind};
 use evo_sim::design::DesignError;
 use evo_sim::math::Vec2;
-use evo_sim::organism::{DeathCause, Organism, Sex};
+use evo_sim::organism::{DeathCause, Dormancy, Organism, Sex};
 use evo_sim::presets::{self, REFERENCE_SIZE};
 use evo_sim::terrain::Season;
 use evo_sim::world::commands::{CommandError, DirectedMating, MatingPreview, MEETING_DISTANCE};
-use evo_sim::world::groups::MAX_GROUPS;
+use evo_sim::world::groups::{ClaimOutcome, FAR_CLAIM_TILES, MAX_GROUPS};
 use evo_sim::{FounderDesign, Gene, PlayerId, World, WorldConfig, WILD};
 use serde::{Deserialize, Serialize};
 
@@ -244,6 +244,9 @@ pub struct GameConfig {
 /// Fewer drinking-water tiles than this in and around a territory or
 /// rally circle draw a warning in the reply ([`Game::circle_report`]).
 pub const LOW_WATER_TILES: usize = 3;
+/// A circle whose standing plants would feed its group for fewer days than
+/// this draws a warning.
+pub const STANDING_WARN_DAYS: f32 = 10.0;
 /// A territory or rally circle farther than this from its group's middle
 /// draws a warning (playtest 3: a claim 85 tiles off).
 pub const FAR_CIRCLE_TILES: f32 = 30.0;
@@ -331,10 +334,13 @@ fn egg_losses(now: &evo_sim::world::EggCounts, before: &evo_sim::world::EggCount
     .collect()
 }
 
-/// An egg loss cause in a sentence.
-fn egg_loss_why(cause: &str) -> &'static str {
+/// An egg loss cause in a sentence. `abandoned`: the lineage leaves its
+/// eggs by design (abandoned eggs), so a chilled clutch is expected, not a
+/// parent's failure.
+fn egg_loss_why(cause: &str, abandoned: bool) -> &'static str {
     match cause {
-        "chilled" => "chilled: no parent was warming them",
+        "chilled" if abandoned => "chilled: abandoned eggs lie exposed, by design",
+        "chilled" => "chilled: no parent was brooding them (it strayed too far from the nest, or died)",
         "overheated" => "overheated",
         _ => "eaten by egg raiders",
     }
@@ -359,7 +365,17 @@ pub const NAME_MARGIN: f32 = 16.0;
 
 /// Share of a bought agreement's fee the buyer forfeits to the seller when
 /// it lapses (at least 1 renown when anything was paid).
-pub const LAPSE_FEE_PERCENT: u64 = 10;
+pub const LAPSE_FEE_PERCENT: u64 = 25;
+/// The least a forfeit takes when anything was paid (capped at what was
+/// paid): playtest 4 found 10% (1 renown on a cheap listing) no deterrent.
+pub const LAPSE_FEE_MIN: u64 = 5;
+/// Longest an accepted agreement holds its pair, in simulated days,
+/// whatever its wall-clock deadline (30 real minutes were about 375 game
+/// days at a fast tick).
+pub const HOLD_MAX_DAYS: u64 = 30;
+/// Least fee (or auction reserve) for listing a dam: buying one holds her
+/// from breeding, so a free listing gave rivals a free dam-lock.
+pub const DAM_MIN_FEE: u64 = 5;
 /// Minutes an accepted agreement waits for the two to meet
 /// (`GameConfig::purchase_deadline_ticks`).
 pub const PURCHASE_DEADLINE_MINUTES: f64 = 30.0;
@@ -382,8 +398,12 @@ pub const MIN_AUCTION_MINUTES: f64 = 5.0;
 pub const STARVING_SHARE: f64 = 0.05;
 /// …and at least this many did.
 pub const STARVING_MIN: u64 = 5;
-/// Near the hard cap from this share of it.
+/// Near the hard cap from this share of it (alerted once per approach)…
 pub const NEAR_CAP_SHARE: f64 = 0.9;
+/// …and alerted again only after dropping below this share.
+pub const NEAR_CAP_REARM: f64 = 0.85;
+/// Litters at or above this multiplier are "full size" in the wording.
+pub const FULL_LITTER: f32 = 0.98;
 /// Animals in a territory at this hunger or thirst count as starving there.
 pub const TERRITORY_NEED: f32 = 85.0;
 /// Territories are starving when this share of the animals in them are.
@@ -515,13 +535,47 @@ pub fn world_config(s: &WorldSettings) -> WorldConfig {
 pub struct FoundOk {
     pub lineage: u32,
     pub founders: Vec<OrgId>,
+    /// Points the founded design cost (with the founders it got).
     pub cost: f32,
+    /// Founders the design asked for (more than `founders` when re-founding
+    /// soon after a lineage ended).
+    pub requested: u32,
+    /// Why fewer were founded, if they were.
+    pub reduced: Option<String>,
 }
+
+/// A re-founding soon after the player's last lineage ended
+/// ([`Game::refound_terms`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RefoundTerms {
+    /// The first simulated day a founding gets the full design again.
+    pub until_day: u64,
+    /// About how many wall-clock minutes until then.
+    pub minutes_left: u64,
+    /// Said to the player.
+    pub reason: String,
+}
+
+impl RefoundTerms {
+    /// Founders a re-founding gets inside the window: half (at least 2).
+    pub fn founders(&self, founders: u32) -> u32 {
+        (founders / 2).max(2).min(founders)
+    }
+}
+
+/// Wall-clock minutes a re-founding counts as soon after a lineage ended,
+/// at the least ([`Game::refound_window_days`]).
+pub const REFOUND_MINUTES: f64 = 30.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum FoundError {
-    AlreadyFounded { lineage: u32 },
+    AlreadyFounded {
+        lineage: u32,
+    },
     Design(DesignError),
+    /// The lineage name looks like another player's (`names::impersonates`)
+    /// or fails the name filter: why.
+    BadName(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -558,6 +612,10 @@ struct Offer {
     /// `partner` is 0 until accepted.
     #[serde(default)]
     lineage: Option<u32>,
+    /// Where an accepted agreement's pair meets (`World::meeting_point`,
+    /// fixed at acceptance; absent in older saves: computed again).
+    #[serde(default)]
+    meet: Option<(f32, f32)>,
 }
 
 struct Conn {
@@ -625,9 +683,6 @@ pub struct Game {
     need_eased: BTreeMap<OrgId, u64>,
     /// Possessed organisms told they bedded down (dormant), until they wake. Not saved.
     sleep_alerted: BTreeSet<OrgId>,
-    /// Who possessed what as of the last tick: death clears possession in
-    /// the world, so the death notice reads it here. Not saved.
-    possessed_prev: BTreeMap<OrgId, PlayerId>,
     /// Watched organisms' deaths not yet announced: grouped per player into
     /// one alert per game hour (`announce_deaths`). Not saved.
     pending_deaths: BTreeMap<PlayerId, Vec<(OrgId, Watch, Why)>>,
@@ -651,6 +706,10 @@ pub struct Game {
     /// possession ends after [`POSSESSION_GRACE_MINUTES`]. Not saved (a
     /// restart drops every session; the release then follows the grace).
     left: BTreeMap<PlayerId, u64>,
+    /// The animal each player possesses, as last seen alive and possessed:
+    /// the sim clears `possessed_by` as an animal dies, so this says whether
+    /// it died possessed. Not saved (possession ends with the sessions).
+    possessing: BTreeMap<PlayerId, OrgId>,
     /// Lineage warnings given (player, kind) and the day: repeated every
     /// [`WARNING_REPEAT_DAYS`] while they last, forgotten when they end.
     /// Not saved.
@@ -708,10 +767,18 @@ pub struct Game {
     territory_alerted: BTreeSet<(PlayerId, u8, u8)>,
     /// Groups already told they drifted from their home; not saved.
     drift_alerted: BTreeSet<(PlayerId, u8)>,
+    /// How each group's last order ended on its own (arrived, stalled,
+    /// claimed on arrival), shown on its card until its next order: alerts
+    /// scroll away (playtest 4: a migration "silently did nothing"). Not
+    /// saved.
+    outcomes: BTreeMap<(PlayerId, u8), String>,
     /// Alleles in breeding adults by (host lineage, origin), taken with
     /// each daily record (`World::legacy_hosts`): the royalty and the score
     /// breakdown read it. Not saved; recomputed on a restore.
     hosts: evo_sim::world::HostTally,
+    /// Messages made outside a command or tick (a founding over HTTP),
+    /// sent with the next tick's (`Game::after_tick`).
+    pending_out: Outbox,
     /// Tick of the last attack alert by (attacker lineage, victim): at most
     /// one per [`GameConfig::attack_alert_minutes`]. Not saved.
     attack_alerts: BTreeMap<(u32, PlayerId), u64>,
@@ -809,6 +876,11 @@ impl SavedGame {
 }
 
 /// Refuse a price above [`economy::MAX_PRICE`].
+#[cfg(test)]
+pub(crate) fn check_price_for_tests(price: u64) -> Result<(), ErrorInfo> {
+    check_price(price)
+}
+
 fn check_price(price: u64) -> Result<(), ErrorInfo> {
     if price > economy::MAX_PRICE {
         return Err(ErrorInfo::new("bad_price", format!("prices go up to {} renown", economy::MAX_PRICE)));
@@ -890,6 +962,7 @@ impl Game {
         let economy = Economy::new();
         let market = market::MarketIndex::build(&economy, &world);
         let hosts = world.legacy_hosts();
+        let pending_out = Outbox::new();
         let mut g = Self {
             world,
             cfg,
@@ -914,7 +987,6 @@ impl Game {
             need_alerted: BTreeMap::new(),
             need_eased: BTreeMap::new(),
             sleep_alerted: BTreeSet::new(),
-            possessed_prev: BTreeMap::new(),
             pending_deaths: BTreeMap::new(),
             founded: BTreeMap::new(),
             focused: BTreeSet::new(),
@@ -924,6 +996,7 @@ impl Game {
             drought_warned: false,
             joined: Vec::new(),
             left: BTreeMap::new(),
+            possessing: BTreeMap::new(),
             warned: BTreeMap::new(),
             attack_watch: BTreeMap::new(),
             economy,
@@ -943,7 +1016,9 @@ impl Game {
             founded_day: BTreeMap::new(),
             territory_alerted: BTreeSet::new(),
             drift_alerted: BTreeSet::new(),
+            outcomes: BTreeMap::new(),
             hosts,
+            pending_out,
             attack_alerts: BTreeMap::new(),
             graced: BTreeSet::new(),
             leaving: BTreeMap::new(),
@@ -970,6 +1045,26 @@ impl Game {
             until_tick: self.world.tick() + ticks,
             real_seconds_left: Some(seconds),
         })
+    }
+
+    /// Names chosen before the shared filter (`crate::names`), cleaned on a
+    /// restore: players' lineage names, species names, nameplate titles.
+    /// Bidi overrides, zero-width characters and markup are dropped; a name
+    /// left empty or passing for staff gets a plain one.
+    fn sanitize_names(&mut self) {
+        use crate::names::{sanitize, Kind};
+        let max = crate::design::MAX_NAME_LEN;
+        for (l, lin) in self.world.lineages.iter_mut().enumerate() {
+            if lin.owner != WILD {
+                lin.name = sanitize(&lin.name, max, Kind::Lineage, &format!("Lineage {l}"));
+            }
+        }
+        for s in self.world.chronicle.species.species.iter_mut() {
+            s.name = sanitize(&s.name, max, Kind::Species, &format!("Species {}", s.id));
+        }
+        for plate in self.economy.nameplates.values_mut() {
+            plate.title = sanitize(&plate.title, economy::MAX_TITLE_LEN, Kind::Title, "Breeder");
+        }
     }
 
     /// Players whose current lineage is under its newcomer grace.
@@ -1107,14 +1202,10 @@ impl Game {
         g.next_offer = saved.next_offer.max(g.offers.keys().max().map_or(1, |k| k + 1));
         // Accepted agreements walk their pair together again (the world
         // keeps no rendezvous in its snapshot).
-        let pairs: Vec<(OrgId, OrgId)> = g
-            .offers
-            .values()
-            .filter(|o| o.status == OfferStatus::Accepted && o.partner != 0)
-            .map(|o| (o.mine, o.partner))
-            .collect();
-        for (a, b) in pairs {
-            g.world.set_rendezvous(a, b);
+        let accepted: Vec<u64> =
+            g.offers.values().filter(|o| o.status == OfferStatus::Accepted && o.partner != 0).map(|o| o.id).collect();
+        for id in accepted {
+            g.start_rendezvous(id);
         }
         g.prev_born = saved.prev_born;
         g.prev_deaths = saved.prev_deaths.into_iter().collect();
@@ -1163,6 +1254,7 @@ impl Game {
         g.offline_resume(saved.offline);
         g.founded = saved.founded;
         g.world.set_grace_waived(saved.grace_waived);
+        g.sanitize_names();
         g.request_log = saved.request_log.into_iter().collect();
         g.attack_alerts = saved.attack_alerts.into_iter().collect();
         g.graced = g.graced_players();
@@ -1307,7 +1399,23 @@ impl Game {
         offer: Option<u64>,
         listing: Option<u64>,
     ) -> Result<LedgerEntry, Insufficient> {
-        let (tick, day) = (self.world.tick(), self.world.day());
+        self.post_on(player, delta, kind, text, offer, listing, self.world.day())
+    }
+
+    /// [`Game::post`] dated `day` (from 0): daily income and royalties are
+    /// paid as a day starts, for the day just ended, and are dated so.
+    #[allow(clippy::too_many_arguments)]
+    fn post_on(
+        &mut self,
+        player: PlayerId,
+        delta: i64,
+        kind: LedgerKind,
+        text: String,
+        offer: Option<u64>,
+        listing: Option<u64>,
+        day: u64,
+    ) -> Result<LedgerEntry, Insufficient> {
+        let tick = self.world.tick();
         let entry = self.economy.post(player, delta, kind, text, offer, listing, tick, day)?;
         self.persist.push(PersistEvent::Ledger(LedgerRecord { world_id: self.world_id.clone(), entry: entry.clone() }));
         self.persist.push(PersistEvent::Balance(BalanceRecord { player, balance: entry.balance, day }));
@@ -1402,32 +1510,84 @@ impl Game {
     /// the history as extinct, and the dead lineage's group orders go.
     pub fn found(&mut self, player: PlayerId, design: &FounderDesign) -> Result<FoundOk, FoundError> {
         design.validate().map_err(FoundError::Design)?;
-        // Re-founding within a ranked season's length of retiring founds
-        // half the founders ([`Game::refound_founders`]): retiring and
-        // founding again was a free re-roll (fresh, fed founders at a new
-        // spot; playtest 3).
-        if let Some(n) = self.refound_founders(player, design.founders) {
+        // The design's name is the lineage's (and its founding species'):
+        // the shared name filter, and not another player's name.
+        let name = crate::names::check(&design.name, crate::design::MAX_NAME_LEN, crate::names::Kind::Lineage)
+            .map_err(FoundError::BadName)?;
+        if self.impersonates(player, &name, crate::names::Kind::Lineage) {
+            return Err(FoundError::BadName("it looks like another player's name".into()));
+        }
+        // Re-founding soon after the player's last lineage ended (retired or
+        // died out) founds half the founders ([`Game::refound_terms`]):
+        // ending a lineage and founding again was a free re-roll (fresh, fed
+        // founders at a new spot; playtests 3 and 4).
+        if let Some(t) = self.refound_terms(player) {
+            let n = t.founders(design.founders);
             if self.lineage_of(player).is_none_or(|_| self.is_extinct(player)) && n < design.founders {
                 let fewer = design.clone().founders(n);
-                let ok = self.found_at_any_price(player, &fewer)?;
-                let text = format!(
-                    "Re-founded within {} days of retiring: {n} of {} founders (half).",
-                    self.cfg.season_days, design.founders
-                );
-                self.alert(player, AlertKind::Milestone, text, None, &mut Outbox::new());
+                let mut ok = self.found_at_any_price(player, &fewer)?;
+                ok.requested = design.founders;
+                ok.reduced = Some(t.reason.clone());
+                let text = format!("Re-founded: {n} of {} founders ({}).", design.founders, t.reason);
+                // Live: delivered with the next tick's messages.
+                let mut out = Outbox::new();
+                self.alert(player, AlertKind::Milestone, text, None, &mut out);
+                self.pending_out.extend(out);
                 return Ok(ok);
             }
         }
         self.found_at_any_price(player, design)
     }
 
-    /// The founders a re-founding gets when `player` retired a lineage
-    /// within the last ranked season's length of simulated days: half of
-    /// `founders` (at least 2). None otherwise (a first founding, after an
-    /// extinction, or long after a retire).
+    /// Simulated days after a lineage ends (retired or died out) during which
+    /// a re-founding gets half the founders: a ranked season, and at least
+    /// [`REFOUND_MINUTES`] of wall-clock time at this tick (a 60-day season
+    /// passes in 5 minutes at a 100 ms tick).
+    pub fn refound_window_days(&self) -> u64 {
+        let tpd = self.world.config.ticks_per_day.max(1) as u64;
+        let real = minutes_to_ticks(REFOUND_MINUTES, self.cfg.tick_ms).div_ceil(tpd);
+        self.cfg.season_days.max(real).max(1)
+    }
+
+    /// The terms of `player`'s next founding if it would be a re-founding
+    /// within [`Game::refound_window_days`] of their last lineage ending
+    /// (retired, or died out), else None (a first founding, or long after).
+    pub fn refound_terms(&self, player: PlayerId) -> Option<RefoundTerms> {
+        if !self.lineage_of.contains_key(&player) || !self.is_extinct(player) {
+            return None;
+        }
+        let founded = self.founded_day.get(&player).copied().unwrap_or(0);
+        let today = self.world.day();
+        // The end recorded for this lineage (retire, or the daily check
+        // that saw it die out); a lineage that died since that check ended
+        // today.
+        let (ended, how) = match self.economy.retired_day.get(&player) {
+            Some(&d) if d >= founded => {
+                (d, if self.economy.died_out.contains(&player) { "died out" } else { "retired" })
+            }
+            _ => (today, "died out"),
+        };
+        let window = self.refound_window_days();
+        (today < ended + window).then(|| {
+            let days_left = ended + window - today;
+            let minutes_left =
+                (days_left as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).ceil();
+            RefoundTerms {
+                until_day: ended + window,
+                minutes_left: minutes_left as u64,
+                reason: format!(
+                    "your last lineage {how} on day {}: re-founding within {window} days (about {} real minutes) founds half the founders",
+                    ended + 1,
+                    (window as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).round()
+                ),
+            }
+        })
+    }
+
+    /// The founders a re-founding gets now: half of `founders` (at least 2)
+    /// inside the window ([`Game::refound_terms`]), None otherwise.
     pub fn refound_founders(&self, player: PlayerId, founders: u32) -> Option<u32> {
-        let retired = *self.economy.retired_day.get(&player)?;
-        (self.world.day() < retired + self.cfg.season_days.max(1)).then(|| (founders / 2).max(2))
+        self.refound_terms(player).map(|t| t.founders(founders))
     }
 
     /// [`Game::found`] without the point-budget check, for offline tools
@@ -1471,7 +1631,8 @@ impl Game {
         if self.world.lineage_grace_ticks(lineage).is_some() {
             self.graced.insert(player);
         }
-        Ok(FoundOk { lineage, founders, cost: design.point_cost() })
+        let requested = design.founders;
+        Ok(FoundOk { lineage, founders, cost: design.point_cost(), requested, reduced: None })
     }
 
     /// The partner organism of an open offer (0 for an offer to a lineage
@@ -1524,6 +1685,7 @@ impl Game {
         let before: BTreeMap<PlayerId, usize> = homes.keys().map(|&p| (p, self.world.owner_count(p))).collect();
         let (n, moved) = self.world.retire_player_sparing(player, &homes, RETIRE_TRANSFER_SHARE);
         self.economy.retired_day.insert(player, self.world.day());
+        self.economy.died_out.remove(&player);
         for (&p, &b) in &before {
             let got = self.world.owner_count(p).saturating_sub(b);
             if got > 0 {
@@ -1631,6 +1793,7 @@ impl Game {
                     .map(|o| o.id)
                     .collect();
                 self.world.possess(player, organism).map_err(e)?;
+                self.possessing.insert(player, organism);
                 Ok(released.first().map(|&r| {
                     serde_json::json!({
                         "organism": organism,
@@ -1667,7 +1830,9 @@ impl Game {
                 // No group: the main group, like a rally or a territory.
                 let group = group.unwrap_or(0);
                 let asked = Vec2::new(x, y);
+                let before = self.orders_of(player, group);
                 let to = self.world.command_migrate_group(player, group, asked).map_err(e)?;
+                self.order_given(player, group);
                 self.plan_route(player, group);
                 let mut data =
                     target_data(asked, to, "that is water or impassable; the group goes to the nearest land");
@@ -1692,6 +1857,7 @@ impl Game {
                     ));
                 }
                 put_warnings(&mut data, warnings);
+                note_replaced(&mut data, &before, "migration");
                 Ok(Some(data))
             }
             ClientMsg::EndGrace => {
@@ -1721,37 +1887,75 @@ impl Game {
             }
             ClientMsg::ClaimTerritory { group, x, y, radius } => {
                 finite(&[x, y, radius])?;
-                let t = match self.world.claim_territory(player, group, Vec2::new(x, y), radius) {
-                    Ok(t) => t,
+                let before = self.orders_of(player, group);
+                let outcome = match self.world.claim_or_migrate(player, group, Vec2::new(x, y), radius) {
+                    Ok(o) => o,
                     Err(CommandError::ClaimCooldown { ticks_left }) => return Err(self.cooldown_error(ticks_left)),
                     Err(err) => return Err(e(err)),
                 };
-                let mut data = serde_json::to_value(TerritoryView::from(t)).unwrap();
-                if (t.radius - radius).abs() > 0.01 {
-                    data["note"] = if t.radius > radius {
-                        format!("radius raised to the smallest territory, {:.0} tiles", t.radius)
-                    } else {
-                        format!("radius cut to the group's limit, {:.1} tiles (it grows with the adults)", t.radius)
+                self.order_given(player, group);
+                let mut data = match outcome {
+                    ClaimOutcome::Claimed(t) => {
+                        let mut data = serde_json::to_value(TerritoryView::from(t)).unwrap();
+                        if (t.radius - radius).abs() > 0.01 {
+                            data["note"] = if t.radius > radius {
+                                format!("radius raised to the smallest territory, {:.0} tiles", t.radius)
+                            } else {
+                                format!(
+                                    "radius cut to the group's limit, {:.1} tiles (it grows with the adults)",
+                                    t.radius
+                                )
+                            }
+                            .into();
+                        }
+                        self.circle_report(player, group, t.center, t.radius, &mut data);
+                        data
                     }
-                    .into();
-                }
-                self.circle_report(player, group, t.center, t.radius, &mut data);
+                    ClaimOutcome::Migrating { target, radius } => {
+                        self.plan_route(player, group);
+                        let mut data = serde_json::json!({
+                            "x": x, "y": y, "radius": radius, "pending": true,
+                            "migrating_to": { "x": target.x, "y": target.y },
+                            "note": format!(
+                                "the circle is more than {FAR_CLAIM_TILES:.0} tiles from the group: it migrates there \
+                                 first and claims the territory when it arrives"
+                            ),
+                        });
+                        if let Some((_, route)) = self.routes.get(&(player, group)) {
+                            data["route"] = serde_json::to_value(route).unwrap_or_default();
+                        }
+                        self.circle_report(player, group, Vec2::new(x, y), radius.max(3.0), &mut data);
+                        data
+                    }
+                };
+                note_replaced(&mut data, &before, "territory");
                 Ok(Some(data))
             }
             ClientMsg::AbandonTerritory { group } => {
-                self.world.abandon_territory(player, group).map_err(e)?;
-                Ok(None)
+                let t = self.world.abandon_territory(player, group).map_err(e)?;
+                self.territory_alerted.retain(|&(p, g, _)| (p, g) != (player, group));
+                let mut data = serde_json::to_value(TerritoryView::from(t)).unwrap();
+                if self.world.settle_circle(player, group).is_some() {
+                    data["note"] = "the group goes back to its home ground".into();
+                }
+                Ok(Some(data))
             }
             ClientMsg::Rally { group, x, y } => {
                 finite(&[x, y])?;
+                let before = self.orders_of(player, group);
                 let r = self.world.rally_group(player, group, Vec2::new(x, y)).map_err(e)?;
+                self.order_given(player, group);
                 let mut data = serde_json::to_value(RallyView::from(r)).unwrap();
                 self.circle_report(player, group, r.center, r.radius, &mut data);
+                note_replaced(&mut data, &before, "rally");
                 Ok(Some(data))
             }
             ClientMsg::CancelRally { group } => {
                 self.world.cancel_rally(player, group).map_err(e)?;
-                Ok(None)
+                let back = self.world.settle_circle(player, group).is_some();
+                Ok(Some(serde_json::json!({
+                    "note": if back { "the group goes back to its home ground" } else { "the group roams freely" }
+                })))
             }
             ClientMsg::SplitGroup { group, organisms } => {
                 if organisms.as_ref().is_some_and(|o| o.len() > MAX_SPLIT_ORGANISMS) {
@@ -1919,10 +2123,14 @@ impl Game {
             ClientMsg::RenownShop => Ok(Some(serde_json::to_value(self.shop_view(player)).unwrap())),
             ClientMsg::BuyMatingSlot => Ok(Some(serde_json::to_value(self.buy_mating_slot(player)?).unwrap())),
             ClientMsg::Reinforce => {
-                let (ids, shop) = self.reinforce(player)?;
-                Ok(Some(serde_json::json!({ "added": ids, "shop": shop })))
+                let (ids, shop, site) = self.reinforce(player)?;
+                Ok(Some(serde_json::json!({ "added": ids, "shop": shop, "at": site.at, "group": site.group })))
             }
             ClientMsg::Compatibility => Ok(Some(serde_json::to_value(self.compatibility(player)).unwrap())),
+            ClientMsg::Provision => {
+                let (fed, shop) = self.provision(player)?;
+                Ok(Some(serde_json::json!({ "fed": fed, "shop": shop })))
+            }
             ClientMsg::SetNameplate { color, title } => {
                 let (plate, shop) = self.set_nameplate(player, &color, &title)?;
                 Ok(Some(serde_json::json!({ "nameplate": plate, "shop": shop })))
@@ -2208,11 +2416,12 @@ impl Game {
             accepted_tick: (status == OfferStatus::Accepted).then(|| self.world.tick()),
             warned: false,
             lineage: None,
+            meet: None,
         };
         self.offers.insert(id, offer);
         if status == OfferStatus::Accepted {
             // The pair walks to meet (`World::set_rendezvous`).
-            self.world.set_rendezvous(mine, partner);
+            self.start_rendezvous(id);
         }
         if let Some(p) = price.filter(|&p| p > 0) {
             let what = match listing {
@@ -2301,6 +2510,20 @@ impl Game {
         Ok(to)
     }
 
+    /// A dam's listing (fee, or auction reserve) is at least
+    /// [`DAM_MIN_FEE`]: buying her holds her from breeding.
+    fn check_dam_price(&self, organism: OrgId, price: u64) -> Result<(), ErrorInfo> {
+        let dam = self.world.organism(organism).is_some_and(|o| o.sex == Sex::Female);
+        if dam && price < DAM_MIN_FEE {
+            return Err(ErrorInfo::new(
+                "bad_price",
+                format!("a dam is listed for at least {DAM_MIN_FEE} renown (a buyer holds her from breeding until they meet)"),
+            )
+            .with_detail(serde_json::json!({ "min": DAM_MIN_FEE })));
+        }
+        Ok(())
+    }
+
     /// The checks before putting an organism on the marketplace (either
     /// kind): ownership, maturity, one listing per organism, the per-player
     /// limit, the price.
@@ -2351,6 +2574,7 @@ impl Game {
             }
         }
         self.check_listable(player, organism, fee)?;
+        self.check_dam_price(organism, fee)?;
         // A dam already promised in an open agreement can't take a buyer
         // (playtest 3: a promised dam got a fixed listing).
         let dam = self.world.organism(organism).is_some_and(|o| o.sex == Sex::Female);
@@ -2401,6 +2625,7 @@ impl Game {
         // (a 1-tick auction closed before anyone could bid).
         let duration = duration.max(self.cfg.min_auction_ticks);
         self.check_listable(player, organism, reserve)?;
+        self.check_dam_price(organism, reserve)?;
         // The winner's agreement must be able to run: a pregnant dam can't
         // be auctioned (the auction's hold keeps a listed dam from
         // conceiving meanwhile).
@@ -2652,6 +2877,14 @@ impl Game {
         }
         if self.offers.values().any(|o| o.status.is_open() && (o.mine == mine || o.partner == mine)) {
             return Err(ErrorInfo::new("organism_busy", format!("#{mine} is already promised in an open agreement")));
+        }
+        // A listed stud walks to one meeting at a time: the next buyer waits
+        // until it is done.
+        if self.in_agreement(l.organism, 0) {
+            return Err(ErrorInfo::new(
+                "listing_busy",
+                format!("#{} is walking to another agreed mating: try again once it is done", l.organism),
+            ));
         }
         self.check_funds(player, l.fee)?;
         let id = self.open_offer(player, to, mine, l.organism, Some(l.fee), OfferStatus::Accepted, Some(listing))?;
@@ -2970,7 +3203,8 @@ impl Game {
                     share * 100.0,
                     weighted * 100.0
                 );
-                let _ = self.post(p, income as i64, LedgerKind::Income, text, None, None);
+                let for_day = record.day.saturating_sub(1);
+                let _ = self.post_on(p, income as i64, LedgerKind::Income, text, None, None, for_day);
             }
         }
     }
@@ -3006,6 +3240,19 @@ impl Game {
         } else {
             partner
         };
+        // An animal walks to one meeting at a time (playtest 4: one male held
+        // several agreements and could reach none of them).
+        for id in [mine, partner] {
+            if self.in_agreement(id, request) {
+                if offer_lineage_open {
+                    self.offers.get_mut(&request).unwrap().partner = 0;
+                }
+                return Err(ErrorInfo::new(
+                    "organism_busy",
+                    format!("#{id} is already walking to another agreed mating: accept again once it is done"),
+                ));
+            }
+        }
         // The accepter's own female can't take it while pregnant: say so
         // now (her state is theirs to know) instead of failing later with
         // "already pregnant".
@@ -3030,7 +3277,8 @@ impl Game {
             log.retain(|&(_, id)| id != request);
         }
         // The pair walks to meet (`World::set_rendezvous`).
-        self.world.set_rendezvous(mine, partner);
+        let _ = (mine, partner);
+        self.start_rendezvous(request);
         self.hold_added(Some(request), None);
         // Try at once; if the organisms are apart, the agreement stands until
         // they meet (checked every tick) or its deadline
@@ -3141,7 +3389,12 @@ impl Game {
             fertility: p.fertility,
             body_plan_fertility: p.body_plan_fertility,
             distance_fertility: p.distance_fertility,
-            body_plan_gaps: body_plan_gaps(&p),
+            // Exact gene differences only for a partner in plain sight (one
+            // just inside the naming margin got its exact genes: playtest 4).
+            body_plan_gaps: body_plan_gaps(&p)
+                .into_iter()
+                .map(|g| if partner_seen { g } else { BodyPlanGap { gap: (g.gap * 10.0).round() / 10.0, ..g } })
+                .collect(),
             mismatch: p.mismatch,
             cost: p.cost,
             failure_chance: p.failure_chance,
@@ -3246,7 +3499,7 @@ impl Game {
     /// rest is refunded. Says what was forfeit.
     fn forfeit_hold(&mut self, id: u64, why: &str) -> String {
         let o = self.offers[&id].clone();
-        let fee = if o.escrow > 0 { (o.escrow * LAPSE_FEE_PERCENT / 100).clamp(1, o.escrow) } else { 0 };
+        let fee = if o.escrow > 0 { (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN).min(o.escrow) } else { 0 };
         if fee > 0 {
             self.offers.get_mut(&id).unwrap().escrow -= fee;
             let what = o.listing.map_or(format!("offer #{id}"), |l| format!("listing #{l}"));
@@ -3438,18 +3691,47 @@ impl Game {
         }
     }
 
+    /// Walk an accepted agreement's pair to its meeting point, fixing the
+    /// point the first time (`World::meeting_point`: dry land near their
+    /// midpoint, so the walk doesn't end in a lake).
+    fn start_rendezvous(&mut self, id: u64) {
+        let Some(o) = self.offers.get(&id) else { return };
+        let (a, b) = (o.mine, o.partner);
+        let meet = match o.meet {
+            Some((x, y)) => Some(Vec2::new(x, y)),
+            None => self.world.meeting_point(a, b),
+        };
+        if let Some(m) = meet {
+            self.offers.get_mut(&id).unwrap().meet = Some((m.x, m.y));
+            self.world.set_rendezvous(a, b, m);
+        }
+    }
+
+    /// Whether `id` is already in an accepted agreement other than `except`
+    /// (an animal walks to one meeting at a time).
+    fn in_agreement(&self, id: OrgId, except: u64) -> bool {
+        self.offers
+            .values()
+            .any(|o| o.id != except && o.status == OfferStatus::Accepted && (o.mine == id || o.partner == id))
+    }
+
     /// Where an accepted agreement's two animals are, coarsely (8-tile
     /// cells), for both sides' escort: they walk to meet on their own
     /// (`World::set_rendezvous`), and a player may possess theirs to hurry.
     fn meet_view(&self, o: &Offer) -> Option<MeetView> {
         let (a, b) = (self.world.organism(o.mine)?, self.world.organism(o.partner)?);
         let coarse = |v: f32| (v / 8.0).floor() * 8.0 + 4.0;
+        let asleep = |x: &Organism| matches!(x.dormancy, Dormancy::Winter | Dormancy::Summer);
         Some(MeetView {
             mine_x: coarse(a.pos.x),
             mine_y: coarse(a.pos.y),
             partner_x: coarse(b.pos.x),
             partner_y: coarse(b.pos.y),
             distance: a.pos.dist(b.pos).round(),
+            meet_x: o.meet.map(|m| coarse(m.0)),
+            meet_y: o.meet.map(|m| coarse(m.1)),
+            asleep: asleep(a) && asleep(b),
+            possessed: a.possessed_by.is_some() || b.possessed_by.is_some(),
         })
     }
 
@@ -3457,7 +3739,9 @@ impl Game {
     /// (accepted: the two never met).
     fn offer_deadline(&self, o: &Offer) -> u64 {
         if o.status == OfferStatus::Accepted {
-            o.accepted_tick.unwrap_or(o.created_tick).saturating_add(self.cfg.purchase_deadline_ticks)
+            // At most `HOLD_MAX_DAYS` of simulated time, whatever the clock.
+            let cap = HOLD_MAX_DAYS * self.world.config.ticks_per_day as u64;
+            o.accepted_tick.unwrap_or(o.created_tick).saturating_add(self.cfg.purchase_deadline_ticks.min(cap))
         } else {
             o.created_tick.saturating_add(self.cfg.offer_ticks)
         }
@@ -3466,12 +3750,22 @@ impl Game {
     /// Bookkeeping after `World::step`: complete agreements whose organisms
     /// have met, expire offers at a season change, record a new legacy day.
     pub fn after_tick(&mut self) -> Outbox {
-        let mut out = Outbox::new();
+        let mut out = std::mem::take(&mut self.pending_out);
         let open: Vec<u64> = self.offers.values().filter(|o| o.status.is_open()).map(|o| o.id).collect();
         let tick = self.world.tick();
         for id in open {
             let o = &self.offers[&id];
             let (accepted, mine, partner) = (o.status == OfferStatus::Accepted, o.mine, o.partner);
+            // Both asleep (hibernating, brumating, estivating): the meeting
+            // waits for them, and so does its deadline.
+            let asleep = |id: OrgId| {
+                self.world.organism(id).is_some_and(|x| matches!(x.dormancy, Dormancy::Winter | Dormancy::Summer))
+            };
+            if accepted && asleep(mine) && asleep(partner) {
+                let o = self.offers.get_mut(&id).unwrap();
+                o.accepted_tick = Some(o.accepted_tick.unwrap_or(o.created_tick).saturating_add(1));
+            }
+            let o = &self.offers[&id];
             let deadline = self.offer_deadline(o);
             let due = tick >= deadline;
             let warn = !accepted && !o.warned && tick.saturating_add(self.cfg.offer_warn_ticks) >= deadline;
@@ -3518,8 +3812,6 @@ impl Game {
         self.last_season = self.world.season();
         self.watch_possessed(&mut out);
         self.announce_deaths(&mut out);
-        self.possessed_prev =
-            self.world.organisms.iter().filter(|o| o.alive).filter_map(|o| Some((o.id, o.possessed_by?))).collect();
         self.tell_joiners(&mut out);
         self.release_the_absent();
         self.announce_attack_results(&mut out);
@@ -3684,7 +3976,22 @@ impl Game {
         if let Some(p) = push {
             self.notice(player, p, text.clone(), organism);
         }
-        let alert = AlertView { tick: self.world.tick(), day: self.world.day(), kind, text, organism };
+        self.alert_on(player, kind, text, organism, self.world.day(), out);
+    }
+
+    /// An alert stamped with `day` (from 0) rather than today: a daily
+    /// summary, taken as the next day starts, is about the day just ended,
+    /// and the feed shows that day beside its "Day N" text.
+    fn alert_on(
+        &mut self,
+        player: PlayerId,
+        kind: AlertKind,
+        text: String,
+        organism: Option<OrgId>,
+        day: u64,
+        out: &mut Outbox,
+    ) {
+        let alert = AlertView { tick: self.world.tick(), day, kind, text, organism };
         let list = self.alerts.entry(player).or_default();
         list.push_back(alert.clone());
         if list.len() > MAX_ALERTS {
@@ -3967,6 +4274,10 @@ impl Game {
     /// ("5 founders died: 3 eaten, 2 starved (#12, #14, …).") rather than one
     /// alert each.
     fn announce_deaths(&mut self, out: &mut Outbox) {
+        // Possessions that ended with the animal alive (released, another
+        // possessed, retired) are forgotten; a dead one's waits for its alert.
+        let w = &self.world;
+        self.possessing.retain(|&p, id| w.organism(*id).is_none_or(|o| o.possessed_by == Some(p)));
         let dead: Vec<(OrgId, PlayerId, Watch)> = self
             .watched
             .iter()
@@ -3976,10 +4287,6 @@ impl Game {
         for (id, player, watch) in dead {
             self.watched.remove(&id);
             self.need_alerted.remove(&id);
-            // Death clears the possession in the world: who held it as of
-            // the last tick says (playtest 4: "Once-possessed" for an
-            // animal possessed when it died).
-            let held = self.possessed_prev.get(&id) == Some(&player);
             let Some(o) = self.world.organisms.iter().find(|o| o.id == id) else {
                 // Gone without a body: with level of detail on it went into a
                 // statistical cohort far from every player, alive; not a death.
@@ -3990,7 +4297,9 @@ impl Game {
             };
             // Possessed when it died (not merely once: possession ends with the
             // player's sessions, and a released animal is an ordinary one).
-            if o.possessed_by == Some(player) || held {
+            // The sim clears `possessed_by` as it kills: `possessing` remembers.
+            if self.possessing.get(&player) == Some(&id) {
+                self.possessing.remove(&player);
                 // Said at once: the player was steering it (its bar just vanished).
                 let text = format!(
                     "#{id}, the animal you were possessing, {}. Possess another from the map or the Lineage tab.",
@@ -4027,11 +4336,15 @@ impl Game {
             let died = starved + thirst;
             let base = e.alive as u64 + e.deaths.values().sum::<u64>();
             if died >= STARVING_MIN && base > 0 && died as f64 >= STARVING_SHARE * base as f64 {
-                let full = self.crowding_view(player).is_none_or(|c| c.litter >= 0.9);
-                let why = if full {
+                let litter = self.crowding_view(player).map_or(1.0, |c| c.litter);
+                let why = if litter >= FULL_LITTER {
                     "Litters are still full size, so the population cap isn't the cause: their ground can't feed them."
+                        .to_string()
                 } else {
-                    "The soft cap slows breeding, but the lineage is still more than its ground can feed."
+                    format!(
+                        "The soft cap has litters at ×{litter:.2} of full size, yet the lineage is still more than its \
+                         ground can feed."
+                    )
                 };
                 out.push(LineageWarning {
                     kind: "starving".into(),
@@ -4087,10 +4400,17 @@ impl Game {
         let players: Vec<PlayerId> = self.lineage_of.keys().copied().collect();
         for p in players {
             let now = self.lineage_warnings(p);
-            self.warned.retain(|(q, k), _| *q != p || now.iter().any(|w| &w.kind == k));
+            // Near the cap is said once per approach: forgotten only below the re-arm share.
+            let near_cap_armed = self.lineage_of(p).is_some_and(|l| {
+                let alive = self.world.population_counts().get(l as usize).map_or(0, |c| c.alive);
+                alive as f64 >= NEAR_CAP_REARM * self.world.player_ceiling() as f64
+            });
+            self.warned
+                .retain(|(q, k), _| *q != p || now.iter().any(|w| &w.kind == k) || (k == "near_cap" && near_cap_armed));
             for w in now {
                 let key = (p, w.kind.clone());
-                if self.warned.get(&key).is_some_and(|&d| day < d + WARNING_REPEAT_DAYS) {
+                let repeat = w.kind != "near_cap";
+                if self.warned.get(&key).is_some_and(|&d| !repeat || day < d + WARNING_REPEAT_DAYS) {
                     continue;
                 }
                 self.warned.insert(key, day);
@@ -4174,34 +4494,56 @@ impl Game {
                         target.x,
                         target.y
                     );
+                    self.outcomes.insert((player, group), format!("reached ({:.0}, {:.0})", target.x, target.y));
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
+                GroupEvent::ClaimedOnArrival { player, group, territory: t } => {
+                    self.routes.remove(&(player, group));
+                    self.drift_alerted.remove(&(player, group));
+                    let text = format!(
+                        "{} arrived and now holds its territory of radius {:.1} at ({:.0}, {:.0}).",
+                        group_name(group),
+                        t.radius,
+                        t.center.x,
+                        t.center.y
+                    );
+                    self.outcomes
+                        .insert((player, group), format!("arrived and claimed ({:.0}, {:.0})", t.center.x, t.center.y));
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
                 GroupEvent::Emptied { player, group } => {
                     self.routes.remove(&(player, group));
+                    self.outcomes.remove(&(player, group));
                     if group != 0 {
                         let text =
                             format!("{} has no members left; its orders and territory are gone.", group_name(group));
                         self.alert(player, AlertKind::Group, text, None, out);
                     }
                 }
-                GroupEvent::TimedOut { player, group, target, median, dormant_share } => {
+                GroupEvent::TimedOut {
+                    player,
+                    group,
+                    target,
+                    median,
+                    dormant_share,
+                    basking_share,
+                    never_moved,
+                    pending_claim,
+                } => {
                     self.routes.remove(&(player, group));
-                    let why = if dormant_share >= 0.5 {
-                        format!(
-                            "{:.0}% of the group is dormant (hibernating or estivating) and can't walk; migrate again \
-                             once it wakes",
-                            dormant_share * 100.0
-                        )
-                    } else {
-                        "it stopped getting closer. Rally it, or migrate again to a nearer point".to_string()
-                    };
+                    let (why, short) = timeout_reason(dormant_share, basking_share, never_moved);
+                    let claim = if pending_claim { " The territory it was to claim there is dropped too." } else { "" };
                     let text = format!(
                         "{} didn't gather at its migration target ({:.0}, {:.0}) (half the group is still more than \
-                         {:.0} tiles away); the order has ended: {why}.",
+                         {:.0} tiles away); the order has ended: {why}.{claim}",
                         group_name(group),
                         target.x,
                         target.y,
                         median
+                    );
+                    self.outcomes.insert(
+                        (player, group),
+                        format!("migration to ({:.0}, {:.0}) ended: {short}", target.x, target.y),
                     );
                     self.alert(player, AlertKind::Group, text, None, out);
                 }
@@ -4218,7 +4560,20 @@ impl Game {
         let w = self.world.water_check(player, group, center, radius);
         data["water_share"] = ((w.water_share * 100.0).round() / 100.0).into();
         data["drinkable_tiles"] = w.drinkable.into();
-        if w.drinkable < LOW_WATER_TILES {
+        // In a drought what water there is dries up: ask for more of it, in
+        // proportion to the group (playtest 4: 12 tiles passed in a 0.83
+        // drought for hundreds of animals).
+        let members = self.world.groups(player).iter().find(|g| g.id == group).map_or(0, |g| g.members);
+        let dryness = self.world.map.dryness_at(center);
+        data["dryness"] = ((dryness * 100.0).round() / 100.0).into();
+        let wanted = if dryness > 0.5 { (members / 8).max(LOW_WATER_TILES) } else { LOW_WATER_TILES };
+        if w.drinkable < wanted && w.drinkable >= LOW_WATER_TILES {
+            warnings.push(format!(
+                "Only {} tiles of drinking water for {members} animals in a drought ({:.0}% dry here): it may not last.",
+                w.drinkable,
+                dryness * 100.0
+            ));
+        } else if w.drinkable < LOW_WATER_TILES {
             warnings.push(
                 "Little or no drinking water in or near this circle: the group will leave it to drink, and may die \
                  of thirst in a drought."
@@ -4232,12 +4587,25 @@ impl Game {
         }
         if let Some(f) = self.world.food_check(player, group, center, radius) {
             data["food_supports"] = f.supports.into();
+            data["standing_days"] = ((f.standing_days * 10.0).round() / 10.0).into();
             if f.supports < f.members {
                 warnings.push(format!(
-                    "The plants here feed about {} of the group's {} animals in a good season; expect hunger, worse \
-                     in winter or a drought.",
+                    "At this season's growth the plants here feed about {} of the group's {} animals; expect hunger.",
                     f.supports, f.members
                 ));
+            }
+            if f.standing_days < STANDING_WARN_DAYS {
+                warnings.push(format!(
+                    "The plants standing here would feed the whole group for about {:.0} days.",
+                    f.standing_days
+                ));
+            }
+        }
+        if let Some(p) = self.world.prey_check(player, group, center, radius) {
+            data["prey_nearby"] = p.prey.into();
+            if p.prey * 2 < p.members {
+                warnings
+                    .push(format!("Only {} prey animals in or near this circle for {} hunters.", p.prey, p.members));
             }
         }
         if let Some(m) = self.world.group_middle(player, group) {
@@ -4248,6 +4616,26 @@ impl Game {
             }
         }
         put_warnings(data, warnings);
+    }
+
+    /// A group's standing orders, by name: what a new order replaces.
+    fn orders_of(&self, player: PlayerId, group: u8) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        if self.world.migration_order(player, group).is_some() {
+            v.push("migration");
+        }
+        if self.world.territory(player, group).is_some() {
+            v.push("territory");
+        }
+        if self.world.rally(player, group).is_some() {
+            v.push("rally");
+        }
+        v
+    }
+
+    /// A new order for a group: the last order's outcome is no longer news.
+    fn order_given(&mut self, player: PlayerId, group: u8) {
+        self.outcomes.remove(&(player, group));
     }
 
     /// `claim_cooldown`, the wait said in minutes of real time and game days.
@@ -4388,6 +4776,7 @@ impl Game {
             let g = max_gen.entry(o.lineage).or_default();
             *g = (*g).max(o.generation);
         }
+        let mut ended_now: Vec<PlayerId> = Vec::new();
         for (p, lineage) in players {
             let Some(entry) = record.lineages.iter().find(|e| e.lineage == lineage) else { continue };
             let died: u64 = entry.deaths.values().sum();
@@ -4405,8 +4794,18 @@ impl Game {
                 };
                 let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{n} {}", word(c))).collect();
                 let eggs = if eggs_lost > 0 {
+                    // Most living members abandon their eggs: say so.
+                    let (abandon, layers) = self
+                        .world
+                        .organisms
+                        .iter()
+                        .filter(|o| o.alive && o.lineage == lineage && o.traits.birth.lays_eggs())
+                        .fold((0usize, 0usize), |(a, n), o| {
+                            (a + usize::from(o.traits.birth == evo_sim::design::BirthType::AbandonedEggs), n + 1)
+                        });
+                    let abandoned = layers > 0 && abandon * 2 > layers;
                     let why: Vec<String> =
-                        entry.eggs_lost.iter().map(|(c, n)| format!("{n} {}", egg_loss_why(c))).collect();
+                        entry.eggs_lost.iter().map(|(c, n)| format!("{n} {}", egg_loss_why(c, abandoned))).collect();
                     format!(" · {eggs_lost} egg{} lost ({})", if eggs_lost == 1 { "" } else { "s" }, why.join(", "))
                 } else {
                     String::new()
@@ -4421,7 +4820,8 @@ impl Game {
                     if causes.is_empty() { String::new() } else { format!(" ({})", causes.join(", ")) },
                     entry.alive
                 );
-                self.alert(p, AlertKind::DailySummary, text, None, out);
+                // Stamped with the day it is about (the feed shows "day N" beside "Day N: …").
+                self.alert_on(p, AlertKind::DailySummary, text, None, record.day.saturating_sub(1), out);
             }
             let alive = entry.alive;
             let share = record.legacy.iter().find(|e| e.player == p).map_or(0.0, |e| e.share);
@@ -4455,10 +4855,16 @@ impl Game {
             if alive == 0 && !prog.extinct {
                 prog.extinct = true;
                 texts.push((AlertKind::Milestone, "Your lineage has no living organisms left.".to_string()));
+                // A re-founding soon after costs founders (`refound_terms`).
+                ended_now.push(p);
             }
             for (kind, text) in texts {
                 self.alert(p, kind, text, None, out);
             }
+        }
+        for p in ended_now {
+            self.economy.retired_day.insert(p, record.day);
+            self.economy.died_out.insert(p);
         }
     }
 
@@ -4547,7 +4953,7 @@ impl Game {
                         _ => true,
                     };
                     if paid {
-                        self.season.add_survival(a.player);
+                        self.season.add_survival(a.player, catastrophe);
                     }
                 }
                 _ => {}
@@ -4614,6 +5020,7 @@ impl Game {
                 founder: s.founder,
                 founder_name: s.founder.map(|p| self.name(p)),
                 namer: self.species_namer(s),
+                named: self.economy.named_species.contains_key(&s.id),
                 dominant: s.dominant,
                 dominant_name: self.name(s.dominant),
                 dominant_share: s.dominant_share,
@@ -5275,9 +5682,10 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
         }
         AchievementKind::NicheDominance { era, niche, share } => {
             let (axis, what) = niche.split_once(':').unwrap_or(("niche", niche));
-            let label = if axis == "diet" { format!("{what}s") } else { format!("the {what}") };
+            // "among herbivores" for a diet, "in the forest" for a biome.
+            let label = if axis == "diet" { format!("among {what}s") } else { format!("in the {what}") };
             format!(
-                "Niche dominance: era {} ended with {:.0}% of breeding alleles among {label} yours.",
+                "Niche dominance: when era {} ended, {:.0}% of the breeding alleles {label} were yours.",
                 era + 1,
                 share * 100.0
             )
@@ -5343,6 +5751,55 @@ fn target_data(asked: Vec2, used: Vec2, note: &str) -> serde_json::Value {
         v["note"] = note.into();
     }
     v
+}
+
+/// Why a migration ended without arriving, from the group's state then:
+/// the alert's sentence and a short form for the group's card.
+fn timeout_reason(dormant_share: f32, basking_share: f32, never_moved: bool) -> (String, &'static str) {
+    if dormant_share >= 0.5 {
+        (
+            format!(
+                "{:.0}% of the group is dormant (hibernating or estivating) and can't walk; migrate again once it wakes",
+                dormant_share * 100.0
+            ),
+            "dormant",
+        )
+    } else if basking_share >= 0.5 {
+        (
+            format!(
+                "{:.0}% of the group was basking or resting (cold-blooded animals warm up before they travel); \
+                 migrate again in warmer weather, or to a nearer point",
+                basking_share * 100.0
+            ),
+            "too cold to travel",
+        )
+    } else if never_moved {
+        (
+            "it never got going: the way may be blocked (water it can't cross, cliffs) or the group too busy with \
+             hunger and thirst. Try a nearer point on its side of the water"
+                .to_string(),
+            "never got going",
+        )
+    } else {
+        ("it stopped getting closer. Rally it, or migrate again to a nearer point".to_string(), "stalled")
+    }
+}
+
+/// Say in a command's reply which of the group's standing orders it
+/// replaced (`replaced`, and a sentence in `note`): a rally or claim used
+/// to cancel a migration without a word.
+fn note_replaced(data: &mut serde_json::Value, before: &[&'static str], new: &str) {
+    let _ = new;
+    let gone: Vec<&str> = before.to_vec();
+    if gone.is_empty() {
+        return;
+    }
+    data["replaced"] = gone.clone().into();
+    let text = format!("this replaces the group's {}", gone.join(" and "));
+    data["note"] = match data["note"].as_str() {
+        Some(n) => format!("{n}; {text}").into(),
+        None => text.into(),
+    };
 }
 
 /// Put a command's warnings in its reply: `warnings` (a list) and
@@ -5506,7 +5963,7 @@ mod tests {
             .find(|x| x.kind == AlertKind::DailySummary)
             .expect("a day with lost eggs is summarised");
         assert!(
-            summary.text.contains("6 eggs lost (5 chilled: no parent was warming them, 1 eaten by egg raiders)"),
+            summary.text.contains("6 eggs lost (5 chilled: no parent was brooding them (it strayed too far from the nest, or died), 1 eaten by egg raiders)"),
             "{}",
             summary.text
         );
@@ -5515,6 +5972,22 @@ mod tests {
         // Counted once: the next day reports none.
         let out = run_days(&mut g, 1);
         assert!(alerts_in(&out, 3).iter().all(|x| !x.text.contains("eggs lost")));
+    }
+
+    /// A lineage that abandons its eggs is told they lie exposed by design,
+    /// not that no parent was warming them (playtest 4).
+    #[test]
+    fn chilled_abandoned_eggs_are_worded_as_by_design() {
+        let (mut g, _, _) = game();
+        g.set_name(3, "cat");
+        let ok =
+            g.found(3, &FounderDesign::new("Frogs", Thermo::Cold, BirthType::AbandonedEggs, 8).founders(6)).unwrap();
+        run_days(&mut g, 1);
+        let counts = g.world.counters.eggs.entry(ok.lineage).or_default();
+        (counts.laid, counts.chilled) = (9, 4);
+        let out = run_days(&mut g, 1);
+        let summary = alerts_in(&out, 3).into_iter().find(|x| x.kind == AlertKind::DailySummary).expect("summary");
+        assert!(summary.text.contains("4 chilled: abandoned eggs lie exposed, by design"), "{}", summary.text);
     }
 
     #[test]
@@ -5701,9 +6174,11 @@ mod tests {
         let d = reply_data(&out);
         assert_eq!((d["group"].as_u64(), d["moved"].as_u64()), (Some(1), Some(a.len() as u64 / 2)));
         // Group 1 holds a territory; the main group migrates.
-        let out = g.command(10, 1, None, ClientMsg::ClaimTerritory { group: 1, x: 20.0, y: 22.0, radius: 500.0 });
+        // (Near the group: a claim farther than FAR_CLAIM_TILES migrates first.)
+        let (cx, cy) = g.world.group_middle(1, 1).map(|m| (m.x.round(), m.y.round())).unwrap();
+        let out = g.command(10, 1, None, ClientMsg::ClaimTerritory { group: 1, x: cx, y: cy, radius: 500.0 });
         let t: TerritoryView = serde_json::from_value(reply_data(&out)).unwrap();
-        assert_eq!((t.x, t.y), (20.0, 22.0));
+        assert_eq!((t.x, t.y), (cx, cy));
         let out = g.command(10, 1, None, ClientMsg::Migrate { x: 50.0, y: 50.0, group: Some(0) });
         assert_eq!(result(&out), (true, None));
         let s = g.state_for(10).unwrap();
@@ -5746,7 +6221,7 @@ mod tests {
         let empty = ClientMsg::Migrate { x: 20.0, y: 20.0, group: Some(5) };
         assert_eq!(code(&mut g, 10, 1, empty).as_deref(), Some("no_such_group"));
         assert_eq!(code(&mut g, 10, 1, ClientMsg::ClearMigration { group: Some(5) }).as_deref(), Some("no_such_group"));
-        assert_eq!(g.world.territory(1, 1).map(|t| (t.center.x, t.center.y)), Some((20.0, 22.0)));
+        assert_eq!(g.world.territory(1, 1).map(|t| (t.center.x, t.center.y)), Some((cx, cy)));
         // Bob can't touch ann's groups: his own group 1 doesn't exist.
         assert_eq!(code(&mut g, 20, 2, ClientMsg::AbandonTerritory { group: 1 }).as_deref(), Some("no_territory"));
         assert_eq!(code(&mut g, 20, 2, ClientMsg::MergeGroups { from: 1, into: 0 }).as_deref(), Some("no_such_group"));
@@ -6780,6 +7255,9 @@ mod tests {
         let d = data(&out);
         assert_eq!(d["added"].as_array().unwrap().len(), economy::REINFORCE_SIZE as usize);
         assert_eq!(d["shop"]["reinforce_price"], 300);
+        // The reply says where they landed, beside how many of the lineage.
+        assert!(d["at"][0].as_f64().is_some() && d["at"][1].as_f64().is_some(), "{d}");
+        assert!(d["group"].as_u64().is_some_and(|n| n > 0), "{d}");
         assert_eq!(alive(&g), n + economy::REINFORCE_SIZE as usize);
         let lineage = g.lineage_of(1).unwrap();
         assert!(g.world.organisms.iter().filter(|o| o.owner == 1).all(|o| o.lineage == lineage));
@@ -6855,6 +7333,42 @@ mod tests {
         assert_eq!(g.world.rendezvous_of(fa), None, "the rendezvous ends with the agreement");
     }
 
+    /// One accepted agreement per animal (playtest 4: one male held several
+    /// and reached none); an agreement whose pair sleeps waits, deadline
+    /// included; the pair meets on dry land.
+    #[test]
+    fn one_agreement_per_animal_and_sleep_pauses_the_deadline() {
+        let (mut g, a, b) = game();
+        let fem: Vec<OrgId> = b.iter().copied().filter(|&x| g.world.organism(x).unwrap().sex == Sex::Female).collect();
+        not_pregnant(&mut g, &fem);
+        let ma = male(&g, &a);
+        // Apart, so the first agreement stays open while they walk.
+        let far = g.world.map.clamp(g.world.organism(ma).unwrap().pos + Vec2::new(12.0, 0.0));
+        g.world.organisms.iter_mut().find(|o| o.id == fem[0]).unwrap().pos = far;
+        let id1 =
+            offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fem[0], price: None }));
+        let id2 =
+            offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fem[1], price: None }));
+        g.command(20, 2, None, ClientMsg::RespondMating { request: id1, accept: true, partner: None });
+        assert_eq!(g.offers.get(&id1).map(|o| o.status), Some(OfferStatus::Accepted));
+        {
+            let out = g.command(20, 2, None, ClientMsg::RespondMating { request: id2, accept: true, partner: None });
+            assert_eq!(result(&out).1.as_deref(), Some("organism_busy"));
+            assert_eq!(g.offers[&id2].status, OfferStatus::Pending);
+            let m = g.offers[&id1].meet.expect("a meeting point");
+            assert_eq!(g.world.map.tile_at(Vec2::new(m.0, m.1)).water_depth, 0.0, "on dry land");
+            // Both asleep: the deadline moves on with the clock.
+            for id in [ma, fem[0]] {
+                g.world.organisms.iter_mut().find(|o| o.id == id).unwrap().dormancy = Dormancy::Winter;
+            }
+            let before = g.offer_deadline(&g.offers[&id1].clone());
+            g.after_tick();
+            g.after_tick();
+            assert_eq!(g.offer_deadline(&g.offers[&id1].clone()), before + 2);
+            assert!(g.offer_view(id1).meet.unwrap().asleep);
+        }
+    }
+
     /// A pregnant dam can't be accepted into an agreement (her owner is
     /// told why), shows as busy on the market, and a promised dam can't get
     /// a fixed listing.
@@ -6916,13 +7430,89 @@ mod tests {
             assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)), (true, None));
         }
         run_days(&mut g, 2);
-        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)).1.as_deref(), Some("limit_reached"));
+        let out = g.command(10, 1, None, ClientMsg::Reinforce);
+        assert_eq!(result(&out).1.as_deref(), Some("limit_reached"));
+        assert!(format!("{out:?}").contains("the next is possible on day"), "{out:?}");
         let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
         assert_eq!(shop.reinforce_price, economy::reinforce_price(2), "the price doesn't reset either");
+        assert!(shop.reinforce_next_day.is_some() && shop.reinforce_next_minutes.is_some());
         run_days(&mut g, 3);
         let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
         assert_eq!((shop.reinforce_price, shop.reinforcements_bought), (economy::REINFORCE_BASE_PRICE, 0));
         // (The lineage may have grown past the size limit; only the window is checked here.)
+    }
+
+    /// A provision feeds and waters a small lineage's neediest adults for
+    /// 40 renown, at most 3 within a season's length, never a large one.
+    #[test]
+    fn a_provision_feeds_a_small_lineage() {
+        let (mut g, _, _) = game();
+        let _ = g.post(1, 5000, LedgerKind::Income, "test".into(), None, None);
+        let l = g.lineage_of(1).unwrap();
+        for o in g.world.organisms.iter_mut().filter(|o| o.lineage == l) {
+            o.matured = true;
+            o.needs.hunger = 80.0;
+            o.needs.thirst = 70.0;
+        }
+        let before = g.balance(1);
+        let d = data(&g.command(10, 1, None, ClientMsg::Provision));
+        let fed = d["fed"].as_u64().unwrap() as usize;
+        assert!(fed > 0 && fed <= economy::PROVISION_SIZE);
+        assert_eq!(g.balance(1), before - economy::PROVISION_PRICE);
+        let full = g.world.organisms.iter().filter(|o| o.lineage == l && o.needs.hunger <= 30.0 + 1e-3).count();
+        assert_eq!(full, fed, "the fed are 50 less hungry");
+        assert!(g.world.organisms.iter().filter(|o| o.lineage == l).all(|o| o.needs.thirst <= 70.0));
+        for _ in 1..economy::MAX_PROVISIONS_PER_SEASON {
+            assert_eq!(result(&g.command(10, 1, None, ClientMsg::Provision)), (true, None));
+        }
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Provision)).1.as_deref(), Some("limit_reached"));
+        let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
+        assert_eq!((shop.provisions_bought, shop.provisions_max), (3, 3));
+        assert!(shop.provision_blocked.is_some());
+        // A large lineage can't buy one.
+        g.economy.provision_days.clear();
+        g.world.config.lineage_cap = 5;
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Provision)).1.as_deref(), Some("too_large"));
+    }
+
+    /// A dam is listed or auctioned for at least [`DAM_MIN_FEE`] (a free
+    /// listing held her for nothing), a stud for anything; a hold lasts at
+    /// most [`HOLD_MAX_DAYS`] simulated days, whatever the clock.
+    #[test]
+    fn dam_listings_have_a_floor_and_holds_a_cap() {
+        let (mut g, a, _) = game();
+        let (fa, ma) = (female(&g, &a), male(&g, &a));
+        not_pregnant(&mut g, &[fa]);
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: 0, expires_days: None });
+        assert_eq!(result(&out).1.as_deref(), Some("bad_price"));
+        let out =
+            g.command(10, 1, None, ClientMsg::CreateAuction { organism: fa, reserve: 4, days: Some(2), ticks: None });
+        assert_eq!(result(&out).1.as_deref(), Some("bad_price"));
+        let out =
+            g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: DAM_MIN_FEE, expires_days: None });
+        assert_eq!(result(&out), (true, None));
+        let out = g.command(10, 1, None, ClientMsg::CreateListing { organism: ma, fee: 0, expires_days: None });
+        assert_eq!(result(&out), (true, None), "a stud may go for free");
+        g.cfg.purchase_deadline_ticks = u64::MAX / 4;
+        let o = Offer {
+            id: 1,
+            from: 2,
+            to: 1,
+            mine: 0,
+            partner: 0,
+            price: None,
+            status: OfferStatus::Accepted,
+            created_tick: 50,
+            listing: None,
+            escrow: 0,
+            fee: 0,
+            accepted_tick: Some(100),
+            warned: false,
+            lineage: None,
+            meet: None,
+        };
+        let tpd = g.world.config.ticks_per_day as u64;
+        assert_eq!(g.offer_deadline(&o), 100 + HOLD_MAX_DAYS * tpd);
     }
 
     /// Re-founding within a ranked season's length of retiring founds half
@@ -6931,16 +7521,43 @@ mod tests {
     fn refounding_soon_after_retiring_costs_founders() {
         let (mut g, _, _) = game();
         g.cfg.season_days = 4;
+        // A slow clock (a minute a tick): the real-time floor (30 minutes)
+        // is 30 ticks, under a day.
+        g.cfg.tick_ms = 60_000.0;
+        assert_eq!(g.refound_window_days(), 4);
         let l = g.lineage_of(1).unwrap();
         g.retire(1, l).unwrap();
         let ok = g.found(1, &design("A2").founders(10)).unwrap();
-        assert_eq!(ok.founders.len(), 5);
+        assert_eq!((ok.founders.len(), ok.requested), (5, 10));
+        assert!(ok.reduced.as_deref().unwrap().contains("retired"), "{:?}", ok.reduced);
+        assert!(ok.cost < design("A2").founders(10).point_cost() + 1e-6);
+        // The alert goes out live with the next tick.
+        g.world.step();
+        let out = g.after_tick();
+        assert!(alerts_in(&out, 1).iter().any(|a| a.text.starts_with("Re-founded: 5 of 10 founders")), "{out:?}");
         let l = g.lineage_of(1).unwrap();
         g.retire(1, l).unwrap();
         run_days(&mut g, 5);
         let ok = g.found(1, &design("A3").founders(10)).unwrap();
         assert_eq!(ok.founders.len(), 10, "long after the retire: the full design");
-        assert_eq!(g.refound_founders(2, 10), None, "Bob never retired");
+        assert_eq!(g.refound_founders(2, 10), None, "Bob's lineage lives");
+        // Dying out counts too (not only retiring).
+        wipe_out(&mut g, 2);
+        run_days(&mut g, 1);
+        let t = g.refound_terms(2).expect("re-founding after dying out");
+        assert!(t.reason.contains("died out"), "{}", t.reason);
+        assert_eq!(g.found(2, &design("B2").founders(10)).unwrap().founders.len(), 5);
+    }
+
+    /// The window is at least 30 real minutes: a 4-day season at 1 s a tick
+    /// lasts 3 minutes, so the window stretches to about 38 days.
+    #[test]
+    fn the_refound_window_has_a_real_time_floor() {
+        let (mut g, _, _) = game();
+        g.cfg.season_days = 4;
+        g.cfg.tick_ms = 1000.0;
+        let tpd = g.world.config.ticks_per_day as u64;
+        assert_eq!(g.refound_window_days(), (30 * 60u64).div_ceil(tpd));
     }
 
     /// Retiring hands animals mostly of a rival's genes to the rival, who is
@@ -7057,6 +7674,14 @@ mod tests {
             "b0b",
             "two  spaces",
             "--",
+            "Game Master",
+            "GM",
+            "Mod",
+            "Owner",
+            "Support",
+            "Sysop",
+            "wild",
+            "bob (alt)",
         ] {
             let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: bad.into() });
             assert_eq!(result(&out).1.as_deref(), Some("bad_title"), "{bad:?}");
@@ -7106,10 +7731,38 @@ mod tests {
         assert_eq!(result(&out), (true, None));
         assert_eq!(g.balance(1), before - economy::SPECIES_NAME_PRICE);
         assert_eq!(g.world.chronicle.species.get(id).unwrap().name, "Queen's grazers");
+        // Named once: shown as named, and not named (or charged) again.
+        assert!(g.chronicle().species.species.iter().any(|v| v.id == id && v.named));
+        let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: "Queen's herd".into() });
+        assert_eq!(result(&out).1.as_deref(), Some("already_named"));
+        assert_eq!(g.balance(1), before - economy::SPECIES_NAME_PRICE);
+    }
+
+    /// Playtest 4: lineage names were unfiltered ("Server Admin" with a
+    /// bidi override, public everywhere and the founding species' name).
+    /// One filter now for every chosen name, and old ones are cleaned.
+    #[test]
+    fn lineage_names_go_through_the_name_filter_and_old_ones_are_cleaned() {
+        let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        g.set_name(1, "Herdmaster4");
+        g.set_name(2, "bob");
+        for bad in ["Server Admin", "rtl\u{202e}nimdA", "<b>Herd</b>", "Herdrnaster4"] {
+            let r = g.found(2, &design(bad));
+            assert!(matches!(r, Err(FoundError::BadName(_))), "{bad:?}: {:?}", r.map(|o| o.lineage));
+        }
+        let ok = g.found(2, &design("Bob's grazers")).unwrap();
+        // A name saved before the filter is cleaned on a restore.
+        g.world.lineages[ok.lineage as usize].name = "Grazers\u{202e} of\u{200b} Admin".into();
+        let r = Game::resume(g.world.clone(), GameConfig::default(), g.saved(), Vec::new());
+        assert_eq!(r.world.lineages[ok.lineage as usize].name, format!("Lineage {}", ok.lineage));
+        g.world.lineages[ok.lineage as usize].name = "Grazers\u{202e} of\u{200b} the north".into();
+        let r = Game::resume(g.world.clone(), GameConfig::default(), g.saved(), Vec::new());
+        assert_eq!(r.world.lineages[ok.lineage as usize].name, "Grazers of the north");
     }
 
     fn display_text_ok(t: &str) -> bool {
-        shop::display_text(t, crate::design::MAX_NAME_LEN).is_ok()
+        crate::names::check(t, crate::design::MAX_NAME_LEN, crate::names::Kind::Species).is_ok()
     }
 
     /// The species a player's founding started can be named by that player
@@ -7134,6 +7787,27 @@ mod tests {
         let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: "Ann's runners".into() });
         assert_eq!(result(&out), (true, None));
         assert_eq!(g.chronicle().species.species.iter().find(|s| s.id == id).unwrap().name, "Ann's runners");
+    }
+
+    /// An initial species that holds a wild lineage can't be named by a
+    /// player, even one whose lineage leads it (playtest 4: the leader
+    /// renamed the Steppe antelope for everyone).
+    #[test]
+    fn initial_wild_species_cannot_be_renamed() {
+        let world = build_world(&WorldSettings { seed: 5, width: 64, height: 64, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        g.set_name(1, "ann");
+        let mine = g.found(1, &design("A")).unwrap().lineage;
+        run_days(&mut g, 2);
+        let wild = (0..g.world.lineages.len() as u32).find(|&l| g.world.lineages[l as usize].owner == WILD).unwrap();
+        let mut sp = g.world.chronicle.species.species.first().cloned().expect("a species");
+        (sp.origin, sp.founder, sp.extinct_day, sp.merged_into) =
+            (evo_sim::species::SpeciesOrigin::Initial, None, None, None);
+        sp.lineages = vec![(mine, 60.0), (wild, 40.0)];
+        assert_eq!(g.species_namer(&sp), None);
+        sp.lineages = vec![(mine, 60.0)];
+        sp.origin = evo_sim::species::SpeciesOrigin::Founding;
+        assert_eq!(g.species_namer(&sp), Some(1));
     }
 
     /// An auction lasts at least the wall-clock floor, whatever was asked.
@@ -7319,7 +7993,7 @@ mod tests {
         assert_eq!(g.offers[&id].escrow, 0);
         g.command(10, 1, None, ClientMsg::CancelMating { request: id });
         // An accepted agreement whose two never meet lapses at its
-        // deadline (the requester forfeits 10%, at least 1 renown).
+        // deadline (the requester forfeits 25%, at least 5 renown).
         let id = offer_id(&g.command(10, 1, None, ClientMsg::RequestMating { mine: ma, partner: fb, price: Some(10) }));
         // Back out of reach: they mustn't meet before the deadline.
         g.world.organisms.iter_mut().find(|o| o.id == fb).unwrap().pos = home;
@@ -7336,7 +8010,7 @@ mod tests {
         assert_eq!(refunds, 5);
         let income: u64 =
             g.ledger(1, 100).iter().filter(|e| e.kind == LedgerKind::Income).map(|e| e.delta as u64).sum();
-        assert_eq!(g.balance(1), start + income - 1, "every hold came back but the lapse fee");
+        assert_eq!(g.balance(1), start + income - 5, "every hold came back but the lapse fee");
         let t = trades(&mut g);
         let settled: Vec<_> = t.iter().map(|t| (t.status.as_str(), t.settlement.as_deref())).collect();
         assert_eq!(
@@ -7452,7 +8126,7 @@ mod tests {
         let c = g.found(3, &design("C")).unwrap().founders;
         g.connect(30, 3, "cat");
         let (fa, mb, mc) = (female(&g, &a), male(&g, &b), male(&g, &c));
-        let l = data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: 0, expires_days: None }))
+        let l = data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: 5, expires_days: None }))
             ["listing"]["id"]
             .as_u64()
             .unwrap();
@@ -7466,7 +8140,7 @@ mod tests {
         let out = g.command(20, 2, None, ClientMsg::BuyListing { listing: l, mine: mb });
         assert_eq!(result(&out), (true, None));
         let id = offer_id(&out);
-        assert_eq!(g.offers[&id].escrow, 0, "a free listing holds nothing");
+        assert_eq!(g.offers[&id].escrow, 5, "the fee is held");
         assert!(g.market(3, &MarketQuery::default()).unwrap().listings[0].busy);
         let out = g.command(30, 3, None, ClientMsg::BuyListing { listing: l, mine: mc });
         assert_eq!(result(&out).1.as_deref(), Some("listing_busy"));
@@ -7559,7 +8233,7 @@ mod tests {
         for (k, ids) in all.iter().enumerate() {
             let p = k as PlayerId + 1;
             for &id in ids {
-                fee = (fee * 7 + 3) % 31;
+                fee = (fee * 7 + 3) % 31 + 5;
                 let out = g.command(
                     p as u64 * 10,
                     p,
@@ -7836,7 +8510,7 @@ mod tests {
         assert_eq!(result(&out).1.as_deref(), Some("auction_listing"));
         let fa = female(&g, &a);
         let fixed =
-            data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: 3, expires_days: None }))
+            data(&g.command(10, 1, None, ClientMsg::CreateListing { organism: fa, fee: 5, expires_days: None }))
                 ["listing"]["id"]
                 .as_u64()
                 .unwrap();
@@ -8066,7 +8740,7 @@ mod tests {
                 10,
                 1,
                 None,
-                ClientMsg::CreateAuction { organism: fa, reserve: 2, days: None, ticks: Some(5) },
+                ClientMsg::CreateAuction { organism: fa, reserve: 5, days: None, ticks: Some(5) },
             );
             assert_eq!(result(&out), (true, None), "layout {layout}");
             assert_eq!(r.saved().version, SAVED_GAME_VERSION);
@@ -8081,7 +8755,7 @@ mod tests {
         let (ma, fa, fb, fc, mb) = (male(&g, &a), female(&g, &a), female(&g, &b), female(&g, &c), male(&g, &b));
         not_pregnant(&mut g, &[fa, fb, fc]);
         let create = |g: &mut Game, organism| {
-            data(&g.command(10, 1, None, ClientMsg::CreateAuction { organism, reserve: 4, days: Some(3), ticks: None }))
+            data(&g.command(10, 1, None, ClientMsg::CreateAuction { organism, reserve: 5, days: Some(3), ticks: None }))
                 ["listing"]["id"]
                 .as_u64()
                 .unwrap()
@@ -8200,13 +8874,15 @@ mod tests {
     }
 
     /// A bought listing whose buyer never brings their organism lapses at
-    /// the deadline: the dam is freed, the seller keeps a tenth of the fee
-    /// and the rest is refunded; bought for nothing, the buyer forfeits a
-    /// mating slot. (Buying a rival's dam and never coming held her until
+    /// the deadline: the dam is freed, the seller keeps a quarter of the fee
+    /// and the rest is refunded. (Free dam listings are refused: a buyer
+    /// would hold her for nothing.) (Buying a rival's dam and never coming held her until
     /// the season ended.)
     #[test]
     fn a_bought_listing_lapses_when_the_buyer_never_comes() {
-        for fee in [20u64, 0] {
+        // A dam is listed for at least [`DAM_MIN_FEE`]; the hold fee is a
+        // quarter of it, at least [`LAPSE_FEE_MIN`] (so all of a cheap one).
+        for fee in [20u64, DAM_MIN_FEE] {
             let (mut g, a, b) = game();
             g.cfg.purchase_deadline_ticks = 5;
             let (dam, stud) = (female(&g, &a), male(&g, &b));
@@ -8231,16 +8907,12 @@ mod tests {
                 .iter()
                 .any(|(_, m)| matches!(m, ServerMsg::MatingUpdate { error: Some(e), .. } if e.code == "lapsed"));
             assert!(told, "the parties hear why");
-            if fee > 0 {
-                let entry = |p: PlayerId, kind: LedgerKind| {
-                    g.ledger(p, 50).into_iter().find(|e| e.kind == kind && e.offer == Some(id)).map(|e| e.delta)
-                };
-                assert_eq!(entry(1, LedgerKind::Sale), Some(2), "a tenth of the fee to the seller");
-                assert_eq!(entry(2, LedgerKind::Refund), Some(18), "the rest refunded");
-                assert_eq!(g.world.mating_slots_left(2), slots);
-            } else {
-                assert_eq!(g.world.mating_slots_left(2), slots - 1, "a slot is forfeit");
-            }
+            let entry = |p: PlayerId, kind: LedgerKind| {
+                g.ledger(p, 50).into_iter().find(|e| e.kind == kind && e.offer == Some(id)).map(|e| e.delta)
+            };
+            assert_eq!(entry(1, LedgerKind::Sale), Some(5), "a quarter of the fee (at least 5) to the seller");
+            assert_eq!(entry(2, LedgerKind::Refund), (fee > 5).then_some(fee as i64 - 5), "the rest refunded");
+            assert_eq!(g.world.mating_slots_left(2), slots);
             // The dam is free to breed again once the listing is gone.
             g.command(10, 1, Some(3), ClientMsg::WithdrawListing { listing });
             for _ in 0..3 {
@@ -8256,11 +8928,11 @@ mod tests {
     }
 
     /// Cancelling a bought dam before the deadline isn't a free hold: the
-    /// buyer forfeits a tenth of the fee (or a slot); the seller cancelling
+    /// buyer forfeits a quarter of the fee; the seller cancelling
     /// refunds the buyer in full.
     #[test]
     fn a_buyer_cancelling_an_accepted_purchase_pays_for_the_hold() {
-        for (fee, by_buyer) in [(20u64, true), (0, true), (20, false)] {
+        for (fee, by_buyer) in [(20u64, true), (20, false)] {
             let (mut g, a, b) = game();
             let (dam, stud) = (female(&g, &a), male(&g, &b));
             g.command(10, 1, Some(1), ClientMsg::CreateListing { organism: dam, fee, expires_days: None });
@@ -8283,11 +8955,10 @@ mod tests {
             };
             match (fee, by_buyer) {
                 (20, true) => {
-                    assert_eq!(entry(&g, 1, LedgerKind::Sale), Some(2), "a tenth to the seller");
-                    assert_eq!(entry(&g, 2, LedgerKind::Refund), Some(18));
+                    assert_eq!(entry(&g, 1, LedgerKind::Sale), Some(5), "a quarter to the seller");
+                    assert_eq!(entry(&g, 2, LedgerKind::Refund), Some(15));
                     assert_eq!(g.world.mating_slots_left(2), slots);
                 }
-                (0, true) => assert_eq!(g.world.mating_slots_left(2), slots - 1, "a slot is forfeit"),
                 _ => {
                     assert_eq!(entry(&g, 1, LedgerKind::Sale), None);
                     assert_eq!(entry(&g, 2, LedgerKind::Refund), Some(20), "the seller backing out refunds all");
@@ -8445,7 +9116,7 @@ mod tests {
         let dam = female(&g, &a);
         let i = g.world.organism_index(dam).unwrap();
         g.world.organisms[i].pos = Vec2::new(3.3, 13.7);
-        let out = g.command(10, 1, Some(3), ClientMsg::CreateListing { organism: dam, fee: 0, expires_days: None });
+        let out = g.command(10, 1, Some(3), ClientMsg::CreateListing { organism: dam, fee: 5, expires_days: None });
         let l = &reply_data(&out)["listing"];
         assert_eq!((l["x"].as_f64(), l["y"].as_f64()), (Some(8.0), Some(8.0)));
         // A preview needs the partner in sight, on the market or in an
@@ -8456,6 +9127,8 @@ mod tests {
         assert!(result(&out).0, "{out:?}");
         let p = g.preview_mating(1, dam, stud).unwrap();
         assert_eq!(p.distance % 16.0, 0.0, "{}", p.distance);
+        let tenths = |x: f32| ((x * 10.0).round() - x * 10.0).abs() < 1e-4;
+        assert!(p.body_plan_gaps.iter().all(|g| tenths(g.gap)), "{:?}", p.body_plan_gaps);
         let listing = reply_data(&out)["listing"]["id"].as_u64().unwrap();
         g.command(20, 2, Some(10), ClientMsg::WithdrawListing { listing });
         assert_eq!(g.preview_mating(1, dam, stud).unwrap_err().code, "out_of_sight");
@@ -8590,8 +9263,8 @@ mod tests {
         let incomes: Vec<LedgerEntry> = g.ledger(1, 50).into_iter().filter(|e| e.kind == LedgerKind::Income).collect();
         assert!(!incomes.is_empty());
         for e in incomes {
-            // Paid as day `e.day` (from 0) starts, for the day just ended: day `e.day` counted from 1.
-            assert!(e.text.starts_with(&format!("Day {} income", e.day.max(1))), "{} vs day {}", e.text, e.day);
+            // Dated the day it is for (paid as the next one starts): the text names the entry's day.
+            assert!(e.text.starts_with(&format!("Day {} income", e.day + 1)), "{} vs day {}", e.text, e.day);
         }
     }
 
@@ -8652,11 +9325,17 @@ mod tests {
         let err = g.open_offer(2, 1, fb, ma, Some(g.balance(2) + 1), OfferStatus::Pending, None).unwrap_err();
         assert_eq!(err.code, "insufficient_funds");
         assert_eq!((g.offers.len(), g.balance(2)), (open, start + 18));
-        // Negative or oversized numbers never parse.
-        for bad in [
-            r#"{"type":"request_mating","mine":1,"partner":2,"price":-5}"#,
+        // Negative numbers never parse; oversized prices parse saturated, so
+        // the range check answers `bad_price` (playtest 4).
+        for big in [
             r#"{"type":"request_mating","mine":1,"partner":2,"price":1e30}"#,
             r#"{"type":"request_mating","mine":1,"partner":2,"price":18446744073709551616}"#,
+        ] {
+            let m = serde_json::from_str::<crate::protocol::ClientEnvelope>(big).unwrap();
+            assert!(matches!(m.msg, ClientMsg::RequestMating { price: Some(u64::MAX), .. }), "{big}");
+        }
+        for bad in [
+            r#"{"type":"request_mating","mine":1,"partner":2,"price":-5}"#,
             r#"{"type":"create_listing","organism":1,"fee":-1}"#,
             r#"{"type":"ledger","limit":-1}"#,
         ] {

@@ -40,6 +40,9 @@ describe('escort and lineage offers', () => {
     expect(meetText({ from_player: 1, meet }, 1)).toContain('56 tiles E of yours');
     expect(meetText({ from_player: 1, meet }, 2)).toContain('56 tiles W of yours');
     expect(meetText({ from_player: 1, meet: { ...meet, distance: 1 } }, 1)).toBe('The two are meeting now.');
+    expect(meetText({ from_player: 1, meet: { ...meet, asleep: true } }, 1)).toContain('Both are asleep');
+    expect(meetText({ from_player: 1, meet: { ...meet, meet_x: 32, meet_y: 4, possessed: true } }, 1))
+      .toContain('meet near 32, 4 (E of yours). One is possessed');
     expect(meetText({ from_player: 1 }, 1)).toBeNull();
   });
   it("names an offer to a lineage as the owner's pick, never #0", () => {

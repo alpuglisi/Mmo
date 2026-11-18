@@ -23,70 +23,11 @@ use evo_sim::{PlayerId, WILD};
 use super::Game;
 use crate::design::gene_key;
 use crate::economy;
+use crate::names;
 use crate::protocol::{
     CompatibilityRow, CompatibilityView, CrowdingView, DesignCompatView, ErrorInfo, GeneHost, GeneSource, LedgerKind,
     ListingView, ScoreBreakdown, ShopView,
 };
-
-/// `text` trimmed, if it has 1 to `max` characters and no control
-/// characters.
-fn clean_text(text: &str, max: usize) -> Option<String> {
-    let t = text.trim();
-    let n = t.chars().count();
-    (n >= 1 && n <= max && !t.chars().any(char::is_control)).then(|| t.to_string())
-}
-
-/// Punctuation a title or species name may use besides letters, digits and
-/// single spaces: nothing that reads as markup (`<`, `>`, `&`, quotes,
-/// slashes, brackets).
-const DISPLAY_PUNCTUATION: &str = ".,'!?-:+#()";
-
-/// Words a title or species name may not contain (once folded like a
-/// name's skeleton, spaces and punctuation dropped): they would pass for
-/// the server's own voice.
-const RESERVED_WORDS: &[&str] = &["admin", "moderator", "server", "staff", "system", "official", "developer"];
-
-/// A title or species name shown to other players (playtest 3: bidi
-/// overrides, zero-width characters, markup and "Server Admin" were
-/// accepted): ASCII letters, digits, single spaces and
-/// [`DISPLAY_PUNCTUATION`] only, like player names ASCII so there are no
-/// look-alike letters, and none of the [`RESERVED_WORDS`]. The reason when
-/// refused.
-pub(crate) fn display_text(text: &str, max: usize) -> Result<String, &'static str> {
-    let t = clean_text(text, max).ok_or("empty, too long or with control characters")?;
-    if !t.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || DISPLAY_PUNCTUATION.contains(c)) {
-        return Err("only letters, digits, spaces and . , ' ! ? - : + # ( )");
-    }
-    if t.contains("  ") {
-        return Err("no double spaces");
-    }
-    if !t.chars().any(|c| c.is_ascii_alphanumeric()) {
-        return Err("at least one letter or digit");
-    }
-    let folded = fold(&t);
-    if RESERVED_WORDS.iter().any(|w| folded.contains(&fold(w))) {
-        return Err("it would pass for the server or its staff");
-    }
-    Ok(t)
-}
-
-/// A text folded for look-alike comparison: a name's skeleton
-/// (`accounts::name_skeleton`) of its letters and digits only,
-/// with the usual digit stand-ins for letters (`3` e, `4` a, `5` s, `7` t).
-fn fold(text: &str) -> String {
-    let alnum: String = text
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .map(|c| match c {
-            '3' => 'e',
-            '4' => 'a',
-            '5' => 's',
-            '7' => 't',
-            c => c,
-        })
-        .collect();
-    crate::accounts::name_skeleton(&alnum)
-}
 
 /// Adults of each lineage compared in a compatibility check.
 const SAMPLE: usize = 16;
@@ -214,7 +155,92 @@ impl Game {
             nameplate_colors: economy::NAMEPLATE_COLORS.iter().map(|c| c.to_string()).collect(),
             nameplate: self.economy.nameplates.get(&player).cloned(),
             species_name_price: economy::SPECIES_NAME_PRICE,
+            provision_price: economy::PROVISION_PRICE,
+            provisions_bought: self.recent_count(self.economy.provision_days.get(&player)),
+            provisions_max: economy::MAX_PROVISIONS_PER_SEASON,
+            provision_blocked: self.provision_blocked(player).err().map(|e| e.message),
+            reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
+            reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
         }
+    }
+
+    /// Purchases in `days` within the last ranked season's length.
+    fn recent_count(&self, days: Option<&Vec<u64>>) -> u32 {
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        days.map_or(0, |d| d.iter().filter(|&&day| day + window > today).count() as u32)
+    }
+
+    /// When the reinforcement window frees a slot, if it is full: the day
+    /// and about how many real minutes from now.
+    fn reinforce_next(&self, player: PlayerId) -> Option<(u64, u64)> {
+        let days = self.economy.reinforce_days.get(&player)?;
+        if self.recent_count(Some(days)) < economy::MAX_REINFORCEMENTS_PER_SEASON {
+            return None;
+        }
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        let oldest = days.iter().copied().filter(|&d| d + window > today).min()?;
+        let day = oldest + window;
+        let minutes =
+            ((day - today) as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).ceil();
+        Some((day, minutes as u64))
+    }
+
+    /// Why `player` can't buy a provision now (their lineage otherwise).
+    fn provision_blocked(&self, player: PlayerId) -> Result<u32, ErrorInfo> {
+        let Some(lineage) = self.lineage_of(player).filter(|_| !self.is_extinct(player)) else {
+            return Err(ErrorInfo::new("no_lineage", "you have no living lineage to provision"));
+        };
+        let max = self.reinforce_max_alive();
+        let alive = self.owner_population(player);
+        if alive > max {
+            return Err(ErrorInfo::new(
+                "too_large",
+                format!("provisions are for lineages of at most {max} (yours has {alive})"),
+            ));
+        }
+        if self.recent_count(self.economy.provision_days.get(&player)) >= economy::MAX_PROVISIONS_PER_SEASON {
+            return Err(ErrorInfo::new(
+                "limit_reached",
+                format!(
+                    "at most {} provisions within a ranked season's length ({} days)",
+                    economy::MAX_PROVISIONS_PER_SEASON,
+                    self.cfg.season_days
+                ),
+            ));
+        }
+        Ok(lineage)
+    }
+
+    /// `provision`: the lineage's hungriest or thirstiest adults are fed and
+    /// watered a little. The number fed and the shop after.
+    pub(super) fn provision(&mut self, player: PlayerId) -> Result<(usize, ShopView), ErrorInfo> {
+        let lineage = self.provision_blocked(player)?;
+        let mut needy: Vec<usize> = (0..self.world.organisms.len())
+            .filter(|&i| {
+                let o = &self.world.organisms[i];
+                o.alive && o.lineage == lineage && o.matured
+            })
+            .collect();
+        if needy.is_empty() {
+            return Err(ErrorInfo::new("no_adults", "your lineage has no adult to provision"));
+        }
+        let need = |i: usize| {
+            let n = &self.world.organisms[i].needs;
+            n.hunger.max(n.thirst)
+        };
+        needy.sort_by(|&a, &b| need(b).total_cmp(&need(a)).then(a.cmp(&b)));
+        needy.truncate(economy::PROVISION_SIZE);
+        self.spend(player, economy::PROVISION_PRICE, format!("Provision: {} adults fed and watered", needy.len()))?;
+        for &i in &needy {
+            let n = &mut self.world.organisms[i].needs;
+            n.hunger = (n.hunger - economy::PROVISION_AMOUNT).max(0.0);
+            n.thirst = (n.thirst - economy::PROVISION_AMOUNT).max(0.0);
+        }
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        let days = self.economy.provision_days.entry(player).or_default();
+        days.retain(|&d| d + window > today);
+        days.push(today);
+        Ok((needy.len(), self.shop_view(player)))
     }
 
     /// `set_nameplate`.
@@ -230,12 +256,12 @@ impl Game {
                 format!("the palette is {}", economy::NAMEPLATE_COLORS.join(", ")),
             ));
         }
-        let title = display_text(title, economy::MAX_TITLE_LEN).map_err(|why| {
-            ErrorInfo::new("bad_title", format!("a title has 1 to {} characters: {why}", economy::MAX_TITLE_LEN))
-        })?;
-        // Nor another player's name (it shows beside the owner's).
-        if self.impersonates(player, &title) {
-            return Err(ErrorInfo::new("bad_title", "a title can't look like another player's name"));
+        let title = names::check(title, economy::MAX_TITLE_LEN, names::Kind::Title)
+            .map_err(|why| ErrorInfo::new("bad_title", format!("that title can't be used: {why}")))?;
+        // Nor another player's name, or one inside it (it shows beside the
+        // owner's: "Herdmaster4 (alt)").
+        if self.impersonates(player, &title, names::Kind::Title) {
+            return Err(ErrorInfo::new("bad_title", "that title can't be used: it looks like another player's name"));
         }
         let price = if self.economy.nameplates.contains_key(&player) {
             economy::NAMEPLATE_CHANGE_PRICE
@@ -250,13 +276,9 @@ impl Game {
 
     /// `name_species`: rename a living species `player` founded.
     pub(super) fn name_species(&mut self, player: PlayerId, species: u32, name: &str) -> Result<String, ErrorInfo> {
-        let name = display_text(name, crate::design::MAX_NAME_LEN).map_err(|why| {
-            ErrorInfo::new(
-                "bad_name",
-                format!("a species name has 1 to {} characters: {why}", crate::design::MAX_NAME_LEN),
-            )
-        })?;
-        if self.impersonates(player, &name) {
+        let name = names::check(name, crate::design::MAX_NAME_LEN, names::Kind::Species)
+            .map_err(|why| ErrorInfo::new("bad_name", format!("that species name can't be used: {why}")))?;
+        if self.impersonates(player, &name, names::Kind::Species) {
             return Err(ErrorInfo::new("bad_name", "a species name can't look like another player's name"));
         }
         let tracker = &self.world.chronicle.species;
@@ -271,8 +293,12 @@ impl Game {
                 "only a species your lineage founded (or split off) can be named by you",
             ));
         }
+        // Named once: the name stands (the World tab no longer offers it).
+        if let Some(&by) = self.economy.named_species.get(&species) {
+            return Err(ErrorInfo::new("already_named", format!("{} has already named this species", self.name(by))));
+        }
         // Look-alikes count as taken, as for player names.
-        if tracker.species.iter().any(|o| o.id != species && fold(&o.name) == fold(&name)) {
+        if tracker.species.iter().any(|o| o.id != species && names::fold(&o.name) == names::fold(&name)) {
             return Err(ErrorInfo::new("name_taken", "another species has that name"));
         }
         self.spend(player, economy::SPECIES_NAME_PRICE, format!("Named species {species} \"{name}\""))?;
@@ -283,10 +309,9 @@ impl Game {
         Ok(name)
     }
 
-    /// Whether `text` looks like another player's name (folded alike).
-    fn impersonates(&self, player: PlayerId, text: &str) -> bool {
-        let f = fold(text);
-        self.names.iter().any(|(&p, n)| p != player && fold(n) == f)
+    /// Whether `text` looks like another player's name (`names::impersonates`).
+    pub(crate) fn impersonates(&self, player: PlayerId, text: &str, kind: names::Kind) -> bool {
+        names::impersonates(text, self.names.iter().filter(|(&p, _)| p != player).map(|(_, n)| n.as_str()), kind)
     }
 
     /// Who may name species `s`: the player credited with a split, or for a
@@ -301,6 +326,13 @@ impl Game {
             return s.founder;
         }
         if s.origin == evo_sim::species::SpeciesOrigin::Split {
+            return None;
+        }
+        // An initial species that holds a wild lineage is the wild one's:
+        // nobody renames it for everyone (playtest 4: the leading player
+        // renamed the Steppe antelope).
+        let wild_lineage = |l: u32| self.world.lineages.get(l as usize).is_some_and(|x| x.owner == evo_sim::WILD);
+        if s.origin == evo_sim::species::SpeciesOrigin::Initial && s.lineages.iter().any(|&(l, _)| wild_lineage(l)) {
             return None;
         }
         let owner = self.world.lineages.get(s.main_lineage()? as usize)?.owner;
@@ -339,9 +371,13 @@ impl Game {
             return Err(ErrorInfo::new(
                 "limit_reached",
                 format!(
-                    "at most {} reinforcements within a ranked season's length ({} days; retired lineages count)",
+                    "at most {} reinforcements within a ranked season's length ({} days; retired lineages count){}",
                     economy::MAX_REINFORCEMENTS_PER_SEASON,
-                    self.cfg.season_days
+                    self.cfg.season_days,
+                    self.reinforce_next(player).map_or(String::new(), |(d, m)| format!(
+                        ": the next is possible on day {} (about {m} real minutes)",
+                        d + 1
+                    ))
                 ),
             ));
         }
@@ -388,7 +424,7 @@ impl Game {
     }
 
     /// `reinforce`: the new members' ids and the shop after.
-    pub(super) fn reinforce(&mut self, player: PlayerId) -> Result<(Vec<u64>, ShopView), ErrorInfo> {
+    pub(super) fn reinforce(&mut self, player: PlayerId) -> Result<(Vec<u64>, ShopView, ReinforceSite), ErrorInfo> {
         let lineage = self.reinforce_blocked(player)?;
         let n = self.reinforcements_this_season(player);
         let price = economy::reinforce_price(n);
@@ -401,7 +437,29 @@ impl Game {
         if ids.is_empty() {
             return Err(ErrorInfo::new("lineage_full", "no room for reinforcements"));
         }
-        self.spend(player, price, format!("Reinforcements: {} adults joined your lineage", ids.len()))?;
+        // Where they landed, and how many of the lineage stand around them.
+        let landed: Vec<evo_sim::math::Vec2> =
+            ids.iter().filter_map(|&id| self.world.organism(id)).map(|o| o.pos).collect();
+        let n_landed = landed.len().max(1) as f32;
+        let at = landed.iter().fold(evo_sim::math::Vec2::ZERO, |a, &p| a + p) * (1.0 / n_landed);
+        let group = self
+            .world
+            .organisms
+            .iter()
+            .filter(|o| o.alive && o.lineage == lineage && !ids.contains(&o.id))
+            .filter(|o| o.pos.dist(at) < evo_sim::World::REINFORCE_CLUSTER)
+            .count();
+        let site = ReinforceSite { at: [at.x, at.y], group };
+        self.spend(
+            player,
+            price,
+            format!(
+                "Reinforcements: {} adults joined your lineage at ({:.0}, {:.0}), beside {group} of its animals",
+                ids.len(),
+                at.x,
+                at.y
+            ),
+        )?;
         let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
         let days = self.economy.reinforce_days.entry(player).or_default();
         days.retain(|&d| d + window > today);
@@ -409,7 +467,7 @@ impl Game {
         let _ = n;
         // New organisms: the next state build indexes the world again.
         self.state_cache.invalidate();
-        Ok((ids, self.shop_view(player)))
+        Ok((ids, self.shop_view(player), site))
     }
 
     /// One row per other lineage with living adults: `own` against a
@@ -504,6 +562,17 @@ impl Game {
             rows,
             shore_access,
             water_warning,
+            refound: self.refound_terms(player).map(|t| {
+                let n = t.founders(design.founders);
+                crate::protocol::RefoundView {
+                    founders: n,
+                    requested: design.founders,
+                    cost: design.clone().founders(n).point_cost(),
+                    until_day: t.until_day,
+                    minutes_left: t.minutes_left,
+                    reason: t.reason,
+                }
+            }),
         }
     }
 
@@ -563,10 +632,11 @@ impl Game {
             if pay > 0 {
                 let text = format!(
                     "Day {} royalty: {:.2}% of all alleles are yours and live in other players' lineages",
-                    day + 1,
+                    // The day just ended, counted from 1, as income names it.
+                    day.max(1),
                     exported * 100.0
                 );
-                let _ = self.post(p, pay as i64, LedgerKind::Royalty, text, None, None);
+                let _ = self.post_on(p, pay as i64, LedgerKind::Royalty, text, None, None, day.saturating_sub(1));
             }
         }
     }
@@ -646,4 +716,12 @@ impl Game {
             hunger,
         })
     }
+}
+
+/// Where a purchase's reinforcements landed: their centre, and how many of
+/// the lineage's animals stand within `World::REINFORCE_CLUSTER` tiles of it.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub(super) struct ReinforceSite {
+    pub at: [f32; 2],
+    pub group: usize,
 }

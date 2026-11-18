@@ -392,9 +392,24 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (s && !window.confirm(`Buy reinforcements for ${s.reinforce_price} renown? ${s.reinforce_size} young adults copied from your own join your lineage. The price doubles with each purchase, at most ${s.reinforcements_max ?? 2} within a ranked season's length.`)) return;
     const r = await deps.send({ type: 'reinforce' });
     if (r.ok) {
-      const d = r.data as { added?: unknown[]; shop?: unknown } | undefined;
+      const d = r.data as { added?: unknown[]; shop?: unknown; at?: [number, number]; group?: number } | undefined;
       shop = parseShopView(d?.shop) ?? shop;
-      model.toast('info', `${d?.added?.length ?? 0} adults joined your lineage.`);
+      const where = d?.at ? ` at (${Math.round(d.at[0])}, ${Math.round(d.at[1])}), beside ${d.group ?? 0} of your animals` : '';
+      model.toast('info', `${d?.added?.length ?? 0} adults joined your lineage${where}.`);
+      render();
+    }
+  });
+  // A provision (a sink for small lineages): feeds and waters the neediest adults.
+  const provBtn = h('button', { id: 'shop-provision', class: 'secondary' }) as HTMLButtonElement;
+  const provNote = h('span', { class: 'muted small' });
+  provBtn.addEventListener('click', async () => {
+    const s = shop;
+    if (s && !window.confirm(`Buy a provision for ${s.provision_price} renown? Your lineage's 20 hungriest or thirstiest adults get 50 off their hunger and thirst, once.`)) return;
+    const r = await deps.send({ type: 'provision' });
+    if (r.ok) {
+      const d = r.data as { fed?: number; shop?: unknown } | undefined;
+      shop = parseShopView(d?.shop) ?? shop;
+      model.toast('info', `${d?.fed ?? 0} adults fed and watered.`);
       render();
     }
   });
@@ -405,6 +420,9 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const plateNote = h('span', { class: 'muted small' });
   const plateRow = h('div', { class: 'row', hidden: true }, plateColor, plateTitle, plateBtn, plateNote);
   plateBtn.addEventListener('click', async () => {
+    const s = shop;
+    const title = plateTitle.value.trim();
+    if (s && !window.confirm(`${s.nameplate ? 'Change' : 'Buy'} your nameplate for ${s.nameplate_price ?? '?'} renown? ${plateColor.value}${title ? `, "${title}"` : ', no title'}: it is cosmetic, shown with your name.`)) return;
     const r = await deps.send({ type: 'set_nameplate', color: plateColor.value, title: plateTitle.value });
     if (r.ok) {
       const d = r.data as { shop?: unknown } | undefined;
@@ -428,7 +446,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     setText(plateBtn, `${s.nameplate ? 'Change' : 'Buy'} nameplate: ${s.nameplate_price ?? '?'} renown`);
     setText(plateNote, `Cosmetic: shown with your name.${s.species_name_price ? ` Naming a species your lineage founded costs ${s.species_name_price}.` : ''}`);
   }
-  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), plateRow);
+  const provRow = h('div', { class: 'row', hidden: true }, provBtn, provNote);
+  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote), provRow, plateRow);
   const shopLoading = h('p', { class: 'muted small' }, 'Loading…');
   shopEl.replaceChildren(shopLoading, shopBody);
 
@@ -446,6 +465,13 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     reinBtn.title = blocked ?? `${s.reinforce_size} adults copied from your own join your lineage`;
     setText(reinBtn, `Reinforcements (${s.reinforce_size} adults): ${s.reinforce_price} renown`);
     setText(reinNote, blocked ?? `For lineages of at most ${s.reinforce_max_alive}; the price doubles with each, at most ${s.reinforcements_max ?? '?'} a ranked season (${s.reinforcements_bought ?? 0} bought).`);
+    provRow.hidden = s.provision_price === undefined;
+    if (s.provision_price !== undefined) {
+      provBtn.disabled = s.provision_blocked !== undefined || s.balance < s.provision_price;
+      provBtn.title = s.provision_blocked ?? 'The 20 neediest adults get 50 off hunger and thirst';
+      setText(provBtn, `Provision (20 adults fed): ${s.provision_price} renown`);
+      setText(provNote, s.provision_blocked ?? `For lineages of at most ${s.reinforce_max_alive}; at most ${s.provisions_max ?? '?'} a ranked season (${s.provisions_bought ?? 0} bought).`);
+    }
     renderNameplate(s);
   }
 

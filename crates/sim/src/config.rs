@@ -1075,6 +1075,46 @@ pub struct Balance {
     /// on the same pasture and starve. 0: all wake on the first spring day.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
     pub wake_spread: f32,
+    // Competitive balance after playtest 4 (version 49; *Playtest 4:
+    // balance* in the README). Off at 0, what snapshots before version 49
+    // read (`serde_util::before_v49`).
+    /// Winter rest for cold-blooded animals: in winter their breeding drive
+    /// drains instead of building, even when they wake to bask on mild days,
+    /// and a brumator awake in winter pays the winter toll as if asleep
+    /// (out in the cold). Playtest 4: roused brumators kept breeding through
+    /// winters (370 → 571, 1,211 → 1,895) with no deaths but old age. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
+    pub winter_rest: f32,
+    /// Strong learned avoidance of toxic prey: once a hunter's lineage has
+    /// learned a toxin (`World::toxic_lesson`), it recognises the prey
+    /// `0.7 + 0.3 × coloration` of the time (drab 70%, bright 90%+) instead of
+    /// `0.3 + 0.7 × coloration`. Playtest 4: 65% of hunters still ate known
+    /// toxic prey and died. 0: the version 44 recognition.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
+    pub toxic_avoidance: f32,
+    /// Eggs keep warm while their brooding parent is alive but off the
+    /// nest: an attended clutch (its guardian alive, within 12 tiles) chills
+    /// at `1 − 0.8 × egg_attendance` of the rate of a lost one (0.6 at the
+    /// default 0.5; at 1 the egg-laying hibernator took 17 of 40 titles in
+    /// the dominance replay). Playtest 4: incubated clutches chilled more
+    /// than they hatched (351 chilled vs 304 born) because parents left to
+    /// eat and drink. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
+    pub egg_attendance: f32,
+    /// Player species identity: a cluster most of whose adults belong to
+    /// one player lineage that wasn't among a wild species' founders isn't
+    /// filed under that initial wild species; it is (or becomes) the player
+    /// lineage's own species. Playtest 4: every starter lineage ended up
+    /// "Steppe antelope" (no founding credit, no naming). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
+    pub player_species: f32,
+    /// Most offspring raised an adult counts for in the weighted legacy
+    /// share (`LegacySnapshot::weighted`): alleles × min(raised, cap). The
+    /// weight was the lifetime count, so an old, prolific cohort dominated
+    /// the weighted share and its die-off swung it by 7–13 points within 60
+    /// days (playtest 4). 0: uncapped.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
+    pub raised_cap: f32,
     // Playtest 3 founding and drinking fixes (version 47). Off at 0, what
     // snapshots before version 47 read (`serde_util::before_v47`).
     /// Thirsty animals head for a shore spot they can walk to and drink
@@ -1090,9 +1130,21 @@ pub struct Balance {
     /// earlier foundings died (avoided). 0: the old search.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v47"))]
     pub founding_conditions: f32,
-    // Playtest 4 predators and dormancy (version 48; *Playtest 4:
+    /// Playtest 4 founding safety (version 50; off at 0, what snapshots
+    /// before version 50 read, `serde_util::before_v50`). In a running
+    /// world, founders settle only on dry land: no water or ice on the tile
+    /// and no lake bed or river channel under it (`Ground::base_water`,
+    /// `Ground::river`), so neither the thaw nor the end of a drought puts
+    /// them in deep water; a home needs most of the ground around it so.
+    /// The home search also weighs the plants within reach against what the
+    /// founders will eat in their first 20 days, and map edges and corners
+    /// in every season (more so in the cold one). Reinforcements land beside
+    /// the lineage's largest group, not a random member.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v50"))]
+    pub founding_safety: f32,
+    // Playtest 4 predators and dormancy (version 51; *Playtest 4:
     // predators, possession and dormancy* in the README). Off at 0, what
-    // snapshots before version 48 read (`serde_util::before_v48`).
+    // snapshots before version 51 read (`serde_util::before_v51`).
     /// Player packs share their kills: a hungry player-owned pack hunter's
     /// hunger rises up to `0.7 × meat diet × pack instinct` slower (from
     /// hunger 20, fully at 50; `apply::player_pack_larder`), so a band
@@ -1100,20 +1152,20 @@ pub struct Balance {
     /// full up to 60 animals of the owner's, none from 150: a big
     /// population competes for its kills. Wild packs keep their own
     /// economy. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v51"))]
     pub player_packs: f32,
     /// Metabolic water in deep dormancy: while a sleeper has fat left, its
     /// thirst rises `0.8 × dormant_water` slower (burning fat yields
     /// water), so hibernators don't wake parched mid-winter by the hundred
     /// (playtest 4: 35 thirst deaths a day while 314 of 366 slept). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v51"))]
     pub dormant_water: f32,
     /// A possessed animal beds down with its kind: it may enter a winter
     /// or summer dormancy lean (hunger below the rousing threshold rather
     /// than the lean limit), since its player kept it from fattening;
     /// it rouses to eat like any sleeper (playtest 4: possessed animals
     /// stayed awake while their group slept, then starved). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v51"))]
     pub possessed_sleep: f32,
 }
 
@@ -1387,8 +1439,14 @@ impl Default for Balance {
             eye_hybrid: 0.6,
             winter_toll: 1.0,
             wake_spread: 10.0,
+            winter_rest: 1.0,
+            toxic_avoidance: 1.0,
+            egg_attendance: 0.5,
+            player_species: 1.0,
+            raised_cap: 4.0,
             reachable_water: 1.0,
             founding_conditions: 1.0,
+            founding_safety: 1.0,
             player_packs: 1.0,
             dormant_water: 1.0,
             possessed_sleep: 1.0,
@@ -1397,7 +1455,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 147;
+    pub const FIELD_COUNT: usize = 153;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1549,8 +1607,14 @@ impl Balance {
             ("eye_hybrid", &mut self.eye_hybrid),
             ("winter_toll", &mut self.winter_toll),
             ("wake_spread", &mut self.wake_spread),
+            ("winter_rest", &mut self.winter_rest),
+            ("toxic_avoidance", &mut self.toxic_avoidance),
+            ("egg_attendance", &mut self.egg_attendance),
+            ("player_species", &mut self.player_species),
+            ("raised_cap", &mut self.raised_cap),
             ("reachable_water", &mut self.reachable_water),
             ("founding_conditions", &mut self.founding_conditions),
+            ("founding_safety", &mut self.founding_safety),
             ("player_packs", &mut self.player_packs),
             ("dormant_water", &mut self.dormant_water),
             ("possessed_sleep", &mut self.possessed_sleep),

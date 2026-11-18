@@ -8,7 +8,7 @@
 //!
 //! `--playtest4`: playtest 4's predators instead (the pure carnivore
 //! "Apex Stalkers" as the Hunter, the omnivore pack "Ridge Packs" in
-//! Nomad's place), with the old rules being only version 48's tunables off.
+//! Nomad's place), with the old rules being only version 51's tunables off.
 //!
 //! Environment: `BAL=name=value,...` sets tunables in every arm (to gauge
 //! a lever); `PRED_TRACE=1` prints the Hunter's lineage every 5 days to
@@ -62,7 +62,7 @@ struct Args {
     /// Playtest 4's predators (`--playtest4`): the Hunter founds the pure
     /// carnivore "Apex Stalkers", Nomad's place goes to the omnivore pack
     /// "Ridge Packs", and the old rules are only this round's tunables off
-    /// (version 48: `player_packs`, `dormant_water`).
+    /// (version 51: `player_packs`, `dormant_water`, `possessed_sleep`).
     playtest4: bool,
 }
 
@@ -434,7 +434,7 @@ fn main() {
         let n = os.len().max(1) as f64;
         let avg = |f: &dyn Fn(&Outcome) -> f64| os.iter().map(|o| f(o)).sum::<f64>() / n;
         let title =
-            if a.playtest4 { title.replace("version 44 tunables", "version 48 tunables") } else { title.to_string() };
+            if a.playtest4 { title.replace("version 44 tunables", "version 51 tunables") } else { title.to_string() };
         println!("\n{title}, {} seeds, {} days:", os.len(), a.days);
         println!("  player   final alive  extinct  mean share  peak alive  killed by Hunter");
         for p in 1..=6u32 {
