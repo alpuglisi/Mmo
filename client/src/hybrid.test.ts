@@ -46,6 +46,14 @@ describe('the builder’s interbreeding check', () => {
     expect(a.confidence).toMatch(/averages: animals vary/);
   });
 
+  it('shows the server-measured fertility instead of the estimate, one figure per species', () => {
+    const est = hybridAdvice(design(), species, 3);
+    expect(est.points[0]).toMatch(/Steppe antelope \(120 adults, 100% fertile\)/);
+    const m = hybridAdvice(design(), species, 3, new Map([[1, 0.62]]));
+    expect(m.points[0]).toMatch(/Steppe antelope \(120 adults, 62% fertile, measured\)/);
+    expect(m.points[0]).not.toMatch(/100% fertile/);
+  });
+
   it('says a distant design keeps its genes, and who it can never breed with', () => {
     const a = hybridAdvice(design({ carnivory: 0.5 }), species, 3);
     expect(a.level).toBe('ok');

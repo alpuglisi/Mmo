@@ -254,6 +254,7 @@ fn api_router(state: AppState) -> Router {
     let reads = Router::new()
         .route("/api/lineage", post(found_lineage))
         .route("/api/design/compatibility", post(design_compatibility))
+        .route("/api/design/last", get(last_design))
         .route("/ws", get(ws_upgrade))
         .route("/api/leaderboard/history", get(leaderboard_history))
         .route("/api/leaderboard/seasons", get(leaderboard_seasons))
@@ -798,6 +799,22 @@ async fn family_tree(
 /// The caller's recent finished matings, newest first (closed offers with
 /// their outcome or error, and matings within their own lineage). Kept in
 /// memory: a reload of the page keeps it, a server restart does not.
+/// `GET /api/design/last`: the design of the caller's last founding in this
+/// world, as founded (the designer starts from it when the browser has none
+/// saved); 404 `no_design` before a first founding.
+async fn last_design(
+    State(app): State<AppState>,
+    World(w): World,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = authed(&app, &headers)?;
+    let designs = w.store.load_designs().await.map_err(ApiError::internal)?;
+    let d = designs.into_iter().find(|d| d.player == session.player).ok_or_else(|| {
+        ApiError::new(StatusCode::NOT_FOUND, "no_design", "you have not founded a lineage in this world")
+    })?;
+    Ok(Json(serde_json::json!({ "design": d.design, "founded_day": d.founded_day })))
+}
+
 async fn mating_history(
     State(app): State<AppState>,
     World(w): World,

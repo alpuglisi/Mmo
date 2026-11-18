@@ -48,7 +48,8 @@ export interface Onboarding {
   tourOpen: () => boolean;
   /** Re-evaluate the hint triggers (call on state, alert and offer changes). */
   check: () => void;
-  openHelp: () => void;
+  /** Open Help; `topic`: open that topic (its title) and scroll to it. */
+  openHelp: (topic?: string) => void;
   destroy: () => void;
 }
 
@@ -317,21 +318,26 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
       + `A lineage founded within ${SEASON_NOTICE_DAYS} days of winter (or during it) arrives fed, with full fat reserves; the design screen says when this applies. `
       + `${FREE_FIRST_WINTER} Warm-blooded designs get through on fur, fat stores and hibernation (the starting design has all three); `
       + 'cold-blooded ones on brumation and fat stores: a cold-blooded hibernator can\'t warm itself awake.'],
-    ['Why are my animals dying?', () => 'The Genes tab charts deaths by cause; each cause has a fix. '
+    ['Why are my animals dying?', () => 'The Genes tab charts deaths by cause (the names below are the chart\'s); each has a fix. '
       + 'Thirst: keep herds, territories and rallies near lakes and rivers, above all in a drought. '
-      + 'Hunger: too many animals on too little food; spread out (split groups, migrate), found fewer, or eat something else. '
+      + 'Starved: too many animals on too little food; spread out (split groups, migrate), found fewer, or eat something else. '
       + 'Winter sleep: some sleepers die every winter, more in their first year and when thin; fat stores help, and founders sleep their first winter free. '
-      + 'Predators: stay in groups, add speed, armor, toxins or camouflage. '
-      + 'Poisoned: your hunters ate toxic prey; bright colours warn them off. '
-      + 'Drowned: poor swimmers crossing water; raise swimming or route around lakes. '
-      + 'Chilled eggs: incubated eggs need a parent brooding them; abandoned eggs are left exposed by design and many die, which their large clutches make up for.'],
+      + 'Exposure: too cold or too hot for the body; fur, fat or a warmer range in winter, shade and water in summer. '
+      + 'Eaten: stay in groups, add speed, armor, toxins or camouflage. '
+      + 'Poisoned (toxin): your hunters ate toxic prey; bright colours warn them off. '
+      + 'Drowned: poor swimmers crossing water, or sleepers flooded in their dens; raise swimming or keep clear of rivers that rise. '
+      + 'Attrition (alerts say "of exhaustion"): the steady toll of disease and accidents on short-lived species; a longer-lived body (bigger, slower to mature) loses fewer. '
+      + 'Old age: they lived out their span. '
+      + 'Eggs are counted apart: chilled eggs need a parent brooding them (abandoned eggs are left exposed by design, and warm-blooded ones chill unless it is hot); '
+      + 'egg raiders eat unguarded clutches, so brooding parents and a group nearby protect them.'],
     ['Growth and the soft cap', () => 'Breeding slows as your lineage grows: litters shrink toward the soft cap (half size at it) and members get hungrier past it; births stop only at the hard cap. '
       + 'The Lineage tab shows where you stand.'],
   ];
   let helpEls: { backdrop: HTMLElement; dialog: HTMLElement } | null = null;
 
-  function openHelp(): void {
+  function openHelp(topic?: unknown): void {
     if (helpEls) return;
+    const want = typeof topic === 'string' ? topic : null;
     const touch = deps.touch();
     const tap = touch ? 'Tap' : 'Click';
     const replay = h('button', { id: 'help-replay', type: 'button' }, 'Replay the tour');
@@ -346,7 +352,7 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
         h('li', {}, 'Mates and Market pair your adults with others; Ranks shows the ranked seasons; alerts badge the Genes tab.')),
       h('h3', {}, 'How the world works'),
       h('div', { class: 'help-topics', id: 'help-topics' }, ...HELP_TOPICS.map(([title, body]) =>
-        h('details', { class: 'help-topic' }, h('summary', {}, title), h('p', { class: 'small' }, body(tap))))),
+        h('details', { class: 'help-topic', open: title === want || undefined, 'data-topic': title }, h('summary', {}, title), h('p', { class: 'small' }, body(tap))))),
       h('div', { class: 'row wrap' }, replay, tips, close));
     const backdrop = h('div', { class: 'help-backdrop', id: 'help' }, dialog);
     backdrop.addEventListener('mousedown', (e) => {
@@ -367,6 +373,7 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
     deps.host.append(backdrop);
     window.addEventListener('keydown', onHelpKey, true);
     replay.focus({ preventScroll: true });
+    if (want) dialog.querySelector<HTMLElement>(`details[data-topic="${CSS.escape(want)}"]`)?.scrollIntoView({ block: 'nearest' });
   }
 
   /** While Help is open (modal): Esc closes it and Tab stays inside, wherever focus is. */

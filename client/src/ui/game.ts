@@ -20,6 +20,7 @@ import { exposeCards, familyShareBar } from '../share/familyShare';
 import type { AlertPrefs, ClientMsg, CompatibilityView, LineageStats, PlayerId, MatingOutcome, MatingPreviewView, NearbyOrganism, OfferView, OrgId, OwnOrganism, ResultMsg, SeasonBoard, SpeciesView, StateView } from '../protocol';
 import { parseCompatibilityView, WILD } from '../protocol';
 import { createPicker, type PickItem } from './picker';
+import { confirmDialog } from './confirm';
 import { nameplatesKey, parseNameplates, plateBadge, setNameplates } from './nameplates';
 import { WorldView } from '../world/worldView';
 import { applyDynamic, decodeTerrain, FOOD_BANDS, terrainSummary, type TerrainGrid } from '../world/terrain';
@@ -146,6 +147,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   };
   /** The genetics dashboard's data (declared up here: the Lineage tab reads it too, possibly before its fetch is set up). */
   let stats: LineageStats | null = null;
+  /** Open Help on a topic (set once onboarding is up). */
+  let helpTopic: ((topic: string) => void) | null = null;
   const inspExtinct = extinctNoticeEl('inspector-extinct', deps.onNewLineage);
   const lineageExtinct = extinctNoticeEl('lineage-extinct', deps.onNewLineage);
   lineageExtinct.hidden = true;
@@ -1328,8 +1331,12 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   autoDecline.addEventListener('change', () => void sendPrefs({ auto_decline: autoDecline.checked }));
   function blockPlayer(p: number): void {
     const name = model.state?.leaderboard.rows.find((r) => r.player === p)?.name ?? `player ${p}`;
-    if (!window.confirm(`Block ${name}? Their mating requests will be declined automatically. You can unblock them under "Who may send me requests".`)) return;
-    void sendPrefs({ block: p }).then(() => model.toast('info', `${name} blocked: their requests are declined automatically.`));
+    void confirmDialog({ id: 'block-confirm', title: `Block ${name}?`, ok: 'Block', danger: true,
+      body: 'Their mating requests will be declined automatically. You can unblock them under "Who may send me requests".' }).then(async (yes) => {
+      if (!yes) return;
+      await sendPrefs({ block: p });
+      model.toast('info', `${name} blocked: their requests are declined automatically.`);
+    });
   }
   function renderMatePrefs(): void {
     if (!matePrefs) {
@@ -1746,7 +1753,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   })();
 
   function renderGenetics(): void {
-    renderDashboard(dashEl, stats);
+    renderDashboard(dashEl, stats, () => helpTopic?.('Why are my animals dying?'));
     renderFeedPanel();
   }
 
@@ -1788,7 +1795,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (lineage === null || lineage === undefined) return;
     const alive = model.state?.population ?? 0;
     // Animals carrying a quarter or more of another player's genes join that player's lineage instead (server RETIRE_TRANSFER_SHARE).
-    if (!window.confirm(`Retire lineage #${lineage}? Its ${animals(alive)} and their eggs leave the world (any carrying at least 25% of another player's genes join that player's lineage instead). This can't be undone, and re-founding within a ranked season's length founds half the founders.`)) return;
+    // The window the server enforces, fetched now (game days, real minutes).
+    const w = await api.world().catch(() => null);
+    const window_ = w?.refound_window_days
+      ? `within ${w.refound_window_days} game days (about ${w.refound_window_minutes} real minute${w.refound_window_minutes === 1 ? '' : 's'})`
+      : 'soon after';
+    const yes = await confirmDialog({
+      id: 'retire-confirm', title: `Retire lineage #${lineage}?`, ok: 'Retire lineage', danger: true,
+      body: [
+        `Its ${animals(alive)} and their eggs leave the world (any carrying at least 25% of another player's genes join that player's lineage instead). This can't be undone.`,
+        `Founding again ${window_} of retiring founds half the founders you design.`,
+      ],
+    });
+    if (!yes) return;
     const r = await send({ type: 'retire_lineage', lineage });
     if (r.ok) {
       const d = r.data as { removed?: number; transferred?: number } | undefined;
@@ -1809,7 +1828,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     endGraceBtn);
   endGraceEl.hidden = true;
   endGraceBtn.addEventListener('click', async () => {
-    if (!window.confirm('End your newcomer grace? Other players\' animals can attack yours from now on. This can\'t be undone.')) return;
+    if (!await confirmDialog({ id: 'end-grace-confirm', title: 'End your newcomer grace?', ok: 'End grace', danger: true,
+      body: 'Other players\' animals can attack yours from now on. This can\'t be undone.' })) return;
     const r = await send({ type: 'end_grace' });
     // The server's alert says it (and toasts): no second toast here.
     if (r.ok) endGraceEl.open = false;
@@ -2072,6 +2092,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   // First-session onboarding: the guided tour (once per account on this
   // device), one-time hints and the Help dialog. `?tour=off` turns it off.
   const touchInput = () => narrow() || window.matchMedia('(pointer: coarse)').matches;
+  // (Declared above its first use: the dashboard links into Help.)
   const onboarding = createOnboarding({
     model, host: el, hintHost: stageWrap, helpBtn, narrow, touch: touchInput,
     openTab: (t, sheet) => {
@@ -2086,6 +2107,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     disabled: onboardingDisabled(window.location.search),
     returning: deps.returning,
   });
+  helpTopic = (t) => onboarding.openHelp(t);
   cleanups.push(
     onboarding.destroy,
     model.on('state', onboarding.check),

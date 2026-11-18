@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { restoreDesign } from './lastDesign';
+import { fromServerDesign, restoreDesign } from './lastDesign';
 import type { GeneCatalog } from './protocol';
 
 const cat = {
@@ -24,5 +24,13 @@ describe('last design', () => {
     expect(d.thermo).toBe('warm');
     expect(d.litter_size).toBeLessThanOrEqual(8);
     expect(d.founders).toBe(20);
+  });
+  it('rebuilds the stored design from the server: omitted genes at their default', () => {
+    const d = fromServerDesign({ name: 'Old', thermo: 'warm', birth: 'live', litter_size: 2, founders: 24, traits: { muscle: 0.4 }, morph: { eye_count: 4 } } as never, cat)!;
+    expect(d.traits.muscle).toBe(0.4);
+    expect(d.traits.carnivory).toBe(0);
+    expect(d.morphology.eye_count).toBe(4);
+    expect([d.birth, d.founders, d.name]).toEqual(['live', 24, '']);
+    expect(fromServerDesign(null, cat)).toBeNull();
   });
 });

@@ -102,6 +102,8 @@ export const api = {
   worlds: () => request<WorldList>('GET', '/api/worlds'),
   found: (token: string, design: DesignSpec) => request<FoundResponse>('POST', withWorld('/api/lineage'), design, token),
   /** Who a design's founders could breed with now: sampled individuals, fertility range, drift risk. */
+  /** The design of the player's last founding in this world (404 `no_design` before one). */
+  lastDesign: (token: string) => request<{ design: DesignSpec; founded_day: number }>('GET', withWorld('/api/design/last'), undefined, token),
   designCompatibility: (token: string, design: DesignSpec) =>
     request<DesignCompatView>('POST', withWorld('/api/design/compatibility'), design, token),
   genes: () => request<GeneCatalog>('GET', '/api/genes'),
