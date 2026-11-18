@@ -41,6 +41,10 @@ fn homes_hash() -> u64 {
         config.balance.player_packs = 0.0;
         config.balance.dormant_water = 0.0;
         config.balance.possessed_sleep = 0.0;
+        // Playtest 5 (version 52): dry beds and the farther drink search
+        // change the days the world grows first.
+        config.balance.dry_beds = 0.0;
+        config.balance.drink_reach = 0.0;
         // Founded empty: the wild ecosystem, then the sample players.
         let mut w = presets::standard_world(config, 1);
         for o in &w.organisms {

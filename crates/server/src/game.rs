@@ -4323,7 +4323,7 @@ impl Game {
                 self.possessing.remove(&player);
                 // Said at once: the player was steering it (its bar just vanished).
                 let by = (o.death == Some(DeathCause::Predation))
-                    .then(|| o.killer)
+                    .then_some(o.killer)
                     .flatten()
                     .map_or(String::new(), |l| format!(" by {}", self.hunter_words(l)));
                 let text = format!(
@@ -4333,7 +4333,7 @@ impl Game {
                 self.alert(player, AlertKind::Death, text, Some(id), out);
                 continue;
             }
-            if let Some(by) = (o.death == Some(DeathCause::Predation)).then(|| o.killer).flatten() {
+            if let Some(by) = (o.death == Some(DeathCause::Predation)).then_some(o.killer).flatten() {
                 let words = self.hunter_words(by);
                 self.pending_killers.entry(player).or_default().insert(id, words);
             }

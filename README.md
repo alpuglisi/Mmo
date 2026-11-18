@@ -8546,6 +8546,107 @@ rest), the toxic frogs' 38–42 (unchanged); fox and pack hunters survive 8 of
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.86 (± 0.16; ≈11.93 before), 11.96 (± 0.04) with `egg_attendance` 0.5 after the merge: every lineage 12 of 12; the cold-blooded marsh newts 197 and toxic frogs 265 (409 and 380) rest in winter |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
+### Playtest 5: floods, drinking and warnings
+
+Round 6 for `docs/playtest-5.md` findings 4 (H4), 11, 15 and two low items.
+Snapshot version 52 (provisional; main is at 51). Both sim rules below are
+off at 0, which is what snapshots of version 51 and before read
+(`serde_util::before_v52`).
+
+**H4: sleeping hibernators drown when water rises** (`Balance::dry_beds`
+1). Herdmaster5 lost three waves of sleepers: 16 at a drought's end, 12
+at a thaw, then 25 of 115 in one day of flood. 78 of 387 sleepers lay on
+ice over 10–60 cm of water. Nothing woke them: a deep sleeper only woke
+on thin ice it would drown under (`dry_sites`), never for water rising
+around it.
+- **A dry bed** (`World::dry_bed`): a deep dormancy (winter or summer)
+  now starts only on a tile that:
+  - is dry now;
+  - has no lake or marsh water at normal wetness (`Ground::base_water` 0);
+  - is off every floodplain (`Ground::plain` 0).
+
+  Rising water can't reach such a tile. Night torpor is unchanged.
+- **Walking to one.** An animal that would bed down (`World::dormancy_wanted`:
+  its season, the cold or heat, fed and watered) but stands on wet or
+  flood-prone ground walks to the nearest dry bed within 8 tiles first
+  (`World::nearest_dry_bed`). It doesn't do this when a threat is near,
+  when it is pregnant, or when it is on a nest.
+- **Waking.** Water reaching a deep sleeper wakes it.
+- **Getting out.** Any animal standing in water it would drown in (a woken
+  sleeper, a flood) heads for the nearest dry land, sprinting, before
+  anything else.
+- **A flood alert, like the drought one** (server). When 25% of the
+  rivers are over their banks (`Map::flood`; clears below 10%), every
+  player is told: "Flood: N% of the rivers are over their banks. … M of
+  your animals stand on floodplains or lake margins (K asleep). Move
+  groups to high, dry ground." The flood easing is said too.
+
+**M15: animals die of thirst shown as "drink"** (`Balance::drink_reach` 1).
+- **The cause.** Rulebender5's herd sat on "drink" at thirst 90–100
+  beside a pond whose banks rise 15–25 m above the water.
+  - In a drought the pond shrinks to its deep middle, and the dry bed
+    around it is too steep for climbing 0.4.
+  - The drink search (`reachable_water`, playtest 3) looks 8 steps for a
+    shore the animal can walk to. Finding none, it fell back to the
+    nearest water as the crow flies, so the animal walked at a bank it
+    could never get down.
+  - The possessed male was the same case: "water near" for the possessed
+    and the parched rules was judged as the crow flies, so it kept
+    breaking off its order to "drink" water it couldn't reach.
+- **The fix.**
+  - With no reachable shore within 8 steps, the search goes on to 24
+    (`decide::FAR_DRINK_STEPS`).
+  - If there is none, the animal searches (wanders) instead of heading
+    for the bank.
+  - "Water near" counts only water it can walk to.
+  - Flyers are unchanged: water is never out of their reach.
+
+**M11: warnings** (server, no snapshot change).
+- **Being hunted.** A lineage warning (`kind` `hunted`, said when it starts
+  and again every few days while it lasts). It fires when 5 or more of a
+  player's animals were eaten in a day, or 2 or more that are at least 4%
+  of the lineage. It names the top hunters with their owners: "Your
+  lineage is being hunted: 7 of your animals were eaten on day 11, by
+  bob's B (6), a wild Red fox (1). …" Counts come from the sim's kills by
+  lineage (`Game::count_hunted`, day by day; the first boundary after a
+  start only sets the baseline).
+- **The hunter named.** Death notices for founders and the possessed say
+  who ate them: "Founder #5 was eaten by bob's B."; several deaths add
+  "Eaten by: …".
+- **Hunger advice for a sleeping herd.** When half or more of the
+  player's animals are asleep, the hunger warning no longer says "move
+  groups". It says sleepers can't be moved, and to fatten them on rich
+  ground before the next dormancy.
+- **Heat named.** The daily summary called exposure deaths "cold, heat or
+  winter sleep" (winter sleep is its own cause). It now says "heat" in
+  summer, "cold" in winter and "cold or heat" between. Three or more heat
+  deaths on a summer day raise a heat warning (`kind` `heat`) with what
+  helps.
+
+**Low:**
+- **Hunger swings.** They are real: each meal drops hunger at once, and
+  hunger rises 40–57 a day. The inspector now shows the last day's range
+  beside the live hunger ("14–87 over the last day, about 49 on
+  average", `client/src/needBand.ts`), from the states the client has
+  seen of the selected animal.
+- **The reach refusal** no longer claims the target moved. It reads "#t is
+  N tiles from your #a (orders reach 12 tiles): get closer first".
+
+**Checks** (this round's two tunables at 0, against defaults):
+
+| Check | `dry_beds`, `drink_reach` at 0 | Defaults |
+| --- | --- | --- |
+| `evo-sim run --size 96 --days 720` on seeds 31–34: drowned | 515, 416, 533, 1,075 (2,539) | 40, 25, 28, 218 (311, −88%) |
+| the same: died of thirst | 1,408, 446, 2,707, 2,816 (7,377) | 894, 713, 2,267, 1,785 (5,659, −23%; seed 32 up) |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.82 (± 0.15) | 11.81 (± 0.21); every lineage 12 of 12 |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 11/16 (11), 16/16 (16); 4 | 11/16 (11), 16/16 (16); 2 |
+| `predators --playtest4 --seeds 6 --days 180`: Hunter (Apex Stalkers) at the end, with this round's rules on | | 62, none extinct (4, 2 extinct, with the version 51 tunables off) |
+| workspace tests, both clippy runs, fixtures, client typecheck, `vitest` (450), build, e2e (16 scripts, `E2E_JOBS=2`) | | pass |
+
+- **Thirst.** Fewer thirst deaths on 3 of 4 seeds. Seed 32 has more
+  (446 → 713): animals that once drowned at a lakeshore now live on to go
+  thirsty in a drought.
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many
