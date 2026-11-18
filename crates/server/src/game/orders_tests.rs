@@ -499,6 +499,21 @@ fn lineage_warnings_flag_hunger_the_cap_and_starving_territories() {
         w[0].text.contains("6 starved and 2 died of thirst") && w[0].text.contains("Litters are still full size"),
         "{w:?}"
     );
+    // Mostly thirst: said as thirst, with water advice, not the Food layer.
+    {
+        let r = g.history.back_mut().unwrap();
+        let e = r.lineages.iter_mut().find(|e| e.owner == 1).unwrap();
+        e.deaths.insert("starved".into(), 0);
+        e.deaths.insert("thirst".into(), 8);
+    }
+    let t = &g.lineage_warnings(1)[0].text;
+    assert!(t.starts_with("Your lineage is dying of thirst: ") && !t.contains("Food layer"), "{t}");
+    {
+        let r = g.history.back_mut().unwrap();
+        let e = r.lineages.iter_mut().find(|e| e.owner == 1).unwrap();
+        e.deaths.insert("starved".into(), 6);
+        e.deaths.insert("thirst".into(), 2);
+    }
     // Near the hard cap.
     g.world.config.lineage_cap = 3;
     assert!(g.lineage_warnings(1).iter().any(|w| w.kind == "near_cap" && w.text.starts_with("Near the hard cap: ")));
@@ -836,6 +851,7 @@ fn founding_says_whether_grace_applies_and_why() {
     g.set_name(2, "bo");
     let ok = g.found(2, &design("B")).unwrap();
     assert!(ok.grace.as_deref().unwrap().starts_with("Newcomer grace: "), "{:?}", ok.grace);
+    assert!(ok.grace.as_deref().unwrap().contains("40 or fewer"), "{:?}", ok.grace);
     g.connect(20, 2, "bo");
     tick(&mut g);
     assert!(g.alerts.get(&2).is_some_and(|l| l.iter().any(|a| a.text.starts_with("Newcomer grace: "))));

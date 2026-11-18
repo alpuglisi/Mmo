@@ -2545,6 +2545,12 @@ pub struct CatastropheView {
     pub start_day: u64,
     /// Planned first day after it while active; the day it ended once over.
     pub end_day: u64,
+    /// Its first and last days counted from 1, as alerts and the game screens
+    /// show them ("days 211–240" is `start_day` 210, `end_day` 240).
+    #[serde(default)]
+    pub first_day: u64,
+    #[serde(default)]
+    pub last_day: u64,
     pub active: bool,
     pub population_before: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]

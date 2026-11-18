@@ -1288,6 +1288,9 @@ export interface CatastropheView {
   start_day: number;
   /** Planned first day after it while active; the day it ended once over. */
   end_day: number;
+  /** First and last days counted from 1, as alerts and screens show them (absent on older servers). */
+  first_day?: number;
+  last_day?: number;
   active: boolean;
   population_before: number;
   population_after?: number;

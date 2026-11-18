@@ -295,7 +295,28 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   /** Both notices up: the drought one starts folded (two expanded covered a third of a phone's map, playtest 4). */
   let bothNotices = false;
   let droughtOn = false;
-  const notices = h('div', { class: 'map-notices', id: 'map-notices' }, catAlert, droughtAlert);
+  // The lineage died out (or was retired): said over the map, whichever tab
+  // is open (playtest 6: only the Lineage tab said so, seen after a fresh login).
+  const extinctTitle = h('strong', { class: 'cat-title' });
+  const extinctText = h('span', { class: 'cat-effect' });
+  const extinctAlert = h('div', { class: 'catastrophe-alert extinct-alert', id: 'extinct-alert', role: 'alert', hidden: true },
+    h('span', { class: 'cat-icon', 'aria-hidden': 'true' }, '⚠'), h('div', { class: 'cat-text' }, extinctTitle, extinctText),
+    deps.onNewLineage ? h('button', { type: 'button', class: 'new-lineage', id: 'extinct-alert-new', onclick: deps.onNewLineage }, 'Start a new lineage') : null);
+  function renderExtinct(): void {
+    const st = model.state;
+    const gone = !!st && st.lineage !== null && st.population === 0;
+    extinctAlert.hidden = !gone;
+    if (!gone) return;
+    const retired = wasRetired(st!.lineage);
+    const title = retired ? `You retired lineage #${st!.lineage}: start a new lineage` : 'Your lineage died out: start a new lineage';
+    if (extinctTitle.textContent !== title) {
+      extinctTitle.textContent = title;
+      extinctText.textContent = retired
+        ? 'Its animals have left the world. Your renown, records and titles stay.'
+        : 'None of your animals are alive (the Genes tab charts what killed them). Your renown, records and titles stay.';
+    }
+  }
+  const notices = h('div', { class: 'map-notices', id: 'map-notices' }, extinctAlert, catAlert, droughtAlert);
   const stageWrap = h('div', { class: 'stage-wrap' }, stage, toolbar, notices, hint, legends, fab, possessBar, chooser, toasts);
   // The legend is collapsible: hidden by default (it covers part of the map;
   // the tour points to its button), the choice remembered on this device.
@@ -608,7 +629,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   function updateEdgePad(): void {
     const wrap = stageWrap.getBoundingClientRect();
     let bottom = toolbar.getBoundingClientRect().bottom;
-    if (!notices.hidden && (!catAlert.hidden || !droughtAlert.hidden)) bottom = Math.max(bottom, notices.getBoundingClientRect().bottom);
+    if (!notices.hidden && (!catAlert.hidden || !droughtAlert.hidden || !extinctAlert.hidden)) bottom = Math.max(bottom, notices.getBoundingClientRect().bottom);
     const top = Math.max(0, Math.round(bottom - wrap.top + 6));
     // And past the bottom edge by what floats there: the hint line, the
     // floating Possess button, the possession bar (playtest 4: a herd at the
@@ -1089,6 +1110,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     if (now) {
       lastRender = performance.now();
       renderTopbar();
+      renderExtinct();
       if (tab === 'organism') renderInspector();
       if (tab === 'matings') renderMatings();
       if (tab === 'market') market.render();

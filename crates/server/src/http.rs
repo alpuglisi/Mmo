@@ -689,7 +689,8 @@ struct HistoryQuery {
 }
 
 /// The stored daily records (thinned with age: [`crate::history`]), oldest
-/// first: the newest `limit` (30 by default, at most
+/// first: the newest `limit` (logged in, the whole stored history by
+/// default; logged out, 30; at most
 /// [`crate::history::MAX_LIMIT`]) in the day range.
 async fn leaderboard_history(
     State(app): State<AppState>,
@@ -730,12 +731,16 @@ async fn leaderboard_history(
 /// Most days `/api/leaderboard/history` gives without a login.
 const PUBLIC_HISTORY_LIMIT: usize = 60;
 
-/// The days `/api/leaderboard/history` returns for `?limit=`: 30 by
-/// default, at most [`PUBLIC_HISTORY_LIMIT`] logged out and
-/// `history::MAX_LIMIT` logged in.
+/// The days `/api/leaderboard/history` returns for `?limit=`: logged in,
+/// the whole stored history by default (at most `history::MAX_LIMIT`;
+/// playtest 6: it gave 30 days unless asked); logged out, 30 by default and
+/// at most [`PUBLIC_HISTORY_LIMIT`].
 fn history_limit(asked: Option<usize>, logged_in: bool) -> usize {
-    let most = if logged_in { crate::history::MAX_LIMIT } else { PUBLIC_HISTORY_LIMIT };
-    asked.unwrap_or(30).clamp(1, most)
+    if logged_in {
+        asked.unwrap_or(crate::history::MAX_LIMIT).clamp(1, crate::history::MAX_LIMIT)
+    } else {
+        asked.unwrap_or(30).clamp(1, PUBLIC_HISTORY_LIMIT)
+    }
 }
 
 /// Genes anyone can judge by looking at the animals, the only ones
@@ -1666,6 +1671,7 @@ mod tests {
         assert_eq!(history_limit(Some(999_999_999), false), 60);
         assert_eq!(history_limit(Some(999_999_999), true), crate::history::MAX_LIMIT);
         assert_eq!(history_limit(Some(0), true), 1);
+        assert_eq!(history_limit(None, true), crate::history::MAX_LIMIT, "the whole history logged in");
     }
 
     #[test]
