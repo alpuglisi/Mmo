@@ -239,7 +239,9 @@ The map has distinct biomes, changing weather and seasons, so each organism pick
 | Year-round active | No seasonal change | Breeds and forages all year; holds territory | Faces winter head-on; needs cold traits or a mild biome |
 | Estivation | Dormant through summer heat or drought | Survives deserts and dry seasons | Loses the summer |
 
-**Brumation** (the cold-blooded counterpart of hibernation) has the 6-day waking lag and, since playtest 3, the same winter toll (about 1 in 10 a winter), and costs 10 points a unit against hibernation's 12 (it was 6). Playtest 3's winner was a cold-blooded, brumating, toxic flier that stayed flat through winters; in the scripted replay it is weaker under the new rules but still the strongest design (README, *Playtest 3: balance*). **Changing:** it won playtest 4 too, from a late start (62 founders on day 320 to the hard cap in 23 real minutes): brumators rouse to bask in mild winter weather and keep breeding, the toll applies only while dormant, and cold blood makes it sterile with every warm lineage. Dormant animals also died of thirst in numbers in one lineage.
+**Cold-blooded animals don't breed in winter**, even when a mild day wakes them to bask, and a brumator out of its den in winter risks the same toll as one asleep (playtest 4: roused brumators bred through winters).
+
+**Brumation** (the cold-blooded counterpart of hibernation) has the 6-day waking lag and, since playtest 3, the same winter toll (about 1 in 10 a winter), and costs 10 points a unit against hibernation's 12 (it was 6). Playtest 3's winner was a cold-blooded, brumating, toxic flier that stayed flat through winters; in the scripted replay it is weaker under the new rules but still the strongest design (README, *Playtest 3: balance*).
 
 **Optional add-ons:** food caching (raidable), seasonal coat (energy cost per molt), fat storage (slower), timed breeding (spring births, narrow window), short-term torpor (cheaper, weaker than hibernation).
 

@@ -1018,7 +1018,7 @@ square MP4s and GIFs, with a manifest of titles, captions and hashtags. See
 | `GET /api/push/prefs` | Bearer | The push kinds the caller switched off, `{off: [kind]}` (`mating`, `death`, `market`, `species`, `season`, `catastrophe`); `{off: []}` until saved |
 | `POST /api/push/prefs` | Bearer | Replace them; the reply is normalized (sorted, no duplicates); an unknown kind is refused (422) |
 | `GET /api/map.png?scale=4` | yes | PNG of the world as the caller may see it (`Game::map_rgb`: the terrain, their organisms and others only within their view radius of them; 1–8 px per tile, lowered to keep a side within 2048 px), for debugging |
-| `GET /api/spectate` | | The read-only spectator view (watch links `?watch=<world>&lineage=<n>`, `tools/marketing/README.md`): clock, active catastrophes and every lineage's public name, owner, head counts, share, most common look and members per cell (16 tiles for a player's lineage, as coarse as a market listing; 8 for the wild species; none, with `hidden: true`, for a lineage under its newcomer grace); no ids, positions, genes or needs, and refreshed at most once per simulated day |
+| `GET /api/spectate` | | The read-only spectator view (watch links `?watch=<world>&lineage=<n>`, `tools/marketing/README.md`): clock, active catastrophes and every lineage's public name, owner, head counts, share, most common look and members per cell (8 tiles for the wild species; none, with `hidden: true`, for players' lineages, which are counted but not placed); no ids, positions, genes or needs, and refreshed at most once per simulated day |
 | `GET /api/metrics` | | Server health (`metrics.rs`): world-thread timings over the last 256 samples as `{n, p50, p99, max}` ms (`tick_ms`: step and bookkeeping; `states_ms`: one state push to every connection; `substep_ms`; `apply_ms`), `ticks`, `conns`, `state_pushes`, `applied`, `max_queued`, `dropped_conns`, `skipped_states`, the last save (`saves`, `save_capture_ms`, `save_encode_ms`, `save_write_ms`, `save_bytes`, `snapshots_pending`), WebSocket traffic (`bytes_out`, `msgs_out`, `state_bytes`, `states_out`, `ws_opened`, `ws_closed`; `state_encode_ns`, the writers' total time encoding states; protocol 2's `delta_conns`, `keyframes_out` and `resyncs`), the process's `cpu_seconds` and `rss_bytes` (Linux), the `allocator` (`jemalloc` by default, `glibc` without the feature) and its `heap` statistics (`allocated`: live allocations; `retained`: resident memory the allocator holds but has not handed out; read at most every 2 s), and password hashing over the whole process, `hashing`: `concurrency` and `queue` (the bound), `in_flight` and `waiting` now, `peak_in_flight` (never above `concurrency`), `hashes` done, `rejected` (refused as busy) and `mean_ms` per hash |
 | `GET /ws?token=…` | token | The game WebSocket (or `Authorization: Bearer`) |
 
@@ -1143,7 +1143,7 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one; `heading`, its facing as one of 32 directions, and `vision`, its eyes for the vision cones: see *Vision cones* below), `nearby` (others in the window, also with `look`; never a heading or eyes), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements), `grace` while your lineage's newcomer grace lasts (`{days_left, until_tick, real_seconds_left?}`: game days to a tenth, the tick it ends, real seconds rounded up to tens; absent otherwise), and `protected: true` on a `nearby` organism whose lineage is under its grace |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command, with its `id` (also for a message that doesn't parse, when its `id` can be read: a number, a numeric string, or found in text that isn't valid JSON: `bad_message`, named after its `type` if that is a command, else `message`, and never with the parser's text). Day numbers in `day` fields count from 0; player-facing texts (ledger, alerts) count from 1. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, the request rules' `requests_refused` (the partner's owner blocked you or declines every request), `too_many_requests` (at most 3 requests to one player an hour; `detail.ticks_left`), `too_many_blocked`, `partner_unavailable` (another player's female can't mate now: her pregnancy is not told), `out_of_sight` (`set_view`; `request_mating` and `preview_mating` for a partner not within your animals' sight plus 16 tiles, not on the market and not in your offers, and for an id that doesn't exist), `no_such_player` (`mating_prefs`; `detail.players`), `self_block`, `newcomer_grace` and `own_grace` (`possess_attack`; `detail.days_left`, `detail.real_seconds_left`), `no_grace` (`end_grace`), `bad_title` and `bad_name` (nameplates and species names: ASCII letters, digits, single spaces and `. , ' ! ? - : + # ( )` only, nothing passing for the server or another player), `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command, with its `id` (also for a message that doesn't parse, when its `id` can be read: a number, a numeric string, or found in text that isn't valid JSON: `bad_message`, named after its `type` if that is a command, else `message`, and never with the parser's text). Day numbers in `day` fields count from 0; player-facing texts (ledger, alerts) count from 1. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, the request rules' `requests_refused` (the partner's owner blocked you or declines every request), `too_many_requests` (at most 3 requests to one player an hour; `detail.ticks_left`), `too_many_blocked`, `partner_unavailable` (another player's female can't mate now: her pregnancy is not told), `out_of_sight` (`set_view`; `request_mating` and `preview_mating` for a partner not within your animals' sight plus 16 tiles, not on the market and not in your offers, and for an id that doesn't exist), `no_such_player` (`mating_prefs`; `detail.players`), `self_block`, `newcomer_grace` and `own_grace` (`possess_attack`; `detail.days_left`, `detail.real_seconds_left`), `no_grace` (`end_grace`), `bad_title` and `bad_name` (every chosen name, lineage and design names included, goes through one filter, `crate::names`: ASCII letters, digits, single spaces and `. , ' ! ? - : + # ( )` only, nothing passing for the server, its staff or another player; a title can't contain another player's name or be "wild"; names saved before the filter are cleaned on load), `bad_price` (also for a price past `u64::MAX`), `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
@@ -1710,8 +1710,9 @@ reinforcements could be farmed):
   living lineage), and more of them that player's than the retiree's,
   joins that player's lineage instead of leaving the world
   (`World::retire_player_sparing`; they are told). The retiree's alleles in
-  it are re-tagged as the receiver's (`Genome::retag_origin`): the gift
-  earns the retiree no royalty or legacy (playtest 3). Exported alleles of a
+  it become the wild's (`Genome::retag_origin`): the gift earns the retiree
+  no royalty or legacy (playtest 3), nor the receiver any it didn't breed
+  (playtest 4: colluding players handed each other legacy share). Exported alleles of a
   retired lineage that live in other lineages keep scoring and paying
   royalty for their breeder, as before: genes count wherever they live.
 - **Sinks for leaders, cosmetic only**: a nameplate (palette color and a
@@ -8155,9 +8156,9 @@ deep water counts as walkable, so lakes were valid spots for them.
 Reinforcements landed beside a random member among predators (8 of 10
 eaten in 5 days), with no word on where.
 
-**`Balance::founding_safety` (1)**, on by default from snapshot version 49
-(gated at 48 on its branch, renumbered at merge after 48), off at 0 for
-older saves (`serde_util::before_v49`). In a
+**`Balance::founding_safety` (1)**, on by default from snapshot version 50
+(gated at 48 on its branch, renumbered at merge after 48 and 49), off at 0
+for older saves (`serde_util::before_v50`). In a
 running world:
 
 - **Dry land only.** Founders settle only on dry land: walkable, no water
@@ -8216,6 +8217,73 @@ autumn, and late winter. The three searches are the old one, with
 
 `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`: 11.93
 (± 0.11), the same as before. A new world's founding is unchanged.
+### Playtest 4: balance
+
+Playtest 4 (`docs/playtest-4.md`, findings 1, 4, 6, 13, 18, 23 here) still
+had a cold-blooded, brumating, toxic flier on top (LateComer4: founded on
+day 320, hard cap and first place in 23 wall minutes). Brumators woke to
+bask on mild winter days and kept breeding (370 → 571 and 1,211 → 1,895
+over two winters, no deaths but old age): the toll only applied asleep.
+Toxic prey kept player predators unplayable (after learning, 65% of hunters
+still ate known toxic prey and died); every starter lineage was filed under
+the Steppe antelope (and the leader renamed it for everyone); incubated
+clutches chilled more than they hatched; the legacy share of two capped
+lineages swung 7–13 points within 60 days.
+
+**Sim rules, on by default from snapshot version 49** (provisional;
+renumber at merge), off at 0 for older saves (`serde_util::before_v49`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `winter_rest` (1) | In winter a cold-blooded animal's breeding drive drains (`World::breeding_drive_rate`), awake or asleep, and LOD cohorts of cold-blooded lineages conceive nothing in winter; a brumator awake in winter pays the winter toll as if asleep (`DeathCause::Exposure`). |
+| `toxic_avoidance` (1) | A learned toxin lesson is acted on at `0.7 + 0.3 × coloration` (drab 70%, bright 88–100%; it was `0.3 + 0.7 × coloration`), each poisoning teaches twice as much, and the pass-up is rolled once per hunter, prey lineage and day instead of at every decision. That per-decision roll was the root cause: a hunter passing a known toxic prey up 70% of the time still ate it within a few ticks. |
+| `egg_attendance` (1) | A clutch whose brooding parent is alive within 12 tiles but off the nest (eating, drinking) chills at a fifth of the rate of one whose parent is far or dead (`environment::EGG_ATTEND_RANGE`). |
+| `player_species` (1) | In species detection (`species::led_by_player`), a cluster most of whose adults are one player lineage's is split from its wild-owned members, and an initial wild species never continues as such a cluster: the player lineage keeps (or founds, with the credit) a species of its own, while a minority player lineage stays in the mixed species. |
+| `raised_cap` (4) | The weighted legacy share counts each adult's offspring raised up to 4 (agents and LOD cohorts). The lifetime count let an old, prolific cohort dominate the weighted share, and its die-off swung it. |
+
+**Server and client**: `species_namer` refuses an initial species that
+holds a wild lineage (nobody renames the Steppe antelope); the builder's
+interbreeding card adds the server's sampled numbers (`POST
+/api/design/compatibility`, the same check as the market), so its estimate
+no longer disagrees with the market's, and the check runs before a name is
+typed; the egg-loss reason says the parent strayed too far or died, and the
+Eggs line says "now" for current clutches and "since founding" for losses;
+the winter notice recommends brumation (not hibernation) for a cold-blooded
+design, says cold-blooded animals don't breed in winter, and mentions the
+founders' free first winter. Cold blood's total sterility with warm lineages
+is kept (and its 20-point price): the over-winter breeding was the runaway's
+engine, and partial thermo isolation would also make the wild newts and
+frogs hybridise with warm species.
+
+**Scripted replay** (`dominance`, now with Cold, LateComer4's exact design
+founded on day 320; seeds 1–4, 840 days; round 4 rules = the five new
+tunables off):
+
+| Player | Round 4: final / peak share, titles* | New rules: final / peak share, titles* |
+| --- | --- | --- |
+| Steady | 2.9% / 11.6%, 0 | 2.5% / 12.0%, 0 |
+| Big (warm hibernator) | 7.3% / 14.9%, 5 | 7.1% / 15.4%, 7 |
+| Broker | 5.5% / 15.6%, 11 | 5.1% / 15.5%, 8 |
+| Eggs (playtest 2's egg-laying hibernator) | 12.8% / 17.1%, 4 | 19.3% / 27.8%, 17 |
+| Flier (PocketNomad3, cold brumator) | 26.1% / 29.0%, 17 (at the 2,100 cap) | 15.5% / 17.1%, 6 (extinct on 1 of 4) |
+| Cold (LateComer4, cold brumator) | 13.9% / 15.8%, 3 | 18.6% / 22.6%, 2 |
+
+(* legacy titles of the 40 whole seasons after day 210.) The brumating
+fliers no longer run away: playtest 3's falls from 26% to 16% and from 17
+titles to 6, and LateComer4's, founded late, ends viable and large (1,704
+alive) but takes 2 titles and averages 7.7% from day 210. The cost of
+winter rest falls on cold-blooded designs as intended. **Not settled**:
+the warm, egg-laying hibernator now leads (17 titles, at the cap by the
+end): attended eggs (`egg_attendance`) remove most of its egg losses.
+`egg_attendance` 0.5 (attended clutches at 60% of the chill rate) is the
+first lever to try; it wasn't measured here.
+
+**Checks**:
+
+| Check | Result |
+| --- | --- |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.86 (± 0.16; ≈11.93 before): every lineage 12 of 12; the cold-blooded marsh newts 197 and toxic frogs 265 (409 and 380) rest in winter |
+| tests, fmt, both clippy, client typecheck/test/build | pass |
 
 ## Genetics validation
 

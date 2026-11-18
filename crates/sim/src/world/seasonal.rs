@@ -321,6 +321,11 @@ impl World {
     /// `TIMED_DRIVE` times as fast in its window and loses `DRIVE_DECAY`
     /// a day outside it (negative).
     pub(crate) fn breeding_drive_rate(&self, o: &Organism) -> f32 {
+        // Winter rest (`Balance::winter_rest`): a cold-blooded body breeds
+        // no more in winter, even awake on a mild day.
+        if self.config.balance.winter_rest > 0.0 && !o.traits.warm && self.season() == Season::Winter {
+            return -DRIVE_DECAY;
+        }
         if o.traits.seasonal.timed_breeding <= 0.0 {
             DRIVE_RATE * self.season().breeding_factor()
         } else if self.in_breeding_window() {
@@ -370,6 +375,26 @@ impl World {
         if on_thin_ice && o.dormancy != Dormancy::Awake {
             o.dormancy = Dormancy::Awake;
             return None;
+        }
+        // A brumator awake in winter pays the winter toll as if asleep
+        // (`Balance::winter_rest`): out in the cold, not in its den.
+        if o.dormancy == Dormancy::Awake
+            && bal.winter_rest > 0.0
+            && season == Season::Winter
+            && matches!(s.winter, Some((WinterForm::Brumation, _)))
+            && bal.dormancy_toll > 0.0
+        {
+            let year = 4.0 * self.config.days_per_season() as f32;
+            let first_year = !o.matured || o.age_days(self.config.ticks_per_day) < year;
+            let rate = dormancy_toll_rate(
+                &bal,
+                self.config.days_per_season() as f32,
+                o.fat / self.fat_capacity(o).max(1e-3),
+                first_year,
+            );
+            if rng.gen::<f32>() < rate * dt {
+                return Some(DeathCause::Exposure);
+            }
         }
         match o.dormancy {
             Dormancy::Awake => {
@@ -975,6 +1000,36 @@ mod tests {
         assert!(first < 30, "{first} of {} awake on the first day", hib.len());
         w.run_days(12);
         assert_eq!(awake(&w), w.organisms.iter().filter(|o| o.alive).count());
+    }
+
+    /// Winter rest (`Balance::winter_rest`): in winter a cold-blooded body's
+    /// breeding drive drains even awake, a warm one's still builds; a
+    /// brumator awake in winter pays the winter toll.
+    #[test]
+    fn cold_blooded_animals_rest_in_winter() {
+        let mut w = flat_world(15.0, 10.0, 100);
+        let cold = add(&mut w, &design(Thermo::Cold), 1);
+        let warm = add(&mut w, &design(Thermo::Warm), 1);
+        assert_eq!(w.season(), Season::Winter);
+        assert_eq!(w.breeding_drive_rate(&w.organisms[cold[0]]), -DRIVE_DECAY);
+        assert!(w.breeding_drive_rate(&w.organisms[warm[0]]) > 0.0);
+        w.config.balance.winter_rest = 0.0;
+        assert!(w.breeding_drive_rate(&w.organisms[cold[0]]) > 0.0);
+        // Awake brumators in a mild winter: some die of the cold.
+        let deaths = |rest: f32| {
+            // Warm enough that they stay awake in winter.
+            let mut w = flat_world(30.0, 10.0, 100);
+            (w.config.balance.winter_rest, w.config.balance.dormancy_toll) = (rest, 6.0);
+            let k = add(&mut w, &design(Thermo::Cold).with(Gene::Brumation, 0.9), 100);
+            for &i in &k {
+                (w.organisms[i].generation, w.organisms[i].needs.thirst) = (1, 0.0);
+            }
+            w.run_days(2);
+            let awake = w.organisms.iter().filter(|o| o.alive && o.dormancy == Dormancy::Awake).count();
+            assert!(awake > 0, "want awake brumators");
+            w.counters.deaths.get(&DeathCause::Exposure).copied().unwrap_or(0)
+        };
+        assert!(deaths(1.0) > deaths(0.0) + 3, "{} vs {}", deaths(1.0), deaths(0.0));
     }
 
     /// Warm hibernators wake in spring by heating themselves; cold-blooded

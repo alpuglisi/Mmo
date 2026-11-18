@@ -411,7 +411,8 @@ fn hysteresis_off(w: &mut World) {
 fn founding_fixes_off(w: &mut World) {
     let old = crate::serde_util::before_v47::OLD_VALUE;
     (w.config.balance.reachable_water, w.config.balance.founding_conditions) = (old, old);
-    w.config.balance.founding_safety = crate::serde_util::before_v49::OLD_VALUE;
+    w.config.balance.founding_safety = crate::serde_util::before_v50::OLD_VALUE;
+    balance49_off(&mut w.config.balance);
     for h in &mut w.lineage_homes {
         *h = None;
     }
@@ -476,6 +477,39 @@ fn balance46_off(b: &mut crate::Balance) {
     b.eye_hybrid = old;
     b.winter_toll = old;
     b.wake_spread = old;
+    balance49_off(b);
+}
+
+/// The playtest 4 balance tunables as snapshots before version 49 read them.
+fn balance49_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v49::OLD_VALUE;
+    b.winter_rest = old;
+    b.toxic_avoidance = old;
+    b.egg_attendance = old;
+    b.player_species = old;
+    b.raised_cap = old;
+}
+
+/// Version 48 snapshots (before the playtest 4 balance rules) restore with
+/// those tunables off, and are otherwise the same world.
+#[test]
+fn version_48_snapshots_restore_without_playtest4_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v48();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 48);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.winter_rest, crate::serde_util::before_v49::OLD_VALUE);
+    balance49_off(&mut w.config.balance);
+    w.config.balance.founding_safety = crate::serde_util::before_v50::OLD_VALUE;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v48() == old);
+    let mut w = fixture_world();
+    w.config.balance.egg_attendance = 0.5;
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.egg_attendance, 0.5);
 }
 
 /// Version 45 snapshots (before the playtest 3 balance rules) restore with
@@ -1610,15 +1644,15 @@ fn version_47_snapshots_restore_without_pending_claims() {
 }
 
 #[test]
-fn version_48_snapshots_restore_without_founding_safety() {
+fn version_49_snapshots_restore_without_founding_safety() {
     let mut w = fixture_world();
-    let old = w.snapshot_v48();
+    let old = w.snapshot_v49();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 48);
+    assert_eq!(h.version, 49);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.founding_safety, 0.0);
-    assert!(r.snapshot_v48() == old);
+    assert!(r.snapshot_v49() == old);
     w.config.balance.founding_safety = 0.0;
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());

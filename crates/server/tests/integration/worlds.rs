@@ -487,10 +487,9 @@ async fn spectators_watch_a_world_without_logging_in() {
         (Some("ann"), Some(false), Some(10))
     );
     assert!(mine["look"]["size"].is_u64(), "{mine}");
-    let cells = mine["cells"].as_array().unwrap();
-    assert_eq!(cells.iter().map(|c| c[2].as_u64().unwrap()).sum::<u64>(), 10);
-    // A player's lineage on 16-tile cells (as coarse as a market listing).
-    assert!(cells.iter().all(|c| c[0].as_u64().unwrap() < 3 && c[1].as_u64().unwrap() < 3), "{cells:?}");
+    // A player's lineage is counted but not placed (playtest 4: the cells
+    // were a radar of every herd).
+    assert!(mine["cells"].as_array().unwrap().is_empty() && mine["hidden"] == true, "{mine}");
     let text = view.to_string();
     for private in ["\"id\":", "\"x\":", "\"genes\"", "\"pregnant\"", "\"token\""] {
         assert!(!text.contains(private), "{private} in {text}");

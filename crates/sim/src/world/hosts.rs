@@ -233,9 +233,11 @@ impl World {
             let old = o.lineage;
             o.owner = p;
             o.lineage = lineage;
-            // The retiree's alleles in it become the receiver's: no
-            // royalty or legacy for the retiree from a gift.
-            std::sync::Arc::make_mut(&mut o.genome).retag_origin(player, p);
+            // The retiree's alleles in it become nobody's (the wild's): no
+            // royalty or legacy for the retiree from it, and none gifted to
+            // the receiver either (playtest 4: re-tagged as the receiver's,
+            // colluding players handed each other legacy share).
+            std::sync::Arc::make_mut(&mut o.genome).retag_origin(player, crate::WILD);
             o.group = 0;
             o.possessed_by = None;
             o.order = None;
@@ -383,6 +385,10 @@ mod tests {
         let o = w.organism(ids[0]).unwrap();
         assert_eq!(o.owner, 2);
         assert_eq!(share(&o.genome, 1), 0.0, "none of the retiree's alleles left in it");
+        // They went to the wild, not to the receiver: its share of the
+        // animal is what it bred in, no more.
+        assert_eq!(share(&o.genome, 2), share(&mostly_rival, 2));
+        assert!((share(&o.genome, crate::WILD) - share(&mostly_rival, 1)).abs() < 1e-9);
         assert!(w.organism(ids[1]).is_none());
     }
 

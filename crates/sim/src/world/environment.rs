@@ -13,6 +13,9 @@ use rayon::prelude::*;
 const NEST_CROWD_RADIUS: usize = 2;
 
 /// Chilling per hour per °C an egg sits below its floor.
+/// Tiles from its clutch within which a brooding parent still counts as
+/// attending it (`Balance::egg_attendance`).
+const EGG_ATTEND_RANGE: f32 = 12.0;
 const CHILL_RATE: f32 = 0.006;
 /// Most °C a sitting parent can cool her eggs by shading them.
 pub(crate) const BROOD_SHADE: f32 = 3.0;
@@ -137,8 +140,13 @@ impl World {
         self.group.update(adults().map(|o| (o.pos, &o.pheno, &o.morph)));
         let breeding = self.organisms.par_iter().filter(|o| o.is_breeding_adult());
         let morph = self.config.balance.morph_in_legacy();
+        // The weighted share counts offspring raised up to `raised_cap`
+        // (`Balance::raised_cap`), so an old cohort's lifetime count doesn't
+        // swing it.
+        let cap = self.config.balance.raised_cap;
+        let cap = if cap > 0.0 { cap as u32 } else { u32::MAX };
         let mut snapshot =
-            LegacySnapshot::compute_par(self.day(), breeding.map(|o| (&*o.genome, o.offspring_raised)), morph);
+            LegacySnapshot::compute_par(self.day(), breeding.map(|o| (&*o.genome, o.offspring_raised.min(cap))), morph);
         if self.config.lod.enabled {
             self.lod_legacy(&mut snapshot);
         }
@@ -249,8 +257,16 @@ impl World {
                 };
                 // Warm-blooded eggs need far more heat (thermoregulation
                 // mismatch for abandoned eggs).
+                // An attended clutch keeps warm between broods: its parent is
+                // alive and near, off eating or drinking
+                // (`Balance::egg_attendance`).
+                let attended = bal.egg_attendance > 0.0
+                    && present.is_none()
+                    && guardian.is_some_and(|gi| self.organisms[gi].pos.dist(c.pos) < EGG_ATTEND_RANGE);
+                let chill_rate =
+                    if attended { CHILL_RATE * (1.0 - 0.8 * bal.egg_attendance.min(1.0)) } else { CHILL_RATE };
                 if egg < lo {
-                    c.chill += (lo - egg) * CHILL_RATE;
+                    c.chill += (lo - egg) * chill_rate;
                 } else {
                     c.chill = (c.chill - 0.02).max(0.0);
                 }

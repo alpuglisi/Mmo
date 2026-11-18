@@ -674,7 +674,8 @@ impl Genome {
 
     /// Re-tag every allele of origin `from` as `to` (gene, load and
     /// morphology loci): the animals a retiring lineage hands to a rival
-    /// carry no legacy (or royalty) of the retiree's any more.
+    /// carry no legacy (or royalty) of the retiree's any more (they become
+    /// the wild's).
     pub fn retag_origin(&mut self, from: PlayerId, to: PlayerId) {
         let fix = |o: &mut PlayerId| {
             if *o == from {

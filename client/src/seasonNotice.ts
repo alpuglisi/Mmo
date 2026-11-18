@@ -22,7 +22,7 @@ export function seasonNotice(
   if (days === undefined || days > SEASON_NOTICE_DAYS) return null;
   const when = days === 0 ? 'It is winter now.' : `Winter starts in ${days} ${days === 1 ? 'day' : 'days'}.`;
   const help = thermo === 'cold'
-    ? 'Brumation and fat stores help a cold-blooded lineage through it (not hibernation: a cold-blooded hibernator can\'t warm itself awake).'
+    ? 'Brumation and fat stores help a cold-blooded lineage through it (not hibernation: a cold-blooded hibernator can\'t warm itself awake); cold-blooded animals don\'t breed in winter.'
     : 'Fur, fat stores and hibernation help a new lineage through it (the starting design has all three).';
   const provision = w?.winter_provision ? ' Founders arriving now start fed, with full fat reserves.' : '';
   return `${when} ${help}${provision} ${FREE_FIRST_WINTER}`;

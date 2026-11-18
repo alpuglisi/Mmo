@@ -925,6 +925,9 @@ impl World {
             s.breeding_adults += adults as usize;
             let w = adults / c.pool.len() as f64;
             let rw = c.raised / c.pool.len() as f64;
+            // At most `Balance::raised_cap` a member, as for agents.
+            let cap = self.config.balance.raised_cap;
+            let rw = if cap > 0.0 { rw.min(cap as f64) } else { rw };
             for e in &c.pool {
                 e.genome.tally_origins_with(w, &mut s.alleles, morph);
                 if rw > 0.0 {
@@ -1608,6 +1611,11 @@ impl World {
                 };
                 let cycle = gestation + rep.recovery + lactation + cfg.mate_search_days / breed_factor.max(0.05);
                 let mut lambda = a[0] as f32 * rep.litter * condition * fed.min(breed_s) * suppression / cycle;
+                // Winter rest (`Balance::winter_rest`): no cold-blooded births
+                // conceived in winter.
+                if bal.winter_rest > 0.0 && !rep.warm() && season == Season::Winter {
+                    lambda = 0.0;
+                }
                 // The soft lineage cap (`Balance::lineage_crowding`).
                 lambda *= self.lineage_crowding(lineage)[0];
                 // Litters follow condition, one litter at a time per breeding
