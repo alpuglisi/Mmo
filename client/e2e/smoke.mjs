@@ -563,8 +563,10 @@ async function main() {
             return document.querySelector('#mating-mine')?.value !== pair.split(':')[0] ? '(selection changed)' : null;
           }, `${req.mine}:${req.partner}`);
         }, 20000);
-        // (A preview error means one of them just died; the offer then fails.)
-        if (!compat.startsWith('(') && !compat.startsWith("Can't preview") && !compat.startsWith('Compatible: fertility')) throw new Error(`same designs not shown compatible: ${compat}`);
+        // (A preview error means one of them just died; the offer then fails.
+        // Under load the agreed pair can also meet and conceive before the
+        // preview is read: the preview then says she is already pregnant.)
+        if (!compat.startsWith('(') && !compat.includes('already pregnant') && !compat.startsWith("Can't preview") && !compat.startsWith('Compatible: fertility')) throw new Error(`same designs not shown compatible: ${compat}`);
         pair = { mine: req.mine, partner: req.partner, compat, id };
       }
       if (!pair) throw new Error('no mating request went through');
