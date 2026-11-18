@@ -877,6 +877,7 @@ square MP4s and GIFs, with a manifest of titles, captions and hashtags. See
 | `POST /api/login` `{name, password}` | | `{token, player, name}`; `401 bad_credentials` |
 | `POST /api/logout` | Bearer | End the session |
 | `GET /api/worlds` | | The hosted worlds, the default first: `{default, worlds: [{id, name, width, height, day, year, season, population, lineages, players_online}]}` |
+| `POST /api/design/compatibility` (design) | Bearer | The builder's interbreeding check, nothing founded: 16 founders as the design would make them (founder variation included) against 16 adults of each living lineage (yours too). `200 {day, sample, fertile_with, at_risk, rows}`, rows as `compatibility`'s; `400` for a design that doesn't validate |
 | `POST /api/lineage` (design) | Bearer | Found your lineage (one per player per world). `201 {lineage, founders: [ids], cost}`; `400` with `over_budget {cost, budget}`, `value_out_of_range {gene}`, `reserved_gene`, `litter_size`, `no_founders`, `unknown_gene`, `bad_name`; `409 already_founded` |
 | `GET /api/genes` | | Settable genes with default and point cost, the budget and founder/offspring prices, and the morphology parameters (`morph`: name, kind, values or range, default, cost) |
 | `GET /api/world` | | Clock, season, weather, map size, organism and lineage counts |
@@ -1014,7 +1015,7 @@ Client → server:
 | `renown_shop` | | `data` = `{balance, slots_left, slots_bought, slot_price?, reinforce_size, reinforce_price, reinforce_max_alive, reinforce_blocked?, market_fee_percent, royalty_per_point}` (*Why trade* in Economy) |
 | `buy_mating_slot` | | One extra directed-mating slot until the weather season changes: 30 renown, doubling with each bought that season, at most 6 (`limit_reached`, `insufficient_funds`, `no_lineage`); `data` = the shop after |
 | `reinforce` | | 10 adults copied from your lineage's living adults join it: 150 renown, doubling per ranked season, only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
-| `compatibility` | | Which lineages yours can breed with: `data` = `{lineage?, rows: [{lineage, lineage_name, owner, owner_name, fertility, compatible, limiting, gap}]}`, most fertile first; `limiting` is the body-plan gene of the widest gap (`carnivory`, `endothermy`, `birth_mode`, `body_size`, `morphology`), sterile at 0.30 |
+| `compatibility` | | Which lineages yours can breed with: `data` = `{lineage?, rows: [{lineage, lineage_name, owner, owner_name, wild, fertility, fertility_low, fertility_high, best_fertility, fertile_share, compatible, drift_risk, limiting, gap}]}`, most fertile first, from every pair of 16 of your adults and 16 of theirs: `fertility` the mean pair, `fertility_low`/`fertility_high` the 10th/90th percentile, `fertile_share` the share of fertile pairs, `compatible` at least half fertile, `drift_risk` `none`/`low`/`high` (any fertile pair, or the closest pair within 0.05 of the sterile gap: high; within 0.12: low); `wild` only for the wild ecosystem's lineages; `limiting` is the body-plan gene of the closest pair's widest gap (`carnivory`, `endothermy`, `birth_mode`, `body_size`, `morphology`), sterile at 0.30 |
 | `resync` | – | Protocol 2 only: the next state is a keyframe (no `result`; see below) |
 | `watch_season` | `on`, `limit?` | `on: true`: a `season` message at once (after the `result`) and then one whenever the ranked season's standings change, at most one a second (rows `0..limit` per category, default 5, at most 200, plus yours); `on: false` stops them. A new connection starts unwatched. Answered between ticks, never queued behind world changes |
 
@@ -1522,10 +1523,13 @@ earned in play, so each perk is modest and priced to rise):
 - **Who can breed with whom.** A body-plan gap of 0.30 or more in diet,
   warm/cold blood, birth mode or body size (or an eye or leg count step) is
   sterile (`mating::BODY_PLAN_STERILE`), which splits the market by diet.
-  `compatibility` lists every other lineage with living adults, the best
-  body-plan fertility between a sample of 16 of the player's adults and
-  theirs, and the gene that keeps them apart; every `browse_market` listing
-  carries `compatible` and `body_plan_fertility` for the viewer's lineage;
+  `compatibility` lists every other lineage with living adults, the
+  fertility over every pair of a sample of 16 of the player's adults and
+  16 of theirs (mean, 10th–90th percentile range, share of fertile pairs,
+  drift risk; before playtest 2 the best pair, which overstated it), and
+  the gene that keeps them apart; every `browse_market` listing carries
+  `compatible` (at least half of the player's sampled adults fertile with
+  it) and `body_plan_fertility` (their mean) for the viewer's lineage;
   the Market tab shows both ("Who your lineage can breed with", a
   "sterile with your lineage" line on listings, and `buy_listing`'s reason
   in the client).
@@ -7517,11 +7521,12 @@ The costs in `design.rs` are calibrated with `examples/calibrate.rs`
 | Points per unit above default | |
 | --- | --- |
 | Leg length 25, wings 24, toxins 18, hooves 16 | Valuable in every design, or a threshold ability (flight, warning coloration) |
-| Muscle 7, fangs 7, claws 6, foot width 6, swimming 6, burrowing 6 | Valuable in one niche |
+| Muscle 7, fangs 7, claws 6, foot width 6, swimming 6, burrowing 8 | Valuable in one niche (burrowing 6 before playtest 2) |
 | Camouflage 5, climbing 5, coloration 5, vocal 5, tail 4, scales 4, nose 4, eyes 4, ears 4, fur 3 | Small or mixed effects |
-| Armor 2, fat stores 2, body size 0 | Cost more fitness than they bring; bigger bodies already mean fewer breeders |
+| Armor 2, fat stores 2 | Cost more fitness than they bring |
 | 0.7 per founder above 20 up to 50, then each 0.07 dearer than the last; 2.5 per extra offspring | Founders were the best buy at 0.4; litter slightly underpriced at 1.5. The rising price past 50 (`design::founder_cost`) is from playtest 1, not the calibration: see *Founders, the soft cap and the market* |
 | 40 per unit of body size below 0.3, 20 for cold-blooded | Free choices that won out of proportion (below) |
+| 40 per unit of body size above 0.5 (free from 0.3 to 0.5); hibernation 12 | Playtest 2, not the calibration: big bodies outgrew every predator, winter sleep decided the board (hibernation was 8). See *Playtest 2: competitive balance* |
 
 Under the new costs the clearest mispricings in the old table are mostly gone
 (per-point coefficients: founders +0.055 → +0.031, leg length +0.049 →
