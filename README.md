@@ -8178,7 +8178,24 @@ frogs hybridise with warm species.
 founded on day 320; seeds 1–4, 840 days; round 4 rules = the five new
 tunables off):
 
-DOMINANCE
+| Player | Round 4: final / peak share, titles* | New rules: final / peak share, titles* |
+| --- | --- | --- |
+| Steady | 2.9% / 11.6%, 0 | 2.5% / 12.0%, 0 |
+| Big (warm hibernator) | 7.3% / 14.9%, 5 | 7.1% / 15.4%, 7 |
+| Broker | 5.5% / 15.6%, 11 | 5.1% / 15.5%, 8 |
+| Eggs (playtest 2's egg-laying hibernator) | 12.8% / 17.1%, 4 | 19.3% / 27.8%, 17 |
+| Flier (PocketNomad3, cold brumator) | 26.1% / 29.0%, 17 (at the 2,100 cap) | 15.5% / 17.1%, 6 (extinct on 1 of 4) |
+| Cold (LateComer4, cold brumator) | 13.9% / 15.8%, 3 | 18.6% / 22.6%, 2 |
+
+(* legacy titles of the 40 whole seasons after day 210.) The brumating
+fliers no longer run away: playtest 3's falls from 26% to 16% and from 17
+titles to 6, and LateComer4's, founded late, ends viable and large (1,704
+alive) but takes 2 titles and averages 7.7% from day 210. The cost of
+winter rest falls on cold-blooded designs as intended. **Not settled**:
+the warm, egg-laying hibernator now leads (17 titles, at the cap by the
+end): attended eggs (`egg_attendance`) remove most of its egg losses.
+`egg_attendance` 0.5 (attended clutches at 60% of the chill rate) is the
+first lever to try; it wasn't measured here.
 
 **Checks**:
 
