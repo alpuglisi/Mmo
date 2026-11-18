@@ -184,21 +184,48 @@ export function buildFields(g: TerrainGrid, prev?: TerrainFields): TerrainFields
 }
 
 /**
- * A checksum of the fields of a rectangle of tiles (to find chunks that
- * changed), quantized so that slow drift (a little grazing, a little
- * regrowth) does not repaint every chunk at every terrain refresh: colours
- * to steps of 4 of 255, the other fields to 1/24.
+ * A copy of the fields of a rectangle of tiles (tiles past the map edge
+ * clamp to it, as the painter does): what a chunk was painted from, to
+ * measure later how far the map has moved on from its painting
+ * (`regionDelta`).
  */
-export function regionHash(f: TerrainFields, x0: number, y0: number, tw: number, th: number): number {
-  let hsh = 2166136261;
-  const d = f.data;
-  for (let y = Math.max(0, y0); y < Math.min(f.height, y0 + th); y++) {
-    for (let x = Math.max(0, x0); x < Math.min(f.width, x0 + tw); x++) {
-      const o = (y * f.width + x) * F;
-      for (let k = 0; k < F; k++) hsh = Math.imul(hsh ^ Math.round(k <= K.WB ? d[o + k] / 4 : d[o + k] * 24), 16777619);
+export function regionSnapshot(f: TerrainFields, x0: number, y0: number, tw: number, th: number, out?: Float32Array): Float32Array {
+  const snap = out && out.length === tw * th * F ? out : new Float32Array(tw * th * F);
+  for (let y = 0; y < th; y++) {
+    const sy = Math.min(f.height - 1, Math.max(0, y0 + y));
+    for (let x = 0; x < tw; x++) {
+      const sx = Math.min(f.width - 1, Math.max(0, x0 + x));
+      snap.set(f.data.subarray((sy * f.width + sx) * F, (sy * f.width + sx + 1) * F), (y * tw + x) * F);
     }
   }
-  return hsh >>> 0;
+  return snap;
+}
+
+/**
+ * How far the fields of a rectangle have moved from a snapshot of it
+ * (`regionSnapshot`, same rectangle): the largest change of any field of any
+ * tile, colours in 64ths of their range and the rest (wetness, snow, ice,
+ * texture) as they are, so 1 is a tile that turned from bare ground to full
+ * snow, or a colour shift of 64 of 255. Unlike a checksum it measures drift
+ * from the painting, however slowly it came (a checksum quantized to ignore
+ * small changes also misses a slow melt, and flips on a tiny one that crosses
+ * a step).
+ */
+export function regionDelta(f: TerrainFields, snap: Float32Array, x0: number, y0: number, tw: number, th: number): number {
+  let worst = 0;
+  const d = f.data;
+  for (let y = 0; y < th; y++) {
+    const sy = Math.min(f.height - 1, Math.max(0, y0 + y));
+    for (let x = 0; x < tw; x++) {
+      const sx = Math.min(f.width - 1, Math.max(0, x0 + x));
+      const o = (sy * f.width + sx) * F, s = (y * tw + x) * F;
+      for (let k = 0; k < F; k++) {
+        const c = Math.abs(d[o + k] - snap[s + k]) * (k <= K.WB ? 1 / 64 : 1);
+        if (c > worst) worst = c;
+      }
+    }
+  }
+  return worst;
 }
 
 const smooth = (a: number, b: number, t: number) => {

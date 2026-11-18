@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Longest first, so a parallel run does not end waiting on a long one.
-const ALL = ['smoke', 'mobile', 'android-desktop', 'onboarding', 'vision', 'family', 'refound', 'attack', 'builder', 'context-loss', 'push', 'lobby', 'panels', 'spectate'];
+const ALL = ['terrain', 'smoke', 'mobile', 'android-desktop', 'onboarding', 'vision', 'family', 'refound', 'attack', 'builder', 'context-loss', 'push', 'lobby', 'panels', 'spectate'];
 const scripts = process.argv.length > 2 ? process.argv.slice(2) : ALL;
 const cores = os.availableParallelism?.() ?? os.cpus().length;
 const jobs = Math.max(1, Number.parseInt(process.env.E2E_JOBS ?? '', 10) || Math.min(4, Math.floor(cores / 2)));
