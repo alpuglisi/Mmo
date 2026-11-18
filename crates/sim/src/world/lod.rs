@@ -925,6 +925,9 @@ impl World {
             s.breeding_adults += adults as usize;
             let w = adults / c.pool.len() as f64;
             let rw = c.raised / c.pool.len() as f64;
+            // At most `Balance::raised_cap` a member, as for agents.
+            let cap = self.config.balance.raised_cap;
+            let rw = if cap > 0.0 { rw.min(cap as f64) } else { rw };
             for e in &c.pool {
                 e.genome.tally_origins_with(w, &mut s.alleles, morph);
                 if rw > 0.0 {

@@ -140,8 +140,13 @@ impl World {
         self.group.update(adults().map(|o| (o.pos, &o.pheno, &o.morph)));
         let breeding = self.organisms.par_iter().filter(|o| o.is_breeding_adult());
         let morph = self.config.balance.morph_in_legacy();
+        // The weighted share counts offspring raised up to `raised_cap`
+        // (`Balance::raised_cap`), so an old cohort's lifetime count doesn't
+        // swing it.
+        let cap = self.config.balance.raised_cap;
+        let cap = if cap > 0.0 { cap as u32 } else { u32::MAX };
         let mut snapshot =
-            LegacySnapshot::compute_par(self.day(), breeding.map(|o| (&*o.genome, o.offspring_raised)), morph);
+            LegacySnapshot::compute_par(self.day(), breeding.map(|o| (&*o.genome, o.offspring_raised.min(cap))), morph);
         if self.config.lod.enabled {
             self.lod_legacy(&mut snapshot);
         }

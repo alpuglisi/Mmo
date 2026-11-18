@@ -1106,6 +1106,13 @@ pub struct Balance {
     /// "Steppe antelope" (no founding credit, no naming). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
     pub player_species: f32,
+    /// Most offspring raised an adult counts for in the weighted legacy
+    /// share (`LegacySnapshot::weighted`): alleles × min(raised, cap). The
+    /// weight was the lifetime count, so an old, prolific cohort dominated
+    /// the weighted share and its die-off swung it by 7–13 points within 60
+    /// days (playtest 4). 0: uncapped.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    pub raised_cap: f32,
     // Playtest 3 founding and drinking fixes (version 47). Off at 0, what
     // snapshots before version 47 read (`serde_util::before_v47`).
     /// Thirsty animals head for a shore spot they can walk to and drink
@@ -1397,6 +1404,7 @@ impl Default for Balance {
             toxic_avoidance: 1.0,
             egg_attendance: 1.0,
             player_species: 1.0,
+            raised_cap: 4.0,
             reachable_water: 1.0,
             founding_conditions: 1.0,
         }
@@ -1404,7 +1412,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 148;
+    pub const FIELD_COUNT: usize = 149;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1560,6 +1568,7 @@ impl Balance {
             ("toxic_avoidance", &mut self.toxic_avoidance),
             ("egg_attendance", &mut self.egg_attendance),
             ("player_species", &mut self.player_species),
+            ("raised_cap", &mut self.raised_cap),
             ("reachable_water", &mut self.reachable_water),
             ("founding_conditions", &mut self.founding_conditions),
         ]

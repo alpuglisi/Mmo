@@ -7000,6 +7000,27 @@ mod tests {
         assert_eq!(g.chronicle().species.species.iter().find(|s| s.id == id).unwrap().name, "Ann's runners");
     }
 
+    /// An initial species that holds a wild lineage can't be named by a
+    /// player, even one whose lineage leads it (playtest 4: the leader
+    /// renamed the Steppe antelope for everyone).
+    #[test]
+    fn initial_wild_species_cannot_be_renamed() {
+        let world = build_world(&WorldSettings { seed: 5, width: 64, height: 64, ..Default::default() });
+        let mut g = Game::new(world, GameConfig::default());
+        g.set_name(1, "ann");
+        let mine = g.found(1, &design("A")).unwrap().lineage;
+        run_days(&mut g, 2);
+        let wild = (0..g.world.lineages.len() as u32).find(|&l| g.world.lineages[l as usize].owner == WILD).unwrap();
+        let mut sp = g.world.chronicle.species.species.first().cloned().expect("a species");
+        (sp.origin, sp.founder, sp.extinct_day, sp.merged_into) =
+            (evo_sim::species::SpeciesOrigin::Initial, None, None, None);
+        sp.lineages = vec![(mine, 60.0), (wild, 40.0)];
+        assert_eq!(g.species_namer(&sp), None);
+        sp.lineages = vec![(mine, 60.0)];
+        sp.origin = evo_sim::species::SpeciesOrigin::Founding;
+        assert_eq!(g.species_namer(&sp), Some(1));
+    }
+
     /// An auction lasts at least the wall-clock floor, whatever was asked.
     #[test]
     fn auctions_last_at_least_the_floor() {

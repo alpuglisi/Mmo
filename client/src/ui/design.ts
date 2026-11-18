@@ -14,7 +14,7 @@ import { seasonNotice } from '../seasonNotice';
 import { designWarnings, FOUNDING_RAMP_TEXT } from '../designWarnings';
 import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign, starterValue } from '../designMorph';
 import { defaultMorphology, sameMorphology, type Morphology } from '../morphology';
-import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
+import type { BirthSpec, DesignCompatView, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
 import { hybridAdvice } from '../hybrid';
 import { foundingHint } from '../foodHint';
 import { adultMass, flight, geneValue } from '../bodyMath';
@@ -319,11 +319,26 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   }
 
   let hybridKey = '';
+  /** The server's sampled check of the current design (individuals, not species means), when it answered. */
+  let sampled: DesignCompatView | null = null;
+  /** The server's sampled fertility in words: the lineages any founder could breed with, most fertile first. */
+  function sampledText(v: DesignCompatView | null): string {
+    if (!v) return '';
+    const pct = (x: number) => `${Math.round(x * 100)}%`;
+    const fertile = v.rows.filter((r) => r.fertile_share !== undefined ? r.fertile_share > 0 : r.fertility > 0).slice(0, 4);
+    if (!fertile.length) return `Sampled now (${v.sample} founders against each lineage's adults): sterile with every living lineage.`;
+    return `Sampled now (${v.sample} founders against each lineage's adults; the market uses the same check): ` + fertile
+      .map((r) => `${r.lineage_name}${r.wild ? ' (wild)' : ` (${r.owner_name})`} ${pct(r.fertility)} fertile on average`
+        + (r.fertility_low !== undefined && r.fertility_high !== undefined ? ` (${pct(r.fertility_low)}–${pct(r.fertility_high)})` : ''))
+      .join(', ') + '.';
+  }
+
   function renderHybrid(): void {
     if (!species) return;
     const p = payload();
     const a = hybridAdvice(p, species.species, cb.player ?? -1);
-    const key = JSON.stringify(a);
+    const server = sampledText(sampled);
+    const key = JSON.stringify(a) + server;
     if (key === hybridKey) return;
     hybridKey = key;
     hybridBox.className = `card hybrid-card hybrid-${a.level}`;
@@ -332,7 +347,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       h('p', { class: 'hybrid-headline' }, a.level === 'warn' ? '⚠ ' : '', a.headline),
       h('ul', { class: 'small hybrid-points' }, ...a.points.map((t) => h('li', {}, t))),
       h('p', { class: 'small muted hybrid-market', id: 'design-hybrid-market' }, a.market),
-      h('p', { class: 'small muted hybrid-confidence', id: 'design-hybrid-confidence' }, a.confidence));
+      h('p', { class: 'small muted hybrid-confidence', id: 'design-hybrid-confidence' }, a.confidence),
+      ...(server ? [h('p', { class: 'small hybrid-sampled', id: 'design-hybrid-sampled' }, server)] : []));
   }
 
   let waterTimer: ReturnType<typeof setTimeout> | undefined;
@@ -342,8 +358,13 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     clearTimeout(waterTimer);
     waterTimer = setTimeout(async () => {
       const seq = ++waterSeq;
-      const r = await api.designCompatibility(cb.token, payload()).catch(() => null);
+      // A name is required to validate: check the design before the player has typed one.
+      const body = payload();
+      if (!body.name.trim()) body.name = 'Design';
+      const r = await api.designCompatibility(cb.token, body).catch(() => null);
       if (seq !== waterSeq) return;
+      sampled = r;
+      renderHybrid();
       const warning = r?.water_warning;
       waterBox.hidden = !warning;
       if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', warning));

@@ -22,11 +22,15 @@
 //!   whenever the shop sells them, as LateComer did.
 //! - **Flier** founds PocketNomad3's design (playtest 3's winner) on
 //!   `--flier-day` (default 150).
+//! - **Cold** founds LateComer4's design (playtest 4's winner: cold-blooded,
+//!   live-bearing, brumating, toxic flier, 62 founders) on `--cold-day`
+//!   (default 320, as LateComer4 did).
 //!
-//! Two arms on the same seeds. **Round 3 rules**: playtest 3's rules
-//! (`eye_hybrid`, `winter_toll`, `wake_spread` off, `dormancy_toll` 0.08),
-//! or with `--baseline playtest2` playtest 2's (the version 43 rules off
-//! too, the old soft cap), each founded at any price. **New rules**:
+//! Two arms on the same seeds. **Round 4 rules**: playtest 4's rules (the
+//! version 48 tunables off: `winter_rest`, `toxic_avoidance`,
+//! `egg_attendance`, `player_species`, `raised_cap`), or with `--baseline
+//! playtest2` playtest 2's (the version 43, 46 and 48 rules off, the old
+//! soft cap), each founded at any price. **New rules**:
 //! today's defaults, each design fitted to today's prices by dropping
 //! founders.
 
@@ -45,7 +49,8 @@ const BIG: PlayerId = 2;
 const BROKER: PlayerId = 3;
 const EGGS: PlayerId = 4;
 const FLIER: PlayerId = 5;
-const NAMES: [&str; 5] = ["Steady", "Big", "Broker", "Eggs", "Flier"];
+const COLD: PlayerId = 6;
+const NAMES: [&str; 6] = ["Steady", "Big", "Broker", "Eggs", "Flier", "Cold"];
 const SEASON: u64 = 60;
 
 struct Args {
@@ -55,12 +60,21 @@ struct Args {
     size: usize,
     late_year: u64,
     flier_day: u64,
+    cold_day: u64,
     playtest2_baseline: bool,
 }
 
 fn args() -> Args {
-    let mut a =
-        Args { seeds: 4, first_seed: 1, days: 840, size: 128, late_year: 1, flier_day: 150, playtest2_baseline: false };
+    let mut a = Args {
+        seeds: 4,
+        first_seed: 1,
+        days: 840,
+        size: 128,
+        late_year: 1,
+        flier_day: 150,
+        cold_day: 320,
+        playtest2_baseline: false,
+    };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         let mut v = || it.next().unwrap_or_else(|| panic!("{k} needs a value"));
@@ -71,6 +85,7 @@ fn args() -> Args {
             "--size" => a.size = v().parse().expect("--size"),
             "--late-year" => a.late_year = v().parse().expect("--late-year"),
             "--flier-day" => a.flier_day = v().parse().expect("--flier-day"),
+            "--cold-day" => a.cold_day = v().parse().expect("--cold-day"),
             "--baseline" => a.playtest2_baseline = v() == "playtest2",
             _ => panic!("unknown argument {k}"),
         }
@@ -178,6 +193,20 @@ fn flier() -> FounderDesign {
         .founders(20)
 }
 
+/// LateComer4's winner (`docs/playtest-4-logs/LateComer4.md`): a
+/// cold-blooded, live-bearing, brumating, toxic, honestly coloured flier of
+/// 4 kg, 62 founders, founded on day 320.
+fn cold_flier() -> FounderDesign {
+    use Gene::*;
+    FounderDesign::new("Cold", Thermo::Cold, BirthType::Live, 3)
+        .with(BodySize, 0.5)
+        .with(Wings, 0.8)
+        .with(Toxins, 0.6)
+        .with(Coloration, 0.6)
+        .with(Brumation, 0.7)
+        .founders(62)
+}
+
 /// `d` with as many of its founders as fit today's prices.
 fn fitted(mut d: FounderDesign) -> FounderDesign {
     while d.point_cost() > DESIGN_BUDGET + 1e-3 && d.founders > 2 {
@@ -216,12 +245,14 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
     let world = build_world(&WorldSettings { seed, width: a.size, height: a.size, ..Default::default() });
     let mut g = Game::new(world, GameConfig::default());
     if !new_rules {
-        // `--arms 2` (default): round 3's rules, before playtest 3's
-        // (version 43: toll per season for warm hibernators only, eyes
-        // counted fully, everyone waking on the first spring day).
+        // Default: round 4's rules, before playtest 4's (no winter rest,
+        // the version 44 toxic recognition, eggs chilling when the parent
+        // is off the nest, no player species, the weighted share uncapped).
         let b = &mut g.world.config.balance;
-        (b.eye_hybrid, b.winter_toll, b.wake_spread, b.dormancy_toll) = (0.0, 0.0, 0.0, 0.08);
+        (b.winter_rest, b.toxic_avoidance, b.egg_attendance, b.player_species, b.raised_cap) =
+            (0.0, 0.0, 0.0, 0.0, 0.0);
         if a.playtest2_baseline {
+            (b.eye_hybrid, b.winter_toll, b.wake_spread, b.dormancy_toll) = (0.0, 0.0, 0.0, 0.08);
             // `--baseline playtest2`: the rules of playtest 2.
             (b.egg_hybrid, b.age_spread, b.dormancy_toll, b.emergence_lag) = (0.0, 0.0, 0.0, 0.0);
             (b.lineage_crowding, b.crowding_ceiling, b.crowding_hunger) = (4.0, 2.0, 0.3);
@@ -252,6 +283,9 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
         if day == a.flier_day {
             found(&mut g, FLIER, flier(), &mut o);
         }
+        if day == a.cold_day {
+            found(&mut g, COLD, cold_flier(), &mut o);
+        }
         if founded.is_none() && day >= a.late_year * year && g.world.season() == Season::Winter {
             found(&mut g, EGGS, eggrunner(), &mut o);
             founded = Some(day);
@@ -276,7 +310,7 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
                 records.push(r);
             }
         }
-        for p in 1..=5 {
+        for p in 1..=6 {
             let alive = g.world.owner_count(p);
             let peak = o.peak_alive.entry(p).or_default();
             *peak = (*peak).max(alive);
@@ -332,7 +366,7 @@ fn run(seed: u64, new_rules: bool, a: &Args) -> Outcome {
 
 fn main() {
     let a = args();
-    for d in [steady(), big(), broker(), eggrunner(), flier()] {
+    for d in [steady(), big(), broker(), eggrunner(), flier(), cold_flier()] {
         let f = fitted(d.clone());
         println!(
             "{}: {:.1} points at today's prices, {} of {} founders fit",
@@ -368,7 +402,7 @@ fn main() {
         }
     });
     let results = results.into_inner().unwrap();
-    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Round 3 rules (playtest 3)" };
+    let old_title = if a.playtest2_baseline { "Playtest 2 rules" } else { "Round 4 rules (playtest 4)" };
     for (new, title) in [(false, old_title), (true, "New rules")] {
         let os: Vec<&Outcome> = results.iter().filter(|r| r.1 == new).map(|r| &r.2).collect();
         let n = os.len().max(1) as f64;
@@ -382,7 +416,7 @@ fn main() {
         println!(
             "  player   founders  final share  peak share  mean share*  peak alive  final alive  extinct  titles*"
         );
-        for p in 1..=5u32 {
+        for p in 1..=6u32 {
             let avg = |f: &dyn Fn(&Outcome) -> f64| os.iter().map(|o| f(o)).sum::<f64>() / n;
             println!(
                 "  {:<8} {:>8.0}  {:>10.1}%  {:>9.1}%  {:>10.1}%  {:>10.0}  {:>11.0}  {:>7}  {}/{}",

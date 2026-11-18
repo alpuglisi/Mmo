@@ -980,6 +980,39 @@ mod tests {
         assert!(t.candidates.is_empty());
     }
 
+    /// Player species identity (`DetectParams::player_species`): a player
+    /// lineage that outnumbers the wild species it interbreeds with keeps a
+    /// species of its own (credited to its player) instead of being filed
+    /// under the initial wild species; a minority stays in the mixed one.
+    #[test]
+    fn a_player_lineage_leading_a_cluster_is_not_filed_under_a_wild_species() {
+        let wild = group(&base(), 30, 0, WILD, 1);
+        let run = |on: bool, player_n: usize| {
+            let mut p = params();
+            p.player_species = on;
+            let mut t = SpeciesTracker::default();
+            t.detect(0, &wild, &p, |l| format!("L{l}"));
+            let mut day1 = group(&base(), 30, 0, WILD, 2);
+            day1.extend(group(&base(), player_n, 1, 2, 3));
+            t.detect(1, &day1, &p, |l| format!("L{l}"));
+            t
+        };
+        // Off: one species, the wild one, holds the player's lineage too.
+        let t = run(false, 60);
+        assert_eq!(t.alive().count(), 1);
+        // On: the wild species goes on with its own members; the player's
+        // lineage is its own species, credited to the player.
+        let t = run(true, 60);
+        assert_eq!(t.alive().count(), 2, "{:?}", t.species.iter().map(|s| (&s.name, &s.lineages)).collect::<Vec<_>>());
+        let w = &t.species[0];
+        assert!(w.lineages.iter().all(|&(l, _)| l == 0));
+        let mine = t.alive().find(|s| s.id != 0).unwrap();
+        assert_eq!((mine.lineages.len(), mine.lineages[0].0, mine.founder), (1, 1, Some(2)));
+        // A minority player lineage stays inside the mixed wild species.
+        let t = run(true, 10);
+        assert_eq!(t.alive().count(), 1);
+    }
+
     fn base() -> FounderDesign {
         FounderDesign::new("a", Thermo::Warm, BirthType::Live, 4).with(Gene::BodySize, 0.3).with(Gene::Carnivory, 0.1)
     }

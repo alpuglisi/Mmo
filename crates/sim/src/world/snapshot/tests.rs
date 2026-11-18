@@ -486,6 +486,7 @@ fn balance48_off(b: &mut crate::Balance) {
     b.toxic_avoidance = old;
     b.egg_attendance = old;
     b.player_species = old;
+    b.raised_cap = old;
 }
 
 /// Version 47 snapshots (before the playtest 4 balance rules) restore with
