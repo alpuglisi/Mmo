@@ -1247,26 +1247,26 @@ pub struct Balance {
     /// 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v57"))]
     pub drink_reach: f32,
-    // Playtest 6 balance (version 58; off at 0, what snapshots before
-    // version 58 read, `serde_util::before_v58`). Playtest 6: a warm,
+    // Playtest 6 balance (version 59; off at 0, what snapshots before
+    // version 59 read, `serde_util::before_v59`). Playtest 6: a warm,
     // egg-incubating, hibernating, toxic, bright herd took every crown and
     // a late cold flier still reached first place; toxic + bright was in
     // every leading lineage.
     /// Toxins cost food to make: hunger × `1 + 0.4 × toxins × toxin_upkeep`
     /// (+24% at toxins 0.6), whatever the body's metabolism. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v58"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v59"))]
     pub toxin_upkeep: f32,
     /// A hungry hunter heeds a warning less: its learned avoidance of a
     /// toxic prey lineage falls by up to `hungry_hunters` × 60% as its
     /// hunger rises from 60 to 100 (`World::toxic_avoidance`). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v58"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v59"))]
     pub hungry_hunters: f32,
     /// A poisoning teaches a hunter's lineage about the prey's lineage only
     /// when the prey's toxin comes from that lineage (one of its two toxin
     /// alleles carries the lineage owner's origin): a wild animal carrying
     /// a player's toxin genes through a hybrid no longer marks its whole
     /// wild species as poisonous (playtest 6: the Steppe antelope). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v58"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v59"))]
     pub toxin_source: f32,
     /// Species credit only for a genuine speciation
     /// (`DetectParams::speciation_credit`): a player is credited with a
@@ -1276,13 +1276,13 @@ pub struct Balance {
     /// design, or a small group of one's own, is a species without credit;
     /// a species whose lineage died never continues as another owner's
     /// cluster. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v58"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v59"))]
     pub speciation_credit: f32,
     /// A sitting parent covers 3 eggs fully: a bigger clutch's brooded
     /// temperature is `site + (brooded − site) × (3 / eggs)^clutch_cover`
     /// (a clutch of 6 at 1: halfway to the nest's own temperature), so a
     /// big incubated clutch chills on cool nights. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v58"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v59"))]
     pub clutch_cover: f32,
 }
 

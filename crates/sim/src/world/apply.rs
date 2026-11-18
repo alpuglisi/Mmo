@@ -2222,6 +2222,8 @@ mod tests {
     fn brooders_shade_their_eggs_at_a_cost() {
         for sitting in [true, false] {
             let (mut w, i) = layer(7, BirthType::IncubatedEggs);
+            // The brooding itself: a big clutch's cover is tested apart.
+            w.config.balance.clutch_cover = 0.0;
             let mut rng = crate::rng::rng_for(1, 0, 0, 0);
             w.give_birth(i, &mut rng);
             let id = w.organisms[i].id;
@@ -2245,6 +2247,32 @@ mod tests {
                 None => assert!(!sitting && thirst == 0.0),
             }
         }
+    }
+
+    /// Clutch cover (`Balance::clutch_cover`): a sitting parent keeps a
+    /// clutch of 3 warm on a cool nest, while a bigger clutch chills under
+    /// her; with the rule off both stay warm.
+    #[test]
+    fn a_big_clutch_chills_under_its_parent() {
+        let chill = |eggs: usize, cover: f32| {
+            let (mut w, i) = layer(7, BirthType::IncubatedEggs);
+            w.config.balance.clutch_cover = cover;
+            let mut rng = crate::rng::rng_for(1, 0, 0, 0);
+            w.give_birth(i, &mut rng);
+            let id = w.organisms[i].id;
+            let k = w.clutches.iter().position(|c| c.guardian == Some(id)).expect("a guarded clutch");
+            let pos = w.clutches[k].pos;
+            w.clutches[k].hatch_tick = u64::MAX;
+            let egg = w.clutches[k].eggs[0].clone();
+            w.clutches[k].eggs = vec![egg; eggs];
+            set_climate(&mut w, pos, 10.0);
+            w.organisms[i].pos = pos;
+            w.update_clutches(&mut rng);
+            w.clutches.iter().find(|c| c.guardian == Some(id)).map_or(f32::MAX, |c| c.chill)
+        };
+        assert_eq!(chill(3, 1.0), 0.0);
+        assert!(chill(6, 1.0) > 0.0);
+        assert_eq!(chill(6, 0.0), 0.0);
     }
 
     /// Attended eggs (`Balance::egg_attendance`): a clutch whose brooding
@@ -2280,6 +2308,7 @@ mod tests {
         for (warmth, temp) in [(24.0, -10.0), (100.0, -10.0), (24.0, 20.0)] {
             let (mut w, i) = layer(7, BirthType::IncubatedEggs);
             w.config.balance.brood_warmth = warmth;
+            w.config.balance.clutch_cover = 0.0;
             let mut rng = crate::rng::rng_for(1, 0, 0, 0);
             w.give_birth(i, &mut rng);
             let id = w.organisms[i].id;

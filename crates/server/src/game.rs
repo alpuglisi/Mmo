@@ -289,6 +289,22 @@ fn species_bonus_due(
     true
 }
 
+/// Whether `species` is a genuine speciation for the season's species
+/// title: split off an existing species by a lineage that had lived at least
+/// a season (a quarter of `dpy` days) before. A founding's own species, or a
+/// fresh copy of a rival's design filed as a split, doesn't count.
+fn genuine_speciation(w: &World, species: u32, dpy: u64) -> bool {
+    let t = &w.chronicle.species;
+    let Some(s) = t.get(species) else {
+        return false;
+    };
+    if s.origin != evo_sim::species::SpeciesOrigin::Split || s.parent.is_none() {
+        return false;
+    }
+    let founded = s.main_lineage().and_then(|l| w.chronicle.lineages.get(l as usize)).map(|l| l.founded_day);
+    founded.is_some_and(|f| s.founded_day >= f + (dpy / 4).max(1))
+}
+
 /// Whether `species`, credited to `player`, is a re-detection: an earlier
 /// species of that player from the same lineage merged back, and this one
 /// is it drifting across the threshold again, not a speciation. Worlds from
@@ -2103,7 +2119,7 @@ impl Game {
                     return Err(ErrorInfo::new("out_of_sight", "you can only look where your organisms are"));
                 }
                 let radius = radius.clamp(1.0, self.cfg.max_view_radius.min(reach));
-                let view = ViewWindow { x: p.x, y: p.y, radius };
+                let view = ViewWindow { x: p.x, y: p.y, radius, pinned: true };
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.view = Some(view);
                 }
@@ -4310,7 +4326,8 @@ impl Game {
         }
         self.attack_alerts.retain(|_, t| now.saturating_sub(*t) < window);
         self.attack_alerts.insert(key, now);
-        let text = format!("#{target} of your {theirs} is being hunted by a player's {mine} (#{attacker}).");
+        let text =
+            format!("#{target} of your {theirs} is being hunted by {}'s {mine} (#{attacker}).", self.name(player));
         self.alert(owner, AlertKind::Attack, text, Some(target), out);
     }
 
@@ -4632,7 +4649,7 @@ impl Game {
                 .iter()
                 .find(|o| o.alive && o.possessed_by == Some(c.player) && o.owner == c.player);
             let center = possessed.map(|o| o.pos).unwrap_or_else(|| self.lineage_center(c.player));
-            ViewWindow { x: center.x, y: center.y, radius: self.cfg.default_view_radius }
+            ViewWindow { x: center.x, y: center.y, radius: self.cfg.default_view_radius, pinned: false }
         })
     }
 
@@ -4759,13 +4776,19 @@ impl Game {
             let base = e.alive as u64 + e.deaths.values().sum::<u64>();
             if died >= STARVING_MIN && base > 0 && died as f64 >= STARVING_SHARE * base as f64 {
                 let litter = self.crowding_view(player).map_or(1.0, |c| c.litter);
-                let why = if litter >= FULL_LITTER {
-                    "Litters are still full size, so the population cap isn't the cause: their ground can't feed them."
+                // Mostly thirst: say so, and point at water rather than food
+                // (playtest 6: a pure thirst die-off was told it was "going
+                // hungry" and sent to the Food layer).
+                let dry = thirst > starved;
+                let why = if dry {
+                    String::new()
+                } else if litter >= FULL_LITTER {
+                    "Litters are still full size, so the population cap isn't the cause: their ground can't feed them. "
                         .to_string()
                 } else {
                     format!(
                         "The soft cap has litters at ×{litter:.2} of full size, yet the lineage is still more than its \
-                         ground can feed."
+                         ground can feed. "
                     )
                 };
                 // Mostly asleep: groups can't be moved (playtest 5: a 91%
@@ -4782,15 +4805,19 @@ impl Game {
                          keep the awake ones near food and water.",
                         100.0 * asleep as f64 / mine as f64
                     )
+                } else if dry {
+                    "Their water has run dry or out of reach (a drought shrinks ponds; steep banks keep some from drinking). \
+                     Move groups beside lasting water: rivers and big lakes (blue on the map)."
+                        .into()
                 } else {
                     "Move groups to better ground (the Food layer shows it), split big herds, keep them near water."
                         .into()
                 };
+                let headline = if dry { "Your lineage is dying of thirst" } else { "Your lineage is going hungry" };
                 out.push(LineageWarning {
                     kind: "starving".into(),
                     text: format!(
-                        "Your lineage is going hungry: on day {} {starved} starved and {thirst} died of thirst ({:.0}% of it). \
-                         {why} {advice}",
+                        "{headline}: on day {} {starved} starved and {thirst} died of thirst ({:.0}% of it). {why}{advice}",
                         r.day.max(1),
                         100.0 * died as f64 / base as f64
                     ),
@@ -4889,7 +4916,12 @@ impl Game {
                     continue;
                 }
                 self.warned.insert(key, day);
-                self.alert(p, AlertKind::Need, w.text, None, out);
+                // A warning about the day just recorded is stamped with that
+                // day, as the daily summary is (playtest 6: "on day 284" sat
+                // beside day 285 in the feed, a day after the vitals' day).
+                let about = matches!(w.kind.as_str(), "starving" | "heat" | "hunted");
+                let stamp = if about { day.saturating_sub(1) } else { self.world.day() };
+                self.alert_on(p, AlertKind::Need, w.text, None, stamp, out);
             }
         }
     }
@@ -4938,10 +4970,19 @@ impl Game {
                 format!("about {min:.0} minutes")
             }
         };
+        let max = evo_sim::world::commands::GRACE_WINTER_FOUNDERS;
+        let founders = w.lineages.get(lineage as usize).map_or(0, |l| l.founders);
+        let winter = if w.grace_end(lineage, start) > start + w.grace_length() {
+            format!(" It lasts through your first winter: a founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends.")
+        } else if founders <= max {
+            format!(" (A founding of {max} or fewer whose grace would end in late autumn or winter keeps it until that winter ends; this one ends before then.)")
+        } else {
+            format!(" (Only a founding of {max} or fewer keeps its grace through its first winter; this one has {founders}.)")
+        };
         let text = match w.lineage_grace_ticks(lineage) {
             Some(left) if start >= founded => format!(
                 "Newcomer grace: {:.0} days ({} of real time). Other players can't order attacks on your animals, \
-                 nor yours on theirs, until it ends.",
+                 nor yours on theirs, until it ends.{winter}",
                 days(left),
                 real(left)
             ),
@@ -5434,7 +5475,28 @@ impl Game {
                         c.replace('_', " ")
                     }
                 };
-                let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{n} {}", word(c))).collect();
+                // Eaten: by whom (playtest 6: only founder deaths named the hunter).
+                let hunters = self
+                    .hunted
+                    .get(&p)
+                    .filter(|(d, _)| *d == record.day)
+                    .map(|(_, by)| match by.as_slice() {
+                        [(l, _)] => format!(" by {}", self.hunter_words(*l)),
+                        _ => {
+                            let named: Vec<String> =
+                                by.iter().take(3).map(|&(l, n)| format!("{} ({n})", self.hunter_words(l))).collect();
+                            let more = if by.len() > 3 { " and others" } else { "" };
+                            format!(" by {}{more}", named.join(" and "))
+                        }
+                    })
+                    .unwrap_or_default();
+                let causes: Vec<String> = causes
+                    .iter()
+                    .map(|(c, n)| {
+                        let by = if c.as_str() == "eaten" { hunters.as_str() } else { "" };
+                        format!("{n} {}{by}", word(c))
+                    })
+                    .collect();
                 let eggs = if eggs_lost > 0 {
                     // Most living members abandon their eggs: say so.
                     let (abandon, layers) = self
@@ -5612,7 +5674,7 @@ impl Game {
                         continue;
                     }
                     paid = species_bonus_due(&ch.species, &mut self.species_bonus, species, a.player, a.day, dpy);
-                    if paid {
+                    if paid && genuine_speciation(&self.world, species, dpy) {
                         self.season.add_species(a.player);
                     }
                     push = Some(PushKind::Species);
@@ -6189,6 +6251,8 @@ pub fn catastrophe_view(c: &Catastrophe) -> CatastropheView {
         severity: c.severity,
         start_day: c.start_day,
         end_day: c.end_day,
+        first_day: c.start_day + 1,
+        last_day: c.end_day.max(c.start_day + 1),
         active: c.is_active(),
         population_before: c.population_before,
         population_after: c.population_after,
@@ -6468,7 +6532,7 @@ fn achievement_text(w: &World, k: &AchievementKind) -> String {
             // "among herbivores" for a diet, "in the forest" for a biome.
             let label = if axis == "diet" { format!("among {what}s") } else { format!("in the {what}") };
             format!(
-                "Niche dominance: when era {} ended, {:.0}% of the breeding alleles {label} were yours.",
+                "Niche dominance: over era {}, on average {:.0}% of the breeding alleles {label} were yours.",
                 era + 1,
                 share * 100.0
             )
@@ -10224,6 +10288,11 @@ mod tests {
         assert_eq!(result(&far).1, Some("out_of_sight".into()));
         let near = g.command(10, 1, Some(2), ClientMsg::SetView { x: 10.0, y: 10.0, radius: 16.0 });
         assert!(result(&near).0, "{near:?}");
+        // The state says the view is pinned (it stays there until clear_view), and not once cleared.
+        assert!(g.state_for(10).unwrap().view.pinned);
+        g.command(10, 1, Some(3), ClientMsg::ClearView);
+        assert!(!g.state_for(10).unwrap().view.pinned);
+        g.command(10, 1, Some(4), ClientMsg::SetView { x: 10.0, y: 10.0, radius: 16.0 });
         for r in [0.0, -5.0] {
             let bad = g.command(10, 1, Some(2), ClientMsg::SetView { x: 10.0, y: 10.0, radius: r });
             assert_eq!(result(&bad).1, Some("bad_coordinates".into()), "radius {r}");
