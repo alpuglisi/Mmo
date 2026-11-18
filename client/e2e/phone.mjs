@@ -144,7 +144,8 @@ async function main() {
     // A reserved name is refused as it is typed, Found disabled (playtest 6: only at founding, as "bad_name: …").
     await page.fill('#design-name', 'G.M. Admin');
     const refused = await waitFor('the name refused inline', () => page.evaluate(() => {
-      const p = document.querySelector('#design-problem')?.textContent ?? '';
+      const w = document.querySelector('#design-name-warning');
+      const p = (w && !w.hidden ? w.textContent : '') || (document.querySelector('#design-problem')?.textContent ?? '');
       return p && document.querySelector('#design-submit').disabled ? p : null;
     }), 8000);
     check(!/bad_name/.test(refused), 'the refusal in words, not its code', refused);
