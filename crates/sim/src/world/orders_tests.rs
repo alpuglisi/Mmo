@@ -464,18 +464,25 @@ fn claims_and_rallies_over_water_are_refused_and_water_is_reported() {
 }
 
 #[test]
-fn abandoning_a_territory_does_not_reset_the_claim_cooldown() {
+fn abandoning_a_territory_shortens_but_does_not_reset_the_claim_cooldown() {
     let mut w = standard();
     w.set_claim_cooldown_min_ticks(1000);
     assert_eq!(w.claim_cooldown_ticks(), 1000);
+    // (Some way into the game: a shortened wait is stored as an earlier claim.)
+    w.tick = 5000;
     let c = w.organisms[herd(&w, HERD)[0]].pos;
     w.claim_territory(HERD, 0, c, 5.0).unwrap();
+    // A regretted claim: abandoned at once, a quarter of the wait remains.
     w.abandon_territory(HERD, 0).unwrap();
     w.tick += 50;
-    assert_eq!(w.claim_territory(HERD, 0, c, 5.0), Err(CommandError::ClaimCooldown { ticks_left: 950 }));
-    assert_eq!(w.groups(HERD)[0].claim_ready_tick, 1000);
-    w.tick += 950;
+    assert_eq!(w.claim_territory(HERD, 0, c, 5.0), Err(CommandError::ClaimCooldown { ticks_left: 200 }));
+    assert_eq!(w.groups(HERD)[0].claim_ready_tick, 5250);
+    w.tick += 200;
     assert!(w.claim_territory(HERD, 0, c, 5.0).is_ok());
+    // Abandoned late, the wait isn't stretched.
+    w.tick += 900;
+    w.abandon_territory(HERD, 0).unwrap();
+    assert_eq!(w.groups(HERD)[0].claim_ready_tick, 6250);
 }
 
 #[test]
@@ -579,7 +586,7 @@ fn claims_refuse_bad_radii_and_rivals_ground_and_skip_the_wait_when_bare() {
     // Player 1's territory: player 2 can't claim over it.
     let theirs = w.group_middle(1, 0).unwrap();
     w.claim_territory(1, 0, theirs, 5.0).unwrap();
-    assert_eq!(w.claim_territory(HERD, 0, theirs + Vec2::new(3.0, 0.0), 5.0), Err(CommandError::Overlaps { owner: 1 }));
+    assert_eq!(w.claim_territory(HERD, 0, theirs + Vec2::new(3.0, 0.0), 5.0), Err(CommandError::Overlaps));
     // A held territory grazed bare can be moved at once, cooldown or not.
     w.set_claim_cooldown_min_ticks(10_000);
     let t = w.claim_territory(HERD, 0, mine, 4.0).unwrap();
@@ -677,4 +684,87 @@ fn a_herd_stays_where_it_migrated_to() {
     );
     assert!(median <= 2.0 * home.radius + 2.0, "drifted: median {median:.1} vs home {:.1}", home.radius);
     assert!(middle.dist(target) < middle.dist(start), "walked back toward the start");
+}
+
+#[test]
+fn a_somewhat_hungry_migrant_keeps_walking_and_a_starving_one_stops() {
+    let mut w = standard();
+    let target = w.command_migrate(HERD, Vec2::new(60.0, 60.0)).unwrap();
+    let id = w.organisms.iter().find(|o| o.alive && o.owner == HERD && o.matured).unwrap().id;
+    let set = |w: &mut World, hunger: f32, action: Action| {
+        let i = w.index[&id];
+        let o = &mut w.organisms[i];
+        (o.needs.thirst, o.needs.hunger, o.needs.energy, o.needs.breeding) = (0.0, hunger, 100.0, 0.0);
+        o.action = action;
+    };
+    // Hunger 65 (a herd near its cap): it walks on (it used to stop at 60).
+    let mut walked = false;
+    for _ in 0..6 {
+        set(&mut w, 65.0, Action::Migrate);
+        w.step();
+        walked |= w.organism(id).unwrap().action == Action::Migrate;
+    }
+    assert!(walked, "a somewhat hungry migrant should keep to the order");
+    assert_eq!(w.migration_order(HERD, 0), Some(target));
+    // Starving: it eats first.
+    let mut ate = false;
+    for _ in 0..6 {
+        set(&mut w, 95.0, Action::Migrate);
+        w.step();
+        ate |= w.organism(id).unwrap().action != Action::Migrate;
+    }
+    assert!(ate);
+}
+
+#[test]
+fn a_refused_or_far_claim_starts_the_wait_so_claims_cannot_probe_the_map() {
+    use super::groups::FAR_CLAIM_TILES;
+    let mut w = standard();
+    w.set_claim_cooldown_min_ticks(1000);
+    w.tick = 5000;
+    let theirs = w.group_middle(1, 0).unwrap();
+    w.claim_territory(1, 0, theirs, 5.0).unwrap();
+    assert_eq!(w.claim_or_migrate(HERD, 0, theirs, 4.0), Err(CommandError::Overlaps));
+    let mine = w.group_middle(HERD, 0).unwrap();
+    assert!(
+        matches!(w.claim_or_migrate(HERD, 0, mine, 4.0), Err(CommandError::ClaimCooldown { .. })),
+        "the probe cost the wait"
+    );
+    // An accepted far claim starts it at once, not on arrival.
+    let mut w = standard();
+    w.set_claim_cooldown_min_ticks(1000);
+    let middle = w.group_middle(HERD, 0).unwrap();
+    let far = (0..64 * 64)
+        .map(|k| Map::tile_center(k % 64, k / 64))
+        .find(|&p| p.dist(middle) > FAR_CLAIM_TILES + 2.0 && w.water_check(HERD, 0, p, 4.0).water_share == 0.0)
+        .unwrap();
+    w.claim_or_migrate(HERD, 0, far, 4.0).unwrap();
+    assert!(w.groups(HERD)[0].claim_ready_tick > w.tick);
+    // Its start is the median member's distance when ordered.
+    let start = w.group_plans.pending.start_median[&(HERD, 0)];
+    assert_eq!(Some(start), w.group_median_dist(HERD, 0, w.migration_order(HERD, 0).unwrap()));
+}
+
+#[test]
+fn a_long_migration_arrives() {
+    let mut w = standard();
+    let start = w.group_middle(HERD, 0).unwrap();
+    let to = (0..64 * 64)
+        .map(|k| Map::tile_center(k % 64, k / 64))
+        .filter(|&p| p.dist(start) > 35.0)
+        .find(|&p| w.water_check(HERD, 0, p, 6.0).water_share == 0.0 && w.water_check(HERD, 0, p, 10.0).drinkable > 0)
+        .expect("dry ground with water near, 35+ tiles off");
+    let target = w.command_migrate(HERD, to).unwrap();
+    for _ in 0..40 * w.config.ticks_per_day {
+        w.step();
+        if w.migration_order(HERD, 0).is_none() {
+            break;
+        }
+    }
+    let events = w.take_group_events();
+    assert!(
+        events.contains(&GroupEvent::Arrived { player: HERD, group: 0, target }),
+        "{events:?} (start {:.0} tiles off)",
+        start.dist(target)
+    );
 }

@@ -194,8 +194,8 @@ async function desktopChecks(browser, base, errors) {
   await page.click('#tour-skip');
   await waitFor('tour closed', async () => (await tourState(page)) === null, UI_MS);
   await mapTakesInput(page, 'desktop');
-  await page.click('#tab-seasons');
-  await waitFor('seasons tab', () => page.isVisible('#panel-seasons'), UI_MS);
+  await page.click('#tab-ranks');
+  await waitFor('seasons tab', () => page.isVisible('#panel-ranks'), UI_MS);
   step('desktop: Skip closes the tour; the map and tabs take input again');
 
   await reload(page);
@@ -233,7 +233,16 @@ async function desktopChecks(browser, base, errors) {
   await page.click('#help-reset-tips');
   await page.keyboard.press('Escape');
   await page.waitForSelector('#help', { state: 'detached', timeout: UI_MS });
-  const death = (text) => page.evaluate((text) => window.evo.model.addFeed([{ kind: 'death', text, tick: 1e9 + text.length }]), text);
+  // (Deaths carry their day. Those in the lineage's first days on this
+  // screen bring no tip: a fresh founding's first losses, or a retired
+  // lineage's in the feed, playtest 5. Later ones do.)
+  const death = (text, after = 30) => page.evaluate(([text, after]) => {
+    const day = window.evo.model.state.clock.day + after;
+    window.evo.model.addFeed([{ kind: 'death', text, tick: 1e9 + text.length, day }]);
+  }, [text, after]);
+  await death('Your #0 starved on the first day (e2e).', 0);
+  await page.waitForTimeout(600);
+  if (await page.$('#onboarding-hint[data-hint="death"]')) throw new Error('the death hint showed for a death in the first days');
   await death('Your #1 starved (e2e).');
   // The living world may have called for other hints first (a pregnancy): dismiss those.
   await waitFor('death hint', async () => {
@@ -255,7 +264,7 @@ async function desktopChecks(browser, base, errors) {
   await death('Your #3 starved after a reload (e2e).');
   await page.waitForTimeout(600);
   if (await page.$('#onboarding-hint[data-hint="death"]')) throw new Error('the death hint came back after a reload');
-  step('desktop: after "Show tips again", a death shows a one-time hint ("Show me" opens Genes); it does not come back');
+  step('desktop: after "Show tips again", a death shows a one-time hint ("Show me" opens Genes), not for a first-days death; it does not come back');
 
   // A tip can be closed with ×, and "No more tips" stops them all.
   const resetTips = async () => {

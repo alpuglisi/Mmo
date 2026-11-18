@@ -182,14 +182,28 @@ score).
   backs it up; the group view's `migration_deadline_tick` is the hard
   limit. The alert says why it ended: most of the group dormant
   (hibernating or estivating animals can't walk), most of it basking or
-  resting (cold-blooded animals warm up before they travel), or the group
-  never got closer than it started (a way blocked by water or cliffs); else
-  it stalled. Every migration ends with an alert (reached, claimed on
-  arrival, or ended with its reason), and the group view keeps the latest
-  as `last_outcome` until the group's next order, since alerts scroll away
-  (playtest 4: "a 70-tile migration silently did nothing"). A migrate given
-  while 30% or more of the group is dormant warns in its reply, and the
-  open-water warning on its route leaves fliers out. Migrate, claim and
+  resting (cold-blooded animals warm up before they travel), most of it
+  too hungry or thirsty to travel, or the group never got closer than it
+  started (a way blocked by water or cliffs); else it stalled. Every
+  migration ends with an alert (reached, claimed on arrival, or ended with
+  its reason), and the group view keeps the latest as `last_outcome` until
+  the group's next order. Group alerts are kept over daily summaries when
+  a player's 50 alerts are full (playtest 5: outcomes were pushed out by
+  summaries within days). **Why big herds didn't set out** (playtest 5:
+  60–70 tile migrations "did nothing"): a lineage near its cap is always
+  somewhat hungry, and grazing outscored the order from hunger 0.6, while
+  migrants also broke off to eat at 0.6 and grazed down to 0.3. Now an
+  ordered migrant outranks grazing and walks on until hunger reaches the
+  stray limit (0.8 at default obedience), eats down to 0.5 and goes on;
+  thirst still breaks off at 0.6. Headway is measured from the median
+  member's distance when the order is given, and must be 3% of it (at
+  least a tile) to count, so a big herd's wandering median no longer keeps
+  a stuck order alive. A migrate, far claim or rally given while 30% or
+  more of the group is dormant warns in its reply, migrate and far claims
+  warn of open water on the route (not for fliers), and migrate checks the
+  destination like a claim (`destination`: its home circle's water,
+  food, drought; warnings start "At the destination:"). A target moved by
+  under a tile (onto a tile's centre) carries no `moved` note. Migrate, claim and
   rally replies say which standing orders they replace (`replaced`, and
   the `note`). `World::reroute_migration`
   moves a standing order's target keeping its age (its hard limit never
@@ -255,7 +269,9 @@ score).
   wait is waived while the group's territory has no drinking water left or
   is grazed bare (standing plants for under 3 days,
   `World::territory_failing`): a big herd strips a territory faster than
-  the wait (playtest 4: ~15 days against ~25), so it may move at once. A group
+  the wait (playtest 4: ~15 days against ~25), so it may move at once.
+  Abandoning a territory cuts the wait left to a quarter of a full one, so
+  a regretted claim can be replaced soon (not at once). A group
   split off keeps the cooldown of the group it came from, on purpose: a
   split must not reset it (split, claim, merge back would dodge it); the
   message says so. Seasonal migration (a gene) still outranks the
@@ -290,13 +306,21 @@ score).
   `migrating_to`, and the territory is claimed when the group arrives
   (snapshot version 48 keeps it waiting; a timeout drops it): a far claim
   used to become a territory, and the home range, with nobody in it. A
-  circle overlapping another player's territory is refused (`overlaps`),
+  circle overlapping another player's territory is refused (`overlaps`,
+  not saying whose), and the refusal starts the claim cooldown, as an
+  accepted far claim does at once: far claims were a free radar of rivals'
+  territories (playtest 5),
   and a radius that isn't a positive number (`bad_radius`): a negative one
   used to commit a 3-tile territory and its cooldown. A radius raised to the minimum or cut to the group's limit
-  says so (`note`). Every day the server checks standing territories and
-  alerts the owner once when one has no drinking water left or is grazed
-  bare (standing plants for under 3 days), with the day's thirst or
-  hunger deaths.
+  says so (`note`). Every day the server checks each group's held ground
+  (its territory, or the home its last migration gave it while no rally
+  or migration takes it away) and alerts the owner once when it has no
+  drinking water left or is grazed bare (standing plants for under 3
+  days), with the day's thirst or hunger deaths; when the group has
+  outgrown it (it feeds fewer than the group has, before anyone starves:
+  playtest 5's herd was claimed at 475 and held 1,941); and, for hunters,
+  when prey around it is fewer than half the pack. The drift alert is only
+  given while no rally, territory or migration holds the group elsewhere.
 - **Rally** (`rally_group`, `cancel_rally`): gather a group at a point.
   The circle it gathers in has radius `2 + √members`, about π tiles of
   ground per member, up to 24 tiles (the largest territory's cap, reached

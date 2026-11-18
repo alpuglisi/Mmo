@@ -115,6 +115,17 @@ pub const FOOD_HORIZON_DAYS: f32 = 30.0;
 pub const FOOD_NEED_MARGIN: f32 = 1.3;
 /// How far beyond a circle's edge prey still counts ([`World::prey_check`]).
 pub const PREY_REACH: f32 = 8.0;
+/// Hunger (0–1) a migrant that stopped to eat grazes down to before it
+/// walks on (it stops to eat at [`stray_hunger`]).
+pub const MIGRANT_EAT_RESUME: f32 = 0.5;
+/// A migration's headway counts once its median member is this share of
+/// the starting distance closer than its best (at least
+/// [`MIGRATE_PROGRESS_TILES`]): a big herd's median wanders by a tile or
+/// two, which kept long orders that weren't moving alive for weeks.
+pub const MIGRATE_PROGRESS_SHARE: f32 = 0.03;
+/// Share of the cooldown left after abandoning a territory: a regretted
+/// claim can be replaced after a short wait, not the whole cooldown.
+pub const ABANDON_COOLDOWN_SHARE: f32 = 0.25;
 /// Largest arrival radius whatever the group's size: a few tiles, so a
 /// big herd has really come (playtest 3: with the rally radius, up to 24
 /// tiles, a 486-strong group "arrived" with its median 24–29 tiles out).
@@ -567,6 +578,7 @@ impl World {
         let mut dists: BTreeMap<(PlayerId, u8), Vec<f32>> = BTreeMap::new();
         let mut dormant: BTreeMap<(PlayerId, u8), usize> = BTreeMap::new();
         let mut basking: BTreeMap<(PlayerId, u8), usize> = BTreeMap::new();
+        let mut needy: BTreeMap<(PlayerId, u8), usize> = BTreeMap::new();
         for o in self.organisms.iter().filter(|o| o.alive) {
             let key = (o.owner, o.group);
             if let Some(n) = members.get_mut(&key) {
@@ -578,6 +590,9 @@ impl World {
                     }
                     if matches!(o.action, crate::organism::Action::Bask | crate::organism::Action::Rest) {
                         *basking.entry(key).or_default() += 1;
+                    }
+                    if o.needs.thirst / 100.0 >= need_limit(o) || o.needs.hunger / 100.0 >= stray_hunger(o) {
+                        *needy.entry(key).or_default() += 1;
                     }
                 }
             }
@@ -643,7 +658,9 @@ impl World {
             if median.is_finite() {
                 self.group_plans.pending.start_median.entry(key).or_insert(median);
             }
-            if !plan.best_median.is_finite() || median < plan.best_median - MIGRATE_PROGRESS_TILES {
+            let start = self.group_plans.pending.start_median.get(&key).copied().unwrap_or(median);
+            let step = MIGRATE_PROGRESS_TILES.max(MIGRATE_PROGRESS_SHARE * start);
+            if !plan.best_median.is_finite() || median < plan.best_median - step {
                 // Headway (or the first measure, from a plan saved before it was kept).
                 if plan.best_median.is_finite() || plan.progress_tick == 0 {
                     plan.progress_tick = now;
@@ -667,6 +684,7 @@ impl World {
                     median,
                     dormant_share: share(&dormant),
                     basking_share: share(&basking),
+                    needy_share: share(&needy),
                     never_moved,
                     pending_claim,
                 });
@@ -955,10 +973,8 @@ impl World {
         }
         let center = self.on_map(center)?;
         let r = radius.max(TERRITORY_MIN_RADIUS);
-        if let Some((&(owner, _), _)) =
-            self.territories.iter().find(|(&(p, _), t)| p != player && t.center.dist(center) < t.radius + r)
-        {
-            return Err(CommandError::Overlaps { owner });
+        if self.territories.iter().any(|(&(p, _), t)| p != player && t.center.dist(center) < t.radius + r) {
+            return Err(CommandError::Overlaps);
         }
         Ok(center)
     }
@@ -985,7 +1001,16 @@ impl World {
     ) -> Result<ClaimOutcome, CommandError> {
         Self::check_group(group)?;
         let Some(middle) = self.group_middle(player, group) else { return Err(CommandError::NoSuchGroup(group)) };
-        let at = self.check_claim(player, group, center, radius)?;
+        let at = match self.check_claim(player, group, center, radius) {
+            Ok(at) => at,
+            Err(CommandError::Overlaps) => {
+                // A refused claim over a rival's ground starts the wait too,
+                // so claims can't probe the map for others' territories.
+                self.territory_claims.insert((player, group), self.tick);
+                return Err(CommandError::Overlaps);
+            }
+            Err(e) => return Err(e),
+        };
         if middle.dist(at) <= FAR_CLAIM_TILES {
             return self.claim_territory(player, group, center, radius).map(ClaimOutcome::Claimed);
         }
@@ -994,6 +1019,8 @@ impl World {
         self.check_water(player, group, at, r)?;
         let target = self.command_migrate_group(player, group, at)?;
         self.group_plans.pending.claims.insert((player, group), (at, radius));
+        // The wait runs from the order, not the arrival.
+        self.territory_claims.insert((player, group), self.tick);
         Ok(ClaimOutcome::Migrating { target, radius })
     }
 
@@ -1056,9 +1083,20 @@ impl World {
     }
 
     /// Group command: `group` gives up its territory.
+    /// The claim cooldown left then shrinks to [`ABANDON_COOLDOWN_SHARE`] of
+    /// a full one if that is sooner: a regretted claim can be replaced after
+    /// a short wait (abandoning still doesn't reset it).
     pub fn abandon_territory(&mut self, player: PlayerId, group: u8) -> Result<Territory, CommandError> {
         Self::check_group(group)?;
-        self.territories.remove(&(player, group)).ok_or(CommandError::NoTerritory(group))
+        let key = (player, group);
+        let t = self.territories.remove(&key).ok_or(CommandError::NoTerritory(group))?;
+        if let Some(&at) = self.territory_claims.get(&key) {
+            let cd = self.claim_cooldown_ticks();
+            let short = (ABANDON_COOLDOWN_SHARE * cd as f32).round() as u64;
+            let ready = (at + cd).min(self.tick + short);
+            self.territory_claims.insert(key, ready.saturating_sub(cd));
+        }
+        Ok(t)
     }
 
     /// Group command: divide `group` in two. With `members`, those organisms
