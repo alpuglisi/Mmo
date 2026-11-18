@@ -326,6 +326,17 @@ mod tests {
         let mut w = presets::standard_world(WorldConfig { seed: 8, width: 64, height: 64, ..Default::default() }, 1);
         let a = w.organisms.iter().find(|o| o.owner == 1 && o.matured).unwrap().id;
         let b = w.organisms.iter().find(|o| o.owner == 2 && o.matured).unwrap().id;
+        // Put b where some animal stands farthest from a (passable ground).
+        let pa = w.organism(a).unwrap().pos;
+        let far = w
+            .organisms
+            .iter()
+            .filter(|o| o.alive)
+            .map(|o| o.pos)
+            .max_by(|x, y| x.dist(pa).total_cmp(&y.dist(pa)))
+            .unwrap();
+        let ib = w.organism_index(b).unwrap();
+        w.organisms[ib].pos = far;
         let start = w.organism(a).unwrap().pos.dist(w.organism(b).unwrap().pos);
         assert!(start > 10.0, "{start}");
         w.set_rendezvous(a, b);
