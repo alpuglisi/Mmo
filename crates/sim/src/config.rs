@@ -82,6 +82,28 @@ pub struct ScoringConfig {
     /// Representative genomes kept per species to match clusters across
     /// detections (farthest-point picks, so every branch is covered).
     pub species_reps: usize,
+    /// Hysteresis (snapshot version 42; 0 or 1 turns each off, as in older
+    /// worlds). A split counts (named, announced, credited) only once its
+    /// cluster has been detected this many times in a row, each time with at
+    /// least `species_min_new` samples, and then has at least
+    /// `species_confirm_adults` estimated adults; until then it is a
+    /// candidate and its members are unclassified. Detections are
+    /// `species_interval_days` apart, so the default 4 is 20 days.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_confirm: u32,
+    /// Estimated adults a candidate needs to be confirmed as a species.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_confirm_adults: f32,
+    /// A species merges into another (goes extinct, merged) only after
+    /// continuing as the same cluster as a larger one this many detections
+    /// in a row; until then it stays alive with no adults of its own.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_merge_confirm: u32,
+    /// A new cluster that matches a species which merged away within this
+    /// many days is that species again (same id and name, no new
+    /// announcement or credit), not a new one. 0: never re-used.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
+    pub species_revive_days: u32,
     /// Era length in years. Each era ends with a final legacy ranking and
     /// niche-dominance awards.
     pub era_years: u32,
@@ -109,6 +131,10 @@ impl Default for ScoringConfig {
             species_min_new: 4,
             species_extinct_after: 2,
             species_reps: 12,
+            species_confirm: 4,
+            species_confirm_adults: 12.0,
+            species_merge_confirm: 4,
+            species_revive_days: 360,
             era_years: 3,
             catastrophes: false,
             catastrophe_chance: 0.4,

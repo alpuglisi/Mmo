@@ -1998,6 +1998,58 @@ pub mod before_v36 {
     }
 }
 
+/// `#[serde(with = "crate::serde_util::before_v42::list")]` on the species
+/// hysteresis settings (`ScoringConfig::species_confirm` and the rest) and
+/// the species tracker's state for them (`SpeciesTracker::candidates`,
+/// `Species::merging`). On a thread holding a [`before_v42::Guard`] (reading
+/// or hashing a snapshot of version 41 or before) none is written or read:
+/// they read as their defaults, 0, which is the old tracker (a split counts
+/// at its first detection, a merge at once, no re-use of merged identities).
+pub mod before_v42 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub mod list {
+        use super::*;
+
+        pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(T::default())
+            } else {
+                T::deserialize(d)
+            }
+        }
+    }
+}
+
 /// What world snapshot version 41 added: migration deadlines and
 /// post-arrival settle circles (`World::group_plans`). On a thread holding
 /// a [`before_v41::Guard`] (reading or hashing a snapshot of version 36 or
