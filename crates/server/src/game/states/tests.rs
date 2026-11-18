@@ -142,8 +142,9 @@ mod old {
             nearby.sort_by(|a, b| a.0.total_cmp(&b.0));
             nearby.truncate(g.cfg.max_nearby);
         }
-        let nearby: Vec<NearbyOrganism> =
+        let mut nearby: Vec<NearbyOrganism> =
             nearby.into_iter().map(|(_, i)| NearbyOrganism::from_org(&orgs[i as usize])).collect();
+        g.mark_protected(&mut nearby);
         let ids = idx.offers.get(&player).map_or(&[][..], Vec::as_slice);
         let offers = ids.iter().map(|&id| g.offer_view(id)).collect();
         let escrow = ids.iter().map(|id| &g.offers[id]).filter(|o| o.from == player).map(|o| o.escrow).sum::<u64>()
