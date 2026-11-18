@@ -3733,7 +3733,7 @@ impl Game {
         let full = if o.escrow > 0 { (o.escrow * LAPSE_FEE_PERCENT / 100).max(LAPSE_FEE_MIN).min(o.escrow) } else { 0 };
         // Less the share of the hold the partner's animal slept through
         // while the requester's was awake.
-        let fee = if o.held > 0 { full * o.held.saturating_sub(o.slept) / o.held } else { full };
+        let fee = (full * o.held.saturating_sub(o.slept)).checked_div(o.held).unwrap_or(full);
         let slept = if fee < full {
             format!(
                 " ({}'s #{} slept through {}% of the hold)",
@@ -8581,6 +8581,7 @@ mod tests {
         assert_eq!(g.refound_window_days(), 4);
         let _ = g.post(1, 1000, LedgerKind::Income, "test".into(), None, None);
         assert_eq!(result(&g.command(10, 1, None, ClientMsg::Reinforce)), (true, None));
+        assert_eq!(result(&g.command(10, 1, None, ClientMsg::Provision)), (true, None));
         let l = g.lineage_of(1).unwrap();
         g.retire(1, l).unwrap();
         let before = g.balance(1);
@@ -8598,7 +8599,7 @@ mod tests {
         );
         // The reinforcement window didn't reset.
         let shop: ShopView = serde_json::from_value(data(&g.command(10, 1, None, ClientMsg::RenownShop))).unwrap();
-        assert_eq!(shop.reinforcements_bought, 1);
+        assert_eq!((shop.reinforcements_bought, shop.provisions_bought), (1, 1), "the limits carry over");
         // Again within the window: the fee doubles; then capped at the balance.
         let l = g.lineage_of(1).unwrap();
         g.retire(1, l).unwrap();
