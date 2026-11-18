@@ -24,7 +24,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeGif } from './gif.mjs';
-import { boomBust, outputs, sceneItems, sceneStory } from './capture-manifest.mjs';
+import { boomBust, outputs, sceneItems, sceneStory, catastropheStory } from './capture-manifest.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../..');
@@ -283,8 +283,9 @@ const scenes = {
         shots,
         subject: f.name,
         measured: {
-          title: `${f.name}: from ${WEIRD.founders} founders to ${f.alive} animals in ${years} game years`,
-          summary: `A three-eyed, six-legged, four-eared design founded with ${WEIRD.founders} animals; ${years} game years later ${f.alive} of them live${share ? `, ${share}% of the world's genes` : ''}.`,
+          // clock.year is the current game year (0-based), not years elapsed.
+          title: `${f.name}: from ${WEIRD.founders} founders to ${f.alive} animals by game year ${years}`,
+          summary: `A three-eyed, six-legged, four-eared design founded with ${WEIRD.founders} animals; by game year ${years} ${f.alive} of them live${share ? `, ${share}% of the world's genes` : ''}.`,
           facts: { lineage: f.name, founders: WEIRD.founders, alive: f.alive, years, day: end.s.clock.day, ...(share ? { share_pct: share } : {}) },
         },
       };
@@ -370,11 +371,9 @@ const scenes = {
       return {
         shots,
         subject: 'a severe winter',
-        measured: {
-          title: 'A severe winter sweeps the map',
-          summary: `A severe winter hit in year ${start.year}: in the next ${days} game days the world went from ${start.animals} animals in ${start.lineages} lineages to ${end.animals} in ${end.lineages}.`,
-          facts: { catastrophe: 'severe winter', year: start.year, start_day: start.day, days, animals_before: start.animals, animals_after: end.animals, lineages_before: start.lineages, lineages_after: end.lineages },
-        },
+        // Honest framing: the winter is triggered for the capture, and the
+        // headline follows what the numbers did rather than assuming a die-off.
+        measured: catastropheStory(start, end, days),
       };
     },
   },

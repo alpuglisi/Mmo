@@ -208,12 +208,45 @@ async function main() {
     step(`possessed #${me}; Attack switches to attack mode ("${hint.trim()}")`);
 
     // One of ours in attack mode: refused in the interface, still in attack mode.
-    const mate = await page.evaluate((me) => window.evo.model.state.organisms.find((o) => o.id !== me)?.id, me);
-    if (mate !== undefined && (await clickMarker(page, mate))) {
-      await waitFor('the own-animal notice', async () => /one of yours/.test(await toastText(page)), 6000);
+    // Animals move every frame, so the tap is checked for what it landed on
+    // (the view's click: the organism under it and the others in reach): on
+    // one of ours alone it must be refused; anything else (a miss, or a wild
+    // animal beside ours, which the tap rightly attacks) is tried again.
+    await page.evaluate(() => {
+      const v = window.evo.screen().view;
+      const orig = v.onClick;
+      v.onClick = (c) => {
+        window.__lastClick = { organism: c.organism, candidates: c.candidates ?? [] };
+        return orig(c);
+      };
+    });
+    let refused = null;
+    for (let attempt = 0; attempt < 5 && !refused; attempt++) {
+      await attackMode(page);
+      me = await ensurePossessed(page, 'before tapping one of ours');
+      // One of ours, preferably with no other player's or wild animal close by.
+      const mate = await page.evaluate((me) => {
+        const s = window.evo.model.state;
+        const others = s.nearby.filter((o) => o.owner !== s.player);
+        const clear = (o) => others.every((x) => Math.hypot(x.x - o.x, x.y - o.y) > 3);
+        const mine = s.organisms.filter((o) => o.id !== me);
+        return (mine.find(clear) ?? mine[0])?.id ?? null;
+      }, me);
+      if (mate === null) break;
+      await page.evaluate(() => { document.querySelector('#toasts')?.replaceChildren(); window.__lastClick = null; });
+      if (!(await clickMarker(page, mate))) continue;
+      const tap = await waitFor('the tap', () => page.evaluate(() => window.__lastClick), 5000);
+      const ours = await page.evaluate((ids) => ids.map((id) => window.evo.model.state.organisms.some((o) => o.id === id)), [tap.organism, ...tap.candidates].filter((x) => x !== null));
+      if (tap.organism === null || !ours.every(Boolean)) {
+        step(`the tap landed on ${tap.organism === null ? 'nothing' : `#${tap.organism} with ${JSON.stringify(tap.candidates)} in reach`}, not on one of ours alone: again`);
+        continue;
+      }
+      await waitFor('the own-animal notice', async () => /one of yours/.test(await toastText(page)), UI_MS);
       check(await page.getAttribute('#possess-attack', 'aria-pressed') === 'true', 'attack mode should stay on after tapping one of ours');
-      step('a tap on one of our own animals in attack mode is refused and attack mode stays on');
+      refused = tap.organism;
     }
+    if (refused !== null) step(`a tap on our own #${refused} in attack mode is refused and attack mode stays on`);
+    else step('no other animal of ours to tap: skipped the own-animal tap');
 
     // A wild animal in sight: walk toward the nearest wild one first if none.
     let ordered = null;

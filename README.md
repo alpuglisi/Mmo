@@ -27,6 +27,8 @@ Where the design's build order stands:
 What remains is in [Suggested next steps](#suggested-next-steps). Launch
 marketing (drafting, human approval, scheduling and publishing on the
 owner's accounts) lives in [`tools/marketing/`](tools/marketing/PUBLISHING.md).
+Three AI playtests so far; what each found and what changed is summarised in
+[`docs/changelog-playtests.md`](docs/changelog-playtests.md).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
 
@@ -653,7 +655,7 @@ smoke test waits on explicit state conditions with generous timeouts rather
 than fixed sleeps, and retries the steps the living world can legitimately
 interrupt (a click landing on an organism that just moved there, a
 possessed organism breaking off its order to drink or flee, a picked mate
-dying, conceiving first or its agreement expiring at a season change), but
+dying, conceiving first or its agreement expiring), but
 never loosens the assertions themselves: the directed mating between two
 same-design players must complete and conceive.
 
@@ -3191,7 +3193,7 @@ the other, until it completes with fertility above 0.5; it must conceive
 when the cost is 0, since a fertile pair inside both preferences has no
 failure chance; an organism lost to predators or thirst on the way, a
 partner female that conceives before bob accepts (a pending request holds
-nothing) or a season change expiring the agreement means another pair is
+nothing) or the agreement expiring means another pair is
 tried, up to five times), releases the walkers, then buys from the **stud
 marketplace** through both players' Market tabs (the first player lists
 one of her females as a dam (a listed dam is held from breeding and the
@@ -7371,7 +7373,9 @@ reference map, scaled by area) as `x`, its litters are multiplied by
 `1 / (1 + x^4)` (0.94 at half the cap, 0.5 at the cap, 0.17 at 1.5×,
 0.06 at 2×) and its members' hunger by `1 + 0.3 · max(0, x − 1)`. The hard
 safety ceiling is twice the cap, every member counted. So a lineage near
-the cap slows down instead of stopping with hundreds pregnant, food rather
+the cap slows down instead of stopping with hundreds pregnant (the
+ceiling is now 1.4× the cap, 2,100 on the reference map: see *Playtest 2:
+competitive balance*), food rather
 than the cap decides where it settles, and its share can grow past it only
 through its genes living in other lineages. Wild species keep their hard
 caps. `lineage_stats.crowding` shows the numbers; the multipliers are
@@ -7491,9 +7495,12 @@ two-sided: a graced lineage's animals don't hunt other players' animals
 and it can't order attacks on them (`own_grace`), though they hunt wild
 prey. It lasts at least `GameConfig::grace_min_minutes` (30) of real time,
 whichever is longer (`World::set_attack_grace_min_ticks`; 20 days passed
-in 100 s at playtest speed). Re-founding doesn't renew it: it runs from the
-first of the owner's foundings in an unbroken run where each came within
-twice the grace of the one before (`World::grace_start`). The state
+in 100 s at playtest speed). Re-founding isn't meant to renew it: it runs
+from the first of the owner's foundings in an unbroken run where each came
+within twice the grace of the one before (`World::grace_start`).
+**Changing (playtest 3, finding 1):** that window is twice the grace in game
+days only (about 40 days, ~3 real minutes at playtest speed) and ignores the
+30-minute floor, so a later re-founding gets a fresh 30-minute grace. The state
 carries it while it lasts (`grace: {days_left, until_tick, real_seconds_left}`, and `protected` on such neighbours), and the
 spectator view doesn't place a graced lineage on the map. Each
 lineage's founding tick is saved (`World::lineage_founded`). The first
