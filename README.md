@@ -7589,8 +7589,8 @@ the soft-cap defaults don't reach the balance tools' lineages):
 | `compare --seed 101 --adaptive` (tunables off vs defaults) | | off 11.67, on 11.72: off − on −0.05 (sequential 95% CI −0.18 … +0.08 after 12 seeds: no difference that matters); with the rules on, burrowing omnivores 55 ± 13 fewer and red foxes 25 ± 18 fewer |
 | `predlong 6` on seeds 31–38 and 41–48: fox, pack (viable); prey lost | 13/16 (12), 15/16 (15); omnivores on 48 | 15/16 (15), 15/16 (14); omnivores on 48 |
 | `predlong`: lowest prey | antelope 15–39, voles 35–88 | antelope 6 (seed 31), else 23–39; voles 17 (seed 41), else 36–88 |
-| `calibrate tournament --worlds 96 --days 90 --seed0 70001`: top class win share | 26.0% (warm live birth) | TOURNAMENT |
-| `evo-sim genetics` | | GENETICS |
+| `calibrate tournament --worlds 96 --days 90 --seed0 70001`: top thermoregulation × birth class win share (mean share) | 26.0% (warm live birth) | 27.1% (warm incubated eggs; warm live birth 26.0%, cold abandoned eggs 15.6%); by final share warm incubated 26.0% |
+| `evo-sim genetics` | | 134 checks: 107 strict passed, 0 failed |
 
 ## Genetics validation
 
