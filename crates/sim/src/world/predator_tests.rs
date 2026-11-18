@@ -257,6 +257,8 @@ fn sure_strike(fixes: f32, hunter_health: f32, toxic: bool) -> (World, usize, us
     let mut w = niche(9);
     (w.config.balance.escape, w.config.balance.attack_power) = (0.0, 1e3);
     w.config.balance.fight_damage = 0.0;
+    // No depth judgment: it holds a strike just short of certain.
+    w.config.balance.directional_vision = 0.0;
     w.config.balance.strike_fixes = fixes;
     let h = adults(&mut w, Sex::Male, 1, &[])[0];
     let prey = (0..w.organisms.len()).find(|&i| w.organisms[i].lineage == 0 && w.organisms[i].matured).unwrap();
@@ -264,6 +266,8 @@ fn sure_strike(fixes: f32, hunter_health: f32, toxic: bool) -> (World, usize, us
     let at = Vec2::new(20.5, 20.5);
     (w.organisms[h].pos, w.organisms[h].health, w.organisms[h].needs.hunger) = (at, hunter_health, 80.0);
     w.organisms[prey].pos = at + Vec2::new(0.3, 0.0);
+    // Out in the open, whatever it was doing.
+    w.organisms[prey].sheltered = false;
     if toxic {
         w.organisms[prey].pheno.0[Gene::Toxins.index()] = 0.9;
     }

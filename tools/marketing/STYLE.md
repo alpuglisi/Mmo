@@ -27,6 +27,27 @@ warm. The event is the hook; the game is the context.
 - **No engagement bait.** Never ask people to like, upvote, share, follow
   or subscribe.
 
+## Claims to avoid (checked against playtest 3)
+
+The drafter rejects copy that makes these claims (`UNSUPPORTED_CLAIMS` in
+`src/style.mjs`); update the list when the game changes.
+
+- **Hunting other players.** Predators can attack rival lineages only in
+  narrow cases (size limits, a founding grace, burrows), and in playtest 3
+  no player predator lasted long enough to use it. Show wild predator–prey
+  stories instead.
+- **Trading as the core loop.** The core is designing and breeding your own
+  lineage; the stud market is a side system, and cross-player matings rarely
+  completed in playtest 3.
+- **Shipped mobile apps.** The iOS and Android wrappers build, but have not
+  shipped.
+- **"Balanced" or "no dominant strategy."** Each playtest found a new
+  dominant build; say the balance is being tuned.
+- **Player counts** we can't back.
+
+Staged footage says so: a catastrophe triggered for a capture is described
+as "triggered for this capture in a test world".
+
 ## Per channel
 
 | Channel | Shape |

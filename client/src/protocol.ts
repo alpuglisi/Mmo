@@ -448,6 +448,8 @@ export interface StateView {
   escrow?: number;
   /** Your lineage's newcomer grace while it lasts (absent once over): other players can't attack it, and it can't attack theirs. */
   grace?: GraceView | null;
+  /** Lineages your animals have learned are poisonous: theirs "look poisonous to you". */
+  poisonous?: number[];
 }
 
 /** The newcomer grace left: game days, and at least some real minutes, whichever is longer. */

@@ -8,10 +8,14 @@
 //! (dormant / awake) and whether there was drinkable water within 6 tiles,
 //! and what the very thirsty (thirst above 80, awake) are doing; at the
 //! end, deaths by sex, stage (adult, pregnant, young) and cause.
+//! Each line also gives the lineage's kills since the last line and what its
+//! hungry (hunger above 70, awake) members are doing.
 //! DESIGN is one of the playtest-1 designs: `broker` (GeneBroker's
 //! hibernating omnivore, 70 founders), `nomad` (PocketNomad's copy of it
 //! with hibernation 0.8, 141 founders) or `apex` (ApexHunter's pack, 87
-//! founders). Read only (*Playtest 1: ecology fixes* in the README).
+//! founders), or playtest 2's `wolves` (ApexHunter2's light obligate
+//! carnivore pack, 42 founders). Read only (*Playtest 1: ecology fixes* and
+//! *Playtest 2: predators, toxins and drowning* in the README).
 
 use std::collections::BTreeMap;
 
@@ -58,7 +62,29 @@ fn design(name: &str) -> FounderDesign {
             .with(Fangs, 0.5)
             .with(Eyes, 0.6)
             .founders(87),
-        other => panic!("unknown design {other} (broker, nomad, apex)"),
+        // Playtest 2's ApexHunter2 v2, "Apex Wolves": a light pack of
+        // obligate carnivores (42 founders).
+        "wolves" => FounderDesign::new("Apex Wolves", Thermo::Warm, BirthType::Live, 4)
+            .with(BodySize, 0.4)
+            .with(Carnivory, 0.92)
+            .with(PackInstinct, 0.95)
+            .with(GroupTolerance, 0.85)
+            .with(LegLength, 0.7)
+            .with(Muscle, 0.6)
+            .with(Fangs, 0.8)
+            .with(Claws, 0.6)
+            .with(Eyes, 0.6)
+            .with(Nose, 0.5)
+            .with(Fur, 0.5)
+            .with(FatStores, 0.7)
+            .with(Torpor, 0.4)
+            .with(Caching, 0.4)
+            .with(Camouflage, 0.4)
+            .with(Vigilance, 0.3)
+            .with(Ears, 0.3)
+            .with(SeasonalCoat, 0.4)
+            .founders(42),
+        other => panic!("unknown design {other} (broker, nomad, apex, wolves)"),
     }
 }
 
@@ -101,6 +127,7 @@ fn main() {
             let mut log = format!("seed {seed}: {} founded on day {day0} ({:?})\n", d.name, w.season());
             let mut deaths: BTreeMap<String, u32> = BTreeMap::new();
             let mut by_sex: BTreeMap<String, u32> = BTreeMap::new();
+            let mut last_kills = 0u64;
             for day in 1..=days {
                 w.run_days(1);
                 for o in w.organisms.iter().filter(|o| !o.alive && o.lineage == l) {
@@ -136,6 +163,16 @@ fn main() {
                         m.iter().map(|o| o.needs.hunger).sum::<f32>() / n,
                         m.iter().map(|o| o.needs.thirst).sum::<f32>() / n,
                     );
+                    let kills: u64 = w.counters.kills_by_lineage.iter().filter(|(k, _)| k.1 == l).map(|(_, v)| *v).sum();
+                    line += &format!(" kills {} |", kills - last_kills);
+                    last_kills = kills;
+                    let mut hungry: BTreeMap<String, u32> = BTreeMap::new();
+                    for o in m.iter().filter(|o| o.needs.hunger > 70.0 && o.dormancy == Dormancy::Awake) {
+                        *hungry.entry(format!("{:?}", o.action)).or_default() += 1;
+                    }
+                    if !hungry.is_empty() {
+                        line += &format!(" hungry acting {hungry:?} |");
+                    }
                     let mut acts: BTreeMap<String, u32> = BTreeMap::new();
                     for o in m.iter().filter(|o| o.needs.thirst > 80.0 && o.dormancy == Dormancy::Awake) {
                         *acts.entry(format!("{:?}", o.action)).or_default() += 1;

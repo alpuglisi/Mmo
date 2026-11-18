@@ -60,6 +60,8 @@ export interface GameDeps {
 }
 
 const LOCAL_CODES = new Set(['not_connected', 'timeout', 'disconnected', 'closed']);
+/** How far an attack order reaches (the server's `World::attack_range`, tiles). */
+const ATTACK_RANGE = 8;
 
 /**
  * Every organism of the player's lineage has died: say so, point to what
@@ -511,8 +513,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   async function attackWith(p: OwnOrganism, target: OrgId): Promise<boolean> {
     // A refusal is toasted by the model (every failed result is), once.
     const r = await send({ type: 'possess_attack', organism: p.id, target });
+    // A refusal is toasted once, by the model, like every failed command.
     if (r.ok) {
-      model.toast('info', `#${p.id} is hunting #${target}; hungry pack-mates nearby join in`);
+      const warning = (r.data as { warning?: string } | undefined)?.warning;
+      model.toast(warning ? 'error' : 'info', `#${p.id} is hunting #${target}; hungry pack-mates nearby join in${warning ? `. ${warning}` : ''}`);
       model.select(target);
     }
     return r.ok;
@@ -1174,9 +1178,21 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         ...(graceDays !== undefined ? [['Protected', graceDays > 0 ? `newcomer grace, ${span(graceDays * ticksPerDay)} left: no attack orders on it` : 'newcomer grace: no attack orders on it'] as [string, string]] : [])]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
+    const poisonous = (model.state?.poisonous ?? []).includes(o.lineage);
     const hunter = possessed();
-    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${graceDays !== undefined}`, () => [
-      !!hunter && h('button', { id: 'btn-attack', class: 'danger', disabled: graceDays !== undefined, title: graceDays !== undefined ? 'A protected newcomer: it can\'t be attacked on orders until its grace ends' : '', onclick: () => void attackWith(hunter, o.id) }, `Attack with #${hunter.id}`),
+    // Orders reach 8 tiles (the server's `target_out_of_sight` beyond that).
+    const reach = hunter ? Math.hypot(hunter.x - o.x, hunter.y - o.y) <= ATTACK_RANGE : false;
+    const guarded = graceDays !== undefined;
+    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${reach}:${poisonous}:${guarded}`, () => [
+      poisonous && h('p', { class: 'notice bad small', id: 'insp-poisonous' }, hunter
+        ? 'This animal looks poisonous to you: your kind has been poisoned eating its kind.'
+        : 'This animal looks poisonous: your kind has been poisoned eating its kind.'),
+      !!hunter && h('button', {
+        id: 'btn-attack', class: 'danger', disabled: guarded || !reach,
+        title: guarded ? 'A protected newcomer: it can\'t be attacked on orders until its grace ends'
+          : reach ? '' : `#${hunter.id} is too far away: get within ${ATTACK_RANGE} tiles`,
+        onclick: () => void attackWith(hunter, o.id),
+      }, guarded || reach ? `Attack with #${hunter.id}` : `Attack with #${hunter.id} (too far)`),
       wild ? h('p', { class: 'muted small' }, 'Wild organisms have no owner to consent to a mating.')
         : h('button', { id: 'btn-ask-mating', onclick: () => { matingForm.setPartner(o.id); showTab('matings'); } }, 'Request mating…'),
       h('button', { class: 'secondary', onclick: () => { view.setFollow(false); view.centerOn(o.x, o.y); } }, 'Center'),
