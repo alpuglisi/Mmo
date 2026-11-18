@@ -514,6 +514,8 @@ impl Game {
             | ClientMsg::SetNameplate { .. }
             | ClientMsg::NameSpecies { .. }
             | ClientMsg::Nameplates
+            // Grace and `protected` are read for every state.
+            | ClientMsg::EndGrace
             | ClientMsg::Resync
             | ClientMsg::WatchSeason { .. } => {}
         }

@@ -1239,10 +1239,10 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     const graceDays = wild ? undefined : protectedPlayers.get(o.owner) ?? (flagged ? 0 : undefined);
     inspDetails.replaceChildren(
       h('h3', {}, h('span', { class: 'swatch', style: `background:${cssColor(ownerColor(o.owner))}` }), `#${o.id} · ${ownerName}`, wild ? null : plateBadge(o.owner),
-        graceDays !== undefined ? h('span', { class: 'pill protected-pill', id: 'insp-protected', title: 'A newcomer\'s lineage: players can\'t order attacks on it yet' }, 'protected newcomer') : null),
+        graceDays !== undefined ? h('span', { class: 'pill protected-pill', id: 'insp-protected', title: 'A newcomer\'s lineage: other players\' animals can\'t attack it yet, nor it theirs' }, 'protected newcomer') : null),
       dl([['Action', actionText(o.action)], ['Sex', o.sex], ['Stage', o.matured ? 'adult' : 'juvenile'], ['Lineage', String(o.lineage)],
         ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—'],
-        ...(graceDays !== undefined ? [['Protected', graceDays > 0 ? `newcomer grace, ${span(graceDays * ticksPerDay)} left: no attack orders on it` : 'newcomer grace: no attack orders on it'] as [string, string]] : [])]),
+        ...(graceDays !== undefined ? [['Protected', graceDays > 0 ? `newcomer grace, ${span(graceDays * ticksPerDay)} left: other players' animals can't attack it, nor it theirs` : 'newcomer grace: other players\' animals can\'t attack it, nor it theirs'] as [string, string]] : [])]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
     const poisonous = (model.state?.poisonous ?? []).includes(o.lineage);
@@ -1762,7 +1762,24 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       retireEl.open = false;
     }
   });
-  append(tabs.lineage, [lineageExtinct, retireEl, statsEl,
+  // End the newcomer grace early (playtest 3: predators never got to hunt). One element, shown while graced.
+  const endGraceBtn = h('button', { type: 'button', id: 'end-grace', class: 'danger' }, 'End my grace now');
+  const endGraceEl = h('details', { id: 'lineage-end-grace', class: 'retire' },
+    h('summary', {}, 'End the newcomer grace'),
+    h('p', { class: 'muted small' },
+      'While the grace lasts, other players\' animals can\'t attack yours, and yours can\'t attack theirs, by order or on instinct. ',
+      'A hunter needs prey: end it to hunt other players\' animals now. They can hunt yours from then on, and founding again soon after won\'t bring it back.'),
+    endGraceBtn);
+  endGraceEl.hidden = true;
+  endGraceBtn.addEventListener('click', async () => {
+    if (!window.confirm('End your newcomer grace? Other players\' animals can attack yours from now on. This can\'t be undone.')) return;
+    const r = await send({ type: 'end_grace' });
+    if (r.ok) {
+      model.toast('info', 'Your newcomer grace has ended: your animals may hunt other players\' now, and be hunted.');
+      endGraceEl.open = false;
+    }
+  });
+  append(tabs.lineage, [lineageExtinct, retireEl, endGraceEl, statsEl,
     h('h3', { title: 'Split a herd or pack into groups with their own orders: migrate one, have another hold a territory' }, 'Groups'), groupsEl,
     h('h3', {}, 'Legacy leaderboard'), h('p', { class: 'muted small', id: 'legacy-explain' }, LEGACY_EXPLAIN), boardEl, h('h3', { title: 'Legacy standings per spring, summer, autumn and winter of the world\'s year (the Ranks tab has the ranked seasons, a competition of several weeks)' }, 'By time of year'), seasonsEl,
     h('h3', {}, 'My organisms'), listEl, listMore]);
@@ -1845,6 +1862,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       lineageExtinct.querySelector('.extinct-text')?.replaceChildren(h('strong', {}, `You retired lineage #${s.lineage}.`), ' Its animals have left the world.');
     }
     retireEl.hidden = !(s.lineage !== null && s.population > 0);
+    endGraceEl.hidden = !s.grace;
     renderGroups(s);
     const lb = s.leaderboard;
     keyed(boardEl, JSON.stringify(lb) + nameplatesKey(), () => lb.rows.length === 0

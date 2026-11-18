@@ -193,8 +193,11 @@ impl World {
                 .iter()
                 .filter(|&&(p, _)| p != player && p != crate::WILD && homes.contains_key(&p))
                 .max_by_key(|&&(p, n)| (n, std::cmp::Reverse(p)));
+            // The rival must hold more of it than the retiree: an animal
+            // three quarters the retiree's no longer goes to a rival.
+            let own = counts.iter().find(|&&(p, _)| p == player).map_or(0, |c| c.1);
             if let Some(&(p, n)) = best {
-                if total > 0 && n as f64 >= min_share * total as f64 {
+                if total > 0 && n as f64 >= min_share * total as f64 && n > own {
                     moves.push((k, p, homes[&p]));
                 }
             }
@@ -204,6 +207,9 @@ impl World {
             let old = o.lineage;
             o.owner = p;
             o.lineage = lineage;
+            // The retiree's alleles in it become the receiver's: no
+            // royalty or legacy for the retiree from a gift.
+            std::sync::Arc::make_mut(&mut o.genome).retag_origin(player, p);
             o.group = 0;
             o.possessed_by = None;
             o.order = None;
@@ -318,6 +324,40 @@ mod tests {
             assert_eq!((o.owner, o.lineage), (2, l2));
         }
         assert!(w.organisms.iter().all(|o| !o.alive || o.lineage != l1));
+    }
+
+    /// Playtest 3: an animal three quarters the retiree's went to a rival
+    /// holding a quarter, then paid the retiree royalties. Now it goes only
+    /// to a rival holding more of it than the retiree, with the retiree's
+    /// alleles re-tagged as the receiver's.
+    #[test]
+    fn a_retirement_hands_over_only_animals_mostly_a_rivals() {
+        use crate::genome::{Genome, MutationParams};
+        let mut w = presets::standard_world(WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() }, 1);
+        let l2 = w.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+        let rival = w.organisms.iter().find(|o| o.owner == 2).unwrap().genome.clone();
+        let own = w.organisms.iter().find(|o| o.owner == 1).unwrap().genome.clone();
+        let none = MutationParams { rate: 0.0, sd: 0.0 };
+        let mut rng = crate::rng::rng_for(1, 2, 3, 4);
+        let half = Genome::inherit(&own, &rival, 1, none, 0.0, &mut rng);
+        let mostly_rival = Genome::inherit(&half, &rival, 1, none, 0.0, &mut rng);
+        let mostly_own = Genome::inherit(&half, &own, 1, none, 0.0, &mut rng);
+        let share = |g: &Genome, p| {
+            let mut c = Vec::new();
+            g.count_origins(&mut c);
+            c.iter().find(|x| x.0 == p).map_or(0, |x| x.1) as f64 / c.iter().map(|x| x.1).sum::<u32>() as f64
+        };
+        assert!(share(&mostly_rival, 2) > 0.6 && share(&mostly_own, 2) >= 0.25 && share(&mostly_own, 1) > 0.6);
+        let ids: Vec<u64> = w.organisms.iter().filter(|o| o.alive && o.owner == 1).map(|o| o.id).take(2).collect();
+        for (&id, g) in ids.iter().zip([&mostly_rival, &mostly_own]) {
+            w.organisms.iter_mut().find(|o| o.id == id).unwrap().genome = std::sync::Arc::new(g.clone());
+        }
+        let (_, moved) = w.retire_player_sparing(1, &BTreeMap::from([(2, l2)]), 0.25);
+        assert_eq!(moved, 1, "only the animal mostly the rival's");
+        let o = w.organism(ids[0]).unwrap();
+        assert_eq!(o.owner, 2);
+        assert_eq!(share(&o.genome, 1), 0.0, "none of the retiree's alleles left in it");
+        assert!(w.organism(ids[1]).is_none());
     }
 
     /// A rendezvous brings two animals far apart together on their own.

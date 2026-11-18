@@ -192,6 +192,46 @@ fn the_grace_is_two_sided_lasts_in_real_time_and_survives_refounding() {
 }
 
 #[test]
+fn refounding_chains_on_the_whole_grace_and_an_ended_grace_stays_ended() {
+    let mut w = flat_world(1500.0);
+    w.config.balance.attack_grace = 2.0;
+    let tpd = w.config.ticks_per_day as u64;
+    // A real-time minimum of 10 days: the grace's whole length.
+    w.set_attack_grace_min_ticks(10 * tpd);
+    assert_eq!(w.grace_length(), 10 * tpd);
+    w.tick = 5;
+    let a = place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    let la = w.organisms[a].lineage;
+    // Re-founding 6 days on (past twice the 2 game days, within the
+    // running grace): the 4 days left carry over, nothing restarts.
+    w.tick += 6 * tpd;
+    let b = place(&mut w, HUNTER, &hunter(), Vec2::new(20.5, 20.5));
+    let lb = w.organisms[b].lineage;
+    assert_eq!(w.lineage_grace_ticks(lb), Some(4 * tpd));
+    assert_eq!(w.lineage_grace_ticks(lb), w.lineage_grace_ticks(la));
+    // Ending it: no grace, and none back by re-founding within the cooldown.
+    assert_eq!(w.end_grace(PREY), Err(CommandError::NoGrace));
+    w.end_grace(HUNTER).unwrap();
+    assert_eq!(w.lineage_grace_ticks(lb), None);
+    assert_eq!(w.end_grace(HUNTER), Err(CommandError::NoGrace));
+    w.tick += tpd;
+    let c = place(&mut w, HUNTER, &hunter(), Vec2::new(30.5, 30.5));
+    assert_eq!(w.lineage_grace_ticks(w.organisms[c].lineage), None);
+    let prey = place(&mut w, PREY, &walker(), Vec2::new(31.5, 30.5));
+    w.organisms[prey].owner = PREY;
+    // The waiver is the host's to keep: restored, it holds.
+    let waived = w.grace_waived().clone();
+    w.set_grace_waived(Default::default());
+    assert!(w.lineage_grace_ticks(w.organisms[c].lineage).is_some());
+    w.set_grace_waived(waived);
+    assert_eq!(w.lineage_grace_ticks(w.organisms[c].lineage), None);
+    // Long after (past twice the whole length), a founding starts afresh.
+    w.tick += 25 * tpd;
+    let d = place(&mut w, HUNTER, &hunter(), Vec2::new(40.5, 40.5));
+    assert_eq!(w.lineage_grace_ticks(w.organisms[d].lineage), Some(10 * tpd));
+}
+
+#[test]
 fn a_possessed_hunter_pursues_and_kills_its_target() {
     let mut w = world();
     w.config.balance.escape = 0.0;

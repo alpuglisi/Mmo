@@ -279,7 +279,7 @@ fn an_attack_order_alerts_the_targets_owner() {
 #[test]
 fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
     // At 100 ms a tick, 20 game days pass in under two minutes; the grace
-    // lasts the configured 30 minutes instead.
+    // lasts the configured 30 minutes instead, but at most 60 game days.
     let (mut g, a) = game_with(GameConfig { tick_ms: 100.0, ..Default::default() });
     g.world.config.balance.attack_grace = 20.0;
     assert_eq!(g.grace_view(1), None, "founded at tick 0: no grace");
@@ -290,12 +290,13 @@ fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
     let b = g.found(2, &design("B")).unwrap().founders;
     g.connect(20, 2, "bo");
     let grace = g.grace_view(2).expect("a newcomer has its grace");
+    let tpd = g.world.config.ticks_per_day as u64;
+    let length = 18_000.min(60 * tpd).max(20 * tpd);
+    assert_eq!(g.world.grace_length(), length);
+    assert_eq!(grace.until_tick - g.world.tick(), length, "{grace:?}");
     let secs = grace.real_seconds_left.unwrap();
-    assert!((1750..=1800).contains(&secs) && secs % 10 == 0, "{grace:?}");
-    // 30 minutes at 100 ms a tick, less the 3 ticks since bo founded.
-    assert!((17_990..=18_000).contains(&(grace.until_tick - g.world.tick())), "{grace:?}");
-    let tpd = g.world.config.ticks_per_day as f32;
-    assert!(grace.days_left > 20.0 && (grace.days_left - 18_000.0 / tpd).abs() < 0.2, "{grace:?}");
+    assert_eq!(secs, (length / 10).div_ceil(10) * 10, "{grace:?}");
+    assert!((grace.days_left - length as f32 / tpd as f32).abs() < 0.11, "{grace:?}");
     let s = g.states().into_iter().find(|(c, _)| *c == Target::Conn(20)).map(|(_, m)| m).unwrap();
     match s {
         ServerMsg::State(s) => assert_eq!(s.grace, Some(grace)),
@@ -321,9 +322,51 @@ fn the_newcomer_grace_is_in_the_state_and_lasts_real_minutes() {
     g.command(20, 2, Some(1), ClientMsg::Possess { organism: b[0] });
     let out = g.command(20, 2, Some(2), msg);
     match &out[0].1 {
-        ServerMsg::Result { error: Some(e), .. } => assert_eq!(e.code, "own_grace", "{e:?}"),
+        ServerMsg::Result { error: Some(e), .. } => {
+            assert_eq!(e.code, "own_grace", "{e:?}");
+            // In real time too.
+            let d = e.detail.as_ref().unwrap();
+            assert!(
+                d["real_seconds_left"].as_u64().is_some_and(|s| s > 0) && e.message.contains("real minutes"),
+                "{e:?}"
+            );
+        }
         m => panic!("expected own_grace, got {m:?}"),
     }
+    // Bo ends the grace (a predator's owner wants to hunt): told so, and
+    // the attack goes through; a second time there is nothing to end.
+    let out = g.command(20, 2, Some(3), ClientMsg::EndGrace);
+    assert!(matches!(&out[0].1, ServerMsg::Result { ok: true, .. }), "{out:?}");
+    assert!(out.iter().any(|(_, m)| matches!(m, ServerMsg::Alert { alert } if alert.text.contains("grace has ended"))));
+    assert_eq!(g.grace_view(2), None);
+    let out = g.command(20, 2, Some(4), ClientMsg::EndGrace);
+    assert!(matches!(&out[0].1, ServerMsg::Result { error: Some(e), .. } if e.code == "no_grace"), "{out:?}");
+    let out = g.command(20, 2, Some(5), ClientMsg::PossessAttack { organism: b[0], target: a[0] });
+    assert!(matches!(&out[0].1, ServerMsg::Result { ok: true, .. }), "{out:?}");
+    // The choice survives a restart.
+    let r = Game::resume(g.world.clone(), GameConfig { tick_ms: 100.0, ..Default::default() }, g.saved(), Vec::new());
+    assert_eq!(r.grace_view(2), None);
+}
+
+#[test]
+fn a_grace_running_out_is_announced() {
+    let (mut g, _) = game();
+    g.world.config.balance.attack_grace = 0.05;
+    g.cfg.grace_min_minutes = 0.0;
+    g.world.set_attack_grace_min_ticks(0);
+    tick(&mut g);
+    g.set_name(2, "bo");
+    g.found(2, &design("B")).unwrap();
+    g.connect(20, 2, "bo");
+    tick(&mut g);
+    assert!(g.grace_view(2).is_some());
+    let told =
+        |g: &Game| g.alerts.get(&2).map_or(0, |l| l.iter().filter(|x| x.text.contains("grace has ended")).count());
+    for _ in 0..(g.world.grace_length() + 2) {
+        tick(&mut g);
+    }
+    assert_eq!(g.grace_view(2), None);
+    assert_eq!(told(&g), 1);
 }
 
 /// The animal a player possesses dies: they hear of it at once, with the cause.

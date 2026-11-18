@@ -281,8 +281,9 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   const HELP_TOPICS: [string, (tap: string) => string][] = [
     ['Attacks', (tap) => `Possess one of yours, press Attack in its bar, then ${tap.toLowerCase()} another player's or a wild animal in sight. It chases and strikes; hungry pack-mates nearby join in. `
       + 'You hear how it ended: killed, escaped, out of sight, gone to ground. It can only take animals up to a weight that grows with the pack around it; the owner of the target is told.'],
-    ['Newcomer grace', () => 'A newly founded lineage is protected for its first days: other players cannot order attacks on it, and it cannot be ordered to attack theirs (other players\' animals leave it alone even when hunting on their own; wild predators still hunt it). Founding again soon after does not start it over. '
-      + 'The Lineage tab shows your grace left; a rival animal in grace shows "protected newcomer" in the inspector.'],
+    ['Newcomer grace', () => 'A newly founded lineage is protected for its first days (at least some real minutes at a fast clock): other players\' animals cannot attack it, by order or hunting on instinct, and its animals cannot attack theirs either way. Wild predators still hunt it, and it may hunt wild prey. '
+      + 'Founding again while it runs, or soon after, does not start it over: the time left carries on. A hunter that wants rival prey can end its grace early in the Lineage tab; it won\'t come back by founding again soon. '
+      + 'The Lineage tab shows your grace left, you are told when it ends, and a rival animal in grace shows "protected newcomer" in the inspector.'],
     ['Territories and rallies', () => 'The Territory tool (in Tools on phones) makes a group hold an area: it patrols it and stays inside. Rally gathers a group at a point for a while. '
       + 'Pick places with water: a territory or rally away from water can kill a herd in a drought.'],
     ['Toxins and colours', () => 'A toxic animal poisons whoever bites it, whether or not the attack succeeds; predators that eat it can die (the Genes tab counts "poisoned" deaths). '
