@@ -1681,13 +1681,19 @@ impl Game {
             RefoundTerms {
                 until_day: ended + window,
                 minutes_left: minutes_left as u64,
-                reason: format!(
-                    "your last lineage {how} on day {}: re-founding within {window} days (about {} real minutes), founders cost double points (you get as many as the budget then buys, at least half)",
-                    ended + 1,
-                    (window as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).round()
-                ),
+                reason: format!("your last lineage {how} on day {}: {}", ended + 1, self.refound_rule()),
             }
         })
+    }
+
+    /// The re-founding rule in words, as [`RefoundTerms::reason`] and the
+    /// retire dialog (`WorldSummary::refound_rule`) state it.
+    pub fn refound_rule(&self) -> String {
+        let window = self.refound_window_days();
+        format!(
+            "re-founding within {window} days (about {} real minutes), founders cost double points (you get as many as the budget then buys, at least half)",
+            (window as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).round()
+        )
     }
 
     /// The founders a re-founding of `design` gets now inside the window
@@ -6156,6 +6162,7 @@ impl Game {
             ticks_per_day: self.world.config.ticks_per_day,
             winter_provision: self.winter_provision_now(),
             refound_window_days: self.refound_window_days(),
+            refound_rule: self.refound_rule(),
             refound_window_minutes: (self.refound_window_days() as f64
                 * self.world.config.ticks_per_day as f64
                 * self.cfg.tick_ms

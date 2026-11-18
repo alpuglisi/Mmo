@@ -1434,6 +1434,9 @@ pub struct WorldSummary {
     pub refound_window_days: u64,
     #[serde(default)]
     pub refound_window_minutes: u64,
+    /// The re-founding rule in words (the retire dialog shows it verbatim).
+    #[serde(default)]
+    pub refound_rule: String,
     /// The lineage cap (`WorldConfig::lineage_cap`, scaled to the map): with
     /// crowding on, the soft cap where breeding is at half pace; off, the
     /// most living organisms one player may have.

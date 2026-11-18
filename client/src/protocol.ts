@@ -875,6 +875,8 @@ export interface WorldSummary {
   /** Re-founding within this many game days of a lineage's end (about `refound_window_minutes` real minutes) founds half the founders. */
   refound_window_days?: number;
   refound_window_minutes?: number;
+  /** The re-founding rule in words (shown verbatim). */
+  refound_rule?: string;
   /** Most living organisms, young included, one player may have; at it births pause (absent from older servers). */
   lineage_cap?: number;
   /** No births past this many living members (with crowding, a multiple of `lineage_cap`, which is then the soft cap). */

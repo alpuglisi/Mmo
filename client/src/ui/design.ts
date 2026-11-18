@@ -337,6 +337,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   let serverCompat: { design: string; view: DesignCompatView } | null = null;
   /** The server's re-founding terms for the design it last checked. */
   let refoundNow: { design: string; terms: NonNullable<DesignCompatView['refound']> } | null = null;
+  /** The server's egg warning (`egg_warning`) for the design it last checked. */
+  let serverEggs: { design: string; text: string } | null = null;
   function renderHybrid(): void {
     if (!species) return;
     const p = payload();
@@ -380,6 +382,14 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         serverCompat = { design: JSON.stringify({ ...p, name: '' }), view: r };
         hybridKey = '';
         renderHybrid();
+      }
+      // Balance's warning for a design whose eggs can't hatch, verbatim (it replaces the client's own).
+      const eggText = r?.egg_warning ?? null;
+      if (r && eggText !== (serverEggs?.text ?? null)) {
+        serverEggs = eggText ? { design: JSON.stringify({ ...p, name: '' }), text: eggText } : null;
+        update();
+      } else if (r && serverEggs) {
+        serverEggs.design = JSON.stringify({ ...p, name: '' });
       }
       const warning = r?.water_warning;
       waterBox.hidden = !warning;
@@ -444,7 +454,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     const food = foundingHint(payload(), world);
     foodBox.textContent = food.text;
     foodBox.className = `small food-hint food-${food.level}`;
-    const warns = designWarnings(payload(), world);
+    const warns = designWarnings(payload(), world).filter((w) => !(w.id === 'eggs' && serverEggs));
+    if (serverEggs) warns.unshift({ id: 'eggs', level: 'bad', text: serverEggs.text });
     const wkey = JSON.stringify(warns);
     if (warnBox.dataset.key !== wkey) {
       warnBox.dataset.key = wkey;

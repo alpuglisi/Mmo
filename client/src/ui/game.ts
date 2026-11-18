@@ -1840,14 +1840,13 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // Animals carrying a quarter or more of another player's genes join that player's lineage instead (server RETIRE_TRANSFER_SHARE).
     // The window the server enforces, fetched now (game days, real minutes).
     const w = await api.world().catch(() => null);
-    const window_ = w?.refound_window_days
-      ? `within ${w.refound_window_days} game days (about ${w.refound_window_minutes} real minute${w.refound_window_minutes === 1 ? '' : 's'})`
-      : 'soon after';
+    // The server's own words for the re-founding rule (its pricing changes: playtest 5).
+    const rule = w?.refound_rule ? `After retiring, ${w.refound_rule}.` : 'Founding again soon after retiring costs more per founder.';
     const yes = await confirmDialog({
       id: 'retire-confirm', title: `Retire lineage #${lineage}?`, ok: 'Retire lineage', danger: true,
       body: [
         `Its ${animals(alive)} and their eggs leave the world (any carrying at least 25% of another player's genes join that player's lineage instead). This can't be undone.`,
-        `Founding again ${window_} of retiring founds half the founders you design.`,
+        rule,
       ],
     });
     if (!yes) return;

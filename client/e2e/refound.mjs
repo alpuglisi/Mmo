@@ -189,7 +189,7 @@ async function main() {
     // The app's own dialog (not the browser's confirm), with the server's window.
     await page.waitForSelector('#retire-confirm', { timeout: UI_MS });
     const confirmText = await page.textContent('#retire-confirm');
-    check(/within \d+ game days \(about \d+ real minutes?\)/.test(confirmText) && !confirmText.includes('ranked season'), 'the retire dialog names the server\'s window', confirmText);
+    check(/re-founding within \d+ days \(about \d+ real minutes?\), founders cost double/.test(confirmText) && !confirmText.includes('ranked season'), 'the retire dialog states the server\'s rule', confirmText);
     await page.click('#retire-confirm-ok');
     await page.waitForSelector('#lineage-extinct', { state: 'visible', timeout: UI_MS });
     check(await page.locator('#lineage-retire').isHidden(), 'the retire section should hide once retired');
@@ -223,6 +223,16 @@ async function main() {
     await page.waitForSelector('#design-name', { timeout: UI_MS });
     const header = await page.textContent('.topbar');
     check(header.includes('You retired your last lineage') && !header.includes('died out'), 'the design screen should say the lineage was retired', header);
+    // A warm-blooded design that abandons its eggs: the server's egg warning, verbatim.
+    await page.check('input[name="birth"][value="abandoned_eggs"]');
+    const eggWarn = await waitFor('the egg warning', async () => {
+      const t = await page.textContent('#design-warnings [data-warning="eggs"]').catch(() => null);
+      return t && t.includes('24 °C') ? t : null;
+    });
+    check(await page.locator('#design-warnings [data-warning="eggs"]').count() === 1, 'one egg warning');
+    await page.check('input[name="birth"][value="incubated_eggs"]');
+    await waitFor('the egg warning to go', async () => (await page.locator('#design-warnings [data-warning="eggs"]').count()) === 0);
+    step(`warm-blooded abandoned eggs show the server's warning: "${eggWarn.slice(0, 80)}…"`);
     await page.fill('#design-name', 'Third try');
     await page.click('#design-submit');
     await page.waitForSelector('#world-canvas', { timeout: UI_MS });
