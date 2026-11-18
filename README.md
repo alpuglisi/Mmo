@@ -8544,8 +8544,12 @@ egg-laying hibernator's eggs and young to its own orders:
   (`brooding_note`, shown as a toast). With the tunable on, the note says
   they stay on their nests until the eggs hatch. With it off, it says
   "N clutches will be left behind and may chill".
-- **The young follow.** Juveniles take their group's migration order
-  alongside their mothers.
+- **The young follow.** Weaned juveniles take their group's migration
+  order. Dependent young keep following their mothers, who migrate. When
+  they took the order themselves they outran their mothers and died on the
+  journey: 38 alive at the end of the measurement below (before the merge),
+  against 81 with
+  the tunable off.
 - **No late clutches.** A winter-sleeping egg layer conceives no clutch that
   would hatch in the second half of the year (gestation plus incubation
   after today).
@@ -8555,22 +8559,26 @@ egg-laying hibernator's eggs and young to its own orders:
 - **Clones.** Reinforcements are a generation after the adult they copy.
   They were already young adults.
 
-**Measured** (`examples/eggcare.rs`). The warm incubated-egg hibernator (50
-founders, obedience 0.85) is founded into grown 96×96 worlds and ordered
-to migrate to a random point every 15 days for 240 days:
+**Measured** (`examples/eggcare.rs`, 6 seeds). The warm incubated-egg
+hibernator (50 founders, obedience 0.85) is founded into grown 96×96
+worlds and ordered to migrate to a random point every 15 days for 240 days:
 
-| Seed | `brood_care` | Laid | Hatched | Chilled | Raided | Alive |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | 0 | 381 | 47 | 330 | 4 | 42 |
-| 1 | 1 | 230 | 196 | 21 | 12 | 29 |
-| 2 | 0 | 294 | 72 | 185 | 35 | 8 |
-| 2 | 1 | 172 | 72 | 49 | 51 | 5 |
+| `brood_care` | Hatched | Chilled | Raided | Alive at day 240 |
+| --- | --- | --- | --- | --- |
+| 0 | 938 | 2,162 | 331 | 55 |
+| 1 | 1,058 | 184 | 90 | 94 |
 
-Chilled eggs fell from 2.1× the hatched count to 0.26×, so
-`egg_attendance` needs no retuning. Fewer clutches are laid (no late
-ones), and more are raided: the brooders now stay behind on their nests
-while the herd moves on. Fewer animals are alive at the end of the 240 days
-under this constant-migration stress test.
+Chilled eggs fell from 2.3× the hatched count to 0.17×, so `egg_attendance`
+needs no retuning. About half as many clutches are laid, mostly because the
+late clutches are gone. Two parts were tested by switching each off, each
+on its own (before merging main, when 81 were alive with the tunable off):
+
+- with the late-clutch rule off, 1,194 eggs chilled;
+- with every juvenile taking the order, only 38 animals were alive at the
+  end (against 115 with no juvenile taking it). This was the cause of the
+  dependent-young rule above.
+
+Per seed, the number alive is noisy (2 to 24).
 
 **Starter.** `crates/sim/tests/founding_safety.rs` rebuilds the playtest's
 world (seed 37) and founds the starter design on day 30. All 20 founders
