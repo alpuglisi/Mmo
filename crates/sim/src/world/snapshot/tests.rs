@@ -411,6 +411,7 @@ fn hysteresis_off(w: &mut World) {
 fn founding_fixes_off(w: &mut World) {
     let old = crate::serde_util::before_v47::OLD_VALUE;
     (w.config.balance.reachable_water, w.config.balance.founding_conditions) = (old, old);
+    w.config.balance.founding_safety = crate::serde_util::before_v48::OLD_VALUE;
     for h in &mut w.lineage_homes {
         *h = None;
     }
@@ -1589,4 +1590,23 @@ fn version_46_snapshots_restore_without_the_founding_fixes() {
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.lineage_homes, w.lineage_homes);
     assert_eq!(r.config.balance.founding_conditions, 1.0);
+}
+
+#[test]
+fn version_47_snapshots_restore_without_founding_safety() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v47();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 47);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founding_safety, 0.0);
+    assert!(r.snapshot_v47() == old);
+    w.config.balance.founding_safety = 0.0;
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    // This version keeps it.
+    let w = fixture_world();
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.founding_safety, 1.0);
 }

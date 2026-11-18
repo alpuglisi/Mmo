@@ -106,6 +106,19 @@ const AVOID_RADIUS: f32 = 20.0;
 /// Plants (`Tile::veg`, summed within 4 tiles) a founding home should hold
 /// per founder to count as fully fed (`Balance::founding_conditions`).
 const FOOD_STOCK: f32 = 20.0;
+/// Least share of the ground within the founders' scatter that must be dry
+/// land for a home (`Balance::founding_safety`).
+const SETTLE_SHARE: f32 = 0.5;
+/// Within this many tiles of a map edge a founding home is marked down in
+/// any season (`Balance::founding_safety`; the cold season's `COLD_EDGE`
+/// comes on top).
+const EDGE_MARGIN: f32 = 12.0;
+/// No founding home within this many tiles of a map edge
+/// (`Balance::founding_safety`; only the fallback round may go there).
+const EDGE_KEEP: f32 = 6.0;
+/// Within this many tiles of a corner (both edges) a home is marked down
+/// further (`Balance::founding_safety`).
+const CORNER_MARGIN: f32 = 16.0;
 /// Founding: radius in tiles of a hunter's prey count.
 const PREY_RANGE: f32 = 16.0;
 /// Founding: prey this close to a hunter's home counts against it, so hunters
@@ -310,6 +323,10 @@ struct HomeSearch {
     avoid: Vec<Vec2>,
     /// Founders placed at each home (the group size).
     founders: u32,
+    /// Tiles founders may settle on (`Balance::founding_safety`, in a
+    /// running world): walkable dry land with no lake bed or river channel
+    /// under it, away from water. `None`: the region map decides.
+    settle: Option<Vec<bool>>,
 }
 
 impl HomeSearch {
@@ -385,7 +402,21 @@ impl HomeSearch {
         } else {
             Vec::new()
         };
-        HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd, avoid, founders }
+        let settle = (w.config.balance.founding_safety > 0.0 && w.tick > 0).then(|| {
+            let ground = w.map.ground();
+            (0..w.map.width * w.map.height)
+                .map(|i| {
+                    let (t, g) = (&w.map.tiles[i], &ground[i]);
+                    region[i] != u32::MAX
+                        && t.water_depth == 0.0
+                        && t.ice == 0.0
+                        && g.base_water <= 0.0
+                        && g.river <= 0.0
+                        && w.map.water_dist[i] >= DRY_WATER_DIST
+                })
+                .collect()
+        });
+        HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd, avoid, founders, settle }
     }
 }
 
@@ -1093,16 +1124,30 @@ impl World {
             let genome = design.founder_genome(owner, &mut rng);
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
             let mut pos = home;
-            let tries = if dry_sites { 40 } else { 20 };
+            let settle = search.as_ref().and_then(|s| s.settle.as_ref());
+            let tries = if settle.is_some() {
+                60
+            } else if dry_sites {
+                40
+            } else {
+                20
+            };
             for _ in 0..tries {
-                let r = if dry_sites { &mut site_rng } else { &mut rng };
+                let r = if dry_sites || settle.is_some() { &mut site_rng } else { &mut rng };
                 let off = Vec2::new(r.gen_range(-spread..spread), r.gen_range(-spread..spread));
                 let cand = self.map.clamp(home + off);
-                // Passable (`passable_for`), from the search's region map.
+                // Passable (`passable_for`), from the search's region map;
+                // with `founding_safety`, settled dry land only.
                 let (cx, cy) = self.map.tile_coords(cand);
-                if search.as_ref().is_some_and(|s| s.region[self.map.idx(cx, cy)] != u32::MAX)
-                    && (!dry_sites || self.dry_ground(cand))
-                {
+                let i = self.map.idx(cx, cy);
+                let ok = match settle {
+                    Some(settle) => settle[i],
+                    None => {
+                        search.as_ref().is_some_and(|s| s.region[i] != u32::MAX)
+                            && (!dry_sites || self.dry_ground(cand))
+                    }
+                };
+                if ok {
                     pos = cand;
                     break;
                 }
@@ -1128,6 +1173,47 @@ impl World {
     /// of at most this many, each at its own home. Above every preset
     /// design's founding (46), so the standard worlds found as before.
     pub const FOUNDING_GROUP: u32 = 48;
+
+    /// Share of the tiles within `r` of `p` that founders may settle on.
+    fn settle_share(&self, settle: &[bool], p: Vec2, r: f32) -> f32 {
+        let (cx, cy) = self.map.tile_coords(p);
+        let r = r.max(1.0).ceil() as usize;
+        let (mut ok, mut all) = (0u32, 0u32);
+        for y in cy.saturating_sub(r)..(cy + r + 1).min(self.map.height) {
+            for x in cx.saturating_sub(r)..(cx + r + 1).min(self.map.width) {
+                all += 1;
+                ok += u32::from(settle[self.map.idx(x, y)]);
+            }
+        }
+        ok as f32 / all.max(1) as f32
+    }
+
+    /// Plants `founders` like `probe` eat in their first 20 days, in units
+    /// of `Tile::veg` (`Balance::hunger_rate` × metabolism a day, converted
+    /// as `eat_plants` converts it); 0 for a body that eats no leaves.
+    fn founding_need(&self, probe: &Organism, founders: u32) -> f32 {
+        let bal = &self.config.balance;
+        let eff = probe.traits.plant_efficiency(bal);
+        if eff <= 0.0 {
+            return 0.0;
+        }
+        founders as f32 * 20.0 * bal.hunger_rate * probe.traits.stats.metabolism * probe.food_per_hunger() / eff
+    }
+
+    /// Plants within `r` tiles of `p` that `probe`'s body can reach.
+    fn reachable_veg_near(&self, probe: &Organism, p: Vec2, r: usize) -> f32 {
+        let (cx, cy) = self.map.tile_coords(p);
+        let (body, share) = (&probe.traits.body, self.config.balance.canopy_share);
+        let ground = self.map.ground();
+        let mut sum = 0.0f32;
+        for y in cy.saturating_sub(r)..(cy + r + 1).min(self.map.height) {
+            for x in cx.saturating_sub(r)..(cx + r + 1).min(self.map.width) {
+                let i = self.map.idx(x, y);
+                sum += self.map.tiles[i].reachable_veg(&ground[i], body, share);
+            }
+        }
+        sum
+    }
 
     /// Plants standing within 4 tiles of `p` now.
     fn veg_near(&self, p: Vec2) -> f32 {
@@ -1196,7 +1282,7 @@ impl World {
     /// add the rest in organism order.
     fn pick_home(&self, probe: &Organism, search: &HomeSearch, rng: &mut impl Rng) -> Vec2 {
         let buffer = self.config.balance.home_buffer.max(0.0);
-        let HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd, avoid, founders } = search;
+        let HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd, avoid, founders, settle } = search;
         // Judge the spot as it is now (`Balance::founding_conditions`): only
         // in a running world, so a new world's founding is unchanged.
         let now = self.config.balance.founding_conditions > 0.0 && self.tick > 0;
@@ -1218,11 +1304,30 @@ impl World {
         let mut per_lineage: Vec<f32> = vec![0.0; self.lineages.len()];
         let mut near: Vec<u32> = Vec::new();
         let mut best = (f32::MIN, Map::tile_center(self.map.width / 2, self.map.height / 2));
-        for _ in 0..200 {
+        // With `founding_safety`, 200 picks on dry land; if none has room,
+        // 200 more under the old rules (better somewhere than nowhere).
+        let rounds = if settle.is_some() { 2 } else { 1 };
+        for k in 0..200 * rounds {
+            if k == 200 && best.0 > f32::MIN {
+                break;
+            }
+            let strict = k < 200;
+            let settle = settle.as_ref().filter(|_| strict);
             let p = Vec2::new(rng.gen_range(0.0..self.map.width as f32), rng.gen_range(0.0..self.map.height as f32));
             // Passable (`passable_for`): the region map marks every tile.
             if region_at(p) == u32::MAX {
                 continue;
+            }
+            // With `founding_safety`: dry land, with room for the founders.
+            if let Some(settle) = settle {
+                let (x, y) = self.map.tile_coords(p);
+                let edge = p.x.min(p.y).min(self.map.width as f32 - p.x).min(self.map.height as f32 - p.y);
+                if edge < EDGE_KEEP
+                    || !settle[self.map.idx(x, y)]
+                    || self.settle_share(settle, p, scatter - 8.0) < SETTLE_SHARE
+                {
+                    continue;
+                }
             }
             let t = self.map.ground_at(p);
             // The year's mean temperature (today's would draw a winter
@@ -1328,7 +1433,23 @@ impl World {
             let cover = if now { (self.veg_near(p) / (*founders as f32 * FOOD_STOCK)).min(1.0) } else { 1.0 };
             let food = t.veg_max / 40.0 * productivity * plant_eff * standing * (0.4 + 0.6 * cover)
                 + meat_eff * 0.04 * prey_count.min(60.0);
-            let score = water + food + comfort
+            // With `founding_safety`: food for the founders' first 20 days
+            // (the plants within reach against what they will eat), and the
+            // map's edges and corners in any season (a herd pressed into a
+            // corner has nowhere to go; playtest 4's tundra rim and
+            // water-ringed corner starved 21 of 27).
+            let mut safety = 0.0;
+            if settle.is_some() {
+                let need = self.founding_need(probe, *founders);
+                if need > 0.0 {
+                    let cover20 = (self.reachable_veg_near(probe, p, 8) / need).min(1.0);
+                    safety -= 2.5 * (1.0 - cover20) * (1.0 - carn).clamp(0.0, 1.0);
+                }
+                let (dx, dy) = (p.x.min(self.map.width as f32 - p.x), p.y.min(self.map.height as f32 - p.y));
+                safety -= 1.5 * (1.0 - dx.min(dy) / EDGE_MARGIN).max(0.0);
+                safety -= 1.5 * (1.0 - dx.max(dy) / CORNER_MARGIN).max(0.0);
+            }
+            let score = water + food + comfort + safety
                 - 0.05 * crowd_n
                 - (0.3 * danger).min(4.0)
                 - (0.1 * carn * on_top).min(2.0)
@@ -1881,6 +2002,7 @@ mod winter_tests {
             for on in [true, false] {
                 let mut c = w.clone();
                 c.config.balance.founding_conditions = if on { 1.0 } else { 0.0 };
+                c.config.balance.founding_safety = if on { 1.0 } else { 0.0 };
                 c.found_lineage_unchecked(77, &d);
                 let p = c.lineage_homes.last().copied().flatten().expect("home recorded");
                 let edge = p.x.min(p.y).min(c.map.width as f32 - p.x).min(c.map.height as f32 - p.y);

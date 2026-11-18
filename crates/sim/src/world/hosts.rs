@@ -84,6 +84,10 @@ impl World {
     /// founders. Sexes alternate; ages are adult and mixed, as founders'.
     /// They join the anchor's group. Returns the new organisms' ids (none
     /// if the lineage has no living adult agent, or its hard cap is full).
+    /// The lineage's adults within this many tiles of an adult make its
+    /// group for placing reinforcements (`Balance::founding_safety`).
+    pub const REINFORCE_CLUSTER: f32 = 8.0;
+
     pub fn reinforce_lineage(&mut self, lineage: u32, n: u32) -> Vec<OrgId> {
         let adults: Vec<usize> = (0..self.organisms.len())
             .filter(|&i| {
@@ -103,6 +107,28 @@ impl World {
         let mut picks: Vec<usize> = (0..adults.len().min(8)).map(|_| adults[rng.gen_range(0..adults.len())]).collect();
         picks.sort_by(|&a, &b| self.organisms[a].needs.hunger.total_cmp(&self.organisms[b].needs.hunger));
         picks.dedup();
+        // With `Balance::founding_safety`: beside the lineage's largest group
+        // (the adult with the most of the lineage's adults within
+        // `REINFORCE_CLUSTER` tiles), not a random member: playtest 4's
+        // reinforcements landed among predators, 8 of 10 eaten in 5 days.
+        let (mut range, mut tries) = (6.0, 12);
+        if self.config.balance.founding_safety > 0.0 {
+            let step = (adults.len() / 64).max(1);
+            let anchor = (0..adults.len())
+                .step_by(step)
+                .map(|k| {
+                    let p = self.organisms[adults[k]].pos;
+                    let near =
+                        adults.iter().filter(|&&j| self.organisms[j].pos.dist(p) < Self::REINFORCE_CLUSTER).count();
+                    (near, k)
+                })
+                .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))
+                .map(|(_, k)| adults[k]);
+            if let Some(a) = anchor {
+                picks = vec![a];
+                (range, tries) = (3.0, 24);
+            }
+        }
         let probe = &self.organisms[picks[0]];
         let (group, owner) = (probe.group, probe.owner);
         let body = probe.traits.body;
@@ -121,11 +147,11 @@ impl World {
         let mut best = f32::MIN;
         for &a in &picks {
             let base = self.organisms[a].pos;
-            for k in 0..12 {
+            for k in 0..tries {
                 let cand = if k == 0 {
                     base
                 } else {
-                    self.map.clamp(base + Vec2::new(rng.gen_range(-6.0..6.0), rng.gen_range(-6.0..6.0)))
+                    self.map.clamp(base + Vec2::new(rng.gen_range(-range..range), rng.gen_range(-range..range)))
                 };
                 if !self.passable_for(probe, cand) {
                     continue;
@@ -413,5 +439,41 @@ mod tests {
         }
         // A lineage without adults gets none.
         assert!(w.reinforce_lineage(999, 3).is_empty());
+    }
+
+    /// Playtest 4: reinforcements landed beside a lone member among
+    /// predators and 8 of 10 were eaten. They land beside the lineage's
+    /// largest group (`Balance::founding_safety`).
+    #[test]
+    fn reinforcements_land_beside_the_largest_group() {
+        let mut w = presets::standard_world(WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() }, 1);
+        w.run_days(1);
+        let l = w.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+        let members: Vec<usize> =
+            (0..w.organisms.len()).filter(|&i| w.organisms[i].alive && w.organisms[i].lineage == l).collect();
+        assert!(members.len() >= 6);
+        // All but a few stand at one spot; the rest are spread far off.
+        let herd = w.organisms[members[0]].pos;
+        let walkable = |w: &World, p: Vec2| w.passable_for(&w.organisms[members[0]], p);
+        for (k, &i) in members.iter().enumerate() {
+            let p = if k < members.len() - 3 {
+                herd + Vec2::new((k % 3) as f32 * 0.3, (k / 3) as f32 * 0.3)
+            } else {
+                Vec2::new((10 + 20 * (k % 3)) as f32, 60.0)
+            };
+            if walkable(&w, p) {
+                w.organisms[i].pos = w.map.clamp(p);
+            }
+        }
+        for _ in 0..4 {
+            let mut c = w.clone();
+            let ids = c.reinforce_lineage(l, 6);
+            assert_eq!(ids.len(), 6);
+            for id in ids {
+                let d = c.organism(id).unwrap().pos.dist(herd);
+                assert!(d < 8.0, "{d:.1} tiles from the herd");
+            }
+            w.next_id += 7;
+        }
     }
 }

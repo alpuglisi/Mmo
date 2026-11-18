@@ -392,9 +392,10 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     if (s && !window.confirm(`Buy reinforcements for ${s.reinforce_price} renown? ${s.reinforce_size} young adults copied from your own join your lineage. The price doubles with each purchase, at most ${s.reinforcements_max ?? 2} within a ranked season's length.`)) return;
     const r = await deps.send({ type: 'reinforce' });
     if (r.ok) {
-      const d = r.data as { added?: unknown[]; shop?: unknown } | undefined;
+      const d = r.data as { added?: unknown[]; shop?: unknown; at?: [number, number]; group?: number } | undefined;
       shop = parseShopView(d?.shop) ?? shop;
-      model.toast('info', `${d?.added?.length ?? 0} adults joined your lineage.`);
+      const where = d?.at ? ` at (${Math.round(d.at[0])}, ${Math.round(d.at[1])}), beside ${d.group ?? 0} of your animals` : '';
+      model.toast('info', `${d?.added?.length ?? 0} adults joined your lineage${where}.`);
       render();
     }
   });

@@ -1090,6 +1090,18 @@ pub struct Balance {
     /// earlier foundings died (avoided). 0: the old search.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v47"))]
     pub founding_conditions: f32,
+    /// Playtest 4 founding safety (version 48; off at 0, what snapshots
+    /// before version 48 read, `serde_util::before_v48`). In a running
+    /// world, founders settle only on dry land: no water or ice on the tile
+    /// and no lake bed or river channel under it (`Ground::base_water`,
+    /// `Ground::river`), so neither the thaw nor the end of a drought puts
+    /// them in deep water; a home needs most of the ground around it so.
+    /// The home search also weighs the plants within reach against what the
+    /// founders will eat in their first 20 days, and map edges and corners
+    /// in every season (more so in the cold one). Reinforcements land beside
+    /// the lineage's largest group, not a random member.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    pub founding_safety: f32,
 }
 
 impl Balance {
@@ -1364,12 +1376,13 @@ impl Default for Balance {
             wake_spread: 10.0,
             reachable_water: 1.0,
             founding_conditions: 1.0,
+            founding_safety: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 144;
+    pub const FIELD_COUNT: usize = 145;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1523,6 +1536,7 @@ impl Balance {
             ("wake_spread", &mut self.wake_spread),
             ("reachable_water", &mut self.reachable_water),
             ("founding_conditions", &mut self.founding_conditions),
+            ("founding_safety", &mut self.founding_safety),
         ]
     }
 
