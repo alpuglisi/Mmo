@@ -1278,6 +1278,12 @@ pub struct Balance {
     /// cluster. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v58"))]
     pub speciation_credit: f32,
+    /// A sitting parent covers 3 eggs fully: a bigger clutch's brooded
+    /// temperature is `site + (brooded − site) × (3 / eggs)^clutch_cover`
+    /// (a clutch of 6 at 1: halfway to the nest's own temperature), so a
+    /// big incubated clutch chills on cool nights. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v58"))]
+    pub clutch_cover: f32,
 }
 
 impl Balance {
@@ -1573,12 +1579,13 @@ impl Default for Balance {
             hungry_hunters: 1.0,
             toxin_source: 1.0,
             speciation_credit: 1.0,
+            clutch_cover: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 165;
+    pub const FIELD_COUNT: usize = 166;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1753,6 +1760,7 @@ impl Balance {
             ("hungry_hunters", &mut self.hungry_hunters),
             ("toxin_source", &mut self.toxin_source),
             ("speciation_credit", &mut self.speciation_credit),
+            ("clutch_cover", &mut self.clutch_cover),
         ]
     }
 

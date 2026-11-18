@@ -522,7 +522,7 @@ fn playtest5_off(b: &mut crate::Balance) {
 /// them.
 fn balance58_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v58::OLD_VALUE;
-    (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit) = (old, old, old, old);
+    (b.toxin_upkeep, b.hungry_hunters, b.toxin_source, b.speciation_credit, b.clutch_cover) = (old, old, old, old, old);
 }
 
 /// Version 57 snapshots (before the playtest 6 balance rules) restore with
