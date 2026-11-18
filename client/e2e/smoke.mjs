@@ -564,11 +564,9 @@ async function main() {
           }, `${req.mine}:${req.partner}`);
         }, 20000);
         // (A preview error means one of them just died; the offer then fails.
-        // A dam that has meanwhile conceived with one of her own males shows
-        // that instead of the fertility: the offer then fails or waits, and
-        // the outcome below decides.)
-        const busy = /already pregnant/.test(compat);
-        if (!busy && !compat.startsWith('(') && !compat.startsWith("Can't preview") && !compat.startsWith('Compatible: fertility')) throw new Error(`same designs not shown compatible: ${compat}`);
+        // Under load the agreed pair can also meet and conceive before the
+        // preview is read: the preview then says she is already pregnant.)
+        if (!compat.startsWith('(') && !compat.includes('already pregnant') && !compat.startsWith("Can't preview") && !compat.startsWith('Compatible: fertility')) throw new Error(`same designs not shown compatible: ${compat}`);
         pair = { mine: req.mine, partner: req.partner, compat, id };
       }
       if (!pair) throw new Error('no mating request went through');
