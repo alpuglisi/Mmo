@@ -6,8 +6,8 @@
 //!   rest of the weather season, and reinforcements for a small lineage
 //!   (prices and limits in [`crate::economy`]). Renown spent is destroyed.
 //! - **Royalty** ([`Game::pay_royalties`]): renown a day for a player's
-//!   alleles living outside their lineage (studs that sired into rivals'
-//!   dams, genes that spread into the wild).
+//!   alleles living in other players' lineages (studs that sired into
+//!   rivals' dams; alleles in the wild don't pay).
 //! - **Compatibility** ([`Game::compatibility`]): which lineages a player's
 //!   can breed with at all (body plans 0.30 apart are sterile), shown per
 //!   listing in the market too.
@@ -229,11 +229,14 @@ impl Game {
         (self.world.config.lineage_cap as f64 * economy::REINFORCE_MAX_SHARE).floor() as usize
     }
 
+    /// Reinforcements `player` bought within the last ranked season's
+    /// length of simulated days (a rolling window).
     fn reinforcements_this_season(&self, player: PlayerId) -> u32 {
-        match self.economy.reinforcements.get(&player) {
-            Some(&(season, n)) if season == self.season.season => n,
-            _ => 0,
-        }
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        self.economy
+            .reinforce_days
+            .get(&player)
+            .map_or(0, |d| d.iter().filter(|&&day| day + window > today).count() as u32)
     }
 
     /// Why `player` can't buy reinforcements now (their lineage otherwise).
@@ -246,8 +249,9 @@ impl Game {
             return Err(ErrorInfo::new(
                 "limit_reached",
                 format!(
-                    "at most {} reinforcements a ranked season (retired lineages count)",
-                    economy::MAX_REINFORCEMENTS_PER_SEASON
+                    "at most {} reinforcements within a ranked season's length ({} days; retired lineages count)",
+                    economy::MAX_REINFORCEMENTS_PER_SEASON,
+                    self.cfg.season_days
                 ),
             ));
         }
@@ -308,7 +312,11 @@ impl Game {
             return Err(ErrorInfo::new("lineage_full", "no room for reinforcements"));
         }
         self.spend(player, price, format!("Reinforcements: {} adults joined your lineage", ids.len()))?;
-        self.economy.reinforcements.insert(player, (self.season.season, n + 1));
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        let days = self.economy.reinforce_days.entry(player).or_default();
+        days.retain(|&d| d + window > today);
+        days.push(today);
+        let _ = n;
         // New organisms: the next state build indexes the world again.
         self.state_cache.invalidate();
         Ok((ids, self.shop_view(player)))
@@ -398,7 +406,6 @@ impl Game {
         self.hosts = self.world.legacy_hosts();
     }
 
-    /// `player`'s alleles outside their lineage, over all alleles.
     /// `player`'s alleles living in other players' lineages, over all
     /// alleles: what the royalty pays for. Alleles in the wild (a design
     /// that hybridised with a wild species) don't count: they came from
@@ -416,7 +423,8 @@ impl Game {
             .iter()
             .filter(|(&(l, p), _)| p == player && Some(l) != home && owner(l) != WILD)
             .map(|(_, &n)| n)
-            .sum();
+            .sum::<f64>()
+            + 0.0; // an empty sum is -0.0
         out / total
     }
 

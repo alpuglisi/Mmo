@@ -739,6 +739,14 @@ impl World {
                 return intent;
             }
         }
+        // An agreed mating's rendezvous (`World::set_rendezvous`): walk to
+        // the partner unless a threat or an urgent need comes first.
+        if let Some(target) = self.rendezvous_target(o, threat) {
+            intent.action = Action::Rally;
+            intent.target = Some(target);
+            intent.sprint = o.needs.energy > 60.0;
+            return intent;
+        }
         if let (Some(_), Some(target)) = (o.possessed_by, o.order) {
             urgent = self.order_override(o, threat);
             if urgent.is_none() && o.pos.dist(target) > super::commands::ORDER_ARRIVAL {

@@ -100,7 +100,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const myListingsEl = h('div', { id: 'my-listings' });
 
   // --- browse
-  const minePick = createPicker({ id: 'market-mine', label: 'For my adult', placeholder: 'Search your adults: id or words', filters: ['sex', 'notPregnant'], noneLabel: '(none: no compatibility)', allowNone: true });
+  const minePick = createPicker({ id: 'market-mine', label: 'For my adult', placeholder: 'Search your adults: id or words', filters: ['sex', 'notPregnant'], noneLabel: '(none picked: compatibility by lineage only)', allowNone: true });
   const mineSel = minePick.el;
   const roleSel = h('select', { id: 'market-role' },
     h('option', { value: 'any' }, 'studs and dams'), h('option', { value: 'stud' }, 'studs (male)'), h('option', { value: 'dam' }, 'dams (female)'));
@@ -340,7 +340,9 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
 
   function renderListings(): void {
     const shown = mergePages(pages);
-    renderCards(listingsEl, market === null ? [] : shown, false, 'No listings match the filters.');
+    // Your own listings never show among the ones to buy: say where they are.
+    const ownNote = own.length > 0 ? ` Your own ${own.length} listing${own.length === 1 ? ' is' : 's are'} under "My listings" below.` : '';
+    renderCards(listingsEl, market === null ? [] : shown, false, `No listings match the filters.${ownNote}`);
     renderCards(myListingsEl, own, true, 'None.');
     pageEl.textContent = pageText(shown.length, market);
     moreBtn.hidden = !market?.next_cursor;
@@ -382,6 +384,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     }
   });
   reinBtn.addEventListener('click', async () => {
+    const s = shop;
+    if (s && !window.confirm(`Buy reinforcements for ${s.reinforce_price} renown? ${s.reinforce_size} young adults copied from your own join your lineage. The price doubles with each purchase, at most ${s.reinforcements_max ?? 2} within a ranked season's length.`)) return;
     const r = await deps.send({ type: 'reinforce' });
     if (r.ok) {
       const d = r.data as { added?: unknown[]; shop?: unknown } | undefined;

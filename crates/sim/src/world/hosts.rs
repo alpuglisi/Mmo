@@ -13,6 +13,10 @@ use crate::math::Vec2;
 use crate::organism::{OrgId, Organism, Sex};
 use crate::rng::{rng_for, stream};
 
+/// How close a rendezvous brings the pair (inside the server's meeting
+/// distance, 1.5 tiles, so the agreement runs).
+pub const RENDEZVOUS_NEAR: f32 = 1.0;
+
 /// Alleles in breeding adults by (host lineage, origin player), counted as
 /// the legacy score counts them (`LegacySnapshot`: the same adults, loci and
 /// morphology alleles; cohort members of abstract regions weighted alike).
@@ -154,7 +158,9 @@ impl World {
             o.generation = generation;
             o.growth = 1.0;
             o.matured = true;
-            o.age_ticks = ((o.traits.maturity_days + rng.gen_range(0.0..o.traits.lifespan_days * 0.3)) * tpd) as u32;
+            // Young adults (playtest 3: copies arrived as old as founders
+            // and died soon).
+            o.age_ticks = ((o.traits.maturity_days + rng.gen_range(0.0..o.traits.lifespan_days * 0.05)) * tpd) as u32;
             o.needs.breeding = rng.gen_range(0.0..40.0);
             ids.push(self.insert(o));
         }
@@ -209,6 +215,50 @@ impl World {
             self.count_lineage(lineage, 1);
         }
         (self.retire_player(player), moves.len())
+    }
+
+    /// An agreed mating's rendezvous: `a` and `b` walk toward each other
+    /// (each to where the other is now) until they meet, breaking off for
+    /// a threat or an urgent thirst or hunger as a possessed animal does
+    /// (`Balance::possess_danger`, `possess_urgency`). A possessed animal
+    /// follows its player instead. Replaces either's earlier rendezvous.
+    pub fn set_rendezvous(&mut self, a: OrgId, b: OrgId) {
+        for (x, y) in [(a, b), (b, a)] {
+            if let Some(old) = self.rendezvous.insert(x, y) {
+                if old != y && self.rendezvous.get(&old) == Some(&x) {
+                    self.rendezvous.remove(&old);
+                }
+            }
+        }
+    }
+
+    /// End `a`'s rendezvous (and its partner's).
+    pub fn clear_rendezvous(&mut self, a: OrgId) {
+        if let Some(b) = self.rendezvous.remove(&a) {
+            if self.rendezvous.get(&b) == Some(&a) {
+                self.rendezvous.remove(&b);
+            }
+        }
+    }
+
+    /// `a`'s rendezvous partner, if any.
+    pub fn rendezvous_of(&self, a: OrgId) -> Option<OrgId> {
+        self.rendezvous.get(&a).copied()
+    }
+
+    /// Where `o` walks for its rendezvous now, if it has one and nothing
+    /// comes first (`decide`): its living partner's position, while they
+    /// are farther apart than [`RENDEZVOUS_NEAR`].
+    pub(super) fn rendezvous_target(&self, o: &Organism, threat: f32) -> Option<Vec2> {
+        if self.rendezvous.is_empty() || o.possessed_by.is_some() || !o.matured {
+            return None;
+        }
+        let partner = *self.rendezvous.get(&o.id)?;
+        let q = self.index.get(&partner).map(|&k| &self.organisms[k]).filter(|q| q.alive)?;
+        if o.pos.dist(q.pos) <= RENDEZVOUS_NEAR || self.order_override(o, threat).is_some() {
+            return None;
+        }
+        Some(q.pos)
     }
 
     fn today_f64(&self) -> f64 {
@@ -268,6 +318,30 @@ mod tests {
             assert_eq!((o.owner, o.lineage), (2, l2));
         }
         assert!(w.organisms.iter().all(|o| !o.alive || o.lineage != l1));
+    }
+
+    /// A rendezvous brings two animals far apart together on their own.
+    #[test]
+    fn a_rendezvous_brings_the_pair_together() {
+        let mut w = presets::standard_world(WorldConfig { seed: 8, width: 64, height: 64, ..Default::default() }, 1);
+        let a = w.organisms.iter().find(|o| o.owner == 1 && o.matured).unwrap().id;
+        let b = w.organisms.iter().find(|o| o.owner == 2 && o.matured).unwrap().id;
+        let start = w.organism(a).unwrap().pos.dist(w.organism(b).unwrap().pos);
+        assert!(start > 10.0, "{start}");
+        w.set_rendezvous(a, b);
+        assert_eq!((w.rendezvous_of(a), w.rendezvous_of(b)), (Some(b), Some(a)));
+        let mut met = None;
+        for t in 0..20 * w.config.ticks_per_day {
+            w.step();
+            let (Some(x), Some(y)) = (w.organism(a), w.organism(b)) else { break };
+            if x.pos.dist(y.pos) <= 1.5 {
+                met = Some(t);
+                break;
+            }
+        }
+        assert!(met.is_some(), "they never met (started {start:.0} apart)");
+        w.clear_rendezvous(b);
+        assert_eq!((w.rendezvous_of(a), w.rendezvous_of(b)), (None, None));
     }
 
     #[test]

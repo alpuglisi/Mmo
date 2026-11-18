@@ -8,7 +8,7 @@ import { commandError } from '../errors';
 import { DEFAULT_TICKS_PER_DAY, gameAndReal, ticksToNextSeason } from './duration';
 import { reconcile, setText } from './reconcile';
 import { friendlyError, MEETING_TILES } from './friendlyErrors';
-import { historyRows, offerLine } from './matingHistory';
+import { historyRows, meetText, offerLine } from './matingHistory';
 import { api, ApiError } from '../api';
 import { alertEntry, type GameModel } from '../model';
 import { buildFamilyTree, type FamilyModel } from '../familyTree';
@@ -1480,9 +1480,17 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     none(incomingEl, 'None.', inc.length === 0);
     reconcile(incomingEl, inc, (e) => String(e.offer.id), (e) => {
       const id = e.offer.id;
+      // An offer to your lineage: you pick which of your animals takes it
+      // (default: the server picks the nearest free one).
+      const pick = h('select', { class: 'pick-own', hidden: true, title: 'Which of your animals takes this mating' }) as HTMLSelectElement;
+      const accept = () => {
+        const partner = Number(pick.value) || undefined;
+        void send({ type: 'respond_mating', request: id, accept: true, ...(partner ? { partner } : {}) });
+      };
       return h('div', { class: 'offer', 'data-offer': id }, h('span', { class: 'offer-line' }), h('small', { class: 'muted offer-time' }),
         h('div', { class: 'row' },
-          h('button', { class: 'accept', onclick: () => void send({ type: 'respond_mating', request: id, accept: true }) }, 'Accept'),
+          pick,
+          h('button', { class: 'accept', onclick: accept }, 'Accept'),
           h('button', { class: 'secondary decline', onclick: () => void send({ type: 'respond_mating', request: id, accept: false }) }, 'Decline'),
           h('button', { class: 'secondary block', title: 'Decline this and every later request from this player', onclick: () => {
             const from = model.offers.get(id)?.offer.from_player;
@@ -1492,7 +1500,23 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           } }, 'Block player')));
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
-      setText(row.querySelector('.offer-time')!, offerTime(e.offer));
+      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player)].filter(Boolean).join(' '));
+      const pick = row.querySelector<HTMLSelectElement>('.pick-own');
+      if (pick) {
+        const lineageOffer = e.offer.partner === 0 && e.offer.lineage !== undefined;
+        pick.hidden = !lineageOffer;
+        if (lineageOffer && document.activeElement !== pick) {
+          const adults = (s?.organisms ?? []).filter((o) => o.matured && !o.pregnant).slice(0, 200);
+          const key = adults.map((o) => o.id).join(',');
+          if (pick.dataset.key !== key) {
+            const keep = pick.value;
+            pick.dataset.key = key;
+            pick.replaceChildren(h('option', { value: '' }, 'nearest free one'),
+              ...adults.map((o) => h('option', { value: o.id }, `#${o.id} ${o.sex} · gen ${o.generation}`)));
+            if ([...pick.options].some((x) => x.value === keep)) pick.value = keep;
+          }
+        }
+      }
     });
     const opn = [...open].sort((a, b) => a.offer.id - b.offer.id);
     none(openEl, 'None.', opn.length === 0);
@@ -1507,7 +1531,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           h('button', { class: 'secondary', onclick: () => void send({ type: 'cancel_mating', request: e.offer.id }) }, 'Cancel')));
     }, (row, e) => {
       setText(row.querySelector('.offer-line')!, offerLine(e.offer));
-      setText(row.querySelector('.offer-time')!, offerTime(e.offer));
+      setText(row.querySelector('.offer-time')!, [offerTime(e.offer), meetText(e.offer, model.player)].filter(Boolean).join(' '));
       const note = row.querySelector<HTMLElement>('.offer-note');
       if (note) {
         const mineId = e.offer.from_player === me ? e.offer.mine : e.offer.partner;
@@ -1624,7 +1648,7 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   retireBtn.addEventListener('click', async () => {
     const lineage = model.state?.lineage;
     if (lineage === null || lineage === undefined) return;
-    if (!window.confirm(`Retire lineage #${lineage}? All ${model.state?.population ?? 0} of its animals leave the world. This can't be undone.`)) return;
+    if (!window.confirm(`Retire lineage #${lineage}? All ${model.state?.population ?? 0} of its animals leave the world (any carrying mostly another player's genes join that player's lineage). This can't be undone, and re-founding within a ranked season's length founds half the founders.`)) return;
     const r = await send({ type: 'retire_lineage', lineage });
     if (r.ok) {
       const n = (r.data as { removed?: number } | undefined)?.removed ?? 0;
