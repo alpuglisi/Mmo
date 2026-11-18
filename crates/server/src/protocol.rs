@@ -1426,6 +1426,10 @@ pub struct DayVitals {
     pub births: u64,
     /// Deaths by cause (`starved`, `thirst`, `eaten`, `old_age`, ...).
     pub deaths: std::collections::BTreeMap<String, u64>,
+    /// Eggs lost during the day by cause (`chilled`, `overheated`,
+    /// `raided`); absent when none were.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub eggs_lost: std::collections::BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1611,12 +1615,17 @@ pub struct GeneHost {
 }
 
 /// `lineage_stats.eggs`: an egg-laying lineage's clutches.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EggsView {
     pub clutches: u32,
     pub eggs: u32,
     /// Clutches with a parent incubating and guarding them.
     pub brooded: u32,
+    /// Eggs the lineage has lost, by cause (`chilled`: no parent warming
+    /// them; `overheated`; `raided` by egg predators), since its founding.
+    /// Absent: none lost.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost: BTreeMap<String, u64>,
 }
 
 /// The soft lineage cap (`lineage_stats.crowding`): births slow as the
@@ -1746,6 +1755,14 @@ pub struct DesignCompatView {
     pub at_risk: usize,
     /// Every lineage with living adults, most fertile first.
     pub rows: Vec<CompatibilityRow>,
+    /// Share of today's shores (dry tiles beside drinkable water) the
+    /// design's founders can stand on and drink from: steep banks stop
+    /// animals that can't climb (climbing below 0.4). Absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shore_access: Option<f32>,
+    /// Set when the design can reach less than half the shores: what to do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water_warning: Option<String>,
 }
 
 /// One player's standing over a season of the history.

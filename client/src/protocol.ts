@@ -910,6 +910,8 @@ export interface DayVitals {
   births: number;
   /** Deaths by cause: starved, thirst, exposure, eaten, toxin, drowned, old_age, attrition, recessive, disease, journey. */
   deaths: Record<string, number>;
+  /** Eggs lost during the day by cause: chilled, overheated, raided (absent: none). */
+  eggs_lost?: Record<string, number>;
 }
 
 export interface GeneStat {
@@ -976,7 +978,13 @@ export interface LineageStats {
   /** Days left of the newcomer grace (others can't order attacks on yours); absent: none. */
   grace_days_left?: number;
   /** Egg-laying lineages: their clutches on the ground (absent for live bearers and older servers). */
-  eggs?: { clutches: number; eggs: number; brooded: number };
+  eggs?: {
+    clutches: number;
+    eggs: number;
+    brooded: number;
+    /** Eggs lost since founding by cause: chilled (no parent warming them), overheated, raided (absent: none). */
+    lost?: Record<string, number>;
+  };
   legacy: LegacyPoint[];
   alerts: AlertView[];
 }
@@ -1080,6 +1088,10 @@ export interface DesignCompatView {
   fertile_with: number;
   at_risk: number;
   rows: CompatibilityRow[];
+  /** Share of today's shores the founders can stand on and drink from (steep banks stop non-climbers); absent on older servers. */
+  shore_access?: number;
+  /** Set when the founders can reach less than half the shores. */
+  water_warning?: string;
 }
 
 export interface SeasonRow {

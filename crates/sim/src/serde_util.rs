@@ -2144,3 +2144,76 @@ pub mod before_v43 {
         }
     }
 }
+
+/// `#[serde(with = "crate::serde_util::before_v45")]` on the playtest 3
+/// founding and drinking tunables (`Balance::reachable_water`,
+/// `founding_conditions`), and `before_v45::list` on the state they keep
+/// (`World::lineage_homes`). On a thread holding a [`before_v45::Guard`]
+/// (reading or hashing a snapshot of version 44 or before) none is written
+/// or read: the tunables read as 0 (the old drinking and founding rules)
+/// and no homes are known.
+pub mod before_v45 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The tunables before version 45: off.
+    pub const OLD_VALUE: f32 = 0.0;
+
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(OLD_VALUE)
+        } else {
+            f32::deserialize(d)
+        }
+    }
+
+    /// The same for a value that older versions don't have at all: its
+    /// default when reading them.
+    pub mod list {
+        use super::*;
+
+        pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+            if OLD.with(Cell::get) {
+                s.serialize_unit()
+            } else {
+                v.serialize(s)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+            if OLD.with(Cell::get) {
+                Ok(T::default())
+            } else {
+                T::deserialize(d)
+            }
+        }
+    }
+}

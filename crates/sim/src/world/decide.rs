@@ -392,6 +392,10 @@ pub(crate) fn pack_instinct(o: &Organism) -> f32 {
     ((o.pheno[Gene::PackInstinct] - 0.3) / 0.6).clamp(0.0, 1.0)
 }
 
+/// How far (steps, 8-neighbor) a thirsty animal looks for a shore spot it
+/// can walk to (`World::reachable_drink_spot`).
+pub(crate) const DRINK_STEPS: usize = 8;
+
 impl World {
     /// How far away a possessed organism can be ordered to attack: the
     /// farthest any organism perceives (`WorldConfig::max_perception`),
@@ -958,6 +962,10 @@ impl World {
             Action::Drink => {
                 if self.map.can_drink_at(o.pos) {
                     intent.target = None;
+                } else if let Some(w) =
+                    (self.config.balance.reachable_water > 0.0).then(|| self.reachable_drink_spot(o)).flatten()
+                {
+                    intent.target = Some(w);
                 } else if let Some(w) = self.map.find_water(o.pos, 3) {
                     intent.target = Some(w);
                 } else if let Some(w) = self.map.toward_water(o.pos) {
@@ -1656,6 +1664,60 @@ impl World {
         }
     }
 
+    /// The nearest tile within [`DRINK_STEPS`] steps (8-neighbor) that `o`
+    /// can walk to (`terrain::passable`: no deep water it can't swim, no
+    /// cliff it can't climb) and drink from (`Map::can_drink_at`), by
+    /// walking distance, ties in row order (`Balance::reachable_water`).
+    /// `None` for a flyer (water is never out of its reach) or when there
+    /// is none: the caller falls back to the nearest water.
+    pub(crate) fn reachable_drink_spot(&self, o: &Organism) -> Option<Vec2> {
+        const SIDE: usize = 2 * DRINK_STEPS + 1;
+        if o.traits.body.can_fly {
+            return None;
+        }
+        let (map, body) = (&self.map, &o.traits.body);
+        let ground = map.ground();
+        let (cx, cy) = map.tile_coords(o.pos);
+        let mut seen = [false; SIDE * SIDE];
+        seen[DRINK_STEPS * SIDE + DRINK_STEPS] = true;
+        let mut frontier: Vec<(usize, usize)> = vec![(cx, cy)];
+        let mut next = Vec::new();
+        for step in 0..=DRINK_STEPS {
+            frontier.sort_unstable_by_key(|&(x, y)| (y, x));
+            if step > 0 {
+                if let Some(&(x, y)) =
+                    frontier.iter().find(|&&(x, y)| map.can_drink_at(crate::terrain::Map::tile_center(x, y)))
+                {
+                    return Some(crate::terrain::Map::tile_center(x, y));
+                }
+            }
+            if step == DRINK_STEPS {
+                break;
+            }
+            next.clear();
+            for &(x, y) in &frontier {
+                for ny in y.saturating_sub(1)..=(y + 1).min(map.height - 1) {
+                    for nx in x.saturating_sub(1)..=(x + 1).min(map.width - 1) {
+                        let k = (ny + DRINK_STEPS - cy) * SIDE + (nx + DRINK_STEPS - cx);
+                        if seen[k] {
+                            continue;
+                        }
+                        seen[k] = true;
+                        let i = map.idx(nx, ny);
+                        if crate::terrain::passable(body, &ground[i], &map.tiles[i]) {
+                            next.push((nx, ny));
+                        }
+                    }
+                }
+            }
+            std::mem::swap(&mut frontier, &mut next);
+            if frontier.is_empty() {
+                break;
+            }
+        }
+        None
+    }
+
     fn wander(&self, o: &Organism, intent: &mut Intent, rng: &mut SimRng, range: f32) {
         // A target the body can't stand on is never reached, and would pin the
         // organism against the shore forever (starving next to the water).
@@ -1699,6 +1761,64 @@ fn migrant_breaks_off(o: &Organism, hunger: f32, thirst: f32) -> bool {
 mod tests {
     use super::*;
     use crate::{presets, terrain::Map, WorldConfig};
+
+    /// Playtest 3: non-climbers stood at the top of a steep bank, 3 tiles
+    /// from a full lake, "drinking" until they died. A lake below a cliff
+    /// (x 10–11) with one walkable gap in the bank (y 14): the thirsty
+    /// animal heads for the gap and drinks; under the old rule
+    /// (`reachable_water` 0) it heads for the water behind the cliff.
+    #[test]
+    fn thirsty_animals_head_for_a_shore_they_can_reach() {
+        let mut w = World::new(WorldConfig { seed: 3, width: 24, height: 24, ..Default::default() });
+        assert!(w.organisms.is_empty());
+        let terrain = w.map.edit_terrain();
+        for y in 0..24 {
+            for x in 0..24 {
+                let g = &mut terrain.ground[y * 24 + x];
+                (g.biome, g.sand, g.veg_density, g.base_water, g.river) =
+                    (crate::terrain::Biome::Grassland, 0.0, 0.1, 0.0, 0.0);
+                g.slope = if (10..12).contains(&x) && y != 14 { 0.8 } else { 0.0 };
+            }
+        }
+        for y in 0..24 {
+            for x in 0..24 {
+                let t = &mut w.map.tiles[y * 24 + x];
+                (t.water_depth, t.ice, t.snow, t.mud, t.current) =
+                    (if x >= 12 { 3.0 } else { 0.0 }, 0.0, 0.0, 0.0, 0.0);
+            }
+        }
+        let d = crate::design::FounderDesign::new("t", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+            .with(Gene::Climbing, 0.0)
+            .with(Gene::Swimming, 0.0)
+            .founders(1);
+        let id = w.found_lineage_unchecked(1, &d)[0];
+        let i = w.organism_index(id).unwrap();
+        w.organisms[i].pos = Vec2::new(8.5, 10.5);
+        assert!(!w.map.can_drink_at(w.organisms[i].pos));
+        let spot = w.reachable_drink_spot(&w.organisms[i]).expect("the gap is in reach");
+        assert!(w.map.can_drink_at(spot));
+        let (sx, sy) = w.map.tile_coords(spot);
+        assert!(sx < 12 && (13..=15).contains(&sy), "spot {spot:?}");
+        // Walking there, it drinks.
+        w.organisms[i].needs.thirst = 90.0;
+        w.organisms[i].needs.hunger = 0.0;
+        for _ in 0..w.config.ticks_per_day {
+            w.step();
+            if let Some(k) = w.organism_index(id) {
+                w.organisms[k].needs.hunger = 0.0;
+            }
+        }
+        let o = w.organism(id).expect("alive");
+        assert!(o.needs.thirst < 30.0, "thirst {} at {:?}", o.needs.thirst, o.pos);
+        // The old rule aims at the water behind the cliff.
+        w.config.balance.reachable_water = 0.0;
+        let k = w.organism_index(id).unwrap();
+        w.organisms[k].pos = Vec2::new(9.5, 10.5);
+        w.organisms[k].needs.thirst = 90.0;
+        let intent = w.decide(k);
+        let t = intent.target.expect("a target");
+        assert!(w.map.tile_coords(t).0 >= 10, "old target {t:?}");
+    }
 
     #[test]
     fn wander_drops_a_target_the_body_cannot_reach() {

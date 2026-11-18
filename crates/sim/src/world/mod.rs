@@ -89,6 +89,22 @@ use spatial::SpatialGrid;
 /// Founding: longest walk (tiles) from a home to a spot where it can drink
 /// (water within 6 tiles, as drinking reaches the next tile).
 const WATER_STEPS: usize = 5;
+/// `Ground::base_water` from which a lake's water lasts a drought
+/// (`World::water_access`): the shallows below it dry out in droughts.
+const LASTING_WATER: f32 = 1.0;
+/// Within this many tiles of a map edge, a cold-season founding home is
+/// marked down (`Balance::founding_conditions`).
+const COLD_EDGE: f32 = 12.0;
+/// How much a cold-season home right at the edge is marked down: enough to
+/// outweigh the crowd and threats that otherwise push foundings into the
+/// corners.
+const COLD_EDGE_WEIGHT: f32 = 3.0;
+/// Radius around a home where the owner's last founding died that the next
+/// founding avoids (`Balance::founding_conditions`).
+const AVOID_RADIUS: f32 = 20.0;
+/// Plants (`Tile::veg`, summed within 4 tiles) a founding home should hold
+/// per founder to count as fully fed (`Balance::founding_conditions`).
+const FOOD_STOCK: f32 = 20.0;
 /// Founding: radius in tiles of a hunter's prey count.
 const PREY_RANGE: f32 = 16.0;
 /// Founding: prey this close to a hunter's home counts against it, so hunters
@@ -288,14 +304,23 @@ struct HomeSearch {
     prey_grid: PointGrid<u32>,
     /// Every organism (founders placed since included), with its carnivory.
     crowd: PointGrid<f32>,
+    /// Homes where the owner's earlier foundings died out
+    /// (`Balance::founding_conditions`): avoided.
+    avoid: Vec<Vec2>,
+    /// Founders placed at each home (the group size).
+    founders: u32,
 }
 
 impl HomeSearch {
-    fn new(w: &World, probe: &Organism, lineage: u32) -> Self {
+    fn new(w: &World, probe: &Organism, lineage: u32, founders: u32) -> Self {
         let hunter = probe.traits.carnivory > 0.45;
         // Regions only tell a hunter's prey apart (reachable from home or
         // not); for anyone else every passable tile reads 0.
-        let region = if hunter { w.passable_regions(probe) } else { w.passable_map(probe) };
+        // In a running world (`Balance::founding_conditions`), ice over deep
+        // water is no home: founders scattered onto a frozen lake drown at
+        // the thaw (playtest 3).
+        let no_ice = w.config.balance.founding_conditions > 0.0 && w.tick > 0;
+        let region = if hunter { w.passable_regions(probe, no_ice) } else { w.passable_map(probe, no_ice) };
         let region_at = |p: Vec2| {
             let (x, y) = w.map.tile_coords(p);
             region[w.map.idx(x, y)]
@@ -342,7 +367,24 @@ impl HomeSearch {
         for (k, q) in prey.iter().enumerate() {
             prey_grid.insert(q.0, k as u32);
         }
-        HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd }
+        // Where this owner's earlier foundings died out (not retired: at
+        // least half their founders died), so a re-founding doesn't land on
+        // the same fatal spot (playtest 3: one player, the same peninsula,
+        // three times).
+        let avoid = if w.config.balance.founding_conditions > 0.0 {
+            (0..lineage as usize)
+                .filter(|&l| w.lineages[l].owner == probe.owner && w.lineage_alive.get(l).copied().unwrap_or(0) == 0)
+                .filter(|&l| {
+                    let died: u64 =
+                        w.counters.deaths_by_lineage.iter().filter(|((k, _), _)| *k == l as u32).map(|(_, n)| n).sum();
+                    2 * died >= w.lineages[l].founders as u64
+                })
+                .filter_map(|l| w.lineage_homes.get(l).copied().flatten())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd, avoid, founders }
     }
 }
 
@@ -549,6 +591,11 @@ pub struct World {
     /// whose lineages count as founded at tick 0).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36::list"))]
     lineage_founded: Vec<u64>,
+    /// Each lineage's first home, indexed like `lineages` (`None` before
+    /// version 45 and for none recorded), so a player's re-founding avoids
+    /// the spot where their last founding died (`Balance::founding_conditions`).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v45::list"))]
+    lineage_homes: Vec<Option<Vec2>>,
     /// Migration deadlines and post-arrival settle circles by (player,
     /// group) (`groups::GroupPlans`; version 41: empty from older
     /// snapshots, whose migrations get a deadline from the restore).
@@ -655,6 +702,7 @@ impl World {
             bonus_slots: BTreeMap::new(),
             attack_orders: BTreeMap::new(),
             lineage_founded: Vec::new(),
+            lineage_homes: Vec::new(),
             group_plans: groups::GroupPlans::default(),
             crowding: Vec::new(),
             clutch_at: IdMap::default(),
@@ -709,8 +757,13 @@ impl World {
 
     /// Founders arriving just before (or in) winter start provisioned: not
     /// hungry, with their fat reserve full (`fat_capacity`, larger with the
-    /// fat stores gene). Deterministic: no randomness.
+    /// fat stores gene). Egg-layers also wait for spring to breed: a winter
+    /// clutch laid by founders who must leave it to feed chills within half
+    /// a day (playtest 3: every founding clutch of a winter founding was
+    /// lost). Deterministic: no randomness.
     pub fn provision_for_winter(&mut self, ids: &[OrgId]) {
+        let tpd = self.config.ticks_per_day as u64;
+        let spring = (self.day() - self.day_of_year() as u64 + self.config.days_per_year.max(1) as u64) * tpd;
         for &id in ids {
             let Some(&i) = self.index.get(&id) else { continue };
             let cap = self.fat_capacity(&self.organisms[i]);
@@ -718,6 +771,9 @@ impl World {
             if o.alive {
                 o.needs.hunger = 0.0;
                 o.fat = o.fat.max(cap);
+                if o.traits.birth != crate::design::BirthType::Live {
+                    o.breed_ready_tick = o.breed_ready_tick.max(spring);
+                }
             }
         }
     }
@@ -963,6 +1019,7 @@ impl World {
         // Lineages from before version 36 count as founded at tick 0.
         self.lineage_founded.resize(lineage as usize, 0);
         self.lineage_founded.push(self.tick);
+        self.lineage_homes.resize(lineage as usize + 1, None);
         self.rebuild_grace_starts();
         // What the home search reads of the world, gathered once: founding
         // only adds this lineage's organisms, which it ignores except as a
@@ -970,8 +1027,12 @@ impl World {
         let mut search = None;
         for k in 0..design.founders {
             if k % group_size == 0 {
-                let s = search.get_or_insert_with(|| HomeSearch::new(self, &probe, lineage));
+                let s = search
+                    .get_or_insert_with(|| HomeSearch::new(self, &probe, lineage, group_size.min(design.founders)));
                 home = self.pick_home(&probe, s, &mut rng);
+                if k == 0 {
+                    self.lineage_homes[lineage as usize] = Some(home);
+                }
             }
             let genome = design.founder_genome(owner, &mut rng);
             let sex = if k % 2 == 0 { Sex::Female } else { Sex::Male };
@@ -1008,6 +1069,18 @@ impl World {
     /// design's founding (46), so the standard worlds found as before.
     pub const FOUNDING_GROUP: u32 = 48;
 
+    /// Plants standing within 4 tiles of `p` now.
+    fn veg_near(&self, p: Vec2) -> f32 {
+        let (cx, cy) = self.map.tile_coords(p);
+        let mut sum = 0.0f32;
+        for y in cy.saturating_sub(4)..(cy + 5).min(self.map.height) {
+            for x in cx.saturating_sub(4)..(cx + 5).min(self.map.width) {
+                sum += self.map.tiles[self.map.idx(x, y)].veg;
+            }
+        }
+        sum
+    }
+
     /// Share of the vegetation still standing within 4 tiles of `p` (1 where
     /// the ground grows nothing), against what it held when the world began
     /// (`terrain`'s 0.8 of the most it could grow), capped at 1.
@@ -1039,7 +1112,12 @@ impl World {
     /// add the rest in organism order.
     fn pick_home(&self, probe: &Organism, search: &HomeSearch, rng: &mut impl Rng) -> Vec2 {
         let buffer = self.config.balance.home_buffer.max(0.0);
-        let HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd } = search;
+        let HomeSearch { region, threats, threat_grid, prey, prey_grid, crowd, avoid, founders } = search;
+        // Judge the spot as it is now (`Balance::founding_conditions`): only
+        // in a running world, so a new world's founding is unchanged.
+        let now = self.config.balance.founding_conditions > 0.0 && self.tick > 0;
+        let cold_season = matches!(self.season(), crate::terrain::Season::Winter) || self.days_until_winter() <= 10;
+
         let region_at = |p: Vec2| {
             let (x, y) = self.map.tile_coords(p);
             region[self.map.idx(x, y)]
@@ -1063,13 +1141,49 @@ impl World {
                 continue;
             }
             let t = self.map.ground_at(p);
-            let comfort = if probe.traits.warm {
+            // The year's mean temperature (today's would draw a winter
+            // founding into a warm desert with nothing to eat).
+            let mut comfort = if probe.traits.warm {
                 -(2.0 - t.base_temp).max(0.0) * 0.1
             } else {
                 -(18.0 - t.base_temp).max(0.0) * 0.1
             };
-            // A short walk to drinking water that avoids the threats.
-            let water = if self.water_reachable(region, p, threat_grid) { 1.0 } else { -2.0 };
+            // A short walk to drinking water that avoids the threats; with
+            // `now`, water that lasts a drought (a lake's deep water) is
+            // worth more than shallows that may dry up within days.
+            let water = if now {
+                match self.water_access(region, p, threat_grid) {
+                    (_, true) => 1.0,
+                    (true, false) => 0.6 - 0.6 * self.map.drought.clamp(0.0, 1.0),
+                    _ => -2.0,
+                }
+            } else if self.water_reachable(region, p, threat_grid) {
+                1.0
+            } else {
+                -2.0
+            };
+            if now && probe.traits.warm {
+                // Summer heat the founders' coat can't shed (the upper end
+                // of their comfort, as `needs` reckons it): a furred design
+                // founded in a hot land dies of exposure in its first summer.
+                let insulation = probe.traits.insulation(self.config.balance.scale_cover);
+                let high = 30.0 - 8.0 * insulation + probe.traits.morph.heat_tolerance;
+                comfort -= 0.15 * (t.base_temp + crate::terrain::SEASONAL_AMPLITUDE - high).max(0.0);
+            }
+            if now {
+                // Snow to wade through and sleep in.
+                comfort -= 0.5 * self.map.tile_at(p).snow.min(1.0);
+                // In the cold season, the map's edges (the far north and
+                // south are the coldest, and a herd pressed to an edge has
+                // nowhere to go): away from them.
+                if cold_season {
+                    let (x, y) = (p.x, p.y);
+                    let edge = x.min(y).min(self.map.width as f32 - x).min(self.map.height as f32 - y);
+                    comfort -= COLD_EDGE_WEIGHT * (1.0 - edge / COLD_EDGE).max(0.0);
+                }
+            }
+            // Where this owner's last foundings died: never again.
+            let fatal: f32 = avoid.iter().map(|h| (1.0 - h.dist(p) / AVOID_RADIUS).max(0.0)).fold(0.0, f32::max);
             // Competitors share a diet: an omnivore competes with grazers and
             // hunters alike (diet overlap `1 - |carnivory difference|` above
             // 0.45), specialists only with their own kind.
@@ -1120,14 +1234,22 @@ impl World {
             // Founding by food (`Balance::founding_food`): in a running
             // world, what is still standing around the spot, not what the
             // ground could grow.
-            let standing =
-                if self.tick > 0 && self.config.balance.founding_food > 0.0 { self.standing_share(p) } else { 1.0 };
-            let food = t.veg_max / 40.0 * productivity * plant_eff * standing + meat_eff * 0.04 * prey_count.min(60.0);
+            let standing = if self.tick > 0 && (self.config.balance.founding_food > 0.0 || now) {
+                self.standing_share(p)
+            } else {
+                1.0
+            };
+            // With `now`: plants standing within 4 tiles for this many
+            // founders (a winter pasture or a grazed-out one feeds few).
+            let cover = if now { (self.veg_near(p) / (*founders as f32 * FOOD_STOCK)).min(1.0) } else { 1.0 };
+            let food = t.veg_max / 40.0 * productivity * plant_eff * standing * (0.4 + 0.6 * cover)
+                + meat_eff * 0.04 * prey_count.min(60.0);
             let score = water + food + comfort
                 - 0.05 * crowd_n
                 - (0.3 * danger).min(4.0)
                 - (0.1 * carn * on_top).min(2.0)
                 - 2.0 * close
+                - 6.0 * fatal
                 + rng.gen_range(0.0..0.5);
             if score > best.0 {
                 best = (score, p);
@@ -1136,12 +1258,48 @@ impl World {
         best.1
     }
 
+    /// The dry tiles beside drinkable water today (`Map::can_drink_at` and no
+    /// water of their own) and how many of them `body` can stand on
+    /// (`terrain::passable`: a bank steeper than it can climb is out):
+    /// `(reachable, all)`. For the builder's warning that a design can't
+    /// reach most water.
+    pub fn shore_access(&self, body: &crate::stats::Body) -> (usize, usize) {
+        let ground = self.map.ground();
+        let (mut reachable, mut all) = (0, 0);
+        for y in 0..self.map.height {
+            for x in 0..self.map.width {
+                let i = self.map.idx(x, y);
+                let t = &self.map.tiles[i];
+                if t.water_depth > 0.0 || !self.map.can_drink_at(Map::tile_center(x, y)) {
+                    continue;
+                }
+                all += 1;
+                reachable += usize::from(crate::terrain::passable(body, &ground[i], t));
+            }
+        }
+        (reachable, all)
+    }
+
     /// Whether the organism can walk each tile (`passable_for`, with only
     /// the tests that block): 0 if so, `u32::MAX` if not.
-    fn passable_map(&self, o: &Organism) -> Vec<u32> {
+    /// With `no_ice`, ice holds nobody: deep water under it counts as open
+    /// water.
+    fn passable_map(&self, o: &Organism, no_ice: bool) -> Vec<u32> {
         let (ground, body) = (&self.map.terrain().ground, &o.traits.body);
         (0..self.map.width * self.map.height)
-            .map(|i| if crate::terrain::passable(body, &ground[i], &self.map.tiles[i]) { 0 } else { u32::MAX })
+            .map(|i| {
+                let t = &self.map.tiles[i];
+                let open = if no_ice && t.ice > 0.0 && t.water_depth > 0.0 {
+                    crate::terrain::passable(body, &ground[i], &crate::terrain::Tile { ice: 0.0, ..*t })
+                } else {
+                    crate::terrain::passable(body, &ground[i], t)
+                };
+                if open {
+                    0
+                } else {
+                    u32::MAX
+                }
+            })
             .collect()
     }
 
@@ -1149,9 +1307,9 @@ impl World {
     /// label per tile; `u32::MAX` for impassable tiles. Regions are numbered
     /// in the order of their first tile (row by row), from runs of open
     /// tiles joined to the overlapping runs of the row above.
-    fn passable_regions(&self, o: &Organism) -> Vec<u32> {
+    fn passable_regions(&self, o: &Organism, no_ice: bool) -> Vec<u32> {
         let w = self.map.width;
-        let open = self.passable_map(o);
+        let open = self.passable_map(o, no_ice);
         label_runs(&open, w, self.map.height)
     }
 
@@ -1199,6 +1357,64 @@ impl World {
             frontier = next;
         }
         false
+    }
+
+    /// [`World::water_reachable`], telling also whether any water reached
+    /// lasts a drought: a lake's deep water (`Ground::base_water` of
+    /// [`LASTING_WATER`] or more), not shallows or a stream that dry up.
+    /// `(reachable, lasting)`.
+    fn water_access(&self, region: &[u32], p: Vec2, threats: &PointGrid<u32>) -> (bool, bool) {
+        const STEPS: usize = WATER_STEPS;
+        const CLEARANCE: f32 = 5.0;
+        let side = 2 * STEPS + 1;
+        let ground = self.map.ground();
+        let lasting_beside = |x: usize, y: usize| {
+            (y.saturating_sub(1)..=(y + 1).min(self.map.height - 1)).any(|ny| {
+                (x.saturating_sub(1)..=(x + 1).min(self.map.width - 1)).any(|nx| {
+                    let i = self.map.idx(nx, ny);
+                    self.map.tiles[i].has_drinkable_water() && ground[i].base_water >= LASTING_WATER
+                })
+            })
+        };
+        let (cx, cy) = self.map.tile_coords(p);
+        let mut seen = vec![false; side * side];
+        let mut frontier = vec![(cx, cy)];
+        seen[STEPS * side + STEPS] = true;
+        let mut reachable = false;
+        for step in 0..=STEPS {
+            let mut next = Vec::new();
+            for &(x, y) in &frontier {
+                if self.map.can_drink_at(Map::tile_center(x, y)) {
+                    reachable = true;
+                    if lasting_beside(x, y) {
+                        return (true, true);
+                    }
+                }
+                if step == STEPS {
+                    continue;
+                }
+                for ny in y.saturating_sub(1)..=(y + 1).min(self.map.height - 1) {
+                    for nx in x.saturating_sub(1)..=(x + 1).min(self.map.width - 1) {
+                        let k = (ny + STEPS - cy) * side + (nx + STEPS - cx);
+                        if seen[k] {
+                            continue;
+                        }
+                        seen[k] = true;
+                        let q = Map::tile_center(nx, ny);
+                        let clear = || {
+                            let mut clear = true;
+                            threats.near(q, CLEARANCE, |t, _| clear &= t.dist(q) >= CLEARANCE);
+                            clear
+                        };
+                        if region[self.map.idx(nx, ny)] != u32::MAX && clear() {
+                            next.push((nx, ny));
+                        }
+                    }
+                }
+            }
+            frontier = next;
+        }
+        (reachable, false)
     }
 
     fn passable_for(&self, o: &Organism, p: Vec2) -> bool {
@@ -1401,9 +1617,9 @@ mod tests {
             let mut w = small_world(seed);
             w.run_days(1);
             for o in w.organisms.iter().step_by(7) {
-                let open = w.passable_map(o);
+                let open = w.passable_map(o, false);
                 let (mw, mh) = (w.map.width, w.map.height);
-                assert_eq!(w.passable_regions(o), flood_labels(&open, mw, mh));
+                assert_eq!(w.passable_regions(o, false), flood_labels(&open, mw, mh));
             }
         }
     }
@@ -1435,7 +1651,7 @@ mod tests {
         }
     }
 
-    fn small_world(seed: u64) -> World {
+    pub(super) fn small_world(seed: u64) -> World {
         let mut w = World::new(WorldConfig { seed, width: 64, height: 64, ..Default::default() });
         for (owner, design) in presets::wild_designs() {
             let n = (design.founders / 3).max(4);
@@ -1525,7 +1741,116 @@ mod tests {
 
 #[cfg(test)]
 mod winter_tests {
+    use super::tests::small_world;
     use super::*;
+
+    /// Playtest 3: one player's founding landed three times on the same
+    /// fatal peninsula. A re-founding by a player whose last founding died
+    /// out lands away from where it died; with the old search
+    /// (`founding_conditions` 0) the same founding lands on the same spot.
+    #[test]
+    fn a_refounding_avoids_where_the_last_founding_died() {
+        let d = crate::design::FounderDesign::new("t", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+            .with(crate::Gene::BodySize, 0.4)
+            .founders(12);
+        for seed in 1..4 {
+            let mut w = small_world(seed);
+            w.run_days(2);
+            let found = |w: &mut World| {
+                let ids = w.found_lineage_unchecked(77, &d);
+                w.organism(ids[0]).unwrap().pos
+            };
+            let mut old = w.clone();
+            old.config.balance.founding_conditions = 0.0;
+            let first = found(&mut w);
+            let old_first = found(&mut old);
+            for v in [&mut w, &mut old] {
+                v.kill_all_of(77, DeathCause::Thirst);
+                v.run_days(1);
+            }
+            let again = found(&mut w);
+            assert!(again.dist(first) > 0.5 * AVOID_RADIUS, "seed {seed}: {first:?} then {again:?}");
+            let _ = (found(&mut old), old_first);
+        }
+    }
+
+    /// In the cold season the search keeps founding homes off the map's
+    /// edges where it can (playtest 3: a winter founding in the north
+    /// snowfield): against the old search on the same worlds, homes sit
+    /// farther in, and fewer on the edge itself. (On a crowded small map
+    /// the interior can be too dangerous to win outright.)
+    #[test]
+    fn cold_season_homes_keep_off_the_edges() {
+        let d = crate::design::FounderDesign::new("t", crate::design::Thermo::Warm, crate::design::BirthType::Live, 2)
+            .with(crate::Gene::BodySize, 0.4)
+            .founders(12);
+        let (mut new_in, mut old_in, mut new_edge, mut old_edge) = (0.0f32, 0.0f32, 0, 0);
+        for seed in 1..7 {
+            let mut w = World::new(WorldConfig { seed, width: 96, height: 96, ..Default::default() });
+            for (owner, design) in crate::presets::wild_designs() {
+                let n = (design.founders / 3).max(4);
+                w.found_lineage_unchecked(owner, &design.founders(n));
+            }
+            while w.days_until_winter() > 3 {
+                w.run_days(1);
+            }
+            for on in [true, false] {
+                let mut c = w.clone();
+                c.config.balance.founding_conditions = if on { 1.0 } else { 0.0 };
+                c.found_lineage_unchecked(77, &d);
+                let p = c.lineage_homes.last().copied().flatten().expect("home recorded");
+                let edge = p.x.min(p.y).min(c.map.width as f32 - p.x).min(c.map.height as f32 - p.y);
+                if on {
+                    (new_in, new_edge) = (new_in + edge, new_edge + usize::from(edge < 4.0));
+                } else {
+                    (old_in, old_edge) = (old_in + edge, old_edge + usize::from(edge < 4.0));
+                }
+            }
+        }
+        assert!(
+            new_in > old_in && new_edge <= old_edge && new_edge <= 1,
+            "in {new_in} vs {old_in}, on the edge {new_edge} vs {old_edge}"
+        );
+    }
+
+    /// Water that lasts a drought beats shallows: with the shallows dried to
+    /// a trickle a lake's deep water still counts, and the search tells them
+    /// apart (`World::water_access`).
+    #[test]
+    fn water_access_tells_lasting_water_from_shallows() {
+        let mut w = small_world(2);
+        w.run_days(1);
+        let probe = w.organisms.iter().find(|o| o.traits.carnivory < 0.3 && !o.traits.body.can_fly).unwrap().clone();
+        let region = w.passable_map(&probe, false);
+        let none = PointGrid::new(&w.map);
+        let ground = w.map.ground().to_vec();
+        let mut kinds = [0usize; 3];
+        for y in (0..w.map.height).step_by(3) {
+            for x in (0..w.map.width).step_by(3) {
+                let p = Map::tile_center(x, y);
+                if region[w.map.idx(x, y)] == u32::MAX {
+                    continue;
+                }
+                let (reach, lasting) = w.water_access(&region, p, &none);
+                assert_eq!(reach, w.water_reachable(&region, p, &none), "at {p:?}");
+                assert!(!lasting || reach);
+                kinds[usize::from(reach) + usize::from(lasting)] += 1;
+                if lasting {
+                    // Some lake tile of base water >= LASTING_WATER within reach.
+                    let (cx, cy) = (x as i64, y as i64);
+                    let near = (0..w.map.height as i64).any(|ty| {
+                        (0..w.map.width as i64).any(|tx| {
+                            (tx - cx).abs() <= WATER_STEPS as i64 + 1
+                                && (ty - cy).abs() <= WATER_STEPS as i64 + 1
+                                && ground[w.map.idx(tx as usize, ty as usize)].base_water >= LASTING_WATER
+                        })
+                    });
+                    assert!(near, "lasting water at {p:?} without a lake near");
+                }
+            }
+        }
+        assert!(kinds.iter().all(|&n| n > 0), "spots with no water, shallows only, lasting water: {kinds:?}");
+    }
 
     #[test]
     fn days_until_winter_counts_down_to_the_first_winter_day() {

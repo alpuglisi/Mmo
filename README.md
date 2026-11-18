@@ -7673,6 +7673,77 @@ the soft-cap defaults don't reach the balance tools' lineages):
 | `calibrate tournament --worlds 96 --days 90 --seed0 70001`: top thermoregulation × birth class win share (mean share) | 26.0% (warm live birth) | 27.1% (warm incubated eggs; warm live birth 26.0%, cold abandoned eggs 15.6%); by final share warm incubated 26.0% |
 | `evo-sim genetics` | | 134 checks: 107 strict passed, 0 failed |
 
+### Playtest 3: founding spots, steep banks and winter eggs
+
+Playtest 3 (`docs/playtest-3.md`, findings 3b, 4 and part of 21) lost whole
+foundings to where they were put and to water they couldn't reach:
+
+- a dry corner after a drought: 64% dead in 13 days;
+- a desert tile: 8 of 8 dead;
+- one player's founding put three times on the same lake peninsula,
+  ~95% dead each time;
+- the north snowfield in winter: 55 → 25.
+
+Animals with climbing below 0.4 stood at the top of a steep bank, 3 tiles
+from a full lake, "drinking" until they died. A winter founding's clutches
+vanished with no word.
+
+**Sim rules, on by default from snapshot version 45** (44 is another
+change's), off at 0 for older saves (`serde_util::before_v45`):
+
+- **`Balance::reachable_water` (1).** A thirsty animal that can't drink
+  where it stands heads for the nearest tile it can walk to (over tiles
+  `terrain::passable` allows: no deep water it can't swim, no cliff it
+  can't climb) and drink from, within 8 steps
+  (`World::reachable_drink_spot`). Before, it headed for the nearest
+  water, below the bank or not. Flyers are unchanged.
+- **`Balance::founding_conditions` (1).** In a running world, the founding
+  search (`World::pick_home`) judges each spot as it is now. A new world's
+  founding is unchanged. The checks:
+  - **Water:** water the design can walk to that lasts a drought (a lake's
+    deep water, `Ground::base_water` ≥ 1, `World::water_access`) scores
+    full. Shallows that dry up score less the drier the map is.
+  - **Ice:** ice over deep water is no home. Founders scattered onto a
+    frozen lake drowned at the thaw.
+  - **Food:** the plants standing within 4 tiles must feed the founders
+    placed there (`FOOD_STOCK` per founder).
+  - **Snow and heat:** snow on the spot counts against it. So does summer
+    heat the design's coat can't shed (the upper end of its comfort as
+    `needs` reckons it). Without that, the new terms pulled furred designs
+    into hot lowlands, where they died of exposure.
+  - **Edges:** in the cold season, spots within 12 tiles of a map edge are
+    marked down.
+  - **Past deaths:** a spot within 20 tiles of where the owner's earlier
+    founding died out is avoided. A founding counts as died out when its
+    lineage is extinct and at least half its founders died, which excludes
+    retirement. Each lineage's first home is kept for this
+    (`World::lineage_homes`, saved).
+
+**Also (no snapshot change):**
+
+- **Winter eggs.** Winter-provisioned egg-laying founders
+  (`World::provision_for_winter`) wait for spring to breed. Founders that
+  laid at once had to leave their nests to feed, and every winter clutch
+  chilled within half a day.
+- **Egg losses reported.** The server reports lost eggs by cause
+  (chilled, overheated, raided):
+  - `lineage_stats.eggs.lost`;
+  - each day's `vitals[].eggs_lost` and the daily record;
+  - the daily summary alert ("6 eggs lost (5 chilled: no parent was warming
+    them, ...)");
+  - the Lineage tab's Eggs row.
+- **Steep-bank warning.** `POST /api/design/compatibility` gives the share
+  of today's shores the founders can stand on (`shore_access`) and a
+  `water_warning` under half. The design screen shows that warning
+  ("Drinking water").
+
+**Checks:**
+
+| Check | Before | After |
+| --- | --- | --- |
+| Founders alive 20 days after founding into grown worlds (`examples/foundsurvival.rs`: 8 seeds × days 45, 100, 160, 220 × three playtest designs) | SURV_OLD | SURV_NEW |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.65 (± 0.31) | 11.86 (± 0.12) |
+
 ## Genetics validation
 
 `evo-sim genetics` (`crates/sim-cli/src/genetics/`) checks over many

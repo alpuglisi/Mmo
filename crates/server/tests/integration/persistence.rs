@@ -558,6 +558,7 @@ fn rich_day(world: &str, d: u64) -> DailyRecord {
         adults: alive,
         born: 0,
         deaths: Default::default(),
+        eggs_lost: Default::default(),
         genes: [("fur".to_string(), 0.5f32), ("claws".to_string(), 0.25)].into_iter().collect(),
         morph: None,
     };
@@ -1017,7 +1018,10 @@ async fn restart_keeps_balances(backend: Backend) {
                 .post_json("/api/register", &format!(r#"{{"name":"{name}","password":"a long password"}}"#), None)
                 .await;
             let token = v["token"].as_str().unwrap().to_string();
-            let design = DesignSpec { name: format!("{name}'s"), ..spec() };
+            // Enough founders that some are free to mate after two days
+            // whatever the world does meanwhile (with 10, all could be
+            // pregnant or resting by then).
+            let design = DesignSpec { name: format!("{name}'s"), founders: 24, ..spec() };
             let v = client.post_json("/api/lineage", &serde_json::to_string(&design).unwrap(), Some(&token)).await;
             assert!(v["lineage"].is_u64(), "{v}");
             tokens.push(token);

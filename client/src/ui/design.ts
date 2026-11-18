@@ -281,6 +281,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const unspent = h('p', { class: 'muted small', id: 'design-unspent' });
   // Who this design could interbreed with (wild and rival species), and the market it implies.
   const hybridBox = h('section', { class: 'card hybrid-card', id: 'design-hybrid', hidden: !species, 'aria-live': 'polite' });
+  // Steep banks: the server's check of how much of today's shore these founders can drink from.
+  const waterBox = h('section', { class: 'card hybrid-card hybrid-warn', id: 'design-water', hidden: true, 'aria-live': 'polite' });
   // Founding size against the land's food (playtest 1, finding 4).
   const foodBox = h('p', { class: 'small food-hint', id: 'design-food' });
   const needName = h('p', { class: 'muted small', id: 'design-need-name' }, nameLink, ' (Basics, at the top) to found it.');
@@ -328,6 +330,21 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       h('p', { class: 'small muted hybrid-confidence', id: 'design-hybrid-confidence' }, a.confidence));
   }
 
+  let waterTimer: ReturnType<typeof setTimeout> | undefined;
+  let waterSeq = 0;
+  /** Ask the server (a moment after the last change) whether the founders can reach most water. */
+  function checkWater(): void {
+    clearTimeout(waterTimer);
+    waterTimer = setTimeout(async () => {
+      const seq = ++waterSeq;
+      const r = await api.designCompatibility(cb.token, payload()).catch(() => null);
+      if (seq !== waterSeq) return;
+      const warning = r?.water_warning;
+      waterBox.hidden = !warning;
+      if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', warning));
+    }, 600);
+  }
+
   /** Redraw from the design; `full` (default) also recomputes costs, captions and validation. */
   function update(full = true): void {
     avatar.update(spec, spec.morphology);
@@ -352,6 +369,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore ready for its first winter: raise the traits that suit the world, or try a preset in Builder mode.`
       : left > 0.05 ? `${left.toFixed(1)} points left to spend.` : left >= -1e-3 ? 'Every point spent.' : '';
     renderHybrid();
+    checkWater();
     const food = foundingHint(payload(), world);
     foodBox.textContent = food.text;
     foodBox.className = `small food-hint food-${food.level}`;
@@ -424,7 +442,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       h('aside', { class: 'design-side' }, avatar.el,
         (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, problem, needName, serverError,
           h('div', { class: 'row' }, submit, reset)), budgetCard),
-        hybridBox),
+        hybridBox,
+        waterBox),
       dock));
   setMode(mode, false);
   update();

@@ -994,6 +994,21 @@ pub struct Balance {
     /// through winter costs part of the breeding year. 0: none.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub emergence_lag: f32,
+    // Playtest 3 founding and drinking fixes (version 45). Off at 0, what
+    // snapshots before version 45 read (`serde_util::before_v45`).
+    /// Thirsty animals head for a shore spot they can walk to and drink
+    /// from (`World::reachable_drink_spot`) before the nearest water: a lake
+    /// below a steep bank no longer holds non-climbers at the top of it
+    /// until they die of thirst. 0: the nearest water, reachable or not.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v45"))]
+    pub reachable_water: f32,
+    /// The founding search (`World::pick_home`) judges the spot as it is
+    /// now: water the design can reach and that will last a drought, snow
+    /// and frozen water in the cold season, plants standing for the founders,
+    /// map edges in the cold season, and the homes where the player's
+    /// earlier foundings died (avoided). 0: the old search.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v45"))]
+    pub founding_conditions: f32,
 }
 
 impl Balance {
@@ -1257,12 +1272,14 @@ impl Default for Balance {
             age_spread: 0.12,
             dormancy_toll: 0.08,
             emergence_lag: 6.0,
+            reachable_water: 1.0,
+            founding_conditions: 1.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 133;
+    pub const FIELD_COUNT: usize = 135;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1405,6 +1422,8 @@ impl Balance {
             ("age_spread", &mut self.age_spread),
             ("dormancy_toll", &mut self.dormancy_toll),
             ("emergence_lag", &mut self.emergence_lag),
+            ("reachable_water", &mut self.reachable_water),
+            ("founding_conditions", &mut self.founding_conditions),
         ]
     }
 

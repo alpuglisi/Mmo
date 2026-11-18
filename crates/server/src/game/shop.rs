@@ -370,7 +370,33 @@ impl Game {
         let rows = self.compat_rows(&own, None);
         let fertile_with = rows.iter().filter(|r| r.fertile_share > 0.0).count();
         let at_risk = rows.iter().filter(|r| r.fertile_share <= 0.0 && r.drift_risk != "none").count();
-        DesignCompatView { day: self.world.day(), sample: SAMPLE, fertile_with, at_risk, rows }
+        // Shores the founders can drink from (steep banks stop non-climbers).
+        let probe = evo_sim::organism::Organism::new(
+            0,
+            player,
+            founders[0].clone(),
+            evo_sim::organism::Sex::Female,
+            evo_sim::math::Vec2::ZERO,
+        );
+        let (reachable, all) = self.world.shore_access(&probe.traits.body);
+        let shore_access = (all > 0).then(|| reachable as f32 / all as f32);
+        let water_warning = shore_access.filter(|&s| s < 0.5).map(|s| {
+            format!(
+                "Steep banks: these founders can drink from only {:.0}% of today's shores. Animals that can't climb \
+                 (climbing below 0.4) can't get down a steep bank and die of thirst beside the water; more climbing \
+                 (or swimming, for deep water) reaches the rest.",
+                s * 100.0
+            )
+        });
+        DesignCompatView {
+            day: self.world.day(),
+            sample: SAMPLE,
+            fertile_with,
+            at_risk,
+            rows,
+            shore_access,
+            water_warning,
+        }
     }
 
     /// Fill each listing's `compatible` and `body_plan_fertility` for
