@@ -382,7 +382,7 @@ fn crowding_off(b: &mut crate::Balance) {
 }
 
 /// The predator tunables as snapshots before version 36 read them.
-/// `w` as snapshots before version 39 read it: no species hysteresis
+/// `w` as snapshots before version 42 read it: no species hysteresis
 /// settings or state.
 fn hysteresis_off(w: &mut World) {
     let sc = &mut w.config.scoring;
@@ -1372,4 +1372,28 @@ fn version_36_snapshots_restore_without_group_plans() {
     assert!(r.snapshot_v36() == old);
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.group_plans, w.group_plans);
+}
+
+#[test]
+fn version_41_snapshots_restore_with_the_old_species_tracker() {
+    use crate::world::groups::MigrationPlan;
+    let mut w = fixture_world();
+    let key = (w.organisms[0].owner, 0u8);
+    w.group_plans.migrations.insert(key, MigrationPlan { issued_tick: 3, deadline_tick: 500 });
+    let old = w.snapshot_v41();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 41);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    // Version 41's state (migration deadlines) is kept; the species
+    // hysteresis settings read as 0, the old tracker.
+    assert_eq!(r.group_plans, w.group_plans);
+    let sc = &r.config.scoring;
+    assert_eq!(
+        (sc.species_confirm, sc.species_confirm_adults, sc.species_merge_confirm, sc.species_revive_days),
+        (0, 0.0, 0, 0)
+    );
+    assert!(r.snapshot_v41() == old);
+    hysteresis_off(&mut w);
+    assert!(r.snapshot() == w.snapshot());
 }

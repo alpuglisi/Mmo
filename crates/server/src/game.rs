@@ -248,7 +248,7 @@ fn species_bonus_due(
 /// Whether `species`, credited to `player`, is a re-detection: an earlier
 /// species of that player from the same lineage merged back, and this one
 /// is it drifting across the threshold again, not a speciation. Worlds from
-/// snapshot version 39 re-use the merged species' identity instead (and
+/// snapshot version 42 re-use the merged species' identity instead (and
 /// confirm splits first), so this only catches older worlds' records; such
 /// achievements earn nothing and raise no alert, and the counts skip them.
 fn species_redetected(t: &evo_sim::species::SpeciesTracker, species: u32, player: PlayerId) -> bool {
@@ -6381,7 +6381,7 @@ mod tests {
         };
         let mut cfg = evo_sim::WorldConfig::default();
         cfg.scoring.species_extinct_after = 1;
-        // The tracker of worlds before snapshot version 39 (no hysteresis):
+        // The tracker of worlds before snapshot version 42 (no hysteresis):
         // what this guards against.
         cfg.scoring.species_confirm = 0;
         cfg.scoring.species_merge_confirm = 0;

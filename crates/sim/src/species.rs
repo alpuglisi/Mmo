@@ -34,7 +34,7 @@
 //! not detected for `species_extinct_after` detections in a row is extinct
 //! (dated to its last detection).
 //!
-//! **Hysteresis** (snapshot version 39; `ScoringConfig::species_confirm`,
+//! **Hysteresis** (snapshot version 42; `ScoringConfig::species_confirm`,
 //! `species_confirm_adults`, `species_merge_confirm`, `species_revive_days`).
 //! A population near the species threshold drifts back and forth across it,
 //! and without hysteresis every crossing was a new numbered species ("L0
@@ -54,7 +54,7 @@
 //!   with no announcement.
 //!
 //! Foundings and the first detection's species count at once. Settings of
-//! 0 (worlds from before version 39) give the old tracker exactly.
+//! 0 (worlds from before version 42) give the old tracker exactly.
 //!
 //! **Credit ("species founded").** A split is credited to the player whose
 //! origin-tagged alleles hold the plurality among the new species' sampled
@@ -366,7 +366,7 @@ pub struct Species {
     reps: Vec<Expr>,
     /// Detections in a row it has continued as the same cluster as a larger
     /// species (a merge in waiting, `ScoringConfig::species_merge_confirm`).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v39::list"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
     pub merging: u32,
 }
 
@@ -433,7 +433,7 @@ pub struct SpeciesTracker {
     pub last_samples: usize,
     pub unclassified: usize,
     /// Splits waiting to be confirmed (`ScoringConfig::species_confirm`).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v39::list"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v42::list"))]
     pub candidates: Vec<Candidate>,
 }
 
@@ -821,7 +821,7 @@ mod tests {
         LinkRule::from_config(&crate::WorldConfig::default())
     }
 
-    /// The tracker without hysteresis (as before snapshot version 39).
+    /// The tracker without hysteresis (as before snapshot version 42).
     fn params() -> DetectParams {
         let mut cfg = crate::WorldConfig::default();
         cfg.scoring.species_extinct_after = 1;

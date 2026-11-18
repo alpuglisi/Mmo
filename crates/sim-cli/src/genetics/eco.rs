@@ -150,7 +150,7 @@ pub struct WorldResult {
     species: SpeciesStats,
 }
 
-/// Species detection with and without hysteresis (snapshot version 39) on
+/// Species detection with and without hysteresis (snapshot version 42) on
 /// the same samples: two shadow trackers fed `World::species_samples` after
 /// each of the world's detections, plus the world's own tracker.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -872,7 +872,7 @@ pub fn summarize(opts: &EcoOpts, worlds: Vec<WorldResult>) -> EcoResults {
         Verdict::soft(flow_total == 0 || flow_closer * 2 > flow_total),
         format!("Pairs with at least {HYBRID_FLOW} hybrid offspring: hybrids carry alleles both ways, so the two gene pools converge instead of diverging (migration–drift: F_ST ≈ 1/(1 + 4Nm))."),
     ));
-    // --- species detection (hysteresis, snapshot version 39)
+    // --- species detection (hysteresis, snapshot version 42)
     let sum = |f: fn(&SpeciesStats) -> [u32; 3]| {
         worlds.iter().fold([0u32; 3], |a, w| {
             let x = f(&w.species);

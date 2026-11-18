@@ -1998,14 +1998,14 @@ pub mod before_v36 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v39::list")]` on the species
+/// `#[serde(with = "crate::serde_util::before_v42::list")]` on the species
 /// hysteresis settings (`ScoringConfig::species_confirm` and the rest) and
 /// the species tracker's state for them (`SpeciesTracker::candidates`,
-/// `Species::merging`). On a thread holding a [`before_v39::Guard`] (reading
-/// or hashing a snapshot of version 38 or before) none is written or read:
+/// `Species::merging`). On a thread holding a [`before_v42::Guard`] (reading
+/// or hashing a snapshot of version 41 or before) none is written or read:
 /// they read as their defaults, 0, which is the old tracker (a split counts
 /// at its first detection, a merge at once, no re-use of merged identities).
-pub mod before_v39 {
+pub mod before_v42 {
     use std::cell::Cell;
 
     use super::*;

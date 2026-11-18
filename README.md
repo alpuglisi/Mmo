@@ -523,7 +523,7 @@ exactly as before (detection draws no random numbers and changes nothing).
   samples; a species missed by 2 detections in a row is extinct (dated to
   its last detection). Names come from the main founding lineage ("Meadow
   vole", then "Meadow vole (2)").
-- **Hysteresis (snapshot version 39).** A population near the threshold
+- **Hysteresis (snapshot version 42).** A population near the threshold
   drifts back and forth across it. Without hysteresis every crossing was a
   new numbered species: playtest 2 saw "Steppe antelope (2)" to "(7)", each
   one announced, counted and credited. Now:
@@ -540,7 +540,7 @@ exactly as before (detection draws no random numbers and changes nothing).
 
   The server lists only species with adults, or extinct ones that lived
   past a season. In older worlds it gives no bonus, alert or count for a
-  re-detected species. Worlds from before version 39 keep the old tracker
+  re-detected species. Worlds from before version 42 keep the old tracker
   (the settings read as 0). `evo-sim genetics --long` compares both trackers
   on the same samples ("speciation" checks).
 - **Species founded (credit rule).** A split is credited to the player whose
