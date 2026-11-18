@@ -21,6 +21,10 @@ describe('design warnings', () => {
     const w = designWarnings(design(), world(0, { kind: 'megadrought', active: true, end_day: 14 }));
     expect(w[0].id).toBe('catastrophe');
     expect(w[0].text).toMatch(/under way \(4 days left\)/);
+    expect(designWarnings(design(), world(0, { kind: 'severe_winter', active: true, end_day: 11 }))[0].text).toContain('(its last day)');
+    // Over (or the summary not caught up yet): no warning.
+    expect(designWarnings(design(), world(0, { kind: 'severe_winter', active: true, end_day: 10 }))).toEqual([]);
+    expect(designWarnings(design(), world(0, { kind: 'severe_winter', active: false, end_day: 14 }))).toEqual([]);
   });
 
   it('says when wings do nothing on a heavy body', () => {

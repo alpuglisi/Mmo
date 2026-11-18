@@ -1,23 +1,25 @@
 # What changed since playtest 1
 
-A one-page summary of three AI playtests (`docs/playtest-1.md`, `-2.md`,
-`-3.md`) and the fixes between them. Each ran four to six AI players on one
+A one-page summary of four AI playtests (`docs/playtest-1.md` to `-4.md`)
+and the fixes between them. Each ran four to six AI players on one
 server at playtest speed (a game day ≈ 5 s, a year ≈ 10 min) for about an
 hour. Current rules: `docs/game-design.md`; details and measurements:
 README (*Playtest 1: ecology fixes*, *Founders, the soft cap and the market*,
-*Predators against players*, *Playtest 2: competitive balance*).
+*Predators against players*, *Playtest 2: competitive balance*, *Playtest 2:
+predators, toxins and drowning*, *Playtest 3: balance*, *Playtest 3: founding
+spots, steep banks and winter eggs*, and the economy's *Playtest 3 changes*).
 
 ## At a glance
 
-| | Playtest 1 | Playtest 2 | Playtest 3 |
-| --- | --- | --- | --- |
-| Players | 4 | 6 (with a late joiner and an exploit tester) | 6 (same roles) |
-| Winner's build | Big swimming, hibernating grazer (a second lineage of 124 founders) | Egg-laying, toxic-but-drab, hibernating burrower founded late in winter | Cold-blooded, brumating, toxic 4 kg flier with extra eyes |
-| Winner's head count | 1,500 (the hard cap) | ~3,000 (the 2× ceiling) | 2,100 (the 1.4× ceiling) |
-| Winner's share | 18.7% | 26–40% | 22–31% |
-| Player trades | 0 | some (rivals accepted paid offers) | 0 of 21 cross-player matings completed |
-| Player predators | couldn't hunt players at all | starved or were poisoned | collapsed in minutes; never out of grace |
-| Server | stayed up | stayed up | the container restarted mid-test; restored from its save with no game data lost |
+| | Playtest 1 | Playtest 2 | Playtest 3 | Playtest 4 |
+| --- | --- | --- | --- | --- |
+| Players | 4 | 6 (with a late joiner and an exploit tester) | 6 (same roles) | 6 (same roles) |
+| Winner's build | Big swimming, hibernating grazer (a second lineage of 124 founders) | Egg-laying, toxic-but-drab, hibernating burrower founded late in winter | Cold-blooded, brumating, toxic 4 kg flier with extra eyes | The same kind of flier, live-bearing and honestly coloured, founded by the late joiner on day 320 |
+| Winner's head count | 1,500 (the hard cap) | ~3,000 (the 2× ceiling) | 2,100 (the 1.4× ceiling) | 2,076 (the hard cap); runner-up 2,006 |
+| Winner's share | 18.7% | 26–40% | 22–31% | 25.9%; runner-up 21–26% |
+| Player trades | 0 | some (rivals accepted paid offers) | 0 of 21 cross-player matings completed | matings completed (6 for the broker) |
+| Player predators | couldn't hunt players at all | starved or were poisoned | collapsed in minutes; never out of grace | hunted (46 attack-order kills) but 4 of 5 lineages starved |
+| Server | stayed up | stayed up | the container restarted mid-test; restored from its save with no game data lost | stayed up |
 
 ## After playtest 1
 
@@ -68,27 +70,68 @@ Playtest 2 confirmed most of these and found trades finally happening.
 Playtest 3 confirmed these: the playtest-2 winner's build no longer dominated
 (the toll cost it ~25–30% a winter).
 
-## What playtest 3 found, being worked on in round 4
+## After playtest 3 (round 4)
 
-- **Grace restarts on re-founding** after ~40 game days, giving a fresh
-  30 minutes; with most lineages graced, attack orders were nearly unusable.
-- **Predators still can't play:** species collapse in 5–10 minutes and a kill
-  doesn't save a starving hunter.
-- **Thirst beside water:** hunger outranks thirst, and steep banks block poor
-  climbers from drinking.
-- **Fatal founding spots:** dry corners after a drought, deserts, an
-  unreachable peninsula, the north snowfield in winter.
-- **Five eyes buys reproductive isolation** for 3 points (and 360° vision).
-- **Cross-player matings never complete:** nothing brings the pair together;
-  buying a listed female is a free dam-lock.
-- **Big groups "arrive"** while their median member is still 24+ tiles out.
-- **New dominant build:** cold-blooded, brumating, toxic flier (brumation has
-  no toll and costs half).
-- **Territory claims** check water only once, with no food check or re-check in
-  a drought (one claim killed 84% of a lineage).
-- Medium items: possession outliving the session, retire as a free re-roll,
-  reinforcement cap resetting at the season boundary, nameplates not shown
-  and names unfiltered, remaining information leaks, lineage-level warnings,
-  builder gaps, phone UI overlaps.
+Playtest 3 found grace restarting on re-founding, predators collapsing,
+thirst beside water, fatal founding spots, five eyes buying isolation,
+cross-player matings never completing, big groups "arriving" far out, a new
+dominant flier, and territory claims that starved herds. Round 4:
 
-These are marked **changing** in `docs/game-design.md` until round 4 lands.
+- **Grace:** re-founding continues the old grace instead of starting a new
+  one; capped at 60 game days; an alert when it ends; "End my grace now".
+- **Predators:** a kill on an order feeds the hunter; predators learn which
+  prey is toxic (bright colours teach faster, drab toxic prey is still mostly
+  taken) and players see "looks poisonous"; burrowed prey is shown and can't
+  be targeted.
+- **Drinking:** parched animals beside water drink before they eat; thirsty
+  animals head for a shore they can walk down to.
+- **Founding spots** judged as they are now: lasting water, no lake ice,
+  standing food, snow and heat, map edges in winter, away from earlier
+  failed foundings. Founders sleep their first winter free; winter egg
+  layers wait for spring.
+- **Winter:** the toll is ~10% a winter as documented, brumators pay it too,
+  brumation costs 10 points a unit (was 6), hibernators wake over 10 days.
+- **Eyes:** an eye step counts much less for fertility (5 eyes ≈ fertile
+  again) and costs 3 points.
+- **Starter** lays 3 incubated eggs, meant to be its own species.
+- **Matings:** agreed pairs walk to meet, with direction and distance shown;
+  pregnant and promised dam rules; the accepter picks their animal.
+- **Economy:** reinforcements in a rolling window; re-founding soon after a
+  retire founds half; nameplates shown; nameplate and species names
+  filtered; species naming in the client.
+- **Groups:** migration arrival within 8 tiles; lake targets moved ashore;
+  territory and rally claims report food and distance, refuse a swimmer's
+  lake, and are checked daily for water and grazing.
+- **Warnings:** lineage alerts (starving, territory dry or bare, near cap);
+  designer warnings (drought at any size, upkeep, useless wings,
+  catastrophes).
+- **Other:** possession ends a minute after disconnect; API players not
+  counted offline; more leaks closed; phone layout fixes.
+
+Playtest 4 confirmed most of these: predators hunted, matings completed,
+the toll ran at its documented rate.
+
+## What playtest 4 found, being worked on in round 5
+
+- **The brumating toxic flier still dominates**, and a late joiner won with
+  it: brumators wake to bask in mild winter weather and keep breeding, and
+  cold blood keeps it sterile with every warm lineage.
+- **Lineage names are unfiltered** ("Server Admin" with a direction
+  override showed publicly), and a founding species takes that name.
+- **Founding placement still kills:** deep water, lake ice that melts, a
+  corner ringed by water.
+- **Player predators still starve out,** and toxic prey (chosen by most
+  players) makes the role nearly unplayable.
+- **Big groups drift back** after migrating; arrival still reported far out
+  for 500+ groups; one migration ended silently.
+- **Starter lineages still absorbed** into the wild Steppe antelope.
+- **Dormant animals died of thirst** in one lineage (to recheck).
+- Medium items: optimistic territory food estimate and long claim cooldown,
+  half-founders window too short and not shown, rendezvous walking across
+  lakes or stalling in winter, cheap dam-lock, gaps in the title filter,
+  incubated eggs chilling more than hatch, survival credit for players with
+  no animals, phone overlaps, possession blocking hibernation, unprotected
+  reinforcements, winter advice for cold designs, a map-wide spectate view,
+  retire transfers gifting share, territory claims anywhere.
+
+These are marked **changing** in `docs/game-design.md` until round 5 lands.
