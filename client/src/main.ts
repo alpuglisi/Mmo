@@ -104,7 +104,7 @@ function start(session: Session): void {
     if (r.routed || running !== r) return;
     r.routed = true;
     if (model.welcomeLineage === null) void showDesign(r);
-    else void showGame(r);
+    else void showGame(r, true);
   });
   socket.start();
 }
@@ -131,7 +131,8 @@ function newLineage(r: Running): void {
   void showDesign(r, true);
 }
 
-async function showGame(r: Running): Promise<void> {
+/** `returning`: logged in to a lineage they already had (not straight from founding). */
+async function showGame(r: Running, returning = false): Promise<void> {
   if (running !== r) return;
   const holder = h('div', { class: 'screen center' });
   mount(holder);
@@ -139,6 +140,7 @@ async function showGame(r: Running): Promise<void> {
     model: r.model, send: (m) => r.socket.send(m), onLogout: logout, onUnauthorized: sessionExpired,
     token: r.session.token, mountInto: (el) => root.replaceChildren(el), world: r.session.world ?? '',
     onNewLineage: () => newLineage(r),
+    returning,
   });
   if (running !== r) return screen.destroy();
   r.screen = screen;

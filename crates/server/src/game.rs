@@ -334,10 +334,13 @@ fn egg_losses(now: &evo_sim::world::EggCounts, before: &evo_sim::world::EggCount
     .collect()
 }
 
-/// An egg loss cause in a sentence.
-fn egg_loss_why(cause: &str) -> &'static str {
+/// An egg loss cause in a sentence. `abandoned`: the lineage leaves its
+/// eggs by design (abandoned eggs), so a chilled clutch is expected, not a
+/// parent's failure.
+fn egg_loss_why(cause: &str, abandoned: bool) -> &'static str {
     match cause {
-        "chilled" => "chilled: no parent was warming them",
+        "chilled" if abandoned => "chilled: abandoned eggs lie exposed, by design",
+        "chilled" => "chilled: no parent was brooding them",
         "overheated" => "overheated",
         _ => "eaten by egg raiders",
     }
@@ -4434,8 +4437,18 @@ impl Game {
                 };
                 let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{n} {}", word(c))).collect();
                 let eggs = if eggs_lost > 0 {
+                    // Most living members abandon their eggs: say so.
+                    let (abandon, layers) = self
+                        .world
+                        .organisms
+                        .iter()
+                        .filter(|o| o.alive && o.lineage == lineage && o.traits.birth.lays_eggs())
+                        .fold((0usize, 0usize), |(a, n), o| {
+                            (a + usize::from(o.traits.birth == evo_sim::design::BirthType::AbandonedEggs), n + 1)
+                        });
+                    let abandoned = layers > 0 && abandon * 2 > layers;
                     let why: Vec<String> =
-                        entry.eggs_lost.iter().map(|(c, n)| format!("{n} {}", egg_loss_why(c))).collect();
+                        entry.eggs_lost.iter().map(|(c, n)| format!("{n} {}", egg_loss_why(c, abandoned))).collect();
                     format!(" · {eggs_lost} egg{} lost ({})", if eggs_lost == 1 { "" } else { "s" }, why.join(", "))
                 } else {
                     String::new()
@@ -5584,7 +5597,7 @@ mod tests {
             .find(|x| x.kind == AlertKind::DailySummary)
             .expect("a day with lost eggs is summarised");
         assert!(
-            summary.text.contains("6 eggs lost (5 chilled: no parent was warming them, 1 eaten by egg raiders)"),
+            summary.text.contains("6 eggs lost (5 chilled: no parent was brooding them, 1 eaten by egg raiders)"),
             "{}",
             summary.text
         );
@@ -5593,6 +5606,22 @@ mod tests {
         // Counted once: the next day reports none.
         let out = run_days(&mut g, 1);
         assert!(alerts_in(&out, 3).iter().all(|x| !x.text.contains("eggs lost")));
+    }
+
+    /// A lineage that abandons its eggs is told they lie exposed by design,
+    /// not that no parent was warming them (playtest 4).
+    #[test]
+    fn chilled_abandoned_eggs_are_worded_as_by_design() {
+        let (mut g, _, _) = game();
+        g.set_name(3, "cat");
+        let ok =
+            g.found(3, &FounderDesign::new("Frogs", Thermo::Cold, BirthType::AbandonedEggs, 8).founders(6)).unwrap();
+        run_days(&mut g, 1);
+        let counts = g.world.counters.eggs.entry(ok.lineage).or_default();
+        (counts.laid, counts.chilled) = (9, 4);
+        let out = run_days(&mut g, 1);
+        let summary = alerts_in(&out, 3).into_iter().find(|x| x.kind == AlertKind::DailySummary).expect("summary");
+        assert!(summary.text.contains("4 chilled: abandoned eggs lie exposed, by design"), "{}", summary.text);
     }
 
     #[test]
