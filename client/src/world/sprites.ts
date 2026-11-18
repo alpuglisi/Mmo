@@ -90,11 +90,31 @@ export const hintKey = (h: Hint): string => `hint:${h}`;
 export class CreatureSprites {
   readonly cache: TextureCache<Texture>;
   private resolution: number;
+  /** Textures drawn outside the markers (`hold`), kept with those `inUse` names. */
+  private holds = new Set<() => Iterable<Texture>>();
 
   /** `inUse`: the textures on screen now, which the cache must not drop when it passes its budget. */
   constructor(private renderer: Renderer, inUse?: () => ReadonlySet<Texture>, maxBytes = TEXTURE_BUDGET_BYTES, maxCount = TEXTURE_CAP) {
     this.resolution = Math.min(6, SUPERSAMPLE * (renderer.resolution || 1));
-    this.cache = new TextureCache<Texture>({ dispose: (t) => t.destroy(true), cost: textureBytes, maxCost: maxBytes, maxCount, inUse });
+    const held = (): ReadonlySet<Texture> => {
+      if (this.holds.size === 0) return inUse?.() ?? new Set();
+      const all = new Set(inUse?.() ?? []);
+      for (const h of this.holds) for (const t of h()) all.add(t);
+      return all;
+    };
+    this.cache = new TextureCache<Texture>({ dispose: (t) => t.destroy(true), cost: textureBytes, maxCost: maxBytes, maxCount, inUse: held });
+  }
+
+  /**
+   * Keep textures shown by something other than the markers (a gallery, a
+   * preview) from being dropped while it is on screen: the cache destroys
+   * what it evicts, and a destroyed texture still drawn throws in PixiJS
+   * ("reading 'alphaMode'"). Returns the release.
+   */
+  hold(textures: () => Iterable<Texture>): () => void {
+    const h = () => textures();
+    this.holds.add(h);
+    return () => { this.holds.delete(h); };
   }
 
   /** Whether every texture of a marker is made (so showing it costs no drawing). */

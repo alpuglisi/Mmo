@@ -868,6 +868,8 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             ClaimCooldown { .. } => "claim_cooldown",
             NoRally(_) => "no_rally",
             MostlyWater { .. } => "mostly_water",
+            Overlaps { .. } => "overlaps",
+            BadRadius => "bad_radius",
             OwnTarget(_) => "own_target",
             OutOfSight(_) => "target_out_of_sight",
             TooBig { .. } => "too_big",
@@ -880,6 +882,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             MostlyWater { share } => info.with_detail(serde_json::json!({ "water_share": share })),
+            Overlaps { owner } => info.with_detail(serde_json::json!({ "owner": owner })),
             TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
             NewcomerGrace { days_left } | OwnGrace { days_left } => {
                 info.with_detail(serde_json::json!({ "days_left": days_left }))
@@ -1182,6 +1185,14 @@ pub struct MatingPrefs {
     pub auto_decline: bool,
 }
 
+/// A group's home ground after a migration (`GroupView::home`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HomeView {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+}
+
 /// One of the player's groups (`World::groups`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GroupView {
@@ -1203,11 +1214,18 @@ pub struct GroupView {
     /// target by then (absent: no migration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration_deadline_tick: Option<u64>,
-    /// The home the group keeps where its last migration arrived: members
-    /// outside the circle drift back into it until the group's next order
-    /// (`expires_tick` is then `u64::MAX`; absent: none). Not a confinement.
+    /// The home the group keeps where its last migration arrived, until its
+    /// next migration: members outside the circle walk back into it (the
+    /// `home` action) and forage near it while fed and watered. A rally or
+    /// territory holds the group elsewhere meanwhile; when it ends the group
+    /// goes back home. Absent: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settle: Option<RallyView>,
+    pub home: Option<HomeView>,
+    /// How the group's last order ended on its own ("reached (40, 46)",
+    /// "migration to (60, 4) ended: never got going"...), until its next
+    /// order. Absent: nothing to tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub territory: Option<TerritoryView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1241,12 +1259,8 @@ impl From<&evo_sim::world::groups::GroupInfo> for GroupView {
             migration: g.migration.map(|p| [p.x, p.y]),
             route: Vec::new(),
             migration_deadline_tick: g.migration_deadline_tick,
-            settle: g.settle.map(|s| RallyView {
-                x: s.center.x,
-                y: s.center.y,
-                radius: s.radius,
-                expires_tick: s.until_tick,
-            }),
+            home: g.settle.map(|s| HomeView { x: s.center.x, y: s.center.y, radius: s.radius }),
+            last_outcome: None,
             territory: g.territory.map(TerritoryView::from),
             rally: g.rally.map(RallyView::from),
             max_radius: g.max_radius,
@@ -2073,6 +2087,7 @@ pub fn action_name(a: Action) -> &'static str {
         Action::Patrol => "patrol",
         Action::Defend => "defend",
         Action::Rally => "rally",
+        Action::Home => "home",
     }
 }
 

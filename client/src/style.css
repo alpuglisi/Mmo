@@ -405,7 +405,11 @@ button.danger { background: #b62324; color: #fff; }
   .possess-bar { left: 8px; right: 8px; transform: none; max-width: none; bottom: 100px; flex-wrap: wrap; font-size: 12px; }
   .possess-bar button { min-height: 40px; }
   /* One row (scrolling sideways), small, just over the floating button: as little of the map as it can. */
-  .pick-chooser { left: 8px; right: 8px; transform: none; max-width: none; width: fit-content; margin: 0 auto; bottom: 104px; padding: 4px 6px; gap: 4px; }
+  .pick-chooser { left: 50%; right: auto; transform: translateX(-50%); width: max-content; max-width: calc(100% - 16px); bottom: 104px; padding: 4px 6px; gap: 4px; z-index: 7; }
+  /* × stays in reach at the right end while the chips scroll (playtest 4: it sat off screen). */
+  .pick-chooser .chip.close { position: sticky; right: 0; background: var(--panel-2); box-shadow: -6px 0 8px rgba(13, 17, 23, 0.92); }
+  /* A tip card makes way for it (it is short-lived and asked for). */
+  .choosing .hint-card { top: 52px; bottom: auto; }
   .pick-chooser .chip { min-height: 34px; padding: 0.2em 0.6em; font-size: 13px; }
   .fab[hidden] { display: none; }
   .legends { width: auto; left: 8px; right: 8px; top: 56px; bottom: auto; }
@@ -614,8 +618,10 @@ details.season summary { cursor: pointer; color: var(--muted); font-size: 0.88em
 .lineage-warning.warn-starving, .lineage-warning.warn-territory_starving { border-color: var(--bad); background: color-mix(in srgb, #3a1515 80%, transparent); }
 
 /* Bought nameplates (ui/nameplates.ts): the title in the bought colour, after the name. */
+/* The badge's separators: in its text (copy, screen readers), not on screen. */
+.nameplate .plate-sep { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: pre; }
 .nameplate {
-  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 0.78em; line-height: 1.5;
+  position: relative; display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 0.78em; line-height: 1.5;
   border: 1px solid currentColor; vertical-align: baseline; max-width: 14em; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; unicode-bidi: isolate; direction: ltr;
 }
