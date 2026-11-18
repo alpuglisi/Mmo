@@ -291,8 +291,29 @@ async function main() {
     if (!spread()) throw new Error(`the cones did not turn: ${JSON.stringify(seen)}; ${tries.join(', ')}`);
     // The sprite faces the way of the heading it was last set from (checked
     // where that is clearly left or right).
-    const facings = await page.evaluate((id) => window.__vs.filter((s) => s.id === id && s.sh !== undefined && Math.abs(Math.cos((s.sh * Math.PI) / 180)) > 0.5)
+    const facingFrames = () => page.evaluate((id) => window.__vs.filter((s) => s.id === id && s.sh !== undefined && Math.abs(Math.cos((s.sh * Math.PI) / 180)) > 0.5)
       .map((s) => ({ f: s.f, want: Math.cos((s.sh * Math.PI) / 180) > 0 ? 1 : -1 })), id);
+    let facings = await facingFrames();
+    // Walks that all went about north or south leave no frame to check left
+    // and right on: walk it east or west (whichever is dry land) for some.
+    for (let attempt = 0; attempt < 3 && facings.length === 0 && (await alive(id)); attempt++) {
+      const t = await page.evaluate((id) => {
+        const v = window.evo.screen().view;
+        const o = window.evo.model.state.organisms.find((x) => x.id === id);
+        if (!o) return null;
+        const g = v.terrain;
+        const land = (x, y) => {
+          const i = Math.floor(y) * g.width + Math.floor(x);
+          return x >= 1 && y >= 1 && x <= 62 && y <= 62 && g.biome[i] >= 3 && g.biome[i] <= 6 && g.water[i] === 0;
+        };
+        for (const dx of [5, -5, 3, -3]) if (land(o.x + dx, o.y) && land(o.x + dx / 2, o.y)) return { x: o.x + dx, y: o.y };
+        return null;
+      }, id);
+      if (!t) break;
+      await page.evaluate(({ id, t }) => window.evo.socket.send({ type: 'order_move', organism: id, x: t.x, y: t.y }), { id, t });
+      await waitFor('a frame heading east or west', async () => (await facingFrames()).length > 0, 6000).catch(() => null);
+      facings = await facingFrames();
+    }
     const wrong = facings.filter((s) => s.f !== s.want);
     if (facings.length === 0 || wrong.length) throw new Error(`sprite facing: ${wrong.length} of ${facings.length} frames face away from the heading`);
     step(`walked: cones turned to ${seen.map((s) => `${s.heading}°`).join(', ')}; the sprite faced its heading in ${facings.length} frames`);

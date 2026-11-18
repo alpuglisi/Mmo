@@ -287,7 +287,7 @@ async function main() {
     // The button goes with the possession (the inspector is rebuilt for the
     // new possessor), so a possession that ends mid-step is retried.
     let inspected = null;
-    for (let attempt = 0; attempt < 3 && !inspected; attempt++) {
+    for (let attempt = 0; attempt < 8 && !inspected; attempt++) {
       await ensurePossessed(page, 'before the inspector');
       const p = await possessedNow(page);
       const wild = await wildNear(page, p);
@@ -304,8 +304,15 @@ async function main() {
           // Out of reach (more than 8 tiles): the button says so instead of a pointless click.
           check(label.includes('too far'), 'a disabled attack button should say why', label);
           step(`the inspector of wild #${pick} offers "${label}", disabled: it is out of reach`);
-          await send(page, { type: 'order_move', organism: p.id, x: (await page.evaluate((id) => window.evo.model.state.nearby.find((o) => o.id === id), pick))?.x ?? p.x, y: p.y });
-          await page.waitForTimeout(2000);
+          // Walk up to it (both ways: it was only sent along x), until within reach or a while has passed.
+          const at = await page.evaluate((id) => window.evo.model.state.nearby.find((o) => o.id === id), pick);
+          if (at) {
+            await send(page, { type: 'order_move', organism: p.id, x: at.x, y: at.y });
+            await waitFor('getting within reach', async () => {
+              const [me, it] = await page.evaluate((id) => [window.evo.model.state.organisms.find((o) => o.possessed), window.evo.model.state.nearby.find((o) => o.id === id)], pick);
+              return !me || !it || Math.hypot(me.x - it.x, me.y - it.y) <= 6;
+            }, 10000).catch(() => null);
+          }
           continue;
         }
         await page.evaluate(() => { document.querySelector('#toasts')?.replaceChildren(); });
@@ -316,6 +323,15 @@ async function main() {
         // The wild animal can die or wander out of sight before the
         // inspector shows it (the hunt above may have caught it): pick again.
         const gone = await page.evaluate((id) => !window.evo.model.state.nearby.some((o) => o.id === id), pick);
+        // Or it wandered beyond reach: the button says so and is disabled (the interface is right).
+        const far = await page.evaluate(() => {
+          const b = document.querySelector('#btn-attack');
+          return b?.disabled && /too far/.test(b.textContent ?? '') ? b.textContent : null;
+        });
+        if (far) {
+          step(`wild #${pick} wandered out of reach ("${far}"): retrying`);
+          continue;
+        }
         if (gone) {
           step(`wild #${pick} went out of sight during the inspector step: retrying`);
           continue;

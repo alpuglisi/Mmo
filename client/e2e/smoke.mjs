@@ -722,7 +722,13 @@ async function main() {
       // Wait until the buy button is enabled: a pregnant dam first gives birth.
       const ready = await waitFor('the dam to be available', async () => {
         if (await bob.isEnabled(`${card} button.buy`).catch(() => false)) return 'ready';
-        const why = (await bob.textContent(`${card} .row .muted`, { timeout: 1000 }).catch(() => null)) ?? 'listing gone';
+        // Why it can't be bought: the card's "Can't buy: …" line (older cards: a muted note in the row).
+        const why = (await bob.evaluate((card) => {
+          const c = document.querySelector(card);
+          if (!c) return null;
+          const w = c.querySelector('.why-not:not([hidden])') ?? c.querySelector('.row .muted');
+          return w?.textContent ?? 'no reason shown';
+        }, card).catch(() => null)) ?? 'listing gone';
         if (!why.includes('pregnant')) return why;
         await bob.click('#market-refresh');
         await new Promise((r) => setTimeout(r, 1000));

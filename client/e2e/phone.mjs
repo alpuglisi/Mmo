@@ -3,18 +3,19 @@
 // with a fresh evo-server (fast, wild ecosystem, test hooks on):
 //
 //  1. the renown pill opens the Market in the bottom sheet;
-//  2. with a catastrophe notice expanded, the open Tools menu is on top: the
-//     point at the middle of Migrate… and of the group menu is the control,
-//     not the notice, and a tap on Migrate… starts the migration mode; the
-//     notice's fold is remembered over a reload;
-//  3. the camera can go past the map's top edge by the toolbar (and notice):
-//     the top row of tiles comes out from under them;
-//  4. a tap in a herd selects the animal under the finger and the "Here:"
+//  2. the camera can go past the map's top edge by the toolbar (and any
+//     notice): the top row of tiles comes out from under them;
+//  3. a tap in a herd selects the animal under the finger and the "Here:"
 //     chooser is one compact row, listing it first, that goes at the next
 //     touch of the map;
-//  5. with Follow on, the camera holds still while the herd mills about the
+//  4. with Follow on, the camera holds still while the herd mills about the
 //     middle (a dead zone: before, it chased the server's view centre and
 //     slid every animal under the finger), and taps on animals land on them;
+//  5. with a catastrophe notice expanded, the open Tools menu is on top: the
+//     point at the middle of Migrate… and of the group menu is the control,
+//     not the notice, and a tap on Migrate… starts the migration mode; the
+//     notice's fold is remembered over a reload (before the Follow checks a
+//     megadrought would send the herd walking to water);
 //  6. possessing says so once (the bar), not again in a toast;
 //  7. Split is disabled at the four-group limit.
 //
@@ -131,40 +132,7 @@ async function main() {
     await page.tap('#tab-market'); // a second tap on the open tab closes the sheet
     await waitFor('the sheet closed', () => page.evaluate(() => !document.querySelector('.game').classList.contains('sheet-open')));
 
-    // 2. A catastrophe notice, expanded, under the open Tools menu.
-    await page.evaluate(() => { try { localStorage.removeItem('evo.notice.catastrophe'); } catch { /* blocked */ } });
-    const r = await fetch(`${base}/api/e2e/catastrophe`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'megadrought', days: 60 }) });
-    check(r.ok, 'the test hook started a catastrophe', await r.text());
-    await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS });
-    check(!(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded'))), 'the notice starts expanded');
-    await page.tap('#tools-more');
-    await page.waitForSelector('#tools-menu #migrate', { state: 'visible' });
-    const onTop = await page.evaluate(() => ['#migrate', '#group-select'].map((q) => {
-      const el = document.querySelector(q);
-      const b = el.getBoundingClientRect();
-      const at = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
-      const notice = document.querySelector('#map-notices').getBoundingClientRect();
-      const overlaps = !(b.bottom <= notice.top || b.top >= notice.bottom || b.right <= notice.left || b.left >= notice.right);
-      return { q, overlaps, hit: !!at && (at === el || el.contains(at)), at: at ? `${at.tagName}#${at.id}.${at.className}` : null };
-    }));
-    check(onTop.some((x) => x.overlaps), 'the menu and the notice should overlap on a phone (else this checks nothing)', onTop);
-    for (const x of onTop) check(x.hit, `${x.q} should be on top of the notice`, x);
-    await page.screenshot({ path: path.join(shots, 'phone-tools-over-notice.png') });
-    await page.tap('#migrate');
-    await waitFor('migration mode', () => page.evaluate(() => /migration target/.test(document.querySelector('#hint')?.textContent ?? '')));
-    await page.tap('#tools-more');
-    await page.tap('#migrate'); // off again
-    step(`with the catastrophe notice expanded, the Tools menu is on top (${onTop.map((x) => x.q).join(', ')} tappable) and Migrate… works`);
-    // The fold, remembered.
-    await page.tap('#catastrophe-alert .cat-fold');
-    check(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded')), 'folded');
-    await page.reload();
-    await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS });
-    check(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded')), 'the fold should be remembered over a reload');
-    step('the notice\'s fold is remembered over a reload');
-    await waitFor('the lineage again', () => page.evaluate(() => (window.evo.model.state?.organisms.length ?? 0) > 1));
-
-    // 3. Past the top edge by the toolbar.
+    // 2. Past the top edge by the toolbar.
     const edge = await page.evaluate(async () => {
       const v = window.evo.screen().view;
       v.setFollow(false);
@@ -179,7 +147,7 @@ async function main() {
     check(edge.mapTop >= edge.over, 'the map\'s top edge should come out from under the toolbar and notice', edge);
     step(`the camera goes past the top edge by ${edge.pad} px: the map starts at y ${edge.mapTop.toFixed(0)}, under the toolbar and notice (y ${edge.over.toFixed(0)})`);
 
-    // 4. A tap in a herd: the animal under the finger, and a compact chooser.
+    // 3. A tap in a herd: the animal under the finger, and a compact chooser.
     await recordTaps(page);
     const canvasBox = await page.locator('#world-canvas').boundingBox();
     const herdTap = await waitFor('a tap on an animal with others in reach', async () => {
@@ -228,7 +196,7 @@ async function main() {
     await page.waitForSelector('#pick-chooser', { state: 'hidden', timeout: 3000 });
     step(`a tap in a herd selects #${picked} (under the finger, of ${herdTap.tap.candidates.length} in reach); the chooser is one ${chooser.height.toFixed(0)} px row, listing it first, gone at the next touch`);
 
-    // 5. Follow on: taps on (moving) animals land on them. Real frames for this.
+    // 4. Follow on: taps on (moving) animals land on them. Real frames for this.
     await page.evaluate(() => window.__e2eFrameCap?.(0));
     await page.evaluate(() => {
       const v = window.evo.screen().view;
@@ -240,24 +208,42 @@ async function main() {
     // While the herd mills about the middle of the screen, the camera holds
     // still (the dead zone): the server's view centre moves with every birth
     // and step, and a camera chasing it slid every animal under the finger.
-    const still = await page.evaluate(async () => {
+    const window4s = () => page.evaluate(async () => {
       const v = window.evo.screen().view;
-      let travel = 0;
-      let last = { ...v.cam };
+      const { width, height } = v.app.screen;
+      // Follow's dead zone for a herd (worldView FOLLOW_DEAD: a quarter of half the shorter side), in pixels.
+      const dead = 0.25 * Math.min(width, height) / 2;
+      // Camera travel in frames that began with the herd's centre well inside
+      // the dead zone (none is allowed there), and in all frames (for the record).
+      let inside = 0, travel = 0, framesInside = 0;
       const t0 = performance.now();
       while (performance.now() - t0 < 4000) {
+        const s = window.evo.model.state.view;
+        const before = { ...v.cam };
+        const offPx = Math.max(Math.abs(s.x - before.x), Math.abs(s.y - before.y)) * before.zoom;
         await new Promise((r) => requestAnimationFrame(r));
-        travel += Math.hypot(v.cam.x - last.x, v.cam.y - last.y) * v.cam.zoom;
-        last = { ...v.cam };
+        const moved = Math.hypot(v.cam.x - before.x, v.cam.y - before.y) * v.cam.zoom;
+        travel += moved;
+        if (offPx < dead * 0.9 && window.evo.model.state.view === s) {
+          inside += moved;
+          framesInside++;
+        }
       }
-      const s = window.evo.model.state.view;
-      const { width, height } = v.app.screen;
-      // Follow's dead zone for a herd (worldView FOLLOW_DEAD: a quarter of half the shorter side).
-      return { travel, off: Math.max(Math.abs(s.x - v.cam.x), Math.abs(s.y - v.cam.y)) * v.cam.zoom, dead: 0.25 * Math.min(width, height) / 2 };
+      return { inside, travel, framesInside, dead };
     });
-    // (Unless the herd has walked out of the dead zone meanwhile: then the camera rightly follows.)
-    check(still.travel <= 3 || still.off >= still.dead * 0.9, 'the camera should hold still while the herd mills about the centre', still);
-    step(`Follow holds the camera still while the herd mills about (${still.travel.toFixed(1)} px of travel in 4 s, the herd centre ${still.off.toFixed(0)} px off centre)`);
+    // (A herd walking somewhere, to water say, is rightly followed: then wait for it to settle.)
+    const still = { inside: 0, travel: 0, framesInside: 0, dead: 0, windows: 0 };
+    while (still.framesInside < 20 && still.windows < 6) {
+      const w = await window4s();
+      still.inside += w.inside;
+      still.travel += w.travel;
+      still.framesInside += w.framesInside;
+      still.dead = w.dead;
+      still.windows++;
+    }
+    check(still.framesInside >= 20, 'the herd should spend some frames inside the dead zone within 24 s (else this checks nothing)', still);
+    check(still.inside <= 1, 'the camera should hold still while the herd mills about inside the dead zone', still);
+    step(`Follow holds the camera still while the herd mills about the middle (${still.inside.toFixed(1)} px of travel over ${still.framesInside} such frames; ${still.travel.toFixed(1)} px in all in ${still.windows * 4} s)`);
     let hits = 0;
     const misses = [];
     for (let i = 0; i < FOLLOW_TAPS; i++) {
@@ -292,6 +278,41 @@ async function main() {
     check(tried >= FOLLOW_TAPS - 2, 'enough animals to tap', { tried });
     check(hits >= Math.min(FOLLOW_HITS, tried - 1), `taps with Follow on should land: ${hits} of ${tried}`, misses);
     step(`Follow on: ${hits} of ${tried} taps on our animals landed on them${misses.length ? ` (missed: ${JSON.stringify(misses)})` : ''}`);
+
+    // 5. A catastrophe notice, expanded, under the open Tools menu.
+    await page.evaluate(() => { try { localStorage.removeItem('evo.notice.catastrophe'); } catch { /* blocked */ } });
+    const r = await fetch(`${base}/api/e2e/catastrophe`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'megadrought', days: 60 }) });
+    check(r.ok, 'the test hook started a catastrophe', await r.text());
+    await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS });
+    // Its text in place (the notice has its full height).
+    await waitFor('the notice text', () => page.evaluate(() => document.querySelector('#catastrophe-alert .cat-effect')?.textContent.length > 20));
+    check(!(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded'))), 'the notice starts expanded');
+    await page.tap('#tools-more');
+    await page.waitForSelector('#tools-menu #migrate', { state: 'visible' });
+    const onTop = await page.evaluate(() => ['#migrate', '#group-select'].map((q) => {
+      const el = document.querySelector(q);
+      const b = el.getBoundingClientRect();
+      const at = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+      const notice = document.querySelector('#map-notices').getBoundingClientRect();
+      const overlaps = !(b.bottom <= notice.top || b.top >= notice.bottom || b.right <= notice.left || b.left >= notice.right);
+      return { q, overlaps, hit: !!at && (at === el || el.contains(at)), at: at ? `${at.tagName}#${at.id}.${at.className}` : null };
+    }));
+    check(onTop.some((x) => x.overlaps), 'the menu and the notice should overlap on a phone (else this checks nothing)', onTop);
+    for (const x of onTop) check(x.hit, `${x.q} should be on top of the notice`, x);
+    await page.screenshot({ path: path.join(shots, 'phone-tools-over-notice.png') });
+    await page.tap('#migrate');
+    await waitFor('migration mode', () => page.evaluate(() => /migration target/.test(document.querySelector('#hint')?.textContent ?? '')));
+    await page.tap('#tools-more');
+    await page.tap('#migrate'); // off again
+    step(`with the catastrophe notice expanded, the Tools menu is on top (${onTop.map((x) => x.q).join(', ')} tappable) and Migrate… works`);
+    // The fold, remembered.
+    await page.tap('#catastrophe-alert .cat-fold');
+    check(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded')), 'folded');
+    await page.reload();
+    await page.waitForSelector('#catastrophe-alert:not([hidden])', { timeout: UI_MS });
+    check(await page.evaluate(() => document.querySelector('#catastrophe-alert').classList.contains('folded')), 'the fold should be remembered over a reload');
+    step('the notice\'s fold is remembered over a reload');
+    await waitFor('the lineage again', () => page.evaluate(() => (window.evo.model.state?.organisms.length ?? 0) > 1));
 
     // 6. Possessing says so once.
     const own = await page.evaluate(() => {
