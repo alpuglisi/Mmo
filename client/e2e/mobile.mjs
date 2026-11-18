@@ -470,6 +470,37 @@ async function phoneChecks(browser, base, deviceName, tag, errors) {
   await page.tap('#split-group');
   await waitFor('two groups', () => page.evaluate(() => window.evo.model.state.groups?.length === 2
     && document.querySelector('#group-select').value !== 'all'), 15000);
+  // Look at dry ground near the herd: a circle mostly over water is refused
+  // (playtest 2), and herds often stand at a shore.
+  await page.evaluate(() => {
+    const v = window.evo.screen().view;
+    const t = v.terrain;
+    const dry = (x, y) => {
+      if (x < 0 || y < 0 || x >= t.width || y >= t.height) return false;
+      const i = Math.floor(y) * t.width + Math.floor(x);
+      return t.biome[i] >= 3 && t.biome[i] <= 6 && t.water[i] === 0;
+    };
+    const share = (cx, cy) => {
+      let n = 0;
+      let d = 0;
+      for (let y = -6; y <= 6; y++) for (let x = -6; x <= 6; x++) {
+        if (x * x + y * y > 36) continue;
+        n++;
+        if (dry(cx + x, cy + y)) d++;
+      }
+      return d / n;
+    };
+    let best = null;
+    for (const o of window.evo.model.state.organisms.slice(0, 12)) {
+      for (let dy = -10; dy <= 10; dy += 2) for (let dx = -10; dx <= 10; dx += 2) {
+        const s = share(o.x + dx, o.y + dy);
+        if (!best || s > best.s) best = { x: o.x + dx, y: o.y + dy, s };
+      }
+    }
+    v.setFollow(false);
+    if (best) v.centerOn(best.x, best.y);
+  });
+  await page.waitForTimeout(200);
   await page.tap('#tools-more');
   await page.tap('#territory');
   const c = await box(page, '#world-canvas');

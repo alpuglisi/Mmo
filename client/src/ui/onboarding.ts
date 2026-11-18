@@ -10,7 +10,7 @@
 import './onboarding.css';
 import type { GameModel } from '../model';
 import {
-  autoStarts, dueHints, HINTS, hintsAfterReset, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
+  autoStarts, dueHints, HINT_IDS, HINTS, hintsAfterReset, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
   CARD_MARGIN, type HintId, type KeyValueStore, type Progress, type TourEvent, type TourStep, type TourTab,
 } from '../onboarding';
 import { h } from './dom';
@@ -185,8 +185,16 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   const live = h('div', { class: 'sr-only', role: 'status', 'aria-live': 'polite', id: 'onboarding-live' });
   deps.hintHost.append(live);
 
+  /** A tip left alone goes away on its own after this long (the map stays clear). */
+  const HINT_AUTO_HIDE_MS = 20_000;
+  /** After a tip went away on its own, the next waits this long (the player is busy). */
+  const HINT_PAUSE_MS = 45_000;
+  let pauseUntil = 0;
+  let hideTimer: ReturnType<typeof setTimeout> | undefined;
+
   function check(): void {
     if (deps.disabled || tourEls || helpEls) return;
+    if (Date.now() < pauseUntil) return;
     if (progress.tour === 'new' || progress.tour === 'active') return;
     const input = { player: model.player, organisms: model.state?.organisms ?? [], feed: model.feed, offers: model.offers.values() };
     for (const id of dueHints(input, [...progress.hints, ...queue])) queue.push(id);
@@ -199,12 +207,36 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
     save();
     const dismiss = h('button', { class: 'secondary', id: 'hint-dismiss', type: 'button' }, 'Got it');
     const show = h('button', { id: 'hint-show', type: 'button' }, 'Show me');
+    const close = h('button', { class: 'tour-close hint-close', id: 'hint-close', type: 'button', 'aria-label': 'Close the tip', title: 'Close' }, '×');
+    const noMore = h('button', { class: 'link small', id: 'hint-no-more', type: 'button', title: 'Help → "Show tips again" brings them back' }, 'No more tips');
     const titleId = `hint-title-${id}`;
     const card = h('div', { class: 'hint-card', id: 'onboarding-hint', role: 'region', 'aria-labelledby': titleId, 'data-hint': id },
-      h('strong', { id: titleId }, def.title), h('p', {}, def.body), h('div', { class: 'row' }, show, dismiss));
+      h('div', { class: 'hint-head' }, h('strong', { id: titleId }, def.title), close),
+      h('p', {}, def.body), h('div', { class: 'row' }, noMore, h('span', { class: 'spacer' }), show, dismiss));
     // Announced politely; focus stays where the player is.
     live.textContent = `Tip: ${def.title}. ${def.body}`;
     dismiss.addEventListener('click', () => nextHint());
+    close.addEventListener('click', () => nextHint());
+    noMore.addEventListener('click', () => {
+      // Every tip counts as seen: none shows again until Help's "Show tips again".
+      queue.length = 0;
+      progress = { ...progress, hints: [...new Set([...progress.hints, ...HINT_IDS])] };
+      save();
+      hideHint();
+    });
+    // Left alone, the tip goes away by itself (not while the pointer or
+    // focus is on it), and the next one waits a while.
+    const arm = () => {
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => {
+        if (hintEl !== card) return;
+        if (card.matches(':hover') || card.contains(document.activeElement)) return arm();
+        pauseUntil = Date.now() + HINT_PAUSE_MS;
+        hideHint();
+        setTimeout(() => check(), HINT_PAUSE_MS + 50);
+      }, HINT_AUTO_HIDE_MS);
+    };
+    arm();
     show.addEventListener('click', () => {
       deps.openTab(def.tab, true);
       nextHint();
@@ -229,6 +261,7 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   }
 
   function hideHint(): void {
+    clearTimeout(hideTimer);
     if (!hintEl) return;
     const hadFocus = hintEl.contains(document.activeElement);
     hintEl.remove();
@@ -285,6 +318,7 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
     tips.addEventListener('click', () => {
       progress = { ...progress, hints: hintsAfterReset((hintEl?.dataset.hint as HintId | undefined) ?? null) };
       queue.length = 0;
+      pauseUntil = 0;
       save();
       tips.textContent = 'Tips will show again';
       close.focus({ preventScroll: true });
@@ -328,6 +362,8 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
     check,
     openHelp,
     destroy: () => {
+      clearTimeout(hideTimer);
+      pauseUntil = Number.POSITIVE_INFINITY;
       deps.helpBtn.removeEventListener('click', openHelp);
       window.removeEventListener('keydown', onTourKey);
       window.removeEventListener('resize', position);

@@ -8,6 +8,7 @@
 // player's (`compatibility`).
 
 import { reconcile, setText } from './reconcile';
+import { createPicker, type PickItem } from './picker';
 import type { GameModel } from '../model';
 import type { ClientMsg, CompatibilityView, LedgerView, ListingView, MarketSort, MarketView, OrgId, ResultMsg, ShopView } from '../protocol';
 import { parseCompatibilityView, parseLedgerView, parseMarketView, parseShopView } from '../protocol';
@@ -15,7 +16,7 @@ import { h, pct } from './dom';
 import { traitName } from './traitNames';
 import './market.css';
 import {
-  auctionText, expiryText, balanceText, bidProblem, buyProblem, COMPAT_CONFIDENCE, compatRowText, DEFAULT_FILTER, shopText, expiresIn, ledgerRows, ledgerTotals, listingCompat,
+  auctionText, expiryText, balanceText, bidProblem, buyProblem, COMPAT_CONFIDENCE, compatRowText, DEFAULT_FILTER, shopText, ledgerRows, ledgerTotals, listingCompat,
   marketQuery, mergePages, ownAdults, pageText, traitSummary, type KindFilter, type MarketFilter, type RoleFilter,
 } from './marketData';
 
@@ -26,6 +27,8 @@ export interface MarketDeps {
   onOrganism: (id: OrgId, x?: number, y?: number) => void;
   /** Measured real milliseconds per tick (for "≈ 2 min" next to game time). */
   msPerTick?: () => number;
+  /** The camera's centre, for "nearest first" in the organism pickers. */
+  cam?: () => { x: number; y: number };
 }
 
 export interface MarketPanel {
@@ -58,7 +61,9 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const balanceEl = h('p', { id: 'market-balance', class: 'market-balance' });
 
   // --- list one of my adults (fixed fee or auction)
-  const listOrg = h('select', { id: 'market-list-organism' });
+  // Searchable pickers, not <select>s: a lineage can have thousands of adults.
+  const listPick = createPicker({ id: 'market-list-organism', label: 'Adult to list', placeholder: 'Search your adults: id or words', filters: ['sex', 'notPregnant'], noneLabel: 'Choose an adult to list…' });
+  const listOrg = listPick.el;
   const listKind = h('select', { id: 'market-list-kind' },
     h('option', { value: 'fixed' }, 'fixed fee'), h('option', { value: 'auction' }, 'auction'));
   const fee = h('input', { id: 'market-fee', type: 'number', min: 0, step: 1, value: 10 });
@@ -95,7 +100,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
   const myListingsEl = h('div', { id: 'my-listings' });
 
   // --- browse
-  const mineSel = h('select', { id: 'market-mine' });
+  const minePick = createPicker({ id: 'market-mine', label: 'For my adult', placeholder: 'Search your adults: id or words', filters: ['sex', 'notPregnant'], noneLabel: '(none: no compatibility)', allowNone: true });
+  const mineSel = minePick.el;
   const roleSel = h('select', { id: 'market-role' },
     h('option', { value: 'any' }, 'studs and dams'), h('option', { value: 'stud' }, 'studs (male)'), h('option', { value: 'dam' }, 'dams (female)'));
   const kindSel = h('select', { id: 'market-kind' },
@@ -143,7 +149,7 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     h('h3', {}, 'Who your lineage can breed with'), compatEl,
     h('h3', {}, 'Stud marketplace'),
     h('div', { class: 'form market-filters' },
-      h('label', {}, 'For my adult', mineSel),
+      h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'For my adult'), mineSel),
       h('div', { class: 'row' }, h('label', {}, 'Show', roleSel), h('label', {}, 'Kind', kindSel)),
       h('div', { class: 'row' }, h('label', {}, 'Order', sortSel), h('label', {}, 'Max price', maxFee)),
       h('div', { class: 'row' }, h('label', { class: 'check' }, compatOnly, 'compatible only'), refreshBtn)),
@@ -151,7 +157,8 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     h('div', { class: 'row market-paging' }, pageEl, moreBtn),
     h('h3', {}, 'List one of my adults'),
     h('div', { class: 'form' },
-      h('div', { class: 'row' }, h('label', {}, 'Adult', listOrg), h('label', {}, 'As', listKind)),
+      h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Adult'), listOrg),
+      h('div', { class: 'row' }, h('label', {}, 'As', listKind)),
       h('div', { class: 'row' }, feeLabel, expiryLabel, daysLabel),
       h('div', { class: 'row' }, listBtn),
       h('p', { class: 'muted small' }, 'Anyone may buy one mating with a listed organism: the listing is your consent. The fee is held in escrow and paid to you when the two meet and mate; it is refunded if they never do. A dam takes one buyer at a time. An auction sells one mating to the highest bid at or above the reserve when it closes; bids are held in escrow and refunded when outbid.')),
@@ -159,20 +166,19 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     h('h3', {}, 'Renown shop'), shopEl,
     h('h3', {}, 'Ledger'), ledgerEl);
 
-  // Options of the two organism pickers, rebuilt only when the adults change.
-  let optionsKey = '';
+  // The two organism pickers: nearest the view first, searchable by id.
   function renderPickers(): void {
     const adults = ownAdults(model.state);
     const listed = new Set(own.map((l) => l.organism));
-    const key = adults.map((o) => `${o.id}${o.pregnant ? 'p' : ''}${listed.has(o.id) ? 'l' : ''}`).join(',');
-    if (key === optionsKey) return;
-    optionsKey = key;
-    // Options updated in place: an open list stays open, the choice stays put.
-    const label = (o: (typeof adults)[number] | null) => (o ? `#${o.id} ${o.sex}${o.pregnant ? ' (pregnant)' : ''} · gen ${o.generation}` : '(none: no compatibility)');
-    const option = (o: (typeof adults)[number] | null) => h('option', { value: o ? o.id : '' }) as HTMLOptionElement;
-    const fill = (opt: HTMLOptionElement, o: (typeof adults)[number] | null) => setText(opt, label(o));
-    reconcile(mineSel, [null, ...adults], (o) => (o ? String(o.id) : ''), option, fill);
-    reconcile(listOrg, adults.filter((o) => !listed.has(o.id)), (o) => String(o.id), option, fill);
+    const cam = deps.cam?.() ?? null;
+    const item = (o: (typeof adults)[number]): PickItem => ({
+      id: o.id, label: `#${o.id} ${o.sex} · gen ${o.generation}`,
+      detail: [o.pregnant && 'pregnant', listed.has(o.id) && 'listed'].filter(Boolean).join(', ') || undefined,
+      sex: o.sex, pregnant: o.pregnant, free: !o.pregnant,
+      distance: cam ? Math.hypot(o.x - cam.x, o.y - cam.y) : undefined,
+    });
+    minePick.setItems(adults.map(item));
+    listPick.setItems(adults.filter((o) => !listed.has(o.id)).map(item));
   }
 
   function renderBalance(): void {
@@ -187,140 +193,156 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
     return model.state?.organisms.find((o) => o.id === Number(mineSel.value));
   }
 
-  function listingCard(l: ListingView, isOwn: boolean): HTMLElement {
-    const s = model.state;
-    const tick = s?.clock.tick ?? 0;
-    const days = expiresIn(l, tick, TICKS_PER_DAY);
-    const mine = chosen();
-    const compat = listingCompat(l);
-    const balance = s?.balance ?? market?.balance ?? 0;
-    const slots = s?.slots_left ?? 0;
-    const a = l.auction;
-    const parents = l.mother !== undefined || l.father !== undefined
-      ? `of #${l.mother ?? '?'} × #${l.father ?? '?'}` : 'a founder';
+  // The latest data of every shown listing, by id: the cards' buttons act on
+  // what is current when clicked, not on what it was when the card was made.
+  const latest = new Map<number, ListingView>();
+  const current = (id: number): ListingView | undefined => latest.get(id);
+
+  /** A listing card's fixed skeleton and handlers; `updateCard` fills it (every render). */
+  function makeCard(l: ListingView, isOwn: boolean): HTMLElement {
+    const id = l.id;
     let action: HTMLElement;
-    let problem: string | null = null;
     if (isOwn) {
-      const hasBids = a?.high_bid !== undefined;
-      action = h('button', { class: 'secondary withdraw', disabled: hasBids, title: hasBids ? 'An auction with a bid runs to its close' : 'Take it off the market' }, 'Withdraw');
+      action = h('button', { class: 'secondary withdraw' }, 'Withdraw');
       action.addEventListener('click', async () => {
-        const r = await deps.send({ type: 'withdraw_listing', listing: l.id });
+        const r = await deps.send({ type: 'withdraw_listing', listing: id });
         if (r.ok) await refresh();
       });
-    } else if (a) {
-      const amount = h('input', { class: 'bid-amount', type: 'number', min: a.min_bid, step: 1, value: a.min_bid });
+    } else if (l.auction) {
+      const amount = h('input', { class: 'bid-amount', type: 'number', step: 1, value: l.auction.min_bid }) as HTMLInputElement;
       const bid = h('button', { class: 'bid' }, 'Bid');
-      const check = (): void => {
-        const why = bidProblem(l, model.player, balance, slots, mine, Math.floor(Number(amount.value)));
-        bid.disabled = why !== null;
-        bid.title = why ?? `Bid ${amount.value} renown (held in escrow, refunded if outbid)`;
-      };
-      amount.addEventListener('input', check);
-      check();
-      problem = bidProblem(l, model.player, balance, slots, mine, a.min_bid);
+      amount.addEventListener('input', () => { const c = current(id); if (c) checkBid(bid, amount, c); });
       bid.addEventListener('click', async () => {
+        const mine = chosen();
         if (!mine) return;
         const value = Math.floor(Number(amount.value));
-        const r = await deps.send({ type: 'bid', listing: l.id, amount: value, mine: mine.id });
+        const r = await deps.send({ type: 'bid', listing: id, amount: value, mine: mine.id });
         if (r.ok) {
-          model.toast('info', `Bid ${value} renown on auction #${l.id} for #${mine.id} (held in escrow).`);
+          model.toast('info', `Bid ${value} renown on auction #${id} for #${mine.id} (held in escrow).`);
           await refresh();
         }
       });
       action = h('span', { class: 'bid-form' }, amount, bid);
     } else {
-      problem = buyProblem(l, model.player, balance, slots, mine);
-      const buy = h('button', { class: 'buy', disabled: problem !== null, title: problem ?? `Buy one mating for ${l.fee} renown` }, `Buy for ${l.fee}`);
-      buy.addEventListener('click', async () => {
-        if (!mine) return;
-        const r = await deps.send({ type: 'buy_listing', listing: l.id, mine: mine.id });
+      action = h('button', { class: 'buy' });
+      action.addEventListener('click', async () => {
+        const mine = chosen();
+        const c = current(id);
+        if (!mine || !c) return;
+        const r = await deps.send({ type: 'buy_listing', listing: id, mine: mine.id });
         if (r.ok) {
-          model.toast('info', `Bought a mating of #${mine.id} with ${l.owner_name}'s #${l.organism}: escort it from the Mates tab.`);
+          model.toast('info', `Bought a mating of #${mine.id} with ${c.owner_name}'s #${c.organism}: escort it from the Mates tab.`);
           await refresh();
         }
       });
-      action = buy;
     }
-    const price = a ? `${a.high_bid ?? a.reserve} renown` : `${l.fee} renown`;
-    return h('div', { class: `listing${l.busy ? ' busy' : ''}${a ? ' auction' : ''}`, 'data-listing': l.id, 'data-organism': l.organism, 'data-kind': l.kind },
+    return h('div', { class: 'listing', 'data-listing': id, 'data-organism': l.organism, 'data-kind': l.kind },
       h('div', { class: 'listing-head' },
         h('strong', {}, `${l.role === 'stud' ? 'Stud' : 'Dam'} #${l.organism}`),
         h('span', { class: 'muted' }, ` · ${l.owner_name}'s ${l.lineage_name}`),
-        h('span', { class: 'fee' }, price)),
-      a && h('div', { class: 'small auction-line' }, auctionText(l, model.player, tick, TICKS_PER_DAY, deps.msPerTick?.())),
-      h('div', { class: 'small' }, traitSummary(l.traits)),
-      h('div', { class: 'small muted' },
-        `gen ${l.generation}, ${parents} · ${l.age_days.toFixed(0)} days · health ${l.health.toFixed(0)} · raised ${l.offspring_raised}`,
-        ` · at ${l.x.toFixed(0)}, ${l.y.toFixed(0)}`,
-        l.sales ? ` · ${l.sales} sold` : '',
-        l.busy ? ' · promised' : '', l.pregnant ? ' · pregnant' : ''),
-      days !== null && h('div', { class: 'small expires-line' }, expiryText(l, tick, TICKS_PER_DAY, deps.msPerTick?.()) ?? ''),
-      h('div', { class: 'trait-bars' }, ...l.traits.filter((t) => t.value >= 0.5 || t.gene === 'body_size').slice(0, 6).map((t) =>
-        h('span', { class: 'trait', title: `${traitName(t.gene)} ${t.value.toFixed(2)}` }, traitName(t.gene),
-          h('span', { class: 'trait-bar' }, h('span', { style: `width:${pct(Math.max(0, Math.min(1, t.value)), 0)}` }))))),
-      compat && h('div', { class: `small compat`, 'data-level': compat.level }, compat.text),
-      l.compatible === false && !isOwn && h('div', { class: 'small compat', 'data-level': 'bad' }, 'Sterile with your lineage: body plans too different.'),
+        h('span', { class: 'fee' })),
+      l.auction && h('div', { class: 'small auction-line' }),
+      h('div', { class: 'small traits-line' }),
+      h('div', { class: 'small muted info-line' }),
+      l.kind !== 'auction' && h('div', { class: 'small expires-line' }),
+      h('div', { class: 'trait-bars' }),
+      h('div', { class: 'small compat', hidden: true }),
+      !isOwn && h('div', { class: 'small compat sterile', 'data-level': 'bad', hidden: true }, 'Sterile with your lineage: body plans too different.'),
       h('div', { class: 'row' },
         action,
-        h('button', { class: 'secondary', onclick: () => deps.onOrganism(l.organism, l.x, l.y) }, 'Show'),
+        h('button', { class: 'secondary', onclick: () => { const c = current(id) ?? l; deps.onOrganism(c.organism, c.x, c.y); } }, 'Show'),
         // Why Buy / Bid is off, in words next to it (not only in a hover title).
-        !isOwn && problem && h('span', { class: 'small why-not' }, `Can't ${a ? 'bid' : 'buy'}: ${problem === 'pick one of your adults' ? 'pick your adult in "For my adult" above' : problem}`)));
+        !isOwn && h('span', { class: 'small why-not', hidden: true })));
   }
 
-  // Rebuild the listing cards only when what they show changes.
-  let listingsKey = '';
-  function renderListings(): void {
+  function checkBid(bid: HTMLElement, amount: HTMLInputElement, l: ListingView): void {
     const s = model.state;
-    const shown = mergePages(pages);
+    const why = bidProblem(l, model.player, s?.balance ?? market?.balance ?? 0, s?.slots_left ?? 0, chosen(), Math.floor(Number(amount.value)));
+    (bid as HTMLButtonElement).disabled = why !== null;
+    bid.title = why ?? `Bid ${amount.value} renown (held in escrow, refunded if outbid)`;
+  }
+
+  /** Everything on a card that can change, set in place. */
+  function updateCard(card: HTMLElement, l: ListingView, isOwn: boolean): void {
+    const s = model.state;
+    const tick = s?.clock.tick ?? 0;
+    const ms = deps.msPerTick?.();
     const mine = chosen();
-    // What the cards show: the listing data and whether (and why not) it
-    // can be bought, not the balance itself (which changes every day). And
-    // the buyer organism: the Buy and Bid buttons act for the one picked
-    // when the card was built, so a new pick must rebuild them.
     const balance = s?.balance ?? market?.balance ?? 0;
     const slots = s?.slots_left ?? 0;
-    const why = (l: ListingView) => (l.auction ? bidProblem(l, model.player, balance, slots, mine, l.auction.min_bid) : buyProblem(l, model.player, balance, slots, mine));
-    const key = JSON.stringify([shown.map((l) => [l.id, l.sales, l.busy, l.pregnant, l.preview?.fertility, l.preview?.compatible,
-      l.auction?.high_bid, l.auction?.high_bidder, why(l)]), market === null, mine?.id ?? null]);
-    if (key !== listingsKey) {
-      listingsKey = key;
-      listingsEl.replaceChildren(...(market === null ? [h('p', { class: 'muted small' }, 'Loading…')]
-        : shown.length === 0
-          ? [h('p', { class: 'muted small' }, 'No listings match the filters.')]
-          : shown.map((l) => listingCard(l, false))));
+    const a = l.auction;
+    card.classList.toggle('busy', l.busy);
+    card.classList.toggle('auction', !!a);
+    setText(card.querySelector('.fee')!, a ? `${a.high_bid ?? a.reserve} renown` : `${l.fee} renown`);
+    const auctionLine = card.querySelector('.auction-line');
+    if (auctionLine) setText(auctionLine, auctionText(l, model.player, tick, TICKS_PER_DAY, ms));
+    setText(card.querySelector('.traits-line')!, traitSummary(l.traits));
+    const parents = l.mother !== undefined || l.father !== undefined ? `of #${l.mother ?? '?'} × #${l.father ?? '?'}` : 'a founder';
+    setText(card.querySelector('.info-line')!, `gen ${l.generation}, ${parents} · ${l.age_days.toFixed(0)} days · health ${l.health.toFixed(0)} · raised ${l.offspring_raised}`
+      + ` · at ${l.x.toFixed(0)}, ${l.y.toFixed(0)}${l.sales ? ` · ${l.sales} sold` : ''}${l.busy ? ' · promised' : ''}${l.pregnant ? ' · pregnant' : ''}`);
+    const expires = card.querySelector('.expires-line');
+    if (expires) setText(expires, expiryText(l, tick, TICKS_PER_DAY, ms) ?? '');
+    const bars = card.querySelector<HTMLElement>('.trait-bars')!;
+    const top = l.traits.filter((t) => t.value >= 0.5 || t.gene === 'body_size').slice(0, 6);
+    reconcile(bars, top, (t) => t.gene, (t) => h('span', { class: 'trait' }, traitName(t.gene), h('span', { class: 'trait-bar' }, h('span', {}))), (el, t) => {
+      el.title = `${traitName(t.gene)} ${t.value.toFixed(2)}`;
+      (el.querySelector('.trait-bar > span') as HTMLElement).style.width = pct(Math.max(0, Math.min(1, t.value)), 0);
+    });
+    const compatEl2 = card.querySelector<HTMLElement>('.compat:not(.sterile)')!;
+    const c = listingCompat(l);
+    compatEl2.hidden = !c;
+    if (c) {
+      setText(compatEl2, c.text);
+      compatEl2.dataset.level = c.level;
     }
-    // The time left on auctions changes every tick: update the line in
-    // place rather than rebuilding the cards (and a bid being typed).
-    refreshAuctionLines(listingsEl, shown);
-    refreshAuctionLines(myListingsEl, own);
-    pageEl.textContent = pageText(shown.length, market);
-    moreBtn.hidden = !market?.next_cursor;
-    const ownKey = JSON.stringify(own.map((l) => [l.id, l.sales, l.busy, l.auction?.high_bid, l.auction?.bids]));
-    if (myListingsEl.dataset.key !== ownKey) {
-      myListingsEl.dataset.key = ownKey;
-      myListingsEl.replaceChildren(...(own.length === 0 ? [h('p', { class: 'muted small' }, 'None.')] : own.map((l) => listingCard(l, true))));
+    const sterile = card.querySelector<HTMLElement>('.sterile');
+    if (sterile) sterile.hidden = l.compatible !== false;
+    let problem: string | null = null;
+    if (isOwn) {
+      const btn = card.querySelector<HTMLButtonElement>('.withdraw')!;
+      const hasBids = a?.high_bid !== undefined;
+      btn.disabled = hasBids;
+      btn.title = hasBids ? 'An auction with a bid runs to its close' : 'Take it off the market';
+    } else if (a) {
+      const amount = card.querySelector<HTMLInputElement>('.bid-amount')!;
+      amount.min = String(a.min_bid);
+      if (document.activeElement !== amount && Number(amount.value) < a.min_bid) amount.value = String(a.min_bid);
+      checkBid(card.querySelector('.bid')!, amount, l);
+      problem = bidProblem(l, model.player, balance, slots, mine, a.min_bid);
+    } else {
+      const buy = card.querySelector<HTMLButtonElement>('.buy')!;
+      problem = buyProblem(l, model.player, balance, slots, mine);
+      buy.disabled = problem !== null;
+      buy.title = problem ?? `Buy one mating for ${l.fee} renown`;
+      setText(buy, `Buy for ${l.fee}`);
+    }
+    const whyNot = card.querySelector<HTMLElement>('.why-not');
+    if (whyNot) {
+      whyNot.hidden = !problem;
+      if (problem) setText(whyNot, `Can't ${a ? 'bid' : 'buy'}: ${problem === 'pick one of your adults' ? 'pick your adult in "For my adult" above' : problem}`);
     }
   }
 
-  function refreshAuctionLines(root: HTMLElement, ls: ListingView[]): void {
-    const tick = model.state?.clock.tick ?? 0;
-    const byId = new Map(ls.map((l) => [l.id, l]));
-    const ms = deps.msPerTick?.();
-    // The countdowns tick on between rebuilds of the cards.
-    for (const card of root.querySelectorAll<HTMLElement>('.listing')) {
-      const l = byId.get(Number(card.dataset.listing));
-      if (!l) continue;
-      const auctionLine = card.querySelector('.auction-line');
-      if (auctionLine) setText(auctionLine, auctionText(l, model.player, tick, TICKS_PER_DAY, ms));
-      const expires = card.querySelector('.expires-line');
-      if (expires) setText(expires, expiryText(l, tick, TICKS_PER_DAY, ms) ?? '');
-      const compat = card.querySelector<HTMLElement>('.compat');
-      const c = listingCompat(l);
-      if (compat && c) {
-        setText(compat, c.text);
-        compat.dataset.level = c.level;
-      }
+  /** Cards kept by listing id and updated in place: a Buy or Bid button is never replaced under a click. */
+  function renderCards(root: HTMLElement, ls: ListingView[], isOwn: boolean, empty: string): void {
+    for (const l of ls) latest.set(l.id, l);
+    const placeholder = root.previousElementSibling as HTMLElement | null;
+    const note = market === null && !isOwn ? 'Loading…' : empty;
+    if (placeholder?.classList.contains('listings-none')) {
+      placeholder.hidden = ls.length > 0 && market !== null;
+      setText(placeholder, note);
+    } else {
+      root.before(h('p', { class: 'muted small listings-none', hidden: ls.length > 0 && market !== null }, note));
     }
+    reconcile(root, ls, (l) => `${l.id}:${l.kind}`, (l) => makeCard(l, isOwn), (card, l) => updateCard(card, l, isOwn));
+  }
+
+  function renderListings(): void {
+    const shown = mergePages(pages);
+    renderCards(listingsEl, market === null ? [] : shown, false, 'No listings match the filters.');
+    renderCards(myListingsEl, own, true, 'None.');
+    pageEl.textContent = pageText(shown.length, market);
+    moreBtn.hidden = !market?.next_cursor;
   }
 
   function renderLedger(): void {
@@ -343,43 +365,48 @@ export function buildMarket(deps: MarketDeps): MarketPanel {
             h('td', { class: r.positive ? 'good' : 'bad' }, r.amount), h('td', { class: 'small' }, r.text), h('td', {}, String(r.balance)))))));
   }
 
-  function renderShop(): void {
-    if (!shop) {
-      shopEl.replaceChildren(h('p', { class: 'muted small' }, 'Loading…'));
-      return;
+  // The renown shop: built once, then updated in place (the balance changes
+  // daily, and a rebuild replaced the buttons under a click).
+  const shopText_ = h('p', { class: 'muted small' });
+  const slotBtn = h('button', { id: 'shop-slot', class: 'secondary' }) as HTMLButtonElement;
+  const slotNote = h('span', { class: 'muted small' });
+  const reinBtn = h('button', { id: 'shop-reinforce', class: 'secondary' }) as HTMLButtonElement;
+  const reinNote = h('span', { class: 'muted small' });
+  slotBtn.addEventListener('click', async () => {
+    const r = await deps.send({ type: 'buy_mating_slot' });
+    if (r.ok) {
+      shop = parseShopView(r.data) ?? shop;
+      model.toast('info', 'One more directed-mating slot this season.');
+      render();
     }
+  });
+  reinBtn.addEventListener('click', async () => {
+    const r = await deps.send({ type: 'reinforce' });
+    if (r.ok) {
+      const d = r.data as { added?: unknown[]; shop?: unknown } | undefined;
+      shop = parseShopView(d?.shop) ?? shop;
+      model.toast('info', `${d?.added?.length ?? 0} adults joined your lineage.`);
+      render();
+    }
+  });
+  const shopBody = h('div', { hidden: true }, shopText_, h('div', { class: 'row' }, slotBtn, slotNote), h('div', { class: 'row' }, reinBtn, reinNote));
+  const shopLoading = h('p', { class: 'muted small' }, 'Loading…');
+  shopEl.replaceChildren(shopLoading, shopBody);
+
+  function renderShop(): void {
+    shopLoading.hidden = !!shop;
+    shopBody.hidden = !shop;
+    if (!shop) return;
     const s = shop;
-    const key = JSON.stringify(s);
-    if (shopEl.dataset.key === key) return;
-    shopEl.dataset.key = key;
-    const slotBtn = h('button', { id: 'shop-slot', class: 'secondary', disabled: s.slot_price === undefined || s.balance < s.slot_price },
-      s.slot_price === undefined ? 'Slot limit reached' : `Extra mating slot: ${s.slot_price} renown`);
-    slotBtn.addEventListener('click', async () => {
-      const r = await deps.send({ type: 'buy_mating_slot' });
-      if (r.ok) {
-        shop = parseShopView(r.data) ?? shop;
-        model.toast('info', 'One more directed-mating slot this season.');
-        render();
-      }
-    });
+    setText(shopText_, shopText(s));
+    slotBtn.disabled = s.slot_price === undefined || s.balance < s.slot_price;
+    setText(slotBtn, s.slot_price === undefined ? 'Slot limit reached' : `Extra mating slot: ${s.slot_price} renown`);
+    setText(slotNote, `${s.slots_bought} bought this season; the price doubles with each.`);
     const blocked = s.reinforce_blocked;
-    const reinBtn = h('button', { id: 'shop-reinforce', class: 'secondary', disabled: blocked !== undefined || s.balance < s.reinforce_price,
-      title: blocked ?? `${s.reinforce_size} adults copied from your own join your lineage` },
-    `Reinforcements (${s.reinforce_size} adults): ${s.reinforce_price} renown`);
-    reinBtn.addEventListener('click', async () => {
-      const r = await deps.send({ type: 'reinforce' });
-      if (r.ok) {
-        const d = r.data as { added?: unknown[]; shop?: unknown } | undefined;
-        shop = parseShopView(d?.shop) ?? shop;
-        model.toast('info', `${d?.added?.length ?? 0} adults joined your lineage.`);
-        render();
-      }
-    });
-    shopEl.replaceChildren(
-      h('p', { class: 'muted small' }, shopText(s)),
-      h('div', { class: 'row' }, slotBtn, h('span', { class: 'muted small' }, `${s.slots_bought} bought this season; the price doubles with each.`)),
-      h('div', { class: 'row' }, reinBtn, h('span', { class: 'muted small' },
-        blocked ?? `For lineages of at most ${s.reinforce_max_alive}; the price doubles with each in a ranked season.`)));
+    reinBtn.disabled = blocked !== undefined || s.balance < s.reinforce_price;
+    reinBtn.title = blocked ?? `${s.reinforce_size} adults copied from your own join your lineage`;
+    setText(reinBtn, `Reinforcements (${s.reinforce_size} adults): ${s.reinforce_price} renown`);
+    setText(reinNote, blocked ?? `For lineages of at most ${s.reinforce_max_alive}; the price doubles with each in a ranked season.`);
   }
 
   function renderCompat(): void {

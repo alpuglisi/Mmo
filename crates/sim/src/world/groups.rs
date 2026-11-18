@@ -94,6 +94,29 @@ pub const OBEDIENT_STRAY: f32 = 0.3;
 pub const RALLY_DAYS: f32 = 3.0;
 /// Utility of walking to the rally point (an ordered migration is 0.55).
 pub const RALLY_UTILITY: f32 = 0.55;
+/// Days a group that has just arrived from a migration keeps a pull back
+/// to where it arrived ([`Settle`]), so it doesn't drift straight back.
+pub const SETTLE_DAYS: f32 = 15.0;
+/// Utility of walking back into the settle circle: weaker than a rally
+/// (wandering, cohesion and every need still win when they press).
+pub const SETTLE_UTILITY: f32 = 0.35;
+/// The settle circle's radius against the group's arrival radius.
+pub const SETTLE_RADIUS_FACTOR: f32 = 1.5;
+/// A migration that hasn't arrived after `MIGRATE_TIMEOUT_BASE_DAYS +
+/// distance / MIGRATE_TIMEOUT_TILES_PER_DAY` days (distance from the
+/// group's middle when ordered; kept between the two bounds) is ended
+/// ([`GroupEvent::TimedOut`](super::commands::GroupEvent::TimedOut)).
+pub const MIGRATE_TIMEOUT_BASE_DAYS: f32 = 3.0;
+pub const MIGRATE_TIMEOUT_TILES_PER_DAY: f32 = 3.0;
+pub const MIGRATE_TIMEOUT_MIN_DAYS: f32 = 4.0;
+pub const MIGRATE_TIMEOUT_MAX_DAYS: f32 = 30.0;
+/// A territory or rally circle with more than this share of its tiles in
+/// water the group can't stand in is refused
+/// ([`CommandError::MostlyWater`]).
+pub const MAX_WATER_SHARE: f32 = 0.5;
+/// How far beyond a circle's edge (tiles) drinking water still counts as
+/// the circle's own ([`WaterCheck::drinkable`]).
+pub const WATER_REACH: f32 = 4.0;
 /// Radius of a rally circle for a lone member; each member adds to it with
 /// the square root of their number ([`RALLY_RADIUS_PER_MEMBER`]), so the
 /// area grows with the group (about π tiles per member) and a big herd
@@ -115,6 +138,25 @@ pub const RALLY_MAX_RADIUS: f32 = TERRITORY_MAX_RADIUS;
 #[inline]
 pub(crate) fn heed(o: &Organism) -> f32 {
     0.5 + o.pheno[Gene::Obedience]
+}
+
+/// The need (0–1) at which `o` sets an order aside to drink or eat
+/// ([`MIGRATE_BREAK`](super::commands::MIGRATE_BREAK), moved by obedience).
+#[inline]
+pub(crate) fn need_limit(o: &Organism) -> f32 {
+    use super::commands::{MIGRATE_BREAK, MIGRATE_BREAK_OBEDIENCE};
+    MIGRATE_BREAK + MIGRATE_BREAK_OBEDIENCE * (o.pheno[Gene::Obedience] - 0.5)
+}
+
+/// Whether thirst has `o` leave its group's territory or rally circle to
+/// drink: at [`need_limit`], or while it is drinking until thirst is down
+/// to [`ORDER_RESUME`](super::commands::ORDER_RESUME), as a migrant breaks
+/// off (a drought used to hold groups inside dry circles until they died).
+#[inline]
+pub(crate) fn thirst_breaks_off(o: &Organism) -> bool {
+    let thirst = o.needs.thirst / 100.0;
+    thirst >= need_limit(o)
+        || (o.action == crate::organism::Action::Drink && thirst > super::commands::ORDER_RESUME / 100.0)
 }
 
 /// Hunger (0–1) above which `o` forages outside its group's territory.
@@ -156,6 +198,46 @@ impl Rally {
     }
 }
 
+/// What a migration order carries besides its target (snapshot version 41).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MigrationPlan {
+    pub issued_tick: u64,
+    /// The order ends at this tick if the group hasn't arrived.
+    pub deadline_tick: u64,
+}
+
+/// Where a group that just arrived from a migration settles: members
+/// outside the circle walk back into it (`Action::Rally` at
+/// [`SETTLE_UTILITY`]) until `until_tick`, when nothing presses. Not a
+/// confinement: they forage and drink anywhere.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Settle {
+    pub center: Vec2,
+    pub radius: f32,
+    pub until_tick: u64,
+}
+
+/// Migration plans and settle circles by (player, group) (snapshot
+/// version 41: empty from older snapshots).
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct GroupPlans {
+    pub migrations: BTreeMap<(PlayerId, u8), MigrationPlan>,
+    pub settles: BTreeMap<(PlayerId, u8), Settle>,
+}
+
+/// Water in and around a territory or rally circle ([`World::water_check`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WaterCheck {
+    /// Share of the circle's tiles in water the group can't stand in.
+    pub water_share: f32,
+    /// Tiles with drinking water in the circle or within [`WATER_REACH`]
+    /// of its edge.
+    pub drinkable: usize,
+}
+
 /// One of a player's groups, for reports (`World::groups`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroupInfo {
@@ -175,6 +257,10 @@ pub struct GroupInfo {
     /// Mean expressed obedience (`Gene::Obedience`) of its members, rounded
     /// to hundredths (0 with no members): how strongly it heeds orders.
     pub obedience: f32,
+    /// The tick its migration ends if it hasn't arrived by then.
+    pub migration_deadline_tick: Option<u64>,
+    /// Where it settles after arriving from a migration, while that lasts.
+    pub settle: Option<Settle>,
 }
 
 /// What [`World::split_group`] did.
@@ -218,7 +304,45 @@ impl World {
                 (r.center, r.radius)
             }
         };
-        (o.needs.hunger / 100.0 <= stray_hunger(o)).then_some((c, r))
+        (o.needs.hunger / 100.0 <= stray_hunger(o) && !thirst_breaks_off(o)).then_some((c, r))
+    }
+
+    /// The settle circle `o`'s group keeps after arriving, if any and
+    /// still standing.
+    #[inline]
+    pub(crate) fn settle_of(&self, o: &Organism) -> Option<&Settle> {
+        if self.group_plans.settles.is_empty() {
+            return None;
+        }
+        self.group_plans.settles.get(&(o.owner, o.group)).filter(|s| self.tick < s.until_tick)
+    }
+
+    /// The settle circle a group keeps after arriving, if still standing.
+    pub fn settle_circle(&self, player: PlayerId, group: u8) -> Option<Settle> {
+        self.group_plans.settles.get(&(player, group)).copied().filter(|s| self.tick < s.until_tick)
+    }
+
+    /// The deadline of a group's migration order, if it has one.
+    pub fn migration_plan(&self, player: PlayerId, group: u8) -> Option<MigrationPlan> {
+        self.migration_order(player, group)?;
+        self.group_plans.migrations.get(&(player, group)).copied()
+    }
+
+    /// Ticks a migration over `dist` tiles may take before it is ended.
+    pub fn migration_timeout_ticks(&self, dist: f32) -> u64 {
+        let days = (MIGRATE_TIMEOUT_BASE_DAYS + dist / MIGRATE_TIMEOUT_TILES_PER_DAY)
+            .clamp(MIGRATE_TIMEOUT_MIN_DAYS, MIGRATE_TIMEOUT_MAX_DAYS);
+        ((days * self.config.ticks_per_day as f32).round() as u64).max(1)
+    }
+
+    /// Where a group's living members are on average, if it has any.
+    pub(crate) fn group_middle(&self, player: PlayerId, group: u8) -> Option<Vec2> {
+        let (sum, n) = self
+            .organisms
+            .iter()
+            .filter(|o| o.alive && o.owner == player && o.group == group)
+            .fold((Vec2::ZERO, 0usize), |(s, n), o| (s + o.pos, n + 1));
+        (n > 0).then(|| sum * (1.0 / n as f32))
     }
 
     /// Drop rally orders that have lapsed. Runs once per tick, before decide.
@@ -226,6 +350,10 @@ impl World {
         if !self.rallies.is_empty() {
             let now = self.tick;
             self.rallies.retain(|_, r| now < r.expires_tick);
+        }
+        if !self.group_plans.settles.is_empty() {
+            let now = self.tick;
+            self.group_plans.settles.retain(|_, s| now < s.until_tick);
         }
     }
 
@@ -256,8 +384,10 @@ impl World {
     }
 
     /// Once per hour (and only with group orders standing): a migration
-    /// most of whose group's adults (or members, with no adults) are within
-    /// [`World::arrival_radius`] of its target is done, and a group with no
+    /// whose group's median member is within [`World::arrival_radius`] of
+    /// its target is done (the group then settles there for
+    /// [`SETTLE_DAYS`]), one past its deadline
+    /// ([`World::migration_timeout_ticks`]) is ended, and a group with no
     /// living members loses its migration, territory and rally. The main
     /// group only counts as empty once the player has nothing alive at all
     /// (its agents may all be away as cohorts in abstract regions, where
@@ -271,41 +401,73 @@ impl World {
         if !self.tick.is_multiple_of(self.config.ticks_per_hour().max(1)) {
             return;
         }
-        // (members, adults, adults near the target, members near it).
-        let mut tally: BTreeMap<(PlayerId, u8), [usize; 4]> = BTreeMap::new();
+        self.group_plans.migrations.retain(|k, _| self.migrate_orders.contains_key(k));
+        // Members per group with an order; each migrating member's distance
+        // to its group's target.
+        let mut members: BTreeMap<(PlayerId, u8), usize> = BTreeMap::new();
         for &k in self.migrate_orders.keys().chain(self.territories.keys()).chain(self.rallies.keys()) {
-            tally.insert(k, [0; 4]);
+            members.insert(k, 0);
         }
-        for o in self.organisms.iter().filter(|o| o.alive) {
-            if let Some(t) = tally.get_mut(&(o.owner, o.group)) {
-                t[0] += 1;
-                t[1] += usize::from(o.matured);
-            }
-        }
+        let mut dists: BTreeMap<(PlayerId, u8), Vec<f32>> = BTreeMap::new();
         for o in self.organisms.iter().filter(|o| o.alive) {
             let key = (o.owner, o.group);
-            let Some(&target) = self.migrate_orders.get(&key) else { continue };
-            let t = tally.get_mut(&key).expect("tallied");
-            if o.pos.dist(target) <= Self::arrival_radius(t[0]) {
-                t[2] += usize::from(o.matured);
-                t[3] += 1;
+            if let Some(n) = members.get_mut(&key) {
+                *n += 1;
+                if let Some(&target) = self.migrate_orders.get(&key) {
+                    dists.entry(key).or_default().push(o.pos.dist(target));
+                }
             }
         }
-        for (key, [members, adults, near_adults, near]) in tally {
+        for (key, n) in members {
             let (player, group) = key;
             let lineage_gone = || self.owner_count(player) == 0 && self.lod.owner_count(player) == 0;
-            if members == 0 && (group != 0 || lineage_gone()) {
+            if n == 0 && (group != 0 || lineage_gone()) {
                 self.migrate_orders.remove(&key);
                 self.territories.remove(&key);
                 self.rallies.remove(&key);
+                self.group_plans.settles.remove(&key);
                 self.push_group_event(GroupEvent::Emptied { player, group });
                 continue;
             }
-            let arrived = if adults > 0 { 2 * near_adults >= adults } else { members > 0 && 2 * near >= members };
-            if arrived {
-                if let Some(target) = self.migrate_orders.remove(&key) {
-                    self.push_group_event(GroupEvent::Arrived { player, group, target });
+            let Some(&target) = self.migrate_orders.get(&key) else { continue };
+            // The group's actual spread: arrived once its median member is
+            // within the arrival radius (half the group there, not the
+            // first few).
+            let mut d = dists.remove(&key).unwrap_or_default();
+            let median = if d.is_empty() {
+                f32::INFINITY
+            } else {
+                let mid = d.len() / 2;
+                *d.select_nth_unstable_by(mid, f32::total_cmp).1
+            };
+            let radius = Self::arrival_radius(n);
+            if median <= radius {
+                self.migrate_orders.remove(&key);
+                self.group_plans.migrations.remove(&key);
+                let until = self.tick + ((SETTLE_DAYS * self.config.ticks_per_day as f32).round() as u64).max(1);
+                let settle = Settle { center: target, radius: radius * SETTLE_RADIUS_FACTOR, until_tick: until };
+                self.group_plans.settles.insert(key, settle);
+                self.push_group_event(GroupEvent::Arrived { player, group, target });
+                continue;
+            }
+            let deadline = match self.group_plans.migrations.get(&key) {
+                Some(p) => p.deadline_tick,
+                None => {
+                    // An order from before plans were kept: its time runs from now.
+                    let dist = self.group_middle(player, group).map_or(0.0, |m| m.dist(target));
+                    let plan = MigrationPlan {
+                        issued_tick: self.tick,
+                        deadline_tick: self.tick + self.migration_timeout_ticks(dist),
+                    };
+                    self.group_plans.migrations.insert(key, plan);
+                    plan.deadline_tick
                 }
+            };
+            if self.tick >= deadline {
+                self.migrate_orders.remove(&key);
+                self.group_plans.migrations.remove(&key);
+                let median = if median.is_finite() { median } else { 0.0 };
+                self.push_group_event(GroupEvent::TimedOut { player, group, target, median });
             }
         }
     }
@@ -337,8 +499,55 @@ impl World {
             .clamp(TERRITORY_MIN_RADIUS, TERRITORY_MAX_RADIUS)
     }
 
-    fn claim_cooldown_ticks(&self) -> u64 {
-        (CLAIM_COOLDOWN_DAYS * self.config.ticks_per_day as f32).round() as u64
+    /// How long a group waits between territory claims (abandoning one in
+    /// between changes nothing): [`CLAIM_COOLDOWN_DAYS`], or the host's
+    /// floor in ticks ([`World::set_claim_cooldown_min_ticks`]) if longer.
+    pub fn claim_cooldown_ticks(&self) -> u64 {
+        ((CLAIM_COOLDOWN_DAYS * self.config.ticks_per_day as f32).round() as u64).max(self.claim_cooldown_min_ticks)
+    }
+
+    /// A floor on the claim cooldown in ticks: a server sets it to a few
+    /// minutes of real time, since half a day passes in seconds at a fast
+    /// tick. Not saved (the host sets it again after a restore).
+    pub fn set_claim_cooldown_min_ticks(&mut self, ticks: u64) {
+        self.claim_cooldown_min_ticks = ticks;
+    }
+
+    /// Water in and around the circle at `center`, `radius`, for the
+    /// bodies of `player`'s `group` ([`WaterCheck`]).
+    pub fn water_check(&self, player: PlayerId, group: u8, center: Vec2, radius: f32) -> WaterCheck {
+        let bodies = self.group_bodies(player, group);
+        let (w, h) = (self.map.width as i32, self.map.height as i32);
+        let reach = radius + WATER_REACH;
+        let (cx, cy) = (center.x.floor() as i32, center.y.floor() as i32);
+        let span = reach.ceil() as i32 + 1;
+        let (mut tiles, mut wet, mut drinkable) = (0usize, 0usize, 0usize);
+        for y in (cy - span).max(0)..=(cy + span).min(h - 1) {
+            for x in (cx - span).max(0)..=(cx + span).min(w - 1) {
+                let d = crate::terrain::Map::tile_center(x as usize, y as usize).dist(center);
+                if d > reach {
+                    continue;
+                }
+                let k = self.map.idx(x as usize, y as usize);
+                if self.map.tiles[k].water_source() {
+                    drinkable += 1;
+                }
+                if d <= radius.max(0.5) {
+                    tiles += 1;
+                    wet += usize::from(!self.standable_tile(&bodies, k));
+                }
+            }
+        }
+        WaterCheck { water_share: if tiles == 0 { 0.0 } else { wet as f32 / tiles as f32 }, drinkable }
+    }
+
+    /// Refuse a circle mostly over water the group can't stand in.
+    fn check_water(&self, player: PlayerId, group: u8, center: Vec2, radius: f32) -> Result<(), CommandError> {
+        let share = self.water_check(player, group, center, radius).water_share;
+        if share > MAX_WATER_SHARE {
+            return Err(CommandError::MostlyWater { share });
+        }
+        Ok(())
     }
 
     /// Living agents of `player` in `group`: (members, adults).
@@ -394,6 +603,10 @@ impl World {
                     max_radius: Self::territory_radius_limit(adults),
                     claim_ready_tick,
                     obedience: (obedience[g as usize] / members.max(1) as f64 * 100.0).round() as f32 / 100.0,
+                    migration_deadline_tick: migration
+                        .and_then(|_| self.group_plans.migrations.get(&key))
+                        .map(|p| p.deadline_tick),
+                    settle: self.settle_circle(player, g),
                 })
             })
             .collect()
@@ -441,10 +654,12 @@ impl World {
             radius: radius.clamp(TERRITORY_MIN_RADIUS, Self::territory_radius_limit(adults)),
             claimed_tick: self.tick,
         };
+        self.check_water(player, group, t.center, t.radius)?;
         self.territories.insert(key, t);
         self.territory_claims.insert(key, self.tick);
         self.migrate_orders.remove(&key);
         self.rallies.remove(&key);
+        self.group_plans.settles.remove(&key);
         Ok(t)
     }
 
@@ -471,10 +686,12 @@ impl World {
             issued_tick: self.tick,
             expires_tick: self.tick + self.rally_ticks(),
         };
+        self.check_water(player, group, r.center, r.radius)?;
         let key = (player, group);
         self.rallies.insert(key, r);
         self.migrate_orders.remove(&key);
         self.territories.remove(&key);
+        self.group_plans.settles.remove(&key);
         Ok(r)
     }
 
@@ -561,6 +778,7 @@ impl World {
         self.migrate_orders.remove(&key);
         self.territories.remove(&key);
         self.rallies.remove(&key);
+        self.group_plans.settles.remove(&key);
         // The new half carries the group's claim cooldown: a split must not
         // reset it.
         match self.territory_claims.get(&(player, group)).copied() {
@@ -590,6 +808,7 @@ impl World {
             self.migrate_orders.remove(&(player, into));
             self.territories.remove(&(player, into));
             self.rallies.remove(&(player, into));
+            self.group_plans.settles.remove(&(player, into));
         }
         for o in self.organisms.iter_mut().filter(|o| o.alive && o.owner == player && o.group == from) {
             o.group = into;
@@ -602,6 +821,7 @@ impl World {
         self.migrate_orders.remove(&(player, from));
         self.territories.remove(&(player, from));
         self.rallies.remove(&(player, from));
+        self.group_plans.settles.remove(&(player, from));
         Ok(members)
     }
 }

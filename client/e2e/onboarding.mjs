@@ -256,6 +256,35 @@ async function desktopChecks(browser, base, errors) {
   await page.waitForTimeout(600);
   if (await page.$('#onboarding-hint[data-hint="death"]')) throw new Error('the death hint came back after a reload');
   step('desktop: after "Show tips again", a death shows a one-time hint ("Show me" opens Genes); it does not come back');
+
+  // A tip can be closed with ×, and "No more tips" stops them all.
+  const resetTips = async () => {
+    await page.click('#help-btn');
+    await page.click('#help-reset-tips');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#help', { state: 'detached', timeout: UI_MS });
+  };
+  await resetTips();
+  await death('Your #4 starved (e2e, close).');
+  // (Other tips the living world called for come first: close those too.)
+  let closedDeath = false;
+  await waitFor('the death tip closed with ×', async () => {
+    const shown = await page.evaluate(() => document.querySelector('#onboarding-hint')?.dataset.hint ?? null);
+    if (shown) {
+      await page.click('#hint-close');
+      if (shown === 'death') closedDeath = true;
+    }
+    return closedDeath && !(await page.$('#onboarding-hint[data-hint="death"]'));
+  }, UI_MS);
+  await resetTips();
+  await death('Your #5 starved (e2e, no more).');
+  await page.waitForSelector('#onboarding-hint', { timeout: UI_MS });
+  await page.click('#hint-no-more');
+  await page.waitForSelector('#onboarding-hint', { state: 'detached', timeout: UI_MS });
+  await death('Your #6 starved (e2e, after no more).');
+  await page.waitForTimeout(600);
+  if (await page.$('#onboarding-hint')) throw new Error('a tip showed after "No more tips"');
+  step('desktop: a tip closes with ×; "No more tips" stops them');
   await context.close();
 }
 

@@ -203,7 +203,15 @@ pub struct GameConfig {
     /// Shortest a rally stands, in minutes of wall-clock time (at
     /// `tick_ms`): the sim's `RALLY_DAYS` pass in seconds at a fast tick.
     pub rally_min_minutes: f64,
+    /// Shortest wait between a group's territory claims (abandoning in
+    /// between changes nothing), in minutes of wall-clock time: the sim's
+    /// half day passes in seconds at a fast tick.
+    pub claim_cooldown_min_minutes: f64,
 }
+
+/// Fewer drinking-water tiles than this in and around a territory or
+/// rally circle draw a warning in the reply ([`Game::water_warning`]).
+pub const LOW_WATER_TILES: usize = 3;
 
 /// Whether a "species founded" achievement of `player` for `species` on
 /// `day` earns its renown bonus (and a season count), recording it if so.
@@ -278,6 +286,7 @@ impl Default for GameConfig {
             purchase_deadline_ticks: 30 * 60,
             request_window_ticks: 3600,
             rally_min_minutes: 5.0,
+            claim_cooldown_min_minutes: 2.0,
         }
     }
 }
@@ -704,8 +713,10 @@ impl Game {
             #[cfg(test)]
             reference: false,
         };
-        let floor = (g.cfg.rally_min_minutes * 60_000.0 / g.cfg.tick_ms.max(1.0)).round() as u64;
-        g.world.set_rally_min_ticks(floor);
+        let minutes = |m: f64| (m * 60_000.0 / g.cfg.tick_ms.max(1.0)).round() as u64;
+        let (rally, claim) = (minutes(g.cfg.rally_min_minutes), minutes(g.cfg.claim_cooldown_min_minutes));
+        g.world.set_rally_min_ticks(rally);
+        g.world.set_claim_cooldown_min_ticks(claim);
         g
     }
 
@@ -1006,6 +1017,22 @@ impl Game {
         self.mating_log.get(&player).map(|l| l.iter().cloned().collect()).unwrap_or_default()
     }
 
+    /// An egg-laying lineage's clutches; `None` for live bearers (or a lineage with nobody left to tell).
+    fn eggs_view(&self, lineage: u32) -> Option<EggsView> {
+        let w = &self.world;
+        let lays = w.organisms.iter().find(|o| o.alive && o.lineage == lineage).map(|o| o.traits.birth.lays_eggs());
+        let mine = w.clutches.iter().filter(|c| c.lineage == lineage);
+        let mut v = EggsView::default();
+        for c in mine {
+            v.clutches += 1;
+            v.eggs += c.eggs.len() as u32;
+            if c.guardian.is_some_and(|g| w.organism(g).is_some_and(|o| o.alive)) {
+                v.brooded += 1;
+            }
+        }
+        (lays == Some(true) || v.clutches > 0).then_some(v)
+    }
+
     /// Whether founders founded now start provisioned for winter.
     pub fn winter_provision_now(&self) -> bool {
         self.cfg.winter_provision && self.world.days_until_winter() <= WINTER_PROVISION_DAYS
@@ -1197,7 +1224,9 @@ impl Game {
             ClientMsg::ClaimTerritory { group, x, y, radius } => {
                 finite(&[x, y, radius])?;
                 let t = self.world.claim_territory(player, group, Vec2::new(x, y), radius).map_err(e)?;
-                Ok(Some(serde_json::to_value(TerritoryView::from(t)).unwrap()))
+                let mut data = serde_json::to_value(TerritoryView::from(t)).unwrap();
+                self.water_warning(player, group, t.center, t.radius, &mut data);
+                Ok(Some(data))
             }
             ClientMsg::AbandonTerritory { group } => {
                 self.world.abandon_territory(player, group).map_err(e)?;
@@ -1206,7 +1235,9 @@ impl Game {
             ClientMsg::Rally { group, x, y } => {
                 finite(&[x, y])?;
                 let r = self.world.rally_group(player, group, Vec2::new(x, y)).map_err(e)?;
-                Ok(Some(serde_json::to_value(RallyView::from(r)).unwrap()))
+                let mut data = serde_json::to_value(RallyView::from(r)).unwrap();
+                self.water_warning(player, group, r.center, r.radius, &mut data);
+                Ok(Some(data))
             }
             ClientMsg::CancelRally { group } => {
                 self.world.cancel_rally(player, group).map_err(e)?;
@@ -2990,7 +3021,7 @@ impl Game {
     }
 
     /// Tell players about group orders that ended on their own: a
-    /// migration that arrived, a group left with no members.
+    /// migration that arrived or timed out, a group left with no members.
     fn announce_group_events(&mut self, out: &mut Outbox) {
         use evo_sim::world::commands::GroupEvent;
         for ev in self.world.take_group_events() {
@@ -3013,7 +3044,35 @@ impl Game {
                         self.alert(player, AlertKind::Group, text, None, out);
                     }
                 }
+                GroupEvent::TimedOut { player, group, target, median } => {
+                    self.routes.remove(&(player, group));
+                    let text = format!(
+                        "{} didn't gather at its migration target ({:.0}, {:.0}) in time (half the group is still \
+                         more than {:.0} tiles away); the order has ended. Rally it, or migrate again to a nearer point.",
+                        group_name(group),
+                        target.x,
+                        target.y,
+                        median
+                    );
+                    self.alert(player, AlertKind::Group, text, None, out);
+                }
             }
+        }
+    }
+
+    /// Add the water in and around a territory or rally circle to its
+    /// command's reply (`water_share`, `drinkable_tiles`), and a `warning`
+    /// when there is little to drink: a drought then sends the group out
+    /// of the circle to drink, and a dry circle won't hold it.
+    fn water_warning(&self, player: PlayerId, group: u8, center: Vec2, radius: f32, data: &mut serde_json::Value) {
+        let w = self.world.water_check(player, group, center, radius);
+        data["water_share"] = ((w.water_share * 100.0).round() / 100.0).into();
+        data["drinkable_tiles"] = w.drinkable.into();
+        if w.drinkable < LOW_WATER_TILES {
+            data["warning"] = "Little or no drinking water in or near this circle: the group will leave it to drink, and may die of thirst in a drought.".into();
+        } else if w.water_share > 0.25 {
+            data["warning"] =
+                format!("{:.0}% of this circle is water the group can't stand in.", w.water_share * 100.0).into();
         }
     }
 
@@ -3575,6 +3634,7 @@ impl Game {
                 days: FOUNDING_RAMP_DAYS,
             }),
             grace_days_left: lineage.and_then(|l| self.world.lineage_grace_left(l)),
+            eggs: lineage.and_then(|l| self.eggs_view(l)),
             legacy,
             alerts: self.alerts(player),
         }
@@ -3983,6 +4043,16 @@ mod tests {
         for _ in 0..g.world.config.ticks_per_day {
             g.world.step();
         }
+    }
+
+    #[test]
+    fn lineage_stats_tell_egg_layers_their_clutches() {
+        let (mut g, _, _) = game();
+        assert!(g.lineage_stats(1).eggs.is_none(), "a live-bearing lineage has no clutches to show");
+        g.set_name(3, "cat");
+        g.found(3, &FounderDesign::new("Layers", Thermo::Warm, BirthType::IncubatedEggs, 4).founders(6)).unwrap();
+        let e = g.lineage_stats(3).eggs.expect("an egg-laying lineage shows its clutches");
+        assert_eq!(e, EggsView::default());
     }
 
     #[test]

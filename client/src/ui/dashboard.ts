@@ -33,7 +33,7 @@ export function renderDashboard(el: HTMLElement, s: LineageStats | null): void {
   }
   // Ages, pregnancies, generation and genes cover agents only.
   const kv = h('div', { class: 'stat-tiles' },
-    ...([['Alive', s.alive], ['Adults', s.adults], ['Young', s.juveniles], ['Pregnant', s.pregnant], ['Generation', s.max_generation]] as [string, number][])
+    ...([['Alive', s.alive], ['Adults', s.adults], ['Young', s.juveniles], ...(s.eggs ? [['Clutches', s.eggs.clutches], ['Eggs', s.eggs.eggs]] as [string, number][] : [['Pregnant', s.pregnant]] as [string, number][]), ['Generation', s.max_generation]] as [string, number][])
       .map(([k, v]) => h('div', { class: 'tile' }, h('strong', {}, String(v)), h('span', { class: 'muted small' }, k))),
     s.agents < s.alive ? h('div', { class: 'tile', title: 'Level of detail: the rest run as statistical cohorts where no player is watching' },
       h('strong', {}, String(s.agents)), h('span', { class: 'muted small' }, 'On the map')) : null);
