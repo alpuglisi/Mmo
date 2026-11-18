@@ -8819,30 +8819,34 @@ pairs):
 **Scripted replay** (`dominance`). Seven players; Flier, Cold and Loophole
 are playtest 5's three designs: PocketNomad5's (10 founders, day 165),
 LateComer5's (62, day 313) and Rulebender5's (22, day 334). Seeds 1–4,
-840 days. The playtest 5 arm has the five new tunables off.
+840 days. The playtest 5 arm has the five new tunables off. Both arms are
+measured after merging `brood_care` (version 55).
 
 | Player | Playtest 5 rules: final share, titles*, capped | New rules: final share, titles*, capped |
 | --- | --- | --- |
-| Steady | 2.3%, 1, 2 | 2.6%, 1, 1 |
-| Big (warm hibernator) | 5.3%, 7, 1 | 6.7%, 8, 2 |
-| Broker (warm live herd) | 4.2%, 7, 3 | 4.6%, 10, 3 |
-| Eggs (egg-laying hibernator) | 12.4%, 5, 3 | 16.7%, 12, 4 |
-| Flier (PocketNomad5) | 19.5%, 12, 3 | 16.1%, 3, 2 |
-| Cold (LateComer5) | 16.2%, 8, 4 | 14.9%, 5, 3 |
-| Loophole (Rulebender5) | 14.0%, 0, 2 | 8.4%, 1, 1 |
-| **Cold fliers as a class** | **20 of 40** | **9 of 40** |
+| Steady | 3.7%, 2, 1 | 3.6%, 2, 2 |
+| Big (warm hibernator) | 7.5%, 10, 2 | 8.9%, 16, 3 |
+| Broker (warm live herd) | 4.9%, 6, 4 | 5.5%, 6, 3 |
+| Eggs (egg-laying hibernator) | 8.2%, 2, 2 | 9.3%, 6, 2 |
+| Flier (PocketNomad5) | 20.7%, 12, 3 | 17.8%, 3, 2 |
+| Cold (LateComer5) | 14.5%, 8, 2 | 12.4%, 5, 1 |
+| Loophole (Rulebender5) | 9.0%, 0, 0 | 10.9%, 2, 2 |
+| **Cold fliers as a class** | **20 of 40** | **10 of 40** |
 
 (* Titles are the legacy titles of the 40 whole seasons after day 210.
 "Capped" counts the seeds on which the lineage touched 95% of the 2,100
 hard cap at least once; no lineage ends at it.) The cold fliers fall from
-half the titles to under a quarter, and the 10-founder flier from 12 titles
-to 3. No design takes more than 12, and every design survives every seed.
-The warm herds (Big, Broker) and the egg layer gain.
+half the titles to a quarter, and the 10-founder flier from 12 titles to 3.
+Every design survives every seed, and the warm herds and the egg layer
+gain. Big takes 16 titles, though its mean share is only 12%: titles go to
+the season's leader, and `brood_care` (version 55) weakened the egg layer,
+Big's usual rival (12 titles before that merge, 6 after).
 
-`flight_upkeep` at full strength (1) overshot. The fliers took no titles,
-Cold peaked at 503 animals and the flier died out on one seed, and the egg
-layer took 18. At 0.5 the fliers took 6 and the egg layer 15. At **0.25**
-the result is as above.
+Before that merge the same rules gave Big 8, Broker 10, Eggs 12 and the
+fliers 9. `flight_upkeep` was tuned there. At full strength (1) it
+overshot: the fliers took no titles, Cold peaked at 503 animals and the
+flier died out on one seed, and the egg layer took 18. At 0.5 the fliers
+took 6 and the egg layer 15. **0.25** gave the result above.
 
 **Wild cold-blooded species.** `predlong 4` on seeds 41–48, defaults
 against `--set cold_heat=0 --set thermo_hybrid=0`. No prey is lost on any
