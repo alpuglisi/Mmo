@@ -11,8 +11,9 @@
 import { api, ApiError } from '../api';
 import { designCost, validateDesign } from '../cost';
 import { seasonNotice } from '../seasonNotice';
-import { designWarnings, FOUNDING_RAMP_TEXT } from '../designWarnings';
+import { designWarnings, FOUNDING_RAMP_TEXT, serverText } from '../designWarnings';
 import { fromServerDesign, loadLastDesign, saveLastDesign } from '../lastDesign';
+import { confirmDialog } from './confirm';
 import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign, starterValue, type EditorDesign } from '../designMorph';
 import { defaultMorphology, sameMorphology, type Morphology } from '../morphology';
 import type { BirthSpec, DesignCompatView, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
@@ -110,6 +111,10 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   litter.addEventListener('input', () => { spec.litter_size = Number(litter.value); update(); });
   const founders = h('input', { id: 'design-founders', type: 'number', min: 2, max: 400, step: 1, value: spec.founders });
   founders.addEventListener('input', () => { spec.founders = Number(founders.value); update(); });
+  const graceHint = h('p', { class: 'muted small', id: 'design-grace-winter' });
+  const showGraceHint = (): void => {
+    graceHint.textContent = graceWinterText(spec.founders);
+  };
 
   // --- traits
   const costCells = new Map<string, HTMLElement>();
@@ -305,6 +310,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const needName = h('p', { class: 'muted small', id: 'design-need-name' }, nameLink, ' (Basics, at the top) to found it.');
   const serverError = h('p', { class: 'error', id: 'design-server-error', role: 'alert' });
   const submit = h('button', { id: 'design-submit', type: 'button' }, 'Found lineage');
+  const nameWarnEl = h('p', { class: 'error small', id: 'design-name-warning', role: 'alert', hidden: true });
   // Phones: the budget card sits below ~45 sliders, so a bar along the bottom
   // keeps the total in sight and jumps to it (and the Found button).
   const dockTotal = h('span', { class: 'dock-total', id: 'design-dock-total' });
@@ -313,18 +319,26 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     h('button', { type: 'button', id: 'design-dock-go', onclick: () => budgetCard.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, 'Review & found ↓'));
   const reset = h('button', { type: 'button', class: 'secondary' }, 'Reset traits');
 
-  reset.addEventListener('click', () => {
-    // Traits and body plan back to the starting design (the builder follows as one undo step).
+  // Blank: every trait at its default (nothing raised, nothing paid), for a
+  // design typed in from scratch (playtest 6: starting from the starter's
+  // raised traits gave 108.9 / 100).
+  const blank = h('button', { type: 'button', class: 'secondary', id: 'design-blank', title: 'Every trait at its default: nothing raised, no trait points spent' }, 'Blank traits');
+  /** Traits and body plan to `value` per gene (the builder follows as one undo step). */
+  const setAll = (value: (g: GeneInfo) => number) => {
     spec.morphology = defaultMorphology();
     for (const g of cat.genes) {
-      const v = starterValue(cat, g.name);
+      const v = value(g);
       spec.traits[g.name] = v;
       const s = sliders.get(g.name)!;
       s.value = String(v);
       s.dispatchEvent(new Event('input'));
     }
     syncBuilder();
-  });
+  };
+  reset.addEventListener('click', () => setAll((g) => starterValue(cat, g.name)));
+  blank.addEventListener('click', () => setAll((g) => g.default));
+  /** Which traits are raised above their default, and what they cost (the starter raises a few). */
+  const raisedNote = h('p', { class: 'muted small', id: 'design-raised' });
 
   function payload() {
     return designPayload(spec, cat);
@@ -337,8 +351,13 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   let serverCompat: { design: string; view: DesignCompatView } | null = null;
   /** The server's re-founding terms for the design it last checked. */
   let refoundNow: { design: string; terms: NonNullable<DesignCompatView['refound']> } | null = null;
+  /** Why the server would refuse the typed name (`name_warning`, or a 400 bad_name), and for which name. */
+  let nameWarning: string | null = null;
+  let nameWarned = '';
   /** The server's egg warning (`egg_warning`) for the design it last checked. */
   let serverEggs: { design: string; text: string } | null = null;
+  /** The server's carnivore egg warning (`carnivore_egg_warning`) for the design it last checked. */
+  let serverCarnEggs: string | null = null;
   function renderHybrid(): void {
     if (!species) return;
     const p = payload();
@@ -376,8 +395,25 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       const seq = ++waterSeq;
       // Before a name is typed the server would refuse the design (400 bad_name): check it under a placeholder.
       const p = payload();
-      const r = await api.designCompatibility(cb.token, { ...p, name: p.name.trim() || 'Unnamed design' }).catch(() => null);
+      // The typed name is checked too (`name_warning`); a name the server
+      // refuses outright (400 bad_name) is shown as the warning, and the
+      // rest of the check runs under a placeholder.
+      // (A name the editor already rejects, empty or too long, isn't sent.)
+      const typed = validateDesign(p, cat)?.code === 'bad_name' ? '' : p.name.trim();
+      let warnName: string | null = null;
+      let r = await api.designCompatibility(cb.token, { ...p, name: typed || 'Unnamed design' }).catch((e: unknown) => {
+        if (e instanceof ApiError && e.code === 'bad_name' && typed) warnName = e.message;
+        return null;
+      });
+      if (warnName !== null && seq === waterSeq) r = await api.designCompatibility(cb.token, { ...p, name: 'Unnamed design' }).catch(() => null);
       if (seq !== waterSeq) return;
+      const raw = warnName ?? (typed ? r?.name_warning ?? null : null);
+      const nw = raw === null ? null : serverText(raw);
+      if (nw !== nameWarning) {
+        nameWarning = nw;
+        nameWarned = typed;
+        update();
+      }
       if (r) {
         serverCompat = { design: JSON.stringify({ ...p, name: '' }), view: r };
         hybridKey = '';
@@ -385,15 +421,21 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       }
       // Balance's warning for a design whose eggs can't hatch, verbatim (it replaces the client's own).
       const eggText = r?.egg_warning ?? null;
-      if (r && eggText !== (serverEggs?.text ?? null)) {
-        serverEggs = eggText ? { design: JSON.stringify({ ...p, name: '' }), text: eggText } : null;
+      if (r && (eggText === null ? null : serverText(eggText)) !== (serverEggs?.text ?? null)) {
+        serverEggs = eggText ? { design: JSON.stringify({ ...p, name: '' }), text: serverText(eggText) } : null;
         update();
       } else if (r && serverEggs) {
         serverEggs.design = JSON.stringify({ ...p, name: '' });
       }
+      // Incubated eggs on a hunter (balance's carnivore_egg_warning), verbatim.
+      const carn = r?.carnivore_egg_warning ? serverText(r.carnivore_egg_warning) : null;
+      if (r && carn !== serverCarnEggs) {
+        serverCarnEggs = carn;
+        update();
+      }
       const warning = r?.water_warning;
       waterBox.hidden = !warning;
-      if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', warning));
+      if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', serverText(warning)));
       const rf = r?.refound;
       const before = JSON.stringify(refoundNow?.terms ?? null);
       refoundNow = r && rf ? { design: JSON.stringify({ ...p, name: '' }), terms: rf } : null;
@@ -402,7 +444,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       if (rf) {
         refoundBox.replaceChildren(h('h2', {}, 'Re-founding soon'),
           h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points.`),
-          h('p', { class: 'small' }, `Because ${rf.reason}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minute${rf.minutes_left === 1 ? '' : 's'}).`));
+          h('p', { class: 'small', id: 'design-refound-reason' }, `${serverText(rf.reason)}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minute${rf.minutes_left === 1 ? '' : 's'}).`));
       }
     }, 600);
   }
@@ -417,6 +459,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
 
   /** Redraw from the design; `full` (default) also recomputes costs, captions and validation. */
   function update(full = true): void {
+    showGraceHint();
     avatar.update(spec, spec.morphology);
     readout.update(spec.morphology);
     if (!full) return;
@@ -430,7 +473,9 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     // (playtest 5: "Budget 70.2" next to "costing 56.2").
     const rf = refoundNow && refoundNow.design === JSON.stringify({ ...payload(), name: '' }) ? refoundNow.terms : null;
     const shown = rf ? rf.cost : c.total;
-    const now = rf ? ` · founding now: ${rf.founders} of ${rf.requested} founders` : '';
+    const now = !rf ? '' : rf.founders < rf.requested
+      ? ` · re-founding: ${rf.founders} of ${rf.requested} founders`
+      : ' · re-founding price';
     total.textContent = `${shown.toFixed(1)} / ${cat.budget} points${now}`;
     dockTotal.textContent = `${shown.toFixed(1)} / ${cat.budget} points${now} · founding with points left is fine`;
     const frac = shown / cat.budget;
@@ -440,9 +485,11 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       c.morph > 0 ? `body plan ${c.morph.toFixed(1)}` : '',
       ...bodyParts(c.body),
     ].filter(Boolean);
-    breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, `extra founders ${c.founders.toFixed(1)}`, ...extras].join(' · ');
+    const refoundPart = rf && Math.abs(rf.cost - c.total) >= 0.05 ? [`re-founding ${rf.cost > c.total ? '+' : '−'}${Math.abs(rf.cost - c.total).toFixed(1)}`] : [];
+    breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, `extra founders ${c.founders.toFixed(1)}`, ...extras, ...refoundPart].join(' · ');
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
-    const left = cat.budget - c.total;
+    // The same figure as the total above (playtest 6: "78.3 / 100" next to "35.7 points left").
+    const left = cat.budget - shown;
     unspent.textContent = left > cat.budget / 2
       ? `${left.toFixed(1)} points still unspent. ${(spec.traits.carnivory ?? 0) < 0.34
         ? 'A plant eater like the starting design needs little: raise the traits that suit the world, or try a preset in Builder mode.'
@@ -454,13 +501,18 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     const food = foundingHint(payload(), world);
     foodBox.textContent = food.text;
     foodBox.className = `small food-hint food-${food.level}`;
-    const warns = designWarnings(payload(), world).filter((w) => !(w.id === 'eggs' && serverEggs));
+    const warns = designWarnings(payload(), world, serverCompat?.view.drought_warning).filter((w) => !(w.id === 'eggs' && serverEggs));
     if (serverEggs) warns.unshift({ id: 'eggs', level: 'bad', text: serverEggs.text });
+    if (serverCarnEggs) warns.push({ id: 'carnivore_eggs', level: 'warn', text: serverCarnEggs });
     const wkey = JSON.stringify(warns);
     if (warnBox.dataset.key !== wkey) {
       warnBox.dataset.key = wkey;
       warnBox.replaceChildren(...warns.map((w) => h('p', { class: `small notice design-warning warn-${w.level}`, 'data-warning': w.id }, w.text)));
     }
+    const raised = Object.entries(c.perGene).filter(([, v]) => v >= 0.05).sort((a, b) => b[1] - a[1]);
+    raisedNote.textContent = raised.length === 0
+      ? 'No trait is raised: every trait point is still free.'
+      : `Raised traits: ${raised.map(([g, v]) => `${traitName(g)} ${v.toFixed(1)}`).join(', ')}. "Blank traits" starts from none.`;
     for (const [g, cell] of costCells) {
       const p = c.perGene[g];
       cell.textContent = p ? p.toFixed(1) : '';
@@ -474,7 +526,12 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     const p = validateDesign(payload(), cat);
     problem.textContent = p && !(p.code === 'bad_name' && spec.name === '') ? p.message : '';
     needName.hidden = spec.name.trim() !== '';
-    submit.disabled = p !== null;
+    // The server's verdict on the name, shown under it while it still applies.
+    const refused = nameWarning !== null && nameWarned === spec.name.trim() ? nameWarning : null;
+    nameWarnEl.textContent = refused ? `This name would be refused: ${refused}` : '';
+    nameWarnEl.hidden = !refused;
+    submit.disabled = p !== null || refused !== null;
+    submit.title = refused ? `Choose another name: ${refused}` : p ? p.message : '';
     serverError.textContent = '';
   }
 
@@ -484,7 +541,10 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     try {
       const r = await api.found(cb.token, payload());
       saveLastDesign(cb.player, spec);
-      if (r.reduced && r.requested) window.alert(`Founded ${r.founders.length} of ${r.requested} founders: ${r.reduced}.`);
+      if (r.reduced && r.requested) {
+        const all = r.founders.length >= r.requested;
+        await confirmDialog({ id: 'founded-reduced', title: all ? `Founded all ${r.founders.length} founders, at the re-founding price` : `Founded ${r.founders.length} of ${r.requested} founders`, body: `${r.reduced.charAt(0).toUpperCase()}${r.reduced.slice(1)}.`, ok: 'Go to the map', cancel: false });
+      }
       cb.onFounded(r);
     } catch (e) {
       if (e instanceof ApiError) {
@@ -492,7 +552,14 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         // A first founding that raced another tab: the lineage exists, go play. Founding again: say why not.
         if (e.code === 'already_founded' && !cb.refound) return cb.onFounded(null);
         const extra = e.code === 'over_budget' && e.body ? ` (server: ${Number(e.body.cost).toFixed(1)} of ${e.body.budget})` : '';
-        serverError.textContent = `${e.code}: ${e.message}${extra}`;
+        // In words, not "bad_name: …"; a refused name also shows under the name field.
+        serverError.textContent = `${e.message.charAt(0).toUpperCase()}${e.message.slice(1)}${extra}`;
+        if (e.code === 'bad_name') {
+          nameWarning = e.message;
+          nameWarned = spec.name.trim();
+          update();
+          return;
+        }
       } else {
         serverError.textContent = String(e);
       }
@@ -516,13 +583,15 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         h('section', { class: 'card' }, h('h2', {}, 'Basics'),
           last ? h('p', { class: 'muted small', id: 'design-prefilled' }, 'Starts from the design you founded last: change what you like, or Reset for the starting design.') : null,
           h('label', {}, 'Lineage name', name),
+          nameWarnEl,
           h('fieldset', {}, h('legend', {}, 'Thermoregulation'), ...thermoRadios),
           h('fieldset', {}, h('legend', {}, 'Birth type'), ...birthRadios),
           h('div', { class: 'row' },
             h('label', {}, `Offspring per birth (1–${cat.max_litter}, ${cat.cost_per_extra_offspring} pts each above 1)`, litter),
             h('label', {}, cat.flat_founders !== undefined && cat.founder_cost_step
               ? `Founders (${cat.base_founders} included, ${cat.cost_per_extra_founder} pts each up to ${cat.flat_founders}, then each ${cat.founder_cost_step} pts dearer than the last)`
-              : `Founders (${cat.base_founders} included, ${cat.cost_per_extra_founder} pts each extra)`, founders))),
+              : `Founders (${cat.base_founders} included, ${cat.cost_per_extra_founder} pts each extra)`, founders)),
+          graceHint),
         h('section', { class: 'card design-traits' },
           h('div', { class: 'design-traits-head' }, h('h2', {}, 'Traits'), modeSwitch),
           modeHint, presetNote, builderHost,
@@ -532,7 +601,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
           h('div', { class: 'traits' }, ...free.map(traitRow)))),
       h('aside', { class: 'design-side' }, avatar.el,
         (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, warnBox, rampNote, problem, needName, serverError,
-          h('div', { class: 'row' }, submit, reset)), budgetCard),
+          raisedNote, h('div', { class: 'row wrap' }, submit, reset, blank)), budgetCard),
         hybridBox,
         waterBox, refoundBox),
       dock));
@@ -553,4 +622,15 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     update();
   }, DESIGN_WORLD_REFRESH_MS);
   return page;
+}
+
+/** Most founders a founding may have for its newcomer grace to last through its first winter (the server's `GRACE_WINTER_FOUNDERS`). */
+export const GRACE_WINTER_FOUNDERS = 40;
+
+/** The designer's line on the first-winter grace rule for `founders`. */
+export function graceWinterText(founders: number): string {
+  const rule = `Newcomer grace: a founding of ${GRACE_WINTER_FOUNDERS} or fewer founders whose grace would end in late autumn or winter keeps it until that winter ends.`;
+  return founders <= GRACE_WINTER_FOUNDERS
+    ? `${rule} These ${founders} qualify.`
+    : `${rule} ${founders} founders don't: their grace ends on time even at winter's start.`;
 }
