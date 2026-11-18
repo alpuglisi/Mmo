@@ -390,6 +390,8 @@ fn toxic(color: f32) -> FounderDesign {
 #[test]
 fn poisoned_lineages_learn_bright_prey_faster_and_forget_slowly() {
     let mut w = world();
+    // The version 44 rates (`toxic_avoidance` doubles them).
+    w.config.balance.toxic_avoidance = 0.0;
     w.learn_toxic(1, 2, 0.0);
     let drab = w.toxic_lesson(1, 2);
     w.learn_toxic(1, 3, 1.0);
@@ -416,9 +418,43 @@ fn poisoned_lineages_learn_bright_prey_faster_and_forget_slowly() {
     assert_eq!(w.toxic_lesson(1, 2), 0.0);
 }
 
+/// `Balance::toxic_avoidance`: a learned lesson is acted on at 70% for a
+/// drab coat and near 90% for a bright one, two drab bites teach most of
+/// it, and the pass-up holds for a hunter and prey lineage all day instead
+/// of being rolled afresh at every decision.
+#[test]
+fn strong_avoidance_holds_for_a_whole_day() {
+    let mut w = world();
+    assert!(w.config.balance.toxic_avoidance > 0.0);
+    w.learn_toxic(1, 2, 0.0);
+    assert!((w.toxic_lesson(1, 2) - 2.0 * super::toxic::LESSON_STEP).abs() < 1e-6);
+    let pk = pack(&mut w, HUNTER, &hunter(), 2, Vec2::new(10.5, 10.5));
+    let preys = pack(&mut w, PREY, &toxic(0.0), 4, Vec2::new(11.5, 10.5));
+    let (hl, pl) = (w.organisms[pk[0]].lineage, w.organisms[preys[0]].lineage);
+    w.toxic_lessons.insert((hl, pl), 1.0);
+    assert!((w.toxic_avoidance(hl, &w.organisms[preys[0]]) - 0.7).abs() < 0.02);
+    for &j in &preys {
+        w.organisms[j].pheno.0[Gene::Coloration.index()] = 0.6;
+    }
+    assert!(w.toxic_avoidance(hl, &w.organisms[preys[0]]) > 0.87);
+    for &i in &pk {
+        w.organisms[i].needs.hunger = 80.0;
+    }
+    w.grid.rebuild(&w.organisms);
+    // The same hunter decides the same way all day about this prey.
+    let first = w.decide(pk[1]).target_org.is_some_and(|j| preys.contains(&j));
+    for _ in 0..20 {
+        let again = w.decide(pk[1]).target_org.is_some_and(|j| preys.contains(&j));
+        assert_eq!(again, first);
+    }
+}
+
 #[test]
 fn a_hunter_poisoned_by_drab_prey_teaches_its_lineage_to_pass_it_up() {
     let mut w = world();
+    // The version 44 recognition (`strong_avoidance_holds_for_a_whole_day`
+    // covers `toxic_avoidance`).
+    w.config.balance.toxic_avoidance = 0.0;
     w.config.balance.escape = 0.0;
     w.config.balance.fight_damage = 0.0;
     w.config.balance.toxin_damage = 1.0;
