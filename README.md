@@ -8733,6 +8733,27 @@ The worst case, at 75% drought, went from 4 survivors to 18. Predation
 deaths rose from 9 to 23, because the homes by lasting water are fewer
 and sometimes nearer wild predators.
 
+**Founder survival** (`examples/foundsurvival.rs`, now with a fourth arm
+and the first day from 120 on with 40–60% drought): founders alive 20 days
+after founding, 8 seeds, three designs:
+
+| Founded | Old | Playtest 3 | Playtest 4 | Playtest 6 |
+| --- | --- | --- | --- | --- |
+| day 45 (spring) | 644 / 872 | 701 | 796 | 836 |
+| day 100 (late autumn) | 836 | 842 | 858 | 860 |
+| day 160 (summer) | 607 | 644 | 772 | 761 |
+| worst drought, days 120–220 | 584 | 635 | 771 | 744 |
+| day 220 (autumn) | 672 | 746 | 788 | 800 |
+| day 230 (late winter) | 664 | 825 | 830 | 832 |
+| 40–60% drought | 689 | 764 | 723 | 799 |
+| all | 4,696 / 6,104 (77%) | 5,157 (84%) | 5,538 (91%) | 5,632 (92%) |
+
+The worst-drought foundings lose a little (771 → 744). They are mostly
+the deepest droughts, where homes by lasting water are fewest.
+
+`sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31`: 11.90
+(± 0.12), unchanged.
+
 **Starter.** I measured the starter with hibernation 0.6 instead of 0.5,
 so that all its founders sleep (`examples/starter_survival`, founded on
 day 45, 8 seeds, 120 days). Starvation deaths fell from 40 to 28, but the
