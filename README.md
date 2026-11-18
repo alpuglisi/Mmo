@@ -7780,7 +7780,42 @@ plays these six players through `Game`:
 
 Six seeds, 180 days:
 
-PRED_TABLE
+| Player | Old rules (the version 44 tunables off) | New rules | New rules, attack orders |
+| --- | --- | --- | --- |
+| Steady | 245, 13.9% (1 extinct) | 244, 13.3% (1) | 178, 13.2% (1) |
+| Herd | 659, 24.3% | 264, 12.0% (2 extinct) | 328, 13.1% (2) |
+| **Hunter** | **42, 3.8%** (peak 67) | **190, 18.4%** (peak 208) | **212, 16.7%** (peak 218) |
+| **Toxic** | **767, 37.2%** | **373, 34.6%** | **386, 37.6%** |
+| Nomad | 325, 14.6% | 206, 14.5% | 166, 13.9% |
+| Late | 185, 6.2% | 84, 7.2% | 41, 5.4% |
+| Toxic's animals eaten per world | 54 | 330 | 310 |
+| Hunter's toxin deaths per world | 29 | 27 | 28 |
+| Hunter's lesson about Toxic | 0 | 0.99 | 0.97 |
+
+Final head count and the mean share of the six players' animals, on top of
+the balance session's version 43 rules. The playtest's carnivore is viable
+now: about 4× the animals and 4–5× the share, where before it hung on at 42
+animals. Toxins are no longer free:
+- **Toxic's predation.** The drab toxic swarm is eaten six times as often.
+- **Toxic's size.** It ends at half its old size, with a slightly smaller
+  share.
+- **The Hunter's toxin deaths.** They stay where they were, while the
+  Hunter is 4× larger: a lineage that has learned is harmed 70% less per
+  bite.
+
+The cost lands on the other herbivores, which now feed a real predator:
+- **Herd** loses most and dies out on 2 of 6 seeds (none before).
+- **Late**, the newcomer, ends smaller once its grace is over.
+- **Steady and Nomad** hold their shares.
+
+Making body size cost points (the balance session's version 43) and a
+grace that follows a newcomer's head count are the levers left for the
+herds.
+
+**Ablation (before the merge with main's version 43).** The first version
+of learned avoidance, without the recognisability factor, made drab toxins
+a free pass. Toxic took 46% against 39%, and the other herbivores were
+eaten instead.
 
 **Checks.**
 
