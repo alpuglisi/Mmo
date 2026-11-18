@@ -2411,11 +2411,10 @@ pub mod before_v47 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v48")]` on the competitive
-/// balance tunables of playtest 4 (`Balance::winter_rest`,
-/// `toxic_avoidance`, `egg_attendance`, `player_species`). On a thread holding a
-/// [`before_v48::Guard`] (reading or hashing a snapshot of version 47 or
-/// before) none is written or read: the tunables read as 0 (off).
+/// What world snapshot version 48 added: territory claims waiting on a
+/// migration and where migrations started (`GroupPlans::pending`). On a
+/// thread holding a [`before_v48::Guard`] (reading or hashing a snapshot of
+/// version 47 or before) the field is written as nothing and read as empty.
 pub mod before_v48 {
     use std::cell::Cell;
 
@@ -2425,7 +2424,53 @@ pub mod before_v48 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The competitive balance tunables before version 48: off.
+    /// The old layout on this thread while this guard lives.
+    pub struct Guard(bool);
+
+    impl Guard {
+        pub fn new() -> Guard {
+            Guard(OLD.with(|c| c.replace(true)))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OLD.with(|c| c.set(self.0));
+        }
+    }
+
+    pub fn serialize<S: Serializer, T: Serialize>(v: &T, s: S) -> Result<S::Ok, S::Error> {
+        if OLD.with(Cell::get) {
+            s.serialize_unit()
+        } else {
+            v.serialize(s)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+        if OLD.with(Cell::get) {
+            Ok(T::default())
+        } else {
+            T::deserialize(d)
+        }
+    }
+}
+
+/// `#[serde(with = "crate::serde_util::before_v49")]` on the competitive
+/// balance tunables of playtest 4 (`Balance::winter_rest`,
+/// `toxic_avoidance`, `egg_attendance`, `player_species`, `raised_cap`). On a thread holding a
+/// [`before_v49::Guard`] (reading or hashing a snapshot of version 48 or
+/// before) none is written or read: the tunables read as 0 (off).
+pub mod before_v49 {
+    use std::cell::Cell;
+
+    use super::*;
+
+    thread_local! {
+        static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The competitive balance tunables before version 49: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.

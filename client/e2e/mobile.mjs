@@ -564,7 +564,18 @@ async function desktopChecks(browser, base, errors) {
     const sprites = v.sprites;
     const Graphics = v.highlight.constructor;
     const Container = v.markerLayer.constructor;
+    // The cache's textures a layer of ours shows: held while it is up, so a
+    // later burst of new textures can't destroy them under it (the cache
+    // keeps only what the markers show, `CreatureSprites.hold`).
+    window.__texturesOf = (c) => {
+      const out = [];
+      // (Sprites only: a Graphics has a texture of its own, not the cache's.)
+      const walk = (n) => { if (n.texture && n.anchor) out.push(n.texture); for (const k of n.children ?? []) walk(k); };
+      walk(c);
+      return out;
+    };
     const layer = new Container();
+    layer.__release = v.sprites.hold(() => window.__texturesOf(layer));
     const bg = new Graphics();
     layer.addChild(bg);
     const base = { size: 2, diet: 'herbivore', warm: true, locomotion: 'walk', cover: 'fur', coloring: 'drab' };
@@ -582,6 +593,7 @@ async function desktopChecks(browser, base, errors) {
       const { juvenile = false, ...look } = over;
       const spec = { look: { ...base, ...look }, juvenile };
       const parts = sprites.marker();
+      layer.addChild(parts.root); // first: its textures are then held as they are made
       parts.ring.texture = sprites.ownerRing(spec, cx === 0);
       parts.ring.tint = tints[(cx + ry) % tints.length];
       parts.body.texture = sprites.body(spec);
@@ -593,7 +605,6 @@ async function desktopChecks(browser, base, errors) {
       }
       parts.root.position.set(30 + cell / 2 + cx * cell, 106 + cell / 2 + ry * cell);
       parts.root.scale.set(2.4);
-      layer.addChild(parts.root);
     }));
     v.app.stage.addChild(layer);
     window.__gallery = layer;
@@ -601,7 +612,7 @@ async function desktopChecks(browser, base, errors) {
   });
   await page.waitForTimeout(200);
   await shot(page, 'desktop-sprite-gallery.png');
-  await page.evaluate(() => window.__gallery.destroy({ children: true }));
+  await page.evaluate(() => (window.__gallery.__release(), window.__gallery.destroy({ children: true })));
   step(`sprite gallery: ${gallery.textures} textures cached`);
 
   // The same body plans at the sizes the map draws them (marker scale 0.75
@@ -612,6 +623,7 @@ async function desktopChecks(browser, base, errors) {
     const sprites = v.sprites;
     const Container = v.markerLayer.constructor;
     const layer = new Container();
+    layer.__release = v.sprites.hold(() => window.__texturesOf(layer));
     const base = { size: 2, diet: 'herbivore', warm: true, locomotion: 'walk', cover: 'fur', coloring: 'drab' };
     const plans = [
       {}, { size: 0 }, { size: 3 }, { juvenile: true }, { diet: 'carnivore', ears: 2, ear_shape: 'pointed', tail: 'bushy' },
@@ -626,6 +638,7 @@ async function desktopChecks(browser, base, errors) {
       scales.forEach((sc, j) => {
         const spec = { look: { ...base, ...look }, juvenile, far: sc < 1 };
         const parts = sprites.marker();
+        layer.addChild(parts.root); // first: its textures are then held as they are made
         parts.ring.texture = sprites.ownerRing(spec, i % 3 === 0);
         parts.ring.tint = [0xffd33d, 0x9aa4ae, 0x5ab0ff][i % 3];
         parts.body.texture = sprites.body(spec);
@@ -634,7 +647,6 @@ async function desktopChecks(browser, base, errors) {
         const y = 140 + Math.floor(i / 2) * 80;
         parts.root.position.set(x + 20, y);
         parts.root.scale.set(sc);
-        layer.addChild(parts.root);
       });
     });
     v.app.stage.addChild(layer);
@@ -642,7 +654,7 @@ async function desktopChecks(browser, base, errors) {
   });
   await page.waitForTimeout(200);
   await shot(page, 'desktop-sprite-scales.png');
-  await page.evaluate(() => window.__scales.destroy({ children: true }));
+  await page.evaluate(() => (window.__scales.__release(), window.__scales.destroy({ children: true })));
 
   // A taller window, so every gallery row clears the map legend.
   await page.setViewportSize({ width: 1280, height: 1240 });
@@ -655,6 +667,7 @@ async function desktopChecks(browser, base, errors) {
     const Graphics = v.highlight.constructor;
     const Container = v.markerLayer.constructor;
     const layer = new Container();
+    layer.__release = v.sprites.hold(() => window.__texturesOf(layer));
     const bg = new Graphics();
     layer.addChild(bg);
     const base = { size: 1, diet: 'herbivore', warm: true, locomotion: 'walk', cover: 'skin', coloring: 'drab' };
@@ -733,6 +746,7 @@ async function desktopChecks(browser, base, errors) {
         const { far = false, juvenile = false, ...look } = over;
         const spec = { look: { ...base, ...look }, juvenile, far };
         const parts = sprites.marker();
+        layer.addChild(parts.root); // first: its textures are then held as they are made
         parts.ring.texture = sprites.ownerRing(spec, false);
         parts.ring.tint = 0x9aa4ae;
         parts.body.texture = sprites.body(spec);
@@ -740,7 +754,6 @@ async function desktopChecks(browser, base, errors) {
         const y = top + 8 + cell / 2 + ry * cell;
         parts.root.position.set(x, y - 8);
         parts.root.scale.set([2.8, 2.4, 2, 1.7][spec.look.size]);
-        layer.addChild(parts.root);
         label(text, x, y + cell / 2 - 22, false);
       });
     });
@@ -756,13 +769,15 @@ async function desktopChecks(browser, base, errors) {
       sprites.body({ look: { ...base, size: i % 4, eyes: 1 + (i % 6), legs: [0, 2, 4, 6, 8][i % 5], tail: ['thin', 'bushy', 'fin', 'club', 'prehensile'][Math.floor(i / 6) % 5], snout: Math.floor(i / 30) % 3 }, juvenile: false });
     }
     const burst = v.spriteStats();
+    // None of the gallery's textures went with the burst's evictions (a destroyed texture still drawn throws in PixiJS).
+    const broken = window.__texturesOf(layer).filter((t) => !t.source).length;
     const eyeRow = rows.findIndex((r) => r[0] === 'eyes');
     const hornRow = rows.findIndex((r) => r[0] === 'horns');
     return {
       phase3: { y: top + hornRow * cell, x: x0 + left, w: cell * 7, h: cell * 2 + 16, canvasLeft: canvas.left, canvasTop: canvas.top, canvasW: canvas.width },
       eyes: { y: top + eyeRow * cell, x: x0 + left, w: cell * 4, h: cell * 3 + 16, canvasLeft: canvas.left, canvasTop: canvas.top, canvasW: canvas.width },
       shown: rows.reduce((n, r) => n + r[1].length, 0), made: after.made - before.made, ms,
-      burstMade: burst.made - made0, burstMs: performance.now() - t1, maxMakeMs: burst.maxMakeMs, textures: burst.textures, evicted: burst.evicted, bytes: burst.bytes,
+      broken, burstMade: burst.made - made0, burstMs: performance.now() - t1, maxMakeMs: burst.maxMakeMs, textures: burst.textures, evicted: burst.evicted, bytes: burst.bytes,
     };
   });
   await page.waitForTimeout(200);
@@ -787,12 +802,14 @@ async function desktopChecks(browser, base, errors) {
   }, morph.phase3);
   await page.waitForTimeout(200);
   await shot(page, 'desktop-morphology-phase3.png', phase3Clip);
-  await page.evaluate(() => { window.__morph.destroy({ children: true }); document.getElementById('morph-labels')?.remove(); });
+  await page.evaluate(() => { (window.__morph.__release(), window.__morph.destroy({ children: true })); document.getElementById('morph-labels')?.remove(); });
   const per = (ms, n) => (n ? (ms / n).toFixed(2) : '-');
   step(`morphology gallery: ${morph.shown} variants, ${morph.made} new textures, ${per(morph.ms, morph.made)} ms each`);
   step(`texture burst: ${morph.burstMade} new bodies in ${morph.burstMs.toFixed(1)} ms (${per(morph.burstMs, morph.burstMade)} ms each, slowest ${morph.maxMakeMs.toFixed(2)} ms); `
     + `cache ${morph.textures} textures, ${(morph.bytes / 1048576).toFixed(1)} MB, ${morph.evicted} evicted`);
   if (morph.made < morph.shown / 2 || morph.textures > 256 + 8) throw new Error(`morphology gallery: ${JSON.stringify(morph)}`);
+  // Regression (playtest 4, #26: "reading 'alphaMode'"): the burst evicts, but nothing on screen.
+  if (!(morph.evicted > 0) || morph.broken > 0) throw new Error(`texture burst: ${morph.broken} gallery textures destroyed while shown (${morph.evicted} evicted)`);
 
   // Frame cost with ~500 creatures on screen: 500 markers over the map from
   // 60 distinct looks (as a crowded view would hold), each drawn facing
@@ -803,6 +820,7 @@ async function desktopChecks(browser, base, errors) {
     const sprites = v.sprites;
     const Container = v.markerLayer.constructor;
     const layer = new Container();
+    layer.__release = v.sprites.hold(() => window.__texturesOf(layer));
     const base = { size: 1, diet: 'herbivore', warm: true, locomotion: 'walk', cover: 'fur', coloring: 'drab' };
     const diets = ['herbivore', 'omnivore', 'carnivore'];
     const covers = ['skin', 'fur', 'scales', 'armor'];
@@ -836,12 +854,12 @@ async function desktopChecks(browser, base, errors) {
     for (let i = 0; i < 500; i++) {
       const spec = { look: looks[i % looks.length], juvenile: i % 7 === 0 };
       const parts = sprites.marker();
+      layer.addChild(parts.root); // first: its textures are then held as they are made
       parts.ring.texture = sprites.ownerRing(spec, false);
       parts.ring.tint = 0x9aa4ae;
       parts.body.texture = sprites.body(spec);
       parts.body.scale.x = i % 2 ? 1 : -1;
       parts.root.position.set(20 + rnd() * (width - 40), 20 + rnd() * (height - 40));
-      layer.addChild(parts.root);
     }
     const build = { ms: performance.now() - t0, made: v.spriteStats().made - s0.made, makeMs: v.spriteStats().makeMs - s0.makeMs };
     v.app.stage.addChild(layer);
@@ -867,7 +885,7 @@ async function desktopChecks(browser, base, errors) {
     return { renderer: v.app.renderer.name, emptyMed: med(empty), first, build, renderMed: med(times), renderP90: times[Math.floor(times.length * 0.9)], frameMed: med(intervals), frameP90: intervals[Math.floor(intervals.length * 0.9)], textures: v.spriteStats().textures };
   });
   await shot(page, 'desktop-perf-500.png');
-  await page.evaluate(() => window.__perfLayer.destroy({ children: true }));
+  await page.evaluate(() => (window.__perfLayer.__release(), window.__perfLayer.destroy({ children: true })));
   step(`500 creatures: ${perf.build.made} new textures in ${perf.build.makeMs.toFixed(1)} ms (${per(perf.build.makeMs, perf.build.made)} ms each), first frame (uploads) ${perf.first.toFixed(1)} ms; `
     + `frame (${perf.renderer}) median ${perf.renderMed.toFixed(2)} ms (p90 ${perf.renderP90.toFixed(2)}; ${perf.emptyMed.toFixed(2)} without them), frame interval median ${perf.frameMed.toFixed(1)} ms (p90 ${perf.frameP90.toFixed(1)}); ${perf.textures} textures`);
   await page.close();

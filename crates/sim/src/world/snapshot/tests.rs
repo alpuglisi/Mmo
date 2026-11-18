@@ -411,7 +411,7 @@ fn hysteresis_off(w: &mut World) {
 fn founding_fixes_off(w: &mut World) {
     let old = crate::serde_util::before_v47::OLD_VALUE;
     (w.config.balance.reachable_water, w.config.balance.founding_conditions) = (old, old);
-    balance48_off(&mut w.config.balance);
+    balance49_off(&mut w.config.balance);
     for h in &mut w.lineage_homes {
         *h = None;
     }
@@ -476,12 +476,12 @@ fn balance46_off(b: &mut crate::Balance) {
     b.eye_hybrid = old;
     b.winter_toll = old;
     b.wake_spread = old;
-    balance48_off(b);
+    balance49_off(b);
 }
 
-/// The playtest 4 balance tunables as snapshots before version 48 read them.
-fn balance48_off(b: &mut crate::Balance) {
-    let old = crate::serde_util::before_v48::OLD_VALUE;
+/// The playtest 4 balance tunables as snapshots before version 49 read them.
+fn balance49_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v49::OLD_VALUE;
     b.winter_rest = old;
     b.toxic_avoidance = old;
     b.egg_attendance = old;
@@ -489,21 +489,21 @@ fn balance48_off(b: &mut crate::Balance) {
     b.raised_cap = old;
 }
 
-/// Version 47 snapshots (before the playtest 4 balance rules) restore with
+/// Version 48 snapshots (before the playtest 4 balance rules) restore with
 /// those tunables off, and are otherwise the same world.
 #[test]
-fn version_47_snapshots_restore_without_playtest4_balance() {
+fn version_48_snapshots_restore_without_playtest4_balance() {
     let mut w = fixture_world();
-    let old = w.snapshot_v47();
+    let old = w.snapshot_v48();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 47);
+    assert_eq!(h.version, 48);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.winter_rest, crate::serde_util::before_v48::OLD_VALUE);
-    balance48_off(&mut w.config.balance);
+    assert_eq!(r.config.balance.winter_rest, crate::serde_util::before_v49::OLD_VALUE);
+    balance49_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());
-    assert!(r.snapshot_v47() == old);
+    assert!(r.snapshot_v48() == old);
     let mut w = fixture_world();
     w.config.balance.egg_attendance = 0.5;
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
@@ -1622,4 +1622,21 @@ fn version_46_snapshots_restore_without_the_founding_fixes() {
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.lineage_homes, w.lineage_homes);
     assert_eq!(r.config.balance.founding_conditions, 1.0);
+}
+
+/// Version 47 snapshots (before pending territory claims) restore with
+/// none, and this version keeps them.
+#[test]
+fn version_47_snapshots_restore_without_pending_claims() {
+    let mut w = fixture_world();
+    let key = (w.organisms[0].owner, 0u8);
+    w.group_plans.pending.claims.insert(key, (Vec2::new(5.0, 6.0), 4.0));
+    w.group_plans.pending.start_median.insert(key, 22.0);
+    let old = w.snapshot_v47();
+    assert_eq!(SnapshotHeader::read(&old).unwrap().version, 47);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans.pending, Default::default());
+    assert!(r.snapshot_v47() == old);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans.pending, w.group_plans.pending);
 }

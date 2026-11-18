@@ -9,7 +9,7 @@
 
 import './onboarding.css';
 import { FOUNDING_RAMP_TEXT } from '../designWarnings';
-import { SEASON_NOTICE_DAYS } from '../seasonNotice';
+import { FREE_FIRST_WINTER, SEASON_NOTICE_DAYS } from '../seasonNotice';
 import type { GameModel } from '../model';
 import {
   autoStarts, dueHints, HINT_IDS, HINTS, hintsAfterReset, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
@@ -33,6 +33,13 @@ export interface OnboardingDeps {
   selectOwn: () => void;
   /** `?tour=off`: no tour and no hints (Help still replays the tour). */
   disabled: boolean;
+  /**
+   * The player came back to a lineage they already had (not straight from
+   * founding): they have been through the first session, if not in this
+   * browser, so the tour does not start by itself (Help replays it). The
+   * playtests saw it again in every new browser profile.
+   */
+  returning?: boolean;
   store?: KeyValueStore | null;
 }
 
@@ -50,6 +57,10 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   const key = progressKey(model.player, model.name);
   let progress: Progress = loadProgress(key, deps.store);
   const save = () => saveProgress(key, progress, deps.store);
+  if (deps.returning && progress.tour === 'new') {
+    progress = { ...progress, tour: 'skipped' };
+    save();
+  }
 
   // ---------------------------------------------------------------- tour
   let steps: TourStep[] = [];
@@ -296,7 +307,16 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
       + 'The design screen says how the world looks right now (season, drought, catastrophe) before you found.'],
     ['Founding before winter: the winter provision', () => 'Winter is the hardest time to start: plants die back and cold animals burn their reserves. '
       + `A lineage founded within ${SEASON_NOTICE_DAYS} days of winter (or during it) arrives fed, with full fat reserves; the design screen says when this applies. `
-      + 'Fur, fat stores and hibernation help it through (the starting design has all three).'],
+      + `${FREE_FIRST_WINTER} Warm-blooded designs get through on fur, fat stores and hibernation (the starting design has all three); `
+      + 'cold-blooded ones on brumation and fat stores: a cold-blooded hibernator can\'t warm itself awake.'],
+    ['Why are my animals dying?', () => 'The Genes tab charts deaths by cause; each cause has a fix. '
+      + 'Thirst: keep herds, territories and rallies near lakes and rivers, above all in a drought. '
+      + 'Hunger: too many animals on too little food; spread out (split groups, migrate), found fewer, or eat something else. '
+      + 'Winter sleep: some sleepers die every winter, more in their first year and when thin; fat stores help, and founders sleep their first winter free. '
+      + 'Predators: stay in groups, add speed, armor, toxins or camouflage. '
+      + 'Poisoned: your hunters ate toxic prey; bright colours warn them off. '
+      + 'Drowned: poor swimmers crossing water; raise swimming or route around lakes. '
+      + 'Chilled eggs: incubated eggs need a parent brooding them; abandoned eggs are left exposed by design and many die, which their large clutches make up for.'],
     ['Growth and the soft cap', () => 'Breeding slows as your lineage grows: litters shrink toward the soft cap (half size at it) and members get hungrier past it; births stop only at the hard cap. '
       + 'The Lineage tab shows where you stand.'],
   ];

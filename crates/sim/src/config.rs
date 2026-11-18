@@ -1075,43 +1075,43 @@ pub struct Balance {
     /// on the same pasture and starve. 0: all wake on the first spring day.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
     pub wake_spread: f32,
-    // Competitive balance after playtest 4 (version 48; *Playtest 4:
-    // balance* in the README). Off at 0, what snapshots before version 48
-    // read (`serde_util::before_v48`).
+    // Competitive balance after playtest 4 (version 49; *Playtest 4:
+    // balance* in the README). Off at 0, what snapshots before version 49
+    // read (`serde_util::before_v49`).
     /// Winter rest for cold-blooded animals: in winter their breeding drive
     /// drains instead of building, even when they wake to bask on mild days,
     /// and a brumator awake in winter pays the winter toll as if asleep
     /// (out in the cold). Playtest 4: roused brumators kept breeding through
     /// winters (370 → 571, 1,211 → 1,895) with no deaths but old age. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
     pub winter_rest: f32,
     /// Strong learned avoidance of toxic prey: once a hunter's lineage has
     /// learned a toxin (`World::toxic_lesson`), it recognises the prey
     /// `0.7 + 0.3 × coloration` of the time (drab 70%, bright 90%+) instead of
     /// `0.3 + 0.7 × coloration`. Playtest 4: 65% of hunters still ate known
     /// toxic prey and died. 0: the version 44 recognition.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
     pub toxic_avoidance: f32,
     /// Eggs keep warm while their brooding parent is alive but off the
     /// nest: an attended clutch (its guardian alive, within 12 tiles) chills
     /// at `1 − 0.8 × egg_attendance` of the rate of a lost one. Playtest 4:
     /// incubated clutches chilled more than they hatched (351 chilled vs 304
     /// born) because parents left to eat and drink. 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
     pub egg_attendance: f32,
     /// Player species identity: a cluster most of whose adults belong to
     /// one player lineage that wasn't among a wild species' founders isn't
     /// filed under that initial wild species; it is (or becomes) the player
     /// lineage's own species. Playtest 4: every starter lineage ended up
     /// "Steppe antelope" (no founding credit, no naming). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
     pub player_species: f32,
     /// Most offspring raised an adult counts for in the weighted legacy
     /// share (`LegacySnapshot::weighted`): alleles × min(raised, cap). The
     /// weight was the lifetime count, so an old, prolific cohort dominated
     /// the weighted share and its die-off swung it by 7–13 points within 60
     /// days (playtest 4). 0: uncapped.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v49"))]
     pub raised_cap: f32,
     // Playtest 3 founding and drinking fixes (version 47). Off at 0, what
     // snapshots before version 47 read (`serde_util::before_v47`).

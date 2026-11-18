@@ -60,7 +60,24 @@ pub enum GroupEvent {
     /// `median` is the median member's distance to the target then.
     /// `dormant_share` is the share of the group that was dormant then
     /// (hibernating or estivating animals can't walk).
-    TimedOut { player: PlayerId, group: u8, target: Vec2, median: f32, dormant_share: f32 },
+    /// `basking_share` the share basking or resting (cold-blooded animals
+    /// in the cold), `never_moved` whether the group never got closer than
+    /// it started (a way blocked by water or cliffs, or animals busy with
+    /// needs), and `pending_claim` whether a territory claim waited on the
+    /// arrival (it is dropped too).
+    TimedOut {
+        player: PlayerId,
+        group: u8,
+        target: Vec2,
+        median: f32,
+        dormant_share: f32,
+        basking_share: f32,
+        never_moved: bool,
+        pending_claim: bool,
+    },
+    /// A far territory claim's migration arrived and the territory was
+    /// claimed (`World::claim_or_migrate`).
+    ClaimedOnArrival { player: PlayerId, group: u8, territory: super::groups::Territory },
 }
 
 /// How an attack order ended on its own (`World::take_attack_events`). A
@@ -131,6 +148,12 @@ pub enum CommandError {
     MostlyWater {
         share: f32,
     },
+    /// A territory circle overlapping another player's territory.
+    Overlaps {
+        owner: PlayerId,
+    },
+    /// A territory radius that is not a positive number.
+    BadRadius,
     /// An attack order on one of the player's own organisms.
     OwnTarget(OrgId),
     /// The target is farther than the possessed organism can see.
@@ -187,6 +210,10 @@ impl fmt::Display for CommandError {
                 write!(f, "the group claimed a territory recently; it can claim again in {ticks_left} ticks")
             }
             CommandError::NoRally(g) => write!(f, "group {g} has no rally to cancel"),
+            CommandError::Overlaps { owner } => {
+                write!(f, "that circle overlaps player {owner}'s territory; claim ground of your own")
+            }
+            CommandError::BadRadius => write!(f, "a territory's radius must be a positive number of tiles"),
             CommandError::MostlyWater { share } => write!(
                 f,
                 "{:.0}% of that circle is water the group can't stand in; choose ground with some land",
@@ -852,6 +879,8 @@ impl World {
         let target = self.standable_near(&bodies, target, MIGRATE_SNAP_RADIUS).ok_or(CommandError::Unreachable)?;
         let key = (player, group);
         self.migrate_orders.insert(key, target);
+        self.group_plans.pending.claims.remove(&key);
+        self.group_plans.pending.start_median.remove(&key);
         let deadline = self.tick + self.migration_timeout_ticks(middle.map_or(0.0, |m| m.dist(target)));
         self.group_plans.migrations.insert(key, MigrationPlan::new(self.tick, deadline));
         self.territories.remove(&key);
