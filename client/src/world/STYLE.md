@@ -69,8 +69,8 @@ map shows a one-texel-per-tile painting at once and refines a slice per
 frame; repainted chunks are revealed together (no patchwork of old and new).
 
 Each chunk keeps a copy of the fields it was painted from; how far the
-terrain has moved from it (`regionDelta`: 1 = bare ground to full snow, or
-a colour shift of 64) decides the repaints (`workOrder`): chunks never
+terrain has moved from it (`regionDelta`: 1 = bare ground to full snow, a
+colour shift of 64, or a shore moved about a tile: wetness counts four times) decides the repaints (`workOrder`): chunks never
 painted first, then those far from the terrain (≥ `URGENT` 0.12: snow
 coming or going, floods), then any past `STALE` (0.03), oldest painting
 first. Slow grazing drift therefore does not repaint everything at every 4 s
