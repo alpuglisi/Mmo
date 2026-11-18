@@ -21,6 +21,8 @@ describe('the population cap row', () => {
     expect(calm.explain).toMatch(/hard cap of 3,000 living organisms/);
     expect(calm.explain).not.toMatch(/births stop at 1,500|at most 1,500/);
     expect(capInfo(1400, 1500, c(1300, 0.64)).status).toBe('breeding slowing: litters ×0.6');
+    // Not "full size" at ×0.95: the factor is said.
+    expect(capInfo(1100, 1500, c(1000, 0.95)).explain).toMatch(/Now: litters are ×0.9 their size|Now: litters are ×0.95 their size/);
     const past = capInfo(2100, 1500, c(1800, 0.325, 1.06));
     expect(past).toMatchObject({ status: 'past the soft cap: litters ×0.3, hunger ×1.06', level: 'near' });
     expect(past.explain).toMatch(/6% hungrier/);

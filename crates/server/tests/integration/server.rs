@@ -163,6 +163,24 @@ async fn play_over_websocket() {
     assert!(v["cost"].as_f64().unwrap() > v["budget"].as_f64().unwrap());
     let (s, _) = json_req(addr, Method::POST, "/api/lineage", None, Some(design("Anon"))).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // A body that isn't a design (a NaN) gets a plain error, not the parser's
+    // text; a name passing for staff is refused by the name filter.
+    let client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
+    let raw = r#"{"name":"N","thermo":"warm","birth":"live","litter_size":2,"founders":12,"traits":{"fur":NaN}}"#;
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("http://{addr}/api/lineage"))
+        .header("authorization", format!("Bearer {ann}"))
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(raw)))
+        .unwrap();
+    let res = client.request(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let v: Value = serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(v["code"], "bad_design", "{v}");
+    assert!(!v["message"].as_str().unwrap().contains("line 1"), "{v}");
+    let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(&ann), Some(design("Server Admin"))).await;
+    assert_eq!((s, v["code"].as_str()), (StatusCode::BAD_REQUEST, Some("bad_name")), "{v}");
     let (s, v) = json_req(addr, Method::POST, "/api/lineage", Some(&ann), Some(design("Ann's"))).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     assert_eq!(v["founders"].as_array().unwrap().len(), 12);

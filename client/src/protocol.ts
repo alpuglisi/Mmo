@@ -1292,6 +1292,8 @@ export interface SpeciesView {
   name: string;
   /** Who may name it (`name_species`; absent on older servers). */
   namer?: PlayerId;
+  /** A player has named it: not offered for naming again. */
+  named?: boolean;
   origin: 'initial' | 'founding' | 'split' | string;
   parent?: number;
   founded_day: number;

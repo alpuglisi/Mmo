@@ -54,7 +54,7 @@ pub enum ClientMsg {
     RequestMating {
         mine: OrgId,
         partner: OrgId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "opt_price")]
         price: Option<u64>,
     },
     /// What a directed mating of your `mine` with `partner` would give (any
@@ -74,7 +74,7 @@ pub enum ClientMsg {
     OfferToLineage {
         mine: OrgId,
         lineage: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "opt_price")]
         price: Option<u64>,
     },
     /// The partner organism's owner accepts or declines an offer. For an
@@ -181,6 +181,7 @@ pub enum ClientMsg {
     /// ([`ListingView`]).
     CreateListing {
         organism: OrgId,
+        #[serde(deserialize_with = "price")]
         fee: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_days: Option<u32>,
@@ -199,6 +200,7 @@ pub enum ClientMsg {
     /// Data: `{listing}` ([`ListingView`]).
     CreateAuction {
         organism: OrgId,
+        #[serde(deserialize_with = "price")]
         reserve: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         days: Option<u32>,
@@ -208,7 +210,12 @@ pub enum ClientMsg {
     /// Bid `amount` renown on an auction for your adult `mine`. The amount
     /// is held in escrow (raising your own highest bid holds only the
     /// difference); you are refunded at once when outbid. Data: `{listing}`.
-    Bid { listing: u64, amount: u64, mine: OrgId },
+    Bid {
+        listing: u64,
+        #[serde(deserialize_with = "price")]
+        amount: u64,
+        mine: OrgId,
+    },
     /// One page of the open listings, each with the compatibility of your
     /// `mine` with the listed organism if given. Data: [`MarketView`]. With
     /// no fields: the newest [`MARKET_PAGE`] listings of every kind.
@@ -285,6 +292,31 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<usize>,
     },
+}
+
+/// A price in renown as a client may send it: a whole number, however
+/// large (a number past `u64::MAX`, such as JavaScript's `2 ** 64`, is
+/// taken as `u64::MAX`), so the command's own range check answers
+/// (`bad_price`) instead of a generic `bad_message` (playtest 4).
+fn price_of(v: &serde_json::Value) -> Option<u64> {
+    if let Some(n) = v.as_u64() {
+        return Some(n);
+    }
+    let f = v.as_f64()?;
+    (f.is_finite() && f >= 0.0 && f.fract() == 0.0).then_some(if f >= u64::MAX as f64 { u64::MAX } else { f as u64 })
+}
+
+fn price<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    price_of(&v).ok_or_else(|| serde::de::Error::custom("a price is a whole number of renown"))
+}
+
+fn opt_price<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    if v.is_null() {
+        return Ok(None);
+    }
+    price_of(&v).map(Some).ok_or_else(|| serde::de::Error::custom("a price is a whole number of renown"))
 }
 
 impl ClientMsg {
@@ -2230,6 +2262,28 @@ mod tests {
         }
     }
 
+    /// A price past `u64::MAX` (JavaScript's `2 ** 64`) parses, saturated,
+    /// so the range check answers `bad_price`; a fraction or a negative
+    /// doesn't parse.
+    #[test]
+    fn huge_prices_reach_the_range_check() {
+        let m: ClientEnvelope =
+            serde_json::from_str(r#"{"type":"create_listing","organism":1,"fee":18446744073709552000}"#).unwrap();
+        assert_eq!(m.msg, ClientMsg::CreateListing { organism: 1, fee: u64::MAX, expires_days: None });
+        let m: ClientEnvelope =
+            serde_json::from_str(r#"{"type":"request_mating","mine":1,"partner":2,"price":1e30}"#).unwrap();
+        assert!(matches!(m.msg, ClientMsg::RequestMating { price: Some(u64::MAX), .. }));
+        let m: ClientEnvelope = serde_json::from_str(r#"{"type":"request_mating","mine":1,"partner":2}"#).unwrap();
+        assert!(matches!(m.msg, ClientMsg::RequestMating { price: None, .. }));
+        for bad in [
+            r#"{"type":"bid","listing":1,"amount":2.5,"mine":3}"#,
+            r#"{"type":"bid","listing":1,"amount":-1,"mine":3}"#,
+        ] {
+            assert!(serde_json::from_str::<ClientEnvelope>(bad).is_err(), "{bad}");
+        }
+        assert_eq!(crate::game::check_price_for_tests(u64::MAX).unwrap_err().code, "bad_price");
+    }
+
     #[test]
     fn client_messages_parse() {
         let m: ClientEnvelope =
@@ -2493,6 +2547,10 @@ pub struct SpeciesView {
     /// gone species.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namer: Option<PlayerId>,
+    /// A player has named it (`name_species`): the name is theirs, not one
+    /// taken from a lineage, and it isn't offered for naming again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
     /// Origin tag holding the most alleles in its adults.
     pub dominant: PlayerId,
     pub dominant_name: String,

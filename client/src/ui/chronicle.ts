@@ -166,11 +166,11 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
         h('strong', {}, s.name),
         h('span', { class: 'muted small' }, ` · ${dietLabel(s.carnivory)} · ${r.status} · ${s.dominant_name} ${pct(s.dominant_share, 0)} of alleles`
           + `${s.founder_name ? ` · founded by ${s.founder_name}` : ''} · detected on day ${s.founded_day + 1}`),
-        onName && r.alive && s.namer === me
-          ? h('button', { class: 'link small name-species', 'data-action': 'name-species', title: 'Give this species a name (costs renown)', onclick: () => onName(s) }, 'Name it…')
+        onName && r.alive && s.namer === me && !s.named
+          ? h('button', { class: 'link small name-species', 'data-action': 'name-species', title: 'It is called after a lineage for now: give it a name of its own (costs renown, once)', onclick: () => onName(s) }, 'Name it…')
           : null);
     })),
-    species.founded.length > 0 ? h('p', { class: 'small' }, 'Species founded: ', species.founded.map((f) => `${f.name} ${f.count}`).join(' · ')) : null,
+    species.founded.length > 0 ? h('p', { class: 'small' }, 'Species split off (speciation): ', species.founded.map((f) => `${f.name} ${f.count}`).join(' · ')) : null,
     h('h3', {}, 'Catastrophes'),
     catastrophes.history.length === 0
       ? h('p', { class: 'muted small' }, catastrophes.enabled ? 'None yet. They strike now and then from the second year on.' : 'Catastrophes are off in this world.')
@@ -182,7 +182,7 @@ export function renderWorld(el: HTMLElement, c: Chronicle | null, me: PlayerId, 
     h('h3', {}, 'Achievements'),
     achievements.players.length === 0 ? h('p', { class: 'muted small' }, 'No player lineages yet.')
       : h('table', { class: 'board', id: 'achievement-table' },
-        h('thead', {}, h('tr', {}, h('th', {}, 'Player'), h('th', { title: 'Speciation events credited' }, 'Species'),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Player'), h('th', { title: 'Species split off from the player\'s lineages by speciation (a founding\'s own species doesn\'t count)' }, 'Species split off'),
           h('th', { title: 'Longest-lived lineage' }, 'Longevity'), h('th', { title: 'Niches led at an era end' }, 'Niches'),
           h('th', { title: 'Catastrophes survived' }, 'Survived'))),
         h('tbody', {}, ...achievements.players.map((p) => h('tr', { class: p.player === me ? 'me' : '' },

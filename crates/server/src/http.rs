@@ -494,9 +494,10 @@ async fn found_lineage(
     State(app): State<AppState>,
     World(w): World,
     headers: HeaderMap,
-    Json(spec): Json<DesignSpec>,
+    spec: Result<Json<DesignSpec>, axum::extract::rejection::JsonRejection>,
 ) -> Result<(StatusCode, Json<FoundResponse>), ApiError> {
     let session = authed(&app, &headers)?;
+    let spec = design_body(spec)?;
     let design = spec.to_design()?;
     let (reply, rx) = oneshot::channel();
     send_request(&w.tx, Request::Found { player: session.player, name: session.name.clone(), design, reply })?;
@@ -510,6 +511,7 @@ async fn found_lineage(
             return Err(e);
         }
         Err(FoundError::Design(d)) => return Err(SpecError::Design(d).into()),
+        Err(FoundError::BadName(why)) => return Err(SpecError::BadName(why).into()),
     };
     let day = w.published.borrow().summary.clock.day;
     let unix = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -529,6 +531,22 @@ async fn found_lineage(
     ))
 }
 
+/// A design body, or a plain error when it isn't one (playtest 4: a `NaN`
+/// gave the JSON parser's own text): which field is wrong, not how serde
+/// says it.
+fn design_body(
+    body: Result<Json<DesignSpec>, axum::extract::rejection::JsonRejection>,
+) -> Result<DesignSpec, ApiError> {
+    body.map(|Json(spec)| spec).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_design",
+            "that design couldn't be read: it needs a name, thermo (warm or cold), birth, litter_size and founders, \
+             and every trait value a number from 0 to 1 (no NaN or text)",
+        )
+    })
+}
+
 /// `POST /api/design/compatibility` (logged in, body: a design): who the
 /// design's founders could breed with now, from samples of individuals on
 /// both sides, with each lineage's fertility range and drift risk
@@ -537,9 +555,10 @@ async fn design_compatibility(
     State(app): State<AppState>,
     World(w): World,
     headers: HeaderMap,
-    Json(spec): Json<DesignSpec>,
+    spec: Result<Json<DesignSpec>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<DesignCompatView>, ApiError> {
     let session = authed(&app, &headers)?;
+    let spec = design_body(spec)?;
     let design = spec.to_design()?;
     let (reply, rx) = oneshot::channel();
     send_request(&w.tx, Request::DesignCompat { player: session.player, design, reply })?;
@@ -676,6 +695,12 @@ async fn leaderboard_history(
     for l in records.iter_mut().flat_map(|r| r.lineages.iter_mut()) {
         if l.owner != player {
             public_genes(&mut l.genes);
+        }
+        // Stored before the name filter: cleaned as they go out.
+        if l.owner != evo_sim::WILD {
+            let fallback = format!("Lineage {}", l.lineage);
+            l.name =
+                crate::names::sanitize(&l.name, crate::design::MAX_NAME_LEN, crate::names::Kind::Lineage, &fallback);
         }
     }
     Ok(Json(records))
