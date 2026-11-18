@@ -1398,6 +1398,10 @@ pub struct LineageStats {
     /// The soft lineage cap and how crowded the lineage is now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crowding: Option<CrowdingView>,
+    /// An egg-laying lineage's clutches waiting to hatch (absent for live
+    /// bearers): what "pregnant" means for them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eggs: Option<EggsView>,
     /// Legacy share per recorded day, oldest first.
     pub legacy: Vec<LegacyPoint>,
     /// Recent alerts, newest last.
@@ -1456,6 +1460,15 @@ pub struct GeneHost {
     pub owner: PlayerId,
     pub owner_name: String,
     pub share: f64,
+}
+
+/// `lineage_stats.eggs`: an egg-laying lineage's clutches.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EggsView {
+    pub clutches: u32,
+    pub eggs: u32,
+    /// Clutches with a parent incubating and guarding them.
+    pub brooded: u32,
 }
 
 /// The soft lineage cap (`lineage_stats.crowding`): births slow as the
