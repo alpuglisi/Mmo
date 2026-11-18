@@ -527,6 +527,10 @@ pub struct World {
     /// `Balance::attack_grace` falls back to computing afresh.
     #[cfg_attr(feature = "serde", serde(skip))]
     grace_starts_cooldown: u64,
+    /// When each player ended their newcomer grace (`World::end_grace`);
+    /// saved by the host, not in the snapshot.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    grace_waived: std::collections::BTreeMap<PlayerId, u64>,
     /// Wall-clock time spent in each phase of `step` (for `bench`).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub phase_times: PhaseTimes,
@@ -669,6 +673,7 @@ impl World {
             grace_min_ticks: 0,
             grace_starts: Vec::new(),
             grace_starts_cooldown: 0,
+            grace_waived: Default::default(),
             phase_times: PhaseTimes::default(),
             last_intents: Vec::new(),
             config,

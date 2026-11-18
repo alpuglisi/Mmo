@@ -123,6 +123,8 @@ pub enum CommandError {
     OwnGrace {
         days_left: f32,
     },
+    /// `end_grace` with no grace to end.
+    NoGrace,
 }
 
 impl fmt::Display for CommandError {
@@ -178,6 +180,7 @@ impl fmt::Display for CommandError {
                 "that lineage was founded only recently; it can't be attacked for another {:.0} days",
                 days_left.ceil()
             ),
+            CommandError::NoGrace => write!(f, "your lineage has no newcomer grace to end"),
             CommandError::OwnGrace { days_left } => write!(
                 f,
                 "your lineage is still under its newcomer grace; it can't attack other players for another {:.0} days",
@@ -465,25 +468,61 @@ impl World {
     /// twice the grace of the one before (`World::grace_start`): re-founding
     /// doesn't start it over.
     pub fn lineage_grace_left(&self, l: u32) -> Option<f32> {
-        let grace = self.config.balance.attack_grace;
-        if grace <= 0.0 {
+        let tpd = self.config.ticks_per_day.max(1) as u64;
+        self.lineage_grace_ticks(l).map(|left| left as f32 / tpd as f32)
+    }
+
+    /// Ticks of newcomer grace lineage `l` has left (`World::lineage_grace_left`).
+    /// None once its owner ended it (`World::end_grace`).
+    pub fn lineage_grace_ticks(&self, l: u32) -> Option<u64> {
+        if self.config.balance.attack_grace <= 0.0 {
             return None;
         }
         let owner = self.lineages.get(l as usize)?.owner;
         if owner == crate::WILD {
             return None;
         }
-        let tpd = self.config.ticks_per_day.max(1) as u64;
-        let length = ((grace * tpd as f32).round() as u64).max(self.grace_min_ticks);
         let start = match self.grace_starts.get(l as usize) {
             Some(&t) if self.grace_starts_cooldown == self.grace_cooldown() => t,
             _ => self.grace_start(l)?,
         };
-        if start == 0 {
+        if start == 0 || self.grace_waived.get(&owner).is_some_and(|&t| t >= start) {
             return None;
         }
-        let left = length.saturating_sub(self.tick.saturating_sub(start));
-        (left > 0).then(|| left as f32 / tpd as f32)
+        let left = self.grace_length().saturating_sub(self.tick.saturating_sub(start));
+        (left > 0).then_some(left)
+    }
+
+    /// How long a newcomer grace lasts in ticks: `Balance::attack_grace`
+    /// days, or `World::set_attack_grace_min_ticks` if that is longer.
+    pub fn grace_length(&self) -> u64 {
+        let tpd = self.config.ticks_per_day.max(1) as f32;
+        ((self.config.balance.attack_grace.max(0.0) * tpd).round() as u64).max(self.grace_min_ticks)
+    }
+
+    /// End the player's newcomer grace now (a predator's owner wants to
+    /// hunt): their animals may attack other players' and be attacked.
+    /// Re-founding within the cooldown doesn't bring it back
+    /// (`World::grace_start`). `NoGrace` if they have none.
+    pub fn end_grace(&mut self, player: PlayerId) -> Result<(), CommandError> {
+        let graced = (0..self.lineages.len() as u32)
+            .any(|l| self.lineages[l as usize].owner == player && self.lineage_grace_ticks(l).is_some());
+        if !graced {
+            return Err(CommandError::NoGrace);
+        }
+        self.grace_waived.insert(player, self.tick);
+        Ok(())
+    }
+
+    /// When each player ended their grace (`World::end_grace`), for the
+    /// host to save; not in the snapshot.
+    pub fn grace_waived(&self) -> &std::collections::BTreeMap<PlayerId, u64> {
+        &self.grace_waived
+    }
+
+    /// Restore [`World::grace_waived`] (from the host's saved game).
+    pub fn set_grace_waived(&mut self, waived: std::collections::BTreeMap<PlayerId, u64>) {
+        self.grace_waived = waived;
     }
 
     /// When lineage `l`'s newcomer grace started (`World::lineage_grace_left`):
@@ -504,10 +543,12 @@ impl World {
         Some(start)
     }
 
-    /// How soon after one founding the owner's next still continues its grace.
+    /// How soon after one founding the owner's next still continues its
+    /// grace: twice the grace's whole length (its real-time minimum
+    /// included), so a re-founding never starts afresh a grace that would
+    /// still be running; the time left carries over.
     fn grace_cooldown(&self) -> u64 {
-        let tpd = self.config.ticks_per_day.max(1) as f32;
-        (2.0 * self.config.balance.attack_grace.max(0.0) * tpd).round() as u64
+        2 * self.grace_length()
     }
 
     /// Recomputes every lineage's grace start (after founding or restoring).
@@ -520,6 +561,7 @@ impl World {
     /// says (the server's minimum of real minutes; not saved).
     pub fn set_attack_grace_min_ticks(&mut self, ticks: u64) {
         self.grace_min_ticks = ticks;
+        self.rebuild_grace_starts();
     }
 
     /// Whether hunter `a` is kept off prey `b` by founding grace

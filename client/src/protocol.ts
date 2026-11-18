@@ -52,6 +52,8 @@ export type ClientMsg =
    * killed or turned wild) and you may found again at once. Data: `{removed}`.
    */
   | { type: 'retire_lineage'; lineage: number }
+  /** End your lineage's newcomer grace now (`no_grace` when there is none). */
+  | { type: 'end_grace' }
   | { type: 'set_view'; x: number; y: number; radius: number }
   | { type: 'clear_view' }
   /** Put one of your adults on the stud marketplace; data: `{ listing: ListingView }`. */

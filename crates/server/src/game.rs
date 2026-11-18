@@ -222,6 +222,9 @@ pub struct GameConfig {
     /// `tick_ms`): `Balance::attack_grace` days pass in under two minutes at
     /// a fast tick.
     pub grace_min_minutes: f64,
+    /// Longest the newcomer grace lasts in game days, real-time minimum
+    /// included: at a fast tick 30 minutes would be hundreds of days.
+    pub grace_max_days: f64,
     /// A player hears at most once in this many minutes of wall-clock time
     /// that one attacker lineage is hunting their animals.
     pub attack_alert_minutes: f64,
@@ -359,6 +362,7 @@ impl Default for GameConfig {
             min_auction_ticks: 5 * 60,
             rally_min_minutes: 5.0,
             grace_min_minutes: 30.0,
+            grace_max_days: 60.0,
             attack_alert_minutes: 5.0,
             claim_cooldown_min_minutes: 2.0,
         }
@@ -607,6 +611,10 @@ pub struct Game {
     /// Tick of the last attack alert by (attacker lineage, victim): at most
     /// one per [`GameConfig::attack_alert_minutes`]. Not saved.
     attack_alerts: BTreeMap<(u32, PlayerId), u64>,
+    /// Players whose lineage was under its newcomer grace at the last tick,
+    /// to announce its end ([`Game::announce_grace_end`]). Not saved
+    /// (rebuilt on a restore).
+    graced: BTreeSet<PlayerId>,
     /// Tests: take the plain, slower paths these shortcuts replace (full
     /// hold scans, a fresh index per new connection) to compare against.
     #[cfg(test)]
@@ -663,6 +671,13 @@ pub struct SavedGame {
     /// founding ramp; absent in older saves, which count every lineage in
     /// full).
     founded_day: BTreeMap<PlayerId, u64>,
+    /// When players ended their newcomer grace (`World::end_grace`; absent
+    /// in older saves: none).
+    grace_waived: BTreeMap<PlayerId, u64>,
+    /// The per-target request log, as a list (absent in older saves: empty).
+    request_log: Vec<((PlayerId, PlayerId), VecDeque<(u64, u64)>)>,
+    /// The last attack alert ticks, as a list (absent in older saves: none).
+    attack_alerts: Vec<((u32, PlayerId), u64)>,
 }
 
 impl SavedGame {
@@ -801,6 +816,7 @@ impl Game {
             founded_day: BTreeMap::new(),
             hosts,
             attack_alerts: BTreeMap::new(),
+            graced: BTreeSet::new(),
             #[cfg(test)]
             reference: false,
         };
@@ -808,7 +824,8 @@ impl Game {
         let (rally, claim) = (minutes(g.cfg.rally_min_minutes), minutes(g.cfg.claim_cooldown_min_minutes));
         g.world.set_rally_min_ticks(rally);
         g.world.set_claim_cooldown_min_ticks(claim);
-        g.world.set_attack_grace_min_ticks(minutes(g.cfg.grace_min_minutes));
+        let cap = (g.cfg.grace_max_days * g.world.config.ticks_per_day as f64).round() as u64;
+        g.world.set_attack_grace_min_ticks(minutes(g.cfg.grace_min_minutes).min(cap));
         g
     }
 
@@ -823,6 +840,42 @@ impl Game {
             until_tick: self.world.tick() + ticks,
             real_seconds_left: Some(seconds),
         })
+    }
+
+    /// Players whose current lineage is under its newcomer grace.
+    fn graced_players(&self) -> BTreeSet<PlayerId> {
+        self.lineage_of.iter().filter(|(_, &l)| self.world.lineage_grace_ticks(l).is_some()).map(|(&p, _)| p).collect()
+    }
+
+    /// Tell each player whose grace just ended (ran out, or they ended it).
+    fn announce_grace_end(&mut self, out: &mut Outbox) {
+        let now = self.graced_players();
+        let ended: Vec<PlayerId> = self.graced.difference(&now).copied().collect();
+        self.graced = now;
+        for p in ended {
+            let text = "Your newcomer grace has ended: other players' animals can now attack yours, and yours theirs"
+                .to_string();
+            self.alert(p, AlertKind::Attack, text, None, out);
+        }
+    }
+
+    /// A command error, with the real time left added to a grace refusal
+    /// (the days alone mislead at a fast clock).
+    fn grace_error(&self, err: &CommandError) -> ErrorInfo {
+        let info = ErrorInfo::from(err);
+        let days = match err {
+            CommandError::NewcomerGrace { days_left } | CommandError::OwnGrace { days_left } => *days_left,
+            _ => return info,
+        };
+        let secs = self.real_seconds((days as f64 * self.world.config.ticks_per_day as f64).round() as u64);
+        let minutes = secs.div_ceil(60);
+        let message = format!("{} (about {minutes} real minutes)", info.message);
+        ErrorInfo { message, ..info }.with_detail(serde_json::json!({ "days_left": days, "real_seconds_left": secs }))
+    }
+
+    /// Real seconds `ticks` take at the server's clock.
+    fn real_seconds(&self, ticks: u64) -> u64 {
+        (ticks as f64 * self.cfg.tick_ms / 1000.0).ceil() as u64
     }
 
     /// Mark the neighbours whose lineage is under its newcomer grace
@@ -864,6 +917,9 @@ impl Game {
             species_bonus: self.species_bonus.clone(),
             founded: self.founded.clone(),
             founded_day: self.founded_day.clone(),
+            grace_waived: self.world.grace_waived().clone(),
+            request_log: self.request_log.iter().map(|(k, v)| (*k, v.clone())).collect(),
+            attack_alerts: self.attack_alerts.iter().map(|(k, v)| (*k, *v)).collect(),
         }
     }
 
@@ -942,6 +998,10 @@ impl Game {
         g.species_bonus = saved.species_bonus;
         g.offline_resume(saved.offline);
         g.founded = saved.founded;
+        g.world.set_grace_waived(saved.grace_waived);
+        g.request_log = saved.request_log.into_iter().collect();
+        g.attack_alerts = saved.attack_alerts.into_iter().collect();
+        g.graced = g.graced_players();
         g
     }
 
@@ -1207,6 +1267,9 @@ impl Game {
             let text = format!("Founding grant for {}", design.name);
             let _ = self.post(player, economy::FOUNDING_GRANT as i64, LedgerKind::Grant, text, None, None);
         }
+        if self.world.lineage_grace_ticks(lineage).is_some() {
+            self.graced.insert(player);
+        }
         Ok(FoundOk { lineage, founders, cost: design.point_cost() })
     }
 
@@ -1344,7 +1407,7 @@ impl Game {
             ClientMsg::PossessAttack { organism, target } => {
                 // Repeating the standing order changes nothing: no new alert.
                 let repeat = self.world.attack_target(organism) == Some(target);
-                self.world.possess_attack(player, organism, target).map_err(e)?;
+                self.world.possess_attack(player, organism, target).map_err(|err| self.grace_error(&err))?;
                 self.attack_watch.insert(organism, (player, target));
                 if !repeat {
                     self.alert_attacked(player, organism, target, out);
@@ -1366,6 +1429,11 @@ impl Game {
                     data["route"] = serde_json::to_value(route).unwrap_or_default();
                 }
                 Ok(Some(data))
+            }
+            ClientMsg::EndGrace => {
+                self.world.end_grace(player).map_err(e)?;
+                self.announce_grace_end(out);
+                Ok(None)
             }
             ClientMsg::RetireLineage { lineage } => {
                 let (n, moved) = self.retire_sparing(player, lineage, out)?;
@@ -1471,8 +1539,22 @@ impl Game {
                 if !offer.status.is_open() {
                     return Err(ErrorInfo::new("offer_closed", format!("offer {request} is {:?}", offer.status)));
                 }
-                self.close(request, OfferStatus::Cancelled, None, None, out);
-                Ok(None)
+                // An accepted agreement held the partner's dam: the requester
+                // backing out pays for the hold as a lapse would (else
+                // buying a rival's dam and cancelling before the deadline
+                // locked her for free). The partner's owner backing out
+                // costs the requester nothing.
+                let held = offer.status == OfferStatus::Accepted
+                    && offer.from == player
+                    && offer.to != player
+                    && self.world.organism(offer.partner).is_some_and(|x| x.sex == Sex::Female);
+                let info = held.then(|| {
+                    let forfeit = self.forfeit_hold(request, "the buyer cancelled");
+                    ErrorInfo::new("cancelled", format!("the agreement was cancelled after acceptance; {forfeit}"))
+                });
+                let data = info.as_ref().map(|i| serde_json::json!({ "forfeit": i.message }));
+                self.close(request, OfferStatus::Cancelled, None, info, out);
+                Ok(data)
             }
             ClientMsg::CreateListing { organism, fee, expires_days } => {
                 let l = self.create_listing(player, organism, fee, expires_days)?;
@@ -2777,23 +2859,33 @@ impl Game {
     /// used to hold her until the season ended.
     fn lapse(&mut self, id: u64, out: &mut Outbox) {
         let o = self.offers[&id].clone();
+        let forfeit = self.forfeit_hold(id, "the buyer never came");
+        let info = ErrorInfo::new(
+            "lapsed",
+            format!("#{} never came to #{} within the deadline: the agreement lapsed; {forfeit}", o.mine, o.partner),
+        );
+        self.close(id, OfferStatus::Expired, None, Some(info), out);
+    }
+
+    /// What the requester of accepted agreement `id` pays for having held
+    /// the partner's dam and not mating: [`LAPSE_FEE_PERCENT`] of the
+    /// escrowed price (at least 1) to the partner's owner, or a mating slot
+    /// when nothing was paid. Taken from the escrow before it closes, so the
+    /// rest is refunded. Says what was forfeit.
+    fn forfeit_hold(&mut self, id: u64, why: &str) -> String {
+        let o = self.offers[&id].clone();
         let fee = if o.escrow > 0 { (o.escrow * LAPSE_FEE_PERCENT / 100).clamp(1, o.escrow) } else { 0 };
-        let forfeit = if fee > 0 {
+        if fee > 0 {
             self.offers.get_mut(&id).unwrap().escrow -= fee;
             let what = o.listing.map_or(format!("offer #{id}"), |l| format!("listing #{l}"));
-            let text = format!("Lapse fee: {fee} renown from {} for {what} (the buyer never came)", self.name(o.from));
+            let text = format!("Hold fee: {fee} renown from {} for {what} ({why})", self.name(o.from));
             let _ = self.post(o.to, fee as i64, LedgerKind::Sale, text, Some(id), o.listing);
             format!("{fee} renown of the fee is forfeit to {}", self.name(o.to))
         } else if self.world.forfeit_mating_slot(o.from) {
             "a mating slot is forfeit".to_string()
         } else {
             "nothing was forfeit".to_string()
-        };
-        let info = ErrorInfo::new(
-            "lapsed",
-            format!("#{} never came to #{} within the deadline: the agreement lapsed; {forfeit}", o.mine, o.partner),
-        );
-        self.close(id, OfferStatus::Expired, None, Some(info), out);
+        }
     }
 
     /// Tell the sender a pending request expires soon (once).
@@ -3013,6 +3105,7 @@ impl Game {
         self.announce_group_events(&mut out);
         self.plan_routes();
         self.offline_after_tick();
+        self.announce_grace_end(&mut out);
         if self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) {
             self.sync_focus();
         }
@@ -6890,6 +6983,47 @@ mod tests {
                 g.world.organism(dam).unwrap().breed_ready_tick <= t + 1
                     || g.world.organism(dam).unwrap().pregnancy.is_some()
             );
+        }
+    }
+
+    /// Cancelling a bought dam before the deadline isn't a free hold: the
+    /// buyer forfeits a tenth of the fee (or a slot); the seller cancelling
+    /// refunds the buyer in full.
+    #[test]
+    fn a_buyer_cancelling_an_accepted_purchase_pays_for_the_hold() {
+        for (fee, by_buyer) in [(20u64, true), (0, true), (20, false)] {
+            let (mut g, a, b) = game();
+            let (dam, stud) = (female(&g, &a), male(&g, &b));
+            g.command(10, 1, Some(1), ClientMsg::CreateListing { organism: dam, fee, expires_days: None });
+            let listing = g.economy.listing_of(dam).unwrap().id;
+            g.economy.balances.insert(1, 0);
+            g.economy.balances.insert(2, 100);
+            let slots = g.world.mating_slots_left(2);
+            let out = g.command(20, 2, Some(2), ClientMsg::BuyListing { listing, mine: stud });
+            assert!(result(&out).0, "{out:?}");
+            let id = *g.offers.keys().next().unwrap();
+            assert_eq!(g.offers[&id].status, OfferStatus::Accepted);
+            let out = if by_buyer {
+                g.command(20, 2, Some(3), ClientMsg::CancelMating { request: id })
+            } else {
+                g.command(10, 1, Some(3), ClientMsg::CancelMating { request: id })
+            };
+            assert!(result(&out).0, "{out:?}");
+            let entry = |g: &Game, p: PlayerId, kind: LedgerKind| {
+                g.ledger(p, 50).into_iter().find(|e| e.kind == kind && e.offer == Some(id)).map(|e| e.delta)
+            };
+            match (fee, by_buyer) {
+                (20, true) => {
+                    assert_eq!(entry(&g, 1, LedgerKind::Sale), Some(2), "a tenth to the seller");
+                    assert_eq!(entry(&g, 2, LedgerKind::Refund), Some(18));
+                    assert_eq!(g.world.mating_slots_left(2), slots);
+                }
+                (0, true) => assert_eq!(g.world.mating_slots_left(2), slots - 1, "a slot is forfeit"),
+                _ => {
+                    assert_eq!(entry(&g, 1, LedgerKind::Sale), None);
+                    assert_eq!(entry(&g, 2, LedgerKind::Refund), Some(20), "the seller backing out refunds all");
+                }
+            }
         }
     }
 
