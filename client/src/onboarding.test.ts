@@ -145,6 +145,14 @@ describe('hint triggers', () => {
     expect(dueHints(input({ offers: [offer(ME, 'pending')] }), [])).toEqual(['offer']);
   });
 
+  it('leaves out deaths before the lineage settled in (a retired one\'s, a fresh founding\'s first)', () => {
+    const at = (day: number): FeedEntry => ({ kind: 'death', text: 'Founder #4 starved.', tick: day * 48, day });
+    expect(dueHints(input({ feed: [at(3), at(12)], deathsFrom: 15 }), [])).toEqual([]);
+    expect(dueHints(input({ feed: [at(3), at(16)], deathsFrom: 15 }), [])).toEqual(['death']);
+    // An entry with no day can't be placed: not counted once there is a bound.
+    expect(dueHints(input({ feed: [entry('death')], deathsFrom: 15 }), [])).toEqual([]);
+  });
+
   it('ignores offers we sent and offers already answered', () => {
     expect(dueHints(input({ offers: [offer(9, 'pending'), offer(ME, 'accepted'), offer(ME, 'declined')] }), [])).toEqual([]);
   });

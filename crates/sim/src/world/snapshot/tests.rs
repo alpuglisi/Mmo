@@ -412,7 +412,7 @@ fn founding_fixes_off(w: &mut World) {
     let old = crate::serde_util::before_v47::OLD_VALUE;
     (w.config.balance.reachable_water, w.config.balance.founding_conditions) = (old, old);
     w.config.balance.founding_safety = crate::serde_util::before_v50::OLD_VALUE;
-    w.config.balance.brood_care = crate::serde_util::before_v52::OLD_VALUE;
+    w.config.balance.brood_care = crate::serde_util::before_v55::OLD_VALUE;
     playtest4_off(&mut w.config.balance);
     balance49_off(&mut w.config.balance);
     for h in &mut w.lineage_homes {
@@ -498,7 +498,7 @@ fn playtest4_off(b: &mut crate::Balance) {
     let old = crate::serde_util::before_v51::OLD_VALUE;
     (b.player_packs, b.dormant_water, b.possessed_sleep) = (old, old, old);
     // Version 52 (`Balance::brood_care`) comes after, so it is off too.
-    b.brood_care = crate::serde_util::before_v52::OLD_VALUE;
+    b.brood_care = crate::serde_util::before_v55::OLD_VALUE;
 }
 
 /// Version 48 snapshots (before the playtest 4 balance rules) restore with
@@ -514,7 +514,7 @@ fn version_48_snapshots_restore_without_playtest4_balance() {
     assert_eq!(r.config.balance.winter_rest, crate::serde_util::before_v49::OLD_VALUE);
     balance49_off(&mut w.config.balance);
     w.config.balance.founding_safety = crate::serde_util::before_v50::OLD_VALUE;
-    w.config.balance.brood_care = crate::serde_util::before_v52::OLD_VALUE;
+    w.config.balance.brood_care = crate::serde_util::before_v55::OLD_VALUE;
     playtest4_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());

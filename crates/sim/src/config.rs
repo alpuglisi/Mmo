@@ -1167,8 +1167,8 @@ pub struct Balance {
     /// stayed awake while their group slept, then starved). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v51"))]
     pub possessed_sleep: f32,
-    /// Playtest 5 eggs and young (version 52; off at 0, what snapshots
-    /// before version 52 read, `serde_util::before_v52`):
+    /// Playtest 5 eggs and young (version 55; off at 0, what snapshots
+    /// before version 55 read, `serde_util::before_v55`):
     /// - a brooding parent (one with a clutch on its nest) stays with the
     ///   clutch instead of following its group's migration, territory or
     ///   rally, and heads back to it once a flight is over (playtest 5:
@@ -1181,7 +1181,7 @@ pub struct Balance {
     /// - reinforcements are a generation after the adults they copy, not
     ///   generation 0 (which gave copies of founders the founders' free
     ///   first winter).
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v55"))]
     pub brood_care: f32,
 }
 

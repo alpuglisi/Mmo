@@ -496,6 +496,10 @@ mod tests {
             tick(&mut g);
         }
         assert!(!g.offline.spells().contains_key(&2), "gone 3 ticks: still playing");
+        // Nor is the small lineage's surviving core shielded meanwhile
+        // (playtest 5: closing the sockets mid-hunt must not shield it at once).
+        let lb = g.lineage_of(2).unwrap();
+        assert!(!protected(&g).contains(&lb), "no shield during the idle time");
         let out = g.connect(21, 2, "bob");
         assert!(!format!("{out:?}").contains("While you were away"));
         g.disconnect(21);
@@ -503,6 +507,7 @@ mod tests {
             tick(&mut g);
         }
         assert!(g.offline.spells().contains_key(&2), "gone past the idle time: away");
+        assert!(protected(&g).contains(&lb), "and shielded from then on");
     }
 
     #[test]

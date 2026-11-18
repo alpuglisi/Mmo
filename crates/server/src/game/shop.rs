@@ -155,10 +155,13 @@ impl Game {
             nameplate_colors: economy::NAMEPLATE_COLORS.iter().map(|c| c.to_string()).collect(),
             nameplate: self.economy.nameplates.get(&player).cloned(),
             species_name_price: economy::SPECIES_NAME_PRICE,
-            provision_price: economy::PROVISION_PRICE,
+            provision_price: self
+                .provision_terms(player)
+                .map_or(economy::PROVISION_PRICE, |(_, n, per)| per * n.len() as u64),
+            provision_size: self.provision_terms(player).map_or(economy::PROVISION_SIZE, |(_, n, _)| n.len()),
             provisions_bought: self.recent_count(self.economy.provision_days.get(&player)),
             provisions_max: economy::MAX_PROVISIONS_PER_SEASON,
-            provision_blocked: self.provision_blocked(player).err().map(|e| e.message),
+            provision_blocked: self.provision_terms(player).err().map(|e| e.message),
             reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
             reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
         }
@@ -185,19 +188,13 @@ impl Game {
         Some((day, minutes as u64))
     }
 
-    /// Why `player` can't buy a provision now (their lineage otherwise).
-    fn provision_blocked(&self, player: PlayerId) -> Result<u32, ErrorInfo> {
+    /// What a provision for `player` would be now: their lineage, the
+    /// adults it would feed (the neediest first) and the renown per adult;
+    /// or why not.
+    fn provision_terms(&self, player: PlayerId) -> Result<(u32, Vec<usize>, u64), ErrorInfo> {
         let Some(lineage) = self.lineage_of(player).filter(|_| !self.is_extinct(player)) else {
             return Err(ErrorInfo::new("no_lineage", "you have no living lineage to provision"));
         };
-        let max = self.reinforce_max_alive();
-        let alive = self.owner_population(player);
-        if alive > max {
-            return Err(ErrorInfo::new(
-                "too_large",
-                format!("provisions are for lineages of at most {max} (yours has {alive})"),
-            ));
-        }
         if self.recent_count(self.economy.provision_days.get(&player)) >= economy::MAX_PROVISIONS_PER_SEASON {
             return Err(ErrorInfo::new(
                 "limit_reached",
@@ -208,13 +205,14 @@ impl Game {
                 ),
             ));
         }
-        Ok(lineage)
-    }
-
-    /// `provision`: the lineage's hungriest or thirstiest adults are fed and
-    /// watered a little. The number fed and the shop after.
-    pub(super) fn provision(&mut self, player: PlayerId) -> Result<(usize, ShopView), ErrorInfo> {
-        let lineage = self.provision_blocked(player)?;
+        let max = self.reinforce_max_alive().max(1);
+        let alive = self.owner_population(player);
+        let (size, per) = if alive <= max {
+            (economy::PROVISION_SIZE, economy::PROVISION_PER_ANIMAL)
+        } else {
+            let blocks = alive.div_ceil(max);
+            ((economy::PROVISION_SIZE * blocks).min(economy::PROVISION_MAX_SIZE), economy::PROVISION_PER_ANIMAL_LARGE)
+        };
         let mut needy: Vec<usize> = (0..self.world.organisms.len())
             .filter(|&i| {
                 let o = &self.world.organisms[i];
@@ -229,8 +227,17 @@ impl Game {
             n.hunger.max(n.thirst)
         };
         needy.sort_by(|&a, &b| need(b).total_cmp(&need(a)).then(a.cmp(&b)));
-        needy.truncate(economy::PROVISION_SIZE);
-        self.spend(player, economy::PROVISION_PRICE, format!("Provision: {} adults fed and watered", needy.len()))?;
+        needy.truncate(size);
+        Ok((lineage, needy, per))
+    }
+
+    /// `provision`: the lineage's hungriest or thirstiest adults are fed and
+    /// watered a little, priced per adult fed. The number fed and the shop
+    /// after.
+    pub(super) fn provision(&mut self, player: PlayerId) -> Result<(usize, ShopView), ErrorInfo> {
+        let (_, needy, per) = self.provision_terms(player)?;
+        let price = per * needy.len() as u64;
+        self.spend(player, price, format!("Provision: {} adults fed and watered ({per} renown each)", needy.len()))?;
         for &i in &needy {
             let n = &mut self.world.organisms[i].needs;
             n.hunger = (n.hunger - economy::PROVISION_AMOUNT).max(0.0);
@@ -297,6 +304,10 @@ impl Game {
         if let Some(&by) = self.economy.named_species.get(&species) {
             return Err(ErrorInfo::new("already_named", format!("{} has already named this species", self.name(by))));
         }
+        // Its own name again would charge for nothing (playtest 5: 300).
+        if names::fold(&s.name) == names::fold(&name) {
+            return Err(ErrorInfo::new("same_name", format!("the species is already called {}", s.name)));
+        }
         // Look-alikes count as taken, as for player names.
         if tracker.species.iter().any(|o| o.id != species && names::fold(&o.name) == names::fold(&name)) {
             return Err(ErrorInfo::new("name_taken", "another species has that name"));
@@ -321,6 +332,11 @@ impl Game {
     pub(crate) fn species_namer(&self, s: &evo_sim::species::Species) -> Option<PlayerId> {
         if !s.is_alive() || s.merged_into.is_some() {
             return None;
+        }
+        // Named once: its namer stays whoever named it (playtest 5: the
+        // namer followed the largest lineage even after naming).
+        if let Some(&by) = self.economy.named_species.get(&s.id) {
+            return Some(by);
         }
         if s.founder.is_some() {
             return s.founder;
@@ -573,6 +589,9 @@ impl Game {
                     reason: t.reason,
                 }
             }),
+            name_warning: self
+                .impersonates(player, &design.name, names::Kind::Lineage)
+                .then(|| "that lineage name looks like another player's name: founding would refuse it".to_string()),
         }
     }
 

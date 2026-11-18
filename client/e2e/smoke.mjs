@@ -822,7 +822,7 @@ async function main() {
     if (!entry(bobLedger, 'escrow') || entry(bobLedger, 'escrow').delta !== -fee) throw new Error(`no escrow entry: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
     if (fin.status === 'completed') {
       // The seller gets the fee less the 10% market fee (floored; economy::market_fee).
-      const net = fee - Math.floor((fee * 10) / 100);
+      const net = fee - Math.floor((fee * 10 + 50) / 100); // the fee rounds to the nearest renown
       if (entry(annLedger, 'sale')?.delta !== net) throw new Error(`completed but ann not paid ${net}: ${JSON.stringify(annLedger.entries.slice(0, 5))}`);
       if (entry(bobLedger, 'refund')) throw new Error('completed and refunded');
       step(`market mating completed (${fin.outcome?.conceived ? 'conceived' : 'not conceived'}): ann paid ${fee - Math.floor((fee * 10) / 100)} of ${fee} renown from escrow`);
@@ -918,7 +918,7 @@ async function main() {
     // machine, or the lot died), the round starts over with a new auction.
     // Only if every bid attempt fails on an auction that is still open does
     // ann withdraw it instead (logged as such).
-    const reserve = 5; // a dam goes for at least 5 (DAM_MIN_FEE)
+    const reserve = 5; // a listing goes for at least 5 (LISTING_MIN_FEE)
     await page.selectOption('#market-list-kind', 'auction');
     if (!(await page.isVisible('#market-auction-days'))) throw new Error('the auction length field is hidden');
     const auctionOpen = async (id) => (await ownListings()).includes(id);
@@ -1506,7 +1506,7 @@ async function main() {
     // Seasons tab (three-day ranked seasons here): the season under way, the
     // hall of fame with finished seasons' winners, your own record, and a
     // finished season's full standings.
-    await page.click('#tab-seasons');
+    await page.click('#tab-ranks');
     const ranked = await waitFor('ranked seasons', () => page.evaluate(() => {
       const clock = document.querySelector('#season-clock')?.textContent ?? '';
       const finished = document.querySelectorAll('#season-history details').length;
@@ -1523,6 +1523,21 @@ async function main() {
       if (d && !document.querySelector('#season-history details[open]')) d.open = true;
       return document.querySelector('#season-history details[open] .standings table.board') !== null;
     }), 20000);
+    // Every value whole (nothing cut off at the panel's edge, playtest 5), and a
+    // heading's "N ranked" never claims more rows than it shows.
+    const tables = await page.evaluate(() => [...document.querySelectorAll('#panel-ranks .standing')].map((st) => {
+      const cells = [...st.querySelectorAll('td.num')];
+      const panel = document.querySelector('#panel-ranks').getBoundingClientRect();
+      return {
+        head: st.querySelector('h4')?.textContent ?? '', rows: st.querySelectorAll('tbody tr').length,
+        clipped: cells.filter((c) => c.scrollWidth > c.clientWidth + 1 || c.getBoundingClientRect().right > panel.right + 1).map((c) => c.textContent),
+      };
+    }));
+    for (const t of tables) {
+      if (t.clipped.length) throw new Error(`ranks values cut off: ${JSON.stringify(t)}`);
+      const m = /· (top (\d+) of )?(\d+) ranked/.exec(t.head);
+      if (m && !m[1] && Number(m[3]) > t.rows) throw new Error(`"${t.head}" over ${t.rows} rows`);
+    }
     const api = await page.evaluate(async () => {
       const me = window.evo.model.player;
       const [list, mine] = await Promise.all([(await fetch('/api/seasons')).json(), (await fetch(`/api/seasons/player/${me}`)).json()]);

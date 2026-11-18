@@ -12,8 +12,8 @@ import { api, ApiError } from '../api';
 import { designCost, validateDesign } from '../cost';
 import { seasonNotice } from '../seasonNotice';
 import { designWarnings, FOUNDING_RAMP_TEXT } from '../designWarnings';
-import { loadLastDesign, saveLastDesign } from '../lastDesign';
-import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign, starterValue } from '../designMorph';
+import { fromServerDesign, loadLastDesign, saveLastDesign } from '../lastDesign';
+import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign, starterValue, type EditorDesign } from '../designMorph';
 import { defaultMorphology, sameMorphology, type Morphology } from '../morphology';
 import type { BirthSpec, DesignCompatView, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
 import { hybridAdvice } from '../hybrid';
@@ -41,13 +41,15 @@ export interface DesignCallbacks {
   refound?: boolean;
   /** The last lineage was retired by the player, not killed off (the screen words it so). */
   retired?: boolean;
+  /** Founding again: the design to start from (this browser's, else the server's). */
+  lastDesign?: EditorDesign | null;
   onCancel?: () => void;
 }
 
 const BIRTHS: [BirthSpec, string, string][] = [
   ['live', 'Live birth', 'Few, well-developed young; mothers carry them.'],
   ['incubated_eggs', 'Incubated eggs', 'Eggs kept warm and guarded.'],
-  ['abandoned_eggs', 'Abandoned eggs', 'Many eggs, no parental care.'],
+  ['abandoned_eggs', 'Abandoned eggs', 'Many eggs, no parental care; warm-blooded eggs chill and die unless it is hot.'],
 ];
 
 export async function designScreen(cb: DesignCallbacks): Promise<HTMLElement> {
@@ -56,12 +58,18 @@ export async function designScreen(cb: DesignCallbacks): Promise<HTMLElement> {
   const world = api.world().catch(() => null);
   // The living species, for the interbreeding check (optional too).
   const species = api.species().catch(() => null);
+  // Founding again in a browser that kept nothing: the server knows how the
+  // last lineage ended and the design it was founded with.
+  const stats = cb.refound && !cb.retired ? api.lineageStats(cb.token).catch(() => null) : Promise.resolve(null);
+  const stored = cb.refound ? api.lastDesign(cb.token).catch(() => null) : Promise.resolve(null);
   try {
     cat = await api.genes();
   } catch (e) {
     return h('div', { class: 'screen center' }, h('div', { class: 'card' }, h('p', { class: 'error' }, `Could not load the gene list: ${(e as Error).message}`)));
   }
-  return buildEditor(cat, cb, await world, await species);
+  const ended = (await stats)?.ended;
+  const last = cb.refound ? loadLastDesign(cb.player, cat) ?? fromServerDesign((await stored)?.design, cat) : null;
+  return buildEditor(cat, { ...cb, retired: cb.retired || ended === 'retired', lastDesign: last }, await world, await species);
 }
 
 /** How often the editor re-reads the world (season notice, founding hint, species): a game day is seconds. */
@@ -70,7 +78,7 @@ export const DESIGN_WORLD_REFRESH_MS = 10000;
 export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldSummary | null = null, species: SpeciesList | null = null): HTMLElement {
   // The one design both modes edit: traits plus the whole body plan.
   // Founding again: start from the design founded last (in this browser).
-  const last = cb.refound ? loadLastDesign(cb.player, cat) : null;
+  const last = cb.refound ? cb.lastDesign ?? loadLastDesign(cb.player, cat) : null;
   const spec = last ?? newEditorDesign(cat);
   // The season notice: kept current while the player designs (it said "winter in 2 days" during winter).
   const seasonEl = h('p', { class: 'notice season-notice', id: 'design-season', role: 'note' });
@@ -327,37 +335,34 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   // when present its fertility figures are the ones shown, since the
   // client's estimate from species averages can disagree (playtest 4).
   let serverCompat: { design: string; view: DesignCompatView } | null = null;
+  /** The server's re-founding terms for the design it last checked. */
+  let refoundNow: { design: string; terms: NonNullable<DesignCompatView['refound']> } | null = null;
   function renderHybrid(): void {
     if (!species) return;
     const p = payload();
-    const a = hybridAdvice(p, species.species, cb.player ?? -1);
     const measured = serverCompat && serverCompat.design === JSON.stringify({ ...p, name: '' }) ? serverCompat.view : null;
-    const rows = measured ? serverFertility(measured) : null;
-    const key = JSON.stringify([a, rows]);
+    // One fertility figure per species: the server's sampled one once it has answered.
+    const byLineage = measured ? new Map(measured.rows.map((r) => [r.lineage, r.fertility])) : undefined;
+    const a = hybridAdvice(p, species.species, cb.player ?? -1, byLineage);
+    // Lineages the server finds fertile that the estimate left out (named once, here).
+    const named = new Set(species.species.filter((sp) => a.points.some((t) => t.includes(sp.name))).flatMap((sp) => sp.lineages.map((l) => l.lineage)));
+    const extra = measured ? measured.rows.filter((r) => r.fertility >= 0.05 && !named.has(r.lineage)).sort((x, y) => y.fertility - x.fertility).slice(0, 3) : [];
+    const key = JSON.stringify([a, extra.map((r) => [r.lineage, r.fertility]), !!measured]);
     if (key === hybridKey) return;
     hybridKey = key;
-    const level = rows && rows.some((r) => r.fertility >= 0.5) ? 'warn' : a.level;
+    const level = extra.some((r) => r.fertility >= 0.5) ? 'warn' : a.level;
     hybridBox.className = `card hybrid-card hybrid-${level}`;
-    hybridBox.replaceChildren(...([
+    const points = [...a.points];
+    if (extra.length) points.push(`Also fertile with these founders, measured: ${extra.map((r) => `${r.lineage_name} (${r.wild ? 'wild' : r.owner_name}, ${Math.round(r.fertility * 100)}% fertile)`).join(', ')}.`);
+    hybridBox.replaceChildren(
       h('h2', {}, 'Interbreeding'),
-      h('p', { class: 'hybrid-headline' }, a.level === 'warn' ? '⚠ ' : '', a.headline),
-      rows ? h('div', { class: 'small hybrid-measured', id: 'design-hybrid-measured' },
-        h('strong', {}, `Measured by the server (day ${measured!.day + 1}, ${measured!.sample} sampled animals): `),
-        rows.length === 0
-          ? 'no species in the world would be fertile with these founders.'
-          : rows.map((r) => `${r.name} ${Math.round(r.fertility * 100)}% fertile`).join(' · ') + '.') : null,
-      h('ul', { class: 'small hybrid-points' }, ...a.points.map((t) => h('li', {}, t))),
+      h('p', { class: 'hybrid-headline' }, level === 'warn' ? '⚠ ' : '', a.headline),
+      h('ul', { class: 'small hybrid-points' }, ...points.map((t) => h('li', {}, t))),
       h('p', { class: 'small muted hybrid-market', id: 'design-hybrid-market' }, a.market),
       h('p', { class: 'small muted hybrid-confidence', id: 'design-hybrid-confidence' },
-        rows ? 'The measured figures come from pairing sampled animals and are the ones that count; the advice above estimates from species averages.' : a.confidence),
-    ] as (HTMLElement | null)[]).filter((x): x is HTMLElement => x !== null));
-  }
-  /** The server's rows with any fertility, most fertile first. */
-  function serverFertility(v: DesignCompatView): { name: string; fertility: number }[] {
-    return v.rows.filter((r) => r.fertility >= 0.01)
-      .sort((a, b) => b.fertility - a.fertility)
-      .slice(0, 5)
-      .map((r) => ({ name: `${r.lineage_name} (${r.wild ? 'wild' : r.owner_name})`, fertility: r.fertility }));
+        measured
+          ? `Figures marked "measured" come from the server pairing ${measured.sample} sampled animals with these founders on day ${measured.day + 1}; they are the ones that count.`
+          : a.confidence));
   }
 
   let waterTimer: ReturnType<typeof setTimeout> | undefined;
@@ -380,11 +385,14 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       waterBox.hidden = !warning;
       if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', warning));
       const rf = r?.refound;
+      const before = JSON.stringify(refoundNow?.terms ?? null);
+      refoundNow = r && rf ? { design: JSON.stringify({ ...p, name: '' }), terms: rf } : null;
+      if (JSON.stringify(rf ?? null) !== before) update();
       refoundBox.hidden = !rf;
       if (rf) {
         refoundBox.replaceChildren(h('h2', {}, 'Re-founding soon'),
           h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points.`),
-          h('p', { class: 'small' }, `Because ${rf.reason}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minutes).`));
+          h('p', { class: 'small' }, `Because ${rf.reason}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minute${rf.minutes_left === 1 ? '' : 's'}).`));
       }
     }, 600);
   }
@@ -407,9 +415,15 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     // Its advice follows the thermoregulation (brumation for cold blood).
     showSeason();
     const c = designCost(payload(), cat);
-    total.textContent = `${c.total.toFixed(1)} / ${cat.budget} points`;
-    dockTotal.textContent = `${c.total.toFixed(1)} / ${cat.budget} points · founding with points left is fine`;
-    const frac = c.total / cat.budget;
+    // Re-founding soon: the server charges for the founders it gives
+    // (`refound.cost`), so the budget shows that figure, not the full design's
+    // (playtest 5: "Budget 70.2" next to "costing 56.2").
+    const rf = refoundNow && refoundNow.design === JSON.stringify({ ...payload(), name: '' }) ? refoundNow.terms : null;
+    const shown = rf ? rf.cost : c.total;
+    const now = rf ? ` · founding now: ${rf.founders} of ${rf.requested} founders` : '';
+    total.textContent = `${shown.toFixed(1)} / ${cat.budget} points${now}`;
+    dockTotal.textContent = `${shown.toFixed(1)} / ${cat.budget} points${now} · founding with points left is fine`;
+    const frac = shown / cat.budget;
     bar.style.width = `${Math.min(100, frac * 100)}%`;
     bar.classList.toggle('over', frac > 1 + 1e-5);
     const extras = [
@@ -479,8 +493,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     h('header', { class: 'topbar' }, h('strong', { class: 'topbar-title' }, cb.refound ? 'Design a new lineage' : 'Design your founders'),
       h('span', { class: 'muted' }, cb.refound
         ? cb.retired
-          ? 'You retired your last lineage. Your renown, records and titles stay; the new founders start fresh.'
-          : 'Your last lineage died out. Your renown, records and titles stay; the new founders start fresh.'
+          ? 'You retired your last lineage. Your renown, records and titles stay; the new founders start fresh. A newcomer grace isn\'t new each time: founding again soon after your last founding continues that grace, even one that has run out (the founding alert says which).'
+          : 'Your last lineage died out. Your renown, records and titles stay; the new founders start fresh. A newcomer grace isn\'t new each time: founding again soon after your last founding continues that grace, even one that has run out (the founding alert says which).'
         : 'After launch the design changes only through breeding, mutation and selection.'),
       h('span', { class: 'spacer' }),
       cb.onCancel ? h('button', { class: 'secondary', id: 'design-cancel', onclick: cb.onCancel }, 'Back to the map') : null,

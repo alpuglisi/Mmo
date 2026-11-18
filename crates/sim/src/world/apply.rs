@@ -1261,7 +1261,7 @@ impl World {
             damage += harm((cold - 10.0) * 2.0 * dt, DeathCause::Exposure);
         }
         if heat > 8.0 {
-            damage += harm((heat - 8.0) * 2.0 * dt, DeathCause::Exposure);
+            damage += harm((heat - 8.0) * 2.0 * dt, DeathCause::Heat);
         }
         if drowning {
             damage += harm(150.0 * dt, DeathCause::Drowning);

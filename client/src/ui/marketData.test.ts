@@ -128,6 +128,7 @@ describe('buyProblem', () => {
     expect(buyProblem(l, 1, 50, 0, own(10))).toBe('no mating slots left');
     expect(buyProblem(l, 1, 9, 2, own(10))).toBe('needs 10 renown');
     expect(buyProblem(listing(1, { compatible: false }), 1, 50, 2, own(10))).toBe('body plans too different: sterile with your lineage');
+    expect(buyProblem(listing(1, { compatible: false }), 1, 50, 2, undefined)).toBe('body plans too different: sterile with your lineage');
   });
 });
 
