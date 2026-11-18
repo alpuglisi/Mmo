@@ -201,9 +201,11 @@ export class GameModel {
         break;
       case 'mating_request': {
         this.offers.set(m.offer.id, { offer: m.offer, incoming: true });
-        const text = `${m.offer.from_name} asks to mate their #${m.offer.mine} with your #${m.offer.partner}`;
+        // An offer to the lineage has no partner yet (0): "one of yours", no link (playtest 5: "#0#0").
+        const toLineage = m.offer.partner === 0;
+        const text = `${m.offer.from_name} asks to mate their #${m.offer.mine} with ${toLineage ? 'one of yours (you pick which)' : `your #${m.offer.partner}`}`;
         this.toast('info', text);
-        this.addFeed([{ kind: 'offer', text, tick: this.tick(), organism: m.offer.partner }]);
+        this.addFeed([{ kind: 'offer', text, tick: this.tick(), ...(toLineage ? {} : { organism: m.offer.partner }) }]);
         this.emit('offers');
         break;
       }

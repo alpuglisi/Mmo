@@ -316,7 +316,7 @@ async fn commands_market_and_leaderboards_stay_in_their_world() {
     let mut listed = None;
     for (k, &id) in ann_ids.iter().enumerate() {
         let r =
-            command(&mut ann_main, 30 + k as u64, json!({"type": "create_listing", "organism": id, "fee": 3})).await;
+            command(&mut ann_main, 30 + k as u64, json!({"type": "create_listing", "organism": id, "fee": 5})).await;
         if r["ok"] == true {
             listed = r["data"]["listing"]["id"].as_u64();
             break;
@@ -327,7 +327,7 @@ async fn commands_market_and_leaderboards_stay_in_their_world() {
     // `GameConfig::min_auction_ticks`).
     let mut auctioned = None;
     for (k, &id) in ann_ids.iter().enumerate() {
-        let msg = json!({"type": "create_auction", "organism": id, "reserve": 1, "ticks": 10});
+        let msg = json!({"type": "create_auction", "organism": id, "reserve": 5, "ticks": 10});
         let r = command(&mut ann_main, 50 + k as u64, msg).await;
         if r["ok"] == true {
             auctioned = r["data"]["listing"]["id"].as_u64();

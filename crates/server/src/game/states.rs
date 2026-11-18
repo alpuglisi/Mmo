@@ -499,6 +499,7 @@ impl Game {
             ClientMsg::RespondMating { .. }
             | ClientMsg::CompleteMating { .. }
             | ClientMsg::CancelMating { .. }
+            | ClientMsg::SubstituteMating { .. }
             | ClientMsg::WithdrawListing { .. } => {}
             // New organisms: `Game::reinforce` invalidates the whole cache.
             ClientMsg::Reinforce => {}

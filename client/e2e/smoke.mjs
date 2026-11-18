@@ -822,7 +822,7 @@ async function main() {
     if (!entry(bobLedger, 'escrow') || entry(bobLedger, 'escrow').delta !== -fee) throw new Error(`no escrow entry: ${JSON.stringify(bobLedger.entries.slice(0, 5))}`);
     if (fin.status === 'completed') {
       // The seller gets the fee less the 10% market fee (floored; economy::market_fee).
-      const net = fee - Math.floor((fee * 10) / 100);
+      const net = fee - Math.floor((fee * 10 + 50) / 100); // the fee rounds to the nearest renown
       if (entry(annLedger, 'sale')?.delta !== net) throw new Error(`completed but ann not paid ${net}: ${JSON.stringify(annLedger.entries.slice(0, 5))}`);
       if (entry(bobLedger, 'refund')) throw new Error('completed and refunded');
       step(`market mating completed (${fin.outcome?.conceived ? 'conceived' : 'not conceived'}): ann paid ${fee - Math.floor((fee * 10) / 100)} of ${fee} renown from escrow`);
@@ -918,7 +918,7 @@ async function main() {
     // machine, or the lot died), the round starts over with a new auction.
     // Only if every bid attempt fails on an auction that is still open does
     // ann withdraw it instead (logged as such).
-    const reserve = 5; // a dam goes for at least 5 (DAM_MIN_FEE)
+    const reserve = 5; // a listing goes for at least 5 (LISTING_MIN_FEE)
     await page.selectOption('#market-list-kind', 'auction');
     if (!(await page.isVisible('#market-auction-days'))) throw new Error('the auction length field is hidden');
     const auctionOpen = async (id) => (await ownListings()).includes(id);
