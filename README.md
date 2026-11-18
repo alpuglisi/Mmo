@@ -1816,7 +1816,9 @@ together):
   adults; the button asks for confirmation and its reason shows beside it.
 - **Re-founding within a ranked season's length of retiring founds half
   the founders** (`Game::refound_founders`; after an extinction, or later,
-  the full design). The retire dialog says so.
+  the full design). The retire dialog says so. (Since playtest 5: founders
+  cost double points in the window, as many as the budget then buys, at
+  least half.)
 - Small: `traded_share` no longer reads −0.0; a closed offer has no
   `expires_tick`; the auction duration error names the 5-minute floor;
   the royalty doc comments agree (other players' lineages only).
@@ -8600,6 +8602,75 @@ rest), the toxic frogs' 38–42 (unchanged); fox and pack hunters survive 8 of
 | --- | --- |
 | `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.86 (± 0.16; ≈11.93 before), 11.96 (± 0.04) with `egg_attendance` 0.5 after the merge: every lineage 12 of 12; the cold-blooded marsh newts 197 and toxic frogs 265 (409 and 380) rest in winter |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
+
+
+### Playtest 5: balance
+
+Playtest 5 (`docs/playtest-5.md`, findings 1, 2, 3, 7 and part of 13 here):
+cold-blooded, brumating, toxic, bright fliers dominated as a class (four of
+six players; three at the hard cap; 10 founders to the cap in ~25 wall
+minutes; 3 deaths in 180 days, none through a severe winter or a 52–63%
+drought). Cold blood was sterile with every warm lineage, which also walled
+the breeding market off (0 completed sales). Warm-blooded abandoned eggs never
+hatched (252 chilled, 0 born). Later copies of a design were filed into the
+first player's species, small player lineages into wild species, and the
+wild Red fox into the Meadow vole species. Re-founding charged full points
+for half the founders.
+
+**Sim rules, on by default from snapshot version 53** (taken as 52 and
+renumbered at merge after `DeathCause::Heat`), off at 0 for older saves
+(`serde_util::before_v53`):
+
+| Tunable (default) | Rule |
+| --- | --- |
+| `thermo_hybrid` (0.7) | Warm/cold blood counts `1 − 0.7` of its 0.8 difference in the fertility gap (`mating::Relief::thermo`, `plan_weights`): 0.24, about a third as fertile, instead of sterile. Kinship and species keep the full gap, and the other body-plan genes still count in full, so a cold frog or newt (abandoned eggs) stays sterile with warm live bearers. |
+| `flight_upkeep` (0.25) | A flier on the move burns `hunger_rate × 0.45 × wings × (mass / 4)^0.3 × flight_upkeep` more food and `thirst_rate × 0.35 × wings × flight_upkeep` more water, more in the heat. Neither scales with a cold-blooded body's low metabolism (×0.35), which had made flight free. |
+| `avoid_cap` (0.85) | A predator lineage's learned avoidance of a toxic prey lineage stops at 0.85 (`World::toxic_avoidance`): bright toxic prey is still tried on some hunter-days. An honest signal is not immunity. |
+| `cold_heat` (1) | A cold-blooded body stops gaining heat from the sun as the air nears 30 °C (shade). Past a body temperature of 32 °C it slows (activity down to 0.15 by 44 °C), loses water faster (+5% a degree) and takes heat harm from 42 °C instead of 46 °C. |
+| `species_credit` (1) | The species tracker clusters each owner's animals apart, the wild ones together (`species::cluster_by_owner`), and a species continues only as a cluster of its main lineage's owner. A player's copy of a rival's design becomes its own species, with split credit to that player; a small player lineage is no longer filed inside a wild species, so its toxins no longer read as the wild species'. A player's animals can no longer bridge two wild species into one, which is how the wild Red fox ended up in the Meadow vole species. Toxin lessons were already per lineage, keyed (predator lineage, prey lineage). |
+
+**Server and client**:
+- **Species namer.** A named species keeps its namer (`species_namer`; polish made the same fix).
+- **Abandoned-egg warning.** `POST /api/design/compatibility` adds `egg_warning` for a warm-blooded design that abandons its eggs (polish shows it in the designer).
+- **Re-founding price.** A re-founding inside the window now prices founders double (`RefoundTerms::founders`, `RefoundTerms::cost`). You get as many founders as the budget then buys, at least half, and the reported cost is what was founded. A design with points to spare gets more than half: the old rule charged full points for half the founders.
+- **Client.** The builder's gap weights warm/cold blood by 0.3 (`hybrid.ts` `THERMO_WEIGHT`).
+
+**Cross-thermo fertility** (H2; `design_compatibility`, 16 × 16 sampled
+pairs):
+
+| Design | Fertility with warm live bearers |
+| --- | --- |
+| Cold live design, default genes | 0.3 (every sampled pair fertile; sterile before) |
+| PocketNomad5's toxic, bright flier | 0.3 (every sampled pair fertile) |
+| Cold abandoned eggs (frog, newt) | 0 (sterile, as before) |
+
+**Scripted replay** (`dominance`). Seven players; Flier, Cold and Loophole
+are playtest 5's three designs: PocketNomad5's (10 founders, day 165),
+LateComer5's (62, day 313) and Rulebender5's (22, day 334). Seeds 1–4,
+840 days. The playtest 5 arm has the five new tunables off.
+
+| Player | Playtest 5 rules: final share, titles*, capped | New rules: final share, titles*, capped |
+| --- | --- | --- |
+| Steady | 2.3%, 1, 2 | 2.6%, 1, 1 |
+| Big (warm hibernator) | 5.3%, 7, 1 | 6.7%, 8, 2 |
+| Broker (warm live herd) | 4.2%, 7, 3 | 4.6%, 10, 3 |
+| Eggs (egg-laying hibernator) | 12.4%, 5, 3 | 16.7%, 12, 4 |
+| Flier (PocketNomad5) | 19.5%, 12, 3 | 16.1%, 3, 2 |
+| Cold (LateComer5) | 16.2%, 8, 4 | 14.9%, 5, 3 |
+| Loophole (Rulebender5) | 14.0%, 0, 2 | 8.4%, 1, 1 |
+| **Cold fliers as a class** | **20 of 40** | **9 of 40** |
+
+(* Titles are the legacy titles of the 40 whole seasons after day 210.
+"Capped" counts the seeds on which the lineage touched 95% of the 2,100
+hard cap at least once; no lineage ends at it.) The cold fliers fall from
+half the titles to under a quarter, and the 10-founder flier from 12 titles
+to 3. No design takes more than 12, and every design survives every seed.
+The warm herds (Big, Broker) and the egg layer gain.
+
+`flight_upkeep` at full strength (1) overshot. The fliers took no titles,
+Cold peaked at 503 animals and the flier died out on one seed, and the egg
+layer took 18. At 0.5 the fliers took 6 and the egg layer 15. At **0.25**
+the result is as above.
 
 ## Genetics validation
 
