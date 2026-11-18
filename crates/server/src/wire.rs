@@ -43,7 +43,7 @@
 //! direction, 0–31 in steps of 11.25° from +x toward +y), 21 vision (`v`: 0
 //! none, else 1 + an index into the `visions` palette).
 //! Nearby fields: 0 owner, 1 lineage, 2 position, 3 action, 4 flags (1 male,
-//! 2 matured), 5 look.
+//! 2 matured, 8 protected newcomer, 16 in its burrow), 5 look.
 //!
 //! The meta JSON holds the other [`StateView`] fields that changed, under
 //! their own names (`clock`, `weather`, `player`, `lineage`, `slots_left`,
@@ -154,6 +154,8 @@ const POSSESSED: u8 = 4;
 /// A neighbour's lineage is under its newcomer grace (neighbour flags only;
 /// the same bit is `PREGNANT` in own organisms' flags).
 const PROTECTED: u8 = 8;
+/// A neighbour down in its burrow (neighbour flags only).
+const BURROWED: u8 = 16;
 const PREGNANT: u8 = 8;
 
 /// An own organism as the client holds it (quantized; palette indices).
@@ -787,6 +789,9 @@ impl DeltaEncoder {
         if o.protected == Some(true) {
             flags |= PROTECTED;
         }
+        if o.burrowed == Some(true) {
+            flags |= BURROWED;
+        }
         NearQ {
             owner: o.owner,
             lineage: o.lineage,
@@ -1136,6 +1141,7 @@ impl DeltaDecoder {
                     matured: o.flags & MATURED != 0,
                     look: self.look(o.look)?,
                     protected: (o.flags & PROTECTED != 0).then_some(true),
+                    burrowed: (o.flags & BURROWED != 0).then_some(true),
                 })
             })
             .collect::<Result<_, DecodeError>>()?;

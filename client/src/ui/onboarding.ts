@@ -287,7 +287,9 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
     ['Territories and rallies', () => 'The Territory tool (in Tools on phones) makes a group hold an area: it patrols it and stays inside. Rally gathers a group at a point for a while. '
       + 'Pick places with water: a territory or rally away from water can kill a herd in a drought.'],
     ['Toxins and colours', () => 'A toxic animal poisons whoever bites it, whether or not the attack succeeds; predators that eat it can die (the Genes tab counts "poisoned" deaths). '
-      + 'Bright colours warn predators that have learned to avoid them; toxic but drab prey is not recognised, so it poisons more hunters. Hunting toxic prey is risky.'],
+      + 'Predators learn: each poisoning teaches the hunter\'s whole lineage to pass that prey up, and bright colours teach it about three times faster. '
+      + 'Toxic but drab prey is no free trick: it looks like any other prey, so even taught predators keep taking most of it, and they take less harm once they know the toxin. '
+      + 'Toxins pay best with warning colours. When your animals have learned a prey is poisonous, the inspector says it looks poisonous to you.'],
     ['Droughts and catastrophes', () => 'When much of the land dries out a drought notice appears over the map: animals far from lakes and rivers go thirsty. '
       + 'Catastrophes (severe winters, megadroughts, epidemics, flood years) are pinned over the map with the days left.'],
     ['Founding again: the founding ramp', () => `${FOUNDING_RAMP_TEXT} Your renown, records and titles stay when a lineage dies out or you retire it. `

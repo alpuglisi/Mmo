@@ -18,7 +18,8 @@ fn possessed(w: &World) -> Option<&crate::organism::Organism> {
 /// came on by default; seed 29 its possessed pack hunter or its state when
 /// the carnivore rules and food values did; seed 33 its possessed
 /// organism when the standard fox's carnivory went to 0.6; seed 36 its LOD
-/// cohorts with the playtest 2 fixes, version 44).
+/// cohorts with the playtest 2 fixes, version 44; seed 39 with the narrower
+/// drinking rule on by default; 41 or 43 after the round 4 merges, 43 kept).
 fn busy_world() -> World {
     let mut config = WorldConfig { seed: 43, width: 96, height: 96, days_per_year: 16, ..Default::default() };
     config.lod.enabled = true;

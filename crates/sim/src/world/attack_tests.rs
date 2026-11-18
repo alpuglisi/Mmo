@@ -515,12 +515,12 @@ fn the_parched_drink_first_and_possessed_animals_break_off_for_water() {
     }
     let i = place(&mut w, PREY, &walker(), Vec2::new(26.5, 10.5));
     grown(&mut w, i);
-    // Off by default (it cost `predlong` the fox on two seeds).
-    w.config.balance.drink_priority = 1.0;
-    // Parched and hungry, fattening for winter: it drinks.
+    // Playtest 3: starving and parched, 4 tiles from a lake, it grazed on
+    // until it died of thirst. With the rule it drinks first.
     let o = &mut w.organisms[i];
-    (o.needs.thirst, o.needs.hunger) = (90.0, 88.0);
+    (o.needs.thirst, o.needs.hunger, o.fat) = (95.0, 100.0, 0.0);
     w.grid.rebuild(&w.organisms);
+    w.config.balance.drink_priority = 1.0;
     assert_eq!(w.decide(i).action, Action::Drink);
     // A possessed animal under a move order, thirst 65, water 4 tiles off.
     let id = w.organisms[i].id;
@@ -530,4 +530,33 @@ fn the_parched_drink_first_and_possessed_animals_break_off_for_water() {
     assert_eq!(w.decide(i).action, Action::Drink);
     w.config.balance.possess_drink = 0.0;
     assert_eq!(w.decide(i).action, Action::Ordered, "the old rule: on until 85");
+}
+
+/// Playtest 3: a starving hunter that makes a kill eats its fill from the
+/// carcass, rather than starving days later beside it.
+#[test]
+fn a_kill_feeds_a_starving_hunter() {
+    let mut w = world();
+    w.config.balance.escape = 0.0;
+    w.config.balance.attack_power = 50.0;
+    w.config.balance.fight_damage = 0.0;
+    let a = place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    grown(&mut w, a);
+    let prey = place(&mut w, PREY, &walker().with(Gene::BodySize, 0.45), Vec2::new(11.5, 10.5));
+    grown(&mut w, prey);
+    let (aid, pid) = (w.organisms[a].id, w.organisms[prey].id);
+    let o = &mut w.organisms[a];
+    (o.needs.hunger, o.fat) = (95.0, 0.0);
+    w.possess(HUNTER, aid).unwrap();
+    w.possess_attack(HUNTER, aid, pid).unwrap();
+    let mut least = 100.0f32;
+    let mut caught = false;
+    for _ in 0..w.config.ticks_per_day * 2 {
+        w.step();
+        caught |= w.organism(pid).is_none();
+        let o = w.organism(aid).expect("the hunter lives");
+        least = least.min(o.needs.hunger);
+    }
+    assert!(caught, "the prey should be caught");
+    assert!(least < 30.0, "the kill should feed it: hunger never fell below {least}");
 }

@@ -1250,16 +1250,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
     // Orders reach 8 tiles (the server's `target_out_of_sight` beyond that).
     const reach = hunter ? Math.hypot(hunter.x - o.x, hunter.y - o.y) <= ATTACK_RANGE : false;
     const guarded = graceDays !== undefined;
-    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${reach}:${poisonous}:${guarded}`, () => [
+    const burrowed = o.burrowed === true;
+    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${reach}:${poisonous}:${guarded}:${burrowed}`, () => [
+      burrowed && h('p', { class: 'muted small', id: 'insp-burrowed' }, 'Down in its burrow: it can\'t be attacked on orders until it comes out, and hunters mostly can\'t reach it.'),
       poisonous && h('p', { class: 'notice bad small', id: 'insp-poisonous' }, hunter
         ? 'This animal looks poisonous to you: your kind has been poisoned eating its kind.'
         : 'This animal looks poisonous: your kind has been poisoned eating its kind.'),
       !!hunter && h('button', {
-        id: 'btn-attack', class: 'danger', disabled: guarded || !reach,
+        id: 'btn-attack', class: 'danger', disabled: guarded || burrowed || !reach,
         title: guarded ? 'A protected newcomer: it can\'t be attacked on orders until its grace ends'
+          : burrowed ? 'In its burrow: wait for it to come out'
           : reach ? '' : `#${hunter.id} is too far away: get within ${ATTACK_RANGE} tiles`,
         onclick: () => void attackWith(hunter, o.id),
-      }, guarded || reach ? `Attack with #${hunter.id}` : `Attack with #${hunter.id} (too far)`),
+      }, burrowed ? `Attack with #${hunter.id} (in its burrow)` : guarded || reach ? `Attack with #${hunter.id}` : `Attack with #${hunter.id} (too far)`),
       wild ? h('p', { class: 'muted small' }, 'Wild organisms have no owner to consent to a mating.')
         : h('button', { id: 'btn-ask-mating', onclick: () => { matingForm.setPartner(o.id); showTab('matings'); } }, 'Request mating…'),
       h('button', { class: 'secondary', onclick: () => { view.setFollow(false); view.centerOn(o.x, o.y); } }, 'Center'),

@@ -357,6 +357,8 @@ export interface NearbyOrganism {
   look?: Appearance;
   /** Its lineage is a newcomer under its grace: no other player's animal may attack it, nor it theirs. */
   protected?: true;
+  /** Down in its burrow: attack orders are refused and hunters mostly can't reach it. */
+  burrowed?: true;
 }
 
 /** `appearance::Appearance`: coarse visible body-plan classes of an adult. */

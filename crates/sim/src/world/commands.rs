@@ -203,7 +203,9 @@ impl fmt::Display for CommandError {
                     kg(*limit)
                 )
             }
-            CommandError::Sheltered(id) => write!(f, "organism {id} is safe in its burrow"),
+            CommandError::Sheltered(id) => {
+                write!(f, "organism {id} is down in its burrow, out of reach: wait for it to come out")
+            }
             CommandError::NewcomerGrace { days_left } => write!(
                 f,
                 "that lineage was founded only recently; it can't be attacked for another {:.0} days",

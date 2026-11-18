@@ -7809,28 +7809,29 @@ the order was dropped. A test
 (`an_attack_order_outside_the_territory_is_followed`) shows a territory
 member outside its territory follows an order to the end.
 
-**Drinking** (`Balance::possess_drink` 1, `Balance::drink_priority` 0):
-- **Possessed animals drink** (`possess_drink`, on). One with water within
-  8 tiles breaks off its order to drink at thirst 60 (instead of 85). At
+**Drinking** (`Balance::possess_drink` 1, `Balance::drink_priority` 1):
+- **Possessed animals drink** (`possess_drink`). One with water within 8
+  tiles breaks off its order to drink at thirst 60 (instead of 85). At
   water, it drinks from thirst 10. The need alert says when it has already
   broken off to drink.
-- **Parched animals drink first** (`drink_priority`, off by default). Past
-  thirst 0.7, drinking gains up to +0.6 utility. A threat in sight stops
-  holding a parched animal back from water (the comment always said so;
-  the code damped drinking for everyone), fattening for winter stops
-  pulling it to graze, and hunters in a chase drink at water they pass.
-  These are playtest 2's parched herbivores that "scavenge" or graze
-  instead of drinking. The rule works in its test, but it changes every
-  wild animal's behaviour, and in `predlong` on the six seeds that went
-  wrong (32, 36, 41, 45, 46 and 48):
+- **Parched animals beside water drink first** (`drink_priority`). This
+  is round 4's narrower rule for playtest 3's finding 3a: starving
+  herbivores at thirst 90–100 grazed or "scavenged" beside 399 drinkable
+  tiles and died of thirst. Past thirst 0.85, with water within 6 tiles,
+  drinking gains up to +1.5 utility (all of it at 0.95). That is more than
+  hunger, fattening and courting give, so thirst outranks hunger then.
+- **The first version cost the fox.** It changed every animal's drinking
+  much earlier: +0.6 past thirst 0.7, parched animals drinking with a
+  threat in sight, no fattening pull, hunters drinking in a chase.
+  `predlong` on the six seeds that went wrong:
   - all rules on, the fox survived 3 of 6 and two prey lineages were lost;
-  - with only `drink_priority` off, the fox survived 5 of 6 and none was
-    lost (5 of 6 and one lost with every new rule off);
-  - turning off any other rule changed nothing measurable, and
-    `led_pack`, which needs attack orders, gave exactly the all-on worlds,
-    as it should.
+  - with only that rule off, the fox survived 5 of 6 and none was lost;
+  - turning off any other rule changed nothing, and `led_pack`, which
+    needs attack orders, gave exactly the all-on worlds.
 
-  So it ships off, for a later round to find which part costs the fox.
+  The narrow rule costs nothing there. On all 16 seeds with it off, the
+  fox survived 13/16 (12 viable); with it on, 14/16 (13 viable). Pack
+  hunters were 15/16 and one prey lineage was lost either way.
 
 **Dry ground** (`Balance::dry_sites` 1):
 - No dormancy on ice over water deep enough to drown the sleeper at the
@@ -7863,6 +7864,26 @@ when meat got its food value.
 - **Wolves in `founding wolves`.** Founded in autumn on seeds 7 and 11,
   playtest 2's design ends the year at 75 and 71 animals, where it ended
   at 30 and 68 before.
+
+**Round 4 (playtest 3):**
+- **A kill feeds the hunter (finding 11).** A starving hunter (hunger 95,
+  no fat) that catches its prey on an attack order eats from the carcass,
+  and its hunger falls below 30 within two days
+  (`a_kill_feeds_a_starving_hunter`). Playtest 3's starving pack was on a
+  build without the carnivore energetics.
+- **Burrowed prey is shown (finding 29).**
+  - Neighbours in their burrow carry `burrowed` (neighbour flag 16 on the
+    wire).
+  - The inspector says the animal is down in its burrow, and its
+    "Attack with #id" button is disabled with "(in its burrow)".
+  - The refusal reads "… is down in its burrow, out of reach: wait for it
+    to come out".
+- **Fewer drownings in summer hunts (finding 29).** A hunter that swims
+  below 0.5 no longer chases prey standing in water deeper than it can
+  wade (part of `dry_sites`).
+- **Help, "Toxins and colours" (finding 23).** It no longer recommends
+  toxic-but-drab. Predators learn, bright colours teach faster, drab
+  toxic prey is still mostly taken, and taught predators take less harm.
 
 **A six-player world.** `cargo run --release -p evo-server --example
 predators` (`crates/server/examples/predators.rs`, beside `hunt.rs`)
@@ -7913,9 +7934,9 @@ eaten instead.
 
 | Check | Before (the version 42 tunables off) | After |
 | --- | --- | --- |
-| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.65 (± 0.31) | 11.88 (± 0.14); every lineage 12 of 12 |
-| `compare --seed 101 --adaptive` (the version 44 tunables off vs defaults) | | +0.01 (sequential 95% CI −0.16 … +0.18 after 12 seeds: no difference that matters) |
-| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 15/16 (15), 15/16 (14); 1 (omnivores, seed 48) | 14/16 (14), 14/16 (14); 0 |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.65 (± 0.31) | 11.89 (± 0.08) after round 4 (11.88 at round 3); every lineage 12 of 12 |
+| `compare --seed 101 --adaptive` (the version 44 tunables off vs defaults) | | +0.04 (sequential 95% CI within ±0.3 after 24 seeds: no difference that matters; +0.01 at round 3) |
+| `predlong 6` on seeds 31–38 and 41–48: fox, pack hunters survive (viable); seeds with a prey lost | 15/16 (15), 15/16 (14); 1 (omnivores, seed 48) | round 4: 14/16 (13), 15/16 (15); 1 (antelope, seed 48). Round 3: 14/16 (14), 14/16 (14); 0 |
 | `predlong`, `drink_priority` on (the first default) | | 13/16 (13), 15/16 (15); 3 |
 | `evo-sim genetics` | | 134 checks: 107 strict passed, 0 failed |
 | workspace tests, both clippy runs, client typecheck and `vitest` | | pass |

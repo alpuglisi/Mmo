@@ -27,6 +27,7 @@ const MALE = 1;
 const MATURED = 2;
 /** A neighbour's lineage is under its newcomer grace. */
 const PROTECTED = 8;
+const BURROWED = 16;
 const POSSESSED = 4;
 const PREGNANT = 8;
 
@@ -363,6 +364,7 @@ export class DeltaDecoder {
       matured: (o.flags & MATURED) !== 0,
       look: this.look(o.look),
       ...((o.flags & PROTECTED) !== 0 ? { protected: true as const } : {}),
+      ...((o.flags & BURROWED) !== 0 ? { burrowed: true as const } : {}),
     }));
     return {
       clock: h.clock,
