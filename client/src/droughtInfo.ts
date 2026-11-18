@@ -18,9 +18,17 @@ export interface DroughtNotice {
  * showed last time), and its words. A megadrought catastrophe has its own
  * notice, so this one stays off then.
  */
-export function droughtNotice(drought: number, wasOn: boolean, megadrought = false): DroughtNotice {
+export function droughtNotice(drought: number, wasOn: boolean, megadrought = false, season = ''): DroughtNotice {
   const on = !megadrought && (drought >= DROUGHT_WARN || (wasOn && drought >= DROUGHT_CLEAR));
   const share = Math.round(drought * 100);
+  if (season === 'winter') {
+    // Under snow "dry" read as a contradiction (playtest 3): in winter it is frozen water as much as dry soil.
+    return {
+      on,
+      title: `Dry winter: ${share}% of the land has no open water`,
+      advice: 'Ponds and streams are frozen or dried up: animals far from big lakes and rivers go thirsty. Keep herds near open water; territories and rallies away from it are risky.',
+    };
+  }
   return {
     on,
     title: `Drought: ${share}% of the land is dry`,

@@ -17,9 +17,11 @@ fn possessed(w: &World) -> Option<&crate::organism::Organism> {
 /// design shrank; seed 23 its second pregnancy when the morphology rules
 /// came on by default; seed 29 its possessed pack hunter or its state when
 /// the carnivore rules and food values did; seed 33 its possessed
-/// organism when the standard fox's carnivory went to 0.6).
+/// organism when the standard fox's carnivory went to 0.6; seed 36 its LOD
+/// cohorts with the playtest 2 fixes, version 44; seed 39 with the narrower
+/// drinking rule on by default; 41 or 43 after the round 4 merges, 43 kept).
 fn busy_world() -> World {
-    let mut config = WorldConfig { seed: 36, width: 96, height: 96, days_per_year: 16, ..Default::default() };
+    let mut config = WorldConfig { seed: 43, width: 96, height: 96, days_per_year: 16, ..Default::default() };
     config.lod.enabled = true;
     // Every tick decides: with staggered decisions the possessed organism
     // walks elsewhere and no region ever leaves focus, so the snapshot
@@ -87,7 +89,17 @@ fn odd_morph(g: &crate::Genome, owner: crate::PlayerId) -> crate::morph::MorphGe
     m
 }
 
+/// If the possessed organism died on the way (the world's course shifts
+/// with any rule change), take another of player 1's.
+fn ensure_possessed(w: &mut World) {
+    if possessed(w).is_none() {
+        let id = w.organisms.iter().find(|o| o.alive && o.owner == 1).expect("player 1 alive").id;
+        w.possess(1, id).unwrap();
+    }
+}
+
 fn order_possessed(w: &mut World) {
+    ensure_possessed(w);
     let o = possessed(w).expect("possessed organism alive");
     let (id, pos) = (o.id, o.pos);
     let target = w.map.clamp(pos + Vec2::new(12.0, -9.0));
@@ -179,6 +191,7 @@ fn restored_world_continues_exactly() {
         a.step();
     }
     // Fed, watered and awake, so no need overrides its order.
+    ensure_possessed(&mut a);
     let i = a.organisms.iter().position(|o| o.alive && o.possessed_by == Some(1)).expect("possessed organism alive");
     let o = &mut a.organisms[i];
     (o.needs.hunger, o.needs.thirst, o.needs.energy, o.needs.safety) = (10.0, 10.0, 90.0, 0.0);
@@ -393,10 +406,10 @@ fn hysteresis_off(w: &mut World) {
     }
 }
 
-/// `w` as snapshots before version 45 read it: the playtest 3 founding and
+/// `w` as snapshots before version 47 read it: the playtest 3 founding and
 /// drinking tunables off, no lineage homes.
 fn founding_fixes_off(w: &mut World) {
-    let old = crate::serde_util::before_v45::OLD_VALUE;
+    let old = crate::serde_util::before_v47::OLD_VALUE;
     (w.config.balance.reachable_water, w.config.balance.founding_conditions) = (old, old);
     for h in &mut w.lineage_homes {
         *h = None;
@@ -418,6 +431,7 @@ fn balance43_off(b: &mut crate::Balance) {
     b.age_spread = old;
     b.dormancy_toll = old;
     b.emergence_lag = old;
+    playtest2_off(b);
 }
 
 /// Version 42 snapshots (before the playtest 2 balance rules) restore with
@@ -441,6 +455,48 @@ fn version_42_snapshots_restore_without_playtest2_balance() {
     w.config.balance.dormancy_toll = 0.3;
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!(r.config.balance.dormancy_toll, 0.3);
+}
+
+/// The playtest 2 tunables as snapshots before version 44 read them.
+fn playtest2_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v44::OLD_VALUE;
+    b.drink_priority = old;
+    b.possess_drink = old;
+    b.toxic_learning = old;
+    b.dry_sites = old;
+    b.carnivore_energetics = old;
+    b.led_pack = old;
+    balance46_off(b);
+}
+
+/// The playtest 3 balance tunables as snapshots before version 46 read them.
+fn balance46_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v46::OLD_VALUE;
+    b.eye_hybrid = old;
+    b.winter_toll = old;
+    b.wake_spread = old;
+}
+
+/// Version 45 snapshots (before the playtest 3 balance rules) restore with
+/// those tunables off, and are otherwise the same world.
+#[test]
+fn version_45_snapshots_restore_without_playtest3_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v45();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 45);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.winter_toll, crate::serde_util::before_v46::OLD_VALUE);
+    balance46_off(&mut w.config.balance);
+    founding_fixes_off(&mut w);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v45() == old);
+    let mut w = fixture_world();
+    w.config.balance.wake_spread = 3.0;
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.wake_spread, 3.0);
 }
 
 /// `b` as snapshots before version 34 read it: the playtest 1 ecology
@@ -1422,7 +1478,10 @@ fn version_36_snapshots_restore_without_group_plans() {
     use crate::world::groups::{MigrationPlan, Settle};
     let mut w = fixture_world();
     let key = (w.organisms[0].owner, 0u8);
-    w.group_plans.migrations.insert(key, MigrationPlan { issued_tick: 3, deadline_tick: 500 });
+    w.group_plans.migrations.insert(
+        key,
+        MigrationPlan { issued_tick: 3, deadline_tick: 500, best_median: f32::INFINITY, progress_tick: 0 },
+    );
     w.group_plans.settles.insert(key, Settle { center: Vec2::new(5.0, 6.0), radius: 4.0, until_tick: 900 });
     let old = w.snapshot_v36();
     let h = SnapshotHeader::read(&old).unwrap();
@@ -1440,7 +1499,10 @@ fn version_41_snapshots_restore_with_the_old_species_tracker() {
     use crate::world::groups::MigrationPlan;
     let mut w = fixture_world();
     let key = (w.organisms[0].owner, 0u8);
-    w.group_plans.migrations.insert(key, MigrationPlan { issued_tick: 3, deadline_tick: 500 });
+    w.group_plans.migrations.insert(
+        key,
+        MigrationPlan { issued_tick: 3, deadline_tick: 500, best_median: f32::INFINITY, progress_tick: 0 },
+    );
     let old = w.snapshot_v41();
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 41);
@@ -1460,18 +1522,65 @@ fn version_41_snapshots_restore_with_the_old_species_tracker() {
     assert!(r.snapshot() == w.snapshot());
 }
 
+/// Version 43 snapshots (before the playtest 2 fixes) restore with their
+/// tunables off and no toxic lessons, and are otherwise the same world.
 #[test]
-fn version_43_snapshots_restore_without_the_founding_fixes() {
+fn version_43_snapshots_restore_without_playtest2_fixes() {
     let mut w = fixture_world();
-    assert!(w.lineage_homes.iter().any(Option::is_some), "foundings record their homes");
+    w.toxic_lessons.insert((1, 0), 0.5);
     let old = w.snapshot_v43();
     let h = SnapshotHeader::read(&old).unwrap();
     assert_eq!(h.version, 43);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.toxic_learning, crate::serde_util::before_v44::OLD_VALUE);
+    assert!(r.toxic_lessons.is_empty());
+    playtest2_off(&mut w.config.balance);
+    w.toxic_lessons.clear();
+    founding_fixes_off(&mut w);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v43() == old);
+    // This version keeps them.
+    let mut w = fixture_world();
+    w.config.balance.toxic_learning = 0.5;
+    w.toxic_lessons.insert((1, 0), 0.5);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.toxic_lesson(1, 0), r.config.balance.toxic_learning), (0.5, 0.5));
+}
+
+/// Version 44 snapshots (before a migration's headway) restore with it
+/// unmeasured, and this version keeps it.
+#[test]
+fn version_44_snapshots_restore_without_migration_headway() {
+    use crate::world::groups::MigrationPlan;
+    let mut w = fixture_world();
+    let key = (w.organisms[0].owner, 0u8);
+    let plan = MigrationPlan { issued_tick: 3, deadline_tick: 500, best_median: 12.5, progress_tick: 40 };
+    w.group_plans.migrations.insert(key, plan);
+    let old = w.snapshot_v44();
+    assert_eq!(SnapshotHeader::read(&old).unwrap().version, 44);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    let got = r.group_plans.migrations[&key];
+    assert_eq!((got.issued_tick, got.deadline_tick, got.progress_tick), (3, 500, 0));
+    assert!(got.best_median.is_infinite());
+    assert!(r.snapshot_v44() == old);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.group_plans.migrations[&key], plan);
+}
+
+#[test]
+fn version_46_snapshots_restore_without_the_founding_fixes() {
+    let mut w = fixture_world();
+    assert!(w.lineage_homes.iter().any(Option::is_some), "foundings record their homes");
+    let old = w.snapshot_v46();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 46);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.config.balance.reachable_water, r.config.balance.founding_conditions), (0.0, 0.0));
     assert!(r.lineage_homes.len() == r.lineages.len() && r.lineage_homes.iter().all(Option::is_none));
-    assert!(r.snapshot_v43() == old);
+    assert!(r.snapshot_v46() == old);
     founding_fixes_off(&mut w);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());

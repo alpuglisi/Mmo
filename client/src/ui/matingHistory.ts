@@ -75,3 +75,20 @@ export function historyRows(closed: OfferEntry[], log: MatingRecord[], limit = 3
   }
   return rows.sort((a, b) => b.at - a.at).slice(0, limit);
 }
+
+const COMPASS = ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'];
+
+/**
+ * An accepted agreement's escort line for player `me`: how far the two are
+ * and which way the partner animal is from yours (screen y grows south).
+ */
+export function meetText(o: Pick<OfferView, 'from_player' | 'meet'>, me: number | null): string | null {
+  const m = o.meet;
+  if (!m) return null;
+  const mineIsMine = o.from_player === me;
+  const [fx, fy, tx, ty] = mineIsMine ? [m.mine_x, m.mine_y, m.partner_x, m.partner_y] : [m.partner_x, m.partner_y, m.mine_x, m.mine_y];
+  if (m.distance <= 2) return 'The two are meeting now.';
+  const angle = Math.atan2(ty - fy, tx - fx);
+  const dir = COMPASS[((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8];
+  return `Walking to meet: the partner is about ${Math.round(m.distance)} tiles ${dir} of yours (near ${Math.round(tx)}, ${Math.round(ty)}). Possess yours to hurry.`;
+}

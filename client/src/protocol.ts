@@ -40,7 +40,7 @@ export type ClientMsg =
   /** Group `group` (default 0) holds a circle (radius kept within its `max_radius`); data: `TerritoryView`. */
   | { type: 'claim_territory'; group?: number; x: number; y: number; radius: number }
   | { type: 'abandon_territory'; group?: number }
-  /** Group `group` (default 0) gathers at a point and holds near it for a few days (replaces its migration or territory); data: `RallyView`. */
+  /** Group `group` (default 0) gathers at a point and holds near it until the rally lapses, at least 5 real minutes (replaces its migration or territory); data: `RallyView`. */
   | { type: 'rally'; group?: number; x: number; y: number }
   | { type: 'cancel_rally'; group?: number }
   /** Divide a group in two (the named organisms, else the far half across its widest spread); data: `{group, moved, kept}`. */
@@ -52,6 +52,8 @@ export type ClientMsg =
    * killed or turned wild) and you may found again at once. Data: `{removed}`.
    */
   | { type: 'retire_lineage'; lineage: number }
+  /** End your lineage's newcomer grace now (`no_grace` when there is none). */
+  | { type: 'end_grace' }
   | { type: 'set_view'; x: number; y: number; radius: number }
   | { type: 'clear_view' }
   /** Put one of your adults on the stud marketplace; data: `{ listing: ListingView }`. */
@@ -68,7 +70,7 @@ export type ClientMsg =
   /** Balance and recent ledger entries; data: `LedgerView`. */
   | { type: 'ledger'; limit?: number }
   /** Block or unblock a player's mating requests, or decline them all; no fields reads the settings. Data: `{blocked, auto_decline}`. */
-  | { type: 'mating_prefs'; block?: PlayerId; unblock?: PlayerId; auto_decline?: boolean }
+  | { type: 'mating_prefs'; block?: PlayerId; unblock?: PlayerId; auto_decline?: boolean; blocked?: PlayerId[] }
   /** The renown shop's prices; data: `ShopView`. */
   | { type: 'renown_shop' }
   /** Buy an extra directed-mating slot for the rest of the weather season; data: `ShopView`. */
@@ -184,6 +186,9 @@ export interface OfferView {
   expires_tick?: number;
   /** An offer to any animal of this lineage: `partner` is 0 until accepted. */
   lineage?: number;
+  /** An accepted agreement's escort: where its two animals are (8-tile cells) and how far apart; they walk to meet
+   * on their own. */
+  meet?: { mine_x: number; mine_y: number; partner_x: number; partner_y: number; distance: number };
 }
 
 export interface WeatherView {
@@ -322,7 +327,7 @@ export interface GroupView {
   route?: [number, number][];
   /** Tick at which the migration ends if the group hasn't gathered at the target (absent: no migration). */
   migration_deadline_tick?: number;
-  /** Where the group settles after arriving from a migration: members drift back into the circle until `expires_tick` (not a confinement). */
+  /** The home the group keeps where its last migration arrived: members drift back into the circle until its next order (`expires_tick` is effectively never; not a confinement). */
   settle?: RallyView;
   territory?: TerritoryView;
   rally?: RallyView;
@@ -352,6 +357,8 @@ export interface NearbyOrganism {
   look?: Appearance;
   /** Its lineage is a newcomer under its grace: no other player's animal may attack it, nor it theirs. */
   protected?: true;
+  /** Down in its burrow: attack orders are refused and hunters mostly can't reach it. */
+  burrowed?: true;
 }
 
 /** `appearance::Appearance`: coarse visible body-plan classes of an adult. */
@@ -448,6 +455,8 @@ export interface StateView {
   escrow?: number;
   /** Your lineage's newcomer grace while it lasts (absent once over): other players can't attack it, and it can't attack theirs. */
   grace?: GraceView | null;
+  /** Lineages your animals have learned are poisonous: theirs "look poisonous to you". */
+  poisonous?: number[];
 }
 
 /** The newcomer grace left: game days, and at least some real minutes, whichever is longer. */
@@ -908,7 +917,7 @@ export interface AgeBand {
 export interface DayVitals {
   day: number;
   births: number;
-  /** Deaths by cause: starved, thirst, exposure, eaten, toxin, drowned, old_age, attrition, recessive, disease, journey. */
+  /** Deaths by cause: starved, thirst, exposure, eaten, toxin, drowned, old_age, attrition, recessive, disease, journey, winter_sleep. */
   deaths: Record<string, number>;
   /** Eggs lost during the day by cause: chilled, overheated, raided (absent: none). */
   eggs_lost?: Record<string, number>;
@@ -977,6 +986,8 @@ export interface LineageStats {
   ramp?: { founded_day: number; weight: number; days: number };
   /** Days left of the newcomer grace (others can't order attacks on yours); absent: none. */
   grace_days_left?: number;
+  /** Lineage-wide warnings now: `starving`, `near_cap`, `territory_starving` (absent from older servers). */
+  warnings?: { kind: string; text: string }[];
   /** Egg-laying lineages: their clutches on the ground (absent for live bearers and older servers). */
   eggs?: {
     clutches: number;
@@ -1195,6 +1206,8 @@ export interface PlayerPlacement {
   value: number;
   /** Players ranked in the category. */
   of: number;
+  /** Won the category's title (one of the season's winners; a tie can be first without one). Absent from older servers. */
+  title?: boolean;
 }
 
 export interface PlayerSeason {
@@ -1251,6 +1264,8 @@ export interface SpeciesLineage {
 export interface SpeciesView {
   id: number;
   name: string;
+  /** Who may name it (`name_species`; absent on older servers). */
+  namer?: PlayerId;
   origin: 'initial' | 'founding' | 'split' | string;
   parent?: number;
   founded_day: number;

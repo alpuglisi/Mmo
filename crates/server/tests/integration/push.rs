@@ -415,8 +415,22 @@ async fn subscriptions_over_http_and_a_mating_offer_reaches_an_offline_player() 
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(online, 1, "bob's socket closed");
-    // Bob, briefly back, asks ann (online: no push for her).
+    // Bob, briefly back, asks ann (online: no push for her). Requests name
+    // only animals in sight or on the market, so each lists the male the
+    // other will ask for (the lineages may be founded far apart).
     let (mut bob_ws, sb) = first_state(addr, &bob).await;
+    for (ws, id, m) in [(&mut wa, 7, ann_m), (&mut bob_ws, 8, bob_m)] {
+        let l = json!({"id": id, "type": "create_listing", "organism": m, "fee": 0});
+        futures_util::SinkExt::send(ws, Message::Text(l.to_string())).await.unwrap();
+        loop {
+            let Some(Ok(Message::Text(t))) = ws.next().await else { panic!("socket closed") };
+            let v: Value = serde_json::from_str(&t).unwrap();
+            if v["type"] == "result" && v["id"] == id {
+                assert_eq!(v["ok"], true, "{v}");
+                break;
+            }
+        }
+    }
     let m = json!({"id": 1, "type": "request_mating", "mine": pick(&sb, "female"), "partner": ann_m});
     futures_util::SinkExt::send(&mut bob_ws, Message::Text(m.to_string())).await.unwrap();
     loop {

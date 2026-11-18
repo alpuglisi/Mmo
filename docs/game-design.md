@@ -1,6 +1,12 @@
 # Evolution MMO — Game Design
 
-Nov 12, 2026 · @Al
+Nov 12, 2026 · @Al · updated Nov 18, 2026 to match the game after playtests 1–3
+
+> **Status.** This document describes the game as built after the fixes from
+> playtests 1 and 2, as confirmed in playtest 3 (`docs/playtest-3.md`).
+> Rules marked **changing** are being reworked in round 4 after playtest 3;
+> their current behaviour is described, but don't build on it. A one-page
+> history is in `docs/changelog-playtests.md`.
 
 ## Concept
 
@@ -37,9 +43,10 @@ Example: 10,000 breeding adults × 50 genes × 2 alleles = 1,000,000 alleles. 80
 **Why trade** (playtest 1 had zero trades: accepting a rival's stud only dilutes you). Renown, earned only in play, now pays and buys things:
 
 - **Breeder's royalty:** renown a day for a player's alleles living outside their own lineage, so siring into rivals' dams pays the breeder beyond the share it already counts for.
-- **Renown shop (sinks):** extra directed-mating slots for the season (rising price), and reinforcements for a small lineage (adults copied from its own; only below a fifth of the soft cap, rising price, at most two a ranked season per player, retired lineages included): a large lineage spreads its genes by paying others' dams, a small one earns renown by hosting them and spends it on catching up. Leaders get cosmetic sinks only: a nameplate, naming a species their lineage founded.
-- **Offers live in real time:** a request waits 10 minutes for an answer and an accepted agreement 30 minutes for the meeting (then the requester forfeits a tenth), not until the next weather season. An offer can go to a whole lineage, whose owner picks a free animal.
-- **Retiring** a lineage hands animals mostly of another player's genes to that player instead of deleting them.
+- **Renown shop (sinks):** extra directed-mating slots for the season (30 renown, doubling, at most 6), and reinforcements for a small lineage (10 young adults copied from its own, landing on the best-fed ground near it; 150 renown, doubling; only while at most a fifth of the soft cap is alive; at most two within a ranked season's length per player, a rolling window that a season boundary doesn't reset, retired lineages included): a large lineage spreads its genes by paying others' dams, a small one earns renown by hosting them and spends it on catching up. Leaders get cosmetic sinks only: a nameplate, naming a species their lineage founded (**changing:** playtest 3 found nameplates aren't shown in the client and names aren't filtered).
+- **Offers live in real time:** a request waits 10 minutes for an answer and an accepted agreement 30 minutes for the meeting (then the requester forfeits a tenth), not until the next weather season; offers survive season changes and server restarts, and the sender is warned 2 minutes before a request expires. An offer can go to a whole lineage, whose owner picks which animal takes it (or the nearest free one). **Changing:** buying a listed female holds her until the deadline and cancelling refunds in full (a free dam-lock).
+- **Agreed pairs walk to meet:** once accepted, both animals head for each other on their own (breaking off for danger, thirst or hunger); both players see roughly where the partner is and may possess theirs to hurry. A pregnant or promised female can't be accepted into another agreement or listed for one.
+- **Retiring** a lineage removes its animals, cohorts and eggs from the world at once (not killed, not turned wild), ends its orders, and lets the player found again; renown, ledger and records stay. An animal at least a quarter of whose alleles are one other living player's joins that player's lineage instead. Re-founding after a retirement starts on a founding ramp (a fresh founding's share counts in gradually), and re-founding within a ranked season's length of retiring founds half the founders, so retiring is no free re-roll. **Changing:** the quarter threshold moves animals that are mostly the retiree's.
 - **Titles need substance:** the stud market needs several sales to different buyers; a survival title nobody failed goes to no one.
 - **Market fee:** 10% of every payout is destroyed.
 - **Compatibility shown:** body plans 0.30 apart (diet, warmth, birth mode, size) are sterile; the market lists which lineages can breed with yours.
@@ -53,6 +60,16 @@ Players never set behavior directly. They act through three levers; everything e
 | Possession | Take direct control of one organism: move, forage, hunt, fight, scout, court | Returns to genetic behavior when released. A small bonus (perception, reaction) rewards active play without dominating |
 | Directed matings | Pair two organisms, including with another player's organism | Limited slots per season. Other player must consent and may set a price. The organisms must physically meet, so the trip carries risk. Stud marketplace for trading genetics |
 | Group commands | Order migration, claim or abandon territory, split a group | How strongly a group follows them is genetic: the obedience gene weighs orders against instinct, and obedient animals are tamer (slower to flee) |
+
+**Attack orders** (player against player). While possessing an animal, a player can order it to attack another player's animal in sight (at most 8 tiles off). The order follows the usual strike rules and is refused on a target too heavy for the attacker and the pack-mates around it, on one in its burrow, and while either lineage is under its founding grace; the victim's owner gets an alert (at most one per attacking lineage every 5 minutes). A possessed pack leader draws its hungry pack-mates into the hunt. Territory holders mob larger intruders when they outnumber them. Wild predators hunt everyone as before. **Changing:** player predators collapsed within minutes in playtest 3, and a kill doesn't yet save a starving hunter.
+
+**Founding grace.** A lineage founded into a running world can't be attacked by other players (orders or their animals' own hunting) for its first 20 game days, and at least 30 minutes of real time, whichever is longer; the grace is two-sided (its own animals don't hunt players and it can't order attacks), shows in the client with time left, and graced lineages are hidden from the spectator map. Wild predators still hunt it. Re-founding is meant to continue the old grace rather than start a new one. **Changing:** in playtest 3 a re-founding more than about 40 game days after the previous one started a fresh 30-minute grace, so lineages were graced most of the time.
+
+**Group commands in detail.**
+
+- **Migration:** a target off the map is refused; one on deep water or a cliff moves to the nearest standable tile within 8 tiles, else it is refused. Members avoid ice they'd drown under at the melt, and break off to drink or eat when a need passes 60. The order ends when the group's *median* member is within the arrival radius, then the group settles there for 15 days; a migration that hasn't gathered by its deadline (3 days plus a day per 3 tiles, 4–30 days) ends with an alert. The route is drawn on the map. **Changing:** the arrival radius grows with the group (up to 24 tiles), so a big group "arrives" while far out; a target in the middle of a lake is still accepted.
+- **Territory and rally:** a claim or rally over a circle more than half water is refused (`mostly_water`); the reply reports the circle's water share and drinkable tiles, with a warning when there is little to drink. Rallies hold for 3 days; members leave to drink at thirst 60. **Changing:** the water check runs only at claim time, with no food or capacity check and no re-check as a drought deepens (a claim killed 84% of one lineage in 25 days in playtest 3).
+- **Retire:** see *Why trade* above.
 
 **Directed-mating override cost.** When a directed mating falls outside an organism's genetic mate preferences, it costs more the further outside it is. See Genetics.
 
@@ -165,6 +182,8 @@ Birth mode is part of the body plan, but counts for less than the other body-pla
 
 **Body size** is free only in a middle band (from the default up to 3.6 kg). Smaller bodies cost points (more breeders on the same food), and so do bigger ones: a big body outgrows most predators, which its food need alone did not offset (playtest 2: player herbivores of 29–54 kg that no predator could take).
 
+**Eyes and the body plan.** Each step in eye count adds 0.1 to the body-plan gap for kinship but only 0.04 for fertility (playtest 3: five eyes had bought full reproductive isolation, and 360° vision, for 3 points; an extra eye now costs 3 points).
+
 **Interbreeding check.** The builder asks the server which living lineages a design's founders could breed with: founders sampled with their individual variation against sampled adults of each lineage, giving a fertility range (not the best pair), the share of fertile pairs and a drift risk (how close a sterile pairing is to becoming fertile as lineages drift). Player lineages are never labelled wild.
 
 **3. Offspring per birth.** Few (1–2): larger, high survival, long care, slow growth. Many (8+): fragile, most die young, fast recovery and more variation. Food cost, recovery time and care per young scale with the number. Only offspring that reach breeding age add to the legacy score.
@@ -203,10 +222,12 @@ The map has distinct biomes, changing weather and seasons, so each organism pick
 
 | Strategy | How it works | Benefit | Cost or risk |
 | --- | --- | --- | --- |
-| Hibernation | Dormant through winter on stored fat | Almost no winter food needed; safe from weather | Must fatten in fall; den can be found; no winter breeding; some sleepers die in the den (more of the young and the lean); after waking, days of recovery before breeding; dearer to design |
+| Hibernation | Dormant through winter on stored fat | Almost no winter food needed; safe from weather | Must fatten in fall; den can be found; no winter breeding; about 1 in 10 sleepers die in the den over a winter (more of the young and the lean; brumators too; founders sleep their first winter free); after waking, days of recovery before breeding; wakers spread over the first days of spring; dearer to design |
 | Migration | Travels between seasonal ranges | Always in good conditions | Dangerous journeys; needs navigation and stamina |
 | Year-round active | No seasonal change | Breeds and forages all year; holds territory | Faces winter head-on; needs cold traits or a mild biome |
 | Estivation | Dormant through summer heat or drought | Survives deserts and dry seasons | Loses the summer |
+
+**Brumation** (the cold-blooded counterpart of hibernation) has the 6-day waking lag and, since playtest 3, the same winter toll (about 1 in 10 a winter), and costs 10 points a unit against hibernation's 12 (it was 6). Playtest 3's winner was a cold-blooded, brumating, toxic flier that stayed flat through winters; in the scripted replay it is weaker under the new rules but still the strongest design (README, *Playtest 3: balance*).
 
 **Optional add-ons:** food caching (raidable), seasonal coat (energy cost per molt), fat storage (slower), timed breeding (spring births, narrow window), short-term torpor (cheaper, weaker than hibernation).
 
@@ -284,7 +305,7 @@ Needs turn genes into behavior: traits set how fast needs rise, behavior genes s
 
 **Predators.** Carcasses keep for days and natural deaths leave carrion, so one kill feeds a family and scavengers. Meat eaters gorge into fat, follow their nose to carcasses and bring food to a pregnant mate or young. A carnivore female breeds only when no other litter of her lineage is within her territory (wide for a lone, aggressive hunter, narrow for a tolerant pack), hunters overlook prey that has grown rare, and a starving mother carries fewer young. How strongly each applies comes from the animal's genes (diet, temper, group tolerance, pack instinct, fat stores, pickiness, litter size), so selection tunes them.
 
-**Action selection.** Each tick, an organism scores possible actions by the urgency of the related need, weighted by its behavior genes; the highest score wins. Hungry organisms prioritize food over everything except immediate danger. A bold organism keeps foraging near a predator; a timid one flees and goes hungry.
+**Action selection.** Each tick, an organism scores possible actions by the urgency of the related need, weighted by its behavior genes; the highest score wins. Hungry organisms prioritize food over everything except immediate danger. **Changing:** playtest 3 found starving herbivores keep grazing at thirst 90–100 and die of thirst beside water, and steep banks keep poor climbers from drinking. A bold organism keeps foraging near a predator; a timid one flees and goes hungry.
 
 **Cascades.** Unmet hunger drains energy, low energy cuts speed and endurance, and slow organisms get caught and fail hunts, which worsens hunger. Bad seasons can spiral, which is where selection bites.
 
@@ -310,8 +331,8 @@ The server is written entirely in Rust; web and mobile share one TypeScript clie
 **Build order**
 
 1. Prototype simulation rules (genetics, needs, terrain) with no players. *(Done: `crates/sim`; balance still being tuned.)*
-2. Build the Rust server around the proven rules. *(Started: `crates/server`, see the README.)*
-3. Build the TypeScript client against the server's API. *(Started: `client/`, PixiJS + Vite, see the README.)*
+2. Build the Rust server around the proven rules. *(Well along: `crates/server`, see the README.)*
+3. Build the TypeScript client against the server's API. *(Well along: `client/`, PixiJS + Vite, with a phone layout and Capacitor wrappers; see the README. Three AI playtests so far: `docs/playtest-1.md` to `-3.md`.)*
 
 The simulation and account services could later split into separate Rust services if scale requires it.
 
@@ -332,7 +353,7 @@ Server load scales with organism count: players × organisms per lineage, plus a
 - **Slow world clock:** about 1 tick per second or slower; possessed organisms tick faster. (Implemented as movement sub-steps: a possessed organism following a move order moves in quarter-tick steps between world ticks and new orders apply at the next sub-step; decisions and needs stay on the world clock. See README, Server.)
 - **Level of detail:** full agents near active players; distant populations run as statistical models (birth, death, gene frequencies) and switch back to agents when a player arrives.
 - **Slow environment updates:** weather, vegetation regrowth and snow depth update per simulated hour, chunk by chunk.
-- **Population limits:** food-based carrying capacity, plus a soft cap per player lineage: as a lineage's adults (juveniles count a quarter) approach the cap its litters shrink (half at the cap) and past it its members get hungrier (steeply: a sixth of the litters at 1.3×), up to a hard safety ceiling at 1.4 times the cap. Food, not the cap, is the real limiter, and a lineage at the cap grows its share by spreading its genes into others (README, *Soft lineage cap*). Wild species keep hard caps.
+- **Population limits:** food-based carrying capacity, plus a soft cap per player lineage (1,500 on the reference map, scaled by area): as a lineage's adults (juveniles count a quarter) approach the cap its litters shrink (half at the cap) and past it its members get hungrier (steeply: a sixth of the litters at 1.3×), up to a hard safety ceiling at 1.4 times the cap (2,100). Playtest 3's winner sat at that ceiling. Food, not the cap, is the real limiter, and a lineage at the cap grows its share by spreading its genes into others (README, *Soft lineage cap*). Wild species keep hard caps.
 - **Parallel regions:** map split into chunks updated across all cores.
 - **More worlds, not bigger ones:** scale by adding independent worlds (shards), each with its own ecosystem, seasons and leaderboard.
 
@@ -340,7 +361,7 @@ Server load scales with organism count: players × organisms per lineage, plus a
 
 ## Open questions
 
-- [ ] Dominant designs: how to keep any single build from taking over (planned next)
+- [ ] Dominant designs: how to keep any single build from taking over. *(Each playtest found one: big founding swarms (1), egg-laying toxic-but-drab hibernating burrowers (2, answered by the dormancy toll, egg hybridisation, body-size cost and a lower ceiling), a cold-blooded brumating toxic flier with extra eyes (3, being answered in round 4).)*
 - [ ] Duplicate mutations: separate tags per origin, or credit only whoever had it first? *(Currently separate tags per origin: with continuous alleles, "first" needs a rule for when two alleles count as the same. See README, Suggested next steps.)*
 - [ ] Seasonal strategy: fixed at design, or an evolvable gene?
 - [x] Group commands (migration, splitting): keep as player levers, or make genetic? *(Both: the commands stay player levers, and an obedience gene sets how strongly a group heeds them against its own instincts. Obedience is paid for in tameness: an obedient animal flees a threat later. See README, Groups and territory.)*

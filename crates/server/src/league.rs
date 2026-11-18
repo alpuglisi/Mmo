@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::store::DailyRecord;
 
 /// Sales a player needs in a season to be ranked in the stud market.
-pub const MARKET_TITLE_SALES: u32 = 3;
+pub const MARKET_TITLE_SALES: u32 = 2;
 /// Different buyers those sales need.
 pub const MARKET_TITLE_BUYERS: usize = 2;
 
@@ -192,6 +192,7 @@ impl SeasonRecord {
                     rank: r.rank,
                     value: r.value,
                     of: s.rows.len(),
+                    title: self.head.winners.iter().any(|w| w.category == s.category && w.player == player),
                 })
             })
             .collect();
@@ -213,6 +214,12 @@ pub struct PlayerPlacement {
     pub value: f64,
     /// Players ranked in the category.
     pub of: usize,
+    /// Whether this place won the category's title: one of the season's
+    /// `winners` (a rank-1 tie the rules award nobody, as in survival, is
+    /// first without a title). Record, hall of fame and seasons all count
+    /// titles from the winners.
+    #[serde(default)]
+    pub title: bool,
 }
 
 /// One season of a player's history.
@@ -747,8 +754,8 @@ mod tests {
         t.record_day(&day(2, &[(1, 0.125), (2, 0.25), (3, 0.625)], &[(1, 45), (2, 10), (3, 5)]));
         t.add_species(2);
         t.add_species(WILD);
-        // Three sales to two buyers each (the stud market's threshold),
-        // crediting 20 + 6 + 8/2 = 30.
+        // Three sales to two buyers each (the stud market's threshold is
+        // two to two), crediting 20 + 6 + 8/2 = 30.
         for p in [1, 2] {
             t.add_sale(p, 9, 20);
             t.add_sale(p, 8, 6);
@@ -841,6 +848,11 @@ mod tests {
         let r = t.clone().finish("w", 1, 1, name);
         assert!(r.head.winners.iter().all(|w| w.category != Category::Survival));
         assert_eq!(r.standings[4].rows.len(), 2, "still ranked");
+        // First, but no title: the player's record says so (one source: the winners).
+        let mine = r.player_season(1).unwrap();
+        let surv = mine.placements.iter().find(|p| p.category == Category::Survival).unwrap();
+        assert_eq!((surv.rank, surv.title), (1, false));
+        assert!(mine.placements.iter().any(|p| p.category == Category::Legacy && p.title));
         t.add_survival(1);
         let r = t.finish("w", 1, 1, name);
         let s: Vec<PlayerId> =
@@ -866,8 +878,8 @@ mod tests {
         let mut n = t.next(3, 3);
         n.add_sale(1, 2, 80);
         assert_eq!(market(&n), None, "one sale isn't a stud market");
-        n.add_sale(1, 3, 10);
-        assert_eq!(market(&n), None, "two sales neither");
+        n.add_sale(1, 2, 10);
+        assert_eq!(market(&n), None, "two sales to one buyer neither");
         n.add_sale(1, 3, 10);
         assert_eq!(market(&n), Some(95.0));
         let restored: SeasonTracker = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();

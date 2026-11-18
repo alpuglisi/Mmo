@@ -36,10 +36,13 @@ pub enum DeathCause {
     Disease,
     /// Lost on a seasonal migration (`Balance::migration_risk`).
     Journey,
+    /// Died in winter sleep (hibernation or brumation:
+    /// `Balance::dormancy_toll`).
+    WinterSleep,
 }
 
 impl DeathCause {
-    pub const ALL: [DeathCause; 11] = [
+    pub const ALL: [DeathCause; 12] = [
         DeathCause::Starvation,
         DeathCause::Thirst,
         DeathCause::Exposure,
@@ -51,6 +54,7 @@ impl DeathCause {
         DeathCause::Recessive,
         DeathCause::Disease,
         DeathCause::Journey,
+        DeathCause::WinterSleep,
     ];
 
     pub fn label(self) -> &'static str {
@@ -66,6 +70,7 @@ impl DeathCause {
             DeathCause::Recessive => "recessive",
             DeathCause::Disease => "disease",
             DeathCause::Journey => "journey",
+            DeathCause::WinterSleep => "winter sleep",
         }
     }
 }

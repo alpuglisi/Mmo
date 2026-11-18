@@ -13,6 +13,10 @@ use crate::math::Vec2;
 use crate::organism::{OrgId, Organism, Sex};
 use crate::rng::{rng_for, stream};
 
+/// How close a rendezvous brings the pair (inside the server's meeting
+/// distance, 1.5 tiles, so the agreement runs).
+pub const RENDEZVOUS_NEAR: f32 = 1.0;
+
 /// Alleles in breeding adults by (host lineage, origin player), counted as
 /// the legacy score counts them (`LegacySnapshot`: the same adults, loci and
 /// morphology alleles; cohort members of abstract regions weighted alike).
@@ -154,7 +158,9 @@ impl World {
             o.generation = generation;
             o.growth = 1.0;
             o.matured = true;
-            o.age_ticks = ((o.traits.maturity_days + rng.gen_range(0.0..o.traits.lifespan_days * 0.3)) * tpd) as u32;
+            // Young adults (playtest 3: copies arrived as old as founders
+            // and died soon).
+            o.age_ticks = ((o.traits.maturity_days + rng.gen_range(0.0..o.traits.lifespan_days * 0.05)) * tpd) as u32;
             o.needs.breeding = rng.gen_range(0.0..40.0);
             ids.push(self.insert(o));
         }
@@ -187,8 +193,11 @@ impl World {
                 .iter()
                 .filter(|&&(p, _)| p != player && p != crate::WILD && homes.contains_key(&p))
                 .max_by_key(|&&(p, n)| (n, std::cmp::Reverse(p)));
+            // The rival must hold more of it than the retiree: an animal
+            // three quarters the retiree's no longer goes to a rival.
+            let own = counts.iter().find(|&&(p, _)| p == player).map_or(0, |c| c.1);
             if let Some(&(p, n)) = best {
-                if total > 0 && n as f64 >= min_share * total as f64 {
+                if total > 0 && n as f64 >= min_share * total as f64 && n > own {
                     moves.push((k, p, homes[&p]));
                 }
             }
@@ -198,6 +207,9 @@ impl World {
             let old = o.lineage;
             o.owner = p;
             o.lineage = lineage;
+            // The retiree's alleles in it become the receiver's: no
+            // royalty or legacy for the retiree from a gift.
+            std::sync::Arc::make_mut(&mut o.genome).retag_origin(player, p);
             o.group = 0;
             o.possessed_by = None;
             o.order = None;
@@ -209,6 +221,50 @@ impl World {
             self.count_lineage(lineage, 1);
         }
         (self.retire_player(player), moves.len())
+    }
+
+    /// An agreed mating's rendezvous: `a` and `b` walk toward each other
+    /// (each to where the other is now) until they meet, breaking off for
+    /// a threat or an urgent thirst or hunger as a possessed animal does
+    /// (`Balance::possess_danger`, `possess_urgency`). A possessed animal
+    /// follows its player instead. Replaces either's earlier rendezvous.
+    pub fn set_rendezvous(&mut self, a: OrgId, b: OrgId) {
+        for (x, y) in [(a, b), (b, a)] {
+            if let Some(old) = self.rendezvous.insert(x, y) {
+                if old != y && self.rendezvous.get(&old) == Some(&x) {
+                    self.rendezvous.remove(&old);
+                }
+            }
+        }
+    }
+
+    /// End `a`'s rendezvous (and its partner's).
+    pub fn clear_rendezvous(&mut self, a: OrgId) {
+        if let Some(b) = self.rendezvous.remove(&a) {
+            if self.rendezvous.get(&b) == Some(&a) {
+                self.rendezvous.remove(&b);
+            }
+        }
+    }
+
+    /// `a`'s rendezvous partner, if any.
+    pub fn rendezvous_of(&self, a: OrgId) -> Option<OrgId> {
+        self.rendezvous.get(&a).copied()
+    }
+
+    /// Where `o` walks for its rendezvous now, if it has one and nothing
+    /// comes first (`decide`): its living partner's position, while they
+    /// are farther apart than [`RENDEZVOUS_NEAR`].
+    pub(super) fn rendezvous_target(&self, o: &Organism, threat: f32) -> Option<Vec2> {
+        if self.rendezvous.is_empty() || o.possessed_by.is_some() || !o.matured {
+            return None;
+        }
+        let partner = *self.rendezvous.get(&o.id)?;
+        let q = self.index.get(&partner).map(|&k| &self.organisms[k]).filter(|q| q.alive)?;
+        if o.pos.dist(q.pos) <= RENDEZVOUS_NEAR || self.order_override(o, threat).is_some() {
+            return None;
+        }
+        Some(q.pos)
     }
 
     fn today_f64(&self) -> f64 {
@@ -268,6 +324,75 @@ mod tests {
             assert_eq!((o.owner, o.lineage), (2, l2));
         }
         assert!(w.organisms.iter().all(|o| !o.alive || o.lineage != l1));
+    }
+
+    /// Playtest 3: an animal three quarters the retiree's went to a rival
+    /// holding a quarter, then paid the retiree royalties. Now it goes only
+    /// to a rival holding more of it than the retiree, with the retiree's
+    /// alleles re-tagged as the receiver's.
+    #[test]
+    fn a_retirement_hands_over_only_animals_mostly_a_rivals() {
+        use crate::genome::{Genome, MutationParams};
+        let mut w = presets::standard_world(WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() }, 1);
+        let l2 = w.lineages.iter().position(|l| l.owner == 2).unwrap() as u32;
+        let rival = w.organisms.iter().find(|o| o.owner == 2).unwrap().genome.clone();
+        let own = w.organisms.iter().find(|o| o.owner == 1).unwrap().genome.clone();
+        let none = MutationParams { rate: 0.0, sd: 0.0 };
+        let mut rng = crate::rng::rng_for(1, 2, 3, 4);
+        let half = Genome::inherit(&own, &rival, 1, none, 0.0, &mut rng);
+        let mostly_rival = Genome::inherit(&half, &rival, 1, none, 0.0, &mut rng);
+        let mostly_own = Genome::inherit(&half, &own, 1, none, 0.0, &mut rng);
+        let share = |g: &Genome, p| {
+            let mut c = Vec::new();
+            g.count_origins(&mut c);
+            c.iter().find(|x| x.0 == p).map_or(0, |x| x.1) as f64 / c.iter().map(|x| x.1).sum::<u32>() as f64
+        };
+        assert!(share(&mostly_rival, 2) > 0.6 && share(&mostly_own, 2) >= 0.25 && share(&mostly_own, 1) > 0.6);
+        let ids: Vec<u64> = w.organisms.iter().filter(|o| o.alive && o.owner == 1).map(|o| o.id).take(2).collect();
+        for (&id, g) in ids.iter().zip([&mostly_rival, &mostly_own]) {
+            w.organisms.iter_mut().find(|o| o.id == id).unwrap().genome = std::sync::Arc::new(g.clone());
+        }
+        let (_, moved) = w.retire_player_sparing(1, &BTreeMap::from([(2, l2)]), 0.25);
+        assert_eq!(moved, 1, "only the animal mostly the rival's");
+        let o = w.organism(ids[0]).unwrap();
+        assert_eq!(o.owner, 2);
+        assert_eq!(share(&o.genome, 1), 0.0, "none of the retiree's alleles left in it");
+        assert!(w.organism(ids[1]).is_none());
+    }
+
+    /// A rendezvous brings two animals far apart together on their own.
+    #[test]
+    fn a_rendezvous_brings_the_pair_together() {
+        let mut w = presets::standard_world(WorldConfig { seed: 8, width: 64, height: 64, ..Default::default() }, 1);
+        let a = w.organisms.iter().find(|o| o.owner == 1 && o.matured).unwrap().id;
+        let b = w.organisms.iter().find(|o| o.owner == 2 && o.matured).unwrap().id;
+        // Put b where some animal stands farthest from a (passable ground).
+        let pa = w.organism(a).unwrap().pos;
+        let far = w
+            .organisms
+            .iter()
+            .filter(|o| o.alive)
+            .map(|o| o.pos)
+            .max_by(|x, y| x.dist(pa).total_cmp(&y.dist(pa)))
+            .unwrap();
+        let ib = w.organism_index(b).unwrap();
+        w.organisms[ib].pos = far;
+        let start = w.organism(a).unwrap().pos.dist(w.organism(b).unwrap().pos);
+        assert!(start > 10.0, "{start}");
+        w.set_rendezvous(a, b);
+        assert_eq!((w.rendezvous_of(a), w.rendezvous_of(b)), (Some(b), Some(a)));
+        let mut met = None;
+        for t in 0..20 * w.config.ticks_per_day {
+            w.step();
+            let (Some(x), Some(y)) = (w.organism(a), w.organism(b)) else { break };
+            if x.pos.dist(y.pos) <= 1.5 {
+                met = Some(t);
+                break;
+            }
+        }
+        assert!(met.is_some(), "they never met (started {start:.0} apart)");
+        w.clear_rendezvous(b);
+        assert_eq!((w.rendezvous_of(a), w.rendezvous_of(b)), (None, None));
     }
 
     #[test]

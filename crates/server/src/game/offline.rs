@@ -414,7 +414,8 @@ mod tests {
     /// both connected, on a small world with no wild ecosystem.
     fn game(cap: u64) -> (Game, Vec<OrgId>, Vec<OrgId>) {
         let world = build_world(&WorldSettings { seed: 7, width: 64, height: 64, wild: false, ..Default::default() });
-        let mut g = Game::new(world, GameConfig { offline_protection_ticks: cap, ..GameConfig::default() });
+        let cfg = GameConfig { offline_protection_ticks: cap, offline_idle_ticks: 0, ..GameConfig::default() };
+        let mut g = Game::new(world, cfg);
         let design = |n: &str| FounderDesign::new(n, Thermo::Warm, BirthType::Live, 2).founders(6);
         let a = g.found(1, &design("A")).unwrap().founders;
         let b = g.found(2, &design("B")).unwrap().founders;
@@ -446,7 +447,8 @@ mod tests {
         let make = || {
             let world =
                 build_world(&WorldSettings { seed: 3, width: 96, height: 96, wild: true, ..Default::default() });
-            let mut g = Game::new(world, GameConfig { offline_protection_ticks: 400, ..GameConfig::default() });
+            let cfg = GameConfig { offline_protection_ticks: 400, offline_idle_ticks: 0, ..GameConfig::default() };
+            let mut g = Game::new(world, cfg);
             for p in 1..=6u32 {
                 let d = FounderDesign::new(format!("L{p}"), Thermo::Warm, BirthType::Live, 2).founders(4);
                 g.found(p, &d).unwrap();
@@ -480,6 +482,26 @@ mod tests {
             assert_eq!(state(&now), state(&later), "tick {t}");
         }
         assert!(now.offline.spells().values().any(|s| s.engaged > 0), "protection did something");
+    }
+
+    /// Playtest 3: a player giving orders over short connections was
+    /// "away" between them. Protection starts only once gone a while.
+    #[test]
+    fn short_absences_are_not_away() {
+        let (mut g, _, _) = game(1000);
+        g.cfg.offline_idle_ticks = 5;
+        g.disconnect(20);
+        for _ in 0..3 {
+            tick(&mut g);
+        }
+        assert!(!g.offline.spells().contains_key(&2), "gone 3 ticks: still playing");
+        let out = g.connect(21, 2, "bob");
+        assert!(!format!("{out:?}").contains("While you were away"));
+        g.disconnect(21);
+        for _ in 0..6 {
+            tick(&mut g);
+        }
+        assert!(g.offline.spells().contains_key(&2), "gone past the idle time: away");
     }
 
     #[test]

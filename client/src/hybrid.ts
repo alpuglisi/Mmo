@@ -22,6 +22,9 @@ export const GAP_STERILE = 0.3;
 export const BIRTH_WEIGHT = 0.8;
 /** Body-plan gap per step of leg pairs or eyes (sim `BODY_PLAN_STEP`). */
 export const GAP_PER_STEP = 0.1;
+/** Weight of an eye-count step in the gap for fertility (sim `1 − Balance::eye_hybrid`, 0.6 by default):
+ * 2 → 5 eyes counts 0.12 (fertile), not a sterile 0.30 (playtest 3). Leg steps count fully. */
+export const EYE_WEIGHT = 0.4;
 
 /** A body plan as the interbreeding rule sees it. */
 export interface BodyPlan {
@@ -64,7 +67,7 @@ export function gapBetween(a: BodyPlan, b: BodyPlan): { gap: number; by: GapPart
     ['body size', Math.abs(a.body_size - b.body_size)],
     ['diet', Math.abs(a.carnivory - b.carnivory)],
     ['legs', (GAP_PER_STEP * Math.abs(a.leg_count - b.leg_count)) / 2],
-    ['eyes', GAP_PER_STEP * Math.abs(a.eye_count - b.eye_count)],
+    ['eyes', EYE_WEIGHT * GAP_PER_STEP * Math.abs(a.eye_count - b.eye_count)],
   ];
   let best = parts[0];
   for (const p of parts) if (p[1] > best[1]) best = p;
@@ -206,9 +209,13 @@ export function originExplain(origins: readonly AlleleOrigin[], me: PlayerId): {
   const own = origins.filter((o) => o.player === me).reduce((n, o) => n + o.share, 0) / total;
   const wild = origins.filter((o) => o.player === 0).reduce((n, o) => n + o.share, 0) / total;
   const rival = Math.max(0, 1 - own - wild);
+  // One decimal, as the share beside it: "Only 100%" next to 99.7% read as a contradiction.
+  const one = (x: number) => `${(Math.floor(x * 1000) / 10).toFixed(1)}%`;
   const headline = own >= 0.9995
     ? 'All of your animals\' genes are yours'
-    : `Only ${pct(own)} of your animals' genes are yours`;
+    : own >= 0.99
+      ? `Nearly all (${one(own)}) of your animals' genes are yours`
+      : `Only ${pct(own)} of your animals' genes are yours`;
   const points: string[] = [
     'Your legacy share counts genes (alleles), not heads: each of your animals scores only for the share of its genes that came from your founders or mutated in your lineage.',
   ];

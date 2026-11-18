@@ -27,6 +27,7 @@ const MALE = 1;
 const MATURED = 2;
 /** A neighbour's lineage is under its newcomer grace. */
 const PROTECTED = 8;
+const BURROWED = 16;
 const POSSESSED = 4;
 const PREGNANT = 8;
 
@@ -235,6 +236,8 @@ export class DeltaDecoder {
   private own = new Map<number, OwnQ>();
   private near = new Map<number, NearQ>();
   private lb = new Map<number, LeaderRow>();
+  /** `poisonous` (optional: absent from older servers' frames). */
+  private poisonous: number[] = [];
   private offers = new Map<number, OfferView>();
   private looks: Appearance[] = [];
   private actions: string[] = [];
@@ -279,6 +282,8 @@ export class DeltaDecoder {
     for (const k of HEAD_KEYS) if (k in meta) head[k] = meta[k];
     for (const k of HEAD_KEYS) if (!(k in head)) throw malformed(`a keyframe lacks ${k}`);
     if ('grace' in meta) head.grace = meta.grace;
+    if (kind === KEYFRAME) this.poisonous = [];
+    if (Array.isArray(meta.poisonous)) this.poisonous = meta.poisonous.filter((x): x is number => typeof x === 'number');
     const list = (k: string): unknown[] => {
       const v = meta[k];
       if (v === undefined) return [];
@@ -359,6 +364,7 @@ export class DeltaDecoder {
       matured: (o.flags & MATURED) !== 0,
       look: this.look(o.look),
       ...((o.flags & PROTECTED) !== 0 ? { protected: true as const } : {}),
+      ...((o.flags & BURROWED) !== 0 ? { burrowed: true as const } : {}),
     }));
     return {
       clock: h.clock,
@@ -377,6 +383,7 @@ export class DeltaDecoder {
       balance: h.balance,
       escrow: h.escrow,
       ...(h.grace ? { grace: h.grace } : {}),
+      ...(this.poisonous.length > 0 ? { poisonous: this.poisonous } : {}),
     };
   }
 }

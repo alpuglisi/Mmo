@@ -287,6 +287,11 @@ async fn directed_mating_consent_round_trip() {
         s["organisms"].as_array().unwrap().iter().find(ok).unwrap()["id"].as_u64().unwrap()
     };
     let (mine, partner) = (pick(&sa, "female"), pick(&sb, "male"));
+    // A request names only an animal in sight or on the market: Bob lists
+    // his male (the lineages may be founded far apart).
+    send(&mut wb, json!({"id": 9, "type": "create_listing", "organism": partner, "fee": 0})).await;
+    let r = wait_for(&mut wb, "listing", |v| v["type"] == "result" && v["id"] == 9).await;
+    assert_eq!(r["ok"], true, "{r}");
 
     // Ann asks; Bob is asked.
     send(&mut wa, json!({"id": 10, "type": "request_mating", "mine": mine, "partner": partner, "price": 25})).await;
@@ -326,7 +331,8 @@ async fn directed_mating_consent_round_trip() {
     let u = wait_for(&mut wb, "bob's update", |v| v["type"] == "mating_update").await;
     assert_eq!(u["offer"]["status"], status.as_str());
     if status == "accepted" {
-        assert_eq!(upd["error"]["code"], "too_far");
+        // Not an error: the pair walks to meet, the update says where.
+        assert!(upd["error"].is_null() && upd["offer"]["meet"]["distance"].as_f64().is_some(), "{upd}");
         // Ann withdraws; both hear it. No tick has run since the answer, so
         // the agreement is still open.
         send(&mut wa, json!({"id": 12, "type": "cancel_mating", "request": offer_id})).await;

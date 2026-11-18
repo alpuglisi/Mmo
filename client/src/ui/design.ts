@@ -11,17 +11,19 @@
 import { api, ApiError } from '../api';
 import { designCost, validateDesign } from '../cost';
 import { seasonNotice } from '../seasonNotice';
+import { designWarnings, FOUNDING_RAMP_TEXT } from '../designWarnings';
 import { applyMorphology, applyTrait, designPayload, morphPrices, newEditorDesign, starterValue } from '../designMorph';
 import { defaultMorphology, sameMorphology, type Morphology } from '../morphology';
 import type { BirthSpec, FoundResponse, GeneCatalog, GeneInfo, PlayerId, SpeciesList, ThermoSpec, WorldSummary } from '../protocol';
 import { hybridAdvice } from '../hybrid';
 import { foundingHint } from '../foodHint';
+import { adultMass, flight, geneValue } from '../bodyMath';
 import { avatarView } from './avatarView';
 import { createBodyBuilder, type BodyBuilder, type BuilderChange } from './builder/builder';
 import type { BuilderPreset } from './builder/presets';
 import { h } from './dom';
 import { readMode, writeMode, type EditorMode } from './editorMode';
-import { caption, TRAIT_TEXT, type Level } from './traitText';
+import { caption, kg, TRAIT_TEXT, type Level } from './traitText';
 import { traitEnds, traitName } from './traitNames';
 import { visionReadoutView } from './visionReadout';
 
@@ -285,6 +287,9 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const waterBox = h('section', { class: 'card hybrid-card hybrid-warn', id: 'design-water', hidden: true, 'aria-live': 'polite' });
   // Founding size against the land's food (playtest 1, finding 4).
   const foodBox = h('p', { class: 'small food-hint', id: 'design-food' });
+  // The world the founders land in (drought, catastrophe) and wings a heavy body can't use.
+  const warnBox = h('div', { id: 'design-warnings', class: 'design-warnings', role: 'status' });
+  const rampNote = h('p', { class: 'muted small', id: 'design-ramp' }, FOUNDING_RAMP_TEXT);
   const needName = h('p', { class: 'muted small', id: 'design-need-name' }, nameLink, ' (Basics, at the top) to found it.');
   const serverError = h('p', { class: 'error', id: 'design-server-error', role: 'alert' });
   const submit = h('button', { id: 'design-submit', type: 'button' }, 'Found lineage');
@@ -345,6 +350,14 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     }, 600);
   }
 
+  /** The body's points in words: cold blood and body size (smaller than the default or past the free size). */
+  function bodyParts(body: number): string[] {
+    if (!(body > 0)) return [];
+    const cold = spec.thermo === 'cold' ? cat.cost_cold_blooded ?? 0 : 0;
+    const size = body - cold;
+    return [cold > 0 ? `cold blood ${cold.toFixed(1)}` : '', size > 0.05 ? `body size ${size.toFixed(1)}` : ''].filter(Boolean);
+  }
+
   /** Redraw from the design; `full` (default) also recomputes costs, captions and validation. */
   function update(full = true): void {
     avatar.update(spec, spec.morphology);
@@ -360,7 +373,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     bar.classList.toggle('over', frac > 1 + 1e-5);
     const extras = [
       c.morph > 0 ? `body plan ${c.morph.toFixed(1)}` : '',
-      c.body > 0 ? `cold blood / small body ${c.body.toFixed(1)}` : '',
+      ...bodyParts(c.body),
     ].filter(Boolean);
     breakdown.textContent = [`traits ${c.traits.toFixed(1)}`, `offspring ${c.litter.toFixed(1)}`, `extra founders ${c.founders.toFixed(1)}`, ...extras].join(' · ');
     // Most of the budget unspent (the starting design): say so before the player founds a bare-minimum animal.
@@ -368,11 +381,24 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     unspent.textContent = left > cat.budget / 2
       ? `${left.toFixed(1)} points still unspent. The starting design is a sturdy herbivore ready for its first winter: raise the traits that suit the world, or try a preset in Builder mode.`
       : left > 0.05 ? `${left.toFixed(1)} points left to spend.` : left >= -1e-3 ? 'Every point spent.' : '';
+    // Wings a heavy body can't use cost points and do nothing: say so.
+    const wings = geneValue(spec, 'wings');
+    if (wings > 0.25 && !flight(spec).glide) {
+      unspent.textContent += ` Wings do nothing on a ${kg(adultMass(spec))} body: too heavy to fly or glide, so their points are wasted.`;
+    } else if (wings > 0.5 && !flight(spec).fly) {
+      unspent.textContent += ` At ${kg(adultMass(spec))} the body is too heavy to fly: its wings only glide.`;
+    }
     renderHybrid();
     checkWater();
     const food = foundingHint(payload(), world);
     foodBox.textContent = food.text;
     foodBox.className = `small food-hint food-${food.level}`;
+    const warns = designWarnings(payload(), world);
+    const wkey = JSON.stringify(warns);
+    if (warnBox.dataset.key !== wkey) {
+      warnBox.dataset.key = wkey;
+      warnBox.replaceChildren(...warns.map((w) => h('p', { class: `small notice design-warning warn-${w.level}`, 'data-warning': w.id }, w.text)));
+    }
     for (const [g, cell] of costCells) {
       const p = c.perGene[g];
       cell.textContent = p ? p.toFixed(1) : '';
@@ -440,7 +466,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         h('section', { class: 'card' }, h('h2', {}, 'Behavior, diet and mate preferences'), h('p', { class: 'muted small' }, 'Free: these are trade-offs.'),
           h('div', { class: 'traits' }, ...free.map(traitRow)))),
       h('aside', { class: 'design-side' }, avatar.el,
-        (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, problem, needName, serverError,
+        (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, warnBox, rampNote, problem, needName, serverError,
           h('div', { class: 'row' }, submit, reset)), budgetCard),
         hybridBox,
         waterBox),

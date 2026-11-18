@@ -272,12 +272,29 @@ fn a_migration_arrives_when_half_the_group_is_there_not_the_first_few() {
     assert!(w.take_group_events().contains(&GroupEvent::Arrived { player: HERD, group: 0, target }));
     let s = w.settle_circle(HERD, 0).expect("settles");
     assert_eq!(s.center, target);
-    assert!(s.radius >= World::arrival_radius(n));
-    assert!(s.until_tick > w.tick);
+    assert_eq!(s.radius, World::home_radius(n));
+    assert_eq!(s.until_tick, u64::MAX, "the target is the group's home until its next order");
 }
 
 #[test]
-fn a_migration_that_never_gathers_times_out() {
+fn a_big_group_arrives_only_within_a_few_tiles() {
+    // A 486-strong herd "arrived" with its median 24-29 tiles out under the
+    // rally radius; the arrival radius is now a few tiles whatever the size.
+    assert!(World::arrival_radius(486) <= 8.0 && World::arrival_radius(486) > World::arrival_radius(10));
+    assert!(World::arrival_radius(1) >= 3.0);
+    let mut w = standard();
+    let target = w.command_migrate(HERD, Vec2::new(32.0, 32.0)).unwrap();
+    let members = herd(&w, HERD);
+    for &i in &members {
+        w.organisms[i].pos = target + Vec2::new(12.0, 0.0);
+    }
+    settle_now(&mut w);
+    assert_eq!(w.migration_order(HERD, 0), Some(target), "12 tiles off is not there");
+}
+
+#[test]
+fn a_migration_ends_when_it_stalls_but_not_while_it_makes_headway() {
+    use super::groups::MIGRATE_STALL_DAYS;
     let mut w = standard();
     let members = herd(&w, HERD);
     let middle = w.group_middle(HERD, 0).unwrap();
@@ -286,27 +303,62 @@ fn a_migration_that_never_gathers_times_out() {
     assert_eq!(plan.issued_tick, w.tick);
     assert_eq!(plan.deadline_tick, w.tick + w.migration_timeout_ticks(middle.dist(target)));
     let tpd = w.config.ticks_per_day as u64;
-    assert!(w.migration_timeout_ticks(0.0) >= 4 * tpd && w.migration_timeout_ticks(1e6) <= 30 * tpd);
-    // Scattered all over the map: it never arrives, and ends at the deadline.
+    assert!(w.migration_timeout_ticks(0.0) >= 6 * tpd && w.migration_timeout_ticks(1e6) <= 120 * tpd);
+    let stall = (MIGRATE_STALL_DAYS * tpd as f32) as u64;
+    // A long walk: the group gets a tile closer every few hours for longer
+    // than the stall limit, and the order stands.
+    let far = target + Vec2::new(0.0, 55.0);
+    let start = w.tick;
+    let mut step = 0.0;
+    while w.tick < start + 2 * stall {
+        for &i in &members {
+            w.organisms[i].pos = w.map.clamp(far + (target - far).norm() * step);
+        }
+        step += 0.6;
+        w.tick += w.config.ticks_per_hour() * 4;
+        settle_now(&mut w);
+        assert!(w.migration_order(HERD, 0).is_some(), "fizzled while moving, at {step}");
+    }
+    // Scattered and going nowhere: it ends once the stall limit passes.
     for (k, &i) in members.iter().enumerate() {
         w.organisms[i].pos = Vec2::new(2.0 + (k % 8) as f32 * 7.0, 10.0 + (k / 8) as f32 * 9.0);
     }
-    w.tick = plan.deadline_tick - 1;
-    settle_now(&mut w);
-    if w.tick < plan.deadline_tick {
-        assert!(w.migration_order(HERD, 0).is_some());
+    let stuck = w.tick;
+    while w.migration_order(HERD, 0).is_some() && w.tick < stuck + 2 * stall {
+        w.tick += w.config.ticks_per_hour();
+        settle_now(&mut w);
     }
-    w.tick = plan.deadline_tick;
-    settle_now(&mut w);
     assert_eq!(w.migration_order(HERD, 0), None);
+    // (The stall counts from the last headway, a few hours before `stuck`.)
+    let tph = w.config.ticks_per_hour();
+    assert!(w.tick + 12 * tph >= stuck + stall && w.tick <= stuck + stall + 2 * tph, "{} vs {}", w.tick - stuck, stall);
     let events = w.take_group_events();
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(*e, GroupEvent::TimedOut { player: HERD, group: 0, median, .. } if median > 3.0)),
+        events.iter().any(
+            |e| matches!(*e, GroupEvent::TimedOut { player: HERD, group: 0, median, dormant_share, .. } if median > 3.0 && dormant_share == 0.0)
+        ),
         "{events:?}"
     );
-    assert_eq!(w.settle_circle(HERD, 0), None, "no settling after a timeout");
+    assert_eq!(w.settle_circle(HERD, 0), None, "no home after a timeout");
+}
+
+#[test]
+fn a_timeout_says_how_much_of_the_group_was_dormant() {
+    let mut w = standard();
+    w.command_migrate(HERD, Vec2::new(60.0, 4.0)).unwrap();
+    let members = herd(&w, HERD);
+    for &i in &members[..members.len() * 3 / 4] {
+        w.organisms[i].dormancy = crate::organism::Dormancy::Winter;
+    }
+    assert!(w.dormant_share(HERD, 0) >= 0.7);
+    let deadline = w.migration_plan(HERD, 0).unwrap().deadline_tick;
+    w.tick = deadline;
+    settle_now(&mut w);
+    let events = w.take_group_events();
+    assert!(
+        events.iter().any(|e| matches!(*e, GroupEvent::TimedOut { dormant_share, .. } if dormant_share >= 0.7)),
+        "{events:?}"
+    );
 }
 
 #[test]
@@ -418,4 +470,40 @@ fn abandoning_a_territory_does_not_reset_the_claim_cooldown() {
     assert_eq!(w.groups(HERD)[0].claim_ready_tick, 1000);
     w.tick += 950;
     assert!(w.claim_territory(HERD, 0, c, 5.0).is_ok());
+}
+
+#[test]
+fn a_swimmer_cannot_claim_a_lake_and_routes_report_open_water() {
+    // A strong swimmer crosses a lake, but a herd can't live in one: a
+    // claim over it is still mostly water (playtest 3: 88% lake, water
+    // share 0).
+    let mut w = lake_world(10, 39);
+    let swimmer = walker().with(crate::genome::Gene::Swimming, 0.95).with(crate::genome::Gene::FatStores, 0.5);
+    place(&mut w, 1, &swimmer, Map::tile_center(3, 10));
+    let lake = Map::tile_center(25, 10);
+    assert!(w.water_check(1, 0, lake, 4.0).water_share > 0.9);
+    assert!(matches!(w.claim_territory(1, 0, lake, 4.0), Err(CommandError::MostlyWater { .. })));
+    // A migrate target in the lake moves ashore (or is refused), not accepted.
+    match w.command_migrate(1, Map::tile_center(13, 10)) {
+        Ok(p) => assert!(!is_lake(&w, p), "{p:?}"),
+        Err(e) => assert_eq!(e, CommandError::Unreachable),
+    }
+    // Tiles of open water along a route.
+    let route = [Map::tile_center(3, 10), Map::tile_center(20, 10)];
+    assert_eq!(w.route_water_tiles(1, 0, &route), 11, "columns 10 to 20");
+    assert_eq!(w.route_water_tiles(1, 0, &[Map::tile_center(1, 1), Map::tile_center(8, 20)]), 0);
+}
+
+#[test]
+fn a_food_check_weighs_a_circles_regrowth_against_the_group() {
+    let w = standard();
+    let c = w.group_middle(HERD, 0).unwrap();
+    let small = w.food_check(HERD, 0, c, 1.0).expect("grazers");
+    let big = w.food_check(HERD, 0, c, 20.0).unwrap();
+    assert_eq!(small.members, herd(&w, HERD).len());
+    assert!(big.supports > small.supports, "{small:?} {big:?}");
+    assert!(small.supports < small.members, "one tile can't feed a herd: {small:?}");
+    assert!(big.standing_days > small.standing_days);
+    // A group with no members has nothing to weigh.
+    assert_eq!(w.food_check(HERD, 3, c, 5.0), None);
 }

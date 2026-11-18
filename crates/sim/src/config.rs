@@ -983,10 +983,12 @@ pub struct Balance {
     /// all within a few days of 84%).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub age_spread: f32,
-    /// Chance that a warm-blooded hibernator dies over a whole season of
-    /// winter sleep (den collapse, cold snaps, disease), twice as high for
-    /// one sleeping its first winter and rising as its fat runs out (up to
-    /// twice at none). 0: winter sleep is safe.
+    /// Chance that a winter sleeper dies over a whole winter's sleep (den
+    /// collapse, cold snaps, disease), 1.5× in its first year and up to
+    /// 1.5× again as its fat runs out, brumators too, founders free in
+    /// their first winter (`Balance::winter_toll` on, the default; with it
+    /// off, the version 43 rule: this chance per season asleep, 2× and 2×,
+    /// warm hibernators only). 0: winter sleep is safe.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub dormancy_toll: f32,
     /// Days after waking from a winter sleep before a hibernator or
@@ -994,20 +996,99 @@ pub struct Balance {
     /// through winter costs part of the breeding year. 0: none.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub emergence_lag: f32,
-    // Playtest 3 founding and drinking fixes (version 45). Off at 0, what
-    // snapshots before version 45 read (`serde_util::before_v45`).
+    // Playtest 2 fixes (version 44; *Playtest 2: predators, toxins and
+    // drowning* in the README). Off at 0, what snapshots before version 44
+    // read (`serde_util::before_v44`).
+    /// Drinking first when parched beside water: past thirst 0.85 with
+    /// water within 6 tiles, drinking gains up to `1.5 × drink_priority`
+    /// (all of it at 0.95), more than hunger, fattening and courting give,
+    /// so a starving, parched animal next to a lake drinks rather than
+    /// grazes or scavenges (playtest 3). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub drink_priority: f32,
+    /// Possessed animals drink: one with water within 8 tiles breaks off its
+    /// order to drink at thirst 60 (instead of `possess_urgency`), and one at
+    /// water drinks from thirst 10. Only possessed animals. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub possess_drink: f32,
+    /// Learned avoidance of toxic prey: each time a predator is poisoned by
+    /// its prey, its lineage's lesson about the prey's lineage grows by
+    /// `0.15 × toxic_learning × (1 + 2 × coloration)` (warning colours
+    /// teach about three times faster than a drab coat), up to 1, and fades
+    /// with a 60-day time constant (`World::toxic_lesson`). Hunters pass
+    /// prey up with the lesson's probability as far as they can recognise
+    /// it, `0.3 + 0.7 × coloration` (a drab coat never buys full
+    /// protection), and a lineage that knows a toxin takes less harm biting
+    /// it, `1 − 0.7 × lesson` (`world::toxic`). 0: off (only the
+    /// bright-prey aversion of a poisoned individual).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub toxic_learning: f32,
+    /// Dry ground for sleeping, founding and hunting: no dormancy on ice
+    /// over water deep enough to drown the sleeper at the melt (a sleeper on
+    /// such ice wakes), founders land only on dry ground away from deep
+    /// water (`World::found_lineage_grouped`), and a hunter that swims
+    /// poorly (below 0.5) doesn't chase prey standing in water deeper than
+    /// it can wade. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub dry_sites: f32,
+    /// Obligate carnivores' energetics: a hungry obligate carnivore's
+    /// hunger rises up to `0.3 × carnivore_energetics` slower (none at
+    /// carnivory 0.7 or below, all of it at 0.95 and above; none at hunger
+    /// 40 or below, all of it at 80 and above: a lean economy in hard
+    /// times, so a fed pack burns as before). Playtest 2's player
+    /// carnivores needed a fifth of their weight in prey a day and starved.
+    /// 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub carnivore_energetics: f32,
+    /// Player-led pack hunts on big prey: in a hunt a player leads (an
+    /// attack order and the pack-mates who join it) the prey mass limit
+    /// grows by `led_pack` per pack-mate around, up to 8 (`decide::LED_PACK_MAX`),
+    /// times pack instinct, and up to 8 pack-mates at the prey strike
+    /// beside the leader: a full pack takes prey several times one hunter's
+    /// weight. 0: off (the wild rule, at most 4 pack-mates).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
+    pub led_pack: f32,
+    // Competitive balance after playtest 3 (version 46; *Playtest 3:
+    // balance* in the README). Off at 0, what snapshots before version 46
+    // read (`serde_util::before_v46`).
+    /// How much less an eye-count step counts in the body-plan gap for
+    /// fertility (`morph::morph_fertility_gap`): weighted `1 − eye_hybrid`.
+    /// At 0.6, 2 → 5 eyes is 0.12 apart (fully fertile) instead of 0.30
+    /// (sterile with every two-eyed animal, playtest 3's 3-point isolation).
+    /// Leg steps and kinship keep the full gap.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
+    pub eye_hybrid: f32,
+    /// The winter toll as documented (`seasonal::dormancy_toll_rate`): on
+    /// (1), `dormancy_toll` is the chance of dying over a whole winter's
+    /// sleep (spread over two seasons, since sleepers bed down in autumn),
+    /// 1.5× in an animal's first year and up to 1.5× again with no fat;
+    /// brumators pay it like hibernators; founders sleep their first winter
+    /// free (the winter provision); a sleeper beds down only once it has
+    /// drunk (thirst under 30), and the deaths are counted as
+    /// `DeathCause::WinterSleep`. Off (0): the version 43 toll (a season's
+    /// toll per season asleep, 2× first year, 2× with no fat, warm
+    /// hibernators only: ~1% a day, 25–30% a winter in playtest 3).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
+    pub winter_toll: f32,
+    /// Days over which a warm hibernator's spring waking is spread (each
+    /// animal its own day, from its id), so a lineage doesn't wake at once
+    /// on the same pasture and starve. 0: all wake on the first spring day.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
+    pub wake_spread: f32,
+    // Playtest 3 founding and drinking fixes (version 47). Off at 0, what
+    // snapshots before version 47 read (`serde_util::before_v47`).
     /// Thirsty animals head for a shore spot they can walk to and drink
     /// from (`World::reachable_drink_spot`) before the nearest water: a lake
     /// below a steep bank no longer holds non-climbers at the top of it
     /// until they die of thirst. 0: the nearest water, reachable or not.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v45"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v47"))]
     pub reachable_water: f32,
     /// The founding search (`World::pick_home`) judges the spot as it is
     /// now: water the design can reach and that will last a drought, snow
     /// and frozen water in the cold season, plants standing for the founders,
     /// map edges in the cold season, and the homes where the player's
     /// earlier foundings died (avoided). 0: the old search.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v45"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v47"))]
     pub founding_conditions: f32,
 }
 
@@ -1270,8 +1351,17 @@ impl Default for Balance {
             attack_grace: 20.0,
             egg_hybrid: 0.2,
             age_spread: 0.12,
-            dormancy_toll: 0.08,
+            dormancy_toll: 0.10,
             emergence_lag: 6.0,
+            drink_priority: 1.0,
+            possess_drink: 1.0,
+            toxic_learning: 1.0,
+            dry_sites: 1.0,
+            carnivore_energetics: 1.0,
+            led_pack: 0.5,
+            eye_hybrid: 0.6,
+            winter_toll: 1.0,
+            wake_spread: 10.0,
             reachable_water: 1.0,
             founding_conditions: 1.0,
         }
@@ -1279,7 +1369,7 @@ impl Default for Balance {
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 135;
+    pub const FIELD_COUNT: usize = 144;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1422,6 +1512,15 @@ impl Balance {
             ("age_spread", &mut self.age_spread),
             ("dormancy_toll", &mut self.dormancy_toll),
             ("emergence_lag", &mut self.emergence_lag),
+            ("drink_priority", &mut self.drink_priority),
+            ("possess_drink", &mut self.possess_drink),
+            ("toxic_learning", &mut self.toxic_learning),
+            ("dry_sites", &mut self.dry_sites),
+            ("carnivore_energetics", &mut self.carnivore_energetics),
+            ("led_pack", &mut self.led_pack),
+            ("eye_hybrid", &mut self.eye_hybrid),
+            ("winter_toll", &mut self.winter_toll),
+            ("wake_spread", &mut self.wake_spread),
             ("reachable_water", &mut self.reachable_water),
             ("founding_conditions", &mut self.founding_conditions),
         ]

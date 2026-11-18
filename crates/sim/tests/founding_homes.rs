@@ -21,7 +21,13 @@ fn homes_hash() -> u64 {
         config.balance.desperate_risk = 0.0;
         // Pack hunts (version 36) change the days the world grows first too.
         config.balance.pack_hunt = 0.0;
-        // Playtest 3 (version 45): the search judging current conditions
+        // Version 37: dry founding sites move homes by design; the others
+        // change the days the world grows first.
+        config.balance.dry_sites = 0.0;
+        config.balance.drink_priority = 0.0;
+        config.balance.toxic_learning = 0.0;
+        config.balance.carnivore_energetics = 0.0;
+        // Playtest 3 (version 47): the search judging current conditions
         // moves homes in grown worlds by design (tests in `world::mod`), and
         // thirsty animals finding a reachable shore changes the days the
         // world grows first.
@@ -60,5 +66,7 @@ fn founding_picks_the_same_homes() {
 /// From the home search before `World::passable_regions` used
 /// `terrain::passable` and run labelling (commit c50ca26: 0x43e1_cbe2_a1a0_2b21),
 /// re-recorded when the standard fox's design changed (carnivory 0.6, *The
-/// fox in its own niche*): the search is unchanged, the fox's homes moved.
-const EXPECTED: u64 = 0xfe77_2129_f5d8_f371;
+/// fox in its own niche*): the search is unchanged, the fox's homes moved;
+/// and again when the toxic frogs went from 46 to 42 founders (brumation's
+/// price, playtest 3: 0xfe77_2129_f5d8_f371 before).
+const EXPECTED: u64 = 0xf8fa_5a60_7113_5d10;

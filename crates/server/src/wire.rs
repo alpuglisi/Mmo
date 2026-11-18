@@ -43,12 +43,12 @@
 //! direction, 0–31 in steps of 11.25° from +x toward +y), 21 vision (`v`: 0
 //! none, else 1 + an index into the `visions` palette).
 //! Nearby fields: 0 owner, 1 lineage, 2 position, 3 action, 4 flags (1 male,
-//! 2 matured), 5 look.
+//! 2 matured, 8 protected newcomer, 16 in its burrow), 5 look.
 //!
 //! The meta JSON holds the other [`StateView`] fields that changed, under
 //! their own names (`clock`, `weather`, `player`, `lineage`, `slots_left`,
 //! `population`, `migration`, `groups` (the whole list when any of it
-//! changed), `view`, `balance`, `escrow`, `grace`), `leaderboard`
+//! changed), `view`, `balance`, `escrow`, `grace`, `poisonous`), `leaderboard`
 //! as `{day, breeding_adults}` with its rows keyed by player (`lb_set`:
 //! new or changed rows, `lb_del`: players gone), offers keyed by id
 //! (`offers_set`, `offers_del`) and the palette additions (`looks`,
@@ -154,6 +154,8 @@ const POSSESSED: u8 = 4;
 /// A neighbour's lineage is under its newcomer grace (neighbour flags only;
 /// the same bit is `PREGNANT` in own organisms' flags).
 const PROTECTED: u8 = 8;
+/// A neighbour down in its burrow (neighbour flags only).
+const BURROWED: u8 = 16;
 const PREGNANT: u8 = 8;
 
 /// An own organism as the client holds it (quantized; palette indices).
@@ -374,6 +376,7 @@ struct Sent {
     balance: Option<u64>,
     escrow: Option<u64>,
     grace: Option<Option<GraceView>>,
+    poisonous: Option<Vec<u32>>,
     lb_head: Option<(Option<u64>, usize)>,
 }
 
@@ -711,6 +714,7 @@ impl DeltaEncoder {
         scalar!(balance);
         scalar!(escrow);
         scalar!(grace);
+        scalar!(poisonous);
         let lb = &s.leaderboard;
         let head = (lb.day, lb.breeding_adults);
         if sent.lb_head != Some(head) {
@@ -784,6 +788,9 @@ impl DeltaEncoder {
         }
         if o.protected == Some(true) {
             flags |= PROTECTED;
+        }
+        if o.burrowed == Some(true) {
+            flags |= BURROWED;
         }
         NearQ {
             owner: o.owner,
@@ -890,6 +897,8 @@ struct MetaIn {
     escrow: Option<u64>,
     #[serde(default, deserialize_with = "some")]
     grace: Option<Option<GraceView>>,
+    #[serde(default)]
+    poisonous: Option<Vec<u32>>,
     leaderboard: Option<LbHead>,
     lb_set: Vec<LeaderRow>,
     lb_del: Vec<PlayerId>,
@@ -920,6 +929,7 @@ struct Head {
     balance: u64,
     escrow: u64,
     grace: Option<GraceView>,
+    poisonous: Vec<u32>,
     lb: LbHead,
 }
 
@@ -1021,6 +1031,9 @@ impl DeltaDecoder {
                 if let Some(v) = m.grace {
                     h.grace = v;
                 }
+                if let Some(v) = m.poisonous {
+                    h.poisonous = v;
+                }
                 if let Some(v) = m.leaderboard {
                     h.lb = v;
                 }
@@ -1042,6 +1055,7 @@ impl DeltaDecoder {
                     escrow: m.escrow.ok_or_else(missing)?,
                     // Optional: older servers don't send it.
                     grace: m.grace.flatten(),
+                    poisonous: m.poisonous.unwrap_or_default(),
                     lb: m.leaderboard.ok_or_else(missing)?,
                 }
             }
@@ -1127,6 +1141,7 @@ impl DeltaDecoder {
                     matured: o.flags & MATURED != 0,
                     look: self.look(o.look)?,
                     protected: (o.flags & PROTECTED != 0).then_some(true),
+                    burrowed: (o.flags & BURROWED != 0).then_some(true),
                 })
             })
             .collect::<Result<_, DecodeError>>()?;
@@ -1149,6 +1164,7 @@ impl DeltaDecoder {
             balance: h.balance,
             escrow: h.escrow,
             grace: h.grace,
+            poisonous: h.poisonous.clone(),
         })
     }
 }

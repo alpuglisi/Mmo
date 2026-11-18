@@ -783,6 +783,20 @@ pub fn morph_terms(a: &MorphKey, b: &MorphKey) -> (f32, f32) {
     (distance, BODY_PLAN_STEP * gap_steps)
 }
 
+/// The body-plan gap of [`morph_terms`] for fertility, eye steps weighted
+/// by `eye_weight` (`1 − Balance::eye_hybrid`): leg steps count fully.
+/// Equal to `morph_terms(a, b).1` at weight 1.
+pub fn morph_fertility_gap(a: &MorphKey, b: &MorphKey, eye_weight: f32) -> f32 {
+    let steps = |k: usize| (a[k] - b[k]).abs();
+    let eyes = BODY_PLAN_STEP * steps(MorphLocus::EyeCount.index());
+    let legs = BODY_PLAN_STEP * steps(MorphLocus::LegCount.index());
+    if eye_weight >= 1.0 {
+        eyes.max(legs)
+    } else {
+        (eyes * eye_weight).max(legs)
+    }
+}
+
 /// A founder design's morphology (the contract's parameters).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MorphDesign {

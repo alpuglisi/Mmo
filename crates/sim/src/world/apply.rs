@@ -309,7 +309,12 @@ impl World {
                 self.eat_plants(i, 0.3);
                 self.eat_meat(i, 0.3);
             }
-            if self.organisms[i].needs.thirst > 30.0 && intent.action != Action::Drink {
+            // A possessed animal at water drinks from a lower thirst: the
+            // player walked it there (`Balance::drink_priority`).
+            let o = &self.organisms[i];
+            let at_order = o.possessed_by.is_some() && self.config.balance.possess_drink > 0.0;
+            let sip = if at_order { 10.0 } else { 30.0 };
+            if o.needs.thirst > sip && intent.action != Action::Drink {
                 self.drink(i);
             }
         }
@@ -778,8 +783,9 @@ impl World {
         // Pack-mates striking beside it (`Balance::pack_hunt`), the more so
         // in a hunt a player leads (`decide::led_pack`).
         let bal = &self.config.balance;
-        let strength = if self.attack_of(a) == Some(j) { super::decide::led_pack(bal) } else { bal.pack_hunt };
-        let pack = 1.0 + strength * super::decide::PACK_POWER * f32::from(self.pack_allies(i, j));
+        let led = self.attack_of(a) == Some(j);
+        let strength = if led { super::decide::led_pack(bal) } else { bal.pack_hunt };
+        let pack = 1.0 + strength * super::decide::PACK_POWER * f32::from(self.pack_allies(i, j, led));
         let pw = a.power() * (1.0 + self.coop_bonus(a)) * pack * self.config.balance.attack_power;
         let mut rs = b.resistance() * (1.0 + 1.5 * self.herd_bonus(b));
         // A parent standing over its dependent young fights for it.
@@ -808,17 +814,23 @@ impl World {
         let prey_power = b.power().max(guard_power);
         let prey_fights = super::decide::fight_back(b, self.config.balance.generalist_tax);
         let prey_bright = b.pheno[Gene::Coloration] > 0.6;
+        let (prey_lineage_of_b, prey_coloration) = (b.lineage, b.pheno[Gene::Coloration]);
         let prey_pos = b.pos;
         let prey_mass = b.mass();
 
         // Toxins hurt whoever bites, whether or not the attack succeeds.
         if tox > 0.3 {
+            // A lineage that knows the toxin tastes and spits (`World::toxin_harm`).
+            let harm = self.toxin_harm(self.organisms[i].lineage, prey_lineage_of_b);
             let a = &mut self.organisms[i];
-            a.health -= self.config.balance.toxin_damage * tox * rng.gen_range(0.5..1.0);
+            a.health -= self.config.balance.toxin_damage * tox * rng.gen_range(0.5..1.0) * harm;
             // A warning signal makes the lesson stick.
             if prey_bright {
                 a.bright_aversion = true;
             }
+            let (pred, prey_lineage, coloration) = (a.lineage, prey_lineage_of_b, prey_coloration);
+            self.learn_toxic(pred, prey_lineage, coloration);
+            let a = &mut self.organisms[i];
             if a.health <= 0.0 {
                 self.kill(i, DeathCause::Toxin);
                 // Dead, it strikes no more (`Balance::strike_fixes`).
@@ -939,7 +951,7 @@ impl World {
         if !accept_f || mm > 1.5 {
             return;
         }
-        let fert = mating::fertility_with(&female.genome, &male.genome, self.config.balance.egg_hybrid)
+        let fert = mating::fertility_with(&female.genome, &male.genome, mating::Relief::of(&self.config.balance))
             * self.disease_fertility(f, m)
             * self.conception_boost(female);
         self.mating_contact(f, m);
@@ -1161,6 +1173,14 @@ impl World {
         // discount follows the meat gut (`Traits::meat_efficiency`), so a
         // generalist gets less of it than its carnivory alone would say.
         let diet = 1.0 - bal.carnivore_hunger_discount * o.traits.meat_efficiency(bal.generalist_tax);
+        // An obligate carnivore's lean economy (`Balance::carnivore_energetics`),
+        // in hard times only: a fed pack burns as before.
+        let diet = diet
+            * (1.0
+                - OBLIGATE_DISCOUNT
+                    * bal.carnivore_energetics
+                    * obligacy(o.traits.carnivory)
+                    * lean_times(o.needs.hunger));
         // Crowding: competition with many kin, felt by group-intolerant organisms.
         let crowd = 1.0 + bal.crowding * (o.kin_nearby as f32 - 8.0).max(0.0) * (1.0 - o.pheno[Gene::GroupTolerance]);
         // Competition in a lineage crowded past its soft cap
@@ -1528,6 +1548,24 @@ impl World {
 /// Ice over water too deep for `body` to stand in or swim if the ice
 /// went: a tile a migrating group keeps off, since it drowns there at the
 /// melt. The water test is `terrain::passable`'s.
+/// Most an obligate carnivore's hunger slows (`Balance::carnivore_energetics`).
+pub(crate) const OBLIGATE_DISCOUNT: f32 = 0.3;
+
+/// How hard the times are for the lean economy (`Balance::carnivore_energetics`):
+/// 0 at hunger 40 or below, 1 at 80 and above.
+pub(crate) fn lean_times(hunger: f32) -> f32 {
+    ((hunger - 40.0) / 40.0).clamp(0.0, 1.0)
+}
+
+/// The lean economy's share in a cohort, which has no hunger of its own.
+pub(crate) const COHORT_LEAN: f32 = 0.5;
+
+/// How obligate a carnivore is: 0 at carnivory 0.7 or below, 1 at 0.95 and
+/// above.
+pub(crate) fn obligacy(carnivory: f32) -> f32 {
+    ((carnivory - 0.7) / 0.25).clamp(0.0, 1.0)
+}
+
 pub(super) fn ice_trap(body: &crate::stats::Body, t: &crate::terrain::Tile) -> bool {
     t.ice > 0.0
         && t.water_depth > 0.0

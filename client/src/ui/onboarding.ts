@@ -8,6 +8,8 @@
 // closed. Only the Help dialog is modal (and traps focus) while open.
 
 import './onboarding.css';
+import { FOUNDING_RAMP_TEXT } from '../designWarnings';
+import { SEASON_NOTICE_DAYS } from '../seasonNotice';
 import type { GameModel } from '../model';
 import {
   autoStarts, dueHints, HINT_IDS, HINTS, hintsAfterReset, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
@@ -279,14 +281,22 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   const HELP_TOPICS: [string, (tap: string) => string][] = [
     ['Attacks', (tap) => `Possess one of yours, press Attack in its bar, then ${tap.toLowerCase()} another player's or a wild animal in sight. It chases and strikes; hungry pack-mates nearby join in. `
       + 'You hear how it ended: killed, escaped, out of sight, gone to ground. It can only take animals up to a weight that grows with the pack around it; the owner of the target is told.'],
-    ['Newcomer grace', () => 'A newly founded lineage is protected for its first days: other players cannot order attacks on it, and it cannot be ordered to attack theirs (wild predators, and animals hunting on instinct, still can). Founding again soon after does not start it over. '
-      + 'The Lineage tab shows your grace left; a rival animal in grace shows "protected newcomer" in the inspector.'],
+    ['Newcomer grace', () => 'A newly founded lineage is protected for its first days (at least some real minutes at a fast clock): other players\' animals cannot attack it, by order or hunting on instinct, and its animals cannot attack theirs either way. Wild predators still hunt it, and it may hunt wild prey. '
+      + 'Founding again while it runs, or soon after, does not start it over: the time left carries on. A hunter that wants rival prey can end its grace early in the Lineage tab; it won\'t come back by founding again soon. '
+      + 'The Lineage tab shows your grace left, you are told when it ends, and a rival animal in grace shows "protected newcomer" in the inspector.'],
     ['Territories and rallies', () => 'The Territory tool (in Tools on phones) makes a group hold an area: it patrols it and stays inside. Rally gathers a group at a point for a while. '
       + 'Pick places with water: a territory or rally away from water can kill a herd in a drought.'],
     ['Toxins and colours', () => 'A toxic animal poisons whoever bites it, whether or not the attack succeeds; predators that eat it can die (the Genes tab counts "poisoned" deaths). '
-      + 'Bright colours warn predators that have learned to avoid them; toxic but drab prey is not recognised, so it poisons more hunters. Hunting toxic prey is risky.'],
+      + 'Predators learn: each poisoning teaches the hunter\'s whole lineage to pass that prey up, and bright colours teach it about three times faster. '
+      + 'Toxic but drab prey is no free trick: it looks like any other prey, so even taught predators keep taking most of it, and they take less harm once they know the toxin. '
+      + 'Toxins pay best with warning colours. When your animals have learned a prey is poisonous, the inspector says it looks poisonous to you.'],
     ['Droughts and catastrophes', () => 'When much of the land dries out a drought notice appears over the map: animals far from lakes and rivers go thirsty. '
       + 'Catastrophes (severe winters, megadroughts, epidemics, flood years) are pinned over the map with the days left.'],
+    ['Founding again: the founding ramp', () => `${FOUNDING_RAMP_TEXT} Your renown, records and titles stay when a lineage dies out or you retire it. `
+      + 'The design screen says how the world looks right now (season, drought, catastrophe) before you found.'],
+    ['Founding before winter: the winter provision', () => 'Winter is the hardest time to start: plants die back and cold animals burn their reserves. '
+      + `A lineage founded within ${SEASON_NOTICE_DAYS} days of winter (or during it) arrives fed, with full fat reserves; the design screen says when this applies. `
+      + 'Fur, fat stores and hibernation help it through (the starting design has all three).'],
     ['Growth and the soft cap', () => 'Breeding slows as your lineage grows: litters shrink toward the soft cap (half size at it) and members get hungrier past it; births stop only at the hard cap. '
       + 'The Lineage tab shows where you stand.'],
   ];
