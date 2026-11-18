@@ -8156,7 +8156,7 @@ renumber at merge), off at 0 for older saves (`serde_util::before_v49`):
 | --- | --- |
 | `winter_rest` (1) | In winter a cold-blooded animal's breeding drive drains (`World::breeding_drive_rate`), awake or asleep, and LOD cohorts of cold-blooded lineages conceive nothing in winter; a brumator awake in winter pays the winter toll as if asleep (`DeathCause::Exposure`). |
 | `toxic_avoidance` (1) | A learned toxin lesson is acted on at `0.7 + 0.3 × coloration` (drab 70%, bright 88–100%; it was `0.3 + 0.7 × coloration`), each poisoning teaches twice as much, and the pass-up is rolled once per hunter, prey lineage and day instead of at every decision. That per-decision roll was the root cause: a hunter passing a known toxic prey up 70% of the time still ate it within a few ticks. |
-| `egg_attendance` (1) | A clutch whose brooding parent is alive within 12 tiles but off the nest (eating, drinking) chills at a fifth of the rate of one whose parent is far or dead (`environment::EGG_ATTEND_RANGE`). |
+| `egg_attendance` (0.5) | A clutch whose brooding parent is alive within 12 tiles but off the nest (eating, drinking) chills at `1 − 0.8 × egg_attendance` (0.6) of the rate of one whose parent is far or dead (`environment::EGG_ATTEND_RANGE`). At 1 (a fifth of the rate) the egg-laying hibernator took 17 of 40 titles in the replay below. |
 | `player_species` (1) | In species detection (`species::led_by_player`), a cluster most of whose adults are one player lineage's is split from its wild-owned members, and an initial wild species never continues as such a cluster: the player lineage keeps (or founds, with the credit) a species of its own, while a minority player lineage stays in the mixed species. |
 | `raised_cap` (4) | The weighted legacy share counts each adult's offspring raised up to 4 (agents and LOD cohorts). The lifetime count let an old, prolific cohort dominate the weighted share, and its die-off swung it. |
 
@@ -8187,21 +8187,36 @@ tunables off):
 | Flier (PocketNomad3, cold brumator) | 26.1% / 29.0%, 17 (at the 2,100 cap) | 15.5% / 17.1%, 6 (extinct on 1 of 4) |
 | Cold (LateComer4, cold brumator) | 13.9% / 15.8%, 3 | 18.6% / 22.6%, 2 |
 
-(* legacy titles of the 40 whole seasons after day 210.) The brumating
-fliers no longer run away: playtest 3's falls from 26% to 16% and from 17
-titles to 6, and LateComer4's, founded late, ends viable and large (1,704
-alive) but takes 2 titles and averages 7.7% from day 210. The cost of
-winter rest falls on cold-blooded designs as intended. **Not settled**:
-the warm, egg-laying hibernator now leads (17 titles, at the cap by the
-end): attended eggs (`egg_attendance`) remove most of its egg losses.
-`egg_attendance` 0.5 (attended clutches at 60% of the chill rate) is the
-first lever to try; it wasn't measured here.
+(* legacy titles of the 40 whole seasons after day 210; "new rules" here
+with `egg_attendance` 1, its first value.) The brumating fliers no longer
+run away: playtest 3's falls from 26% to 16% and from 17 titles to 6, and
+LateComer4's, founded late, ends viable and large but takes 2 titles. With
+attended eggs at full strength the warm egg-laying hibernator took the lead
+(17 titles), so `egg_attendance` was measured again (new-rules arm only,
+`dominance --new-only --set egg_attendance=V`, the same seeds):
+
+| `egg_attendance` | Steady | Big | Broker | Eggs | Flier | Cold |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 2.5%, 0 | 7.1%, 7 | 5.1%, 8 | 19.3%, 17 | 15.5%, 6 | 18.6%, 2 |
+| **0.5 (default)** | 2.9%, 0 | 7.2%, 8 | 5.3%, 9 | 16.3%, 7 | 16.9%, 7 | 20.8%, 9 |
+| 0.35 | 2.9%, 0 | 6.9%, 9 | 5.2%, 9 | 14.2%, 9 | 21.1%, 9 | 16.3%, 4 |
+
+(Final share, titles of 40.) At 0.5 no design takes more than 9 of the 40
+titles, five designs take 7–9, and every one survives every seed; the egg
+layer stays at 16% (at 0.35 it fell to a peak of 713 on one seed). No
+design ends at the 2,100 cap; most touch it once (peak alive).
+
+**Wild cold-blooded species under winter rest** (`predlong 4` on seeds
+41–48, defaults against `--set winter_rest=0`): no prey lost on any seed
+either way; the marsh newts' lowest counts 16–53 (25–53 without winter
+rest), the toxic frogs' 38–42 (unchanged); fox and pack hunters survive 8 of
+8 (viable 7 and 8; 8 and 8 without).
 
 **Checks**:
 
 | Check | Result |
 | --- | --- |
-| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.86 (± 0.16; ≈11.93 before): every lineage 12 of 12; the cold-blooded marsh newts 197 and toxic frogs 265 (409 and 380) rest in winter |
+| `sweep --size 96 --trials 1 --seeds 12 --rounds 1 --seed 31` | 11.86 (± 0.16; ≈11.93 before), 11.96 (± 0.04) with `egg_attendance` 0.5 after the merge: every lineage 12 of 12; the cold-blooded marsh newts 197 and toxic frogs 265 (409 and 380) rest in winter |
 | tests, fmt, both clippy, client typecheck/test/build | pass |
 
 ## Genetics validation
