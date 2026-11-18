@@ -4,7 +4,8 @@ import { draftStory } from '../src/drafting/index.mjs';
 import { validateDraft, unsupportedNumbers } from '../src/drafting/validate.mjs';
 import { ALL_PLATFORMS, PLATFORMS } from '../src/platforms.mjs';
 import { counters } from '../src/text.mjs';
-import { factCorpus, normalizeMediaItem } from '../src/stories.mjs';
+import path from 'node:path';
+import { factCorpus, normalizeMediaItem, loadStories } from '../src/stories.mjs';
 import { buildSchema, FALLBACK_BETA } from '../src/drafting/claude.mjs';
 import { STORY, VIDEO, IMAGE, testConfig } from './helpers.mjs';
 
@@ -155,4 +156,29 @@ test('devlog embeds manifest-relative paths, and digits in paths are not facts',
   assert.deepEqual(unsupportedNumbers(`<video src="${base}/a7.mp4"></video> ![x](${base}/b9.png) [y](https://e.example/42)`, ''), []);
   // ...but numbers in the prose still count.
   assert.deepEqual(unsupportedNumbers('![x](a1.png) The herd lost 99 animals.', 'herd'), ['99']);
+});
+
+test('claims the current build does not support fail validation', () => {
+  const config = testConfig();
+  for (const text of [
+    'Hunt other players across a living world.',
+    'Trading studs is the core of the game.',
+    'Out now on iOS and Android.',
+    'A perfectly balanced ecosystem.',
+  ]) {
+    const v = validateDraft({ platform: 'x', fields: { text } }, { config });
+    assert.ok(v.errors.some((e) => e.startsWith('claims:')), text);
+  }
+  const ok = validateDraft({ platform: 'x', fields: { text: 'A fox lineage hunted voles through the winter.' } }, { config });
+  assert.ok(!ok.errors.some((e) => e.startsWith('claims:')));
+});
+
+test('example and sample stories draft without unsupported claims', async () => {
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  for (const f of ['../examples/stories.example.json', '../../../docs/marketing/samples/stories.json']) {
+    for (const story of loadStories(path.join(here, f))) {
+      const { drafts } = await draftStory(story, [], { platforms: ['x', 'bluesky', 'reddit', 'discord'], config: testConfig() });
+      for (const d of drafts) assert.ok(!d.validation.errors.some((e) => e.startsWith('claims:')), `${story.id} ${d.platform}: ${d.validation.errors}`);
+    }
+  }
 });

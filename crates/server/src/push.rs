@@ -166,6 +166,7 @@ mod tests {
             balance: 0,
             escrow: 0,
             grace: None,
+            poisonous: Vec::new(),
         }))
     }
 

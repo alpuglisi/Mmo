@@ -7,8 +7,8 @@
     {
       "id": "evolution",
       "kind": "lineage",
-      "title": "Glimmer striders: from 40 founders to 90 animals in 2 game years",
-      "summary": "A three-eyed, six-legged, four-eared design founded with 40 animals; 2 game years later 90 of them live, 24.6% of the world's genes.",
+      "title": "Glimmer striders: from 40 founders to 90 animals by game year 2",
+      "summary": "A three-eyed, six-legged, four-eared design founded with 40 animals; by game year 2 90 of them live, 24.6% of the world's genes.",
       "facts": {
         "lineage": "Glimmer striders",
         "founders": 40,
@@ -103,8 +103,8 @@
     {
       "id": "catastrophe",
       "kind": "catastrophe",
-      "title": "A severe winter sweeps the map",
-      "summary": "A severe winter hit in year 1: in the next 24 game days the world went from 232 animals in 5 lineages to 416 in 5.",
+      "title": "A severe winter, and the world keeps growing",
+      "summary": "In a test world, a severe winter (triggered for this capture) began in year 1; over the next 24 game days the world still grew from 232 animals to 416.",
       "facts": {
         "catastrophe": "severe winter",
         "year": 1,
@@ -113,7 +113,8 @@
         "animals_before": 232,
         "animals_after": 416,
         "lineages_before": 5,
-        "lineages_after": 5
+        "lineages_after": 5,
+        "staged": "triggered for the capture"
       },
       "media": [
         "catastrophe-vertical",
