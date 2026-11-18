@@ -14,7 +14,7 @@ export function friendlyError(e: Pick<ErrorInfo, 'code' | 'message'>): string {
       return 'The female is already pregnant: pick another female, or wait until she gives birth.';
     case 'too_far': {
       const d = /([\d.]+) tiles apart/.exec(e.message)?.[1];
-      return `They are ${d ? `${d} tiles` : 'too far'} apart: the two must be within ${MEETING_TILES} tiles to mate. Walk one to the other (possess it, or use Escort).`;
+      return `They are ${d ? `${d} tiles` : 'too far'} apart: the two must be within ${MEETING_TILES} tiles to mate. Walk one to the other: "Walk to the partner" under the Mates form does it, or possess one and click the map.`;
     }
     case 'same_sex':
       return 'Both are the same sex: pick a male and a female.';

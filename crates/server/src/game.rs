@@ -1050,6 +1050,22 @@ impl Game {
         self.mating_log.get(&player).map(|l| l.iter().cloned().collect()).unwrap_or_default()
     }
 
+    /// An egg-laying lineage's clutches; `None` for live bearers (or a lineage with nobody left to tell).
+    fn eggs_view(&self, lineage: u32) -> Option<EggsView> {
+        let w = &self.world;
+        let lays = w.organisms.iter().find(|o| o.alive && o.lineage == lineage).map(|o| o.traits.birth.lays_eggs());
+        let mine = w.clutches.iter().filter(|c| c.lineage == lineage);
+        let mut v = EggsView::default();
+        for c in mine {
+            v.clutches += 1;
+            v.eggs += c.eggs.len() as u32;
+            if c.guardian.is_some_and(|g| w.organism(g).is_some_and(|o| o.alive)) {
+                v.brooded += 1;
+            }
+        }
+        (lays == Some(true) || v.clutches > 0).then_some(v)
+    }
+
     /// Whether founders founded now start provisioned for winter.
     pub fn winter_provision_now(&self) -> bool {
         self.cfg.winter_provision && self.world.days_until_winter() <= WINTER_PROVISION_DAYS
@@ -3670,6 +3686,7 @@ impl Game {
             origins,
             score: self.score_breakdown(player),
             crowding: self.crowding_view(player),
+            eggs: lineage.and_then(|l| self.eggs_view(l)),
             legacy,
             alerts: self.alerts(player),
         }
@@ -4013,6 +4030,16 @@ mod tests {
         for _ in 0..g.world.config.ticks_per_day {
             g.world.step();
         }
+    }
+
+    #[test]
+    fn lineage_stats_tell_egg_layers_their_clutches() {
+        let (mut g, _, _) = game();
+        assert!(g.lineage_stats(1).eggs.is_none(), "a live-bearing lineage has no clutches to show");
+        g.set_name(3, "cat");
+        g.found(3, &FounderDesign::new("Layers", Thermo::Warm, BirthType::IncubatedEggs, 4).founders(6)).unwrap();
+        let e = g.lineage_stats(3).eggs.expect("an egg-laying lineage shows its clutches");
+        assert_eq!(e, EggsView::default());
     }
 
     #[test]
