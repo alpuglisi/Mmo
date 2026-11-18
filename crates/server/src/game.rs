@@ -232,6 +232,11 @@ pub struct GameConfig {
     /// between changes nothing), in minutes of wall-clock time: the sim's
     /// half day passes in seconds at a fast tick.
     pub claim_cooldown_min_minutes: f64,
+    /// Ticks without a connection before a player's offline protection
+    /// starts ([`OFFLINE_IDLE_MINUTES`]; 0: at once). Playtest 3: an API
+    /// player making short connections was "away" all the time, protected
+    /// while giving orders, and told "While you were away…" each time.
+    pub offline_idle_ticks: u64,
 }
 
 /// Fewer drinking-water tiles than this in and around a territory or
@@ -325,6 +330,11 @@ pub const OFFER_MINUTES: f64 = 10.0;
 pub const OFFER_WARN_MINUTES: f64 = 2.0;
 /// Minutes of the per-target request window (`GameConfig::request_window_ticks`).
 pub const REQUEST_WINDOW_MINUTES: f64 = 60.0;
+
+/// Wall-clock minutes a player must be gone (no connection) before their
+/// offline protection starts (`GameConfig::offline_idle_ticks`): a player
+/// giving orders over short connections is playing, not away.
+pub const OFFLINE_IDLE_MINUTES: f64 = 10.0;
 /// Shortest auction in minutes (`GameConfig::min_auction_ticks`).
 pub const MIN_AUCTION_MINUTES: f64 = 5.0;
 
@@ -372,6 +382,7 @@ impl Default for GameConfig {
             grace_max_days: 60.0,
             attack_alert_minutes: 5.0,
             claim_cooldown_min_minutes: 2.0,
+            offline_idle_ticks: 600,
         }
     }
 }
@@ -622,11 +633,20 @@ pub struct Game {
     /// to announce its end ([`Game::announce_grace_end`]). Not saved
     /// (rebuilt on a restore).
     graced: BTreeSet<PlayerId>,
+    /// Players whose last connection closed, with the tick: their offline
+    /// spell starts after `GameConfig::offline_idle_ticks`. Not saved (a
+    /// restart starts every unconnected player's spell).
+    leaving: BTreeMap<PlayerId, u64>,
     /// Tests: take the plain, slower paths these shortcuts replace (full
     /// hold scans, a fresh index per new connection) to compare against.
     #[cfg(test)]
     reference: bool,
 }
+
+/// (requester, target) of the per-target request log.
+type PlayerPair = (PlayerId, PlayerId);
+/// (tick, offer) of each logged request, oldest first.
+type RequestTicks = VecDeque<(u64, u64)>;
 
 /// The game-side state saved with each world snapshot (`crate::snapshot`):
 /// what isn't in the `World` and can't be derived from it. Connections,
@@ -682,7 +702,7 @@ pub struct SavedGame {
     /// in older saves: none).
     grace_waived: BTreeMap<PlayerId, u64>,
     /// The per-target request log, as a list (absent in older saves: empty).
-    request_log: Vec<((PlayerId, PlayerId), VecDeque<(u64, u64)>)>,
+    request_log: Vec<(PlayerPair, RequestTicks)>,
     /// The last attack alert ticks, as a list (absent in older saves: none).
     attack_alerts: Vec<((u32, PlayerId), u64)>,
 }
@@ -824,6 +844,7 @@ impl Game {
             hosts,
             attack_alerts: BTreeMap::new(),
             graced: BTreeSet::new(),
+            leaving: BTreeMap::new(),
             #[cfg(test)]
             reference: false,
         };
@@ -1361,7 +1382,8 @@ impl Game {
             Target::Conn(conn),
             ServerMsg::Welcome { player, name: name.into(), lineage: self.lineage_of(player), proto: None },
         )];
-        if first {
+        // Back within the idle time: never away, no spell to end.
+        if first && self.leaving.remove(&player).is_none() {
             self.offline_login(player, &mut out);
         }
         if let Some(s) = self.state_now(conn) {
@@ -1373,8 +1395,24 @@ impl Game {
     pub fn disconnect(&mut self, conn: ConnId) {
         if let Some(c) = self.conns.remove(&conn) {
             if !self.conns.values().any(|o| o.player == c.player) {
-                self.offline_logout(c.player);
+                if self.cfg.offline_idle_ticks == 0 {
+                    self.offline_logout(c.player);
+                } else {
+                    // Away only once gone a while (`offline_idle_ticks`).
+                    self.leaving.insert(c.player, self.world.tick());
+                }
             }
+        }
+    }
+
+    /// Start the offline spells of players gone (no connection) for
+    /// `offline_idle_ticks`.
+    fn start_idle_spells(&mut self) {
+        let (tick, idle) = (self.world.tick(), self.cfg.offline_idle_ticks);
+        let due: Vec<PlayerId> = self.leaving.iter().filter(|&(_, &t)| tick >= t + idle).map(|(&p, _)| p).collect();
+        for p in due {
+            self.leaving.remove(&p);
+            self.offline_logout(p);
         }
     }
 
@@ -1589,21 +1627,42 @@ impl Game {
             }
             ClientMsg::Bid { listing, amount, mine } => self.bid(player, listing, amount, mine, out),
             ClientMsg::BrowseMarket(q) => Ok(Some(serde_json::to_value(self.market(player, &q)?).unwrap())),
-            ClientMsg::MatingPrefs { block, unblock, auto_decline } => {
+            ClientMsg::MatingPrefs { block, unblock, auto_decline, blocked } => {
                 // Only a real player can be blocked: not the wild (0), not a
-                // made-up id.
-                if let Some(p) = block {
-                    let known = self.names.contains_key(&p) || self.world.lineages.iter().any(|l| l.owner == p);
-                    if p == WILD || !known {
-                        return Err(ErrorInfo::new("no_such_player", format!("there is no player {p}"))
-                            .with_detail(serde_json::json!({ "player": p })));
-                    }
+                // made-up id, not oneself. Every one named is checked and
+                // the bad ones are said (they used to be dropped quietly).
+                let named: Vec<PlayerId> = blocked.iter().flatten().chain(&block).copied().collect();
+                if named.contains(&player) {
+                    return Err(ErrorInfo::new("self_block", "you can't block yourself"));
+                }
+                let unknown: Vec<PlayerId> = named
+                    .iter()
+                    .copied()
+                    .filter(|&p| {
+                        p == WILD || !(self.names.contains_key(&p) || self.world.lineages.iter().any(|l| l.owner == p))
+                    })
+                    .collect();
+                if !unknown.is_empty() {
+                    let list = unknown.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+                    return Err(ErrorInfo::new("no_such_player", format!("there is no player {list}"))
+                        .with_detail(serde_json::json!({ "player": unknown[0], "players": unknown })));
+                }
+                if blocked.as_ref().is_some_and(|b| b.len() > MAX_BLOCKED) {
+                    return Err(ErrorInfo::new(
+                        "too_many_blocked",
+                        format!("you can block up to {MAX_BLOCKED} players"),
+                    ));
                 }
                 let prefs = self.mating_prefs.entry(player).or_default();
+                if let Some(mut list) = blocked {
+                    list.sort_unstable();
+                    list.dedup();
+                    prefs.blocked = list;
+                }
                 if let Some(p) = unblock {
                     prefs.blocked.retain(|&b| b != p);
                 }
-                if let Some(p) = block.filter(|&p| p != player && !prefs.blocked.contains(&p)) {
+                if let Some(p) = block.filter(|&p| !prefs.blocked.contains(&p)) {
                     if prefs.blocked.len() >= MAX_BLOCKED {
                         return Err(ErrorInfo::new(
                             "too_many_blocked",
@@ -3140,6 +3199,7 @@ impl Game {
         self.announce_attack_results(&mut out);
         self.announce_group_events(&mut out);
         self.plan_routes();
+        self.start_idle_spells();
         self.offline_after_tick();
         self.announce_grace_end(&mut out);
         if self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) {
@@ -4787,6 +4847,13 @@ mod tests {
         assert_eq!(result(&out), (true, None));
     }
 
+    fn result_error(out: &Outbox) -> Option<ErrorInfo> {
+        match &out[0].1 {
+            ServerMsg::Result { error, .. } => error.clone(),
+            _ => None,
+        }
+    }
+
     fn reply_data(out: &Outbox) -> serde_json::Value {
         match &out[0].1 {
             ServerMsg::Result { ok: true, data: Some(d), .. } => d.clone(),
@@ -5972,6 +6039,25 @@ mod tests {
         assert_eq!(result(&out).1.as_deref(), Some("bad_color"));
         let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: " ".into() });
         assert_eq!(result(&out).1.as_deref(), Some("bad_title"));
+        // No bidi overrides, zero-width or other non-ASCII characters, no
+        // markup, nothing passing for the server or another player.
+        for bad in [
+            "rtl\u{202e}evil",
+            "zero\u{200b}width",
+            "Ѕerver",
+            "<b>Hi</b>",
+            "a &lt; b",
+            "Server Admin",
+            "S3rv3r ADM1N",
+            "Bob",
+            "b0b",
+            "two  spaces",
+            "--",
+        ] {
+            let out = g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: bad.into() });
+            assert_eq!(result(&out).1.as_deref(), Some("bad_title"), "{bad:?}");
+        }
+        assert_eq!(g.balance(1), start, "nothing spent on a refused title");
         g.command(10, 1, None, ClientMsg::SetNameplate { color: "amber".into(), title: "Herd queen".into() });
         assert_eq!(g.balance(1), start - economy::NAMEPLATE_PRICE);
         g.command(10, 1, None, ClientMsg::SetNameplate { color: "jet".into(), title: "Herd king".into() });
@@ -5990,10 +6076,25 @@ mod tests {
         let out = g.command(20, 2, None, ClientMsg::NameSpecies { species: id, name: "Bobs".into() });
         assert_eq!(result(&out).1.as_deref(), Some("not_yours"));
         let before = g.balance(1);
+        for bad in ["\u{202e}srezarg", "<i>Grazers</i>", "Official grazers", "bob"] {
+            let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: bad.into() });
+            assert_eq!(result(&out).1.as_deref(), Some("bad_name"), "{bad:?}");
+        }
+        // A look-alike of another species' name is taken.
+        let other = g.world.chronicle.species.species[0].name.clone();
+        let look_alike = other.replace('o', "0").replace('l', "1");
+        if look_alike != other && display_text_ok(&look_alike) {
+            let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: look_alike });
+            assert_eq!(result(&out).1.as_deref(), Some("name_taken"));
+        }
         let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: "Queen's grazers".into() });
         assert_eq!(result(&out), (true, None));
         assert_eq!(g.balance(1), before - economy::SPECIES_NAME_PRICE);
         assert_eq!(g.world.chronicle.species.get(id).unwrap().name, "Queen's grazers");
+    }
+
+    fn display_text_ok(t: &str) -> bool {
+        shop::display_text(t, crate::design::MAX_NAME_LEN).is_ok()
     }
 
     /// An auction lasts at least the wall-clock floor, whatever was asked.
@@ -7115,27 +7216,62 @@ mod tests {
             }
         };
         // Ann blocks Bob.
-        let out =
-            g.command(10, 1, Some(1), ClientMsg::MatingPrefs { block: Some(2), unblock: None, auto_decline: None });
+        let out = g.command(
+            10,
+            1,
+            Some(1),
+            ClientMsg::MatingPrefs { block: Some(2), unblock: None, auto_decline: None, blocked: None },
+        );
         assert_eq!(reply_data(&out)["blocked"], serde_json::json!([2]));
         assert_eq!(code(&ask(&mut g, 2)), Some("requests_refused".into()));
         // Not the wild, nor a player who doesn't exist.
         for p in [WILD, 999] {
-            let out =
-                g.command(10, 1, Some(1), ClientMsg::MatingPrefs { block: Some(p), unblock: None, auto_decline: None });
+            let out = g.command(
+                10,
+                1,
+                Some(1),
+                ClientMsg::MatingPrefs { block: Some(p), unblock: None, auto_decline: None, blocked: None },
+            );
             assert_eq!(code(&out), Some("no_such_player".into()), "{p}");
         }
+        // Nor oneself; a whole list names its bad entries and changes nothing.
+        let me = ClientMsg::MatingPrefs { block: Some(1), unblock: None, auto_decline: None, blocked: None };
+        assert_eq!(code(&g.command(10, 1, Some(1), me)), Some("self_block".into()));
+        let list =
+            ClientMsg::MatingPrefs { block: None, unblock: None, auto_decline: None, blocked: Some(vec![0, 999, 2]) };
+        let out = g.command(10, 1, Some(1), list);
+        assert_eq!(code(&out), Some("no_such_player".into()));
+        assert!(result_error(&out).unwrap().message.contains("0, 999"), "{out:?}");
+        let list = ClientMsg::MatingPrefs { block: None, unblock: None, auto_decline: None, blocked: Some(vec![2, 2]) };
+        assert_eq!(reply_data(&g.command(10, 1, Some(1), list))["blocked"], serde_json::json!([2]));
         assert_eq!(g.mating_prefs[&1].blocked, vec![2]);
-        g.command(10, 1, Some(3), ClientMsg::MatingPrefs { block: None, unblock: Some(2), auto_decline: Some(true) });
+        g.command(
+            10,
+            1,
+            Some(3),
+            ClientMsg::MatingPrefs { block: None, unblock: Some(2), auto_decline: Some(true), blocked: None },
+        );
         assert_eq!(code(&ask(&mut g, 4)), Some("requests_refused".into()), "auto-decline");
-        let out =
-            g.command(10, 1, Some(5), ClientMsg::MatingPrefs { block: None, unblock: None, auto_decline: Some(false) });
+        let out = g.command(
+            10,
+            1,
+            Some(5),
+            ClientMsg::MatingPrefs { block: None, unblock: None, auto_decline: Some(false), blocked: None },
+        );
         assert_eq!(reply_data(&out), serde_json::json!({ "blocked": [], "auto_decline": false }));
         // Three open requests; the fourth is refused.
         for k in 0..REQUESTS_PER_TARGET as u64 {
             assert_eq!(code(&ask(&mut g, 10 + k)), None, "request {k}");
         }
         assert_eq!(code(&ask(&mut g, 20)), Some("too_many_requests".into()));
+        // A restart doesn't reset the limit (playtest 3), nor the attack
+        // alerts' clocks.
+        g.attack_alerts.insert((0, 1), g.world.tick());
+        let saved: SavedGame = serde_json::from_str(&serde_json::to_string(&g.saved()).unwrap()).unwrap();
+        let mut r = Game::resume(g.world.clone(), g.cfg.clone(), saved, Vec::new());
+        r.connect(20, 2, "bob");
+        assert_eq!(code(&ask(&mut r, 20)), Some("too_many_requests".into()));
+        assert_eq!(r.attack_alerts, g.attack_alerts);
         // Requests that came to nothing (cancelled, expired) or were accepted
         // don't count: trading isn't capped by the limiter.
         cancel_all(&mut g);
@@ -7152,7 +7288,12 @@ mod tests {
         assert_eq!(code(&ask(&mut g, 21)), None);
         cancel_all(&mut g);
         // The settings survive a restart.
-        g.command(10, 1, Some(6), ClientMsg::MatingPrefs { block: Some(2), unblock: None, auto_decline: None });
+        g.command(
+            10,
+            1,
+            Some(6),
+            ClientMsg::MatingPrefs { block: Some(2), unblock: None, auto_decline: None, blocked: None },
+        );
         let mut r = Game::resume(g.world.clone(), GameConfig::default(), g.saved(), Vec::new());
         r.connect(20, 2, "bob");
         let out = r.command(20, 2, Some(7), ClientMsg::RequestMating { mine: stud, partner: dam, price: None });

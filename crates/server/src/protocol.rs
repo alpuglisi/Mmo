@@ -225,6 +225,10 @@ pub enum ClientMsg {
         unblock: Option<PlayerId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auto_decline: Option<bool>,
+        /// The whole block list at once (replacing it), applied before
+        /// `block` and `unblock`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked: Option<Vec<PlayerId>>,
     },
     /// Your balance and recent ledger entries (newest first, at most `limit`,
     /// default 50). Data: [`LedgerView`].

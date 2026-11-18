@@ -36,6 +36,58 @@ fn clean_text(text: &str, max: usize) -> Option<String> {
     (n >= 1 && n <= max && !t.chars().any(char::is_control)).then(|| t.to_string())
 }
 
+/// Punctuation a title or species name may use besides letters, digits and
+/// single spaces: nothing that reads as markup (`<`, `>`, `&`, quotes,
+/// slashes, brackets).
+const DISPLAY_PUNCTUATION: &str = ".,'!?-:+#()";
+
+/// Words a title or species name may not contain (once folded like a
+/// name's skeleton, spaces and punctuation dropped): they would pass for
+/// the server's own voice.
+const RESERVED_WORDS: &[&str] = &["admin", "moderator", "server", "staff", "system", "official", "developer"];
+
+/// A title or species name shown to other players (playtest 3: bidi
+/// overrides, zero-width characters, markup and "Server Admin" were
+/// accepted): ASCII letters, digits, single spaces and
+/// [`DISPLAY_PUNCTUATION`] only, like player names ASCII so there are no
+/// look-alike letters, and none of the [`RESERVED_WORDS`]. The reason when
+/// refused.
+pub(crate) fn display_text(text: &str, max: usize) -> Result<String, &'static str> {
+    let t = clean_text(text, max).ok_or("empty, too long or with control characters")?;
+    if !t.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || DISPLAY_PUNCTUATION.contains(c)) {
+        return Err("only letters, digits, spaces and . , ' ! ? - : + # ( )");
+    }
+    if t.contains("  ") {
+        return Err("no double spaces");
+    }
+    if !t.chars().any(|c| c.is_ascii_alphanumeric()) {
+        return Err("at least one letter or digit");
+    }
+    let folded = fold(&t);
+    if RESERVED_WORDS.iter().any(|w| folded.contains(&fold(w))) {
+        return Err("it would pass for the server or its staff");
+    }
+    Ok(t)
+}
+
+/// A text folded for look-alike comparison: a name's skeleton
+/// (`accounts::name_skeleton`) of its letters and digits only,
+/// with the usual digit stand-ins for letters (`3` e, `4` a, `5` s, `7` t).
+fn fold(text: &str) -> String {
+    let alnum: String = text
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| match c {
+            '3' => 'e',
+            '4' => 'a',
+            '5' => 's',
+            '7' => 't',
+            c => c,
+        })
+        .collect();
+    crate::accounts::name_skeleton(&alnum)
+}
+
 /// Adults of each lineage compared in a compatibility check.
 const SAMPLE: usize = 16;
 
@@ -178,9 +230,13 @@ impl Game {
                 format!("the palette is {}", economy::NAMEPLATE_COLORS.join(", ")),
             ));
         }
-        let title = clean_text(title, economy::MAX_TITLE_LEN).ok_or_else(|| {
-            ErrorInfo::new("bad_title", format!("a title has 1 to {} characters", economy::MAX_TITLE_LEN))
+        let title = display_text(title, economy::MAX_TITLE_LEN).map_err(|why| {
+            ErrorInfo::new("bad_title", format!("a title has 1 to {} characters: {why}", economy::MAX_TITLE_LEN))
         })?;
+        // Nor another player's name (it shows beside the owner's).
+        if self.impersonates(player, &title) {
+            return Err(ErrorInfo::new("bad_title", "a title can't look like another player's name"));
+        }
         let price = if self.economy.nameplates.contains_key(&player) {
             economy::NAMEPLATE_CHANGE_PRICE
         } else {
@@ -194,9 +250,15 @@ impl Game {
 
     /// `name_species`: rename a living species `player` founded.
     pub(super) fn name_species(&mut self, player: PlayerId, species: u32, name: &str) -> Result<String, ErrorInfo> {
-        let name = clean_text(name, crate::design::MAX_NAME_LEN).ok_or_else(|| {
-            ErrorInfo::new("bad_name", format!("a species name has 1 to {} characters", crate::design::MAX_NAME_LEN))
+        let name = display_text(name, crate::design::MAX_NAME_LEN).map_err(|why| {
+            ErrorInfo::new(
+                "bad_name",
+                format!("a species name has 1 to {} characters: {why}", crate::design::MAX_NAME_LEN),
+            )
         })?;
+        if self.impersonates(player, &name) {
+            return Err(ErrorInfo::new("bad_name", "a species name can't look like another player's name"));
+        }
         let tracker = &self.world.chronicle.species;
         let s =
             tracker.get(species).ok_or_else(|| ErrorInfo::new("unknown_species", format!("no species {species}")))?;
@@ -206,7 +268,8 @@ impl Game {
         if s.extinct_day.is_some() || s.merged_into.is_some() {
             return Err(ErrorInfo::new("species_gone", "that species is extinct or merged into another"));
         }
-        if tracker.species.iter().any(|o| o.id != species && o.name.eq_ignore_ascii_case(&name)) {
+        // Look-alikes count as taken, as for player names.
+        if tracker.species.iter().any(|o| o.id != species && fold(&o.name) == fold(&name)) {
             return Err(ErrorInfo::new("name_taken", "another species has that name"));
         }
         self.spend(player, economy::SPECIES_NAME_PRICE, format!("Named species {species} \"{name}\""))?;
@@ -215,6 +278,12 @@ impl Game {
         }
         self.economy.named_species.insert(species, player);
         Ok(name)
+    }
+
+    /// Whether `text` looks like another player's name (folded alike).
+    fn impersonates(&self, player: PlayerId, text: &str) -> bool {
+        let f = fold(text);
+        self.names.iter().any(|(&p, n)| p != player && fold(n) == f)
     }
 
     /// Every bought nameplate.

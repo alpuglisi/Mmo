@@ -70,7 +70,7 @@ export type ClientMsg =
   /** Balance and recent ledger entries; data: `LedgerView`. */
   | { type: 'ledger'; limit?: number }
   /** Block or unblock a player's mating requests, or decline them all; no fields reads the settings. Data: `{blocked, auto_decline}`. */
-  | { type: 'mating_prefs'; block?: PlayerId; unblock?: PlayerId; auto_decline?: boolean }
+  | { type: 'mating_prefs'; block?: PlayerId; unblock?: PlayerId; auto_decline?: boolean; blocked?: PlayerId[] }
   /** The renown shop's prices; data: `ShopView`. */
   | { type: 'renown_shop' }
   /** Buy an extra directed-mating slot for the rest of the weather season; data: `ShopView`. */

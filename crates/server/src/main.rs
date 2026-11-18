@@ -303,6 +303,7 @@ fn parse_args() -> Result<ServerConfig, String> {
         cfg.game.offer_warn_ticks = m(OFFER_WARN_MINUTES, tick_ms);
         cfg.game.request_window_ticks = m(REQUEST_WINDOW_MINUTES, tick_ms);
         cfg.game.min_auction_ticks = m(MIN_AUCTION_MINUTES, tick_ms);
+        cfg.game.offline_idle_ticks = m(OFFLINE_IDLE_MINUTES, tick_ms);
     }
     // The home range: full strength for H hours after a logout (from 10
     // minutes in), then fading over 2H more.

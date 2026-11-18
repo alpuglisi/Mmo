@@ -528,7 +528,12 @@ async function main() {
         // adult (which can be the partner's sex): retry then, too.
         const swapped = req.mine !== cand.mine || req.partner !== cand.partner;
         if (!req.ok) {
-          if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
+          if (!swapped && !['already_pregnant', 'not_mature', 'not_found', 'died', 'out_of_sight'].includes(req.error?.code)) throw new Error(`request_mating failed: ${JSON.stringify(req.error)} for ${JSON.stringify(cand)}`);
+          // A request names only an animal in sight, on the market or in an
+          // offer: the lineages can be founded far apart, so bob lists it.
+          if (req.error?.code === 'out_of_sight') {
+            await bob.evaluate((id) => window.evo.socket.send({ type: 'create_listing', organism: id, fee: 0 }), req.partner);
+          }
           const server = (await (await fetch(`${base}/api/world`)).json()).clock.tick;
           const look = (p, id) => p.evaluate((id) => { const s = window.evo.model.state; const o = s.organisms.find((o) => o.id === id); return `${s.clock.tick}:${o ? `${o.sex[0]}${o.pregnant ? 'P' : ''}${o.matured ? 'A' : ''}` : '-'}`; }, id);
           const diag = `server ${server}, ann ${await look(page, req.mine)}, bob ${await look(bob, req.partner)}`;
