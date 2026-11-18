@@ -679,8 +679,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (id === null) return;
       const r = await send(rallyMsg(id, c.x, c.y));
       if (r.ok) {
-        const t = r.data as { x: number; y: number; radius: number; warning?: string };
-        model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles`);
+        const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string };
+        model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles${t.note ? ` (${t.note})` : ''}`);
         if (t.warning) model.toast('error', `Rally: ${t.warning}`);
       }
       return;
@@ -696,8 +696,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       setMode('select');
       const r = await send(step.claim);
       if (r.ok) {
-        const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string };
-        model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}`);
+        const t = r.data as { x: number; y: number; radius: number; warning?: string; note?: string; pending?: boolean };
+        if (t.pending) model.toast('info', `${groupName(g.id)} is migrating to (${t.x.toFixed(0)}, ${t.y.toFixed(0)}): ${t.note ?? 'it claims the territory when it arrives'}`);
+        else model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})${t.note ? ` (${t.note})` : ''}`);
         if (t.warning) model.toast('error', `Territory: ${t.warning}`);
       }
       return;
@@ -1951,7 +1952,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
           h('button', { class: 'secondary small', 'data-action': 'rally', title: 'Gather the group at a point you tap; it holds there until the rally lapses (at least 5 minutes; the group card shows when)',
             disabled: g.members === 0, onclick: () => { setGroupChoice(g.id); setMode('rally'); if (narrow()) setSheet(false); } }, 'Rally…'),
           g.rally && h('button', { class: 'secondary small', 'data-action': 'cancel-rally', title: `Lapses on its own in ${span(rallyLeft(g, tick))}`,
-            onclick: () => void send({ type: 'cancel_rally', group: g.id }) }, 'Cancel rally'),
+            onclick: async () => {
+              const r = await send({ type: 'cancel_rally', group: g.id });
+              const note = (r.data as { note?: string } | undefined)?.note;
+              if (r.ok) model.toast('info', `${groupName(g.id)}'s rally cancelled${note ? `: ${note}` : ''}`);
+            } }, 'Cancel rally'),
           canSplit(g, groups) && h('button', { class: 'secondary small', 'data-action': 'split', onclick: () => void splitGroup(g.id) }, 'Split'),
           g.id !== 0 && h('button', { class: 'secondary small', 'data-action': 'merge', onclick: () => void send({ type: 'merge_groups', from: g.id, into: 0 }) }, 'Merge into A'),
           (g.territory || g.rally) && h('button', { class: 'secondary small', 'data-action': 'center', onclick: () => {
@@ -1964,7 +1969,8 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       const el = groupsEl.querySelector(`.group-card[data-group="${g.id}"] .group-summary`);
       const heed = groupObedience(g);
       const lapse = g.rally ? ` (lapses in ${span(rallyLeft(g, tick))})` : '';
-      const text = `${g.members} (${g.adults} adults) · ${groupOrders(g)}${lapse}${heed ? ` · ${heed}` : ''}`;
+      const outcome = g.last_outcome ? ` · last order: ${g.last_outcome}` : '';
+      const text = `${g.members} (${g.adults} adults) · ${groupOrders(g)}${lapse}${heed ? ` · ${heed}` : ''}${outcome}`;
       if (el && el.textContent !== text) el.textContent = text;
     }
   }

@@ -98,6 +98,23 @@ pub const RALLY_UTILITY: f32 = 0.55;
 /// migration ([`Settle`]): weaker than a rally (wandering, cohesion and
 /// every need still win when they press).
 pub const SETTLE_UTILITY: f32 = 0.35;
+/// A territory claim farther than this from its group's middle becomes a
+/// migration that claims on arrival ([`World::claim_or_migrate`]): a
+/// claim far from the group used to confine nobody, yet counted as its
+/// home range.
+pub const FAR_CLAIM_TILES: f32 = 30.0;
+/// A territory whose standing plants would feed its group for fewer days
+/// than this, or with no drinking water, may be moved at once, without
+/// the claim cooldown (a big herd strips a territory faster than the wait).
+pub const TERRITORY_BARE_DAYS: f32 = 3.0;
+/// Days over which [`World::food_check`] spreads the plants standing now,
+/// on top of the regrowth at the current season's pace.
+pub const FOOD_HORIZON_DAYS: f32 = 30.0;
+/// Margin on a group's daily plant need for what [`World::food_check`]
+/// leaves out (activity, pregnancy, the cold).
+pub const FOOD_NEED_MARGIN: f32 = 1.3;
+/// How far beyond a circle's edge prey still counts ([`World::prey_check`]).
+pub const PREY_REACH: f32 = 8.0;
 /// Largest arrival radius whatever the group's size: a few tiles, so a
 /// big herd has really come (playtest 3: with the rally radius, up to 24
 /// tiles, a 486-strong group "arrived" with its median 24–29 tiles out).
@@ -256,13 +273,49 @@ pub struct Settle {
 pub struct GroupPlans {
     pub migrations: BTreeMap<(PlayerId, u8), MigrationPlan>,
     pub settles: BTreeMap<(PlayerId, u8), Settle>,
+    /// Version 48: territory claims waiting on a migration and where
+    /// migrations started (empty from older snapshots).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v48"))]
+    pub pending: PendingPlans,
+}
+
+/// What snapshot version 48 added to [`GroupPlans`].
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PendingPlans {
+    /// A far territory claim's circle (centre, radius asked), claimed when
+    /// the migration to it arrives ([`World::claim_or_migrate`]).
+    pub claims: BTreeMap<(PlayerId, u8), (Vec2, f32)>,
+    /// A migration's median member distance when first measured: whether
+    /// it ever got going.
+    pub start_median: BTreeMap<(PlayerId, u8), f32>,
+}
+
+/// What [`World::claim_or_migrate`] did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ClaimOutcome {
+    /// Claimed at once.
+    Claimed(Territory),
+    /// Too far from the group: it migrates there first and claims on
+    /// arrival (`radius` as asked; kept to the group's limit then).
+    Migrating { target: Vec2, radius: f32 },
+}
+
+/// Prey around a meat-eating group's circle ([`World::prey_check`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PreyCheck {
+    /// Other lineages' animals (wild or players') in the circle or within
+    /// [`PREY_REACH`] of its edge.
+    pub prey: usize,
+    pub members: usize,
 }
 
 /// Plant food in a circle against a group's needs ([`World::food_check`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FoodCheck {
-    /// About how many of the group's animals the circle's regrowth feeds
-    /// in a good season (nominal growth: cold, snow and drought cut it).
+    /// About how many of the group's animals the circle feeds: today's
+    /// regrowth (season, snow, drought) plus the standing plants spread over
+    /// [`FOOD_HORIZON_DAYS`].
     pub supports: usize,
     pub members: usize,
     /// Days the plants standing in it now would feed the whole group.
@@ -348,6 +401,23 @@ impl World {
         (o.needs.hunger / 100.0 <= stray_hunger(o) && !thirst_breaks_off(o)).then_some((c, r))
     }
 
+    /// Where `o` looks for food and wanders: its territory or rally circle
+    /// ([`World::roam_bound`]), else twice its home circle while it is not
+    /// hungry or thirsty enough to range further ([`need_limit`]), so a herd
+    /// doesn't forage its way back to where it came from.
+    #[inline]
+    pub(crate) fn forage_bound(&self, o: &Organism) -> Option<(Vec2, f32)> {
+        if let Some(b) = self.roam_bound(o) {
+            return Some(b);
+        }
+        if self.territory_of(o).is_some() || self.rally_of(o).is_some() {
+            return None;
+        }
+        let s = self.settle_of(o)?;
+        let free = o.needs.hunger / 100.0 >= need_limit(o) || thirst_breaks_off(o);
+        (!free).then_some((s.center, 2.0 * s.radius))
+    }
+
     /// The settle circle `o`'s group keeps after arriving, if any and
     /// still standing.
     #[inline]
@@ -426,11 +496,12 @@ impl World {
         (super::commands::MIGRATE_ARRIVAL + 0.25 * (members as f32).sqrt()).min(MIGRATE_ARRIVAL_MAX)
     }
 
-    /// The home circle a group keeps after arriving: the circle it would
-    /// gather in at a rally (room to graze), at least 1.5× the arrival
-    /// radius.
+    /// The home circle a group keeps after arriving: 1.5× the arrival
+    /// radius (at most 12 tiles), centred on the target. Small on purpose:
+    /// the rally circle (up to 24 tiles) could hold the place a big herd
+    /// came from, and it walked straight back to it (playtest 4).
     pub fn home_radius(members: usize) -> f32 {
-        Self::rally_radius(members).max(1.5 * Self::arrival_radius(members))
+        1.5 * Self::arrival_radius(members)
     }
 
     /// The median distance of a group's living members from `p`.
@@ -484,6 +555,9 @@ impl World {
             return;
         }
         self.group_plans.migrations.retain(|k, _| self.migrate_orders.contains_key(k));
+        let orders = &self.migrate_orders;
+        self.group_plans.pending.claims.retain(|k, _| orders.contains_key(k));
+        self.group_plans.pending.start_median.retain(|k, _| orders.contains_key(k));
         // Members per group with an order; each migrating member's distance
         // to its group's target.
         let mut members: BTreeMap<(PlayerId, u8), usize> = BTreeMap::new();
@@ -492,6 +566,7 @@ impl World {
         }
         let mut dists: BTreeMap<(PlayerId, u8), Vec<f32>> = BTreeMap::new();
         let mut dormant: BTreeMap<(PlayerId, u8), usize> = BTreeMap::new();
+        let mut basking: BTreeMap<(PlayerId, u8), usize> = BTreeMap::new();
         for o in self.organisms.iter().filter(|o| o.alive) {
             let key = (o.owner, o.group);
             if let Some(n) = members.get_mut(&key) {
@@ -500,6 +575,9 @@ impl World {
                     dists.entry(key).or_default().push(o.pos.dist(target));
                     if o.dormancy.is_deep() {
                         *dormant.entry(key).or_default() += 1;
+                    }
+                    if matches!(o.action, crate::organism::Action::Bask | crate::organism::Action::Rest) {
+                        *basking.entry(key).or_default() += 1;
                     }
                 }
             }
@@ -533,7 +611,22 @@ impl World {
                 // The target becomes the group's home until its next order.
                 let settle = Settle { center: target, radius: Self::home_radius(n), until_tick: u64::MAX };
                 self.group_plans.settles.insert(key, settle);
-                self.push_group_event(GroupEvent::Arrived { player, group, target });
+                self.group_plans.pending.start_median.remove(&key);
+                match self.group_plans.pending.claims.remove(&key) {
+                    Some((center, radius)) => {
+                        let adults = self.group_counts(player, group).1;
+                        let t = Territory {
+                            center,
+                            radius: radius.clamp(TERRITORY_MIN_RADIUS, Self::territory_radius_limit(adults)),
+                            claimed_tick: self.tick,
+                        };
+                        self.territories.insert(key, t);
+                        self.territory_claims.insert(key, self.tick);
+                        self.rallies.remove(&key);
+                        self.push_group_event(GroupEvent::ClaimedOnArrival { player, group, territory: t });
+                    }
+                    None => self.push_group_event(GroupEvent::Arrived { player, group, target }),
+                }
                 continue;
             }
             let now = self.tick;
@@ -547,6 +640,9 @@ impl World {
                 }
             };
             let mut plan = plan;
+            if median.is_finite() {
+                self.group_plans.pending.start_median.entry(key).or_insert(median);
+            }
             if !plan.best_median.is_finite() || median < plan.best_median - MIGRATE_PROGRESS_TILES {
                 // Headway (or the first measure, from a plan saved before it was kept).
                 if plan.best_median.is_finite() || plan.progress_tick == 0 {
@@ -559,8 +655,21 @@ impl World {
                 self.migrate_orders.remove(&key);
                 self.group_plans.migrations.remove(&key);
                 let median = if median.is_finite() { median } else { 0.0 };
-                let dormant_share = dormant.get(&key).copied().unwrap_or(0) as f32 / n.max(1) as f32;
-                self.push_group_event(GroupEvent::TimedOut { player, group, target, median, dormant_share });
+                let share =
+                    |m: &BTreeMap<(PlayerId, u8), usize>| m.get(&key).copied().unwrap_or(0) as f32 / n.max(1) as f32;
+                let start = self.group_plans.pending.start_median.remove(&key).unwrap_or(plan.best_median);
+                let never_moved = plan.best_median > start - 2.0 * MIGRATE_PROGRESS_TILES;
+                let pending_claim = self.group_plans.pending.claims.remove(&key).is_some();
+                self.push_group_event(GroupEvent::TimedOut {
+                    player,
+                    group,
+                    target,
+                    median,
+                    dormant_share: share(&dormant),
+                    basking_share: share(&basking),
+                    never_moved,
+                    pending_claim,
+                });
             }
         }
     }
@@ -635,8 +744,10 @@ impl World {
     }
 
     /// Plant food in the circle at `center`, `radius` against `player`'s
-    /// `group`: what its regrowth would feed and how long what stands now
-    /// lasts ([`FoodCheck`]). `None` for a group with no members, or one
+    /// `group`: what it feeds at this season's regrowth plus the plants
+    /// standing now spread over [`FOOD_HORIZON_DAYS`], and how long what
+    /// stands lasts ([`FoodCheck`]). Playtest 4 found the old measure (peak
+    /// regrowth, 0.39 × capacity a day) 2–3× too hopeful. `None` for a group with no members, or one
     /// that lives mostly on meat (its food walks in and out).
     pub fn food_check(&self, player: PlayerId, group: u8, center: Vec2, radius: f32) -> Option<FoodCheck> {
         let bal = &self.config.balance;
@@ -651,6 +762,7 @@ impl World {
         if members == 0 || carnivory / members as f32 > 0.6 || need <= 0.0 {
             return None;
         }
+        let need = need * FOOD_NEED_MARGIN;
         let (w, h) = (self.map.width as i32, self.map.height as i32);
         let (cx, cy) = (center.x.floor() as i32, center.y.floor() as i32);
         let span = radius.ceil() as i32 + 1;
@@ -661,20 +773,37 @@ impl World {
                     continue;
                 }
                 let k = self.map.idx(x as usize, y as usize);
-                let g = &self.map.ground()[k];
-                // Logistic regrowth peaks at 0.39 × the tile's capacity a day.
-                yield_day += bal.veg_regrowth * 0.39 * g.veg_max;
-                standing += self.map.tiles[k].veg;
+                let (g, t) = (&self.map.ground()[k], &self.map.tiles[k]);
+                standing += t.veg;
+                if g.veg_max <= 0.0 || (g.plain > 0.0 && t.water_depth > 0.0) {
+                    continue;
+                }
+                // Today's regrowth at today's plants, in this season's warmth,
+                // snow cover and dryness (the terrain's own logistic rule):
+                // a grazed tile grows back on its root term only.
+                let warmth = crate::terrain::growth_warmth(g.base_temp + self.season_offset);
+                let cover = (1.0 - t.snow * 3.0).clamp(0.0, 1.0);
+                let wet = 1.0 - bal.rain_growth + bal.rain_growth * (t.wetness / 0.5).clamp(0.0, 1.4);
+                let v = t.veg.min(g.veg_max);
+                yield_day += bal.veg_regrowth * warmth * cover * wet * (v + 0.25 * g.veg_max) * (1.0 - v / g.veg_max);
             }
         }
         let per_animal = need / members as f32;
-        Some(FoodCheck { supports: (yield_day / per_animal).floor() as usize, members, standing_days: standing / need })
+        Some(FoodCheck {
+            supports: ((yield_day + standing / FOOD_HORIZON_DAYS) / per_animal).floor() as usize,
+            members,
+            standing_days: standing / need,
+        })
     }
 
     /// Tiles along `route` (each counted once) the group can't stand on:
     /// open water it would have to swim, or a cliff.
     pub fn route_water_tiles(&self, player: PlayerId, group: u8, route: &[Vec2]) -> usize {
         let bodies = self.group_bodies(player, group);
+        // Fliers go over water.
+        if !bodies.is_empty() && 2 * bodies.iter().filter(|b| b.can_fly).count() >= bodies.len() {
+            return 0;
+        }
         let mut seen = std::collections::BTreeSet::new();
         for pair in route.windows(2) {
             let (a, b) = (pair[0], pair[1]);
@@ -790,15 +919,8 @@ impl World {
         if members == 0 {
             return Err(CommandError::NoSuchGroup(group));
         }
+        let center = self.check_claim(player, group, center, radius)?;
         let key = (player, group);
-        if let Some(&at) = self.territory_claims.get(&key) {
-            let ready = at + self.claim_cooldown_ticks();
-            if self.tick < ready {
-                return Err(CommandError::ClaimCooldown { ticks_left: ready - self.tick });
-            }
-        }
-        let center = self.on_map(center)?;
-        let radius = if radius.is_finite() { radius } else { TERRITORY_MIN_RADIUS };
         let t = Territory {
             center,
             radius: radius.clamp(TERRITORY_MIN_RADIUS, Self::territory_radius_limit(adults)),
@@ -809,8 +931,88 @@ impl World {
         self.territory_claims.insert(key, self.tick);
         self.migrate_orders.remove(&key);
         self.rallies.remove(&key);
-        self.group_plans.settles.remove(&key);
+        self.group_plans.pending.claims.remove(&key);
+        // The group's home stays for when the territory is given up.
         Ok(t)
+    }
+
+    /// What a territory claim must pass, before its circle is checked for
+    /// water: a positive radius, the claim cooldown (waived while the
+    /// group's current territory is dry or grazed bare,
+    /// [`World::territory_failing`]), a centre on the map and no overlap
+    /// with another player's territory. The centre, on the map.
+    fn check_claim(&self, player: PlayerId, group: u8, center: Vec2, radius: f32) -> Result<Vec2, CommandError> {
+        if !(radius.is_finite() && radius > 0.0) {
+            return Err(CommandError::BadRadius);
+        }
+        let key = (player, group);
+        if let Some(&at) = self.territory_claims.get(&key) {
+            let ready = at + self.claim_cooldown_ticks();
+            let failing = self.territories.get(&key).is_some_and(|t| self.territory_failing(player, group, t));
+            if self.tick < ready && !failing {
+                return Err(CommandError::ClaimCooldown { ticks_left: ready - self.tick });
+            }
+        }
+        let center = self.on_map(center)?;
+        let r = radius.max(TERRITORY_MIN_RADIUS);
+        if let Some((&(owner, _), _)) =
+            self.territories.iter().find(|(&(p, _), t)| p != player && t.center.dist(center) < t.radius + r)
+        {
+            return Err(CommandError::Overlaps { owner });
+        }
+        Ok(center)
+    }
+
+    /// Whether a territory has no drinking water left or is grazed bare
+    /// (standing plants for under [`TERRITORY_BARE_DAYS`]): the group may
+    /// then move it at once.
+    pub fn territory_failing(&self, player: PlayerId, group: u8, t: &Territory) -> bool {
+        self.water_check(player, group, t.center, t.radius).drinkable == 0
+            || self.food_check(player, group, t.center, t.radius).is_some_and(|f| f.standing_days < TERRITORY_BARE_DAYS)
+    }
+
+    /// Group command: claim a territory, or, when its centre is more than
+    /// [`FAR_CLAIM_TILES`] from the group, migrate there first and claim on
+    /// arrival (the claim's checks run now; the circle is kept to the
+    /// group's limit when it is claimed). A far claim used to become the
+    /// group's territory (and home range) with nobody in it.
+    pub fn claim_or_migrate(
+        &mut self,
+        player: PlayerId,
+        group: u8,
+        center: Vec2,
+        radius: f32,
+    ) -> Result<ClaimOutcome, CommandError> {
+        Self::check_group(group)?;
+        let Some(middle) = self.group_middle(player, group) else { return Err(CommandError::NoSuchGroup(group)) };
+        let at = self.check_claim(player, group, center, radius)?;
+        if middle.dist(at) <= FAR_CLAIM_TILES {
+            return self.claim_territory(player, group, center, radius).map(ClaimOutcome::Claimed);
+        }
+        let adults = self.group_counts(player, group).1;
+        let r = radius.clamp(TERRITORY_MIN_RADIUS, Self::territory_radius_limit(adults));
+        self.check_water(player, group, at, r)?;
+        let target = self.command_migrate_group(player, group, at)?;
+        self.group_plans.pending.claims.insert((player, group), (at, radius));
+        Ok(ClaimOutcome::Migrating { target, radius })
+    }
+
+    /// Prey around a meat-eating group's circle: other lineages' animals in
+    /// it or within [`PREY_REACH`]. `None` for a group that lives mostly on
+    /// plants ([`World::food_check`] weighs those).
+    pub fn prey_check(&self, player: PlayerId, group: u8, center: Vec2, radius: f32) -> Option<PreyCheck> {
+        let (members, carnivory) = self
+            .organisms
+            .iter()
+            .filter(|o| o.alive && o.owner == player && o.group == group)
+            .fold((0usize, 0.0f32), |(n, c), o| (n + 1, c + o.traits.carnivory));
+        if members == 0 || carnivory / (members as f32) <= 0.6 {
+            return None;
+        }
+        let reach = radius + PREY_REACH;
+        let prey =
+            self.organisms.iter().filter(|o| o.alive && o.owner != player && o.pos.dist(center) <= reach).count();
+        Some(PreyCheck { prey, members })
     }
 
     /// The rally a group is answering.
@@ -841,7 +1043,8 @@ impl World {
         self.rallies.insert(key, r);
         self.migrate_orders.remove(&key);
         self.territories.remove(&key);
-        self.group_plans.settles.remove(&key);
+        self.group_plans.pending.claims.remove(&key);
+        // The group's home stays: cancelling the rally sends it back there.
         Ok(r)
     }
 
