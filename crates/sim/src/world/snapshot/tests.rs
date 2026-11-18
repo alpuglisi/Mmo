@@ -603,6 +603,9 @@ fn fixture_world() -> World {
     for _ in 0..7 {
         w.step();
     }
+    // Snapshots before version 58 hold no niche tallies: start with none so
+    // the older layouts restore to the same world.
+    w.chronicle.niche_tally = Default::default();
     w
 }
 
@@ -1773,4 +1776,24 @@ fn version_56_snapshots_restore_without_playtest5_survival() {
     let w = fixture_world();
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.config.balance.dry_beds, r.config.balance.drink_reach), (1.0, 1.0));
+}
+
+/// Version 57 snapshots (before the era's niche tallies) restore with none,
+/// and are otherwise the same world; this version keeps them.
+#[test]
+fn version_57_snapshots_restore_without_niche_tallies() {
+    let mut w = fixture_world();
+    w.run_days(2);
+    assert!(w.chronicle.niche_tally.days > 0);
+    let old = w.snapshot_v57();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 57);
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.chronicle.niche_tally, Default::default());
+    assert!(r.snapshot_v57() == old);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.chronicle.niche_tally, w.chronicle.niche_tally);
+    w.chronicle.niche_tally = Default::default();
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert!(r.snapshot() == w.snapshot());
 }

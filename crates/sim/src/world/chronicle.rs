@@ -155,6 +155,10 @@ impl World {
             self.detect_species(day);
         }
         let era_days = self.config.era_days();
+        if day > 0 {
+            let shares = self.niche_shares();
+            self.chronicle.niche_tally.add(shares);
+        }
         if day > 0 && day.is_multiple_of(era_days) {
             self.close_era(day / era_days - 1, day);
         }
@@ -296,9 +300,21 @@ impl World {
         }
     }
 
-    /// Allele shares per niche among breeding adults (agents and cohort
-    /// members): the leader of each niche with enough adults.
+    /// The leader of each niche with enough adults today.
     pub fn niche_leaders(&self) -> Vec<NicheLeader> {
+        self.niche_shares()
+            .into_iter()
+            .map(|(niche, adults, shares)| {
+                let (player, share) = shares.iter().fold((WILD, -1.0), |b, (&p, &n)| if n > b.1 { (p, n) } else { b });
+                NicheLeader { niche, player, share, adults }
+            })
+            .collect()
+    }
+
+    /// Allele shares per niche among breeding adults (agents and cohort
+    /// members) today, for each niche with enough adults: (niche, adults,
+    /// share per origin).
+    pub fn niche_shares(&self) -> Vec<(String, f64, BTreeMap<PlayerId, f64>)> {
         let mut niches: BTreeMap<&'static str, (f64, BTreeMap<PlayerId, f64>)> = BTreeMap::new();
         let morph = self.config.balance.morph_in_legacy();
         let mut add = |niche: &'static str, genome: &Genome, w: f64| {
@@ -336,8 +352,8 @@ impl World {
             .filter(|(_, (adults, _))| *adults >= NICHE_MIN_ADULTS)
             .filter_map(|(niche, (adults, alleles))| {
                 let total: f64 = alleles.values().sum();
-                let (player, n) = alleles.iter().fold((WILD, -1.0), |b, (&p, &n)| if n > b.1 { (p, n) } else { b });
-                (total > 0.0).then(|| NicheLeader { niche: niche.to_string(), player, share: n / total, adults })
+                (total > 0.0)
+                    .then(|| (niche.to_string(), adults, alleles.into_iter().map(|(p, n)| (p, n / total)).collect()))
             })
             .collect()
     }
@@ -357,7 +373,10 @@ impl World {
             }
             None => (Vec::new(), 0),
         };
-        let niches = self.niche_leaders();
+        // By the era's mean daily share; an era begun before the tallies
+        // (an older snapshot) falls back to its final day.
+        let tally = std::mem::take(&mut self.chronicle.niche_tally);
+        let niches = if tally.days == 0 { self.niche_leaders() } else { tally.leaders() };
         for n in &niches {
             if n.player != WILD && n.share >= NICHE_MIN_SHARE {
                 self.chronicle.award(

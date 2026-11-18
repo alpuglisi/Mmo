@@ -138,6 +138,11 @@ async function main() {
     // The lineage dies out.
     const wiped = await api(page, 'POST', '/api/e2e/wipe-out');
     check(wiped.status === 200 && wiped.json.killed > 0, 'wipe-out hook', wiped);
+    // Said over the map whichever tab is open (playtest 6: only the Lineage tab said so).
+    await page.waitForSelector('#extinct-alert', { state: 'visible', timeout: UI_MS });
+    const banner = await page.textContent('#extinct-alert');
+    check(banner.includes('Your lineage died out') && banner.includes('Start a new lineage'), 'died-out banner over the map', banner);
+    step('the map says the lineage died out, with "Start a new lineage"');
     await page.click('#tab-lineage');
     await page.waitForSelector('#lineage-extinct', { state: 'visible', timeout: UI_MS });
     const notice = await page.textContent('#lineage-extinct');
@@ -151,6 +156,12 @@ async function main() {
     await page.click('#inspector-extinct-new');
     await page.waitForSelector('#design-name', { timeout: UI_MS });
     check((await page.textContent('.topbar')).includes('Design a new lineage'), 'the design screen should say it is a new lineage');
+    await page.click('#design-cancel');
+    await page.waitForSelector('#world-canvas', { timeout: UI_MS });
+    // The banner's button opens it too.
+    await page.waitForSelector('#extinct-alert-new', { state: 'visible', timeout: UI_MS });
+    await page.click('#extinct-alert-new');
+    await page.waitForSelector('#design-name', { timeout: UI_MS });
     await page.click('#design-cancel');
     await page.waitForSelector('#world-canvas', { timeout: UI_MS });
     await page.click('#tab-lineage');
