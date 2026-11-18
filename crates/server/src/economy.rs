@@ -91,6 +91,17 @@ pub const REINFORCE_SIZE: u32 = 10;
 /// Price of a ranked season's first reinforcement; each further one costs
 /// twice the last ([`reinforce_price`]).
 pub const REINFORCE_BASE_PRICE: u64 = 150;
+/// Renown for a provision (a sink for small lineages): the
+/// [`PROVISION_SIZE`] hungriest or thirstiest adults of a lineage get
+/// [`PROVISION_AMOUNT`] off their hunger and thirst, as a cache found or a
+/// spring reached would; only while the lineage is small (as
+/// reinforcements), at most [`MAX_PROVISIONS_PER_SEASON`] within a ranked
+/// season's length.
+pub const PROVISION_PRICE: u64 = 40;
+pub const PROVISION_SIZE: usize = 20;
+pub const PROVISION_AMOUNT: f32 = 50.0;
+pub const MAX_PROVISIONS_PER_SEASON: u32 = 3;
+
 /// Renown for a first nameplate (a cosmetic sink for leaders).
 pub const NAMEPLATE_PRICE: u64 = 500;
 /// Renown to change a nameplate afterwards.
@@ -114,10 +125,11 @@ pub const MAX_REINFORCEMENTS_PER_SEASON: u32 = 2;
 pub const REINFORCE_MAX_SHARE: f64 = 0.2;
 
 /// The market fee kept from a payout of `amount`: rounded down, but at
-/// least 1 renown on any paid price (splitting a purchase into 1–9 renown
-/// prices used to dodge it).
+/// least 1 renown on a price of 2 or more (splitting a purchase into 1–9
+/// renown prices used to dodge it); a 1-renown sale pays none, so the
+/// seller still gets something.
 pub fn market_fee(amount: u64) -> u64 {
-    if amount == 0 {
+    if amount < 2 {
         return 0;
     }
     (amount * MARKET_FEE_PERCENT / 100).max(1)
@@ -255,9 +267,14 @@ pub struct Economy {
     /// (a rolling window; playtest 3 bought +40 adults across a season
     /// boundary in two minutes).
     pub reinforce_days: BTreeMap<PlayerId, Vec<u64>>,
-    /// The day each player last retired a lineage (re-founding soon after
-    /// costs founders: `Game::found`).
+    /// The simulated day of each player's recent provisions (`provision`).
+    pub provision_days: BTreeMap<PlayerId, Vec<u64>>,
+    /// The day each player's last lineage ended, retired or died out
+    /// (re-founding soon after costs founders: `Game::refound_terms`).
     pub retired_day: BTreeMap<PlayerId, u64>,
+    /// Players whose last lineage died out (rather than was retired), for
+    /// the wording.
+    pub died_out: BTreeSet<PlayerId>,
     /// Bought nameplates (`set_nameplate`): a color from [`NAMEPLATE_COLORS`]
     /// and a short title shown with the player's name. Cosmetic only.
     pub nameplates: BTreeMap<PlayerId, Nameplate>,
@@ -410,7 +427,7 @@ mod tests {
 
     #[test]
     fn shop_prices_rise_and_fees_and_royalties_round() {
-        assert_eq!((market_fee(0), market_fee(1), market_fee(9)), (0, 1, 1));
+        assert_eq!((market_fee(0), market_fee(1), market_fee(2), market_fee(9)), (0, 0, 1, 1));
         assert_eq!(market_fee(40), 4);
         assert_eq!(royalty(0.025, true), 13);
         assert_eq!(royalty(0.5, false), 0);

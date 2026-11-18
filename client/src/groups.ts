@@ -86,7 +86,7 @@ export function rallyMsg(group: number, x: number, y: number): ClientMsg {
 
 /** Ticks until a group's rally lapses (0: no rally). */
 export function rallyLeft(g: GroupView, tick: number): number {
-  return g.rally ? Math.max(0, g.rally.expires_tick - tick) : 0;
+  return g.rally?.expires_tick !== undefined ? Math.max(0, g.rally.expires_tick - tick) : 0;
 }
 
 /** The territory radius a second tap at `edge` sets around `center`: the distance, kept between the minimum and the group's limit. */

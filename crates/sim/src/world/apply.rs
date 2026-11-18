@@ -217,9 +217,11 @@ impl World {
         let frac = if intent.action == Action::Ordered { self.substep_frac() } else { 1.0 };
         // Under a player's migration order, it keeps off ice that would
         // drown it if it melted (a frozen lake looks like a short cut).
-        let wary = intent.action == Action::Migrate
+        // So does an animal walking to an agreed mating (`set_rendezvous`).
+        let wary = (intent.action == Action::Migrate
             && !self.migrate_orders.is_empty()
-            && self.migrate_orders.contains_key(&(o.owner, o.group));
+            && self.migrate_orders.contains_key(&(o.owner, o.group)))
+            || (intent.action == Action::Rally && self.in_rendezvous(o));
         match intent.target {
             Some(target) => self.step_toward(o, chase.unwrap_or(target), intent.sprint, frac, wary, scratch, paths),
             None => 0.0,

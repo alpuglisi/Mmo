@@ -16,6 +16,10 @@ use crate::rng::{rng_for, stream};
 /// How close a rendezvous brings the pair (inside the server's meeting
 /// distance, 1.5 tiles, so the agreement runs).
 pub const RENDEZVOUS_NEAR: f32 = 1.0;
+/// Within this of the meeting point an animal counts as there.
+pub const MEET_AT: f32 = 2.0;
+/// How far from the midpoint a dry meeting point is searched for.
+pub const MEET_SEARCH: i32 = 12;
 
 /// Alleles in breeding adults by (host lineage, origin player), counted as
 /// the legacy score counts them (`LegacySnapshot`: the same adults, loci and
@@ -223,15 +227,18 @@ impl World {
         (self.retire_player(player), moves.len())
     }
 
-    /// An agreed mating's rendezvous: `a` and `b` walk toward each other
-    /// (each to where the other is now) until they meet, breaking off for
-    /// a threat or an urgent thirst or hunger as a possessed animal does
-    /// (`Balance::possess_danger`, `possess_urgency`). A possessed animal
-    /// follows its player instead. Replaces either's earlier rendezvous.
-    pub fn set_rendezvous(&mut self, a: OrgId, b: OrgId) {
+    /// An agreed mating's rendezvous: `a` and `b` walk to `meet` (a
+    /// meeting point, [`World::meeting_point`]) and, once both are there,
+    /// to each other, breaking off for a threat or an urgent thirst or
+    /// hunger as a possessed animal does (`Balance::possess_danger`,
+    /// `possess_urgency`). They keep off ice that could break, as migrants
+    /// do. While either is possessed the other goes only to the meeting
+    /// point and waits there: it never follows (a buyer can't lure a
+    /// rival's animal anywhere). Replaces either's earlier rendezvous.
+    pub fn set_rendezvous(&mut self, a: OrgId, b: OrgId, meet: Vec2) {
         for (x, y) in [(a, b), (b, a)] {
-            if let Some(old) = self.rendezvous.insert(x, y) {
-                if old != y && self.rendezvous.get(&old) == Some(&x) {
+            if let Some((old, _)) = self.rendezvous.insert(x, (y, meet)) {
+                if old != y && self.rendezvous.get(&old).is_some_and(|r| r.0 == x) {
                     self.rendezvous.remove(&old);
                 }
             }
@@ -240,8 +247,8 @@ impl World {
 
     /// End `a`'s rendezvous (and its partner's).
     pub fn clear_rendezvous(&mut self, a: OrgId) {
-        if let Some(b) = self.rendezvous.remove(&a) {
-            if self.rendezvous.get(&b) == Some(&a) {
+        if let Some((b, _)) = self.rendezvous.remove(&a) {
+            if self.rendezvous.get(&b).is_some_and(|r| r.0 == a) {
                 self.rendezvous.remove(&b);
             }
         }
@@ -249,22 +256,71 @@ impl World {
 
     /// `a`'s rendezvous partner, if any.
     pub fn rendezvous_of(&self, a: OrgId) -> Option<OrgId> {
-        self.rendezvous.get(&a).copied()
+        self.rendezvous.get(&a).map(|r| r.0)
+    }
+
+    /// Where `a` and `b` should meet: the dry tile nearest the midpoint
+    /// between them (within [`MEET_SEARCH`] tiles; the midpoint itself if
+    /// there is none) that `a`'s body can stand on, so the walk doesn't end
+    /// in a lake.
+    pub fn meeting_point(&self, a: OrgId, b: OrgId) -> Option<Vec2> {
+        let (x, y) = (self.organism(a)?, self.organism(b)?);
+        let mid = self.map.clamp((x.pos + y.pos) * 0.5);
+        let dry = |p: Vec2| self.map.tile_at(p).water_depth <= 0.0 && self.passable_for(x, p) && self.passable_for(y, p);
+        if dry(mid) {
+            return Some(mid);
+        }
+        let mut best: Option<(f32, Vec2)> = None;
+        for r in 1..=MEET_SEARCH {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs() != r && dy.abs() != r {
+                        continue;
+                    }
+                    let p = self.map.clamp(mid + Vec2::new(dx as f32, dy as f32));
+                    if dry(p) {
+                        let d = p.dist(mid);
+                        if best.is_none_or(|(bd, _)| d < bd) {
+                            best = Some((d, p));
+                        }
+                    }
+                }
+            }
+            if best.is_some() {
+                break;
+            }
+        }
+        Some(best.map_or(mid, |b| b.1))
+    }
+
+    /// Whether `o` walks for a rendezvous (and so keeps off breakable ice).
+    pub(super) fn in_rendezvous(&self, o: &Organism) -> bool {
+        !self.rendezvous.is_empty() && self.rendezvous.contains_key(&o.id)
     }
 
     /// Where `o` walks for its rendezvous now, if it has one and nothing
-    /// comes first (`decide`): its living partner's position, while they
-    /// are farther apart than [`RENDEZVOUS_NEAR`].
+    /// comes first (`decide`): the meeting point until it is there; then its
+    /// partner, once the partner is there too and not possessed. None while
+    /// they are within [`RENDEZVOUS_NEAR`] (the agreement runs).
     pub(super) fn rendezvous_target(&self, o: &Organism, threat: f32) -> Option<Vec2> {
         if self.rendezvous.is_empty() || o.possessed_by.is_some() || !o.matured {
             return None;
         }
-        let partner = *self.rendezvous.get(&o.id)?;
+        let &(partner, meet) = self.rendezvous.get(&o.id)?;
         let q = self.index.get(&partner).map(|&k| &self.organisms[k]).filter(|q| q.alive)?;
         if o.pos.dist(q.pos) <= RENDEZVOUS_NEAR || self.order_override(o, threat).is_some() {
             return None;
         }
-        Some(q.pos)
+        if o.pos.dist(meet) > MEET_AT {
+            return Some(meet);
+        }
+        // At the meeting point: close in only on a partner that is there too
+        // and walking on its own; otherwise wait here.
+        if q.possessed_by.is_none() && q.pos.dist(meet) <= 2.0 * MEET_AT || q.pos.dist(o.pos) <= 2.0 * MEET_AT {
+            Some(q.pos)
+        } else {
+            Some(meet)
+        }
     }
 
     fn today_f64(&self) -> f64 {
@@ -379,7 +435,9 @@ mod tests {
         w.organisms[ib].pos = far;
         let start = w.organism(a).unwrap().pos.dist(w.organism(b).unwrap().pos);
         assert!(start > 10.0, "{start}");
-        w.set_rendezvous(a, b);
+        let meet = w.meeting_point(a, b).unwrap();
+        assert_eq!(w.map.tile_at(meet).water_depth, 0.0, "a dry meeting point");
+        w.set_rendezvous(a, b, meet);
         assert_eq!((w.rendezvous_of(a), w.rendezvous_of(b)), (Some(b), Some(a)));
         let mut met = None;
         for t in 0..20 * w.config.ticks_per_day {
@@ -393,6 +451,30 @@ mod tests {
         assert!(met.is_some(), "they never met (started {start:.0} apart)");
         w.clear_rendezvous(b);
         assert_eq!((w.rendezvous_of(a), w.rendezvous_of(b)), (None, None));
+    }
+
+    /// A possessed partner isn't followed: the other walks only to the
+    /// meeting point and waits there.
+    #[test]
+    fn a_possessed_partner_is_not_followed() {
+        let mut w = presets::standard_world(WorldConfig { seed: 8, width: 64, height: 64, ..Default::default() }, 1);
+        let a = w.organisms.iter().find(|o| o.owner == 1 && o.matured).unwrap().id;
+        let b = w.organisms.iter().find(|o| o.owner == 2 && o.matured).unwrap().id;
+        let meet = w.meeting_point(a, b).unwrap();
+        w.set_rendezvous(a, b, meet);
+        w.possess(2, b).unwrap();
+        // Lead b far away: a must stay near the meeting point.
+        let ib = w.organism_index(b).unwrap();
+        let away = w.map.clamp(meet + Vec2::new(25.0, 25.0));
+        for _ in 0..6 * w.config.ticks_per_day {
+            w.organisms[ib].pos = away;
+            w.step();
+        }
+        let pa = w.organism(a).unwrap().pos;
+        assert!(pa.dist(meet) < pa.dist(away), "a followed the possessed partner: at {pa:?}, meet {meet:?}");
+        // Near it (breaks to eat or drink allowed), never at the possessed one.
+        assert!(pa.dist(meet) <= 10.0, "a waits near the meeting point: {:.1} away", pa.dist(meet));
+        assert!(pa.dist(away) > 20.0, "a followed: {:.1} from the possessed partner", pa.dist(away));
     }
 
     #[test]

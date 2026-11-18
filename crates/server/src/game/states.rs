@@ -511,6 +511,7 @@ impl Game {
             | ClientMsg::RenownShop
             | ClientMsg::BuyMatingSlot
             | ClientMsg::Compatibility
+            | ClientMsg::Provision
             | ClientMsg::SetNameplate { .. }
             | ClientMsg::NameSpecies { .. }
             | ClientMsg::Nameplates

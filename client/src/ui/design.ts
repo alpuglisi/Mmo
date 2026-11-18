@@ -285,6 +285,8 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
   const hybridBox = h('section', { class: 'card hybrid-card', id: 'design-hybrid', hidden: !species, 'aria-live': 'polite' });
   // Steep banks: the server's check of how much of today's shore these founders can drink from.
   const waterBox = h('section', { class: 'card hybrid-card hybrid-warn', id: 'design-water', hidden: true, 'aria-live': 'polite' });
+  // A re-founding soon after the last lineage ended founds half the founders.
+  const refoundBox = h('section', { class: 'card hybrid-card hybrid-warn', id: 'design-refound', hidden: true, 'aria-live': 'polite' });
   // Founding size against the land's food (playtest 1, finding 4).
   const foodBox = h('p', { class: 'small food-hint', id: 'design-food' });
   // The world the founders land in (drought, catastrophe) and wings a heavy body can't use.
@@ -347,6 +349,13 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
       const warning = r?.water_warning;
       waterBox.hidden = !warning;
       if (warning) waterBox.replaceChildren(h('h2', {}, 'Drinking water'), h('p', { class: 'hybrid-headline' }, '⚠ ', warning));
+      const rf = r?.refound;
+      refoundBox.hidden = !rf;
+      if (rf) {
+        refoundBox.replaceChildren(h('h2', {}, 'Re-founding soon'),
+          h('p', { class: 'hybrid-headline' }, '⚠ ', `Founding now gives ${rf.founders} of your ${rf.requested} founders, costing ${rf.cost.toFixed(1)} points.`),
+          h('p', { class: 'small' }, `Because ${rf.reason}. The full design founds again from day ${rf.until_day + 1} (about ${rf.minutes_left} real minutes).`));
+      }
     }, 600);
   }
 
@@ -421,6 +430,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
     serverError.textContent = '';
     try {
       const r = await api.found(cb.token, payload());
+      if (r.reduced && r.requested) window.alert(`Founded ${r.founders.length} of ${r.requested} founders: ${r.reduced}.`);
       cb.onFounded(r);
     } catch (e) {
       if (e instanceof ApiError) {
@@ -469,7 +479,7 @@ export function buildEditor(cat: GeneCatalog, cb: DesignCallbacks, world: WorldS
         (budgetCard.append(h('h2', {}, 'Budget'), total, h('div', { class: 'bar' }, bar), breakdown, unspent, foodBox, warnBox, rampNote, problem, needName, serverError,
           h('div', { class: 'row' }, submit, reset)), budgetCard),
         hybridBox,
-        waterBox),
+        waterBox, refoundBox),
       dock));
   setMode(mode, false);
   update();

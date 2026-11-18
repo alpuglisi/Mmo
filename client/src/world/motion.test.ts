@@ -41,6 +41,20 @@ describe('TickClock', () => {
     expect(c.msPerTick).toBeLessThan(105);
   });
 
+  it('is not skewed by late states while a reloaded page loads', () => {
+    const c = new TickClock();
+    let now = 0;
+    c.observe(0, now);
+    // Two states arrive late (the page was busy), then the steady 100 ms.
+    now += 900; c.observe(1, now);
+    now += 700; c.observe(2, now);
+    for (let tick = 3; tick < 12; tick++) {
+      now += 100;
+      c.observe(tick, now);
+    }
+    expect(c.msPerTick).toBe(100);
+  });
+
   it('restarts when the tick goes back (a fresh world) and ignores nonsense', () => {
     const c = new TickClock();
     c.observe(50, 0);
@@ -49,7 +63,7 @@ describe('TickClock', () => {
     c.observe(10, 5000);
     c.observe(12, 5400);
     expect(c.msPerTick).toBeLessThan(1000);
-    expect(c.msPerTick).toBeGreaterThan(200);
+    expect(c.msPerTick).toBe(200);
   });
 });
 

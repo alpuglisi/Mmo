@@ -479,7 +479,15 @@ async fn logout(State(app): State<AppState>, headers: HeaderMap) -> StatusCode {
 pub struct FoundResponse {
     pub lineage: u32,
     pub founders: Vec<u64>,
+    /// Points the founding cost (with the founders it got).
     pub cost: f32,
+    /// Founders the design asked for: more than `founders` when it was a
+    /// re-founding soon after the player's last lineage ended.
+    #[serde(default)]
+    pub requested: u32,
+    /// Why fewer were founded, if they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduced: Option<String>,
 }
 
 async fn found_lineage(
@@ -509,7 +517,16 @@ async fn found_lineage(
     if let Err(e) = w.store.put_design(&record).await {
         tracing::error!("could not persist design of player {} in world {}: {e}", session.player, w.id);
     }
-    Ok((StatusCode::CREATED, Json(FoundResponse { lineage: ok.lineage, founders: ok.founders, cost: ok.cost })))
+    Ok((
+        StatusCode::CREATED,
+        Json(FoundResponse {
+            lineage: ok.lineage,
+            founders: ok.founders,
+            cost: ok.cost,
+            requested: ok.requested,
+            reduced: ok.reduced,
+        }),
+    ))
 }
 
 /// `POST /api/design/compatibility` (logged in, body: a design): who the

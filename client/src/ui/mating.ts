@@ -16,6 +16,8 @@ export interface PairContext {
   ownPair?: boolean;
   /** The id of a pregnant female in the pair, if the client can see it (own organisms only). */
   pregnant?: number | null;
+  /** On the market: buying is the agreement (the listing consented in advance). */
+  listed?: boolean;
 }
 
 export function compatSummary(p: MatingPreviewView, ctx: PairContext = {}): CompatSummary {
@@ -43,6 +45,8 @@ export function compatSummary(p: MatingPreviewView, ctx: PairContext = {}): Comp
       // Within the lineage the mating happens on the spot or not at all.
       level = 'warn';
       after = ` Within your lineage they must be within ${p.meeting_distance} tiles to mate: walk one to the other first.`;
+    } else if (ctx.listed) {
+      after = ` Buying is the agreement (the seller consented when listing); then the two walk to a meeting point (within ${p.meeting_distance} tiles).`;
     } else {
       after = ` After the other player agrees, the two must meet (within ${p.meeting_distance} tiles).`;
     }

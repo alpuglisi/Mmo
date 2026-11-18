@@ -214,7 +214,88 @@ impl Game {
             nameplate_colors: economy::NAMEPLATE_COLORS.iter().map(|c| c.to_string()).collect(),
             nameplate: self.economy.nameplates.get(&player).cloned(),
             species_name_price: economy::SPECIES_NAME_PRICE,
+            provision_price: economy::PROVISION_PRICE,
+            provisions_bought: self.recent_count(self.economy.provision_days.get(&player)),
+            provisions_max: economy::MAX_PROVISIONS_PER_SEASON,
+            provision_blocked: self.provision_blocked(player).err().map(|e| e.message),
+            reinforce_next_day: self.reinforce_next(player).map(|x| x.0),
+            reinforce_next_minutes: self.reinforce_next(player).map(|x| x.1),
         }
+    }
+
+    /// Purchases in `days` within the last ranked season's length.
+    fn recent_count(&self, days: Option<&Vec<u64>>) -> u32 {
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        days.map_or(0, |d| d.iter().filter(|&&day| day + window > today).count() as u32)
+    }
+
+    /// When the reinforcement window frees a slot, if it is full: the day
+    /// and about how many real minutes from now.
+    fn reinforce_next(&self, player: PlayerId) -> Option<(u64, u64)> {
+        let days = self.economy.reinforce_days.get(&player)?;
+        if self.recent_count(Some(days)) < economy::MAX_REINFORCEMENTS_PER_SEASON {
+            return None;
+        }
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        let oldest = days.iter().copied().filter(|&d| d + window > today).min()?;
+        let day = oldest + window;
+        let minutes = ((day - today) as f64 * self.world.config.ticks_per_day as f64 * self.cfg.tick_ms / 60_000.0).ceil();
+        Some((day, minutes as u64))
+    }
+
+    /// Why `player` can't buy a provision now (their lineage otherwise).
+    fn provision_blocked(&self, player: PlayerId) -> Result<u32, ErrorInfo> {
+        let Some(lineage) = self.lineage_of(player).filter(|_| !self.is_extinct(player)) else {
+            return Err(ErrorInfo::new("no_lineage", "you have no living lineage to provision"));
+        };
+        let max = self.reinforce_max_alive();
+        let alive = self.owner_population(player);
+        if alive > max {
+            return Err(ErrorInfo::new("too_large", format!("provisions are for lineages of at most {max} (yours has {alive})")));
+        }
+        if self.recent_count(self.economy.provision_days.get(&player)) >= economy::MAX_PROVISIONS_PER_SEASON {
+            return Err(ErrorInfo::new(
+                "limit_reached",
+                format!(
+                    "at most {} provisions within a ranked season's length ({} days)",
+                    economy::MAX_PROVISIONS_PER_SEASON,
+                    self.cfg.season_days
+                ),
+            ));
+        }
+        Ok(lineage)
+    }
+
+    /// `provision`: the lineage's hungriest or thirstiest adults are fed and
+    /// watered a little. The number fed and the shop after.
+    pub(super) fn provision(&mut self, player: PlayerId) -> Result<(usize, ShopView), ErrorInfo> {
+        let lineage = self.provision_blocked(player)?;
+        let mut needy: Vec<usize> = (0..self.world.organisms.len())
+            .filter(|&i| {
+                let o = &self.world.organisms[i];
+                o.alive && o.lineage == lineage && o.matured
+            })
+            .collect();
+        if needy.is_empty() {
+            return Err(ErrorInfo::new("no_adults", "your lineage has no adult to provision"));
+        }
+        let need = |i: usize| {
+            let n = &self.world.organisms[i].needs;
+            n.hunger.max(n.thirst)
+        };
+        needy.sort_by(|&a, &b| need(b).total_cmp(&need(a)).then(a.cmp(&b)));
+        needy.truncate(economy::PROVISION_SIZE);
+        self.spend(player, economy::PROVISION_PRICE, format!("Provision: {} adults fed and watered", needy.len()))?;
+        for &i in &needy {
+            let n = &mut self.world.organisms[i].needs;
+            n.hunger = (n.hunger - economy::PROVISION_AMOUNT).max(0.0);
+            n.thirst = (n.thirst - economy::PROVISION_AMOUNT).max(0.0);
+        }
+        let (today, window) = (self.world.day(), self.cfg.season_days.max(1));
+        let days = self.economy.provision_days.entry(player).or_default();
+        days.retain(|&d| d + window > today);
+        days.push(today);
+        Ok((needy.len(), self.shop_view(player)))
     }
 
     /// `set_nameplate`.
@@ -339,9 +420,13 @@ impl Game {
             return Err(ErrorInfo::new(
                 "limit_reached",
                 format!(
-                    "at most {} reinforcements within a ranked season's length ({} days; retired lineages count)",
+                    "at most {} reinforcements within a ranked season's length ({} days; retired lineages count){}",
                     economy::MAX_REINFORCEMENTS_PER_SEASON,
-                    self.cfg.season_days
+                    self.cfg.season_days,
+                    self.reinforce_next(player).map_or(String::new(), |(d, m)| format!(
+                        ": the next is possible on day {} (about {m} real minutes)",
+                        d + 1
+                    ))
                 ),
             ));
         }
@@ -504,6 +589,17 @@ impl Game {
             rows,
             shore_access,
             water_warning,
+            refound: self.refound_terms(player).map(|t| {
+                let n = t.founders(design.founders);
+                crate::protocol::RefoundView {
+                    founders: n,
+                    requested: design.founders,
+                    cost: design.clone().founders(n).point_cost(),
+                    until_day: t.until_day,
+                    minutes_left: t.minutes_left,
+                    reason: t.reason,
+                }
+            }),
         }
     }
 
