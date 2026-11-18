@@ -743,6 +743,8 @@ mod tests {
             max_radius: 8.0,
             claim_ready_tick: 0,
             obedience: 0.5,
+            migration_deadline_tick: None,
+            settle: None,
         };
         assert_eq!(home_group(&[info(0, 9, false), info(1, 3, true), info(2, 5, true)]), Some(2));
         assert_eq!(home_group(&[info(0, 5, true), info(1, 5, true)]), Some(0), "ties to the lower id");

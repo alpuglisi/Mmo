@@ -572,8 +572,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       if (id === null) return;
       const r = await send(rallyMsg(id, c.x, c.y));
       if (r.ok) {
-        const t = r.data as { x: number; y: number; radius: number };
+        const t = r.data as { x: number; y: number; radius: number; warning?: string };
         model.toast('info', `${groupName(id)} gathering at (${t.x.toFixed(0)}, ${t.y.toFixed(0)}), within ${t.radius.toFixed(1)} tiles`);
+        if (t.warning) model.toast('error', `Rally: ${t.warning}`);
       } else if (r.error) {
         model.toast('error', `Rally: ${r.error.message}`);
       }
@@ -590,8 +591,9 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
       setMode('select');
       const r = await send(step.claim);
       if (r.ok) {
-        const t = r.data as { x: number; y: number; radius: number };
+        const t = r.data as { x: number; y: number; radius: number; warning?: string };
         model.toast('info', `${groupName(g.id)} holds a territory of radius ${t.radius.toFixed(1)} at (${t.x.toFixed(0)}, ${t.y.toFixed(0)})`);
+        if (t.warning) model.toast('error', `Territory: ${t.warning}`);
       } else if (r.error) {
         model.toast('error', `Territory: ${r.error.message}`);
       }
