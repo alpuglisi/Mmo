@@ -265,11 +265,9 @@ impl World {
                     self.eat_plants(i, 0.3);
                 }
                 // A roaming hunter drinks where it passes water (with the
-                // carnivore-diet rules, `Balance::carcass_scent`), and so
-                // does one in a chase (`Balance::drink_priority`).
-                let chasing_drinks = self.config.balance.drink_priority > 0.0;
-                if (intent.target_org.is_none() && self.config.balance.carcass_scent > 0.0
-                    || intent.target_org.is_some() && chasing_drinks)
+                // carnivore-diet rules, `Balance::carcass_scent`).
+                if intent.target_org.is_none()
+                    && self.config.balance.carcass_scent > 0.0
                     && self.organisms[i].needs.thirst > 30.0
                 {
                     self.drink(i);

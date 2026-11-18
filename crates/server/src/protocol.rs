@@ -1224,6 +1224,11 @@ pub struct NearbyOrganism {
     /// player's animal may attack it, nor it theirs); absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protected: Option<bool>,
+    /// `Some(true)` while it is down in its burrow, where attack orders are
+    /// refused (`sheltered`) and hunters mostly can't reach it; absent
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burrowed: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -2073,6 +2078,7 @@ impl NearbyOrganism {
             matured: o.matured,
             look: Appearance::of(o),
             protected: None,
+            burrowed: o.sheltered.then_some(true),
         }
     }
 }

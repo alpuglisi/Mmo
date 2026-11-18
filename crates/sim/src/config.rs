@@ -997,12 +997,11 @@ pub struct Balance {
     // Playtest 2 fixes (version 44; *Playtest 2: predators, toxins and
     // drowning* in the README). Off at 0, what snapshots before version 44
     // read (`serde_util::before_v44`).
-    /// Drinking first when parched: past thirst 0.7 drinking gains up to
-    /// `0.6 × drink_priority`, a threat in sight stops holding it back and
-    /// fattening stops pulling the animal to graze, and hunters in a chase
-    /// drink at water they pass. Off by default: on, `predlong` lost the fox
-    /// on two more of six seeds (*Playtest 2: predators, toxins and
-    /// drowning* in the README). 0: off.
+    /// Drinking first when parched beside water: past thirst 0.85 with
+    /// water within 6 tiles, drinking gains up to `1.5 × drink_priority`
+    /// (all of it at 0.95), more than hunger, fattening and courting give,
+    /// so a starving, parched animal next to a lake drinks rather than
+    /// grazes or scavenges (playtest 3). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub drink_priority: f32,
     /// Possessed animals drink: one with water within 8 tiles breaks off its
@@ -1022,10 +1021,12 @@ pub struct Balance {
     /// bright-prey aversion of a poisoned individual).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub toxic_learning: f32,
-    /// Dry ground for sleeping and founding: no dormancy on ice over water
-    /// deep enough to drown the sleeper at the melt (a sleeper on such ice
-    /// wakes), and founders land only on dry ground away from deep water
-    /// (`World::found_lineage_grouped`). 0: off.
+    /// Dry ground for sleeping, founding and hunting: no dormancy on ice
+    /// over water deep enough to drown the sleeper at the melt (a sleeper on
+    /// such ice wakes), founders land only on dry ground away from deep
+    /// water (`World::found_lineage_grouped`), and a hunter that swims
+    /// poorly (below 0.5) doesn't chase prey standing in water deeper than
+    /// it can wade. 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub dry_sites: f32,
     /// Obligate carnivores' energetics: a hungry obligate carnivore's
