@@ -1309,7 +1309,7 @@ impl Default for Balance {
             age_spread: 0.12,
             dormancy_toll: 0.08,
             emergence_lag: 6.0,
-            drink_priority: 0.0,
+            drink_priority: 1.0,
             possess_drink: 1.0,
             toxic_learning: 1.0,
             dry_sites: 1.0,
