@@ -48,6 +48,8 @@ pub const HISTORY_DAYS: usize = crate::history::WINDOW_DAYS as usize;
 pub const MAX_ALERTS: usize = 50;
 /// Thirst or hunger at which a possessed organism raises a `need` alert.
 pub const NEED_ALERT: f32 = 75.0;
+/// A need alert is raised again only once the need has fallen this far below `NEED_ALERT`.
+const NEED_EASED: f32 = 25.0;
 const POPULATION_MILESTONES: [usize; 7] = [25, 50, 100, 250, 500, 1000, 1500];
 const SHARE_MILESTONES: [f64; 5] = [0.01, 0.05, 0.1, 0.25, 0.5];
 /// Layout version of [`SavedGame`]: 2 added the economy (balances, ledger,
@@ -534,7 +536,7 @@ pub struct Game {
     /// Organisms whose death is announced to their owner.
     watched: BTreeMap<OrgId, (PlayerId, Watch)>,
     progress: BTreeMap<PlayerId, Progress>,
-    /// Last day a `need` alert was raised per organism.
+    /// Organisms whose spell of need was alerted (the day it was), until it eases.
     need_alerted: BTreeMap<OrgId, u64>,
     /// Watched organisms' deaths not yet announced: grouped per player into
     /// one alert per game hour (`announce_deaths`). Not saved.
@@ -3182,7 +3184,7 @@ impl Game {
     }
 
     /// Watch possessed organisms for their death, and tell the owner once a
-    /// day when one is parched or starving. The sim looks after it: a
+    /// spell when one is parched or starving. The sim looks after it: a
     /// possessed organism breaks off its move order to drink, eat or flee
     /// when the need is severe (`Balance::possess_urgency`) and drops the
     /// order once it arrives.
@@ -3193,8 +3195,12 @@ impl Game {
         for o in self.world.organisms.iter().filter(|o| o.alive && o.owner != WILD) {
             let Some(p) = o.possessed_by else { continue };
             self.watched.entry(o.id).or_insert((p, Watch::Possessed));
+            // Once per spell of need (playtest 3: the same alert came on two
+            // days running): again only after it has eased well below.
             let need = o.needs.thirst.max(o.needs.hunger);
-            if need >= NEED_ALERT && self.need_alerted.get(&o.id) != Some(&day) {
+            if need < NEED_ALERT - NEED_EASED {
+                self.need_alerted.remove(&o.id);
+            } else if need >= NEED_ALERT && !self.need_alerted.contains_key(&o.id) {
                 needy.push((p, o.id, o.needs.thirst, o.needs.hunger, o.order.is_some()));
             }
         }
@@ -5081,9 +5087,23 @@ mod tests {
         let o = g.world.organism(id).unwrap();
         assert_eq!(o.action, evo_sim::organism::Action::Ordered);
         assert!(o.order.is_some() && o.possessed_by == Some(1));
-        // Once a day per organism.
+        // Once per spell of need: not again the next day while it lasts.
         g.world.step();
         assert!(alerts_in(&g.after_tick(), 1).iter().all(|x| x.kind != AlertKind::Need));
+        let day = g.world.day();
+        g.need_alerted.insert(id, day.saturating_sub(1));
+        g.world.step();
+        assert!(
+            alerts_in(&g.after_tick(), 1).iter().all(|x| x.kind != AlertKind::Need),
+            "a second alert for the same spell"
+        );
+        // Eased, then thirsty again: a new spell, a new alert.
+        set_thirst(&mut g, 20.0);
+        g.world.step();
+        g.after_tick();
+        set_thirst(&mut g, 80.0);
+        g.world.step();
+        assert!(alerts_in(&g.after_tick(), 1).iter().any(|x| x.kind == AlertKind::Need), "no alert for a new spell");
         // Severely thirsty: it breaks off to drink, keeping the order for later.
         set_thirst(&mut g, 92.0);
         g.world.step();
