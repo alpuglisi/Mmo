@@ -35,6 +35,15 @@ export function categoryLabel(c: SeasonCategory | string): string {
   return LABELS[c as SeasonCategory] ?? c.replace(/_/g, ' ');
 }
 
+/**
+ * A category's value in a standings table: the number alone where the
+ * heading names the unit (playtest 5: "peak 1,987 organis…" was cut off in
+ * a sidebar column), else as `formatValue`.
+ */
+export function cellValue(c: SeasonCategory | string, v: number): string {
+  return c === 'lineage' ? Math.round(v).toLocaleString('en-US') : formatValue(c, v);
+}
+
 /** A category's value as shown: a share, a count with its unit. */
 export function formatValue(c: SeasonCategory | string, v: number): string {
   const n = Math.round(v);
@@ -168,12 +177,13 @@ const swatch = (p: PlayerId, me: PlayerId) => h('span', { class: 'swatch', style
 
 function standingTables(standings: StandingPage[], me: PlayerId, idPrefix: string): HTMLElement {
   return h('div', { class: 'standings' }, ...standings.map((s) => h('div', { class: 'standing', 'data-category': s.category },
-    h('h4', { title: HINTS[s.category] }, `${categoryLabel(s.category)}${s.total > 0 ? ` · ${s.total} ranked` : ''}`),
+    // "6 ranked" over five rows read as a player missing (playtest 5): say they are the top ones.
+    h('h4', { title: HINTS[s.category] }, `${categoryLabel(s.category)}${s.total > 0 ? (s.rows.length < s.total ? ` · top ${s.rows.length} of ${s.total} ranked` : ` · ${s.total} ranked`) : ''}`),
     s.rows.length === 0
       ? h('p', { class: 'muted small' }, 'Nobody yet.')
       : h('table', { class: 'board', id: `${idPrefix}-${s.category}` },
         h('tbody', {}, ...s.rows.map((r) => h('tr', { class: r.player === me ? 'me' : '' },
-          h('td', { class: 'rank' }, String(r.rank)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name), plateBadge(r.player)), h('td', { class: 'num' }, formatValue(s.category, r.value)))))))));
+          h('td', { class: 'rank' }, String(r.rank)), h('td', {}, swatch(r.player, me), h('span', { class: 'who', title: r.name }, r.name), plateBadge(r.player)), h('td', { class: 'num', title: formatValue(s.category, r.value) }, cellValue(s.category, r.value)))))))));
 }
 
 /** The legacy category in words (`league.rs`: each day the mean of raw and weighted share, scaled by the founding ramp). */
@@ -234,7 +244,8 @@ export function renderSeasons(el: HTMLElement, d: SeasonsData, me: PlayerId, on:
   }
   const list = d.list;
   if (list) {
-    const fame = hallOfFame(list.seasons).slice(0, 8);
+    // The server's count over every season (a page dropped the oldest ones); older servers: this page's.
+    const fame = (list.hall_of_fame ?? hallOfFame(list.seasons)).slice(0, 8);
     parts.push(h('h3', {}, 'Hall of fame'));
     if (list.seasons.length === 0) {
       parts.push(h('p', { class: 'muted small', id: 'season-history' }, 'No season has ended yet.'));

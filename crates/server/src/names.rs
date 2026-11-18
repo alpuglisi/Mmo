@@ -17,12 +17,34 @@ pub const PUNCTUATION: &str = ".,'!?-:+#()_";
 
 /// Folded fragments a name may not contain anywhere: they would pass for
 /// the server or its staff.
-const RESERVED_ANYWHERE: &[&str] =
-    &["admin", "moderator", "gamemaster", "sysop", "server", "staff", "system", "official", "developer"];
+const RESERVED_ANYWHERE: &[&str] = &[
+    "admin",
+    "moderator",
+    "gamemaster",
+    "gamemod",
+    "sysop",
+    "server",
+    "staff",
+    "system",
+    "official",
+    "developer",
+    "anthropic",
+];
 
 /// Words a name may not use as a whole word (folded): too short or too
 /// common to match inside other words ("model", "modest", "owners'…").
-const RESERVED_WORDS: &[&str] = &["gm", "mod", "mods", "dev", "devs", "owner", "support", "helpdesk"];
+const RESERVED_WORDS: &[&str] = &["gm", "mod", "mods", "dev", "devs", "owner", "support", "helpdesk", "claude"];
+
+/// What a whole name may not come down to, once folded with its spaces and
+/// punctuation dropped, a leading "the", a trailing team word and trailing
+/// digits taken off (playtest 5: "G.M.", "M.o.d", "TheOwner",
+/// "SupportTeam", "Help desk" and "wild" all passed): the staff words, the
+/// wild (the owner of every wild animal) and the root account.
+const RESERVED_WHOLE: &[&str] =
+    &["gm", "mod", "dev", "owner", "support", "helpdesk", "help", "claude", "wild", "root", "admin", "op", "ops"];
+
+/// Words a staff name may end in ("SupportTeam", "DevCrew", "Mods").
+const TEAM_SUFFIXES: &[&str] = &["team", "crew", "squad", "s"];
 
 /// What a name is for: a nameplate title shows beside its owner's name, so
 /// it can't claim to be the wild either.
@@ -69,10 +91,38 @@ pub fn reserved(text: &str, kind: Kind) -> bool {
     if RESERVED_ANYWHERE.iter().any(|w| folded.contains(&fold(w))) {
         return true;
     }
+    if reserved_whole(text) {
+        return true;
+    }
     let words: Vec<String> =
         text.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).map(fold).collect();
     let word = |w: &str| words.iter().any(|x| *x == fold(w));
     RESERVED_WORDS.iter().any(|w| word(w)) || (kind == Kind::Title && word("wild"))
+}
+
+/// Whether the whole name, run together (spaces and punctuation dropped,
+/// so "G.M." reads "gm"), less a leading "the", trailing digits and a team
+/// word, is one of [`RESERVED_WHOLE`].
+fn reserved_whole(text: &str) -> bool {
+    let mut base = fold(&strip_digits(text));
+    let the = fold("the");
+    if base.len() > the.len() && base.starts_with(&the) {
+        base = base[the.len()..].to_string();
+    }
+    let forms: Vec<String> = RESERVED_WHOLE.iter().map(|w| fold(w)).collect();
+    if forms.contains(&base) {
+        return true;
+    }
+    TEAM_SUFFIXES.iter().map(|s| fold(s)).any(|s| {
+        base.len() > s.len() && base.ends_with(&s) && forms.contains(&base[..base.len() - s.len()].to_string())
+    })
+}
+
+/// The letters and digits of `text` with trailing digits taken off
+/// ("Herdmaster5" → "Herdmaster").
+fn strip_digits(text: &str) -> String {
+    let alnum: String = text.chars().filter(char::is_ascii_alphanumeric).collect();
+    alnum.trim_end_matches(|c: char| c.is_ascii_digit()).to_string()
 }
 
 /// A text folded for look-alike comparison: its letters and digits only,
@@ -95,13 +145,18 @@ pub fn fold(text: &str) -> String {
 }
 
 /// Whether `text` looks like one of `others` (other players' names): folded
-/// alike, or, for a title, containing one ("Herdmaster4 (alt)"). Names of
-/// fewer than 3 folded characters only count when equal.
+/// alike, alike once trailing digits are dropped from both ("Herdmaster"
+/// against "Herdmaster5", at least 4 characters), or, for a title,
+/// containing one ("Herdmaster4 (alt)"). Names of fewer than 3 folded
+/// characters only count when equal.
 pub fn impersonates<'a>(text: &str, others: impl IntoIterator<Item = &'a str>, kind: Kind) -> bool {
     let f = fold(text);
+    let fb = fold(&strip_digits(text));
     others.into_iter().any(|n| {
         let o = fold(n);
-        !o.is_empty() && (o == f || (kind == Kind::Title && o.len() >= 3 && f.contains(&o)))
+        let ob = fold(&strip_digits(n));
+        !o.is_empty()
+            && (o == f || (ob.len() >= 4 && ob == fb) || (kind == Kind::Title && o.len() >= 3 && f.contains(&o)))
     })
 }
 
@@ -150,8 +205,44 @@ mod tests {
             assert!(check(bad, 24, Kind::Title).is_err(), "{bad:?}");
         }
         assert!(check("wild", 24, Kind::Title).is_err());
+        // Playtest 5: the whole name run together, for every kind.
+        for kind in [Kind::Lineage, Kind::Species, Kind::Title, Kind::Account] {
+            for bad in [
+                "wild",
+                "Wild",
+                "W1ld",
+                "the wild",
+                "Wilds",
+                "Wild 2",
+                "G.M.",
+                "G M",
+                "G-M",
+                "GMs",
+                "M.o.d",
+                "GameMod",
+                "TheOwner",
+                "SupportTeam",
+                "DevTeam",
+                "Help desk",
+                "Root",
+                "Anthropic",
+                "Claude",
+            ] {
+                assert!(check(bad, 40, kind).is_err(), "{bad:?} as {kind:?}");
+            }
+        }
         // Ordinary names, and words merely containing a short reserved one.
-        for ok in ["Wild horses", "Model herd", "Queen's grazers", "Steppe runners (2)", "Modest voles"] {
+        for ok in [
+            "Wild horses",
+            "Model herd",
+            "Queen's grazers",
+            "Steppe runners (2)",
+            "Modest voles",
+            "Root voles",
+            "Gemstones",
+            "Helpful herd",
+            "Teamsters",
+        ] {
             assert!(check(ok, 40, Kind::Lineage).is_ok(), "{ok:?}");
         }
         assert_eq!(check("Server Admin", 24, Kind::Lineage).unwrap_err(), "that looks like a staff or system name");
@@ -166,6 +257,10 @@ mod tests {
         assert!(!impersonates("Herdmaster4 (alt)", others, Kind::Lineage), "a lineage only when alike");
         assert!(!impersonates("Bold bodies", others, Kind::Title), "short names only when equal");
         assert!(impersonates("B0", others, Kind::Title));
+        // A rival's name minus its digit (or with another) is a look-alike.
+        assert!(impersonates("Herdmaster", others, Kind::Lineage));
+        assert!(impersonates("Herdmaster7", others, Kind::Species));
+        assert!(!impersonates("Bo2", ["Bo1"], Kind::Lineage), "too short to compare without digits");
     }
 
     #[test]
@@ -173,5 +268,6 @@ mod tests {
         assert_eq!(sanitize("Grazers\u{202e} of\u{200b} the  north", 40, Kind::Lineage, "x"), "Grazers of the north");
         assert_eq!(sanitize("<b>Server Admin</b>", 40, Kind::Lineage, "Lineage 3"), "Lineage 3");
         assert_eq!(sanitize("\u{202e}\u{200b}", 40, Kind::Species, "Species 2"), "Species 2");
+        assert_eq!(sanitize("wild", 40, Kind::Species, "Species 7"), "Species 7");
     }
 }

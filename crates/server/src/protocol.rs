@@ -271,10 +271,15 @@ pub enum ClientMsg {
     /// share fertile), the drift risk, and the body-plan gene that keeps
     /// you apart. Data: [`CompatibilityView`].
     Compatibility,
-    /// A provision for a small lineage (40 renown): its 20 hungriest or
-    /// thirstiest adults get 50 off hunger and thirst. Only while at most a
-    /// fifth of the soft lineage cap is alive, at most 3 within a ranked
-    /// season's length. Data: `{fed, shop}`.
+    /// The requester of an accepted agreement whose animal died sends
+    /// `mine` instead, within the deadline (the same checks as buying).
+    /// Data: `{offer}`.
+    SubstituteMating { request: u64, mine: OrgId },
+    /// A provision: the lineage's hungriest or thirstiest adults get 50 off
+    /// hunger and thirst, 2 renown each (20 adults) while at most a fifth of
+    /// the soft lineage cap is alive, else 4 each (20 per fifth of the cap
+    /// alive, at most 200); at most 3 within a ranked season's length.
+    /// Data: `{fed, shop}`.
     Provision,
     /// Protocol 2 only: the client lost track of the delta states; the
     /// connection's next state is a keyframe. Handled by the connection (no
@@ -356,6 +361,7 @@ impl ClientMsg {
             ClientMsg::Reinforce => "reinforce",
             ClientMsg::Compatibility => "compatibility",
             ClientMsg::Provision => "provision",
+            ClientMsg::SubstituteMating { .. } => "substitute_mating",
             ClientMsg::SetNameplate { .. } => "set_nameplate",
             ClientMsg::NameSpecies { .. } => "name_species",
             ClientMsg::Nameplates => "nameplates",
@@ -407,6 +413,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "name_species",
     "nameplates",
     "provision",
+    "substitute_mating",
     "end_grace",
 ];
 
@@ -875,7 +882,7 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
             ClaimCooldown { .. } => "claim_cooldown",
             NoRally(_) => "no_rally",
             MostlyWater { .. } => "mostly_water",
-            Overlaps { .. } => "overlaps",
+            Overlaps => "overlaps",
             BadRadius => "bad_radius",
             OwnTarget(_) => "own_target",
             OutOfSight(_) => "target_out_of_sight",
@@ -889,7 +896,6 @@ impl From<&evo_sim::world::commands::CommandError> for ErrorInfo {
         match e {
             ClaimCooldown { ticks_left } => info.with_detail(serde_json::json!({ "ticks_left": ticks_left })),
             MostlyWater { share } => info.with_detail(serde_json::json!({ "water_share": share })),
-            Overlaps { owner } => info.with_detail(serde_json::json!({ "owner": owner })),
             TooBig { mass, limit } => info.with_detail(serde_json::json!({ "mass": mass, "limit": limit })),
             NewcomerGrace { days_left } | OwnGrace { days_left } => {
                 info.with_detail(serde_json::json!({ "days_left": days_left }))
@@ -1035,6 +1041,10 @@ pub struct OfferView {
     /// of 8-tile cells) and how far apart. They walk to meet on their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meet: Option<MeetView>,
+    /// The requester's animal died after acceptance (how): they may send
+    /// another with `substitute_mating` before `expires_tick`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost: Option<String>,
 }
 
 /// `OfferView::meet`.
@@ -1417,6 +1427,13 @@ pub struct WorldSummary {
     /// reserves full: `GameConfig::winter_provision`).
     #[serde(default)]
     pub winter_provision: bool,
+    /// Re-founding within this many game days of a lineage's end (about
+    /// `refound_window_minutes` real minutes) founds half the founders
+    /// (`Game::refound_window_days`); 0 from older servers.
+    #[serde(default)]
+    pub refound_window_days: u64,
+    #[serde(default)]
+    pub refound_window_minutes: u64,
     /// The lineage cap (`WorldConfig::lineage_cap`, scaled to the map): with
     /// crowding on, the soft cap where breeding is at half pace; off, the
     /// most living organisms one player may have.
@@ -1629,6 +1646,9 @@ pub struct LineageStats {
     /// bearers): what "pregnant" means for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eggs: Option<EggsView>,
+    /// How the lineage ended once it has: `retired` or `died_out`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<String>,
     /// Lineage-wide warnings now (hunger or thirst crash, near the hard
     /// cap, starving inside territories), most urgent first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1802,6 +1822,9 @@ pub struct ShopView {
     /// the rolling window and the most allowed, and why not now.
     #[serde(default)]
     pub provision_price: u64,
+    /// Adults a provision would feed now (the price is per adult).
+    #[serde(default)]
+    pub provision_size: usize,
     #[serde(default)]
     pub provisions_bought: u32,
     #[serde(default)]
@@ -1895,6 +1918,10 @@ pub struct DesignCompatView {
     /// `cost` points; `reason` says why and until when.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refound: Option<RefoundView>,
+    /// Why founding would refuse the design's name (it looks like another
+    /// player's), so the designer can warn before Found; absent when fine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_warning: Option<String>,
 }
 
 /// `DesignCompatView::refound`.
@@ -2181,7 +2208,7 @@ pub fn death_name(c: evo_sim::organism::DeathCause) -> &'static str {
     match c {
         Starvation => "starved",
         Thirst => "thirst",
-        Exposure => "exposure",
+        Exposure => "cold",
         Predation => "eaten",
         Toxin => "toxin",
         Drowning => "drowned",
@@ -2191,6 +2218,7 @@ pub fn death_name(c: evo_sim::organism::DeathCause) -> &'static str {
         Disease => "disease",
         Journey => "journey",
         WinterSleep => "winter_sleep",
+        Heat => "heat",
     }
 }
 
@@ -2548,6 +2576,10 @@ pub struct SpeciesView {
     pub extinct_day: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_into: Option<u32>,
+    /// The name of the species it merged into (so it reads by name even
+    /// when that one isn't listed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_into_name: Option<String>,
     /// Player credited with the speciation (splits only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub founder: Option<PlayerId>,
@@ -2667,8 +2699,14 @@ pub struct SpeciesList {
 pub struct EraRow {
     pub player: PlayerId,
     pub name: String,
+    /// Share at the era's end (and weighted).
     pub share: f64,
     pub weighted_share: f64,
+    /// The era's mean day score (the ranked season's: mean of raw and
+    /// weighted share, with the founding ramp), which ranks it; absent for
+    /// eras from before it was kept, ranked by the final share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_share: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

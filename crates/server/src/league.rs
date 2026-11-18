@@ -242,6 +242,42 @@ pub struct SeasonList {
     pub total: usize,
     pub offset: usize,
     pub seasons: Vec<SeasonHead>,
+    /// Titles and legacy crowns per player over every finished season (not
+    /// just this page: the client's count from a page dropped the oldest
+    /// seasons), most crowns then titles first.
+    #[serde(default)]
+    pub hall_of_fame: Vec<FameRow>,
+}
+
+/// One player's titles over the whole record (`SeasonList::hall_of_fame`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FameRow {
+    pub player: PlayerId,
+    pub name: String,
+    pub crowns: u32,
+    pub titles: u32,
+}
+
+/// The hall of fame from season heads (each winner a title; a legacy one a crown).
+pub fn hall_of_fame<'a>(heads: impl IntoIterator<Item = &'a SeasonHead>) -> Vec<FameRow> {
+    let mut rows: BTreeMap<PlayerId, FameRow> = BTreeMap::new();
+    for h in heads {
+        for w in &h.winners {
+            let r = rows.entry(w.player).or_insert_with(|| FameRow {
+                player: w.player,
+                name: w.name.clone(),
+                crowns: 0,
+                titles: 0,
+            });
+            r.titles += 1;
+            if w.category == Category::Legacy {
+                r.crowns += 1;
+            }
+        }
+    }
+    let mut rows: Vec<FameRow> = rows.into_values().collect();
+    rows.sort_by(|a, b| b.crowns.cmp(&a.crowns).then(b.titles.cmp(&a.titles)).then(a.name.cmp(&b.name)));
+    rows
 }
 
 /// One page of a category's standings.
@@ -290,6 +326,10 @@ pub struct PlayerHistory {
     pub seasons: Vec<PlayerSeason>,
 }
 
+/// Survival is ranked only for players with living animals on at least
+/// this share of the season's recorded days.
+pub const SURVIVAL_ALIVE_SHARE: f64 = 0.8;
+
 /// The standings of the season under way (saved with the game).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -315,8 +355,9 @@ pub struct SeasonTracker {
     /// catastrophe, however many lineages saw it end (absent in older saves).
     survived_ids: BTreeSet<(PlayerId, u32)>,
     /// Recorded days on which each player had living animals: survival is
-    /// ranked only for players alive on at least half the season's days
-    /// (playtest 4: a title for a player with no animals for 55 of 60 days).
+    /// ranked only for players alive on at least [`SURVIVAL_ALIVE_SHARE`] of
+    /// the season's days (playtests 4 and 5: titles for players without
+    /// animals for much of the season).
     alive_days: BTreeMap<PlayerId, u32>,
     /// The legacy category counts the mean of the raw and weighted share
     /// (`Category::Legacy`); false in trackers saved before that rule,
@@ -408,10 +449,12 @@ impl SeasonTracker {
         }
     }
 
-    /// Whether `player` had living animals on at least half the season's
-    /// recorded days (the survival category's entry rule).
+    /// Whether `player` had living animals on at least
+    /// [`SURVIVAL_ALIVE_SHARE`] of the season's recorded days (the survival
+    /// category's entry rule).
     fn alive_most_days(&self, player: PlayerId) -> bool {
-        2 * self.alive_days.get(&player).copied().unwrap_or(0) >= self.days.max(1)
+        let days = self.alive_days.get(&player).copied().unwrap_or(0) as f64;
+        days >= SURVIVAL_ALIVE_SHARE * self.days.max(1) as f64
     }
 
     pub fn add_species(&mut self, player: PlayerId) {
@@ -1024,5 +1067,20 @@ mod tests {
         let w: Vec<PlayerId> =
             r.head.winners.iter().filter(|w| w.category == Category::Survival).map(|w| w.player).collect();
         assert_eq!(w, vec![1], "the only player alive most of the season wins it alone");
+    }
+
+    /// The hall of fame counts every season it is given (the API gives it all of them).
+    #[test]
+    fn the_hall_of_fame_counts_every_season() {
+        let mut heads = Vec::new();
+        for n in 1..=12 {
+            let mut t = SeasonTracker::new(n, 0, 1);
+            t.record_day(&day(0, &[(1, 0.3), (2, 0.1)], &[(1, 50), (2, 30)]));
+            heads.push(t.finish("w", 1, 1, name).head);
+        }
+        let fame = hall_of_fame(&heads);
+        let p1 = fame.iter().find(|r| r.player == 1).unwrap();
+        assert_eq!(p1.crowns, 12, "{fame:?}");
+        assert!(p1.titles >= 12);
     }
 }

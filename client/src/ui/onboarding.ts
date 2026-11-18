@@ -12,7 +12,7 @@ import { FOUNDING_RAMP_TEXT } from '../designWarnings';
 import { FREE_FIRST_WINTER, SEASON_NOTICE_DAYS } from '../seasonNotice';
 import type { GameModel } from '../model';
 import {
-  autoStarts, dueHints, HINT_IDS, HINTS, hintsAfterReset, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
+  autoStarts, DEATH_HINT_AFTER_DAYS, dueHints, HINT_IDS, HINTS, hintsAfterReset, loadProgress, placeCard, progressKey, saveProgress, tourReduce, tourSteps,
   CARD_MARGIN, type HintId, type KeyValueStore, type Progress, type TourEvent, type TourStep, type TourTab,
 } from '../onboarding';
 import { h } from './dom';
@@ -48,7 +48,8 @@ export interface Onboarding {
   tourOpen: () => boolean;
   /** Re-evaluate the hint triggers (call on state, alert and offer changes). */
   check: () => void;
-  openHelp: () => void;
+  /** Open Help; `topic`: open that topic (its title) and scroll to it. */
+  openHelp: (topic?: string) => void;
   destroy: () => void;
 }
 
@@ -58,7 +59,9 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   let progress: Progress = loadProgress(key, deps.store);
   const save = () => saveProgress(key, progress, deps.store);
   if (deps.returning && progress.tour === 'new') {
-    progress = { ...progress, tour: 'skipped' };
+    // Back in a new browser: they have played, so the tips have been seen
+    // too (they recurred in every new browser profile, playtest 5).
+    progress = { ...progress, tour: 'skipped', hints: [...new Set([...progress.hints, ...HINT_IDS])] };
     save();
   }
 
@@ -203,13 +206,17 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   /** After a tip went away on its own, the next waits this long (the player is busy). */
   const HINT_PAUSE_MS = 45_000;
   let pauseUntil = 0;
+  /** The day the game opened on this lineage (deaths before it, or just after, bring no tip). */
+  let startDay: number | null = null;
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
 
   function check(): void {
     if (deps.disabled || tourEls || helpEls) return;
     if (Date.now() < pauseUntil) return;
     if (progress.tour === 'new' || progress.tour === 'active') return;
-    const input = { player: model.player, organisms: model.state?.organisms ?? [], feed: model.feed, offers: model.offers.values() };
+    if (startDay === null && model.state) startDay = model.state.clock.day;
+    if (startDay === null) return;
+    const input = { player: model.player, organisms: model.state?.organisms ?? [], feed: model.feed, offers: model.offers.values(), deathsFrom: startDay + DEATH_HINT_AFTER_DAYS };
     for (const id of dueHints(input, [...progress.hints, ...queue])) queue.push(id);
     if (!hintEl && queue.length > 0) showHint(queue.shift()!);
   }
@@ -276,6 +283,8 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
   function hideHint(): void {
     clearTimeout(hideTimer);
     if (!hintEl) return;
+    // (The screen-reader copy goes too: it stayed in the page for minutes, playtest 5.)
+    live.textContent = '';
     const hadFocus = hintEl.contains(document.activeElement);
     hintEl.remove();
     hintEl = null;
@@ -309,21 +318,26 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
       + `A lineage founded within ${SEASON_NOTICE_DAYS} days of winter (or during it) arrives fed, with full fat reserves; the design screen says when this applies. `
       + `${FREE_FIRST_WINTER} Warm-blooded designs get through on fur, fat stores and hibernation (the starting design has all three); `
       + 'cold-blooded ones on brumation and fat stores: a cold-blooded hibernator can\'t warm itself awake.'],
-    ['Why are my animals dying?', () => 'The Genes tab charts deaths by cause; each cause has a fix. '
+    ['Why are my animals dying?', () => 'The Genes tab charts deaths by cause (the names below are the chart\'s); each has a fix. '
       + 'Thirst: keep herds, territories and rallies near lakes and rivers, above all in a drought. '
-      + 'Hunger: too many animals on too little food; spread out (split groups, migrate), found fewer, or eat something else. '
+      + 'Starved: too many animals on too little food; spread out (split groups, migrate), found fewer, or eat something else. '
       + 'Winter sleep: some sleepers die every winter, more in their first year and when thin; fat stores help, and founders sleep their first winter free. '
-      + 'Predators: stay in groups, add speed, armor, toxins or camouflage. '
-      + 'Poisoned: your hunters ate toxic prey; bright colours warn them off. '
-      + 'Drowned: poor swimmers crossing water; raise swimming or route around lakes. '
-      + 'Chilled eggs: incubated eggs need a parent brooding them; abandoned eggs are left exposed by design and many die, which their large clutches make up for.'],
+      + 'Exposure: too cold or too hot for the body; fur, fat or a warmer range in winter, shade and water in summer. '
+      + 'Eaten: stay in groups, add speed, armor, toxins or camouflage. '
+      + 'Poisoned (toxin): your hunters ate toxic prey; bright colours warn them off. '
+      + 'Drowned: poor swimmers crossing water, or sleepers flooded in their dens; raise swimming or keep clear of rivers that rise. '
+      + 'Attrition (alerts say "of exhaustion"): the steady toll of disease and accidents on short-lived species; a longer-lived body (bigger, slower to mature) loses fewer. '
+      + 'Old age: they lived out their span. '
+      + 'Eggs are counted apart: chilled eggs need a parent brooding them (abandoned eggs are left exposed by design, and warm-blooded ones chill unless it is hot); '
+      + 'egg raiders eat unguarded clutches, so brooding parents and a group nearby protect them.'],
     ['Growth and the soft cap', () => 'Breeding slows as your lineage grows: litters shrink toward the soft cap (half size at it) and members get hungrier past it; births stop only at the hard cap. '
       + 'The Lineage tab shows where you stand.'],
   ];
   let helpEls: { backdrop: HTMLElement; dialog: HTMLElement } | null = null;
 
-  function openHelp(): void {
+  function openHelp(topic?: unknown): void {
     if (helpEls) return;
+    const want = typeof topic === 'string' ? topic : null;
     const touch = deps.touch();
     const tap = touch ? 'Tap' : 'Click';
     const replay = h('button', { id: 'help-replay', type: 'button' }, 'Replay the tour');
@@ -338,7 +352,7 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
         h('li', {}, 'Mates and Market pair your adults with others; Ranks shows the ranked seasons; alerts badge the Genes tab.')),
       h('h3', {}, 'How the world works'),
       h('div', { class: 'help-topics', id: 'help-topics' }, ...HELP_TOPICS.map(([title, body]) =>
-        h('details', { class: 'help-topic' }, h('summary', {}, title), h('p', { class: 'small' }, body(tap))))),
+        h('details', { class: 'help-topic', open: title === want || undefined, 'data-topic': title }, h('summary', {}, title), h('p', { class: 'small' }, body(tap))))),
       h('div', { class: 'row wrap' }, replay, tips, close));
     const backdrop = h('div', { class: 'help-backdrop', id: 'help' }, dialog);
     backdrop.addEventListener('mousedown', (e) => {
@@ -359,6 +373,7 @@ export function createOnboarding(deps: OnboardingDeps): Onboarding {
     deps.host.append(backdrop);
     window.addEventListener('keydown', onHelpKey, true);
     replay.focus({ preventScroll: true });
+    if (want) dialog.querySelector<HTMLElement>(`details[data-topic="${CSS.escape(want)}"]`)?.scrollIntoView({ block: 'nearest' });
   }
 
   /** While Help is open (modal): Esc closes it and Tab stays inside, wherever focus is. */

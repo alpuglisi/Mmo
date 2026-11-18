@@ -91,14 +91,22 @@ pub const REINFORCE_SIZE: u32 = 10;
 /// Price of a ranked season's first reinforcement; each further one costs
 /// twice the last ([`reinforce_price`]).
 pub const REINFORCE_BASE_PRICE: u64 = 150;
-/// Renown for a provision (a sink for small lineages): the
-/// [`PROVISION_SIZE`] hungriest or thirstiest adults of a lineage get
+/// A provision: the lineage's hungriest or thirstiest adults get
 /// [`PROVISION_AMOUNT`] off their hunger and thirst, as a cache found or a
-/// spring reached would; only while the lineage is small (as
-/// reinforcements), at most [`MAX_PROVISIONS_PER_SEASON`] within a ranked
-/// season's length.
-pub const PROVISION_PRICE: u64 = 40;
+/// spring reached would; at most [`MAX_PROVISIONS_PER_SEASON`] within a
+/// ranked season's length. A small lineage (at most a fifth of the soft cap
+/// alive, as reinforcements) provisions [`PROVISION_SIZE`] adults at
+/// [`PROVISION_PER_ANIMAL`] each; a larger one [`PROVISION_SIZE`] per fifth
+/// of the cap it holds (at most [`PROVISION_MAX_SIZE`]) at
+/// [`PROVISION_PER_ANIMAL_LARGE`] each: a sink that scales with the leaders'
+/// renown (playtest 5: 6,788 unspent) while feeding a small share of them.
+/// Fewer adults fed cost less (playtest 5: feeding 12 cost the full 40).
 pub const PROVISION_SIZE: usize = 20;
+pub const PROVISION_MAX_SIZE: usize = 200;
+pub const PROVISION_PER_ANIMAL: u64 = 2;
+pub const PROVISION_PER_ANIMAL_LARGE: u64 = 4;
+/// A full small provision (20 adults).
+pub const PROVISION_PRICE: u64 = PROVISION_SIZE as u64 * PROVISION_PER_ANIMAL;
 pub const PROVISION_AMOUNT: f32 = 50.0;
 pub const MAX_PROVISIONS_PER_SEASON: u32 = 3;
 
@@ -124,15 +132,13 @@ pub const MAX_REINFORCEMENTS_PER_SEASON: u32 = 2;
 /// lineage cap (`WorldConfig::lineage_cap`) is alive.
 pub const REINFORCE_MAX_SHARE: f64 = 0.2;
 
-/// The market fee kept from a payout of `amount`: rounded down, but at
-/// least 1 renown on a price of 2 or more (splitting a purchase into 1–9
-/// renown prices used to dodge it); a 1-renown sale pays none, so the
-/// seller still gets something.
+/// The market fee kept from a payout of `amount`: [`MARKET_FEE_PERCENT`]
+/// rounded to the nearest renown (halves up), so every price loses about a
+/// tenth: 1–4 pay none, 5–14 pay 1, 15–24 pay 2. (Playtest 5: with "at
+/// least 1" a 2-renown sale lost half and 3–9 lost 11–33%; listings are
+/// at least 5 renown now, so small prices no longer dodge it.)
 pub fn market_fee(amount: u64) -> u64 {
-    if amount < 2 {
-        return 0;
-    }
-    (amount * MARKET_FEE_PERCENT / 100).max(1)
+    (amount * MARKET_FEE_PERCENT + 50) / 100
 }
 
 /// Renown a day from alleles living in other players' lineages:
@@ -427,7 +433,10 @@ mod tests {
 
     #[test]
     fn shop_prices_rise_and_fees_and_royalties_round() {
-        assert_eq!((market_fee(0), market_fee(1), market_fee(2), market_fee(9)), (0, 0, 1, 1));
+        assert_eq!(
+            (market_fee(0), market_fee(2), market_fee(4), market_fee(5), market_fee(14), market_fee(15)),
+            (0, 0, 0, 1, 1, 2)
+        );
         assert_eq!(market_fee(40), 4);
         assert_eq!(royalty(0.025, true), 13);
         assert_eq!(royalty(0.5, false), 0);

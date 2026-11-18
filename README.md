@@ -27,7 +27,7 @@ Where the design's build order stands:
 What remains is in [Suggested next steps](#suggested-next-steps). Launch
 marketing (drafting, human approval, scheduling and publishing on the
 owner's accounts) lives in [`tools/marketing/`](tools/marketing/PUBLISHING.md).
-Four AI playtests so far; what each found and what changed is summarised in
+Five AI playtests so far; what each found and what changed is summarised in
 [`docs/changelog-playtests.md`](docs/changelog-playtests.md).
 
 ![World on day 45: player lineages (colored) and the wild ecosystem (pale = herbivores, dark red = predators)](docs/img/world-day45.png)
@@ -182,14 +182,28 @@ score).
   backs it up; the group view's `migration_deadline_tick` is the hard
   limit. The alert says why it ended: most of the group dormant
   (hibernating or estivating animals can't walk), most of it basking or
-  resting (cold-blooded animals warm up before they travel), or the group
-  never got closer than it started (a way blocked by water or cliffs); else
-  it stalled. Every migration ends with an alert (reached, claimed on
-  arrival, or ended with its reason), and the group view keeps the latest
-  as `last_outcome` until the group's next order, since alerts scroll away
-  (playtest 4: "a 70-tile migration silently did nothing"). A migrate given
-  while 30% or more of the group is dormant warns in its reply, and the
-  open-water warning on its route leaves fliers out. Migrate, claim and
+  resting (cold-blooded animals warm up before they travel), most of it
+  too hungry or thirsty to travel, or the group never got closer than it
+  started (a way blocked by water or cliffs); else it stalled. Every
+  migration ends with an alert (reached, claimed on arrival, or ended with
+  its reason), and the group view keeps the latest as `last_outcome` until
+  the group's next order. Group alerts are kept over daily summaries when
+  a player's 50 alerts are full (playtest 5: outcomes were pushed out by
+  summaries within days). **Why big herds didn't set out** (playtest 5:
+  60–70 tile migrations "did nothing"): a lineage near its cap is always
+  somewhat hungry, and grazing outscored the order from hunger 0.6, while
+  migrants also broke off to eat at 0.6 and grazed down to 0.3. Now an
+  ordered migrant outranks grazing and walks on until hunger reaches the
+  stray limit (0.8 at default obedience), eats down to 0.5 and goes on;
+  thirst still breaks off at 0.6. Headway is measured from the median
+  member's distance when the order is given, and must be 3% of it (at
+  least a tile) to count, so a big herd's wandering median no longer keeps
+  a stuck order alive. A migrate, far claim or rally given while 30% or
+  more of the group is dormant warns in its reply, migrate and far claims
+  warn of open water on the route (not for fliers), and migrate checks the
+  destination like a claim (`destination`: its home circle's water,
+  food, drought; warnings start "At the destination:"). A target moved by
+  under a tile (onto a tile's centre) carries no `moved` note. Migrate, claim and
   rally replies say which standing orders they replace (`replaced`, and
   the `note`). `World::reroute_migration`
   moves a standing order's target keeping its age (its hard limit never
@@ -255,7 +269,9 @@ score).
   wait is waived while the group's territory has no drinking water left or
   is grazed bare (standing plants for under 3 days,
   `World::territory_failing`): a big herd strips a territory faster than
-  the wait (playtest 4: ~15 days against ~25), so it may move at once. A group
+  the wait (playtest 4: ~15 days against ~25), so it may move at once.
+  Abandoning a territory cuts the wait left to a quarter of a full one, so
+  a regretted claim can be replaced soon (not at once). A group
   split off keeps the cooldown of the group it came from, on purpose: a
   split must not reset it (split, claim, merge back would dodge it); the
   message says so. Seasonal migration (a gene) still outranks the
@@ -290,13 +306,21 @@ score).
   `migrating_to`, and the territory is claimed when the group arrives
   (snapshot version 48 keeps it waiting; a timeout drops it): a far claim
   used to become a territory, and the home range, with nobody in it. A
-  circle overlapping another player's territory is refused (`overlaps`),
+  circle overlapping another player's territory is refused (`overlaps`,
+  not saying whose), and the refusal starts the claim cooldown, as an
+  accepted far claim does at once: far claims were a free radar of rivals'
+  territories (playtest 5),
   and a radius that isn't a positive number (`bad_radius`): a negative one
   used to commit a 3-tile territory and its cooldown. A radius raised to the minimum or cut to the group's limit
-  says so (`note`). Every day the server checks standing territories and
-  alerts the owner once when one has no drinking water left or is grazed
-  bare (standing plants for under 3 days), with the day's thirst or
-  hunger deaths.
+  says so (`note`). Every day the server checks each group's held ground
+  (its territory, or the home its last migration gave it while no rally
+  or migration takes it away) and alerts the owner once when it has no
+  drinking water left or is grazed bare (standing plants for under 3
+  days), with the day's thirst or hunger deaths; when the group has
+  outgrown it (it feeds fewer than the group has, before anyone starves:
+  playtest 5's herd was claimed at 475 and held 1,941); and, for hunters,
+  when prey around it is fewer than half the pack. The drift alert is only
+  given while no rally, territory or migration holds the group elsewhere.
 - **Rally** (`rally_group`, `cancel_rally`): gather a group at a point.
   The circle it gathers in has radius `2 + √members`, about π tiles of
   ground per member, up to 24 tiles (the largest territory's cap, reached
@@ -1130,7 +1154,8 @@ Client → server:
 | `renown_shop` | | `data` = `{balance, slots_left, slots_bought, slot_price?, reinforce_size, reinforce_price, reinforce_max_alive, reinforce_blocked?, market_fee_percent, royalty_per_point, reinforcements_bought, reinforcements_max, nameplate_price, nameplate_colors, nameplate?, species_name_price, provision_price, provisions_bought, provisions_max, provision_blocked?, reinforce_next_day?, reinforce_next_minutes?}` (*Why trade* in Economy) |
 | `buy_mating_slot` | | One extra directed-mating slot until the weather season changes: 30 renown, doubling with each bought that season, at most 6 (`limit_reached`, `insufficient_funds`, `no_lineage`); `data` = the shop after |
 | `reinforce` | | 10 young adults copied from your lineage's living adults join it on the best-fed ground near them: 150 renown, doubling with each, at most 2 within a ranked season's length per player (a rolling window; retired lineages count: `limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`, `lineage_full`); `data` = `{added: [ids], shop}` |
-| `provision` | | The 20 hungriest or thirstiest adults of your lineage get 50 off hunger and thirst: 40 renown, at most 3 within a ranked season's length (`limit_reached`), only while at most a fifth of the soft lineage cap is alive (`too_large`, `no_adults`, `no_lineage`, `insufficient_funds`); `data` = `{fed, shop}` |
+| `provision` | | The hungriest or thirstiest adults of your lineage get 50 off hunger and thirst, priced per adult fed: 20 adults at 2 renown each while at most a fifth of the soft lineage cap is alive, else 20 per fifth of the cap alive (at most 200) at 4 each; at most 3 within a ranked season's length (`limit_reached`, `no_adults`, `no_lineage`, `insufficient_funds`); `data` = `{fed, shop}` |
+| `substitute_mating` | `request`, `mine` | The requester of an accepted agreement whose animal died sends another adult of theirs instead, before the deadline (the purchase checks; `not_substitutable` while the first still lives or for anyone else); `data` = `{offer}` |
 | `set_nameplate` | `color, title` | A cosmetic nameplate (a palette color, a 1–24 character title) shown with your name: 500 renown, 100 per change (`bad_color`, `bad_title`); `data` = `{nameplate, shop}` |
 | `name_species` | `species, name` | Name a living species your lineage founded (cosmetic, 300 renown; `not_yours`, `species_gone`, `name_taken`, `bad_name`); `data` = `{species, name}` |
 | `nameplates` | | `data` = `{nameplates: {player: {color, title}}}` |
@@ -1144,7 +1169,7 @@ Server → client:
 | --- | --- |
 | `welcome` `{player, name, lineage, proto?}` | On connect; `proto: 2` when the connection speaks protocol 2 (absent for protocol 1) |
 | `state` | On connect, then every state interval (default 1 s): `clock` (tick, day, year, hour, season, daytime, era, era_days), `weather` (mean wind, storm, drought and flood shares, `catastrophe` while one is under way), `lineage`, `slots_left`, `population` (lineage size, cohort members included), `migration` (the main group's), `groups` (yours by id, the main group always: `{id, members, adults, migration?, territory?: {x, y, radius, claimed_tick}, rally?: {x, y, radius, expires_tick}, max_radius, claim_ready_tick?, obedience}` (`obedience`: the members' mean obedience gene, to hundredths)), `view`, `organisms` (yours: id, lineage, position, action, sex, age, growth, health, needs, possessed, pregnant, generation, `look`, `group` when not 0; when possessed also `speed`, tiles per tick toward an order on open ground (`World::move_speed`), and `order` `[x, y]` while it has one; `heading`, its facing as one of 32 directions, and `vision`, its eyes for the vision cones: see *Vision cones* below), `nearby` (others in the window, also with `look`; never a heading or eyes), `leaderboard` (cut to the top 50 rows plus yours and those of the owners in `nearby` when longer), `offers` (your open offers, with `listing?` and `escrow` when bought from a listing or priced), `balance` and `escrow` (your renown, and how much of it is held on open agreements), `grace` while your lineage's newcomer grace lasts (`{days_left, until_tick, real_seconds_left?}`: game days to a tenth, the tick it ends, real seconds rounded up to tens; absent otherwise), and `protected: true` on a `nearby` organism whose lineage is under its grace |
-| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command, with its `id` (also for a message that doesn't parse, when its `id` can be read: a number, a numeric string, or found in text that isn't valid JSON: `bad_message`, named after its `type` if that is a command, else `message`, and never with the parser's text). Day numbers in `day` fields count from 0; player-facing texts (ledger, alerts) count from 1. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, the request rules' `requests_refused` (the partner's owner blocked you or declines every request), `too_many_requests` (at most 3 requests to one player an hour; `detail.ticks_left`), `too_many_blocked`, `partner_unavailable` (another player's female can't mate now: her pregnancy is not told), `out_of_sight` (`set_view`; `request_mating` and `preview_mating` for a partner not within your animals' sight plus 16 tiles, not on the market and not in your offers, and for an id that doesn't exist), `no_such_player` (`mating_prefs`; `detail.players`), `self_block`, `newcomer_grace` and `own_grace` (`possess_attack`; `detail.days_left`, `detail.real_seconds_left`), `no_grace` (`end_grace`), `bad_title` and `bad_name` (every chosen name, lineage and design names included, goes through one filter, `crate::names`: ASCII letters, digits, single spaces and `. , ' ! ? - : + # ( )` only, nothing passing for the server, its staff or another player; a title can't contain another player's name or be "wild"; names saved before the filter are cleaned on load), `bad_price` (also for a price past `u64::MAX`), `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
+| `result` `{id, command, ok, error?: {code, message, detail?}, data?}` | After each command, with its `id` (also for a message that doesn't parse, when its `id` can be read: a number, a numeric string, or found in text that isn't valid JSON: `bad_message`, named after its `type` if that is a command, else `message`, and never with the parser's text). Day numbers in `day` fields count from 0; player-facing texts (ledger, alerts) count from 1. Codes include the sim's `not_found`, `not_owned`, `no_consent`, `not_mature`, `same_sex`, `already_pregnant`, `too_far`, `no_slots_left`, `possessed_by_other`, the group commands' `no_such_group`, `group_limit`, `group_too_small`, `not_in_group`, `same_group`, `no_territory`, `claim_cooldown` (`detail.ticks_left`), `too_many_organisms`, and `incompatible_body_plans` (`detail.genes`: the differing body-plan genes), `genetically_incompatible`, `died`, `bad_message`, `bad_coordinates`, `unknown_offer`, `offer_closed`, `too_many_offers`, `busy`, `rate_limited`; the marketplace's `insufficient_funds` (`detail`: `{balance, needed}`), `bad_price`, `bad_expiry`, `already_listed`, `too_many_listings`, `unknown_listing`, `own_listing`, `own_organism`, `listing_busy`, `organism_busy`, `auction_listing`, `not_auction`, `bid_too_low`, `auction_closed`, `auction_has_bids`, `bad_duration`, `bad_cursor`, the request rules' `requests_refused` (the partner's owner blocked you or declines every request), `too_many_requests` (at most 3 requests to one player an hour; `detail.ticks_left`), `too_many_blocked`, `partner_unavailable` (another player's female can't mate now: her pregnancy is not told), `out_of_sight` (`set_view`; `request_mating` and `preview_mating` for a partner not within your animals' sight plus 16 tiles, not on the market and not in your offers, and for an id that doesn't exist), `no_such_player` (`mating_prefs`; `detail.players`), `self_block`, `newcomer_grace` and `own_grace` (`possess_attack`; `detail.days_left`, `detail.real_seconds_left`), `no_grace` (`end_grace`), `bad_title` and `bad_name` (every chosen name, lineage and design names included, goes through one filter, `crate::names`: ASCII letters, digits, single spaces and `. , ' ! ? - : + # ( )` only, nothing passing for the server, its staff, the wild or another player, also read run together ("G.M.", "TheOwner", "SupportTeam", "the wild") and with trailing digits dropped ("Herdmaster" for "Herdmaster5"); a title can't contain another player's name; names saved before the filter are cleaned on load; `/api/design/compatibility` gives `name_warning` for a look-alike before Found), `bad_price` (also for a price past `u64::MAX`), `too_large` (a command message over 16 KB: answered with its id when readable, the connection stays open; a design body over 64 KB), `duplicate_gene` (two trait keys naming one gene), `bad_coordinates` also for a bare `NaN`/`Infinity` and a `set_view` radius of 0 or less, `in_auction` (a dam in an open auction is locked against other requests, acceptances, purchases, bids and directed matings until it closes or is withdrawn; `detail.listing`) |
 | `mating_request` `{offer}` | Someone asks to mate with your organism |
 | `mating_update` `{offer, outcome?, error?}` | An offer changed status (to both sides) |
 | `alert` `{alert: {tick, day, kind, text, organism?}}` | `kind`: `daily_summary`, `birth` (first offspring, new generation), `death` (founder or possessed organism), `milestone`, `need` (possessed organism parched or starving), `world` (a catastrophe began or ended, an era ended with your rank), `achievement` (species founded, longevity, niche dominance, survived a catastrophe), `market` (someone bought a mating with your listed organism, a sale paid to you, a price paid or refunded from your escrow, a listing closed by expiry or death, an achievement's renown bonus, a bid on your auction, outbid and refunded, an auction won, sold, unsold or failed) |
@@ -1634,8 +1659,8 @@ earned in play, so each perk is modest and priced to rise):
   wants: it can't grow its own head count much further, but its genes can
   live in other players' animals.
 - **Market fee.** 10% of every stud fee or price paid out is destroyed
-  (`economy::market_fee`, rounded down, at least 1 renown from a price of
-  2 or more, none from 1; the payer pays the full price, the
+  (`economy::market_fee`, rounded to the nearest renown: 1–4 pay none,
+  5–14 pay 1, 15–24 pay 2; the payer pays the full price, the
   seller gets the rest; the sale's ledger text says so). Offers saved
   before the fee pay out in full (`Offer::fee` is 0 in them).
 - **The renown shop** (`renown_shop`, `buy_mating_slot`, `reinforce`,
@@ -1822,6 +1847,36 @@ together):
   confirmation; mating outcomes keep the server's cause ("drowned"); the
   client's tick-length estimate is the median of recent intervals, so a
   reload no longer skews real-time estimates.
+
+**Playtest 5 changes** (`docs/playtest-5.md`: 0 completed sales in ~50
+minutes, every purchase failed when the buyer's animal died):
+
+- **A buyer's animal dying** no longer fails the agreement with a full
+  refund (a free 30-day dam-lock): the offer stays accepted with
+  `lost` (how it died), the partner stops walking, and the buyer may send
+  another adult with `substitute_mating` before the deadline. If none
+  comes it lapses with the hold fee, unless the loss was outside the
+  buyer's control (eaten, disease, a harmful recessive, attrition, the
+  winter-sleep toll, a migration): then nothing is forfeit.
+- **Every listing** (stud or dam, fixed or auction) is at least 5 renown
+  (`LISTING_MIN_FEE`; a 1-renown purchase locked a stud), cancelling any
+  accepted agreement as the buyer forfeits the hold fee, and only accepted
+  agreements make a listing busy (a free pending request blocked a dam
+  for 10 minutes).
+- **Sleep**: the deadline waits while either animal sleeps (at most 30
+  game days in all); the partner's animal sleeping while the buyer's is
+  awake excuses a lapse.
+- **Provisions scale** (M13): priced per adult fed, 2 renown each for a
+  small lineage, 4 each for a larger one, which provisions 20 adults per
+  fifth of the soft cap alive (at most 200): a sink for leaders' renown
+  that feeds a small share of them.
+- **Fee** rounded to the nearest renown (a 2-renown sale lost half).
+- Small: sterile listings hide Buy and Bid and say why (with the sampled
+  fertility); outcomes read "Conceived (8% chance to conceive)", with an
+  override's failure risk only when there was one; a request to a
+  lineage reads "one of yours" (not "#0#0"); a purchase's update comes
+  once; a listing closed by a retirement says so; a species named with
+  its own name is refused (`same_name`) instead of charged.
 
 What a scripted competition shows: see *Competition: the economy and the
 soft cap* in the Balance section.
@@ -8549,9 +8604,10 @@ rest), the toxic frogs' 38–42 (unchanged); fox and pack hunters survive 8 of
 ### Playtest 5: floods, drinking and warnings
 
 Round 6 for `docs/playtest-5.md` findings 4 (H4), 11, 15 and two low items.
-Snapshot version 52 (provisional; main is at 51). Both sim rules below are
-off at 0, which is what snapshots of version 51 and before read
-(`serde_util::before_v52`).
+Snapshot version 54 (gated at 52 on its branch, renumbered at merge: 52
+is `DeathCause::Heat`, 53 balance's). Both sim rules below are off at 0,
+which is what snapshots of version 53 and before read
+(`serde_util::before_v54`).
 
 **H4: sleeping hibernators drown when water rises** (`Balance::dry_beds`
 1). Herdmaster5 lost three waves of sleepers: 16 at a drought's end, 12
@@ -8617,11 +8673,11 @@ around it.
   player's animals are asleep, the hunger warning no longer says "move
   groups". It says sleepers can't be moved, and to fatten them on rich
   ground before the next dormancy.
-- **Heat named.** The daily summary called exposure deaths "cold, heat or
-  winter sleep" (winter sleep is its own cause). It now says "heat" in
-  summer, "cold" in winter and "cold or heat" between. Three or more heat
-  deaths on a summer day raise a heat warning (`kind` `heat`) with what
-  helps.
+- **Heat named.** Since main's round 6, the sim records heat and cold as
+  their own causes (`DeathCause::Heat`), so the daily summary names heat
+  deaths. On top of that, three or more heat deaths on a summer day raise
+  a heat warning (`kind` `heat`) that says what helps. A record from
+  before the split counts summer exposure as heat.
 
 **Low:**
 - **Hunger swings.** They are real: each meal drops hunger at once, and

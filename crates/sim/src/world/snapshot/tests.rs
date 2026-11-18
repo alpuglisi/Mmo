@@ -499,10 +499,10 @@ fn playtest4_off(b: &mut crate::Balance) {
     playtest5_off(b);
 }
 
-/// The playtest 5 survival tunables as snapshots before version 52 read
+/// The playtest 5 survival tunables as snapshots before version 54 read
 /// them.
 fn playtest5_off(b: &mut crate::Balance) {
-    let old = crate::serde_util::before_v52::OLD_VALUE;
+    let old = crate::serde_util::before_v54::OLD_VALUE;
     (b.dry_beds, b.drink_reach) = (old, old);
 }
 
@@ -1701,18 +1701,18 @@ fn version_50_snapshots_restore_without_playtest4_predators() {
     assert_eq!((r.config.balance.dormant_water, r.config.balance.possessed_sleep), (1.0, 1.0));
 }
 
-/// Version 51 snapshots (before the playtest 5 survival rules) restore
+/// Version 52 snapshots (before the playtest 5 survival rules) restore
 /// with those tunables off, and are otherwise the same world.
 #[test]
-fn version_51_snapshots_restore_without_playtest5_survival() {
+fn version_52_snapshots_restore_without_playtest5_survival() {
     let mut w = fixture_world();
-    let old = w.snapshot_v51();
+    let old = w.snapshot_v52();
     let h = SnapshotHeader::read(&old).unwrap();
-    assert_eq!(h.version, 51);
+    assert_eq!(h.version, 52);
     assert!(h.restorable());
     let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
-    assert_eq!(r.config.balance.dry_beds, crate::serde_util::before_v52::OLD_VALUE);
-    assert!(r.snapshot_v51() == old);
+    assert_eq!(r.config.balance.dry_beds, crate::serde_util::before_v54::OLD_VALUE);
+    assert!(r.snapshot_v52() == old);
     playtest5_off(&mut w.config.balance);
     assert_eq!(r.config.balance, w.config.balance);
     assert!(r.snapshot() == w.snapshot());

@@ -420,7 +420,7 @@ async fn subscriptions_over_http_and_a_mating_offer_reaches_an_offline_player() 
     // other will ask for (the lineages may be founded far apart).
     let (mut bob_ws, sb) = first_state(addr, &bob).await;
     for (ws, id, m) in [(&mut wa, 7, ann_m), (&mut bob_ws, 8, bob_m)] {
-        let l = json!({"id": id, "type": "create_listing", "organism": m, "fee": 0});
+        let l = json!({"id": id, "type": "create_listing", "organism": m, "fee": 5});
         futures_util::SinkExt::send(ws, Message::Text(l.to_string())).await.unwrap();
         loop {
             let Some(Ok(Message::Text(t))) = ws.next().await else { panic!("socket closed") };

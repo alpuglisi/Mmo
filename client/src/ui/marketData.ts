@@ -104,11 +104,12 @@ export function buyProblem(l: ListingView, me: PlayerId, balance: number, slotsL
   if (l.owner === me) return 'your own listing';
   if (l.kind === 'auction') return 'an auction: bid instead';
   if (l.busy) return 'already promised';
+  // Sterile with the whole lineage: no adult of yours would do (playtest 5: Buy showed anyway).
+  if (l.compatible === false) return 'body plans too different: sterile with your lineage';
   if (!mine) return 'pick one of your adults';
   if (mine.sex === l.sex) return `needs a ${l.sex === 'male' ? 'female' : 'male'}`;
   if (mine.pregnant || (l.pregnant && l.sex === 'female')) return 'pregnant';
   if (l.preview && !l.preview.compatible) return 'cannot conceive';
-  if (l.compatible === false) return 'body plans too different: sterile with your lineage';
   if (slotsLeft <= 0) return 'no mating slots left';
   if (balance < l.fee) return `needs ${l.fee} renown`;
   return null;
@@ -160,6 +161,7 @@ export function bidProblem(l: ListingView, me: PlayerId, balance: number, slotsL
   const a = l.auction;
   if (!a) return 'not an auction';
   if (l.owner === me) return 'your own auction';
+  if (l.compatible === false) return 'body plans too different: sterile with your lineage';
   if (!mine) return 'pick one of your adults';
   if (mine.sex === l.sex) return `needs a ${l.sex === 'male' ? 'female' : 'male'}`;
   if (mine.pregnant) return 'pregnant';

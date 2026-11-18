@@ -44,7 +44,11 @@ export function offerUpdateText(o: OfferView, outcome: MatingOutcome | undefined
 
 export function outcomeText(o: MatingOutcome | undefined): string | null {
   if (!o) return null;
-  return `${o.conceived ? 'Conceived' : 'Not conceived'} · fertility ${Math.round(o.fertility * 100)}% · failure chance ${Math.round(o.failure_chance * 100)}%`;
+  // Fertility is the chance a pairing conceives; the failure chance is the separate risk an override of
+  // preferences fails outright (0 within both preferences), so show it only when there was one.
+  const odds = `${Math.round(o.fertility * 100)}% chance to conceive`;
+  const risk = o.failure_chance > 0 ? ` · ${Math.round(o.failure_chance * 100)}% risk the override failed` : '';
+  return `${o.conceived ? 'Conceived' : 'Not conceived'} (${odds})${risk}`;
 }
 
 export function historyRows(closed: OfferEntry[], log: MatingRecord[], limit = 30): HistoryRow[] {
@@ -88,7 +92,7 @@ export function meetText(o: Pick<OfferView, 'from_player' | 'meet'>, me: number 
   const mineIsMine = o.from_player === me;
   const [fx, fy, tx, ty] = mineIsMine ? [m.mine_x, m.mine_y, m.partner_x, m.partner_y] : [m.partner_x, m.partner_y, m.mine_x, m.mine_y];
   if (m.distance <= 2) return 'The two are meeting now.';
-  if (m.asleep) return 'Both are asleep: the meeting resumes when they wake (the deadline waits).';
+  if (m.asleep) return 'One of them is asleep: the meeting resumes when it wakes (the deadline waits).';
   const dirTo = (x: number, y: number) => {
     const angle = Math.atan2(y - fy, x - fx);
     return COMPASS[((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8];

@@ -1167,16 +1167,16 @@ pub struct Balance {
     /// stayed awake while their group slept, then starved). 0: off.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v51"))]
     pub possessed_sleep: f32,
-    // Playtest 5 survival (version 52; *Playtest 5: floods, drinking and
-    // warnings* in the README). Off at 0, what snapshots before version 52
-    // read (`serde_util::before_v52`).
+    // Playtest 5 survival (version 54; *Playtest 5: floods, drinking and
+    // warnings* in the README). Off at 0, what snapshots before version 54
+    // read (`serde_util::before_v54`).
     /// Sleepers bed down on dry ground: a deep dormancy starts only on a
     /// tile with no lake or marsh water at normal wetness and off every
     /// floodplain (`World::dry_bed`); an animal that would sleep elsewhere
     /// first walks to the nearest such tile; water reaching a sleeper wakes
     /// it, and any animal in water it would drown in heads for dry land
     /// (playtest 5: 25 of 115 sleepers drowned in one day of flood). 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v54"))]
     pub dry_beds: f32,
     /// A thirsty animal with no shore it can walk to within 8 steps looks
     /// for one within 24, else searches, instead of heading for water it
@@ -1184,7 +1184,7 @@ pub struct Balance {
     /// counts only water it can walk to (playtest 5: animals sat on
     /// "drink" above a drought-shrunk, steep-banked pond until they died).
     /// 0: off.
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v52"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v54"))]
     pub drink_reach: f32,
 }
 

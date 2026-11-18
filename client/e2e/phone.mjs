@@ -160,6 +160,7 @@ async function main() {
       v.setFollow(false);
       v.cam.zoom = 24;
       v.cam.y = -100;
+      for (let k = 0; k < 100 && v.cam.y < 0; k++) await new Promise((r) => setTimeout(r, 30));
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       const canvas = document.querySelector('#world-canvas').getBoundingClientRect();
       const over = Math.max(document.querySelector('.toolbar').getBoundingClientRect().bottom,
@@ -173,8 +174,11 @@ async function main() {
       const v = window.evo.screen().view;
       const own = window.evo.model.state.organisms[0];
       window.evo.model.select(own.id);
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // (Once the floating button shows, the room at the bottom edge follows it.)
+      for (let k = 0; k < 50 && !(v.edgePad.bottom > 60); k++) await new Promise((r) => setTimeout(r, 50));
       v.cam.y = 10000;
+      // (Until a frame has clamped it to the map.)
+      for (let k = 0; k < 100 && v.cam.y > v.terrain.height; k++) await new Promise((r) => setTimeout(r, 30));
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       const canvas = document.querySelector('#world-canvas').getBoundingClientRect();
       const tops = ['#hint', '#fab-possess', '#possess-bar'].map((q) => document.querySelector(q).getBoundingClientRect()).filter((r) => r.height > 0).map((r) => r.top);
@@ -398,9 +402,41 @@ async function main() {
     check(said.bar.includes(`#${own}`), 'the bar names the possessed animal', said);
     check(!/Possessing #/.test(said.toasts), 'no toast repeating the bar', said);
     await page.screenshot({ path: path.join(shots, 'phone-possessing.png') });
+    // The chooser while possessing (a long press in a herd selects and offers
+    // the others): above the bar, not over its buttons (playtest 5).
+    const stacked = await page.evaluate(async (own) => {
+      const v = window.evo.screen().view;
+      const ids = window.evo.model.state.organisms.map((o) => o.id).filter((id) => id !== own).slice(0, 4);
+      const m = v.markers.get(ids[0]);
+      await v.onClick({ x: m.x, y: m.y, organism: ids[0], candidates: ids, modifier: true, touch: true });
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const c = document.querySelector('#pick-chooser');
+      const cb = c.getBoundingClientRect();
+      const buttons = [...document.querySelectorAll('#possess-bar button')].map((b) => b.getBoundingClientRect()).filter((r) => r.height > 0);
+      const over = buttons.some((r) => !(r.bottom <= cb.top || r.top >= cb.bottom || r.right <= cb.left || r.left >= cb.right));
+      return { shown: !c.hidden, over, chooser: [cb.top, cb.bottom], bar: buttons.map((r) => [r.top, r.bottom]) };
+    }, own);
+    check(stacked.shown && !stacked.over, 'while possessing, the chooser should sit clear of the possession bar\'s buttons', stacked);
     await page.tap('#possess-release');
     await page.waitForSelector('#possess-bar', { state: 'hidden', timeout: UI_MS });
-    step(`possessing #${own}: the bar says so, no toast repeats it`);
+    // Possessing again (the chooser still up from before): it goes.
+    if (await page.locator('#pick-chooser').isHidden()) {
+      await page.evaluate(async (own) => {
+        const v = window.evo.screen().view;
+        const ids = window.evo.model.state.organisms.map((o) => o.id).slice(0, 4);
+        const m = v.markers.get(ids[0]);
+        await v.onClick({ x: m.x, y: m.y, organism: ids[0], candidates: ids, modifier: false, touch: true });
+        window.evo.model.select(own);
+      }, own);
+    }
+    check(await page.locator('#pick-chooser').isVisible(), 'the chooser is up before possessing');
+    await page.evaluate((own) => window.evo.model.select(own), own);
+    await page.tap('#fab-possess');
+    await page.waitForSelector('#possess-bar:not([hidden])', { timeout: UI_MS });
+    await page.waitForSelector('#pick-chooser', { state: 'hidden', timeout: 3000 });
+    await page.tap('#possess-release');
+    await page.waitForSelector('#possess-bar', { state: 'hidden', timeout: UI_MS });
+    step(`possessing #${own}: the bar says so, no toast repeats it; the chooser sits above the bar and goes when a possession starts`);
 
     // 7. Split, up to the limit of four groups.
     const send = (m) => page.evaluate((m) => window.evo.socket.send(m), m);

@@ -2602,11 +2602,11 @@ pub mod before_v51 {
     }
 }
 
-/// `#[serde(with = "crate::serde_util::before_v52")]` on the playtest 5
+/// `#[serde(with = "crate::serde_util::before_v54")]` on the playtest 5
 /// survival tunables (`Balance::dry_beds`, `drink_reach`). On a thread
-/// holding a [`before_v52::Guard`] (reading or hashing a snapshot of
-/// version 51 or before) none is written or read: they read as 0 (off).
-pub mod before_v52 {
+/// holding a [`before_v54::Guard`] (reading or hashing a snapshot of
+/// version 53 or before) none is written or read: they read as 0 (off).
+pub mod before_v54 {
     use std::cell::Cell;
 
     use super::*;
@@ -2615,7 +2615,7 @@ pub mod before_v52 {
         static OLD: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The tunable before version 52: off.
+    /// The tunable before version 54: off.
     pub const OLD_VALUE: f32 = 0.0;
 
     /// The old layout on this thread while this guard lives.
