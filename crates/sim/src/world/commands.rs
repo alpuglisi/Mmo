@@ -358,7 +358,7 @@ impl World {
             mating::mismatch(&female.pheno, male.display()).max(mating::mismatch(&male.pheno, female.display()));
         let cost = mating::override_cost(mismatch, self.config.override_k);
         let failure_chance = mating::override_failure_chance(cost);
-        let fertility = mating::fertility_with(&female.genome, &male.genome, self.config.balance.egg_hybrid)
+        let fertility = mating::fertility_with(&female.genome, &male.genome, mating::Relief::of(&self.config.balance))
             * self.disease_fertility(f, m);
         (mismatch, cost, failure_chance, fertility)
     }
@@ -375,10 +375,9 @@ impl World {
         let (f, m) = if oa.sex == Sex::Female { (ia, ib) } else { (ib, ia) };
         let (mismatch, cost, failure_chance, fertility) = self.directed_terms(f, m);
         let (ga, gb) = (&oa.genome, &ob.genome);
-        let egg_hybrid = self.config.balance.egg_hybrid;
         let body_plan_gaps = mating::BODY_PLAN_GENES
             .iter()
-            .zip(mating::plan_weights(egg_hybrid))
+            .zip(mating::plan_weights(self.config.balance.egg_hybrid))
             .map(|(&g, w)| (g, (ga.expr(g) - gb.expr(g)).abs() * w))
             .filter(|&(_, gap)| gap > mating::BODY_PLAN_FULL)
             .collect();
@@ -387,7 +386,11 @@ impl World {
             cost,
             failure_chance,
             fertility,
-            body_plan_fertility: mating::fertility_from_gap(mating::fertility_gap(ga, gb, egg_hybrid)),
+            body_plan_fertility: mating::fertility_from_gap(mating::fertility_gap(
+                ga,
+                gb,
+                mating::Relief::of(&self.config.balance),
+            )),
             distance_fertility: mating::distance_fertility(ga.distance(gb)),
             body_plan_gaps,
             distance: oa.pos.dist(ob.pos),

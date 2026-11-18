@@ -983,10 +983,12 @@ pub struct Balance {
     /// all within a few days of 84%).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub age_spread: f32,
-    /// Chance that a warm-blooded hibernator dies over a whole season of
-    /// winter sleep (den collapse, cold snaps, disease), twice as high for
-    /// one sleeping its first winter and rising as its fat runs out (up to
-    /// twice at none). 0: winter sleep is safe.
+    /// Chance that a winter sleeper dies over a whole winter's sleep (den
+    /// collapse, cold snaps, disease), 1.5× in its first year and up to
+    /// 1.5× again as its fat runs out, brumators too, founders free in
+    /// their first winter (`Balance::winter_toll` on, the default; with it
+    /// off, the version 43 rule: this chance per season asleep, 2× and 2×,
+    /// warm hibernators only). 0: winter sleep is safe.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v43"))]
     pub dormancy_toll: f32,
     /// Days after waking from a winter sleep before a hibernator or
@@ -1045,6 +1047,33 @@ pub struct Balance {
     /// weight. 0: off (the wild rule, at most 4 pack-mates).
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v44"))]
     pub led_pack: f32,
+    // Competitive balance after playtest 3 (version 46; *Playtest 3:
+    // balance* in the README). Off at 0, what snapshots before version 46
+    // read (`serde_util::before_v46`).
+    /// How much less an eye-count step counts in the body-plan gap for
+    /// fertility (`morph::morph_fertility_gap`): weighted `1 − eye_hybrid`.
+    /// At 0.6, 2 → 5 eyes is 0.12 apart (fully fertile) instead of 0.30
+    /// (sterile with every two-eyed animal, playtest 3's 3-point isolation).
+    /// Leg steps and kinship keep the full gap.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
+    pub eye_hybrid: f32,
+    /// The winter toll as documented (`seasonal::dormancy_toll_rate`): on
+    /// (1), `dormancy_toll` is the chance of dying over a whole winter's
+    /// sleep (spread over two seasons, since sleepers bed down in autumn),
+    /// 1.5× in an animal's first year and up to 1.5× again with no fat;
+    /// brumators pay it like hibernators; founders sleep their first winter
+    /// free (the winter provision); a sleeper beds down only once it has
+    /// drunk (thirst under 30), and the deaths are counted as
+    /// `DeathCause::WinterSleep`. Off (0): the version 43 toll (a season's
+    /// toll per season asleep, 2× first year, 2× with no fat, warm
+    /// hibernators only: ~1% a day, 25–30% a winter in playtest 3).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
+    pub winter_toll: f32,
+    /// Days over which a warm hibernator's spring waking is spread (each
+    /// animal its own day, from its id), so a lineage doesn't wake at once
+    /// on the same pasture and starve. 0: all wake on the first spring day.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v46"))]
+    pub wake_spread: f32,
 }
 
 impl Balance {
@@ -1306,7 +1335,7 @@ impl Default for Balance {
             attack_grace: 20.0,
             egg_hybrid: 0.2,
             age_spread: 0.12,
-            dormancy_toll: 0.08,
+            dormancy_toll: 0.10,
             emergence_lag: 6.0,
             drink_priority: 0.0,
             possess_drink: 1.0,
@@ -1314,12 +1343,15 @@ impl Default for Balance {
             dry_sites: 1.0,
             carnivore_energetics: 1.0,
             led_pack: 0.5,
+            eye_hybrid: 0.6,
+            winter_toll: 1.0,
+            wake_spread: 10.0,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 139;
+    pub const FIELD_COUNT: usize = 142;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1468,6 +1500,9 @@ impl Balance {
             ("dry_sites", &mut self.dry_sites),
             ("carnivore_energetics", &mut self.carnivore_energetics),
             ("led_pack", &mut self.led_pack),
+            ("eye_hybrid", &mut self.eye_hybrid),
+            ("winter_toll", &mut self.winter_toll),
+            ("wake_spread", &mut self.wake_spread),
         ]
     }
 

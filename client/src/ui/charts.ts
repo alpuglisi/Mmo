@@ -12,15 +12,16 @@ import { traitName } from './traitNames';
 export const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9', '#8b949e'];
 
 /** Death causes shown on their own; the rest fold into "other" (toxins, drowning and attrition were lumped there: playtest 2). */
-export const CAUSES = ['eaten', 'starved', 'thirst', 'exposure', 'toxin', 'drowned', 'attrition', 'old_age'] as const;
+export const CAUSES = ['eaten', 'starved', 'thirst', 'exposure', 'winter_sleep', 'toxin', 'drowned', 'attrition', 'old_age'] as const;
 export const CAUSE_COLORS: Record<string, string> = {
   eaten: SERIES[1], starved: SERIES[3], thirst: SERIES[0], exposure: SERIES[5], old_age: SERIES[2], other: SERIES[6],
-  toxin: '#9bbd2e', drowned: '#2fb3c4', attrition: '#b07a52',
+  toxin: '#9bbd2e', drowned: '#2fb3c4', attrition: '#b07a52', winter_sleep: '#5b6fb5',
 };
 /** A cause in the charts' words. */
 export const CAUSE_LABELS: Record<string, string> = {
-  eaten: 'eaten', starved: 'starved', thirst: 'thirst', exposure: 'cold, heat or winter sleep', toxin: 'poisoned (toxic prey)',
-  drowned: 'drowned', attrition: 'attrition (disease, accidents)', old_age: 'old age', other: 'other',
+  eaten: 'eaten', starved: 'starved', thirst: 'thirst', exposure: 'cold or heat', toxin: 'poisoned (toxic prey)',
+  drowned: 'drowned', attrition: 'attrition (disease, accidents)', old_age: 'old age',
+  winter_sleep: 'died in winter sleep', other: 'other',
 };
 
 export type Scale = (v: number) => number;

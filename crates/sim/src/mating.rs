@@ -90,6 +90,30 @@ pub fn body_plan_gap(a: &Genome, b: &Genome) -> f32 {
 /// Position of birth mode in [`BODY_PLAN_GENES`].
 pub const BIRTH_SLOT: usize = 1;
 
+/// How much less some body-plan differences count for fertility than for
+/// kinship: birth mode (`Balance::egg_hybrid`) and eye count
+/// (`Balance::eye_hybrid`). Both 0: the full body-plan gap.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Relief {
+    pub egg: f32,
+    pub eye: f32,
+}
+
+impl Relief {
+    pub fn of(b: &crate::Balance) -> Relief {
+        Relief { egg: b.egg_hybrid, eye: b.eye_hybrid }
+    }
+
+    /// Weight of an eye-count step (`1 − eye`).
+    pub fn eye_weight(self) -> f32 {
+        1.0 - self.eye.clamp(0.0, 1.0)
+    }
+
+    pub fn is_none(self) -> bool {
+        self.egg <= 0.0 && self.eye <= 0.0
+    }
+}
+
 /// The weight of each [`BODY_PLAN_GENES`] difference in the fertility gap:
 /// 1, birth mode `1 − egg_hybrid` (`Balance::egg_hybrid`).
 pub fn plan_weights(egg_hybrid: f32) -> [f32; 4] {
@@ -98,21 +122,22 @@ pub fn plan_weights(egg_hybrid: f32) -> [f32; 4] {
     w
 }
 
-/// [`body_plan_gap`] for fertility, birth mode weighted by `1 − egg_hybrid`
-/// (`Balance::egg_hybrid`): adjacent birth modes, 0.35 apart, count 0.28
-/// apart at 0.2, so an egg layer is a little fertile with a close live
-/// bearer. The same as [`body_plan_gap`] at 0. Kinship and species keep the
+/// [`body_plan_gap`] for fertility, birth mode weighted by `1 − relief.egg`
+/// (`Balance::egg_hybrid`: adjacent birth modes, 0.35 apart, count 0.28 at
+/// 0.2) and eye-count steps by `1 − relief.eye` (`Balance::eye_hybrid`:
+/// 2 → 5 eyes counts 0.12 at 0.6 instead of a sterile 0.30). The same as
+/// [`body_plan_gap`] with no relief. Kinship and species keep the
 /// unweighted gap.
-pub fn fertility_gap(a: &Genome, b: &Genome, egg_hybrid: f32) -> f32 {
-    let w = plan_weights(egg_hybrid);
-    let morph = crate::morph::morph_terms(&a.morph().key(), &b.morph().key()).1;
+pub fn fertility_gap(a: &Genome, b: &Genome, relief: Relief) -> f32 {
+    let w = plan_weights(relief.egg);
+    let morph = crate::morph::morph_fertility_gap(&a.morph().key(), &b.morph().key(), relief.eye_weight());
     BODY_PLAN_GENES.iter().zip(w).map(|(&g, w)| (a.expr(g) - b.expr(g)).abs() * w).fold(0.0, f32::max).max(morph)
 }
 
-/// [`fertility`] with birth mode weighted by `1 − egg_hybrid` in the
-/// body-plan term ([`fertility_gap`]); the same as [`fertility`] at 0.
-pub fn fertility_with(a: &Genome, b: &Genome, egg_hybrid: f32) -> f32 {
-    distance_fertility(a.distance(b)).min(fertility_from_gap(fertility_gap(a, b, egg_hybrid)))
+/// [`fertility`] with the body-plan term's relief ([`fertility_gap`]); the
+/// same as [`fertility`] with none.
+pub fn fertility_with(a: &Genome, b: &Genome, relief: Relief) -> f32 {
+    distance_fertility(a.distance(b)).min(fertility_from_gap(fertility_gap(a, b, relief)))
 }
 
 /// Whether two organisms recognize each other as their own kind: never hunted
@@ -162,14 +187,14 @@ mod tests {
             Genome::uniform(&d.values(), 1)
         };
         let (live, eggs) = (g(BirthType::Live, Thermo::Warm), g(BirthType::IncubatedEggs, Thermo::Warm));
-        assert_eq!(fertility_with(&live, &eggs, 0.0), 0.0);
-        assert_eq!(fertility_with(&live, &eggs, 0.0), fertility(&live, &eggs));
-        let f = fertility_with(&live, &eggs, 0.2);
+        assert_eq!(fertility_with(&live, &eggs, Relief { egg: 0.0, eye: 0.0 }), 0.0);
+        assert_eq!(fertility_with(&live, &eggs, Relief { egg: 0.0, eye: 0.0 }), fertility(&live, &eggs));
+        let f = fertility_with(&live, &eggs, Relief { egg: 0.2, eye: 0.0 });
         assert!(f > 0.05 && f < 0.2, "{f}");
-        assert!((fertility_gap(&live, &eggs, 0.2) - 0.28).abs() < 1e-4);
-        assert_eq!(body_plan_gap(&live, &eggs), fertility_gap(&live, &eggs, 0.0));
+        assert!((fertility_gap(&live, &eggs, Relief { egg: 0.2, eye: 0.0 }) - 0.28).abs() < 1e-4);
+        assert_eq!(body_plan_gap(&live, &eggs), fertility_gap(&live, &eggs, Relief { egg: 0.0, eye: 0.0 }));
         let cold = g(BirthType::Live, Thermo::Cold);
-        assert_eq!(fertility_with(&live, &cold, 0.2), 0.0);
+        assert_eq!(fertility_with(&live, &cold, Relief { egg: 0.2, eye: 0.0 }), 0.0);
     }
 
     fn chooser(pickiness: f32) -> Phenotype {

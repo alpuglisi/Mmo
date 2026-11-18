@@ -183,8 +183,8 @@ fn body_plan_gap(a: &Genes, b: &Genes) -> f32 {
 
 /// `mating::fertility_gap` from [`Genes`]: [`body_plan_gap`] with each
 /// body-plan difference weighted (`mating::plan_weights`).
-fn fertility_gap(a: &Genes, b: &Genes, w: &[f32; PLAN]) -> f32 {
-    let morph = crate::morph::morph_terms(morph_key(a), morph_key(b)).1;
+fn fertility_gap(a: &Genes, b: &Genes, w: &[f32; PLAN], eye_weight: f32) -> f32 {
+    let morph = crate::morph::morph_fertility_gap(morph_key(a), morph_key(b), eye_weight);
     a[..PLAN].iter().zip(&b[..PLAN]).zip(w).map(|((x, y), w)| (x - y).abs() * w).fold(0.0, f32::max).max(morph)
 }
 
@@ -1337,10 +1337,13 @@ impl World {
             && q.can_breed(self.tick)
             && gd(&|gd| gd < cfg.mate_distance)
             && q.needs.breeding > 20.0
-            && mating::fertility_from_gap(if cfg.balance.egg_hybrid > 0.0 {
-                fertility_gap(&v.genes, genes, &mating::plan_weights(cfg.balance.egg_hybrid))
-            } else {
-                gap
+            && mating::fertility_from_gap({
+                let relief = mating::Relief::of(&cfg.balance);
+                if relief.is_none() {
+                    gap
+                } else {
+                    fertility_gap(&v.genes, genes, &mating::plan_weights(relief.egg), relief.eye_weight())
+                }
             }) > 0.0
             // A female in a taken breeding territory isn't courted either
             // (`Balance::breeding_territory`): she can't be bred there.

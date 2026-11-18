@@ -4969,6 +4969,7 @@ fn death_words(why: Why) -> &'static str {
         Why::Of(Some(DeathCause::Recessive)) => "died of an inherited defect",
         Why::Of(Some(DeathCause::Disease)) => "died of disease",
         Why::Of(Some(DeathCause::Journey)) => "died on a journey",
+        Why::Of(Some(DeathCause::WinterSleep)) => "died in its winter sleep",
         Why::Of(None) => "died",
     }
 }
@@ -4990,6 +4991,7 @@ fn death_count_words(why: Why, n: usize) -> String {
         Why::Of(Some(DeathCause::Recessive)) => "of an inherited defect",
         Why::Of(Some(DeathCause::Disease)) => "of disease",
         Why::Of(Some(DeathCause::Journey)) => "on a journey",
+        Why::Of(Some(DeathCause::WinterSleep)) => "in their winter sleep",
         Why::Of(None) => "of an unrecorded cause",
     };
     format!("{n} {what}")
@@ -5154,7 +5156,13 @@ fn incompatibility(p: &MatingPreview) -> Option<ErrorInfo> {
             .filter(|&&(_, gap)| gap >= evo_sim::mating::BODY_PLAN_STERILE)
             .map(|&(g, gap)| format!("{} ({gap:.2} apart)", g.display_name_lower()))
             .collect();
-        let msg = format!("different body plans: {} differ too much to conceive", sterile.join(", "));
+        // No gene past the sterile gap: the eye or leg counts are
+        // (`morph::morph_fertility_gap`), which the gene list doesn't show.
+        let msg = if sterile.is_empty() {
+            "different body plans: their eye or leg counts differ too much to conceive".to_string()
+        } else {
+            format!("different body plans: {} differ too much to conceive", sterile.join(", "))
+        };
         return Some(ErrorInfo::new("incompatible_body_plans", msg).with_detail(serde_json::json!({ "genes": gaps })));
     }
     if p.distance_fertility <= 0.0 {
@@ -6830,9 +6838,20 @@ mod tests {
         sp.founder = Some(1);
         sp.extinct_day = None;
         sp.merged_into = None;
-        g.world.chronicle.species.species.push(sp);
+        let (la, lb) = (g.lineage_of(1).unwrap(), g.lineage_of(2).unwrap());
+        sp.lineages = vec![(la, 30.0), (lb, 10.0)];
+        g.world.chronicle.species.species.push(sp.clone());
         let out = g.command(20, 2, None, ClientMsg::NameSpecies { species: id, name: "Bobs".into() });
         assert_eq!(result(&out).1.as_deref(), Some("not_yours"));
+        // A wild species most of whose adults are Bob's lineage: his to name.
+        let mut wild = sp;
+        wild.id = id + 1;
+        wild.founder = None;
+        wild.lineages = vec![(lb, 60.0), (0, 40.0)];
+        g.world.chronicle.species.species.push(wild);
+        let _ = g.post(2, 1000, LedgerKind::Income, "test".into(), None, None);
+        let out = g.command(20, 2, None, ClientMsg::NameSpecies { species: id + 1, name: "Bobs".into() });
+        assert_eq!(result(&out), (true, None));
         let before = g.balance(1);
         for bad in ["\u{202e}srezarg", "<i>Grazers</i>", "Official grazers", "bob"] {
             let out = g.command(10, 1, None, ClientMsg::NameSpecies { species: id, name: bad.into() });

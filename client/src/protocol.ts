@@ -915,7 +915,7 @@ export interface AgeBand {
 export interface DayVitals {
   day: number;
   births: number;
-  /** Deaths by cause: starved, thirst, exposure, eaten, toxin, drowned, old_age, attrition, recessive, disease, journey. */
+  /** Deaths by cause: starved, thirst, exposure, eaten, toxin, drowned, old_age, attrition, recessive, disease, journey, winter_sleep. */
   deaths: Record<string, number>;
 }
 

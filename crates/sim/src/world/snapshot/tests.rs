@@ -20,7 +20,7 @@ fn possessed(w: &World) -> Option<&crate::organism::Organism> {
 /// organism when the standard fox's carnivory went to 0.6; seed 36 its LOD
 /// cohorts with the playtest 2 fixes, version 44).
 fn busy_world() -> World {
-    let mut config = WorldConfig { seed: 39, width: 96, height: 96, days_per_year: 16, ..Default::default() };
+    let mut config = WorldConfig { seed: 43, width: 96, height: 96, days_per_year: 16, ..Default::default() };
     config.lod.enabled = true;
     // Every tick decides: with staggered decisions the possessed organism
     // walks elsewhere and no region ever leaves focus, so the snapshot
@@ -454,6 +454,36 @@ fn playtest2_off(b: &mut crate::Balance) {
     b.dry_sites = old;
     b.carnivore_energetics = old;
     b.led_pack = old;
+    balance46_off(b);
+}
+
+/// The playtest 3 balance tunables as snapshots before version 46 read them.
+fn balance46_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v46::OLD_VALUE;
+    b.eye_hybrid = old;
+    b.winter_toll = old;
+    b.wake_spread = old;
+}
+
+/// Version 45 snapshots (before the playtest 3 balance rules) restore with
+/// those tunables off, and are otherwise the same world.
+#[test]
+fn version_45_snapshots_restore_without_playtest3_balance() {
+    let mut w = fixture_world();
+    let old = w.snapshot_v45();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 45);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.winter_toll, crate::serde_util::before_v46::OLD_VALUE);
+    balance46_off(&mut w.config.balance);
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v45() == old);
+    let mut w = fixture_world();
+    w.config.balance.wake_spread = 3.0;
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.wake_spread, 3.0);
 }
 
 /// `b` as snapshots before version 34 read it: the playtest 1 ecology

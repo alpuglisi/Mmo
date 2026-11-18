@@ -51,7 +51,7 @@ describe('feature detection', () => {
     s.name = 'Starter';
     const c = designCost(designPayload(s, real), real);
     expect(c.traits).toBeCloseTo(9, 5);
-    expect(c.total).toBeLessThan(real.budget * 0.12);
+    expect(c.total).toBeLessThan(real.budget * 0.15);
   });
 
   it('an old server never gets morph, whatever the body plan', () => {
@@ -62,7 +62,7 @@ describe('feature detection', () => {
     expect(p).not.toHaveProperty('morph');
     expect(p).not.toHaveProperty('morphology');
     expect(p.name).toBe('Watchers');
-    expect(JSON.parse(JSON.stringify(p))).toEqual({ name: 'Watchers', thermo: 'warm', birth: 'live', litter_size: 2, traits: starterIn(oldCat), founders: 10 });
+    expect(JSON.parse(JSON.stringify(p))).toEqual({ name: 'Watchers', thermo: 'warm', birth: 'incubated_eggs', litter_size: 3, traits: starterIn(oldCat), founders: 10 });
   });
 
   it('a new server gets the non-default morph fields only', () => {

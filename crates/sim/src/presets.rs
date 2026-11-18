@@ -564,7 +564,8 @@ pub fn player_designs() -> Vec<FounderDesign> {
             .with(GroupTolerance, 0.6)
             .with(Pickiness, 0.7)
             .with(Brumation, 0.8)
-            .founders(46),
+            // 46 before brumation cost 10 points a unit (playtest 3).
+            .founders(42),
         FounderDesign::new("Burrowing omnivores", Thermo::Warm, BirthType::IncubatedEggs, 4)
             .with(BodySize, 0.3)
             .with(Burrowing, 0.8)
@@ -711,7 +712,10 @@ mod tests {
     fn caribou_migrate_south_as_a_group() {
         use crate::group::GroupTrait;
         use crate::organism::Action;
-        let config = WorldConfig { seed: 5, width: 64, height: 64, ..Default::default() };
+        // Seed 6: on a 64² map a herd that starts near the south edge has
+        // nowhere south to go (seed 5's did once the toxic frogs' founding
+        // changed, playtest 3).
+        let config = WorldConfig { seed: 6, width: 64, height: 64, ..Default::default() };
         let mut w = extended_world(config, 1);
         let l = w.lineages.len() as u32 - 1;
         assert_eq!(l, 8);

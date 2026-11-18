@@ -56,6 +56,8 @@ const AROUSAL_HUNGER: f32 = 90.0;
 /// below which it settles into a dormancy.
 const AROUSAL_THIRST: f32 = 80.0;
 const THIRST_LIMIT: f32 = 50.0;
+/// Thirst below which a winter sleeper beds down (`Balance::winter_toll`).
+const WINTER_THIRST_LIMIT: f32 = 30.0;
 /// Plant share of the diet (1 - carnivory) needed to cache or raid caches.
 const CACHE_DIET: f32 = 0.3;
 /// Regional dryness (`Map::dryness_at`) above which an estivator also goes
@@ -88,12 +90,31 @@ pub(crate) const DRIVE_DECAY: f32 = 60.0;
 /// Daily breeding-drive gain at a seasonal factor of 1.
 pub(crate) const DRIVE_RATE: f32 = 30.0;
 
-/// Daily death chance of a warm hibernator asleep in winter
-/// (`Balance::dormancy_toll` over a season of `season_days`), rising as its
-/// fat runs out: 1× with full fat (`fat_share` 1), 2× with none.
-pub(crate) fn dormancy_toll_rate(bal: &crate::Balance, season_days: f32, fat_share: f32) -> f32 {
-    bal.dormancy_toll / season_days.max(1.0) * (2.0 - fat_share.clamp(0.0, 1.0))
+/// Daily death chance of a winter sleeper (`Balance::dormancy_toll`) with
+/// `fat_share` of its fat capacity left, in its first year or not.
+/// `Balance::winter_toll` on: the toll is the chance over a whole winter's
+/// sleep, spread over two seasons (sleepers bed down in autumn), times up
+/// to 1.5 with no fat and 1.5 in the first year. Off (version 43): the toll
+/// per season asleep, up to 2× with no fat and 2× in the first year (in
+/// playtest 3 about 1% a day, 25–30% a winter).
+pub(crate) fn dormancy_toll_rate(bal: &crate::Balance, season_days: f32, fat_share: f32, first_year: bool) -> f32 {
+    let lean = 1.0 - fat_share.clamp(0.0, 1.0);
+    if bal.winter_toll > 0.0 {
+        bal.dormancy_toll / (2.0 * season_days.max(1.0)) * (1.0 + 0.5 * lean) * if first_year { 1.5 } else { 1.0 }
+    } else {
+        bal.dormancy_toll / season_days.max(1.0) * (1.0 + lean) * if first_year { 2.0 } else { 1.0 }
+    }
 }
+
+/// Whether winter sleep in `form` pays the toll: warm hibernators always,
+/// brumators too with `Balance::winter_toll` (playtest 3: cold-blooded
+/// brumators slept through winters for free and dominated).
+pub(crate) fn pays_toll(bal: &crate::Balance, form: WinterForm) -> bool {
+    form == WinterForm::Hibernation || (bal.winter_toll > 0.0 && form == WinterForm::Brumation)
+}
+
+/// Random stream of the spring waking day (`Balance::wake_spread`).
+const WAKE_STREAM: u64 = 0x0057_a4e5;
 
 /// A lineage's shared food cache in one group region (`GroupTrait::SharedCaches`).
 #[derive(Clone, Copy, Debug)]
@@ -357,7 +378,11 @@ impl World {
                     && intent.threat < 0.3
                     && intent.action != Action::Flee
                     && !on_thin_ice;
-                let fed = (o.fat > 0.0 || o.needs.hunger < LEAN_LIMIT) && o.needs.thirst < THIRST_LIMIT;
+                // With `winter_toll` a sleeper drinks before bedding down
+                // for the winter (playtest 3: sleepers died of thirst).
+                let thirst_limit =
+                    if bal.winter_toll > 0.0 && s.winter.is_some() { WINTER_THIRST_LIMIT } else { THIRST_LIMIT };
+                let fed = (o.fat > 0.0 || o.needs.hunger < LEAN_LIMIT) && o.needs.thirst < thirst_limit;
                 let cold_season = matches!(season, Season::Autumn | Season::Winter);
                 if !free {
                     return None;
@@ -385,7 +410,16 @@ impl World {
                     return None;
                 };
                 let wake = if form.self_waking() {
-                    matches!(season, Season::Spring | Season::Summer)
+                    // Waking spread over the first days of spring
+                    // (`wake_spread`), each animal on its own day.
+                    let into_spring = self.day_of_year() as f32 % self.config.days_per_season() as f32;
+                    let spread = bal.wake_spread.max(0.0);
+                    let my_day = if spread > 0.0 {
+                        crate::rng::rng_for(self.config.seed, WAKE_STREAM, o.id, 0).gen::<f32>() * spread
+                    } else {
+                        0.0
+                    };
+                    season == Season::Summer || (season == Season::Spring && into_spring >= my_day)
                 } else {
                     season == Season::Summer || temp >= bal.dormancy_temp + WAKE_MARGIN
                 };
@@ -404,18 +438,29 @@ impl World {
                     o.dormancy = Dormancy::Awake;
                     return None;
                 }
-                // Winter sleep's toll (`dormancy_toll`): warm hibernators
-                // only; brumators wake with the weather.
-                if form == WinterForm::Hibernation && bal.dormancy_toll > 0.0 {
-                    let first_winter = !o.matured
-                        || o.age_days(self.config.ticks_per_day) < 4.0 * self.config.days_per_season() as f32;
-                    let rate = dormancy_toll_rate(
-                        &bal,
-                        self.config.days_per_season() as f32,
-                        o.fat / self.fat_capacity(o).max(1e-3),
-                    ) * if first_winter { 2.0 } else { 1.0 };
-                    if rng.gen::<f32>() < rate * dt {
-                        return Some(DeathCause::Exposure);
+                // Winter sleep's toll (`dormancy_toll`, `winter_toll`).
+                if pays_toll(&bal, form) && bal.dormancy_toll > 0.0 {
+                    let tpd = self.config.ticks_per_day;
+                    let year = 4.0 * self.config.days_per_season() as f32;
+                    let first_year = !o.matured || o.age_days(tpd) < year;
+                    // Founders sleep their first winter free (the winter
+                    // provision): a winter founding isn't culled at once.
+                    let founded = self.lineage_founded.get(o.lineage as usize).copied().unwrap_or(0);
+                    let new_founder = bal.winter_toll > 0.0
+                        && o.generation == 0
+                        && (self.tick.saturating_sub(founded) as f32) < year * tpd as f32;
+                    if !new_founder {
+                        let rate = dormancy_toll_rate(
+                            &bal,
+                            self.config.days_per_season() as f32,
+                            o.fat / self.fat_capacity(o).max(1e-3),
+                            first_year,
+                        );
+                        if rng.gen::<f32>() < rate * dt {
+                            let cause =
+                                if bal.winter_toll > 0.0 { DeathCause::WinterSleep } else { DeathCause::Exposure };
+                            return Some(cause);
+                        }
                     }
                 }
             }
@@ -836,6 +881,8 @@ mod tests {
                 let o = &mut w.organisms[k];
                 (o.dormancy, o.fat, o.needs.hunger, o.needs.thirst) =
                     (Dormancy::Winter, if fat { cap } else { 0.0 }, 0.0, 0.0);
+                // Not a founder in its first winter (those sleep free).
+                o.generation = 1;
             }
             w.run_days(3);
             // The dead are compacted away: count the living.
@@ -847,6 +894,7 @@ mod tests {
         assert!(fed > 5 && lean > fed, "fed {fed}, lean {lean}");
         // Waking in spring: no breeding for `emergence_lag` days.
         let mut w = flat_world(20.0, 10.0, 1);
+        w.config.balance.wake_spread = 0.0;
         let hib = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9), 4);
         for &k in &hib {
             (w.organisms[k].matured, w.organisms[k].breed_ready_tick) = (true, 0);
@@ -861,11 +909,58 @@ mod tests {
                 && w.organisms[k].breed_ready_tick >= w.tick() + lag - 1));
     }
 
+    /// The playtest 3 sleep rules (`winter_toll`, `wake_spread`): the toll
+    /// is a winter's chance spread over two seasons, brumators pay it too,
+    /// founders sleep their first winter free, and spring waking is spread
+    /// over `wake_spread` days.
+    #[test]
+    fn winter_sleep_rules_of_playtest_3() {
+        let b = crate::Balance::default();
+        // A full-fat adult over two seasons asleep: about `dormancy_toll`.
+        let season = 30.0;
+        let daily = dormancy_toll_rate(&b, season, 1.0, false);
+        let survive = (1.0 - daily).powf(2.0 * season);
+        assert!(((1.0 - survive) - b.dormancy_toll).abs() < 0.01, "{}", 1.0 - survive);
+        assert!(dormancy_toll_rate(&b, season, 0.0, true) > 2.0 * daily);
+        assert!(pays_toll(&b, WinterForm::Brumation) && pays_toll(&b, WinterForm::Hibernation));
+        let old = crate::Balance { winter_toll: 0.0, ..b };
+        assert!(!pays_toll(&old, WinterForm::Brumation));
+        // Founders (generation 0, founded this year) sleep free; their
+        // young don't.
+        let count = |generation: u32| {
+            let mut w = flat_world(-5.0, 10.0, 100);
+            w.config.balance.dormancy_toll = 6.0;
+            let k = add(&mut w, &design(Thermo::Cold).with(Gene::Brumation, 0.9), 100);
+            for &i in &k {
+                let o = &mut w.organisms[i];
+                (o.dormancy, o.generation, o.needs.thirst) = (Dormancy::Winter, generation, 0.0);
+            }
+            w.run_days(2);
+            w.counters.deaths.get(&DeathCause::WinterSleep).copied().unwrap_or(0)
+        };
+        assert_eq!(count(0), 0);
+        assert!(count(1) > 3, "{}", count(1));
+        // Spring waking spread over days.
+        let mut w = flat_world(20.0, 10.0, 1);
+        let hib = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9), 40);
+        for &k in &hib {
+            w.organisms[k].dormancy = Dormancy::Winter;
+        }
+        w.step();
+        let awake = |w: &World| w.organisms.iter().filter(|o| o.alive && o.dormancy == Dormancy::Awake).count();
+        let first = awake(&w);
+        assert!(first < 30, "{first} of {} awake on the first day", hib.len());
+        w.run_days(12);
+        assert_eq!(awake(&w), w.organisms.iter().filter(|o| o.alive).count());
+    }
+
     /// Warm hibernators wake in spring by heating themselves; cold-blooded
     /// hibernators (affinity mismatch) often never wake.
     #[test]
     fn cold_blooded_hibernators_may_never_wake() {
         let mut w = flat_world(20.0, 10.0, 1);
+        // Everyone wakes on the first spring day (no `wake_spread`).
+        w.config.balance.wake_spread = 0.0;
         let warm = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9), 40);
         let cold = add(&mut w, &design(Thermo::Cold).with(Gene::Hibernation, 0.9), 40);
         for &k in warm.iter().chain(&cold) {
@@ -883,6 +978,7 @@ mod tests {
     #[test]
     fn brumators_wake_with_the_weather() {
         let mut w = flat_world(0.0, 10.0, 1);
+        w.config.balance.wake_spread = 0.0;
         let brum = add(&mut w, &design(Thermo::Cold).with(Gene::Brumation, 0.9), 2);
         let warm_brum = add(&mut w, &design(Thermo::Warm).with(Gene::Brumation, 0.9), 2);
         let hib = add(&mut w, &design(Thermo::Warm).with(Gene::Hibernation, 0.9), 2);

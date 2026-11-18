@@ -2053,6 +2053,7 @@ pub fn death_name(c: evo_sim::organism::DeathCause) -> &'static str {
         Recessive => "recessive",
         Disease => "disease",
         Journey => "journey",
+        WinterSleep => "winter_sleep",
     }
 }
 
