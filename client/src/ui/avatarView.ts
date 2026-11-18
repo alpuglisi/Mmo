@@ -67,7 +67,10 @@ export function avatarView(extra?: HTMLElement): AvatarView {
     figure.innerHTML = svg;
     figure.setAttribute('aria-label', `Founder preview: ${describeAvatar(m)}`);
     // The covering the caption names is the one the avatar draws (`captionOf`).
-    caption.textContent = captionOf(m);
+    // With the adult weight: the size word is the world sprite's class
+    // (tiny < 1 kg, small < 8, medium < 40, large), which differs from the
+    // slider's thirds ("small" for 4.2 kg read as wrong).
+    caption.textContent = captionOf(m).replace(/^(\S+)/, `$1 (adult ≈ ${m.mass >= 10 ? Math.round(m.mass) : m.mass.toFixed(1)} kg)`);
   };
   motion?.addEventListener?.('change', () => {
     last = '';
