@@ -162,6 +162,9 @@ pub struct SpeciesStats {
     pub new: [u32; 3],
     /// The world's own tracker (this build's settings).
     pub world: [u32; 3],
+    /// Living species with adults at the end: without hysteresis, with.
+    #[serde(default)]
+    pub end: [u32; 2],
     /// Names of the world's split species.
     pub names: Vec<String>,
 }
@@ -534,6 +537,7 @@ pub fn run_world(opts: &EcoOpts, world: u64, log: bool) -> WorldResult {
         old: split_stats(&shadows[0], end, season),
         new: split_stats(&shadows[1], end, season),
         world: split_stats(&w.chronicle.species, end, season),
+        end: shadows.each_ref().map(|t| t.alive().filter(|s| s.adults > 0.0).count() as u32),
         names: w
             .chronicle
             .species
@@ -884,13 +888,15 @@ pub fn summarize(opts: &EcoOpts, worlds: Vec<WorldResult>) -> EcoResults {
         if own[1] + new[1] == 0 { Verdict::Pass } else { Verdict::Fail },
         "A split counts only after holding several detections and a merge only after holding too, so a population drifting back and forth across the species threshold is one species, not a numbered copy per crossing.".into(),
     ));
+    let ends: Vec<String> = worlds.iter().map(|w| format!("{}/{}", w.species.end[0], w.species.end[1])).collect();
+    let agree = worlds.iter().all(|w| w.species.end[0].abs_diff(w.species.end[1]) <= 1);
     checks.push(eco(
         "speciation",
-        "lasting splits still detected".into(),
-        format!("≥ {} (lasting splits without hysteresis, less one per world)", old[2]),
-        format!("{} splits", new[0]),
-        if new[0] + worlds.len() as u32 >= old[2] { Verdict::SoftPass } else { Verdict::SoftFail },
-        "Speciation that holds (two seasons or more, or alive at the end) is still recorded; only the flicker is dropped.".into(),
+        "the same species at the end with and without hysteresis".into(),
+        "within 1 per world".into(),
+        format!("{} (without/with, per world)", ends.join(", ")),
+        if agree { Verdict::SoftPass } else { Verdict::SoftFail },
+        "Hysteresis only delays splits and merges: species that hold are all there at the end. Many 'lasting' splits without it are species that merged for a detection or two and separated again, recorded as new numbered copies; with it they keep their identity.".into(),
     ));
     checks.push(eco(
         "speciation",
@@ -901,13 +907,13 @@ pub fn summarize(opts: &EcoOpts, worlds: Vec<WorldResult>) -> EcoResults {
         "Shadow trackers on the same samples (`World::species_samples` after each detection).".into(),
     ));
     let mut st = String::from(
-        "| world | splits (old) | flaps (old) | lasting (old) | splits (new) | flaps (new) | lasting (new) | world's species split off |\n|---|---|---|---|---|---|---|---|\n",
+        "| world | splits (old) | flaps (old) | lasting (old) | splits (new) | flaps (new) | lasting (new) | species at end (old/new) | world's species split off |\n|---|---|---|---|---|---|---|---|---|\n",
     );
     for w in &worlds {
         let s = &w.species;
         let _ = writeln!(
             st,
-            "| {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {}/{} | {} |",
             w.rows.first().map_or(0, |r| r.world),
             s.old[0],
             s.old[1],
@@ -915,6 +921,8 @@ pub fn summarize(opts: &EcoOpts, worlds: Vec<WorldResult>) -> EcoResults {
             s.new[0],
             s.new[1],
             s.new[2],
+            s.end[0],
+            s.end[1],
             if s.names.is_empty() { "-".to_string() } else { s.names.join(", ") }
         );
     }
