@@ -145,6 +145,53 @@ fn the_grace_runs_out() {
 }
 
 #[test]
+fn the_grace_is_two_sided_lasts_in_real_time_and_survives_refounding() {
+    let mut w = flat_world(1500.0);
+    w.config.balance.attack_grace = 2.0;
+    let tpd = w.config.ticks_per_day as u64;
+    // An established player (founded at tick 0, no grace) and a newcomer.
+    let prey = place(&mut w, PREY, &walker(), Vec2::new(12.5, 10.5));
+    grown(&mut w, prey);
+    w.tick = 5;
+    let a = place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    grown(&mut w, a);
+    let (aid, pid) = (w.organisms[a].id, w.organisms[prey].id);
+    w.possess(HUNTER, aid).unwrap();
+    // The graced newcomer can't attack other players, by order or on its own.
+    assert!(matches!(w.possess_attack(HUNTER, aid, pid), Err(CommandError::OwnGrace { days_left }) if days_left > 1.9));
+    assert!(w.grace_spares(&w.organisms[a], &w.organisms[prey]));
+    assert!(CommandError::OwnGrace { days_left: 1.5 }.to_string().contains("2 days"));
+    // The wild's animals are fair game for it.
+    let wild = place(&mut w, crate::WILD, &walker(), Vec2::new(30.5, 20.5));
+    assert!(!w.grace_spares(&w.organisms[a], &w.organisms[wild]));
+    // A minimum of real time: at a fast clock the grace lasts longer.
+    let l = w.organisms[a].lineage;
+    w.set_attack_grace_min_ticks(10 * tpd);
+    assert!(w.lineage_grace_left(l).unwrap() > 9.9);
+    w.set_attack_grace_min_ticks(0);
+    // Re-founding a day later continues the first grace instead of a new one.
+    w.tick += tpd;
+    let b = place(&mut w, HUNTER, &hunter(), Vec2::new(40.5, 40.5));
+    let left = w.lineage_grace_left(w.organisms[b].lineage).unwrap();
+    assert!((left - w.lineage_grace_left(l).unwrap()).abs() < 1e-6 && left < 1.01, "{left}");
+    // Its grace ends with the first one's, then the newcomer may attack.
+    w.tick += tpd;
+    assert_eq!(w.lineage_grace_left(w.organisms[b].lineage), None);
+    assert_eq!(w.possess_attack(HUNTER, aid, pid), Ok(()));
+    // After a long enough break, founding again starts a new grace.
+    w.tick += 5 * tpd;
+    let c = place(&mut w, HUNTER, &hunter(), Vec2::new(60.5, 60.5));
+    assert!(w.lineage_grace_left(w.organisms[c].lineage).unwrap() > 1.99);
+    // And it survives a snapshot (the starts are rebuilt on restore).
+    #[cfg(feature = "serde")]
+    {
+        let back = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+        assert_eq!(back.lineage_grace_left(w.organisms[b].lineage), None);
+        assert!(back.lineage_grace_left(w.organisms[c].lineage).unwrap() > 1.99);
+    }
+}
+
+#[test]
 fn a_possessed_hunter_pursues_and_kills_its_target() {
     let mut w = world();
     w.config.balance.escape = 0.0;

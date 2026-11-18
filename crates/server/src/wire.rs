@@ -48,7 +48,7 @@
 //! The meta JSON holds the other [`StateView`] fields that changed, under
 //! their own names (`clock`, `weather`, `player`, `lineage`, `slots_left`,
 //! `population`, `migration`, `groups` (the whole list when any of it
-//! changed), `view`, `balance`, `escrow`), `leaderboard`
+//! changed), `view`, `balance`, `escrow`, `grace`), `leaderboard`
 //! as `{day, breeding_adults}` with its rows keyed by player (`lb_set`:
 //! new or changed rows, `lb_del`: players gone), offers keyed by id
 //! (`offers_set`, `offers_del`) and the palette additions (`looks`,
@@ -84,8 +84,8 @@ use serde::{Deserialize, Deserializer};
 
 use crate::appearance::Appearance;
 use crate::protocol::{
-    ClockView, GroupView, LeaderRow, Leaderboard, NearbyOrganism, NeedsView, OfferView, OrgId, OwnOrganism, StateView,
-    ViewWindow, WeatherView,
+    ClockView, GraceView, GroupView, LeaderRow, Leaderboard, NearbyOrganism, NeedsView, OfferView, OrgId, OwnOrganism,
+    StateView, ViewWindow, WeatherView,
 };
 use crate::vision::VisionView;
 use evo_sim::PlayerId;
@@ -370,6 +370,7 @@ struct Sent {
     view: Option<ViewWindow>,
     balance: Option<u64>,
     escrow: Option<u64>,
+    grace: Option<Option<GraceView>>,
     lb_head: Option<(Option<u64>, usize)>,
 }
 
@@ -706,6 +707,7 @@ impl DeltaEncoder {
         scalar!(view);
         scalar!(balance);
         scalar!(escrow);
+        scalar!(grace);
         let lb = &s.leaderboard;
         let head = (lb.day, lb.breeding_adults);
         if sent.lb_head != Some(head) {
@@ -880,6 +882,8 @@ struct MetaIn {
     view: Option<ViewWindow>,
     balance: Option<u64>,
     escrow: Option<u64>,
+    #[serde(default, deserialize_with = "some")]
+    grace: Option<Option<GraceView>>,
     leaderboard: Option<LbHead>,
     lb_set: Vec<LeaderRow>,
     lb_del: Vec<PlayerId>,
@@ -909,6 +913,7 @@ struct Head {
     view: ViewWindow,
     balance: u64,
     escrow: u64,
+    grace: Option<GraceView>,
     lb: LbHead,
 }
 
@@ -1007,6 +1012,9 @@ impl DeltaDecoder {
                 if let Some(v) = m.escrow {
                     h.escrow = v;
                 }
+                if let Some(v) = m.grace {
+                    h.grace = v;
+                }
                 if let Some(v) = m.leaderboard {
                     h.lb = v;
                 }
@@ -1026,6 +1034,8 @@ impl DeltaDecoder {
                     view: m.view.ok_or_else(missing)?,
                     balance: m.balance.ok_or_else(missing)?,
                     escrow: m.escrow.ok_or_else(missing)?,
+                    // Optional: older servers don't send it.
+                    grace: m.grace.flatten(),
                     lb: m.leaderboard.ok_or_else(missing)?,
                 }
             }
@@ -1131,6 +1141,7 @@ impl DeltaDecoder {
             offers: self.offers.values().cloned().collect(),
             balance: h.balance,
             escrow: h.escrow,
+            grace: h.grace,
         })
     }
 }
