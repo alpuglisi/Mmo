@@ -427,6 +427,8 @@ export interface StateView {
   balance?: number;
   /** Renown of yours held in escrow on open agreements. */
   escrow?: number;
+  /** Lineages your animals have learned are poisonous: theirs "look poisonous to you". */
+  poisonous?: number[];
 }
 
 export interface WelcomeMsg {

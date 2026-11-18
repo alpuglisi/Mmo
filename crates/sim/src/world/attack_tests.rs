@@ -230,9 +230,9 @@ fn a_pack_takes_larger_prey_and_strikes_harder_together() {
     }
     w.organisms[pk[3]].target = Some(Vec2::new(30.0, 20.0));
     w.grid.rebuild(&w.organisms);
-    assert_eq!(w.pack_allies(pk[0], prey), 2);
+    assert_eq!(w.pack_allies(pk[0], prey, false), 2);
     w.config.balance.pack_hunt = 0.0;
-    assert_eq!(w.pack_allies(pk[0], prey), 0);
+    assert_eq!(w.pack_allies(pk[0], prey, false), 0);
 }
 
 #[test]
@@ -270,4 +270,175 @@ fn defenders_that_outnumber_a_larger_intruder_see_it_off() {
         w.organisms[i].kin_nearby = 0;
     }
     assert_ne!(w.decide(herd[0]).action, Action::Defend);
+}
+
+#[test]
+fn an_attack_order_outside_the_territory_is_followed() {
+    let mut w = world();
+    let pk = pack(&mut w, HUNTER, &hunter(), 3, Vec2::new(8.5, 8.5));
+    let prey = place(&mut w, PREY, &walker(), Vec2::new(30.5, 12.5));
+    grown(&mut w, prey);
+    // The group holds a territory around the pack; the attacker is outside it.
+    w.claim_territory(HUNTER, 0, Vec2::new(8.5, 8.5), 6.0).unwrap();
+    let a = pk[0];
+    w.organisms[a].pos = Vec2::new(26.5, 12.5);
+    let (aid, pid) = (w.organisms[a].id, w.organisms[prey].id);
+    w.possess(HUNTER, aid).unwrap();
+    w.possess_attack(HUNTER, aid, pid).unwrap();
+    for t in 0..20 {
+        w.step();
+        if !w.organisms[w.index[&pid]].alive || w.attack_target(aid).is_none() {
+            break;
+        }
+        let o = &w.organisms[w.index[&aid]];
+        assert_eq!(o.action, Action::Hunt, "tick {t}: {:?} at {:?}", o.action, o.pos);
+    }
+}
+
+/// A drab toxic prey (a walker with strong toxins).
+fn toxic(color: f32) -> FounderDesign {
+    walker().with(Gene::Toxins, 0.9).with(Gene::Coloration, color)
+}
+
+#[test]
+fn poisoned_lineages_learn_bright_prey_faster_and_forget_slowly() {
+    let mut w = world();
+    w.learn_toxic(1, 2, 0.0);
+    let drab = w.toxic_lesson(1, 2);
+    w.learn_toxic(1, 3, 1.0);
+    let bright = w.toxic_lesson(1, 3);
+    assert!((drab - super::toxic::LESSON_STEP).abs() < 1e-6, "{drab}");
+    assert!((bright - 3.0 * drab).abs() < 1e-5, "bright teaches 3×: {bright} vs {drab}");
+    for _ in 0..20 {
+        w.learn_toxic(1, 2, 0.0);
+    }
+    assert_eq!(w.toxic_lesson(1, 2), 1.0, "capped at 1");
+    // A month later it is still mostly remembered; faint lessons go.
+    for _ in 0..30 {
+        w.fade_toxic_lessons();
+    }
+    let kept = w.toxic_lesson(1, 2);
+    assert!(kept > 0.55 && kept < 0.65, "{kept}");
+    for _ in 0..300 {
+        w.fade_toxic_lessons();
+    }
+    assert!(w.toxic_lessons.is_empty());
+    // Off: nothing learned.
+    w.config.balance.toxic_learning = 0.0;
+    w.learn_toxic(1, 2, 1.0);
+    assert_eq!(w.toxic_lesson(1, 2), 0.0);
+}
+
+#[test]
+fn a_hunter_poisoned_by_drab_prey_teaches_its_lineage_to_pass_it_up() {
+    let mut w = world();
+    w.config.balance.escape = 0.0;
+    w.config.balance.fight_damage = 0.0;
+    w.config.balance.toxin_damage = 1.0;
+    let pk = pack(&mut w, HUNTER, &hunter(), 2, Vec2::new(10.5, 10.5));
+    let preys = pack(&mut w, PREY, &toxic(0.1), 2, Vec2::new(11.5, 10.5));
+    let (prey, spare) = (preys[0], preys[1]);
+    let (hl, pl) = (w.organisms[pk[0]].lineage, w.organisms[prey].lineage);
+    for &i in &pk {
+        w.organisms[i].needs.hunger = 80.0;
+    }
+    w.grid.rebuild(&w.organisms);
+    // Naive: the drab toxic prey is hunted, and the strike poisons.
+    let it = w.decide(pk[1]);
+    assert!(it.action == Action::Hunt && it.target_org.is_some_and(|j| preys.contains(&j)), "{it:?}");
+    let mut rng = crate::rng::rng_for(1, crate::rng::stream::APPLY, 0, 0);
+    let strike = super::Intent {
+        action: Action::Hunt,
+        target: Some(w.organisms[prey].pos),
+        target_org: Some(prey),
+        ..super::Intent::idle()
+    };
+    w.apply(pk[0], &strike, &mut rng);
+    let lesson = w.toxic_lesson(hl, pl);
+    assert!(lesson > 0.1 && lesson < 0.25, "one drab poisoning: {lesson}");
+    // Taught well, the lineage passes it up as far as it can tell it apart:
+    // a drab coat at little more than a third, a bright one almost always.
+    w.toxic_lessons.insert((hl, pl), 1.0);
+    let drab = w.toxic_avoidance(hl, &w.organisms[spare]);
+    assert!((drab - (0.3 + 0.7 * 0.1)).abs() < 0.02, "{drab}");
+    for &j in &preys {
+        w.organisms[j].pheno.0[Gene::Coloration.index()] = 1.0;
+    }
+    assert!((w.toxic_avoidance(hl, &w.organisms[spare]) - 1.0).abs() < 1e-6);
+    let it = w.decide(pk[1]);
+    assert!(!it.target_org.is_some_and(|j| preys.contains(&j)), "{it:?}");
+    // It knows the toxin, so a bite harms it less.
+    assert!((w.toxin_harm(hl, pl) - 0.3).abs() < 1e-6);
+    // The player is told, but may still order the attack.
+    let (a, t) = (w.organisms[pk[1]].id, w.organisms[spare].id);
+    assert!(w.attack_warning(a, t).is_some_and(|s| s.contains("poisonous")));
+    assert!(w.looks_poisonous_to(HUNTER, pl) && !w.looks_poisonous_to(PREY, pl));
+    w.possess(HUNTER, a).unwrap();
+    assert_eq!(w.possess_attack(HUNTER, a, t), Ok(()));
+}
+
+#[test]
+fn attack_orders_report_how_they_end() {
+    use super::commands::AttackEnd;
+    let mut w = world();
+    w.config.balance.escape = 0.0;
+    w.config.balance.attack_power = 50.0;
+    w.config.balance.fight_damage = 0.0;
+    let a = place(&mut w, HUNTER, &hunter(), Vec2::new(10.5, 10.5));
+    grown(&mut w, a);
+    let prey = place(&mut w, PREY, &walker(), Vec2::new(12.5, 10.5));
+    grown(&mut w, prey);
+    let other = place(&mut w, PREY, &walker(), Vec2::new(13.5, 12.5));
+    let (aid, pid, oid) = (w.organisms[a].id, w.organisms[prey].id, w.organisms[other].id);
+    w.possess(HUNTER, aid).unwrap();
+    w.possess_attack(HUNTER, aid, pid).unwrap();
+    for _ in 0..200 {
+        w.step();
+        if w.attack_target(aid).is_none() {
+            break;
+        }
+    }
+    let ev = w.take_attack_events();
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert_eq!((ev[0].player, ev[0].attacker, ev[0].target, ev[0].end), (HUNTER, aid, pid, AttackEnd::Killed));
+    // Gone to ground: the order ends, and says why.
+    if w.organisms[w.index[&oid]].alive && w.organisms[w.index[&aid]].alive {
+        w.possess(HUNTER, aid).unwrap();
+        let j = w.index[&oid];
+        w.organisms[j].pos = w.organisms[w.index[&aid]].pos + Vec2::new(3.0, 0.0);
+        w.possess_attack(HUNTER, aid, oid).unwrap();
+        w.organisms[j].sheltered = true;
+        w.settle_orders();
+        assert_eq!(w.take_attack_events().iter().map(|e| e.end).collect::<Vec<_>>(), vec![AttackEnd::WentToGround]);
+        // A release is the player's doing: no event.
+        w.organisms[j].sheltered = false;
+        w.possess_attack(HUNTER, aid, oid).unwrap();
+        w.release(HUNTER, aid).unwrap();
+        w.settle_orders();
+        assert!(w.take_attack_events().is_empty());
+    }
+}
+
+#[test]
+fn the_parched_drink_first_and_possessed_animals_break_off_for_water() {
+    use super::path_tests::set;
+    let mut w = world();
+    for y in 0..super::path_tests::H {
+        set(&mut w, 30, y, "lake");
+    }
+    let i = place(&mut w, PREY, &walker(), Vec2::new(26.5, 10.5));
+    grown(&mut w, i);
+    // Parched and hungry, fattening for winter: it drinks.
+    let o = &mut w.organisms[i];
+    (o.needs.thirst, o.needs.hunger) = (90.0, 88.0);
+    w.grid.rebuild(&w.organisms);
+    assert_eq!(w.decide(i).action, Action::Drink);
+    // A possessed animal under a move order, thirst 65, water 4 tiles off.
+    let id = w.organisms[i].id;
+    w.organisms[i].needs = crate::organism::Needs { thirst: 65.0, hunger: 10.0, energy: 90.0, ..w.organisms[i].needs };
+    w.possess(PREY, id).unwrap();
+    w.order_move(PREY, id, Vec2::new(5.5, 10.5)).unwrap();
+    assert_eq!(w.decide(i).action, Action::Drink);
+    w.config.balance.drink_priority = 0.0;
+    assert_eq!(w.decide(i).action, Action::Ordered, "the old rule: on until 85");
 }

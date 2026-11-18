@@ -106,7 +106,7 @@ const KIND_HINT: Record<AlertKind, string> = {
   milestone: 'population and legacy milestones', need: 'a possessed organism parched or starving', world: 'catastrophes and eras',
   achievement: 'achievements', market: 'sales, purchases, refunds, renown',
   group: 'a migration arrived, a group left with no members',
-  attack: 'another player sent an animal to hunt one of yours',
+  attack: 'how your attack orders end, and players hunting yours',
 };
 
 /** Per-kind switches: show in the feed, and toast on arrival. `onChange` gets the new preferences. */

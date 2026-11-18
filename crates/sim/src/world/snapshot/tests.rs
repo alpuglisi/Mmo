@@ -387,6 +387,17 @@ fn predators_off(b: &mut crate::Balance) {
     b.pack_hunt = old;
     b.territory_harass = old;
     b.attack_grace = old;
+    playtest2_off(b);
+}
+
+/// The playtest 2 tunables as snapshots before version 37 read them.
+fn playtest2_off(b: &mut crate::Balance) {
+    let old = crate::serde_util::before_v37::OLD_VALUE;
+    b.drink_priority = old;
+    b.toxic_learning = old;
+    b.dry_sites = old;
+    b.carnivore_energetics = old;
+    b.led_pack = old;
 }
 
 /// `b` as snapshots before version 34 read it: the playtest 1 ecology
@@ -1306,4 +1317,30 @@ fn version_35_snapshots_restore_without_predator_play() {
     w.attack_orders.insert(a, t);
     let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
     assert_eq!((r.attack_orders.get(&a).copied(), r.config.balance.pack_hunt), (Some(t), 0.5));
+}
+
+/// Version 36 snapshots (before the playtest 2 fixes) restore with their
+/// tunables off and no toxic lessons, and are otherwise the same world.
+#[test]
+fn version_36_snapshots_restore_without_playtest2_fixes() {
+    let mut w = fixture_world();
+    w.toxic_lessons.insert((1, 0), 0.5);
+    let old = w.snapshot_v36();
+    let h = SnapshotHeader::read(&old).unwrap();
+    assert_eq!(h.version, 36);
+    assert!(h.restorable());
+    let r = World::restore(&old, Some(w.map.terrain().clone())).unwrap();
+    assert_eq!(r.config.balance.toxic_learning, crate::serde_util::before_v37::OLD_VALUE);
+    assert!(r.toxic_lessons.is_empty());
+    playtest2_off(&mut w.config.balance);
+    w.toxic_lessons.clear();
+    assert_eq!(r.config.balance, w.config.balance);
+    assert!(r.snapshot() == w.snapshot());
+    assert!(r.snapshot_v36() == old);
+    // This version keeps them.
+    let mut w = fixture_world();
+    w.config.balance.toxic_learning = 0.5;
+    w.toxic_lessons.insert((1, 0), 0.5);
+    let r = World::restore(&w.snapshot(), Some(w.map.terrain().clone())).unwrap();
+    assert_eq!((r.toxic_lesson(1, 0), r.config.balance.toxic_learning), (0.5, 0.5));
 }

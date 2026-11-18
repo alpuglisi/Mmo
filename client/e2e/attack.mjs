@@ -267,6 +267,14 @@ async function main() {
         await page.waitForSelector('#btn-attack', { timeout: 5000 });
         const label = await page.textContent('#btn-attack');
         check(label.includes(`Attack with #${p.id}`), 'the inspector attack button', label);
+        if (await page.locator('#btn-attack').isDisabled()) {
+          // Out of reach (more than 8 tiles): the button says so instead of a pointless click.
+          check(label.includes('too far'), 'a disabled attack button should say why', label);
+          step(`the inspector of wild #${pick} offers "${label}", disabled: it is out of reach`);
+          await send(page, { type: 'order_move', organism: p.id, x: (await page.evaluate((id) => window.evo.model.state.nearby.find((o) => o.id === id), pick))?.x ?? p.x, y: p.y });
+          await page.waitForTimeout(2000);
+          continue;
+        }
         await page.evaluate(() => { document.querySelector('#toasts')?.replaceChildren(); });
         await page.click('#btn-attack', { timeout: 3000 });
         const said = await waitFor('an answer', () => attackAnswer(page, pick), 8000);

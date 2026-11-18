@@ -939,6 +939,49 @@ pub struct Balance {
     /// it. 0: no grace.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v36"))]
     pub attack_grace: f32,
+    // Playtest 2 fixes (version 37; *Playtest 2: predators, toxins and
+    // drowning* in the README). Off at 0, what snapshots before version 37
+    // read (`serde_util::before_v37`).
+    /// Drinking first when parched: past thirst 0.7 drinking gains up to
+    /// `0.6 × drink_priority`, a threat in sight stops holding it back and
+    /// fattening stops pulling the animal to graze; possessed animals break
+    /// off an order to drink at thirst 60 with water near, and hunters and
+    /// ordered animals drink at water they pass. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37"))]
+    pub drink_priority: f32,
+    /// Learned avoidance of toxic prey: each time a predator is poisoned by
+    /// its prey, its lineage's lesson about the prey's lineage grows by
+    /// `0.15 × toxic_learning × (1 + 2 × coloration)` (warning colours
+    /// teach about three times faster than a drab coat), up to 1, and fades
+    /// with a 60-day time constant (`World::toxic_lesson`). Hunters pass
+    /// prey up with the lesson's probability as far as they can recognise
+    /// it, `0.3 + 0.7 × coloration` (a drab coat never buys full
+    /// protection), and a lineage that knows a toxin takes less harm biting
+    /// it, `1 − 0.7 × lesson` (`world::toxic`). 0: off (only the
+    /// bright-prey aversion of a poisoned individual).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37"))]
+    pub toxic_learning: f32,
+    /// Dry ground for sleeping and founding: no dormancy on ice over water
+    /// deep enough to drown the sleeper at the melt (a sleeper on such ice
+    /// wakes), and founders land only on dry ground away from deep water
+    /// (`World::found_lineage_grouped`). 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37"))]
+    pub dry_sites: f32,
+    /// Obligate carnivores' energetics: an obligate carnivore's hunger
+    /// rises up to `0.3 × carnivore_energetics` slower (none at carnivory
+    /// 0.7 or below, all of it at 0.95 and above: big, infrequent meals, a
+    /// lean-season economy). Playtest 2's player carnivores needed a fifth
+    /// of their weight in prey a day and starved. 0: off.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37"))]
+    pub carnivore_energetics: f32,
+    /// Player-led pack hunts on big prey: in a hunt a player leads (an
+    /// attack order and the pack-mates who join it) the prey mass limit
+    /// grows by `led_pack` per pack-mate around, up to 8 (`decide::LED_PACK_MAX`),
+    /// times pack instinct, and up to 8 pack-mates at the prey strike
+    /// beside the leader: a full pack takes prey several times one hunter's
+    /// weight. 0: off (the wild rule, at most 4 pack-mates).
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_util::before_v37"))]
+    pub led_pack: f32,
 }
 
 impl Balance {
@@ -1198,12 +1241,17 @@ impl Default for Balance {
             pack_hunt: 0.25,
             territory_harass: 1.0,
             attack_grace: 20.0,
+            drink_priority: 1.0,
+            toxic_learning: 1.0,
+            dry_sites: 1.0,
+            carnivore_energetics: 1.0,
+            led_pack: 0.5,
         }
     }
 }
 
 impl Balance {
-    pub const FIELD_COUNT: usize = 129;
+    pub const FIELD_COUNT: usize = 134;
 
     /// Every field by name, for search tools and reports.
     pub fn fields(&self) -> [(&'static str, f32); Self::FIELD_COUNT] {
@@ -1342,6 +1390,11 @@ impl Balance {
             ("pack_hunt", &mut self.pack_hunt),
             ("territory_harass", &mut self.territory_harass),
             ("attack_grace", &mut self.attack_grace),
+            ("drink_priority", &mut self.drink_priority),
+            ("toxic_learning", &mut self.toxic_learning),
+            ("dry_sites", &mut self.dry_sites),
+            ("carnivore_energetics", &mut self.carnivore_energetics),
+            ("led_pack", &mut self.led_pack),
         ]
     }
 

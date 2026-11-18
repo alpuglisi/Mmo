@@ -57,6 +57,8 @@ export interface GameDeps {
 }
 
 const LOCAL_CODES = new Set(['not_connected', 'timeout', 'disconnected', 'closed']);
+/** How far an attack order reaches (the server's `World::attack_range`, tiles). */
+const ATTACK_RANGE = 8;
 
 /**
  * Every organism of the player's lineage has died: say so, point to what
@@ -459,11 +461,11 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
   /** Send the possessed organism `p` after `target`; the server says why not. */
   async function attackWith(p: OwnOrganism, target: OrgId): Promise<boolean> {
     const r = await send({ type: 'possess_attack', organism: p.id, target });
+    // A refusal is toasted once, by the model, like every failed command.
     if (r.ok) {
-      model.toast('info', `#${p.id} is hunting #${target}; hungry pack-mates nearby join in`);
+      const warning = (r.data as { warning?: string } | undefined)?.warning;
+      model.toast(warning ? 'error' : 'info', `#${p.id} is hunting #${target}; hungry pack-mates nearby join in${warning ? `. ${warning}` : ''}`);
       model.select(target);
-    } else if (r.error) {
-      model.toast('error', `Attack: ${r.error.message}`);
     }
     return r.ok;
   }
@@ -1090,9 +1092,19 @@ export async function gameScreen(deps: GameDeps): Promise<GameScreen> {
         ['Position', `${o.x.toFixed(1)}, ${o.y.toFixed(1)}`], ['Body plan', o.look ? describeLook(o.look) : '—']]),
       h('p', { class: 'muted small' }, 'Only what can be seen: needs and health of other players\' organisms are hidden.'),
     );
+    const poisonous = (model.state?.poisonous ?? []).includes(o.lineage);
     const hunter = possessed();
-    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}`, () => [
-      !!hunter && h('button', { id: 'btn-attack', class: 'danger', onclick: () => void attackWith(hunter, o.id) }, `Attack with #${hunter.id}`),
+    // Orders reach 8 tiles (the server's `target_out_of_sight` beyond that).
+    const reach = hunter ? Math.hypot(hunter.x - o.x, hunter.y - o.y) <= ATTACK_RANGE : false;
+    keyed(inspActions, `other:${o.id}:${wild}:${hunter?.id ?? ''}:${reach}:${poisonous}`, () => [
+      poisonous && h('p', { class: 'notice bad small', id: 'insp-poisonous' }, hunter
+        ? 'This animal looks poisonous to you: your kind has been poisoned eating its kind.'
+        : 'This animal looks poisonous: your kind has been poisoned eating its kind.'),
+      !!hunter && h('button', {
+        id: 'btn-attack', class: 'danger', disabled: !reach,
+        title: reach ? '' : `#${hunter.id} is too far away: get within ${ATTACK_RANGE} tiles`,
+        onclick: () => void attackWith(hunter, o.id),
+      }, reach ? `Attack with #${hunter.id}` : `Attack with #${hunter.id} (too far)`),
       wild ? h('p', { class: 'muted small' }, 'Wild organisms have no owner to consent to a mating.')
         : h('button', { id: 'btn-ask-mating', onclick: () => { matingForm.setPartner(o.id); showTab('matings'); } }, 'Request mating…'),
       h('button', { class: 'secondary', onclick: () => { view.setFollow(false); view.centerOn(o.x, o.y); } }, 'Center'),

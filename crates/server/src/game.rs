@@ -494,6 +494,9 @@ pub struct Game {
     /// target it was planned for; planned when first missing (an order
     /// just given, or after a restart) in [`Game::plan_routes`].
     routes: BTreeMap<(PlayerId, u8), PlannedRoute>,
+    /// The day each player was last alerted to attacks by each other player
+    /// (victim, attacker): at most one such alert a day.
+    attack_alerted: BTreeMap<(PlayerId, PlayerId), u64>,
     /// Day each player's current lineage was founded, for the founding
     /// ramp of the season's legacy score ([`FOUNDING_RAMP_DAYS`]); absent
     /// for lineages founded before it was kept (counted in full).
@@ -691,6 +694,7 @@ impl Game {
             held_tick: None,
             market,
             routes: BTreeMap::new(),
+            attack_alerted: BTreeMap::new(),
             founded_day: BTreeMap::new(),
             hosts,
             #[cfg(test)]
@@ -1155,7 +1159,11 @@ impl Game {
             ClientMsg::PossessAttack { organism, target } => {
                 self.world.possess_attack(player, organism, target).map_err(e)?;
                 self.alert_attacked(player, organism, target, out);
-                Ok(Some(serde_json::json!({ "organism": organism, "target": target })))
+                let mut data = serde_json::json!({ "organism": organism, "target": target });
+                if let Some(w) = self.world.attack_warning(organism, target) {
+                    data["warning"] = w.into();
+                }
+                Ok(Some(data))
             }
             ClientMsg::Release { organism } => self.world.release(player, organism).map(|_| None).map_err(e),
             ClientMsg::Migrate { x, y, group } => {
@@ -2561,6 +2569,7 @@ impl Game {
         self.watch_possessed(&mut out);
         self.announce_deaths(&mut out);
         self.announce_group_events(&mut out);
+        self.announce_attack_events(&mut out);
         self.plan_routes();
         self.offline_after_tick();
         if self.world.tick().is_multiple_of(self.world.config.ticks_per_hour()) {
@@ -2682,10 +2691,42 @@ impl Game {
         if t.owner == WILD || t.owner == player {
             return;
         }
-        let kind = |l: u32| w.lineages.get(l as usize).map_or("an animal", |x| x.name.as_str()).to_string();
+        // One alert a day per attacking player, however many orders.
+        let day = w.day();
+        if self.attack_alerted.get(&(t.owner, player)).is_some_and(|&d| d == day) {
+            return;
+        }
+        let kind = |l: u32| w.lineages.get(l as usize).map_or("animals", |x| x.name.as_str()).to_string();
         let (owner, theirs, mine) = (t.owner, kind(t.lineage), kind(a.lineage));
-        let text = format!("A {theirs} of yours (#{target}) is being hunted by a player's {mine} (#{attacker})");
+        let who = self.names.get(&player).cloned().unwrap_or_else(|| "another player".into());
+        let text = format!(
+            "{who} is hunting your animals: one of their {mine} (#{attacker}) is after #{target} of your {theirs}"
+        );
+        self.attack_alerted.insert((owner, player), day);
         self.alert(owner, AlertKind::Attack, text, Some(target), out);
+    }
+
+    /// Tell attackers how their attack orders ended when they ended on their
+    /// own: a kill, the target dead of something else, gone to ground or out
+    /// of reach, or the attacker dead.
+    fn announce_attack_events(&mut self, out: &mut Outbox) {
+        use evo_sim::world::commands::AttackEnd;
+        for ev in self.world.take_attack_events() {
+            if ev.player == WILD {
+                continue;
+            }
+            let (a, t) = (ev.attacker, ev.target);
+            let text = match ev.end {
+                AttackEnd::Killed => format!("#{a}'s hunt is over: #{t} was caught."),
+                AttackEnd::TargetDied => format!("#{a}'s hunt is over: #{t} died before it was caught."),
+                AttackEnd::WentToGround => {
+                    format!("#{a}'s hunt is over: #{t} went to ground in its burrow, out of reach.")
+                }
+                AttackEnd::Lost => format!("#{a}'s hunt is over: #{t} got away (more than 12 tiles off)."),
+                AttackEnd::AttackerDied => format!("#{a} died while hunting #{t}."),
+            };
+            self.alert(ev.player, AlertKind::Attack, text, Some(a), out);
+        }
     }
 
     /// Record a push notice (`crate::webpush`) for a player.
@@ -6427,6 +6468,7 @@ mod tests {
             offers,
             balance: g.balance(player),
             escrow: g.escrow(player),
+            poisonous: (0..g.world.lineages.len() as u32).filter(|&l| g.world.looks_poisonous_to(player, l)).collect(),
         }
     }
 

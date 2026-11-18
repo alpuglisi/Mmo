@@ -231,6 +231,8 @@ export class DeltaDecoder {
   private own = new Map<number, OwnQ>();
   private near = new Map<number, NearQ>();
   private lb = new Map<number, LeaderRow>();
+  /** `poisonous` (optional: absent from older servers' frames). */
+  private poisonous: number[] = [];
   private offers = new Map<number, OfferView>();
   private looks: Appearance[] = [];
   private actions: string[] = [];
@@ -274,6 +276,8 @@ export class DeltaDecoder {
     const head = (this.head ? { ...this.head } : {}) as Record<string, unknown>;
     for (const k of HEAD_KEYS) if (k in meta) head[k] = meta[k];
     for (const k of HEAD_KEYS) if (!(k in head)) throw malformed(`a keyframe lacks ${k}`);
+    if (kind === KEYFRAME) this.poisonous = [];
+    if (Array.isArray(meta.poisonous)) this.poisonous = meta.poisonous.filter((x): x is number => typeof x === 'number');
     const list = (k: string): unknown[] => {
       const v = meta[k];
       if (v === undefined) return [];
@@ -370,6 +374,7 @@ export class DeltaDecoder {
       offers: [...this.offers].sort(byId).map(([, o]) => o),
       balance: h.balance,
       escrow: h.escrow,
+      ...(this.poisonous.length > 0 ? { poisonous: this.poisonous } : {}),
     };
   }
 }

@@ -1184,6 +1184,11 @@ pub struct StateView {
     /// Renown of yours held in escrow on open agreements.
     #[serde(default)]
     pub escrow: u64,
+    /// Lineages your animals have learned are poisonous
+    /// (`World::looks_poisonous_to`): the client marks theirs "looks
+    /// poisonous to you".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub poisonous: Vec<u32>,
 }
 
 /// World summary for `GET /api/world`.

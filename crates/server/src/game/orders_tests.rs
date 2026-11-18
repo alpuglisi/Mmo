@@ -223,6 +223,6 @@ fn an_attack_order_alerts_the_targets_owner() {
         .get(&2)
         .map_or(Vec::new(), |l| l.iter().filter(|x| x.kind == AlertKind::Attack).map(|x| x.text.clone()).collect());
     assert_eq!(told.len(), 1, "{told:?}");
-    assert!(told[0].contains(&format!("#{}", b[0])) && told[0].contains("hunted"), "{told:?}");
+    assert!(told[0].contains(&format!("#{}", b[0])) && told[0].contains("hunting"), "{told:?}");
     assert!(alerts(&g, AlertKind::Attack).is_empty(), "the attacker isn't alerted");
 }
